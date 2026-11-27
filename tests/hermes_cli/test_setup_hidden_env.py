@@ -80,10 +80,10 @@ class TestCliWizard:
         return out
 
     def test_wizard_stops_asking_about_hidden_knobs(self, home, monkeypatch, capsys):
-        # Only the three real answers. If the wizard still prompted for the
-        # home channel it would read past them.
+        # Supply platform credentials, the allowlist and the opt-in admin answer.
+        # Hidden settings must not consume any of these answers.
         self._run(
-            ["https://mm.example.com", "tok-abc", "user26charid"], monkeypatch
+            ["https://mm.example.com", "tok-abc", "user26charid", "n"], monkeypatch
         )
 
         written = self._env(home)
@@ -101,6 +101,64 @@ class TestCliWizard:
         self._run(["https://mm.example.com", ""], monkeypatch)
 
         assert "MATTERMOST_TOKEN" not in self._env(home)
+
+    @pytest.mark.parametrize("existing_admins", [[], ["existing-admin"]])
+    def test_wizard_offers_dm_admin_after_allowlist(self, home, monkeypatch, existing_admins):
+        from hermes_cli.config import read_raw_config, write_platform_config_field
+
+        if existing_admins:
+            write_platform_config_field("mattermost", "allow_admin_from", existing_admins, raw=True)
+        self._run(
+            ["https://mm.example.com", "tok-abc", "operator-42,other-user", "y"],
+            monkeypatch,
+        )
+
+        platform = read_raw_config()["platforms"]["mattermost"]
+        assert platform["allow_admin_from"] == (existing_admins or ["operator-42"])
+        assert "group_allow_admin_from" not in platform
+
+
+def test_gateway_setup_can_make_first_dm_operator_an_admin(tmp_path, monkeypatch, capsys):
+    """The setup wizard explains and persists the opt-in DM slash-admin scope."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from hermes_cli import gateway as gw
+
+    monkeypatch.setattr(gw, "prompt_yes_no", lambda *_args, **_kwargs: True)
+    from hermes_cli.gateway_setup_wizard import _offer_first_operator_admin
+
+    _offer_first_operator_admin("telegram", "operator-42")
+
+    from hermes_cli.config import read_raw_config
+
+    config = read_raw_config()
+    assert config["platforms"]["telegram"]["allow_admin_from"] == ["operator-42"]
+    assert "group_allow_admin_from" not in config["platforms"]["telegram"]
+    output = capsys.readouterr().out
+    assert "direct messages" in output.lower()
+    assert "group_allow_admin_from" in output
+
+
+def test_gateway_setup_preserves_existing_dm_admins(tmp_path, monkeypatch, capsys):
+    """An existing admin list is never replaced by the first-operator prompt."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from hermes_cli import gateway as gw
+    from hermes_cli.config import write_platform_config_field
+
+    write_platform_config_field("telegram", "allow_admin_from", ["existing-admin"], raw=True)
+    monkeypatch.setattr(
+        gw,
+        "prompt_yes_no",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not prompt")),
+    )
+
+    from hermes_cli.gateway_setup_wizard import _offer_first_operator_admin
+
+    _offer_first_operator_admin("telegram", "operator-42")
+
+    from hermes_cli.config import read_raw_config
+
+    assert read_raw_config()["platforms"]["telegram"]["allow_admin_from"] == ["existing-admin"]
+    assert "already configured" in capsys.readouterr().out.lower()
 
 
 class TestStillConfigurable:

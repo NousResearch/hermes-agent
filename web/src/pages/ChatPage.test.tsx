@@ -29,6 +29,38 @@ class FakeWebglAddon {
   }
 }
 
+// Mirrors xterm 6.0.0's CompositionHelper arithmetic (compositionstart,
+// compositionupdate, _finalizeComposition(true)): the start is the helper
+// textarea's length at compositionstart, and on the tick after compositionend
+// the committed text is read back as `textarea.value.substring(start)` (or up
+// to the next composition's start if one already began) and sent via onData.
+function installFakeCompositionHelper(
+  textarea: HTMLTextAreaElement,
+  triggerDataEvent: (data: string) => void,
+) {
+  const position = { start: 0, end: 0 };
+  let isComposing = false;
+  textarea.addEventListener("compositionstart", () => {
+    isComposing = true;
+    position.start = textarea.value.length;
+  });
+  textarea.addEventListener("compositionupdate", () => {
+    setTimeout(() => {
+      position.end = textarea.value.length;
+    }, 0);
+  });
+  textarea.addEventListener("compositionend", () => {
+    isComposing = false;
+    const current = { ...position };
+    setTimeout(() => {
+      const input = isComposing
+        ? textarea.value.substring(current.start, position.start)
+        : textarea.value.substring(current.start);
+      if (input.length > 0) triggerDataEvent(input);
+    }, 0);
+  });
+}
+
 class FakeTerminal {
   options: Record<string, unknown>;
   rows = 24;
@@ -36,7 +68,9 @@ class FakeTerminal {
   parser = {
     registerOscHandler: vi.fn(),
   };
+  textarea: HTMLTextAreaElement | undefined;
   unicode = { activeVersion: "" };
+  private dataListeners = new Set<(data: string) => void>();
 
   constructor(options: Record<string, unknown>) {
     this.options = options;
@@ -64,8 +98,13 @@ class FakeTerminal {
 
   loadAddon() {}
 
-  onData() {
-    return { dispose() {} };
+  onData(cb: (data: string) => void) {
+    this.dataListeners.add(cb);
+    return { dispose: () => this.dataListeners.delete(cb) };
+  }
+
+  emitData(data: string) {
+    for (const cb of this.dataListeners) cb(data);
   }
 
   onResize() {
@@ -84,7 +123,13 @@ class FakeTerminal {
 
   scrollToBottom() {}
 
-  open() {}
+  open(host: HTMLElement) {
+    const textarea = document.createElement("textarea");
+    textarea.className = "xterm-helper-textarea";
+    host.append(textarea);
+    this.textarea = textarea;
+    installFakeCompositionHelper(textarea, (data) => this.emitData(data));
+  }
 
   paste() {}
 
@@ -809,6 +854,215 @@ describe("ChatPage PTY ticket connect deadline", () => {
     // force-close a wedged handshake — the two must not both fire.
     await advance(PTY_TICKET_TIMEOUT_MS);
     expect(apiMocks.buildWsUrl).toHaveBeenCalledTimes(1);
+  });
+});
+
+// Chrome inserts an IME commit at the caret inside xterm's helper textarea,
+// while xterm reads it back from the length recorded at compositionstart. A
+// mid-line commit therefore surfaces as a shifted tail fragment ("调奇怪）" for
+// "语调奇怪") on top of the compositionend fallback's real word; the PTY must
+// receive the committed word exactly once.
+describe("ChatPage IME composition commit", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  async function renderOpenChat() {
+    const { default: ChatPage } = await import("./ChatPage");
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive />
+      </MemoryRouter>,
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    const socket = FakeWebSocket.instances[0];
+    await act(async () => socket.onopen?.());
+    socket.send.mockClear();
+    const textarea = container.querySelector<HTMLTextAreaElement>(
+      "textarea.xterm-helper-textarea",
+    )!;
+    return { socket, textarea };
+  }
+
+  /**
+   * Commit a composition the way Chrome does: `inserted` lands at the caret in
+   * the mirror (the commit plus anything its key added) and compositionend
+   * reports `data`. Returns the frames sent by xterm's 0 ms finalize, before
+   * the forwarder's 16 ms fallback runs.
+   */
+  async function commitAtCaret(
+    socket: FakeWebSocket,
+    textarea: HTMLTextAreaElement,
+    inserted: string,
+    data = inserted,
+  ) {
+    const before = socket.send.mock.calls.length;
+    await act(async () => {
+      textarea.dispatchEvent(new CompositionEvent("compositionstart", { data: "" }));
+      textarea.dispatchEvent(new CompositionEvent("compositionupdate", { data }));
+      const { selectionStart, selectionEnd, value } = textarea;
+      const caret = selectionStart + inserted.length;
+      textarea.value = value.slice(0, selectionStart) + inserted + value.slice(selectionEnd);
+      textarea.setSelectionRange(caret, caret);
+      textarea.dispatchEvent(new CompositionEvent("compositionend", { data }));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    const atXtermFinalize = sentFrames(socket).slice(before);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(16);
+    });
+    return atXtermFinalize;
+  }
+
+  function sentFrames(socket: FakeWebSocket): string[] {
+    return socket.send.mock.calls.map((call) => call[0] as string);
+  }
+
+  function expectNoFragment(frames: string[]) {
+    for (const fragment of ["调奇怪）", "奇怪）", "本）", "本怪"]) {
+      expect(frames.some((frame) => frame.includes(fragment))).toBe(false);
+    }
+  }
+
+  it("delivers a mid-line commit once, never a shifted tail fragment", async () => {
+    const { socket, textarea } = await renderOpenChat();
+    textarea.value = "B1（）";
+    textarea.setSelectionRange(3, 3);
+
+    const atXtermFinalize = await commitAtCaret(socket, textarea, "语调奇怪");
+
+    expect(atXtermFinalize).toEqual(["语调奇怪"]);
+    expect(sentFrames(socket)).toEqual(["语调奇怪"]);
+    expectNoFragment(sentFrames(socket));
+  });
+
+  it("delivers consecutive mid-line commits once each", async () => {
+    const { socket, textarea } = await renderOpenChat();
+    textarea.value = "B1（）";
+    textarea.setSelectionRange(3, 3);
+
+    await commitAtCaret(socket, textarea, "语调奇怪");
+    // One arrow-left: the next commit lands before the mirror's last character.
+    const caret = textarea.value.length - 1;
+    textarea.setSelectionRange(caret, caret);
+    await commitAtCaret(socket, textarea, "文本");
+
+    expect(sentFrames(socket)).toEqual(["语调奇怪", "文本"]);
+    expectNoFragment(sentFrames(socket));
+  });
+
+  it("keeps a character the commit's key left in the mirror", async () => {
+    const { socket, textarea } = await renderOpenChat();
+
+    await commitAtCaret(socket, textarea, "녕 ", "녕");
+
+    expect(sentFrames(socket)).toEqual(["녕 "]);
+  });
+
+  it("delivers an appended commit exactly once", async () => {
+    const { socket, textarea } = await renderOpenChat();
+
+    await commitAtCaret(socket, textarea, "语调奇怪");
+
+    expect(sentFrames(socket)).toEqual(["语调奇怪"]);
+  });
+
+  it("leaves xterm's mirror intact when compositionend carries no text", async () => {
+    const { socket, textarea } = await renderOpenChat();
+
+    await commitAtCaret(socket, textarea, "é", "");
+
+    expect(textarea.value).toBe("é");
+    expect(sentFrames(socket)).toEqual(["é"]);
+  });
+
+  // Composition ranges that replace or shrink text the mirror already holds.
+  // Models the browser's composition range: an update replaces the range
+  // [from, to) with `text` and leaves the caret after it.
+  function replaceRange(textarea: HTMLTextAreaElement, from: number, to: number, text: string) {
+    const v = textarea.value;
+    textarea.value = v.slice(0, from) + text + v.slice(to);
+    textarea.setSelectionRange(from + text.length, from + text.length);
+    return { from, to: from + text.length };
+  }
+
+  it("Korean mid-line: the next syllable starts before xterm's finalize", async () => {
+    const { socket, textarea } = await renderOpenChat();
+    textarea.value = "B1（）";
+    textarea.setSelectionRange(3, 3);
+
+    await act(async () => {
+      textarea.dispatchEvent(new CompositionEvent("compositionstart", { data: "" }));
+      let r = replaceRange(textarea, 3, 3, "ㅇ");
+      textarea.dispatchEvent(new CompositionEvent("compositionupdate", { data: "ㅇ" }));
+      r = replaceRange(textarea, r.from, r.to, "안");
+      textarea.dispatchEvent(new CompositionEvent("compositionupdate", { data: "안" }));
+      // Typing ㄴ commits 안 and opens the next composition in the same task.
+      textarea.dispatchEvent(new CompositionEvent("compositionend", { data: "안" }));
+      textarea.dispatchEvent(new CompositionEvent("compositionstart", { data: "" }));
+      const caret = textarea.selectionStart;
+      r = replaceRange(textarea, caret, caret, "ㄴ");
+      textarea.dispatchEvent(new CompositionEvent("compositionupdate", { data: "ㄴ" }));
+      await vi.advanceTimersByTimeAsync(0);
+      replaceRange(textarea, r.from, r.to, "녕");
+      textarea.dispatchEvent(new CompositionEvent("compositionupdate", { data: "녕" }));
+      textarea.dispatchEvent(new CompositionEvent("compositionend", { data: "녕" }));
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(16);
+    });
+
+    expect(sentFrames(socket)).toEqual(["안", "녕"]);
+  });
+
+  it("Japanese henkan mid-line replaces a longer reading", async () => {
+    const { socket, textarea } = await renderOpenChat();
+    textarea.value = "B1（）";
+    textarea.setSelectionRange(3, 3);
+
+    await act(async () => {
+      textarea.dispatchEvent(new CompositionEvent("compositionstart", { data: "" }));
+      const r = replaceRange(textarea, 3, 3, "かんじ");
+      textarea.dispatchEvent(new CompositionEvent("compositionupdate", { data: "かんじ" }));
+      await vi.advanceTimersByTimeAsync(0);
+      replaceRange(textarea, r.from, r.to, "漢字");
+      textarea.dispatchEvent(new CompositionEvent("compositionupdate", { data: "漢字" }));
+      textarea.dispatchEvent(new CompositionEvent("compositionend", { data: "漢字" }));
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(16);
+    });
+
+    expect(sentFrames(socket)).toEqual(["漢字"]);
+  });
+
+  it("Gboard-style recomposition keeps the mirror and delivers the word once", async () => {
+    const { socket, textarea } = await renderOpenChat();
+    textarea.value = "hello";
+    textarea.setSelectionRange(5, 5);
+
+    await act(async () => {
+      // Backspacing into a committed word: Gboard reopens composition over it.
+      textarea.dispatchEvent(new CompositionEvent("compositionstart", { data: "" }));
+      const r = replaceRange(textarea, 0, 5, "hell");
+      textarea.dispatchEvent(new CompositionEvent("compositionupdate", { data: "hell" }));
+      replaceRange(textarea, r.from, r.to, "help");
+      textarea.dispatchEvent(new CompositionEvent("compositionupdate", { data: "help" }));
+      textarea.dispatchEvent(new CompositionEvent("compositionend", { data: "help" }));
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(16);
+    });
+
+    // The commit reaches the PTY exactly once, with no slice of the mirror the
+    // user never typed: the bridge stands down on the short slice and the
+    // forwarder's fallback delivers "help".
+    expect(sentFrames(socket)).toEqual(["help"]);
+    expect(textarea.value).toBe("help");
   });
 });
 

@@ -309,6 +309,14 @@ def refuse_moved_home(home: Path) -> None:
         raise PluginHomeMoved(moved)
 
 
+def refuse_moved_plugin_dir(dashboard_dir: str | Path) -> None:
+    """``PluginHomeMoved`` when the home name a dashboard plugin's directory was read through has moved
+    (:func:`refuse_moved_home`). Discovery builds that directory as ``<home>/plugins/<plugin>/dashboard`` from the
+    name it scanned, so a plugin found in the Hermes root or the bundled tree is judged by that tree, not by a
+    profile name its path never went through."""
+    refuse_moved_home(Path(dashboard_dir).parents[2])
+
+
 @contextlib.contextmanager
 def transient_plugin_host() -> Iterator[Any]:
     """A throwaway plugin manager for a one-shot load in the active profile (a profile lifecycle

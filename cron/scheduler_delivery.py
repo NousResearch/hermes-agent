@@ -1817,8 +1817,7 @@ def _deliver_result(
         from cron.delivery_queue import enqueue_and_wait
 
         _record_delivery_verification(job, [])
-        error = "; ".join(filter(None, [enqueue_and_wait(
-            external_execution, job, content, for_failure=for_failure), *skipped])) or None
+        error = enqueue_and_wait(external_execution, job, content, for_failure=for_failure)
         from cron.delivery_queue import get_status
         delivery_status = get_status(external_execution)
         if delivery_status and delivery_status["status"] == "suppressed":

@@ -284,6 +284,12 @@ def _validate_model_config(config_path, issues: list) -> None:
                         f"Fix: run 'hermes config set model.provider <valid_provider>'", issues)
     policy_id = str(runtime_provider or catalog_provider or "").strip().lower()
     accepts_vendor_slug = policy_id in _VENDOR_SLUG_PROVIDERS or policy_id == "custom" or policy_id.startswith("custom:")
+    if not accepts_vendor_slug and policy_id:
+        # Plugin and catalog profiles can declare aggregator semantics instead of being listed above.
+        with warn_on_error(""):
+            from providers import get_provider_profile
+            profile = get_provider_profile(policy_id)
+            accepts_vendor_slug = bool(profile is not None and profile.accepts_vendor_model_slugs)
     # openai-api pointed at a non-OpenAI endpoint (local router, proxy) is an aggregator in all but name:
     # the router owns the model namespace, so vendor/model slugs are the correct IDs there.
     model_base_url = str(model_section.get("base_url") or "").strip()

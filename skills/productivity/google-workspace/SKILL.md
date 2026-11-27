@@ -292,7 +292,35 @@ $GAPI docs create --title "Draft" --body "First paragraph..."
 # Append text to the end of an existing Doc
 $GAPI docs append DOC_ID --text "Additional content to append"
 $GAPI docs append DOC_ID --tab TAB_ID --text "..."   # --tab required when the Doc has multiple tabs
+
+# Find/replace across the body (whole Doc, or one tab with --tab)
+$GAPI docs replace DOC_ID --find "Q3 2026" --replace "Q4 2026"
+$GAPI docs replace DOC_ID --tab TAB_ID --find "old" --replace "new"
+$GAPI docs replace DOC_ID --find "draft" --replace ""   # empty replacement deletes the match
 ```
+
+### Slides
+
+```bash
+# Read a deck as text: one entry per slide with its 1-based index, objectId,
+# shape text, and speaker notes when present
+$GAPI slides get PRESENTATION_ID
+$GAPI slides get PRESENTATION_ID --slide 3        # one slide
+$GAPI slides get PRESENTATION_ID --slide 3,5      # several
+
+# Find/replace text, whole deck or a set of slides (pageObjectIds under the hood)
+$GAPI slides replace PRESENTATION_ID --find "BODYCAM" --replace "Bodycam"
+$GAPI slides replace PRESENTATION_ID --slide 1,2 --find "old" --replace "new"
+
+# Export one slide as a PNG (1600x900 by default) for a visual review
+$GAPI slides thumbnail PRESENTATION_ID --slide 1 --out "$TMPDIR/slide1.png"
+$GAPI slides thumbnail PRESENTATION_ID --slide 1 --size MEDIUM
+```
+
+`--slide` accepts a 1-based index or a slide `objectId`, so an objectId from
+`slides get` can be fed straight back into `slides replace`/`thumbnail`.
+The Slides API cannot create a presentation; to edit one without touching the
+original, copy it in Drive and edit the copy.
 
 ## Output Format
 
@@ -315,6 +343,10 @@ All commands return JSON. Parse with `jq` or read directly. Key fields:
 - **Sheets create**: `{status: "created", spreadsheetId, title, spreadsheetUrl}`
 - **Docs create**: `{status: "created", documentId, title, url}`
 - **Docs append**: `{status: "appended", documentId, inserted_at, characters}`
+- **Docs replace**: `{status: "replaced", documentId, occurrencesChanged, url}` (plus `tab` when limited)
+- **Slides get**: `{presentationId, title, slideCount, url, slides: [{index, objectId, texts, notes?}]}`
+- **Slides replace**: `{status: "replaced", presentationId, occurrencesChanged, url}`
+- **Slides thumbnail**: `{presentationId, slideObjectId, contentUrl, width, height, savedTo?}`
 
 ## Rules
 

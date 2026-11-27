@@ -64,7 +64,7 @@ def _build_background_section(compressor: Any) -> str:
         return ""
     lines = [
         "\n\n" + _LEAN_BACKGROUND_HEADING,
-        "Use process(action='poll'|'log'|'wait'|'kill', session_id=...); do not start duplicates.",
+        "Use process_manage(action='poll'|'log'|'wait'|'kill', session_id=...); do not start duplicates.",
     ]
     used = sum(len(line) + 1 for line in lines)
     shown = 0
@@ -77,5 +77,5 @@ def _build_background_section(compressor: Any) -> str:
         used += len(line) + 1
         shown += 1
     if shown < len(procs):
-        lines.append(f"- (+{len(procs) - shown} more: process(action='list'))")
+        lines.append(f"- (+{len(procs) - shown} more: process_manage(action='list'))")
     return "\n".join(lines)

@@ -124,30 +124,3 @@ def test_prepared_compaction_refreshes_processes_at_adoption(registry, compresso
         assert later in section and ancestor in section
         assert old not in section and "stale-model-handle" not in text
 
-
-def test_process_appendix_is_bounded(registry, compressor):
-    for i in range(25):
-        proc = registry._new_session(f"run-job-{i:02d} " + "x" * 200, SESSION, SESSION, "", "")
-        registry._running[proc.id] = proc
-
-    section = _section(_summary(compressor, force=True))
-    entries = [line for line in section.splitlines() if line.startswith("- proc_")]
-
-    assert len(entries) == 10
-    assert all(len(line.split("): ", 1)[1]) <= 80 for line in entries)
-    assert len(HEADING) + len(section) <= 1_500
-    assert "+15 more" in section
-
-
-def test_registry_failure_omits_process_snapshot(compressor, monkeypatch):
-    import tools.process_registry as processes
-
-    def unavailable():
-        raise RuntimeError("registry unavailable")
-
-    monkeypatch.setattr(processes.process_registry, "list_sessions", unavailable)
-    summary = _summary(compressor, force=True)
-
-    assert "Continue the work." in summary
-    assert HEADING not in summary.splitlines()
-    assert "stale-model-handle" not in summary

@@ -167,6 +167,50 @@ def idle_reference_timestamp(messages: list[Any], current_turn_user_idx: Optiona
     return newest
 
 
+@dataclass(frozen=True)
+class IdleAdmission:
+    """What the idle gates measured when they admitted a compaction."""
+
+    tokens: int
+    floor_tokens: int
+    last_compaction_tokens: int
+
+
+def idle_compaction_admission(
+    agent: Any, messages: list[Any], system_prompt: str, idle_gap: float,
+) -> Optional[IdleAdmission]:
+    """The idle gates (``_should_idle_compact``) for *messages* after *idle_gap* seconds, shared by the
+    turn-start trigger and the gateway's background run: None when they refuse."""
+    from agent import turn_context as _tc
+
+    _compressor = agent.context_compressor
+    # A live or restored native checkpoint must reach its issuer once so real usage,
+    # rather than an opaque ciphertext estimate, decides whether local compression is
+    # still needed.  Threshold and post-tool preflight honor the same latch.
+    if bool(getattr(_compressor, "awaiting_real_usage_after_compression", False)):
+        return None
+    # Route-aware pressure: on compacted native-Codex sessions the durable figure
+    # overstates the wire, so reuse the preflight estimator.
+    tokens = _tc._preflight_request_tokens(agent, messages, system_prompt)
+    # Don't summarise a thread already below the post-compression target size.
+    floor = int(_compressor.threshold_tokens * _compressor.summary_target_ratio)
+    cooldown = getattr(_compressor, "get_active_compression_failure_cooldown", lambda: None)()
+    # What the previous pass actually produced — the honest floor versus the theoretical
+    # ``floor``. Type pin: compressor doubles expose truthy non-ints here; only a real
+    # int may raise the floor, anything else falls back to 0 (original semantics).
+    last = getattr(_compressor, "last_compression_rough_tokens", 0)
+    if not isinstance(last, int) or isinstance(last, bool):
+        last = 0
+    if not _tc._should_idle_compact(
+        enabled=agent.compression_enabled,
+        idle_after_seconds=getattr(agent, "compression_idle_compact_after_seconds", 0),
+        idle_gap_seconds=idle_gap, tokens=tokens, floor_tokens=floor,
+        cooldown_active=bool(cooldown), last_compaction_tokens=last,
+    ):
+        return None
+    return IdleAdmission(tokens=tokens, floor_tokens=floor, last_compaction_tokens=last)
+
+
 def _idle_compaction(
     agent: Any, out: CompactionOutcome, system_message: Optional[str], user_message: Any,
     effective_task_id: str,
@@ -174,8 +218,6 @@ def _idle_compaction(
     """Idle-triggered compaction (opt-in; ``idle_compact_after_seconds``): fires on the
     wall-clock gap since the newest pre-turn transcript row (``idle_reference_timestamp``;
     ``_last_activity_ts`` only as a fallback); a cheap gap check gates the estimate."""
-    from agent import turn_context as _tc
-
     messages = out.messages
     _idle_after = getattr(agent, "compression_idle_compact_after_seconds", 0)
     if not (agent.compression_enabled and _idle_after > 0 and messages):
@@ -187,38 +229,15 @@ def _idle_compaction(
     _idle_gap = _now - _idle_ref
     if _idle_gap < _idle_after:
         return
+    admitted = idle_compaction_admission(agent, messages, out.active_system_prompt or "", _idle_gap)
+    if admitted is None:
+        return
     _compressor = agent.context_compressor
-    # A live or restored native checkpoint must reach its issuer once so real usage,
-    # rather than an opaque ciphertext estimate, decides whether local compression is
-    # still needed.  Threshold and post-tool preflight honor the same latch.
-    if bool(getattr(_compressor, "awaiting_real_usage_after_compression", False)):
-        return
-    # Route-aware pressure: on compacted native-Codex sessions the durable figure
-    # overstates the wire, so reuse the preflight estimator.
-    _idle_tokens = _tc._preflight_request_tokens(
-        agent, messages, out.active_system_prompt or ""
-    )
-    # Don't summarise a thread already below the post-compression target size.
-    _idle_floor = int(_compressor.threshold_tokens * _compressor.summary_target_ratio)
-    _idle_cooldown = getattr(
-        _compressor, "get_active_compression_failure_cooldown", lambda: None
-    )()
-    # What the previous pass actually produced — the honest floor versus the theoretical
-    # ``_idle_floor``. Type pin: compressor doubles expose truthy non-ints here; only a real
-    # int may raise the floor, anything else falls back to 0 (original semantics).
-    _idle_last_compaction = getattr(_compressor, "last_compression_rough_tokens", 0)
-    if not isinstance(_idle_last_compaction, int) or isinstance(_idle_last_compaction, bool):
-        _idle_last_compaction = 0
-    if not _tc._should_idle_compact(
-        enabled=agent.compression_enabled, idle_after_seconds=_idle_after,
-        idle_gap_seconds=_idle_gap, tokens=_idle_tokens, floor_tokens=_idle_floor,
-        cooldown_active=bool(_idle_cooldown), last_compaction_tokens=_idle_last_compaction,
-    ):
-        return
+    _idle_tokens = admitted.tokens
     logger.info(
         "Idle compaction: %ss idle >= %ss, ~%s tokens > %s floor (last compaction produced ~%s) (session %s)",
-        int(_idle_gap), _idle_after, f"{_idle_tokens:,}", f"{_idle_floor:,}",
-        f"{_idle_last_compaction:,}" if _idle_last_compaction > 0 else "n/a",
+        int(_idle_gap), _idle_after, f"{_idle_tokens:,}", f"{admitted.floor_tokens:,}",
+        f"{admitted.last_compaction_tokens:,}" if admitted.last_compaction_tokens > 0 else "n/a",
         agent.session_id or "none",
     )
     _idle_status = automatic_compaction_status_message(

@@ -1,6 +1,6 @@
 ---
 name: excel-author
-description: Build auditable financial workbooks headless via openpyxl.
+description: Build auditable financial workbooks (DCF, LBO, 3-statement models) headless with openpyxl, with formula-driven cells and source traceability. Use when the workbook is a financial model. For general spreadsheet creation, editing, or CSV work, use the 'xlsx' skill instead.
 version: 1.0.0
 author: Anthropic (adapted by Nous Research)
 license: Apache-2.0

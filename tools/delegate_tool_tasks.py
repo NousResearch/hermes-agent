@@ -90,9 +90,13 @@ def _normalize_task_list(
         if output_schema is not None:
             task_list[0]["output_schema"] = output_schema
     else:
+        # Schema permits {} at the JSON-Schema layer when provider-native validation is disabled
+        # (Hermes core/visible tools skip the tool_search schema gate); surface it loudly so the
+        # model corrects on the first try instead of looping the identical empty-args call.
         return None, (
-            "No tasks provided. Pass tasks=[{goal: '...', context: '...'}, "
-            "...] — one entry per subagent (a single task is a one-entry array)."
+            "Schema violation: delegate_task requires either `tasks` (an array of "
+            "{goal: '...', ...} objects, one per subagent) or `action` ('list'/'steer'/'stop'). "
+            "Bare {} is not a valid call. Pass tasks=[{goal: '...', context: '...'}, ...]."
         )
 
     for i, task in enumerate(task_list):

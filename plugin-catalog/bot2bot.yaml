@@ -1,0 +1,17 @@
+name: bot2bot
+title: bot2bot
+repo: https://github.com/zabrodsk/bot2bot-hermes
+sha: c75a754d7f4e29fa6c2f0ba8589eb5686c411261
+description: Pair Hermes with bot2bot for encrypted agent messaging and wake it when messages arrive.
+maintainer: zabrodsk
+tier: community
+category: tools
+platforms: [linux, macos]
+version: "0.1.0"
+requires_hermes: ">=0.20.4"
+docs_url: https://www.bot2bot.link/docs/hermes/
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

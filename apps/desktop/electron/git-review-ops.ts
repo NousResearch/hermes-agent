@@ -327,7 +327,9 @@ async function reviewList(repoPath, scope, baseRef, gitBin) {
         staged: false
       }))
 
-      // "Last turn" also surfaces files created since the baseline (untracked).
+      // "Last turn" also surfaces untracked files. Which of them the turn
+      // CREATED is not something `git status` answers, so the renderer holds
+      // that snapshot and subtracts the pre-turn paths itself (#155605).
       if (scope === 'lastTurn' && files.length < REVIEW_FILE_CAP) {
         // Keep untracked directories compact. A recursive status can produce
         // hundreds of thousands of rows for browser profiles, generated
@@ -518,6 +520,27 @@ async function reviewRevParse(repoPath, ref, gitBin) {
     return (await gitFor(cwd, gitBin).revparse([ref || 'HEAD'])).trim() || null
   } catch {
     return null
+  }
+}
+
+// Paths `git status` reports as untracked, for the renderer's last-turn
+// baseline. Paths only — counting insertions per file (what reviewList does to
+// render +N) would read every untracked file at every turn start.
+async function reviewUntracked(repoPath, gitBin) {
+  let cwd
+
+  try {
+    cwd = resolveRequestedPathForIpc(repoPath, { purpose: 'Review untracked' })
+  } catch {
+    return []
+  }
+
+  try {
+    const status = await gitFor(cwd, gitBin).status(['--untracked-files=normal'])
+
+    return status.not_added.slice(0, REVIEW_FILE_CAP)
+  } catch {
+    return []
   }
 }
 
@@ -895,5 +918,6 @@ export {
   reviewRevParse,
   reviewShipInfo,
   reviewStage,
-  reviewUnstage
+  reviewUnstage,
+  reviewUntracked
 }

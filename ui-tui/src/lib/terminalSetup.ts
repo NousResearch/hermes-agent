@@ -1,6 +1,6 @@
 import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { join, posix, win32 } from 'node:path'
+import { posix, win32 } from 'node:path'
 
 import { t } from '../i18n/runtime.js'
 
@@ -210,14 +210,25 @@ export function isRemoteShellSession(env: NodeJS.ProcessEnv): boolean {
   return Boolean(env['SSH_CONNECTION'] || env['SSH_TTY'] || env['SSH_CLIENT'])
 }
 
+// The target platform drives path syntax, not the host: every path handed to
+// fileOps must use the target system's separators even when tests run on a
+// different host OS. Production callers pass process.platform, so there the
+// dialect simply is the host's.
+const pathModuleFor = (platform: NodeJS.Platform) => (platform === 'win32' ? win32 : posix)
+
+// configDir is already a target-platform path, so its child files must be
+// joined by that same target path module — never the host's default join —
+// keeping the read/write chain in one dialect end to end.
+const keybindingsPath = (platform: NodeJS.Platform, configDir: string): string =>
+  pathModuleFor(platform).join(configDir, 'keybindings.json')
+
 export function getVSCodeStyleConfigDir(
   appName: string,
   platform: NodeJS.Platform = process.platform,
   env: NodeJS.ProcessEnv = process.env,
   homeDir: string = homedir()
 ): null | string {
-  // Explicit platform inputs must not inherit the host path separators.
-  const targetJoin = platform === 'win32' ? win32.join : posix.join
+  const targetJoin = pathModuleFor(platform).join
 
   if (platform === 'darwin') {
     return targetJoin(homeDir, 'Library', 'Application Support', appName, 'User')
@@ -358,7 +369,7 @@ export async function configureTerminalKeybindings(
     }
   }
 
-  const keybindingsFile = join(configDir, 'keybindings.json')
+  const keybindingsFile = keybindingsPath(platform, configDir)
 
   try {
     await ops.mkdir(configDir, { recursive: true })
@@ -497,7 +508,7 @@ export async function shouldPromptForTerminalSetup(options?: {
   }
 
   try {
-    const content = await ops.readFile(join(configDir, 'keybindings.json'), 'utf8')
+    const content = await ops.readFile(keybindingsPath(platform, configDir), 'utf8')
     const parsed: unknown = JSON.parse(stripJsonComments(content))
 
     if (!Array.isArray(parsed)) {

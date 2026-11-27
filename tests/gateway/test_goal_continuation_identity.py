@@ -616,6 +616,109 @@ async def test_goal_resume_during_a_background_result_turn_still_continues(tmp_p
         db.close()
 
 
+async def _pause_then_resume(adapter, source, sent, load_goal):
+    from tests.waiting import async_wait_until
+
+    created_at = load_goal().created_at
+    for verb, status in (("pause", "paused"), ("resume", "active")):
+        await adapter.handle_message(MessageEvent(text=f"/goal {verb}", source=source, message_id=verb))
+        await async_wait_until(lambda: any(f"Goal {verb}d:" in text for _, text in sent), what=f"/goal {verb} answered")
+        current = load_goal()
+        assert (current.created_at, current.status) == (created_at, status)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prior_wake", ["judged", "gate_failed", "legacy_untagged"])
+async def test_pause_then_resume_only_starts_the_new_continuation(tmp_path, monkeypatch, prior_wake):
+    """A committed wake must not come back to life when the same goal is resumed."""
+    from gateway.session_results import admission_result
+    from hermes_cli import goals
+    from tests.waiting import async_wait_until
+
+    runner, authority, adapter, db, sent = await _telegram_gateway(tmp_path, monkeypatch, "goal-resumed")
+    assert authority is not None
+    calls = []
+    queued, drain = asyncio.Event(), asyncio.Event()
+    real_judge = runner._post_turn_goal_continuation
+    if prior_wake == "legacy_untagged":
+        from gateway import session_automation
+
+        admit = session_automation.admit_route_wake
+
+        async def legacy_wake(*args, **kwargs):
+            if not queued.is_set():
+                kwargs.pop("generation", None)  # exercise the released three-element identity
+            return await admit(*args, **kwargs)
+
+        monkeypatch.setattr(session_automation, "admit_route_wake", legacy_wake)
+    if prior_wake == "gate_failed":
+        monkeypatch.setattr(goals, "_gate_workspace", lambda: (tmp_path, None))
+        monkeypatch.setattr(goals, "run_gate", lambda *a, **k: (False, 1, "check failed"))
+
+    async def respond(**kw):
+        calls.append(kw["message"])
+        return _reply(f"reply {len(calls)}")
+
+    async def judge_then_hold(**kw):
+        # Keep the goal active after the observed starts: a `done` verdict from the first
+        # continuation would discard a second one for the wrong reason.
+        if len(calls) == 2:
+            await real_judge(**kw)
+            queued.set()
+            await drain.wait()
+
+    monkeypatch.setattr(runner, "_run_agent", respond)
+    monkeypatch.setattr(runner, "_post_turn_goal_continuation", judge_then_hold)
+    monkeypatch.setattr(goals, "judge_goal", lambda *a, **k: ("continue", "one read remains", False, None, False))
+    source = adapter.build_source(chat_id="42", chat_type="dm", user_id="42")
+    route = runner._session_key_for_source(source)
+    try:
+        await adapter.handle_message(MessageEvent(text="seed the route", source=source, message_id="1"))
+        await async_wait_until(lambda: len(calls) == 1 and not adapter._background_tasks, what="human turn delivered")
+        sid = runner.session_store.peek_session_id(route)
+        assert sid is not None
+        manager = goals.GoalManager(sid)
+        manager.set("ship release A")
+        if prior_wake == "gate_failed":
+            manager.add_gate("check-release")
+        live = authority.sessions[authority.logical_owner(sid)]
+        admissions = authority.persistence.admissions
+
+        def wakes():
+            return [row for row in admissions.list(
+                session_id=authority.logical_owner(sid), pending_only=False,
+            ) if row.request_id.startswith('["goal-continuation",')]
+
+        assert await runner._inject_watch_notification("[IMPORTANT: background result arrived]", {
+            "type": "async_delegation", "delegation_id": "deleg_pause_resume", "status": "completed",
+            "parent_session_id": sid, "session_key": route, "platform": "telegram",
+            "chat_type": "dm", "chat_id": "42", "user_id": "42", "output": "read-only result",
+        }) is True
+        await asyncio.wait_for(queued.wait(), 15)
+        (old,) = wakes()
+        assert old.status == "queued"
+        assert ("check failed" in old.payload["text"]) == (prior_wake == "gate_failed")
+        await _pause_then_resume(adapter, source, sent, lambda: goals.load_goal(sid))
+
+        assert len(calls) == 2
+        drain.set()
+        await async_wait_until(lambda: not adapter._background_tasks and (live.task is None or live.task.done())
+                               and all(row.status == "terminal" for row in wakes()), what="the route settled")
+        continued = calls[2:]
+        rows = [(row.request_id, row.status) for row in wakes()]
+        assert goals.load_goal(sid).status == "active"
+        assert len(continued) == 1, (continued, rows)
+        assert len(rows) == 2 and rows[0] == (old.request_id, "terminal"), rows
+        assert rows[1][0] != old.request_id
+        discarded, resumed = (admission_result(authority.persistence, row.admission_id) for row in wakes())
+        assert discarded is not None and discarded["result"]["final_response"] == ""
+        assert resumed is not None and resumed["result"]["final_response"] == "reply 3"
+        assert continued[0].startswith(MARKER)
+    finally:
+        drain.set()
+        db.close()
+
+
 @pytest.mark.asyncio
 async def test_goal_resume_whose_wake_is_refused_does_not_run_unidentified(tmp_path, monkeypatch):
     """No ``goal-continuation`` wake can be admitted for ``/goal resume``: its continuation is not run
@@ -653,7 +756,7 @@ async def test_goal_resume_whose_wake_is_refused_does_not_run_unidentified(tmp_p
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("command", ["/goal clear", "/goal pause", "/subgoal also tag the release"])
+@pytest.mark.parametrize("command", ["/goal clear", "/goal pause", "/subgoal also tag the release", "pause_then_resume"])
 async def test_a_goal_changed_while_its_judge_runs_stays_changed(tmp_path, monkeypatch, command):
     """The judge takes seconds. A /goal clear or pause sent through the adapter meanwhile is persisted
     before the judge returns ``continue``: the judge's result must not write the goal back as active,
@@ -663,7 +766,7 @@ async def test_a_goal_changed_while_its_judge_runs_stays_changed(tmp_path, monke
     from hermes_cli import goals
     from tests.waiting import async_wait_until
 
-    runner, authority, adapter, db, _sent = await _telegram_gateway(tmp_path, monkeypatch, "goal-judging")
+    runner, authority, adapter, db, sent = await _telegram_gateway(tmp_path, monkeypatch, "goal-judging")
     calls, judging, release = [], threading.Event(), threading.Event()
 
     async def respond(**kw):
@@ -675,6 +778,8 @@ async def test_a_goal_changed_while_its_judge_runs_stays_changed(tmp_path, monke
             return ("done", "all done", False, None, False)
         judging.set()
         assert release.wait(30), "the test never released the judge"
+        if command == "pause_then_resume":
+            return ("done", "a now stale verdict", False, None, False)
         return ("continue", "one step remains", False, None, False)
 
     monkeypatch.setattr(runner, "_run_agent", respond)
@@ -685,11 +790,14 @@ async def test_a_goal_changed_while_its_judge_runs_stays_changed(tmp_path, monke
     try:
         await adapter.handle_message(MessageEvent(text="work", source=source, message_id="1"))
         await async_wait_until(judging.is_set, what="the judge is running")
-        await adapter.handle_message(MessageEvent(text=command, source=source, message_id="2"))
         expected = {"/goal clear": "cleared", "/goal pause": "paused"}.get(command, "active")
-        await async_wait_until(lambda: goals.load_goal(sid).status == expected
-                               and (expected != "active" or goals.load_goal(sid).subgoals),
-                               what="the command was persisted")
+        if command == "pause_then_resume":
+            await _pause_then_resume(adapter, source, sent, lambda: goals.load_goal(sid))
+        else:
+            await adapter.handle_message(MessageEvent(text=command, source=source, message_id="2"))
+            await async_wait_until(lambda: goals.load_goal(sid).status == expected
+                                   and (expected != "active" or goals.load_goal(sid).subgoals),
+                                   what="the command was persisted")
         release.set()
         live = authority.sessions[authority.logical_owner(sid)]
         await async_wait_until(lambda: not adapter._background_tasks and (live.task is None or live.task.done())
@@ -698,7 +806,10 @@ async def test_a_goal_changed_while_its_judge_runs_stays_changed(tmp_path, monke
                                what="the route settled")
 
         continued = [c for c in calls if c.startswith(MARKER)]
-        if expected == "active":
+        if command == "pause_then_resume":
+            assert len(continued) == 1, calls
+            assert goals.load_goal(sid).last_reason == "all done"
+        elif expected == "active":
             assert goals.load_goal(sid).subgoals == ["also tag the release"]
             assert len(continued) == 1 and "also tag the release" in continued[0], calls
         else:
@@ -769,7 +880,7 @@ def test_waiting_continuation_counts_only_for_the_judged_goal():
 
     key = "agent:main:telegram:dm:42"
     slot = {key: SimpleNamespace(text=f"{MARKER}\nGoal: ship", internal=False,
-                                 metadata={"gateway_session_id": "s1", "goal_created_at": 100.5})}
+                                 metadata={"gateway_session_id": "s1", "goal_generation": 100.5})}
     stub = SimpleNamespace(
         _session_key_for_source=lambda source: key,
         _delivery_adapter_for=lambda source: SimpleNamespace(_pending_messages=slot),
@@ -805,10 +916,17 @@ def test_in_band_follow_up_check_names_the_goal(tmp_path, monkeypatch):
         stale = GatewayBusySessionMixin._stale_goal_continuation
 
         def queued(text, generation):
-            return SimpleNamespace(text=text, internal=False, metadata={"goal_created_at": generation})
+            return SimpleNamespace(text=text, internal=False, metadata={"goal_generation": generation})
 
         continuation = f"{MARKER}\nGoal: ship release A"
         assert stale(runner, queued(continuation, first), "sess-inband") is False
+        assert stale(runner, queued(continuation, None), "sess-inband") is False
+        manager.pause()
+        resumed = manager.resume()
+        assert resumed is not None
+        assert stale(runner, queued(continuation, first), "sess-inband") is True
+        assert stale(runner, queued(continuation, None), "sess-inband") is True
+        assert stale(runner, queued(continuation, resumed.continuation_generation), "sess-inband") is False
         manager.clear()
         second = goals.GoalManager("sess-inband").set("ship release A").created_at
         assert second != first

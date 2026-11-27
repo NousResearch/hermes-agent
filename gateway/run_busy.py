@@ -338,28 +338,29 @@ class GatewayBusySessionMixin:
             self._peek_session_state(session_key).conversation.queued_events = kept
         return removed
 
-    def _goal_still_active_for_session(self, session_id: str, generation: Optional[float] = None) -> bool:
-        """Best-effort fresh DB check before running a queued continuation: the session's goal is
-        active and, when the continuation names one, is the goal it was queued for."""
+    def _goal_still_active_for_session(self, session_id: str, generation: float | str | None = None) -> bool:
+        """A fresh DB check that the same run of the goal is still active."""
         if not session_id:
             return False
         try:
             from hermes_cli.goals import GoalManager
-            mgr = GoalManager(session_id=session_id)
-            return mgr.is_active() and (generation is None or mgr.state.created_at == generation)
+            state = GoalManager(session_id=session_id).state
+            return state is not None and state.status == "active" and state.continuation_generation == (
+                state.created_at if generation is None else generation)
         except Exception as exc:
             logger.debug("goal continuation: active-state recheck failed: %s", exc)
             return False
 
     @staticmethod
-    def _goal_continuation_generation(event: Any) -> Optional[float]:
-        """The ``GoalState.created_at`` of the goal a /goal continuation was queued for, None for any
-        other input. Not its text: a goal set again with the same text, or a criterion edited on it,
-        must not be mistaken for another. An adapter-FIFO continuation carries it in its metadata, a
-        durable ``goal-continuation`` wake (internal) as the last item of its admission identity."""
+    def _goal_continuation_generation(event: Any) -> float | str | None:
+        """A goal run's generation lives in adapter metadata or the durable wake's request ID.
+
+        The ID's fourth item is the creation time until first resume, then the resume token.
+        Older three-item IDs are untagged; they cannot survive a resume.
+        """
         metadata = getattr(event, "metadata", None) or {}
-        if "goal_created_at" in metadata or not getattr(event, "internal", False):
-            return metadata.get("goal_created_at")
+        if "goal_generation" in metadata or not getattr(event, "internal", False):
+            return metadata.get("goal_generation")
         try:
             identity = json.loads(getattr(event, "message_id", None) or "")
         except (TypeError, ValueError):
@@ -377,10 +378,8 @@ class GatewayBusySessionMixin:
         """Record a human event's slash-command metric; True for a queued /goal continuation that
         must not run.
 
-        A continuation was queued while its goal was active. /goal pause, clear or a new goal since
-        then leaves a durable wake in the authority FIFO (only the adapter slot is cleared), and a
-        new goal does not clear the slot either, so it is rechecked against the route's current
-        session (a compression moves the goal, with its identity, to its child), as
+        Pause, resume, clear or replace can leave a durable wake in the authority FIFO. Check it
+        against the route's current session (compression carries the generation to the child), as
         ``_run_agent_queued_followup`` rechecks the adapter slot it drains in-band."""
         if not is_internal:
             from hermes_cli.observability.shared_metrics_events import record_gateway_slash_command
@@ -392,10 +391,10 @@ class GatewayBusySessionMixin:
         current = getattr(entry, "session_id", None)
         if not current or await asyncio.to_thread(self._goal_still_active_for_session, current, generation):
             return False
-        logger.info("Discarding stale goal continuation for session %s — its goal is no longer active", current)
+        logger.info("Discarding stale goal continuation for session %s", current)
         return True
 
-    def _goal_continuation_waiting(self, source: Any, session_id: str, generation: Optional[float] = None) -> bool:
+    def _goal_continuation_waiting(self, source: Any, session_id: str, generation: float | str | None = None) -> bool:
         """Whether this chat already holds a /goal continuation of the goal ``generation`` for
         ``session_id`` that has not started: in the adapter's pending slot/overflow, or as a queued
         ``goal-continuation`` authority wake. A slot event pinned to another session (a compression

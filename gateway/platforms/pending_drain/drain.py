@@ -36,7 +36,7 @@ async def _drain_after(self, pending_event: MessageEvent, session_key: str, dela
             self._cleanup_finished_session_task(session_key, guard)
             return
         metadata = pending_event.metadata or {}
-        if metadata.get("goal_created_at") is not None:
+        if metadata.get("goal_generation") is not None:
             asyncio.current_task()._goal_drain = (session_key, metadata.get("gateway_session_id"),
-                                                  metadata["goal_created_at"])
+                                                  metadata["goal_generation"])
     await self._process_message_background(pending_event, session_key)

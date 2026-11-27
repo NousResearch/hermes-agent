@@ -4328,9 +4328,9 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                     "[%s] Late-arrival pending message during cleanup — spawning drain task",
                     self.name)
                 metadata = late_pending.metadata or {}
-                if current_task is not None and metadata.get("goal_created_at") is not None:
+                if current_task is not None and metadata.get("goal_generation") is not None:
                     current_task._goal_drain = (session_key, metadata.get("gateway_session_id"),
-                                                metadata["goal_created_at"])
+                                                metadata["goal_generation"])
                 spawn_drain_task(self, late_pending, session_key)
         elif current_task is not None and self._session_tasks.get(session_key) is current_task:
             self._cleanup_finished_session_task(session_key, interrupt_event)
@@ -4432,9 +4432,9 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                 delay = self._requeue_backoff_delay(session_key, pending_event, event)
                 if not delay:  # a backed-off event stays queued until the drain task wakes
                     metadata = pending_event.metadata or {}
-                    if metadata.get("goal_created_at") is not None:
+                    if metadata.get("goal_generation") is not None:
                         asyncio.current_task()._goal_drain = (session_key, metadata.get("gateway_session_id"),
-                                                              metadata["goal_created_at"])
+                                                              metadata["goal_generation"])
                     self._pending_messages.pop(session_key)
                 logger.debug("[%s] Processing queued follow-up message", self.name)
                 self._clear_session_guard(session_key)

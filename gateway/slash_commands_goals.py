@@ -65,7 +65,7 @@ class GatewayGoalCommandsMixin:
             # A resume continuation is the goal's own: it carries the goal's identity like a judged one.
             self._enqueue_goal_turn(event, result.prompt, label="command enqueue", kickoff=result.kickoff,
                                     goal=None if result.kickoff or mgr.state is None else
-                                    (mgr.session_id, mgr.state.created_at))
+                                    (mgr.session_id, mgr.state.continuation_generation))
         return result.output
 
     def _clear_goal_continuations(self, event: MessageEvent, verb: str) -> None:
@@ -115,7 +115,7 @@ class GatewayGoalCommandsMixin:
                     # Pinned to its session and goal like a judged continuation: when its task drains
                     # it, it is committed as the same identified wake (``_hm_admit_to_fifo``).
                     turn.metadata.update(gateway_session_key=quick_key, gateway_session_strict=True,
-                                         gateway_session_id=goal[0], goal_created_at=goal[1])
+                                         gateway_session_id=goal[0], goal_generation=goal[1])
                 self._enqueue_fifo(quick_key, turn, adapter)
         except Exception as exc:
             logger.debug("goal %s failed: %s", label, exc)

@@ -979,8 +979,8 @@ async def admit_route_wake(runner, adapter, source, text, producer, metadata=Non
     path (nothing is queued there either). Raises ``AuthorityRefusal`` on a refusal. A producer
     that names its own ``request_id`` (a plugin card's id) gets the admission's replay dedupe and
     reads created-versus-existing from the ``AdmissionReplay`` it passes as ``replay``.
-    ``generation`` (a /goal continuation's goal ``created_at``) ends the admission identity
-    ``[producer, route, id, generation]``: the only producer field a restored row keeps."""
+    A Goal wake also carries its run's ``generation`` as the fourth item of the durable identity:
+    ``[producer, route, id, generation]``. Restoring the row preserves that identity."""
     from gateway.session_authorities import active_authority
     from gateway.session_local_recovery import restore_completion_route
     from gateway.session_detached import detached_live, detached_route_of, route_entry

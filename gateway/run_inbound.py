@@ -1326,7 +1326,7 @@ class GatewayInboundMixin(
             # A pinned adapter-FIFO turn (a /goal continuation) runs only in the session it was
             # judged in. The native envelope keeps no gateway metadata, so the pin is spent here.
             pinned = event.metadata.pop("gateway_session_id", None)
-            generation = event.metadata.pop("goal_created_at", None)
+            generation = event.metadata.pop("goal_generation", None)
             for key in ("gateway_session_key", "gateway_session_strict"):
                 event.metadata.pop(key, None)
             entry = await self.async_session_store.lookup_by_session_key(_quick_key)

@@ -346,9 +346,8 @@ class GatewayGoalsMixin:
         msg = decision.get("message") or ""
         prompt = decision.get("continuation_prompt") or ""
         continuing = bool(decision.get("should_continue") and prompt and source is not None)
-        # The judged goal's persistent identity: its continuation runs only while that goal stands, not
-        # a goal set since (``GatewayBusySessionMixin._goal_continuation_generation``).
-        generation = mgr.state.created_at if continuing else None
+        # A wake belongs to the run that produced it, not a later resume of the same goal.
+        generation = mgr.state.continuation_generation if continuing else None
         if continuing and await asyncio.to_thread(
                 self._goal_continuation_waiting, source, session_entry.session_id, generation):
             # A turn that ran while an earlier continuation was still queued (a message sent during
@@ -378,12 +377,12 @@ class GatewayGoalsMixin:
                 # Pinned to the judged session and goal: a /new, reset or new goal before the slot
                 # drains drops it.
                 event.metadata.update(gateway_session_key=_quick_key, gateway_session_strict=True,
-                                      gateway_session_id=session_entry.session_id, goal_created_at=generation)
+                                      gateway_session_id=session_entry.session_id, goal_generation=generation)
                 self._enqueue_fifo(_quick_key, event, adapter)
         except Exception as exc:
             logger.debug("goal continuation: enqueue failed: %s", exc)
 
-    async def _admit_goal_continuation(self, source: Any, prompt: str, session_id: str, generation: float) -> bool:
+    async def _admit_goal_continuation(self, source: Any, prompt: str, session_id: str, generation: float | str) -> bool:
         """Commit a /goal continuation to the authority FIFO as a ``goal-continuation`` wake naming its
         judged session and goal, which ``_drop_admitted_event`` checks when it starts and
         ``_goal_continuation_waiting`` counts. False when none was admitted (no authority or route

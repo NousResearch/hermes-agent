@@ -80,6 +80,8 @@ def test_surface_goal_state_matches_cli(surface, command, monkeypatch):
         if state:
             from dataclasses import asdict
             state = asdict(state)
+            # Independent sessions must both persist a resume fence, not the same opaque value.
+            assert bool(state.pop('resume_token')) == (command == 'resume')
             for key in ('created_at', 'updated_at', 'waiting_since'):
                 state.pop(key, None)
         snapshots.append(state)

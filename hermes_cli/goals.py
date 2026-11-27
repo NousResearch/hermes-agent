@@ -16,6 +16,7 @@ import re
 import subprocess
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone, UTC
 from pathlib import Path
@@ -451,6 +452,12 @@ class GoalState:
     contract: GoalContract = field(default_factory=GoalContract)
     # /goal gate add <cmd>: ALL must pass before the judge may declare done.
     gates: list[GoalGate] = field(default_factory=list)
+    resume_token: str | None = None
+
+    @property
+    def continuation_generation(self) -> float | str:
+        """Name this run of the goal without invalidating pre-upgrade wakes before a resume."""
+        return self.resume_token or self.created_at
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False)
@@ -473,6 +480,7 @@ class GoalState:
             waiting_on_session=(str(data["waiting_on_session"]) if data.get("waiting_on_session") else None),
             waiting_reason=data.get("waiting_reason"),
             contract=GoalContract.from_dict(data.get("contract")),
+            resume_token=data.get("resume_token"),
             gates=[
                 GoalGate.from_dict(g) for g in (data.get("gates") or [])
                 if isinstance(g, dict) and str(g.get("command") or "").strip()
@@ -1167,7 +1175,7 @@ class GoalManager:
             changed = {name for name, value in asdict(stored).items() if before[name] != value}
             # A gate edit during execution invalidates that pass before its intermediate save
             # can adopt the new list as the baseline. Those gates have not run this turn.
-            if (stored.status != "active" or "created_at" in changed or "gates" in changed
+            if (stored.status != "active" or changed & {"created_at", "resume_token", "gates"}
                     or (self._state.status == "done" and changed & {"goal", "contract", "subgoals"})):
                 self._state = None if stored.status == "cleared" else stored
                 raise _GoalSuperseded
@@ -1233,6 +1241,8 @@ class GoalManager:
             return None
         self._state.status = "active"
         self._state.paused_reason = None
+        # A resume schedules fresh work: neither a queued wake nor a judge from before it owns it.
+        self._state.resume_token = uuid.uuid4().hex
         self._state.clear_wait()   # resuming starts fresh
         if reset_budget:
             self._state.turns_used = 0
@@ -1521,9 +1531,8 @@ class GoalManager:
     ) -> dict[str, Any]:
         """Run gates + judge and update state. Return a decision dict (``status``, ``should_continue``,
         ``continuation_prompt``, ``verdict``, ``reason``, ``message``). Both real user prompts and our
-        own continuations increment ``turns_used`` — both consume model budget. A goal paused, cleared
-        or replaced while the gates or the judge ran keeps that change: nothing is saved over it and
-        the turn does not continue (verdict ``superseded``)."""
+        own continuations increment ``turns_used`` — both consume model budget. Pause, clear, replace
+        or resume during the gates or judge supersedes that evaluation, without overwriting the goal."""
         self._judged = asdict(self._state) if self._state is not None else None
         try:
             return self._judge_turn(last_response, background_processes=background_processes,

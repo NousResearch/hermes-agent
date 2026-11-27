@@ -1,7 +1,7 @@
 import './portal-sidebar.css'
 
 import { useStore } from '@nanostores/react'
-import { type ComponentProps, type KeyboardEvent, type ReactNode } from 'react'
+import { type ComponentProps, type KeyboardEvent, type ReactNode, useEffect } from 'react'
 
 import { $sessionTileDragging } from '@/components/pane-shell/tree/store'
 import { Sidebar, SidebarContent } from '@/components/ui/sidebar'
@@ -15,7 +15,8 @@ import {
 } from '@/store/agent-sidebar-preferences'
 import { setPinnedSessionOrder } from '@/store/layout'
 import { $newChatProfile } from '@/store/profile'
-import { sessionPinId } from '@/store/session'
+import { $projectTree, refreshProjectTree } from '@/store/projects'
+import { $gatewayState, sessionPinId } from '@/store/session'
 
 import type { ChatSidebar } from '../index'
 import { SidebarLoadMoreRow } from '../load-more-row'
@@ -142,6 +143,19 @@ function PortalPinnedShelf() {
 }
 
 export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
+  const gatewayState = useStore($gatewayState)
+
+  // Warm registered Projects once connected so the composer project picker, Cmd+K,
+  // and Move-to-project menu show real projects on first click without blocking boot.
+  useEffect(() => {
+    if (gatewayState !== 'open' || $projectTree.get().length > 0) {
+      return
+    }
+
+    const timer = window.setTimeout(() => void refreshProjectTree(), 1_200)
+
+    return () => window.clearTimeout(timer)
+  }, [gatewayState])
   const {
     t,
     all,

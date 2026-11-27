@@ -18,14 +18,24 @@ import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { selectDesktopPaths } from '@/lib/desktop-fs'
 import { displayPath, pathLeaf } from '@/lib/display-path'
-import { ChevronDown, FolderOpen, Plus, Zap, ZapFilled } from '@/lib/icons'
+import { Check, ChevronDown, FolderOpen, Pencil, Plus, Zap, ZapFilled } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { requestGatewayForActiveRoute } from '@/store/active-route-request'
 import { $approvalModes, type ApprovalMode, setApprovalModeForProfile } from '@/store/approval-mode'
 import { copyFilePath } from '@/store/file-actions'
 import { revealFileInTree } from '@/store/layout'
 import { $activeGatewayProfile } from '@/store/profile'
-import { $projectTree, openProjectCreate, projectNameForCwd, projectRootCwd } from '@/store/projects'
+import {
+  $projectTree,
+  openProjectAddFolder,
+  openProjectCreate,
+  openProjectRename,
+  projectIdForCwd,
+  projectNameForCwd,
+  projectRootCwd,
+  refreshProjectTree,
+  setActiveProject
+} from '@/store/projects'
 import { $currentCwd, $gatewayState } from '@/store/session'
 
 const PILL = cn(
@@ -92,13 +102,20 @@ function ComposerProjectPill({
   }
 
   const projectName = projectNameForCwd(effectiveCwd)
+  const activeProjectId = projectIdForCwd(effectiveCwd)
+  const activeProject = activeProjectId ? projects.find(project => project.id === activeProjectId) : undefined
   const label = projectName || pathLeaf(effectiveCwd)
   const fullPath = displayPath(effectiveCwd)
   const pickableProjects = projects
     .map(project => ({ cwd: projectRootCwd(project), project }))
     .filter(entry => Boolean(entry.cwd))
+
   const setMenuOpen = (next: boolean) => {
     setOpen(next)
+
+    if (next && projects.length === 0) {
+      void refreshProjectTree()
+    }
 
     if (!next) {
       releaseTypingFocus()
@@ -147,18 +164,27 @@ function ComposerProjectPill({
         <DropdownMenuSeparator />
         {onChangeCwd && pickableProjects.length > 0 && (
           <>
-            {pickableProjects.slice(0, 8).map(({ cwd: projectCwd, project }) => (
-              <DropdownMenuItem
-                disabled={busy}
-                key={project.id}
-                onSelect={() => {
-                  void onChangeCwd(projectCwd, sessionId ?? undefined)
-                }}
-              >
-                <FolderOpen className="size-3.5 shrink-0 opacity-70" />
-                <span className="truncate">{project.label}</span>
-              </DropdownMenuItem>
-            ))}
+            {pickableProjects.slice(0, 8).map(({ cwd: projectCwd, project }) => {
+              const isCurrent = project.id === activeProjectId
+
+              return (
+                <DropdownMenuItem
+                  disabled={busy}
+                  key={project.id}
+                  onSelect={() => {
+                    if (!project.isAuto) {
+                      void setActiveProject(project.id)
+                    }
+
+                    void onChangeCwd(projectCwd, sessionId ?? undefined)
+                  }}
+                >
+                  <FolderOpen className="size-3.5 shrink-0 opacity-70" />
+                  <span className="min-w-0 flex-1 truncate">{project.label}</span>
+                  {isCurrent && <Check className="size-3.5 shrink-0 opacity-80" />}
+                </DropdownMenuItem>
+              )
+            })}
             <DropdownMenuSeparator />
           </>
         )}
@@ -172,6 +198,22 @@ function ComposerProjectPill({
           <Plus className="size-3.5 shrink-0 opacity-70" />
           <span>{t.sidebar.projects.newButton}</span>
         </DropdownMenuItem>
+        {activeProject && !activeProject.isAuto && (
+          <>
+            <DropdownMenuItem
+              onSelect={() => openProjectRename({ id: activeProject.id, name: activeProject.label })}
+            >
+              <Pencil className="size-3.5 shrink-0 opacity-70" />
+              <span>{t.sidebar.projects.menuRename}</span>
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onSelect={() => openProjectAddFolder({ id: activeProject.id, name: activeProject.label })}
+            >
+              <FolderOpen className="size-3.5 shrink-0 opacity-70" />
+              <span>{t.sidebar.projects.menuAddFolder}</span>
+            </DropdownMenuItem>
+          </>
+        )}
         <DropdownMenuSeparator />
         <DropdownMenuItem onSelect={() => void copyFilePath(effectiveCwd)}>
           <span>{t.fileMenu.copyPath}</span>

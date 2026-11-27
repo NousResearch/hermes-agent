@@ -2,11 +2,13 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $approvalModes } from '@/store/approval-mode'
-import { $activeGatewayProfile } from '@/store/profile'
 import { $projectTree } from '@/store/projects'
 import { $currentCwd, $gatewayState } from '@/store/session'
-
 const setApprovalModeForProfile = vi.hoisted(() => vi.fn(async () => {}))
+const openProjectRename = vi.hoisted(() => vi.fn())
+const openProjectAddFolder = vi.hoisted(() => vi.fn())
+const setActiveProject = vi.hoisted(() => vi.fn(async () => {}))
+const refreshProjectTree = vi.hoisted(() => vi.fn(async () => {}))
 
 vi.mock('@/store/approval-mode', async importOriginal => {
   const actual = await importOriginal<Record<string, unknown>>()
@@ -17,14 +19,29 @@ vi.mock('@/store/approval-mode', async importOriginal => {
   }
 })
 
+vi.mock('@/store/projects', async importOriginal => {
+  const actual = await importOriginal<Record<string, unknown>>()
+
+  return {
+    ...actual,
+    openProjectAddFolder,
+    openProjectRename,
+    refreshProjectTree,
+    setActiveProject
+  }
+})
+
 import { ComposerWorkspaceControls } from './workspace-controls'
 
 describe('ComposerWorkspaceControls', () => {
   beforeEach(() => {
     setApprovalModeForProfile.mockClear()
+    openProjectRename.mockClear()
+    openProjectAddFolder.mockClear()
+    setActiveProject.mockClear()
+    refreshProjectTree.mockClear()
     $currentCwd.set('/home/user/hermes-desktop')
     $gatewayState.set('open')
-    $activeGatewayProfile.set('default')
     $approvalModes.set({ default: 'smart' })
     $projectTree.set([
       {
@@ -85,5 +102,25 @@ describe('ComposerWorkspaceControls', () => {
     fireEvent.click(await screen.findByRole('menuitemradio', { name: /Smart/i }))
 
     await waitFor(() => expect(setApprovalModeForProfile).toHaveBeenCalledWith(expect.any(Function), 'ops', 'smart'))
+  })
+
+  it('offers Rename and Add folder for the active explicit project', async () => {
+    render(<ComposerWorkspaceControls busy={false} cwd="/home/user/hermes-desktop" disabled={false} />)
+
+    fireEvent.pointerDown(screen.getByTestId('composer-project-pill'), { button: 0, ctrlKey: false })
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Rename…' }))
+    expect(openProjectRename).toHaveBeenCalledWith({ id: 'proj-1', name: 'Hermes Desktop' })
+
+    fireEvent.pointerDown(screen.getByTestId('composer-project-pill'), { button: 0, ctrlKey: false })
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Add folder' }))
+    expect(openProjectAddFolder).toHaveBeenCalledWith({ id: 'proj-1', name: 'Hermes Desktop' })
+  })
+
+  it('lazily refreshes the project tree on open when empty', () => {
+    $projectTree.set([])
+    render(<ComposerWorkspaceControls busy={false} cwd="/home/user/hermes-desktop" disabled={false} />)
+
+    fireEvent.pointerDown(screen.getByTestId('composer-project-pill'), { button: 0, ctrlKey: false })
+    expect(refreshProjectTree).toHaveBeenCalledTimes(1)
   })
 })

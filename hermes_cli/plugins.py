@@ -1464,16 +1464,20 @@ def get_plugin_auxiliary_tasks() -> list[dict[str, Any]]:
 
 def get_plugin_toolset_default_platforms() -> dict[str, frozenset[str]]:
     """Plugin toolsets that default on only for some platforms: toolset -> the union of the
-    ``default_platforms`` its tools were registered with. A toolset absent here defaults on everywhere."""
+    ``default_platforms`` its tools were registered with. A toolset absent here defaults on everywhere,
+    including one where any tool left ``default_platforms`` empty (that tool asked for every platform)."""
     manager = get_plugin_manager()
     from tools.registry import registry
     scoped: dict[str, set[str]] = {}
+    everywhere: set[str] = set()
     for tool_name in manager._plugin_tool_names:
-        platforms = manager._tool_default_platforms.get(tool_name)
-        entry = registry.get_entry(tool_name) if platforms else None
-        if platforms and entry:
+        if (entry := registry.get_entry(tool_name)) is None:
+            continue
+        if platforms := manager._tool_default_platforms.get(tool_name):
             scoped.setdefault(entry.toolset, set()).update(platforms)
-    return {ts: frozenset(p) for ts, p in scoped.items()}
+        else:
+            everywhere.add(entry.toolset)
+    return {ts: frozenset(p) for ts, p in scoped.items() if ts not in everywhere}
 
 
 def get_plugin_toolsets() -> list[tuple]:

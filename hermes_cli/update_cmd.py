@@ -1557,7 +1557,7 @@ def _record_update_initiator() -> None:
             _completion_receipt.record_fact("initiator", "desktop")
 
 
-def _prepare_git_command(*, checkout_move=None) -> tuple[bool, list, bool]:
+def _prepare_git_command(*, checkout_move=None, skip_worktree_cleanup: bool = False) -> tuple[bool, list, bool]:
     """Return ``(use_zip_update, git_cmd, is_fork)``; ``sys.exit(1)`` when not a git repo
     on a non-Windows host (Windows falls back to ZIP: broken git file I/O, AV, NTFS filters).
     *checkout_move* binds the churn cleanups' file writes to the paused gateways' tree gate."""
@@ -1590,10 +1590,11 @@ def _prepare_git_command(*, checkout_move=None) -> tuple[bool, list, bool]:
         _record_stop("not_git_checkout")
         sys.exit(1)
 
-    # Before stash/branch logic: npm rewrites package-lock.json non-deterministically and
-    # line-ending churn is machine-made dirt; both would otherwise force an autostash every update.
-    _discard_lockfile_churn(git_cmd, _m().PROJECT_ROOT, checkout_move=checkout_move)
-    _normalize_managed_eol(git_cmd, _m().PROJECT_ROOT, checkout_move=checkout_move)
+    if not skip_worktree_cleanup:
+        # Before stash/branch logic: npm rewrites package-lock.json non-deterministically and
+        # line-ending churn is machine-made dirt; both would otherwise force an autostash every update.
+        _discard_lockfile_churn(git_cmd, _m().PROJECT_ROOT, checkout_move=checkout_move)
+        _normalize_managed_eol(git_cmd, _m().PROJECT_ROOT, checkout_move=checkout_move)
 
     origin_url = _m()._get_origin_url(git_cmd, _m().PROJECT_ROOT)
     is_fork = _is_fork(origin_url)
@@ -1700,15 +1701,39 @@ def _finalize_receipt(status: str, debug_message: str) -> None:
         finalize_update_receipt(status)
 
 
+def _run_no_pull_completion(git_cmd, completion_request: dict | None) -> None:
+    """Run the standard update completion for the CURRENT HEAD (--no-pull).
+
+    A pinned-source install (upstream main at a verified commit + local fixes) has no
+    hermes update path that finishes at its HEAD: every arm either moves the code
+    (fetch/merge/reset/checkout — including ``_reconcile_diverged_checkout``'s ``reset
+    --hard``, which would delete the local fixes) or exits 1 before the completion tail
+    (deps/venv sync, products, home maintenance, fleet restart). This runs only that
+    tail. The tree was never touched, so no stash or branch restore applies.
+    """
+    head_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT) or ""
+    current_branch = _current_branch_name(git_cmd, check=True)
+    if completion_request is not None:
+        completion_request["expected_sha"] = head_sha
+        completion_request["completion_message"] = (
+            f"✓ Completed at {head_sha[:10]} ({current_branch}); no code was pulled.")
+    _complete_source_update(completion_request)
+
+
 def _finish_already_up_to_date(
     git_cmd, branch: str, current_branch: str, _plan, *, gw_input_fn, completion_request: dict,
-    _windows_gateway_resume=None, held_message: str | None = None) -> None:
-    """"Already up to date" path: restore stash, repair the checkout, catch up the fleet.
+    _windows_gateway_resume=None, held_message: str | None = None, no_pull: bool = False) -> None:
+    """``Already up to date`` path: restore stash, repair the checkout, catch up the fleet.
     ``held_message`` replaces "Already up to date!" when the channel's release was held, not reached.
-    ``sys.exit(1)`` when the repair is incomplete (after gateway exit code + partial receipt)."""
+    ``sys.exit(1)`` when the repair is incomplete (after gateway exit code + partial receipt).
+    ``no_pull`` (the --no-pull flag): the checkout was never touched, so the stash/branch
+    restores are skipped and the completion message says so."""
     # A parked branch the update switched off stays on the target: re-parking on the stale branch
     # recreates the incident. No other checkout left current_branch (in-place and release updates
     # never switch), so there is nothing to switch back to.
+    if no_pull:
+        _run_no_pull_completion(git_cmd, completion_request)
+        return
     if _plan.auto_stash_ref is not None:
         _m()._restore_stashed_changes(
             git_cmd, _m().PROJECT_ROOT, _plan.auto_stash_ref, prompt_user=_plan.prompt_for_restore,
@@ -1833,13 +1858,32 @@ def _cmd_update_impl(args, gateway_mode: bool):
         or _m()._desktop_dist_exists(desktop_dir)
         or bool(_m()._installed_desktop_apps()))
 
-    use_zip_update, git_cmd, is_fork = _prepare_git_command(checkout_move=_moves_for(_windows_gateway_resume))
+    # --no-pull must inspect dirt before the normal preparation helpers, which intentionally
+    # discard machine-generated lockfile/EOL churn with checkout --.
+    use_zip_update, git_cmd, is_fork = _prepare_git_command(
+        checkout_move=_moves_for(_windows_gateway_resume),
+        skip_worktree_cleanup=getattr(args, "no_pull", False))
 
     completion_request = _source_completion_request(
         opts, _pre_update_plan, pre_update_snapshot_id, _windows_gateway_resume,
         had_desktop_app_before_update, gateway_mode)
     branch = _m()._resolve_update_branch(args)
     completion_request["branch"] = branch
+    # --no-pull: complete at the current HEAD without any git movement (#124382).
+    # Refuse a dirty tree exactly as the moving paths do; an autostash across a
+    # completion that never moves the tree would only hide uncommitted work.
+    if getattr(args, "no_pull", False):
+        status = _git_run(git_cmd, ["status", "--porcelain"], _m().PROJECT_ROOT)
+        if status.returncode != 0 or status.stdout.strip():
+            print("✗ --no-pull refused: the working tree has uncommitted changes.")
+            print("  Commit or stash them, then re-run `hermes update --no-pull`.")
+            _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
+            sys.exit(1)
+        _finish_already_up_to_date(
+            git_cmd, branch, _current_branch_name(git_cmd, check=True),
+            None, gw_input_fn=gw_input_fn, completion_request=completion_request, no_pull=True)
+        return
+
     target_ref, release_sha, target_is_head, target_repository = _check.select_apply_target(
         args, branch, completion_request, git_cmd=None if use_zip_update else git_cmd,
         stop=lambda: _m()._resume_windows_gateways_after_update(_windows_gateway_resume))

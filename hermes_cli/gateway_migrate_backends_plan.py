@@ -53,6 +53,9 @@ _UNSUPPORTED = {
     "systemd-system": "The backend is a systemd SYSTEM unit: this command changes no system unit, and "
                       "hermes cannot run as root on a per-user install. Run the steps below as yourself; only "
                       "the one `sudo systemctl` line needs root.",
+    "launchd-system": "The backend is a system-wide launchd LaunchDaemon: this command changes no system "
+                      "daemon, and hermes cannot run as root on a per-user install. Run the steps below as "
+                      "yourself; only the one `sudo launchctl` line needs root.",
     "windows": "Automatic migration is not available on Windows. Run the steps below in PowerShell or Command "
                "Prompt, one line at a time; `hermes gateway install` asks how to start the gateway.",
     "unknown": "Its supervisor could not be identified, so it cannot be stopped safely. Stop it yourself, "
@@ -450,6 +453,33 @@ def _profile_flag(argv: list[str]) -> bool:
     return any(a in ("-p", "--profile") or a.startswith("--profile=") for a in argv or [])
 
 
+_SYSTEM_LAUNCHD_DIRS = ("/Library/LaunchDaemons/", "/System/Library/LaunchDaemons/")
+
+
+def is_system_launchd(scope: Optional[str], unit_path: Optional[str]) -> bool:
+    """Whether a launchd target is a system-domain LaunchDaemon rather than a per-user LaunchAgent."""
+    if (unit_path or "").strip().startswith(_SYSTEM_LAUNCHD_DIRS):
+        return True
+    return not (scope or "").strip().startswith(("gui/", "user/"))
+
+
+def _is_system_launchd(item: BackendItem) -> bool:
+    """Whether a launchd backend is a system-domain LaunchDaemon rather than a per-user LaunchAgent."""
+    return is_system_launchd(getattr(item, "scope", None), getattr(item, "unit_path", None))
+
+
+def _launchd_manual_stop(item: Optional[BackendItem]) -> Optional[str]:
+    """The stop+disable shell line for a launchd backend (with ``sudo`` for a system LaunchDaemon)."""
+    if not item or item.supervisor != "launchd" or not item.unit:
+        return None
+    is_system = _is_system_launchd(item)
+    domain = (getattr(item, "scope", None) or "system") if is_system else item.scope
+    prefix = ["sudo"] if is_system else []
+    target = f"{domain}/{item.unit}"
+    return (f"{shlex.join([*prefix, 'launchctl', 'bootout', target])}; "
+            f"{shlex.join([*prefix, 'launchctl', 'disable', target])}")
+
+
 def _supervisor_kind(item: BackendItem, host) -> str:
     """``systemd`` / ``launchd`` / ``manual`` when this command drives it, else an _UNSUPPORTED key."""
     if host.os_family() == "win32":
@@ -458,9 +488,13 @@ def _supervisor_kind(item: BackendItem, host) -> str:
         # A system unit is never driven, root or not: `sudo hermes` refuses a per-user checkout, and
         # the gateway would have to become a system service of the unit's User= (not this caller's).
         return "systemd" if item.scope == "user" else "systemd-system"
+    if item.supervisor == "launchd":
+        # A system LaunchDaemon (/Library/LaunchDaemons, domain `system`) needs root to bootout/disable;
+        # hermes cannot run as root on a per-user install, and the gateway is a per-user LaunchAgent.
+        return "launchd-system" if _is_system_launchd(item) else "launchd"
     if item.supervisor in ("manual", "detached"):
         return "manual"
-    return item.supervisor if item.supervisor in ("launchd", *_UNSUPPORTED) else "unknown"
+    return item.supervisor if item.supervisor in _UNSUPPORTED else "unknown"
 
 
 # What `hermes gateway status` prints for each case, quoted from its output (systemd and launchd here,
@@ -561,8 +595,7 @@ def manual_steps(old_host: Optional[str], old_port: Optional[int], item: Optiona
                         f"systemctl is-active {item.unit}  # must print inactive (or failed) before the next line",
                         *gateway_tail(hermes)]
     stop = {"systemd": f"systemctl --user disable --now {item.unit}" if item and item.unit else None,
-            "launchd": (f"launchctl bootout {item.scope}/{item.unit}; launchctl disable {item.scope}/{item.unit}"
-                        if item and item.unit else None)}
+            "launchd": _launchd_manual_stop(item)}
     steps.append(stop.get(item.supervisor if item else "", None)
                  or "# stop the old backend through its supervisor and keep it from starting at boot")
     if no_service:
@@ -578,7 +611,9 @@ def _unsupported_entry(item: Optional[BackendItem], kind: str, host) -> tuple:
     why = _UNSUPPORTED[kind] if address or item is None else _UNSUPPORTED[kind] + " " + _UNSUPPORTED["unknown-address"]
     env = _manual_launcher_env(item, kind, host)  # names only leave this function
     keys: list[str] = []
-    if kind == "windows" or (item is not None and item.supervisor == "systemd" and item.unit and item.scope):
+    if kind in ("windows", "launchd-system") or (
+        item is not None and item.supervisor == "systemd" and item.unit and item.scope
+    ):
         keys = list(_keys_to_copy({k: v for k, v in env.items() if k.startswith(_AUTH_PREFIX) and v}, host.dotenv()))
     url = resolve_public_url(host.effective_config(), backend_url_env(host, env))
     if kind == "windows":
@@ -589,12 +624,16 @@ def _unsupported_entry(item: Optional[BackendItem], kind: str, host) -> tuple:
 
 def _manual_launcher_env(item: Optional[BackendItem], kind: str, host) -> dict:
     """The environment a by-hand backend was launched with (in memory only): a systemd unit's own,
-    else its process's; empty when neither can be read."""
+    else its process's (falling back to a launchd plist's EnvironmentVariables); empty when neither can be read."""
     if item is None:
         return {}
     if kind != "windows" and item.supervisor == "systemd" and item.unit and item.scope:
         return host.unit_launcher_env(item.unit, item.scope) or {}
-    return (host.process_env(item.pid) if item.pid else None) or {}
+    env = (host.process_env(item.pid) if item.pid else None) or {}
+    if not env and item.supervisor == "launchd" and (plist_path := getattr(item, "unit_path", None)):
+        from hermes_cli.gateway_migrate_backends_host import plist_environment
+        env = plist_environment(plist_path)
+    return env
 
 
 def _manual_public_url(plan: BackendPlan, host) -> None:
@@ -1088,7 +1127,8 @@ def _restart_hint(plan: BackendPlan) -> str:
         user = " --user" if rec.get("scope") == "user" else ""
         return f"{'sudo ' if not user else ''}systemctl{user} restart {rec['unit']}"
     if rec.get("supervisor") == "launchd" and rec.get("unit") and rec.get("scope"):
-        return f"launchctl kickstart -k {rec['scope']}/{rec['unit']}"
+        prefix = ["sudo"] if is_system_launchd(rec.get("scope"), rec.get("unit_path")) else []
+        return shlex.join([*prefix, "launchctl", "kickstart", "-k", f"{rec['scope']}/{rec['unit']}"])
     return "stop it and start it again the way it was started"
 
 

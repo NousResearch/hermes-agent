@@ -4,6 +4,7 @@ import { isSessionBusyError, markNextSubmitVoice, submitPrompt, type SubmitPromp
 import { captureDestination } from '../app/submissionDestination.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import type { GatewayClient } from '../gatewayClient.js'
+import { $persistedSessions, consumeProgramResumeEnv, resetProgramResumeStateForTests } from '../lib/programResume.js'
 
 // A gateway double whose `input.detect_drop` resolution we control, so we can
 // observe UI state DURING the async gap — the exact window the queue-mode race
@@ -379,5 +380,55 @@ describe('submissionCore.submitPrompt — typed voice stop on the shared gateway
     expect(publishLocalEvent).toHaveBeenCalled()
     expect(getUiState().busy).toBe(true)
     expect(getUiState().status).toBe('running…')
+  })
+})
+
+describe('submissionCore.submitPrompt — OSC 7577 saved-session signal', () => {
+  beforeEach(() => {
+    resetUiState()
+    resetProgramResumeStateForTests()
+    consumeProgramResumeEnv({ HERMES_TUI_RESUME_ARGV: JSON.stringify(['hermes', '--tui']), OSC7577_TOKEN: 'dummy-token-replace-me' })
+    patchUiState({ info: { model: 'm', skills: {}, stored_session_id: 'stored-1', tools: {} }, sid: 'sess-1' })
+  })
+
+  it('an accepted prompt.submit marks the stored session saved (the gateway wrote its row first)', async () => {
+    const { gw, resolveDrop } = makeDeferredGateway()
+
+    submitPrompt('hello', makeDeps(gw))
+    resolveDrop()
+    await vi.waitFor(() => expect($persistedSessions.get().has('stored-1')).toBe(true))
+  })
+
+  it('an isolated compute-host turn or a shared gateway receipt marks nothing (no row yet / no attestation)', async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce({ status: 'streaming', turn_isolation: true })
+      .mockResolvedValueOnce({
+        admission_id: 'r1',
+        status: 'started',
+        target_profile_home: captureDestination().profileHome,
+        target_session_id: 'stored-1'
+      })
+
+    const deps = makeDeps({ request } as unknown as GatewayClient)
+
+    for (const submissionId of ['r0', 'r1']) {
+      const item = { display: 'hello', settle: vi.fn(), submissionId, text: 'hello' }
+      submitPrompt(item.text, deps, true, undefined, { queueItem: item, skipDetectDrop: true })
+      await vi.waitFor(() => expect(item.settle).toHaveBeenCalled())
+    }
+
+    expect($persistedSessions.get().size).toBe(0)
+  })
+
+  it('a refused prompt.submit marks nothing', async () => {
+    const request = vi.fn(async (method: string) =>
+      method === 'input.detect_drop' ? { matched: false } : Promise.reject(new Error('storage unavailable'))
+    )
+
+    submitPrompt('hello', makeDeps({ request } as unknown as GatewayClient))
+    await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(2))
+    await Promise.resolve()
+    expect($persistedSessions.get().size).toBe(0)
   })
 })

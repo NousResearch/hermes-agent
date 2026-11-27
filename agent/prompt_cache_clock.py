@@ -560,11 +560,24 @@ def request_write_tier(api_kwargs: Any, usage: Any, *, provider: str, base_url: 
     """:func:`declared_write_tier` for a request sent outside the loop (a keep-alive or priming write),
     read from its own payload: its reply may not be folded into the clock (the context moved on), but
     its writes still went to the tier it asked for."""
+    return _payload_tier(api_kwargs, int(getattr(usage, "cache_write_tokens", 0) or 0), provider=provider,
+                         base_url=base_url, api_mode=api_mode, model=model)
+
+
+def requested_cache_tier(api_kwargs: Any, *, provider: str, base_url: str, api_mode: str,
+                         model: str) -> Optional[str]:
+    """The tier a request's writes go to once it is sent, before its reply says anything: what its payload
+    asks, under the route's rule and ceiling (the request in flight, kept warm while its reply generates)."""
+    return _payload_tier(api_kwargs, 1, provider=provider, base_url=base_url, api_mode=api_mode, model=model)
+
+
+def _payload_tier(api_kwargs: Any, write_tokens: int, *, provider: str, base_url: str, api_mode: str,
+                  model: str) -> Optional[str]:
     attempt = attempt_facts(api_kwargs) or {}
     route_class = classify_route(provider=provider, base_url=base_url, api_mode=api_mode, model=model,
                                  has_markers=attempt.get("marker_ttl") is not None, retention=attempt.get("retention"))
     requested = attempt.get("marker_ttl") or attempt.get("openai_ttl")
-    return _declared_tier(route_class, requested, int(getattr(usage, "cache_write_tokens", 0) or 0), provider, base_url)
+    return _declared_tier(route_class, requested, write_tokens, provider, base_url)
 
 
 def _declared_tier(route_class: str, requested_ttl: Optional[str], write_tokens: int, provider: str,

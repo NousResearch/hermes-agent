@@ -7,6 +7,7 @@ import type { GatewayClient } from '../gatewayClient.js'
 import { syncTuiLocale } from '../i18n/loader.js'
 import { t } from '../i18n/runtime.js'
 import { DEFAULT_VOICE_RECORD_KEY, type ParsedVoiceRecordKey, parseVoiceRecordKey } from '../lib/platform.js'
+import { $programResumeEnabled } from '../lib/programResume.js'
 import { $programStatusEnabled } from '../lib/programStatus.js'
 import { asRpcResult } from '../lib/rpc.js'
 
@@ -334,6 +335,7 @@ export const applyDisplay = (
 
   // A failed read (cfg null) keeps the last known setting.
   if (cfg?.config) {
+    $programResumeEnabled.set(d.program_resume !== false)
     $programStatusEnabled.set(d.program_status !== false)
   }
 

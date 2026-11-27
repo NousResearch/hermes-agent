@@ -15,6 +15,9 @@ from collections import Counter
 from typing import Any, Callable, Dict, Optional
 
 from gateway.run_auto_resume import GatewayAutoResumeMixin
+from gateway.run_watchers_idle import (
+    IDLE_ACTION, forget_stretches, has_buffered_input, idle_admitted, idle_due, idle_policy_seconds,
+)
 from gateway.session_stall import (
     format_session_stall_notification,
     resolve_session_idle_seconds_from_activity,
@@ -90,25 +93,36 @@ class GatewaySessionWatchersMixin(GatewayAutoResumeMixin):
 
     def _cache_expiry_due_keys(self, skip=()) -> list[tuple[str, object, str]]:
         """Cached, idle, human-paced sessions at the cache edge as ``(key, agent, action)``: ``compact``
-        at the end of a keep-alive budget, ``offload`` past the cache window. *skip* (keys with a job in
-        flight) is excluded before the claim, which latches the stretch. Runs off the event loop: the
-        claim reads the clock's session generation from state.db."""
+        at the end of a keep-alive budget, ``offload`` past the cache window, else ``idle`` once the
+        chat's ``idle_compact_after_seconds`` passed (any route). *skip* (keys with a job in flight) is
+        excluded before the claim, which latches the stretch. Runs off the event loop: the claim reads
+        the clock's session generation from state.db."""
         from gateway.run import _AGENT_PENDING_SENTINEL
         from gateway.run_agent_cache import _tuple_agent
         cache, lock = getattr(self, "_agent_cache", None), getattr(self, "_agent_cache_lock", None)
         if cache is None or lock is None:
             return []
         with lock:
+            live_keys = set(cache)
             entries = [(key, _tuple_agent(entry)) for key, entry in cache.items() if key not in skip]
-        due = []
+        forget_stretches(self, live_keys)
+        due, now = [], time.time()
         for key, agent in entries:
             if agent is None or agent is _AGENT_PENDING_SENTINEL or self._is_session_running(key):
                 continue
-            warmer = getattr(agent, "_prompt_cache_warmer", None)
-            action = warmer.claim_edge() if warmer is not None else None
+            # The chat's own idle policy first: past the cache window the edge claims ``offload``, which
+            # would otherwise take this tick and delay the compaction a whole interval. A compaction makes
+            # the offload moot; a refused one leaves the edge to claim on the next tick.
+            action = IDLE_ACTION if idle_due(self, key, agent, now) else self._claim_cache_edge(agent)
             if action:
                 due.append((key, agent, action))
         return due
+
+    @staticmethod
+    def _claim_cache_edge(agent, *, releasing: bool = False) -> Optional[str]:
+        """The prompt-cache edge's claim for *agent*; None on a route that never armed a warmer."""
+        warmer = getattr(agent, "_prompt_cache_warmer", None)
+        return warmer.claim_edge(releasing=releasing) if warmer is not None else None
 
     async def _compact_idle_sessions_before_cache_expiry(self) -> None:
         """Start one compaction job per due session and return without awaiting them: a summary can
@@ -182,8 +196,26 @@ class GatewaySessionWatchersMixin(GatewayAutoResumeMixin):
             if after is not history:
                 logger.info("Cache-expiry offload: session=%s", key)
             return
+        if action == IDLE_ACTION:
+            await self._compact_idle_session(key, entry, live_agent, history)
+            return
         await self._run_manual_compression(entry.origin, entry, history, CompressRequest(), trigger=TRIGGER)
         logger.info("Cache-expiry compaction: session=%s", key)
+
+    async def _compact_idle_session(self, key: str, entry, live_agent, history: list) -> None:
+        """``compression.idle_compact_after_seconds`` in the background: the turn-start idle gates on the
+        stored transcript, then the cache-edge pipeline with the ``idle`` trigger. Silent on the chat; the
+        outcome (a refusal or failure included) goes to the log."""
+        from agent.conversation_compression_manual import CompressRequest
+        if not await asyncio.to_thread(idle_admitted, live_agent, history):
+            logger.debug("Background idle compaction skipped (idle gates refuse): session=%s", key)
+            return
+        # Re-checked here, not only at the claim: the job may have waited for a slot behind other summaries.
+        if self._is_session_running(key) or has_buffered_input(self, key):
+            return
+        reply = await self._run_manual_compression(entry.origin, entry, history, CompressRequest(), trigger=IDLE_ACTION)
+        logger.info("Background idle compaction: session=%s idle_after=%ss result=%s",
+                    key, idle_policy_seconds(live_agent), " | ".join(str(reply or "").splitlines()[:2]))
 
     def _compact_then_release(self, key: str, agent) -> bool:
         """An agent-cache eviction (idle TTL, LRU cap): a budget ends at its keep-alives or at the release,
@@ -195,7 +227,8 @@ class GatewaySessionWatchersMixin(GatewayAutoResumeMixin):
         before the callback runs), the agent is released exactly once."""
         from gateway.run import _AGENT_PENDING_SENTINEL
         loop = getattr(self, "_gateway_loop", None)
-        if (agent is None or agent is _AGENT_PENDING_SENTINEL or getattr(agent, "_prompt_cache_warmer", None) is None
+        if (agent is None or agent is _AGENT_PENDING_SENTINEL
+                or (getattr(agent, "_prompt_cache_warmer", None) is None and idle_policy_seconds(agent) <= 0)
                 or loop is None or loop.is_closed() or not getattr(self, "_running", False)):
             return False
         release = self._release_once(key, agent)
@@ -239,10 +272,11 @@ class GatewaySessionWatchersMixin(GatewayAutoResumeMixin):
         task.add_done_callback(release)
 
     async def _compact_then_release_job(self, key: str, agent) -> None:
-        """Claim the cache edge at release off the loop (the claim reads state.db), then run it. The
-        caller's done-callback releases the agent afterwards."""
+        """Claim the cache edge at release off the loop (the claim reads state.db), else a due idle
+        policy, then run it. The caller's done-callback releases the agent afterwards."""
         try:
-            action = await asyncio.to_thread(agent._prompt_cache_warmer.claim_edge, releasing=True)
+            action = (IDLE_ACTION if idle_due(self, key, agent, time.time())
+                      else await asyncio.to_thread(self._claim_cache_edge, agent, releasing=True))
         except Exception:
             logger.debug("release-time compaction check failed for %s", key, exc_info=True)
             return

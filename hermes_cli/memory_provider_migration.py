@@ -152,12 +152,23 @@ def _install_command(name: str, home: Path) -> str:
     return f"hermes -p {profile} plugins install {name}"
 
 
+def kept_off_sentence(name: str, home: Path) -> str:
+    """Why an automatic install left *name* off in *home* (its ``plugins.disabled`` named it when the
+    enable ran, :func:`_install_into`), and the command that turns it on."""
+    enable = _install_command(name, home).replace(" plugins install ", " plugins enable ")
+    return f"plugins.disabled lists '{name}', so it is installed but off: run `{enable}` to turn it on."
+
+
 def _install_pending(home: Path, name: str, *, install: Callable[[str], dict],
                      say: Callable[[str], None]) -> bool:
     try:
         result = install(name)
     except Exception as exc:  # network, uv, kill list — report, do not raise
         result = {"ok": False, "error": str(exc)}
+    if result.get("kept_disabled"):
+        say(f"  ⚠ Memory provider '{name}' moved out of core — installed its plugin from the catalog, but "
+            f"{kept_off_sentence(name, home)}")
+        return True
     if result.get("ok"):
         say(f"  ✓ Memory provider '{name}' moved out of core — installed its plugin from the catalog "
             f"(memory.provider and your stored memories are unchanged; check its settings with "
@@ -207,12 +218,14 @@ def _home_consent(home: Path) -> bool:
 
 
 def _install_into(home: Path, *, consent: Optional[bool] = None) -> Callable[[str], dict]:
+    """The unattended install into *home*: a ``plugins.disabled`` entry naming the plugin when its enable
+    runs keeps it off (``kept_disabled``), never lifted."""
     def _install(name: str) -> dict:
         from hermes_cli.plugins_cmd import dashboard_install_plugin
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
         token = set_hermes_home_override(home)
         try:
-            return dashboard_install_plugin("", force=False, enable=True, catalog_name=name,
+            return dashboard_install_plugin("", force=False, enable=True, catalog_name=name, unattended=True,
                                             assume_deps_consent=(name in _LEFT_CORE and _unattended_consent())
                                             if consent is None else consent)
         finally:

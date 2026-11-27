@@ -957,3 +957,38 @@ def test_a_home_channel_change_is_live_without_a_reconnect(tmp_path, monkeypatch
     assert runner.adapters[Platform.WEBHOOK] is live  # not rebuilt
     assert runner.delivery_router.config.get_home_channel(Platform.WEBHOOK).chat_id == "new"
     assert live.config.home_channel.chat_id == "new"
+
+
+def test_explicit_gateway_config_is_not_reconciled_from_home_files(tmp_path, monkeypatch):
+    """A ``GatewayRunner`` launched with an explicit ``GatewayConfig`` (``gateway --config <file>`` or
+    programmatic injection) is not backed by ``$HERMES_HOME/config.yaml``: unrelated writes to the home's
+    config (such as onboarding state on the first turn) must never retire or rebuild its adapters."""
+    from gateway.config import GatewayConfig
+    from gateway.run import GatewayRunner
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text("platforms: {}\n", encoding="utf-8")
+    explicit = GatewayConfig(platforms={Platform.WEBHOOK: PlatformConfig(enabled=True, token="explicit-token")})
+    runner = GatewayRunner(explicit)
+    live = types.SimpleNamespace(config=runner.config.platforms[Platform.WEBHOOK])
+    runner.adapters[Platform.WEBHOOK] = live
+    runner._primary_build_prints = {
+        Platform.WEBHOOK: runner._primary_build_print(Platform.WEBHOOK, runner.config.platforms[Platform.WEBHOOK])}
+    runner._running = True
+    retired: list[Platform] = []
+
+    async def _retire(platform):
+        retired.append(platform)
+        runner.adapters.pop(platform, None)
+
+    runner._retire_primary_platform = _retire
+    asyncio.run(runner._note_boot_platform_signature())
+    # First turn writes unrelated state into $HERMES_HOME/config.yaml.
+    (tmp_path / "config.yaml").write_text("onboarding:\n  seen:\n    profile_build_offered: true\n", encoding="utf-8")
+
+    asyncio.run(runner._reconcile_primary_platforms_if_changed(reason="watcher"))
+    assert retired == [] and runner.adapters.get(Platform.WEBHOOK) is live
+
+    answer = asyncio.run(runner.reconcile_profile_platforms(None, reason="control-socket"))
+    assert answer["applied"] is True and answer["changed"] is False and answer["stopped"] == [], answer
+    assert retired == [] and runner.adapters.get(Platform.WEBHOOK) is live

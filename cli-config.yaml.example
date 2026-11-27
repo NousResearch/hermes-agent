@@ -2092,6 +2092,11 @@ display:
   #   false: Silent (default)
   bell_on_prompt: false
 
+  # Report OSC 7577 Program Resume commands to supporting terminals (when
+  # OSC7577_TOKEN is set in the pane environment) so terminal/server restarts
+  # can restore the active Hermes session automatically.
+  # program_resume: true
+
   # Show model reasoning/thinking before each response.
   # When enabled, a dim box shows the model's thought process above the response.
   # Toggle at runtime with /reasoning show or /reasoning hide.

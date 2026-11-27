@@ -494,10 +494,14 @@ export interface PluginProbeOptions {
 }
 
 export async function probePluginRepo(
-  gitBin: string,
+  gitBin: string | null,
   identifier: string,
   { ref }: PluginProbeOptions = {}
 ): Promise<PluginProbeResult> {
+  if (!gitBin) {
+    return { ok: false, error: 'git is not available', agent: false, desktop: false, warnings: [], insecure: false }
+  }
+
   try {
     const pin = ref?.trim().toLowerCase()
 
@@ -581,11 +585,15 @@ export interface DesktopPluginInstallOptions {
 }
 
 export async function installDesktopPluginFromGit(
-  gitBin: string,
+  gitBin: string | null,
   identifier: string,
   desktopPluginsRoot: string,
   { force = false, sha, catalogName }: DesktopPluginInstallOptions = {}
 ): Promise<DesktopPluginInstallResult> {
+  if (!gitBin) {
+    return { ok: false, error: 'git is not available' }
+  }
+
   try {
     const { gitUrl, subdir } = resolvePluginGitUrl(identifier)
     const cloneRoot = await cloneToTemp(gitBin, gitUrl, subdir)

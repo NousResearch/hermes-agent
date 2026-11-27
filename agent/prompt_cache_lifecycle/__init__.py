@@ -3,7 +3,7 @@
 Modules: ``replay`` (which requests replay, with which output cap, through which client), ``economics``
 (a keep-alive's cost against the rewrite it prevents), ``edge`` (the cache-edge gates: compact or offload),
 ``warmer`` (``PromptCacheWarmer``: keep-alives, budget, first-miss stop, ``claim_edge``; the agent-facing
-seams). This facade is the surface; code imports topic modules directly inside the package.
+seams), ``in_flight`` (the window a request still awaiting its reply keeps warm). This facade is the surface; code imports topic modules directly inside the package.
 
 When a chat's cache is about to expire the controller makes ONE decision, in this order:
 
@@ -80,6 +80,7 @@ from agent.prompt_cache_lifecycle.warmer import (
     prompt_cache_warming_disabled,
     reset_prompt_cache_session,
     session_totals_lock,
+    start_in_flight_prompt_cache_warming,
     start_prompt_cache_warming,
 )
 
@@ -112,5 +113,6 @@ __all__ = [
     "replay_output_cap",
     "reset_prompt_cache_session",
     "session_totals_lock",
+    "start_in_flight_prompt_cache_warming",
     "start_prompt_cache_warming",
 ]

@@ -139,6 +139,7 @@ class CLIInitMixin:
         self.bell_on_complete = display.get("bell_on_complete", False)
         self.bell_on_prompt = display.get("bell_on_prompt", False)  # bell when a blocking modal opens
         self.program_status_enabled = bool(display.get("program_status", True))
+        self.program_resume_enabled = bool(display.get("program_resume", True))
         self.show_reasoning = display.get("show_reasoning", True)
         self.reasoning_full = display.get("reasoning_full", False)
         _configure_output_history(

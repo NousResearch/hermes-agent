@@ -416,3 +416,183 @@ def test_the_tier_check_never_reads_the_old_clock_and_a_cleared_in_flight_mark(t
                 worker.join(10)
                 warmer.cancel()
                 db.close()
+
+
+def _next_request(agent):
+    return {"model": agent.model, "max_tokens": 100, "messages": [
+        {"role": "user", "content": [{"type": "text", "text": "OLD PREFIX " * 2000}]},
+        {"role": "assistant", "content": "x"},
+        {"role": "user", "content": [{"type": "text", "text": "NEXT REQUEST", "cache_control": {"type": "ephemeral"}}]}]}
+
+
+def test_a_reply_generating_past_the_entrys_lifetime_keeps_its_own_prompt_warm(tmp_path, monkeypatch):
+    """A request whose reply takes longer than the 5m entry lives (a long generation): a keep-alive
+    replaying that same request goes out while the reply streams, and the reply landing afterwards
+    keeps the renewal instead of moving the window back to its own send (issue #160322)."""
+    import time
+
+    from agent.prompt_cache_clock import cache_certainly_warm, record_attempt_sent
+
+    with _endpoint() as (client, server):
+        agent, warmer, run, db = _armed(tmp_path, client, sid=uuid.uuid4().hex)
+        try:
+            warmer.cancel("new request in flight")
+            request = _next_request(agent)
+            t0 = time.time()
+            record_attempt_sent(agent, request)
+            pcw.start_in_flight_prompt_cache_warming(agent, request)
+            run = warmer._run
+            assert run is not None and run.timer is not None
+            run.timer.cancel()
+            with monkeypatch.context() as clock:
+                clock.setattr(time, "time", lambda: t0 + 250)
+                warmer._refresh(run)
+            assert server.requests[-1]["messages"][-1]["content"][0]["text"] == "NEXT REQUEST"
+            usage = SimpleNamespace(input_tokens=0, output_tokens=9_000, cache_read_input_tokens=_READ,
+                                    cache_creation_input_tokens=400)
+            record_cache_response(agent, normalize_usage(usage, provider=agent.provider, api_mode=agent.api_mode),
+                                  model=agent.model, provider=agent.provider, base_url=agent.base_url,
+                                  api_mode=agent.api_mode)  # the loop's fold: from the agent's attempt
+            window = cache_window(agent)
+            assert window.refreshed_at == pytest.approx(t0 + 250, abs=1)
+            assert cache_certainly_warm(window, now=t0 + 390)
+        finally:
+            warmer.cancel()
+            db.close()
+
+
+def test_an_automatic_cache_that_never_proved_itself_arms_nothing_for_the_request_in_flight(tmp_path):
+    """No markers (an OpenAI-spec automatic cache) and no reply on the clock yet: nothing says this
+    request is cached, so nothing is kept warm; a marked request declares its tier and is."""
+    with _endpoint() as (client, _server):
+        agent, warmer, _run, db = _armed(tmp_path, client, sid=uuid.uuid4().hex)
+        try:
+            warmer.cancel("new request in flight")
+            agent._prompt_cache_clock, agent._prompt_cache_clock_restored = None, True  # no reply has cached yet
+            agent._prompt_cache_attempt = None
+            unmarked = {"model": agent.model, "max_tokens": 100,
+                        "messages": [{"role": "user", "content": "OLD PREFIX " * 2000}]}
+            assert warmer.start_in_flight(unmarked) == "no cache window to keep warm (no markers, nothing proven)"
+            assert warmer._run is None
+            assert warmer.start_in_flight(_next_request(agent)) is None
+        finally:
+            warmer.cancel()
+            db.close()
+
+
+def test_a_keep_alive_reply_landing_after_its_requests_own_reply_still_renews_the_window(tmp_path, monkeypatch):
+    """The request's reply lands (and is folded, and replaces the run) while its keep-alive is still on
+    the wire: the keep-alive's reply folds after it as a later read of the same prompt, so the window
+    counts from the keep-alive, not from the request's send."""
+    import time
+
+    from agent.prompt_cache_clock import cache_certainly_warm, record_attempt_sent
+    from agent.prompt_cache_lifecycle.warmer import fold_reply
+
+    with _endpoint() as (client, server):
+        agent, warmer, run, db = _armed(tmp_path, client, sid=uuid.uuid4().hex)
+        try:
+            warmer.cancel("new request in flight")
+            request = _next_request(agent)
+            t0 = time.time()
+            now = [t0]
+            monkeypatch.setattr(time, "time", lambda: now[0])
+            record_attempt_sent(agent, request)
+            pcw.start_in_flight_prompt_cache_warming(agent, request)
+            run = warmer._run
+            run.timer.cancel()
+            server.release.clear()
+            now[0] = t0 + 250
+            worker = threading.Thread(target=warmer._refresh, args=(run,))
+            worker.start()
+            assert server.entered.wait(5)
+            now[0] = t0 + 255  # the request's own reply lands while the keep-alive is on the wire
+            usage = SimpleNamespace(input_tokens=0, output_tokens=9_000, cache_read_input_tokens=_READ,
+                                    cache_creation_input_tokens=400)
+            fold_reply(agent, lambda: record_cache_response(
+                agent, normalize_usage(usage, provider=agent.provider, api_mode=agent.api_mode), model=agent.model,
+                provider=agent.provider, base_url=agent.base_url, api_mode=agent.api_mode))
+            warmer.cancel("the reply replaced the run")
+            server.release.set()
+            worker.join(10)
+            assert not worker.is_alive()
+            window = cache_window(agent)
+            assert window.refreshed_at == pytest.approx(t0 + 250, abs=1)
+            assert cache_certainly_warm(window, now=t0 + 390)
+        finally:
+            server.release.set()
+            warmer.cancel()
+            db.close()
+
+
+def test_an_unmarked_tail_past_the_last_cache_marker_is_priced_as_input(tmp_path):
+    """A small marked prefix and a large tool result past the last marker (a route that leaves tool
+    results unmarked): every replay re-bills that tail as plain input, so the request in flight is not
+    kept warm; with the marker on the last message the same prompt is."""
+    with _endpoint() as (client, _server):
+        agent, warmer, _run, db = _armed(tmp_path, client, sid=uuid.uuid4().hex)
+        try:
+            warmer.cancel("new request in flight")
+            prefix = {"role": "user", "content": [{"type": "text", "text": "SMALL PREFIX " * 300,
+                                                   "cache_control": {"type": "ephemeral"}}]}
+            tail = "TOOL RESULT " * 60_000
+            unmarked = {"model": agent.model, "max_tokens": 100, "messages": [
+                prefix, {"role": "assistant", "content": "x"}, {"role": "user", "content": [{"type": "text", "text": tail}]}]}
+            assert warmer.start_in_flight(unmarked) is not None
+            assert warmer._run is None
+            marked = {"model": agent.model, "max_tokens": 100, "messages": [
+                prefix, {"role": "assistant", "content": "x"},
+                {"role": "user", "content": [{"type": "text", "text": tail, "cache_control": {"type": "ephemeral"}}]}]}
+            assert warmer.start_in_flight(marked) is None
+        finally:
+            warmer.cancel()
+            db.close()
+
+
+def test_a_late_keep_alive_reply_never_rewinds_a_newer_requests_fold(tmp_path, monkeypatch):
+    """The request's reply folds, then the next request is sent and folds too, all while the old
+    keep-alive is still on the wire: its late reply is older than what the clock holds and is dropped,
+    so the newer request's coverage stands."""
+    import time
+
+    from agent.prompt_cache_clock import record_attempt_sent
+    from agent.prompt_cache_lifecycle.warmer import fold_reply
+
+    def fold(agent):
+        usage = SimpleNamespace(input_tokens=0, output_tokens=9_000, cache_read_input_tokens=_READ,
+                                cache_creation_input_tokens=400)
+        fold_reply(agent, lambda: record_cache_response(
+            agent, normalize_usage(usage, provider=agent.provider, api_mode=agent.api_mode), model=agent.model,
+            provider=agent.provider, base_url=agent.base_url, api_mode=agent.api_mode))
+
+    with _endpoint() as (client, server):
+        agent, warmer, run, db = _armed(tmp_path, client, sid=uuid.uuid4().hex)
+        try:
+            warmer.cancel("new request in flight")
+            request = _next_request(agent)
+            t0 = time.time()
+            now = [t0]
+            monkeypatch.setattr(time, "time", lambda: now[0])
+            record_attempt_sent(agent, request)
+            pcw.start_in_flight_prompt_cache_warming(agent, request)
+            run = warmer._run
+            run.timer.cancel()
+            server.release.clear()
+            now[0] = t0 + 250
+            worker = threading.Thread(target=warmer._refresh, args=(run,))
+            worker.start()
+            assert server.entered.wait(5)
+            now[0] = t0 + 255
+            fold(agent)
+            warmer.cancel("the reply replaced the run")
+            now[0] = t0 + 260  # the next request is sent and its reply folds first
+            record_attempt_sent(agent, _next_request(agent))
+            fold(agent)
+            server.release.set()
+            worker.join(10)
+            assert not worker.is_alive()
+            assert cache_window(agent).refreshed_at == pytest.approx(t0 + 260, abs=1)
+        finally:
+            server.release.set()
+            warmer.cancel()
+            db.close()

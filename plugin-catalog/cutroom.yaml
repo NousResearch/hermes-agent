@@ -1,22 +1,22 @@
 name: cutroom
 title: Cutroom
 repo: https://github.com/KaanDRoid/hermes-cutroom
-sha: f3cec697fd4878d7667e5fddc02be288bc1708ac
-version: "0.2.0"
-description: "Local-first video editing studio: edit a talking video by deleting words from its transcript, style it for Instagram Reels, YouTube Shorts, TikTok or YouTube (animated word captions, face-tracked or blurred reframing, punch-ins and transitions, supplied music ducked under speech, platform loudness), find clips in long recordings, preview with automated quality checks, approve, then export the final, a cover, chapters and a local delivery package. Ships a Hermes Desktop Studio page, three agent tools for projects and background jobs (no approval tool: only a person can approve a final export) and a CLI. Requires FFmpeg/ffprobe on PATH; speech, vision and segmentation need optional Python packages and local model files. Disclosure — reads only the local media paths it is given and launches local FFmpeg/ffprobe and a Python worker subprocess with a minimal allowlisted environment (provider API keys and tokens are not forwarded); the worker interpreter comes only from CUTROOM_PYTHON, the plugin's bundled .venv or Hermes' own interpreter; projects, renders and reports are written only under its own workspace in the Hermes home and never overwrite sources or existing outputs; models are never downloaded automatically, and `cutroom setup-models --confirm-downloads` fetches pinned files from storage.googleapis.com (MediaPipe) and huggingface.co (faster-whisper) with SHA-256 verification. Two optional Studio actions run only from a person's click in the Desktop page, never from agent tools: Send to the cloud runs the person's own rclone CLI with its own configuration (Cutroom never reads rclone's config or tokens) to copy an approved export into a new folder on a remote the person chose, such as Google Drive; Record with OBS talks to OBS Studio's WebSocket server on a loopback address only, with the OBS password the person typed into the plugin's Desktop settings (stored by Hermes Desktop on that computer, sent only with OBS requests, never written to projects or logs). In chats on messaging services, finished renders are not shared automatically; the agent is told to ask first. No telemetry, no API keys, no self-update. Approval records a person's decision in the Desktop Studio page; it is a workflow record, not a security boundary against other code running as the same user."
+sha: c2d6f9400a84dec3757119665a14262a8c0b5c31
+version: "0.3.0"
+description: "Local-first video editing studio: edit a talking video by deleting words from its transcript, style it for Instagram Reels, YouTube Shorts, TikTok or YouTube (animated word captions, split explainer layouts with cards or local visuals, face-tracked or blurred reframing, punch-ins and transitions, supplied music ducked under speech, platform loudness), find clips in long recordings, bleep or mute selected words, hide regions with optional motion tracking, preview with automated quality checks, approve, then export the final, a cover, chapters and a local delivery package. Ships a Hermes Desktop Studio page, three agent tools for projects and background jobs (no approval tool: only a person can approve a final export) and a CLI. Requires FFmpeg/ffprobe on PATH; speech, vision and segmentation need optional Python packages and local model files. Disclosure — reads only the local media paths it is given and launches local FFmpeg/ffprobe and a Python worker subprocess with a minimal allowlisted environment (provider API keys and tokens are not forwarded); the worker interpreter comes only from CUTROOM_PYTHON, the plugin's bundled .venv or Hermes' own interpreter; projects, renders and reports are written only under its own workspace in the Hermes home and never overwrite sources or existing outputs; models are never downloaded automatically, and `cutroom setup-models --confirm-downloads` fetches pinned files from storage.googleapis.com (MediaPipe) and huggingface.co (faster-whisper) with SHA-256 verification. Two optional Studio actions run only from a person's click in the Desktop page, never from agent tools: Send to the cloud runs the person's own rclone CLI with its own configuration (Cutroom never reads rclone's config or tokens) to copy an approved export into a new folder on a remote the person chose, such as Google Drive; Record with OBS talks to OBS Studio's WebSocket server on a loopback address only, with the OBS password the person typed into the plugin's Desktop settings (stored by Hermes Desktop on that computer, sent only with OBS requests, never written to projects or logs). In chats on messaging services, finished renders are not shared automatically; the agent is told to ask first. No telemetry, no API keys, no self-update. Approval records a person's decision in the Desktop Studio page; it is a workflow record, not a security boundary against other code running as the same user."
 maintainer: KaanDRoid
 category: tools
 tier: community
 requires_hermes: ">=0.23.0"
-docs_url: https://github.com/KaanDRoid/hermes-cutroom/blob/f3cec697fd4878d7667e5fddc02be288bc1708ac/README.md
+docs_url: https://github.com/KaanDRoid/hermes-cutroom/blob/c2d6f9400a84dec3757119665a14262a8c0b5c31/README.md
 readme: true
 screenshots:
-  - https://raw.githubusercontent.com/KaanDRoid/hermes-cutroom/f3cec697fd4878d7667e5fddc02be288bc1708ac/docs/screenshots/edit.png
-  - https://raw.githubusercontent.com/KaanDRoid/hermes-cutroom/f3cec697fd4878d7667e5fddc02be288bc1708ac/docs/screenshots/style.png
-  - https://raw.githubusercontent.com/KaanDRoid/hermes-cutroom/f3cec697fd4878d7667e5fddc02be288bc1708ac/docs/screenshots/review.png
-  - https://raw.githubusercontent.com/KaanDRoid/hermes-cutroom/f3cec697fd4878d7667e5fddc02be288bc1708ac/docs/screenshots/export.png
-  - https://raw.githubusercontent.com/KaanDRoid/hermes-cutroom/f3cec697fd4878d7667e5fddc02be288bc1708ac/docs/screenshots/cloud.png
-  - https://raw.githubusercontent.com/KaanDRoid/hermes-cutroom/f3cec697fd4878d7667e5fddc02be288bc1708ac/docs/screenshots/home.png
+  - https://raw.githubusercontent.com/KaanDRoid/hermes-cutroom/c2d6f9400a84dec3757119665a14262a8c0b5c31/docs/screenshots/edit.png
+  - https://raw.githubusercontent.com/KaanDRoid/hermes-cutroom/c2d6f9400a84dec3757119665a14262a8c0b5c31/docs/screenshots/layout.png
+  - https://raw.githubusercontent.com/KaanDRoid/hermes-cutroom/c2d6f9400a84dec3757119665a14262a8c0b5c31/docs/screenshots/review.png
+  - https://raw.githubusercontent.com/KaanDRoid/hermes-cutroom/c2d6f9400a84dec3757119665a14262a8c0b5c31/docs/screenshots/export.png
+  - https://raw.githubusercontent.com/KaanDRoid/hermes-cutroom/c2d6f9400a84dec3757119665a14262a8c0b5c31/docs/screenshots/cloud.png
+  - https://raw.githubusercontent.com/KaanDRoid/hermes-cutroom/c2d6f9400a84dec3757119665a14262a8c0b5c31/docs/screenshots/hide.png
 capabilities:
   provides_tools:
     - cutroom_inspect
@@ -32,5 +32,6 @@ known_issues:
   - Hooks, storyboards, clip scores and post text are extractive drafts from the transcript, not generated writing; gaze/mouth results are review-only heuristics.
   - Send to the cloud needs rclone installed with a configured remote; Record with OBS needs OBS Studio with its WebSocket server turned on.
   - In a Hermes profile other than the one the gateway started with, loading a video into the Studio player is slow (about 0.8 MB/s measured).
+  - When motion tracking loses a hidden region, the affected source frames are covered and flagged in Review. Check the rendered result before sharing.
   - Output filesystems must support hard links (NTFS, ext4, APFS); FAT/exFAT is not supported.
   - Verified primarily on Windows; Linux and macOS have had less testing.

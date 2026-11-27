@@ -15,6 +15,10 @@ import {
   removePendingInput,
   savePendingInput
 } from '../lib/pendingInputs.js'
+import { actionShortcutLabel } from '../lib/platform.js'
+
+// Retry hint for a failed row: the key `isAction(key, ch, 'k')` accepts here (#148766).
+const RETRY_KEY = actionShortcutLabel('k')
 
 export interface QueueItem {
   display: string
@@ -213,7 +217,7 @@ export function useQueue(gw?: { request: (method: string, params: Record<string,
   const serverRows = (ui.info?.pending_submissions ?? []).filter(isServerQueued)
 
   const queuedDisplay = [
-    ...queueRef.current.map(item => `${item.failed ? t('canonical.queue.unconfirmedPrefix') : ''}${item.display}`),
+    ...queueRef.current.map(item => `${item.failed ? t('canonical.queue.unconfirmedPrefix', RETRY_KEY) : ''}${item.display}`),
     // A queued row reads as main's plain queue line; only an unknown execution keeps its status tag.
     ...serverRows.map(row =>
       row.status === 'queued'
@@ -434,7 +438,7 @@ export function useQueue(gw?: { request: (method: string, params: Record<string,
       // Editing a durable row re-admits the edited text as a new input once
       // the authority has retired the original. Until then the edit is a
       // durable local row; a refused retirement leaves it as an unconfirmed
-      // draft (Alt+K) instead of admitting a second copy behind the original.
+      // draft (retry key) instead of admitting a second copy behind the original.
       if (server) {
         if (server.status === 'unknown') {
           patchUiState({ status: t('canonical.queue.unknownExecution') })

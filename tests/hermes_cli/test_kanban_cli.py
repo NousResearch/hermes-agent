@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import threading
 from pathlib import Path
 
@@ -29,9 +30,94 @@ def kanban_home(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("value,expected", [
+    ("scratch", ("scratch", None)),
+    ("worktree", ("worktree", None)),
+    ("dir:/tmp/vault", ("dir", "/tmp/vault")),
+    ("worktree:~/trees/t6-wire", ("worktree", os.path.expanduser("~/trees/t6-wire"))),
+])
+def test_parse_workspace_flag_valid(value, expected):
+    assert kc._parse_workspace_flag(value) == expected
 
 
+def test_parse_workspace_flag_expands_user():
+    kind, path = kc._parse_workspace_flag("dir:~/vault")
+    assert kind == "dir"
+    assert path.endswith("/vault")
+    assert not path.startswith("~")
 
+
+@pytest.mark.parametrize("bad", ["cloud", "dir:", "worktree:"])
+def test_parse_workspace_flag_rejects(bad):
+    with pytest.raises(argparse.ArgumentTypeError):
+        kc._parse_workspace_flag(bad)
+
+
+def test_parse_workspace_flag_omitted_is_none():
+    """Omitted must stay ``(None, None)`` so create_task can tell "default" from
+    an explicit scratch — a project-scoped board resolves the two differently."""
+    assert kc._parse_workspace_flag(None) == (None, None)
+    assert kc._parse_workspace_flag("") == (None, None)
+
+
+# ---------------------------------------------------------------------------
+# swarm workspace
+# ---------------------------------------------------------------------------
+
+
+def test_swarm_forwards_workspace_to_every_card(kanban_home, tmp_path):
+    """``swarm --workspace dir:<p>`` must land on all five cards.
+
+    The default is scratch, whose directory is deleted by _cleanup_workspace on
+    completion — a synthesizer writing its deliverable there loses it. The
+    durable-workspace capability existed in create_swarm() but the CLI never
+    passed it, so a swarm could not deliver a surviving artifact at all.
+    """
+    ws = tmp_path / "deliverables"
+    ws.mkdir()
+
+    out = kc.run_slash(
+        f"swarm 'produce a durable report' "
+        f"--worker lead:gather --worker support:review "
+        f"--verifier lead --synthesizer lead --workspace dir:{ws}"
+    )
+
+    with kbc.connect_closing() as conn:
+        cards = kb.list_tasks(conn)
+
+    assert cards, f"swarm created no cards; output was: {out!r}"
+    for task in cards:
+        assert task.workspace_kind == "dir", f"{task.id} kind={task.workspace_kind!r}"
+        assert task.workspace_path == str(ws), f"{task.id} path={task.workspace_path!r}"
+
+
+def test_swarm_defaults_to_scratch_when_workspace_omitted(kanban_home):
+    """Omitting --workspace keeps the historical scratch default (now explicit
+    rather than the only option)."""
+    kc.run_slash(
+        "swarm 'brief task' "
+        "--worker lead:gather --verifier lead --synthesizer lead"
+    )
+
+    with kbc.connect_closing() as conn:
+        cards = kb.list_tasks(conn)
+
+    assert cards
+    for task in cards:
+        assert task.workspace_kind == "scratch"
+        assert task.workspace_path is None
+
+
+def test_swarm_rejects_malformed_workspace(kanban_home):
+    """A bad --workspace value must be rejected by _parse_workspace_flag's own
+    normalization, not fall through as an argparse "unrecognized argument" —
+    which is what made the flag look absent rather than misused."""
+    out = kc.run_slash(
+        "swarm 'x' --worker lead:gather --verifier lead --synthesizer lead "
+        "--workspace cloud"
+    )
+    assert "unknown --workspace value" in out, out
+    assert "unrecognized arguments" not in out, out
 
 
 # ---------------------------------------------------------------------------

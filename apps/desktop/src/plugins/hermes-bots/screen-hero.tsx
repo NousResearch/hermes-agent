@@ -105,6 +105,11 @@ const TONE_RING: Partial<Record<PortalTone, string>> = {
   other: 'ring-2 ring-amber-500/70'
 }
 
+const HERO_DOT_CLASS: Partial<Record<PortalTone | 'idle', string>> = {
+  human: 'bg-red-400',
+  live: 'bg-emerald-400',
+  other: 'bg-amber-400'
+}
 export function ScreenHero({ bot, meta }: { bot: RosterRow; meta?: BotMeta | null }) {
   // A profile switch must discard the previous owner's pixels before painting.
   return <ScreenHeroContent bot={bot} key={botSelectionKey(bot)} meta={meta} />
@@ -141,12 +146,16 @@ function ScreenHeroContent({ bot, meta }: { bot: RosterRow; meta?: BotMeta | nul
       ? t.screen.heroInstall
       : tone === 'off'
         ? t.screen.heroStart
-        : ''
+      : ''
+  const dotState: PortalTone | 'idle' = running && !stale ? tone : 'idle'
+  const dotToneClass = HERO_DOT_CLASS[dotState] ?? 'bg-white/40'
 
   return (
     <button
       aria-label={`${t.screen.portalTitle}: ${caption}`}
       className={`group relative block w-full overflow-hidden rounded-lg border border-(--ui-stroke-secondary) bg-black text-left ${TONE_RING[tone] ?? ''}`}
+      data-slot="bot-screen-hero"
+      data-tone={tone}
       onClick={() => openBotScreen(bot, meta ?? null)}
       ref={boxRef}
       style={{ aspectRatio: '16 / 10' }}
@@ -172,16 +181,28 @@ function ScreenHeroContent({ bot, meta }: { bot: RosterRow; meta?: BotMeta | nul
         </span>
       )}
 
-      <span className="absolute inset-x-0 bottom-0 flex items-center gap-2 bg-gradient-to-t from-black/85 to-black/0 px-2.5 pb-2 pt-6 text-white">
+      <span
+        className="absolute inset-x-0 bottom-0 flex items-center gap-2 bg-gradient-to-t from-black/85 to-black/0 px-2.5 pb-2 pt-6 text-white"
+        data-slot="bot-screen-hero-caption"
+      >
         <span
-          className={`size-2 shrink-0 rounded-full ${running && !stale ? (tone === 'live' ? 'bg-emerald-400' : tone === 'human' ? 'bg-red-400' : 'bg-amber-400') : 'bg-white/40'}`}
+          className={`size-2 shrink-0 rounded-full ${dotToneClass}`}
+          data-slot="bot-screen-hero-dot"
+          data-state={dotState}
         />
         <span className="min-w-0 flex-1">
-          <span className="block truncate text-xs font-medium">{t.screen.portalTitle}</span>
-          <span className="block truncate text-[0.65rem] text-white/70">{caption}</span>
+          <span className="block truncate text-xs font-medium" data-slot="bot-screen-hero-title">
+            {t.screen.portalTitle}
+          </span>
+          <span className="block truncate text-[0.65rem] text-white/70" data-slot="bot-screen-hero-sub">
+            {caption}
+          </span>
         </span>
         {cta ? (
-          <span className="flex shrink-0 items-center gap-1 rounded-md bg-white/15 px-2 py-1 text-[0.65rem] font-medium backdrop-blur-sm transition-colors group-hover:bg-white/25">
+          <span
+            className="flex shrink-0 items-center gap-1 rounded-md bg-white/15 px-2 py-1 text-[0.65rem] font-medium backdrop-blur-sm transition-colors group-hover:bg-white/25"
+            data-slot="bot-screen-hero-cta"
+          >
             {cta} <Codicon name="arrow-right" />
           </span>
         ) : null}

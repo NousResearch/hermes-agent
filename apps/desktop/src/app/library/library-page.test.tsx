@@ -42,6 +42,7 @@ beforeEach(() => {
     ]
   })
   vi.stubGlobal('hermesDesktop', {
+    readFileText: vi.fn().mockResolvedValue({ path: '/out/brief.md', text: '# Brief\n\nLaunch checklist ready.' }),
     saveGatewayFile: vi.fn().mockResolvedValue({ saved: true }),
     api: vi.fn().mockResolvedValue('data:image/png;base64,AA==')
   })
@@ -160,4 +161,20 @@ it('closes a preview whose image went away, and opens the next image on the stag
 
   expect(screen.getByRole('heading', { name: 'shot-28.png' })).toBeTruthy()
   expect(screen.queryByRole('dialog')).toBeNull()
+})
+
+it('previews markdown files inline in Library with Rendered/Source toggle and Escape back to the list (HADESK-96)', async () => {
+  mount('/?tab=file')
+
+  fireEvent.click(await screen.findByRole('button', { name: 'brief.md' }))
+
+  const preview = await screen.findByRole('heading', { name: 'brief.md' })
+  expect(preview).toBeTruthy()
+  expect(await screen.findByText('Launch checklist ready.')).toBeTruthy()
+
+  fireEvent.click(screen.getByRole('button', { name: 'Source' }))
+  expect(screen.getByText(/# Brief/)).toBeTruthy()
+
+  fireEvent.keyDown(preview.closest('[data-slot="library-markdown-preview"]')!, { key: 'Escape' })
+  await waitFor(() => expect(window.document.querySelector('[data-slot="library-markdown-preview"]')).toBeNull())
 })

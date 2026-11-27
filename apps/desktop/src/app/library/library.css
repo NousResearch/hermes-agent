@@ -662,3 +662,50 @@
     gap: 0.25rem;
   }
 }
+
+/* ── Markdown preview (HADESK-96) ──────────────────────────────────────────────────────────── */
+
+.library-markdown-stage {
+  min-height: 18rem;
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: 1.5rem;
+  border: 1px solid var(--portal-stroke-hairline);
+  border-radius: var(--portal-radius-frame);
+  background: var(--portal-surface-collection);
+}
+
+.library-markdown-skeleton {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.library-markdown-error {
+  display: grid;
+  justify-items: start;
+  gap: 0.75rem;
+  color: var(--portal-text-secondary);
+  font-size: var(--portal-type-ui-size);
+}
+
+.library-markdown-error p {
+  margin: 0;
+}
+
+.library-markdown-body {
+  color: var(--portal-text-primary);
+  font-family: var(--portal-font-body);
+  font-size: var(--portal-type-body-size);
+  line-height: 1.6;
+}
+
+.library-markdown-source {
+  margin: 0;
+  overflow-x: auto;
+  color: var(--portal-text-primary);
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-meta-size);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

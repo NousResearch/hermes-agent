@@ -10,6 +10,7 @@ import { SearchField } from '@/components/ui/search-field'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
+import { isMarkdownDocumentPath } from '@/lib/media'
 import type { PixelIconName } from '@/lib/pixel-icon-registry'
 import { normalize } from '@/lib/text'
 import { fmtClock } from '@/lib/time'
@@ -25,6 +26,7 @@ import { chatOfItem, downloadItem, openFileItem, openItemChat } from './library-
 import { ImageGrid, ItemTable, Pager } from './library-collections'
 import { useLibraryCopy } from './library-copy'
 import { ImageLightbox, ImagePreview } from './library-image-view'
+import { MarkdownPreviewView } from './library-markdown-view'
 import { useItemIndex } from './use-item-index'
 
 const IMAGE_PAGE = 24
@@ -50,6 +52,23 @@ function matches(item: ArtifactRecord, chat: IndexedChat | undefined, query: str
     (chat?.title ?? item.sessionTitle).toLowerCase().includes(query)
   )
 }
+
+const isMarkdownItem = (item: ArtifactRecord) => item.kind === 'file' && isMarkdownDocumentPath(item.value)
+
+function findPreviewMarkdown(
+  preview: null | string,
+  previewIndex: number,
+  rows: readonly ArtifactRecord[]
+): ArtifactRecord | null {
+  if (preview === null || previewIndex >= 0) {
+    return null
+  }
+
+  return rows.find(item => item.id === preview && isMarkdownItem(item)) ?? null
+}
+
+const isPreviewMissing = (preview: null | string, previewIndex: number, previewMarkdown: ArtifactRecord | null) =>
+  preview !== null && previewIndex < 0 && previewMarkdown === null
 
 function LibrarySkeleton({ label }: { label: string }) {
   return (
@@ -272,12 +291,13 @@ export function LibraryPage(props: ComponentProps<'section'>) {
     setPreview(item.id)
   }, [])
 
-  // The previewed image left the list (a refresh dropped its chat): close it here, so neither view
-  // reopens by itself should the image come back.
-  if (preview !== null && previewIndex < 0) {
+  const previewMarkdown = findPreviewMarkdown(preview, previewIndex, rows)
+
+  // The previewed item left the list (a refresh dropped its chat): close it here, so neither view
+  // reopens by itself should the item come back.
+  if (isPreviewMissing(preview, previewIndex, previewMarkdown)) {
     closePreview()
   }
-
   const selectTab = useCallback(
     (next: ArtifactFilter) => {
       closePreview()
@@ -293,7 +313,19 @@ export function LibraryPage(props: ComponentProps<'section'>) {
 
   const download = useCallback((item: ArtifactRecord) => void downloadItem(item, chatOfItem(chats, item)), [chats])
 
-  const openItem = useCallback((item: ArtifactRecord) => void openFileItem(item, chatOfItem(chats, item)), [chats])
+  const openFileExternal = useCallback((item: ArtifactRecord) => void openFileItem(item, chatOfItem(chats, item)), [chats])
+  const openItem = useCallback(
+    (item: ArtifactRecord) => {
+      if (isMarkdownItem(item)) {
+        openPreview(item)
+
+        return
+      }
+
+      void openFileItem(item, chatOfItem(chats, item))
+    },
+    [chats, openPreview]
+  )
 
   const loading = items.length === 0 && (index.checkedAt === null || index.refreshing) && !index.error
   const summaryTime = index.checkedAt === null ? null : fmtClock.format(new Date(index.checkedAt))
@@ -387,6 +419,16 @@ export function LibraryPage(props: ComponentProps<'section'>) {
             onBack={closePreview}
             onEnlarge={() => setLightbox(true)}
             onIndex={next => setPreview(images[next]?.id ?? null)}
+          />
+        ) : previewMarkdown ? (
+          <MarkdownPreviewView
+            backLabel={copy.tabs[tab]}
+            chats={chats}
+            item={previewMarkdown}
+            onBack={closePreview}
+            onDownload={download}
+            onOpenChat={openChat}
+            onOpenExternal={openFileExternal}
           />
         ) : (
           <>

@@ -34,3 +34,13 @@
   clip-path: inset(50%);
   white-space: nowrap;
 }
+
+/* Inline approval, clarify, and computer-use cards in HUD wear the same redesign surface tokens. */
+:root[data-shell='portal'] [data-hud-shell] :is([data-slot='card-stack-surface'], [data-slot='clarify-inline']) {
+  border-radius: var(--portal-radius-surface);
+  background: var(--portal-surface-card-inline);
+}
+
+:root[data-shell='portal'] [data-hud-shell] [data-redesigned-composer] [data-slot='composer-surface'] {
+  border-radius: var(--portal-radius-panel);
+}

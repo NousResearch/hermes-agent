@@ -921,3 +921,135 @@ html[data-hermes-desktop-host='browser'][data-shell='portal'][data-portal-safe-a
     env(safe-area-inset-left, 0px);
   contain: layout;
 }
+
+/* ── Bot Screen viewer & live thumbnail (HADESK-196) ───────────────────────────────────────────
+   Redesign-only styling for plugins/hermes-bots/screen-pane.tsx and screen-hero.tsx; classic keeps
+   its own utility styling untouched. */
+:root[data-shell='portal'] [data-slot='bot-screen-header'] {
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border-bottom-color: var(--portal-stroke-divider);
+  background-color: var(--portal-surface-elevated);
+  color: var(--portal-text-primary);
+  font-family: var(--portal-font-body);
+  font-size: var(--portal-type-meta-size);
+}
+
+:root[data-shell='portal'] [data-slot='bot-screen-title'] {
+  font-size: var(--portal-type-ui-size);
+  font-weight: var(--portal-weight-medium);
+}
+
+:root[data-shell='portal'] [data-slot='bot-screen-meta'] {
+  color: var(--portal-text-tertiary);
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-micro-size);
+}
+
+:root[data-shell='portal'] [data-slot='bot-screen-badge'] {
+  border-radius: var(--portal-radius-chip);
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-caption-size);
+  font-weight: var(--portal-weight-medium);
+  letter-spacing: var(--portal-tracking-chip);
+}
+
+:root[data-shell='portal'] [data-slot='bot-screen-badge'][data-tone='agent'],
+:root[data-shell='portal'] [data-slot='bot-screen-badge'][data-tone='other'],
+:root[data-shell='portal'] [data-slot='bot-screen-badge'][data-tone='sandbox'] {
+  background-color: var(--portal-surface-control);
+  color: var(--portal-text-secondary);
+}
+
+:root[data-shell='portal'] [data-slot='bot-screen-badge'][data-tone='human'] {
+  background-color: var(--portal-surface-danger);
+  color: var(--portal-text-danger);
+}
+
+:root[data-shell='portal'] [data-slot='bot-screen-badge'][data-tone='reason'] {
+  background-color: var(--portal-surface-brand-selected);
+  color: var(--portal-text-brand);
+}
+
+:root[data-shell='portal'] [data-slot='bot-screen-stage'][data-holding] {
+  box-shadow: inset 0 0 0 2px var(--portal-stroke-danger);
+}
+
+:root[data-shell='portal'] [data-slot='bot-screen-banner'][data-tone='error'] {
+  background-color: var(--portal-surface-danger-solid);
+  color: var(--portal-text-on-danger);
+  font-size: var(--portal-type-meta-size);
+}
+
+:root[data-shell='portal'] [data-slot='bot-screen-banner'][data-tone='warn'] {
+  background-color: var(--portal-surface-elevated);
+  border-bottom: 1px solid var(--portal-stroke-divider);
+  color: var(--portal-status-pending);
+  font-size: var(--portal-type-meta-size);
+}
+
+:root[data-shell='portal'] [data-slot='bot-screen-state-card'] {
+  padding: 1.5rem;
+  border: 1px solid var(--portal-stroke-hairline);
+  border-radius: var(--portal-radius-frame);
+  background-color: var(--portal-surface-card);
+}
+
+:root[data-shell='portal'] [data-slot='bot-screen-state-title'] {
+  color: var(--portal-text-primary);
+  font-size: var(--portal-type-body-size);
+  font-weight: var(--portal-weight-medium);
+}
+
+:root[data-shell='portal'] [data-slot='bot-screen-state-body'] {
+  color: var(--portal-text-tertiary);
+  font-size: var(--portal-type-meta-size);
+}
+
+:root[data-shell='portal'] [data-slot='bot-screen-state-error'] {
+  color: var(--portal-status-error-ink);
+  font-size: var(--portal-type-meta-size);
+}
+
+:root[data-shell='portal'] [data-slot='bot-screen-hero'] {
+  border-color: var(--portal-stroke-hairline);
+  border-radius: var(--portal-radius-card);
+}
+
+:root[data-shell='portal'] [data-slot='bot-screen-hero'][data-tone='human'] {
+  box-shadow: 0 0 0 2px var(--portal-stroke-danger);
+}
+
+:root[data-shell='portal'] [data-slot='bot-screen-hero'][data-tone='other'] {
+  box-shadow: 0 0 0 2px var(--portal-status-pending);
+}
+
+:root[data-shell='portal'] [data-slot='bot-screen-hero-dot'][data-state='live'] {
+  background-color: var(--portal-status-online);
+}
+
+:root[data-shell='portal'] [data-slot='bot-screen-hero-dot'][data-state='human'] {
+  background-color: var(--portal-surface-danger-solid);
+}
+
+:root[data-shell='portal'] [data-slot='bot-screen-hero-dot'][data-state='other'] {
+  background-color: var(--portal-status-pending);
+}
+
+:root[data-shell='portal'] [data-slot='bot-screen-hero-title'] {
+  font-family: var(--portal-font-body);
+  font-size: var(--portal-type-meta-size);
+  font-weight: var(--portal-weight-medium);
+}
+
+:root[data-shell='portal'] [data-slot='bot-screen-hero-sub'] {
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-caption-size);
+}
+
+:root[data-shell='portal'] [data-slot='bot-screen-hero-cta'] {
+  border-radius: var(--portal-radius-control);
+  font-family: var(--portal-font-body);
+  font-size: var(--portal-type-caption-size);
+  font-weight: var(--portal-weight-medium);
+}

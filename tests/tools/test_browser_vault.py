@@ -1563,8 +1563,18 @@ class TestBrowserVaultTools:
             with patch("agent.vault_store.get_vault_store", return_value=store), \
                  patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
                  patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret), \
-                 patch("tools.approval_prompt.request_elicitation_consent", return_value="accept"):
+                 patch("tools.approval_prompt.request_elicitation_consent", return_value="cancel"):
+                timed_out = json.loads(browser_vault_tool.browser_vault_fill(meta.id))
+            assert timed_out["success"] is False and timed_out["error_type"] == "payment_timeout"
+            assert timed_out["retryable"] is True
+            assert secret_exprs == []
+
+            with patch("agent.vault_store.get_vault_store", return_value=store), \
+                 patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
+                 patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret), \
+                 patch("tools.approval_prompt.request_elicitation_consent", return_value="accept") as mock_consent:
                 raw = browser_vault_tool.browser_vault_fill(meta.id)
+            assert mock_consent.call_args.kwargs.get("timeout_seconds") == 300
             out = json.loads(raw)
             assert out["success"] is True and out["fields"] == ["cc-csc", "cc-exp", "cc-number"]
             assert _CARD["card_number"] not in raw and _CARD["cvc"] not in raw
@@ -1573,6 +1583,33 @@ class TestBrowserVaultTools:
             assert secret_exprs[1:] and all("reverted" in e for e in secret_exprs[1:])
             assert '"index": 3' not in secret_exprs[0]  # the email box is never a card target
             assert _CARD["card_number"] not in redact.redact_sensitive_text(f"dom says {_CARD['card_number']}")
+
+            # Fresh single-use Stripe Link virtual card (`link-temp:...@<ts>`) is already user-approved
+            # out-of-band for its exact origin and amount, so it fills without a second confirmation prompt.
+            import time as _t
+            link_meta = store.add_item("payment", f"link-temp:Link $12.34 Shop@{int(_t.time())}", _CARD,
+                                       origin="https://shop.test")
+            with patch("agent.vault_store.get_vault_store", return_value=store), \
+                 patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
+                 patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret), \
+                 patch("tools.approval_prompt.request_elicitation_consent", side_effect=AssertionError("should not re-prompt")):
+                link_out = json.loads(browser_vault_tool.browser_vault_fill(link_meta.id))
+            assert link_out["success"] is True and link_out["fields"] == ["cc-csc", "cc-exp", "cc-number"]
+
+            # Expired `link-temp:` card still requires explicit confirmation.
+            stale_meta = store.add_item("payment", f"link-temp:Link $12.34 Shop@{int(_t.time()) - 3600}", _CARD,
+                                        origin="https://shop.test")
+            with patch("agent.vault_store.get_vault_store", return_value=store), \
+                 patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
+                 patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret), \
+                 patch("tools.approval_prompt.request_elicitation_consent", return_value="decline") as mock_stale:
+                stale_out = json.loads(browser_vault_tool.browser_vault_fill(stale_meta.id))
+            assert mock_stale.called
+            assert stale_out["success"] is False and stale_out["error_type"] == "payment_declined"
+            assert "explicitly confirm" in stale_out["error"]
+            desc = browser_vault_tool.BROWSER_VAULT_SCHEMA["description"]
+            assert "link_card_stage" in desc and "no extra prompt" in desc
+            assert "never retry payment_declined" not in desc
         finally:
             redact.clear_vault_redaction_values()
 

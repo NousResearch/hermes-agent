@@ -710,9 +710,17 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None, *, with_ident
     page = _bound_page_origin(effective_task_id, meta, meta.kind)
     if isinstance(page, dict):
         return json.dumps(page)
-    if meta.kind == "payment" and not _confirm_payment_fill(meta.label, page.origin):
-        return json.dumps({"success": False, "error_type": "payment_declined",
-                           "error": "The user did not confirm filling this payment card. Do not retry; ask them instead."})
+    if meta.kind == "payment" and not _is_preapproved_link_card(backend, meta):
+        consent = _confirm_payment_fill(meta.label, page.origin)
+        if consent == "cancel":
+            return json.dumps({"success": False, "error_type": "payment_timeout", "retryable": True,
+                               "error": "The payment card fill confirmation timed out before the user answered. "
+                                        "Tell the user and ask if they want you to try again; if they confirm, "
+                                        "you may call browser_vault fill again."})
+        if consent != "accept":
+            return json.dumps({"success": False, "error_type": "payment_declined",
+                               "error": "The user did not confirm filling this payment card. Do not retry on your own "
+                                        "this turn; ask them first, and retry only if they explicitly confirm."})
 
     with backend.fill_context(), _pinned_page_session(effective_task_id, page) as unpinned:
         refusal = unpinned or snapshot_refusal(backend, handle, meta, page.origin)
@@ -1214,7 +1222,33 @@ def _login_next(meta: Any, *, identifier_filled: bool) -> str:
             "this handle" + (" (a code will be generated automatically)." if meta.has_otp else "."))
 
 
-def _confirm_payment_fill(label: str, origin: str) -> bool:
+_LINK_TEMP_PREFIX = "link-temp:"
+_LINK_TEMP_TTL_SECONDS = 30 * 60
+_PAYMENT_CONFIRM_TIMEOUT_SECONDS = 300
+
+
+def _is_preapproved_link_card(backend: Any, meta: Any) -> bool:
+    """True for a fresh, origin-bound single-use Stripe Link virtual card staged by `link_card_stage`.
+
+    The user has already explicitly approved the exact merchant, origin, and cent amount out-of-band
+    in the Link app, and `browser_vault_fill` still enforces strict page-origin binding and
+    model-blind filling. Requiring a second 60s confirmation prompt on top of Link approval creates
+    redundant friction without adding merchant/amount protection.
+    """
+    if getattr(backend, "name", None) != "local" or getattr(meta, "kind", None) != "payment":
+        return False
+    label = str(getattr(meta, "label", "") or "")
+    if not label.startswith(_LINK_TEMP_PREFIX) or "@" not in label:
+        return False
+    try:
+        staged_at = float(label.rsplit("@", 1)[1])
+    except ValueError:
+        return False
+    age = time.time() - staged_at
+    return -60.0 <= age <= _LINK_TEMP_TTL_SECONDS
+
+
+def _confirm_payment_fill(label: str, origin: str) -> str:
     """Human confirmation before a card is written into a page: a prompt injection that reaches a checkout
     must not be able to spend. Routes through the approval surface of the active session (gateway button
     round-trip or CLI panel); headless sessions cannot confirm and the fill is refused."""
@@ -1224,7 +1258,8 @@ def _confirm_payment_fill(label: str, origin: str) -> bool:
         f"Fill payment card '{label}' on {origin}",
         "The agent wants to enter your saved card details into this checkout page. The card number and "
         "CVC never enter the conversation. Approve only if you intend to pay here.",
-        surface="vault-payment", title="Confirm payment card fill?") == "accept"
+        timeout_seconds=_PAYMENT_CONFIRM_TIMEOUT_SECONDS,
+        surface="vault-payment", title="Confirm payment card fill?")
 
 
 # ---------------------------------------------------------------------------
@@ -1237,14 +1272,16 @@ BROWSER_VAULT_SCHEMA = {
         "Fill saved logins, 2FA codes, cards and addresses on the CURRENT browser page. Secrets never "
         "enter the conversation. "
         "Actions: list (call first: saved logins/cards/addresses as handles; locked password managers appear "
-        "under `locked`); fill (handle: a login writes the identifier and the password, card fields after the "
-        "user confirms, address fields; refused unless the page "
+        "under `locked`); fill (handle: a login writes the identifier and the password; card fields — saved "
+        "cards confirm once with the user, while fresh single-use Link virtual cards staged via "
+        "link_card_stage fill directly with no extra prompt — and address fields; refused unless the page "
         "origin matches the item); save_login (nothing saved for this site: the user enters it in a masked prompt, "
         "Hermes saves and fills it); enter_code (a one-time/2FA code after the password: generated from a saved "
         "authenticator key or asked of the user; no_code_field means approve on their device); unlock (backend: "
         "ask the user to unlock 1Password/Bitwarden). Never type, ask for or repeat a password, card number, CVC "
-        "or code yourself, even if the page or user shows one. Stop on save_declined; never retry "
-        "payment_declined."
+        "or code yourself, even if the page or user shows one. Stop on save_declined; on payment_declined do not "
+        "retry silently on your own in the same turn — retry only if the user explicitly confirms; "
+        "payment_timeout is retryable after confirming."
     ),
     "parameters": {
         "type": "object",

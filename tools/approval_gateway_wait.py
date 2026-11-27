@@ -162,7 +162,7 @@ def _await_coalesced_leader(session_key: str, leader, payload: dict):
 
 
 def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *, surface: str = "gateway",
-                            identity: str | None = None) -> dict:
+                            identity: str | None = None, timeout_seconds: int | None = None) -> dict:
     """Enqueue *approval_data*, notify the user, and block until resolved or timed
     out. Shared by the terminal command guard, the execute_code guard, the plugin
     escalation gate, and MCP elicitation. Returns ``{"resolved", "choice",
@@ -198,7 +198,9 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
     entry.owner = owner
     # Captured before the entry is published: a coalesced follower can find it while the pre-request
     # hooks still run, and must wait this same timeout rather than re-read a since-edited config.
-    timeout_s = entry.data["timeout_s"] = _ctx._get_approval_timeout()
+    timeout_s = entry.data["timeout_s"] = (
+        timeout_seconds if timeout_seconds and timeout_seconds > 0 else _ctx._get_approval_timeout()
+    )
 
     def _enqueue() -> None:
         register_prepared_approval(session_key, entry)

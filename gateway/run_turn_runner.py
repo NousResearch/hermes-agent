@@ -94,12 +94,17 @@ def _finite_viewer_turn() -> bool:
     return finite_turn_required() is True
 
 
-def _persisted_turn(agent, agent_history, result, compressions) -> dict | None:
+def _persisted_turn(agent, agent_history, result, compressions, *, display_kind=None) -> dict | None:
     """``message.complete.persisted_turn`` for this turn, the receipt the TUI gateway's own turns
     publish: clients bind the streamed reply to its stored row instead of comparing words. The
     agent copies ``conversation_history`` into its message list, so an untouched pre-turn prefix
     is the same dicts (transcript rows here carry no ``_row_id`` to compare)."""
     from agent.persisted_turn_receipt import persisted_turn_receipt
+    from gateway.response_filters import is_machinery_display_kind, is_silent_notification_result
+    from gateway.session_display import hide_silent_notification_reply
+
+    if is_machinery_display_kind(display_kind) and is_silent_notification_result(result):
+        hide_silent_notification_reply(agent, result)
     if not isinstance(result, dict):
         return None
     status = ("interrupted" if result.get("interrupted")
@@ -359,11 +364,12 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             ) if sc is not None
         ]
         stream_delta_cb = None
+        from gateway.response_filters import SilenceMarkerStreamHold, is_intentional_silence_response, is_machinery_display_kind
         local_viewer_route = getattr(ctx.source, "platform", None) == Platform.LOCAL
+        machinery = is_machinery_display_kind(getattr(ctx, "persist_user_display_kind", None))
+        hold = SilenceMarkerStreamHold() if machinery else None
         if delta_sinks or self._approval_owner is not None:
-            def stream_delta_cb(text: Optional[str]) -> None:
-                if not ctx._run_still_current():
-                    return
+            def publish_delta(text: Optional[str]) -> None:
                 delivered = bool(delta_sinks)
                 if text is not None:
                     delivered = self._publish_execution("message.delta", {"text": text}) or delivered
@@ -380,8 +386,19 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                     # stitched as a "partial delivery" nobody received (classic -q parity).
                     raise _NoStreamConsumer()
 
+            def stream_delta_cb(text: Optional[str]) -> None:
+                if not ctx._run_still_current():
+                    return
+                if hold is not None:
+                    if text is None:
+                        if rest := hold.end_segment():
+                            publish_delta(rest)
+                    elif not (text := hold.feed(text)):
+                        return
+                publish_delta(text)
+
         def interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
-            if not ctx._run_still_current():
+            if not ctx._run_still_current() or (hold is not None and is_intentional_silence_response(text)):
                 return
             unseen = False
             if local_viewer_route and not already_streamed and str(text or "").strip():
@@ -1493,7 +1510,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 publish_usage(self, agent, record=True)  # turn end: the final API call's counters
                 from gateway.session_local_inventory import publish_settled_info
                 publish_settled_info(self, agent)
-        persisted_turn = _persisted_turn(agent, agent_history, result, compressions)
+        persisted_turn = _persisted_turn(agent, agent_history, result, compressions,
+                                         display_kind=ctx.persist_user_display_kind)
         self._finish_stream_consumer(result, agent_history, stream_consumer)
         if _finite_viewer_turn() and getattr(agent, "_codex_session", None) is not None:
             # The classic `chat -q` process exit bounded the codex app-server child; a finite turn

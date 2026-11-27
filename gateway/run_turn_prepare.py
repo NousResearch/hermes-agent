@@ -862,6 +862,9 @@ class GatewayTurnPrepareMixin:
         message_text, persist_user_message, persist_user_timestamp = (
             self._hmwa_apply_message_timestamp(event, message_text)
         )
+        if event.internal and isinstance(persist_user_message, str):
+            from gateway.run_notifications import process_notice_for_display
+            persist_user_message = process_notice_for_display(persist_user_message)
 
         # Stage the notes (one-shot; consumed in run_sync) AFTER the early-out so an aborted turn
         # cannot leak them into the next turn.

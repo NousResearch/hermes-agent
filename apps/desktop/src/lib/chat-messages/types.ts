@@ -261,6 +261,7 @@ export type GatewayEventPayload = {
   response_transformed?: MessageCompletePayload['response_transformed']
   // message.complete — `text` is a response this turn already delivered: it adds no text.
   response_reused?: MessageCompletePayload['response_reused']
+  silent?: MessageCompletePayload['silent']
   // message.complete — an interrupted turn its interrupter continues by itself (store/paused-replies.ts).
   paused?: MessageCompletePayload['paused']
   persisted_turn?: PersistedTurn | null

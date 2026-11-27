@@ -96,7 +96,7 @@ INTERNAL_NOTIFICATION_FOOTER = (
 )
 
 
-def _mark_internal_notification(text: str) -> str:
+def _mark_internal_notification(text: str, *, process_silence: bool = False) -> str:
     """Append unambiguous machine provenance to model-facing notification text (#52694).
 
     A process notification re-enters the conversation as a role=user turn on every wake path
@@ -106,10 +106,19 @@ def _mark_internal_notification(text: str) -> str:
     memory gating, desktop notification detection, the SYSTEM prefix) keep matching.
     Idempotent so a retried delivery never stacks footers.
     """
-    text = text.rstrip()
-    if text.endswith(INTERNAL_NOTIFICATION_FOOTER):
-        return text
+    from gateway.response_filters import PROCESS_NOTIFICATION_SILENCE_HINT
+    text = text.rstrip().removesuffix(INTERNAL_NOTIFICATION_FOOTER).rstrip()
+    if process_silence and not text.endswith(PROCESS_NOTIFICATION_SILENCE_HINT):
+        text += "\n\n" + PROCESS_NOTIFICATION_SILENCE_HINT
     return text + "\n\n" + INTERNAL_NOTIFICATION_FOOTER
+
+
+def process_notice_for_display(text: str) -> str:
+    """Keep the silence instruction out of transcript rows and their display copies."""
+    from gateway.response_filters import PROCESS_NOTIFICATION_SILENCE_HINT
+    footer = "\n\n" + INTERNAL_NOTIFICATION_FOOTER
+    suffix = "\n\n" + PROCESS_NOTIFICATION_SILENCE_HINT + footer
+    return text.removesuffix(suffix) + footer if text.endswith(suffix) else text
 
 
 def _held_reason(source, platform: str, multiplexed: bool) -> str:
@@ -941,7 +950,11 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             raw_sid = str(evt.get("origin_session_id") or "").strip() or str(source.chat_id or "")
             return await self._self_post_api_server(adapter, synth_text, raw_sid, evt)
         try:
-            synth_text = _mark_internal_notification(synth_text)
+            # Push/authority turns suppress markers in both delivery and receipts. Self-posted
+            # API turns above use a separate result contract and never get this instruction.
+            from gateway.response_filters import PROCESS_NOTICE_TYPES
+            synth_text = _mark_internal_notification(
+                synth_text, process_silence=evt.get("type", "completion") in PROCESS_NOTICE_TYPES)
             metadata = _watch_notification_metadata(evt, source)
             # The queued event's ``message_id`` is the message that STARTED the process, and the
             # persisted origin carries the same stale id. A synthetic completion is not a reply to

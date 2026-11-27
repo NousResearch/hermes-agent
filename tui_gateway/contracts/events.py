@@ -292,6 +292,8 @@ class MessageCompletePayload(Payload):
     #: ``text`` is a response this turn already delivered (streamed and/or sealed) — it adds no text.
     response_reused: bool | None = None
     response_transformed: bool | None = None
+    #: A successful automation wake intentionally delivered no reply or completion alert.
+    silent: bool | None = None
     billing: BillingBlock | None = None
     failure_reason: str | None = None
     rendered: str | None = None

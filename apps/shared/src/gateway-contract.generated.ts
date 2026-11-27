@@ -6035,6 +6035,7 @@ export interface MessageCompletePayload {
   response_previewed?: boolean | null
   response_reused?: boolean | null
   response_transformed?: boolean | null
+  silent?: boolean | null
   billing?: BillingBlock | null
   failure_reason?: string | null
   rendered?: string | null

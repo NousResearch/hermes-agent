@@ -158,6 +158,7 @@ _FOLD_HEADER_RE = re.compile(r'\[IMPORTANT: \d+ background process results arriv
 
 
 def _fold_completion(event, waiting, identity):
+    from gateway.response_filters import PROCESS_NOTIFICATION_SILENCE_HINT
     from gateway.run_notifications import INTERNAL_NOTIFICATION_FOOTER, _mark_internal_notification
     from tools.process_registry_notifications import process_completion_display_text
     descriptor = _descriptor(waiting['payload'])
@@ -166,10 +167,12 @@ def _fold_completion(event, waiting, identity):
 
     def body(text):
         text = text.rstrip().removesuffix(INTERNAL_NOTIFICATION_FOOTER).rstrip()
+        text = text.removesuffix(PROCESS_NOTIFICATION_SILENCE_HINT).rstrip()
         folded = _FOLD_HEADER_RE.match(text)
         return text[folded.end():] if folded else text
     event.text = _mark_internal_notification('\n\n'.join((
-        _FOLD_HEADER.format(count=len(identities)), body(waiting['payload']['text']), body(event.text))))
+        _FOLD_HEADER.format(count=len(identities)), body(waiting['payload']['text']), body(event.text))),
+        process_silence=True)
     event.metadata['automation_identities'] = identities
     if 'display_text' in event.metadata:
         event.metadata['display_text'] = process_completion_display_text([{}] * len(identities))
@@ -392,7 +395,7 @@ _AUTOMATION_METADATA = frozenset({'gateway_session_key', 'gateway_session_id', '
 
 
 def admission_display(payload):
-    """An automation admission's async-result card (plus its model text) for the claim's
+    """An automation admission's async-result card (without model-only instructions) for the claim's
     ``message.start``: a viewer that did not submit the turn (the classic CLI, idle while a
     background process it started finishes in the gateway) paints the same header the submitting
     surface would. ``{}`` for every other input."""
@@ -400,7 +403,9 @@ def admission_display(payload):
     kind, text = descriptor.get('display_kind'), descriptor.get('display_text')
     if not kind or not isinstance(text, str) or not text.strip():
         return {}
-    card = {'display_kind': kind, 'display_text': text, 'text': str(payload.get('text') or '')}
+    from gateway.run_notifications import process_notice_for_display
+    card = {'display_kind': kind, 'display_text': text,
+            'text': process_notice_for_display(str(payload.get('text') or ''))}
     if descriptor.get('notification_category') == 'diagnostic':
         card['notification_category'] = 'diagnostic'
     return card

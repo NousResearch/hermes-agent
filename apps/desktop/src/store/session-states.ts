@@ -731,7 +731,12 @@ export function isSessionInForeground(storedSessionId: string): boolean {
 }
 
 // --- Transition detection (called automatically from publishSessionState) ---
-function handleTransition(previous: ClientSessionState | null, next: ClientSessionState, runtimeId: string) {
+function handleTransition(
+  previous: ClientSessionState | null,
+  next: ClientSessionState,
+  runtimeId: string,
+  silentCompletion: boolean
+) {
   // Compression id rotation: signal the route-follow effect with enough
   // provenance (previous id + runtime) that the consumer can reject the event
   // if the user navigated elsewhere before React handled it. A bare next id
@@ -804,22 +809,17 @@ function handleTransition(previous: ClientSessionState | null, next: ClientSessi
   } else if (!next.busy && wasWorking) {
     markSettled(storedId)
 
-    // A PRIMARY reconnect reconcile is not a terminal event: it downgrades
-    // EVERY busy claim on the socket, live turns included, so lighting the dot
-    // here is the false green of #113029. Park the completion until the
-    // post-reconnect `session.active_list` snapshot confirms the turn is gone
-    // (or a re-assert proves it alive). A SCOPED (secondary/background-profile)
-    // reconcile lights immediately: the active profile's poll never lists that
-    // socket's runtimes, so a parked completion there would have no confirm
-    // producer and a turn that ended while the socket was down would never
-    // earn its dot.
-    if (deferringReconcileUnread) {
-      unconfirmedReconnectSettles.set(storedId, runtimeId)
-
+    if (silentCompletion) {
       return
     }
 
-    lightUnreadCompletion(storedId, runtimeId)
+    // Primary reconnect clears even live busy claims; wait for session.active_list (#113029).
+    // Scoped reconnects light immediately because the active profile cannot confirm their finishes.
+    if (deferringReconcileUnread) {
+      unconfirmedReconnectSettles.set(storedId, runtimeId)
+    } else {
+      lightUnreadCompletion(storedId, runtimeId)
+    }
   }
 }
 
@@ -925,7 +925,7 @@ function evictable(runtimeId: string, state: ClientSessionState): boolean {
  *  effects still fire, so lightweight status and the unread dot survive. A
  *  FIRST publish always lands in full because a resume can publish its idle
  *  state a beat before `$activeSessionId` / the tile binding points at it. */
-export function publishSessionState(runtimeId: string, state: ClientSessionState) {
+export function publishSessionState(runtimeId: string, state: ClientSessionState, silentCompletion = false) {
   const current = $sessionStates.get()
   const prev = current[runtimeId] ?? null
 
@@ -934,14 +934,14 @@ export function publishSessionState(runtimeId: string, state: ClientSessionState
   }
 
   if (prev && evictable(runtimeId, state)) {
-    handleTransition(prev, state, runtimeId)
+    handleTransition(prev, state, runtimeId, silentCompletion)
     releaseSessionTranscript(runtimeId, state)
 
     return
   }
 
   $sessionStates.set({ ...current, [runtimeId]: state })
-  handleTransition(prev, state, runtimeId)
+  handleTransition(prev, state, runtimeId, silentCompletion)
 }
 
 /** Keep the cheap status projection for a cold session while releasing its

@@ -1,6 +1,9 @@
 """Exact execution results commit with settlement, before delivery/publication."""
 from contextvars import ContextVar
 
+from gateway.response_filters import is_silent_notification_result
+from session_rules.automation import automation_descriptor
+
 execution_result: ContextVar[dict | None] = ContextVar("execution_result", default=None)
 
 
@@ -50,6 +53,11 @@ def retain_result(store, *, epoch, row, result):
                                                  result=_redacted(result)))
 
 
+def silent_automation_completion(row, response, outcome, result):
+    return (outcome == 'completed' and not response and bool(automation_descriptor(row.get('payload') or {}))
+            and (result.get('silent') is True or is_silent_notification_result(result)))
+
+
 def prepare_result(row, response, outcome, result=None):
     """``(outcome, stored_result)``: the outcome the result's own flags imply and the compact,
     redacted copy settlement stores. Pure CPU work, safe off-loop and outside the stream lock."""
@@ -65,7 +73,13 @@ def prepare_result(row, response, outcome, result=None):
         value['completed'] = False
     # Compact before redacting, so the walk covers this turn's output, not every earlier turn.
     from session_rules.results import compact_result
-    return outcome, _redacted(compact_result(result, user_message=row['payload'].get('text')))
+    stored = compact_result(result, user_message=row['payload'].get('text'))
+    if silent_automation_completion(row, response, outcome, value):
+        # Receipt readers render the reply too (including after a replay gap). Keep the model's
+        # original text in its transcript row, not in either of the displayable reply fields.
+        stored['result'].update(silent=True, final_response='', response_transformed=False)
+        stored['result'].pop('pre_transform_response', None)
+    return outcome, _redacted(stored)
 
 
 def finish_result(store, *, epoch, row, response, outcome, result=None, prepared=None, transfers=None):

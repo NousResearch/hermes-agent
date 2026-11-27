@@ -694,7 +694,8 @@ class CLIChatTurnMixin:
 
         self._program_turn_outcome = _program_outcome(turn.result)
         self._sync_program_status()
-        self._ring_bell(context=t("cli.modal.bell_turn_complete"))  # propagates over SSH
+        if not (turn.result or {}).get("silent"):
+            self._ring_bell(context=t("cli.modal.bell_turn_complete"))  # propagates over SSH
         if turn.result and not turn.result.get("completed") and not turn.result.get("interrupted"):
             _api_calls = turn.result.get("api_calls", 0)
             _max_iter = getattr(self.agent, "max_iterations", 500)

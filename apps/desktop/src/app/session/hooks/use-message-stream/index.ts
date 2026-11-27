@@ -79,7 +79,8 @@ interface MessageStreamOptions {
     sessionId: string,
     updater: (state: ClientSessionState) => ClientSessionState,
     storedSessionId?: string | null,
-    liveDelta?: boolean
+    liveDelta?: boolean,
+    silentCompletion?: boolean
   ) => ClientSessionState
 }
 
@@ -830,7 +831,8 @@ export function useMessageStream({
       responseTransformed?: boolean,
       status?: string,
       responseReused?: boolean,
-      failureReason?: string
+      failureReason?: string,
+      silent?: boolean
     ) => {
       let shouldHydrate = false
 
@@ -1191,7 +1193,7 @@ export function useMessageStream({
           turnStartedAt: null,
           turnLive: false
         }
-      })
+      }, undefined, false, silent)
 
       // Persistence / mid-turn disk-full failures land as a terminal frame with
       // an error string, not a rejected prompt.submit. Toast them here so a
@@ -1221,12 +1223,14 @@ export function useMessageStream({
         void hydrateFromStoredSession(3, completedState.storedSessionId, sessionId)
       }
 
-      dispatchNativeNotification({
-        body: turnDoneNotificationBody(text, translateNow('notifications.native.turnDoneBody')),
-        kind: 'turnDone',
-        sessionId,
-        title: translateNow('notifications.native.turnDoneTitle')
-      })
+      if (!silent) {
+        dispatchNativeNotification({
+          body: turnDoneNotificationBody(text, translateNow('notifications.native.turnDoneBody')),
+          kind: 'turnDone',
+          sessionId,
+          title: translateNow('notifications.native.turnDoneTitle')
+        })
+      }
     },
     [hydrateFromStoredSession, scheduleSessionsRefresh, updateSessionState]
   )

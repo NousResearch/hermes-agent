@@ -431,9 +431,13 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
 
     flushQueuedDeltas(sessionId)
 
-    // Keyed by session so only one window beeps when several are open.
-    playCompletionSound(sessionId)
-    lightOwnMessagingTurn(sessionId, event.admission_id, event.profile)
+    const silent = payload?.silent === true
+
+    if (!silent) {
+      // Keyed by session so only one window beeps when several are open.
+      playCompletionSound(sessionId)
+      lightOwnMessagingTurn(sessionId, event.admission_id, event.profile)
+    }
 
     const finalText = coerceGatewayText(payload?.text) || coerceGatewayText(payload?.rendered)
 
@@ -453,7 +457,8 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
       Boolean(payload?.response_transformed),
       typeof payload?.status === 'string' ? payload.status : undefined,
       payload?.response_reused === true,
-      typeof payload?.failure_reason === 'string' ? payload.failure_reason : undefined
+      typeof payload?.failure_reason === 'string' ? payload.failure_reason : undefined,
+      silent
     )
 
     // The continuation a pause waited for has ended: sends held for it go now. Interrupted to be continued
@@ -491,13 +496,15 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
       // toolRunning/reasoning AND sets celebrate together) so no stray "run"
       // frame leaks to the sprite — including the popped-out overlay, which
       // mirrors each activity change. The jump runs ~2 loops, then settles.
-      flashPetActivity({ celebrate: true, reasoning: false, toolRunning: false }, 2200)
+      if (silent) {
+        setPetActivity({ celebrate: false, reasoning: false, toolRunning: false })
+      } else {
+        flashPetActivity({ celebrate: true, reasoning: false, toolRunning: false }, 2200)
 
-      // Light up the pet's mail icon if the user wasn't looking when the turn
-      // finished — a glanceable "new message" hint on the popped-out overlay.
-      // Cleared when they open the app via the mail icon or refocus the window.
-      if (typeof document !== 'undefined' && !document.hasFocus()) {
-        markPetUnread()
+        // Light up the pet's mail icon if the user wasn't looking when the turn finished.
+        if (typeof document !== 'undefined' && !document.hasFocus()) {
+          markPetUnread()
+        }
       }
     }
 

@@ -202,9 +202,14 @@ def test_consecutive_handoffs_do_not_lose_listener_directory(base, monkeypatch):
         assert hello == {'type': 'hello', 'pid': os.getpid()}
         assert cleanup_entered.wait(10)
         attempted = threading.Event()
+        acquired = []
         orphaned = threading.Event()
 
         def next_owner():
+            locked = channel.lock.acquire(blocking=False)
+            acquired.append(locked)
+            if locked:
+                channel.lock.release()
             attempted.set()
             with channel.lock:
                 channel.orphaned = True
@@ -216,7 +221,7 @@ def test_consecutive_handoffs_do_not_lose_listener_directory(base, monkeypatch):
         second.start()
         assert attempted.wait(10)
         # The first handoff must not become visible while its directory is still owned.
-        assert not orphaned.wait(0.5)
+        assert acquired == [False]
         assert path.parent.is_dir()
         allow_cleanup.set()
         first.join(10)

@@ -3,6 +3,7 @@
 import io
 import os
 import socket
+import sys
 import threading
 from types import SimpleNamespace
 
@@ -13,6 +14,36 @@ from agent.managed_worker_detach.channel import DetachableChannel
 from gateway.session_managed_worker import _prompt_frame
 from tools import approval
 from tools.approval_gateway_wait import _await_gateway_decision
+
+
+@pytest.mark.platforms('linux')
+@pytest.mark.parametrize('persisted', [False, True])
+def test_detachable_controls_observe_owner_eof_until_finish_persisted(monkeypatch, persisted):
+    """Acknowledgment is not persistence; a completed finish no longer needs an owner."""
+    import agent.managed_worker as worker
+
+    read_fd, write_fd = os.pipe()
+    observed = threading.Event()
+
+    class Channel:
+        def await_owner(self, stream):
+            observed.set()
+
+    monkeypatch.setattr(worker, '_drain_background_delegations', lambda budget: None)
+    monkeypatch.setattr(worker, '_die_with_owner', lambda: None)
+    with os.fdopen(read_fd, 'rb') as reader, os.fdopen(write_fd, 'wb', buffering=0) as writer:
+        monkeypatch.setattr(sys, 'stdin', SimpleNamespace(buffer=reader))
+        controls = WorkerControls(Channel(), 'fixture')
+        try:
+            writer.write(encode_frame({'type': 'finish'}))
+            assert controls.finish.wait(3)
+            if persisted:
+                controls.finish_persisted.set()
+        finally:
+            writer.close()
+            controls.reader.join(5)
+        assert not controls.reader.is_alive()
+        assert observed.is_set() is not persisted
 
 
 class _ReplayWriter(io.BytesIO):

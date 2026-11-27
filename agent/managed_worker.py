@@ -251,6 +251,7 @@ class WorkerControls:
         self.agent = None
         self.stopped = threading.Event()
         self.finish = threading.Event()
+        self.finish_persisted = threading.Event()
         self.clarifications = {}
         self.lock = threading.Lock()
         self.reader = threading.Thread(target=self.read, name='managed-controls', daemon=True)
@@ -268,21 +269,29 @@ class WorkerControls:
 
     def read(self):
         stream = sys.stdin.buffer
+        await_owner = getattr(self.channel, 'await_owner', None)
         while True:
             try:
-                self._read_controls(stream)
-                return
+                if not self.finish.is_set():
+                    self._read_controls(stream)
+                if await_owner is None:
+                    return
+                # Acknowledgment ends controls, not owner liveness: finish still needs its RPC.
+                # Raw reads avoid holding Python's stdin buffer lock during interpreter exit.
+                while os.read(stream.fileno(), 4096):
+                    pass
             except ValueError:
                 self.stop()
                 self.finish.set()
                 return
             except (EOFError, OSError):
-                # A detachable channel (gateway.detached_workers) outlives its owner: the turn keeps
-                # running and the controls continue on the next owner's socket (managed_worker_detach/channel.py).
-                await_owner = getattr(self.channel, 'await_owner', None)
-                stream = await_owner(stream) if await_owner is not None else None
-                if stream is None:
-                    break
+                pass
+            if self.finish_persisted.is_set():
+                return
+            # The turn still needs an owner: continue on its successor's socket.
+            stream = await_owner(stream) if await_owner is not None else None
+            if stream is None:
+                break
         self.stop()
         # The owner is gone (EOF/OSError) — before the hard-exit SIGKILLs this process group, give
         # in-flight background subagents a bounded chance to finish + persist a real result.
@@ -435,7 +444,8 @@ def execute(frame, channel):
     push_state(scope=Scope(LOCAL_TENANT, frame['home'], LOCAL_OWNER).for_turn(
         scope['session_id'], scope['execution_id'], Fence(scope['epoch'], scope['generation'])))
     rpc = WorkerRPC(frame['home'])
-    if 'detach_v1' in frame:
+    detachable = 'detach_v1' in frame
+    if detachable:
         from agent.managed_worker_detach.channel import DetachedRPC
         rpc = DetachedRPC(rpc, channel)
     adopted = rpc('worker.adopt', **{k: v for k, v in scope.items() if k != 'epoch'})
@@ -453,7 +463,7 @@ def execute(frame, channel):
     policy = restore_policy(frame['policy'])
     register_worker_hooks(policy)
     # A detachable worker must notice owner EOF even while MCP discovery is blocked.
-    controls = WorkerControls(channel, frame['route']) if 'detach_v1' in frame else None
+    controls = WorkerControls(channel, frame['route']) if detachable else None
     discover_profile_mcp(policy)
     from run_agent import AIAgent
     from tools.approval import register_gateway_notify, unregister_gateway_notify
@@ -529,6 +539,8 @@ def execute(frame, channel):
             if not _await_finish(controls, channel):
                 raise ValueError('managed_finish_timeout')
             store.finish()
+            if detachable:
+                controls.finish_persisted.set()
             channel.send('finished')
     finally:
         turn_done.set()

@@ -3368,7 +3368,13 @@ class TestModelContextLength:
 class TestDenormalizeProviderSwitch:
     """The flat Config-page Model field carries no provider info. When the
     model string changes to one served by a different provider, the saved
-    provider must follow it (issue #14058)."""
+    provider must follow it (issue #14058).
+
+    Post-#115079 the inferred provider only persists when the user NAMED it
+    (auth-store ``active_provider``) — credential possession alone is refused by the
+    shared gate; the rows below authorize the inferred target so they keep testing the
+    assignment routing (the refusal itself is covered in
+    ``test_web_server_config_inferred_provider_gate.py``)."""
 
     def test_vendor_slug_switches_off_non_aggregator_provider(self):
         """ollama-local + a vendor/model slug → switch to openrouter and drop
@@ -3376,6 +3382,7 @@ class TestDenormalizeProviderSwitch:
         from hermes_cli.web_server_config import _denormalize_config_from_web
         from unittest.mock import patch as _patch
         from hermes_cli.config import save_config
+        from hermes_constants import get_hermes_home
 
         save_config({
             "model": {
@@ -3385,6 +3392,9 @@ class TestDenormalizeProviderSwitch:
                 "api_mode": "chat_completions",
             }
         })
+        (get_hermes_home() / "auth.json").write_text(
+            '{"version": 3, "providers": {}, "active_provider": "openrouter"}',
+            encoding="utf-8")
 
         with _patch("hermes_cli.models_detect.provider_has_credentials", lambda p: p == "openrouter"):
             result = _denormalize_config_from_web({"model": "google/gemini-2.5-flash"})
@@ -3402,8 +3412,12 @@ class TestDenormalizeProviderSwitch:
         from hermes_cli.web_server_config import _denormalize_config_from_web
         from unittest.mock import patch as _patch
         from hermes_cli.config import save_config
+        from hermes_constants import get_hermes_home
 
         save_config({"model": {"default": "llama3.2", "provider": "ollama-local"}})
+        (get_hermes_home() / "auth.json").write_text(
+            '{"version": 3, "providers": {}, "active_provider": "openrouter"}',
+            encoding="utf-8")
 
         with _patch("hermes_cli.models_detect.provider_has_credentials", lambda p: p == "openrouter"):
             result = _denormalize_config_from_web({
@@ -3435,6 +3449,9 @@ class TestDenormalizeProviderSwitch:
             "    fast: qwen3\n",
             encoding="utf-8")
         before = cfg_path.read_bytes()
+        (get_hermes_home() / "auth.json").write_text(
+            '{"version": 3, "providers": {}, "active_provider": "openrouter"}',
+            encoding="utf-8")
         monkeypatch.setattr("hermes_cli.models_detect.provider_has_credentials", lambda p: p == "openrouter")
         monkeypatch.setattr("hermes_cli.model_switch.switch_model",
                             lambda **_kw: ModelSwitchResult(success=False, error_message="models.dev offline"))

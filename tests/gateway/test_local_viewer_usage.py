@@ -165,6 +165,17 @@ def _parity_agents():
     # Nothing measured yet: no context, cache, latency or throughput figures, never zeros.
     yield pytest.param(SimpleNamespace(model='fake-model', session_api_calls=0, context_compressor=None,
                                        get_rate_limit_state=lambda: None), id='fresh')
+    # A REAL fresh agent: the counter exists and is 0.0 with an unknown cost status. That must read
+    # as "no price yet", never as $0.00 — the fabrication this contract forbids.
+    yield pytest.param(SimpleNamespace(model='fake-model', session_api_calls=0, context_compressor=None,
+                                       get_rate_limit_state=lambda: None,
+                                       session_estimated_cost_usd=0.0, session_cost_status='unknown',
+                                       session_cost_source='none'), id='fresh-real-agent-shape')
+    # An unpriced route after a real call: same 0.0 counter, still unknown.
+    yield pytest.param(SimpleNamespace(model='unpriced-model', session_api_calls=1, context_compressor=None,
+                                       get_rate_limit_state=lambda: None,
+                                       session_estimated_cost_usd=0.0, session_cost_status='unknown',
+                                       session_cost_source='none'), id='unpriced-route')
 
 
 @pytest.mark.parametrize('agent', list(_parity_agents()))
@@ -278,3 +289,34 @@ def test_resume_snapshot_carries_the_resident_agents_own_readouts():
         stored = snapshot_usage(authority, ref, agent)
         assert stored['cache_hit_pct'] == 80 and stored['calls'] == 3 and 'avg_tps' not in stored
     assert snapshot_usage(authority, SimpleNamespace(session_id='gone'), None) is None
+
+
+def test_an_unpriced_session_reports_no_cost_rather_than_zero():
+    """A real agent's counter starts at 0.0 with cost_status "unknown": that means "not priced", and
+    both producers must omit the figure instead of rendering $0.00."""
+    from gateway.session_usage import tui_usage, usage_stats
+    from tui_gateway.server import _get_usage
+    agent = SimpleNamespace(model='m', session_api_calls=1, context_compressor=None,
+                            get_rate_limit_state=lambda: None,
+                            session_estimated_cost_usd=0.0, session_cost_status='unknown')
+    stats = usage_stats(agent)
+    assert stats['estimated_cost_usd'] is None and stats['cost_status'] == 'unknown'
+    assert 'cost_usd' not in tui_usage(stats)
+    assert 'cost_usd' not in _get_usage(agent)
+
+
+def test_a_resumed_snapshot_keeps_the_persisted_spend():
+    """After a restart the resume snapshot comes from the stored row; it must carry the row's spend,
+    or the meter reads zero until the next model call."""
+    from gateway.session_usage import snapshot_usage
+    row = {'input_tokens': 150, 'output_tokens': 40, 'cache_read_tokens': 800, 'cache_write_tokens': 50,
+           'api_call_count': 3, 'model': 'm', 'estimated_cost_usd': 0.42,
+           'cost_status': 'estimated', 'cost_source': 'official_docs_snapshot'}
+    record = SimpleNamespace(as_session_row=lambda: row)
+    authority = SimpleNamespace(sessions={'s': SimpleNamespace(compression_count=0)}, persistence=SimpleNamespace(
+        sessions=SimpleNamespace(get=lambda sid: record if sid == 's' else None)))
+    ref = SimpleNamespace(session_id='s')
+    usage = snapshot_usage(authority, ref, None)  # no resident agent
+    assert usage['cost_usd'] == 0.42 and usage['cost_status'] == 'estimated'
+    row.update(estimated_cost_usd=0.0, cost_status='unknown')
+    assert 'cost_usd' not in snapshot_usage(authority, ref, None)

@@ -18,6 +18,9 @@ _COUNTERS = (("input_tokens", "session_input_tokens"), ("output_tokens", "sessio
              ("prompt_tokens", "session_prompt_tokens"), ("completion_tokens", "session_completion_tokens"),
              ("total_tokens", "session_total_tokens"), ("reasoning_tokens", "session_reasoning_tokens"),
              ("api_calls", "session_api_calls"))
+# Cost statuses that mean "this session's spend is known". A real agent initializes the counter to
+# 0.0 with status "unknown"; reporting that as a price is a fabricated $0.00.
+_PRICED_COST_STATUSES = ("estimated", "actual", "included")
 # The output-token count at the start of the viewer's current turn (``↓ N tok`` on main's spinner).
 TURN_BASE_ATTR = "_viewer_turn_output_base"
 
@@ -99,13 +102,21 @@ def usage_stats(agent) -> dict:
                  fallback_model=(str(getattr(agent, "model", "") or "") or None)
                  if getattr(agent, "_fallback_activated", False) is True else None)
     # Money: the agent's own per-call accumulation (``agent/turn_usage.py`` prices every response
-    # through ``estimate_usage_cost``, cache reads/writes at their own rates). ``None`` means
-    # "not priced" — a route with no pricing entry — and must stay absent rather than read as $0.
+    # through ``estimate_usage_cost``, cache reads/writes at their own rates).
+    #
+    # Only a route that actually priced the session may report a figure. A real agent starts with
+    # ``session_estimated_cost_usd = 0.0`` and ``session_cost_status = "unknown"``
+    # (``agent/agent_init.py``), so testing ``isinstance`` alone would emit 0.0 for a fresh session
+    # and for a model with no pricing entry — and a client would render "$0.0000", the exact
+    # fabrication this contract forbids. ``included`` is a known answer (a subscription) and rides
+    # through with its own label on the client.
     cost = getattr(agent, "session_estimated_cost_usd", None)
+    cost_status = str(getattr(agent, "session_cost_status", "") or "") or None
     estimated_cost = (round(float(cost), 6)
-                      if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None)
+                      if cost_status in _PRICED_COST_STATUSES
+                      and isinstance(cost, (int, float)) and not isinstance(cost, bool) else None)
     stats.update(estimated_cost_usd=estimated_cost,
-                 cost_status=str(getattr(agent, "session_cost_status", "") or "") or None,
+                 cost_status=cost_status,
                  cost_source=str(getattr(agent, "session_cost_source", "") or "") or None)
     if (gauge := plan_gauge(agent)) is not None:  # absent off a window plan, as on the embedded path
         stats["plan_gauge"] = gauge
@@ -228,11 +239,18 @@ _STORED_COUNTERS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache
 
 def _stored_stats(row: dict) -> dict:
     """A session row's cumulative counters in ``usage_stats``' shape. The row's ``input_tokens`` excludes cache
-    reads and writes, so the prompt total adds them back for the cache hit rate."""
+    reads and writes, so the prompt total adds them back for the cache hit rate. A priced row also carries its
+    spend: a resumed session's meter must not read zero until the next model call."""
     counts = {key: int(row.get(key) or 0) for key in _STORED_COUNTERS}
-    return {**counts, "prompt_tokens": counts["input_tokens"] + counts["cache_read_tokens"] + counts["cache_write_tokens"],
-            "completion_tokens": counts["output_tokens"], "total_tokens": counts["input_tokens"] + counts["output_tokens"],
-            "api_calls": int(row.get("api_call_count") or 0), "model": row.get("model") or ""}
+    stats = {**counts, "prompt_tokens": counts["input_tokens"] + counts["cache_read_tokens"] + counts["cache_write_tokens"],
+             "completion_tokens": counts["output_tokens"], "total_tokens": counts["input_tokens"] + counts["output_tokens"],
+             "api_calls": int(row.get("api_call_count") or 0), "model": row.get("model") or ""}
+    cost = row.get("estimated_cost_usd")
+    status = str(row.get("cost_status") or "")
+    if status in _PRICED_COST_STATUSES and isinstance(cost, (int, float)) and not isinstance(cost, bool):
+        stats.update(estimated_cost_usd=round(float(cost), 6), cost_status=status,
+                     cost_source=row.get("cost_source") or None)
+    return stats
 
 
 def snapshot_usage(authority, ref, agent) -> dict | None:

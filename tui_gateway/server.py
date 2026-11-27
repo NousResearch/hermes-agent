@@ -1299,12 +1299,17 @@ def _get_usage(agent) -> dict:
         if _cache_write := int(getattr(agent, "session_cache_write_tokens", 0) or 0):
             usage["cache_write"] = _cache_write
     # Session spend in USD: the agent's own accumulation (``agent/turn_usage.py`` prices each response
-    # through ``estimate_usage_cost``). Absent when the route has no pricing entry — never a false $0.
+    # through ``estimate_usage_cost``). Gated on a priced status — a real agent starts at 0.0 with
+    # cost_status "unknown", and an unpriced route has no price either; both must stay absent rather
+    # than read as $0.00 (see ``gateway.session_usage._PRICED_COST_STATUSES``).
     with contextlib.suppress(Exception):
+        from gateway.session_usage import _PRICED_COST_STATUSES
         _cost = getattr(agent, "session_estimated_cost_usd", None)
-        if isinstance(_cost, (int, float)) and not isinstance(_cost, bool):
+        _cost_status = str(getattr(agent, "session_cost_status", "") or "")
+        if (_cost_status in _PRICED_COST_STATUSES
+                and isinstance(_cost, (int, float)) and not isinstance(_cost, bool)):
             usage["cost_usd"] = round(float(_cost), 6)
-        if _cost_status := str(getattr(agent, "session_cost_status", "") or ""):
+        if _cost_status:
             usage["cost_status"] = _cost_status
     with contextlib.suppress(Exception):  # a status-bar readout must never break usage reporting
         _lhist = list(getattr(agent, "_api_latency_history", []) or [])

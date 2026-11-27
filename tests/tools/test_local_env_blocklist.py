@@ -599,13 +599,32 @@ def test_pythonpath_installs_env_venv_is_stripped(tmp_path, monkeypatch):
     monkeypatch.setattr(pm_env, "installs_root", lambda: installs)
 
     assert pp._is_installs_env_site_packages(env_venv_sp)
+    # Windows layout (<install-key>/environments/<hash>/venv/Lib/site-packages) matches too
+    win_sp = (installs / "08f7d59f9758a75d" / "environments" / "7aa978153ee9492998ed9fa3cd262088"
+              / "venv" / "Lib" / "site-packages")
+    assert pp._is_installs_env_site_packages(win_sp)
+
+    # Negative cases *under* installs/ that pin all three structural guards:
+    # len(parts) >= 4, parts[1] == "environments", and parts[3] == "venv".
+    key_dir = installs / "08f7d59f9758a75d"
+    under_installs_non_venv = [
+        key_dir / "facts.json",
+        key_dir / "install.json",
+        key_dir / "inputs" / "uv.lock",
+        key_dir / "other" / "7aa978153ee9492998ed9fa3cd262088" / "venv" / "lib" / "python3.14" / "site-packages",
+        key_dir / "environments" / "7aa978153ee9492998ed9fa3cd262088" / "venv2" / "lib" / "python3.14" / "site-packages",
+    ]
+    for non_venv in under_installs_non_venv:
+        assert not pp._is_installs_env_site_packages(non_venv)
+
     # user venvs elsewhere are never touched
     assert not pp._is_installs_env_site_packages(tmp_path / "proj" / ".venv" / "lib" / "python3.11" / "site-packages")
 
     user_venv = "/home/u/proj/.venv/lib/python3.11/site-packages"
-    env = {"PYTHONPATH": os.pathsep.join([str(env_venv_sp), user_venv])}
+    kept_expected = [*map(str, under_installs_non_venv), user_venv]
+    env = {"PYTHONPATH": os.pathsep.join([str(env_venv_sp), *kept_expected])}
     pp._strip_hermes_owned_pythonpath(env)
-    assert env["PYTHONPATH"] == user_venv
+    assert env["PYTHONPATH"].split(os.pathsep) == kept_expected
 
 
 @pytest.mark.platforms("linux", "macos", "windows")

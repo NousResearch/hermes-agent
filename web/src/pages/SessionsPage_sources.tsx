@@ -32,12 +32,14 @@ export const SOURCE_CONFIG: Record<string, { icon: typeof Terminal; color: strin
     webhook: { icon: Globe, color: "text-warning" },
   };
 
+// Sources the sessions page files under Automation. An ACP row is an editor-driven chat
+// (Orca, Zed), not a scheduled or machine-triggered run: the page opens on "chats", so
+// filing it here hid conversations the person had from the default view.
 export const AUTOMATION_SESSION_SOURCES = [
   "cron",
   "tool",
   "oneshot",
   "api_server",
-  "acp",
   "hermes_flow",
   "vulcan_delegate",
   "webhook",

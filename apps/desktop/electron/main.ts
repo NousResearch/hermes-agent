@@ -220,6 +220,7 @@ import { describeCrashReason, installCrashForensics } from './crash-forensics'
 import { adoptServedDashboardToken } from './dashboard-token'
 import { resolveDesktopUserData } from './data-paths'
 import { extractDeepLink, handleLaunchDeepLink, registerDeepLinkProtocol as registerDeepLinkProtocolWith } from './deep-link-protocol'
+import { createPreflightGatewayRunner, DEFAULT_PLUGINS_BOOT_MESSAGE, DEFAULT_PLUGINS_BOOT_PHASE } from './default-plugins-preflight'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import { formatDesktopLogLine, formatLogStamp } from './desktop-log-line'
 import {
@@ -10948,6 +10949,8 @@ function assertPoolEntryStillOwned(poolKey: string, entry: any) {
   assertDescriptorStillOwned(backendPool, poolKey, entry)
 }
 
+const preflightGateway = createPreflightGatewayRunner({ buildParentEnv: profile => profileBackendParentEnv({ hermesHome: HERMES_HOME, profile }), buildSpawnEnv: desktopBackendSpawnEnv, getSignal: () => localBackendLifecycle.signal, hermesHome: HERMES_HOME, log: rememberLog, resolveCwd: resolveHermesCwd, runEnsure: runGatewayEnsure })
+
 // Resolve the connection descriptor for a named profile that is not the
 // primary: attach to (or start) its canonical local gateway via
 // `hermes gateway ensure`, or verify and describe its remote. Mirrors the local
@@ -10989,6 +10992,8 @@ async function dialPoolBackend(profile, entry, opts: { forceLocal?: boolean; poo
     directoryExists(path.join(HERMES_HOME, 'profiles', key))
   )
 
+  const preflightOnce = { ran: false }
+
   const connection = await launchedProfiles.startLocally(profile, ensureLocalGateway, async () => {
     const backend = await ensureRuntime(
       await resolveHermesBackend(['--profile', profile, 'gateway', 'ensure', '--json']),
@@ -10999,12 +11004,7 @@ async function dialPoolBackend(profile, entry, opts: { forceLocal?: boolean; poo
     assertPoolEntryStillOwned(poolKey, entry)
 
     // Never another profile's dotenv credentials from the Desktop env (#68367).
-    return runGatewayEnsure(
-      { ...backend, env: desktopBackendSpawnEnv(backend.env || {}) },
-      resolveHermesCwd(),
-      HERMES_HOME,
-      profileBackendParentEnv({ hermesHome: HERMES_HOME, profile })
-    )
+    return preflightGateway.run(backend, profile, { once: preflightOnce, onAfter: () => { localBackendLifecycle.assertCanStart(); profileDeletionGate.assertCanStart(profile); assertPoolEntryStillOwned(poolKey, entry) } })
   }, async () => {
     // Same update mutual exclusion as the primary's waitForLocalStart (#73822);
     // a held update shows the window's blocked screen for this profile too.
@@ -11039,16 +11039,12 @@ const GATEWAY_RESTART_CLIENT_TIMEOUT_MS = 120_000
 // `--detach` (runGatewayOwnerRestart). A non-zero exit is logged, not thrown: the re-ensure reports
 // what answers.
 async function restartLocalGatewayOwner(ownerProfile: string): Promise<void> {
+  const preflightOnce = { ran: false }
+
   const result = await runGatewayOwnerRestart(async args => {
     const backend = await ensureRuntime(await resolveHermesBackend(args), () => undefined)
 
-    return runGatewayEnsure(
-      { ...backend, env: desktopBackendSpawnEnv(backend.env || {}) },
-      resolveHermesCwd(),
-      HERMES_HOME,
-      profileBackendParentEnv({ hermesHome: HERMES_HOME, profile: ownerProfile }),
-      { timeoutMs: GATEWAY_RESTART_CLIENT_TIMEOUT_MS, label: 'hermes gateway restart' }
-    )
+    return preflightGateway.run(backend, ownerProfile, { once: preflightOnce, ensureOptions: { timeoutMs: GATEWAY_RESTART_CLIENT_TIMEOUT_MS, label: 'hermes gateway restart' } })
   }, ownerProfile)
 
   const reason = `${result.stdout}\n${result.stderr}`.trim().split(/\r?\n/).filter(Boolean).pop()
@@ -11466,12 +11462,14 @@ async function startHermes(requestedProfile?: string, inheritsPrimary = false) {
     // Local WSL backend — paths are bridgeable.
     setWslBridgeProfileState(primaryProfile, true)
 
-    const connection = await ensureLocalGateway(() => runGatewayEnsure(
-      { ...setup.backend, env: desktopBackendSpawnEnv(setup.backend.env || {}) },
-      resolveHermesCwd(),
-      HERMES_HOME,
-      profileBackendParentEnv({ hermesHome: HERMES_HOME, profile: primaryProfile })
-    ), undefined, restartStaleLocalGateway)
+    const connection = await ensureLocalGateway(
+      await preflightGateway.prepare(setup.backend, primaryProfile, {
+        onBefore: () => advanceBootProgress(DEFAULT_PLUGINS_BOOT_PHASE, DEFAULT_PLUGINS_BOOT_MESSAGE, 45),
+        onAfter: () => { localBackendLifecycle.assertCanStart(); backendConnectionState.assertCurrentAttempt(connectionAttempt) }
+      }),
+      undefined,
+      restartStaleLocalGateway
+    )
 
     backendConnectionState.assertCurrentAttempt(connectionAttempt)
 

@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd job for the agent-bridge watchdog (macOS).
+
+  WatchPaths fire the check when the app bundle, its agent registry, or our launcher shims change —
+  that is, when an app update or a runtime install happens. No polling, no schedule.
+
+  Watch the bundle DIRECTORIES as well as files inside them: a bundle swap (new directory + rename)
+  produces no event for file-only paths, and the check then never runs.
+
+  install-watchdog.sh fills in __GUARD__ / __APP_BUNDLE__ / __APP_SUPPORT__ / __PATH__ and loads this.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>__LABEL__</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>__GUARD__/watchdog.sh</string>
+  </array>
+
+  <key>WatchPaths</key>
+  <array>
+    <string>__APP_BUNDLE__/Contents/Resources/app.asar</string>
+    <string>__APP_BUNDLE__/Contents/Info.plist</string>
+    <string>__APP_BUNDLE__/Contents</string>
+    <string>__APP_BUNDLE__</string>
+    <string>__APP_SUPPORT__/acp-agents/registry.json</string>
+    <string>__HOME__/.local/bin/__CLI1__</string>
+    <string>__HOME__/.local/bin/__CLI2__</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+
+  <key>StandardErrorPath</key>
+  <string>__GUARD__/launchd.err</string>
+  <key>StandardOutPath</key>
+  <string>__GUARD__/launchd.out</string>
+</dict>
+</plist>

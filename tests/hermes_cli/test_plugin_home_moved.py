@@ -566,6 +566,57 @@ def test_a_host_start_whose_link_is_repointed_before_it_reads_ambient_credential
 
 
 @pytest.mark.platforms("posix")  # directory symlinks
+def test_a_host_start_from_a_caller_bound_to_a_moved_name_reads_providers_through_the_hosts_own_home(
+        tmp_path, monkeypatch):
+    """The first import of the child-env builder reads the provider registry, which imports an in-process home's
+    provider plugins. A start that is that first import, run from a caller bound to another profile whose link
+    has since been repointed, reads the registry for the host's own checked home, not through the caller's
+    moved name."""
+    import sys
+
+    from hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_cli.plugin_host import PluginHost
+    from hermes_cli.plugin_isolation import ISOLATION_IN_PROCESS
+    from hermes_constants import hermes_home_key, reset_hermes_home_override, set_hermes_home_override
+
+    for module in ("tools.environments.local", "tools.environments.local_env_policy"):
+        monkeypatch.delitem(sys.modules, module, raising=False)
+    PROVIDER_REGISTRY.sync_before_first_read()
+    home = _home_with_plugins(tmp_path / "home", monkeypatch, {})
+    caller = _home_with_plugins(tmp_path / "caller", monkeypatch, {})
+    other = _home_with_plugins(tmp_path / "other", monkeypatch, {}, isolation=ISOLATION_IN_PROCESS)
+    imported = tmp_path / "provider.imported"
+    provider = other / "plugins" / "model-providers" / "otherprov"
+    provider.mkdir(parents=True)
+    (provider / "__init__.py").write_text(f"from pathlib import Path\nPath({str(imported)!r}).write_text('ran')\n",
+                                          encoding="utf-8")
+    link = tmp_path / "root" / "profiles" / "ops"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(caller, target_is_directory=True)
+    hermes_home_key(link)  # the process opened ops as the caller's directory
+    link.unlink()
+    link.symlink_to(other, target_is_directory=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    plugins_mod._reset_plugin_managers_for_tests()
+    host = plugins_mod.get_plugin_manager()._plugin_host()
+
+    class EnvBuilt(Exception):
+        pass
+
+    env = PluginHost._env
+    monkeypatch.setattr(PluginHost, "_env", lambda self, *a: (env(self, *a), (_ for _ in ()).throw(EnvBuilt()))[0])
+    token = set_hermes_home_override(link)
+    try:
+        with pytest.raises(EnvBuilt):  # the start got past its env build, its own home unmoved
+            host.ensure_started()
+        assert not imported.exists()
+    finally:
+        reset_hermes_home_override(token)
+        host.shutdown()
+        plugins_mod._reset_plugin_managers_for_tests()
+
+
+@pytest.mark.platforms("posix")  # directory symlinks
 @pytest.mark.parametrize("failure", ["refused", "launcher_unreadable", "built_with_the_host"])
 def test_a_host_context_built_while_its_link_led_elsewhere_reads_the_profiles_own_secrets_once_it_leads_back(
         failure, tmp_path, monkeypatch):

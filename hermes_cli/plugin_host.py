@@ -146,9 +146,13 @@ class PluginHost:
         # them, in Hermes for an in-process home: not through a moved name.
         if (moved := home_moved_refusal(self._home)) is not None:
             raise PluginHomeMoved(moved)
-        from tools.environments.local import served_profile_child_env
-        env = self._base_context.run(served_profile_child_env, target_home=self._home, inherit_credentials=True,
-                                     own_profile=own, template_env=templates)
+
+        def build() -> dict[str, str]:  # imported here too: a first import reads the registry for the bound home
+            from tools.environments.local import served_profile_child_env
+            return served_profile_child_env(target_home=self._home, inherit_credentials=True, own_profile=own,
+                                            template_env=templates)
+
+        env = self._base_context.run(build)
 
         def ambient() -> dict[str, str]:  # a cold provider extraction here runs under this start's launcher
             with lending_launcher(launcher):

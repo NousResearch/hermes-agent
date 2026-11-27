@@ -1,0 +1,49 @@
+# Nous-approved MCP catalog entry (PR draft for NousResearch/hermes-agent).
+# Target path: optional-mcps/zensched/manifest.yaml
+# Presence in that directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: zensched
+description: >-
+  Agent-first field workforce scheduling: locations, workers, shifts,
+  GPS-verified check-in, forms, timesheets, and webhooks.
+source: https://www.zensched.com/docs/quickstart/
+
+# Vendor-hosted remote MCP (Streamable HTTP). Bearer zsc_ key; cold-start via
+# zensched_guide then account_create (no email required).
+transport:
+  type: http
+  url: https://mcp.zensched.com/mcp
+
+auth:
+  type: api_key
+  env:
+    - name: MCP_ZENSCHED_API_KEY
+      prompt: "ZenSched API key (zsc_… from account_create, or existing key)"
+      required: true
+      secret: true
+
+suggest:
+  keywords:
+    - zensched
+    - field workforce
+    - shift scheduling
+    - gps check-in
+    - timesheet
+    - home care schedule
+    - pet care route
+  hosts:
+    - zensched.com
+    - mcp.zensched.com
+
+post_install: |
+  Cold start (no key yet):
+    1. Restart the session so tools load.
+    2. Call zensched_guide, then account_create(org_name) — returns a zsc_ key.
+    3. Run `hermes mcp configure zensched` and paste the key, or set
+       MCP_ZENSCHED_API_KEY in ~/.hermes/.env, then /reload-mcp.
+
+  Paid meters (GPS verify, geocode, worker invite, etc.) debit prepaid balance.
+  billing_status shows balance; $5 activation is credited. See zensched.com/pricing.
+
+  Not ZenShows (zs_ / roadshows). Same LLC, different product.

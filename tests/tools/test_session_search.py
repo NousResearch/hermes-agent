@@ -445,12 +445,20 @@ class TestCompactionRecoveryPointersRecover:
         assert self._recovered(result, sid, "fatal: TAILMARK_3141"), result
         # The full text is not tied to the caller: another session, and a compression continuation
         # searching its lineage, reach the same superseded original.
+        # A later ordinary match in the same session, for the date-order check below.
+        seed_messages(db, sid, {"role": "tool", "content": "later TAILMARK_3141 echo", "tool_name": "terminal"})
         db.sessions.end(sid, "compression")
         seed_session(db, "s_tail_tip", "cli", parent_session_id=sid)
         for caller, target in ((None, sid), ("s_unrelated", sid), ("s_tail_tip", "s_tail_tip")):
             result = json.loads(session_search(**{**kwargs, "session_id": target}, persistence=persistence,
                                                current_session_id=caller))
             assert self._recovered(result, sid, "fatal: TAILMARK_3141"), (caller, result)
+        # The added originals keep the requested date order: sort="oldest" limit=1 returns the
+        # original, not the later ordinary row.
+        result = json.loads(session_search(**{**kwargs, "session_id": "s_tail_tip", "sort": "oldest", "limit": 1},
+                                           persistence=persistence, current_session_id="s_tail_tip"))
+        assert [r["session_id"] for r in result["results"]] == [sid], result
+        assert "deploy log" in result["results"][0]["snippet"] and "later" not in result["results"][0]["snippet"], result
 
     def test_the_footer_call_recovers_an_archived_image_turn_caption(self, db, persistence):
         from agent.context_compressor import _build_recovery_footer

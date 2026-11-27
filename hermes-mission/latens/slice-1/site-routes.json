@@ -1,0 +1,92 @@
+{
+  "version": "slice-1",
+  "issue": "chipoto69/latens#2",
+  "route_policy": {
+    "canonical_urls": "lowercase-kebab-case",
+    "renames": "redirect-only-after-publication",
+    "public_default": false,
+    "deploy_requires_founder_yes": true
+  },
+  "routes": [
+    {
+      "path": "/",
+      "name": "Home",
+      "concept": "LATENS",
+      "audience": "public",
+      "data_scope": "public",
+      "description": "Entry page describing LATENS, FERROGLYPH, OZVENA, and the approval boundary."
+    },
+    {
+      "path": "/latens",
+      "name": "LATENS index",
+      "concept": "LATENS",
+      "audience": "public",
+      "data_scope": "public",
+      "description": "Canonical public index for LATENS editions and artifacts."
+    },
+    {
+      "path": "/ferroglyph",
+      "name": "FERROGLYPH index",
+      "concept": "FERROGLYPH",
+      "audience": "public",
+      "data_scope": "public",
+      "description": "Canonical public index for FERROGLYPH editions and artifacts."
+    },
+    {
+      "path": "/ozvena",
+      "name": "OZVENA index",
+      "concept": "OZVENA",
+      "audience": "public",
+      "data_scope": "public",
+      "description": "Canonical public index for OZVENA editions and artifacts."
+    },
+    {
+      "path": "/lexicon",
+      "name": "Lexicon",
+      "concept": "shared",
+      "audience": "public",
+      "data_scope": "public",
+      "description": "Index of durable kickoff-term definitions."
+    },
+    {
+      "path": "/lexicon/{term_slug}",
+      "name": "Lexicon term",
+      "concept": "shared",
+      "audience": "public",
+      "data_scope": "public",
+      "description": "Canonical glossary page for one kickoff term."
+    },
+    {
+      "path": "/artifacts/{artifact_id}",
+      "name": "Artifact",
+      "concept": "shared",
+      "audience": "public",
+      "data_scope": "public",
+      "description": "Approved public artifact page with sanitized provenance."
+    },
+    {
+      "path": "/editions/{edition_id}",
+      "name": "Edition",
+      "concept": "shared",
+      "audience": "public",
+      "data_scope": "public",
+      "description": "Approved public edition page aggregating artifact pages."
+    },
+    {
+      "path": "/provenance/{run_id}",
+      "name": "Public provenance",
+      "concept": "shared",
+      "audience": "public",
+      "data_scope": "public",
+      "description": "Sanitized provenance packet after redaction and approval."
+    },
+    {
+      "path": "/review/{run_id}",
+      "name": "Private review packet",
+      "concept": "shared",
+      "audience": "internal",
+      "data_scope": "private_review",
+      "description": "Local/internal review packet. Must not be deployed publicly."
+    }
+  ]
+}

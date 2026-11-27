@@ -204,6 +204,9 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     # shell override leaked "myhost" into the full suite and flipped 20
     # otherwise-unrelated config tests away from the default "hermes" host.
     "HERMES_HONCHO_HOST",
+    # The .env bootstrap publishes the backend selector into os.environ, so a
+    # test that selects a backend via .env leaks it past monkeypatch.
+    "HERMES_CONFIG_BACKEND",
     # Dashboard OAuth auth gate (PR #30156). When set, the bundled
     # dashboard-auth `nous` plugin auto-registers itself on plugin discovery,
     # which is triggered by any `/api/status` call. That leaks a provider

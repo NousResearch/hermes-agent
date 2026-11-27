@@ -69,7 +69,7 @@ CLIENT_ELEVATED_REMEDY = (
 
 
 def spawn_unmanaged_gateway(profile_home: Path, *, deadline: float, idle_exit: bool = False,
-                            force: bool = False) -> subprocess.Popen | GatewayJob:
+                            force: bool = False, exclude_inherited_prefixes: tuple[str, ...] = ()) -> subprocess.Popen | GatewayJob:
     """Request a daemon, not readiness. Refuse Windows no-breakaway fallback.
 
     No --replace, persistence, login changes, elevation, shell, or inherited stdio.
@@ -95,7 +95,8 @@ def spawn_unmanaged_gateway(profile_home: Path, *, deadline: float, idle_exit: b
     # The target profile's own secrets, never the launching client's: a `hermes -p work` client's
     # dotenv would otherwise become the default daemon's frozen launch env (host_gateway_child_env).
     from tools.environments.local import gateway_child_env
-    env = gateway_child_env(home, base=dict(os.environ))
+    base = {name: value for name, value in os.environ.items() if not name.upper().startswith(exclude_inherited_prefixes)}
+    env = gateway_child_env(home, base=base)
     if sys.platform == "win32":
         from hermes_cli.gateway_windows import windowless_gateway_restart_spec
         command, _, overlay = windowless_gateway_restart_spec(command)

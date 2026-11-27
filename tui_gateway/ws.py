@@ -381,7 +381,8 @@ def _disable_nagle(ws: Any) -> None:
         _log.debug("ws TCP_NODELAY skip: %s", exc)
 
 
-def _authority_connection(ws: Any, transport: WSTransport, auth_identity: dict | None, operator: bool):
+def _authority_connection(ws: Any, transport: WSTransport, auth_identity: dict | None, operator: bool,
+                          acp_launch_env=None):
     """The session-authority connection for this socket (route scope, else app state), or None
     when this backend has no authority and requests go to the legacy ``server.dispatch``."""
     authority = (getattr(ws, 'scope', None) or {}).get('hermes.session_authority') or getattr(
@@ -389,7 +390,7 @@ def _authority_connection(ws: Any, transport: WSTransport, auth_identity: dict |
     if authority is None:
         return None
     from gateway.session_controls import AuthorityConnection
-    return AuthorityConnection(authority, transport, auth_identity or {}, operator=operator)
+    return AuthorityConnection(authority, transport, auth_identity or {}, operator=operator, acp_launch_env=acp_launch_env)
 
 
 async def _dispatch_request(authority_connection: Any, req: Any, req_method: Any, transport: WSTransport) -> Any:
@@ -437,7 +438,7 @@ class _SendFailed(Exception):
 
 
 async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: str | None = None,
-                    operator: bool = False) -> None:
+                    operator: bool = False, acp_launch_env=None) -> None:
     """Run one WebSocket session. Wire-compatible with ``tui_gateway.entry``. *auth_identity* is the server-minted
     ``{user_id, provider}`` recorded at WS-upgrade auth, stored as ``WSTransport.auth_identity`` (the only identity
     authority for session ownership and relay authorship); callers that omit it (harnesses, embedded TUI child) get None."""
@@ -655,7 +656,7 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
         _disable_nagle(ws)
         _log.info("ws accepted peer=%s", peer)
         transport = WSTransport(ws, asyncio.get_running_loop(), peer=peer, auth_identity=auth_identity)
-        authority_connection = _authority_connection(ws, transport, auth_identity, operator)
+        authority_connection = _authority_connection(ws, transport, auth_identity, operator, acp_launch_env)
         # resolve_skin() is sync I/O + CPU; pooled so the read loop can drain the frontend's initial RPC burst.
         skin_payload = await asyncio.to_thread(server.resolve_skin)
         # change_events: this backend broadcasts pet/cron/sessions.changed, so clients can demote legacy

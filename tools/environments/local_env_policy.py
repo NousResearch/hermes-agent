@@ -7,6 +7,7 @@ import os
 import re
 from typing import Any, Iterable, Optional
 
+from acp_adapter.launch_env import LAUNCH_ENV_PREFIXES
 from gateway.bridged_env import BRIDGED_ENV_MARKER_PREFIX
 
 # Prefix a caller uses in ``extra_env`` to force a blocklisted var through.
@@ -255,6 +256,8 @@ def _is_provider_env_blocklisted(name: str, _registered: frozenset | None = None
     | :func:`_home_declared_key_env`; loops pass ``_registered`` so they are read once per env, not
     once per key."""
     upper = name.upper()
+    if upper.startswith(LAUNCH_ENV_PREFIXES):
+        return True
     if name in _HERMES_PROVIDER_ENV_BLOCKLIST or upper in _HERMES_PROVIDER_ENV_BLOCKLIST:
         return True
     if _registered is None:
@@ -274,11 +277,10 @@ def _is_provider_env_blocklisted(name: str, _registered: frozenset | None = None
 # ``BUZZ_*`` vars for the Buzz messaging platform, which drive the platform-mandated ``buzz`` CLI:
 # BUZZ_PRIVATE_KEY, BUZZ_AUTH_TAG, BUZZ_RELAY_URL, and the other BUZZ_* names). These are the agent's OWN
 # credentials — a Buzz community agent is expected to operate the ``buzz`` CLI — so they are carved out of
-# the terminal scrub. CONTEXT-GATED: the carve-out applies ONLY when this process/session is actually
-# operating as a Buzz agent — either the process is a Buzz-ACP managed agent (``BUZZ_MANAGED_AGENT`` is set,
-# only by Buzz Desktop's buzz-acp harness; see #76243 / #78511) or the current session's platform is
-# ``buzz`` (the gateway's ``HERMES_SESSION_PLATFORM`` ContextVar; concurrency safe under a multi-session
-# host). A Telegram/CLI/cron session on a host that also runs a Buzz gateway does NOT get BUZZ_PRIVATE_KEY
+# the terminal scrub. Ambient values are for a standalone Buzz-Desktop-managed process or a native
+# ``buzz`` gateway turn. A hosted Buzz ACP turn instead gets an explicit session-scoped environment
+# after the scrub, so a different identity already configured on the daemon can't override it.
+# A Telegram/CLI/cron session on a host that also runs a Buzz gateway does NOT get BUZZ_PRIVATE_KEY
 # in its terminal children — blanket passthrough of a signing key to every terminal child on the host would
 # be wrong (maintainer triage note on #76243: don't expose the key to unrelated shell commands).
 # ``_sanitize_subprocess_env`` is also consumed by search workers (e.g. the ddgs web-search subprocess), the
@@ -311,19 +313,14 @@ def _matches_terminal_first_party_prefix(name: str) -> bool:
 
 
 def _buzz_terminal_context_active() -> bool:
-    """True when this process/session operates as a Buzz agent: ``BUZZ_MANAGED_AGENT`` in
-    the process env (set only by Buzz Desktop's buzz-acp harness), or the live session's
-    platform is ``buzz`` via the gateway ContextVar — authoritative under a concurrent
-    multi-session host, so a sibling Telegram session resolves its OWN platform.
-
-    Gateway / CLI / cron / kanban processes never carry it. See #76243.
-    """
-    if os.environ.get("BUZZ_MANAGED_AGENT"):
-        return True
+    """Allow ambient values only for a native Buzz turn or a standalone managed process."""
     try:
-        from gateway.session_context import get_session_env
+        from gateway.session_context import bound_session_key, get_session_env
 
-        return get_session_env("HERMES_SESSION_PLATFORM", "").strip().lower() == "buzz"
+        platform = get_session_env("HERMES_SESSION_PLATFORM", "").strip().lower()
+        return platform == "buzz" or (
+            not platform and not bound_session_key() and get_session_env("HERMES_CRON_SESSION", "") != "1"
+            and os.environ.get("BUZZ_MANAGED_AGENT", "") != "")
     except Exception:
         return False
 

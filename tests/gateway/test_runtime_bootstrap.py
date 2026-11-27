@@ -37,6 +37,23 @@ async def test_private_control_peer_mints_profile_bound_ticket(tmp_path):
         assert grant['subject'] == f'uid:{os.getuid()}'
         assert grant['instance_id'] == 'instance'
         assert 'session:create' in grant['capabilities']
+        buzz_env = {'BUZZ_PRIVATE_KEY': 'fixture-key', 'BUZZ_RELAY_URL': 'wss://relay.example.invalid'}
+        envelope = {'client': 'buzz-acp', 'env': buzz_env}
+        launch = {**params, 'acp_launch_env': envelope}
+        reply = await request(launch)
+        assert reply['ok'] and 'fixture-key' not in json.dumps(reply)
+        grant = server.ticket_store.redeem(reply['result']['ticket'], profile_id=params['profile_id'],
+                                           purpose='interactive')
+        assert grant['acp_launch_env'] == envelope
+        assert not (await request({**launch, 'scope': 'host'}))['ok']
+        assert not (await request({**launch, 'purpose': 'native-http'}))['ok']
+        for rejected in (
+            {**envelope, 'client': 'example-editor'},
+            {**envelope, 'env': {**buzz_env, 'PATH': 'fixture-path'}},
+            {**envelope, 'env': {**buzz_env, 'BUZZ_MANAGED_AGENT': 'fixture-marker'}},
+        ):
+            reply = await request({**launch, 'acp_launch_env': rejected})
+            assert not reply['ok'] and 'fixture-key' not in json.dumps(reply)
         for invalid in ({**params, 'instance_id': 'old'}, {**params, 'profile_id': '/wrong'}, {**params, 'subject': 'admin'}):
             assert not (await request(invalid))['ok']
         assert not (await request(params, origin='http://browser'))['ok']

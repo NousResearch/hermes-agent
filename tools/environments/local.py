@@ -17,6 +17,8 @@ import time
 from collections.abc import Mapping
 from pathlib import Path
 
+from acp_adapter.launch_env import LAUNCH_ENV_PREFIXES
+from gateway.session_acp_launch import active_launch_env, apply_terminal_env
 from hermes_constants import get_process_hermes_home
 from tools.environments.base import BaseEnvironment, _SHELL_ENV_NAME_RE
 from tools.environments.base_output import _pipe_stdin
@@ -298,7 +300,8 @@ def _filter_secret_env(
             if not unwrap_force:
                 continue
             key = key[len(_HERMES_PROVIDER_ENV_FORCE_PREFIX):]
-            if not _is_hermes_internal_secret(key):
+            if (not _is_hermes_internal_secret(key)
+                    and (not key.upper().startswith(LAUNCH_ENV_PREFIXES) or _is_terminal_first_party_env(key))):
                 out[key] = value
             continue
         if _is_hermes_internal_secret(key) or key.upper() in plugin_strip_folded:
@@ -361,6 +364,7 @@ def _terminal_env(env: dict) -> dict:
     path_key = _path_env_key(env)
     if path_key is not None:
         env[path_key] = _user_tools_first(env[path_key])
+    apply_terminal_env(env)
     return env
 
 
@@ -1164,6 +1168,10 @@ class LocalEnvironment(BaseEnvironment):
         config-declared key holders: a key the snapshot captured before its declaration stays out."""
         from hermes_cli.plugins_session_env import session_env_names
         declared = (n for n in _home_declared_key_env() if _SHELL_ENV_NAME_RE.fullmatch(n))
+        # Even on a single-profile daemon, a terminal snapshot must never retain a
+        # private ACP launch value or restore it in a later, uncredentialed turn.
+        if (launch := active_launch_env()) is not None:
+            self._snapshot_passthrough_names.update(launch["env"])
         return tuple(sorted({*super()._snapshot_excluded_passthrough_names(), *session_env_names(), *declared}))
 
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict | None = None, persistent: bool = True):
@@ -1260,6 +1268,7 @@ class LocalEnvironment(BaseEnvironment):
                   stdin_data: str | None = None) -> subprocess.Popen:
         bash = _find_bash()
         run_env = _make_run_env(self.env)
+        apply_terminal_env(run_env)
         handoff = getattr(self, "_secret_handoff", None)  # absent on bare test doubles (__new__)
         session_id = getattr(self, "_session_id", "")
         token = _secret_fd_token(session_id)

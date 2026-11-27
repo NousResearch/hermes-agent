@@ -38,16 +38,18 @@ def test_daemon_does_not_inherit_hook_consent_or_worker_pins(tmp_path, monkeypat
     home.mkdir(mode=0o700)
     witness = home / 'env.json'
     executable = tmp_path / 'owned-interpreter'
+    buzz = {'BUZZ_PRIVATE_KEY': 'fixture-harness', 'BUZZ_AUXILIARY': 'fixture-harness-only'}
+    (home / '.env').write_text('BUZZ_PRIVATE_KEY=fixture-profile\n', encoding='utf-8')
     executable.write_text(
         '#!' + sys.executable + '\nimport json, os\n'
         + f'open({str(witness)!r}, "w").write(json.dumps('
-        + '{k: os.environ.get(k) for k in ' + repr([*LEAKS, 'HERMES_INFERENCE_MODEL', PIN]) + '}))\n',
+        + '{k: os.environ.get(k) for k in ' + repr([*LEAKS, *buzz, 'HERMES_INFERENCE_MODEL', PIN]) + '}))\n',
         encoding='utf-8')
     executable.chmod(0o700)
     monkeypatch.setattr(sys, 'executable', str(executable))
-    for key, value in {**LEAKS, 'HERMES_INFERENCE_MODEL': 'fallback'}.items():
+    for key, value in {**LEAKS, **buzz, 'HERMES_INFERENCE_MODEL': 'fallback'}.items():
         monkeypatch.setenv(key, value)
-    child = start.spawn_unmanaged_gateway(home, deadline=time.monotonic() + 5)
+    child = start.spawn_unmanaged_gateway(home, deadline=time.monotonic() + 5, exclude_inherited_prefixes=('BUZZ_',))
     try:
         assert child.wait(timeout=10) == 0
     finally:
@@ -57,6 +59,8 @@ def test_daemon_does_not_inherit_hook_consent_or_worker_pins(tmp_path, monkeypat
     seen = json.loads(Path(witness).read_text())
     # The supervisor markers go, but the daemon's own tool children stay on its profile (#74872).
     assert seen.pop(PIN) == '1'
+    assert seen.pop('BUZZ_PRIVATE_KEY') == 'fixture-profile'
+    assert seen.pop('BUZZ_AUXILIARY') is None
     assert seen == {**dict.fromkeys(LEAKS), 'HERMES_INFERENCE_MODEL': 'fallback'}
     assert os.environ['HERMES_ACCEPT_HOOKS'] == '1'  # the launching process keeps its own policy
 

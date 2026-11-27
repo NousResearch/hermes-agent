@@ -17,6 +17,7 @@ from acp.schema import (
 from hermes_cli.gateway_client import GatewayClientError, connect_gateway
 from hermes_constants import get_hermes_home
 from acp_adapter.gateway_reply import GatewayReplyMixin, _text
+from acp_adapter.launch_env import collect_launch_env
 from acp_adapter.session import _translate_acp_cwd, _normalize_cwd_for_compare
 
 logger = logging.getLogger(__name__)
@@ -67,6 +68,7 @@ def _tools_changed_notice(payload):
 class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
     def __init__(self):
         self._conn = None
+        self._launch_env = None
         self._gateway = None
         self._connection = None
         self._connect_lock = asyncio.Lock()
@@ -137,9 +139,10 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             from acp_adapter.elicitation import client_supports_form_elicitation
             self._form_elicitation = client_supports_form_elicitation(message.get("params"))
 
-    async def initialize(self, **kwargs):
+    async def initialize(self, client_info=None, **kwargs):
         from hermes_cli import __version__
         from acp_adapter.auth import build_auth_methods
+        self._launch_env = collect_launch_env(client_info.name if client_info is not None else None)
         return InitializeResponse(protocol_version=acp.PROTOCOL_VERSION,
             agent_info=Implementation(name="hermes-agent", version=__version__),
             agent_capabilities=AgentCapabilities(load_session=True,
@@ -160,7 +163,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
                 # connection instead of the stale error forever.
                 await self._teardown()
             if self._gateway is None:
-                connection = connect_gateway()
+                connection = connect_gateway(acp_launch_env=self._launch_env) if self._launch_env else connect_gateway()
                 gateway = await connection.__aenter__()
                 try:
                     descriptor = await gateway.rpc("runtime.describe")

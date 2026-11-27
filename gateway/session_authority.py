@@ -15,6 +15,7 @@ import threading
 from types import SimpleNamespace
 import uuid
 
+from acp_adapter.launch_env import LaunchEnvironment
 from gateway.session_contract import (
     CANONICAL_GATEWAY_PROTOCOL, AdmissionReceipt, PendingAdmission, SessionActor, SessionHandle, SessionRef, Submission,
     SubscriptionSnapshot,
@@ -108,6 +109,7 @@ class LiveSession:
     # Last-viewer detaches between losing their subscriber and recording the close (``detach``).
     detaching: int = 0
     viewer_revision: int = 0  # an attach invalidates startup's prepared close, even after a live handoff
+    acp_launch_binding: tuple[str, LaunchEnvironment] | None = field(default=None, repr=False)
     # Set while a plugin's turn waits for the session's background work (run_plugin_injection
     # ``admission_turn_scope``): a person's input queued behind it sets it and ends that wait.
     background_wait: threading.Event | None = None
@@ -730,7 +732,7 @@ class SessionAuthority:
         return results
 
     async def submit(self, actor: SessionActor, request: Submission, *, queue_while_restarting=False,
-                     _kanban_card=None, replaces=None, supersedes=None, api_target=None, hosted=None):
+                     _kanban_card=None, replaces=None, supersedes=None, api_target=None, hosted=None, acp_launch_env=None):
         """``queue_while_restarting``: the caller is an interactive client attached to a restart's
         after-turn wait, which commits the input queued for the next owner. Machine callers (a2a,
         kanban, hosted rooms) keep the plain ``runtime_draining`` refusal and retry against the next
@@ -750,10 +752,10 @@ class SessionAuthority:
             with capture_lease():  # captured bytes are held from capture until commit or refusal
                 return await self._submit(actor, request, queue_only=queue_while_restarting is True,
                                           _kanban_card=_kanban_card, replaces=replaces, supersedes=supersedes,
-                                          api_target=api_target, hosted=hosted)
+                                          api_target=api_target, hosted=hosted, acp_launch_env=acp_launch_env)
 
     async def _submit(self, actor, request, *, queue_only=False, _kanban_card=None, replaces=None, supersedes=None,
-                      api_target=None, hosted=None):
+                      api_target=None, hosted=None, acp_launch_env=None):
         self._require_admission_open(queue_only=queue_only)
         if (request.intent != 'queue' or not {'text'} <= set(request.payload) <= {
                 'text', 'attachments', 'finite', 'unattended', 'surface', 'voice_context', 'interrupted',
@@ -776,6 +778,9 @@ class SessionAuthority:
         payload = {'text': request.payload['text'], **finite, **admit_surface(request.payload),
                    **admit_display(request.payload), **admit_cli_turn(request.payload),
                    **admit_attachments(request.payload.get('attachments'), admitted=admitted)}
+        if acp_launch_env is not None:
+            from gateway.session_acp_launch import bind_admission
+            payload.update(bind_admission(self, request.ref, actor, acp_launch_env))
         if _kanban_card is not None:
             payload['kanban_card_v1'] = _kanban_card
         source = self.sessions[request.ref.session_id].source

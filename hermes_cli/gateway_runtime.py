@@ -424,7 +424,7 @@ def _observe_replacing_stale(home: Path, deadline: float, replaced: set[Path]) -
 
 
 def ensure_gateway_runtime(profile_home: str | Path, *, timeout: float | None = None,
-                           idle_exit: bool = False) -> GatewayDiscovery:
+                           idle_exit: bool = False, exclude_inherited_prefixes: tuple[str, ...] = ()) -> GatewayDiscovery:
     """Ensure once; pending remains pending at deadline.
 
     ``timeout`` None: :data:`DEFAULT_ENSURE_TIMEOUT`, extended while the pending start's owner keeps
@@ -540,7 +540,8 @@ def ensure_gateway_runtime(profile_home: str | Path, *, timeout: float | None = 
                 else:
                     from hermes_cli.gateway_runtime_start import spawn_unmanaged_gateway, stdio_log_size
                     child_home, child_offset = target, stdio_log_size(target)
-                    child = spawn_unmanaged_gateway(target, deadline=deadline, idle_exit=idle_exit)
+                    options = {"exclude_inherited_prefixes": exclude_inherited_prefixes} if exclude_inherited_prefixes else {}
+                    child = spawn_unmanaged_gateway(target, deadline=deadline, idle_exit=idle_exit, **options)
                 requested = True
                 waiting[target] = None
             # Never raises: an exhausted budget gets one more sample (top of loop) before its verdict.

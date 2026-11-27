@@ -32,6 +32,22 @@ hermes acp / hermes-acp / python -m acp_adapter
 
 Stdout is reserved for ACP JSON-RPC transport. Human-readable logs go to stderr.
 
+### ACP launch credentials
+
+The ACP viewer can carry a reviewed producer's inherited launch environment to
+the owner over the authenticated local control socket, using its one-use
+connection ticket. The client name selects a policy in `acp_adapter/launch_env.py`;
+the owner independently validates the producer and its environment names.
+`buzz-acp` is the first producer: its policy requires `BUZZ_PRIVATE_KEY` and
+`BUZZ_RELAY_URL`, permits `BUZZ_AUTH_TAG`, and excludes Desktop ownership stamps.
+Unregistered clients cannot use the handoff to supply arbitrary variables.
+
+The owner binds the values in memory to the ACP session and makes them available
+to local terminal subprocesses of turns submitted by that viewer. The durable
+turn records only a binding identifier. A queued turn whose credentials were
+lost in a gateway restart fails rather than using another identity. This leaves
+the session's ACP toolset and approval behavior intact.
+
 ### Gateway terminal projection
 
 `acp_adapter/gateway_server.py` waits for the completion of the exact submitted

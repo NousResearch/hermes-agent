@@ -146,6 +146,10 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
     # that flag, and a way to name a session. None of it belongs on ``session/list`` — that is the
     # visible catalog every other ACP client sees, and its meaning must not change.
     #
+    # ``model/options`` is the read-only member of the set: ACP's own session replies carry only
+    # ``availableModels``, so the picker that offers the shared inventory (pricing, capabilities,
+    # planned usage) has no way to ask for it. This answers with the TUI's ``model.options`` payload.
+    #
     # The handlers open the profile's store directly, as the CLI does, rather than routing through
     # the daemon: the store is process-shared (``persistence_assembly`` keeps one backend per
     # profile), so a panel's write is what the agent reads on the next turn, and its read sees what
@@ -165,6 +169,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             "session/catalog": self._ext_session_catalog,
             "session/setHidden": self._ext_session_set_hidden,
             "session/setTitle": self._ext_session_set_title,
+            "model/options": self._ext_model_options,
         }
         handler = handlers.get(method)
         if handler is None:
@@ -211,6 +216,29 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             raise RequestError.invalid_params({"reason": f"unknown session {session_id}"})
         logger.info("Session %s retitled", session_id)
         return {"ok": True, "sessionId": session_id, "title": title}
+
+    async def _ext_model_options(self, params: dict) -> dict:
+        """The TUI's ``model.options`` over ACP: the full picker inventory, not ``availableModels``.
+
+        An editor names the session its picker belongs to, so the payload centers that session's
+        model, as the TUI layers the live agent onto the disk config. The flags are the TUI's —
+        ``explicitOnly``, ``includeUnconfigured`` and ``refresh`` (only ``refresh`` probes providers) —
+        and a session this connection never attached is refused, as for the other session methods.
+        """
+        session_id = str(params.get("sessionId") or "").strip()
+        info = {}
+        if session_id:
+            snapshot = self._snapshots.get(self._aliases.get(session_id, session_id))
+            if snapshot is None:
+                raise RequestError.invalid_params({"reason": f"unknown session {session_id}"})
+            info = snapshot.get("info") or {}
+        from acp_adapter.gateway_session_meta import model_options_payload
+        return await asyncio.to_thread(
+            model_options_payload, info,
+            explicit_only=bool(params.get("explicitOnly")),
+            include_unconfigured=bool(params.get("includeUnconfigured")),
+            refresh=bool(params.get("refresh")),
+        )
 
     def _ext_write_hidden(self, session_id: str, hidden: bool) -> bool:
         handle = self._ext_store()

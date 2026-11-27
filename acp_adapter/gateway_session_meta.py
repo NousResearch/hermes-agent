@@ -124,12 +124,17 @@ async def session_config_options(client, session_id, models, info, mode_id):
     return options
 
 
+def session_model_identity(info: dict) -> tuple[str, str]:
+    """``(model, provider)`` a picker centers on for ``session.info``: the session's live model, and
+    the provider this profile configures (``session.info`` names no provider)."""
+    from acp_adapter.auth import detect_provider
+    return str(info.get("model") or "").strip(), info.get("provider") or detect_provider() or "openrouter"
+
+
 def model_state(info: dict) -> SessionModelState | None:
     """The picker for ``session.info`` from shared inventory, with a current-model fallback. Blocking."""
-    from acp_adapter.auth import detect_provider
     from acp_adapter.model_catalog import build_model_state, fallback_model_state
-    model = str(info.get("model") or "").strip()
-    provider = info.get("provider") or detect_provider() or "openrouter"
+    model, provider = session_model_identity(info)
     try:
         picker = build_model_state(model, provider, "")
         if picker is not None:
@@ -138,6 +143,20 @@ def model_state(info: dict) -> SessionModelState | None:
         # Boundary: a broken inventory must not fail session/new; the current model still shows.
         logger.debug("Could not build ACP model state", exc_info=True)
     return fallback_model_state(model, provider)
+
+
+def model_options_payload(info: dict, *, explicit_only: bool = False, include_unconfigured: bool = False,
+                          refresh: bool = False) -> dict:
+    """The TUI's ``model.options`` payload for this session: the same inventory, the session's model
+    centered on it, as the TUI picker layers the live agent onto the disk config. The flags are the
+    TUI's; only ``refresh`` probes providers. Blocking (provider catalogs, pricing, usage)."""
+    from hermes_cli.inventory import build_model_options_payload, load_picker_context
+    from hermes_cli.models import normalize_provider
+    model, provider = session_model_identity(info)
+    context = load_picker_context().with_overrides(
+        current_provider=normalize_provider(provider), current_model=model)
+    return build_model_options_payload(
+        context, explicit_only=explicit_only, include_unconfigured=include_unconfigured, refresh=refresh)
 
 
 def provenance_meta(home: Path, acp_session_id: str, session_id: str) -> dict | None:

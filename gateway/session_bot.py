@@ -18,7 +18,7 @@ from gateway.platforms.event import MessageEvent
 from gateway.session_persistence import authority_persistence, owner_rule
 from persistence.core.errors import AuthorityRefusal
 from tools.bot_failure_reasons import HELD_NOT_SENT, UNKNOWN
-from tools.bot_live_delivery import _TERMINAL, _delivery_id, _read
+from tools.bot_live_delivery import _TERMINAL, _delivery_id, _read, legacy_ticket_targets_chat
 logger = logging.getLogger(__name__)
 from gateway.session_bot_mailbox import (mailbox_lock, read_receipt, write_receipt,
     scan_receipts, remember_receipt, track_receipt_task, withdraw_pin, refuse_pin, requeue_pin)
@@ -710,9 +710,7 @@ async def _migrate(authority, actor, home, root):
     ref, live, entry = await _target(authority, actor)
     for path, record in sorted(legacy, key=lambda item: _legacy_order(*item)):
         owner = record['owner']
-        if owner['profile_home'] != str(home):
-            continue
-        if authority_persistence(authority).lineage.tip(owner['session_id']) != entry.session_id:
+        if not legacy_ticket_targets_chat(authority_persistence(authority).lineage, home, owner, entry.session_id):
             continue
         from hermes_cli.active_sessions import active_session_liveness_guard
         with active_session_liveness_guard(owner['session_id'], registry_home=home) as active:

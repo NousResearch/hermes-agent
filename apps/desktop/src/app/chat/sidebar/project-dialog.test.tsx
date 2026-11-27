@@ -6,6 +6,10 @@ import { ProjectDialog } from './project-dialog'
 
 afterEach(cleanup)
 
+// The remove-folder dialog is covered by its own test; stub it so this file's
+// narrow `@/store/projects` mock stays minimal.
+vi.mock('./project-remove-folder-dialog', () => ({ ProjectRemoveFolderDialog: () => null }))
+
 vi.mock('@/i18n', () => ({
   useI18n: () => ({
     t: {

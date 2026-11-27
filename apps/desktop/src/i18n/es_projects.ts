@@ -27,6 +27,13 @@ export const esProjects: NonNullable<TranslationOverrides['sidebar']>['projects'
   menuAppearance: 'Apariencia',
   noColor: 'Sin color',
   menuAddFolder: 'Agregar carpeta',
+  menuRemoveFolder: 'Quitar carpeta…',
+  removeFolderTitle: 'Quitar carpeta',
+  removeFolderDesc:
+    'Quita la carpeta de este proyecto. No se borran archivos; los chats iniciados en ella dejan de aparecer en este proyecto.',
+  removeFolderNewPrimary: path => `${path} pasa a ser la carpeta principal.`,
+  removeFolderLast: 'Un proyecto necesita al menos una carpeta.',
+  removeFolderFailed: 'No se pudo quitar la carpeta',
   menuSetActive: 'Establecer activo',
   menuDelete: 'Borrar',
   moveToProject: 'Mover a proyecto',

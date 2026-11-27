@@ -27,6 +27,13 @@ export const deProjects: NonNullable<TranslationOverrides['sidebar']>['projects'
   menuAppearance: 'Aussehen',
   noColor: 'Keine Farbe',
   menuAddFolder: 'Ordner hinzufügen',
+  menuRemoveFolder: 'Ordner entfernen…',
+  removeFolderTitle: 'Ordner entfernen',
+  removeFolderDesc:
+    'Entfernt den Ordner aus diesem Projekt. Dateien werden nicht gelöscht; dort gestartete Chats erscheinen nicht mehr unter diesem Projekt.',
+  removeFolderNewPrimary: path => `${path} wird zum primären Ordner.`,
+  removeFolderLast: 'Ein Projekt braucht mindestens einen Ordner.',
+  removeFolderFailed: 'Ordner konnte nicht entfernt werden',
   menuSetActive: 'Als aktiv festlegen',
   menuDelete: 'Löschen',
   moveToProject: 'In Projekt verschieben',

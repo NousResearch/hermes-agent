@@ -29,6 +29,7 @@ import {
   copyPath,
   deleteProject,
   openProjectAddFolder,
+  openProjectRemoveFolder,
   openProjectRename,
   revealPath,
   setActiveProject,
@@ -103,6 +104,12 @@ function useProjectActions({
           key: 'add-folder',
           label: p.menuAddFolder,
           onSelect: () => openProjectAddFolder(target)
+        },
+        {
+          icon: 'remove',
+          key: 'remove-folder',
+          label: p.menuRemoveFolder,
+          onSelect: () => openProjectRemoveFolder(target)
         },
         {
           disabled: isActive,

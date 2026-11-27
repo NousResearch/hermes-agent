@@ -90,7 +90,7 @@ try:
 except Exception:
     _MCP_AVAILABLE = False
 if not _MCP_AVAILABLE:
-    logger.debug("mcp package not installed -- MCP tool support disabled")
+    logger.warning("mcp package not installed -- MCP tool support disabled; install with: pip install mcp")
 
 ClientSession: Any = None
 # True once the probe settled: every SDK import either loaded or is genuinely absent from this

@@ -65,3 +65,27 @@ def test_unlinked_task_unchanged(kanban_conn):
     assert task.branch_name is None
 
 
+def test_title_with_trailing_punctuation_produces_valid_branch(kanban_conn):
+    """A title ending in '.' or '...' must not create a branch name ending in
+    a period — git rejects such names (check-ref-format). Regression for the
+    bug that blocked t_d133212f."""
+    proj = _make_project()
+    tid = kb.create_task(kanban_conn, title="The anthropic key input is still weird.", project_id=proj.slug)
+    task = kb.get_task(kanban_conn, tid)
+
+    assert task.branch_name is not None
+    assert not task.branch_name.endswith("."), (
+        f"branch name must not end in '.': {task.branch_name!r}"
+    )
+    assert task.branch_name == f"{proj.slug}/{tid}-the-anthropic-key-input-is-still-weird"
+
+
+def test_title_with_dots_in_middle_preserved(kanban_conn):
+    """Dots within the title slug (e.g. version numbers) are kept as-is."""
+    proj = _make_project()
+    tid = kb.create_task(kanban_conn, title="update v1.2.3 release", project_id=proj.slug)
+    task = kb.get_task(kanban_conn, tid)
+
+    assert task.branch_name == f"{proj.slug}/{tid}-update-v1.2.3-release"
+
+

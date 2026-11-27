@@ -130,7 +130,6 @@ def _apply_new_session_title(cli, title: str) -> Optional[str]:
     except Exception:
         return None
     cli._pending_title = None
-    cli._session_title_persisted = True
     cli._status_bar_title_checked_at = 0.0
     return sanitized
 
@@ -598,7 +597,6 @@ class CLISessionMixin:
         self.conversation_history = []
         self._pending_title = None
         self._resumed = False
-        self._session_title_persisted = False
         # getattr: tests drive new_session unbound against a SimpleNamespace stand-in.
         getattr(self, "_write_terminal_breadcrumb", lambda: None)()
         # An explicit -m/--model was for the previous session only.

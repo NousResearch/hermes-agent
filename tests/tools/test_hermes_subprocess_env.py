@@ -239,8 +239,8 @@ class TestInternalDynamicSecrets:
             "GATEWAY_RELAY_ID", "GATEWAY_RELAY_SECRET", "GATEWAY_RELAY_DELIVERY_KEY",
         } <= _ALWAYS_STRIP_KEYS
 
-    def test_osc7577_token_scrubbed_from_subprocesses_but_kept_when_unscrubbed(self):
+    def test_osc7577_token_scrubbed_from_subprocesses(self):
         assert "OSC7577_TOKEN" in _ALWAYS_STRIP_KEYS
         with patch.dict(os.environ, {**_SAFE_SAMPLE, "OSC7577_TOKEN": "dummy-token-replace-me"}, clear=True):
             assert "OSC7577_TOKEN" not in build_subprocess_env(scrub_secrets=True)
-            assert build_subprocess_env(scrub_secrets=False).get("OSC7577_TOKEN") == "dummy-token-replace-me"
+            assert "OSC7577_TOKEN" not in hermes_subprocess_env(inherit_credentials=True)

@@ -89,7 +89,11 @@ def lost_admission(snapshot, admission_id):
 
 
 class GatewayChatView:
-    def __init__(self, client, snapshot, *, quiet=False, emitter=None, usage_file=None, resumed=False):
+    def __init__(self, client, snapshot, *, quiet=False, emitter=None, usage_file=None, resumed=False,
+                 program_resume=False, resume_flags=()):
+        self.program_resume_enabled = program_resume  # gateway_chat.program_resume_enabled for this launch
+        self._resume_flags = resume_flags  # the bypass flag: this launch sets no env opt-in for it
+        self._resume_store = None  # opened on the first saved-row check, reused until the row is found
         self.usage_file = usage_file
         self.client = client
         self.session_id = snapshot["stored_session_id"]
@@ -123,10 +127,11 @@ class GatewayChatView:
         self._composer = None
         # `/undo` puts the removed message back in the composer for the next prompt.
         self.prefill = ""
-        info = snapshot.get("info") or {}
-        self._session_durable = bool(resumed or snapshot.get("messages") or info.get("lazy") is False or info.get("title"))
-        self._program_resume_last_argv = None
-        self._program_resume_reported = False
+        # Resumed or carrying history: the row exists. Otherwise the session store answers (_resume_session_id).
+        self._session_durable = bool(resumed or snapshot.get("messages"))
+        from hermes_cli.program_resume import ProgramResumeReporter
+        from hermes_cli.terminal_notify import write_tty
+        self._program_resume = ProgramResumeReporter(write_tty)
 
     def unknown_admissions(self):
         return [row["admission_id"] for row in self.pending if row["status"] == "unknown"]
@@ -365,7 +370,6 @@ class GatewayChatView:
                 async with self._attaching:
                     if admission not in self.cut and not self.failure:
                         await self._recover(admission, sid)
-        self._session_durable = True
         self._sync_program_resume()
         return receipt
 
@@ -435,43 +439,49 @@ class GatewayChatView:
         return await gateway_chat_commands.run_command(self, command, rest)
 
     def _sync_program_resume(self, *, force: bool = False) -> None:
-        if self.finite or self.emitter is not None or not sys.stdout.isatty():
+        if (self.finite or self.emitter is not None or not self.program_resume_enabled or not sys.stdout.isatty()
+                or not self._program_resume.active):
             return
-        from hermes_cli.terminal_notify import (
-            build_hermes_resume_argv, osc7577_token,
-            program_resume_clear_sequence, program_resume_sequence, write_tty,
-        )
-        token = osc7577_token()
-        if token is None:
+        from hermes_cli.program_resume import resume_argv
+
+        self._program_resume.sync(resume_argv(self._resume_session_id(), "cli", *self._resume_flags), force=force)
+
+    def _resync_program_resume_on_sigcont(self) -> None:
+        """Report again after a stop (Ctrl+Z, ``kill -STOP``): OSC 7577 asks a program that gets the terminal
+        back to report, since another program may have replaced the record meanwhile. POSIX only."""
+        import signal
+
+        if not self.program_resume_enabled or not hasattr(signal, "SIGCONT"):
             return
-        sid = self.session_id if self._session_durable and self.session_id else None
-        target_argv = tuple(build_hermes_resume_argv(sid, surface="cli"))
-        if not force and target_argv == self._program_resume_last_argv:
-            return
+        def _report() -> None:
+            self._sync_program_resume(force=True)
+
         try:
-            seq = program_resume_sequence(target_argv, token=token)
-        except (TypeError, ValueError, UnicodeError):
-            if self._program_resume_reported:
-                self._program_resume_reported = False
-                self._program_resume_last_argv = None
-                with suppress(TypeError, ValueError, UnicodeError):
-                    write_tty(program_resume_clear_sequence(token=token))
-            return
-        write_tty(seq)
-        self._program_resume_last_argv = target_argv
-        self._program_resume_reported = True
+            asyncio.get_running_loop().add_signal_handler(signal.SIGCONT, _report)  # windows-footgun: ok
+        except (NotImplementedError, RuntimeError, ValueError):  # no loop signal support / not the main thread
+            pass
+
+    def _close_resume_store(self):
+        if self._resume_store is not None:
+            self._resume_store.close_reader()
+
+    def _resume_session_id(self) -> str | None:
+        if not self.session_id:
+            return None
+        if not self._session_durable:
+            from hermes_cli.gateway_session_store import session_store
+            from hermes_cli.program_resume import session_saved
+
+            try:
+                self._resume_store = self._resume_store or session_store()
+            except Exception:
+                logger.debug("program resume: session store unavailable", exc_info=True)
+                return None
+            self._session_durable = session_saved(self._resume_store, self.session_id)
+        return self.session_id if self._session_durable else None
 
     def _clear_program_resume(self) -> None:
-        if not self._program_resume_reported:
-            return
-        self._program_resume_reported = False
-        self._program_resume_last_argv = None
-        from hermes_cli.terminal_notify import osc7577_token, program_resume_clear_sequence, write_tty
-        token = osc7577_token()
-        if token is None:
-            return
-        with suppress(TypeError, ValueError, UnicodeError):
-            write_tty(program_resume_clear_sequence(token=token))
+        self._program_resume.clear()
 
     async def adopt(self, snapshot):
         """Attach this view to another session's snapshot (a branch, /new)."""
@@ -481,7 +491,7 @@ class GatewayChatView:
         self.pending = snapshot.get('pending', [])
         info = snapshot.get('info') or {}
         self.model = str(info.get('model') or self.model).split('/')[-1]
-        self._session_durable = bool(snapshot.get('messages') or info.get('lazy') is False or info.get('title'))
+        self._session_durable = bool(snapshot.get('messages'))
         if not self.finite:
             # Bare `hermes -c` in this terminal continues the session it is now on, as the
             # in-process CLI re-wrote its breadcrumb on every session switch.
@@ -648,13 +658,14 @@ class GatewayChatView:
             welcome = "Welcome to Hermes Agent! Type your message or /help for commands."
             print(get_active_skin().get_branding("welcome", welcome), flush=True)
             # The classic status bar's leading segments: model, then the attached session.
-            prompt = PromptSession(erase_when_done=True,
+            prompt = PromptSession(erase_when_done=True, key_bindings=_quit_on_ctrl_d(),
                                    bottom_toolbar=lambda: f" \u2624 {self.model} \u2502 {self.session_id} ")
             prompt_symbol = get_active_prompt_symbol("❯ ")
             self._composer = prompt if sys.stdin.isatty() else None
-            self._sync_program_resume()
+            self._resync_program_resume_on_sigcont()
             with patch_stdout():
                 while not self.failure:
+                    self._sync_program_resume()  # a finished turn may have saved the session
                     try:
                         # Empty when the stream failed first: the loop guard then raises it.
                         text = (await self._read_line(prompt, prompt_symbol)).strip()
@@ -671,16 +682,36 @@ class GatewayChatView:
                             await self.submit(text)
                     except KeyboardInterrupt:
                         print("Use /stop to interrupt execution, /quit to detach.")
-                    except EOFError:
-                        self._clear_program_resume()
+                    except EOFError:  # the input went away (Ctrl+D is /quit): keep the resume record
+                        self._program_resume.keep()
                         return 0
                     except GatewayClientError as exc:
                         print(f"Error: {exc}", file=sys.stderr)
                 raise self.failure
         finally:
             renderer.cancel()
-            with suppress(asyncio.CancelledError):
-                await renderer
+            try:
+                with suppress(asyncio.CancelledError):
+                    await renderer
+            finally:
+                self._close_resume_store()
+
+
+def _quit_on_ctrl_d():
+    """Ctrl+D deletes forward, and on an empty line quits like /quit. prompt_toolkit's own binding raises
+    EOFError, which then could not tell the user's quit from the input going away."""
+    from prompt_toolkit.key_binding import KeyBindings
+
+    keys = KeyBindings()
+
+    @keys.add("c-d")
+    def _ctrl_d(event):
+        if event.current_buffer.text:
+            event.current_buffer.delete()
+        else:
+            event.app.exit(result="/quit")
+
+    return keys
 
 
 def _oneshot_admission(receipt):

@@ -478,6 +478,56 @@ class TestSendUpdateNotification:
         assert not (hermes_home / ".update_pending.claimed.json").exists()
 
     @pytest.mark.asyncio
+    async def test_notice_for_plugin_platform_survives_until_it_registers(self, tmp_path):
+        """After the update's restart a plugin platform may not be registered yet, so its name does
+        not resolve to a Platform. The notice must wait for it like an offline adapter, not be deleted."""
+        from gateway.platform_registry import PlatformEntry, platform_registry
+        name = "zz_late_update_plugin"
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        pending_path = hermes_home / ".update_pending.json"
+        pending_path.write_text(json.dumps({"platform": name, "chat_id": "111", "user_id": "222"}))
+        (hermes_home / ".update_output.txt").write_text("✓ Update complete!")
+        (hermes_home / ".update_exit_code").write_text("0")
+
+        with patch("gateway.run._hermes_home", hermes_home):
+            assert await runner._send_update_notification() is False
+        assert pending_path.exists()
+        assert (hermes_home / ".update_output.txt").exists()
+
+        platform_registry.register(PlatformEntry(
+            name=name, label="Late", adapter_factory=lambda cfg: None, check_fn=lambda: True,
+        ))
+        try:
+            mock_adapter = AsyncMock()
+            runner.adapters = {Platform(name): mock_adapter}
+            with patch("gateway.run._hermes_home", hermes_home):
+                assert await runner._send_update_notification() is True
+        finally:
+            platform_registry.unregister(name)
+        mock_adapter.send.assert_called_once()
+        assert "Update complete" in mock_adapter.send.call_args[0][1]
+        assert not pending_path.exists()
+
+    @pytest.mark.asyncio
+    async def test_notice_for_never_registered_platform_expires_with_log(self, tmp_path, caplog):
+        """A platform that never registers gives up after the adapter-wait bound, loudly."""
+        import logging
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        old = (datetime.now() - timedelta(hours=3)).isoformat()
+        (hermes_home / ".update_pending.json").write_text(json.dumps(
+            {"platform": "zz_never_registered", "chat_id": "111", "timestamp": old}))
+        (hermes_home / ".update_exit_code").write_text("0")
+
+        with patch("gateway.run._hermes_home", hermes_home), caplog.at_level(logging.WARNING):
+            assert await runner._send_update_notification() is True
+        assert not (hermes_home / ".update_pending.json").exists()
+        assert "never connected" in caplog.text
+
+    @pytest.mark.asyncio
     async def test_completion_notification_tolerates_invalid_utf8_output(self, tmp_path):
         """Completion-only update notifications must not crash on bad bytes."""
         runner = _make_runner()

@@ -67,8 +67,9 @@ class ReservationVerbs:
             records = []
             for worker in authority['workers'].values():
                 declaration = worker.get('detached')
-                if declaration is None or worker['owner_epoch'] != epoch or worker['status'] not in ('registered', 'running'):
+                if declaration is None or worker['owner_epoch'] != epoch:
                     continue
+                # Finishing the execution closes writes; settlement closes the admission.
                 admission = authority['admissions'].get(declaration['admission_id'])
                 if (admission is not None and admission['status'] == 'started'
                         and admission['owner_epoch'] == epoch and admission['generation'] == worker['generation']):

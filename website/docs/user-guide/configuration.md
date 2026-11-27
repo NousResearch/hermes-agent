@@ -1341,12 +1341,13 @@ gateway:
   kill it. That needs the gateway user's session bus (`/run/user/<uid>/bus`); for a system-level
   unit, `sudo loginctl enable-linger <user>`. Without a reachable bus the gateway logs a warning
   and does not detach the worker: a restart ends its turn as without the setting.
+- **Final result.** A live, verified worker can also finish handing over the original result if
+  it already recorded its finish but the previous gateway had not yet settled the turn.
+  A stored finish receipt alone is not a substitute for reattaching the worker.
 - **Still `unknown`.** The turn is recorded `unknown`, as without the setting, when no gateway
   reattaches the worker within 15 minutes (it then ends itself and its process group), when it
-  crashed or was killed first, when its identity check fails, and when the gateway stops in the
-  short window after the worker recorded its final result but before the gateway closed the
-  turn: that already finished turn is not taken over. A worker killed while it waits can leave
-  its socket pathname and directory behind.
+  crashed or was killed first, or when its identity check fails. A worker killed while it waits can
+  leave its socket pathname and directory behind.
 
 ## Session Stall Watchdog
 

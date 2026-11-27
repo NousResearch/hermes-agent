@@ -26,7 +26,8 @@ def worker_process():
 
 @pytest.mark.platforms('posix')
 @pytest.mark.asyncio
-async def test_detached_child_continues_after_owner_recovery(tmp_path, worker_process):
+@pytest.mark.parametrize('finished_before_recovery', [False, True])
+async def test_detached_child_continues_after_owner_recovery(tmp_path, worker_process, finished_before_recovery):
     db = storage_handle(tmp_path)
     process = worker_process
     try:
@@ -50,20 +51,33 @@ async def test_detached_child_continues_after_owner_recovery(tmp_path, worker_pr
         db.worker_executions.register(epoch=epoch, execution_id='other-worker', session_id='unrelated', generation=0,
                                       kind='compute', adoption_secret='other-secret')
         other = db.worker_executions.reserve_child(epoch=epoch, execution_id='other-worker', session_id='unrelated',
-                    generation=0, sequence=1, secret='d' * 32, profile_id=str(tmp_path), pid=process.pid,
-                    birth=root['birth'], principal='human', max_concurrent_children=10, max_spawn_depth=1).child
+                     generation=0, sequence=1, secret='d' * 32, profile_id=str(tmp_path), pid=process.pid,
+                     birth=root['birth'], principal='human', max_concurrent_children=10, max_spawn_depth=1).child
+        append = child | {'sequence': 1, 'operation': 'transcript.append',
+                          'payload': {'messages': [{'role': 'assistant', 'content': 'continued'}]}}
+        finish = child | {'sequence': 2, 'operation': 'execution.finish', 'payload': {}}
+        if finished_before_recovery:
+            await worker_request(connection, None, append, operation='persist')
+            # The old owner's persistence call returns, but the child never gets the response.
+            finished = await worker_request(connection, None, finish, operation='persist')
+            assert db.sessions.get(child['session_id']).end_reason == 'agent_close'
         authority.epoch = db.runtime.begin_epoch(instance_id='successor')
         db.admissions.recover(epoch=authority.epoch)
         assert db.admissions.get(admission_id=admitted.admission_id).owner_epoch == authority.epoch
         assert db.sessions.get(other.session_id).end_reason == 'agent_close'
-        child['epoch'] = authority.epoch
-        append = child | {'sequence': 1, 'operation': 'transcript.append',
-                          'payload': {'messages': [{'role': 'assistant', 'content': 'continued'}]}}
-        receipt = await worker_request(connection, None, append, operation='persist')
-        assert await worker_request(connection, None, append, operation='persist') == receipt
-        finish = child | {'sequence': 2, 'operation': 'execution.finish', 'payload': {}}
-        finished = await worker_request(connection, None, finish, operation='persist')
+        append = append | {'epoch': authority.epoch}
+        next_finish = finish | {'epoch': authority.epoch}
+        if not finished_before_recovery:
+            receipt = await worker_request(connection, None, append, operation='persist')
+            assert await worker_request(connection, None, append, operation='persist') == receipt
+            finished = await worker_request(connection, None, next_finish, operation='persist')
+        else:
+            with pytest.raises(AuthorityRefusal, match='stale_epoch'):
+                await worker_request(connection, None, finish, operation='persist')
+        finish = next_finish
         assert await worker_request(connection, None, finish, operation='persist') == finished
+        with pytest.raises(AuthorityRefusal, match='permission_denied'):
+            await worker_request(connection, None, finish | {'secret': 'x' * 32}, operation='persist')
         assert [m.content for m in db.messages.read_transcript(child['session_id'])] == ['continued']
         with pytest.raises(AuthorityRefusal, match='stale_generation'):
             await worker_request(connection, None, append | {'sequence': 3}, operation='persist')

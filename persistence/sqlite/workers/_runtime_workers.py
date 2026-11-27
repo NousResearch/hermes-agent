@@ -105,10 +105,10 @@ def transfer_detached_workers(conn, epoch):
                                        (epoch, record['admission_id'])).rowcount
         if moved_worker != 1 or moved_admission != 1:
             raise AuthorityRefusal('stale_generation')  # Roll back the entire recovery write.
-        # Child execution IDs encode their reserving ancestry; only live descendants from
-        # this same owner survive with the proven root. Other stale children are retired below.
+        # Child execution IDs encode their reserving ancestry. Move only the verified root's
+        # descendants from the old epoch; terminal children move for exact receipts, not writes.
         conn.execute("UPDATE worker_executions SET owner_epoch=? WHERE execution_id>=? AND execution_id<? "
-                     "AND kind='child' AND status IN ('registered','running') AND owner_epoch=?",
+                     "AND kind='child' AND owner_epoch=?",
                      (epoch, *descendant_range(record['execution_id']), link[0]))
 
 

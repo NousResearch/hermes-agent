@@ -231,7 +231,7 @@ def test_a_feishu_override_is_reported_only_when_nothing_serves_the_feishu_crede
 
 
 @pytest.mark.parametrize("placed", ["left-core", "default"])
-def test_a_hermes_tag_home_is_told_once_feishu_runs_on_the_official_plugin(tmp_path, placed):
+def test_a_hermes_tag_home_is_told_once_the_official_feishu_plugin_replaces_its_override(tmp_path, placed):
     """``hermes-tag`` overrides Feishu by importing core's bundled adapter. Its home hears where Feishu went
     exactly once, also when the default installer placed the feishu plugin first (no install outcome line)."""
     config = "_default_plugins_installed: [feishu]\n" if placed == "default" else ""
@@ -248,7 +248,8 @@ def test_a_hermes_tag_home_is_told_once_feishu_runs_on_the_official_plugin(tmp_p
     lcm.migrate_home(home, install=install, say=said.append)
     lcm.migrate_home(home, install=install, say=said.append)
     told = [line for line in said if "'hermes-tag'" in line]
-    assert len(told) == 1 and "official 'feishu' plugin" in told[0]
+    assert len(told) == 1 and "The replacement is the official 'feishu' plugin" in told[0]
+    assert "runs on" not in told[0]  # said before the install's outcome is known: no claim that Feishu runs
 
 
 def test_a_feishu_home_without_hermes_tag_hears_nothing_about_it(tmp_path):

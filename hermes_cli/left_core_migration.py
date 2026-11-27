@@ -247,8 +247,8 @@ def _feishu_override_notice(home: Path, *, process_env: bool = False) -> str:
     if not plugin_present("hermes-tag", home):
         return ""
     return ("The community 'hermes-tag' plugin in this profile extends the Feishu adapter Hermes core no longer "
-            "ships, so its Feishu override cannot load: Feishu runs on the official 'feishu' plugin, with the same "
-            "FEISHU_* settings. Update hermes-tag once it supports the feishu plugin, or remove it "
+            "ships, so its Feishu override cannot load. The replacement is the official 'feishu' plugin, which uses the "
+            "same FEISHU_* settings. Update hermes-tag once it supports the feishu plugin, or remove it "
             "(`hermes plugins remove hermes-tag`).")
 
 

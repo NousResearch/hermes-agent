@@ -37,8 +37,9 @@ async def test_fifo_goal_continuation_never_runs_in_a_reset_session(
     monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "42")
     monkeypatch.setattr(gr, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
     runner = gr.GatewayRunner(GatewayConfig(sessions_dir=tmp_path / "sessions"))
-    if with_authority:  # native admission (production); else the classic in-process resolver
-        await initialize_session_authority(runner, profile_id="default", instance_id="goal-pin")
+    # Native admission (production), or the classic in-process resolver.
+    authority = (await initialize_session_authority(runner, profile_id="default", instance_id="goal-pin")
+                 if with_authority else None)
     db = open_persistence(runner.session_store.persistence.scope)
     monkeypatch.setattr(goals, "_get_session_db", lambda: db)
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fixture", typing_indicator=False))
@@ -58,7 +59,7 @@ async def test_fifo_goal_continuation_never_runs_in_a_reset_session(
                 "history_offset": 0, "last_prompt_tokens": 0}
 
     monkeypatch.setattr(runner, "_run_agent", respond)
-    verdicts = iter([("continue", "more work remains", False, None, False)])
+    verdicts = iter([("continue", "more work remains", False, None, False)] * 2)
     monkeypatch.setattr(goals, "judge_goal",
                         lambda *a, **k: next(verdicts, ("done", "finished", False, None, False)))
 
@@ -89,6 +90,15 @@ async def test_fifo_goal_continuation_never_runs_in_a_reset_session(
         session_b = runner.session_store.peek_session_id(route)
         assert (session_b != session_a) is reset_before_drain
 
+        if authority is not None:
+            # The adapter has handed off, but authority can still be running the durable wake.
+            live = authority.sessions.get(session_a)
+            if live is not None and live.task is not None:
+                await live.task
+        started = [sid for sid, message in calls if CONTINUATION_MARKER in message]
+        assert started == ([] if reset_before_drain else [session_a, session_a]), calls
+        if not reset_before_drain:
+            assert goals.GoalManager(session_a).state.status == "done"
         await adapter.handle_message(MessageEvent(text="fresh question", source=source, message_id="2"))
         await async_wait_until(lambda: any(m == "fresh question" for _, m in calls)
                                and not adapter._background_tasks, what="second user turn ran")
@@ -98,6 +108,6 @@ async def test_fifo_goal_continuation_never_runs_in_a_reset_session(
         if reset_before_drain:
             assert continuation_runs == [], f"stale continuation ran after reset: {calls}"
         else:
-            assert continuation_runs == [session_a], calls
+            assert continuation_runs == [session_a, session_a], calls
     finally:
         db.close()

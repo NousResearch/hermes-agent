@@ -1447,6 +1447,11 @@ class GatewayInboundMixin(
         _claim_state.turn.agent = _AGENT_PENDING_SENTINEL
         _claim_state.turn.event = event
         _claim_state.turn.started_ts = time.time()
+        # The classic path now owns this turn. A selected adapter event no longer waits
+        # for drainage; do not let its own post-turn judge count it as a queued successor.
+        task = asyncio.current_task()
+        if task is not None and getattr(task, "_goal_drain", None) is not None:
+            task._goal_drain = None
         from hermes_cli.observability.shared_metrics_gateway import start_reply_clock
         start_reply_clock(source, internal=is_internal)
         self._persist_active_agents()

@@ -340,13 +340,13 @@ class GatewayBusySessionMixin:
 
     def _goal_still_active_for_session(self, session_id: str, generation: float | str | None = None) -> bool:
         """A fresh DB check that the same run of the goal is still active."""
-        if not session_id:
+        if not session_id or generation is None:
             return False
         try:
             from hermes_cli.goals import GoalManager
             state = GoalManager(session_id=session_id).state
-            return state is not None and state.status == "active" and state.continuation_generation == (
-                state.created_at if generation is None else generation)
+            return (state is not None and state.status == "active"
+                    and state.continuation_generation == generation)
         except Exception as exc:
             logger.debug("goal continuation: active-state recheck failed: %s", exc)
             return False
@@ -356,7 +356,7 @@ class GatewayBusySessionMixin:
         """A goal run's generation lives in adapter metadata or the durable wake's request ID.
 
         The ID's fourth item is the creation time until first resume, then the resume token.
-        Older three-item IDs are untagged; they cannot survive a resume.
+        Older three-item IDs are untagged and cannot prove which goal produced them.
         """
         metadata = getattr(event, "metadata", None) or {}
         if "goal_generation" in metadata or not getattr(event, "internal", False):
@@ -389,7 +389,7 @@ class GatewayBusySessionMixin:
             return False
         entry = await self.async_session_store.lookup_by_session_key(self._session_key_for_source(source))
         current = getattr(entry, "session_id", None)
-        if not current or await asyncio.to_thread(self._goal_still_active_for_session, current, generation):
+        if current and await asyncio.to_thread(self._goal_still_active_for_session, current, generation):
             return False
         logger.info("Discarding stale goal continuation for session %s", current)
         return True

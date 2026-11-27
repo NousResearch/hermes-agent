@@ -21,6 +21,7 @@ The judge runs for seconds: a /goal pause or clear sent meanwhile is not written
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
@@ -307,13 +308,15 @@ async def test_adapter_slot_continuation_never_runs_for_a_replaced_goal(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_new_goal_judged_while_the_old_continuation_waits_still_continues(tmp_path, monkeypatch):
-    """Goal A's continuation is still queued when goal B is set and B's turn is judged: A's waiting
-    continuation does not stand in for B's (it is dropped when it would start), so B continues."""
+@pytest.mark.parametrize("case", ["tagged", "legacy", "legacy_clear_same", "legacy_unchanged"])
+async def test_new_goal_judged_while_the_old_continuation_waits_still_continues(tmp_path, monkeypatch, case):
+    """An untagged durable row cannot run or stand in for a freshly judged continuation."""
     from gateway import session_automation
+    from gateway.session_results import admission_result
     from hermes_cli import goals
 
     runner, authority, adapter, db, _sent = await _telegram_gateway(tmp_path, monkeypatch, "goal-dedupe")
+    assert authority is not None
     calls = []
 
     async def respond(**kw):
@@ -326,12 +329,18 @@ async def test_new_goal_judged_while_the_old_continuation_waits_still_continues(
     source = adapter.build_source(chat_id="42", chat_type="dm", user_id="42")
     route = runner._session_key_for_source(source)
     real_wake, wakes = session_automation.admit_route_wake, []
+    final_goal = "ship release A" if case == "legacy_clear_same" else "ship release B"
 
     async def wake_then_new_goal(*args, **kwargs):
+        if not wakes and case != "tagged":
+            kwargs["metadata"] = {key: value for key, value in kwargs["metadata"].items()
+                                  if key != "goal_generation"}
         accepted = await real_wake(*args, **kwargs)
         wakes.append(args[3])
-        if len(wakes) == 1:
-            await runner._handle_goal_command(MessageEvent(text="/goal ship release B", source=source, message_id="g"))
+        if len(wakes) == 1 and case != "legacy_unchanged":
+            if case == "legacy_clear_same":
+                await runner._handle_goal_command(MessageEvent(text="/goal clear", source=source, message_id="c"))
+            await runner._handle_goal_command(MessageEvent(text=f"/goal {final_goal}", source=source, message_id="g"))
             entry = await runner.async_session_store.get_or_create_session(source, touch_activity=False)
             await runner._post_turn_goal_continuation(session_entry=entry, source=source, final_response="answered",
                                                       authority_owned_wake=True)
@@ -343,6 +352,7 @@ async def test_new_goal_judged_while_the_old_continuation_waits_still_continues(
         await adapter.handle_message(MessageEvent(text="seed the route", source=source, message_id="1"))
         await async_wait_until(lambda: len(calls) == 1 and not adapter._background_tasks, what="human turn delivered")
         sid = runner.session_store.peek_session_id(route)
+        assert sid is not None
         goal_a = goals.GoalManager(sid).set("ship release A").created_at
         live = authority.sessions[sid]
         assert await runner._inject_watch_notification("[IMPORTANT: background result arrived]", {
@@ -352,10 +362,19 @@ async def test_new_goal_judged_while_the_old_continuation_waits_still_continues(
         }) is True
         await live.task
 
-        assert len(wakes) == 2 and "ship release A" in wakes[0] and "ship release B" in wakes[1], wakes
-        assert [c.split("\n")[1] for c in calls if c.startswith(MARKER)] == ["Goal: ship release B"], calls
+        if case == "legacy_unchanged":
+            rows = db.admissions.list(session_id=authority.logical_owner(sid), pending_only=False)
+            (old,) = [row for row in rows if "goal-continuation" in row.request_id]
+            assert len(json.loads(old.request_id)) == 3
+            assert not any(c.startswith(MARKER) for c in calls), calls
+            result = admission_result(db, old.admission_id)
+            assert result is not None and result["result"]["final_response"] == ""
+            state = goals.GoalManager(sid).state
+            assert state is not None and state.status == "active"
+            return
+        assert len(wakes) == 2 and "ship release A" in wakes[0] and final_goal in wakes[1], wakes
         # Each goal's identity is in its stored row: read back and restored by the native restore a
-        # restarted gateway uses, the rows still name goal A and goal B.
+        # restarted gateway uses. The historical row has no generation; the new one names B.
         from gateway.run_busy import GatewayBusySessionMixin
         from gateway.session_envelope import restore_native
         goal_b = goals.GoalManager(sid).state.created_at
@@ -363,7 +382,12 @@ async def test_new_goal_judged_while_the_old_continuation_waits_still_continues(
                   if "goal-continuation" in row.request_id]
         restored = [restore_native(row.payload, runner) for row in stored]
         assert all(event.internal for event in restored)
-        assert [GatewayBusySessionMixin._goal_continuation_generation(e) for e in restored] == [goal_a, goal_b]
+        assert [len(json.loads(row.request_id)) for row in stored] == [4 if case == "tagged" else 3, 4]
+        assert [GatewayBusySessionMixin._goal_continuation_generation(e) for e in restored] == [
+            goal_a if case == "tagged" else None, goal_b]
+        assert [c.split("\n")[1] for c in calls if c.startswith(MARKER)] == [f"Goal: {final_goal}"], calls
+        result = admission_result(db, stored[0].admission_id)
+        assert result is not None and result["result"]["final_response"] == ""
     finally:
         db.close()
 
@@ -631,6 +655,7 @@ async def _pause_then_resume(adapter, source, sent, load_goal):
 @pytest.mark.parametrize("prior_wake", ["judged", "gate_failed", "legacy_untagged"])
 async def test_pause_then_resume_only_starts_the_new_continuation(tmp_path, monkeypatch, prior_wake):
     """A committed wake must not come back to life when the same goal is resumed."""
+    from gateway.session_envelope import restore_native
     from gateway.session_results import admission_result
     from hermes_cli import goals
     from tests.waiting import async_wait_until
@@ -647,7 +672,8 @@ async def test_pause_then_resume_only_starts_the_new_continuation(tmp_path, monk
 
         async def legacy_wake(*args, **kwargs):
             if not queued.is_set():
-                kwargs.pop("generation", None)  # exercise the released three-element identity
+                kwargs["metadata"] = {key: value for key, value in kwargs["metadata"].items()
+                                      if key != "goal_generation"}
             return await admit(*args, **kwargs)
 
         monkeypatch.setattr(session_automation, "admit_route_wake", legacy_wake)
@@ -697,6 +723,9 @@ async def test_pause_then_resume_only_starts_the_new_continuation(tmp_path, monk
         await asyncio.wait_for(queued.wait(), 15)
         (old,) = wakes()
         assert old.status == "queued"
+        assert len(json.loads(old.request_id)) == (3 if prior_wake == "legacy_untagged" else 4)
+        if prior_wake == "legacy_untagged":
+            assert runner._goal_continuation_generation(restore_native(old.payload, runner)) is None
         assert ("check failed" in old.payload["text"]) == (prior_wake == "gate_failed")
         await _pause_then_resume(adapter, source, sent, lambda: goals.load_goal(sid))
 
@@ -920,7 +949,7 @@ def test_in_band_follow_up_check_names_the_goal(tmp_path, monkeypatch):
 
         continuation = f"{MARKER}\nGoal: ship release A"
         assert stale(runner, queued(continuation, first), "sess-inband") is False
-        assert stale(runner, queued(continuation, None), "sess-inband") is False
+        assert stale(runner, queued(continuation, None), "sess-inband") is True
         manager.pause()
         resumed = manager.resume()
         assert resumed is not None

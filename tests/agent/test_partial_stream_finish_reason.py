@@ -254,6 +254,99 @@ class TestCleanStreamEndMidToolCall:
         )
 
 
+class TestTerminalStreamWithUnrepairableToolArgs:
+    """A terminal marker does not make an unrecoverable payload safe to execute."""
+
+    @pytest.mark.parametrize("finish_reason", ["tool_calls", "stop", "length", None])
+    @pytest.mark.parametrize("tool_name", ["write_file", "read_file"])
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_unrepairable_args_with_terminal_finish_route_to_stub(
+        self, _mock_close, mock_create, monkeypatch, tool_name, finish_reason, loop_agent,
+    ):
+        def _terminal_but_unrepairable_stream():
+            yield _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, tc_id="call_x", name=tool_name),
+            ])
+            # A string cut in progress cannot be safely repaired. The provider nevertheless
+            # sends a normal terminal marker, which used to let this call execute as {}.
+            yield _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, arguments='{"path": "unterminated'),
+            ])
+            yield _make_stream_chunk(finish_reason=finish_reason)
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = (
+            lambda *a, **kw: _terminal_but_unrepairable_stream()
+        )
+        mock_create.return_value = mock_client
+
+        agent = _make_agent()
+        agent._fire_stream_delta = lambda text: None
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.id == PARTIAL_STREAM_STUB_ID
+        assert response.choices[0].finish_reason == FINISH_REASON_LENGTH
+        assert response.choices[0].message.tool_calls is None
+        assert getattr(response, "_dropped_tool_names", None) == [tool_name]
+        assert response._clean_eof is (finish_reason is None)
+
+        from tests.agent.test_run_agent import _mock_response
+
+        loop_agent._disable_streaming = True
+        with (
+            patch.object(loop_agent, "_interruptible_api_call", side_effect=[
+                response, _mock_response(content="Retried safely", finish_reason="stop"),
+            ]) as api_call,
+            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_save_trajectory"),
+            patch.object(loop_agent, "_cleanup_task_resources"),
+            patch("model_tools.handle_function_call") as dispatch,
+        ):
+            result = loop_agent.run_conversation("save the file")
+
+        assert result["completed"] is True
+        assert result["final_response"] == "Retried safely"
+        assert api_call.call_count == 2
+        dispatch.assert_not_called()
+        retry_messages = api_call.call_args_list[1].args[0]["messages"]
+        retry_prompt = next(m["content"] for m in reversed(retry_messages) if m["role"] == "user")
+        assert tool_name in retry_prompt
+        assert not any(m.get("tool_calls") for m in retry_messages)
+
+    @pytest.mark.parametrize("finish_reason", ["tool_calls", "stop", "length"])
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_repairable_terminal_tool_arguments_remain_executable(
+        self, _mock_close, mock_create, finish_reason,
+    ):
+        import json
+
+        chunks = [
+            _make_stream_chunk(tool_calls=[_make_tool_call_delta(
+                tc_id="call_repaired", name="read_file", arguments='{"path": "/tmp/report",}',
+            )]),
+            _make_stream_chunk(finish_reason=finish_reason),
+        ]
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = lambda *a, **kw: iter(chunks)
+        mock_create.return_value = mock_client
+        agent = _make_agent()
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.id != PARTIAL_STREAM_STUB_ID
+        assert response.choices[0].finish_reason == finish_reason
+        call = response.choices[0].message.tool_calls[0]
+        assert call.function.name == "read_file"
+        assert json.loads(call.function.arguments) == {"path": "/tmp/report"}
+        assert call.function.args_repaired is True
+
+
+
+
+
 # ── Clean stream-end before any argument byte arrives (#80498) ─────────────
 
 class TestCleanStreamEndBeforeAnyToolArgs:

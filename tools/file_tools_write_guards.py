@@ -172,7 +172,8 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
 # case-insensitive filesystems (macOS/Windows) cannot slip past; on case-sensitive filesystems most loaders
 # probe common case variants too, so the stricter behavior is kept uniform.
 _PROTECTED_INSTRUCTION_BASENAMES = frozenset({
-    "agents.md", "claude.md", "soul.md", ".cursorrules"})
+    "agents.md", "claude.md", "gemini.md", "soul.md", ".cursorrules",
+    ".clinerules", ".windsurfrules", "copilot-instructions.md"})
 
 
 def _name_key(name: str) -> str:

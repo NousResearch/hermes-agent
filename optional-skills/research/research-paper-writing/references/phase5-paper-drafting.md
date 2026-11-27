@@ -60,8 +60,8 @@ This skill synthesizes writing philosophy from researchers who have published ex
 | **Andrej Karpathy** | Single contribution focus | Various lectures |
 
 **For deeper dives into any of these, see:**
-- [references/writing-guide.md](references/writing-guide.md) — Full explanations with examples
-- [references/sources.md](references/sources.md) — Complete bibliography
+- [writing-guide.md](writing-guide.md) — Full explanations with examples
+- [sources.md](sources.md) — Complete bibliography
 
 ### Time Allocation
 
@@ -370,7 +370,7 @@ Model Card (Appendix):
 - Consistent terminology throughout
 - Avoid incremental vocabulary: "develop", not "combine"
 
-**Full writing guide with examples**: See [references/writing-guide.md](references/writing-guide.md)
+**Full writing guide with examples**: See [writing-guide.md](writing-guide.md)
 
 ### Using LaTeX Templates
 
@@ -461,7 +461,7 @@ Work through systematically: title/authors → abstract → introduction → met
 
 **Universal**: Double-blind, references don't count, appendices unlimited, LaTeX required.
 
-Templates in `templates/` directory. See [templates/README.md](templates/README.md) for compilation setup (VS Code, CLI, Overleaf, other IDEs).
+Templates in `templates/` directory. See [templates/README.md](../templates/README.md) for compilation setup (VS Code, CLI, Overleaf, other IDEs).
 
 ### Tables and Figures
 

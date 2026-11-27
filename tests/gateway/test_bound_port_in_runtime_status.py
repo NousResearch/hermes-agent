@@ -3,7 +3,6 @@ port for a profile whose platform plugin the dashboard's own process never loade
 installed only in another profile)."""
 
 import pytest
-from aiohttp import web
 
 from gateway import status
 from gateway.platforms.base import BasePlatformAdapter
@@ -28,6 +27,7 @@ async def test_a_plugin_listeners_bound_port_reaches_the_dashboard_without_its_p
     assert not platform_registry.is_registered("feishu")  # no table row and no plugin in this process
 
     adapter = _adapter("feishu")
+    web = pytest.importorskip("aiohttp.web")  # the messaging extra; the status-only tests run without it
     app = web.Application()
     app.router.add_post("/feishu/webhook", lambda request: web.Response())
     runner = await bind_listener(adapter, app, "127.0.0.1", 0, "/feishu/webhook")
@@ -57,6 +57,7 @@ async def test_a_bot_restarted_without_a_listener_clears_its_old_port(tmp_path, 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
     webhook_mode = _adapter("feishu")
+    web = pytest.importorskip("aiohttp.web")  # the messaging extra; the status-only tests run without it
     app = web.Application()
     app.router.add_post("/feishu/webhook", lambda request: web.Response())
     runner = await bind_listener(webhook_mode, app, "127.0.0.1", 0, "/feishu/webhook")

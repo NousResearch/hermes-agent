@@ -140,9 +140,15 @@ def _prepare(authority, session_id, mcp_only=False, adopt_only=False):
     from gateway.session_local import load_profile_config
     from gateway.session_persistence import authority_persistence
     from gateway.session_policy import SURFACES, restore_policy
+    from gateway.session_route_recovery import _messaging_platform
     from tools.terminal_scope import build_profile_terminal_scope
     store = authority_persistence(authority)
-    generation = store.sessions.get(session_id).runtime_generation
+    row = store.sessions.get(session_id)
+    # A messaging row has no local creation receipt by design: reading one refuses storage_unavailable
+    # before the SURFACES guard below can give it the no-refresh it takes (#148456).
+    if row is not None and _messaging_platform(row.source) is not None:
+        return None
+    generation = row.runtime_generation
     stored = store.bindings.receipt(session_id).policy
     old = restore_policy(stored)
     # A bypass launch never reads the profile; cron, Kanban and room routes are not resumed CLI sessions.

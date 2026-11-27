@@ -74,6 +74,8 @@ class Service:
         if authority['kind'] == 'unstarted' and (
                 not plan['confirmable'] or plan['expires_at_ms'] <= int(time.time() * 1000)):
             raise CatalogError('review_expired', 'Review again before confirming.')
+        from hermes_cli.skill_catalog.registry import retry_initialization
+        retry_initialization(self.home, deadline=deadline)
         entry.mutations.reconcile(target=plan['target_relative_path'], deadline=deadline)
         if time.monotonic() >= deadline:
             raise CatalogError('timeout', 'Catalog request timed out.')

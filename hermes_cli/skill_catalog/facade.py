@@ -72,6 +72,7 @@ class ContextMutations:
                 pending['operation_id'] != operation_id or pending['state'] not in ('pending', 'unknown')
                 or pending['identifier'] != review['identifier'] or pending['action'] != review['action']):
             raise CatalogError('review_changed', 'Native pending journal does not match this review.')
+        registry.retry_initialization(self.home)
         admission = entry.mutations.projection.reserve(entry, review, operation_id=operation_id,
                                                         recovery=pending is not None)
         return dict(admission=admission, operation_id=operation_id)

@@ -120,7 +120,9 @@ This delivery adds no `hermes skills` parser, activation probe, flags, commands 
 
 Unload fences new calls and commits, waits for already-entered short filesystem commits, then drops the provider's projection. It deletes no skill files. An active writer can produce a transient busy refusal, so retry unload after that writer exits. With the last registration gone, stale projection bytes confer no ownership and the original local behavior applies.
 
-Re-enable calls `installed()` again. The provider classifies deleted, edited and replaced paths from its own records. Core validates those claims, never infers ownership by scanning arbitrary trees and never automatically deletes or overwrites a target. Ambiguous recovery against a changed target refuses.
+Re-enable calls `installed()` again. If that initial complete snapshot fails, core retains unknown ownership and retries the snapshot on an explicit confirmation, installed-list read or generic mutation. Retries use the bounded provider worker and never retry a file effect or Gateway acknowledgement. Unknown ownership does not expire. A pending operation with an established inventory fences only its overlapping target, not unrelated skills.
+
+The provider classifies deleted, edited and replaced paths from its own records. Core validates those claims, never infers ownership by scanning arbitrary trees and never automatically deletes or overwrites a target. Ambiguous recovery against a changed target refuses.
 
 Author-source enrollment is metadata-only and creates no managed claim. An edited update that needs a preservation copy at a second target refuses without writing files. Automatic preservation awaits a multi-target reservation contract. Guidance to archive or rename does not bypass live ownership. Provider reclassification or completed disable is required before a generic action can touch that claim.
 

@@ -119,6 +119,8 @@ def extend_installed_rows(rows):
     home = get_hermes_home()
     from hermes_cli.skill_catalog.projection import Projection
     store = Projection(home)
+    from hermes_cli.skill_catalog.registry import retry_initialization
+    retry_initialization(home)
     projection = store.read()
     entries = snapshot()
     before = _authority(projection, entries)

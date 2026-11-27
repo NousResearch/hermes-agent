@@ -142,10 +142,40 @@ def publish(key, *, scope=None):
     row.mutations = Mutations(row, projection)
     row.ready = True
     try:
-        projection.publish(row, installed_records(row))
+        projection.publish(row, installed_records(row), initializing=True)
     except CatalogError:
         # Keep the live reconciling lease: unknown ownership must not become local.
         return
+
+
+def retry_initialization(home, *, deadline=None):
+    """Retry a failed initial snapshot on demand; never expire unknown ownership.
+
+    A pending operation is path-scoped, but an incomplete initial inventory has
+    no known path set. Keep that fence until a complete snapshot publishes. Reads
+    use the ordinary bounded worker outside the mutation gate, with no effects.
+    """
+    from hermes_cli.skill_catalog.installed import installed_records
+    from hermes_cli.skill_catalog.projection import Projection
+    from hermes_cli.skill_catalog.validation import CatalogError
+    from hermes_cli.skill_catalog.worker import deadline_for
+
+    entries = snapshot(scope=home)
+    if not entries:
+        return
+    end = deadline_for('installed', deadline)
+    projection = Projection(Path(home))
+    doc = projection.read(deadline=end)
+    for entry in entries:
+        owner = projection._owner(entry, doc)
+        if owner['state'] != 'reconciling':
+            continue
+        try:
+            records = installed_records(entry, deadline=end)
+            projection.publish(entry, records, initializing=True, deadline=end)
+        except CatalogError:
+            raise CatalogError('ownership_state_unavailable',
+                               'Catalog installed ownership is unavailable. Retry later.') from None
 
 
 def admission_error(manifest) -> str:

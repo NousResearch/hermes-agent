@@ -53,6 +53,8 @@ def generic(*paths, deadline=None):
     home = get_hermes_home()
     root = Path(os.path.abspath(home / "skills"))
     live, reserved = _split(root, paths)
+    from hermes_cli.skill_catalog.registry import retry_initialization
+    retry_initialization(home, deadline=deadline)
     with Projection(home).generic(live, deadline=deadline):
         for relative in reserved:
             _check_reserved(root, relative)

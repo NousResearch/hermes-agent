@@ -319,7 +319,7 @@ class Projection:
             raise CatalogError("permission_denied", "Catalog registration is not authorized.")
         return row
 
-    def publish(self, entry, records):
+    def publish(self, entry, records, *, initializing=False, deadline=None):
         if type(records) is not list or len(records) > 10000:
             raise CatalogError("invalid_response", "Catalog installed pagination is incomplete.")
         clean = []
@@ -327,8 +327,12 @@ class Projection:
             page = v.validate_result("installed", {"ok": True, "data": {
                 "items": records[start:start + 100], "next_cursor": None}}, entry)
             clean.extend(page["items"])
-        with self.transaction() as doc:
+        with self.transaction(deadline=deadline) as doc:
             owner = self._owner(entry, doc)
+            # Another request may have published and then committed while this
+            # initial snapshot was in flight. Never replace its newer claims.
+            if initializing and owner["state"] == "ready":
+                return
             targets = self._claims(entry, doc, clean)
             doc["targets"] = {path: row for path, row in doc["targets"].items()
                               if row["registration_id"] != entry.registration_id} | targets

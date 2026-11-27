@@ -384,6 +384,27 @@ def _apply_stale_unit_guard(report: Report) -> Report:
                 report["overall"] = "degraded"
     return report
 
+def _apply_wayland_optin_guard(report: Report) -> Report:
+    """Linux+Wayland with ``computer_use.native_wayland`` unset: the driver runs its X11 backend, which cannot
+    enumerate native-Wayland toplevels — capture of a Wayland-native window then fails with empty window
+    discovery while every binary-level check here stays green (#130824). Doctor is the only surface that can
+    name the opt-in at the point of failure; a note (skip status) rather than fail, because the X11 path is
+    correct for X11/XWayland targets and the native backend is experimental upstream."""
+    if report.get("platform") != "linux" or not os.environ.get("WAYLAND_DISPLAY"):
+        return report
+    from tools.computer_use.cua_backend import _computer_use_cfg
+
+    if _computer_use_cfg().get("native_wayland", False):
+        return report
+    checks = report.get("checks")
+    if isinstance(checks, list):
+        checks.append({"name": "native_wayland opt-in", "status": "skip",
+                       "message": "Wayland session with computer_use.native_wayland unset: the driver's X11 "
+                                  "backend cannot see native-Wayland-only windows (e.g. a Wayland-native browser).",
+                       "hint": "Set computer_use.native_wayland: true to enable cua-driver's native-Wayland "
+                               "backend (experimental upstream), then restart the gateway; see the computer-use guide."})
+    return report
+
 def _wayland_environment_context(report: Report) -> Optional[Report]:
     """Linux+Wayland only: doctor probes the CLI process's environment, not the gateway's."""
     if report.get("platform") != "linux" or not os.environ.get("WAYLAND_DISPLAY"):
@@ -458,6 +479,7 @@ def run_doctor(driver_cmd: Optional[str] = None, *, include: Sequence[str] = (),
     report = _apply_stale_tcc_guard(report)
     report = _apply_stale_unit_guard(report)
     report = _apply_daemon_liveness_guard(report, binary)
+    report = _apply_wayland_optin_guard(report)
     identity = _build_identity(binary, report)
     environment = _wayland_environment_context(report)
     if json_output:

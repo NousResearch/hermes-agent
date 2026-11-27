@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import suppress
+import json
 import logging
 import os
 import uuid
@@ -111,6 +112,9 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         # Editor-held compression-tip id -> logical session id (see ``_resume``).
         self._aliases = {}
         self._form_elicitation = False
+        # ``acp_adapter/masked_prompts.py``: the editor opted in; gateway request id -> (session, task).
+        self._masked_prompts = False
+        self._masked = {}
         from hermes_cli.gateway_mutations import PreparedMutations
         self._mutations = PreparedMutations()
         # Session -> title the editor was last shown (``session_info_update`` fires on a change).
@@ -130,12 +134,14 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             add_observer(self._observe_client_message)
 
     def _observe_client_message(self, event):
-        """``initialize``'s raw capabilities (the SDK's typed model drops ``elicitation``)."""
+        """``initialize``'s raw capabilities (the SDK's typed model drops ``elicitation`` and ``_meta``)."""
         message = getattr(event, "message", None)
         if getattr(event, "direction", None) == "incoming" and isinstance(message, dict) \
                 and message.get("method") == "initialize":
             from acp_adapter.elicitation import client_supports_form_elicitation
+            from acp_adapter.masked_prompts import client_supports_masked_prompts
             self._form_elicitation = client_supports_form_elicitation(message.get("params"))
+            self._masked_prompts = client_supports_masked_prompts(message.get("params"))
 
     async def initialize(self, **kwargs):
         from hermes_cli import __version__
@@ -949,6 +955,8 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
                 if isinstance(frame, tuple):  # a post-ack recovery (``_after_ack``), behind every frame so far
                     await self._recover(*frame)
                     continue
+                if self._server_request(frame):
+                    continue
                 event = frame.get("params", {})
                 sid = event.get("session_id")
                 snapshot = self._snapshots.get(sid)
@@ -976,6 +984,9 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         aid = event.get("admission_id")
         if kind in {"session.info", "session.updated", "session.usage", "session.tools_changed"}:
             await self._project_session_state(kind, sid, editor_id, payload, event)
+            return
+        if kind == "request.cancel":
+            await self._withdraw_masked(editor_id, payload)
             return
         if await self._gap_guard(kind, sid, aid):
             return
@@ -1188,6 +1199,60 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             logger.info("ACP clarify viewer detached or control expired", exc_info=True)
             return False
 
+    def _server_request(self, frame):
+        """True for a gateway server→client request (an ``srq-`` id and a method, never a turn event:
+        it has no ``seq``, so it must not reach the replay cursor). A masked prompt goes to an editor
+        that opted in (``acp_adapter/masked_prompts.py``); anything else is left, as before, to
+        another viewer or the gateway's own timeout."""
+        from acp_adapter.masked_prompts import KINDS
+        request_id, method = frame.get("id"), frame.get("method")
+        if not (isinstance(request_id, str) and request_id.startswith("srq-") and isinstance(method, str)):
+            return False
+        params = frame.get("params") or {}
+        sid = params.get("session_id") if isinstance(params, dict) else None
+        # A re-attach replays the requests still open; one already on the editor is not asked twice.
+        if (self._masked_prompts and self._conn is not None and method in KINDS and sid in self._snapshots
+                and request_id not in self._masked):
+            task = asyncio.create_task(self._answer_masked(sid, request_id, method, params))
+            self._masked[request_id] = (sid, task)
+            task.add_done_callback(lambda done: self._masked.pop(request_id, None)
+                                   if self._masked.get(request_id, (None, None))[1] is done else None)
+        return True
+
+    async def _answer_masked(self, session_id, request_id, kind, params):
+        from acp_adapter.masked_prompts import METHOD, answer, build_request
+        value = ""
+        try:
+            response = await self._conn._conn.send_request(
+                METHOD, build_request(self._editor_id(session_id), request_id, kind, params))
+            value = answer(kind, response)
+        except asyncio.CancelledError:
+            raise  # withdrawn (``request.cancel``): the gateway settled it without this editor
+        except Exception:  # health: allow BLE001 -- a refused or failed editor request is the skip; no traceback, which could carry the typed value
+            # Boundary: a failed or refused request is the skip every viewer sends, so the tool does
+            # not sit out the prompt's timeout.
+            logger.info("ACP masked prompt %s not answered by the editor", kind)
+        gateway = self._gateway
+        websocket = getattr(gateway, "websocket", None)
+        if websocket is None:
+            return
+        try:
+            await websocket.send(json.dumps({"jsonrpc": "2.0", "id": request_id, "result": {"value": value}}))
+        except Exception:  # health: allow BLE001 -- the gateway's own wait bounds a lost answer; no traceback, which could carry the value
+            # Boundary: the gateway's own wait bounds a lost answer.
+            logger.debug("ACP masked prompt reply for %s not sent", kind)
+
+    async def _withdraw_masked(self, editor_id, payload):
+        """The gateway settled or withdrew a request (``reason``: resolved, timeout, interrupted)."""
+        from acp_adapter.masked_prompts import CANCEL_METHOD
+        entry = self._masked.pop(payload.get("id"), None)
+        if entry is None or entry[1].done():  # done: this editor's own answer settled it
+            return
+        entry[1].cancel()
+        with suppress(Exception):
+            await self._conn._conn.send_notification(CANCEL_METHOD, {
+                "sessionId": editor_id, "promptId": payload["id"], "reason": str(payload.get("reason") or "")})
+
     async def _answer_permission(self, session_id, prompt):
         from acp.schema import AllowedOutcome
         from acp_adapter.permissions import (
@@ -1235,4 +1300,10 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         if self._permissions:
             await asyncio.gather(*self._permissions.values(), return_exceptions=True)
             self._permissions.clear()
+        masked = [task for _sid, task in self._masked.values()]
+        for task in masked:
+            task.cancel()
+        if masked:
+            await asyncio.gather(*masked, return_exceptions=True)
+            self._masked.clear()
         await self._teardown()

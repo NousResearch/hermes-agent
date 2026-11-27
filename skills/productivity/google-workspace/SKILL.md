@@ -53,7 +53,7 @@ GSETUP="python ${HERMES_HOME:-$HOME/.hermes}/skills/productivity/google-workspac
 $GSETUP --check
 ```
 
-If it prints `AUTHENTICATED`, skip to Usage — setup is already done.
+If it prints `AUTHENTICATED`, skip to Usage — setup is already done. This includes an existing `gws auth login` (see Notes below).
 
 ### Step 1: Triage — ask the user what they need
 
@@ -168,6 +168,7 @@ Should print `AUTHENTICATED`. Setup is complete — token refreshes automaticall
 - Token is stored at `~/.hermes/google_token.json` and auto-refreshes.
 - Pending OAuth session state/verifier are stored temporarily at `~/.hermes/google_oauth_pending.json` until exchange completes.
 - If `gws` is installed, `google_api.py` points it at the same `~/.hermes/google_token.json` credentials file. Users do not need to run a separate `gws auth login` flow.
+- Without that token, an existing `gws auth login` is used instead: `--check` reports `AUTHENTICATED: Using gws CLI credentials`. Two limits: `drive upload`/`drive download` have no gws route and still need the Hermes token, and gws's own login is only visible where gws runs locally (remote terminal backends mount only Hermes credential files, so there the check reports `NOT_AUTHENTICATED`).
 - To revoke: `$GSETUP --revoke`
 
 ## Usage
@@ -330,6 +331,7 @@ All commands return JSON. Parse with `jq` or read directly. Key fields:
 |---------|-----|
 | `NOT_AUTHENTICATED` | Run setup Steps 2-5 above |
 | `REFRESH_FAILED` | Token revoked or expired — redo Steps 3-5 |
+| `GWS_TOKEN_INVALID` | The user's own gws login expired or was revoked — they re-run `gws auth login`, or do Steps 2-5 for a Hermes token |
 | `HttpError 403: Insufficient Permission` | Missing API scope — `$GSETUP --revoke` then redo Steps 3-5 |
 | `AUTHENTICATED (partial)` or "Token missing scopes" | New write capabilities (Drive write/delete, Docs create/edit) require re-authorization. `$GSETUP --revoke` then redo Steps 3-5 to grant the upgraded scopes. |
 | `HttpError 403: Access Not Configured` | API not enabled — user needs to enable it in Google Cloud Console |

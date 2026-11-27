@@ -66,6 +66,17 @@ def _read_config(home: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _layered_config(home: Path) -> dict:
+    """*home*'s config.yaml with the managed overlay applied, as the plugin loader reads it; ``{}`` when the
+    user file is malformed (the loader's own read then fails open too)."""
+    from gateway import config_loader
+    try:
+        return config_loader.read_yaml_layers(home)
+    except Exception:  # health: allow BLE001 -- malformed config.yaml: nothing the loader honours either
+        logger.debug("left-core: unreadable config for %s", home, exc_info=True)
+        return {}
+
+
 def _merged_platform_block(home: Path, name: str) -> Optional[dict]:
     """Platform *name*'s block as the gateway loader builds it for *home* (``config_loader.platform_blocks``,
     the one normalized view: key case and aliases, every layer, the malformed-layer fallback); ``None`` when no
@@ -229,7 +240,7 @@ def _feishu_notice(home: Path, *, process_env: bool = False) -> str:
     A bare ``feishu`` in plugins.disabled (core's adapter ignored it) is said by the kept-off sentence."""
     from hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
     # The bundled adapter was exempt from host isolation; a catalog platform adapter cannot run in the host.
-    if isolation_mode(_read_config(home)) == ISOLATION_HOST:
+    if isolation_mode(_layered_config(home)) == ISOLATION_HOST:  # an administrator's pin counts
         return ("This profile sets plugins.isolation: host, where platform adapters cannot load: Feishu "
                 "stays off until the profile loads plugins in-process.")
     return ""

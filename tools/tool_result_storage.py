@@ -430,20 +430,87 @@ def _calls_for_rows(messages: list[dict[str, Any]]) -> list[tuple[str, str]]:
     return out
 
 
+def _demoted_call_arguments(original: Any, replacement: Any) -> dict[str, tuple[str, str]]:
+    """``call id -> (tool name, original arguments)`` for every call whose arguments *replacement* demoted.
+
+    A lean-tail demotion rewrites the argument half of a stale round as well as the result half: a ``write_file``
+    body, both sides of a ``patch``, an inline shell script. Those originals are archived exactly like a result's
+    body, so an argument stub never stands without the file that holds what it replaced.
+    """
+    from agent.context_compressor import _tc_get
+
+    if not isinstance(original, dict) or not isinstance(replacement, dict):
+        return {}
+    after = {
+        str(_tc_get(call, "id") or ""): _tc_get(_tc_get(call, "function", {}), "arguments")
+        for call in replacement.get("tool_calls") or []
+    }
+    changed: dict[str, tuple[str, str]] = {}
+    for call in original.get("tool_calls") or []:
+        cid = str(_tc_get(call, "id") or "")
+        fn = _tc_get(call, "function", {})
+        if cid and cid in after and after[cid] != _tc_get(fn, "arguments"):
+            changed[cid] = (str(_tc_get(fn, "name") or ""), str(_tc_get(fn, "arguments") or ""))
+    return changed
+
+
+def _archive_demoted_arguments(
+    row: dict[str, Any], changed: dict[str, tuple[str, str]], session_id: str,
+) -> tuple[dict[str, Any], list[str]] | None:
+    """Archive each demoted call's original arguments and name the file in its stub; None if a write failed.
+
+    None means the caller must put that row back to its original: a compaction never commits an argument stub
+    without the file behind it, exactly as the result half decides one row at a time.
+    """
+    from agent.context_compressor import _tc_get
+    from agent.context_compressor_tail import with_arguments_pointer
+
+    calls, paths = [], []
+    for call in row.get("tool_calls") or []:
+        cid = str(_tc_get(call, "id") or "")
+        if cid not in changed:
+            calls.append(call)
+            continue
+        tool_name, original_args = changed[cid]
+        archived = write_pruned_original(
+            original_args, session_id or "session", f"{tool_name or 'tool'}_args", cid,
+        )
+        if archived is None:
+            return None
+        paths.append(archived[0])
+        fn = dict(_tc_get(call, "function", {}) or {})
+        fn["arguments"] = with_arguments_pointer(str(fn.get("arguments") or ""), archived[1])
+        calls.append({**(dict(call) if isinstance(call, dict) else {}), "function": fn})
+    return {**row, "tool_calls": calls}, paths
+
+
 def archive_pruned_originals(
     messages: list[dict[str, Any]], pruned: list[dict[str, Any]], session_id: str,
 ) -> tuple[list[dict[str, Any]], list[str], int]:
-    """Write the original of every tool row *pruned* changed; returns ``(rows, written host paths, reverted)``.
+    """Write the original of every row *pruned* changed; returns ``(rows, written host paths, reverted)``.
 
-    A changed row whose archive write fails is put back to its original (``reverted`` counts them),
-    so the caller re-checks its reclaim gate and never commits a stub without a file behind it. A row
+    Both halves of a demoted round are covered: a tool row whose body a prune shortened, and the call arguments a
+    lean-tail demotion replaced. A changed row whose archive write fails is put back to its original (``reverted``
+    counts them), so the caller re-checks its reclaim gate and never commits a stub without a file behind it. A row
     that already names its archive is left as the prune made it: its original is on disk.
     """
     call_at = _calls_for_rows(messages)
     rows, written, reverted = list(pruned), [], 0
     for i, (original, replacement) in enumerate(zip(messages, pruned)):
-        if (not isinstance(original, dict) or original.get("role") != "tool"
-                or not isinstance(replacement, dict) or replacement.get("content") == original.get("content")):
+        if not isinstance(original, dict) or not isinstance(replacement, dict):
+            continue
+        if original.get("role") == "assistant":
+            changed = _demoted_call_arguments(original, replacement)
+            if not changed or _archive_backend() is None:
+                continue  # no folder to hold the originals here: the plain argument stubs stand, as results do
+            archived = _archive_demoted_arguments(replacement, changed, session_id)
+            if archived is None:
+                rows[i], reverted = dict(original), reverted + 1
+                continue
+            rows[i], paths = archived
+            written.extend(paths)
+            continue
+        if original.get("role") != "tool" or replacement.get("content") == original.get("content"):
             continue
         body = original.get("content")
         if isinstance(body, str) and has_archive_pointer(body):

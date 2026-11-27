@@ -3434,10 +3434,11 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         return self._augment_summary_lean(summary, turns_to_summarize)
 
     def _demote_stale_tail_tools(self, messages: list[dict[str, Any]], tail_start: int) -> list[dict[str, Any]]:
-        """Lean mode: demote stale tail tool results to recovery stubs (``demote_stale_tail_tools``)."""
+        """Lean mode: demote stale tail tool results and their call arguments to recovery stubs
+        (``demote_stale_tail_tools``)."""
         result, demoted = demote_stale_tail_tools(messages, tail_start, getattr(self, "_session_id", "") or "")
         if demoted and not self.quiet_mode:
-            logger.info("Lean tail: demoted %d stale tool result(s)", demoted)
+            logger.info("Lean tail: demoted %d stale tool row(s) (results and call arguments)", demoted)
         return result
 
     def _augment_summary_lean(self, summary: str, turns_to_summarize: list[dict[str, Any]]) -> str:

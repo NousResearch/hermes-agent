@@ -3,6 +3,7 @@ import { beforeEach, expect, it, vi } from 'vitest'
 import { createSlashHandler } from '../app/createSlashHandler.js'
 import { getOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
+import { modelPickerCommand } from '../components/modelPicker.js'
 
 const flush = () => new Promise(resolve => setImmediate(resolve))
 const info = { model: 'old', skills: {}, tools: {}, execution_epoch: '1', execution_generation: 4 }
@@ -342,6 +343,18 @@ it('a picker-issued --reasoning rides in the one canonical model selection, defe
   // One request: a busy session defers it and commits model + level together at the boundary.
   expect(sends).toEqual([['model', { model: 'picked', provider: 'custom', reasoning: 'high' }]])
   expect(request.mock.calls.some(([method]) => method === 'config.set')).toBe(false)
+})
+
+it.each(['high', 'none'])('sends picker reasoning %s with the canonical model selection', async effort => {
+  const { request, slash } = harness()
+  slash(`/model ${modelPickerCommand('picked', 'custom', false, effort)}`)
+  await flush()
+
+  const sends = request.mock.calls
+    .filter(([method]) => method === 'session.mutate')
+    .map(([, params]) => [params.operation, params.payload])
+
+  expect(sends).toEqual([['model', { model: 'picked', provider: 'custom', reasoning: effort }]])
 })
 
 it('an unknown --reasoning level is refused like any unsupported model option, mutating nothing', async () => {

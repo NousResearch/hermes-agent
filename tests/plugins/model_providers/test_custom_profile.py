@@ -83,7 +83,8 @@ class TestCustomReasoningWireShape:
             base_url="https://api.mistral.ai/v1",
         )
         assert "think" not in eb
-        assert tl == {"reasoning_effort": "none"}
+        # non-Ollama: omit reasoning_effort entirely (litellm proxies 400 even on "none")
+        assert tl == {}
 
     def test_disabled_omits_think_without_base_url(self, custom_profile):
         """Unknown custom endpoint — do not send the Ollama-only flag."""
@@ -91,7 +92,8 @@ class TestCustomReasoningWireShape:
             reasoning_config={"enabled": False}, model="glm-5.2"
         )
         assert "think" not in eb
-        assert tl == {"reasoning_effort": "none"}
+        # non-Ollama: omit entirely (litellm proxies 400 on the field, even "none")
+        assert tl == {}
 
     @pytest.mark.parametrize(
         "base_url",
@@ -108,7 +110,9 @@ class TestCustomReasoningWireShape:
             base_url=base_url,
         )
         assert "think" not in eb
-        assert tl == {"reasoning_effort": "none"}
+        # non-Ollama relays: omit reasoning_effort entirely rather than
+        # sending "none" — litellm-based proxies reject the field outright.
+        assert tl == {}
 
     def test_disabled_sends_think_false_on_ollama_cloud_host(self, custom_profile):
         eb, tl = custom_profile.build_api_kwargs_extras(
@@ -141,7 +145,7 @@ class TestCustomReasoningWireShape:
             base_url=base_url,
         )
         assert "think" not in eb
-        assert tl == {"reasoning_effort": "none"}
+        assert tl == {}  # non-Ollama: omit reasoning_effort entirely
 
     @pytest.mark.parametrize(
         "effort", ["minimal", "low", "medium", "high", "xhigh", "max"]

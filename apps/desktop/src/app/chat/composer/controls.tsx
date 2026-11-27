@@ -25,7 +25,7 @@ import { StartVoiceButton } from './start-voice-button'
 import type { ChatBarState, VoiceStatus } from './types'
 import { VoiceFan } from './voice-fan'
 import { VoiceMenu } from './voice-menu'
-
+import { ComposerWorkspaceControls } from './workspace-controls'
 // Re-exported: `context-menu.tsx` and other row neighbours have always reached
 // for these here, and the row is where they read as belonging.
 export { ACTIVE_ICON_BTN, GHOST_ICON_BTN, ICON_BTN, PRIMARY_ICON_BTN } from './control-classes'
@@ -258,14 +258,28 @@ function ComposerPrimaryAction({
 }
 
 interface ComposerModelRowProps {
+  busy?: boolean
+  cwd?: null | string
   disabled: boolean
   model: ChatBarState['model']
+  onChangeCwd?: (cwd: string, sessionId?: string) => Promise<void>
+  profile?: null | string
   redesigned: boolean
+  sessionId?: null | string
 }
 
-/** The redesigned composer puts model selection above the editor, not in its footer. A visitor who
- *  must sign up has no model to pick yet: the row offers sign up instead. */
-export function ComposerModelRow({ disabled, model, redesigned }: ComposerModelRowProps) {
+/** The redesigned composer puts project/approval on the left and model/effort on the right above
+ *  the editor. A visitor who must sign up has no model or workspace controls yet. */
+export function ComposerModelRow({
+  busy = false,
+  cwd,
+  disabled,
+  model,
+  onChangeCwd,
+  profile,
+  redesigned,
+  sessionId
+}: ComposerModelRowProps) {
   const signUpRequired = useStore($signUpRequired)
 
   if (!redesigned) {
@@ -274,12 +288,16 @@ export function ComposerModelRow({ disabled, model, redesigned }: ComposerModelR
 
   return (
     <div className="flex min-w-0 flex-wrap items-center gap-1" data-slot="composer-model-row">
-      <Codicon
-        aria-hidden
-        className="pointer-events-none shrink-0 select-none text-(--ui-text-tertiary)"
-        name="comment"
-        size="1.125rem"
-      />
+      {!signUpRequired && (
+        <ComposerWorkspaceControls
+          busy={busy}
+          cwd={cwd}
+          disabled={disabled}
+          onChangeCwd={onChangeCwd}
+          profile={profile}
+          sessionId={sessionId}
+        />
+      )}
       <span className="min-w-0 flex-1" />
       {signUpRequired ? (
         <ComposerSignUpLink />
@@ -287,12 +305,6 @@ export function ComposerModelRow({ disabled, model, redesigned }: ComposerModelR
         <>
           <ModelPill disabled={disabled} model={model} />
           <ReasoningPill disabled={disabled} model={model} />
-          <Codicon
-            aria-hidden
-            className="pointer-events-none shrink-0 select-none text-(--ui-text-tertiary)"
-            name="zap"
-            size="0.875rem"
-          />
         </>
       )}
     </div>

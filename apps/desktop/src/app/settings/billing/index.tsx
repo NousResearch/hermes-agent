@@ -82,7 +82,10 @@ function NoticeCard({ inStack = false, notice }: { inStack?: boolean; notice: Bi
   const warn = notice.tone === 'warn'
 
   return (
-    <div className={cn('rounded-xl p-4', !inStack && 'mb-6', warn ? 'bg-(--ui-yellow)/10' : 'bg-(--ui-bg-quaternary)')}>
+    <div
+      className={cn('rounded-xl p-4', !inStack && 'mb-6', warn ? 'bg-(--ui-yellow)/10' : 'bg-(--ui-bg-quaternary)')}
+      data-slot="billing-notice"
+    >
       <div
         className={cn(
           'text-[length:var(--conversation-text-font-size)] font-medium',

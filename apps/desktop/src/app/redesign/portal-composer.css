@@ -140,19 +140,13 @@
   line-height: 1.4;
 }
 
-:root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-model-row'] button:first-of-type {
+:root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-model-row'] button[data-testid='model-pill'] {
   color: var(--ui-text-primary);
 }
 
 :root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-model-row'] button span {
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-/* The row reads as text, not chips: the open-menu chevrons go. Hover and
-   focus still give each label its own 3px plate. */
-:root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-model-row'] button > svg:last-child {
-  display: none;
 }
 
 :root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-model-row'] button[data-state='open'] {

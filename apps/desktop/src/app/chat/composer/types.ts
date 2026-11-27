@@ -57,6 +57,7 @@ export interface ChatBarProps {
    *  with it wherever it docks. */
   landing?: { above: ReactNode }
   onCancel: () => Promise<void> | void
+  onChangeCwd?: (cwd: string, sessionId?: string) => Promise<void>
   onAddContextRef?: (refText: string, label?: string, detail?: string) => void
   onAddUrl?: (url: string) => void
   onAttachImageBlob?: (blob: Blob, isCurrent?: () => boolean) => Promise<boolean | void> | boolean | void

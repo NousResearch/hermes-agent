@@ -660,11 +660,17 @@
 :root[data-shell='portal']
   [data-page-surface]
   [data-slot='overlay-main']
-  :is(.global-settings-card, .global-settings-disclosure, [data-slot='empty-state']):not(
+  :is(.global-settings-card, .global-settings-disclosure, [data-slot='empty-state'], [data-slot='billing-notice']):not(
     :is(.global-settings-card, .global-settings-disclosure) *
   ) {
   margin-inline: calc(-1 * var(--portal-settings-inset));
 }
+
+:root[data-shell='portal'] [data-page-surface] [data-slot='overlay-main'] [data-slot='billing-notice'] {
+  padding-inline: var(--portal-settings-inset);
+  border-radius: var(--portal-radius-settings-card);
+}
+
 :root[data-shell='portal'] [data-page-surface] [data-slot='overlay-main'] .portal-page-header-title > h1 {
   letter-spacing: var(--portal-settings-h1-tracking);
   line-height: var(--portal-settings-h1-line);

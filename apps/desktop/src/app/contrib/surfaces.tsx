@@ -235,6 +235,7 @@ export const ChatRoutesSurface = memo(function ChatRoutesSurface({
       modelMenuContent={modelMenuContent}
       modelOptionsOwnerConnectionId={activeConnectionId || undefined}
       modelOptionsProfile={activeGatewayProfile}
+      onChangeCwd={actions.changeSessionCwd}
       reasoningMenuContent={reasoningMenuContent}
       requestModelOptionsForOwner={actions.requestGateway}
       {...chatActions}

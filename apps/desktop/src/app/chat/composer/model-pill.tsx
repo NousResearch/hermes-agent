@@ -190,6 +190,7 @@ export function ModelPill({
         <Button
           aria-label={copy.openModelPicker}
           className={pillClass}
+          data-testid="model-pill"
           data-tour={tourMarker}
           disabled={disabled}
           onClick={() => setModelPickerOpen(true)}
@@ -220,6 +221,7 @@ export function ModelPill({
           <Button
             aria-label={title}
             className={pillClass}
+            data-testid="model-pill"
             data-tour={tourMarker}
             disabled={disabled}
             type="button"

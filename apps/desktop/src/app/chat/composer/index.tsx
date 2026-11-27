@@ -161,6 +161,7 @@ export function ChatBar({
   sessionId,
   state,
   onCancel,
+  onChangeCwd,
   onAddUrl,
   onAttachDroppedItems,
   onAttachImageBlob,
@@ -1440,7 +1441,16 @@ export function ChatBar({
                   <VoiceActivity state={voiceActivityState} />
                   <VoicePlaybackActivity />
                   {queueEdit && editingQueuedPrompt && <QueuedEditBanner onExit={exitQueuedEdit} />}
-                  <ComposerModelRow disabled={disabled} model={state.model} redesigned={redesigned && !hudMode} />
+                  <ComposerModelRow
+                    busy={busy}
+                    cwd={cwd}
+                    disabled={disabled}
+                    model={state.model}
+                    onChangeCwd={onChangeCwd}
+                    profile={profile}
+                    redesigned={redesigned && !hudMode}
+                    sessionId={sessionId}
+                  />
                   {attachments.length > 0 && <AttachmentList attachments={attachments} onRemove={onRemoveAttachment} />}
                   <div
                     className={cn(

@@ -100,6 +100,7 @@ interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   onToggleSelectedPin: () => void
   onDeleteSelectedSession: () => void
   onCancel: () => Promise<void> | void
+  onChangeCwd?: (cwd: string, sessionId?: string) => Promise<void>
   onAddContextRef: (refText: string, label?: string, detail?: string) => void
   onAddUrl: (url: string) => void
   onBranchInNewChat?: (messageId: string) => void
@@ -493,6 +494,7 @@ const ChatViewContent = memo(function ChatViewContent({
   onToggleSelectedPin,
   onDeleteSelectedSession,
   onCancel,
+  onChangeCwd,
   onAddContextRef,
   onAddUrl,
   onAttachImageBlob,
@@ -826,6 +828,7 @@ const ChatViewContent = memo(function ChatViewContent({
                 onAttachImageBlob={onAttachImageBlob}
                 onAttachPastedText={onAttachPastedText}
                 onCancel={onCancel}
+                onChangeCwd={onChangeCwd}
                 onPasteClipboardImage={onPasteClipboardImage}
                 onPickFiles={onPickFiles}
                 onPickFolders={onPickFolders}

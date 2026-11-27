@@ -1142,7 +1142,7 @@ blocks'; an override under a media query (a width class, a coarse pointer) is no
 | `--portal-sidebar-machine-radius` | `12px` | ″ |  |
 | `--portal-sidebar-machine-pad` | `0.3125rem` | ″ |  |
 | `--portal-sidebar-machine-head` | `3.25rem` | ″ |  |
-| `--portal-sidebar-agent-inset` | `0.375rem` | ″ | Agent cards (16292:15592): radius 9, 6px leading pad (12 to the name past the 32px tile), 16px trailing, 12px over and under, a soft drop shadow. The open agent is the brand slab, white .10 / black .40 / blue (#2E2EA8); the others white .10 / black .60 / blue .30 (16292:15630). Both carry the CRT texture at 5% colour-dodge. Light draws both as blue .10 on white .80 under a 1px brand rule, the open one solid brand, the others brand .10 (16292:25188, 16292:25226), the texture at 90%. |
+| `--portal-sidebar-agent-inset` | `0.25rem` | ″ | Agent cards (16292:15592): radius 9, 6px leading pad (12 to the name past the 32px tile), 16px trailing, 12px over and under, a soft drop shadow. The open agent is the brand slab, white .10 / black .40 / blue (#2E2EA8); the others white .10 / black .60 / blue .30 (16292:15630). Both carry the CRT texture at 5% colour-dodge. Light draws both as blue .10 on white .80 under a 1px brand rule, the open one solid brand, the others brand .10 (16292:25188, 16292:25226), the texture at 90%. |
 | `--portal-sidebar-agent-radius` | `9px` | ″ |  |
 | `--portal-sidebar-agent-pad-block` | `0.75rem` | ″ |  |
 | `--portal-sidebar-agent-pad-start` | `0.375rem` | ″ |  |
@@ -1161,9 +1161,9 @@ blocks'; an override under a media query (a width class, a coarse pointer) is no
 | `--portal-sidebar-agent-subtitle` | `var(--ui-text-quaternary)` | ″ |  |
 | `--portal-sidebar-agent-subtitle-open` | `var(--ui-text-secondary)` | `var(--ui-text-quaternary)` | On the open agent's brand slab the floor needs .7 to hold 4.5:1. |
 | `--portal-sidebar-chats-pad` | `0.375rem` | ″ | An agent's chats (list 1250:37633): 6px over and under, rows as wide as the agent's card, the dot 24px into the row, the title 22px after it, the age 14px from the row's end. |
-| `--portal-sidebar-chat-start` | `1.5rem` | ″ |  |
-| `--portal-sidebar-chat-end` | `0.875rem` | ″ |  |
-| `--portal-sidebar-chat-dot-gap` | `1.375rem` | ″ |  |
+| `--portal-sidebar-chat-start` | `0.75rem` | ″ |  |
+| `--portal-sidebar-chat-end` | `0.625rem` | ″ |  |
+| `--portal-sidebar-chat-dot-gap` | `0.625rem` | ″ |  |
 | `--portal-sidebar-chat-title` | `calc( var(--portal-sidebar-chat-start) + var(--portal-sidebar-dot) + var(--portal-sidebar-chat-dot-gap) )` | ″ |  |
 | `--portal-sidebar-dot-ink` | `var(--ui-text-quaternary)` | ″ | A settled row's dot: the row's ink, quieter than its title; the open chat's in full ink. |
 | `--portal-sidebar-label` | `var(--ui-text-quaternary)` | ″ | Captions, tags, subtitles and ages take the ladder's floor where Figma's .3-.4 fail AA. |

@@ -29,9 +29,9 @@
 /* Sub-nav (895:9593): 10px uppercase group labels, 32px items with 13px +1% labels at .8. */
 .agent-settings-nav-group h2 {
   margin: 0 0.625rem 0.375rem;
-  color: var(--ui-text-tertiary);
-  font-size: var(--portal-type-caption-size);
-  font-weight: 400;
+  color: var(--ui-text-secondary);
+  font-size: var(--portal-type-micro-size);
+  font-weight: 600;
   letter-spacing: var(--portal-tracking-caption);
   line-height: 1.4;
   text-transform: uppercase;

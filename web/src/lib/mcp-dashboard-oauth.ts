@@ -12,6 +12,16 @@ type CompleteOptions = {
 const defaultSleep = (milliseconds: number) =>
   new Promise<void>((resolve) => window.setTimeout(resolve, milliseconds));
 
+/** http(s) authorization URLs only — reject javascript:/file: before navigate. */
+export function isValidAuthorizationUrl(authorizationUrl: string): boolean {
+  try {
+    const parsed = new URL(authorizationUrl);
+    return (parsed.protocol === "http:" || parsed.protocol === "https:") && Boolean(parsed.host);
+  } catch {
+    return false;
+  }
+}
+
 export async function completeMcpDashboardOAuth({
   serverName,
   start,
@@ -35,6 +45,11 @@ export async function completeMcpDashboardOAuth({
     }
     if (!started.authorization_url) {
       throw new Error("OAuth server did not provide an authorization URL");
+    }
+    if (!isValidAuthorizationUrl(started.authorization_url)) {
+      throw new Error(
+        "OAuth authorization_url must be an http(s) URL with a host",
+      );
     }
     authWindow.location.href = started.authorization_url;
   } catch (error) {

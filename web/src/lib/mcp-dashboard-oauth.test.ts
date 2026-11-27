@@ -1,5 +1,21 @@
 import { describe, expect, it, vi } from "vitest";
-import { completeMcpDashboardOAuth } from "./mcp-dashboard-oauth";
+import {
+  completeMcpDashboardOAuth,
+  isValidAuthorizationUrl,
+} from "./mcp-dashboard-oauth";
+
+describe("isValidAuthorizationUrl", () => {
+  it("accepts http(s) URLs with a host", () => {
+    expect(isValidAuthorizationUrl("https://idp.example/authorize")).toBe(true);
+    expect(isValidAuthorizationUrl("http://127.0.0.1:8080/oauth")).toBe(true);
+  });
+
+  it("rejects non-http schemes", () => {
+    expect(isValidAuthorizationUrl("javascript:alert(1)")).toBe(false);
+    expect(isValidAuthorizationUrl("file:///etc/passwd")).toBe(false);
+    expect(isValidAuthorizationUrl("not a url")).toBe(false);
+  });
+});
 
 describe("completeMcpDashboardOAuth", () => {
   it("opens the authorization URL in the dashboard browser and polls to approval", async () => {
@@ -67,6 +83,28 @@ describe("completeMcpDashboardOAuth", () => {
       }),
     ).rejects.toThrow("registration denied");
     expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("rejects non-http(s) authorization URLs before navigating", async () => {
+    const close = vi.fn();
+    const authWindow = { location: { href: "" }, close } as unknown as Window;
+    await expect(
+      completeMcpDashboardOAuth({
+        serverName: "reports",
+        start: async () => ({
+          flow_id: "flow-bad-scheme",
+          server_name: "reports",
+          status: "authorization_required",
+          authorization_url: "javascript:alert(1)",
+          error: null,
+        }),
+        status: vi.fn(),
+        open: vi.fn().mockReturnValue(authWindow),
+        sleep: async () => {},
+      }),
+    ).rejects.toThrow(/http\(s\) URL/);
+    expect(close).toHaveBeenCalledOnce();
+    expect(authWindow.location.href).toBe("");
   });
 
   it("fails before starting when the browser blocks the popup", async () => {

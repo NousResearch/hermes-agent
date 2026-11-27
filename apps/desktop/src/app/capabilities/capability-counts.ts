@@ -39,11 +39,11 @@ export function useConnectorsCount(scope: ProfileScope): CapabilityCount {
     void config.refetch()
   }
 
-  if (!list.data || !config.data) {
-    return { failed: (!list.data && list.isError) || (!config.data && config.isError), retry }
+  if (!config.data || (!list.data && !list.isError && list.failureCount === 0)) {
+    return { failed: !config.data && config.isError, retry }
   }
-
-  const hosted = list.data.available === false ? 0 : list.data.connectors.filter(row => row.connected).length
+  const hosted =
+    !list.data || list.data.available === false ? 0 : list.data.connectors.filter(row => row.connected).length
   const servers = Object.values(getServers(config.data)).filter(serverEnabled).length
 
   return { value: hosted + servers, failed: false, retry }

@@ -104,6 +104,13 @@
   gap: 0.75rem;
 }
 
+:root[data-shell='portal'] .conn-notices :is(button, a) {
+  color: var(--portal-text-brand);
+  font-weight: 500;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 :root[data-shell='portal'] .conn-banner {
   display: flex;
   align-items: flex-start;

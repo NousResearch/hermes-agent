@@ -73,10 +73,12 @@ describe('portal-projects store', () => {
     expect(agentPortalProjectsFor($portalAgentProjects.get(), toOwner).projects[0].name).toBe('Launch v2')
   })
 
-  it('arms and automatically files a newly created session into the chosen project without stealing baseline chats', () => {
+  it('arms from an existing chat without prematurely disarming and files the newly created session', () => {
     const p1 = createPortalProject(owner, 'Q4 planning')!.project
-    armPortalProjectNewChat(owner, p1.id, ['existing-1'])
+    armPortalProjectNewChat(owner, p1.id, ['existing-1'], 'existing-1')
     expect($portalProjectExpanded.get()[p1.id]).toBe(true)
+    expect($pendingPortalProjectForNewChat.get()?.armedAtSessionId).toBe('existing-1')
+    expect($pendingPortalProjectForNewChat.get()?.leftArmedSession).toBe(false)
 
     expect(claimPendingPortalProjectSession(owner, 'existing-1')).toBe(false)
     expect(claimPendingPortalProjectSession({ connectionId: null, profile: 'other' }, 'new-1')).toBe(false)

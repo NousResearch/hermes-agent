@@ -14,7 +14,7 @@ import { $hiddenSidebarAgents, agentSidebarKey } from '@/store/agent-sidebar-pre
 import { $activeConnectionId } from '@/store/connections'
 import { recordAction } from '@/store/desktop-metrics'
 import { recordIaAction } from '@/store/ia-metrics'
-import { $portalAgentProjects, agentPortalProjectsFor } from '@/store/portal-projects'
+import { $portalAgentProjects, agentPortalProjectsFor, clearPendingPortalProjectNewChat } from '@/store/portal-projects'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $sessionProfilesTruncated, $sessionProfilesUsage, knownSessionOwner } from '@/store/session'
 import { $focusedStoredSessionId } from '@/store/session-focus'
@@ -114,6 +114,7 @@ function AgentCard({
             aria-label={`${c.newChat}: ${agent.label}`}
             className="portal-agent-new"
             onClick={() => {
+              clearPendingPortalProjectNewChat()
               recordAction('session.new', 'click')
               recordIaAction('ia.new_session.agent_row')
               startSimplifiedAgentSession(agent)

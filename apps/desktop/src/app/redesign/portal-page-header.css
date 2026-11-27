@@ -141,7 +141,7 @@
   /* 877:4200: a 20px label, 10px to the underline. */
   padding: 0 var(--portal-page-tab-inset) 0.625rem;
   border-bottom: 2px solid transparent;
-  color: var(--ui-text-tertiary);
+  color: var(--portal-text-secondary);
   font-size: var(--portal-type-body-size);
   font-weight: 500;
   line-height: 1.4;
@@ -155,8 +155,8 @@
 
 :where(:root[data-shell='portal']) .portal-page-tabs-list > [aria-selected='true'] {
   border-bottom-color: var(--portal-brand-ink);
+  font-weight: 600;
 }
-
 :where(:root[data-shell='portal']) .portal-page-tabs-list > [role='tab']:focus-visible {
   border-radius: var(--portal-radius-control);
   outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);

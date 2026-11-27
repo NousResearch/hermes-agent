@@ -17,6 +17,7 @@ import { ChevronRight, MoreVertical, Pencil, Plus, Trash2 } from '@/lib/icons'
 import type { AgentSidebarOwner } from '@/store/agent-sidebar-preferences'
 import { notify } from '@/store/notifications'
 import {
+  $pendingPortalProjectForNewChat,
   $portalProjectExpanded,
   armPortalProjectNewChat,
   deletePortalProject,
@@ -25,6 +26,7 @@ import {
   renamePortalProject,
   setPortalProjectExpanded
 } from '@/store/portal-projects'
+import { $selectedStoredSessionId } from '@/store/session'
 
 import { startSimplifiedAgentSession } from '../simplified-new-session-model'
 import type { SimplifiedAgent } from '../use-simplified-agents'
@@ -48,9 +50,11 @@ function PortalProjectRow({
   renderChats,
   sessions
 }: ProjectRowProps) {
+  const pendingNewChat = useStore($pendingPortalProjectForNewChat)
   const [truncated, setTruncated] = useState(false)
   const [renaming, setRenaming] = useState(false)
   const [draft, setDraft] = useState(project.name)
+  const hasDraftHere = pendingNewChat?.projectId === project.id
 
   const checkTruncation = (node: HTMLSpanElement | null) => {
     if (node) {
@@ -59,7 +63,7 @@ function PortalProjectRow({
   }
 
   const startChatInProject = () => {
-    armPortalProjectNewChat(owner, project.id, allAgentSessionIds)
+    armPortalProjectNewChat(owner, project.id, allAgentSessionIds, $selectedStoredSessionId.get())
     startSimplifiedAgentSession(agent)
     requestComposerFocus()
   }
@@ -191,14 +195,31 @@ function PortalProjectRow({
 
       {open && (
         <div className="portal-project-chats">
+          {hasDraftHere && (
+            <div className="portal-session-item">
+              <div
+                aria-current="page"
+                className="portal-session-row"
+                data-slot="portal-project-draft-chat"
+                onClick={() => requestComposerFocus()}
+              >
+                <span aria-hidden className="portal-row-mark" data-slot="session-status" data-state="idle">
+                  <span>
+                    <span />
+                  </span>
+                </span>
+                <span className="truncate">New chat</span>
+              </div>
+            </div>
+          )}
           {sessions.length > 0 ? (
             renderChats(sessions)
-          ) : (
+          ) : !hasDraftHere ? (
             <button className="portal-project-empty-new" onClick={startChatInProject} type="button">
               <Plus aria-hidden className="size-3.5" />
               <span>New chat</span>
             </button>
-          )}
+          ) : null}
         </div>
       )}
     </div>

@@ -20,7 +20,8 @@ import {
   $portalAgentProjects,
   agentPortalProjectsFor,
   claimPendingPortalProjectSession,
-  clearPendingPortalProjectNewChat
+  clearPendingPortalProjectNewChat,
+  markPendingPortalProjectLeftArmed
 } from '@/store/portal-projects'
 import { $activeGatewayProfile, $newChatProfile } from '@/store/profile'
 import { $projectTree, refreshProjectTree } from '@/store/projects'
@@ -199,13 +200,19 @@ export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
   const activeProfile = useStore($activeGatewayProfile)
 
   // When a user clicked "+" / "New chat" inside a project, file the first newly created session
-  // for that agent directly into that project; clear if they switch to an existing baseline chat.
+  // for that agent directly into that project. Never disarm on the pre-switch render while
+  // `selectedStoredSessionId` still holds the chat we just navigated away from.
   useEffect(() => {
     if (!pendingProjectNewChat) {
       return
     }
 
-    if (selectedStoredSessionId) {
+    if (!selectedStoredSessionId) {
+      markPendingPortalProjectLeftArmed()
+    } else if (
+      selectedStoredSessionId !== pendingProjectNewChat.armedAtSessionId ||
+      pendingProjectNewChat.leftArmedSession
+    ) {
       if (pendingProjectNewChat.baselineIds.has(selectedStoredSessionId)) {
         clearPendingPortalProjectNewChat()
 

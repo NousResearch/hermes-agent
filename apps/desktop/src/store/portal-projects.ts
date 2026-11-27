@@ -106,6 +106,11 @@ export interface PendingPortalProjectNewChat {
   owner: AgentSidebarOwner
   projectId: string
   baselineIds: ReadonlySet<string>
+  /** Session ID that was selected at the instant the user clicked "+" / "New chat" inside the
+   *  project, so a render before `startSimplifiedAgentSession` clears selection never disarms it. */
+  armedAtSessionId: string | null
+  /** Becomes true once selection leaves `armedAtSessionId` (e.g. drops to null for the fresh draft). */
+  leftArmedSession: boolean
 }
 
 /** Armed when the user starts a new chat from inside a project; files the first newly created
@@ -115,14 +120,25 @@ export const $pendingPortalProjectForNewChat = atom<PendingPortalProjectNewChat 
 export function armPortalProjectNewChat(
   owner: AgentSidebarOwner,
   projectId: string,
-  existingSessionIds: Iterable<string>
+  existingSessionIds: Iterable<string>,
+  armedAtSessionId: string | null = null
 ): void {
   setPortalProjectExpanded(projectId, true)
   $pendingPortalProjectForNewChat.set({
+    armedAtSessionId,
     baselineIds: new Set(existingSessionIds),
+    leftArmedSession: armedAtSessionId === null,
     owner,
     projectId
   })
+}
+
+export function markPendingPortalProjectLeftArmed(): void {
+  const pending = $pendingPortalProjectForNewChat.get()
+
+  if (pending && !pending.leftArmedSession) {
+    $pendingPortalProjectForNewChat.set({ ...pending, leftArmedSession: true })
+  }
 }
 
 export function clearPendingPortalProjectNewChat(): void {
@@ -143,7 +159,6 @@ export function claimPendingPortalProjectSession(owner: AgentSidebarOwner, sessi
 
   return true
 }
-
 export function openPortalCreateProjectDialog(request: PortalCreateProjectRequest): void {
   $portalCreateProjectDialog.set(request)
 }

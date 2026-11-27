@@ -527,9 +527,9 @@
 
 :root[data-shell='portal'] [data-zone-tabstrip] [role='tab'] {
   block-size: 1.625rem;
-  border: 1px solid transparent;
+  border: 1px solid var(--portal-stroke-hairline);
   border-radius: var(--portal-radius-control);
-  background-color: transparent;
+  background-color: var(--portal-surface-chrome);
   box-shadow: none;
   color: var(--portal-text-secondary);
   font-size: var(--portal-type-ui-size);
@@ -546,23 +546,23 @@
 }
 
 :root[data-shell='portal'] [data-zone-tabstrip] [role='tab']:hover {
-  border-color: transparent;
+  border-color: var(--portal-stroke-control);
   background-color: var(--portal-surface-chrome-hover);
   box-shadow: none;
   color: var(--portal-text-primary);
 }
 
 :root[data-shell='portal'] [data-zone-tabstrip] [role='tab'][data-active='true'] {
-  border-color: var(--portal-stroke-hairline);
-  background-color: var(--portal-surface-chrome);
+  border-color: var(--portal-stroke-floating);
+  background-color: var(--portal-rail-fill-selected);
   box-shadow: none;
   color: var(--portal-text-primary);
   font-weight: 500;
 }
 
 :root[data-shell='portal'] [data-zone-tabstrip] [role='tab'][data-active='true']:hover {
-  border-color: var(--portal-stroke-control);
-  background-color: var(--portal-surface-chrome-hover);
+  border-color: var(--portal-stroke-floating);
+  background-color: var(--portal-rail-fill-selected);
 }
 
 /* Overflow scroll buttons wear the same chrome tile family as the tabs they flank. */

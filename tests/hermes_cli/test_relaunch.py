@@ -101,6 +101,35 @@ class TestRelaunch:
 
         assert calls == [("/usr/bin/hermes", ["/usr/bin/hermes", "--resume", "abc"])]
 
+    @pytest.mark.platforms("posix")
+    def test_scoped_environment_keeps_source_context_out_of_child_only(self, monkeypatch):
+        parent_env = {"KEEP": "parent", "DROP": "source-session"}
+        child_env = {"KEEP": "parent"}
+        monkeypatch.setattr(relaunch_mod.os, "environ", parent_env)
+        monkeypatch.setattr(relaunch_mod, "resolve_hermes_bin", lambda: "/usr/bin/hermes")
+        calls = []
+
+        def fake_execvpe(path, argv, env):
+            calls.append((path, argv, env))
+            raise SystemExit(0)
+
+        monkeypatch.setattr(relaunch_mod.os, "execvpe", fake_execvpe)
+
+        with pytest.raises(SystemExit):
+            relaunch_mod.relaunch(["chat"], env=child_env)
+
+        # relaunch stamps its process metric in the parent immediately before exec, but the
+        # source session marker remains untouched and is absent only from the child environment.
+        assert parent_env["DROP"] == "source-session"
+        assert parent_env["KEEP"] == "parent"
+        assert len(calls) == 1
+        path, argv, actual_env = calls[0]
+        assert path == "/usr/bin/hermes"
+        assert argv == ["/usr/bin/hermes", "chat"]
+        assert actual_env["KEEP"] == "parent"
+        assert "DROP" not in actual_env
+        assert actual_env["HERMES_RELAUNCHED_PID"] == parent_env["HERMES_RELAUNCHED_PID"]
+
     @pytest.mark.platforms("windows")
     def test_windows_uses_subprocess_not_execvp(self, monkeypatch):
         """On Windows, os.execvp raises OSError "Exec format error" when the
@@ -124,10 +153,10 @@ class TestRelaunch:
 
         import subprocess as _subprocess
 
-        captured_argv = []
+        captured_calls = []
 
         def fake_subprocess_run(argv, **kwargs):
-            captured_argv.append(list(argv))
+            captured_calls.append((list(argv), kwargs))
             class _Result:
                 returncode = 0
             return _Result()
@@ -144,11 +173,16 @@ class TestRelaunch:
         monkeypatch.setattr(relaunch_mod.os, "execvp", fake_execvp)
 
         with pytest.raises(SystemExit) as exc_info:
-            relaunch_mod.relaunch(["chat"])
+            relaunch_mod.relaunch(["chat"], env={"HERMES_HOME": r"C:\profiles\work"})
 
         assert exc_info.value.code == 0
         assert execvp_calls == []
-        assert captured_argv == [[r"C:\Users\test\hermes.exe", "chat"]]
+        assert captured_calls == [
+            (
+                [r"C:\Users\test\hermes.exe", "chat"],
+                {"check": False, "env": {"HERMES_HOME": r"C:\profiles\work"}},
+            )
+        ]
 
     @pytest.mark.platforms("windows")
     def test_windows_propagates_child_exit_code(self, monkeypatch):

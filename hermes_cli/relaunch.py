@@ -5,7 +5,7 @@ import os
 import pathlib
 import shutil
 import sys
-from typing import Optional, Sequence
+from typing import Mapping, Optional, Sequence
 
 from hermes_cli._parser import (
     PRE_ARGPARSE_INHERITED_FLAGS, build_top_level_parser
@@ -113,7 +113,8 @@ def build_relaunch_argv(
 
 
 def relaunch(
-    extra_args: Sequence[str], *, preserve_inherited: bool = True, original_argv: Optional[Sequence[str]] = None
+    extra_args: Sequence[str], *, preserve_inherited: bool = True,
+    original_argv: Optional[Sequence[str]] = None, env: Mapping[str, str] | None = None,
 ) -> None:
     """Replace the current process with a fresh hermes invocation.
 
@@ -121,10 +122,15 @@ def relaunch(
     ``execvp`` emulation only works for a real Win32 executable, so spawn + exit instead.
     """
     new_argv = build_relaunch_argv(extra_args, preserve_inherited=preserve_inherited, original_argv=original_argv)
+    child_env = dict(env) if env is not None else None
     if sys.platform == "win32":
         import subprocess
         try:
-            result = subprocess.run(new_argv, check=False)
+            # Windows has no in-place exec. Waiting for the replacement's full interactive
+            # lifetime is the exec-equivalent contract, so a timeout would be incorrect.
+            result = subprocess.run(  # health: allow HX006 -- waits for replacement process lifetime
+                new_argv, check=False, env=child_env
+            )
             sys.exit(result.returncode)
         except KeyboardInterrupt:
             sys.exit(130)
@@ -140,8 +146,16 @@ def relaunch(
             sys.exit(1)
     else:
         from hermes_cli.cpu_profile import write_cpu_profile
-        from hermes_cli.observability.shared_metrics_startup import mark_in_place_relaunch
+        from hermes_cli.observability.shared_metrics_startup import (
+            RELAUNCHED_PID_ENV,
+            mark_in_place_relaunch,
+        )
 
         mark_in_place_relaunch()
+        if child_env is not None:
+            child_env[RELAUNCHED_PID_ENV] = os.environ[RELAUNCHED_PID_ENV]
         write_cpu_profile()  # exec skips atexit
-        os.execvp(new_argv[0], new_argv)
+        if child_env is None:
+            os.execvp(new_argv[0], new_argv)
+        else:
+            os.execvpe(new_argv[0], new_argv, child_env)

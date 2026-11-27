@@ -2904,6 +2904,13 @@ cli:
     profile:
       profile: "الملف التعريفي: {profile}"
       home: "المجلد الرئيسي: {home}"
+      switch_hint: "بدّل باستخدام /profile الاسم. الملفات التعريفية الأخرى: {profiles}"
+      invalid: "اختيار الملف التعريفي «{request}» غير صالح. الملفات المتاحة: {profiles}"
+      already_on: "الملف التعريفي {profile} مستخدم بالفعل."
+      switching: "جارٍ التبديل إلى الملف التعريفي {profile}…"
+      picker_title: "تبديل الملف التعريفي"
+      picker_stay: "البقاء على {profile}"
+      picker_stay_desc: "الإبقاء على هذه الجلسة"
     handoff:
       usage: "الاستخدام: /handoff <platform>"
       usage_detail_1: "يسلّم الجلسة الحالية إلى القناة الرئيسية لتلك المنصة."

@@ -510,9 +510,10 @@ class CLIInfoMixin:
 
     def _should_handle_background_command_inline(
         self, text: str, has_images: bool = False) -> bool:
-        """Return True when /bg or /btw should be dispatched while the agent runs (their
-        ``CommandDef`` entries declare ``busy_policy="dispatch"``; the classic CLI honours it here)."""
-        return self._busy_inline_command(text, has_images, ("bg", "btw"))
+        """Return True when /bg, /btw or /profile should be dispatched while the agent runs (their
+        ``CommandDef`` entries declare ``busy_policy="dispatch"``; the classic CLI honours it here).
+        ``/profile <name>`` mid-turn detaches like Ctrl+D, so it must not wait for the turn to end."""
+        return self._busy_inline_command(text, has_images, ("bg", "btw", "profile"))
 
     def _should_handle_stop_command_inline(self, text: str, has_images: bool = False) -> bool:
         """Return True when /stop should be dispatched while the agent runs: its ``CommandDef`` declares

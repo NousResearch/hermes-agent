@@ -2904,6 +2904,13 @@ cli:
     profile:
       profile: "Perfil: {profile}"
       home: "Home:   {home}"
+      switch_hint: "Cambia con /profile NOMBRE. Otros perfiles: {profiles}"
+      invalid: "Selección de perfil no válida «{request}». Perfiles disponibles: {profiles}"
+      already_on: "Ya estás usando el perfil {profile}."
+      switching: "Cambiando al perfil {profile}…"
+      picker_title: "Cambiar de perfil"
+      picker_stay: "Quedarse en {profile}"
+      picker_stay_desc: "Mantener esta sesión"
     handoff:
       usage: "Uso: /handoff <plataforma>"
       usage_detail_1: "Transfiere la sesión actual al canal principal de esa plataforma."

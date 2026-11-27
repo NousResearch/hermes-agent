@@ -2904,6 +2904,13 @@ cli:
     profile:
       profile: "Профіль:          {profile}"
       home: "Домашній каталог: {home}"
+      switch_hint: "Перемкніться командою /profile НАЗВА. Інші профілі: {profiles}"
+      invalid: "Неприпустимий вибір профілю «{request}». Доступні профілі: {profiles}"
+      already_on: "Профіль {profile} уже використовується."
+      switching: "Перемикання на профіль {profile}…"
+      picker_title: "Змінити профіль"
+      picker_stay: "Залишитися в {profile}"
+      picker_stay_desc: "Зберегти цей сеанс"
     handoff:
       usage: "Використання: /handoff <platform>"
       usage_detail_1: "Передає поточний сеанс у домашній канал цієї платформи."

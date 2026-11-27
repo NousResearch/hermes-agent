@@ -146,7 +146,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/image <path>` | Attach a local image file for your next prompt. |
 | `/debug [upload\|nous upload\|local]` | Debug report. Bare `/debug` shows the privacy notice and uploads nothing; `/debug upload` uploads to a public paste and returns shareable links, `/debug nous upload` uploads to Nous-internal storage (classic CLI only: messaging, the TUI and the desktop app refuse it and point to `hermes debug share --nous` or Desktop's Send diagnostics), `/debug local` prints the report without uploading. Also available in messaging. |
 | `/update` | Update Hermes Agent to the latest version. |
-| `/profile` | Show active profile name and home directory |
+| `/profile [NAME]` | Show the active profile and home; in the classic CLI, switch to another profile in a fresh chat (or its Bot Chat in Bot Mode) |
 
 ### Exit
 

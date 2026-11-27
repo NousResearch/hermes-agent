@@ -2904,6 +2904,13 @@ cli:
     profile:
       profile: "Profil: {profile}"
       home: "Stamm:  {home}"
+      switch_hint: "Mit /profile NAME wechseln. Andere Profile: {profiles}"
+      invalid: "Ungültige Profilauswahl „{request}“. Verfügbare Profile: {profiles}"
+      already_on: "Profil {profile} wird bereits verwendet."
+      switching: "Wechsel zu Profil {profile}…"
+      picker_title: "Profil wechseln"
+      picker_stay: "Bei {profile} bleiben"
+      picker_stay_desc: "Diese Sitzung behalten"
     handoff:
       usage: "Verwendung: /handoff <platform>"
       usage_detail_1: "Übergibt die aktuelle Sitzung an den Heimkanal dieser Plattform."

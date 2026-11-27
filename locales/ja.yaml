@@ -2904,6 +2904,13 @@ cli:
     profile:
       profile: "プロファイル: {profile}"
       home: "ホーム:       {home}"
+      switch_hint: "/profile 名前 で切り替えます。その他のプロファイル: {profiles}"
+      invalid: "プロファイルの指定「{request}」は無効です。利用可能: {profiles}"
+      already_on: "プロファイル {profile} はすでに使用中です。"
+      switching: "プロファイル {profile} に切り替えています…"
+      picker_title: "プロファイルを切り替え"
+      picker_stay: "{profile} のままにする"
+      picker_stay_desc: "このセッションを続ける"
     handoff:
       usage: "使い方: /handoff <platform>"
       usage_detail_1: "現在のセッションをそのプラットフォームのホームチャンネルに引き継ぎます。"

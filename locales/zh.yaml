@@ -2904,6 +2904,13 @@ cli:
     profile:
       profile: "配置档：{profile}"
       home: "主目录：  {home}"
+      switch_hint: "使用 /profile 名称切换。其他配置档：{profiles}"
+      invalid: "配置档选择“{request}”无效。可用配置档：{profiles}"
+      already_on: "已在使用配置档 {profile}。"
+      switching: "正在切换到配置档 {profile}…"
+      picker_title: "切换配置档"
+      picker_stay: "留在 {profile}"
+      picker_stay_desc: "保留此会话"
     handoff:
       usage: "用法：/handoff <平台>"
       usage_detail_1: "将当前会话移交到该平台的主频道。"

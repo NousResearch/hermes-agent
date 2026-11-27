@@ -30,9 +30,27 @@ def in_flight_window(agent: Any, api_kwargs: dict[str, Any]) -> Optional[tuple[f
     return float(facts.get("sent_at") or time.time()) + ttl_s, float(ttl_s)
 
 
-def request_tokens(api_kwargs: dict[str, Any]) -> int:
-    """Rough prompt size of a request payload (messages and tools, plus an Anthropic ``system``)."""
+def request_split(api_kwargs: dict[str, Any]) -> tuple[int, int]:
+    """``(cached, uncached)`` rough prompt tokens of a request payload once it is sent: with
+    ``cache_control`` markers, the system prompt, tools and messages through the last marked one are
+    cached and the messages after it (a route that leaves tool results unmarked) are re-billed as plain
+    input on every replay; without markers (an automatic cache) the whole prompt is cached."""
     from agent.chat_completion_helpers import estimate_request_context_tokens
 
+    messages = list(api_kwargs.get("messages") or [])
     system = api_kwargs.get("system")
-    return estimate_request_context_tokens(api_kwargs) + (estimate_request_context_tokens([system]) if system else 0)
+    head = estimate_request_context_tokens(list(api_kwargs.get("tools") or [])) + (
+        estimate_request_context_tokens([system]) if system else 0)
+    marked = [i for i, message in enumerate(messages) if _carries_marker(message)]
+    if not marked and not _carries_marker(system) and not _carries_marker(api_kwargs.get("tools")):
+        return head + estimate_request_context_tokens(messages), 0
+    cut = marked[-1] + 1 if marked else 0
+    return head + estimate_request_context_tokens(messages[:cut]), estimate_request_context_tokens(messages[cut:])
+
+
+def _carries_marker(value: Any) -> bool:
+    if isinstance(value, dict):
+        return "cache_control" in value or any(_carries_marker(v) for v in value.values())
+    if isinstance(value, list):
+        return any(_carries_marker(v) for v in value)
+    return False

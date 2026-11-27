@@ -523,3 +523,27 @@ def test_a_keep_alive_reply_landing_after_its_requests_own_reply_still_renews_th
             server.release.set()
             warmer.cancel()
             db.close()
+
+
+def test_an_unmarked_tail_past_the_last_cache_marker_is_priced_as_input(tmp_path):
+    """A small marked prefix and a large tool result past the last marker (a route that leaves tool
+    results unmarked): every replay re-bills that tail as plain input, so the request in flight is not
+    kept warm; with the marker on the last message the same prompt is."""
+    with _endpoint() as (client, _server):
+        agent, warmer, _run, db = _armed(tmp_path, client, sid=uuid.uuid4().hex)
+        try:
+            warmer.cancel("new request in flight")
+            prefix = {"role": "user", "content": [{"type": "text", "text": "SMALL PREFIX " * 300,
+                                                   "cache_control": {"type": "ephemeral"}}]}
+            tail = "TOOL RESULT " * 60_000
+            unmarked = {"model": agent.model, "max_tokens": 100, "messages": [
+                prefix, {"role": "assistant", "content": "x"}, {"role": "user", "content": [{"type": "text", "text": tail}]}]}
+            assert warmer.start_in_flight(unmarked) is not None
+            assert warmer._run is None
+            marked = {"model": agent.model, "max_tokens": 100, "messages": [
+                prefix, {"role": "assistant", "content": "x"},
+                {"role": "user", "content": [{"type": "text", "text": tail, "cache_control": {"type": "ephemeral"}}]}]}
+            assert warmer.start_in_flight(marked) is None
+        finally:
+            warmer.cancel()
+            db.close()

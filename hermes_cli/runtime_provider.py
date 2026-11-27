@@ -24,7 +24,7 @@ from agent.credential_pool import (  # custom_provider_pool_key_candidates is re
 )
 from agent.secret_scope import get_secret_str
 from hermes_cli.auth import (  # resolve_external_process_provider_credentials is read via origin by runtime_provider_backends
-    ACTUAL_LOCAL_NOAUTH_PLACEHOLDER, AuthError, DEFAULT_CODEX_BASE_URL, DEFAULT_QWEN_BASE_URL, DEFAULT_XAI_OAUTH_BASE_URL,
+    ACTUAL_LOCAL_NOAUTH_PLACEHOLDER, AuthError, DEFAULT_CODEX_BASE_URL, MODEL_RATE_LIMITED_CODE, DEFAULT_QWEN_BASE_URL, DEFAULT_XAI_OAUTH_BASE_URL,
     PROVIDER_REGISTRY, _agent_key_is_usable, _nous_inference_env_override, _qwen_base_url, format_auth_error, resolve_provider,
     resolve_nous_runtime_credentials, resolve_codex_runtime_credentials, resolve_xai_oauth_runtime_credentials,
     resolve_qwen_runtime_credentials, resolve_api_key_provider_credentials,
@@ -413,12 +413,15 @@ def _anthropic_token_or_raise(*, model: str | None = None) -> str:
     from agent.anthropic_credentials import resolve_anthropic_token
     token = resolve_anthropic_token(model=model)
     if not token:
-        # A key the pool benched for *this* model is not a missing credential; telling the
-        # user to re-authenticate would send them chasing a cooldown that lifts on its own.
+        # A benched key is not a missing credential; telling the user to re-authenticate
+        # would send them chasing a cooldown that lifts on its own.
+        from agent.auxiliary_unavailable import pool_cooldown_message
+        if cooldown := pool_cooldown_message("anthropic", rate_limited_only=True):
+            raise AuthError(cooldown, provider="anthropic", code=MODEL_RATE_LIMITED_CODE)
         if model and resolve_anthropic_token():
             raise AuthError(f"Anthropic credentials are rate-limited for {model}; "
                             "other Claude models remain available (see `hermes auth list`).",
-                            provider="anthropic", code="model_rate_limited")
+                            provider="anthropic", code=MODEL_RATE_LIMITED_CODE)
         raise AuthError(_NO_ANTHROPIC_CREDENTIALS_MSG)
     return token
 

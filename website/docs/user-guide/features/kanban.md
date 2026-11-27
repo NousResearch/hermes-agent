@@ -100,22 +100,22 @@ They look similar; they are not the same primitive.
 
 | | `delegate_task` | Kanban |
 |---|---|---|
-| Shape | RPC call (fork → join) | Durable message queue + state machine |
-| Parent | Blocks until child returns | Fire-and-forget after `create` |
+| Shape | Tool call that runs child agents inside the calling session | Durable message queue + state machine |
+| Parent | Gets a handle at once and the result as a later message. Sessions that cannot receive a later message (one-shot runs, cron jobs, Kanban workers) and nested orchestrators wait in the call | Gets a task id at once. A gateway, TUI or Desktop chat that creates a task is subscribed to its completion and block events by default; a classic CLI, cron or scripted create is not, and the result's `subscribed` flag says which |
 | Child identity | Anonymous subagent | Named profile with persistent memory |
-| Resumability | None — failed = failed | Block → unblock → re-run; crash → reclaim |
-| Human in the loop | Not supported | Comment / unblock at any point |
-| Agents per task | One call = one subagent | N agents over task's life (retry, review, follow-up) |
-| Audit trail | Lost on context compression | Durable rows in SQLite forever |
-| Coordination | Hierarchical (caller → callee) | Peer — any profile reads/writes any task |
+| Resumability | A finished or stopped child continues on its own conversation with `action="continue"`. Automatic resume is opt-in (`delegation.auto_resume`) | Block → unblock → re-run; crash → reclaim |
+| Human in the loop | The child cannot ask questions. You can steer or stop it while it runs | Comment / unblock at any point |
+| Agents per task | One subagent per task; one call takes several tasks | N agents over task's life (retry, review, follow-up) |
+| Audit trail | Each child's transcript is stored as a session under the parent's. The parent's context holds only the child's summary | Rows in SQLite until the task is deleted. `hermes kanban gc` prunes old events of done and archived tasks |
+| Coordination | Hierarchical (caller → callee) | Any profile reads and comments on any task on the board. A dispatched worker changes only its own card |
 
-**One-sentence distinction:** `delegate_task` is a function call; Kanban is a work queue where every handoff is a row any profile (or human) can see and edit.
+**One-sentence distinction:** `delegate_task` runs child agents inside one conversation and returns their summaries to it; Kanban is a work queue where every handoff is a row any profile (or human) can read.
 
 :::caution Don't link a support card to the card it is meant to unblock
 A worker that is blocked on `t_parent` and creates a support card for the missing piece must **not** `kanban_link(t_parent, t_support)`: the link makes the support card a *child* of the blocked parent, so it is gated behind the parent it exists to unblock and neither card ever runs. Reference the parent id in the support card's body instead. `link`/`kanban_link` report `gated: true` and record a `dependency_wait` event when they demote a `ready` child (and `kanban_create` with `parents` does the same when it parks the new card), so the deadlock is visible on the board; `hermes kanban unlink <parent> <child>` releases it.
 :::
 
-**Use `delegate_task` when** the parent agent needs a short reasoning answer before continuing, no humans involved, result goes back into the parent's context.
+**Use `delegate_task` when** the result belongs in the parent's own context, the work can end with the session, and no other profile or person needs to pick it up.
 
 **Use Kanban when** work crosses agent boundaries, needs to survive restarts, might need human input, might be picked up by a different role, or needs to be discoverable after the fact.
 

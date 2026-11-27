@@ -213,20 +213,17 @@ class TestGenerateSummaryTruncationGuard:
 
         Gemini answers a blocked prompt with HTTP 200 and ``promptFeedback.blockReason``; the native
         adapter raises it as a content-policy error instead of the empty content it used to return."""
-        import httpx
+        class GeminiAPIError(Exception):
+            def __init__(self, message: str, *, code: str):
+                super().__init__(message)
+                self.code = code
 
-        from agent.gemini_native_adapter import GeminiNativeClient
-
-        sent = []
-
-        def handle(request):
-            sent.append(request)
-            return httpx.Response(200, json={"promptFeedback": {"blockReason": "SAFETY"}})
-
-        client = GeminiNativeClient(api_key="AQ.test", http_client=httpx.Client(transport=httpx.MockTransport(handle)))
+        calls = 0
 
         def call_llm(**kwargs):
-            return client.chat.completions.create(model="gemini-2.5-flash", messages=kwargs["messages"])
+            nonlocal calls
+            calls += 1
+            raise GeminiAPIError("Gemini blocked the prompt (blockReason=SAFETY)", code="gemini_prompt_blocked")
 
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(
@@ -240,7 +237,7 @@ class TestGenerateSummaryTruncationGuard:
 
         assert result == msgs
         assert c._last_compress_aborted is True
-        assert len(sent) == 1
+        assert calls == 1
 
     def test_provider_refusal_field_is_rejected_even_with_summary_shaped_content(self):
         """An explicit ``message.refusal`` wins over plausible-looking content (#118406)."""

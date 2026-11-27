@@ -370,7 +370,7 @@ class TestChatCompletionsBuildKwargs:
         }
 
     def test_gemini_ultra_thinking_raises_first_request_max_tokens(self, transport):
-        from agent.gemini_native_adapter import GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
+        from agent.gemini_model_family import GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
         from providers import get_provider_profile
 
         profile = get_provider_profile("gemini")

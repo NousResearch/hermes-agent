@@ -170,13 +170,13 @@ def test_keep_alives_fire_at_five_sixths_of_the_ttl_and_compaction_decides_there
     assert run.deadline_at - run.next_warm_at == pytest.approx(600, rel=0, abs=1e-6)
 
 
-def test_a_five_minute_window_warms_three_times_then_expires_without_compacting():
+def test_a_five_minute_window_warms_three_times_then_decides_the_edge():
     agent = _chat(_cache_ttl="5m")
     warmer = pcl.get_prompt_cache_warmer(agent)
     assert _respond(agent, _request("5m"), _WRITE_5M) is None
     pcl.end_turn_prompt_cache_warming(agent)
     assert _warm_until_spent(agent) == pcl.WARM_BUDGET
-    assert pcl.get_prompt_cache_warmer(agent).edge_decision(now=warmer._spent.due_at).compact == "short_window:300s"
+    assert pcl.get_prompt_cache_warmer(agent).edge_decision(now=warmer._spent.due_at).compact == "due"
 
 
 def test_a_keep_alive_that_misses_twice_in_a_row_ends_warming():

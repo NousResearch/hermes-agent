@@ -113,6 +113,7 @@ Every `ctx.*` API below is available inside a plugin's `register(ctx)` function.
 | Add CLI commands | `ctx.register_cli_command(name, help, setup_fn, handler_fn)` — adds `hermes <plugin> <subcommand>` |
 | Inject messages | `ctx.inject_message(content, role="user", session_key=... \| origin=...)` - see [Injecting Messages](#injecting-messages) |
 | Post and edit a status message | `handle = ctx.post_message(text)`, then `handle.edit(text)` — see [Posting a live message](#posting-a-live-message) |
+| Post a card with no model turn | `ctx.post_card({"text": ..., "directive": ...}, session_key=...)` — see [Posting a card](#posting-a-card) |
 | Ship data files | `Path(__file__).parent / "data" / "file.yaml"` |
 | Bundle skills | `ctx.register_skill(name, path)` — namespaced as `plugin:skill`, loaded via `skill_view("plugin:skill")` |
 | Gate on env vars | `requires_env: [API_KEY]` in plugin.yaml — prompted during `hermes plugins install` |
@@ -650,11 +651,13 @@ working but are **deprecated** in favor of the consent flow:
 | `llm.profile_override` | `llm.allow_profile_override` |
 | `llm.task_override` | `llm.allow_task_override` |
 | `gateway.platform_actions` | `allow_platform_actions` |
+| `llm.side_question` | — |
+| `conversation.cards` | — |
 
 A gate is open when *either* the capability is granted *or* the legacy key is
 set — existing configs keep working unchanged.
-`llm.side_question` and `llm.session_fork` have no legacy key: each is open
-only when declared and granted through the consent flow.
+`llm.side_question`, `llm.session_fork` and `conversation.cards` have no legacy key: each is
+open only when declared and granted through the consent flow.
 
 :::warning Not a sandbox
 Capabilities are a **consent and audit layer**, not isolation. Plugins run as
@@ -1066,6 +1069,90 @@ because the message can only reach the conversation that already invoked the plu
 `ctx.post_message` is not available to plugins running in the out-of-process plugin host
 (`plugins.isolation: host`): the handle is bound to the gateway's event loop and live adapter.
 
+## Posting a card
+
+:::caution Experimental
+`ctx.post_card` is experimental, like [`ctx.fork_session`](../../developer-guide/plugin-llm-access.md#forking-the-sessions-own-agent-ctxfork_session):
+the card shape and the result codes may change in a later release. Keep the call inside one small
+function of your plugin that returns plain data. Treat a definite refusal as "no card", but never
+fall back on an uncertain result as described below.
+Under `plugins.isolation: host` a third-party plugin's `ctx.post_card` and `ctx.apost_card` exist but
+raise `PluginHostUnsupported` (a `RuntimeError`), as `post_message` and `fork_session` do: the card is
+admitted on the gateway's event loop into a session the Hermes process owns.
+:::
+
+A plugin can put a card into a conversation from anywhere, including a timer or its own background
+thread, without starting a model turn. The card is saved in the session's history, so it is still there
+after a reload. A card is display-only: people see it, and the model is told only that the plugin posted
+a card with a core-derived opaque reference (one line, `[<plugin id> posted a card <opaque id>]`).
+The reference is stable for that plugin and card id and saved in the row's content beside its display
+metadata, so clients can match them. The plugin-chosen `id` stays in display metadata for rendering and
+deduplication, never in model-facing content. A card saved by a Hermes version that wrote the plugin's
+own id in that line keeps its row as it is, and an unchanged retry of it is still a `duplicate`. The model never reads the card's
+text, directive or attrs. Hermes also strips those fields before handing transcript rows to memory
+providers through `on_session_end()` or `on_pre_compress()`:
+
+```python
+result = ctx.post_card(
+    {
+        "id": "sugg_8f2c1a",
+        "text": "Hermes thinks deploy-checklist could help your team.",
+        "directive": {"name": "wisdom-share", "attrs": {"id": "sugg_8f2c1a"}},
+    },
+    session_key=session_key,
+)
+```
+
+**Signature:** `ctx.post_card(card: dict, *, session_key: str | None = None, origin: Mapping | None = None) -> dict`,
+and `await ctx.apost_card(...)` on the gateway's event loop. It never raises.
+
+- `text` (1 to 2,000 characters) is required. It is what every surface without the plugin's card shows.
+  It is never shown to the model.
+- `directive` is optional. It names a [transcript directive](../../developer-guide/desktop-plugin-sdk.md) that
+  the plugin's Desktop half registers in `transcript.directives`. Desktop renders that component with
+  `attrs` (string values, at most 16 keys, 2,048 characters in all). If no plugin claims the name, the text
+  is shown. The model never sees `attrs` either.
+- `id` is optional. Posting the same `id` again with the same card does nothing (`status: "duplicate"`).
+  Posting it with a different card is refused (`card_conflict`). A card is never edited: the plugin's
+  component shows the current state for its `id`.
+
+**Which conversation.** `session_key` names an existing session, and `origin` resolves an existing private-chat
+session of the plugin's own profile. Unlike [`inject_message`](#injecting-messages), a card does not create a
+new messaging session: there is no committed conversation to record it in yet. Without either target, the
+session bound in the calling context is used. With no bound session either, the call is refused with
+`no_conversation`. Group chats are refused (`group_not_allowed`).
+
+**When it appears.** The card waits its place in the session's queue. An idle session shows it at once. A
+running turn finishes first, and a message the person sent before the card runs before it. Posting a card
+does not stop the session's background review or plugin forks, because no turn starts.
+
+| Surface | What it shows |
+|---|---|
+| Desktop | the plugin's directive component inline in the transcript, or the text as a system row |
+| Ink TUI, Web dashboard chat, and classic CLI | the text as a system line |
+| Messaging platforms | nothing from core: the card is recorded in the session's history and the plugin sends its own native card through its adapter |
+
+Result: `{"ok": True, "card_id", "status": "queued" | "duplicate"}`, or `{"ok": False, "error"}`.
+`cancelled`, `post_failed` and `timeout` are **UNCERTAIN** and include `"certain": false`: the card
+**may have landed**, even though no receipt reached the caller. Do not inject a fallback turn for
+these results. Retry the same `id` and unchanged card to recover the durable duplicate receipt
+without posting twice.
+Expected refusals are `consent_required`, `invalid_target`, `no_conversation`, `group_not_allowed`,
+`invalid_card`, `card_conflict`, `rate_limited` (more than 6 cards in 60 seconds for one session),
+`gateway_unavailable` (no live gateway, or its loop closed while the card was on its way) and `on_event_loop`.
+`cancelled` (the gateway stopped before answering), `post_failed` and `timeout` are uncertain as described
+above. An internal admission refusal is reported as `refused`, not raised into the plugin. `refused` is certain:
+nothing was queued, and the same card can be posted again. One expected case is a chat whose conversation moved
+(for example a `/resume`) while the card was being admitted: the retry lands on the conversation the chat now has.
+Like `inject_message`, the card is admitted from
+the gateway's own context, never the caller's: a card posted from a session fork's tool handler or from a
+hook inside a turn hands none of that turn's scopes to the session queue.
+
+Cards need the `conversation.cards` capability. Declare it in `plugin.yaml` and grant it on the consent
+screen. It is separate from `allow_gateway_injection` because a card runs no model and no tools, sends
+nothing to a platform, and puts no plugin-authored text in front of the model or a memory provider: the
+model is told a card was posted, never its text.
+
 ## Injecting Messages
 
 Plugins can inject messages into a CLI conversation, a known gateway session, or a new gateway session in a given chat using `ctx.inject_message()`:
@@ -1162,7 +1249,7 @@ Hooks, tools and injected turns of every chat and every local session (CLI, TUI,
 - `os.getcwd()` is the gateway's own directory, shared by every session; Hermes never changes it. Use `ctx.session_cwd()` for the working directory of the session the hook or tool runs for: the workspace a CLI/TUI/Desktop session was started in, or the profile's terminal cwd for a chat (`""` when there is none). Pass it as `cwd=` to subprocesses. It reads the session from the running turn, so it works in code that runs for a session: turn hooks, tool handlers and approval hooks. Ingress hooks such as `pre_gateway_dispatch` run before the message is admitted to any session; there it returns the profile's terminal cwd, or `""` when none is configured.
 - `ctx.session_surface()` names the calling session's client: `"cli"`, `"tui"`, `"desktop"`, `"acp"`, or the messaging platform (`"telegram"`, …); `""` outside a session.
 - `hermes_cli.plugin_session.session_client()` returns the client that created the calling local session, as it named itself on `session.create` (`{"name": "my-client", "version": "1.2.0"}`; `version` only when sent), or `None`: outside a session, for a messaging chat, and for a client that sent no name (the TUI, Desktop, the classic CLI and ACP send none today). Under `plugins.isolation: host` the plugin's process has no session context, so read `info["client"]` in a system prompt section instead. The name is a label the client chose, not an authentication: never grant anything, or skip a check, because of it.
-- `hermes_cli.plugin_session.turn_client()` (also `ctx.turn_client()`) returns the client that submitted the turn running now, as its connection announced itself (`{"name": "hermes-desktop", "version": "2.1.0", "kind": "desktop"}`; `version` and `kind` only when sent), or `None`: outside a turn, in a delegated child, for a client that announced nothing, and for a messaging, cron or other automation turn. `hermes_cli.plugin_session.session_viewers()` (also `ctx.session_viewers()`) lists the clients attached to the calling session right now, one dict per connection: `name` and `kind` (`None` when it announced nothing), `idle_seconds` since the user's last input there (`None` when none was seen), `basis` (`"system"`: the device's idle clock, `"page"`: input inside the Hermes window, `"input"`: only what the gateway saw itself) and `can_alert` (whether that client can get the user's attention itself; `None` while no report of that client counts for this session, and a report that leaves it out says `True`). It is `[]` when the calling code is bound to no session, in a delegated child, in a managed worker, and when the session is not live. Under `plugins.isolation: host` the two forms answer differently: the module-level `plugin_session.turn_client()` / `session_viewers()` run in the plugin's own process, which has no gateway and no turn, so they always return `None` / `[]` there, while `ctx.turn_client()` / `ctx.session_viewers()` call back into the gateway with the calling hook's context and answer as they would in-process. Use the `ctx` form in a plugin that may run hosted; the module-level form answers only inside the gateway process. Both read the calling context, so they answer for the right session in turn hooks such as `post_llm_call` and `on_session_end`. In the plugin's own slash command no turn is running: `turn_client()` is `None` there, and `session_viewers()` answers for the session the command was typed in. A notification plugin uses them to skip a phone alert while the user is active at the client that sent the turn. Detect them with `getattr(plugin_session, "turn_client", None)`. Like `session_client()`, these are labels and reports the clients chose: never grant anything on them.
+- `hermes_cli.plugin_session.turn_client()` (also `ctx.turn_client()`) returns the client that submitted the turn running now, as its connection announced itself (`{"name": "hermes-desktop", "version": "2.1.0", "kind": "desktop"}`; `version` and `kind` only when sent), or `None`: outside a turn, in a delegated child, for a client that announced nothing, and for a messaging, cron or other automation turn. `hermes_cli.plugin_session.session_viewers()` (also `ctx.session_viewers()`) lists the clients attached to the calling session right now, one dict per connection: `name` and `kind` (`None` when it announced nothing), `idle_seconds` since the user's last input there (`None` when none was seen), `basis` (`"system"`: the device's idle clock, `"page"`: input inside the Hermes window, `"input"`: only what the gateway saw itself) and `can_alert` (whether that client can get the user's attention itself; `None` while no report of that client counts for this session, and a report that leaves it out says `True`). It is `[]` when the calling code is bound to no session, in a delegated child, in a managed worker, and when the session is not live. `hermes_cli.plugin_session.turn_origin()` (also `ctx.turn_origin()`) names the Hermes producer of the turn running now, only where Hermes knows it: `"process_notification"` for a turn a background process's completion, watch match or liveness tick started, and `"delegation_result"` for an async delegation's result re-entering its parent session. It is `None` for every other turn, whoever started it: typed in a client (whether or not its connection announced itself), sent on a messaging chat, an API request, a Bot Chat delivery or `hermes peer dm`, a restart resuming an interrupted turn, a goal continuation, cron, Kanban and other automation wakes, a message a plugin injected, and a steer or interrupt text that runs as the next turn. It is `None` too outside a turn, in a delegated child, in a detached fork (a plugin fork, a side question or a background review: `fork_origin()` is not empty), in a managed worker and in a plugin's own slash command. Once a person's input joins the running turn (an accepted steer or redirect: Steer or `/steer` in a client, a steered or redirected chat message), it is `None` for the rest of that turn, since the reply now answers that person too; a steer that is refused changes nothing. More values may be added later, so compare against the ones you handle rather than testing for `None`. `turn_client()` is `None` both for a client that announced nothing and for a process or delegation wake; `turn_origin()` tells those two apart. Under `plugins.isolation: host` the two forms answer differently: the module-level `plugin_session.turn_client()` / `turn_origin()` / `session_viewers()` run in the plugin's own process, which has no gateway and no turn, so they always return `None` / `None` / `[]` there, while `ctx.turn_client()` / `ctx.turn_origin()` / `ctx.session_viewers()` call back into the gateway with the calling hook's context and answer as they would in-process. Use the `ctx` form in a plugin that may run hosted; the module-level form answers only inside the gateway process. Both read the calling context, so they answer for the right session in turn hooks such as `post_llm_call` and `on_session_end`. In the plugin's own slash command no turn is running: `turn_client()` is `None` there, and `session_viewers()` answers for the session the command was typed in. A notification plugin uses them to skip a phone alert while the user is active at the client that sent the turn. Detect them with `getattr(plugin_session, "turn_client", None)` (and `"turn_origin"`, which is newer). Like `session_client()`, these are labels and reports the clients chose: never grant anything on them.
 - `hermes_cli.plugin_session.session_source()` (also `ctx.session_source()`) returns the label the calling session was created with, its `source`: `"cli"`, `"tui"`, `"gui"` or `"acp"` for a chat opened in that client, `"tool"` for a run a third-party integration launched (`hermes chat --source tool`), `"oneshot"` for a finite `chat -q` / `-z` run. Any other non-empty value is a label Hermes gives a session it starts itself. It is a launch label, not proof that a person is waiting. `""` says only that no launch policy is bound, not who started the session: it is what you get outside a session, for a person's messaging chat turn (use `session_surface()` for the platform there) and for a cron run (use `ctx.current_cron_execution()` to recognize one). A delegated child reads its parent session's label. It reads only the running turn, never the process environment.
 - `hermes_cli.plugin_session.in_delegated_child()` (also `ctx.in_delegated_child()`) is `True` while the calling code runs for a `delegate_task` child, `False` otherwise. Pass `include_subprocesses=True` to also get `True` in a process a delegated child started, such as a terminal command it ran.
 - `hermes_cli.plugin_session.fork_origin()` (also `ctx.fork_origin()`) is `""` for a session's own agent and every other regular agent (CLI, gateway, cron, subagent). Inside a detached fork Hermes runs beside a turn it returns the fork's label: `"background_review"` (the self-improvement review), `"side_question"` (`/btw` or `ctx.side_question()`), or `"plugin_fork:<plugin id>"` for a fork started with `ctx.fork_session()`. A notification plugin uses these three to alert only for the user's own turn: `if ctx.in_delegated_child() or ctx.fork_origin(): return`. Under `plugins.isolation: host` use the `ctx` forms: they run in the gateway in the calling hook's context, while the module-level forms answer for the plugin's own process.

@@ -16,6 +16,7 @@ import shlex
 from dataclasses import dataclass, field
 from typing import Optional
 
+from hermes_cli import gateway_migrate_backends_timeouts as _timeouts
 from hermes_cli.gateway_migrate_backends import BackendItem
 
 EXIT_OK, EXIT_USAGE, EXIT_BLOCKED, EXIT_UNSUPPORTED = 0, 2, 3, 6
@@ -52,6 +53,9 @@ _UNSUPPORTED = {
     "systemd-system": "The backend is a systemd SYSTEM unit: this command changes no system unit, and "
                       "hermes cannot run as root on a per-user install. Run the steps below as yourself; only "
                       "the one `sudo systemctl` line needs root.",
+    "launchd-system": "The backend is a system-wide launchd LaunchDaemon: this command changes no system "
+                      "daemon, and hermes cannot run as root on a per-user install. Run the steps below as "
+                      "yourself; only the one `sudo launchctl` line needs root.",
     "windows": "Automatic migration is not available on Windows. Run the steps below in PowerShell or Command "
                "Prompt, one line at a time; `hermes gateway install` asks how to start the gateway.",
     "unknown": "Its supervisor could not be identified, so it cannot be stopped safely. Stop it yourself, "
@@ -138,7 +142,7 @@ class BackendPlan:
                                 + (", then the gateway running outside its service" if self.stray_gateway else ""),
             "start_gateway": "start or restart the gateway",
             "verify": "verify " + " and ".join(format_address(h, self.new_port) for h in self.verify_hosts)
-                      + ": /api/status 200 from the gateway and the Webapp page served, within 90 s",
+                      + f": /api/status 200 from the gateway and the Webapp page served, within {int(_timeouts.VERIFY_SECONDS)} s",
         }
         return [{"name": n, "title": titles[n]} for n in APPLY_STEPS]
 
@@ -206,7 +210,7 @@ def backend_address(argv: list[str]) -> Optional[tuple[str, int]]:
     """``(host, port)`` a ``hermes dashboard`` / ``serve`` argv listens on (its defaults when it names
     none), or None when *argv* is empty or not such a command."""
     from hermes_cli.main_dashboard import _parse_dashboard_runtime
-    parsed = _parse_dashboard_runtime(shlex.join(argv)) if argv else None
+    parsed = _parse_dashboard_runtime(argv) if argv else None
     # --port 0 asks for a free port: the command line does not say which one it got.
     return (parsed[1], parsed[2]) if parsed and parsed[2] else None
 
@@ -449,6 +453,33 @@ def _profile_flag(argv: list[str]) -> bool:
     return any(a in ("-p", "--profile") or a.startswith("--profile=") for a in argv or [])
 
 
+_SYSTEM_LAUNCHD_DIRS = ("/Library/LaunchDaemons/", "/System/Library/LaunchDaemons/")
+
+
+def is_system_launchd(scope: Optional[str], unit_path: Optional[str]) -> bool:
+    """Whether a launchd target is a system-domain LaunchDaemon rather than a per-user LaunchAgent."""
+    if (unit_path or "").strip().startswith(_SYSTEM_LAUNCHD_DIRS):
+        return True
+    return not (scope or "").strip().startswith(("gui/", "user/"))
+
+
+def _is_system_launchd(item: BackendItem) -> bool:
+    """Whether a launchd backend is a system-domain LaunchDaemon rather than a per-user LaunchAgent."""
+    return is_system_launchd(getattr(item, "scope", None), getattr(item, "unit_path", None))
+
+
+def _launchd_manual_stop(item: Optional[BackendItem]) -> Optional[str]:
+    """The stop+disable shell line for a launchd backend (with ``sudo`` for a system LaunchDaemon)."""
+    if not item or item.supervisor != "launchd" or not item.unit:
+        return None
+    is_system = _is_system_launchd(item)
+    domain = (getattr(item, "scope", None) or "system") if is_system else item.scope
+    prefix = ["sudo"] if is_system else []
+    target = f"{domain}/{item.unit}"
+    return (f"{shlex.join([*prefix, 'launchctl', 'bootout', target])}; "
+            f"{shlex.join([*prefix, 'launchctl', 'disable', target])}")
+
+
 def _supervisor_kind(item: BackendItem, host) -> str:
     """``systemd`` / ``launchd`` / ``manual`` when this command drives it, else an _UNSUPPORTED key."""
     if host.os_family() == "win32":
@@ -457,9 +488,13 @@ def _supervisor_kind(item: BackendItem, host) -> str:
         # A system unit is never driven, root or not: `sudo hermes` refuses a per-user checkout, and
         # the gateway would have to become a system service of the unit's User= (not this caller's).
         return "systemd" if item.scope == "user" else "systemd-system"
+    if item.supervisor == "launchd":
+        # A system LaunchDaemon (/Library/LaunchDaemons, domain `system`) needs root to bootout/disable;
+        # hermes cannot run as root on a per-user install, and the gateway is a per-user LaunchAgent.
+        return "launchd-system" if _is_system_launchd(item) else "launchd"
     if item.supervisor in ("manual", "detached"):
         return "manual"
-    return item.supervisor if item.supervisor in ("launchd", *_UNSUPPORTED) else "unknown"
+    return item.supervisor if item.supervisor in _UNSUPPORTED else "unknown"
 
 
 # What `hermes gateway status` prints for each case, quoted from its output (systemd and launchd here,
@@ -560,8 +595,7 @@ def manual_steps(old_host: Optional[str], old_port: Optional[int], item: Optiona
                         f"systemctl is-active {item.unit}  # must print inactive (or failed) before the next line",
                         *gateway_tail(hermes)]
     stop = {"systemd": f"systemctl --user disable --now {item.unit}" if item and item.unit else None,
-            "launchd": (f"launchctl bootout {item.scope}/{item.unit}; launchctl disable {item.scope}/{item.unit}"
-                        if item and item.unit else None)}
+            "launchd": _launchd_manual_stop(item)}
     steps.append(stop.get(item.supervisor if item else "", None)
                  or "# stop the old backend through its supervisor and keep it from starting at boot")
     if no_service:
@@ -577,7 +611,9 @@ def _unsupported_entry(item: Optional[BackendItem], kind: str, host) -> tuple:
     why = _UNSUPPORTED[kind] if address or item is None else _UNSUPPORTED[kind] + " " + _UNSUPPORTED["unknown-address"]
     env = _manual_launcher_env(item, kind, host)  # names only leave this function
     keys: list[str] = []
-    if kind == "windows" or (item is not None and item.supervisor == "systemd" and item.unit and item.scope):
+    if kind in ("windows", "launchd-system") or (
+        item is not None and item.supervisor == "systemd" and item.unit and item.scope
+    ):
         keys = list(_keys_to_copy({k: v for k, v in env.items() if k.startswith(_AUTH_PREFIX) and v}, host.dotenv()))
     url = resolve_public_url(host.effective_config(), backend_url_env(host, env))
     if kind == "windows":
@@ -588,12 +624,16 @@ def _unsupported_entry(item: Optional[BackendItem], kind: str, host) -> tuple:
 
 def _manual_launcher_env(item: Optional[BackendItem], kind: str, host) -> dict:
     """The environment a by-hand backend was launched with (in memory only): a systemd unit's own,
-    else its process's; empty when neither can be read."""
+    else its process's (falling back to a launchd plist's EnvironmentVariables); empty when neither can be read."""
     if item is None:
         return {}
     if kind != "windows" and item.supervisor == "systemd" and item.unit and item.scope:
         return host.unit_launcher_env(item.unit, item.scope) or {}
-    return (host.process_env(item.pid) if item.pid else None) or {}
+    env = (host.process_env(item.pid) if item.pid else None) or {}
+    if not env and item.supervisor == "launchd" and (plist_path := getattr(item, "unit_path", None)):
+        from hermes_cli.gateway_migrate_backends_host import plist_environment
+        env = plist_environment(plist_path)
+    return env
 
 
 def _manual_public_url(plan: BackendPlan, host) -> None:
@@ -813,7 +853,22 @@ def backend_url_env(host, launch_env: Optional[dict]) -> dict:
     return {_URL_KEY: value} if value is not None else {}
 
 
-def secret_source_blocker(host) -> Optional[str]:
+def _loopback_public_url(address: Optional[tuple[str, int]]) -> str:
+    """A valid loopback ``webapp.public_url`` matching *address*'s host/IP family and port, or a placeholder."""
+    if address is None:
+        return "http://127.0.0.1:<port>"
+    from gateway.webapp_listener import dial_origin
+    return dial_origin(_canonical(address[0].strip()), address[1])
+
+
+def _secret_source_address(item: Optional[BackendItem], host, keep_webapp: bool) -> Optional[tuple[str, int]]:
+    """Where the Webapp would serve after the move (:func:`_target`); None while that is unknown or blocked,
+    since the old backend's port is wrong once the Webapp is already enabled on another address."""
+    old = _address_of(item, host) if item is not None else None
+    return _target(host, old, keep_webapp)[0] if old is not None else None
+
+
+def secret_source_blocker(host, *, address: Optional[tuple[str, int]] = None, nix: bool = False) -> Optional[str]:
     """An enabled external secret source (``secrets:``) may set or override HERMES_DASHBOARD_PUBLIC_URL
     after the ``.env`` loads, so which public URL the old backend serves cannot be told, unless
     ``webapp.public_url`` is already set (the plan then copies none)."""
@@ -824,9 +879,26 @@ def secret_source_blocker(host) -> Optional[str]:
     if not (isinstance(secrets, dict) and any(isinstance(v, dict) and v.get("enabled") is True
                                                 for v in secrets.values())):
         return None
-    return ("An external secret source is enabled (secrets: in config.yaml), and it may set the old backend's "
-            "HERMES_DASHBOARD_PUBLIC_URL, so the public URL it serves cannot be told. Set webapp.public_url to "
-            "the address the Webapp should be reached at, then re-run. Nothing changed.")
+    from hermes_constants import get_managed_system
+
+    local_url = _loopback_public_url(address)
+    managed = get_managed_system(host.home)
+    if nix or managed in ("nix", "nixos", "home-manager"):
+        where = (f"Set webapp.public_url in your Nix configuration to the URL you open in a browser, "
+                 f"or {local_url} for local/Desktop-only use")
+    elif managed:
+        where = (f"Set webapp.public_url in your {managed} configuration to the URL you open in a browser, "
+                 f"or {local_url} for local/Desktop-only use")
+    else:
+        where = f"Set webapp.public_url to the URL you open in a browser, or {local_url} for local/Desktop-only use"
+        if address is not None:  # saved as is, the <port> placeholder would keep the Webapp off
+            hermes = hermes_command(str(host.home), powershell=host.os_family() == "win32")
+            where += f" (e.g. `{hermes} config set webapp.public_url {shlex.quote(local_url)}`)"
+    return ("An external secret source is enabled (secrets: in config.yaml), and it may set or override the old "
+            "backend's HERMES_DASHBOARD_PUBLIC_URL; Hermes never reads vault values to guess it. "
+            "webapp.public_url is simply the browser-facing http:// or https:// address the Webapp uses for "
+            "sign-in callbacks and Host/Origin checks — it does not need to be internet-routable (a LAN "
+            f"hostname/IP or loopback address works). {where}, then re-run. Nothing changed.")
 
 
 def _public_url(plan: BackendPlan, cfg: dict, env: Optional[dict]) -> None:
@@ -1055,7 +1127,8 @@ def _restart_hint(plan: BackendPlan) -> str:
         user = " --user" if rec.get("scope") == "user" else ""
         return f"{'sudo ' if not user else ''}systemctl{user} restart {rec['unit']}"
     if rec.get("supervisor") == "launchd" and rec.get("unit") and rec.get("scope"):
-        return f"launchctl kickstart -k {rec['scope']}/{rec['unit']}"
+        prefix = ["sudo"] if is_system_launchd(rec.get("scope"), rec.get("unit_path")) else []
+        return shlex.join([*prefix, "launchctl", "kickstart", "-k", f"{rec['scope']}/{rec['unit']}"])
     return "stop it and start it again the way it was started"
 
 
@@ -1179,8 +1252,14 @@ def _build_plan(host, *, address=None, keep_webapp=False, force_interrupt=False)
         plan.unsupported = [(item, why, []) for item, why, _steps in plan.unsupported]
         plan.candidates = []
         return plan
-    if (plan.unsupported or plan.candidates) and (problem := secret_source_blocker(host)):
-        plan.blockers.append(problem)
+    if plan.unsupported or plan.candidates:
+        selected = plan.candidates[0] if plan.candidates else plan.unsupported[0][0]
+        if problem := secret_source_blocker(
+            host,
+            address=_secret_source_address(selected, host, keep_webapp and bool(plan.candidates)),
+            nix=selected is not None and selected.supervisor in ("nix-systemd", "nix-launchd"),
+        ):
+            plan.blockers.append(problem)
     if plan.unsupported:
         _manual_target(plan, host, keep_webapp)
         _manual_public_url(plan, host)

@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from pm.environment import PythonEnvironment  # noqa: TID251
 
 from pm import paths
+from pm.filesystem import long_root
 from pm.package import InstallError
 from pm.plugin_declarations import read_python_declaration, manifest_version_error
 
@@ -52,11 +53,12 @@ def members_stamp(plugin_dirs) -> str:
             h.update(source.read_bytes())
             h.update(b"\0")
         if (entry / "pyproject.toml").is_file():
-            for directory, dirs, files in os.walk(entry):
+            walk_root = long_root(entry)
+            for directory, dirs, files in os.walk(walk_root):
                 dirs[:] = sorted(set(dirs) - set(_member_ignored(directory, dirs)))
                 for name in sorted(set(files) - set(_member_ignored(directory, files))):
                     path = Path(directory) / name
-                    h.update(path.relative_to(entry).as_posix().encode())
+                    h.update(path.relative_to(walk_root).as_posix().encode())
                     h.update(b"\0")
                     h.update(os.readlink(path).encode() if path.is_symlink() else path.read_bytes())
                     h.update(b"\0")
@@ -135,7 +137,7 @@ def _copy_core_inputs(source: Path, destination: Path) -> None:
                      or entry.name in _ROOT_DATA_DIRS
                      or any(fnmatch.fnmatchcase(entry.name, pattern) for pattern in package_roots))):
             target = destination / entry.name
-            shutil.copytree(entry, target, ignore=ignore)
+            shutil.copytree(long_root(entry), long_root(target), ignore=ignore)
     for name in files:
         entry = source / name
         if not entry.is_file() or entry.is_symlink():
@@ -620,7 +622,7 @@ def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path, extras: I
     pyproject = declaration.pyproject
     if pyproject is not None:
         member = root / "plugin-sources" / key
-        shutil.copytree(plugin_dir, member, symlinks=True,
+        shutil.copytree(long_root(plugin_dir), long_root(member), symlinks=True,
                         ignore=_member_ignored)
         document = tomllib.loads(pyproject.read_text(encoding="utf-8-sig"))
         # uv identifies a workspace member by [project].name, so the same virtual
@@ -883,7 +885,7 @@ def lock_and_sync(
         # Sibling generations keep external relative paths at the same depth;
         # snapshotted members and their exact lock travel with the workspace.
         # Use the snapshot's exclusions: build/ may hold an in-tree backend.
-        shutil.copytree(replay, root, symlinks=True, ignore=_member_ignored)
+        shutil.copytree(long_root(replay), long_root(root), symlinks=True, ignore=_member_ignored)
         # A generation recorded before the cutoff left the user's machine still carries it.
         manifest = root / "pyproject.toml"
         manifest.write_text(_without_release_age(manifest.read_text(encoding="utf-8-sig")), encoding="utf-8")

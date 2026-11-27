@@ -49,6 +49,65 @@ def machine(monkeypatch, tmp_path):
     return {"root": root, "solo": solo, "listening": listening, "probed": probed, "monkeypatch": monkeypatch}
 
 
+def test_port_selection_skips_decimal_string_claims(machine):
+    root = machine["root"]
+    _write(root, "webapp:\n  port: '9122'\n")
+    _write(root / "profiles" / "other", "webapp:\n  port: '9123'\n")
+    assert webapp_access.plan("lan")[1] == 9124
+
+
+def test_port_selection_skips_env_expanded_claims_and_ignores_invalid_claims(machine):
+    root = machine["root"]
+    monkeypatch = machine["monkeypatch"]
+    monkeypatch.setenv("ROOT_WEBAPP_PORT", "9122")
+    monkeypatch.setenv("OTHER_WEBAPP_PORT", "09123")
+    _write(root, "webapp:\n  port: ${ROOT_WEBAPP_PORT}\n")
+    _write(root / "profiles" / "other", "webapp:\n  port: ${OTHER_WEBAPP_PORT}\n")
+    _write(root / "profiles" / "bad_unicode", "webapp:\n  port: '\uff19\uff11\uff12\uff14'\n")
+    _write(root / "profiles" / "bad_ws", "webapp:\n  port: ' 9124 '\n")
+    _write(root / "profiles" / "bad_sign", "webapp:\n  port: '+9124'\n")
+    _write(root / "profiles" / "bad_bool", "webapp:\n  port: true\n")
+    _write(root / "profiles" / "bad_unset", "webapp:\n  port: ${UNSET_OTHER_PORT}\n")
+    assert webapp_access.plan("lan")[1] == 9124
+
+
+def test_port_selection_expands_stopped_sibling_dotenv_without_mutating_environ(machine):
+    root = machine["root"]
+    monkeypatch = machine["monkeypatch"]
+    monkeypatch.delenv("BM_WEBAPP_PORT", raising=False)
+    machine["listening"].clear()
+    other = _write(
+        root / "profiles" / "other",
+        "gateway:\n  standalone: true\nwebapp:\n  enabled: true\n  port: ${BM_WEBAPP_PORT}\n",
+    )
+    (other / ".env").write_text("BM_WEBAPP_PORT=09121\n", encoding="utf-8")
+    env_before = dict(os.environ)
+
+    assert webapp_access._claimed_ports(machine["solo"]) == {9120, 9121}
+    assert webapp_access.plan("lan")[1] == 9122
+    assert "BM_WEBAPP_PORT" not in os.environ
+    assert dict(os.environ) == env_before
+
+
+def test_root_with_invalid_port_still_claims_default_port(machine):
+    root = machine["root"]
+    _write(root, "webapp:\n  port: true\n")
+    _write(root / "profiles" / "other", "webapp:\n  port: '9122'\n")
+    assert webapp_access._claimed_ports(machine["solo"]) == {9120, 9122}
+
+
+def test_a_standalone_profile_with_an_env_expanded_port_keeps_its_template(machine):
+    monkeypatch = machine["monkeypatch"]
+    monkeypatch.setenv("SOLO_WEBAPP_PORT", "9555")
+    _write(machine["solo"], "gateway:\n  standalone: true\nwebapp:\n  port: ${SOLO_WEBAPP_PORT}\n")
+    host, port, public_url, callback = webapp_access.plan("lan")
+    assert (port, callback) == (None, "http://192.168.1.50:9555/auth/callback")
+    assert machine["probed"] == []
+    webapp_access.serve(host, public_url, port)
+    assert _webapp_block(machine["solo"])["port"] == "${SOLO_WEBAPP_PORT}"
+    assert webapp_access.access_status()["port"] == 9555
+
+
 def _webapp_block(home: Path) -> dict:
     from hermes_cli.config import read_user_config_raw
 

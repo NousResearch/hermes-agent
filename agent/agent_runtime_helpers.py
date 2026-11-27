@@ -30,6 +30,7 @@ from agent.credential_pool import (
     credential_pool_matches_provider,
 )
 from agent.error_classifier import FailoverReason
+from agent.credential_pool_model_cooldowns import record_plan_window, usage_allowance_spent
 from agent.retry_utils import parse_retry_after_seconds, reset_delay_from_message
 from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
 from agent.primary_runtime_snapshot import _build_primary_runtime_snapshot
@@ -459,8 +460,6 @@ _STATUS_TO_FAILOVER_REASON = {
     402: FailoverReason.billing, 429: FailoverReason.rate_limit, 401: FailoverReason.auth,
     403: FailoverReason.auth,
 }
-_USAGE_LIMIT_REASON_TOKENS = ("usage_limit_reached", "gousagelimit")
-_USAGE_LIMIT_MESSAGE_TOKENS = ("usage limit reached", "usage limit has been reached")
 
 
 def _failed_credential_identity(agent, pool) -> tuple[Optional[str], Optional[str]]:
@@ -543,14 +542,7 @@ def _recover_rate_limit(pool, *, has_retried_429, error_context, api_key_hint, c
             current_last_status,
         )
         return (True, False) if rotate_and_swap(429, "rate limit, pre-exhausted") else (False, True)
-    usage_limit_reached = False
-    if error_context:
-        context_reason = str(error_context.get("reason") or "").lower()
-        context_message = str(error_context.get("message") or "").lower()
-        usage_limit_reached = any(t in context_reason for t in _USAGE_LIMIT_REASON_TOKENS) or any(
-            t in context_message for t in _USAGE_LIMIT_MESSAGE_TOKENS
-        )
-    if not has_retried_429 and not usage_limit_reached:
+    if not has_retried_429 and not usage_allowance_spent(error_context):
         return False, True
     return (True, False) if rotate_and_swap(429, "rate limit") else (False, True)
 
@@ -1456,7 +1448,7 @@ def _provider_supplied_client(agent, client_kwargs: dict) -> Any | None:
     try:
         return profile.create_client(**client_kwargs)
     except Exception:
-        if getattr(profile, "auth_type", "") == "external_process":
+        if getattr(profile, "auth_type", "") == "external_process" or getattr(profile, "strict_client", False):
             raise
         _ra().logger.warning(
             "Provider profile %r failed to create a client; falling back to the standard client path",
@@ -1476,6 +1468,8 @@ def _profile_for_base_url(base_url: str) -> Any | None:
         return None
     target = base_url.rstrip("/").lower()
     for candidate in candidates or []:
+        if getattr(candidate, "hidden", False):
+            continue
         own = str(getattr(candidate, "base_url", "") or "").rstrip("/").lower()
         if own and (target == own or target.startswith(own + "/")):
             return candidate
@@ -1497,27 +1491,6 @@ def _ensure_route_client_headers(client_kwargs: dict, provider: str) -> None:
         if hk.lower() not in existing_lower:
             existing[hk] = hv
     client_kwargs["default_headers"] = existing
-
-
-def _gemini_native_client(agent, client_kwargs: dict, httpx_verify, *, reason: str, shared: bool):
-    """Native Gemini client when the base_url is the Gemini API, else None."""
-    from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
-    base_url = str(client_kwargs.get("base_url", "") or "")
-    if not is_native_gemini_base_url(base_url):
-        return None
-    safe_kwargs = {
-        k: v for k, v in client_kwargs.items()
-        if k in {"api_key", "base_url", "default_headers", "timeout", "http_client"}
-    }
-    if "http_client" not in safe_kwargs:
-        keepalive_http = agent._build_keepalive_http_client(base_url, verify=httpx_verify)
-        if keepalive_http is not None:
-            safe_kwargs["http_client"] = keepalive_http
-    client = GeminiNativeClient(**safe_kwargs)
-    _ra().logger.info(
-        "Gemini native client created (%s, shared=%s) %s", reason, shared, agent._client_log_context()
-    )
-    return client
 
 
 def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: bool) -> Any:
@@ -1579,11 +1552,6 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
             agent.provider, reason, shared, agent._client_log_context(),
         )
         return provider_client
-    from agent.auxiliary_client import _GEMINI_NATIVE_PROVIDER_NAMES
-    if agent.provider in _GEMINI_NATIVE_PROVIDER_NAMES:
-        client = _gemini_native_client(agent, client_kwargs, httpx_verify, reason=reason, shared=shared)
-        if client is not None:
-            return client
     # TCP keepalives so dead provider connections are detected (~60s) instead of hanging in
     # CLOSE-WAIT. Injected into the local copy only, so each client gets its own httpx.Client;
     # pinned by tests/agent/test_create_openai_client_reuse.py. What IS shared across those per-client wrappers is the
@@ -3187,7 +3155,7 @@ def extract_api_error_context(error: Exception) -> dict[str, Any]:
             message = payload.get("error")
         if isinstance(message, str) and message.strip():
             context["message"] = message.strip()
-        reset = next((payload.get(k) for k in ("resets_at", "reset_at") if payload.get(k) not in {None, ""}), None)
+        reset = next((payload.get(k) for k in ("resets_at", "reset_at") if payload.get(k) not in (None, "")), None)
         if reset is not None:
             context["reset_at"] = reset
         elif isinstance(payload.get("resets_in_seconds"), (int, float)):
@@ -3200,6 +3168,7 @@ def extract_api_error_context(error: Exception) -> dict[str, Any]:
         ratelimit_reset = headers.get("x-ratelimit-reset")
         if ratelimit_reset and "reset_at" not in context:
             context["reset_at"] = ratelimit_reset
+        record_plan_window(context, headers)
         if "reset_at" not in context:
             _set_reset_from_vendor_headers(context, headers)
     if "message" not in context and str(error).strip():

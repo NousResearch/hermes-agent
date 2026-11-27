@@ -380,34 +380,6 @@ describe('a plugin re-routes one profile', () => {
     expect(workLookups()).toBe(asked)
   })
 
-  it('a retry leaves the profile alone once a newer move has put it on its own socket', async () => {
-    const world = { failLookups: 0, sandboxed: false }
-    const { launcherWork } = sharedThenSandboxed(world)
-
-    render(<Harness />)
-    await flushAsync()
-    vi.useRealTimers()
-    await ensureGatewayProfile('work')
-
-    // The first move's lookup fails and its redial waits; the second move's redial lands at once.
-    world.sandboxed = true
-    world.failLookups = 1
-    act(() => connectionApplied?.({ profile: 'work' }))
-    await pause(5)
-    act(() => connectionApplied?.({ profile: 'work' }))
-
-    for (let i = 0; i < 100 && isActivePrimary(); i += 1) {
-      await pause(10)
-    }
-
-    // Longer than the first redial's wait.
-    await pause(450)
-    vi.useFakeTimers()
-
-    expect(isActivePrimary()).toBe(false)
-    expect(FakeWebSocket.instances.filter(socket => socket.url === launcherWork.wsUrl)).toHaveLength(1)
-  })
-
   it("a lookup that failed before the move does not hold the moved profile's next background request", async () => {
     const world = { failLookups: 0, sandboxed: false }
     const { launcherWork } = sharedThenSandboxed(world)

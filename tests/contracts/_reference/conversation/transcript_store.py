@@ -132,6 +132,13 @@ class _Transcript:
     def find(self, message_id: int) -> Optional[_StoredRow]:
         return next((row for row in self.rows if row.id == int(message_id)), None)
 
+    def superseded(self, row: _StoredRow) -> bool:
+        """A rewound row with an active or archived twin (same uid) holding different content: a compaction rewrite."""
+        uid = row.message.message_uid
+        return row.visibility is RowVisibility.REWOUND and bool(uid) and any(
+            twin is not row and twin.visibility is not RowVisibility.REWOUND and twin.message.message_uid == uid
+            and twin.message.content != row.message.content for twin in self.rows)
+
 
 @dataclass
 class _Cooldown:

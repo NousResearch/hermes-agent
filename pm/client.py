@@ -97,6 +97,9 @@ def _raise_worker_error(error: dict):
     if error["type"] == "DownloadPaused":
         from pm.downloader import DownloadPaused
         raise DownloadPaused(error["message"])
+    if error["type"] == "SelectionChanged":
+        from pm.publication import SelectionChanged
+        raise SelectionChanged(error["message"])
     raise _WORKER_ERRORS.get(error["type"], RuntimeError)(error["message"])
 
 

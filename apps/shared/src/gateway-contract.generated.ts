@@ -6145,6 +6145,17 @@ export interface ReactionPayload {
 export interface ReviewSummaryPayload {
   text: string
 }
+/** ``gateway.session_completion_notes`` after a plugin card's note row committed. */
+export interface PluginCardPayload {
+  plugin_id: string
+  card_id: string
+  text: string
+  directive?: PluginCardDirectivePayload | null
+}
+export interface PluginCardDirectivePayload {
+  name: string
+  attrs?: Record<string, string>
+}
 /** A session-authority local-viewer turn: one line the agent printed through ``_print_fn`` (subagent completion, compaction, errors, budget notices), which main's classic CLI rendered through ``_agent_status_print``. */
 export interface AgentPrintPayload {
   text: string
@@ -7498,6 +7509,8 @@ export interface BackendGatewayEventMap {
   'pet.hatch.progress': PetHatchProgressPayload
   /** gateway_state.json moved; refetch platform status. */
   'platforms.changed': ChangeSignalPayload
+  /** A plugin posted a card into the session (a note, no model turn). */
+  'plugin.card': PluginCardPayload
   /** Close the preview pane or one tab. */
   'preview.close': PreviewClosePayload
   /** Open a URL / file in the desktop preview pane. */
@@ -7621,6 +7634,7 @@ export const GATEWAY_EVENT_TYPES = [
   'pet.generate.progress',
   'pet.hatch.progress',
   'platforms.changed',
+  'plugin.card',
   'preview.close',
   'preview.open',
   'preview.restart.complete',

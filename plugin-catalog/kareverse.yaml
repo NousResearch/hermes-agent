@@ -1,9 +1,9 @@
 name: kareverse
 title: Kareverse
 repo: https://github.com/digitalmanager-commits/kareverse-mcp
-sha: 60fd05d9fc6a5230bfd353f28846187382d96add
-version: "1.0.0"
-description: "Elder care at home in Bangalore, India, from Hermes through Kareverse's public MCP server (Streamable HTTP at https://www.kareverse.com/mcp, no sign-in): search services and prices, read a service's details, the monthly Care Plan, service areas and care guides, and send a callback request to the Kareverse team. Bundles one skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure — every tool call goes to www.kareverse.com, operated by Kareverse; submit_enquiry sends the name, phone number and details the user provides to Kareverse so the team can call back, requires consent: true, and the package marks the server trust: untrusted so Hermes asks before it runs. The other six tools are read-only. The tool set is served by the remote server at runtime and is not covered by the pinned sha."
+sha: 7bd4839040eb196cb6e00aaee1939b23b025e095
+version: "1.0.1"
+description: "Elder care at home in Bangalore, India, from Hermes through Kareverse's public MCP server (Streamable HTTP at https://www.kareverse.com/mcp, no sign-in): search services and prices, read a service's details, the monthly Care Plan, service areas and care guides, and send a callback request to the Kareverse team. Bundles one skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure — every tool call goes to www.kareverse.com, operated by Kareverse; submit_enquiry sends the name, phone number and details the user provides to Kareverse, which stores them in its database and copies them to its team email, lead tracker and CRM (marked unconfirmed); it requires consent: true after the user has seen Kareverse's privacy notice, is treated as unconfirmed until the person sends a WhatsApp message from their own number, can be switched off by Kareverse at any time, and the package marks the server trust: untrusted so Hermes asks before it runs. The other six tools are read-only. The tool set is served by the remote server at runtime and is not covered by the pinned sha."
 maintainer: Kareverse
 tier: community
 category: tools

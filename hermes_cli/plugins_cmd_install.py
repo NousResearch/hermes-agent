@@ -923,18 +923,31 @@ def _place_tree(entry, identifier: str, *, force: bool, ref: Optional[str], assu
         return {"ok": False, "error": str(exc), **({"source_moved": True} if isinstance(exc, _pc().PluginSourceMoved) else {})}
 
 
+_ENABLE_RACE_ATTEMPTS = 3
+
+
 def _enable_placed(installed_name: str, deps, step: Callable[[InstallPhase], None]) -> Optional[dict]:
     """None once enabled, else the refusal result. Enabling admits the plugin, and admission resolves
     its Python dependencies."""
-    from hermes_cli.plugins_admission import AdmissionRefused
+    from hermes_cli.plugins_admission import AdmissionRefused, SelectionRaced
 
     if deps:
         step(InstallPhase.python_packages)
     try:
-        # _set_plugin_enabled serializes per home itself (parallel install-card rows).
-        _pc()._set_plugin_enabled(installed_name, enable=True)
+        # _set_plugin_enabled serializes per home itself (parallel install-card rows). It re-reads the
+        # selection each attempt, so an enable another writer's selection change beat (a second
+        # installer, a profile's gateway) re-applies to theirs; past a few such races it is reported.
+        for attempt in range(_ENABLE_RACE_ATTEMPTS):
+            try:
+                _pc()._set_plugin_enabled(installed_name, enable=True)
+                break
+            except SelectionRaced:
+                if attempt == _ENABLE_RACE_ATTEMPTS - 1:
+                    raise
     except (AdmissionRefused, _pc().PluginOperationError) as exc:
-        return {"ok": False, "error": f"enable refused: {exc}", "plugin_name": installed_name, "enabled": False}
+        # raced: other writers kept changing the selection; a later attempt has nothing to wait out.
+        return {"ok": False, "error": f"enable refused: {exc}", "plugin_name": installed_name, "enabled": False,
+                **({"raced": True} if isinstance(exc, SelectionRaced) else {})}
     return None
 
 

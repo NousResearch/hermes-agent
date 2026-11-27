@@ -79,7 +79,11 @@ def _resolve_git_executable() -> Optional[str]:
         candidates = [os.path.join(r, "Git", sub, "git.exe") for r in roots for sub in ("cmd", "bin")]
     else:
         candidates = ["/usr/bin/git", "/usr/local/bin/git", "/bin/git"]
-    return next((c for c in candidates if c and os.path.isfile(c)), None)
+    # _git_binary refused macOS's uninstalled CLT stub (it opens Apple's install dialog when
+    # launched); /usr/bin/git is that stub, so the fallback asks the same question.
+    from hermes_platform.resolver.git import is_usable_git_executable
+
+    return next((c for c in candidates if c and os.path.isfile(c) and is_usable_git_executable(c)), None)
 
 
 class PluginOperationError(Exception):

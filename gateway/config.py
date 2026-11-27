@@ -403,13 +403,22 @@ class ChannelOverride:
     provider: Optional[str] = None
     system_prompt: Optional[str] = None
     allow_silence: Optional[bool] = None
+    # This channel's ``compression.idle_compact_after_seconds`` (0 turns it off here); None = the global value.
+    idle_compact_after_seconds: Optional[int] = None
 
     def to_dict(self) -> dict[str, Any]:
         return {k: v for k, v in asdict(self).items() if v is not None}
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ChannelOverride":
-        return cls(**{f.name: data.get(f.name) for f in fields(cls)}) if data else cls()
+        if not data:
+            return cls()
+        values = {f.name: data.get(f.name) for f in fields(cls)}
+        idle = values["idle_compact_after_seconds"]
+        # A malformed value is ignored (the global one applies); a negative one is 0 (off), as globally.
+        idle = None if isinstance(idle, bool) else _coerce_num(int, idle, None)
+        values["idle_compact_after_seconds"] = None if idle is None else max(0, idle)
+        return cls(**values)
 
 
 # Platforms whose primary credential is ``PlatformConfig.token`` → its env var (empty-token

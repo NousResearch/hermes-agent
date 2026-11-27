@@ -1432,9 +1432,12 @@ host.openSession(id, { profile?, intent? }) // open a stored session core-style;
                                            //   profile: soft-swap to that profile's backend first
                                            //   intent: 'in-place' (default) | 'stack' | 'tab' | 'window'
 host.newChat(profile?)                     // fresh chat draft, optionally in another profile
-host.openWorkspace(id, { render, title?, minWidth?, onClose? })
+host.openWorkspace(id, { render, title?, minWidth?, onClose?, approvalScope? })
                                            // dock a plugin-rendered tab into the MAIN
-                                           //   workspace zone and reveal it; returns a disposer
+                                           //   workspace zone and reveal it; returns a disposer.
+                                           //   approvalScope: 'per-profile' (a room of several
+                                           //   profiles) shows a per-profile approvals hint in
+                                           //   the statusbar instead of the active profile's mode
 host.paneVisibility(paneId)                // ReadableAtom<boolean> — is a contributed pane
                                            //   actually on screen (its zone's active tab)?
 host.onEvent(type, fn)                     // gateway event stream ('*' = all); returns disposer.

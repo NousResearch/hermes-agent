@@ -496,7 +496,13 @@ service not installed yet is judged as `hermes gateway install` would write it: 
 environment plus the unit's `Environment=` lines, or the LaunchAgent's variables), or when
 the old unit's `env` launcher sets VAR: put the literal value in `.env`, or set VAR where the gateway
 runs), the public URL it would copy into
-`webapp.public_url` (only one the gateway accepts; a refused one is a blocker and is not printed), the
+`webapp.public_url` (only one the gateway accepts; a refused one is a blocker and is not printed — and
+when an external secret source is enabled under `secrets:`, the planner never reads vault values to
+guess whether it sets `HERMES_DASHBOARD_PUBLIC_URL`, so it blocks until `webapp.public_url` is set;
+"public" here just means the browser-facing `http://` or `https://` address used for sign-in
+callbacks and Host/Origin checks, so a LAN hostname/IP or a loopback URL such as
+`http://127.0.0.1:9119` works for local or Desktop-only setups without exposing anything to the
+internet), the
 state of the gateway service and the
 Webapp bundle, how many turns are running on the old backend, and the steps in order. To find this
 out it probes the old backend on its address as above and reads `systemctl show` / `launchctl`
@@ -561,7 +567,7 @@ that exist only in the old unit's environment into `.env` (names are printed, va
 gateway as a user service (`hermes gateway install`, which also tries to enable lingering; a launchd agent
 on macOS), stops and disables the old unit (its file is kept; a drop-in `UNIT.d/hermes-migrated.conf` with
 `RestartPreventExitStatus=78` makes a later manual start exit once and stay down), starts the gateway and
-checks every address it now listens on within 90 seconds: `/api/status` answers from the gateway and the
+checks every address it now listens on within 300 seconds: `/api/status` answers from the gateway and the
 Webapp page itself is served. A backend you started by hand is stopped by its recorded process ID (only
 while that ID is still the same process); there is nothing to disable. Any failure puts back what the run
 had changed, and only that: the files, the gateway service exactly as it was, and the old unit with the
@@ -1348,6 +1354,8 @@ dashboard:
 ```
 
 When set, the OAuth callback URL becomes `<public_url>/auth/callback` verbatim — `X-Forwarded-Prefix` is ignored on that code path because the operator has explicitly declared the public URL. This is intentional: stacking the prefix on top would double-prefix the common case where the prefix is already baked into `public_url`.
+
+Provider sign-in (`/auth/login` and the desktop start, `/auth/native/authorize`) happens on the `public_url` host. The sign-in cookie belongs to the host that set it, and the provider returns to `<public_url>/auth/callback`. So when one of those starts on another name that still reaches the dashboard (an old hostname, an alias), Hermes first redirects it to the same sign-in URL on the `public_url` host, and the browser lands there signed in. To decide which host the browser used, it reads `X-Forwarded-Host`, falling back to `Host`. Behind a proxy that rewrites `Host` and sends no `X-Forwarded-Host`, this costs one extra redirect and never loops.
 
 The hostname in `public_url` is also accepted as an **exact** HTTP `Host` and
 WebSocket `Origin` value. This supports a reverse proxy that preserves the

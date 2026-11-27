@@ -1307,7 +1307,7 @@ def build_turn_context(
     agent._persist_user_message_idx = current_turn_user_idx
 
     agent._user_turn_count += 1
-    # cache_ttl auto: a person's chat moves from 5m to 1h once this message ends its first pause past 5m.
+    # cache_ttl auto: a person's chat moves from 5m to 1h once this message finds its 5m entry expired.
     maybe_upgrade_cache_tier(agent)
     # Turn-initiator state for per-request provider headers: the first API call of this
     # user turn is user-initiated; tool-loop follow-ups are agent-initiated.

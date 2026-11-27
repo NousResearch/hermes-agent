@@ -22,6 +22,7 @@ from pm.filesystem import (
     durable_write_bytes as _atomic_bytes,
     file_digest as _digest,
     lock_fd as _lock,
+    long_root,
     moved_lock,
     read_bytes_or_none as _bytes,
 )
@@ -69,7 +70,7 @@ def _recover_plugin_publication(project: Path, row: dict, journal: Path) -> None
     committed = row.get("committed") or _digest(runtime_facts_path(project)) != row["facts_before"]
     if committed:
         if backup.exists():
-            rmtree_force(backup)
+            rmtree_force(long_root(backup))
     else:
         old = base64.b64decode(row["metadata_before"], validate=True) if row["metadata_before"] is not None else None
         current = _bytes(metadata)
@@ -78,10 +79,10 @@ def _recover_plugin_publication(project: Path, row: dict, journal: Path) -> None
             raise ValueError("plugin metadata changed after publication; preserve it for manual recovery")
         if backup.exists():
             if target.exists():
-                rmtree_force(target)
+                rmtree_force(long_root(target))
             os.replace(backup, target)
         elif not row["target_existed"] and target.exists():
-            rmtree_force(target)
+            rmtree_force(long_root(target))
         if old is None:
             metadata.unlink(missing_ok=True)
         else:
@@ -217,7 +218,7 @@ def collect_generations(project: Path, *, min_age_seconds: float = 86400) -> lis
             if not marker.is_file() or time.time() - marker.stat().st_mtime < min_age_seconds:
                 continue
             if not leases_held(generation):
-                shutil.rmtree(generation)
+                shutil.rmtree(long_root(generation))
                 removed.append(generation)
         collect_lease_dirs(root / "leases" / "environments", generations)
     return removed

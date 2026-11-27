@@ -765,3 +765,16 @@ class ProviderProfile:
     # Registry id this provider's row sits right after, keeping its place in priority-ordered scans
     # (aux api-key chain, env auto-detect); "" or an unknown id = appended.
     registry_after: str = ""
+    # True when ``create_client`` owns this provider's native transport: a client-creation error
+    # propagates instead of falling back to the standard OpenAI client, and the auxiliary api-key
+    # auto-discovery chain consults ``create_client(..., auxiliary_chain=True)``.
+    strict_client: bool = False
+
+    def implicit_max_output_tokens(self, *, model: str | None = None, base_url: str = "") -> int | None:
+        """Default output-token budget reserved by context compaction when ``max_tokens`` is unset;
+        None = no implicit reservation."""
+        return None
+
+    def validate_setup_api_key(self, api_key: str, *, base_url: str = "") -> bool:
+        """Optional setup-time API key check (e.g. paid-tier probe); False aborts saving the provider."""
+        return True

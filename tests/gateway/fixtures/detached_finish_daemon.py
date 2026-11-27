@@ -1,4 +1,4 @@
-"""Hold the old owner's worker finish; observe the successor's real receipt."""
+"""Hold the old owner on either side of the finish commit; capture the real request."""
 
 import asyncio
 import json
@@ -19,9 +19,12 @@ async def hold_finish(connection, ref, params, *, operation):
         return await request(connection, ref, params, operation=operation)
     identity = {k: params[k] for k in ('execution_id', 'sequence', 'epoch', 'pid')}
     if not is_successor:
+        if (home / 'commit-before-loss').exists():
+            real = await request(connection, ref, params, operation=operation)
+            assert real == {'status': 'terminal'}, real
         (home / 'before-finish.tmp').write_text(json.dumps(identity))
         (home / 'before-finish.tmp').replace(home / 'before-finish.json')
-        # The test replaces this owner while this task is still before the transaction.
+        # The test replaces this owner before the worker receives its RPC reply.
         await asyncio.Future()
     result = await request(connection, ref, params, operation=operation)
     (home / 'after-finish.json').write_text(json.dumps(identity))

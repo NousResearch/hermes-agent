@@ -285,6 +285,7 @@ class DetachedRPC:
         return getattr(self.rpc, name)
 
     def __call__(self, method, **params):
+        recovered_finish_epoch = False
         while True:
             with self.channel.lock:
                 seen = self.channel.attachments
@@ -311,7 +312,16 @@ class DetachedRPC:
                 if isinstance(exc, WorkerPersistenceError) and str(exc) in {
                     'stale_epoch', 'stale_generation', 'permission_denied',
                 }:
-                    raise  # A definitive fence refusal is not transport loss, even if another owner attaches.
+                    # A successor can expose RPC before confirming this worker's control channel.
+                    # Its old-epoch finish had no effect; only a verified handoff permits one retry.
+                    if (str(exc) != 'stale_epoch' or params.get('operation') != 'execution.finish'
+                            or recovered_finish_epoch or not self.channel.await_reattach(seen)):
+                        raise
+                    with self.channel.lock:
+                        if self.channel.epoch is None or self.channel.epoch <= params['epoch']:
+                            raise
+                    recovered_finish_epoch = True
+                    continue
                 if isinstance(exc, (WorkerOwnerStarting, WorkerOwnerUnreachable)) and reattached_at is not None:
                     startup_deadline = reattached_at + REATTACH_SERVE_SECONDS
                     if time.monotonic() + 1 < startup_deadline:

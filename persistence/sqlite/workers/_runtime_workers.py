@@ -36,13 +36,15 @@ def _detached_link(conn, key, record):
     if record['execution_id'] != execution_id or key != DETACHED_RECORD_PREFIX + execution_id:
         return None
     # Compression can move the worker to a physical successor without changing the admission.
+    # A terminal execution may still have a live producer waiting for its exact finish receipt;
+    # only the started admission resumes. The execution stays terminal and rejects new writes.
     return conn.execute(
         "SELECT a.owner_epoch FROM session_admissions a JOIN worker_executions w "
         "ON w.execution_id=? AND w.generation=a.generation AND w.owner_epoch=a.owner_epoch "
         "JOIN sessions s ON s.id=w.session_id AND s.runtime_generation=w.generation "
         "JOIN sessions logical ON logical.id=a.target_session_id AND logical.runtime_generation=a.generation "
         "WHERE a.admission_id=? AND a.generation=? AND a.status='started' "
-        "AND w.kind='compute' AND w.status IN ('registered','running') "
+        "AND w.kind='compute' AND w.status IN ('registered','running','terminal') "
         "AND w.session_id=json_extract(a.lineage_json,'$[#-1]') "
         "AND EXISTS (SELECT 1 FROM json_each(a.lineage_json) WHERE value=?)",
         (execution_id, record['admission_id'], record['generation'], record['session_id']),
@@ -188,7 +190,11 @@ def _end_child_row(conn, execution_id):
                  "AND id=(SELECT session_id FROM worker_executions WHERE execution_id=?)", (time.time(), execution_id))
 
 
-def compact_terminal_receipts(conn, execution_id):
+def clear_detached_reservation(conn, execution_id):
+    conn.execute('DELETE FROM state_meta WHERE key=?', (DETACHED_RECORD_PREFIX + execution_id,))
+
+
+def compact_terminal_receipts(conn, execution_id, *, keep_detached_reservation=False):
     """Every terminal transition calls this, so it also retires the execution's delegated children.
     Once an execution is terminal its read receipts are dead weight: a ``compression.history``
     read stores the whole transcript and a context read a full session row, so keeping them leaves
@@ -196,7 +202,8 @@ def compact_terminal_receipts(conn, execution_id):
     marker in the closing transaction (an exact late replay is refused ``stale_generation``, as
     after retirement); ``payload_digest`` stays, so a late duplicate with other content still
     conflicts. Mutation acknowledgements (counts, row annotations, assignments) stay replayable."""
-    conn.execute('DELETE FROM state_meta WHERE key=?', (DETACHED_RECORD_PREFIX + execution_id,))
+    if not keep_detached_reservation:
+        clear_detached_reservation(conn, execution_id)
     retire_child_executions(conn, execution_id)
     _compact(conn, execution_id)
     if CHILD_SEPARATOR in execution_id:

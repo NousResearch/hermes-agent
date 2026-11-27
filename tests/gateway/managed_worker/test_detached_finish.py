@@ -1,9 +1,11 @@
-"""A detachable worker retains its turn if its owner dies before the finish commit."""
+"""A live detachable worker retains its turn on either side of the finish commit."""
 import asyncio
 from contextlib import closing
 from http.server import ThreadingHTTPServer
 import json
+import os
 from pathlib import Path
+import signal
 import sqlite3
 import threading
 
@@ -18,7 +20,9 @@ class ModelPeer(ThreadingHTTPServer):
 
 
 @pytest.mark.platforms('linux')
-def test_same_worker_finishes_when_owner_exits_before_commit(tmp_path):
+@pytest.mark.parametrize(('committed', 'worker_dies'), [(False, False), (True, False), (True, True)],
+                         ids=['before-commit', 'after-commit', 'dead-worker'])
+def test_same_admission_finishes_across_owner_loss(tmp_path, committed, worker_dies):
     root = Path(__file__).resolve().parents[3]
     home, user = tmp_path / 'state', tmp_path / 'user'
     home.mkdir(mode=0o700)
@@ -36,6 +40,8 @@ def test_same_worker_finishes_when_owner_exits_before_commit(tmp_path):
     env.update(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home), PYTHONPATH=str(root),
                OPENAI_API_KEY='loopback-only', OPENAI_BASE_URL=url)
     marker = home / 'before-finish.json'
+    if committed:
+        (home / 'commit-before-loss').touch()
 
     def rows(sql, *params):
         with closing(sqlite3.connect(f'file:{home / "state.db"}?mode=ro', uri=True)) as db:
@@ -72,22 +78,36 @@ def test_same_worker_finishes_when_owner_exits_before_commit(tmp_path):
             finish = json.loads(marker.read_text())
             [(admission_id, status, _, epoch)] = admissions()
             record_key = 'gateway.detached_worker.v1.' + finish['execution_id']
-            [(record,)] = rows('SELECT value FROM state_meta WHERE key=?', record_key)
-            record = json.loads(record)
-            assert record['pid'] == finish['pid'] and record['admission_id'] == admission_id
+            record = rows('SELECT value FROM state_meta WHERE key=?', record_key)
             assert status == 'started' and epoch == finish['epoch'] == first['authority_epoch']
-            assert not receipts(finish), 'the old owner committed the finish before the fault'
+            if committed:
+                assert receipts(finish) == [(finish['sequence'],)]
+                assert rows('SELECT status FROM worker_executions WHERE execution_id=?', finish['execution_id']) == [('terminal',)]
+            else:
+                [(raw,)] = record
+                assert (json.loads(raw)['pid'], json.loads(raw)['admission_id']) == (finish['pid'], admission_id)
+                assert not receipts(finish), 'the old owner committed the finish before the fault'
+            if worker_dies:
+                os.kill(finish['pid'], signal.SIGKILL)
             old.kill()
             assert old.wait(timeout=10) < 0
         with daemon(root, home, env, barrier=True, fixture='detached_finish_daemon.py') as (successor, next_owner):
             assert successor.pid != old.pid and next_owner['authority_epoch'] > epoch
             messages = asyncio.run(receive_result(next_owner, sid))
-            assert admissions() == [(admission_id, 'terminal', 'completed', next_owner['authority_epoch'])]
-            assert json.loads((home / 'after-finish.json').read_text()) == {**finish, 'epoch': next_owner['authority_epoch']}
+            [[got_id, got_status, outcome, owner_epoch]] = admissions()
+            if worker_dies:
+                assert (got_id, got_status, outcome) == (admission_id, 'unknown', None)
+                assert not (home / 'after-finish.json').exists()
+            else:
+                assert (got_id, got_status, outcome) == (admission_id, 'terminal', 'completed')
+                assert owner_epoch == next_owner['authority_epoch']
+                assert json.loads((home / 'after-finish.json').read_text()) == {**finish, 'epoch': owner_epoch}
+                assert [(m['role'], m['content']) for m in messages if m['role'] == 'assistant'] == [
+                    ('assistant', 'RECOVERY_ACK_FINISH_TURN')]
             assert receipts(finish) == [(finish['sequence'],)]
+            assert not rows('SELECT value FROM state_meta WHERE key=?', record_key)
             assert rows('SELECT status FROM worker_executions WHERE execution_id=?', finish['execution_id']) == [('terminal',)]
-            assert [(m['role'], m['content']) for m in messages if m['role'] == 'assistant'] == [
-                ('assistant', 'RECOVERY_ACK_FINISH_TURN')]
+
             assert sum(any(m.get('content') == 'FINISH_TURN' for m in call['messages']) for call in peer.requests) == 1
     finally:
         peer.shutdown()

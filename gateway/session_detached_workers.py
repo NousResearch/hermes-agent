@@ -2,7 +2,7 @@
 
 With ``gateway.managed_workers`` and ``gateway.detached_workers`` both true on Linux, a turn's
 worker is told a private unix socket at bootstrap and the reservation writes a durable record of
-it (``RECORD_PREFIX`` + execution id in ``state_meta``, deleted when the execution goes terminal).
+it (``RECORD_PREFIX`` + execution id in ``state_meta``, retained through admission settlement).
 The worker no longer dies with its owner's pipe (``agent/managed_worker_detach/channel.py``); a stopping
 gateway hands its turns over instead of interrupting them (``stop_authority_turns``).
 

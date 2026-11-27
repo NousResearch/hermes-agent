@@ -66,13 +66,16 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         _cfg = load_config()
         _kanban_cfg = _cfg.get("kanban", {}) if isinstance(_cfg, dict) else {}
         default_assignee = (_kanban_cfg.get("default_assignee") or "").strip() or None
-        max_in_progress_per_profile = kbd._positive_int(
-            _kanban_cfg.get("max_in_progress_per_profile"), None
+        from hermes_cli.kanban_dispatch_caps import explicit_dispatch_caps
+        # Board-level minimum, not only this profile — same rule as the gateway
+        # dispatcher. A lock-winning (or CLI) profile with the keys unset must
+        # not ignore a cap another profile actually set.
+        board_max_in_progress, max_in_progress_per_profile = explicit_dispatch_caps(
+            kbd._positive_int(_kanban_cfg.get("max_in_progress"), None),
+            kbd._positive_int(_kanban_cfg.get("max_in_progress_per_profile"), None),
         )
         # Memory-derived default when unset — same fallback the gateway applies.
-        max_in_progress = kbd.resolve_max_in_progress(
-            kbd._positive_int(_kanban_cfg.get("max_in_progress"), None)
-        )
+        max_in_progress = kbd.resolve_max_in_progress(board_max_in_progress)
         # CLI --max is the more explicit signal, so it wins over kanban.max_spawn.
         cli_max = getattr(args, "max", None)
         max_spawn = (

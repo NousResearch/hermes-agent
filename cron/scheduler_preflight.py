@@ -370,7 +370,7 @@ def _preflight_check_delivery(job: dict) -> Optional[str]:
                 if error:
                     return f"delivery target '{token}': {error}"
                 if token == part and part.lower() not in {"origin", "all"} and not (
-                        target and _delivery.moved_platform_hint(target["platform"])):
+                        target and _unloaded.moved_platform_hint(target["platform"])):
                     platform_parts.append(part.split(":", 1)[0].strip())
     if not platform_parts:
         return None
@@ -527,3 +527,4 @@ def _preflight_job_config(job: dict, cfg: dict) -> Optional[str]:
 # populated before ``scheduler`` re-exports from it.
 from cron import scheduler as _sched
 from cron import scheduler_delivery as _delivery
+from cron import scheduler_delivery_unloaded as _unloaded

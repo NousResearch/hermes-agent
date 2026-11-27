@@ -429,41 +429,6 @@ def _is_known_delivery_platform(platform_name: str) -> bool:
     return name in _KNOWN_DELIVERY_PLATFORMS or bool(_resolve_home_env_var(name))
 
 
-def moved_platform_hint(platform_name: str) -> str:
-    """``". <label> moved out of core into the '<plugin>' plugin: install it with `<command>`"`` for a
-    platform that left core whose plugin is not loaded, else ``""``: a route saved while core shipped it
-    names the install instead of failing as an unknown target."""
-    from gateway.platform_registry import platform_registry
-    from hermes_cli.left_core_migration import platform_install_hint
-    name = platform_name.strip().lower()
-    return "" if platform_registry.get(name) else platform_install_hint(name)
-
-
-def _primary_registration(platform_key: str):
-    """The primary's loaded ``PlatformEntry`` for *platform_key*, or ``None``: a moved platform's ref syntax."""
-    from gateway.platform_registry import platform_registry
-    from hermes_constants import get_default_hermes_root, hermes_home_key
-    return platform_registry.snapshot_registration(platform_key, scope=hermes_home_key(get_default_hermes_root()))[0]
-
-
-def _moved_platform_ref(platform_key: str, ref: str) -> tuple[str, Optional[str]]:
-    """``(chat_id, thread_id)`` of a moved platform's ref when its plugin is not loaded here: the
-    primary's already-loaded plugin parser when it reads the ref, else core's generic
-    ``chat[:thread]`` split. Only an exact route match on the result sends anything."""
-    entry = _primary_registration(platform_key)
-    parse = entry.parse_target_ref_fn if entry is not None else None
-    parsed = None
-    if parse is not None:
-        try:
-            parsed = parse(ref)
-        except Exception:
-            logger.debug("Primary's target parser failed for %s", platform_key, exc_info=True)
-    if isinstance(parsed, tuple) and len(parsed) == 2 and parsed[0]:
-        return str(parsed[0]), str(parsed[1]) if parsed[1] else None
-    chat_id, _, thread_id = ref.partition(":")
-    return chat_id, thread_id or None
-
-
 def resolve_cron_destination(
     job: dict, deliver_value: str, *, from_broadcast: bool = False, skipped: Optional[list] = None
 ) -> tuple[Optional[dict], Optional[str]]:
@@ -474,10 +439,10 @@ def resolve_cron_destination(
     is the skipped-home one ``all``/``origin`` add to *skipped* (:func:`_note_unloaded_homes`): one per home."""
     target = _resolve_single_delivery_target(job, deliver_value, from_broadcast=from_broadcast, skipped=skipped)
     platform_name = str(target["platform"] if target else deliver_value.split(":", 1)[0]).strip()
-    if not moved_platform_hint(platform_name) or (target and _preflight.shared_route_serves(target)):
+    if not _unloaded.moved_platform_hint(platform_name) or (target and _preflight.shared_route_serves(target)):
         return target, None
-    if ":" not in deliver_value and platform_name.lower() in _unloaded_home_platforms():
-        return None, _unloaded_home_error(platform_name.lower())
+    if ":" not in deliver_value and platform_name.lower() in _unloaded._unloaded_home_platforms():
+        return None, _unloaded._unloaded_home_error(platform_name.lower())
     return None, unknown_platform_error(platform_name)
 
 
@@ -488,10 +453,10 @@ def _resolve_home_env_var(platform_name: str) -> str:
     ``resolve_cron_destination`` sends it only where a route serves it."""
     name = platform_name.lower()
     env_var = _plugin_cron_env_var(name)
-    if env_var or not moved_platform_hint(name):
+    if env_var or not _unloaded.moved_platform_hint(name):
         return env_var
     from hermes_cli.left_core_migration import platform_home_env_var
-    entry = _primary_registration(name)
+    entry = _unloaded._primary_registration(name)
     return (entry is not None and entry.cron_deliver_env_var) or platform_home_env_var(name)
 
 
@@ -592,41 +557,6 @@ def _iter_home_target_platforms():
         discover_plugins()  # idempotent
         from gateway.platform_registry import platform_registry
         yield from _home_target_order([e.name for e in platform_registry.plugin_entries() if e.cron_deliver_env_var])
-
-
-# Core-owned platforms a saved home channel may name without any plugin registering them.
-_CORE_HOME_PLATFORMS = _KNOWN_DELIVERY_PLATFORMS | _NON_PUSH_ORIGIN_PLATFORMS | {"local", "relay", "msgraph_webhook"}
-
-
-def _unloaded_home_platforms() -> list[str]:
-    """Platforms with a home chat saved in config.yaml (what ``/sethome`` writes) that no loaded plugin
-    registers in this profile (not installed, not enabled, failed to load), read from the gateway's normalized
-    view (``config_loader.platform_blocks``): ``load_gateway_config`` drops a block whose platform nothing
-    registers, so ``origin``/``all`` would otherwise skip that home without a word."""
-    from gateway import config_loader
-    from gateway.platform_registry import platform_registry
-    from hermes_cli.left_core_migration import LEFT_CORE
-    from hermes_constants import get_hermes_home
-    moved = frozenset(f.platform for f in LEFT_CORE if f.platform)
-    saved = sorted(name for name, block in config_loader.platform_blocks(get_hermes_home(), also=moved).items()
-                   if isinstance(block.get("home_channel"), dict) and block["home_channel"].get("chat_id"))
-    list(_iter_home_target_platforms())  # discovers plugins so the registry lookups below are final
-    return [n for n in saved if n not in _CORE_HOME_PLATFORMS and platform_registry.get(n) is None]
-
-
-def _unloaded_home_error(platform_name: str) -> str:
-    """Job-result text for a saved home channel skipped because its platform plugin is not loaded."""
-    from hermes_cli.left_core_migration import platform_install_hint
-    remedy = platform_install_hint(platform_name) or (
-        f". Install or enable the plugin that provides '{platform_name}' (`hermes plugins list`)")
-    return (f"{platform_name} home channel skipped: no loaded plugin provides the platform{remedy}, "
-            f"or remove platforms.{platform_name}.home_channel from config.yaml")
-
-
-def _note_unloaded_homes(names, skipped: Optional[list]) -> None:
-    for name in names:
-        if skipped is not None and (error := _unloaded_home_error(name)) not in skipped:
-            skipped.append(error)
 
 
 def _relay_fronted_delivery_platforms(connected: set) -> set:
@@ -741,10 +671,10 @@ def _resolve_single_delivery_target(
         # No origin (API/script job): fall back to a home channel instead of silently dropping. A saved
         # home ranked ahead of the one chosen but whose plugin is not loaded is reported, not skipped silently.
         deliverable = list(_iter_home_target_platforms())
-        unloaded = [n for n in _unloaded_home_platforms() if n not in deliverable]
+        unloaded = [n for n in _unloaded._unloaded_home_platforms() if n not in deliverable]
         for platform_name in _home_target_order(deliverable + unloaded):
             if platform_name in unloaded:
-                _note_unloaded_homes([platform_name], skipped)
+                _unloaded._note_unloaded_homes([platform_name], skipped)
                 continue
             chat_id = _get_home_target_chat_id(platform_name)
             if chat_id:
@@ -764,9 +694,9 @@ def _resolve_single_delivery_target(
         # must reach the adapter as written or the job's output is silently lost.
         chat_id, thread_id, resolution_error = resolve_send_target(
             platform_key, rest, pass_unresolved_references=True)
-        if resolution_error and moved_platform_hint(platform_key):
+        if resolution_error and _unloaded.moved_platform_hint(platform_key):
             # No plugin here to parse it; resolve_cron_destination sends it only where a route serves it.
-            (chat_id, thread_id), resolution_error = _moved_platform_ref(platform_key, rest), None
+            (chat_id, thread_id), resolution_error = _unloaded._moved_platform_ref(platform_key, rest), None
         if resolution_error:
             logger.warning("Invalid cron delivery target '%s': %s", deliver_value, resolution_error)
             return None
@@ -801,7 +731,7 @@ def _resolve_single_delivery_target(
             "thread_id": origin.get("thread_id"),
         }
     if not _is_known_delivery_platform(platform_name):
-        _note_unloaded_homes([n for n in _unloaded_home_platforms() if n == platform_name.lower()], skipped)
+        _unloaded._note_unloaded_homes([n for n in _unloaded._unloaded_home_platforms() if n == platform_name.lower()], skipped)
         return None
     chat_id = _get_home_target_chat_id(platform_name)
     return _home_target(platform_name, chat_id, home_provenance) if chat_id else None
@@ -1040,7 +970,7 @@ def _resolve_delivery_targets(
             continue
         from_broadcast = raw.lower() in _ROUTING_TOKENS
         if from_broadcast:
-            _note_unloaded_homes(_unloaded_home_platforms(), skipped)
+            _unloaded._note_unloaded_homes(_unloaded._unloaded_home_platforms(), skipped)
         for part in _expand_routing_tokens(raw):
             target, error = resolve_cron_destination(job, part, from_broadcast=from_broadcast, skipped=skipped)
             if error and skipped is not None and error not in skipped:
@@ -1761,7 +1691,7 @@ def _prepare_target_delivery(
     try:
         platform = Platform(platform_name.lower())
     except (ValueError, KeyError):
-        error = unknown_platform_error(platform_name) if moved_platform_hint(platform_name) else (
+        error = unknown_platform_error(platform_name) if _unloaded.moved_platform_hint(platform_name) else (
             f"unknown platform '{platform_name}'")
         _note_target_error(job, error, delivery_errors)
         return None
@@ -2051,3 +1981,4 @@ from cron import scheduler_preflight as _preflight
 from cron import scheduler_script as _script
 from cron.scheduler_delivery_standalone import (
     _queue_for_live_reconnect, _standalone_send)
+from cron import scheduler_delivery_unloaded as _unloaded

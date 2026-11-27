@@ -42,13 +42,15 @@ def _expand_parent_toolsets(parent_toolsets: set) -> set:
     the RESOLVED static surface: a composite's ``includes`` (``debugging`` -> ``web``/``file``, ``safe``) are tools
     the parent genuinely holds, and the child never gains a tool the parent lacks."""
     # A ``hermes-<platform>`` bundle of a platform that left core is in no listing but still resolves for a saved
-    # selection (``get_toolset``): the parent holds its tools and its ``includes``.
-    left_core = {name for name in parent_toolsets if name not in TOOLSETS and name.startswith("hermes-")
-                 and get_toolset(name) is not None}
+    # selection (``get_toolset``, read once so a plugin reload cannot drop it mid-way): the parent holds its tools
+    # and its ``includes``. An MCP alias named ``hermes-*`` is not one and never counts toward a built-in toolset.
+    left_core = [spec for name in parent_toolsets if name not in TOOLSETS and name.startswith("hermes-")
+                 and not _is_mcp_toolset_name(name) and (spec := get_toolset(name)) is not None]
     parent_tool_names = {
         t for ts_name in parent_toolsets if ts_name in TOOLSETS for t in resolve_toolset(ts_name, include_registry=False)
-    } | {t for ts_name in left_core for t in resolve_toolset(ts_name)}
-    expanded = set(parent_toolsets) | {part for ts_name in left_core for part in get_toolset(ts_name)["includes"]}
+    } | {t for spec in left_core for t in spec["tools"]} | {
+        t for spec in left_core for part in spec["includes"] for t in resolve_toolset(part)}
+    expanded = set(parent_toolsets) | {part for spec in left_core for part in spec["includes"]}
     if parent_tool_names:
         expanded.update(
             ts_name for ts_name in TOOLSETS

@@ -19,6 +19,7 @@ from agent.credential_pool import (
     PooledCredential,
 )
 
+
 def _codex_entry(entry_id: str = "codex-1") -> PooledCredential:
     return PooledCredential(
         provider="openai-codex",
@@ -31,6 +32,59 @@ def _codex_entry(entry_id: str = "codex-1") -> PooledCredential:
         refresh_token="rt-stale",
         expires_at_ms=1,  # long expired -> needs refresh
     )
+
+
+def _plugin_entry(*, expires_at_ms) -> PooledCredential:
+    return PooledCredential(
+        provider="example-oauth",
+        id="plugin-1",
+        label="Example OAuth",
+        auth_type=AUTH_TYPE_OAUTH,
+        priority=0,
+        source="manual:loopback_pkce",
+        access_token="at-stale",
+        refresh_token="rt-stale",
+        expires_at_ms=expires_at_ms,
+    )
+
+
+def test_plugin_malformed_expiry_fails_closed_into_refresh(monkeypatch):
+    pool = CredentialPool("example-oauth", [_plugin_entry(expires_at_ms="not-a-timestamp")])
+    monkeypatch.setattr(
+        "agent.credential_pool.plugin_refresh_hook",
+        lambda provider: (lambda entry: {}) if provider == "example-oauth" else None,
+    )
+
+    assert pool._entry_needs_refresh(pool._entries[0]) is True
+
+
+def test_plugin_refresh_is_deferred_outside_pool_lock(monkeypatch):
+    pool = CredentialPool("example-oauth", [_plugin_entry(expires_at_ms=1)])
+    lock_free_during_refresh = {}
+
+    monkeypatch.setattr(
+        "agent.credential_pool.plugin_refresh_hook",
+        lambda provider: (lambda entry: {}) if provider == "example-oauth" else None,
+    )
+
+    def _fake_refresh(entry, *, force):
+        acquired = pool._lock.acquire(blocking=False)
+        lock_free_during_refresh["value"] = acquired
+        if acquired:
+            pool._lock.release()
+        refreshed = replace(entry, access_token="at-fresh", expires_at_ms=2**53)
+        pool._replace_entry(entry, refreshed)
+        return refreshed
+
+    monkeypatch.setattr(pool, "_refresh_entry", _fake_refresh)
+    monkeypatch.setattr(pool, "_persist", lambda **kw: None)
+
+    selected = pool.select()
+
+    assert lock_free_during_refresh.get("value") is True
+    assert selected is not None
+    assert selected.access_token == "at-fresh"
+
 
 def test_select_does_not_hold_pool_lock_during_deferred_refresh(monkeypatch):
     pool = CredentialPool("openai-codex", [_codex_entry()])

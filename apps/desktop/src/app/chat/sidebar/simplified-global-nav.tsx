@@ -5,7 +5,13 @@ import { useLocation } from 'react-router'
 import figmaRobot from '@/assets/figma-rail-robot.svg'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
-import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@/components/ui/context-menu'
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger
+} from '@/components/ui/context-menu'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { useI18n } from '@/i18n'
@@ -14,6 +20,7 @@ import { $cronJobs } from '@/store/cron'
 import { recordIaAction } from '@/store/ia-metrics'
 import type { IaAction } from '@/store/ia-metrics-contract'
 import { $sidebarOpen, setSidebarOpen, toggleSidebarOpen } from '@/store/layout'
+import { openRouteTile } from '@/store/route-tiles'
 import { $focusedSessionIsTile, $focusedStoredSessionId } from '@/store/session-focus'
 import { applySidebarNavPrefs, SIDEBAR_NAV_PREFS_AREA } from '@/store/sidebar-nav'
 
@@ -25,6 +32,7 @@ import {
   ARTIFACTS_ROUTE,
   CAPABILITIES_ROUTE,
   CRON_ROUTE,
+  MESSAGING_ROUTE,
   NEW_CHAT_ROUTE,
   PROFILES_ROUTE,
   sessionRoute,
@@ -36,6 +44,7 @@ import { REDESIGN_SETTINGS_SECTIONS } from '../../settings/redesign-navigation'
 import { $openSheet } from '../../shell/shell-sheet'
 import type { SidebarNavItem } from '../../types'
 
+import { CONTEXT_SPLIT_KIT, SplitSubmenu } from './split-submenu'
 import { useIaNavigationMetrics } from './use-ia-navigation-metrics'
 import { useSimplifiedPluginPages } from './use-simplified-plugin-pages'
 
@@ -102,7 +111,7 @@ interface RailButtonProps {
   /** Something here needs the user (Routines: a failed or overdue routine), as a dot on the glyph. */
   alert?: string
   label: string
-  metric: IaAction
+  metric?: IaAction
   onNavigate: () => void
   panel: null | PanelToggle
 }
@@ -124,8 +133,9 @@ function RailButton({ active, alert, area, children, label, metric, onNavigate, 
         // Where a splash row points at this destination (app/discovery/nav-spotlight.tsx).
         data-nav-spot={area}
         onClick={() => {
-          recordIaAction(metric)
-
+          if (metric) {
+            recordIaAction(metric)
+          }
           if (panel) {
             panel.toggle()
 
@@ -144,6 +154,42 @@ function RailButton({ active, alert, area, children, label, metric, onNavigate, 
         {alert && <span aria-hidden className="portal-rail-alert" data-slot="rail-alert" />}
       </Button>
     </Tip>
+  )
+}
+
+interface RailSplitMenuProps {
+  children: ReactNode
+  label: string
+  openInSplitLabel: string
+  splitRoute: string
+  settingsAction?: { label: string; onSelect: () => void }
+}
+
+/** Right-click menu on route-backed rail buttons: opens any page in a split tile (Classic parity),
+ *  and retains a plugin page's own Settings shortcut when present. */
+function RailSplitMenu({ children, label, openInSplitLabel, settingsAction, splitRoute }: RailSplitMenuProps) {
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger asChild>
+        <span className="contents">{children}</span>
+      </ContextMenuTrigger>
+      <ContextMenuContent aria-label={label}>
+        {settingsAction ? (
+          <>
+            <ContextMenuItem onSelect={settingsAction.onSelect}>
+              <Codicon name="settings-gear" />
+              {settingsAction.label}
+            </ContextMenuItem>
+            <ContextMenuSeparator />
+          </>
+        ) : null}
+        <SplitSubmenu
+          kit={CONTEXT_SPLIT_KIT}
+          label={openInSplitLabel}
+          onSplit={dir => openRouteTile(splitRoute, dir)}
+        />
+      </ContextMenuContent>
+    </ContextMenu>
   )
 }
 
@@ -218,7 +264,15 @@ export function SimplifiedGlobalNav({ onNavigate, footer }: SimplifiedGlobalNavP
       active: view === 'artifacts'
     },
     // Figma's Routines glyph is a clock (16292:15264).
-    { id: 'cron', label: t.cron.title, icon: 'clock', area: 'cron', route: CRON_ROUTE, active: view === 'cron' }
+    { id: 'cron', label: t.cron.title, icon: 'clock', area: 'cron', route: CRON_ROUTE, active: view === 'cron' },
+    {
+      id: 'messaging',
+      label: t.sidebar.nav.messaging,
+      icon: 'mail',
+      area: 'messaging',
+      route: MESSAGING_ROUTE,
+      active: view === 'messaging'
+    }
   ] as const
 
   const coreItem = ({ icon, ...item }: (typeof anchored)[number] | (typeof movable)[number]) => ({
@@ -264,6 +318,8 @@ export function SimplifiedGlobalNav({ onNavigate, footer }: SimplifiedGlobalNavP
     <nav aria-label={t.updates.appName} className="portal-rail w-(--global-nav-width) shrink-0" data-slot="global-nav">
       <div className="portal-rail-group min-h-0 flex-1 overflow-y-auto">
         {items.map(item => {
+          const metric: IaAction | undefined =
+            item.area === 'messaging' ? undefined : (`ia.rail.${item.area}` as IaAction)
           const button = (
             <RailButton
               active={item.active}
@@ -271,7 +327,7 @@ export function SimplifiedGlobalNav({ onNavigate, footer }: SimplifiedGlobalNavP
               area={item.area}
               key={item.id}
               label={item.label}
-              metric={`ia.rail.${item.area}`}
+              metric={metric}
               onNavigate={() => onNavigate(item)}
               panel={panelFor(item.area, item.active)}
             >
@@ -279,41 +335,51 @@ export function SimplifiedGlobalNav({ onNavigate, footer }: SimplifiedGlobalNavP
             </RailButton>
           )
 
-          if (!('settingsRoute' in item) || !item.settingsRoute) {
+          if (item.area === 'chat') {
             return button
           }
 
-          const route = item.settingsRoute
+          const settingsRoute = 'settingsRoute' in item ? item.settingsRoute : undefined
 
-          // The trigger listens on a layout-free wrapper: the button inside owns its own tooltip.
           return (
-            <ContextMenu key={item.id}>
-              <ContextMenuTrigger asChild>
-                <span className="contents">{button}</span>
-              </ContextMenuTrigger>
-              <ContextMenuContent aria-label={item.label}>
-                <ContextMenuItem onSelect={() => onNavigate({ ...item, route })}>
-                  <Codicon name="settings-gear" />
-                  {t.skills.plugins.settingsToggle(item.label)}
-                </ContextMenuItem>
-              </ContextMenuContent>
-            </ContextMenu>
+            <RailSplitMenu
+              key={item.id}
+              label={item.label}
+              openInSplitLabel={t.sidebar.row.openInSplit}
+              settingsAction={
+                settingsRoute
+                  ? {
+                      label: t.skills.plugins.settingsToggle(item.label),
+                      onSelect: () => onNavigate({ ...item, route: settingsRoute })
+                    }
+                  : undefined
+              }
+              splitRoute={item.route}
+            >
+              {button}
+            </RailSplitMenu>
           )
         })}
       </div>
       <div className="portal-rail-group portal-rail-foot">
         {footer}
         {/* Settings opens its page directly: the page's own column is the menu. */}
-        <RailButton
-          active={view === 'settings'}
-          area="settings"
+        <RailSplitMenu
           label={t.commandCenter.settings}
-          metric="ia.drawer.settings"
-          onNavigate={() => onNavigate(settingsItem)}
-          panel={panelFor('settings', view === 'settings')}
+          openInSplitLabel={t.sidebar.row.openInSplit}
+          splitRoute={SETTINGS_ROUTE}
         >
-          <Codicon name="settings-gear" />
-        </RailButton>
+          <RailButton
+            active={view === 'settings'}
+            area="settings"
+            label={t.commandCenter.settings}
+            metric="ia.drawer.settings"
+            onNavigate={() => onNavigate(settingsItem)}
+            panel={panelFor('settings', view === 'settings')}
+          >
+            <Codicon name="settings-gear" />
+          </RailButton>
+        </RailSplitMenu>
       </div>
     </nav>
   )

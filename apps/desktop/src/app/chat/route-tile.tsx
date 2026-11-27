@@ -15,14 +15,17 @@ import { runtimeTranslations, type Translations, useI18n } from '@/i18n'
 import { $routeTiles, closeRouteTile, type RouteTile } from '@/store/route-tiles'
 import { $portalShell, usePortalShell } from '@/store/shell-variant'
 
-import { ArtifactsView, CapabilitiesView, MessagingView } from '../page-views'
+import { ArtifactsView, CapabilitiesView, CronView, MessagingView, ProfilesView, SettingsView } from '../page-views'
 import {
   $routesVersion,
   ARTIFACTS_ROUTE,
   CAPABILITIES_ROUTE,
   contributedRoutes,
+  CRON_ROUTE,
   MESSAGING_ROUTE,
-  ROUTES_AREA
+  PROFILES_ROUTE,
+  ROUTES_AREA,
+  SETTINGS_ROUTE
 } from '../routes'
 
 import { paneMirror } from './pane-mirror'
@@ -43,6 +46,21 @@ const BUILTIN_PAGES: Record<string, BuiltinPage> = {
     render: () => <CapabilitiesView />,
     title: 'Capabilities',
     label: t => t.sidebar.nav.capabilities
+  },
+  [CRON_ROUTE]: {
+    render: () => <CronView onClose={() => closeRouteTile(CRON_ROUTE)} />,
+    title: 'Routines',
+    label: t => t.cron.title
+  },
+  [PROFILES_ROUTE]: {
+    render: () => <ProfilesView onClose={() => closeRouteTile(PROFILES_ROUTE)} />,
+    title: 'Agents',
+    label: t => t.profiles.title
+  },
+  [SETTINGS_ROUTE]: {
+    render: () => <SettingsView onClose={() => closeRouteTile(SETTINGS_ROUTE)} />,
+    title: 'Settings',
+    label: t => t.commandCenter.settings
   }
 }
 

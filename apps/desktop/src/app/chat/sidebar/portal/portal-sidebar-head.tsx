@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { type RefObject, useCallback, useEffect, useId, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
+import { Codicon } from '@/components/ui/codicon'
 import { KbdCombo } from '@/components/ui/kbd'
 import { SearchField } from '@/components/ui/search-field'
 import { Tip } from '@/components/ui/tooltip'
@@ -10,7 +11,8 @@ import { Search } from '@/lib/icons'
 import { recordIaAction } from '@/store/ia-metrics'
 import { $bindings, bindingsFor } from '@/store/keybinds'
 import { SESSION_SEARCH_FOCUS_EVENT } from '@/store/layout'
-
+import { $unreadFinishedSessionIds, markAllSessionsRead } from '@/store/session'
+import { ackAllSessionsRead } from '@/store/session-unread'
 // Brand marks, never translated: the product's wordmark over its maker (Top 16292:15498).
 const WORDMARK = 'Hermes'
 const WORDMARK_CAPTION = '// Nous Research'
@@ -62,6 +64,7 @@ export function usePortalSidebarSearch(setQuery: (query: string) => void): Porta
 /** The sidebar's header: the wordmark over its caption, the search button at the end. */
 export function PortalSidebarHead({ search }: { search: PortalSidebarSearch }) {
   const { t } = useI18n()
+  const unreadCount = useStore($unreadFinishedSessionIds).length
 
   return (
     <div className="portal-sidebar-head">
@@ -69,20 +72,38 @@ export function PortalSidebarHead({ search }: { search: PortalSidebarSearch }) {
         <span className="portal-sidebar-wordmark">{WORDMARK}</span>
         <span className="portal-sidebar-brand-caption">{WORDMARK_CAPTION}</span>
       </div>
-      <Tip label={t.sidebar.searchAria}>
-        <Button
-          aria-controls={search.open ? search.id : undefined}
-          aria-expanded={search.open}
-          aria-label={t.sidebar.searchAria}
-          className="portal-sidebar-search-toggle"
-          onClick={() => (search.open ? search.close() : search.reveal())}
-          ref={search.toggleRef}
-          size="icon"
-          variant="ghost"
-        >
-          <Search aria-hidden />
-        </Button>
-      </Tip>
+      <div className="flex shrink-0 items-center gap-1">
+        {unreadCount > 0 ? (
+          <Tip label={t.sidebar.markAllRead}>
+            <Button
+              aria-label={t.sidebar.markAllRead}
+              className="portal-sidebar-search-toggle"
+              onClick={() => {
+                markAllSessionsRead()
+                ackAllSessionsRead()
+              }}
+              size="icon"
+              variant="ghost"
+            >
+              <Codicon aria-hidden name="check-all" size="1rem" />
+            </Button>
+          </Tip>
+        ) : null}
+        <Tip label={t.sidebar.searchAria}>
+          <Button
+            aria-controls={search.open ? search.id : undefined}
+            aria-expanded={search.open}
+            aria-label={t.sidebar.searchAria}
+            className="portal-sidebar-search-toggle"
+            onClick={() => (search.open ? search.close() : search.reveal())}
+            ref={search.toggleRef}
+            size="icon"
+            variant="ghost"
+          >
+            <Search aria-hidden />
+          </Button>
+        </Tip>
+      </div>
     </div>
   )
 }

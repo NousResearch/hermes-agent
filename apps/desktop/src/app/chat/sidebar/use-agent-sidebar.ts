@@ -80,7 +80,7 @@ export function useAgentSidebar(props: ComponentProps<typeof ChatSidebar>) {
   const [revealSession, setRevealSession] = useState<{ key: string } | null>(null)
   const [loadingMore, setLoadingMore] = useState(false)
 
-  const all = useMemo(
+  const allCandidates = useMemo(
     () =>
       [
         ...new Map(
@@ -90,26 +90,31 @@ export function useAgentSidebar(props: ComponentProps<typeof ChatSidebar>) {
           ])
         ).values()
       ]
-        .filter(row => !row.hidden && !row.archived && !removed.has(row.id) && !removed.has(sessionRowKey(row)))
+        .filter(row => !row.hidden && !removed.has(row.id) && !removed.has(sessionRowKey(row)))
         .sort((a, b) => (b.last_active ?? b.started_at) - (a.last_active ?? a.started_at)),
     [sessions, messaging, cron, removed, pinWrites.rows]
   )
 
+  const all = useMemo(() => allCandidates.filter(row => !row.archived), [allCandidates])
+
+  const trimmedQuery = query.trim()
+  const isSearching = Boolean(trimmedQuery)
+
   const matches = (row: SessionInfo) =>
-    !query.trim() ||
-    sessionMatchesSearch(row, query.trim()) ||
-    (row.profile ?? 'default').toLowerCase().includes(query.trim().toLowerCase())
+    !trimmedQuery ||
+    sessionMatchesSearch(row, trimmedQuery) ||
+    (row.profile ?? 'default').toLowerCase().includes(trimmedQuery.toLowerCase())
 
-  const search = useSimplifiedSessionSearch(query.trim())
+  const search = useSimplifiedSessionSearch(trimmedQuery)
 
-  const searchRows = query.trim()
-    ? [...new Map([...search.rows, ...all.filter(matches)].map(row => [sessionRowKey(row), row])).values()]
+  const searchRows = isSearching
+    ? [...new Map([...search.rows, ...allCandidates.filter(matches)].map(row => [sessionRowKey(row), row])).values()]
     : all
 
+  // Archived chats stay out of the resting list, but surface during search (Classic parity).
   const rows = searchRows.filter(
-    row => !row.hidden && !row.archived && !removed.has(row.id) && !removed.has(sessionRowKey(row))
+    row => !row.hidden && (isSearching || !row.archived) && !removed.has(row.id) && !removed.has(sessionRowKey(row))
   )
-
   useIaSearchMetrics(query.trim(), search.pending, search.failed, rows.length)
   const agents = useSimplifiedAgents(rows)
   const pinned = simplifiedPins(all, pinIds, unconfirmed, pinWrites.value)

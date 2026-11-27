@@ -125,7 +125,7 @@ it('opens the contributing plugin settings from its page icon without navigating
     )
     fireEvent.contextMenu(screen.getByRole('button', { name: 'Gantt' }))
     expect(onNavigate).not.toHaveBeenCalled()
-    fireEvent.click(screen.getByRole('menuitem'))
+    fireEvent.click(screen.getByRole('menuitem', { name: en.skills.plugins.settingsToggle('Gantt') }))
     expect(onNavigate).toHaveBeenCalledWith(
       expect.objectContaining({ route: '/settings?tab=plugins&plugin=custom&profile=default' })
     )
@@ -152,7 +152,8 @@ it('does not offer a broken settings shortcut for a plugin without a settings pa
       </MemoryRouter>
     )
     fireEvent.contextMenu(screen.getByRole('button', { name: 'Plain' }))
-    expect(screen.queryByRole('menu')).toBeNull()
+    expect(screen.queryByRole('menuitem', { name: en.skills.plugins.settingsToggle('Plain') })).toBeNull()
+    expect(screen.getByRole('menuitem', { name: en.sidebar.row.openInSplit })).toBeTruthy()
   } finally {
     cleanup()
     dispose()
@@ -192,6 +193,7 @@ it('applies nav preferences to the rail’s core destinations as classic does to
       en.simplifiedAgents.library,
       // Capabilities hosts the Plugins tab, the way back to a plugin's off switch: never hidden.
       en.sidebar.nav.capabilities,
+      en.sidebar.nav.messaging,
       en.commandCenter.settings
     ])
     act(dispose)
@@ -201,6 +203,7 @@ it('applies nav preferences to the rail’s core destinations as classic does to
       en.sidebar.nav.capabilities,
       en.simplifiedAgents.library,
       en.cron.title,
+      en.sidebar.nav.messaging,
       en.commandCenter.settings
     ])
   } finally {

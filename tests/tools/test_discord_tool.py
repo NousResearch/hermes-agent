@@ -296,6 +296,42 @@ class TestCreateThread:
             body={"name": "Discussion", "auto_archive_duration": 1440},
         )
 
+    @patch("tools.discord_tool._discord_request")
+    def test_forum_post_message_and_tags_reach_the_api(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {"id": "802", "name": "Forum Post"}
+        result = json.loads(discord_core(
+            action="create_thread", channel_id="11", name="Forum Post",
+            message="Opening content", applied_tags=["9001", "9002"],
+        ))
+        assert result["success"] is True
+        mock_req.assert_called_once_with(
+            "POST", "/channels/11/threads", "test-token",
+            body={
+                "name": "Forum Post",
+                "auto_archive_duration": 1440,
+                "type": 11,
+                "message": {"content": "Opening content"},
+                "applied_tags": ["9001", "9002"],
+            },
+        )
+
+    @patch("tools.discord_tool._discord_request")
+    def test_message_and_tags_ignored_when_anchored_to_a_message(self, mock_req, monkeypatch):
+        # Threads anchored to an existing message take their opening content from
+        # that message; Discord rejects `message`/`applied_tags` on that route.
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {"id": "803", "name": "Discussion"}
+        result = json.loads(discord_core(
+            action="create_thread", channel_id="11", name="Discussion", message_id="1001",
+            message="Opening content", applied_tags=["9001"],
+        ))
+        assert result["success"] is True
+        mock_req.assert_called_once_with(
+            "POST", "/channels/11/messages/1001/threads", "test-token",
+            body={"name": "Discussion", "auto_archive_duration": 1440},
+        )
+
 
 # ---------------------------------------------------------------------------
 # Error handling

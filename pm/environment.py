@@ -285,13 +285,18 @@ def _same_executable(candidate: Path, pinned: Path) -> bool:
 def _git_path_dirs() -> list[str]:
     """PATH entries for PM's installed git (if any), ordinary spelling; never installs or raises."""
     try:
-        from pm.install import env_for
+        from pm.install import installed_package
+        from pm.packages import Git
+        from pm.store import current_target
 
-        git_env = env_for("git", base_env={})
+        installed = installed_package("git")
+        if installed is None:
+            return []
+        raw = Git().env(installed.path, current_target()).get("PATH") or []
     except (OSError, ValueError, KeyError, RuntimeError):
         return []
-    key = next((k for k in git_env if k.upper() == "PATH"), "PATH")
-    return [native(entry) for entry in git_env.get(key, "").split(os.pathsep) if entry]
+    entries = [raw] if isinstance(raw, str) else raw
+    return [native(entry) for entry in entries if entry]
 
 
 def _prepend_installed_git(build_env: dict[str, str], *, explicit_env: bool) -> None:

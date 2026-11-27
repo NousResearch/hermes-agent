@@ -17,6 +17,8 @@ from pm.lock import Facts, Lockfile
 from pm.packages import Git
 from pm.store import Store, current_target
 
+pytestmark = pytest.mark.platforms("windows", "posix")
+
 
 def _stub_toolchain(tmp_path: Path, monkeypatch):
     uv = tmp_path / "uv"
@@ -137,7 +139,7 @@ def test_managed_environment_keeps_ambient_path_when_git_not_installed(tmp_path,
 def test_managed_environment_survives_unreadable_git_lookup(tmp_path, monkeypatch):
     _uv, py = _stub_toolchain(tmp_path, monkeypatch)
     monkeypatch.setattr(
-        install_module, "env_for",
+        install_module, "installed_package",
         lambda *a, **kw: (_ for _ in ()).throw(OSError("corrupt facts")),
     )
     ambient = "/usr/bin"
@@ -150,10 +152,14 @@ def test_managed_environment_survives_unreadable_git_lookup(tmp_path, monkeypatc
 def test_managed_environment_strips_verbatim_prefix_from_git_path(tmp_path, monkeypatch):
     _uv, py = _stub_toolchain(tmp_path, monkeypatch)
     # UNC verbatim path has no ':' so it splits cleanly with os.pathsep on every OS.
-    verbatim = r"\\?\UNC\server\share\git\cmd"
-    monkeypatch.setattr(install_module, "env_for", lambda *a, **kw: {"PATH": verbatim})
+    verbatim = Path(r"\\?\UNC\server\share\git")
+    monkeypatch.setattr(
+        install_module, "installed_package",
+        lambda name, **kw: install_module.InstalledPackage(verbatim, "2.56.1+1", verbatim / "cmd" / "git.exe")
+        if name == "git" else None,
+    )
     monkeypatch.setenv("PATH", "/usr/bin")
 
     built = env_module.managed_environment(tmp_path / "venv", python=py, cache=tmp_path / "cache")
     assert r"\\?\\" not in built.env["PATH"]
-    assert built.env["PATH"].split(os.pathsep)[0] == r"\\server\share\git\cmd"
+    assert built.env["PATH"].split(os.pathsep)[0].replace("/", "\\") == r"\\server\share\git\cmd"

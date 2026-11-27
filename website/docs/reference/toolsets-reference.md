@@ -77,6 +77,7 @@ Or in-session:
 | `safe` | `image_generate`, `vision_analyze`, `web_extract`, `web_search` (via `includes`) | Read-only research + media generation. No file writes, no terminal, no code execution. |
 | `search` | `web_search` | Web search only (without extract). |
 | `session_search` | `session_search` | Search past conversation sessions. |
+| `knowledge_access` | `knowledge_access` | Opt-in structured access to bounded Hermes knowledge authorities. |
 | `skills` | `skill_manage`, `skill_view`, `skills_list` | Skill CRUD and browsing. |
 | `terminal` | `process_manage`, `terminal` | Shell command execution and background process management. |
 | `todo` | `todo_list` | Task list management within a session. |

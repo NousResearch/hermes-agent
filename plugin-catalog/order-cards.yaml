@@ -6,7 +6,7 @@ description: "Purchase approval cards for checkouts the agent drives: it stops b
 maintainer: kenhendricks00
 tier: community
 category: tools
-version: "1.2.0"
+version: "1.2.1"
 requires_hermes: ">=0.21.6"
 docs_url: https://github.com/kenhendricks00/hermes-order-cards#readme
 image: https://raw.githubusercontent.com/kenhendricks00/hermes-order-cards/de5de43d6a9d580dd83ca1479bec8977d1d9ae6d/docs/banner.png

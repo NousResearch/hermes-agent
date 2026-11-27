@@ -632,6 +632,32 @@ async def get_session_detail(session_id: str, profile: Optional[str] = None):
         owned = cron_run_scheduler_owned(session, profile)
         if owned is not None:
             session["scheduler_owned"] = owned
+        # Project the compression lineage the same way every list path does
+        # (_project_compression_tips): root id, the full id chain, and the
+        # lineage-wide pin. The desktop's sidebar dedupe keys on
+        # `_lineage_root_id` and renders Pinned from the projected flag — a raw
+        # row missing both used to render as a second, unpinned session after
+        # /compress rotated the conversation to a new tip row. Tip-only, like
+        # the list projection: stamping an ANCESTOR would let a stale root
+        # payload evict the live tip from the desktop's cache.
+        chain = [str(s) for s in store.lineage.lineage(sid)]
+        if len(chain) > 1 and sid == chain[-1]:
+            session["_lineage_root_id"] = chain[0]
+            session["_lineage_ids"] = chain
+            pinned = 0
+            for chain_sid in chain:
+                # chain members may have been pruned or deleted individually;
+                # a missing row is not a 500.
+                if chain_sid == sid:
+                    if session.get("pinned"):
+                        pinned = 1
+                        break
+                else:
+                    rec = store.sessions.get(chain_sid)
+                    if rec is not None and rec.pinned:
+                        pinned = 1
+                        break
+            session["pinned"] = pinned
         return session
 
     return await asyncio.to_thread(_with_db, profile, _detail, read_only=True)

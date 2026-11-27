@@ -434,7 +434,12 @@ interface AppearanceThemeSettingsProps {
   setQuery: (query: string) => void
 }
 
-function AppearanceThemeSettings({ compact, query, setQuery }: AppearanceThemeSettingsProps) {
+function AppearanceThemeSettings({
+  compact,
+  includeId = true,
+  query,
+  setQuery
+}: AppearanceThemeSettingsProps & { includeId?: boolean }) {
   const { t, locale } = useI18n()
   // The default-theme badge belongs to the redesign's theme picker (856:2641); classic never drew it.
   const redesign = usePortalShell()
@@ -576,7 +581,7 @@ function AppearanceThemeSettings({ compact, query, setQuery }: AppearanceThemeSe
         </>
       }
       description={a.themeDesc}
-      id={settingElementId(ids.theme)}
+      id={includeId ? settingElementId(ids.theme) : undefined}
       title={a.themeTitle}
       wide
     />
@@ -1302,9 +1307,9 @@ function AdvancedGroup({ title, children }: AdvancedGroupProps) {
 export function AppearanceAdvancedSettings() {
   const { locale } = useI18n()
   const copy = appearanceAdvancedCopy(locale)
+  const [query, setQuery] = useState('')
 
   useEffect(() => resetTranslucencyPeek, [])
-
   return (
     <div className="appearance-advanced-groups">
       <AdvancedGroup title={copy.groups.text}>
@@ -1330,6 +1335,7 @@ export function AppearanceAdvancedSettings() {
         <WelcomeScreenRow copy={copy.welcome} />
       </AdvancedGroup>
       <AdvancedGroup title={copy.groups.device}>
+        <AppearanceThemeSettings compact includeId={false} query={query} setQuery={setQuery} />
         <div id={settingElementId(ids.terminalFont)}>
           <TerminalFontSetting />
         </div>

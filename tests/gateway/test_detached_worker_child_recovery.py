@@ -13,12 +13,22 @@ from tests.gateway.fixtures.storage_handles import storage_handle
 from tests.gateway.test_worker_admission_reservation import hello
 
 
+@pytest.fixture
+def worker_process():
+    process = subprocess.Popen([sys.executable, '-c', 'import sys; sys.stdin.read()'], stdin=subprocess.PIPE,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        yield process
+    finally:
+        process.stdin.close()
+        process.wait(timeout=5)
+
+
 @pytest.mark.platforms('posix')
 @pytest.mark.asyncio
-async def test_detached_child_continues_after_owner_recovery(tmp_path):
+async def test_detached_child_continues_after_owner_recovery(tmp_path, worker_process):
     db = storage_handle(tmp_path)
-    process = subprocess.Popen([sys.executable, '-c', 'import sys; sys.stdin.read()'], stdin=subprocess.PIPE,
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)  # noqa: ASYNC220 -- fixture process
+    process = worker_process
     try:
         for sid in ('owned', 'unrelated'):
             seed_session(db, sid, 'cli')
@@ -58,6 +68,4 @@ async def test_detached_child_continues_after_owner_recovery(tmp_path):
         with pytest.raises(AuthorityRefusal, match='stale_generation'):
             await worker_request(connection, None, append | {'sequence': 3}, operation='persist')
     finally:
-        process.stdin.close()
-        process.wait(timeout=5)
         db.close()

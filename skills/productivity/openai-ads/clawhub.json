@@ -1,0 +1,27 @@
+{
+  "schema": "v1",
+  "name": "openai-ads",
+  "displayName": "OpenAI Ads & ChatGPT Marketing Agent",
+  "version": "1.0.0",
+  "description": "Autonomous AI Marketing & Ads Manager for OpenAI Ads API v1. End-to-end management for ChatGPT Ads: campaigns, context hints, interactive chat_cards, CAPI, custom audiences, product feeds, and insights.",
+  "author": "Rafa Martins <rafacpti@gmail.com>",
+  "category": "productivity",
+  "tags": [
+    "openai-ads",
+    "chatgpt-ads",
+    "marketing",
+    "advertising",
+    "traffic-management",
+    "conversions-api",
+    "business-agents",
+    "ecommerce",
+    "capi"
+  ],
+  "entrypoint": "SKILL.md",
+  "platforms": [
+    "linux",
+    "darwin",
+    "windows"
+  ],
+  "homepage": "https://portal.sthub.com.br"
+}

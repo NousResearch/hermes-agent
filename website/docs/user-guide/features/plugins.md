@@ -1155,6 +1155,81 @@ Only grant gateway injection to plugins you trust. Hermes checks this host API p
 This plugin API does not expose a public HTTP endpoint or CLI command for external processes. The plugin must already know the target gateway `session_key`, for example from its own trusted configuration or previously retained session state.
 :::
 
+### Durable submission receipts
+
+A background plugin that needs to distinguish scheduling from durable admission can use
+`ctx.submit_message(content, *, session_key, expected_session_id, request_id)` and
+`ctx.submission_status(*, session_key, expected_session_id, request_id)`. Both return plain
+JSON-compatible dictionaries and work with in-process and host-isolated plugins. They require
+the same `allow_gateway_injection` permission and current route authorization as gateway injection.
+They target an existing gateway-owned conversation with committed provenance; they do not create
+sessions or fall back to the classic CLI or a separate TUI host.
+
+These methods block until admission or observation, **not until the agent finishes**. Call them
+from an independent worker thread; calling them on the gateway event loop returns
+`requires_worker_thread`. A synchronous hosted callback that blocks that loop also refuses.
+Do **not** use `asyncio.to_thread()` or the gateway loop's default executor: admission and
+storage use that pool too, so concurrent blocking callers can exhaust the workers they need.
+For an async plugin, own a separate waiter pool for the plugin's lifetime:
+
+```python
+import asyncio
+import contextvars
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
+
+# Create during register(ctx), not at module import.
+waiters = ThreadPoolExecutor(max_workers=4, thread_name_prefix="plugin-receipts")
+ctx.on_unload(partial(waiters.shutdown, wait=False, cancel_futures=True))
+
+async def host_call(method, *args, **kwargs):
+    context = contextvars.copy_context()
+    return await asyncio.get_running_loop().run_in_executor(
+        waiters, partial(context.run, method, *args, **kwargs)
+    )
+
+receipt = await host_call(
+    ctx.submit_message,
+    "Review the failing tests and report the cause",
+    session_key=session_key,
+    expected_session_id=session_id,
+    request_id=request_id,
+)
+# Later, using the same captured identities:
+receipt = await host_call(
+    ctx.submission_status,
+    session_key=session_key,
+    expected_session_id=session_id,
+    request_id=request_id,
+)
+```
+
+Preserve the caller's context when offloading. Pool shutdown cancels only calls that have not
+started; it does not cancel an admission already scheduled on the gateway. A cancelled wait or
+lost response leaves the outcome uncertain until the same request identity is observed again.
+
+Capture the session and a stable, nonempty request ID (at most 256 characters) before submitting.
+IDs are scoped to the plugin,
+profile and conversation; retry with the **same ID and content** after a lost response. Reusing
+an ID with different text returns `admission_conflict`. A valid compression continues the same
+conversation; a reset or unrelated resume returns `admission_conflict`, so an old request cannot
+start work in the replacement conversation. Obtain a fresh binding for new work after a reset.
+
+Every response contains `ok`, `status`, `request_id`, `session_id`, `admission_id`, `outcome`, and
+`result`. A successful receipt has `ok: true` and the authority's `queued`, `started`, `unknown`,
+or `terminal` status. `queued` means durable admission, not completion. `unknown` can mean an
+interrupted execution awaiting the session owner's decision; do not submit replacement work blindly.
+A terminal receipt exposes the exact stored outcome and, when retained, a `result` containing
+`final_response` (at most 16,000 characters) and `truncated`. It never infers completion from a
+nearby assistant message and does not include tool transcripts or internal routing provenance.
+This describes the submitted turn; background work it starts can outlive that turn.
+
+An explicit refusal has `ok: false`, `status: "refused"`, and an `error` code. If the 30-second
+observation deadline expires, the response instead has `status: "unknown"`, `error: "timeout"`:
+the write may still commit. Poll or retry the same identity; a timeout does not cancel work.
+Results follow the gateway's existing admission retention. These methods do not approve prompts,
+execute slash commands, interrupt turns, or grant additional tools.
+
 ## Plugin code inside the gateway
 
 Hooks, tools and injected turns of every chat and every local session (CLI, TUI, Desktop) run in the one gateway process, not in the client you launched. Some process-level habits from the classic CLI do not carry over:

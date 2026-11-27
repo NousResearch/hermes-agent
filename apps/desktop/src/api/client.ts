@@ -846,8 +846,43 @@ export function resolveOwnerNow(owner?: OwnerScope): ResolvedOwner {
  *  ambient connection spread underneath. An untagged half stays untagged. A
  *  named profile is always explicit here, so it carries the foreground
  *  priority `profileScoped` gives explicit profiles (voice is user-driven). */
+const inFlightGetsByTransport = new WeakMap<object, Map<string, Promise<unknown>>>()
+
+function callApiCoalesced<T>(resolved: HermesApiRequest): Promise<T> {
+  const transport = window.hermesDesktop.api
+  const method = (resolved.method ?? 'GET').toUpperCase()
+
+  if (method !== 'GET' || resolved.body !== undefined || resolved.upload !== undefined) {
+    return transport<T>(resolved)
+  }
+
+  let inFlight = inFlightGetsByTransport.get(transport)
+
+  if (!inFlight) {
+    inFlight = new Map()
+    inFlightGetsByTransport.set(transport, inFlight)
+  }
+
+  const key = `${resolved.connectionId ?? ''}\0${resolved.profile ?? ''}\0${resolved.passive ? '1' : '0'}\0${resolved.priority ?? ''}\0${resolved.path}`
+  const existing = inFlight.get(key)
+
+  if (existing) {
+    return existing as Promise<T>
+  }
+
+  const pending = Promise.resolve(transport<T>(resolved)).finally(() => {
+    if (inFlight.get(key) === pending) {
+      inFlight.delete(key)
+    }
+  })
+
+  inFlight.set(key, pending)
+
+  return pending
+}
+
 export function hermesApiAs<T>(owner: ResolvedOwner, request: HermesApiRequest): Promise<T> {
-  return window.hermesDesktop.api<T>({
+  return callApiCoalesced<T>({
     ...(owner.connectionId ? { connectionId: owner.connectionId } : {}),
     ...(owner.profile ? { priority: 'foreground' as const, profile: owner.profile } : {}),
     ...request
@@ -914,7 +949,7 @@ export function ambientOwnerConnectionId(): string | undefined {
  *  underneath it. (It used to omit the key for 'local', which made the pin
  *  unable to beat the ambient tag; helpers then had to bypass this wrapper.) */
 export function hermesApi<T>(request: HermesApiRequest): Promise<T> {
-  return window.hermesDesktop.api<T>({ ...connectionScoped(), ...request })
+  return callApiCoalesced<T>({ ...connectionScoped(), ...request })
 }
 
 // ── Capability scope: (connection, profile) routing for the Capabilities

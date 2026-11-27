@@ -10,12 +10,26 @@ import { toolsetsQueryKey } from './toolsets/toolsets-data'
  *  its tabs count and the Tools tab waits on, and the scope roster) for the scope it opens on, under
  *  the page's own keys, so a rail click paints its final layout from the cache. The ~100k-row skill
  *  feed is not warmed: parsing it would block the idle window it runs in. */
+const PREFETCH_STALE_MS = 30_000
+
 export async function prefetchCapabilitiesInventory(): Promise<void> {
   const scope = $activeGatewayProfile.get() ?? null
 
   await Promise.all([
-    queryClient.prefetchQuery({ queryKey: skillsQueryKey(scope), queryFn: () => getSkills(scope) }),
-    queryClient.prefetchQuery({ queryKey: toolsetsQueryKey(scope), queryFn: () => getToolsets(scope) }),
-    queryClient.prefetchQuery({ queryKey: CAPABILITY_PROFILES_KEY, queryFn: () => getProfiles() })
+    queryClient.prefetchQuery({
+      queryFn: () => getSkills(scope),
+      queryKey: skillsQueryKey(scope),
+      staleTime: PREFETCH_STALE_MS
+    }),
+    queryClient.prefetchQuery({
+      queryFn: () => getToolsets(scope),
+      queryKey: toolsetsQueryKey(scope),
+      staleTime: PREFETCH_STALE_MS
+    }),
+    queryClient.prefetchQuery({
+      queryFn: () => getProfiles(),
+      queryKey: CAPABILITY_PROFILES_KEY,
+      staleTime: PREFETCH_STALE_MS
+    })
   ])
 }

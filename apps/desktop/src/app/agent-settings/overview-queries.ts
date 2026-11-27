@@ -73,6 +73,8 @@ function landingOwner(): AgentSettingsOwner | null {
 
 /** Warm the landing agent's Overview reads (the classic shell has no Overview). Rows already
  *  cached and fresh are not refetched. */
+const PREFETCH_STALE_MS = 30_000
+
 export async function prefetchLandingAgentOverview(): Promise<void> {
   const owner = $portalShell.get() ? landingOwner() : null
 
@@ -81,9 +83,23 @@ export async function prefetchLandingAgentOverview(): Promise<void> {
   }
 
   await Promise.all([
-    ...Object.values(agentOverviewQueries).map(query => queryClient.prefetchQuery<unknown>(query(owner))),
-    queryClient.prefetchQuery({ queryKey: hermesConfigKey(owner), queryFn: () => getHermesConfigRecord(owner) }),
-    queryClient.prefetchQuery({ queryKey: skillsQueryKey(owner), queryFn: () => getSkills(owner) }),
-    queryClient.prefetchQuery({ queryKey: toolsetsQueryKey(owner), queryFn: () => getToolsets(owner) })
+    ...Object.values(agentOverviewQueries).map(query =>
+      queryClient.prefetchQuery<unknown>({ ...query(owner), staleTime: PREFETCH_STALE_MS })
+    ),
+    queryClient.prefetchQuery({
+      queryFn: () => getHermesConfigRecord(owner),
+      queryKey: hermesConfigKey(owner),
+      staleTime: PREFETCH_STALE_MS
+    }),
+    queryClient.prefetchQuery({
+      queryFn: () => getSkills(owner),
+      queryKey: skillsQueryKey(owner),
+      staleTime: PREFETCH_STALE_MS
+    }),
+    queryClient.prefetchQuery({
+      queryFn: () => getToolsets(owner),
+      queryKey: toolsetsQueryKey(owner),
+      staleTime: PREFETCH_STALE_MS
+    })
   ])
 }

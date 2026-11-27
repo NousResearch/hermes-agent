@@ -32,6 +32,28 @@ def _install_anthropic_adapter_mocks():
     ), fake_client
 
 
+def test_auxiliary_main_follows_live_custom_transport(tmp_path, monkeypatch):
+    from openai import OpenAI
+    from agent import auxiliary_client as aux
+
+    pytest.importorskip("anthropic")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text("model:\n  provider: custom\n", encoding="utf-8")
+    runtime = {"provider": "custom", "base_url": "https://relay.example/v1",
+               "api_key": "test-key", "api_mode": "chat_completions"}
+
+    def client(mode=None):
+        return aux._get_cached_client("main", "title-model", api_mode=mode,
+                                      main_runtime=runtime, task="title_generation")[0]
+
+    assert isinstance(client(), OpenAI)
+    runtime["api_mode"] = "anthropic_messages"
+    messages_client = client()
+    assert isinstance(messages_client, aux.AnthropicAuxiliaryClient)
+    assert messages_client.base_url == runtime["base_url"]
+    assert isinstance(client("chat_completions"), OpenAI)
+
+
 def test_custom_endpoint_anthropic_messages_builds_anthropic_wrapper():
     """api_mode=anthropic_messages → returns AnthropicAuxiliaryClient, not OpenAI."""
     from agent.auxiliary_client import _try_custom_endpoint, AnthropicAuxiliaryClient

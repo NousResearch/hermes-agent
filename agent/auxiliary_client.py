@@ -4901,14 +4901,12 @@ def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
             logger.warning("resolve_provider_client: explicit custom endpoint requested but base_url is empty")
             return None, None
     elif main_runtime:
-        # Reuse main_runtime's concrete base_url + api_key for a named custom provider;
-        # re-resolving from bare "custom" loses the name and lands on the wrong provider.
-        # Re-resolution loses the provider name and falls back to OpenRouter or a wrong API-key provider —
-        # the main agent already solved this, we just need to reuse its answer. (#45472)
-        _main_base = str(main_runtime.get("base_url") or "").strip().rstrip("/")
-        _main_key = _normalize_api_key(main_runtime.get("api_key"))
-        if _main_base and _main_key:
-            custom_base, custom_key = _main_base, _main_key
+        # Bare "custom" loses the named provider. Reuse the main route with its wire (#45472).
+        custom_base = str(main_runtime.get("base_url") or "").strip().rstrip("/")
+        custom_key = _normalize_api_key(main_runtime.get("api_key"))
+        runtime_mode = main_runtime.get("api_mode")
+        if custom_base and custom_key and not req.api_mode and isinstance(runtime_mode, str):
+            req = req._replace(api_mode=_canonical_api_mode(runtime_mode).lower() or None)
     if custom_base and custom_key:
         if _is_actual_auxiliary_route(req, custom_base):
             from hermes_cli.auth import normalize_actual_base_url
@@ -5588,8 +5586,9 @@ def _client_cache_key(
     task: Optional[str] = None, model: Optional[str] = None,
 ) -> tuple:
     runtime = _normalize_main_runtime(main_runtime)
-    # `auto` resolves through the main runtime and task-specific policy, so both join the key.
-    runtime_key = tuple(_runtime_cache_discriminator(f, runtime.get(f, "")) for f in _MAIN_RUNTIME_FIELDS) if provider == "auto" else ()
+    # A custom route without its own endpoint can also reuse the live main endpoint and wire.
+    uses_runtime = provider == "auto" or (runtime and not base_url and _normalize_aux_provider(provider) == "custom")
+    runtime_key = tuple(_runtime_cache_discriminator(f, runtime.get(f, "")) for f in _MAIN_RUNTIME_FIELDS) if uses_runtime else ()
     task_key = (task or "", _task_prefers_fast_model(task)) if provider == "auto" else ""
     pool_hint = _pool_cache_hint(provider, main_runtime=main_runtime)
     # Model MUST be in the key: concurrent calls to the same endpoint with different models would

@@ -74,6 +74,24 @@ def _gateway_room_grant_secret_for_home(home_value: str) -> bytes:
                 os.link(temporary, path)
             except FileExistsError:
                 material = _read()
+            except (OSError, AttributeError):
+                # No hard links (Android/Termux without os.link, exFAT): exclusive create
+                # again, and a racing writer re-reads whoever won.
+                try:
+                    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                except FileExistsError:
+                    material = _read()
+                else:
+                    try:
+                        with os.fdopen(fd, "wb") as stream:
+                            stream.write(material)
+                            stream.flush()
+                            os.fsync(stream.fileno())
+                    except BaseException:
+                        # Do not leave an uncommitted secret blocking later mint attempts.
+                        path.unlink(missing_ok=True)
+                        raise
+                    fsync_directory(home)
             else:
                 fsync_directory(home)
         finally:

@@ -189,6 +189,8 @@ def test_update_asks_once_and_names_each_profile(tmp_path, monkeypatch):
     monkeypatch.setattr("pm.plugins_state.dependency_homes", lambda: homes)
     monkeypatch.setattr(mig, "provider_present", lambda name, home: (home / "plugins" / name).is_dir())
     monkeypatch.setattr(mig, "catalog_source", lambda name: name)
+    monkeypatch.setattr(mig, "_LEFT_CORE", frozenset({"twin"}))  # stands in for a formerly bundled provider
+    monkeypatch.setattr("pm.install.lazy_installs_allowed", lambda: True)
     monkeypatch.setattr(plugins_cmd_install.sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(plugins_cmd_install.sys.stdout, "isatty", lambda: True)
 
@@ -573,6 +575,7 @@ def test_an_unusable_installer_lock_is_reported_and_the_update_goes_on(tmp_path,
     monkeypatch.setenv("HERMES_HOME", str(homes[0]))
     monkeypatch.setattr(plugins_state, "dependency_homes", lambda: homes)
     monkeypatch.setattr(mig, "catalog_source", lambda n: n)
+    monkeypatch.setattr("pm.install.lazy_installs_allowed", lambda: True)
     calls = iter([PermissionError(13, "Permission denied"), None])
 
     @contextmanager
@@ -886,3 +889,71 @@ def test_a_config_edit_between_the_scan_reads_installs_nothing_stale(tmp_path, m
     installs: list[str] = []
     mig.migrate_home(profile, install=lambda n: installs.append(n) or {"ok": True}, say=lambda s: None)
     assert installs == []
+
+
+def _update_without_dependency_prompts(tmp_path, monkeypatch, name, *, tty, lazy):
+    """One profile naming *name*, a real-shaped installer that (like the real one for a plugin with no
+    Python or Node dependencies) places the plugin whatever ``assume_deps_consent`` says."""
+    import io
+
+    from hermes_cli import plugins_cmd
+    from hermes_constants import get_hermes_home
+    from pm import install as pm_install
+
+    root = tmp_path / ".hermes"
+    work = root / "profiles" / "work"
+    work.mkdir(parents=True)
+    (root / "config.yaml").write_text("{}\n", encoding="utf-8")
+    (work / "config.yaml").write_text(f"memory:\n  provider: {name}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
+    monkeypatch.setattr("pm.plugins_state.dependency_homes", lambda: [work])
+    monkeypatch.setattr(mig, "provider_present", lambda n, home: (home / "plugins" / n).is_dir())
+    monkeypatch.setattr(mig, "catalog_source", lambda n: n)
+
+    class _Stream(io.StringIO):
+        def isatty(self):
+            return tty
+
+    monkeypatch.setattr("sys.stdin", _Stream())
+    monkeypatch.setattr("sys.stdout", _Stream())
+    monkeypatch.setattr(pm_install, "lazy_installs_allowed", lambda: lazy)
+    installs: list[str] = []
+
+    def install(*_a, catalog_name, **_kw):
+        installs.append(catalog_name)
+        (get_hermes_home() / "plugins" / catalog_name).mkdir(parents=True)
+        return {"ok": True}
+
+    monkeypatch.setattr(plugins_cmd, "dashboard_install_plugin", install)
+    return work, installs
+
+
+def test_unattended_update_fetches_no_provider_code_where_lazy_installs_are_off(tmp_path, monkeypatch):
+    """Dependency consent is not permission to install plugin code: ByteRover declares no Python
+    dependency, so the installer's consent flag gates nothing. Without a terminal, a profile with
+    security.allow_lazy_installs off gets the command, not the plugin."""
+    work, installs = _update_without_dependency_prompts(tmp_path, monkeypatch, "byterover", tty=False, lazy=False)
+    said: list[str] = []
+    assert mig.migrate_all_homes(say=said.append) == []
+    assert installs == [] and not (work / "plugins").exists()
+    assert any("allow_lazy_installs" in line and "`hermes -p work plugins install byterover`" in line
+               for line in said)
+
+
+@pytest.mark.parametrize("tty", [False, True])
+def test_update_never_installs_a_provider_that_never_shipped_with_hermes(tmp_path, monkeypatch, tty):
+    """Naming a catalog memory plugin in a synced or restored config is not a request to install it,
+    even with lazy installs on; only a provider that left core is migrated."""
+    work, installs = _update_without_dependency_prompts(tmp_path, monkeypatch, "someplugin", tty=tty, lazy=True)
+    said: list[str] = []
+    assert mig.migrate_all_homes(say=said.append) == []
+    assert installs == [] and not (work / "plugins").exists()
+    assert any("never shipped with Hermes" in line and "`hermes -p work plugins install someplugin`" in line
+               for line in said)
+
+
+def test_update_still_migrates_a_provider_that_left_core(tmp_path, monkeypatch):
+    work, installs = _update_without_dependency_prompts(tmp_path, monkeypatch, "byterover", tty=False, lazy=True)
+    assert mig.migrate_all_homes(say=lambda _m: None) == ["byterover"]
+    assert installs == ["byterover"] and (work / "plugins" / "byterover").is_dir()

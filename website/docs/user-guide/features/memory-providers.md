@@ -695,7 +695,7 @@ Base URL precedence is `supermemory.json` → `SUPERMEMORY_BASE_URL` → `https:
 
 Supermemory used to ship inside the Hermes tree (and as the `hermes-agent[supermemory]` pip extra). If your `config.yaml` already has `memory.provider: supermemory`, there is nothing to do for most users:
 
-- `hermes update` installs the catalog plugin into every profile home that names the provider (this runs even when `security.allow_lazy_installs` is `false`).
+- `hermes update` installs the catalog plugin into every profile home that names the provider. Without a terminal (the Desktop app, a script, a service) a profile with `security.allow_lazy_installs: false` gets the `hermes -p <profile> plugins install supermemory` command instead.
 - If the plugin is still missing on the first agent start (`hermes chat`, the gateway, …), Hermes installs it and prints `✓ Memory provider 'supermemory' moved out of core — installed its plugin from the catalog (your memory.supermemory settings and data are unchanged).`
 - With `security.allow_lazy_installs: false`, the agent-start path instead logs one line — ``Memory provider 'supermemory' is not installed; security.allow_lazy_installs is off — run `hermes plugins install supermemory`.`` — and you run `hermes plugins install supermemory` yourself.
 
@@ -809,7 +809,8 @@ maintained by itpartypattaya, see
 [Migrating from bundled Holographic](#migrating-from-bundled-holographic)). Nothing changes for you: the
 provider name, the settings it reads, its data directory and its tools stay the same.
 When a provider you have configured stops shipping with Hermes, `hermes update` installs its
-catalog plugin for every profile that names it; if you update through the Desktop app, the
+catalog plugin for every profile that names it (only providers that shipped with Hermes: a
+`memory.provider` naming any other catalog plugin is never installed for you); if you update through the Desktop app, the
 agent does the same the first time it starts. Every outcome is shown to you — in the terminal,
 in Desktop, or with the first reply on a messaging platform. If the install cannot happen
 (`security.allow_lazy_installs: false`, offline, declined), the warning includes the exact

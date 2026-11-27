@@ -1,6 +1,14 @@
+import type { GatewayEvent } from '@hermes/shared'
+import { act, cleanup } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { $currentModel, $currentProvider, setCurrentModelTransient, setCurrentProviderTransient } from '@/store/session'
+import { createClientSessionState } from '@/lib/chat-runtime'
+import type * as GuardedModelSwitch from '@/lib/guarded-model-switch'
+import { $confirmRequest, settleConfirm } from '@/store/confirm'
+import { $currentModel, $currentProvider, clearComposerSelectionOwner, setComposerSelectionOwner, setCurrentModelTransient, setCurrentProviderTransient } from '@/store/session'
+import { $sessionTiles, clearAllSessionStates, recordSessionEventScope } from '@/store/session-states'
+
+import { renderMessageStream } from '../test-harness'
 
 import { handleDeferredPickEvent } from './deferred-pick'
 import type { GatewayEventContext } from './types'
@@ -126,5 +134,109 @@ describe('handleDeferredPickEvent', () => {
     await vi.waitFor(() => expect(requestGatewayForAgent).toHaveBeenCalled())
     expect(requestGatewayForAgent).toHaveBeenCalledWith(null, 'default', 'session.model', {
       confirm: 'token', payload: { model: 'guarded', provider: 'custom', reasoning: 'high' }, session_id: 's' })
+  })
+})
+
+// These receipts arrive on a tile's own registry socket while another chat stays visible.
+// Use the production fan-in, stream dispatcher and confirm decision; only the owner RPC is stubbed.
+describe('background model receipts', () => {
+  const id = 'tile-runtime'
+  const owner = { connectionId: 'tile-owner', profile: 'default' }
+  const beforeTiles = $sessionTiles.get()
+  const committed = { model: 'tile-old', provider: 'tile-provider' }
+  const requested = { model: 'tile-next', provider: 'tile-provider' }
+
+  function mountTile() {
+    const active = { current: 'foreground-a' }
+    setComposerSelectionOwner('foreground-owner', 'default')
+    setCurrentModelTransient('foreground-model')
+    setCurrentProviderTransient('foreground-provider')
+    $sessionTiles.set([{ ownerRoute: owner, runtimeId: id, storedSessionId: id }])
+
+    const states = new Map([[id, { ...createClientSessionState(), ...committed, modelRevision: 3,
+      queuedModel: { ...requested, revision: 3 } }]])
+
+    const stream = renderMessageStream(active.current, { activeSessionIdRef: active, states })
+
+    const deliver = (fields: Record<string, unknown>, connectionId = owner.connectionId) => {
+      const frame = { ...owner, connectionId, type: 'session.updated', session_id: id,
+        payload: { operation: 'model', session_id: id, ...fields } } as unknown as GatewayEvent
+
+      recordSessionEventScope(frame)
+      act(() => stream.handleEvent(frame))
+    }
+
+    const info = (connectionId: string, model: string, revision: number) => {
+      const frame = { ...owner, connectionId, type: 'session.info', session_id: id,
+        payload: { model, provider: requested.provider, revision } } as unknown as GatewayEvent
+
+      recordSessionEventScope(frame)
+      act(() => stream.handleEvent(frame))
+    }
+
+    const ask = () => deliver({ status: 'confirmation_required', confirm: 'tile-fixture',
+      target_model: requested.model, payload: requested, committed_model: committed.model,
+      committed_provider: committed.provider })
+
+    return { active, ask, deliver, info, read: () => stream.state(id) }
+  }
+
+  afterEach(() => {
+    cleanup()
+    settleConfirm(false)
+    clearAllSessionStates()
+    $sessionTiles.set(beforeTiles)
+    clearComposerSelectionOwner()
+    vi.clearAllMocks()
+  })
+
+  it('publishes the owning background commit without waiting for session.info or changing the foreground', () => {
+    const { deliver, read } = mountTile()
+    deliver({ ...requested, revision: 4, status: 'applied' })
+    expect(read()).toMatchObject({ ...requested, modelRevision: 4, queuedModel: undefined })
+    expect([$currentModel.get(), $currentProvider.get()]).toEqual(['foreground-model', 'foreground-provider'])
+  })
+
+  it('keeps a same-id background tile on its bound owner when another connection also reports a commit', () => {
+    const { deliver, read } = mountTile()
+    deliver({ model: 'other-model', provider: 'other-provider', revision: 99, status: 'applied' }, 'other-owner')
+    expect(read()).toMatchObject({ ...committed, modelRevision: 3, queuedModel: requested })
+  })
+
+  it('only the bound tile owner can settle its queued label through session.info', () => {
+    const { info, read } = mountTile()
+    info('other-owner', requested.model, 99)
+    expect(read()).toMatchObject({ ...committed, modelRevision: 3, queuedModel: requested })
+    info(owner.connectionId, requested.model, 4)
+    expect(read()).toMatchObject({ ...requested, modelRevision: 4, queuedModel: undefined })
+  })
+
+  it('confirms on the background owner after unrelated foreground navigation and publishes its receipt', async () => {
+    const { surfaceModelSwitchConfirm: actualConfirm } = await vi.importActual<typeof GuardedModelSwitch>('@/lib/guarded-model-switch')
+    surfaceModelSwitchConfirm.mockImplementationOnce(actualConfirm as never)
+    requestGatewayForAgent.mockResolvedValueOnce({ ...requested, revision: 4 })
+    const { active, ask, read } = mountTile()
+    ask()
+    expect($confirmRequest.get()).not.toBeNull()
+    active.current = 'foreground-c'
+    await act(async () => { settleConfirm(true) })
+
+    expect(requestGatewayForAgent).toHaveBeenCalledExactlyOnceWith(owner.connectionId, owner.profile, 'session.model', {
+      session_id: id, confirm: 'tile-fixture', payload: requested
+    })
+    expect(read()).toMatchObject({ ...requested, modelRevision: 4, queuedModel: undefined })
+    expect($currentModel.get()).toBe('foreground-model')
+  })
+
+  it('does not confirm an outdated background choice after that tile receives a newer committed route', async () => {
+    const { surfaceModelSwitchConfirm: actualConfirm } = await vi.importActual<typeof GuardedModelSwitch>('@/lib/guarded-model-switch')
+    surfaceModelSwitchConfirm.mockImplementationOnce(actualConfirm as never)
+    const { ask, deliver, read } = mountTile()
+    ask()
+    expect($confirmRequest.get()).not.toBeNull()
+    deliver({ model: 'newer-tile-model', provider: 'tile-provider', revision: 5, status: 'applied' })
+    await act(async () => { settleConfirm(true) })
+    expect(requestGatewayForAgent).not.toHaveBeenCalled()
+    expect(read().model).toBe('newer-tile-model')
   })
 })

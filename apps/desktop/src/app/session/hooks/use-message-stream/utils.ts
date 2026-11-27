@@ -12,6 +12,7 @@ type SessionRuntimeStatePatch = Partial<
     | 'cwd'
     | 'fast'
     | 'model'
+    | 'modelRevision'
     | 'personality'
     | 'provider'
     | 'reasoningEffort'
@@ -27,6 +28,10 @@ export function sessionInfoStatePatch(payload: GatewayEventPayload | undefined):
 
   if (typeof payload?.model === 'string') {
     patch.model = payload.model || ''
+
+    if (typeof payload.revision === 'number') {
+      patch.modelRevision = payload.revision
+    }
   }
 
   if (typeof payload?.provider === 'string') {
@@ -73,6 +78,63 @@ export function hasSessionInfoStatePatch(patch: SessionRuntimeStatePatch): boole
   return Object.keys(patch).length > 0
 }
 
+export interface ModelSwitchResponse {
+  confirm_message?: string
+  confirm_required?: boolean
+  deferred?: boolean
+  model?: string
+  provider?: string
+  revision?: number
+  status?: string
+  reason?: string
+  ok?: boolean
+}
+
+/** A receipt settles only the addressed session; a deferred route leaves the running model intact. */
+export function applySessionModelReceipt(
+  state: ClientSessionState,
+  result: ModelSwitchResponse,
+  requested: { model: string; provider: string }
+): ClientSessionState {
+  const model = result.model || requested.model
+  const provider = result.provider || requested.provider
+
+  if (result.deferred || result.status === 'deferred') {
+    return result.revision !== undefined && result.revision < (state.modelRevision ?? -1)
+      ? state
+      : { ...state, queuedModel: { model, provider, revision: result.revision } }
+  }
+
+  return commitSessionModel(state, model, provider, result.revision)
+}
+
+/** An applied model mutation (reply or broadcast) carries the session's resolved route. */
+export function commitSessionModel(
+  state: ClientSessionState,
+  model: string,
+  provider: string,
+  revision?: number
+): ClientSessionState {
+  if (revision !== undefined && revision <= Math.max(state.modelRevision ?? -1, state.queuedModel?.revision ?? -1)) {
+    return state
+  }
+
+  const changed = model !== state.model || provider !== state.provider
+
+  if (!changed && !state.queuedModel && revision === undefined) {
+    return state
+  }
+
+  return {
+    ...state,
+    model,
+    provider,
+    queuedModel: undefined,
+    modelRevision: revision ?? state.modelRevision,
+    reasoningEffortWire: changed ? '' : state.reasoningEffortWire
+  }
+}
+
 /** Keep the runtime-state object when a heartbeat only restates cached fields.
  *  `$sessionStates` feeds every mounted session surface, so an equivalent spread
  *  re-renders them all at the heartbeat cadence. */
@@ -80,7 +142,35 @@ export function applySessionInfoStatePatch(
   state: ClientSessionState,
   patch: SessionRuntimeStatePatch
 ): ClientSessionState {
+  // A snapshot requested before an applied receipt may arrive afterwards. Gate
+  // route data only: an unrelated workspace or status update still belongs here.
+  const conflictingRoute =
+    (patch.model !== undefined && patch.model !== state.model) ||
+    (patch.provider !== undefined && patch.provider !== state.provider)
+
   if (
+    state.modelRevision !== undefined &&
+    ((patch.modelRevision !== undefined && patch.modelRevision < state.modelRevision) ||
+      (conflictingRoute && (patch.modelRevision === undefined || patch.modelRevision === state.modelRevision)))
+  ) {
+    patch = { ...patch }
+    delete patch.model
+    delete patch.provider
+    delete patch.modelRevision
+    delete patch.reasoningEffortWire
+  }
+
+  const queued = state.queuedModel
+
+  const confirmsQueue =
+    queued &&
+    patch.model === queued.model &&
+    patch.provider === queued.provider &&
+    (queued.revision === undefined || patch.modelRevision === undefined || patch.modelRevision > queued.revision)
+
+  if (
+    !confirmsQueue &&
+    (patch.modelRevision === undefined || patch.modelRevision === state.modelRevision) &&
     (patch.branch === undefined || patch.branch === state.branch) &&
     (patch.cwd === undefined || patch.cwd === state.cwd) &&
     (patch.fast === undefined || patch.fast === state.fast) &&
@@ -99,7 +189,7 @@ export function applySessionInfoStatePatch(
     return state
   }
 
-  return { ...state, ...patch }
+  return { ...state, ...patch, ...(confirmsQueue ? { queuedModel: undefined } : {}) }
 }
 
 // Minimum gap between two assistant-text flushes during a stream. Was 16ms

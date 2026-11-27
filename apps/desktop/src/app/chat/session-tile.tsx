@@ -213,6 +213,7 @@ function buildTileView(storedSessionId: string): SessionView {
     $messages,
     $messagesEmpty: computed($messages, messages => messages.length === 0),
     $model: computed($state, state => state?.model ?? ''),
+    $queuedModel: computed($state, state => state?.queuedModel),
     $provider: computed($state, state => state?.provider ?? ''),
     $reasoningEffort: computed($state, state => state?.reasoningEffort ?? ''),
     // No slice yet means the tile's resume is still in flight.

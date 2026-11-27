@@ -37,18 +37,13 @@ import {
 import { $sessionStates, sessionTileDelegate } from '@/store/session-states'
 
 import { beginModelPick, isPickSuperseded, type ModelPickSnapshot, settleModelPick } from './model-pick-ledger'
+import { applySessionModelReceipt, type ModelSwitchResponse } from './use-message-stream/utils'
 
 interface ModelControlsOptions {
   cacheOwnerConnectionId?: string
   cacheProfile?: string
   queryClient: QueryClient
   requestGateway: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
-}
-
-interface ModelSwitchResponse {
-  confirm_message?: string
-  confirm_required?: boolean
-  deferred?: boolean
 }
 
 export function useModelControls({
@@ -287,16 +282,10 @@ export function useModelControls({
           setCurrentModel(selection.model)
           setCurrentProvider(selection.provider)
           markComposerSelectionManual()
-        } else if (liveSessionId) {
-          // Optimistic tile paint — session.info will confirm; rollback on error. The wire stamp
-          // belongs to the old route, so it is withdrawn until session.info re-stamps it.
-          sessionTileDelegate()?.updateSession(liveSessionId, state => ({
-            ...state,
-            model: selection.model,
-            provider: selection.provider,
-            reasoningEffortWire: ''
-          }))
         }
+
+        // The session's running route stays authoritative while its owner decides.
+        return { ...readSnapshot(), model: selection.model, provider: selection.provider, reasoningEffortWire: '' }
       }
 
       const cacheSelection = (provider: string, model: string) => {
@@ -304,6 +293,10 @@ export function useModelControls({
       }
 
       const restoreSnapshot = (snapshot: ModelPickSnapshot) => {
+        if (getComposerSelectionScope() !== composerScope) {
+          return
+        }
+
         if (touchesPrimary) {
           setCurrentModel(snapshot.composerSelection.model)
           setCurrentProvider(snapshot.composerSelection.provider)
@@ -312,19 +305,12 @@ export function useModelControls({
           setCurrentModelTransient(snapshot.model)
           setCurrentProviderTransient(snapshot.provider)
           setCurrentReasoningEffortWire(snapshot.reasoningEffortWire)
-        } else if (liveSessionId) {
-          sessionTileDelegate()?.updateSession(liveSessionId, state => ({
-            ...state,
-            model: snapshot.model,
-            provider: snapshot.provider,
-            reasoningEffortWire: snapshot.reasoningEffortWire
-          }))
         }
 
         cacheSelection(snapshot.provider, snapshot.model)
       }
 
-      paintSelection()
+      const painted = paintSelection()
       cacheSelection(selection.provider, selection.model)
 
       // No live session yet: session.create snapshots the persisted composer pick
@@ -342,7 +328,7 @@ export function useModelControls({
       // steps and preset edits bump it without touching the model.
       // Per owner: another owner can hold a session with the same id (imports).
       const pickKey = `${composerScope}\n${liveSessionId}`
-      const pickToken = beginModelPick(pickKey, before, readSnapshot())
+      const pickToken = beginModelPick(pickKey, before, painted)
 
       // The snapshot to repaint after this pick failed to apply, or null to leave the paint alone.
       const settleUnapplied = () => {
@@ -374,23 +360,38 @@ export function useModelControls({
       const isSessionOnlyPreset = (selection.provider || '').toLowerCase() === 'moa'
       const scope = touchesPrimary && !isSessionOnlyPreset ? '' : ' --session'
 
-      const requestSwitch = (confirmExpensiveModel = false) =>
-        requestGateway<ModelSwitchResponse>('config.set', {
+      const requestSwitch = async (confirmExpensiveModel = false) => {
+        const result = await requestGateway<ModelSwitchResponse>('config.set', {
           session_id: liveSessionId,
           key: 'model',
           value: `${selection.model} --provider ${selection.provider}${scope}`,
           ...(confirmExpensiveModel ? { confirm_expensive_model: true } : {})
         })
 
-      const finishSwitch = (result: ModelSwitchResponse | undefined, token: number) => {
-        noteQueuedLaunchPick(liveSessionId, touchesPrimary && result?.deferred ? selection : null, composerScope, token)
+        if (!result?.confirm_required && (result?.status === 'refused' || result?.ok === false)) {
+          throw new Error(result.reason || copy.modelSwitchFailed)
+        }
 
-        // A pick made DURING a turn is queued by the gateway and applied at the
-        // next turn start (`deferred`). Re-fetching now would answer with the
-        // model still running and repaint the old name over the user's choice —
-        // the switch publishes session.info when it lands, and that is what
-        // re-syncs every surface.
-        if (!result?.deferred) {
+        return result
+      }
+
+      const finishSwitch = (result: ModelSwitchResponse | undefined, token: number) => {
+        const deferred = result?.deferred || result?.status === 'deferred'
+
+        const latestAnswer = noteQueuedLaunchPick(
+          liveSessionId,
+          touchesPrimary && deferred ? selection : null,
+          composerScope,
+          token
+        )
+
+        if (latestAnswer && getComposerSelectionScope() === composerScope) {
+          sessionTileDelegate()?.updateSession(liveSessionId, state =>
+            applySessionModelReceipt(state, result ?? {}, selection)
+          )
+        }
+
+        if (!deferred) {
           void queryClient.invalidateQueries({
             queryKey: modelOptionsQueryKey(liveGatewayProfile, liveSessionId, cacheOwnerConnectionId)
           })
@@ -411,7 +412,7 @@ export function useModelControls({
           // would only offer to undo it.
           const restored = settleUnapplied()
 
-          if (!restored) {
+          if (!restored || getComposerSelectionScope() !== composerScope) {
             return false
           }
 
@@ -430,22 +431,23 @@ export function useModelControls({
             // bail (with a notice) if the live state no longer matches the
             // snapshot this prompt was created for.
             isStale: () =>
-              touchesPrimary
+              getComposerSelectionScope() !== composerScope ||
+              (touchesPrimary
                 ? $activeSessionId.get() !== liveSessionId ||
                   $currentModel.get() !== restored.model ||
                   $currentProvider.get() !== restored.provider
                 : !liveSessionId ||
                   $sessionStates.get()[liveSessionId]?.model !== restored.model ||
-                  $sessionStates.get()[liveSessionId]?.provider !== restored.provider,
+                  $sessionStates.get()[liveSessionId]?.provider !== restored.provider),
             model: selection.model,
             // The confirmed retry is a fresh pick in the ledger: it joins whatever is still in
             // flight, becomes the confirmed selection when it applies, and settles like any pick
             // when it fails — so an older pick failing later cannot restore what it replaced.
             repaint: () => {
               const retryBefore = readSnapshot()
-              paintSelection()
+              const painted = paintSelection()
               cacheSelection(selection.provider, selection.model)
-              retryToken = beginModelPick(pickKey, retryBefore, readSnapshot())
+              retryToken = beginModelPick(pickKey, retryBefore, painted)
             },
             requestConfirmed: () => requestSwitch(true),
             finish: result => {
@@ -479,6 +481,7 @@ export function useModelControls({
         // path — they answer `deferred`.
         if (isBusySessionModelSwitch(err)) {
           settleModelPick(pickKey, pickToken, true)
+          finishSwitch({ deferred: true }, pickToken)
 
           return true
         }

@@ -78,6 +78,7 @@ export const arChrome = {
       'session.newWindow': 'جلسة جديدة في نافذة',
       'session.next': 'الجلسة التالية',
       'session.prev': 'الجلسة السابقة',
+      'session.last': 'الانتقال إلى آخر جلسة',
       'session.slot.1': 'الانتقال إلى الجلسة الأخيرة 1',
       'session.slot.2': 'الانتقال إلى الجلسة الأخيرة 2',
       'session.slot.3': 'الانتقال إلى الجلسة الأخيرة 3',

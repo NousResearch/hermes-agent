@@ -180,6 +180,9 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // (macOS reserves Cmd+Tab for app switching); see `ctrl` in combo.ts.
   hostAction('session.next', 'session', ['ctrl+tab', 'ctrl+pagedown'], { mac: 'mod+ctrl+]', other: 'alt+]' }),
   hostAction('session.prev', 'session', ['ctrl+shift+tab', 'ctrl+pageup'], { mac: 'mod+ctrl+[', other: 'alt+[' }),
+  // Flip to the chat you were on before this one (Alt-Tab style; again flips
+  // back). Unbound: every free chord means something to an OS or a shell.
+  { id: 'session.last', category: 'session', defaults: [] },
   ...SESSION_SLOT_ACTIONS,
   { id: 'session.focusSearch', category: 'session', defaults: ['mod+shift+f'] },
   { id: 'session.togglePin', category: 'session', defaults: [] },

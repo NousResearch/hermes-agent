@@ -25,6 +25,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 GITHUB_TOKEN_ENV_VARS = ("GITHUB_TOKEN", "GH_TOKEN")
+GITHUB_REQUEST_TIMEOUT_SECONDS = 30
 _GH_CLI_TIMEOUT_SECONDS = 3
 _gh_cli_cache: Optional[str] = None
 _gh_cli_probed = False
@@ -94,10 +95,10 @@ def describe_github_failure(exc: BaseException, authenticated: bool, now: Option
     if isinstance(exc, urllib.error.URLError):
         reason = exc.reason
         if isinstance(reason, TimeoutError) or "timed out" in str(reason).lower():
-            return "api.github.com did not answer within 10 seconds."
+            return f"api.github.com request timed out (per-attempt timeout: {GITHUB_REQUEST_TIMEOUT_SECONDS} seconds)."
         return f"Connection to api.github.com failed ({reason}) — check your connection, firewall or proxy."
     if isinstance(exc, TimeoutError):
-        return "api.github.com did not answer within 10 seconds."
+        return f"api.github.com request timed out (per-attempt timeout: {GITHUB_REQUEST_TIMEOUT_SECONDS} seconds)."
     return f"api.github.com: {exc}"
 
 

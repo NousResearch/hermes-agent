@@ -98,31 +98,29 @@ def _note_success(home: Path, plugin: str) -> None:
     _failure_stamp(home, plugin).unlink(missing_ok=True)
 
 
-def configured_provider(home: Path) -> str:
-    """``memory.provider`` of *home*'s effective config (managed overlay included, as the agent reads
-    it), or ``""``."""
-    return _plugin_choice(home).selected
-
-
 def _plugin_choice(home: Path):
-    """*home*'s memory selection and plugin lists as the memory loader reads them (effective config,
-    managed overlay included), in one read. Bound explicitly: the update hook walks several homes."""
-    from agent.runtime_scope import bind_profile_scope
-    from plugins.plugin_loader import read_plugin_choice
-    with bind_profile_scope(home, hydrate_secrets=False):
-        return read_plugin_choice("memory", "provider")
-
-
-def provider_disabled(name: str, home: Path) -> bool:
-    """*home*'s ``plugins.disabled`` lists provider *name*: the user's own off switch, which an install
-    (it enables what it places) must never override. A catalog plugin not installed yet has one
-    spelling, its name, which is also the directory and manifest name the loader will match."""
-    return name in _plugin_choice(home).disabled
+    """*home*'s ``memory.provider`` and plugin lists as the agent sees them (user config with the managed
+    overlay applied), in one side-effect-free read: this scans every profile on ``hermes update``, and
+    the CLI config loader would set a profile up (directories, ``SOUL.md``) just to be read. A config
+    that does not parse selects, enables and disables nothing, as in the memory loader."""
+    from gateway.config_loader import read_yaml_layers
+    from plugins.plugin_loader import PluginChoice
+    try:
+        config = read_yaml_layers(home)
+    except Exception:  # health: allow BLE001 -- malformed config.yaml: the loader turns nothing on from it either
+        logger.debug("memory provider migration: unreadable config for %s", home, exc_info=True)
+        return PluginChoice()
+    memory, plugins = (config.get(key) if isinstance(config.get(key), dict) else {} for key in ("memory", "plugins"))
+    selected = memory.get("provider")
+    enabled, disabled = (frozenset(v for v in plugins.get(key) if isinstance(v, str))
+                         if isinstance(plugins.get(key), list) else frozenset() for key in ("enabled", "disabled"))
+    return PluginChoice(selected.strip() if isinstance(selected, str) else "", enabled, disabled)
 
 
 def _still_wanted(name: str, home: Path) -> bool:
     """*home* still selects *name* and has not disabled it, from one read taken now (under the
-    installer lock), not when the attempt began."""
+    installer lock), not when the attempt began. A catalog plugin not installed yet has one spelling in
+    ``plugins.disabled``, its name, which is also the directory and manifest name the loader matches."""
     choice = _plugin_choice(home)
     return choice.selected == name and name not in choice.disabled
 
@@ -133,6 +131,7 @@ class _Outcome(enum.Enum):
     FAILED = "failed"            # the install ran and failed (reported, stamped)
     BUSY = "busy"                # the installer lock was not had: nothing ran (reported, never stamped)
     NOT_WANTED = "not_wanted"    # the user changed the selection or disabled it meanwhile: nothing owed
+    BACKED_OFF = "backed_off"    # an install failed while this start waited: not run again
 
 
 def provider_present(name: str, home: Path) -> bool:
@@ -219,15 +218,16 @@ def kept_off_sentence(name: str, home: Path) -> str:
 
 def _install_pending(home: Path, name: str, *, install: Callable[[str], dict],
                      say: Callable[[str], None], wait: float = 900.0, backoff: bool = False,
-                     busy_say: Optional[Callable[[str], None]] = None) -> _Outcome:
+                     aside: Optional[Callable[[str], None]] = None) -> _Outcome:
     """Install *name* into *home* under the installer lock every unattended plugin installer holds
     (:func:`default_plugins.installer_lock`). The home is read again under the lock: another Hermes
     process may have placed the provider while this one waited (nothing reported: that one reports its
     own), the user may have switched to another provider or disabled this one (nothing owed), and with
-    *backoff* (agent start) an install that failed while this one waited is not run again. *busy_say*
-    (default *say*) takes the line for a lock that could not be had."""
+    *backoff* (agent start) an install that failed while this one waited is not run again. *say* takes
+    the install's own outcome; *aside* (default *say*) the lines for an install that did not run (a busy
+    lock, the backoff), which an unattended start only logs."""
     from hermes_cli.default_plugins import installer_lock
-    busy_say = busy_say or say
+    aside = aside or say
     try:
         with installer_lock(wait):
             if provider_present(name, home):
@@ -238,16 +238,16 @@ def _install_pending(home: Path, name: str, *, install: Callable[[str], dict],
                             name, home)
                 return _Outcome.NOT_WANTED
             if backoff and _failed_recently(home, name):
-                say(_failed_recently_line(name, home))
-                return _Outcome.FAILED
+                aside(_failed_recently_line(name, home))
+                return _Outcome.BACKED_OFF
             return _Outcome.PRESENT if _install_locked(home, name, install=install, say=say) else _Outcome.FAILED
     except TimeoutError:  # nothing was tried, so no failure is stamped
-        busy_say(f"  ⚠ Memory provider '{name}': another Hermes process is still installing plugins, so its "
-                 f"plugin was not installed now. Run `{_install_command(name, home)}`." + _LABS_NOTICES.get(name, ""))
+        aside(f"  ⚠ Memory provider '{name}': another Hermes process is still installing plugins, so its "
+              f"plugin was not installed now. Run `{_install_command(name, home)}`." + _LABS_NOTICES.get(name, ""))
         return _Outcome.BUSY
     except OSError as exc:  # the lock file cannot be opened or locked: report it, never end the update loop
-        busy_say(f"  ⚠ Memory provider '{name}': the plugin installer lock could not be taken ({exc}), so its "
-                 f"plugin was not installed. Run `{_install_command(name, home)}`." + _LABS_NOTICES.get(name, ""))
+        aside(f"  ⚠ Memory provider '{name}': the plugin installer lock could not be taken ({exc}), so its "
+              f"plugin was not installed. Run `{_install_command(name, home)}`." + _LABS_NOTICES.get(name, ""))
         return _Outcome.BUSY
 
 
@@ -460,14 +460,17 @@ def recover_at_startup(name: str, *, say: Optional[Callable[[str], None]] = None
                     time.monotonic() - busy_since)
         _attempted.discard(key)
         return False
-    # A retry after a busy lock takes it without the long wait and logs (the busy line was given once).
+    # Only an install's own outcome is kept for an unattended start; lines about an install that did not run
+    # are logged there, and on a retry after a busy lock (whose line was given once). A retry also skips the
+    # long wait.
     outcome = _install_pending(home, name, install=_install_into(home, consent=True),
                                say=report if say is not None else defer_startup_notice,
                                wait=0.0 if busy_since is not None else startup_lock_wait(gateway_start=False),
-                               backoff=True, busy_say=logger.info if busy_since is not None else None)
+                               backoff=True,
+                               aside=logger.info if say is None or busy_since is not None else report)
     if outcome is _Outcome.BUSY:  # nothing ran: a later start in this process (a gateway, Desktop) tries again
+        _lock_busy[key] = time.monotonic()  # before the claim is released, so no start slips into the long wait
         _attempted.discard(key)
-        _lock_busy[key] = time.monotonic()
     else:
         _lock_busy.pop(key, None)
     return outcome is _Outcome.PRESENT

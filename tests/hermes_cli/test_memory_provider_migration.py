@@ -594,10 +594,9 @@ def test_an_unusable_installer_lock_is_reported_and_the_update_goes_on(tmp_path,
 def test_a_start_that_found_the_lock_busy_retries_in_the_same_process_without_waiting(tmp_path, monkeypatch):
     """A gateway or Desktop process serves many sessions: a start that timed out on another installer's
     (real, held) lock installed nothing, so a later session there tries again instead of running without
-    memory until a restart. Sessions inside the retry interval do not touch the lock at all, and the busy
-    line is given once."""
+    memory until a restart. Sessions inside the retry interval do not ask for the lock at all, and the
+    busy line is given once."""
     import threading
-    import time
     from hermes_cli import default_plugins, left_core_migration
     from pm import install as pm_install
 
@@ -617,9 +616,16 @@ def test_a_start_that_found_the_lock_busy_retries_in_the_same_process_without_wa
 
     monkeypatch.setattr(mig, "_install_into", installer)
     held, release = threading.Event(), threading.Event()
+    real_lock, asked = default_plugins.installer_lock, []
+
+    def counted_lock(wait):
+        asked.append(wait)
+        return real_lock(wait)
+
+    monkeypatch.setattr(default_plugins, "installer_lock", counted_lock)
 
     def other_installer():
-        with default_plugins.installer_lock(5):
+        with real_lock(5):
             held.set()
             release.wait(30)
 
@@ -629,23 +635,26 @@ def test_a_start_that_found_the_lock_busy_retries_in_the_same_process_without_wa
     said: list[str] = []
     try:
         assert mig.recover_at_startup("retaindb", say=said.append) is False  # waits out the lock once
-        started = time.monotonic()
         assert mig.recover_at_startup("retaindb", say=said.append) is False  # inside the retry interval
-        assert time.monotonic() - started < 0.5
+        assert len(asked) == 1
     finally:
         release.set()
         holder.join(10)
     monkeypatch.setattr(mig, "BUSY_RETRY_SECONDS", 0.0)
     assert mig.recover_at_startup("retaindb", say=said.append) is True
+    assert len(asked) == 2
     assert sum("still installing plugins" in line for line in said) == 1
     assert any("RetainDB is now a Hermes Labs plugin" in line for line in said)
     assert not mig._failure_stamp(tmp_path, "retaindb").exists()
 
 
-def test_an_install_that_failed_while_this_start_waited_is_not_run_again(tmp_path, monkeypatch):
+@pytest.mark.parametrize("watched", [True, False])
+def test_an_install_that_failed_while_this_start_waited_is_not_run_again(tmp_path, monkeypatch, watched):
     """Two starts for one profile: the first fails its install while the second waits for the lock. The
-    second reads the failure stamp under the lock and reports it instead of failing the same install again."""
+    second reads the failure stamp under the lock and does not fail the same install again. A watched
+    start says so; an unattended one keeps nothing (the first start's own outcome is the one notice)."""
     import threading
+    from hermes_cli.left_core_migration import claim_kept_notices
     from pm import install as pm_install
 
     (tmp_path / "config.yaml").write_text("memory:\n  provider: byterover\n", encoding="utf-8")
@@ -670,12 +679,15 @@ def test_an_install_that_failed_while_this_start_waited_is_not_run_again(tmp_pat
     assert held.wait(10)
     said: list[str] = []
     try:
-        assert mig.recover_at_startup("byterover", say=said.append) is False
+        assert mig.recover_at_startup("byterover", say=said.append if watched else None) is False
     finally:
         reached.set()
         holder.join(10)
     assert installs == []
-    assert len(said) == 1 and "failed recently" in said[0]
+    if watched:
+        assert len(said) == 1 and "failed recently" in said[0]
+    else:
+        assert claim_kept_notices() == []
 
 
 def test_a_managed_memory_selection_is_the_one_migrated(tmp_path, monkeypatch):
@@ -721,3 +733,14 @@ def test_another_kind_of_plugin_with_the_same_leaf_name_does_not_park_the_provid
     assert mig.migrate_home(tmp_path, install=lambda n: installs.append(n) or (tmp_path / "plugins" / n).mkdir(
         parents=True) or {"ok": True}, say=lambda s: None) == "byterover"
     assert installs == ["byterover"]
+
+
+def test_scanning_a_profile_for_a_missing_provider_writes_nothing_into_it(tmp_path, monkeypatch):
+    """`hermes update` reads every profile's memory selection: the read must not set the profile up
+    (directories, SOUL.md, config backups) when there is nothing to migrate."""
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "config.yaml").write_text("model:\n  default: m\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "launch"))
+    assert mig.migrate_home(other, install=lambda n: pytest.fail("must not install"), say=lambda s: None) is None
+    assert sorted(p.name for p in other.iterdir()) == ["config.yaml"]

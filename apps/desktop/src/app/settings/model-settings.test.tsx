@@ -207,6 +207,63 @@ describe('ModelSettings', () => {
     expect(startManualOnboarding).not.toHaveBeenCalled()
   })
 
+  // An unauthenticated catalog row with no models (e.g. `nous` before its API
+  // key is stored) used to swallow the whole ModelSelect behind the ternary —
+  // the "Model" label rendered with nothing next to it. The selector must stay
+  // mounted with its not-configured placeholder while the setup affordance
+  // sits alongside it, and Apply stays gated on a chosen model.
+  it('keeps the model selector mounted alongside the setup affordance for an unauthenticated provider', async () => {
+    getGlobalModelInfo.mockResolvedValueOnce({ provider: 'nous', model: '' })
+    getGlobalModelOptions.mockResolvedValueOnce({
+      providers: [
+        {
+          name: 'Nous',
+          slug: 'nous',
+          models: [],
+          authenticated: false,
+          auth_type: 'oauth'
+        }
+      ]
+    })
+
+    renderModelSettings()
+
+    expect(await screen.findByRole('combobox', { name: 'Model' })).toBeTruthy()
+    expect(screen.getByText('No model yet — set the provider up first')).toBeTruthy()
+    expect(await screen.findByRole('button', { name: 'Set up Nous' })).toBeTruthy()
+    expect(screen.getByText(/signs in through your browser/)).toBeTruthy()
+
+    // No model is chosen, so the apply control must not submit anything.
+    const applyButton = screen.getByRole('button', { name: 'Apply' })
+    expect(applyButton).toBeTruthy()
+    expect((applyButton as HTMLButtonElement).disabled).toBe(true)
+
+    fireEvent.click(applyButton)
+    expect(setModelAssignment).not.toHaveBeenCalled()
+  })
+
+  it('offers the inline API key activation beside the mounted model selector for an api_key provider', async () => {
+    getGlobalModelInfo.mockResolvedValueOnce({ provider: 'nous', model: '' })
+    getGlobalModelOptions.mockResolvedValueOnce({
+      providers: [
+        {
+          name: 'Nous',
+          slug: 'nous',
+          models: [],
+          authenticated: false,
+          auth_type: 'api_key',
+          key_env: 'NOUS_API_KEY'
+        }
+      ]
+    })
+
+    renderModelSettings()
+
+    expect(await screen.findByRole('combobox', { name: 'Model' })).toBeTruthy()
+    expect(screen.getByPlaceholderText('Paste NOUS_API_KEY')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Activate' })).toBeTruthy()
+  })
+
   it('replaces the selected provider and model when the active profile changes', async () => {
     getGlobalModelInfo
       .mockResolvedValueOnce({ provider: 'custom', model: 'local-a' })

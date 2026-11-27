@@ -26,6 +26,7 @@ export const deModelSettings: TranslationOverride<ModelSettingsTranslations> = {
     'Gilt für neue Sessions. Verwenden Sie die Modellauswahl im Composer, um im aktiven Chat schnell zu wechseln.',
   provider: 'Anbieter',
   model: 'Modell',
+  modelNotConfigured: 'Noch kein Modell — bitte zuerst den Anbieter einrichten',
   applying: 'Wird angewendet…',
   mainAppliedTitle: 'Hauptmodell aktualisiert',
   mainAppliedMessage: model => `Neue Sitzungen verwenden ${model}.`,

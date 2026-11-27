@@ -27,6 +27,7 @@ export const esModelSettings: TranslationOverride<ModelSettingsTranslations> = {
   appliesDesc: 'Se aplica a sesiones nuevas. Usa el selector de modelo en el compositor para cambiar el chat activo.',
   provider: 'Proveedor',
   model: 'Modelo',
+  modelNotConfigured: 'Aún no hay modelo: configura primero el proveedor',
   applying: 'Aplicando...',
   mainAppliedTitle: 'Modelo principal actualizado',
   mainAppliedMessage: model => `Las sesiones nuevas usarán ${model}.`,

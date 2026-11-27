@@ -22,6 +22,7 @@ export interface ModelSettingsTranslations {
   appliesDesc: string
   provider: string
   model: string
+  modelNotConfigured: string
   applying: string
   mainAppliedTitle: string
   mainAppliedMessage: (model: string) => string

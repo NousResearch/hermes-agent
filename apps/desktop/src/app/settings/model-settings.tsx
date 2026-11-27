@@ -1102,37 +1102,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
             />
             <ListRow
               action={
-                needsSetup ? (
-                  setupIsApiKey ? (
-                    <div className="grid w-full min-w-0 max-w-full @2xl:w-72 justify-items-end gap-2">
-                      <Input
-                        autoComplete="off"
-                        className={cn('min-w-0', CONTROL_TEXT)}
-                        onChange={event => setApiKeyDraft(event.target.value)}
-                        onKeyDown={event => {
-                          if (isSubmitEnter(event)) {
-                            void activateApiKeyProvider()
-                          }
-                        }}
-                        placeholder={`Paste ${selectedProviderRow?.key_env ?? 'API key'}`}
-                        type="password"
-                        value={apiKeyDraft}
-                      />
-                      <Button
-                        disabled={!apiKeyDraft.trim() || activating}
-                        onClick={() => void activateApiKeyProvider()}
-                        size="sm"
-                      >
-                        {activating && <Loader2 className="size-3.5 animate-spin" />}
-                        {activating ? 'Activating...' : 'Activate'}
-                      </Button>
-                    </div>
-                  ) : (
-                    <Button onClick={startProviderSetup} size="sm" variant="textStrong">
-                      {m.setUpProvider(selectedProviderRow?.name ?? m.setupProviderFallback)}
-                    </Button>
-                  )
-                ) : (
+                <div className="grid w-full min-w-0 max-w-full @2xl:w-72 justify-items-end gap-2">
                   <ModelSelect
                     aria-label={m.model}
                     className="w-full min-w-0 max-w-full @2xl:w-72 [&_[data-slot=select-value]]:truncate"
@@ -1142,30 +1112,60 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
                     providerSlug={selectedProvider}
                     value={selectedModel}
                   />
-                )
+                  {needsSetup &&
+                    (setupIsApiKey ? (
+                      <div className="grid w-full justify-items-end gap-2">
+                        <Input
+                          autoComplete="off"
+                          className={cn('min-w-0', CONTROL_TEXT)}
+                          onChange={event => setApiKeyDraft(event.target.value)}
+                          onKeyDown={event => {
+                            if (isSubmitEnter(event)) {
+                              void activateApiKeyProvider()
+                            }
+                          }}
+                          placeholder={`Paste ${selectedProviderRow?.key_env ?? 'API key'}`}
+                          type="password"
+                          value={apiKeyDraft}
+                        />
+                        <Button
+                          disabled={!apiKeyDraft.trim() || activating}
+                          onClick={() => void activateApiKeyProvider()}
+                          size="sm"
+                        >
+                          {activating && <Loader2 className="size-3.5 animate-spin" />}
+                          {activating ? 'Activating...' : 'Activate'}
+                        </Button>
+                      </div>
+                    ) : (
+                      <div className="grid gap-1 justify-items-end text-right">
+                        <Button onClick={startProviderSetup} size="sm" variant="textStrong">
+                          {m.setUpProvider(selectedProviderRow?.name ?? m.setupProviderFallback)}
+                        </Button>
+                        {selectedProviderRow && (
+                          <p className="text-xs text-muted-foreground">
+                            {selectedProviderRow.auth_type === 'api_key'
+                              ? `${selectedProviderRow.name} needs an API key — set it up to choose a model.`
+                              : `${selectedProviderRow.name} signs in through your browser — Hermes runs the flow for you.`}
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                </div>
               }
               title={m.model}
             />
           </div>
-          {!needsSetup && (
-            <div className="flex justify-end pt-1">
-              <Button
-                disabled={!selectedProvider || !selectedModel || applying}
-                onClick={() => void applyMainModel()}
-                size="sm"
-              >
-                {applying && <Loader2 className="size-3.5 animate-spin" />}
-                {applying ? m.applying : t.common.apply}
-              </Button>
-            </div>
-          )}
-          {needsSetup && !setupIsApiKey && selectedProviderRow && (
-            <p className="mt-2 text-xs text-muted-foreground">
-              {selectedProviderRow?.auth_type === 'api_key'
-                ? `${selectedProviderRow?.name} needs an API key — set it up to choose a model.`
-                : `${selectedProviderRow?.name} signs in through your browser — Hermes runs the flow for you.`}
-            </p>
-          )}
+          <div className="flex justify-end pt-1">
+            <Button
+              disabled={!selectedProvider || !selectedModel || applying}
+              onClick={() => void applyMainModel()}
+              size="sm"
+            >
+              {applying && <Loader2 className="size-3.5 animate-spin" />}
+              {applying ? m.applying : t.common.apply}
+            </Button>
+          </div>
           {config && mainModel && (reasoningSupported || fastSupported || ultrafastSupported) && (
             <MainModelDefaults
               effortValue={effortValue}

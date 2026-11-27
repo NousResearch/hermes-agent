@@ -141,7 +141,7 @@ export function ModelSelect({
       value={toItemValue(value)}
     >
       <SelectTrigger aria-label={ariaLabel} className={cn(className, CONTROL_TEXT)}>
-        <SelectValue placeholder={m.model} />
+        <SelectValue placeholder={models.length ? m.model : m.modelNotConfigured} />
       </SelectTrigger>
       <SelectContent>
         {withActive(models, value).map(model => (

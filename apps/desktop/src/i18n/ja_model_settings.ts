@@ -32,6 +32,7 @@ export const jaModelSettings: TranslationOverride<ModelSettingsTranslations> = {
     '新しいセッションに適用されます。コンポーザーのモデルピッカーを使ってアクティブなチャットをホットスワップできます。',
   provider: 'プロバイダー',
   model: 'モデル',
+  modelNotConfigured: 'モデル未設定 — まずプロバイダーを設定してください',
   applying: '適用中...',
   loadFailed: 'モデルを読み込めませんでした',
   restartRequired:

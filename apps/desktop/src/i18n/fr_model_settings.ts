@@ -28,6 +28,7 @@ export const frModelSettings: TranslationOverride<ModelSettingsTranslations> = {
     "S'applique aux nouvelles sessions. Utilisez le sélecteur de modèle dans le compositeur pour changer à chaud la conversation active.",
   provider: 'Fournisseur',
   model: 'Modèle',
+  modelNotConfigured: "Aucun modèle pour le moment — configurez d'abord le fournisseur",
   applying: 'Application...',
   mainAppliedTitle: 'Modèle principal mis à jour',
   mainAppliedMessage: model => `Les nouvelles sessions utiliseront ${model}.`,

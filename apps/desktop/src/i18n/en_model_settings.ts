@@ -22,6 +22,7 @@ export const enModelSettings: ModelSettingsTranslations = {
   appliesDesc: 'Applies to new sessions. Use the model picker in the composer to hot-swap the active chat.',
   provider: 'Provider',
   model: 'Model',
+  modelNotConfigured: 'No model yet — set the provider up first',
   applying: 'Applying...',
   mainAppliedTitle: 'Main model updated',
   mainAppliedMessage: model => `New sessions will use ${model}.`,

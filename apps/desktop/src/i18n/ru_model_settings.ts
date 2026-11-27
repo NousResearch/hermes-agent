@@ -31,6 +31,7 @@ export const ruModelSettings: TranslationOverride<ModelSettingsTranslations> = {
     'Применяется к новым сеансам. Для горячей смены модели в активном чате используйте выборщик модели в композере.',
   provider: 'Провайдер',
   model: 'Модель',
+  modelNotConfigured: 'Модель ещё не выбрана — сначала настройте провайдера',
   applying: 'Применение…',
   defaultsLabel: 'По умолчанию',
   reasoning: 'Рассуждения',

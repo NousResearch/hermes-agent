@@ -1042,6 +1042,7 @@ export const zhHantSettings = {
       appliesDesc: '套用至新工作階段。可在輸入框的模型選擇器中臨時切換目前對話。',
       provider: '提供方',
       model: '模型',
+      modelNotConfigured: '尚未設定模型 — 請先設定提供方',
       applying: '套用中...',
       loadFailed: '無法載入模型',
       restartRequired: '更新後此後端仍在執行舊程式碼。請重新啟動以載入新程式碼。',

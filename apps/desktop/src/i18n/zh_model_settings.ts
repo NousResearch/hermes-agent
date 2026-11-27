@@ -24,6 +24,7 @@ export const zhModelSettings: TranslationOverride<ModelSettingsTranslations> = {
   appliesDesc: '应用于新会话。可在输入框的模型选择器中临时切换当前对话。',
   provider: '提供方',
   model: '模型',
+  modelNotConfigured: '尚未设置模型 — 请先设置提供方',
   applying: '应用中...',
   defaultsLabel: '默认值',
   reasoning: '推理',

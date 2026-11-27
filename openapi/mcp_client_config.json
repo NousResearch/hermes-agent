@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "hermes": {
+      "command": "python",
+      "args": [
+        "-m",
+        "tools.mcp_server"
+      ],
+      "cwd": "<HERMES_AGENT_DIR>",
+      "env": {
+        "HERMES_HOME": "~/.hermes",
+        "OPENAI_API_KEY": "<your-openai-key>",
+        "API_SERVER_KEY": "<your-hermes-api-server-key>"
+      }
+    }
+  }
+}

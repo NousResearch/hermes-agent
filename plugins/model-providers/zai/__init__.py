@@ -28,14 +28,25 @@ def _has_token(model: str | None, tokens: tuple[str, ...]) -> bool:
     return any(token in m for token in tokens)
 
 
-def _glm_5_2_reasoning_effort(reasoning_config: dict | None, *, model: str | None = None) -> str | None:
-    """Hermes effort -> GLM vocabulary (5.2: high/max; 5.3: low..max). Below-floor
-    efforts clamp to the floor; disabled/unset leaves the server default."""
+def _glm_5_2_reasoning_effort(
+    reasoning_config: dict | None,
+    *,
+    model: str | None = None,
+    base_url: str | None = None,
+) -> str | None:
+    """Hermes effort -> GLM vocabulary (5.2: high/max; 5.3: low..max, minus ``medium`` on the
+    standard endpoint — #133595). Below-floor efforts clamp to the floor; disabled/unset
+    leaves the server default."""
     effort = re_.requested_effort(reasoning_config)
     if effort is None or effort == "none":
         return None
     if _has_token(model, _GLM_5_3_TOKENS):
-        efforts, overrides, floor = re_.GLM53_EFFORTS, re_.GLM53_OVERRIDES, "low"
+        # Only the coding-plan endpoint serves the full graded ladder (#91789); the
+        # standard pay-as-you-go endpoint drops ``medium`` (400 / code 1210, #133595).
+        coding = "/coding/" in (base_url or "").lower()
+        efforts = re_.GLM53_EFFORTS if coding else re_.GLM53_STANDARD_EFFORTS
+        overrides = re_.GLM53_OVERRIDES if coding else re_.GLM53_STANDARD_OVERRIDES
+        floor = "low"
     else:
         efforts, overrides, floor = re_.GLM52_EFFORTS, re_.GLM52_OVERRIDES, "high"
     clamped = re_.clamp_effort(effort, efforts, overrides)
@@ -64,7 +75,9 @@ class ZaiProfile(ProviderProfile):
             # reasoning_content unless clear_thinking is false (docs.z.ai/guides/capabilities/thinking-mode).
             extra_body["thinking"] = {"type": "enabled", "clear_thinking": False} if enabled else {"type": "disabled"}
         if is_5_2:
-            effort = _glm_5_2_reasoning_effort(reasoning_config, model=model)
+            effort = _glm_5_2_reasoning_effort(
+                reasoning_config, model=model, base_url=context.get("base_url")
+            )
             if effort is not None:
                 top_level["reasoning_effort"] = effort
         return extra_body, top_level

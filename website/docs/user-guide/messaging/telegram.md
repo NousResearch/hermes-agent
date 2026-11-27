@@ -924,6 +924,14 @@ platforms:
 Telegram private DM topics have a Bot API read-state limitation. Hermes can receive messages from a user-created topic and route replies back into that topic, but normal bot accounts don't expose a reliable API for marking the topic copy of an incoming user message as read. Telegram may show the root "All Messages" chat and the topic with different unread/read indicators. This is expected Telegram behaviour, not necessarily a Hermes processing failure.
 :::
 
+:::tip Run multiple goals in parallel across topics
+**Yes: you can run one active `/goal` in Topic A and another active `/goal` in Topic B at the same time.** Each topic is a separate Hermes session, so setting or replacing a goal in one topic does not affect any other topic. For example, Topic A can run `/goal Work on Repo A` while Topic B simultaneously runs `/goal Work on Repo B`.
+
+The one-goal restriction applies only **within the same topic/session**. The command is singular (`/goal`, not `/goals`). `/goal` runs that topic session's primary-agent continuation loop; it does not automatically spawn a delegated child agent, but multiple topic loops can still execute concurrently. Concurrency remains subject to `max_concurrent_sessions` (`null` or `0` means unlimited).
+:::
+
+Topic sessions isolate conversation and goal state, not shared repository files. Separate repositories are safe; when parallel goals must modify the same repository, use separate Git worktrees or serialize the work. See [Persistent Goals](/user-guide/features/goals#scope-and-parallel-goals).
+
 ### Root DM handling
 
 By default, messages sent to the root DM (outside any topic) are processed

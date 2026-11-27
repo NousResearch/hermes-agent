@@ -9,6 +9,7 @@ records and arguments is the order argparse renders in ``--help``.
 from __future__ import annotations
 
 import argparse
+from hermes_cli import kanban_db_controls as kb_controls
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_dispatch as kbd
@@ -306,6 +307,11 @@ _SPECS = [
     ], help="Mark one or more tasks done"),
     _cmd("edit", [
         _TASK_ID,
+        _arg("--goal-mode", type=kb_controls.parse_control_bool, default=argparse.SUPPRESS,
+             help="Stopped-task goal loop: true or false (operator only)"),
+        *[_arg("--" + field.replace("_", "-"), type=kb_controls.parse_control_limit,
+               default=argparse.SUPPRESS, help="Positive integer, or clear to inherit; operator only")
+          for field in ("goal_max_turns", "max_retries", "max_runtime_seconds")],
         _arg("--title", help="Replace the task title"),
         _arg("--body", help="Replace the task body"),
         _arg("--priority", type=int, help="Replace the task priority"),

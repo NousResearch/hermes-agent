@@ -271,6 +271,7 @@ _BLOCK_START_PROPS = frozenset({
     "margin", "margin-top", "margin-block", "margin-block-start", "top", "inset", "inset-block", "inset-block-start",
     "translate",
 })
+_PAGE_COLUMN_CALC = re.compile(r"100%\s*-\s*var\(--page-content-max-width\b")
 _STRINGS = re.compile(r"'[^']*'|\"[^\"]*\"|url\([^)]*\)")
 
 
@@ -306,6 +307,8 @@ def declaration_findings(decl: Decl) -> list[str]:
         kinds.append("z-index")
     if prop in _BLOCK_START_PROPS and _PAGE_TOP_PULL.search(decl.value):
         kinds.append("page-top")
+    if _PAGE_COLUMN_CALC.search(decl.value):
+        kinds.append("page-column-calc")
     if prop.startswith("--portal-") and "var(" not in decl.value and (
         _LENGTH.search(bare) or _TIME.search(bare) or "raw-color" in kinds or re.fullmatch(r"-?\d*\.?\d+%?", decl.value.strip())
     ):
@@ -581,6 +584,11 @@ def settings_column_findings(refs: dict[str, list[tuple[str, int]]]) -> list[Fin
     ]
     return sorted(out, key=lambda f: (f.file, f.line, f.text))
 
+
+def _print_rule_findings(findings: list[Finding], note: str) -> None:
+    for f in findings:
+        print(f"{f}  ({note})")
+
 def ratchet(counts: dict[str, int], baseline: dict[str, int]) -> tuple[list[str], list[str]]:
     """(files over their baseline, files under it)."""
     over = sorted(f for f, n in counts.items() if n > baseline.get(f, 0))
@@ -636,24 +644,28 @@ def main(argv: list[str] | None = None) -> int:
     own_column = page_column_findings(refs)
     own_settings_column = settings_column_findings(refs)
     pulled = [f for f in found if f.kind == "page-top"]
+    hand_rolled_col = [f for f in found if f.kind == "page-column-calc"]
 
     if args.list:
         for f in found:
             print(f)
-    failed = bool(over or undefined or stale or own_column or own_settings_column or pulled)
+    failed = bool(over or undefined or stale or own_column or own_settings_column or pulled or hand_rolled_col)
     for rel in over:
         print(f"{rel}: {counts[rel]} design-token findings, baseline {baseline.get(rel, 0)} (it may only go down):")
         for f in found:
             if f.file == rel:
                 print(f"  {f}")
-    for f in undefined:
-        print(f"{f}  (defined nowhere: a typo or a deleted token)")
-    for f in own_column:
-        print(f"{f}  (mark the page's stage `page-stage`; only {PAGE_STAGE_CONTRACT} lays the column)")
-    for f in own_settings_column:
-        print(f"{f}  (use SettingsCard/SettingsDisclosure/[data-settings-surface]; only {SETTINGS_SURFACE_CONTRACTS} lay the Settings column)")
-    for f in pulled:
-        print(f"{f}  (a page's first row starts at its top inset; put the row in the flow under it)")
+    _print_rule_findings(undefined, "defined nowhere: a typo or a deleted token")
+    _print_rule_findings(own_column, f"mark the page's stage `page-stage`; only {PAGE_STAGE_CONTRACT} lays the column")
+    _print_rule_findings(
+        own_settings_column,
+        f"use SettingsCard/SettingsDisclosure/[data-settings-surface]; only {SETTINGS_SURFACE_CONTRACTS} lay the Settings column",
+    )
+    _print_rule_findings(pulled, "a page's first row starts at its top inset; put the row in the flow under it")
+    _print_rule_findings(
+        hand_rolled_col,
+        "centre page content with max-width: var(--page-content-max-width); margin-inline: auto; padding-inline: var(--page-content-inset) or .page-stage",
+    )
     if stale:
         print("apps/desktop/DESIGN.md token tables are stale: run python scripts/check_desktop_design_tokens.py --write-docs")
     if under and not args.write_baseline:

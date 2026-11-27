@@ -264,9 +264,16 @@
   width: 100%;
   min-height: 0;
   padding-block: calc(var(--titlebar-height) + var(--portal-page-top)) var(--portal-page-end-space);
-  padding-inline: max(1.5rem, calc((100% - var(--page-content-max-width, 61.25rem)) / 2));
   overflow-y: auto;
   overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+:root[data-shell='portal'] .conn-tools-page > * {
+  width: 100%;
+  max-width: var(--page-content-max-width);
+  margin-inline: auto;
+  padding-inline: var(--page-content-inset);
 }
 
 :root[data-shell='portal'] .conn-tools-header {

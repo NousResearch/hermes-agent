@@ -13,20 +13,18 @@
   width: 100%;
   min-height: 0;
   padding-block: 1.5rem var(--portal-page-end-space);
-  padding-inline: max(1.5rem, calc((100% - var(--page-content-max-width, 61.25rem)) / 2));
   overflow-y: auto;
   overscroll-behavior: contain;
-}
-
-/* Keep Connections aligned pixel-for-pixel with the PageHeader & tabs above it while letting the
-   scroller itself span the full stage width (scrollbar at the stage's right edge). */
-:root[data-shell='portal'] .capabilities-page .conn-page:not([data-owns-header='true']) {
-  padding-inline: max(
-    var(--page-content-inset, 1.5rem),
-    calc((100% - var(--page-content-max-width, 61.25rem)) / 2 + var(--page-content-inset, 1.5rem))
-  );
   scrollbar-gutter: stable;
 }
+
+:root[data-shell='portal'] .conn-page > * {
+  width: 100%;
+  max-width: var(--page-content-max-width);
+  margin-inline: auto;
+  padding-inline: var(--page-content-inset);
+}
+
 /* A drill-down draws the header itself, so its first row clears the floating window chrome. */
 :root[data-shell='portal'] .conn-page[data-owns-header='true'] {
   padding-block-start: calc(var(--titlebar-height) + var(--portal-page-top));
@@ -1179,7 +1177,9 @@
   :root[data-shell='portal'] .conn-page,
   :root[data-shell='portal'] .conn-tools-page {
     gap: 1.25rem;
-    padding-inline: var(--portal-frame-inset);
+  }
+
+  :root[data-shell='portal'] .conn-page:not([data-owns-header='true']) {
     padding-block: 1rem var(--portal-page-end-space);
   }
 

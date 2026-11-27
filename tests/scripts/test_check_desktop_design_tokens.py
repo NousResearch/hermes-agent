@@ -207,6 +207,11 @@ def test_a_row_pulled_into_the_page_top_inset_is_flagged(decl):
     assert _kinds(GATED.format(decl)) == ["page-top"]
 
 
+def test_hand_rolled_page_column_calc_is_flagged():
+    decl = "padding-inline: max(1.5rem, calc((100% - var(--page-content-max-width, 61.25rem)) / 2));"
+    assert "page-column-calc" in _kinds(GATED.format(decl))
+
+
 @pytest.mark.parametrize(
     "decl",
     [

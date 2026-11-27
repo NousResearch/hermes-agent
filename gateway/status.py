@@ -255,9 +255,7 @@ def _same_hermes_home(left: Path | str, right: Path | str) -> bool:
     return left_c == os.path.normcase(str(_canonical_hermes_home(right)))
 
 
-def recorded_gateway_home_conflicts(
-    record: Optional[dict[str, Any]], *, expected_home: Optional[Path | str] = None
-) -> bool:
+def recorded_gateway_home_conflicts(record: Optional[dict[str, Any]], *, expected_home: Optional[Path | str] = None) -> bool:
     """True when a persisted gateway record names a DIFFERENT HERMES_HOME (cross-profile kill guard:
     profile B's stop must never SIGTERM profile A). ``expected_home`` overrides the comparison base.
     Legacy records without ``hermes_home`` prove nothing -> False; a comparison failure fails
@@ -746,21 +744,22 @@ def _host_gateway_serves_home(pid: int, profile_home: Path) -> bool:
     return owner is not None and owner.pid == pid and owner.serves(profile_name_for_home(profile_home))
 
 
-def _record_matches_live_gateway_pid(
-    record: dict[str, Any], pid: int, *, expected_home: Optional[Path] = None
-) -> bool:
+def _record_matches_live_gateway_pid(record: dict[str, Any], pid: int, *, expected_home: Optional[Path] = None) -> bool:
     """True when a live PID still identifies as this gateway record. The live command line wins (a
     stale record's argv must not make a recycled PID count as a gateway; with ``expected_home`` it
     must also belong to that profile — or serve it as the host multiplexer); unreadable cmdline
-    (Windows/EACCES) -> persisted record."""
+    (Windows/EACCES) -> persisted record. A symlinked profile home runs its gateway under the
+    RESOLVED home, whose argv names no profile; a record naming that home vouches for the match."""
     live_cmdline = _read_process_cmdline(pid)
     if not live_cmdline:
         return _record_looks_like_gateway(record)
     if not looks_like_gateway_runtime_command_line(live_cmdline):
         return False
-    if expected_home is not None and _host_gateway_serves_home(pid, expected_home):
+    if expected_home is None or _host_gateway_serves_home(pid, expected_home) or _command_line_belongs_to_profile(live_cmdline, expected_home):
         return True
-    return expected_home is None or _command_line_belongs_to_profile(live_cmdline, expected_home)
+    recorded = record.get("hermes_home")
+    return (isinstance(recorded, str) and bool(recorded.strip()) and _same_hermes_home(recorded, expected_home)
+            and _command_line_belongs_to_profile(live_cmdline, _canonical_hermes_home(expected_home)))
 
 
 def _record_argv() -> list[str]:

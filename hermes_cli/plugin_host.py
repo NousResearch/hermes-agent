@@ -385,7 +385,11 @@ class PluginHost:
                      authenticated: bool = False) -> dict[str, Any]:
         """One dashboard ``/api/plugins/<name>/`` request, served by the plugin's router in the host;
         ``TimeoutError`` when no answer comes within ``timeout`` seconds (the host is left running)."""
+        from hermes_cli.plugin_isolation import refuse_moved_plugin_dir
         self.ensure_started()
+        # The request waited in its profile's queue, and the host may have just started, since the lookup read
+        # ``dashboard_dir``: its name is checked right before the host loads it.
+        refuse_moved_plugin_dir(dashboard_dir)
         return self._call("asgi", {"plugin": plugin_name, "dashboard_dir": dashboard_dir, "api_file": api_file,
                                    "method": method, "path": path, "query": query,
                                    "authenticated": authenticated is True,

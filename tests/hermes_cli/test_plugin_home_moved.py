@@ -309,6 +309,59 @@ def test_a_launch_home_name_that_moves_forwards_no_dashboard_plugin(moved, tmp_p
 
 
 @pytest.mark.platforms("posix")  # directory symlinks
+@pytest.mark.parametrize("moved", ["in_the_queue", "while_the_host_starts"])
+def test_a_dashboard_plugin_whose_home_name_moves_after_its_lookup_is_not_loaded_by_the_host(moved, tmp_path,
+                                                                                            monkeypatch):
+    """A forwarded request waits in its profile's queue, and the host may start cold, before the host loads the
+    plugin's path. The lookup ran through a second live name for the launch home (ops2) and found the copy read
+    through ops; ops repointed meanwhile would hand the host another directory's plugin code, while ops2 still
+    passes. The host checks the path's own name right before the load."""
+    from hermes_cli import web_server, web_server_dashboard
+    from hermes_cli.plugin_host import PluginHost
+    from hermes_cli.plugins_loader import PluginHomeMoved
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tests.hermes_cli.test_plugin_api_consent_gate import _install
+
+    home = _home_with_plugins(tmp_path / "home", monkeypatch, {})
+    other = _home_with_plugins(tmp_path / "other", monkeypatch, {})
+    for each in (home, other):
+        _install(each, "dash")
+        (each / "config.yaml").write_text(yaml.safe_dump({"plugins": {"enabled": ["dash"], "isolation": "host"}}),
+                                          encoding="utf-8")
+    profiles = tmp_path / "root" / "profiles"
+    profiles.mkdir(parents=True)
+    for name in ("ops", "ops2"):
+        (profiles / name).symlink_to(home, target_is_directory=True)
+    monkeypatch.setenv("HERMES_HOME", str(profiles / "ops"))
+    monkeypatch.setattr(web_server, "_dashboard_plugins_cache", None)
+    loaded, starts = [], []
+
+    def repoint_ops():
+        (profiles / "ops").unlink()
+        (profiles / "ops").symlink_to(other, target_is_directory=True)
+
+    # A started host is a no-op start; the second request's start is a cold one during which ops moves.
+    monkeypatch.setattr(PluginHost, "ensure_started",
+                        lambda self: starts.append(1) if len(starts) < 1 or moved != "while_the_host_starts"
+                        else (starts.append(1), repoint_ops()))
+    monkeypatch.setattr(PluginHost, "_call", lambda self, method, params, **kw: loaded.append(params["dashboard_dir"]))
+    plugins_mod._reset_plugin_managers_for_tests()
+    token = set_hermes_home_override(profiles / "ops2")
+    try:
+        host, dashboard_dir, api_file = web_server_dashboard._hosted_plugin_for_request("dash")
+        host.asgi_request("dash", dashboard_dir, api_file, "GET", "/", "", [], b"")
+        assert loaded == [dashboard_dir]
+        if moved == "in_the_queue":
+            repoint_ops()  # while the request waits for its profile's threads
+        with pytest.raises(PluginHomeMoved):
+            host.asgi_request("dash", dashboard_dir, api_file, "GET", "/", "", [], b"")
+        assert loaded == [dashboard_dir]
+    finally:
+        reset_hermes_home_override(token)
+        plugins_mod._reset_plugin_managers_for_tests()
+
+
+@pytest.mark.platforms("posix")  # directory symlinks
 def test_a_plugin_in_the_hermes_root_still_serves_the_renamed_launch_profile(tmp_path, monkeypatch):
     """After the launch link ops is renamed to ops2, a request through ops2 still finds a plugin installed in the
     Hermes root. Its path never went through ops, so the moved launch name doesn't refuse it; a copy read through

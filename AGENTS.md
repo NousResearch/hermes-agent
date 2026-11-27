@@ -5,6 +5,16 @@ loads automatically when you work in that directory; read it before editing ther
 `python scripts/check` caps this file at 12k chars and every root-to-area chain at 30k: long form
 goes in `website/docs/developer-guide/`.
 
+## Local working memory
+
+- Node.js portable is installed at `C:\Users\FABIO.BARBOSA\AppData\Local\Programs\nodejs`
+- Python 3.12 is installed at `C:\Users\FABIO.BARBOSA\AppData\Local\Programs\Python\Python312`
+- npm is configured to use `https://registry.npmmirror.com` while on this network because `registry.npmjs.org` is blocked by the firewall
+- When PowerShell blocks npm scripts, use `Set-ExecutionPolicy -Scope Process Bypass` for the current session
+- Playwright MCP is installed and configured for OpenCode
+- Reopen OpenCode after MCP/config changes so the new tool is loaded
+- Use `python -m app.cli` instead of direct `app\cli.py` execution when running the local Python orchestration prototype
+
 **Never give up on the right solution.**
 
 ## What Hermes Is

@@ -18,6 +18,11 @@ _mcp_discovery_lock = threading.Lock()
 _mcp_discovery_started: set[str] = set()
 _mcp_discovery_thread: dict[str, threading.Thread] = {}
 _mcp_discovery_deferred: Optional[threading.Timer] = None
+# Profiles that already logged the "no mcp_servers configured" warning (#138622).
+# Kept separate from ``_mcp_discovery_started`` so skipping the gate never pins the
+# profile as "discovery ran" (which would make later ``hermes mcp add`` / mirrored
+# config look like a failed zero-server run).
+_mcp_no_config_logged: set[str] = set()
 # Process-wide MCP server-name allowlist derived from ``-t/--toolsets``.
 # ``None`` = no filter (spawn every configured server). Set once at CLI
 # startup by ``set_mcp_server_filter`` and honored by every discovery path
@@ -90,6 +95,45 @@ def _servers_awaiting_connect() -> list[str]:
     return pending if _mcp_server_filter is None else [n for n in pending if n in _mcp_server_filter]
 
 
+def _process_wide_connected_server_count() -> int:
+    """Best-effort count of live MCP connections in this process (any profile).
+
+    Used only for the no-config diagnostic. Never imports the MCP stack: if another
+    profile has not loaded it yet, there is nothing useful to report.
+    """
+    mod = sys.modules.get("tools.mcp_tool")
+    if mod is None:
+        return 0
+    try:
+        lock = getattr(mod, "_lock", None)
+        servers = getattr(mod, "_servers", None)
+        if lock is None or servers is None:
+            return 0
+        with lock:
+            return len(servers)
+    except Exception:
+        return 0
+
+
+def _log_no_mcp_servers_configured(logger, home_key: str) -> None:
+    """Emit one clear warning when a profile skips MCP discovery for lack of config (#138622)."""
+    if home_key in _mcp_no_config_logged:
+        return
+    _mcp_no_config_logged.add(home_key)
+    shared = _process_wide_connected_server_count()
+    if shared:
+        logger.warning(
+            "no mcp_servers configured for this profile — 0 MCP tools available "
+            "(%d server(s) connected in-process for other profile(s); "
+            "mirror mcp_servers into this profile's config.yaml to adopt them)",
+            shared,
+        )
+    else:
+        logger.warning(
+            "no mcp_servers configured for this profile — 0 MCP tools available"
+        )
+
+
 def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
     """Spawn one background MCP discovery thread per profile home.
 
@@ -122,9 +166,15 @@ def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
             _mcp_discovery_started.discard(home_key)
             _mcp_discovery_thread.pop(home_key, None)
 
-        _mcp_discovery_started.add(home_key)
+        # Config gate BEFORE marking started (#138622): a multiplexed profile with no
+        # ``mcp_servers`` must not be pinned as "discovery already ran". Otherwise later
+        # calls either stay silent (first call) or hit the misleading "retrying with no
+        # connected servers" path while still skipping the real discovery.
         if not _has_configured_mcp_servers():
+            _log_no_mcp_servers_configured(logger, home_key)
             return
+
+        _mcp_discovery_started.add(home_key)
 
         # Bare threads start from an empty context: run discovery under a copy of the caller's, so
         # the context-local HERMES_HOME override (multi-profile dashboard/desktop backends, #67605)

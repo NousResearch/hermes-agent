@@ -86,3 +86,54 @@ def test_typed_block_still_refuses_typed_or_live_blocked_cards(kanban_home, monk
         assert kb.block_task(conn, live, reason="race", kind="needs_input") is False
         assert kb.block_task(conn, live, reason="no kind") is False
         assert kb.get_task(conn, live).block_kind is None
+
+
+def test_dependency_classify_parks_in_todo_and_promotes(kanban_home, monkeypatch):
+    """Classifying a parked card as ``dependency`` while a parent is open parks
+    it in ``todo`` (``dependency_wait``) so the parent's completion releases it —
+    not a sticky ``blocked`` card no tick can promote (#129486)."""
+    monkeypatch.setattr(kb, "_pid_alive", lambda pid: False)
+    with kbc.connect() as conn:
+        parent = kb.create_task(conn, title="open-parent", assignee="worker")
+        tid = kb.create_task(conn, title="waiter", assignee="worker", max_runtime_seconds=1)
+        _time_out_once(conn, tid)
+        _time_out_once(conn, tid)
+        assert kb.get_task(conn, tid).status == "blocked"
+        kb.link_tasks(conn, parent_id=parent, child_id=tid)
+
+        assert kb.block_task(conn, tid, reason="waiting on parent", kind="dependency") is True
+
+        after = kb.get_task(conn, tid)
+        assert (after.status, after.block_kind, after.block_recurrences) == ("todo", "dependency", 0)
+        wait = [e for e in kb.list_events(conn, tid) if e.kind == "dependency_wait"][-1]
+        assert wait.payload.get("classified_in_place") is True
+        # Gated in todo while the parent is open, released when it lands — no manual unblock.
+        assert kb.recompute_ready(conn) == 0
+        assert kb.get_task(conn, tid).status == "todo"
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (parent,))
+        kb.claim_task(conn, parent, claimer="worker")
+        kb.complete_task(conn, parent, result="done")
+        kb.recompute_ready(conn)
+        assert kb.get_task(conn, tid).status == "ready"
+
+
+def test_dependency_classify_without_open_parent_rekinds_needs_input(kanban_home, monkeypatch):
+    """Classifying a parked card as ``dependency`` with no open parent re-kinds
+    to sticky ``needs_input`` exactly like the running path, keeping the rekind
+    provenance instead of an unsatisfiable ``dependency`` kind (#129486)."""
+    monkeypatch.setattr(kb, "_pid_alive", lambda pid: False)
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="solo", assignee="worker", max_runtime_seconds=1)
+        _time_out_once(conn, tid)
+        _time_out_once(conn, tid)
+        assert kb.get_task(conn, tid).status == "blocked"
+
+        assert kb.block_task(conn, tid, reason="waiting", kind="dependency") is True
+
+        after = kb.get_task(conn, tid)
+        assert (after.status, after.block_kind, after.block_recurrences) == ("blocked", "needs_input", 1)
+        blocked = [e for e in kb.list_events(conn, tid) if e.kind == "blocked"][-1].payload
+        assert (blocked["requested_kind"], blocked["rekind_reason"]) == ("dependency", "no_open_parent")
+        assert kb.recompute_ready(conn) == 0
+        assert kb.get_task(conn, tid).status == "blocked"

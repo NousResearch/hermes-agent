@@ -8,6 +8,8 @@ description: >
   an HTTP API and relays messages between WhatsApp chats and the Hermes agent.
   Supports DM/group policies, mention gating, free-response chats, and
   per-user allowlists.
+provides_tools:
+  - whatsapp_send_poll
 author: NousResearch
 requires_env:
   - name: WHATSAPP_ENABLED

@@ -108,13 +108,19 @@ class GatewaySessionWatchersMixin(GatewayAutoResumeMixin):
         for key, agent in entries:
             if agent is None or agent is _AGENT_PENDING_SENTINEL or self._is_session_running(key):
                 continue
-            warmer = getattr(agent, "_prompt_cache_warmer", None)
-            action = warmer.claim_edge() if warmer is not None else None
-            if not action and idle_due(self, key, agent, now):
-                action = IDLE_ACTION
+            # The chat's own idle policy first: past the cache window the edge claims ``offload``, which
+            # would otherwise take this tick and delay the compaction a whole interval. A compaction makes
+            # the offload moot; a refused one leaves the edge to claim on the next tick.
+            action = IDLE_ACTION if idle_due(self, key, agent, now) else self._claim_cache_edge(agent)
             if action:
                 due.append((key, agent, action))
         return due
+
+    @staticmethod
+    def _claim_cache_edge(agent, *, releasing: bool = False) -> Optional[str]:
+        """The prompt-cache edge's claim for *agent*; None on a route that never armed a warmer."""
+        warmer = getattr(agent, "_prompt_cache_warmer", None)
+        return warmer.claim_edge(releasing=releasing) if warmer is not None else None
 
     async def _compact_idle_sessions_before_cache_expiry(self) -> None:
         """Start one compaction job per due session and return without awaiting them: a summary can
@@ -265,9 +271,9 @@ class GatewaySessionWatchersMixin(GatewayAutoResumeMixin):
     async def _compact_then_release_job(self, key: str, agent) -> None:
         """Claim the cache edge at release off the loop (the claim reads state.db), else a due idle
         policy, then run it. The caller's done-callback releases the agent afterwards."""
-        warmer = getattr(agent, "_prompt_cache_warmer", None)
         try:
-            action = await asyncio.to_thread(warmer.claim_edge, releasing=True) if warmer is not None else None
+            action = (IDLE_ACTION if idle_due(self, key, agent, time.time())
+                      else await asyncio.to_thread(self._claim_cache_edge, agent, releasing=True))
         except Exception:
             logger.debug("release-time compaction check failed for %s", key, exc_info=True)
             return
@@ -277,7 +283,7 @@ class GatewaySessionWatchersMixin(GatewayAutoResumeMixin):
             if settled is not None:
                 await settled.wait()
         handed = self.__dict__.setdefault("_cache_expiry_handoff", {}).pop(key, None)
-        action = action or handed or (IDLE_ACTION if idle_due(self, key, agent, time.time()) else None)
+        action = action or handed
         if action is None:
             return
         slots = self.__dict__.setdefault("_cache_expiry_slots", asyncio.Semaphore(_CACHE_EXPIRY_CONCURRENCY))

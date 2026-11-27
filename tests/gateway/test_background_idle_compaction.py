@@ -110,6 +110,19 @@ async def test_an_idle_chat_without_keep_alives_compacts_in_the_background_once(
 
 
 @pytest.mark.asyncio
+async def test_a_due_idle_policy_is_not_preempted_by_the_cache_edge_offload(make_runner):
+    """A route with a warmer claims ``offload`` once its cache window is over; a chat whose idle
+    policy is due on that tick is compacted on it, not one housekeeping interval later."""
+    agent = _idle_agent("s1")
+    agent._prompt_cache_warmer = SimpleNamespace(claim_edge=lambda *, releasing=False: "offload")
+    runner = make_runner(agent)
+
+    await _scan(runner)
+
+    assert runner.compacted == [("s1", "idle")]
+
+
+@pytest.mark.asyncio
 async def test_an_evicted_idle_chat_compacts_at_release(make_runner):
     """The idle-TTL sweep runs before the scan in the same tick: a chat due at its eviction is
     compacted by the release job rather than lost with the agent."""

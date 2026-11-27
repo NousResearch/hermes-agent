@@ -758,6 +758,18 @@ return `404`. The `/api/pty` WebSocket accepts the same parameter to spawn
 a chat under the selected profile.
 :::
 
+### GET /api/health and GET /health
+
+Lightweight process liveness for Desktop boot handshakes, native clients and uptime probes: `ok`,
+`version`, `displayVersion`, the `commit` this process booted from, and `auth_required`. Both paths
+are public — no session token, no cookie — even when the auth gate is engaged.
+
+`/health` is the bare path documented for the [api_server](api-server.md#get-health), so it also
+answers that contract's `status` and `platform` keys: a probe written for either shape parses
+(`/api/health` keeps the `ok`/`commit` body only). Without the bare route the gate answers an
+unmounted path with the sign-in redirect, and a client probing it reads the login page instead of
+JSON.
+
 ### GET /api/status
 
 Returns agent version, gateway status, platform states, and active session count.

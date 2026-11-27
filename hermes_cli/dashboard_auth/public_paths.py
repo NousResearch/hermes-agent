@@ -10,6 +10,10 @@ PUBLIC_API_PATHS: frozenset[str] = frozenset({
     # Minimal process liveness probe for desktop/backend boot handshakes; avoids
     # gateway config, platform discovery, MCP setup and cold plugin imports.
     "/api/health",
+    # The same body at the bare path native clients and uptime monitors ask for (the
+    # api_server's ``GET /health`` shape). Without it the gate redirects an unmounted path
+    # to /login, so a JSON probe parses the sign-in page and reports a protocol error.
+    "/health",
     # Portal wildcard liveness probe (``docs/agent-dashboard-public-url-contract.md``,
     # NAS side): version, gateway state, session count, auth-gate shape. No secrets.
     "/api/status",

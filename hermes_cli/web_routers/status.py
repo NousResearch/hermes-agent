@@ -135,6 +135,25 @@ async def get_health():
             "auth_required": bool(getattr(app.state, "auth_required", False))}
 
 
+@router.get("/health")
+async def get_health_bare_path():
+    """Bare ``/health``: liveness at the path the api_server documents (``GET /health``).
+
+    Clients and uptime monitors written against ``docs/features/api-server.md`` probe this bare
+    path, and both gates answer a path they do not mount with the sign-in redirect — so a JSON
+    probe parses a login page and reports a protocol error instead of a health result.
+
+    The body is a superset of the two documented shapes: every ``/api/health`` field (``ok``,
+    ``version``, ``displayVersion``, boot ``commit``, ``auth_required``) plus the api_server's
+    ``status``/``platform`` keys, so a probe keyed on either contract parses without a second
+    source of truth for the version fields. The route is in ``PUBLIC_API_PATHS``, like
+    ``/api/health``.
+    """
+    body = dict(await get_health())
+    body.update({"status": "ok", "platform": "hermes-agent"})
+    return body
+
+
 @router.get("/api/host/identity")
 async def get_host_identity(request: Request):
     """Prove to an attaching `hermes serve`/`dashboard` WHO owns this port.

@@ -2,7 +2,7 @@
  "counts": {
   "http": {
    "keep-host-wide": 1,
-   "undecided": 355
+   "undecided": 356
   },
   "rpc": {
    "authority": 113,
@@ -198,6 +198,7 @@
   {"current_path": "hermes_cli.dashboard_auth.routes:auth_native_authorize", "decision": "undecided", "handler": "GET /auth/native/authorize", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.dashboard_ui:serve_profile_plugin_asset", "decision": "undecided", "handler": "GET /dashboard-plugins/@{profile}/{plugin_name}/{file_path:path}", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.dashboard_ui:serve_plugin_asset", "decision": "undecided", "handler": "GET /dashboard-plugins/{plugin_name}/{file_path:path}", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.status:get_health_bare_path", "decision": "undecided", "handler": "GET /health", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.dashboard_auth.routes:login_page", "decision": "undecided", "handler": "GET /login", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.gateway_connections_reach:oauth_callback; surface: gateway_connections", "decision": "undecided", "handler": "GET /webapp/gateway-connections/oauth/callback", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.webapp:launch_page", "decision": "undecided", "handler": "GET /webapp/launch", "kind": "http", "ref": ""},

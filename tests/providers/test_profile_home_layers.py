@@ -90,3 +90,29 @@ def test_plugin_installed_after_discovery_is_found_without_a_restart(homes):
 
     assert providers.get_provider_profile("late-install") is not None
     assert "late-install" in {p.name for p in providers.list_providers()}
+
+
+def test_picker_sees_secondary_plugin_after_catalog_import_in_launch_home(homes, monkeypatch):
+    from types import SimpleNamespace
+    from hermes_cli import models
+    from hermes_cli import model_switch_providers as picker
+    from hermes_cli import auth
+
+    launch, secondary = homes
+    _install(secondary, "picker-only")
+    # No network or credentials: test the real registry-to-picker projection.
+    monkeypatch.setattr(picker, "_auth_store_has_provider", lambda *a: False)
+    monkeypatch.setattr(picker, "_pool_usable", lambda *a: False)
+    monkeypatch.setattr(picker, "_has_aws_sdk_creds_for_listing", lambda *a: False)
+    monkeypatch.setattr(auth, "get_external_process_provider_status", lambda name: {"configured": name == "picker-only"})
+    monkeypatch.setattr(picker, "_live_or_curated_ids", lambda *a, **kw: ["fixture-model"])
+    def rows():
+        found = []
+        build = SimpleNamespace(seen_slugs=set(), excluded=set(), current_provider="", curated={},
+                                non_blocking_catalogs=True,
+                                add_builtin_row=lambda slug, *a, **kw: found.append(slug))
+        picker._lap_canonical_rows(build)
+        return found
+    assert "picker-only" not in rows()
+    assert "picker-only" in _bound(secondary, rows)
+    assert "picker-only" not in rows()

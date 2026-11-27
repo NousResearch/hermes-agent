@@ -79,6 +79,10 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
         const next = new URLSearchParams(prev);
         if (profile) next.set("profile", profile);
         else next.delete("profile");
+        // Same rule as setProfile: a per-profile resume id must not
+        // survive a scope change (this effect can race with setProfile
+        // and would otherwise copy ?resume= back onto the new profile).
+        next.delete("resume");
         return next;
       },
       { replace: true, state: locationState },
@@ -132,6 +136,10 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
           const next = new URLSearchParams(prev);
           if (name) next.set("profile", name);
           else next.delete("profile");
+          // Resume ids are per-profile sqlite session ids. Keeping one
+          // across a switcher hop makes ChatPage look up bot A's session
+          // in bot B's DB → HTTP 404 "Session not found".
+          next.delete("resume");
           return next;
         },
         { replace: true },

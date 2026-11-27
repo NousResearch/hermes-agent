@@ -2200,6 +2200,15 @@ def _run_reclaim_phase(
     result.promoted = _kb.recompute_ready(conn, failure_limit=failure_limit)
 
 
+def _pending_capacity_work(conn: sqlite3.Connection) -> bool:
+    """Whether a ready or enabled review lane has an unclaimed task."""
+    return bool(conn.execute(
+        "SELECT 1 FROM tasks WHERE claim_lock IS NULL "
+        "AND (status = 'ready' OR (status = 'review' AND ?)) LIMIT 1",
+        (review_dispatch_enabled(),),
+    ).fetchone())
+
+
 def _tick_spawn_budget(
     conn: sqlite3.Connection,
     result: DispatchResult,
@@ -2208,17 +2217,11 @@ def _tick_spawn_budget(
     max_in_progress: Optional[int],
     board: Optional[str],
 ) -> tuple[bool, Optional[int]]:
-    """``(may_spawn, spawn_budget)`` for this tick; ``budget None`` = uncapped.
+    """Return whether another worker may spawn and the remaining budget.
 
-    ``max_spawn`` is a live per-board concurrency cap (running + this tick's
-    spawns), not a per-tick budget — a per-tick reading would grow concurrency
-    by N every tick. ``max_in_progress`` is a HOST-level cap: running workers on
-    every other board count against the same budget, else N boards multiply the
-    cap by N — exactly the fan-out the memory-derived default exists to prevent.
+    ``max_spawn`` caps this board; ``max_in_progress`` caps all boards.
     """
-    # Count already-running tasks so max_spawn enforces concurrency, not a
-    # per-tick budget: "running" tasks stay running until the worker makes a terminal
-    # board call (kanban_complete/kanban_block/kanban_request_review) or the TTL reclaims them.
+    # Running workers consume capacity until they finish or are reclaimed.
     running_count = 0
     spawn_budget: Optional[int] = None
     if max_spawn is not None or max_in_progress is not None:
@@ -2227,23 +2230,22 @@ def _tick_spawn_budget(
     # Both ready and review loops consume from the same budget.
     if max_spawn is not None:
         if running_count >= max_spawn:
-            result.spawn_budget_hold = "board_capacity"
+            if _pending_capacity_work(conn):
+                result.spawn_budget_hold = "board_capacity"
             return False, None
         spawn_budget = max_spawn - running_count
 
     if max_in_progress is not None:
         total_running = running_count + count_running_tasks_other_boards(board)
         if total_running >= max_in_progress:
-            result.spawn_budget_hold = "host_capacity"
+            if _pending_capacity_work(conn):
+                result.spawn_budget_hold = "host_capacity"
             return False, None
         remaining = max_in_progress - total_running
         if spawn_budget is None or spawn_budget > remaining:
             spawn_budget = remaining
 
-    # Memory-pressure guard: a static cap can't see the host's actual state.
-    # critical -> spawn nothing this tick; elevated -> at most one new worker.
-    # Reclaim/promotion already ran, so bookkeeping stays live; deferred tasks
-    # wait for a later tick. "unknown" imposes no restriction.
+    # Memory pressure can further restrict the static capacity budget.
     pressure = _memory_pressure_level()
     if pressure == "critical":
         result.memory_pressure = pressure
@@ -2337,11 +2339,10 @@ def _dispatch_once_locked(
     max_in_progress_per_profile: Optional[int] = None,
     reconcile_orphans: bool = True,
 ) -> DispatchResult:
-    """One dispatcher tick: reclaim stale/crashed running tasks, promote
-    todo -> ready, then atomically claim each spawnable ready/review row and
-    call ``spawn_fn(task, workspace_path, board) -> Optional[int]``, recording
-    the PID so later ticks catch crashes before the TTL. Cap semantics:
-    :func:`_tick_spawn_budget`."""
+    """Reclaim, promote, then claim and spawn eligible ready/review tasks.
+
+    Board and host concurrency are enforced by :func:`_tick_spawn_budget`.
+    """
     result = DispatchResult()
     _run_reclaim_phase(
         conn, result, stale_timeout_seconds=stale_timeout_seconds,

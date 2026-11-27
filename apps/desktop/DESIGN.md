@@ -775,7 +775,7 @@ blocks'; an override under a media query (a width class, a coarse pointer) is no
 | `--portal-text-on-brand` | `var(--portal-raw-accent-on)` | ″ |  |
 | `--portal-surface-brand-hover` | `color-mix(in srgb, var(--portal-surface-brand) 86%, var(--ui-base))` | ″ | A brand-filled card under the pointer (the sidebar's Create an Account): a step toward the ink. |
 | `--portal-text-brand` | `var(--portal-raw-accent-ink-dark)` | `var(--portal-raw-accent-ink-light)` |  |
-| `--portal-composer-fill` | `color-mix( in srgb, var(--portal-raw-pure-white) 8%, color-mix( in srgb, var(--portal-raw-blue) 10%, color-mix(in srgb, var(--portal-raw-black) 80%, var(--ui-chat-surface-background)) ) )` | `color-mix(in srgb, var(--portal-raw-pure-white) 98%, var(--ui-chat-surface-background))` | The composer card (msg 16292:15670): white .05 / blue .10 / black .80 at .94, flattened onto the stage so the transcript never shows through. Figma's card lets 6% of the art through, which lifts it to #171635 on Wing; the opaque card takes white .08 to land there. Light draws it white (16292:27185). Its resting prompt is the card's heading line (16292:15681), a step back from typed text. |
+| `--portal-composer-fill` | `color-mix( in srgb, var(--portal-raw-pure-white) 8%, color-mix( in srgb, var(--portal-raw-blue) 10%, color-mix(in srgb, var(--portal-raw-black) 80%, var(--ui-chat-surface-background)) ) )` | ″ | The composer card (msg 16292:15670): white .05 / blue .10 / black .80 at .94, flattened onto the stage so the transcript never shows through. Figma's card lets 6% of the art through, which lifts it to #171635 on Wing; the opaque card takes white .08 to land there. Light draws it white (16292:27185). Its resting prompt is the card's heading line (16292:15681), a step back from typed text. |
 | `--portal-composer-prompt-ink` | `var(--portal-text-tertiary)` | ″ |  |
 | `--portal-surface-brand-selected` | `var(--portal-raw-brand-25)` | `var(--portal-raw-brand-12)` | Brand selection: selected destinations, segments, scope chips, choice tiles and the DEFAULT / RUNNING chips (856:3444, 1036:7318). |
 | `--portal-spectrum-red` | `var(--portal-raw-spectrum-red)` | ″ |  |
@@ -806,10 +806,11 @@ blocks'; an override under a media query (a width class, a coarse pointer) is no
 | `--portal-welcome-card` | `color-mix( in srgb, var(--portal-raw-pure-white) 2%, color-mix(in srgb, var(--portal-raw-black) 60%, color-mix(in srgb, var(--portal-raw-blue) 20%, transparent)) )` | `color-mix(in srgb, var(--portal-raw-pure-white) 70%, transparent)` | The first-time splash's cards (Onboarding 18695:17163 "Information", the artwork cards): white .02 / black .60 / blue .20 over the stage. |
 | `--portal-surface-brand-card` | `var(--portal-raw-brand-10)` | ″ | Hermes' answer to a message held until sign up (18695:18641): the accent at 10%. |
 | `--portal-badge-alert-fill` | `var(--portal-raw-red-signal)` | ″ | A step's status badge on the sign-in screens (18732:33155, 18695:19224): Figma's red, green and white .4 fills under black ink. The waiting fill takes the ladder's .5 so black keeps 4.5:1. |
-| `--portal-badge-ok-fill` | `var(--portal-status-online)` | ″ |  |
+| `--portal-badge-ok-fill` | `color-mix(in srgb, var(--portal-status-online) 16%, transparent)` | `color-mix(in srgb, var(--portal-status-online) 12%, transparent)` | Light's waiting fill is the dark ink at .64: white reads on it, black does not. |
+| `--portal-badge-ok-ink` | `var(--portal-status-online)` | ″ |  |
 | `--portal-badge-waiting-fill` | `var(--portal-text-quaternary)` | ″ |  |
 | `--portal-badge-ink` | `var(--portal-raw-black)` | ″ |  |
-| `--portal-badge-waiting-ink` | `var(--portal-raw-black)` | `var(--portal-raw-pure-white)` | Light's waiting fill is the dark ink at .64: white reads on it, black does not. |
+| `--portal-badge-waiting-ink` | `var(--portal-raw-black)` | `var(--portal-raw-pure-white)` |  |
 | `--portal-choice-rim` | `color-mix(in srgb, var(--portal-raw-black) 80%, transparent)` | `color-mix(in srgb, var(--portal-raw-pure-white) 80%, transparent)` | The dark rim inside a colour swatch and a chosen artwork card (18695:18079): black .80. |
 | `--portal-settings-section-ink` | `color-mix(in srgb, var(--ui-base) 80%, transparent)` | ″ |  |
 | `--portal-settings-link` | `var(--portal-raw-ink-5)` | ″ | The column's Agent settings card (16292:16428): light/5. |

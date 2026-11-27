@@ -12,7 +12,7 @@
  * attaches is bounded to a few rapid retries before the error state.
  */
 
-import { Button, Codicon, EmptyState, GlyphSpinner, host, Tip, useValue } from '@hermes/plugin-sdk'
+import { Button, Codicon, EmptyState, GlyphSpinner, host, Tip, useValue, writeClipboardText } from '@hermes/plugin-sdk'
 import type { RpcEvent } from '@hermes/plugin-sdk'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
@@ -53,7 +53,46 @@ type RfbLike = {
   disconnect: () => void
   focus: () => void
   clipboardPasteFrom: (text: string) => void
+  sendKey: (keysym: number, code: string, down?: boolean) => void
 }
+
+const XK_V = 0x0076
+const XK_INSERT = 0xff63
+
+/** Same test noVNC uses (core/util/browser.js isMac): its Mac keyboard path maps Cmd to Alt. */
+const isMacClient = () => /mac/i.test(globalThis.navigator?.platform ?? '')
+
+/** The client's own paste shortcut. On macOS that is Cmd+V; elsewhere Ctrl+V, Ctrl+Shift+V or
+ *  Shift+Insert. Returns the key to replay to the remote app after the clipboard is loaded, or
+ *  `null` when nothing should be replayed (Cmd+V: the remote is X11, so its paste is Ctrl+V). */
+function pasteChord(event: KeyboardEvent): { match: false } | { match: true; replay: null | [number, string] } {
+  if (isMacClient()) {
+    return event.metaKey && !event.ctrlKey && !event.altKey && event.code === 'KeyV'
+      ? { match: true, replay: null }
+      : { match: false }
+  }
+
+  if (event.ctrlKey && !event.altKey && !event.metaKey && event.code === 'KeyV') {
+    return { match: true, replay: [XK_V, 'KeyV'] }
+  }
+
+  if (event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey && event.code === 'Insert') {
+    return { match: true, replay: [XK_INSERT, 'Insert'] }
+  }
+
+  return { match: false }
+}
+
+/** Cmd+C over the screen on macOS copies the screen's clipboard to this computer. Elsewhere Ctrl+C
+ *  belongs to the remote app (that is how text gets INTO the screen's clipboard), so copy-out there
+ *  is the toolbar button only. */
+const isCopyChord = (event: KeyboardEvent) =>
+  isMacClient() && event.metaKey && !event.ctrlKey && !event.altKey && event.code === 'KeyC'
+
+/** How long a clipboard notice stays up over the screen. */
+const NOTICE_MS = 4000
+
+type ClipboardReadResult = { text?: null | string; reason?: null | string }
 
 type ConnState = 'idle' | 'attaching' | 'live' | 'error'
 
@@ -111,9 +150,32 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
   const [busy, setBusy] = useState(false)
   // Caption after a 4000 eviction; cleared once the watch-mode re-attach paints live frames.
   const [evicted, setEvicted] = useState(false)
+  // Clipboard feedback over the screen: both directions are otherwise invisible until the next paste.
+  const [notice, setNotice] = useState<null | string>(null)
+  const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // The latest copy-out action, so the per-attach key listener never holds a stale lease or viewer.
+  const copyOut = useRef<() => void>(() => {})
   const attachGeneration = useRef(0)
   const dialedAt = useRef(0)
   const rapidEvictions = useRef(0)
+
+  const showNotice = useCallback((text: string) => {
+    if (noticeTimer.current) {
+      clearTimeout(noticeTimer.current)
+    }
+
+    setNotice(text)
+    noticeTimer.current = setTimeout(() => setNotice(null), NOTICE_MS)
+  }, [])
+
+  useEffect(
+    () => () => {
+      if (noticeTimer.current) {
+        clearTimeout(noticeTimer.current)
+      }
+    },
+    []
+  )
 
   const refresh = useCallback(async () => {
     // A reply that a newer request, a start result or a pushed event overtook is dropped by
@@ -306,22 +368,69 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
         // paste after control changes hands mid-session is silently dropped, same as the gateway's
         // own lease-gated RFB filter would drop it.
         const pasteTarget = canvasHost.current
+        // noVNC's Keyboard calls preventDefault on every keydown it handles (core/input/keyboard.js
+        // stopEvent; on macOS the Cmd+<key> path too), which cancels the browser's own paste action, so
+        // a `paste` event never fires over the canvas. While this viewer holds control, a capture-phase
+        // listener on the host keeps the client's paste shortcut away from noVNC (stopPropagation only,
+        // no preventDefault) so the browser, or Electron's Edit > Paste role, runs its native paste.
+        // Ctrl+V / Shift+Insert also reach the remote app: noVNC already sent the held modifier, so the
+        // swallowed key is replayed after the clipboard, and Xvnc handles the two in order.
+        let replay: null | [number, string] = null
+
+        const handleKeyDown = (event: KeyboardEvent) => {
+          if (client.viewOnly) {
+            return
+          }
+
+          if (isCopyChord(event)) {
+            // noVNC would send it on as Alt+C; this is a copy to the Mac, not a key for the remote app.
+            event.stopPropagation()
+            event.preventDefault()
+            copyOut.current()
+
+            return
+          }
+
+          const chord = pasteChord(event)
+
+          if (chord.match) {
+            event.stopPropagation()
+            replay = chord.replay
+          }
+        }
 
         const handlePaste = (event: ClipboardEvent) => {
+          const key = replay
+          replay = null
+
           if (client.viewOnly) {
             return
           }
 
           const text = event.clipboardData?.getData('text')
 
-          if (text && text.length <= MAX_PASTE_CUT_TEXT) {
+          if (text && text.length > MAX_PASTE_CUT_TEXT) {
+            showNotice(t.screen.pasteTooLarge)
+          } else if (text) {
             event.preventDefault()
             client.clipboardPasteFrom(text)
+
+            // Only after a forwarded clipboard: replaying into a stale remote clipboard would paste
+            // something the user never copied. Without a replay (Cmd+V) the paste is two-step, so say so.
+            if (key) {
+              client.sendKey(key[0], key[1])
+            } else {
+              showNotice(t.screen.pasteSent)
+            }
           }
         }
 
+        pasteTarget.addEventListener('keydown', handleKeyDown, true)
         pasteTarget.addEventListener('paste', handlePaste)
-        pasteCleanup.current = () => pasteTarget.removeEventListener('paste', handlePaste)
+        pasteCleanup.current = () => {
+          pasteTarget.removeEventListener('keydown', handleKeyDown, true)
+          pasteTarget.removeEventListener('paste', handlePaste)
+        }
       } catch (err) {
         if (generation === attachGeneration.current) {
           setConn('error')
@@ -329,7 +438,7 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
         }
       }
     },
-    [bot, detach, refresh, t.screen.controlTaken, t.screen.streamLost]
+    [bot, detach, refresh, showNotice, t.screen.controlTaken, t.screen.pasteSent, t.screen.pasteTooLarge, t.screen.streamLost]
   )
 
   // Visibility is not lifecycle: the stream stays attached while the pane is
@@ -409,6 +518,39 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
       setBusy(false)
     }
   }, [attach, bot, conn, viewer])
+
+  // Copy out: the gateway reads the screen's X CLIPBOARD for the lease holder only (Xvnc never sends
+  // its clipboard on the RFB stream, which watchers share), then it goes on this computer's clipboard.
+  const copyFromScreen = useCallback(async () => {
+    if (!viewer || !iHold) {
+      return
+    }
+
+    try {
+      const result = await displayRequest<ClipboardReadResult>(bot, 'display.clipboard.read', {
+        viewer_id: viewer.id
+      })
+
+      if (!result.text) {
+        showNotice(
+          result.reason === 'too_large'
+            ? t.screen.copyTooLarge
+            : result.reason === 'unavailable'
+              ? t.screen.copyUnavailable
+              : t.screen.copyEmpty
+        )
+
+        return
+      }
+
+      await writeClipboardText(result.text)
+      showNotice(t.screen.copied(result.text.length))
+    } catch (err) {
+      showNotice(err instanceof Error ? err.message : String(err))
+    }
+  }, [bot, iHold, showNotice, t.screen, viewer])
+
+  copyOut.current = () => void copyFromScreen()
 
   // `force` is the escape hatch for a lease this window no longer owns (a reload
   // minted a fresh viewer id; the old one still holds): the server refuses a
@@ -526,9 +668,16 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
           <span className="rounded bg-muted px-2 py-0.5 text-muted-foreground">{t.screen.agentControls}</span>
         )}
         {iHold ? (
-          <Button disabled={busy} onClick={() => void handBack()} size="sm" variant="secondary">
-            <Codicon name="debug-continue" /> {t.screen.handBack}
-          </Button>
+          <>
+            <Tip label={t.screen.copyFromScreenHint}>
+              <Button onClick={() => void copyFromScreen()} size="sm" variant="ghost">
+                <Codicon name="copy" /> {t.screen.copyFromScreen}
+              </Button>
+            </Tip>
+            <Button disabled={busy} onClick={() => void handBack()} size="sm" variant="secondary">
+              <Codicon name="debug-continue" /> {t.screen.handBack}
+            </Button>
+          </>
         ) : (
           <>
             {humanOther ? (
@@ -580,6 +729,14 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
         ) : null}
         {conn === 'error' && error ? (
           <div className="absolute inset-x-0 bottom-0 bg-red-950/80 px-3 py-1.5 text-xs text-red-200">{error}</div>
+        ) : null}
+        {notice ? (
+          <div
+            className="pointer-events-none absolute inset-x-0 bottom-0 bg-black/80 px-3 py-1.5 text-center text-xs text-white"
+            role="status"
+          >
+            {notice}
+          </div>
         ) : null}
         <ScreenNeedsHttps label={t.screen.needsHttps} />
       </div>

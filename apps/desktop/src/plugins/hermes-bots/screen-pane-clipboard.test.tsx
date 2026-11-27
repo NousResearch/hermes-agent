@@ -13,8 +13,18 @@ import type { DisplayStatus } from './screen-connection'
 import type * as ScreenConnection from './screen-connection'
 import type { RosterRow } from './types'
 
+const writes = vi.hoisted(() => vi.fn(async (_text: string) => {}))
+
 const rfbs = vi.hoisted(
-  () => [] as Array<{ target: HTMLElement; viewOnly: boolean; clipboardPasteFrom: (text: string) => void }>
+  () =>
+    [] as Array<{
+      target: HTMLElement
+      canvas: HTMLCanvasElement
+      viewOnly: boolean
+      clipboardPasteFrom: (text: string) => void
+      sendKey: (keysym: number, code: string, down?: boolean) => void
+      noVncKeys: string[]
+    }>
 )
 
 vi.mock('@hermes/plugin-sdk', async () => {
@@ -30,6 +40,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
     Tip: ({ children }: { children: ReactNode }) => <>{children}</>,
     EmptyState: () => null,
     useValue: useStore,
+    writeClipboardText: writes,
     host: { onEvent: onGatewayEvent, retainProfile: async () => () => {} }
   }
 })
@@ -47,7 +58,15 @@ vi.mock('./i18n', () => ({
       handBack: 'Hand back',
       takeOver: 'Take over',
       reconnect: 'Reconnect',
-      streamLost: 'Stream lost'
+      streamLost: 'Stream lost',
+      copyFromScreen: 'Copy',
+      copyFromScreenHint: 'Copy hint',
+      copied: (chars: number) => `Copied ${chars}`,
+      copyEmpty: 'Empty',
+      copyTooLarge: 'Too large',
+      copyUnavailable: 'Unavailable',
+      pasteSent: 'Sent - press Ctrl+V',
+      pasteTooLarge: 'Paste too large'
     }
   })
 }))
@@ -61,9 +80,21 @@ vi.mock('@novnc/novnc', () => ({
   default: class {
     viewOnly = true
     clipboardPasteFrom = vi.fn()
+    sendKey = vi.fn()
+    noVncKeys: string[] = []
+    canvas: HTMLCanvasElement
     constructor(target: HTMLElement) {
       rfbs.push(this as never)
       ;(this as unknown as { target: HTMLElement }).target = target
+      // Stands in for noVNC's Keyboard: it owns a focusable canvas and cancels every keydown it sees.
+      this.canvas = document.createElement('canvas')
+      this.canvas.tabIndex = -1
+      this.canvas.addEventListener('keydown', event => {
+        this.noVncKeys.push(event.code)
+        event.stopPropagation()
+        event.preventDefault()
+      })
+      target.appendChild(this.canvas)
     }
     addEventListener(type: string, callback: (event: { detail?: unknown }) => void) {
       if (type === 'connect') {
@@ -99,6 +130,7 @@ const status: DisplayStatus = {
 }
 
 beforeEach(() => {
+  writes.mockClear()
   $screenState.set({})
   rfbs.length = 0
   vi.mocked(displayRequest)
@@ -114,7 +146,13 @@ beforeEach(() => {
   )
 })
 
-afterEach(() => vi.unstubAllGlobals())
+let platformSpy: { mockRestore: () => void } | null = null
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+  platformSpy?.mockRestore()
+  platformSpy = null
+})
 
 it('forwards an explicit paste over the canvas to noVNC while holding the lease', async () => {
   const view = render(<BotScreenPane bot={bot} />)
@@ -154,5 +192,131 @@ it("drops a paste over the bridge's 256 KiB cut-text cap instead of forwarding i
   fireEvent.paste(rfbs[0].target, { clipboardData: { getData: () => oversized } })
 
   expect(rfbs[0].clipboardPasteFrom).not.toHaveBeenCalled()
+  view.unmount()
+})
+
+const withPlatform = (platform: string) => {
+  platformSpy = vi.spyOn(navigator, 'platform', 'get').mockReturnValue(platform)
+}
+
+it("keeps Cmd+V away from noVNC on macOS so the browser's native paste can fire", async () => {
+  withPlatform('MacIntel')
+  const view = render(<BotScreenPane bot={bot} />)
+  await waitFor(() => expect(rfbs).toHaveLength(1))
+  await waitFor(() => expect(rfbs[0].viewOnly).toBe(false))
+
+  const notCancelled = fireEvent.keyDown(rfbs[0].canvas, { code: 'KeyV', key: 'v', metaKey: true })
+  expect(notCancelled).toBe(true)
+  expect(rfbs[0].noVncKeys).toEqual([])
+
+  fireEvent.paste(rfbs[0].canvas, { clipboardData: { getData: () => 'mac-paste' } })
+  expect(rfbs[0].clipboardPasteFrom).toHaveBeenCalledWith('mac-paste')
+  expect(rfbs[0].sendKey).not.toHaveBeenCalled()
+  view.unmount()
+})
+
+it('loads the clipboard, then replays the V so Ctrl+V pastes in the remote app', async () => {
+  withPlatform('Linux x86_64')
+  const view = render(<BotScreenPane bot={bot} />)
+  await waitFor(() => expect(rfbs).toHaveLength(1))
+  await waitFor(() => expect(rfbs[0].viewOnly).toBe(false))
+
+  expect(fireEvent.keyDown(rfbs[0].canvas, { code: 'KeyV', key: 'v', ctrlKey: true })).toBe(true)
+  fireEvent.paste(rfbs[0].canvas, { clipboardData: { getData: () => 'linux-paste' } })
+
+  expect(rfbs[0].clipboardPasteFrom).toHaveBeenCalledWith('linux-paste')
+  expect(rfbs[0].sendKey).toHaveBeenCalledWith(0x0076, 'KeyV')
+  expect(vi.mocked(rfbs[0].clipboardPasteFrom).mock.invocationCallOrder[0]).toBeLessThan(
+    vi.mocked(rfbs[0].sendKey).mock.invocationCallOrder[0]
+  )
+  view.unmount()
+})
+
+it('leaves other keys, and every key while watching, to noVNC', async () => {
+  withPlatform('MacIntel')
+  vi.mocked(displayRequest).mockResolvedValue({
+    ...status,
+    lease: { ...status.lease, viewer_hash: 'someone-else' },
+    ticket: 'test-ticket',
+    viewer_id: 'this-viewer'
+  })
+  const view = render(<BotScreenPane bot={bot} />)
+  await waitFor(() => expect(rfbs).toHaveLength(1))
+  await waitFor(() => expect(rfbs[0].viewOnly).toBe(true))
+
+  fireEvent.keyDown(rfbs[0].canvas, { code: 'KeyV', key: 'v', metaKey: true })
+  fireEvent.keyDown(rfbs[0].canvas, { code: 'KeyC', key: 'c', metaKey: true })
+  expect(rfbs[0].noVncKeys).toEqual(['KeyV', 'KeyC'])
+  view.unmount()
+})
+
+/** display.clipboard.read answers `clip`; every other display call answers the holding status. */
+function serveClipboard(clip: { text?: null | string; reason?: null | string }) {
+  vi.mocked(displayRequest).mockImplementation(async (_bot, method) =>
+    method === 'display.clipboard.read' ? clip : { ...status, ticket: 'test-ticket', viewer_id: 'this-viewer' }
+  )
+}
+
+it("copies the screen's clipboard to this computer from the toolbar, for this viewer only", async () => {
+  serveClipboard({ text: 'from-the-bot' })
+  const view = render(<BotScreenPane bot={bot} />)
+  await waitFor(() => expect(rfbs[0]?.viewOnly).toBe(false))
+
+  fireEvent.click(view.getByText('Copy'))
+
+  await waitFor(() => expect(writes).toHaveBeenCalledWith('from-the-bot'))
+  expect(vi.mocked(displayRequest)).toHaveBeenCalledWith(bot, 'display.clipboard.read', { viewer_id: 'this-viewer' })
+  await view.findByText('Copied 12')
+  view.unmount()
+})
+
+it('copies with Cmd+C over the screen on macOS, without sending it to the remote app', async () => {
+  withPlatform('MacIntel')
+  serveClipboard({ text: 'cmd-c' })
+  const view = render(<BotScreenPane bot={bot} />)
+  await waitFor(() => expect(rfbs[0]?.viewOnly).toBe(false))
+
+  fireEvent.keyDown(rfbs[0].canvas, { code: 'KeyC', key: 'c', metaKey: true })
+
+  await waitFor(() => expect(writes).toHaveBeenCalledWith('cmd-c'))
+  expect(rfbs[0].noVncKeys).toEqual([])
+  view.unmount()
+})
+
+it('says why nothing was copied and writes nothing', async () => {
+  serveClipboard({ text: null, reason: 'empty' })
+  const view = render(<BotScreenPane bot={bot} />)
+  await waitFor(() => expect(rfbs[0]?.viewOnly).toBe(false))
+
+  fireEvent.click(view.getByText('Copy'))
+
+  await view.findByText('Empty')
+  expect(writes).not.toHaveBeenCalled()
+  view.unmount()
+})
+
+it('offers no copy to a viewer that only watches', async () => {
+  vi.mocked(displayRequest).mockResolvedValue({
+    ...status,
+    lease: { ...status.lease, viewer_hash: 'someone-else' },
+    ticket: 'test-ticket',
+    viewer_id: 'this-viewer'
+  })
+  const view = render(<BotScreenPane bot={bot} />)
+  await waitFor(() => expect(rfbs[0]?.viewOnly).toBe(true))
+
+  expect(view.queryByText('Copy')).toBeNull()
+  view.unmount()
+})
+
+it('tells a Mac user the paste is waiting for Ctrl+V in the app', async () => {
+  withPlatform('MacIntel')
+  const view = render(<BotScreenPane bot={bot} />)
+  await waitFor(() => expect(rfbs[0]?.viewOnly).toBe(false))
+
+  fireEvent.keyDown(rfbs[0].canvas, { code: 'KeyV', key: 'v', metaKey: true })
+  fireEvent.paste(rfbs[0].canvas, { clipboardData: { getData: () => 'mac-paste' } })
+
+  await view.findByText('Sent - press Ctrl+V')
   view.unmount()
 })

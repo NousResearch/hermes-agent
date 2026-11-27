@@ -7,7 +7,7 @@
   "rpc": {
    "authority": 113,
    "keep-host-wide": 1,
-   "undecided": 181
+   "undecided": 182
   },
   "websocket": {
    "undecided": 10
@@ -440,6 +440,7 @@
   {"current_path": "authority; standalone: legacy server.dispatch", "decision": "authority", "handler": "delegation.pause", "kind": "rpc", "ref": ""},
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "delegation.status", "kind": "rpc", "ref": "D3"},
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "diagnostics.share_nous", "kind": "rpc", "ref": "D3"},
+  {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "display.clipboard.read", "kind": "rpc", "ref": "D3"},
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "display.install", "kind": "rpc", "ref": "D3"},
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "display.lease.acquire", "kind": "rpc", "ref": "D3"},
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "display.lease.release", "kind": "rpc", "ref": "D3"},

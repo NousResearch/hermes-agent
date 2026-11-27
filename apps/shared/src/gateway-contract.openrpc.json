@@ -817,6 +817,24 @@
       }
     },
     {
+      "name": "display.clipboard.read",
+      "summary": "Copy out: the screen's X CLIPBOARD text, only for the viewer that holds the lease.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/DisplayClipboardReadParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/DisplayClipboardReadResult"
+        }
+      }
+    },
+    {
       "name": "display.install",
       "summary": "Run the distro package install on the gateway host; progress streams as display.install.log/.done.",
       "params": [
@@ -17680,6 +17698,63 @@
         ],
         "title": "DispatchType",
         "type": "string"
+      },
+      "DisplayClipboardReadParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "viewer_id": {
+            "title": "Viewer Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "viewer_id"
+        ],
+        "title": "DisplayClipboardReadParams",
+        "type": "object"
+      },
+      "DisplayClipboardReadResult": {
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Text"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
+          }
+        },
+        "title": "DisplayClipboardReadResult",
+        "type": "object"
       },
       "DisplayImageSwitch": {
         "additionalProperties": false,

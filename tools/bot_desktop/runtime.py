@@ -40,7 +40,8 @@ _LAUNCHER = Path(__file__).with_name("launcher.sh")
 # private band and record the choice so restarts reuse it.
 _DISPLAY_MIN, _DISPLAY_MAX = 20, 89
 
-# Binaries the launcher execs; the package hint is per distro family.
+# Binaries the launcher execs; the package hint is per distro family. xclip is installed too but not
+# required: it only backs copy-out (tools/bot_desktop/clipboard.py), which says "unavailable" without it.
 REQUIRED_BINARIES = ("Xvnc", "xfwm4", "xfce4-panel", "xfdesktop", "xfsettingsd", "dbus-run-session",
                      "xauth", "xdpyinfo", "setxkbmap", "xprop")
 
@@ -50,13 +51,13 @@ REQUIRED_BINARIES = ("Xvnc", "xfwm4", "xfce4-panel", "xfdesktop", "xfsettingsd",
 PACKAGES = {
     "apt": ["tigervnc-standalone-server", "xfce4-panel", "xfwm4", "xfdesktop4", "xfce4-settings",
             "xfce4-terminal", "dbus-x11", "x11-xserver-utils", "x11-utils", "x11-xkb-utils", "xauth",
-            "fonts-dejavu-core"],
+            "fonts-dejavu-core", "xclip"],
     "dnf": ["tigervnc-x11-server", "xfce4-panel", "xfwm4", "xfdesktop", "xfce4-settings",
             "xfce4-terminal", "dbus-daemon", "xsetroot", "xset", "xdpyinfo", "xprop", "xorg-x11-xauth", "setxkbmap",
-            "dejavu-sans-fonts"],
+            "dejavu-sans-fonts", "xclip"],
     "pacman": ["tigervnc", "xfce4-panel", "xfwm4", "xfdesktop", "xfce4-settings", "xfce4-terminal", "dbus",
                "xorg-xsetroot", "xorg-xset", "xorg-xdpyinfo", "xorg-xprop", "xorg-xauth", "xorg-setxkbmap",
-               "ttf-dejavu"],
+               "ttf-dejavu", "xclip"],
 }
 
 

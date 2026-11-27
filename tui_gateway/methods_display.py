@@ -270,5 +270,30 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"lease": _bd_lease.public_view(lease)})
 
 
+@method("display.clipboard.read")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """Copy out of the screen: its X CLIPBOARD text, for the viewer that holds the lease and nobody else.
+    Xvnc's own ServerCutText stays off (-SendCutText=0) because the bridge would hand it to watchers too.
+    A lease that moves during the read drops the text, as display.thumbnail does. Never logged."""
+    from tools.bot_desktop import clipboard as _bd_clipboard, lease as _bd_lease
+    viewer_id = str(params.get("viewer_id") or "").strip()
+    if not viewer_id:
+        return _err(rid, _DISPLAY_ERR, "viewer_id required")
+    if (refused := _foreign_viewer_id(rid, viewer_id)) is not None:
+        return refused
+    before = _bd_lease.get()
+    if not (before.holder == _bd_lease.HUMAN and before.viewer_id == viewer_id):
+        return _err(rid, _DISPLAY_ERR, "only the viewer in control can copy from this screen",
+                    data={"code": "viewer_mismatch"})
+    try:
+        read = _bd_clipboard.read_text()
+    except Exception as e:
+        return _err(rid, _DISPLAY_ERR, str(e))
+    if _bd_lease.get().epoch != before.epoch:
+        return _err(rid, _DISPLAY_ERR, "control changed hands during the copy", data={"code": "viewer_mismatch"})
+    return _ok(rid, {"text": read.text, "reason": read.reason})
+
+
 def register(server) -> None:
     bind_module(globals(), server, skip=("_",))

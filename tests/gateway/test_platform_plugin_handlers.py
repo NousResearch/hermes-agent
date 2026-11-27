@@ -14,8 +14,10 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -192,6 +194,77 @@ class TestAdapterPluginWiring:
         with patch("hermes_cli.plugins.get_plugin_manager", return_value=mgr):
             adapter._wire_plugin_handlers(None)
         assert seen == [None]
+
+
+def _async_value(value):
+    async def _inner():
+        return value
+    return _inner()
+
+
+class _RecordingApp:
+    """The Application surface this retry path uses: add_handler appends, and that
+    list is the registration the test can see without naming adapter methods.
+    """
+
+    def __init__(self, initialize):
+        self.handlers = {}
+        self.bot = MagicMock()
+        self.initialize = initialize
+
+    def add_handler(self, handler, group=0):
+        self.handlers.setdefault(group, []).append(handler)
+
+
+def _handler_is_on(app, handler) -> bool:
+    return any(item is handler for group in app.handlers.values() for item in group)
+
+
+class TestTransientInitRebuildRestoresPluginHandlers:
+    def test_rebuilt_application_contains_the_plugin_handler(self, monkeypatch):
+        """A transient initialize failure discards the Application. The retry
+        must install the plugin handler on the replacement, not merely receive
+        a reference to it.
+        """
+        adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
+        first_app = _RecordingApp(MagicMock(side_effect=OSError("transient")))
+        rebuilt_app = _RecordingApp(MagicMock(side_effect=RuntimeError("stop after rebuild")))
+        plugin_handler = object()
+
+        builder = MagicMock()
+        builder.token.return_value = builder
+        builder.request.return_value = builder
+        builder.get_updates_request.return_value = builder
+        builder.concurrent_updates.return_value = builder
+        builder.build.side_effect = [first_app, rebuilt_app]
+        monkeypatch.setattr(
+            "plugins.platforms.telegram.adapter.Application",
+            SimpleNamespace(builder=MagicMock(return_value=builder)),
+        )
+        monkeypatch.setattr(
+            "plugins.platforms.telegram.adapter.HTTPXRequest",
+            lambda **kwargs: MagicMock(),
+        )
+        monkeypatch.setattr(
+            "plugins.platforms.telegram.adapter.discover_fallback_ips",
+            lambda: _async_value([]),
+        )
+        monkeypatch.setattr("asyncio.sleep", MagicMock(return_value=_async_value(None)))
+        monkeypatch.setattr(
+            "gateway.status.acquire_scoped_lock",
+            lambda scope, identity, metadata=None: (True, None),
+        )
+
+        def factory(native, _adapter):
+            native.add_handler(plugin_handler)
+
+        mgr = MagicMock()
+        mgr.get_platform_handler_factories.return_value = [(factory, "p")]
+        with patch("hermes_cli.plugins.get_plugin_manager", return_value=mgr):
+            assert asyncio.run(adapter.connect()) is False
+
+        assert _handler_is_on(rebuilt_app, plugin_handler)
+
 
 # ===========================================================================
 # Every adapter calls _wire_plugin_handlers in connect() — source invariant

@@ -31,6 +31,12 @@ _SCAFFOLD_TAIL = (
 # normalized content (stripped, line endings unified). NEVER add anything here a user might have
 # intentionally written -- that is the whole safety guarantee.
 _LEGACY_TEMPLATE_SOULS = (
+    # A truncated / zero-byte SOUL.md (failed write, interrupted sync, cloud-sync
+    # conflict) carries zero user intent and used to take the "user customized this"
+    # branch of _ensure_default_soul_md() forever: the seed is skipped, the file
+    # loads as an empty context source, and the profile ends up with NO persona at
+    # all. Matches _normalize_soul("") for empty and whitespace-only files alike.
+    "",
     _SCAFFOLD_HEAD + (
         "Examples:\n"
         '  - "You are a warm, playful assistant who uses kaomoji occasionally."\n'

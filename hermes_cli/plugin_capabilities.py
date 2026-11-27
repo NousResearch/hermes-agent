@@ -54,6 +54,9 @@ _CAPABILITY_ROWS = (
      "Show this plugin's skill catalog in Hermes. Catalog searches may contact its service. "
      "When you confirm an install, update or uninstall, the plugin performs it in this profile "
      "under its own policy. Disabling the plugin leaves its installed files as ordinary local skills."),
+    ("conversation.cards", (),
+     "Post display-only cards into your conversations (no model call; the model is told a card "
+     "was posted, never its text; the card renders in Desktop or as a system line)."),
     ("gateway.platform_actions", ("allow_platform_actions",),
      "Act on connected chat platforms as the gateway bot "
      "(add reactions, rename threads) via ctx.platform_actions"))

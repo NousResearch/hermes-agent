@@ -107,28 +107,6 @@ export function MakeItYours() {
       <fieldset className="discovery-artworks">
         <legend className="discovery-welcome-lead-title">{copy.artwork.title}</legend>
         <div className="discovery-artworks-track">
-          <label className="discovery-artwork" data-artwork="none">
-            <input
-              aria-label="No background"
-              checked={noArtworkSelected}
-              className="sr-only"
-              name={`${group}-artwork`}
-              onChange={() => {
-                triggerHaptic('crisp')
-                setArtworkShown(false)
-              }}
-              type="radio"
-              value={NO_ARTWORK}
-            />
-            {noArtworkSelected && (
-              <span aria-hidden className="discovery-artwork-tag">
-                {copy.artwork.selected}
-              </span>
-            )}
-            <span aria-hidden className="discovery-artwork-none-label">
-              No background
-            </span>
-          </label>
           {artworksFor(renderedMode).map(artwork => {
             const selected = !noArtworkSelected && painted?.[renderedMode] === artwork
 
@@ -154,6 +132,28 @@ export function MakeItYours() {
               </label>
             )
           })}
+          <label className="discovery-artwork" data-artwork="none">
+            <input
+              aria-label="No background"
+              checked={noArtworkSelected}
+              className="sr-only"
+              name={`${group}-artwork`}
+              onChange={() => {
+                triggerHaptic('crisp')
+                setArtworkShown(false)
+              }}
+              type="radio"
+              value={NO_ARTWORK}
+            />
+            {noArtworkSelected && (
+              <span aria-hidden className="discovery-artwork-tag">
+                {copy.artwork.selected}
+              </span>
+            )}
+            <span aria-hidden className="discovery-artwork-none-label">
+              No background
+            </span>
+          </label>
         </div>
       </fieldset>
     </>

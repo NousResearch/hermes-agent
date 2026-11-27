@@ -29378,6 +29378,21 @@
           "description": {
             "title": "Description",
             "type": "string"
+          },
+          "default_platforms": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Default Platforms"
           }
         },
         "required": [

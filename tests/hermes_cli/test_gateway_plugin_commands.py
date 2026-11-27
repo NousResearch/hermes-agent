@@ -454,3 +454,27 @@ def test_the_open_sessions_catalog_is_read_and_an_older_gateway_is_asked_without
     assert gateway_plugin_commands.lookup(c, "mcp-status") is True
     assert [p for m, p in conn.calls if m == "commands.catalog"][-2:] == [{"session_id": "local-t"}, {}]
     assert local_plugin_reads == []
+
+
+def test_the_gateway_plugins_list_reply_carries_default_platforms_under_its_contract(monkeypatch, tmp_path):
+    """The gateway's real ``plugins.list`` handler sends each toolset's ``default_platforms``; the wire
+    contract (``extra="forbid"``) must accept that reply, or strict checks reject every listing."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from gateway.session_discovery import list_plugins
+    from hermes_cli import plugins as plugins_mod
+    from tui_gateway.contracts import METHODS
+
+    manager = SimpleNamespace(list_plugins=list, get_portable_mcp_servers=list)
+    monkeypatch.setattr(plugins_mod, "discover_plugins", lambda: None)
+    monkeypatch.setattr(plugins_mod, "get_plugin_manager", lambda: manager)
+    monkeypatch.setattr(plugins_mod, "get_plugin_toolsets", lambda: [("scoped-ts", "Scoped", "")])
+    monkeypatch.setattr(plugins_mod, "get_plugin_toolset_default_platforms", lambda: {"scoped-ts": {"slack"}})
+    home = tmp_path / "profile"
+    home.mkdir()
+    authority = SimpleNamespace(profile_id=str(home))
+    actor = SimpleNamespace(capabilities={"session:read"}, profile_id=str(home))
+    reply = asyncio.run(list_plugins(authority, actor, {}))
+    assert reply["toolsets"][0]["default_platforms"] == ["slack"]
+    METHODS["plugins.list"].result.model_validate(reply)

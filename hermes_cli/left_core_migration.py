@@ -252,10 +252,8 @@ _WECOM_NOTICE = ("WeCom is now a Hermes Labs plugin: built by Nous Research, not
 
 
 def _wecom_notice(home: Path, *, process_env: bool = False) -> str:
-    # As for Yuanbao: a bare ``wecom`` that survived the install's enable (a managed overlay pin) now turns it off.
-    if plugin_present("wecom", home) and _plugins_listed(home, ("wecom",))[1]:
-        return (f"{_WECOM_NOTICE} plugins.disabled lists 'wecom', which now turns WeCom off; "
-                "remove it to keep using WeCom.")
+    # As for Yuanbao: the automatic install keeps a bare ``wecom`` in plugins.disabled (which core's adapter
+    # ignored), and its kept-off notice (_install_locked) names the enable command.
     return _WECOM_NOTICE
 
 
@@ -823,7 +821,7 @@ LEFT_CORE: tuple[LeftCoreFeature, ...] = (
         secret_env=("WECOM_SECRET",),
         private_env=("WECOM_BOT_ID", "WECOM_WEBSOCKET_URL", "WECOM_ALLOWED_USERS", "WECOM_HOME_CHANNEL"),
         platform="wecom", enable_env=("WECOM_BOT_ID", "WECOM_SECRET"), notice=_wecom_notice,
-        left_at=55,  # as DingTalk: a home from v55 on that sets WeCom up is told the install command
+        left_at=55, labs=True,  # as DingTalk: a home that cannot prove it ran core's WeCom is told the command
     ),
     LeftCoreFeature(
         plugin="wecom", label="WeCom callback", in_use=wecom_callback_in_use, plugin_key="platforms/wecom",
@@ -832,7 +830,7 @@ LEFT_CORE: tuple[LeftCoreFeature, ...] = (
         secret_env=("WECOM_CALLBACK_CORP_SECRET", "WECOM_CALLBACK_TOKEN", "WECOM_CALLBACK_ENCODING_AES_KEY"),
         private_env=("WECOM_CALLBACK_CORP_ID", "WECOM_CALLBACK_AGENT_ID"),
         platform="wecom_callback", enable_env=("WECOM_CALLBACK_CORP_ID", "WECOM_CALLBACK_CORP_SECRET"),
-        notice=_wecom_notice, left_at=55,
+        notice=_wecom_notice, left_at=55, labs=True,
     ),
 )
 

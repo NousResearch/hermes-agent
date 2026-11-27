@@ -17,6 +17,7 @@ import hermes_cli.left_core_migration as lcm
 
 _BOT_ENV = "WECOM_BOT_ID=b\nWECOM_SECRET=s\n"
 _CALLBACK_ENV = "WECOM_CALLBACK_CORP_ID=c\nWECOM_CALLBACK_CORP_SECRET=s\n"
+_CORE_ERA = "_config_version: 54\n"  # a config.yaml from before v55: the proof a home ran core's WeCom
 
 
 @pytest.fixture(autouse=True)
@@ -69,7 +70,7 @@ def test_wecom_callback_in_use_matches_what_core_ran(tmp_path, env, config, in_u
 
 @pytest.mark.parametrize("env", [_BOT_ENV + _CALLBACK_ENV, _CALLBACK_ENV])
 def test_both_rows_install_the_one_wecom_plugin_once(tmp_path, env):
-    home = _home(tmp_path, env=env)
+    home = _home(tmp_path, env=env, config=_CORE_ERA)
     calls = []
 
     def install(name):
@@ -109,7 +110,7 @@ def test_an_upgrade_crossing_v55_still_installs_the_plugin(tmp_path, monkeypatch
     """`hermes update` migrates config.yaml past v55 before the left-core pass: the shared v55 step records that
     the home ran WeCom (either mode) in core, so the pass still installs the plugin once."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "launch"))
-    home = _home(tmp_path, env=env, config="_config_version: 54\n" + config)
+    home = _home(tmp_path, env=env, config=_CORE_ERA + config)
     _migrate_config(home)
     import hermes_yaml as yaml
     stamped = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
@@ -132,6 +133,41 @@ def test_a_home_from_v55_on_that_sets_wecom_up_is_told_the_install_command(tmp_p
                             say=said.append) == []
     assert len(said) == 1 and "hermes plugins install wecom" in said[0]
     assert (home / "config.yaml").read_bytes() == before
+
+
+@pytest.mark.parametrize("config", ["", _ENABLED_ONLY], ids=["no-config", "unstamped"])
+def test_a_home_that_cannot_prove_it_ran_core_wecom_is_told_the_install_command(tmp_path, config):
+    """A missing or unstamped config.yaml is not proof of core-era use (a new home whose setup wrote only
+    .env, both modes here, looks the same): it gets the one install command, also after its first stamp."""
+    from hermes_cli.config import save_config
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    home = _home(tmp_path, env=_BOT_ENV + _CALLBACK_ENV, config=config)
+    for _ in range(2):
+        said = []
+        lcm._attempted.clear()
+        (home / "cache" / "left-core.failed-wecom").unlink(missing_ok=True)
+        assert lcm.migrate_home(home, install=lambda name: pytest.fail("Labs code is installed only when asked"),
+                                say=said.append) == []
+        assert len(said) == 1 and "hermes plugins install wecom" in said[0], said
+        token = set_hermes_home_override(home)
+        try:
+            save_config({"display": {"compact": True}}, merge_existing=True)  # the home's first stamp
+        finally:
+            reset_hermes_home_override(token)
+    assert not (home / "plugins" / "wecom").exists()
+
+
+def test_a_bare_wecom_in_plugins_disabled_is_kept_with_one_enable_notice(tmp_path):
+    home = _home(tmp_path, env=_BOT_ENV, config=_CORE_ERA + "plugins:\n  disabled: [wecom]\n")
+    said = []
+
+    def install(name):
+        (home / "plugins" / name).mkdir(parents=True)
+        return {"ok": True, "kept_disabled": True}
+
+    assert lcm.migrate_home(home, install=install, say=said.append) == ["wecom"]
+    assert len(said) == 1 and said[0].count("plugins.disabled lists 'wecom'") == 1, said
+    assert "hermes plugins enable wecom" in said[0]
 
 
 def test_the_wecom_card_installs_the_labs_plugin_once_wecom_is_set_up(monkeypatch):

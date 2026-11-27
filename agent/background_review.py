@@ -301,22 +301,79 @@ def _review_input_token_budget(
     return budget if budget > 0 else None
 
 
+def _review_requested_for_managed_worker(task: dict[str, Any]) -> bool:
+    """``auxiliary.background_review.managed_workers`` - opt-in, default off.
+
+    A managed worker (a kanban card's worker) is a finite turn, and finite turns are excluded
+    from the review because their exit takes the daemon thread with it. A worker is the one
+    finite turn that can wait for it, so the exclusion becomes a config choice rather than a
+    rule. Default False keeps the upstream behaviour for every board that has not asked.
+    """
+    try:
+        from utils import is_truthy_value
+        return is_truthy_value(task.get("managed_workers"), default=False)
+    except Exception:
+        logger.warning(
+            "Failed to read auxiliary.background_review.managed_workers; leaving the "
+            "managed-worker review off", exc_info=True)
+        return False
+
+
+def managed_worker_review_requested() -> bool:
+    """Config-only answer for the worker's construct flag (no turn-scope gate).
+
+    ``load_background_review_settings`` cannot answer this before the agent exists, because the
+    turn scope is bound inside the worker and reports a finite turn.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+        return _review_requested_for_managed_worker(_task_block(load_config_readonly()))
+    except Exception:
+        logger.warning(
+            "Failed to read the background-review config; leaving the managed-worker review off",
+            exc_info=True)
+        return False
+
+
+def wait_for_background_review(agent: Any, timeout: float = 120.0) -> bool:
+    """Wait (bounded) for this session's in-flight review, so a worker is not killed mid-review.
+
+    Returns True when nothing was in flight or the run published its request exit, False on the
+    timeout - the caller logs that rather than blocking its own shutdown. ``request_done`` is the
+    ABA-safe signal ``finish_background_review_run`` sets, so a successor run is never confused
+    with the one being waited on.
+    """
+    run = getattr(agent, "_background_review_run", None)
+    if run is None:
+        # The run token is published just before the thread starts; give a spawn that is still in
+        # the turn's tail a moment to appear rather than reading "nothing in flight" too early.
+        deadline = time.monotonic() + 2.0
+        while run is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+            run = getattr(agent, "_background_review_run", None)
+    if run is None:
+        return True
+    try:
+        return bool(run.request_done.wait(timeout))
+    except Exception:
+        logger.debug("background review wait raised", exc_info=True)
+        return True
+
+
 def load_background_review_settings() -> tuple[bool, dict[str, Any]]:
     """Single config read -> ``(enabled, task_cfg)``. Fail-open (``enabled=True``) so a broken
     config never silently disables reviews — but WARN so the cost is visible."""
     from agent.safe_worker_policy import safe_worker_enabled
-    from gateway.session_finite import finite_turn_required
+    from gateway.session_finite import finite_turn_required, managed_worker_turn
 
-    # A finite gateway turn (`chat -q` / `-z`) is one-shot like the in-process run, whose exit
-    # takes the daemon review thread with it; the long-lived gateway would otherwise fork a
-    # ~30K-token review after the viewer has already gone.
-    if safe_worker_enabled() or finite_turn_required() is True:
+    # A safe/troubleshooting worker never self-modifies.
+    if safe_worker_enabled():
         return False, {}
     try:
         from hermes_cli.config import load_config_readonly
         from utils import is_truthy_value
         task = _task_block(load_config_readonly())
-        return is_truthy_value(task.get("enabled"), default=True), task
+        enabled = is_truthy_value(task.get("enabled"), default=True)
     except Exception:
         logger.warning(
             "Failed to read background_review.enabled; leaving automatic "
@@ -324,6 +381,15 @@ def load_background_review_settings() -> tuple[bool, dict[str, Any]]:
             exc_info=True,
         )
         return True, {}
+
+    # A finite gateway turn (`chat -q` / `-z`) is one-shot like the in-process run, whose exit
+    # takes the daemon review thread with it; the long-lived gateway would otherwise fork a
+    # ~30K-token review after the viewer has already gone. A managed worker is the one finite
+    # turn that drains the review before retiring its agent, so it opts in by config.
+    if finite_turn_required() is True and not (
+            managed_worker_turn() and _review_requested_for_managed_worker(task)):
+        return False, {}
+    return enabled, task
 
 
 def _resolve_review_runtime(agent: Any, task_cfg: Optional[dict[str, Any]] = None) -> dict[str, Any]:

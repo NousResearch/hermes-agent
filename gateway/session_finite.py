@@ -6,6 +6,25 @@ from persistence.core.errors import AuthorityRefusal
 
 _finite_turn = ContextVar('finite_turn', default=None)
 _unattended_turn = ContextVar('unattended_turn', default=False)
+# A turn run inside an admission-owned managed worker (a kanban card's worker, not a
+# viewer's `chat -q`). The finite flag alone cannot tell them apart, and the background
+# review needs to: a one-shot CLI turn exits with the review thread, while a worker can be
+# made to wait for it (agent/managed_worker.py drains it before retiring the agent).
+_managed_worker_turn = ContextVar('managed_worker_turn', default=False)
+
+
+def managed_worker_turn():
+    """True inside a managed worker's turn (bound by gateway.session_managed_worker)."""
+    return _managed_worker_turn.get()
+
+
+@contextmanager
+def managed_worker_turn_scope(value=True):
+    token = _managed_worker_turn.set(bool(value))
+    try:
+        yield
+    finally:
+        _managed_worker_turn.reset(token)
 
 
 def finite_turn_required():

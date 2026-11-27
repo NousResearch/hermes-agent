@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 
-import { auxTaskIsUnpinned, auxTaskLabel, auxTaskRows, BUILTIN_AUX_TASKS, effectiveAuxRoute } from "./aux-tasks";
+import {
+  AUTO_ROUTE_EXPLANATION,
+  auxTaskIsUnpinned,
+  auxTaskLabel,
+  auxTaskRouteLabel,
+  auxTaskRows,
+  BUILTIN_AUX_TASKS,
+  effectiveAuxRoute,
+} from "./aux-tasks";
 
 const builtinKeys = BUILTIN_AUX_TASKS.map((t) => t.key);
 
@@ -80,5 +88,42 @@ describe("auxTaskRows", () => {
       inherits_default: false,
     };
     expect(auxTaskIsUnpinned(assignment)).toBe(false);
+  });
+
+  it("labels a denied plugin base route by its actual Default source", () => {
+    const meta = { key: "side_task", label: "Side", hint: "", inheritFrom: "compression" };
+    const assignment = {
+      task: "side_task",
+      provider: "auto",
+      model: "",
+      base_url: "",
+      inherit_from: "compression",
+      inherits_default: true,
+      effective: { provider: "openrouter", model: "vendor/default", base_url: "" },
+    };
+    expect(auxTaskRouteLabel(meta, assignment, [assignment])).toBe(
+      "inherits Default · openrouter · vendor/default",
+    );
+  });
+
+  it("shows a standalone plugin's declared effective route", () => {
+    const meta = { key: "own_task", label: "Own", hint: "" };
+    const assignment = {
+      task: "own_task",
+      provider: "auto",
+      model: "",
+      base_url: "",
+      inherits_default: false,
+      effective: { provider: "openrouter", model: "vendor/own", base_url: "" },
+    };
+    expect(auxTaskRouteLabel(meta, assignment, [assignment])).toBe(
+      "openrouter · vendor/own",
+    );
+  });
+
+  it("explains auto without claiming it always means main", () => {
+    expect(AUTO_ROUTE_EXPLANATION).toBe(
+      "auto follows Default when configured, otherwise the main model.",
+    );
   });
 });

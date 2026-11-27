@@ -114,6 +114,30 @@ def test_listing_is_per_profile_and_carries_inheritance(two_profile_homes):
     assert rows_b["approval"]["effective"]["model"] == "vendor/model-b-default"
 
 
+def test_denied_core_inheritance_reports_default_as_effective_source(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    _write_plugin(home, "side", _SIDE)
+    (home / "config.yaml").write_text(json.dumps({
+        "plugins": {"enabled": ["side"]},
+        "auxiliary": {
+            "default": {"provider": "openrouter", "model": "vendor/default"},
+            "compression": {"provider": "openrouter", "model": "vendor/compression"},
+        },
+    }))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(plugins_mod, "get_bundled_plugins_dir", lambda: tmp_path / "empty-bundled")
+    monkeypatch.setattr(PluginManager, "_scan_entry_points", lambda self: [])
+    plugins_mod._reset_plugin_managers_for_tests()
+    try:
+        side = _rows(None)["side_task"]
+        assert side["inherit_from"] == "compression"
+        assert side["effective"]["model"] == "vendor/default"
+        assert side["inherits_default"] is True
+    finally:
+        plugins_mod._reset_plugin_managers_for_tests()
+
+
 def test_pin_persists_per_profile_and_is_honored_by_resolution(two_profile_homes):
     home_a, _home_b = two_profile_homes
     with _profile_scope("b"):

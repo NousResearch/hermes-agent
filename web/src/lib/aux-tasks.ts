@@ -8,6 +8,9 @@ export interface AuxTaskMeta {
   inheritFrom?: string;
 }
 
+export const AUTO_ROUTE_EXPLANATION =
+  "auto follows Default when configured, otherwise the main model.";
+
 // Built-in auxiliary tasks, in the order `_AUX_TASK_SLOTS`
 // (hermes_cli/web_server_config.py) serves them. Plugin-registered tasks are
 // not listed here: the backend appends them to `/api/model/auxiliary` with the
@@ -78,4 +81,22 @@ export function auxTaskIsUnpinned(
   return (!provider || provider === "auto")
     && !assignment.model?.trim()
     && !assignment.base_url?.trim();
+}
+
+export function auxTaskRouteLabel(
+  meta: AuxTaskMeta,
+  assignment: AuxiliaryTaskAssignment | null | undefined,
+  tasks: readonly AuxiliaryTaskAssignment[] | null | undefined,
+): string {
+  const isAuto = auxTaskIsUnpinned(assignment);
+  const effective = effectiveAuxRoute(assignment);
+  if (isAuto && assignment?.inherits_default && effective && meta.key !== "default") {
+    return `inherits Default · ${effective}`;
+  }
+  if (isAuto && meta.inheritFrom) {
+    return `inherits ${auxTaskLabel(tasks, meta.inheritFrom)} · ${effective || "auto (use main model)"}`;
+  }
+  if (isAuto && effective) return effective;
+  if (isAuto) return "auto (use main model)";
+  return `${assignment?.provider} · ${assignment?.model || "(provider default)"}`;
 }

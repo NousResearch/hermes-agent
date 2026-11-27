@@ -14,7 +14,13 @@ import {
   Zap,
 } from "lucide-react";
 import { api } from "@/lib/api";
-import { auxTaskIsUnpinned, auxTaskLabel, auxTaskRows, effectiveAuxRoute } from "@/lib/aux-tasks";
+import {
+  AUTO_ROUTE_EXPLANATION,
+  auxTaskIsUnpinned,
+  auxTaskLabel,
+  auxTaskRouteLabel,
+  auxTaskRows,
+} from "@/lib/aux-tasks";
 import type {
   AuxiliaryModelsResponse,
   AuxiliaryTaskAssignment,
@@ -612,9 +618,8 @@ function AuxiliaryTasksModal({
           </div>
           <p className="text-xs text-text-secondary mt-2">
             Auxiliary tasks handle side-jobs like vision, session search, and
-            compression. <span className="font-mono">auto</span> means
-            &quot;use the main model&quot;. Override per-task when you want a
-            cheap/fast model for a specific job.
+            compression. <span className="font-mono">{AUTO_ROUTE_EXPLANATION}</span>{" "}
+            Override per-task when you want a different model for a specific job.
           </p>
         </header>
 
@@ -622,7 +627,6 @@ function AuxiliaryTasksModal({
           {auxTaskRows(aux?.tasks).map((t) => {
             const cur = aux?.tasks.find((a) => a.task === t.key);
             const isAuto = auxTaskIsUnpinned(cur);
-            const effRoute = effectiveAuxRoute(cur);
             return (
               <div
                 key={t.key}
@@ -636,13 +640,7 @@ function AuxiliaryTasksModal({
                     </span>
                   </div>
                   <div className="text-xs font-mono text-text-secondary truncate">
-                    {isAuto && t.inheritFrom
-                      ? `inherits ${auxTaskLabel(aux?.tasks, t.inheritFrom)} · ${effRoute || "auto (use main model)"}`
-                      : isAuto && cur?.inherits_default && effRoute && t.key !== "default"
-                        ? `inherits Default · ${effRoute}`
-                      : isAuto
-                        ? "auto (use main model)"
-                        : `${cur?.provider} · ${cur?.model || "(provider default)"}`}
+                    {auxTaskRouteLabel(t, cur, aux?.tasks)}
                   </div>
                 </div>
                 {t.inheritFrom && !isAuto && (

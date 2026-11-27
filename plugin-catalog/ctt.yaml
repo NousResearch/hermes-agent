@@ -1,0 +1,29 @@
+name: ctt
+repo: https://github.com/kalice-vi/ctt
+sha: f81e67b3ce184213a85e6ec618d9e3b2660de406
+subdir: ""
+description: "Help Hermes finish what it starts—with clear steps, saved progress, checked results, and lessons it can reuse."
+maintainer: kalice-vi
+tier: community
+category: automation
+requires_hermes: ">=0.23.2"
+docs_url: https://github.com/kalice-vi/ctt#readme
+version: "3.0.0"
+readme: true
+platforms: [linux, macos, windows]
+default: false
+onboarding: false
+known_issues:
+  - "Live typed Decisions require an installer-provided Gemini/Google API key and available quota; installation and loading need no key."
+  - "Without optional turn_origin metadata, unknown-source turns preserve active work; use an explicit new task for separate work."
+  - "A learned workflow may require review when sanitized metadata cannot support a confident choice; automatic learned reuse is not guaranteed."
+capabilities:
+  provides_tools: [ctt_task, ctt_context, ctt_workflow]
+  provides_hooks:
+    - pre_llm_call
+    - subagent_start
+    - pre_tool_call
+    - post_tool_call
+    - transform_tool_result
+  provides_middleware: []
+  requires_env: []

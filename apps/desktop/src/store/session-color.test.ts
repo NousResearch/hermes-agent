@@ -6,7 +6,7 @@ import { makeCwdSession } from '../test/session-info'
 
 import { $projects } from './projects'
 import { $sessions } from './session'
-import { $sessionColorById, $sessionColorOverrides, sessionColorFor, setSessionColorOverride } from './session-color'
+import { $sessionColorById, $sessionColorOverrides, sessionColorFor, sessionSeedHue, setSessionColorOverride } from './session-color'
 
 function makeProject(id: string, folders: string[], color: null | string): ProjectInfo {
   return {
@@ -31,6 +31,22 @@ afterEach(() => {
 })
 
 describe('$sessionColorById', () => {
+  it('notifies listeners when a colour is set, cleared or inherited', () => {
+    const session = makeCwdSession('/www/app')
+
+    $projects.set([makeProject('p_app', ['/www/app'], '#5865f2')])
+    $sessions.set([session])
+
+    const seen: Record<string, string>[] = []
+    const off = $sessionColorById.listen(map => seen.push(map))
+
+    setSessionColorOverride(session.id, '#ff8800')
+    setSessionColorOverride(session.id, null)
+    off()
+
+    expect(seen.map(map => map[session.id])).toEqual(['#ff8800', '#5865f2'])
+  })
+
   it('maps each session under a colored project to that color, keyed by live id', () => {
     const a = makeCwdSession('/www/app/src', { git_repo_root: '/www/app' })
     const b = makeCwdSession('/other/place')
@@ -107,5 +123,27 @@ describe('sessionColorFor', () => {
   it('returns undefined for a null/absent session', () => {
     expect(sessionColorFor(null)).toBeUndefined()
     expect(sessionColorFor(undefined)).toBeUndefined()
+  })
+})
+
+describe('sessionSeedHue', () => {
+  it('is stable for the same id — across calls and windows', () => {
+    expect(sessionSeedHue('local-1ba4db6dbfde')).toBe(sessionSeedHue('local-1ba4db6dbfde'))
+  })
+
+  it('always lands in 0–359', () => {
+    for (const id of ['', 'a', 'local-1', 'x'.repeat(200), 'сессия-с-кириллицей']) {
+      const hue = sessionSeedHue(id)
+
+      expect(Number.isInteger(hue)).toBe(true)
+      expect(hue).toBeGreaterThanOrEqual(0)
+      expect(hue).toBeLessThan(360)
+    }
+  })
+
+  it('gives neighbouring ids different hues', () => {
+    const hues = new Set(['local-1', 'local-2', 'local-3', 'session-tile:local-1'].map(sessionSeedHue))
+
+    expect(hues.size).toBeGreaterThan(2)
   })
 })

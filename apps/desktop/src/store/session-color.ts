@@ -80,3 +80,22 @@ export function sessionColorFor(session: null | SessionInfo | undefined): string
     resolveSessionColor(session, $projects.get(), $sessionColorOverrides.get(), $projectOwnerBySessionId.get())
   )
 }
+
+/** A stable hue (0–359) for a chat that has no colour of its own.
+ *
+ *  Pure and dependency-free on purpose: the chat surface publishes it as
+ *  `--ui-session-hue`, so a CSS-only theme can give every chat a distinct tint
+ *  without running any JavaScript of its own (desktop-plugin-sdk.md ▸ Session
+ *  colour hooks). The same id always yields the same hue — across reloads,
+ *  windows and profiles — because the value is derived from the id and nothing
+ *  else. */
+export function sessionSeedHue(sessionId: string): number {
+  let hash = 2_166_136_261
+
+  for (let i = 0; i < sessionId.length; i += 1) {
+    hash ^= sessionId.charCodeAt(i)
+    hash = Math.imul(hash, 16_777_619)
+  }
+
+  return Math.abs(hash) % 360
+}

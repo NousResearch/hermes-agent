@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { fetchCatalog, parseCatalog } from './catalog-data'
+import { ru } from '@/i18n/ru'
+
+import { catalogSourceLabel, fetchCatalog, parseCatalog } from './catalog-data'
 
 afterEach(() => vi.unstubAllGlobals())
 
@@ -142,4 +144,13 @@ describe('public catalog data', () => {
   it('rejects a non-catalog response instead of treating an error payload as an empty catalog', () => {
     expect(() => parseCatalog('skills', { error: 'Service unavailable' })).toThrow('Invalid catalog response')
   })
+})
+
+it('localizes known source badges and keeps registry domains intact', () => {
+  expect(catalogSourceLabel('community', ru)).toBe('Сообщество')
+  expect(catalogSourceLabel('local', ru)).toBe('Локальный')
+  expect(catalogSourceLabel('optional', ru)).toBe('Дополнительный')
+  expect(catalogSourceLabel('built-in', ru)).toBe('Встроенный')
+  expect(catalogSourceLabel('bundled', ru)).toBe('Встроенный')
+  expect(catalogSourceLabel('browse.sh', ru)).toBe('browse.sh')
 })

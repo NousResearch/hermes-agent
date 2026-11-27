@@ -1,5 +1,6 @@
 import { useEffect, useReducer, useRef } from 'react'
 
+import { translateNow, useI18n } from '@/i18n'
 import { isSubmitEnter } from '@/lib/ime'
 import {
   initialQuickComposerState,
@@ -36,6 +37,8 @@ const QUICK_TARGET_OPTION_STYLE = {
  * the primary renderer's normal prompt-submit path.
  */
 export function QuickEntryApp() {
+  const { t } = useI18n()
+  const q = t.quickEntry
   const inputRef = useRef<HTMLInputElement>(null)
   const submitIdRef = useRef(0)
 
@@ -83,7 +86,7 @@ export function QuickEntryApp() {
 
     const offLateResult = api?.onLateResult(payload => {
       dispatch({
-        message: payload?.result?.message ?? 'Hermes could not deliver the prompt.',
+        message: payload?.result?.message ?? translateNow('quickEntry.deliveryFailed'),
         ok: payload?.result?.ok === true,
         type: 'late-result'
       })
@@ -141,7 +144,7 @@ export function QuickEntryApp() {
             ›
           </span>
           <input
-            aria-label="Quick Entry"
+            aria-label={q.inputLabel}
             autoCapitalize="off"
             autoComplete="off"
             autoCorrect="off"
@@ -162,7 +165,7 @@ export function QuickEntryApp() {
                 dispatch({ type: 'dismiss' })
               }
             }}
-            placeholder={state.connected ? 'Ask Hermes…' : 'Not connected — open Hermes to reconnect'}
+            placeholder={state.connected ? q.placeholder : q.notConnected}
             ref={inputRef}
             spellCheck={false}
             style={{
@@ -188,10 +191,10 @@ export function QuickEntryApp() {
               userSelect: 'none'
             }}
           >
-            Send to
+            {q.sendTo}
           </label>
           <select
-            aria-label="Target session"
+            aria-label={q.targetLabel}
             disabled={!state.connected}
             id="quick-entry-target"
             onChange={event => dispatch({ target: event.target.value, type: 'target' })}
@@ -213,10 +216,10 @@ export function QuickEntryApp() {
             value={state.target}
           >
             <option style={QUICK_TARGET_OPTION_STYLE} value={QUICK_TARGET_CURRENT}>
-              Current chat
+              {q.currentChat}
             </option>
             <option style={QUICK_TARGET_OPTION_STYLE} value={QUICK_TARGET_NEW}>
-              New session
+              {t.sidebar.nav['new-session']}
             </option>
             {state.sessions.map(session => (
               <option key={session.id} style={QUICK_TARGET_OPTION_STYLE} value={session.id}>

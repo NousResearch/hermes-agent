@@ -96,7 +96,7 @@ const { runGroupRoundMember } = await import('./group-round-members')
 const engine = { kind: 'gateway', connectionId: 'owner', profile: 'default', roomId: 'r1' } as const
 
 function hydrationContext(values: Map<string, unknown>) {
-  return { ...scriptedStorage(values), i18n: { register: () => () => undefined },
+  return { ...scriptedStorage(values), i18n: { onLocaleChange: () => () => undefined, register: () => () => undefined, t: (key: string) => key },
     onDispose: () => undefined, register: () => () => undefined }
 }
 

@@ -4199,6 +4199,17 @@ export const esOverrides = {
     versionDetailsBackend: 'Backend conectado',
     versionDetailsCommit: 'Commit',
     versionDetailsBuildOrigin: 'Origen de la compilación',
+    versionDetailsSource: {
+      build: 'Compilación',
+      ci: 'CI',
+      'commit-build': 'Compilación de commit',
+      docker: 'Docker',
+      fallback: 'Respaldo',
+      git: 'Git',
+      local: 'Local',
+      nix: 'Nix',
+      unknown: 'Desconocido'
+    },
     versionDetailsDistribution: 'Distribución',
     versionDetailsDistributionDesktop: 'Aplicación de escritorio',
     versionDetailsDistributionDesktopMsix: 'Aplicación de escritorio (MSIX)',
@@ -5147,6 +5158,12 @@ export const esOverrides = {
       readAloud: 'Leer en voz alta',
       copyFullResponse: 'Copiar la respuesta completa',
       readAloudFullResponseHint: 'Mayús+clic: leer la respuesta completa',
+      steered: "Indicación recibida",
+      failedTurnNotices: {
+        notProcessed: 'No se procesó tu solicitud. Si aún quieres que la lleve a cabo, envíala de nuevo.',
+        partial: 'La solicitud no se completó. Es posible que algunas acciones ya se hayan ejecutado. Comprueba el resultado antes de volver a enviarla.',
+        automationInterrupted: 'La tarea automática se interrumpió y no se volvió a ejecutar. Comprueba qué acciones llegaron a realizarse.'
+      },
       contentRefusedNotice: 'El filtro de seguridad del modelo rechazó este mensaje: prueba con otra consulta.',
       editMessage: 'Editar mensaje',
       expandMessage: 'Expandir mensaje',

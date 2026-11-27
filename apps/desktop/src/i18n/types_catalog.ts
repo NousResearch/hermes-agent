@@ -1,4 +1,7 @@
 export interface CatalogTranslations {
+  builtinToolsets: Record<string, { label: string; description: string }>
+  sourceLabels: Record<'local' | 'optional', string>
+  pluginCategories: Record<string, { label: string; blurb: string }>
   add: string
   added: string
   discover: string

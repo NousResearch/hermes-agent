@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { useState } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { I18nProvider } from '@/i18n'
 import { queryClient } from '@/lib/query-client'
 
 import { PageSearchShell } from '../../page-search-shell'
@@ -21,7 +22,7 @@ afterEach(() => {
   $catalogCardView.set(true)
 })
 
-function setup(kind: CatalogKind) {
+function setup(kind: CatalogKind, locale: 'en' | 'ru' = 'en') {
   const entries = parseCatalog(
     kind,
     ['alpha', 'beta'].map(name => ({
@@ -59,7 +60,7 @@ function setup(kind: CatalogKind) {
     )
   }
 
-  return { entries, onInstall, ...render(<Harness />) }
+  return { entries, onInstall, ...render(<I18nProvider configClient={null} initialLocale={locale}><Harness /></I18nProvider>) }
 }
 
 const card = (name: string) =>
@@ -137,4 +138,12 @@ it('shares the saved layout choice when moving between Skills and Plugins', () =
   expect(container.querySelector('[data-catalog-list="plugins"]')).not.toBeNull()
   fireEvent.click(screen.getByRole('button', { name: 'Card view' }))
   expect($catalogCardView.get()).toBe(true)
+})
+
+it('searches localized plugin categories and installs the original catalog entry', async () => {
+  const { entries, onInstall } = setup('plugins', 'ru')
+  fireEvent.change(screen.getByRole('textbox', { name: 'Search catalog' }), { target: { value: 'память' } })
+  await waitFor(() => expect(screen.getAllByRole('article')).toHaveLength(1))
+  fireEvent.click(within(card('alpha')).getByRole('button', { name: 'Добавить alpha' }))
+  expect(onInstall).toHaveBeenCalledExactlyOnceWith(entries[0])
 })

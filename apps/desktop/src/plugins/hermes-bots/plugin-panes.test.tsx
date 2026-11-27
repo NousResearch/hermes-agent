@@ -111,7 +111,7 @@ function recordingContext() {
   const unregisters = new Map<string, () => void>()
 
   const ctx = {
-    i18n: { register: () => () => undefined, t: (key: string) => key },
+    i18n: { onLocaleChange: () => () => undefined, register: () => () => undefined, t: (key: string) => key },
     onDispose: (fn: () => void) => disposers.push(fn),
     register: (registration: Registration) => {
       registrations.push(registration)

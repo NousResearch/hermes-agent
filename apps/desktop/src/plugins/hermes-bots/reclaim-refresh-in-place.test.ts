@@ -128,7 +128,7 @@ function register() {
 
   try {
     plugin.register({
-      i18n: { register: () => () => undefined },
+      i18n: { onLocaleChange: () => () => undefined, register: () => () => undefined, t: (key: string) => key },
       onDispose: () => undefined,
       register: () => () => undefined,
       storage: { get: async () => undefined, set: async () => undefined }

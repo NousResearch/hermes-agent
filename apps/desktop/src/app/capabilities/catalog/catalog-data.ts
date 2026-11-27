@@ -1,6 +1,7 @@
 import { skillCatalogInstallIdentifier } from '@hermes/shared'
 import { queryOptions, useQuery } from '@tanstack/react-query'
 
+import type { Translations } from '@/i18n/types'
 import { CATALOG_ORIGIN } from '@/lib/plugin-catalog'
 import { queryClient } from '@/lib/query-client'
 
@@ -85,6 +86,26 @@ function webUrl(value: unknown): string | null {
  *  slugs read as words (`software-development` → `Software Development`). */
 export const catalogLabel = (value: string) =>
   value.includes('.') ? value : value.replace(/[-_]+/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+
+export function catalogSourceLabel(source: string, t: Translations): string {
+  if (source === 'built-in' || source === 'bundled') {
+    return t.skills.provenance.bundled
+  }
+
+  if (source === 'hub') {
+    return t.skills.provenance.hub
+  }
+
+  if (source === 'local' || source === 'optional') {
+    return t.catalog.sourceLabels[source]
+  }
+
+  if (source === 'official' || source === 'verified' || source === 'community') {
+    return t.catalog.tierLabels[source]
+  }
+
+  return catalogLabel(source)
+}
 
 const isoDate = (value: unknown) => (Number.isFinite(Date.parse(text(value))) ? text(value) : undefined)
 

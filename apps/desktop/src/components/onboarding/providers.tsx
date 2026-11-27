@@ -1,10 +1,10 @@
 import { RowButton } from '@/components/ui/row-button'
-import { useI18n } from '@/i18n'
+import { type Translations, useI18n } from '@/i18n'
 import { Check, ChevronRight, Terminal } from '@/lib/icons'
-import { PROVIDER_DISPLAY_NAMES } from '@/lib/model-status-label'
+import { knownProviderTitle } from '@/lib/model-status-label'
 import type { OAuthProvider } from '@/types/hermes'
 
-// Titles live in PROVIDER_DISPLAY_NAMES (shared with the model pill); this is
+// Titles come from knownProviderTitle (shared with the model pill); this is
 // only the featured order. Both Anthropic entries sit at the bottom: the API-key
 // path first, then the subscription OAuth path (only works with extra usage credits).
 const PROVIDER_ORDER: Record<string, number> = {
@@ -19,7 +19,7 @@ const PROVIDER_ORDER: Record<string, number> = {
 
 const assetPath = (path: string) => `${import.meta.env.BASE_URL}${path.replace(/^\/+/, '')}`
 
-export const providerTitle = (p: OAuthProvider) => PROVIDER_DISPLAY_NAMES[p.id] ?? p.name
+export const providerTitle = (p: OAuthProvider, t?: Translations) => knownProviderTitle(p.id, t) ?? p.name
 const orderOf = (p: OAuthProvider) => PROVIDER_ORDER[p.id] ?? 99
 
 export const sortProviders = (providers: OAuthProvider[]) =>
@@ -47,7 +47,7 @@ export function FeaturedProviderRow({
         <div className="flex items-center gap-2">
           <img alt="" className="size-5 shrink-0 rounded" src={assetPath('apple-touch-icon.png')} />
           <span className="text-[length:var(--conversation-text-font-size)] font-semibold">
-            {freeTier ? t.freeTier.providerRowTitle : providerTitle(provider)}
+            {freeTier ? t.freeTier.providerRowTitle : providerTitle(provider, t)}
           </span>
           {freeTier ? (
             <FreeTierTag />
@@ -146,7 +146,7 @@ export function ProviderRow({
       <div className="min-w-0">
         <div className="flex items-center gap-2">
           <span className="text-[length:var(--conversation-text-font-size)] font-semibold">
-            {freeTier ? t.freeTier.providerRowTitle : providerTitle(provider)}
+            {freeTier ? t.freeTier.providerRowTitle : providerTitle(provider, t)}
           </span>
           {freeTier ? <FreeTierTag /> : loggedIn ? <ConnectedTag /> : null}
         </div>

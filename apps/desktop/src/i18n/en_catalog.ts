@@ -1,6 +1,12 @@
+import { PLUGIN_CATEGORIES } from '@hermes/shared'
+
+import { enBuiltinToolsets } from './en_builtin_toolsets'
 import type { CatalogTranslations } from './types_catalog'
 
 export const enCatalog: CatalogTranslations = {
+  sourceLabels: { local: 'Local', optional: 'Optional' },
+  pluginCategories: Object.fromEntries(Object.entries(PLUGIN_CATEGORIES).map(([id, { label, blurb }]) => [id, { label, blurb }])),
+  builtinToolsets: enBuiltinToolsets,
   add: 'Add',
   added: 'Added',
   discover: 'Discover',

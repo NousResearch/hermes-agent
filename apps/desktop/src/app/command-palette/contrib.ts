@@ -5,6 +5,7 @@
  */
 
 import { useContributions } from '@/contrib/react/use-contributions'
+import { translateNow } from '@/i18n'
 import type { IconComponent } from '@/lib/icons'
 
 export const PALETTE_AREA = 'palette'
@@ -55,7 +56,7 @@ export function paletteToggle(
 
   const data: PaletteContribution = {
     ...rest,
-    detail: () => (get() ? 'on' : 'off'),
+    detail: () => translateNow(get() ? 'common.on' : 'common.off').toLowerCase(),
     detailVariant: 'state',
     keepOpen: true,
     keywords: [...keywords, 'on', 'off', 'enable', 'disable'],

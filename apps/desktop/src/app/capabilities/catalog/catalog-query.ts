@@ -1,5 +1,7 @@
 import { sortCatalogPlugins } from '@hermes/shared'
 
+import type { CatalogTranslations } from '@/i18n/types_catalog'
+
 import { PLUGIN_TIER_ORDER, pluginTier } from './catalog-curation'
 import type { CatalogEntry, CatalogKind } from './catalog-data'
 import type { FacetRow } from './catalog-filters'
@@ -61,7 +63,8 @@ export function filterCatalog(
   facets: CatalogFacets,
   query: string,
   isInstalled: (entry: CatalogEntry) => boolean,
-  kind: CatalogKind
+  kind: CatalogKind,
+  pluginCategories?: CatalogTranslations['pluginCategories']
 ) {
   const { sources, categories, tags, installedOnly, updatesOnly } = facets
 
@@ -72,7 +75,7 @@ export function filterCatalog(
       (!tags.length || tags.some(tag => entry.tags.includes(tag))) &&
       (!installedOnly || isInstalled(entry)) &&
       (!updatesOnly || Boolean(entry.updateAvailable)) &&
-      (!query || entry.search.includes(query))
+      (!query || entry.search.includes(query) || (kind === 'plugins' && pluginCategories?.[entry.category]?.label?.toLowerCase().includes(query)))
   )
 }
 

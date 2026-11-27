@@ -144,3 +144,16 @@ export function stripPreviewMarkdown(text: unknown) {
     .replace(/\s+/g, ' ')
     .trim()
 }
+
+/** The shell's name for an unrenamed `local` connection (electron/connection-registry.ts). */
+const SHELL_LOCAL_CONNECTION_LABEL = 'This device'
+
+/** A connection's name on screen: the reader's own word for this device when the local
+ *  connection still carries the shell's English default, else the registry label. */
+export function connectionDisplayLabel(
+  connectionId: string | undefined,
+  label: string | undefined,
+  thisDevice: string
+): string {
+  return connectionId === 'local' && (!label || label === SHELL_LOCAL_CONNECTION_LABEL) ? thisDevice : label || ''
+}

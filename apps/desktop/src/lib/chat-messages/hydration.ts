@@ -767,6 +767,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       ...(reactions.length ? { reactions } : {}),
       ...(message.role === 'assistant' && messageInterrupted(message.display_metadata) ? { interrupted: true } : {}),
       ...(extractedAttachmentRefs ? { attachmentRefs: extractedAttachmentRefs } : {}),
+      ...(message.display_kind === 'failed_turn' ? { failedTurn: true } : {}),
       ...contentRefused
     })
 

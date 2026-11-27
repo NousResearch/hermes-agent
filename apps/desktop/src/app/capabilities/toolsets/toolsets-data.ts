@@ -1,6 +1,8 @@
 import { useQuery } from '@tanstack/react-query'
 
 import { getToolsets, type ProfileScope, profileScopeKey } from '@/hermes'
+import { enBuiltinToolsets } from '@/i18n/en_builtin_toolsets'
+import type { CatalogTranslations } from '@/i18n/types_catalog'
 import { isDesktopToolsetVisible } from '@/lib/desktop-toolsets'
 import { normalize } from '@/lib/text'
 import type { ToolsetInfo } from '@/types/hermes'
@@ -68,27 +70,33 @@ export function filteredToolsets(
   toolsets: ToolsetInfo[],
   query: string,
   toolCalls: Record<string, number>,
-  desc: boolean
+  desc: boolean,
+  labels: CatalogTranslations['builtinToolsets']
 ): ToolsetInfo[] {
   const q = normalize(query)
   const sign = desc ? 1 : -1
 
   return toolsets
-    .filter(toolset => {
+    .flatMap(toolset => {
       if (!isDesktopToolsetVisible(toolset.name)) {
-        return false
+        return []
       }
 
-      if (!q) {
-        return true
-      }
+      const label = toolsetDisplayLabel(toolset)
+      const id = toolset.name as keyof typeof enBuiltinToolsets
+      const original = Object.hasOwn(enBuiltinToolsets, id) ? enBuiltinToolsets[id] : undefined
+      const copy = original && labels[id]
 
-      return (
-        includesQuery(toolset.name, q) ||
-        includesQuery(toolsetDisplayLabel(toolset), q) ||
-        includesQuery(toolset.description, q) ||
-        toolNames(toolset).some(name => includesQuery(name, q))
-      )
+      const localized = copy && original ? {
+        ...toolset,
+        label: label === original.label ? copy.label : toolset.label,
+        description: toolset.description === original.description ? copy.description : toolset.description
+      } : toolset
+
+      const matches = !q || [toolset.name, label, toolset.description, localized.label, localized.description, ...toolNames(toolset)]
+        .some(value => includesQuery(value, q))
+
+      return matches ? [localized] : []
     })
     .sort(
       (a, b) =>

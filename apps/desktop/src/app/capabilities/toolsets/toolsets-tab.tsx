@@ -65,8 +65,8 @@ export function ToolsetsTab({ hints, onQueryChange, profile, query, toolsets }: 
 
   // Most-used first; absent counts sort A–Z until the analytics scan lands.
   const visibleToolsets = useMemo(
-    () => filteredToolsets(toolsets, query, toolCalls ?? {}, true),
-    [query, toolCalls, toolsets]
+    () => filteredToolsets(toolsets, query, toolCalls ?? {}, true, t.catalog.builtinToolsets),
+    [query, t.catalog.builtinToolsets, toolCalls, toolsets]
   )
 
   // Bulk actions and the master-switch state target the WHOLE tab, never the

@@ -3485,6 +3485,14 @@ def request_changes(
             implementer = _implementer_from_history(conn, task_id)
             implementer_source = "history"
         if implementer is None:
+            # Last resort: no implementer anywhere in history (a card created
+            # already assigned to its reviewer). Send the changes back to the
+            # current assignee rather than refusing, so the card cannot loop
+            # through block -> triage. Note this can route the changes to the
+            # profile that wrote the findings.
+            implementer = _nonblank_str(task_row["assignee"])
+            implementer_source = "assignee"
+        if implementer is None:
             return False, "review handoff has no valid implementer provenance"
         reviewer = _canonical_assignee(_nonblank_str(task_row["assignee"]))
 

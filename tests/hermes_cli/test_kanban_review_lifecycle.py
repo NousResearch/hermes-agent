@@ -894,7 +894,8 @@ def test_review_handoff_of_card_assigned_to_its_reviewer_records_no_implementer(
     ``implementer == reviewer``, and ``request_changes`` routes on that field —
     so a rejection went back to the profile that wrote the findings. With no
     live run and nothing but the reviewer on the row, the honest provenance is
-    *none*, and the rejection must refuse rather than misroute."""
+    *none*. A rejection then falls back to the current assignee (and says so
+    via ``implementer_source``) instead of refusing and looping to triage."""
     with kbc.connect() as conn:
         tid = kb.create_task(conn, title="already applied", assignee="reviewer-a")
         assert kb.request_review(
@@ -912,9 +913,13 @@ def test_review_handoff_of_card_assigned_to_its_reviewer_records_no_implementer(
 
         claimed = kb.claim_review_task(conn, tid, claimer="reviewer-a")
         assert claimed is not None
-        ok, reason = kb.request_changes(conn, tid, reason="found 3 issues")
-        assert ok is False
-        assert "implementer provenance" in (reason or "")
+        # With no implementer anywhere in history, the changes go back to the
+        # current assignee and the event says so.
+        ok, implementer = kb.request_changes(conn, tid, reason="found 3 issues")
+        assert (ok, implementer) == (True, "reviewer-a")
+        ev = _events(conn, tid, kind="changes_requested")[-1][1]
+        assert ev["implementer_source"] == "assignee"
+        assert kb.get_task(conn, tid).status == "ready"
 
 
 def test_rereview_from_ready_keeps_implementer_provenance(kanban_home: Path) -> None:

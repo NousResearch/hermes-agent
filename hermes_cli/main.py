@@ -263,6 +263,7 @@ from hermes_cli.main_resume_args import apply_in_dir as _apply_in_dir
 from hermes_cli.subcommands.cron import build_cron_parser
 from hermes_cli.subcommands.gateway import build_gateway_parser
 from hermes_cli.subcommands.profile import build_profile_parser
+from hermes_cli.subcommands.group import build_group_parser
 from hermes_cli.subcommands.model import build_model_parser
 from hermes_cli.subcommands.setup import build_setup_parser
 
@@ -3159,6 +3160,13 @@ def _build_cli_parser():
     build_uninstall_parser(subparsers, cmd_uninstall=cmd_uninstall)
     build_acp_parser(subparsers, cmd_acp=cmd_acp)
     build_profile_parser(subparsers, cmd_profile=cmd_profile)
+
+    # =========================================================================
+    # group command  (parser in hermes_cli/subcommands/group.py)
+    # =========================================================================
+    from hermes_cli.groups import cmd_group
+
+    build_group_parser(subparsers, cmd_group=cmd_group)
     build_completion_parser(subparsers, cmd_completion=cmd_completion, parser=parser)
     build_dashboard_parser(
         subparsers, cmd_dashboard=cmd_dashboard, cmd_dashboard_register=cmd_dashboard_register)

@@ -76,9 +76,11 @@ def _process_start_marker(pid: int) -> str:
     marker = result.stdout.strip()
     if result.returncode == 0 and marker:
         return f"ps:{marker}"
-    # Only known "missing pid" signals become ProcessLookupError; anything else stays OSError so the
-    # watchdog degrades to pid liveness instead of exiting on a healthy backend.
-    if (result.returncode == 1 and not marker) or "no such process" in result.stderr.lower():
+    # rc=1 with no output or diagnostic is the portable missing-pid signal. Diagnostics such as an
+    # unsupported output keyword remain OSError so the watchdog degrades to pid liveness.
+    if (
+        result.returncode == 1 and not marker and not result.stderr.strip()
+    ) or "no such process" in result.stderr.lower():
         raise ProcessLookupError(pid)
     raise OSError(f"ps could not inspect PID {pid}: {result.stderr.strip()}")
 

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { type ResolvedOwner, resolveOwnerNow } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { isEditableKeyEvent } from '@/lib/keybinds/combo'
 import { IncrementalSpeechSentenceBuffer } from '@/lib/speech-text'
 import { syncSttLease, VOICE_INPUT_LEASE } from '@/lib/stt-lease'
 import { startThinkingSound, stopThinkingSound } from '@/lib/thinking-sound'
@@ -1017,6 +1018,13 @@ export function useVoiceConversation({
       }
 
       if (statusRef.current !== 'listening') {
+        return
+      }
+
+      // A focused text control owns Space. Without this, a stuck or racing
+      // 'listening' state swallowed every Space typed into inputs (e.g. the
+      // session rename dialog) while voice mode was enabled.
+      if (isEditableKeyEvent(event)) {
         return
       }
 

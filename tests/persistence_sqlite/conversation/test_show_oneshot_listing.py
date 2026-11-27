@@ -89,7 +89,8 @@ def test_the_recents_shape_the_surfaces_really_send_readmits_the_oneshot_run(tmp
     now owns both opt-ins, with the real shape as input.
     """
     home = _home(tmp_path, show_oneshot=True)
-    shipped = [s for s in INTERNAL_LISTING_SOURCES if s != "acp"]  # desktop keeps acp local-side
+    # The internal sources a surface hides by default; one-shot runs are one of them.
+    shipped = list(INTERNAL_LISTING_SOURCES)
     assert "oneshot" in shipped
 
     offline = session_listing_scope(home, exclude_sources=shipped)

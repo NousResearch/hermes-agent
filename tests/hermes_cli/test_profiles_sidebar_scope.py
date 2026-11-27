@@ -387,3 +387,53 @@ class TestSidebarShowOneshot:
         # Same request, warm cache from the line above: the flipped flag must still be honored.
         assert _slice_ids(client.get("/api/profiles/sessions/sidebar", params=params).json(), "recents") == {
             "default-oneshot"}
+
+    def test_an_unreadable_opt_in_state_falls_back_to_an_uncacheable_key(self):
+        """The hook's exception branch must neither raise nor pin one key forever.
+
+        Driven on the decorator itself: the sidebar route already holds its decorated reference,
+        so re-patching the module symbol would test nothing. A failing ``_sidebar_cache_state``
+        must yield a key that never matches a previous one, and must not propagate.
+        """
+        from hermes_cli.web_routers import profiles as profiles_routes
+
+        calls = {"n": 0}
+        served = []
+
+        def _boom():
+            calls["n"] += 1
+            raise RuntimeError("config unreadable")
+
+        @profiles_routes._sidebar_singleflight_cache
+        def _cached(profile: str = "default") -> dict:
+            served.append(profile)
+            return {"recents": {"sessions": [], "profiles_failed": []}}
+
+        _cached._sidebar_cache_state = _boom
+
+        previous_ttl = profiles_routes._SIDEBAR_CACHE_TTL_SECONDS
+        profiles_routes._SIDEBAR_CACHE_TTL_SECONDS = 5.0
+        try:
+            assert _cached() == {"recents": {"sessions": [], "profiles_failed": []}}
+            # A warm entry keyed on the fallback would answer this one; a fresh key rescans.
+            assert _cached() == {"recents": {"sessions": [], "profiles_failed": []}}
+        finally:
+            profiles_routes._SIDEBAR_CACHE_TTL_SECONDS = previous_ttl
+
+        assert calls["n"] == 2  # the hook raised, it did not swallow-and-share a key
+        assert served == ["default", "default"]
+
+    def test_an_unreadable_opt_in_state_still_answers_the_sidebar(self, client, profiles_on_disk, monkeypatch):
+        """End to end: a profile home that cannot be read keeps the default shape, HTTP 200."""
+        from hermes_cli.web_routers import profiles as profiles_routes
+
+        home = profiles_on_disk["default"]
+        self._seed_oneshot(home, "default-oneshot")
+        monkeypatch.setattr(profiles_routes, "_sidebar_optin_state",
+                            lambda: (_ for _ in ()).throw(RuntimeError("config unreadable")))
+
+        response = client.get("/api/profiles/sessions/sidebar",
+                              params={"recents_profile": "default", "recents_exclude": "cron,oneshot"})
+
+        assert response.status_code == 200
+        assert _slice_ids(response.json(), "recents") == set()

@@ -27,6 +27,8 @@ def test_minted_launcher_reads_current_selection_and_editable_members(tmp_path, 
     # Real selection code, with a fixture entry point rather than a live CLI.
     (pm_package / "environments.py").write_bytes(Path(runtime_paths.__file__).read_bytes())
     (pm_package / "filesystem.py").write_bytes((Path(runtime_paths.__file__).parent / "filesystem.py").read_bytes())
+    for name in ("leases.py", "moved_locks.py"):  # runtime_state imports both at top level
+        (pm_package / name).write_bytes((Path(runtime_paths.__file__).parent / name).read_bytes())
     (package / "runtime_state.py").write_bytes(Path(runtime_state.__file__).read_bytes())
     (root / "hermes_constants.py").write_bytes(Path(hermes_constants.__file__).read_bytes())
     (root / "hermes_bootstrap.py").write_text(

@@ -222,7 +222,7 @@ def _listener_socket(family, kind, proto, port: int, *, dual_stack: bool = False
 
 def _bind_primary(listener, address, companion) -> None:
     if companion:
-        from hermes_platform.host.facts import has_interface_address
+        from hermes_platform.host.interfaces import has_interface_address
         if not has_interface_address(address[0]):
             raise OSError(errno.EADDRNOTAVAIL, "address not assigned to an interface")
     listener.bind(address)

@@ -32,7 +32,7 @@ BOOT = ("hermes_bootstrap.py", "hermes_constants.py", "hermes_cli/__init__.py", 
         "hermes_cli/_early_recovery.py", "hermes_cli/_parser.py", "hermes_cli/runtime_state.py",
         "hermes_cli/venv_sync.py", "hermes_cli/steward.py", "hermes_cli/stderr_timestamp.py",
         "hermes_cli/update_lock.py", "hermes_cli/update_custody.py", "pm/environments.py",
-        "pm/filesystem.py", "pm/paths.py")
+        "pm/filesystem.py", "pm/leases.py", "pm/moved_locks.py", "pm/paths.py")
 _HOLDER = ("import sys, time\nfrom pathlib import Path\nsys.path.insert(0, sys.argv[1])\n"
            "from hermes_cli.update_lock import UpdateLock\n"
            "lock = UpdateLock(path=Path(sys.argv[2]) / 'owner', install_root=Path(sys.argv[2]))\n"

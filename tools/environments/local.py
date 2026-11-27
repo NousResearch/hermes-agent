@@ -30,7 +30,8 @@ from tools.environments.local_env_policy import (
     _home_adapter_secret_env, _home_declared_key_env, _matches_terminal_first_party_prefix,
     _plugin_terminal_env_strip_keys,
     _registered_adapter_secret_env, _registry_adapter_secret_env, _secret_source_bootstrap_env,
-    DEPLOYMENT_STAMP_ENV, strip_profile_gate_env, strip_supervised_process_identity)
+    strip_profile_gate_env, strip_supervised_process_identity)
+from tools.environments.local_gateway_env import drop_deployment_stamps, gateway_child_env
 from tools.environments.local_pythonpath import (
     _build_hermes_repo_root_aliases, _strip_hermes_owned_pythonpath_and_runtime_markers)
 from tools.environments.base_session_env import (
@@ -459,14 +460,6 @@ def served_profile_child_env(
     return drop_deployment_stamps(_profile_child_env(base, target_home, inherit_credentials))
 
 
-def drop_deployment_stamps(env: dict[str, str]) -> dict[str, str]:
-    """Remove ``DEPLOYMENT_STAMP_ENV`` from *env* in place, any casing (a Windows env block is not
-    case-sensitive), for a child built from an unscrubbed base that is not a gateway."""
-    for name in [key for key in env if key.upper() in DEPLOYMENT_STAMP_ENV]:
-        del env[name]
-    return env
-
-
 def _profile_child_env(
     base: Mapping[str, str] | None, target_home: str | Path | None, inherit_credentials: bool,
 ) -> dict[str, str]:
@@ -499,17 +492,6 @@ def _profile_child_env(
     return env
 
 
-def keep_deployment_stamps(env: dict, source: Mapping[str, str] | None = None) -> dict:
-    """Put the deployment's launch stamps (``DEPLOYMENT_STAMP_ENV``) from *source* (the process env)
-    into the env of a gateway this process starts, where the scrub removed them. A value already in
-    *env* (the target profile's own ``GATEWAY_RELAY_SLEEP_URL``) is kept."""
-    source = os.environ if source is None else source
-    for name in DEPLOYMENT_STAMP_ENV:
-        if source.get(name) and not env.get(name):
-            env[name] = source[name]
-    return env
-
-
 def _carry_bridge_markers(env: dict, source: Mapping[str, str], *, own_profile: bool) -> None:
     """Keep a YAML-bridge ownership marker only on a child that serves the launch profile itself and
     still holds the exact value the marker's digest names: that child (a daemon restart) re-bridges
@@ -532,12 +514,6 @@ def _restore_bootstrap_tokens(env: dict[str, str], source: Mapping[str, str]) ->
     for name in _secret_source_bootstrap_env():
         if name not in env and source.get(name):
             env[name] = source[name]
-
-
-def gateway_child_env(target_home: str | Path, base: Mapping[str, str] | None = None) -> dict[str, str]:
-    """Child env for a gateway this process starts on *target_home*: that profile's environment,
-    with each launch stamp it lacks filled from *base* (``keep_deployment_stamps``)."""
-    return keep_deployment_stamps(_profile_child_env(base, target_home, True), os.environ if base is None else base)
 
 
 def host_gateway_child_env(

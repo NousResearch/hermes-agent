@@ -33,6 +33,7 @@ def generations(tmp_path, monkeypatch):
 def test_unlocked_reader_releases_a_lease_the_installer_moved_away_from(generations, monkeypatch):
     from hermes_cli import runtime_state
     from pm.environments import activate_dependencies
+    from pm.leases import lease_dirs
 
     repo, state, select = generations
     first = select("first")
@@ -60,12 +61,13 @@ def test_unlocked_reader_releases_a_lease_the_installer_moved_away_from(generati
     activate_dependencies(repo)
 
     assert leased[0] == first and leased[-1] == state / "environments" / "second" / "venv"
-    assert not any(runtime_state.lease_dirs(first.parent)[0].iterdir()), "the stale lease must be released"
-    assert len(list(runtime_state.lease_dirs(state / "environments" / "second")[0].iterdir())) == 1
+    assert not any(lease_dirs(first.parent)[0].iterdir()), "the stale lease must be released"
+    assert len(list(lease_dirs(state / "environments" / "second")[0].iterdir())) == 1
 
 
 def test_release_removes_the_lease_file(generations):
-    from hermes_cli.runtime_state import lease_dirs, lease_generation
+    from hermes_cli.runtime_state import lease_generation
+    from pm.leases import lease_dirs
 
     _, _state, select = generations
     environment = select("first")

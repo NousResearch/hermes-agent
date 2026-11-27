@@ -42,7 +42,7 @@ def test_a_label_that_cannot_be_idna_encoded_prints_mains_output(capsys):
 
 @pytest.mark.parametrize("host", ["192.0.2.1", "198.51.100.7", "2001:db8:5e1f::7", "[2001:db8:5e1f::7]"])
 def test_another_machines_address_gets_no_connection_attempt(monkeypatch, capsys, host):
-    from hermes_platform.host.facts import has_interface_address
+    from hermes_platform.host.interfaces import has_interface_address
     if has_interface_address(host.strip("[]")):  # some CI networks number their hosts from a documentation range
         pytest.skip(f"this machine holds {host}")
     attempts = []

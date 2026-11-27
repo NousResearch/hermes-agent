@@ -8,6 +8,7 @@ import re
 from typing import Any, Iterable, Optional
 
 from gateway.bridged_env import BRIDGED_ENV_MARKER_PREFIX
+from tools.environments.local_gateway_env import DEPLOYMENT_STAMP_ENV
 
 # Prefix a caller uses in ``extra_env`` to force a blocklisted var through.
 _HERMES_PROVIDER_ENV_FORCE_PREFIX = "_HERMES_FORCE_"
@@ -18,12 +19,6 @@ _HERMES_PROVIDER_ENV_FORCE_PREFIX = "_HERMES_FORCE_"
 # trusted operator shell (SECURITY.md §3.2) and env_passthrough can never re-allow a
 # blocklisted name (GHSA-rhgp-j443-p4rf), so blocking it would be unrecoverable.
 _AWS_SDK_CREDENTIAL_ENV_VARS = frozenset({"AWS_BEARER_TOKEN_BEDROCK"})
-
-# URLs a hosting deployment stamps into the gateway's launch environment, each with its credential:
-# the status report URL and the brokered sleep URL. Tier 1, so the scrub drops them (the terminal
-# tool, credentialed CLIs) and ``served_profile_child_env`` drops them whatever its base; the
-# gateway launch builders (``gateway_child_env``) put them back.
-DEPLOYMENT_STAMP_ENV: frozenset[str] = frozenset({"GATEWAY_STATUS_REPORT_URL", "GATEWAY_RELAY_SLEEP_URL"})
 
 _STATIC_PROVIDER_ENV_BLOCKLIST = DEPLOYMENT_STAMP_ENV | frozenset({
     "OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_API_BASE", "OPENAI_ORG_ID",

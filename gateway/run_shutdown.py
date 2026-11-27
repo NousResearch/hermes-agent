@@ -1349,14 +1349,14 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
     def _restart_watcher_env() -> dict:
         """Watcher env minus ``_HERMES_GATEWAY`` (else the CLI's self-restart guard refuses; gateway stays down).
 
-        The host multiplexer is respawned with ``host_gateway_child_env`` (default-root
-        secrets plus available launch stamps, not ``os.environ.copy()``). A standalone
-        named-profile gateway keeps that profile's home — only a multiplexer, or a process
-        already on the default root, is the host.
+        The host multiplexer is respawned with ``host_gateway_child_env`` (default-root secrets plus
+        available launch stamps, not ``os.environ.copy()``). A standalone named-profile gateway keeps
+        that profile's home — only a multiplexer, or a process already on the default root, is the host.
         """
         from gateway.config_loader import drop_bridged_env
         from hermes_constants import get_default_hermes_root, get_hermes_home
-        from tools.environments.local import gateway_child_env, host_gateway_child_env
+        from tools.environments.local import host_gateway_child_env
+        from tools.environments.local_gateway_env import gateway_child_env
 
         home = get_hermes_home()
         try:

@@ -15,6 +15,7 @@ from pathlib import Path
 from fastapi import HTTPException, Request
 from fastapi.routing import APIRoute
 from starlette.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 
 from hermes_cli.skill_catalog.installed import installed_records
 from hermes_cli.skill_catalog.validation import CatalogError
@@ -242,18 +243,16 @@ async def _bounded_body(request):
 
 
 async def _refuse_oversized(request, deadline):
-    # A foreign live lease is sufficient authority. Do not wait for a local
-    # service or provider bootstrap just to reject an over-limit body.
-    profiles = request.query_params.getlist('profile') or [None]
-    for profile in dict.fromkeys(profiles):
-        try:
-            required = await _discovery_required(profile, deadline)
-        except HTTPException:
-            if len(profiles) == 1:
-                raise
-            continue
-        if required:
-            raise CatalogError('request_too_large', 'Catalog request body exceeds 256 KiB.')
+    # The unread body may override the query with any profile. Inspect live
+    # authority without bootstrap, parsing a prefix, or loading provider code.
+    from hermes_cli.skill_catalog.bootstrap import live_authority_anywhere
+    try:
+        required = await asyncio.wait_for(run_in_threadpool(live_authority_anywhere),
+                                          max(0, deadline - time.monotonic()))
+    except TimeoutError:
+        raise CatalogError('timeout', 'Catalog discovery timed out.') from None
+    if required:
+        raise CatalogError('request_too_large', 'Catalog request body exceeds 256 KiB.')
 
 
 async def _delegate(request, stock, provider_deadline):
@@ -263,8 +262,8 @@ async def _delegate(request, stock, provider_deadline):
     query_profile = request.query_params.get('profile')
     raw = await _bounded_body(request) if request.method == 'POST' else b''
     if raw is None:
-        # Never partially parse an oversized body to infer authority. The query
-        # selector (or current profile) determines whether stock bypass is safe.
+        # Never partially parse an oversized body to infer its profile. Stock
+        # bypass is safe only when no profile has live catalog authority.
         await _refuse_oversized(request, provider_deadline)
         return await stock(request)
     # Keep every selector until optional-provider admission has resolved it.

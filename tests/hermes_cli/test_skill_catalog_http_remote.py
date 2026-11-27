@@ -25,8 +25,15 @@ def _remote_owner(home, connection):
 
 
 @pytest.fixture
-def remote():
+def remote(request, monkeypatch):
+    from hermes_cli import profiles
+    from hermes_cli.config import atomic_config_write
     home = get_hermes_home()
+    monkeypatch.setattr(profiles, '_get_default_hermes_home', lambda: get_hermes_home())
+    if getattr(request, 'param', None) == 'other':
+        home = home / 'profiles/other'
+        home.mkdir(parents=True)
+        atomic_config_write(home / 'config.yaml', {})
     target = home / 'skills/remote'
     target.mkdir(parents=True)
     (target / 'SKILL.md').write_text('---\nname: remote\ndescription: remote\n---\nRemote')
@@ -85,6 +92,32 @@ def test_oversized_remote_live_provider_refuses_before_stock(client, remote, mon
     assert result.status_code == 413, result.text
     assert result.json()['error']['code'] == 'request_too_large'
     assert spawned == []
+
+
+@pytest.mark.parametrize('remote', ['other'], indirect=True)
+def test_oversized_body_selected_remote_profile_refuses_until_lease_dies(client, remote, monkeypatch):
+    import json
+    from hermes_cli.skill_catalog.registry import snapshot
+    from hermes_cli.web_routers import skills
+    source, process = remote
+    assert snapshot(scope=str(get_hermes_home())) == ()
+    spawned = []
+    monkeypatch.setattr(skills, 'spawn_profile_action', lambda *a, **kw: spawned.append(kw) or {'ok': True})
+    raw = json.dumps(dict(profile='other', identifier=source + ':item')).encode()
+    small = client.post('/api/skills/hub/install', content=raw, headers={'content-type': 'application/json'})
+    assert small.status_code == 503, small.text
+    assert small.json()['error']['code'] == 'provider_unavailable'
+    padded = raw + b' ' * (262145 - len(raw))
+    large = client.post('/api/skills/hub/install', content=padded, headers={'content-type': 'application/json'})
+    assert large.status_code == 413, large.text
+    assert large.json()['error']['code'] == 'request_too_large'
+    assert spawned == []
+    process.terminate()
+    process.join(5)
+    assert not process.is_alive()
+    stock = client.post('/api/skills/hub/install', content=padded, headers={'content-type': 'application/json'})
+    assert stock.status_code == 200, stock.text
+    assert len(spawned) == 1
 
 
 @pytest.mark.platforms('posix')

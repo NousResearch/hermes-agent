@@ -50,6 +50,37 @@ def test_oversized_managed_install_never_spawns_stock(client, catalog, monkeypat
     assert spawned == []
 
 
+@pytest.mark.parametrize('query', ['', '?profile=default', '?profile=missing'])
+def test_oversized_body_selected_profile_never_spawns_stock(client, monkeypatch, query):
+    from hermes_constants import get_hermes_home
+    from hermes_cli import profiles
+    from hermes_cli.skill_catalog.registry import snapshot
+    from hermes_cli.web_routers import skills
+    from tests.hermes_cli.test_skill_catalog_service import fixture
+
+    home = get_hermes_home()
+    monkeypatch.setattr(profiles, '_get_default_hermes_home', lambda: home)
+    other = home / 'profiles/other'
+    manager, entry, plan = fixture(other)
+    spawned = []
+    monkeypatch.setattr(skills, 'spawn_profile_action', lambda *a, **kw: spawned.append(kw) or {'ok': True})
+    try:
+        assert snapshot(scope=str(home)) == ()
+        raw = json.dumps(dict(profile='other', identifier=plan['identifier'])).encode()
+        small = client.post('/api/skills/hub/install', content=raw, headers={'content-type': 'application/json'})
+        assert small.status_code == 409, small.text
+        assert small.json()['error']['code'] == 'review_required'
+        large = client.post('/api/skills/hub/install' + query,
+                            content=raw + b' ' * (CAP + 1 - len(raw)),
+                            headers={'content-type': 'application/json'})
+        assert large.status_code == 413, large.text
+        assert large.json()['error']['code'] == 'request_too_large'
+        assert spawned == []
+        assert entry.provider.effects == 0
+    finally:
+        manager.unload()
+
+
 def test_exact_body_limit_still_routes_to_provider(client, catalog):
     _entry, plan = catalog
     response = client.post('/api/skills/hub/review', content=_padded(plan, CAP))

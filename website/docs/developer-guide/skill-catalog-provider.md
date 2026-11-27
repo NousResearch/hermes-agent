@@ -68,7 +68,7 @@ HTTP activation preserves ordinary isolation. An already-registered in-process p
 
 Bootstrap waits at most five seconds independently of loader settings. Without an admitted registration, the response remains stock and has no provider loading/error fields. A late registration can serve a later request only if its manager generation, enable state and consent remain current. Host bootstrap output goes to bounded, redacted diagnostics, not the response or inherited terminal stream. Core does not redirect process-global stdout.
 
-Provider-aware routing parses request bodies up to 256 KiB. Larger bodies return a core-authored 413 without parsing or starting a stock action when catalog authority can apply in the query-selected or current profile, including an owner in another serving process. With no provider authority in that scope, stock receives the original body unchanged.
+Provider-aware routing parses request bodies up to 256 KiB. An oversized body can select a profile that is not named in the query. Larger bodies return a core-authored 413 without parsing or starting a stock action whenever any profile has a live catalog registration or lease, including an owner in another serving process. With no live provider authority anywhere, stock receives the original body unchanged.
 
 ## Identity and profile scope
 

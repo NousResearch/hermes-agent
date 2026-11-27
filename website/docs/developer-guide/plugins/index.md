@@ -1356,7 +1356,7 @@ The old `shutil.copy2` pattern (copying a skill into `~/.hermes/skills/`) still 
 
 ### Serve a skill catalog (experimental)
 
-Provider-aware routing applies to request bodies up to 256 KiB; larger bodies are handled exactly as a host without providers handles them.
+Provider-aware routing applies to request bodies up to 256 KiB. Larger bodies return 413 when any profile has a live catalog registration or lease, since the unread body may select that profile. With no live provider authority anywhere, stock receives the original body unchanged.
 
 ### Read the skill catalog
 

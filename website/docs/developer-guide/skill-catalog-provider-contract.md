@@ -14,7 +14,7 @@ Companion to [Plugin-served skill catalogs](./skill-catalog-provider.md). Wire f
 
 ### A.1 Identity, validation and common envelope
 
-Provider-aware routing parses request bodies up to 256 KiB. Larger bodies return a core-authored 413 without parsing or starting a stock action when catalog authority can apply in the query-selected or current profile, including an owner in another serving process. With no provider authority in that scope, stock receives the original body unchanged.
+Provider-aware routing parses request bodies up to 256 KiB. An oversized body can select a profile that is not named in the query. Larger bodies return a core-authored 413 without parsing or starting a stock action whenever any profile has a live catalog registration or lease, including an owner in another serving process. With no live provider authority anywhere, stock receives the original body unchanged.
 
 All methods accept one request object containing `context` and return `Result`. Required consumed fields are listed below. Unknown request fields refuse. Unknown response fields are ignored only after every consumed field validates.
 

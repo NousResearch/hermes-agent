@@ -617,7 +617,7 @@ def credential_pool_matches_provider(
     *,
     base_url: Optional[str] = None,
 ) -> bool:
-    """Return whether a pool belongs to the requested runtime provider.
+    """Return whether a pool belongs to the requested runtime provider, by name or profile alias.
 
     Named custom endpoints may use three identities: the live agent can retain
     the configured name/provider key, newer runtime paths normalize it to
@@ -639,9 +639,9 @@ def credential_pool_matches_provider(
     if not pool_provider or not provider_norm:
         return False
     if not pool_provider.startswith(CUSTOM_POOL_PREFIX):
-        if pool_provider == provider_norm:
-            return True
-        return _keyed_custom_pool_matches(pool_provider, provider_norm, base_url)
+        from agent.custom_entry_pool import same_provider_profile
+        return (pool_provider == provider_norm or _keyed_custom_pool_matches(pool_provider, provider_norm, base_url)
+                or same_provider_profile(pool_provider, provider_norm))
     if provider_norm == "custom":
         try:
             matched_pool = get_custom_provider_pool_key(base_url or "")

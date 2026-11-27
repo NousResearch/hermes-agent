@@ -213,6 +213,38 @@ def custom_entry_for_identity(provider: Optional[str], config: Optional[dict] = 
                  if _normalize_custom_pool_name(str(e.get("provider_key") or "")) == key), None)
 
 
+def same_provider_profile(name: str, other: str) -> bool:
+    """Whether two spellings of a registered profile may share its pool by alias.
+
+    ``/model`` stores the models.dev id (``opencode``, ``github-copilot``) while the pool is keyed by the
+    profile name. The generic ``custom`` profile and configured custom entries are endpoint-bound.
+    Providers with single-use refresh tokens stay literal: recovery dispatches on the runtime's
+    provider spelling, not the profile name.
+    """
+    from agent.credential_pool import _load_config_safe
+    from hermes_cli.auth_oauth_grants import SINGLE_USE_REFRESH_POOL_PROVIDERS
+    from providers import get_provider_profile
+
+    # A plugin alias cannot opt a literal single-use pool key into profile matching.
+    if name in SINGLE_USE_REFRESH_POOL_PROVIDERS or other in SINGLE_USE_REFRESH_POOL_PROVIDERS:
+        return False
+    try:
+        profile = get_provider_profile(name)
+        if (
+            profile is None
+            or profile.name == "custom"
+            or profile.name in SINGLE_USE_REFRESH_POOL_PROVIDERS
+            or get_provider_profile(other) is not profile
+        ):
+            return False
+        config = _load_config_safe() or {}
+        return custom_entry_for_identity(name, config) is None and custom_entry_for_identity(other, config) is None
+    except Exception:
+        logger.debug("Could not compare provider profiles of %s and %s; treating them as different",
+                     name, other, exc_info=True)
+        return False
+
+
 def pool_for_aux_provider(provider: Optional[str], pool_key: str, load: Callable[[str], Any],
                           base_url: Optional[str] = None) -> Any:
     """``load(pool_key)`` for an auxiliary pool read (the key peek, credential recovery). A custom

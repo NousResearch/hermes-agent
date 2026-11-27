@@ -50,8 +50,9 @@ function unload() {
 
 afterEach(() => {
   cleanup()
-  unload()
+  resetBinding('kanban.open')
   resetBinding('kanban.newTask')
+  unload()
   setRuntimeI18nLocale('en')
 })
 
@@ -60,7 +61,9 @@ it('relabels Kanban after delayed config load and locale switches without replac
   plugin.register(createPluginContext('kanban', dispose => disposers.push(dispose)))
   const route = registry.getArea(ROUTES_AREA).find(c => c.id === 'kanban:page')
   const handler = contributedKeybindHandler('kanban.newTask')
+  const openHandler = contributedKeybindHandler('kanban.open')
   setBinding('kanban.newTask', ['mod+alt+k'])
+  setBinding('kanban.open', ['mod+alt+y'])
   let resolveConfig!: (config: HermesConfigRecord) => void
 
   const config = new Promise<HermesConfigRecord>(resolve => {
@@ -91,6 +94,9 @@ it('relabels Kanban after delayed config load and locale switches without replac
     expect(keybindAction('kanban.newTask')?.label).toBe(messages.newTaskCommand)
     expect(contributedKeybindHandler('kanban.newTask')).toBe(handler)
     expect(bindingsFor('kanban.newTask')).toEqual(['mod+alt+k'])
+    expect(keybindAction('kanban.open')?.label).toBe(messages.openBoard)
+    expect(contributedKeybindHandler('kanban.open')).toBe(openHandler)
+    expect(bindingsFor('kanban.open')).toEqual(['mod+alt+y'])
     expect(registry.getArea(ROUTES_AREA).find(c => c.id === 'kanban:page')).toBe(route)
     expect(registry.getArea(SIDEBAR_NAV_AREA).filter(c => c.id === 'kanban:nav')).toHaveLength(1)
   }
@@ -105,4 +111,5 @@ it('relabels Kanban after delayed config load and locale switches without replac
   await act(() => plugin.register(createPluginContext('kanban', dispose => disposers.push(dispose))))
   expect(screen.getByText(KANBAN_LOCALES.zh!.nav as string)).toBeTruthy()
   expect(bindingsFor('kanban.newTask')).toEqual(['mod+alt+k'])
+  expect(bindingsFor('kanban.open')).toEqual(['mod+alt+y'])
 })

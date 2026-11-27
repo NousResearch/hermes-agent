@@ -6,7 +6,7 @@
  * Compiler memoized the list without the subscription as an input. Uses the
  * real registry + hook under the compiler-enabled vitest ui project.
  */
-import { act, cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { registry } from '@/contrib/registry'
@@ -37,6 +37,13 @@ describe('KeybindSettings late-contributed actions', () => {
 
     expect(screen.getByText('Late Plugin Action')).toBeTruthy()
 
-    act(() => dispose())
+    try {
+      fireEvent.change(screen.getByRole('textbox', { name: 'Search shortcuts…' }), {
+        target: { value: 'Late Plugin Action' }
+      })
+      expect(screen.getByText('Late Plugin Action')).toBeTruthy()
+    } finally {
+      act(() => dispose())
+    }
   })
 })

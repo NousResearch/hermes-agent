@@ -18,8 +18,9 @@ from tests.pm._fixtures import _wheel
 
 
 
+@pytest.mark.parametrize("dependency", ["ruamel.yaml", "ruamel-yaml", "ruamel_yaml"])
 @pytest.mark.parametrize("failure", [None, "missing_distribution", "broken_module"])
-def test_startup_validation_checks_real_ruamel_dependency(tmp_path, failure):
+def test_startup_validation_checks_real_ruamel_dependency(tmp_path, dependency, failure):
     from importlib.metadata import distribution
     import venv
 
@@ -45,7 +46,7 @@ def test_startup_validation_checks_real_ruamel_dependency(tmp_path, failure):
         shutil.copytree(metadata, target / metadata.name)
 
     (tmp_path / "pyproject.toml").write_text(
-        '[project]\nname="yaml-recovery"\ndependencies=["ruamel.yaml"]\n', encoding="utf-8",
+        f'[project]\nname="yaml-recovery"\ndependencies=["{dependency}"]\n', encoding="utf-8",
     )
 
     if failure:

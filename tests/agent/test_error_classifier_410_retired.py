@@ -1,4 +1,4 @@
-"""Tests for HTTP 410 model-retired classification in agent.error_classifier.
+"""A model the provider retired or does not know: HTTP 410 and 404 wordings that must fall back.
 
 Split from test_error_classifier.py to keep the parent under the 2000-line
 lint target. See PR #147812.
@@ -57,3 +57,34 @@ def test_retired_model_404_falls_back_instead_of_retrying(provider, body):
     result = classify_api_error(e, provider=provider, model="m")
     assert result.reason == FailoverReason.model_not_found
     assert result.retryable is False and result.should_fallback is True
+
+
+def test_404_model_is_not_found_wording():
+    """OpenAI-compatible gateways can word it as ``model is not found`` (the copula breaks
+    the ``model not found`` substring): a deterministic failure, not a retry."""
+    result = classify_api_error(MockAPIError("model is not found", status_code=404))
+    assert result.reason == FailoverReason.model_not_found
+    assert result.should_fallback is True and result.retryable is False
+
+
+def _anthropic_404(message):
+    body = {"type": "error", "error": {"type": "not_found_error", "message": message}}
+    return MockAPIError("Error code: 404", status_code=404, body=body)
+
+
+def test_404_echoing_the_requested_model_id_is_model_not_found():
+    """Anthropic answers an unknown model with the id we sent (``model: <id>``)."""
+    result = classify_api_error(_anthropic_404("model: some-model-id"), provider="anthropic", model="some-model-id")
+    assert result.reason == FailoverReason.model_not_found
+    assert result.retryable is False and result.should_fallback is True
+
+
+@pytest.mark.parametrize("message", [
+    *(f"model: {m}" for m in ("some-model-id-extra", "some-model-id.v2", "some-model-id/variant",
+                               "some-model-id_2", "some-model-id+variant")),
+    "Not found",  # a wrong endpoint path names no model: it must not undo #14013
+])
+def test_404_not_naming_the_requested_model_stays_generic(message):
+    result = classify_api_error(_anthropic_404(message), provider="anthropic", model="some-model-id")
+    assert result.reason == FailoverReason.unknown
+    assert result.retryable is True and result.should_fallback is False

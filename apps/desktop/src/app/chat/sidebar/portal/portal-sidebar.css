@@ -244,7 +244,7 @@
   color: var(--portal-brand-ink);
   font-size: var(--portal-type-caption-size);
   font-weight: 500;
-  letter-spacing: 0.08em;
+  letter-spacing: var(--portal-tracking-caption);
   text-transform: uppercase;
 }
 
@@ -304,7 +304,7 @@
   width: 1.5rem;
   height: 1.5rem;
   border-radius: var(--portal-radius-card);
-  background: color-mix(in srgb, var(--ui-base) 6%, transparent);
+  background: var(--portal-surface-control-hover);
 }
 
 /* ── Search, out while its header button is pressed: it takes New chat's 40px row — the same

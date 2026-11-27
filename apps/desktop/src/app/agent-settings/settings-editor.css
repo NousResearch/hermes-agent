@@ -367,7 +367,7 @@
   color: var(--ui-text-primary);
   font-size: var(--portal-type-ui-size);
   letter-spacing: var(--portal-tracking-display);
-  line-height: 1.25rem;
+  line-height: 1.4;
 }
 
 .agent-settings-panel-back:hover {
@@ -417,7 +417,7 @@
 }
 
 .agent-settings-name-field:hover {
-  border-color: color-mix(in srgb, var(--ui-base) 20%, transparent);
+  border-color: var(--portal-stroke-strong);
 }
 
 .agent-settings-name-field:focus-visible {

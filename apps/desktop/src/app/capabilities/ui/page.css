@@ -68,8 +68,8 @@
   gap: 14px;
   padding: 16px;
   border: 1px solid var(--agent-capability-banner-stroke);
-  border-radius: 4px;
-  background: color-mix(in srgb, var(--portal-brand-fill) 10%, transparent);
+  border-radius: var(--portal-radius-card);
+  background: var(--portal-raw-brand-10);
 }
 
 .agent-capability-banner-icon {
@@ -79,8 +79,8 @@
   height: 36px;
   place-items: center;
   border: 1px solid var(--agent-capability-banner-stroke);
-  border-radius: 4px;
-  background: color-mix(in srgb, var(--portal-brand-fill) 35%, transparent);
+  border-radius: var(--portal-radius-card);
+  background: var(--portal-surface-brand-selected);
   color: var(--ui-text-primary);
 }
 
@@ -93,15 +93,14 @@
 }
 
 .agent-capability-banner-text > p:first-child {
-  font-size: 14px;
+  font-size: var(--portal-type-body-size);
   font-weight: 500;
 }
 
 .agent-capability-banner-note {
   color: var(--ui-text-secondary);
-  font-size: 13px;
+  font-size: var(--portal-type-ui-size);
 }
-
 /* Narrow panes stack the action under the text instead of squeezing it. */
 @container (max-width: 520px) {
   .agent-capability-banner {
@@ -121,24 +120,23 @@
 }
 
 .agent-capability-section > header > h3 {
-  font-size: 15px;
+  font-size: var(--portal-type-section-size);
   font-weight: 500;
-  line-height: 17px;
+  line-height: 1.15;
 }
 
 .agent-capability-section > header > p {
   color: var(--ui-text-tertiary);
-  font-size: 13px;
-  line-height: 18px;
+  font-size: var(--portal-type-ui-size);
+  line-height: 1.4;
 }
 
 .agent-capability-rows {
   overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--ui-base) 10%, transparent);
-  border-radius: 4px;
-  background: color-mix(in srgb, var(--ui-base) 2%, transparent);
+  border: 1px solid var(--portal-stroke-hairline);
+  border-radius: var(--portal-radius-card);
+  background: var(--portal-surface-card);
 }
-
 .agent-capability-rows > * + * {
   border-top: 1px solid var(--ui-stroke-tertiary);
 }
@@ -164,7 +162,7 @@
 }
 
 .agent-capability-row[data-expanded] {
-  background: color-mix(in srgb, var(--portal-brand-fill) 8%, transparent);
+  background: var(--portal-raw-brand-10);
 }
 
 .agent-capability-row-text {
@@ -178,7 +176,7 @@
   display: grid;
   min-width: 0;
   gap: 2px;
-  border-radius: 2px;
+  border-radius: var(--portal-radius-chip);
   text-align: start;
 }
 
@@ -194,17 +192,17 @@
 
 .agent-capability-row-name {
   overflow-wrap: anywhere;
-  font-size: 14px;
+  font-size: var(--portal-type-body-size);
   font-weight: 500;
-  line-height: 20px;
-  letter-spacing: 0.01em;
+  line-height: 1.4;
+  letter-spacing: var(--portal-tracking-ui);
 }
 
 .agent-capability-row-description {
   overflow: hidden;
   color: var(--ui-text-tertiary);
-  font-size: 13px;
-  line-height: 18px;
+  font-size: var(--portal-type-ui-size);
+  line-height: 1.4;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -229,14 +227,13 @@
 
 .agent-capability-tags > * {
   padding: 0 6px;
-  border: 1px solid color-mix(in srgb, var(--ui-base) 14%, transparent);
-  border-radius: 2px;
+  border: 1px solid var(--portal-stroke-control);
+  border-radius: var(--portal-radius-chip);
   color: var(--ui-text-secondary);
-  font-size: 11px;
-  line-height: 15px;
-  letter-spacing: 0.01em;
+  font-size: var(--portal-type-micro-size);
+  line-height: 1.35;
+  letter-spacing: var(--portal-tracking-ui);
 }
-
 .agent-capability-row-text > .agent-capability-tags {
   padding-top: 4px;
 }
@@ -267,11 +264,11 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  border-radius: 2px;
+  border-radius: var(--portal-radius-chip);
   color: var(--ui-text-secondary);
-  font-size: 11px;
-  line-height: 15px;
-  letter-spacing: 0.01em;
+  font-size: var(--portal-type-micro-size);
+  line-height: 1.35;
+  letter-spacing: var(--portal-tracking-ui);
   white-space: nowrap;
 }
 
@@ -292,18 +289,18 @@
 
 .agent-capability-meta {
   color: var(--ui-text-tertiary);
-  font-size: 11px;
-  line-height: 15px;
+  font-size: var(--portal-type-micro-size);
+  line-height: 1.35;
 }
 
-/* "Show all 23" (895:14956): the card's last row, an underlined 13px Medium label. */
+/* "Show all 23" (895:14956): the card's last row, an underlined Medium label. */
 .agent-capability-show-all {
   display: block;
   width: 100%;
   padding: 12px 16px;
-  font-size: 13px;
+  font-size: var(--portal-type-ui-size);
   font-weight: 500;
-  line-height: 18px;
+  line-height: 1.4;
   text-align: start;
   text-decoration: underline;
   text-underline-offset: 3px;
@@ -354,22 +351,22 @@
   gap: 6px;
   padding-inline: 10px;
   border: 0;
-  border-radius: 3px;
-  background: color-mix(in srgb, var(--ui-base) 2%, transparent);
+  border-radius: var(--portal-radius-control);
+  background: var(--portal-raw-ink-2);
   box-shadow: none;
   color: var(--ui-text-secondary);
-  font-size: 13px;
+  font-size: var(--portal-type-ui-size);
 }
 
 .capability-header-scope [data-slot='select-trigger']:hover {
-  background: color-mix(in srgb, var(--ui-base) 5%, transparent);
+  background: var(--portal-raw-ink-5);
   color: var(--ui-text-primary);
 }
 
 .capability-header-link {
   gap: 4px;
-  color: color-mix(in srgb, var(--ui-text-primary) 70%, transparent);
-  font-size: 13px;
+  color: var(--portal-text-secondary);
+  font-size: var(--portal-type-ui-size);
   font-weight: 500;
   text-decoration: underline;
   text-underline-offset: 3px;
@@ -381,11 +378,10 @@
 }
 
 /* A skill's SKILL.md and a feed overview in the detail dialog (redesign): the dialog's type scale —
-   13px secondary body, 15/14/13 Medium headings, mono only for code. Overrides CompactMarkdown's
-   tool-detail sizes. */
+   secondary body, Medium headings, mono only for code. Overrides CompactMarkdown's tool-detail sizes. */
 .capability-markdown {
   color: var(--ui-text-secondary);
-  font-size: 13px;
+  font-size: var(--portal-type-ui-size);
   line-height: 1.5;
 }
 
@@ -402,15 +398,15 @@
 }
 
 .capability-markdown h1 {
-  font-size: 15px;
+  font-size: var(--portal-type-section-size);
 }
 
 .capability-markdown h2 {
-  font-size: 14px;
+  font-size: var(--portal-type-body-size);
 }
 
 .capability-markdown :is(h3, h4) {
-  font-size: 13px;
+  font-size: var(--portal-type-ui-size);
 }
 
 .capability-markdown :is(p, ul, ol) {
@@ -418,5 +414,5 @@
 }
 
 .capability-markdown :is(pre, code) {
-  font-size: 12px;
+  font-size: var(--portal-type-meta-size);
 }

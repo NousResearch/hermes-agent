@@ -402,7 +402,7 @@
   color: var(--ui-text-secondary);
   font-size: var(--portal-type-chip-size);
   letter-spacing: var(--portal-tracking-chip);
-  line-height: 0.875rem;
+  line-height: 1.4;
   text-transform: uppercase;
 }
 /* RUNNING wears the status green (18563:12897), the sign-in steps' "ok" badge. */
@@ -786,7 +786,7 @@
   font-size: var(--portal-type-chip-size);
   font-style: normal;
   letter-spacing: var(--portal-tracking-chip);
-  line-height: 0.875rem;
+  line-height: 1.4;
   text-transform: uppercase;
 }
 /* Skipped callout (878:8032): pending orange 8% fill, 40% stroke, r4, warn glyph then 13 Medium. */

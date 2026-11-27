@@ -167,14 +167,14 @@
   background: var(--portal-raw-ink-10);
   font-size: var(--portal-type-caption-size);
   font-weight: 500;
-  line-height: 0.875rem;
+  line-height: 1.4;
   text-align: center;
 }
 
 .global-settings-disclosure-caret {
   flex-shrink: 0;
   color: var(--ui-text-secondary);
-  transition: transform 150ms ease-out;
+  transition: transform var(--portal-motion-fast) var(--portal-ease);
 }
 
 .global-settings-disclosure[open] .global-settings-disclosure-caret {

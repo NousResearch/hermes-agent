@@ -1037,6 +1037,9 @@ def test_spawn_hermes_action_scrubs_gateway_loop_guard_env(monkeypatch, tmp_path
     class _FakeProc:
         pid = 1234
 
+        def wait(self, timeout=None):  # the spawn helper hands the child to a reaper thread
+            return 0
+
     def _fake_popen(cmd, **kwargs):
         captured["env"] = kwargs.get("env")
         return _FakeProc()
@@ -1074,6 +1077,9 @@ def test_spawn_hermes_action_retries_without_breakaway_when_job_denies(monkeypat
 
     class _FakeProc:
         pid = 4321
+
+        def wait(self, timeout=None):  # the spawn helper hands the child to a reaper thread
+            return 0
 
     def _fake_popen(cmd, **kwargs):
         flags_seen.append(kwargs.get("creationflags"))
@@ -1185,6 +1191,9 @@ def test_named_profile_action_isolates_parent_env_and_loads_target_env(monkeypat
 
     class _FakeProc:
         pid = 4321
+
+        def wait(self, timeout=None):  # the spawn helper hands the child to a reaper thread
+            return 0
 
     def _fake_popen(cmd, **kwargs):
         captured["cmd"] = cmd

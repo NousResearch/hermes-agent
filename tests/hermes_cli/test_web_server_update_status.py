@@ -66,7 +66,7 @@ class TestUpdateStatusRootLog:
         monkeypatch.setattr(_web_server_gateway, "_ACTION_LOG_DIR", b_logs)
         for registry in ("_ACTION_PROCS", "_ACTION_RESULTS", "_ACTION_COMMANDS", "_ACTION_IDS"):
             monkeypatch.setattr(_web_server_gateway, registry, {})
-        monkeypatch.setattr(_web_server_gateway.subprocess, "Popen", lambda *a, **kw: types.SimpleNamespace(pid=7))
+        monkeypatch.setattr(_web_server_gateway.subprocess, "Popen", lambda *a, **kw: types.SimpleNamespace(pid=7, wait=lambda *_: 0))
         b_id = "b" * 32
         _web_server_gateway._spawn_hermes_action(["update"], "hermes-update", env_overrides={"HERMES_ACTION_ID": b_id})
         _web_server_gateway._ACTION_PROCS.clear()  # B's dashboard restarted: in-memory result lost
@@ -99,7 +99,7 @@ class TestUpdateStatusRootLog:
         monkeypatch.setattr(_web_server_gateway, "_ACTION_LOG_DIR", b_logs)
         for registry in ("_ACTION_PROCS", "_ACTION_RESULTS", "_ACTION_COMMANDS", "_ACTION_IDS"):
             monkeypatch.setattr(_web_server_gateway, registry, {})
-        monkeypatch.setattr(_web_server_gateway.subprocess, "Popen", lambda *a, **kw: types.SimpleNamespace(pid=7))
+        monkeypatch.setattr(_web_server_gateway.subprocess, "Popen", lambda *a, **kw: types.SimpleNamespace(pid=7, wait=lambda *_: 0))
         monkeypatch.setenv("HERMES_HOME", str(root / "profiles" / "b"))
         _web_server_gateway._spawn_hermes_action(["update"], "hermes-update", env_overrides={"HERMES_ACTION_ID": b_id})
         for profile, action_id, outcome in (("b", b_id, b_outcome), ("a", a_id, "success")):

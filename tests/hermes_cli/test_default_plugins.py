@@ -7,6 +7,7 @@ that places the plugin directory (the live install is exercised end to end outsi
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -173,7 +174,12 @@ def test_a_new_home_or_a_failed_pass_unsettles_the_revision(tmp_path, monkeypatc
         return install
     monkeypatch.setattr(lcm, "_install_into", install_into)
     children: list = []
-    monkeypatch.setattr(subprocess, "Popen", lambda argv, **kwargs: children.append(argv))
+
+    def fake_popen(argv, **kwargs):
+        children.append(argv)
+        return SimpleNamespace(pid=0, wait=lambda: 0)  # spawn_install hands the child to a reaper thread
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
 
     # Offline: the in-tree default installs, but the pass stays owed until the live catalog is read.
     assert default_plugins.install_and_record(wait=1.0)["owed"] == ["live catalog"]

@@ -30,6 +30,7 @@ from hermes_cli._subprocess_compat import (
     bounded_probe_run,
     kill_process_tree,
     noninteractive_git_env,
+    reap_in_background,
     windows_detach_flags_without_breakaway,
     windows_detach_popen_kwargs,
 )
@@ -280,12 +281,13 @@ def spawn_commit_graph_refresh(repo_root: Path) -> bool:
     try:
         try:
             # detached-spawn: ok — the refresh must neither delay the update nor die with it; slot-locked, bounded
-            subprocess.Popen(argv, **kwargs, **windows_detach_popen_kwargs())
+            proc = subprocess.Popen(argv, **kwargs, **windows_detach_popen_kwargs())
         except OSError:
             if not IS_WINDOWS:
                 raise
             # A job object without BREAKAWAY_OK refuses CREATE_BREAKAWAY_FROM_JOB; retry without it.
-            subprocess.Popen(argv, **kwargs, creationflags=windows_detach_flags_without_breakaway())
+            proc = subprocess.Popen(argv, **kwargs, creationflags=windows_detach_flags_without_breakaway())
+        reap_in_background(proc)
     except OSError:
         release_maintenance_slot(git_dir, _LOCK)
         raise

@@ -234,6 +234,58 @@ def test_identical_call_streak_never_halts_when_hard_stop_disabled_or_for_poller
     assert hard.halt_decision is None
 
 
+def test_identical_success_loop_notices_when_fresh_results_defeat_the_result_streak():
+    # #137170: a mutating tool re-issued with byte-identical args kept SUCCEEDING with a
+    # fresh result each time ({"ok": true, "comment_id": N} with N incrementing), so the
+    # result-identical streak reset on every call and ~430 replays ran with zero notices.
+    controller = ToolCallGuardrailController(ToolCallGuardrailConfig(hard_stop_enabled=True))
+    args = {"task_id": "T-1", "comment": "approved"}
+
+    def fresh(n: int) -> str:
+        return json.dumps({"ok": True, "comment_id": n})
+
+    notices = [controller.observe_call("kanban_comment", args, fresh(n), failed=False) for n in range(953, 958)]
+    assert [o.kind for o in notices[:2]] == [None, None]
+    assert notices[2].kind == "identical_success_streak"
+    assert "3rd" in notices[2].notice and "kanban_comment" in notices[2].notice
+    assert all(o.kind == "identical_success_streak" for o in notices[2:])
+    # Notice-only: a fresh result is observation of the duplication, never a hard stop.
+    assert controller.halt_decision is None
+
+
+def test_identical_success_loop_resets_on_failure_or_changed_args_and_spares_pollers():
+    controller = ToolCallGuardrailController(ToolCallGuardrailConfig(hard_stop_enabled=True))
+    args = {"task_id": "T-1", "comment": "approved"}
+
+    def fresh(n: int) -> str:
+        return json.dumps({"ok": True, "comment_id": n})
+
+    # A failure interrupts the success streak; the next replays start the count over.
+    assert controller.observe_call("kanban_comment", args, fresh(1), failed=False).kind is None
+    assert controller.observe_call("kanban_comment", args, fresh(2), failed=False).kind is None
+    assert controller.observe_call("kanban_comment", args, '{"error": "task gone"}', failed=True).kind is None
+    assert controller.observe_call("kanban_comment", args, fresh(3), failed=False).kind is None
+    assert controller.observe_call("kanban_comment", args, fresh(4), failed=False).kind is None
+
+    # Different args never accumulate.
+    other = {"task_id": "T-2", "comment": "approved"}
+    assert controller.observe_call("kanban_comment", other, fresh(5), failed=False).kind is None
+    assert controller.observe_call("kanban_comment", other, fresh(6), failed=False).kind is None
+
+    # Pollers are exempt: identical-args poller calls succeeding repeatedly are waiting, not looping.
+    for n in range(5):
+        poll = controller.observe_call(
+            "process_manage", {"action": "poll", "session_id": "p1"}, f"running {n}", failed=False
+        )
+        assert poll.kind is None
+
+    # Output-style tools are exempt: a re-run command whose output moves is observation
+    # (test_stall_guards' poll-status semantics), left to the result-identical detectors.
+    for n in range(5):
+        rerun = controller.observe_call("terminal", {"command": "poll-status"}, f"output {n}", failed=False)
+        assert rerun.kind is None
+
+
 
 
 

@@ -369,6 +369,9 @@ def _project_committed(authority, ref, operation, result):
         # command still waiting for a turn boundary.
         authority.runner._set_session_reasoning_override(authority.sessions[ref.session_id].route, None)
         authority.sessions[ref.session_id].pending_reasoning = None
+    if operation == 'workspace':
+        # The committed folder is newer than a project tool move still waiting for the turn boundary.
+        authority.sessions[ref.session_id].pending_workspace = None
     if operation in {'model', 'reasoning', 'workspace', 'edit_policy'}:
         # Every viewer repaints its model, reasoning pill or workspace from the published policy,
         # as main's _emit_session_info did after the live change.

@@ -1,0 +1,17 @@
+name: logbuch
+repo: https://github.com/Senci/hermes-logbuch
+sha: 5b387aca03c190a87515da9714229e11f6740cb4
+description: "A value-ranked list of your real-work Hermes sessions in Hermes Desktop, as a tab and a full page. Compression chains fold into their root, sessions group by topic and rank by business value and shipped output (commit and MR calls), an icon shows each session's end state (waiting for a go, interrupted, not merged, shipped), open loose ends are tracked, and a weekly Markdown digest is one click away. Labels come from your own rules first, an optional model pass on request, and manual edits that are never overwritten. Disclosure — reads the sessions database (state.db, opened read-only) of the profile the backend runs in; writes only its own files under $HERMES_HOME/logbuch (labels.db at 0600, digests you ask for). The one model call, POST /classify, runs only when that route is called: it starts a 'hermes chat --oneshot --safe-mode --source tool' child with the configured model, provider and profile (claude-haiku-5-5 on anthropic under the default profile unless changed) and hands it a redacted excerpt (400 characters each of the first prompt and the last reply, withheld whole when a key-like value is present) through a 0600 query file. No other network calls, no background processes, no stored credentials, no telemetry."
+maintainer: Senci
+tier: community
+category: desktop
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/Senci/hermes-logbuch
+version: "0.1.2"
+image: https://raw.githubusercontent.com/Senci/hermes-logbuch/5b387aca03c190a87515da9714229e11f6740cb4/docs/assets/cover.jpg
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

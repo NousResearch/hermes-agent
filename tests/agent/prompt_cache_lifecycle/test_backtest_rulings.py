@@ -3,9 +3,10 @@
 1. A keep-alive miss served by another upstream than the one that cached the prefix (Nous serves one
    Claude model from ``chatcmpl-*`` and ``gen-*`` upstreams), or one that still read the stable system
    prefix, does not end warming; real misses end it only on the second in a row.
-2. Under ``cache_ttl: auto`` a person's chat sends 5m markers until its first idle gap past five
-   minutes and 1h from that request on, for the rest of the session; the tier never changes while the
-   5m entry is still warm, and no idle keep-alive is sent before the upgrade.
+2. Under ``cache_ttl: auto`` a person's chat sends 5m markers until its 5m entry first expires and 1h
+   from that request on, for the rest of the session; the tier never changes while the 5m entry is
+   still warm (a 1h request then re-writes the whole prompt; a keep-alive still in flight counts as a
+   touch), and idle keep-alives run on the 5m window.
 3. The route store learns a downgrade only from samples in two different sessions, never from an
    upstream switch, and never a lifetime shorter than the longest hit it ever saw.
 
@@ -173,7 +174,7 @@ def _markers(agent):
             if isinstance(part, dict) and "cache_control" in part}
 
 
-def test_2_a_human_auto_chat_sends_5m_until_its_first_long_pause_then_1h_for_good():
+def test_2_a_human_auto_chat_sends_5m_until_its_first_long_pause_then_1h_for_good(monkeypatch):
     from agent.prompt_cache_lifecycle.tier import carry_cache_tier, maybe_upgrade_cache_tier
 
     import time
@@ -183,12 +184,23 @@ def test_2_a_human_auto_chat_sends_5m_until_its_first_long_pause_then_1h_for_goo
     assert _markers(agent) == {"5m"}
     assert _respond(agent, _request("5m"), at=t0) is None
     pcl.end_turn_prompt_cache_warming(agent)
-    assert pcl.get_prompt_cache_warmer(agent)._run is None, "an idle keep-alive was armed before the upgrade"
+    run = pcl.get_prompt_cache_warmer(agent)._run
+    assert run is not None and run.ttl_s == 300, "idle keep-alives run on the 5m window before the upgrade"
 
     assert not maybe_upgrade_cache_tier(agent, now=t0 + 240)  # a quick reply: the 5m entry is still warm
     assert _markers(agent) == {"5m"}
     _respond(agent, _request("5m"), at=t0 + 240)
     assert not maybe_upgrade_cache_tier(agent, now=t0 + 240 + 299), "the TTL changed while the 5m entry was warm"
+    warmer = pcl.get_prompt_cache_warmer(agent)
+    warmer.last_sent_at = t0 + 240 + 250  # a keep-alive whose reply is still due
+    assert not maybe_upgrade_cache_tier(agent, now=t0 + 240 + 301), "the TTL changed under an in-flight refresh"
+
+    def _unreachable(_run):
+        raise ConnectionError("refresh never reached the provider")
+    monkeypatch.setattr(warmer, "_send", _unreachable)
+    with monkeypatch.context() as at_send:
+        at_send.setattr(time, "time", lambda: t0 + 240 + 250)
+        _fire(warmer)  # that keep-alive fails: it renewed nothing, so it stops counting as a touch
 
     assert maybe_upgrade_cache_tier(agent, now=t0 + 240 + 301)  # the first pause past five minutes
     assert _markers(agent) == {"1h"}

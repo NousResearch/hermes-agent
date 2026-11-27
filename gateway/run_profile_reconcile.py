@@ -249,6 +249,14 @@ class GatewayProfileReconcileMixin(GatewayPlatformReconcileMixin):
         """Apply a selected diff under the reconcile lock, shared by the watcher and the
         serve/unserve control verbs. New profiles first get a runtime (reservation + store); one
         whose home another gateway owns or whose store is unusable is parked, not served."""
+        result, _receipts = await self._apply_profile_diff(
+            current, added, removed, changed, reason=reason, live=live, result=result)
+        return result
+
+    async def _apply_profile_diff(self, current, added, removed, changed, *, reason,
+                                  live=None, result=None) -> tuple:
+        """``(result, {profile: platform receipt})``: the one apply every named-profile path goes
+        through; each served profile it applied records its receipt in the PlatformChangeLedger."""
         from gateway.run import MultiplexConfigError
         from gateway.run_platform_reconcile import PlatformConfigUnreadable
         from gateway.run_runtime import park_profile, unpark_profile
@@ -260,7 +268,8 @@ class GatewayProfileReconcileMixin(GatewayPlatformReconcileMixin):
         known = dict(self._served_profile_homes or {})
         sigs = self._served_profile_signatures or {}
         if not (added or removed or changed):
-            return {**result, "served_profiles": self.served_profile_names()}
+            return {**result, "served_profiles": self.served_profile_names()}, {}
+        before = self._open_profile_receipts(added, changed)
         for name in removed:
             await self._unserve_profile(name, known[name])
             result["removed"].append(name)
@@ -336,12 +345,13 @@ class GatewayProfileReconcileMixin(GatewayPlatformReconcileMixin):
             configs = getattr(self, "_profile_configs", None)
             if isinstance(configs, dict):
                 configs.pop(name, None)
+        receipts = self._close_profile_receipts(before, result.get("unreadable") or {})
         if added:
             from gateway.run_runtime import recover_served_native_rows
             await recover_served_native_rows(self)
             await self._after_profiles_added([(n, current[n]) for n in added])
         result["served_profiles"] = self.served_profile_names()
-        return result
+        return result, receipts
 
     def _drop_stale_platform_verdicts(self, name: str) -> None:
         """Before a changed profile's rescan, drop its ``<name>:<platform>`` status entries for

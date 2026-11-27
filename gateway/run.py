@@ -1849,32 +1849,32 @@ def load_gateway_config_for_runner() -> "GatewayConfig":
 
 
 async def _discover_gateway_mcp_tools(config: object) -> None:
-    """Run startup MCP discovery for every profile this gateway serves: ``discover_mcp_tools`` reads
-    ``mcp_servers`` from ``get_hermes_home()``'s config, so an unscoped call only connects the launch
-    profile's servers (single-profile gateways keep the unscoped call).
-
-    Under multiplex, run it once per served profile inside that profile's ``_profile_runtime_scope`` and
-    carry the scope into the executor thread with ``copy_context()`` (the same shape as
-    ``_run_in_executor_with_context``). See #95518.
-
-    No gateway run can complete a browser OAuth flow (nobody watches its stdout; on Windows its
-    DEVNULL stdin even passes ``isatty``), so discovery runs with interactive OAuth suppressed — the
-    same gate the CLI's background discovery uses. An expired token then parks the server with an
-    actionable ``hermes mcp login`` warning instead of opening an authorize tab.
-    """
+    """Run startup MCP discovery with interactive OAuth suppressed (unattended gateways cannot
+    complete browser OAuth). Single-profile gateways keep the unscoped call; under multiplex, run
+    once per served profile in its ``_profile_runtime_scope`` (#95518), renewing a startup-watchdog
+    progress lease and logging start/end per profile (#160479)."""
+    from hermes_startup_watchdog import report_startup_progress
     from tools.mcp_oauth import suppress_interactive_oauth
+    from tools.mcp_tool_common import _core as _mcp_core
     from tools.mcp_tool_discovery import discover_mcp_tools
     loop = asyncio.get_running_loop()
     with suppress_interactive_oauth():
         if not getattr(config, "multiplex_profiles", False):
             await loop.run_in_executor(None, copy_context().run, discover_mcp_tools)
             return
+        lease_s = float(_mcp_core._MCP_DISCOVERY_PASS_MAX_SEC
+                        + _mcp_core._MCP_DISCOVERY_LOCK_MAX_RETRIES * _mcp_core._MCP_DISCOVERY_LOCK_RETRY_DELAY_S)
         for profile_name, profile_home in _multiplex_profile_homes(config):
+            report_startup_progress(lease_s, phase=f"mcp_discovery:{profile_name}")
+            started = time.monotonic()
+            logger.info("MCP tool discovery starting for profile '%s'", profile_name)
             try:
                 with _profile_runtime_scope(Path(profile_home)):
                     await loop.run_in_executor(None, copy_context().run, discover_mcp_tools)
             except Exception:
-                logger.warning("MCP tool discovery failed for profile '%s'", profile_name, exc_info=True)
+                logger.warning("MCP tool discovery failed for profile '%s' after %.2fs", profile_name, time.monotonic() - started, exc_info=True)
+            else:
+                logger.info("MCP tool discovery finished for profile '%s' in %.2fs", profile_name, time.monotonic() - started)
 
 
 def _platform_has_bot_credential(platform: "Platform", platform_config: "PlatformConfig") -> bool:

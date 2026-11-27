@@ -32,6 +32,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import threading
 import time
 from dataclasses import dataclass, fields
 from pathlib import Path
@@ -152,17 +153,27 @@ def _receipt(profile: str, started, restarted, stopped, states: dict, reasons: d
             "installed": list(installed)}
 
 
+def _unserved_receipt(profile: str, stopped) -> dict:
+    """The answer for a profile its own apply parked (a config the multiplexer refuses) or dropped:
+    nothing of it runs any more; ``stopped`` is what ran before."""
+    return {"applied": False, "profile": profile, "changed": bool(stopped), "started": [], "restarted": [],
+            "stopped": sorted(p.value for p in stopped), "platforms": {}, "reasons": {}, "installed": [],
+            "reason": "not_served",
+            "error": f"profile '{profile}' is no longer served by this gateway (parked or removed); see its log"}
+
+
 class PlatformConfigUnreadable(Exception):
     """A served profile's ``config.yaml`` cannot be loaded: the reconcile keeps the last good
     configuration (adapters, runner settings, ``os.environ``) and acknowledges nothing, so the next
     readable edit is applied as usual."""
 
 
-def _unreadable_receipt(profile: str, error: Exception, states: dict) -> dict:
+def _unreadable_receipt(profile: str, error: Exception, states: dict, installed=()) -> dict:
     """The ``reconcile-platforms`` answer when the profile's config cannot be read: nothing applied,
-    every platform keeps running as it was (``platforms``), and why (``error``)."""
+    every platform keeps running as it was (``platforms``), and why (``error``). ``installed``: plugins
+    the recovery ahead of the read installed all the same."""
     return {"applied": False, "profile": profile, "changed": False, "started": [], "restarted": [],
-            "stopped": [], "platforms": states, "reasons": {}, "installed": [],
+            "stopped": [], "platforms": states, "reasons": {}, "installed": list(installed),
             "reason": "config_unreadable",
             "error": f"config.yaml cannot be read; the running gateway kept its current platforms ({error})"}
 
@@ -225,6 +236,69 @@ def _dependency_blocked(config: Any) -> dict:
     return blocked
 
 
+_CHANGE_LISTS = ("started", "restarted", "stopped", "installed")
+
+
+class PlatformChangeLedger:
+    """What the reconciles applied that no ``reconcile-platforms`` answer has reported yet.
+
+    The rule: every platform a reconcile started, restarted or stopped, and every plugin it installed, is
+    reported to exactly ONE answer for that profile, the first one given after that reconcile finished.
+    It holds for every path that applies a served profile's platforms, because each records here at the
+    one apply boundary it goes through, under the reconcile lock:
+
+    - the launch profile (``_reconcile_primary_locked``): watcher tick, plugin-load trigger, the gateway-
+      start plugin recovery landing late, an ask's own apply, the apply of an ask that answered ``pending``;
+    - every named profile (``_apply_profile_diff``): the profile watcher's tick, ``rescan-profiles``,
+      ``serve-profile``, a plugin-load trigger, an ask's own apply, and the plugins its recovery installed.
+
+    - Change lists ACCUMULATE: every reconcile merges its lists in; nothing ever replaces them, so a later
+      reconcile that found nothing left to do cannot erase an earlier one's start.
+    - Each record also replaces the profile's platform states and reasons with the ones that reconcile
+      read as it finished. :meth:`drain` takes the lists AND that latest snapshot in one locked step, so
+      an answer pairs every change it reports with the state after the newest of them: a reconcile that
+      finishes between an ask's own apply and its drain is reported with its own states, never older ones.
+    - An answer drains on the thread that returns it, as the last step before it returns (nothing waits
+      after the drain, so the whole answer stays inside the caller's wait), after the reconcile it waited
+      for finished; an ask that stops waiting leaves everything for the next ask.
+    - No saved answer is ever replayed: an ask always reconciles the files as they stand first.
+
+    Recorded on the loop thread, drained on the control socket's: hence the lock."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._lists: dict = {}
+        self._latest: dict = {}  # profile -> the newest receipt's non-list fields (states, reasons, ...)
+
+    def record(self, receipt: dict) -> None:
+        profile = receipt.get("profile")
+        if profile is None:
+            return
+        with self._lock:
+            self._latest[profile] = {k: v for k, v in receipt.items() if k not in _CHANGE_LISTS}
+            if not any(receipt.get(k) for k in _CHANGE_LISTS):
+                return
+            lists = self._lists.setdefault(profile, {k: [] for k in _CHANGE_LISTS})
+            for key in _CHANGE_LISTS:
+                lists[key].extend(v for v in receipt.get(key) or () if v not in lists[key])
+
+    def drain(self, profile: str) -> Optional[dict]:
+        """The answer for ``profile`` as of the newest record: its unreported lists (taken) and its
+        states. None when nothing was ever recorded for it (or it left the served set since)."""
+        with self._lock:
+            latest = self._latest.get(profile)
+            if latest is None:
+                return None
+            lists = self._lists.pop(profile, None) or {k: [] for k in _CHANGE_LISTS}
+        return {**latest, **lists, "changed": bool(lists["started"] or lists["restarted"] or lists["stopped"])}
+
+    def forget(self, profile: str) -> None:
+        """A profile newly served: nothing a previous serving of that name applied is owed to it."""
+        with self._lock:
+            self._lists.pop(profile, None)
+            self._latest.pop(profile, None)
+
+
 class GatewayPlatformReconcileMixin:
     """Per-profile platform adapter reconcile (primary and multiplexed secondaries)."""
 
@@ -234,6 +308,7 @@ class GatewayPlatformReconcileMixin:
     _primary_dotenv: Optional[dict] = None  # the .env values the last read put into os.environ (standalone)
     _primary_installing: bool = False  # the reconcile is installing a plugin the new credentials need
     _unreadable_signatures: Optional[dict] = None  # profile -> the file signature whose config failed to load
+    _platform_change_ledger: Optional[PlatformChangeLedger] = None
 
     @property
     def _unreadable_platform_configs(self) -> dict:
@@ -289,44 +364,105 @@ class GatewayPlatformReconcileMixin:
     async def reconcile_profile_platforms(self, profile_name: Optional[str], *, reason: str) -> dict:
         """Apply one profile's platform diff now; ``None`` (or the primary's name) = the launch profile.
         Returns ``{"applied", "profile", "changed", "started", "restarted", "stopped", "platforms": {platform:
-        state}, "reasons": {platform: why it is unavailable}}`` for every served profile alike."""
+        state}, "reasons": {platform: why it is unavailable}}`` for every served profile alike: what THIS
+        reconcile did; the apply recorded it in the :class:`PlatformChangeLedger` for the next answer."""
+        return await self._reconcile_platforms(profile_name, reason=reason)
+
+    async def answer_platform_reconcile(self, profile_name: Optional[str]) -> dict:
+        """The control verb's apply (loop thread): reconcile the files the caller wrote. The verb then
+        drains the ledger (:func:`reconcile_platforms_verb`); an ask that stops waiting drains nothing."""
+        return await self.reconcile_profile_platforms(profile_name, reason="control-socket")
+
+    @property
+    def platform_change_ledger(self) -> PlatformChangeLedger:
+        if self._platform_change_ledger is None:
+            self._platform_change_ledger = PlatformChangeLedger()
+        return self._platform_change_ledger
+
+    async def _reconcile_platforms(self, profile_name: Optional[str], *, reason: str) -> dict:
+        from gateway.run_profile_reconcile import profile_serve_signature
         primary = getattr(self, "_primary_profile_name", None) or "default"
         if not getattr(self, "_running", False):
             return {"applied": False, "pending": True, "error": "gateway is not running yet"}
-        if profile_name in (None, primary):
-            from gateway.run_profile_reconcile import profile_serve_signature
+        if profile_name not in (None, primary):
+            if (self._served_profile_homes or {}).get(profile_name) is None:
+                return {"applied": False, "error": f"profile '{profile_name}' is not served by this gateway"}
             async with self._reconcile_lock():
-                # Taken before the read: an edit landing during this apply is seen by the next tick.
-                signature = await asyncio.to_thread(profile_serve_signature, self._primary_platform_home())
-                try:
-                    plan, installed = await self._apply_primary_platform_plan(reason)
-                except PlatformConfigUnreadable as exc:
-                    # Not acknowledged: the edit that makes it readable again is applied as usual.
-                    self._note_unreadable_platform_config(primary, signature, exc)
-                    return _unreadable_receipt(primary, exc, self._primary_platform_states())
-                finally:
-                    self._primary_platform_plan = None
-                self._primary_platform_signature = signature
-                self._unreadable_platform_configs.pop(primary, None)
-            return _receipt(primary, plan.start, plan.restart, plan.stop, self._primary_platform_states(),
-                            dict(getattr(self, "_primary_blocked_platforms", None) or {}), installed)
-        home = (self._served_profile_homes or {}).get(profile_name)
-        if home is None:
-            return {"applied": False, "error": f"profile '{profile_name}' is not served by this gateway"}
+                return await self._reconcile_secondary_locked(profile_name, reason)
         async with self._reconcile_lock():
-            before = self._secondary_running_platforms(profile_name)
-            (getattr(self, "_profile_platform_plans", None) or {}).pop(profile_name, None)
-            applied = await self._apply_profile_changes(
-                dict(self._served_profile_homes or {}), [], [], [profile_name], reason=reason)
-            unreadable = (applied.get("unreadable") or {}).get(profile_name)
-            if unreadable is not None:
-                return _unreadable_receipt(profile_name, unreadable, self._secondary_platform_states(profile_name))
-            plan = (getattr(self, "_profile_platform_plans", None) or {}).pop(
-                profile_name, PlatformPlan((), (), ()))
-            after = self._secondary_running_platforms(profile_name)
-        started = tuple(p for p in after if p not in before and p not in plan.restart)
-        return _receipt(profile_name, started, plan.restart, plan.stop,
-                        self._secondary_platform_states(profile_name), {})
+            # Taken before the read: an edit landing during this apply is seen by the next tick.
+            signature = await asyncio.to_thread(profile_serve_signature, self._primary_platform_home())
+            return await self._reconcile_primary_locked(primary, signature, reason)
+
+    async def _reconcile_primary_locked(self, primary: str, signature, reason: str) -> dict:
+        try:
+            plan, installed, own_write = await self._apply_primary_platform_plan(reason)
+        except PlatformConfigUnreadable as exc:
+            # Not acknowledged: the edit that makes it readable again is applied as usual.
+            self._note_unreadable_platform_config(primary, signature, exc)
+            return self._recorded(_unreadable_receipt(primary, exc, self._primary_platform_states()))
+        finally:
+            self._primary_platform_plan = None
+        # The plugin recovery's install marker is this apply's own write to config.yaml, not an edit.
+        self._primary_platform_signature = signature if own_write is None else (own_write, *signature[1:])
+        self._unreadable_platform_configs.pop(primary, None)
+        return self._recorded(_receipt(primary, plan.start, plan.restart, plan.stop, self._primary_platform_states(),
+                                       dict(getattr(self, "_primary_blocked_platforms", None) or {}), installed))
+
+    def _recorded(self, receipt: dict) -> dict:
+        self.platform_change_ledger.record(receipt)
+        return receipt
+
+    async def _reconcile_secondary_locked(self, profile_name: str, reason: str) -> dict:
+        _result, receipts = await self._apply_profile_diff(
+            dict(self._served_profile_homes or {}), [], [], [profile_name], reason=reason)
+        return receipts[profile_name]
+
+    # ── named-profile receipts (``_apply_profile_diff`` brackets every named-profile apply) ──────────
+
+    @property
+    def _profile_installs(self) -> dict:
+        installs = getattr(self, "_profile_installs_pending", None)
+        if installs is None:
+            installs = self._profile_installs_pending = {}
+        return installs
+
+    def _note_profile_installs(self, profile_name: str, installed) -> None:
+        """A named profile's plugin recovery installed ``installed``: owed to its apply's receipt."""
+        self._profile_installs.setdefault(profile_name, []).extend(installed)
+
+    def _open_profile_receipts(self, added, changed) -> dict:
+        """Before a named-profile apply: what each profile it applies runs now (its receipt's baseline).
+        A newly served profile owes nothing a previous serving of its name applied."""
+        plans = getattr(self, "_profile_platform_plans", None) or {}
+        for name in added:
+            self.platform_change_ledger.forget(name)
+        for name in (*added, *changed):
+            plans.pop(name, None)
+            self._profile_installs.pop(name, None)  # the gateway start's install, not this apply's
+        return {name: self._secondary_running_platforms(name) for name in (*added, *changed)}
+
+    def _close_profile_receipts(self, before: dict, unreadable: dict) -> dict:
+        """After the apply, still under its lock: each applied profile's receipt, recorded in the ledger.
+        One the apply parked or dropped records that it is no longer served (its newest state), never
+        the states an earlier apply left. ``{profile: receipt}``."""
+        plans = getattr(self, "_profile_platform_plans", None) or {}
+        served = self._served_profile_homes or {}
+        receipts = {}
+        for name, was in before.items():
+            plan = plans.pop(name, PlatformPlan((), (), ()))
+            installed = self._profile_installs.pop(name, [])
+            if name not in served:
+                receipts[name] = self._recorded(_unserved_receipt(name, was))
+                continue
+            states = self._secondary_platform_states(name)
+            if name in unreadable:
+                receipts[name] = self._recorded(_unreadable_receipt(name, unreadable[name], states, installed))
+                continue
+            started = tuple(p for p in self._secondary_running_platforms(name)
+                            if p not in was and p not in plan.restart)
+            receipts[name] = self._recorded(_receipt(name, started, plan.restart, plan.stop, states, {}, installed))
+        return receipts
 
     def platform_plan_in_flight(self, profile_name: Optional[str]) -> Optional[PlatformPlan]:
         """The plan a still-running reconcile of ``profile_name`` (None = the launch profile) applies."""
@@ -404,17 +540,22 @@ class GatewayPlatformReconcileMixin:
         return installed
 
     def _load_primary_platforms_now(self) -> tuple:
-        """Blocking (off-loop). ``(config, wanted prints, blocked, installed)``: the launch profile's gateway
+        """Blocking (off-loop). ``(config, wanted prints, blocked, installed, own write)``: the launch profile's gateway
         config as the files say now (after :meth:`_recover_primary_plugins`), the build print of every
         platform it wants, the configured plugin platforms the config sweep dropped because their
-        dependencies do not import here, and the plugins the recovery installed. Standalone re-reads
+        dependencies do not import here, the plugins the recovery installed, and the config layer's signature
+        after the recovery's own write (None: it installed nothing). Standalone re-reads
         ``.env`` changes into ``os.environ`` first (:meth:`_apply_dotenv_changes`: its adapters read it
         there); under multiplex the default profile's scope is the credential source, never ``os.environ``."""
+        from gateway.run_profile_reconcile import profile_serve_signature
         home = self._primary_platform_home()
         credentials = self._primary_credential_print
         installed = self._recover_primary_plugins(home)
+        # config.yaml as the recovery left it (its install marker), before the read below: an edit to it
+        # landing meanwhile is read and applied too; a later one, or any .env edit, is seen by the next tick.
+        own_write = profile_serve_signature(home)[0] if installed else None
         try:
-            return self._read_primary_platforms(home, installed)
+            return (*self._read_primary_platforms(home, installed), own_write)
         except PlatformConfigUnreadable:
             self._primary_credential_print = credentials  # the fixed config re-runs this recovery too
             raise
@@ -469,9 +610,9 @@ class GatewayPlatformReconcileMixin:
         return _undo
 
     async def _apply_primary_platform_plan(self, reason: str) -> tuple:
-        """``(plan applied, plugins installed first)``."""
-        fresh, wanted, self._primary_blocked_platforms, installed = await self._run_housekeeping_in_executor(
-            self._load_primary_platforms_now)
+        """``(plan applied, plugins installed first, config signature after their install marker or None)``."""
+        fresh, wanted, self._primary_blocked_platforms, installed, own_write = (
+            await self._run_housekeeping_in_executor(self._load_primary_platforms_now))
         built = getattr(self, "_primary_build_prints", None)
         if built is None:
             built = self._primary_build_prints = {}
@@ -482,7 +623,7 @@ class GatewayPlatformReconcileMixin:
         # Runner-read settings (the home channel) are live at once, whatever the adapter plan says.
         publish_runner_owned_settings(self.config.platforms, fresh.platforms)
         if not plan:
-            return plan, installed
+            return plan, installed, own_write
         self._primary_platform_plan = plan  # what a ``pending`` verb answer reports while this runs
         logger.info("Platform reconcile (%s): start=%s restart=%s stop=%s", reason,
                     [p.value for p in plan.start], [p.value for p in plan.restart], [p.value for p in plan.stop])
@@ -495,7 +636,7 @@ class GatewayPlatformReconcileMixin:
             else:
                 self.config.platforms.pop(platform, None)
         await self._hot_start_primary_platforms([(p, *wanted[p]) for p in (*plan.restart, *plan.start)])
-        return plan, installed
+        return plan, installed, own_write
 
     async def _hot_start_primary_platforms(self, items: list) -> None:
         """Boot's prepare -> connect -> publish-or-queue path for platforms started mid-run. Under multiplex
@@ -682,6 +823,18 @@ def reconcile_platforms_verb(runner: Any, loop: asyncio.AbstractEventLoop):
     socket executor: marshal onto the loop, bounded; a longer connect answers ``pending``."""
     import concurrent.futures
 
+    def _deliver(receipt: dict) -> dict:
+        """This thread returns the answer, so it drains the ledger (PlatformChangeLedger), and waits on
+        nothing after. The drain is one cut: the unreported changes with the states of the newest
+        reconcile that recorded any (this ask's own, or one that finished after it)."""
+        profile = receipt.get("profile")
+        if profile is None:
+            return receipt
+        answer = runner.platform_change_ledger.drain(profile)
+        if answer is None:  # it left the served set since: what it applied is owed to no one
+            return {**receipt, **{k: [] for k in _CHANGE_LISTS}, "changed": False}
+        return answer
+
     def _handler(params: Optional[dict] = None) -> dict:
         from hermes_constants import get_process_hermes_home, hermes_home_key
         requested = Path(str((params or {}).get("home") or get_process_hermes_home())).expanduser()
@@ -694,11 +847,11 @@ def reconcile_platforms_verb(runner: Any, loop: asyncio.AbstractEventLoop):
             name = next((str(n) for n, h in served if hermes_home_key(h) == key), None)
             if name is None:
                 return {"applied": False, "error": "home is not served by this gateway", "home": str(requested)}
-        future = asyncio.run_coroutine_threadsafe(
-            runner.reconcile_profile_platforms(name, reason="control-socket"), loop)
+        future = asyncio.run_coroutine_threadsafe(runner.answer_platform_reconcile(name), loop)
         try:
-            return future.result(timeout=_VERB_WAIT_SECS)
+            return _deliver(future.result(timeout=_VERB_WAIT_SECS))
         except concurrent.futures.TimeoutError:
+            # The reconcile runs on; what it applies stays in the ledger for the next ask.
             # Still connecting (or draining a turn): name what it is doing, so callers can say so.
             plan = runner.platform_plan_in_flight(name) or PlatformPlan((), (), ())
             return {"applied": True, "pending": True, "starting": [p.value for p in plan.start],

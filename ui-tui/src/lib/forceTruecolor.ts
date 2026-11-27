@@ -9,6 +9,23 @@
 const TRUE_RE = /^(?:1|true|yes|on)$/i
 const FALSE_RE = /^(?:0|false|no|off)$/i
 
+const isWindowsTerminalTruecolorCandidate = (env: NodeJS.ProcessEnv = process.env): boolean => {
+  if (!env.WT_SESSION) {
+    return false
+  }
+
+  if ('FORCE_COLOR' in env) {
+    return false
+  }
+
+  const colorTerm = (env.COLORTERM ?? '').trim().toLowerCase()
+  if (colorTerm === 'truecolor' || colorTerm === '24bit') {
+    return false
+  }
+
+  return (env.TERM ?? '').trim().toLowerCase().endsWith('256color')
+}
+
 export function shouldForceTruecolor(env: NodeJS.ProcessEnv = process.env): boolean {
   const override = (env.HERMES_TUI_TRUECOLOR ?? '').trim()
 
@@ -16,7 +33,7 @@ export function shouldForceTruecolor(env: NodeJS.ProcessEnv = process.env): bool
     return false
   }
 
-  return TRUE_RE.test(override)
+  return TRUE_RE.test(override) || isWindowsTerminalTruecolorCandidate(env)
 }
 
 const isAppleTerminal = (env: NodeJS.ProcessEnv = process.env) => (env.TERM_PROGRAM ?? '').trim() === 'Apple_Terminal'

@@ -1264,7 +1264,8 @@ def _noticed(message: str, home: Path, feature: LeftCoreFeature, process_env: bo
 
 
 def _install_into(home: Path, *, consent: Optional[bool] = None) -> Callable[[str], dict]:
-    def _install(name: str, discard: Optional[Path] = None) -> dict:
+    def _install(name: str, discard: Optional[Path] = None,
+                 on_step: Optional[Callable[[object], None]] = None) -> dict:
         from hermes_cli.plugins_cmd import dashboard_install_plugin
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
         token = set_hermes_home_override(home)
@@ -1274,7 +1275,7 @@ def _install_into(home: Path, *, consent: Optional[bool] = None) -> Callable[[st
                 _remove_plugin_core(discard)
             return dashboard_install_plugin("", force=False, enable=True, catalog_name=name,
                                             assume_deps_consent=_unattended_consent() if consent is None
-                                            else consent)
+                                            else consent, on_step=on_step)
         finally:
             reset_hermes_home_override(token)
     return _install

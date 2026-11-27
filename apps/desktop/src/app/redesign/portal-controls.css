@@ -493,13 +493,17 @@
 }
 
 /* Give overflowing page surfaces (Agent Overview/Settings, Settings, Capabilities, Routines,
-   Library) a visible resting scrollbar thumb; sidebar keeps its fade indicator. */
+   Library) a quiet resting scrollbar cue; sidebar keeps its fade indicator. */
 :root[data-shell='portal'] :is([data-page-surface], [data-zone-page]) ::-webkit-scrollbar-thumb {
-  background: var(--portal-stroke-control);
+  background: var(--portal-stroke-divider);
 }
 
 :root[data-shell='portal'] :is([data-page-surface], [data-zone-page]) :hover::-webkit-scrollbar-thumb {
-  background: var(--ui-text-quaternary);
+  background: var(--portal-stroke-control);
+}
+
+:root[data-shell='portal'] :is([data-page-surface], [data-zone-page]) ::-webkit-scrollbar-thumb:hover {
+  background: var(--ui-text-tertiary);
 }
 
 /* ── Touch (DESIGN.md › Responsive) ───────────────────────────────────────────

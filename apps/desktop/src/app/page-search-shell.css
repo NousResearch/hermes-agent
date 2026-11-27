@@ -54,6 +54,13 @@
   padding-inline: var(--page-content-inset);
 }
 
+
+/* Let the Connections directory span the full stage width so its scrollbar sits on the stage's
+   right edge (matching Settings & Agent Overview) and wheel-scrolling works over the side gutters. */
+.page-redesigned .capabilities-page:has(> .conn-page) {
+  max-width: none;
+  padding-inline: 0;
+}
 .page-redesigned :is(.catalog-discovery, .capabilities-sections) {
   padding-bottom: var(--portal-page-end-space);
 }

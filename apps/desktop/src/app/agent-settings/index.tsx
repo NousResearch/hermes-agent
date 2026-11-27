@@ -7,6 +7,7 @@ import type { ReactNode } from 'react'
 import { Navigate, useLocation, useNavigate } from 'react-router'
 
 import { $apiRequestScope } from '@/api/client'
+import { requestComposerFocus } from '@/app/chat/composer/focus'
 import { AgentScreenThumbnail, useAgentScreen } from '@/app/chat/sidebar/portal/portal-agent-screen'
 import { useBotModeLoaded } from '@/app/chat/sidebar/simplified-bot-chat-row'
 import { Button } from '@/components/ui/button'
@@ -521,8 +522,8 @@ function AgentSettingsContent({
           ?.targetProfile || owner.profile,
       sourceScoped: true
     })
+    requestComposerFocus()
   }
-
   const sessionRows = sessions.map(session => (
     <SettingRow
       key={session.id}

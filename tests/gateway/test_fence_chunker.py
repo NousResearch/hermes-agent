@@ -176,6 +176,27 @@ def test_mixed_emoji_newline_text_utf16_limit():
     assert all(c for c in chunks)
 
 
+def test_newline_splitter_makes_progress_when_utf16_budget_cannot_fit_emoji():
+    """A one-unit UTF-16 budget must consume an astral code point (#120420)."""
+    calls = 0
+
+    def guarded_utf16_len(value: str) -> int:
+        nonlocal calls
+        calls += 1
+        if calls > 5:
+            raise AssertionError("newline splitter did not make progress")
+        return utf16_len(value)
+
+    text = "😀"
+    chunks = split_text_fence_aware(
+        text, 1, guarded_utf16_len, prefer_paragraphs=False
+    )
+
+    assert chunks == [text]
+    assert all(chunks)
+    assert "".join(chunks) == text
+
+
 # ── split_markdown_atoms: empty ``` ``` blocks (main parity) ─────────────────
 
 

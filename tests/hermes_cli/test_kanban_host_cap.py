@@ -165,6 +165,25 @@ def test_idle_board_does_not_report_capacity_hold(kanban_home, all_assignees_spa
     assert kbd.describe_suppression([res]) == ""
 
 
+@pytest.mark.parametrize("cap", ["board", "host"])
+def test_nonspawnable_ready_does_not_report_capacity_hold(kanban_home, monkeypatch, cap):
+    monkeypatch.setattr(kbd, "_profile_exists_fn", lambda: lambda name: name == "alice")
+    kb.create_board("second")
+    with kbc.connect(board="second") as conn:
+        busy = kb.create_task(conn, title="busy elsewhere", assignee="alice")
+        assert kb.claim_task(conn, busy) is not None
+    with kbc.connect() as conn:
+        kb.create_task(conn, title="terminal lane", assignee="orion-cc")
+        if cap == "board":
+            busy = kb.create_task(conn, title="busy here", assignee="alice")
+            assert kb.claim_task(conn, busy) is not None
+            res = kbd.dispatch_once(conn, spawn_fn=_fake_spawn_factory([]), max_spawn=1)
+        else:
+            res = kbd.dispatch_once(conn, spawn_fn=_fake_spawn_factory([]), max_in_progress=1)
+    assert res.spawn_budget_hold is None
+    assert kbd.describe_suppression([res]) == ""
+
+
 @pytest.mark.parametrize("review_enabled", [False, True])
 def test_review_only_capacity_hold_follows_review_dispatch(
     kanban_home, all_assignees_spawnable, monkeypatch, review_enabled,

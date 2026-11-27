@@ -2201,12 +2201,10 @@ def _run_reclaim_phase(
 
 
 def _pending_capacity_work(conn: sqlite3.Connection) -> bool:
-    """Whether a ready or enabled review lane has an unclaimed task."""
-    return bool(conn.execute(
-        "SELECT 1 FROM tasks WHERE claim_lock IS NULL "
-        "AND (status = 'ready' OR (status = 'review' AND ?)) LIMIT 1",
-        (review_dispatch_enabled(),),
-    ).fetchone())
+    """Match the gateway's spawnable ready/review health predicate."""
+    return has_spawnable_ready(conn) or (
+        review_dispatch_enabled() and has_spawnable_review(conn)
+    )
 
 
 def _tick_spawn_budget(

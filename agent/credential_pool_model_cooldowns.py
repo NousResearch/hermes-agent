@@ -51,12 +51,13 @@ def account_window_spent(error_context: Optional[dict[str, Any]]) -> bool:
 
 
 def usage_allowance_spent(error_context: Optional[dict[str, Any]]) -> bool:
-    """The 429 says the account's allowance is spent, so retrying the same credential cannot succeed
-    before the reset: rotate on the first one."""
+    """The 429 says an allowance is spent, so retrying the same credential cannot succeed before the
+    reset: rotate on the first one. Any rejected Claude plan window counts; its scope (whole credential
+    or one model) is decided by ``account_window_spent``."""
     reason = str((error_context or {}).get("reason") or "").lower()
     message = str((error_context or {}).get("message") or "").lower()
-    return account_window_spent(error_context) or any(t in reason for t in _USAGE_LIMIT_REASON_TOKENS) or any(
-        t in message for t in _USAGE_LIMIT_MESSAGE_TOKENS)
+    return bool((error_context or {}).get("subscription_window")) or any(
+        t in reason for t in _USAGE_LIMIT_REASON_TOKENS) or any(t in message for t in _USAGE_LIMIT_MESSAGE_TOKENS)
 
 
 # A Codex ChatGPT-account model entitlement 400 is a plan property, not a window: bench the

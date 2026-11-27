@@ -188,7 +188,7 @@ def auto_cache_ttl_for_agent(agent: Any) -> str:
 
 def auto_start_cache_ttl(agent: Any) -> str:
     """The tier an ``auto`` session starts on: the source's choice, a 1h choice starting on 5m until
-    the chat's first pause (``prompt_cache_lifecycle.tier``)."""
+    the chat's 5m entry first expires (``prompt_cache_lifecycle.tier``)."""
     from agent.prompt_cache_lifecycle.tier import adaptive_start_tier
 
     return adaptive_start_tier(agent, auto_cache_ttl_for_agent(agent))

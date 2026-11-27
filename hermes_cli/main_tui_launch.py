@@ -15,6 +15,8 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+from hermes_platform.resolver.git import resolve_usable_git
+
 # Log-record parity with the origin module.
 logger = logging.getLogger("hermes_cli.main")
 
@@ -77,7 +79,7 @@ def _restore_tui_workspace(tui_dir: Path) -> bool:
     than raising) when git is unavailable, this isn't a checkout, or the restore leaves the directory still
     missing — the caller then prints the manual-recovery message.
     """
-    git = shutil.which("git")
+    git = resolve_usable_git()
     if not git or not (tui_dir.parent / ".git").exists():
         return False
     try:

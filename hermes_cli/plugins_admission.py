@@ -9,6 +9,11 @@ class AdmissionRefused(RuntimeError):
     """The candidate set was refused; config and environment untouched."""
 
 
+class SelectionRaced(AdmissionRefused):
+    """Another writer changed the plugin selection while PM prepared this one; nothing was published,
+    so re-reading the selection and proposing again is safe."""
+
+
 class DependencyConflict(AdmissionRefused):
     """PM's resolver proved the candidate set cannot co-install with the pinned dependency set.
 
@@ -76,8 +81,9 @@ def admit_plugin_set_change(
             **({"expected_config": expected_config} if expected_config is not None else {}),
         }))
     except Exception as exc:
+        from pm.publication import SelectionChanged
         from pm.workspace import ResolutionConflict
 
         if isinstance(exc, ResolutionConflict):
             raise DependencyConflict(exc.cause, plugin=plugin) from exc
-        raise AdmissionRefused(str(exc)) from exc
+        raise (SelectionRaced if isinstance(exc, SelectionChanged) else AdmissionRefused)(str(exc)) from exc

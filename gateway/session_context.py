@@ -227,6 +227,13 @@ def _bound_session_value(name: str) -> Any:
     return _UNSET if var is None else var.get()
 
 
+def bound_turn_origin() -> str | None:
+    """``MessageEvent.turn_origin`` of the turn this context runs, ``None`` with no turn bound (a
+    managed worker, cron, the CLI or a plugin's slash command bind no event)."""
+    event = _SESSION_TURN_EVENT.get()
+    return event.turn_origin() if event is not None else None
+
+
 def bound_session_env(name: str) -> str:
     """``get_session_env`` without the ``os.environ`` fallback: ``""`` when THIS context never bound
     *name*, so a caller outside a turn never reads the process's (or another session's) values."""

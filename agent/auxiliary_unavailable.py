@@ -55,7 +55,7 @@ def _sentence(text: object) -> str:
     return str(text).strip().rstrip(".") + "."
 
 
-def pool_cooldown_message(provider_id: str) -> Optional[str]:
+def pool_cooldown_message(provider_id: str, *, rate_limited_only: bool = False) -> Optional[str]:
     """The "all N credentials … are cooling down" error when the provider's pool is fully benched.
 
     ``resolve_provider_client()`` returns ``None`` both when no credential exists and when every
@@ -63,7 +63,8 @@ def pool_cooldown_message(provider_id: str) -> Optional[str]:
     were found. Run hermes auth add …" — wrong on both counts for a valid OAuth grant that is
     merely rate-limited (#56810). Read the persisted pool state (no seeding, no writes) and name
     the cooldown and its reset time instead; ``None`` when the pool is empty or a credential is
-    usable (the caller keeps the missing-credential diagnostic).
+    usable (the caller keeps the missing-credential diagnostic). *rate_limited_only*: also ``None``
+    unless every live bench is a 429, so an auth or billing bench keeps its own remedy.
     """
     from agent.credential_pool import STATUS_DEAD, PooledCredential, _exhausted_until
     from hermes_cli.auth import read_credential_pool
@@ -73,7 +74,7 @@ def pool_cooldown_message(provider_id: str) -> Optional[str]:
         entries = [PooledCredential.from_dict(provider_id, e)
                    for e in read_credential_pool(provider_id) if isinstance(e, dict)]
     live = [e for e in entries if e.last_status != STATUS_DEAD]
-    if not live:
+    if not live or (rate_limited_only and any(e.last_error_code != 429 for e in live)):
         return None
     now = time.time()
     resets = [until for e in live

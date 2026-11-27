@@ -19,6 +19,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from hermes_cli import gateway as gw
 from hermes_cli import gateway_migrate as gm
 from hermes_cli import gateway_migrate_backends as gmb
 from hermes_cli import main_dashboard
@@ -113,6 +114,13 @@ def host(monkeypatch, tmp_path):
     monkeypatch.setattr("hermes_cli.dashboard_procs._pid_environ", lambda pid: None)
     monkeypatch.setattr(main_dashboard, "_loaded_launchd_backend_jobs", list)
     monkeypatch.delenv("HERMES_DESKTOP_CHILD_PID", raising=False)
+    # On Linux every scan sets the user bus env up from /run/user/<uid>: start without it, never read this
+    # machine's runtime dir, and restore both vars afterwards (setenv records them; a bare delenv would not).
+    for name in ("XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"):
+        monkeypatch.setenv(name, "")
+        monkeypatch.delenv(name)
+    monkeypatch.setattr("hermes_cli.gateway._runtime_dir_is_ours", lambda path: False)
+    monkeypatch.setattr("hermes_cli.gateway._path_exists_safe", lambda path: False)
     home = tmp_path / "hermes-home"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
@@ -178,6 +186,105 @@ def test_cgroup_without_mainpid_is_not_claimed_by_the_unit(host, no_writes):
 
     (item,) = [i for i in gmb.collect_backends() if i.pid == 4201]
     assert item.supervisor == "manual" and item.unit is None
+
+
+@pytest.mark.platforms("linux")
+def test_user_unit_dashboard_is_one_systemd_backend_from_a_shell_without_the_user_bus(host, no_writes,
+                                                                                    monkeypatch):
+    """A headless shell has no XDG_RUNTIME_DIR / DBUS_SESSION_BUS_ADDRESS, so `systemctl --user` fails
+    there; the user unit's dashboard was then reported twice, as a manual backend and as its unit."""
+    uid = os.getuid()  # windows-footgun: ok — linux-only test
+    env = {k: v for k, v in os.environ.items() if k not in ("XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS")}
+    monkeypatch.setattr(os, "environ", env)
+    monkeypatch.setattr("hermes_cli.gateway._runtime_dir_is_ours", lambda path: path == f"/run/user/{uid}")
+    fake_run = host.run
+
+    def run_needing_the_user_bus(cmd, *args, **kwargs):
+        if cmd[0] == "systemctl" and "--user" in cmd and "XDG_RUNTIME_DIR" not in os.environ:
+            host.calls.append([str(c) for c in cmd])
+            return subprocess.CompletedProcess(cmd, 1, "", "Failed to connect to bus: No medium found")
+        return fake_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", run_needing_the_user_bus)
+    host.proc(4301, _argv("dashboard", "--port", "9119"), ppid=900,
+              cgroup=f"/user.slice/user-{uid}.slice/user@{uid}.service/app.slice/hermes-dashboard.service")
+    host.unit("user", "hermes-dashboard.service", main_pid=4301,
+              path="/home/u/.config/systemd/user/hermes-dashboard.service")
+
+    items = gmb.collect_backends()
+
+    assert [(i.supervisor, i.pid, i.unit, i.scope) for i in items] == [
+        ("systemd", 4301, "hermes-dashboard.service", "user")]
+
+
+@pytest.mark.platforms("linux")
+def test_a_rescan_after_a_user_systemctl_call_finds_the_same_systemd_backend(host, no_writes, monkeypatch):
+    """#160028: the plan picks the backend from a first scan, a later `systemctl --user` step through the
+    gateway sets the bus env up, and _owner_blockers' rescan then saw the same PID as its unit (a second
+    backend). Real systemctl fails `show` and `list-unit-files` alike without XDG_RUNTIME_DIR."""
+    uid = os.getuid()  # windows-footgun: ok — linux-only test
+    env = {k: v for k, v in os.environ.items() if k not in ("XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS")}
+    monkeypatch.setattr(os, "environ", env)
+    monkeypatch.setattr("hermes_cli.gateway._runtime_dir_is_ours", lambda path: path == f"/run/user/{uid}")
+    fake_run = host.run
+
+    def run_needing_the_user_bus(cmd, *args, **kwargs):
+        if cmd[0] == "systemctl" and "--user" in cmd and "XDG_RUNTIME_DIR" not in os.environ:
+            host.calls.append([str(c) for c in cmd])
+            return subprocess.CompletedProcess(cmd, 1, "", "Failed to connect to bus: No medium found")
+        return fake_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", run_needing_the_user_bus)
+    host.proc(4302, _argv("dashboard", "--port", "9119"), ppid=900,
+              cgroup=f"/user.slice/user-{uid}.slice/user@{uid}.service/app.slice/hermes-dashboard.service")
+    host.unit("user", "hermes-dashboard.service", main_pid=4302,
+              path="/home/u/.config/systemd/user/hermes-dashboard.service")
+
+    def scan():
+        return [(i.supervisor, i.pid, i.unit, i.scope) for i in gmb.collect_backends()]
+
+    first = scan()
+    gw._systemctl_cmd()  # what each SystemHost `systemctl --user` step runs first
+    want = [("systemd", 4302, "hermes-dashboard.service", "user")]
+    assert (first, scan()) == (want, want)
+
+
+@pytest.mark.platforms("linux")
+def test_user_bus_env_preserves_existing_own_runtime_dir_and_absent_bus(host, no_writes, tmp_path, monkeypatch):
+    """Existing user-owned runtime/bus env is never overwritten, and an absent runtime dir is not fabricated."""
+    runtime = tmp_path / "custom-runtime"
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+    monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/custom/bus")
+    monkeypatch.setattr("hermes_cli.gateway._runtime_dir_is_ours", lambda path: path == str(runtime))
+
+    assert gmb.collect_backends() == []
+    assert os.environ["XDG_RUNTIME_DIR"] == str(runtime)
+    assert os.environ["DBUS_SESSION_BUS_ADDRESS"] == "unix:path=/custom/bus"
+
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
+    monkeypatch.setattr("hermes_cli.gateway._runtime_dir_is_ours", lambda path: False)
+    monkeypatch.setattr("hermes_cli.gateway._path_exists_safe", lambda path: False)
+
+    assert gmb.collect_backends() == []
+    assert "XDG_RUNTIME_DIR" not in os.environ
+    assert "DBUS_SESSION_BUS_ADDRESS" not in os.environ
+
+
+@pytest.mark.platforms("macos", "windows")
+def test_non_linux_backend_scan_skips_user_systemd_env(host, no_writes, monkeypatch):
+    """macOS and Windows never call the Linux-only user-systemd env helper (which uses os.getuid())."""
+    family = gmb.os_family()
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
+    monkeypatch.setattr(main_dashboard, "_launchd_plist_dirs", list)
+    monkeypatch.setattr("hermes_cli.gateway_migrate_backends_windows.wmic_missing", lambda: False)
+    monkeypatch.setattr("hermes_cli.gateway._ensure_user_systemd_env",
+                        lambda: pytest.fail(f"_ensure_user_systemd_env called on {family}"))
+
+    assert gmb.collect_backends() == []
+    assert "XDG_RUNTIME_DIR" not in os.environ
+    assert "DBUS_SESSION_BUS_ADDRESS" not in os.environ
 
 
 def test_installed_enabled_unit_that_is_not_running_is_reported_once(host, no_writes):

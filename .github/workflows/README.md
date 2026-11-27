@@ -229,7 +229,7 @@ of every suite that reads it.
 | ↳ `e2e-upgrade-plan`, `e2e-upgrade (shard)` | | `e2e_upgrade` lane (release or dispatch) | every PR and every push |
 | OS-specific tests | `tests-os.yml` | `python` or `desktop_updater` or `e2e` or `e2e_upgrade` | none of those |
 | ↳ macOS (2 slices), Windows x64, Windows arm64 (2 slices) | | always inside `tests-os.yml`; the real Windows hand-off tests only with `desktop_updater` | |
-| ↳ Windows install + update E2E | `windows-install-update-e2e.yml` | `e2e_upgrade` (release or dispatch) | PRs and pushes |
+| ↳ Windows install + update E2E: `Plan Windows install + update journeys`, then one job per journey file | `windows-install-update-e2e.yml` | `e2e_upgrade` (release or dispatch) | PRs and pushes |
 | ↳ Windows E2E (real processes) | | `e2e` (release or dispatch) | PRs and pushes |
 | Python lints | `lint.yml` (one job) | `python` or `frontend`; the job itself skips a frontend-only push | neither |
 | ↳ Windows footguns + sibling guards, `ruff check .` (steps) | | `python` | frontend-only |

@@ -557,6 +557,37 @@ def test_browser_exec_points_at_vision_analyze_only_when_the_session_has_it(monk
             not native and "vision_analyze" in names)
 
 
+@pytest.mark.parametrize("toolsets, steers, names_exec", [
+    (["terminal"], False, False),
+    (["terminal", "file"], True, False),
+    (["terminal", "code_execution"], False, False),
+    (["terminal", "file", "code_execution"], True, True),
+])
+def test_terminal_steers_file_work_only_to_tools_the_session_has(toolsets, steers, names_exec):
+    """A terminal-only session must not be told to avoid its only file route, and execute_code is
+    named only when the session exposes it."""
+    from model_tools import get_tool_definitions
+
+    term = next(t for t in get_tool_definitions(enabled_toolsets=toolsets, quiet_mode=True)
+                if t["function"]["name"] == "terminal")["function"]["description"]
+    assert ("write_file do that and are tracked" in term) is steers
+    assert ("execute_code" in term) is names_exec
+
+
+@pytest.mark.parametrize("missing", ["read_file", "search_files", "patch", "write_file"])
+def test_terminal_keeps_shell_route_with_partial_file_tools(monkeypatch, missing):
+    """Missing any one file tool keeps the shell as the file route (all four or no steer)."""
+    from model_tools import get_tool_definitions
+    from toolsets import TOOLSETS
+
+    monkeypatch.setitem(TOOLSETS, "omit_one", {"tools": [missing]})
+    defs = get_tool_definitions(enabled_toolsets=["terminal", "file", "code_execution"],
+                                disabled_toolsets=["omit_one"], quiet_mode=True)
+    tools = {d["function"]["name"]: d["function"] for d in defs}
+    assert missing not in tools
+    assert "Do not use it to read" not in tools["terminal"]["description"]
+
+
 def test_tool_defs_cache_key_sees_config_replacement_with_pinned_mtime(tmp_path):
     """#111105: a same-size config.yaml swapped in with the old mtime must change the memo key."""
     import os

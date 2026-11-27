@@ -11,6 +11,7 @@ from hermes_cli.doctor_report import (
     warn_on_error,
 )
 from hermes_cli.sizefmt import format_bytes as _human_bytes
+from hermes_platform.resolver.git import resolve_usable_git
 from persistence_assembly import open_store_admin
 
 
@@ -140,7 +141,11 @@ def check_legacy_desktop_checkout() -> None:
 
     _section("Legacy Desktop Checkout")
 
+    git_usable = resolve_usable_git(cached=False) is not None
+
     def _git(*args: str):
+        if not git_usable:
+            return None
         try:
             return subprocess.run(
                 ["git", "-C", str(checkout), *args],

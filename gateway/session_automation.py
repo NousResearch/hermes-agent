@@ -552,6 +552,36 @@ def snapshot_automation(authority, adapter, event, identity):
     return {'text': event.text, 'native_text_v1': envelope}, entry
 
 
+# The process-registry producers whose admission identity (``producer_identity``: a JSON list
+# ``[type, producer id, incarnation]``) names the turn's ``turn_origin()``.
+_IDENTITY_ORIGINS = {'async_delegation': 'delegation_result', 'completion': 'process_notification',
+                     'watch_match': 'process_notification', 'watch_disabled': 'process_notification',
+                     'heartbeat': 'process_notification'}
+
+
+def _identity_origin(descriptor):
+    """The ``turn_origin()`` a committed automation row names, read back from the identity every row
+    (an older build's included) already carries, so no descriptor field and no fingerprint changes.
+    A liveness tick's row also records its output (``tick``), which the session heartbeat's does not;
+    every other producer's identity names none of these types."""
+    identity = descriptor.get('identity')
+    try:
+        parts = json.loads(identity) if isinstance(identity, str) else None
+    except ValueError:
+        return None
+    if (not isinstance(parts, list) or len(parts) != 3 or not isinstance(parts[0], str)
+            or (parts[0] == 'heartbeat' and 'tick' not in descriptor)):
+        return None
+    return _IDENTITY_ORIGINS.get(parts[0])
+
+
+def restore_origin(event, descriptor):
+    """Re-name a restored automation event's producer from its row (``_identity_origin``): any other
+    producer's row restores as ``None``. ``internal``, execution trust, stays as it is."""
+    event.set_turn_origin(_identity_origin(descriptor))
+    return event
+
+
 def check_automation_route(runner, payload, session_id, available_source, adapter):
     from gateway.session_envelope import restore_native
     event = restore_native(payload, runner)
@@ -654,7 +684,7 @@ def restore_local_automation(authority, ref, row):
         event.metadata['turn_author'] = deepcopy(descriptor['turn_author'])
     if descriptor.get('heartbeat'):
         event._heartbeat_session_id = descriptor['heartbeat']
-    return event
+    return restore_origin(event, descriptor)
 
 
 async def admit_automation(authority, adapter, event, identity, replaces=None, fold=None):

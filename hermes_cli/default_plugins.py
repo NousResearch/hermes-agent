@@ -48,10 +48,13 @@ def default_entries() -> list:
     return [entry for entry in load_catalog_live() if entry.default and entry.tier in DEFAULT_TIERS and runs_here(entry)]
 
 
-def _recorded(home: Path) -> set[str]:
-    from hermes_cli.left_core_migration import _read_config
-    done = _read_config(home).get(_INSTALLED_KEY)
-    return set(map(str, done)) if isinstance(done, list) else set()
+def _recorded(home: Path, *, own_only: bool = False) -> set[str]:
+    """Plugins *home* already got automatically: this installer's marker, plus (unless *own_only*)
+    the left-core migrator's, so a plugin either one installed and the user removed stays removed."""
+    from hermes_cli.left_core_migration import _INSTALLED_KEY as _LEFT_CORE_KEY, _read_config
+    config = _read_config(home)
+    keys = (_INSTALLED_KEY,) if own_only else (_INSTALLED_KEY, _LEFT_CORE_KEY)
+    return {str(n) for key in keys if isinstance(config.get(key), list) for n in config[key]}
 
 
 def _record(home: Path, names: set[str]) -> None:
@@ -61,7 +64,7 @@ def _record(home: Path, names: set[str]) -> None:
     from hermes_cli.config_backend import config_exists, write_config_key
     from hermes_cli.left_core_migration import _stamp_created
     path = home / "config.yaml"
-    done = _recorded(home)
+    done = _recorded(home, own_only=True)
     marker = sorted(done | names)
     if config_exists(path):
         write_config_key(path, _INSTALLED_KEY, marker)
@@ -142,7 +145,8 @@ def fetch_allowed(home: Path) -> bool:
 def install_defaults(home: Path, *, say: Callable[[str], None] = logger.info,
                      entries: Optional[list] = None) -> dict:
     """Install and enable every default plugin *home* never had. ``installed`` lists what this call
-    installed, ``owed`` what is still to fetch (a failed install). One plugin's failure never raises."""
+    installed, ``owed`` what is still to fetch (a failed install), ``raced`` the owed ones whose enable only
+    lost to other writers of the plugin selection (only when there are any). One plugin's failure never raises."""
     from hermes_cli.left_core_migration import _first_cause, _install_into
     from hermes_cli.memory_provider_migration import _home_label, _note_failure, _note_success
     result: dict = {"installed": [], "owed": []}
@@ -179,6 +183,8 @@ def install_defaults(home: Path, *, say: Callable[[str], None] = logger.info,
             say(f"  ✓ Installed default plugin '{entry.name}' for {_home_label(home)}")
             continue
         result["owed"].append(entry.name)
+        if outcome.get("raced"):
+            result.setdefault("raced", []).append(entry.name)
         _note_failure(home, _attempt(entry))  # marks a tree it left as ours to retry, not the user's
         if _installed_dir(home, entry) is not None:
             _placed(home, entry).parent.mkdir(parents=True, exist_ok=True)
@@ -195,6 +201,11 @@ def install_defaults_all_homes(*, say: Callable[[str], None] = print, wait: floa
     """Every profile home sharing this install (the default home plus each live profile). The catalog is
     read once; one home's failure never stops the next. Waits up to *wait* seconds for another installer
     to finish (``TimeoutError`` past that)."""
+    return _install_all_homes(say=say, lock=lambda: installer_lock(wait))
+
+
+def _install_all_homes(*, say: Callable[[str], None], lock: Callable) -> dict:
+    """:func:`install_defaults_all_homes`, taking *lock* only when something is to install."""
     from hermes_cli.plugin_catalog import fetch_live_catalog
     from pm.plugins_state import dependency_homes
     summary: dict = {"installed": [], "owed": []}
@@ -208,7 +219,7 @@ def install_defaults_all_homes(*, say: Callable[[str], None] = print, wait: floa
         summary["owed"].append("live catalog")
     if not entries:
         return summary
-    with _machine_lock(wait):  # never two installers in one home (an update tail beside a detached child)
+    with lock():  # never two installers in one home (an update tail beside a detached child)
         for home in homes:
             try:
                 outcome = install_defaults(home, say=say, entries=entries)
@@ -217,12 +228,16 @@ def install_defaults_all_homes(*, say: Callable[[str], None] = print, wait: floa
                 outcome = {"installed": [], "owed": [str(home)]}
             summary["installed"] += outcome["installed"]
             summary["owed"] += outcome["owed"]
+            if outcome.get("raced"):
+                summary.setdefault("raced", []).extend(outcome["raced"])
     return summary
 
 
-def _machine_lock(wait: float):
-    """The OS-held lock every installer of the default set holds (the kernel frees it when its holder dies).
-    Raises ``TimeoutError`` when another holder keeps it past *wait* seconds."""
+def installer_lock(wait: float):
+    """The OS-held lock every unattended plugin installer holds: this default set, the left-core migrator
+    and the gateway-start catalog platform install (the kernel frees it when its holder dies). Raises
+    ``TimeoutError`` when another holder keeps it past *wait* seconds. Not reentrant: hold it around one
+    pass, never around a call that takes it again."""
     from hermes_cli.auth import _file_lock
     from pm.environments import dependency_home_root
     return _file_lock(_state(Path(dependency_home_root()), "lock"), threading.local(), wait,
@@ -230,6 +245,17 @@ def _machine_lock(wait: float):
 
 
 # ── detached child: first start, profile create ──────────────────────────────
+
+def _pass_in_flight(root: Path) -> bool:
+    """Another live process holds :func:`installer_lock` (a holder stamps its pid into the lock file
+    while it holds it). Read, never acquired: a boot must not wait on it."""
+    from hermes_cli._subprocess_compat import pid_exists_stdlib
+    try:
+        pid = int(_state(root, "lock").read_text(encoding="utf-8-sig").split()[0])
+    except (OSError, ValueError, IndexError):
+        return False
+    return pid > 0 and pid != os.getpid() and pid_exists_stdlib(pid)
+
 
 def _state(root: Path, name: str) -> Path:
     return root / "cache" / f"default-plugins.{name}"
@@ -242,9 +268,10 @@ def _identity() -> str:
 
 
 def spawn_install(home: Optional[Path] = None) -> bool:
-    """Start the detached child that installs the defaults for every home (*home*, when given, must allow
-    fetching), unless the last attempt failed recently. A running child sees the request when it finishes
-    and scans again. Never waits."""
+    """Start the detached child that installs the defaults for every home, unless the last attempt failed
+    recently or an install pass is running now (it reports for this revision; a boot only asks that one
+    runs). *home* (a profile just created; it must allow fetching) is a rescan request: a running pass
+    scans again when it finishes cleanly. Never waits."""
     from hermes_cli._launchers import runtime_command
     from hermes_cli._subprocess_compat import windows_detach_flags_without_breakaway, windows_detach_popen_kwargs
     from hermes_cli.memory_provider_migration import _failed_recently
@@ -257,9 +284,12 @@ def spawn_install(home: Optional[Path] = None) -> bool:
     _state(root, "settled").unlink(missing_ok=True)  # unsettled until a pass installs it, so every boot re-checks
     if _failed_recently(root, _BACKOFF):
         return False
-    rerun = _state(root, "rerun")
-    rerun.parent.mkdir(parents=True, exist_ok=True)
-    rerun.touch()
+    if home is not None:
+        rerun = _state(root, "rerun")
+        rerun.parent.mkdir(parents=True, exist_ok=True)
+        rerun.touch()
+    if _pass_in_flight(root):
+        return False
     argv = runtime_command(install_root(), module="hermes_cli.default_plugins")
     kwargs = dict(stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
     try:
@@ -294,26 +324,33 @@ def _run_child() -> int:
 def install_and_record(*, say: Callable[[str], None] = print, wait: float = 900.0) -> dict:
     """The one coordinator (update tail and detached child): :func:`install_defaults_all_homes` again until
     no rescan was requested meanwhile (a profile created during the pass), then the outcome the boot step
-    reads: a failure begins the backoff, a clean pass marks this revision settled."""
+    reads: a failure begins the backoff, a clean pass marks this revision settled. Both are written before
+    the installer lock is released, so no boot in between starts another attempt; a failed pass is never
+    repeated here (the backoff decides when the next one runs)."""
     import time
+    from contextlib import nullcontext
     from hermes_cli.memory_provider_migration import _note_failure, _note_success
     from pm.environments import dependency_home_root
     root = Path(dependency_home_root())
     rerun = _state(root, "rerun")
-    while True:
-        started = time.time()
-        outcome = install_defaults_all_homes(say=say, wait=wait)
-        if not (rerun.exists() and rerun.stat().st_mtime >= started):
-            break
-    if outcome["owed"]:
-        _note_failure(root, _BACKOFF)
-        # A later pass (a profile created after this revision settled) can fail too: owed again.
-        _state(root, "settled").unlink(missing_ok=True)
+    with installer_lock(wait):
+        while True:
+            started = time.time()
+            outcome = _install_all_homes(say=say, lock=nullcontext)
+            # An enable that only lost to other selection writers is owed without a backoff: the next start retries.
+            failed = set(outcome["owed"]) - set(outcome.get("raced", ()))
+            if failed or not (rerun.exists() and rerun.stat().st_mtime >= started):
+                break
+        if outcome["owed"]:
+            if failed:
+                _note_failure(root, _BACKOFF)
+            # A later pass (a profile created after this revision settled) can fail too: owed again.
+            _state(root, "settled").unlink(missing_ok=True)
+            return outcome
+        _note_success(root, _BACKOFF)
+        _state(root, "settled").parent.mkdir(parents=True, exist_ok=True)
+        _state(root, "settled").write_text(_identity(), encoding="utf-8")
         return outcome
-    _note_success(root, _BACKOFF)
-    _state(root, "settled").parent.mkdir(parents=True, exist_ok=True)
-    _state(root, "settled").write_text(_identity(), encoding="utf-8")
-    return outcome
 
 
 def step_install_default_plugins() -> dict:

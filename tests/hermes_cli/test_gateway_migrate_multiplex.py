@@ -631,6 +631,60 @@ def test_failed_default_bringup_compensates_to_one_detached_gateway(fleet, monke
     assert not after.blocked and after.standalone_secondaries == []
 
 
+@pytest.mark.platforms("linux")
+def test_failed_legacy_disable_during_default_install_runs_migration_recovery(fleet, tmp_path, monkeypatch, capsys):
+    """When the default profile has no service and ``systemd_install()`` aborts with ``SystemExit(1)``
+    because disabling a legacy ``hermes.service`` failed after stopping it, ``_service_op`` must convert
+    that exit into a caught failure on both the apply and recovery install paths so ``apply_migration``
+    compensates to a detached host gateway instead of leaving zero gateways running."""
+    from subprocess import CompletedProcess
+    from hermes_cli import gateway as gw
+
+    legacy_dir = tmp_path / "legacy-user"
+    legacy_dir.mkdir()
+    legacy_unit = legacy_dir / "hermes.service"
+    legacy_unit.write_bytes(
+        b"[Unit]\nDescription=Hermes Gateway\n[Service]\n"
+        b"ExecStart=/usr/bin/python -m hermes_cli.main gateway run --replace\n"
+    )
+    new_unit = tmp_path / "user-units" / "hermes-gateway.service"
+    monkeypatch.setattr(gw, "_legacy_unit_search_paths", lambda: [(False, legacy_dir)])
+    monkeypatch.setattr(gw, "get_systemd_unit_path", lambda system=False: new_unit)
+    monkeypatch.setattr(gw, "generate_systemd_unit", lambda **kw: "[Service]\n")
+    monkeypatch.setattr(gw, "_prepare_service_launcher", lambda **kw: None)
+    monkeypatch.setattr(gw, "_ensure_linger_enabled", lambda: None)
+    monkeypatch.setattr(gw, "print_systemd_scope_conflict_warning", lambda: None)
+    # Stopping the legacy unit succeeds, but disabling it fails: systemd_install() exits 1.
+    monkeypatch.setattr(
+        gw,
+        "_run_systemctl",
+        lambda args, **kw: CompletedProcess(args, 1 if args[0] == "disable" else 0),
+    )
+
+    real_fake_op = gm._service_op
+    install_attempts: list[tuple[str, bool]] = []
+
+    def _op(kind, system, verb, home, *, run_as_user=None):
+        if verb == "install" and _name(home) == "default":
+            install_attempts.append((kind, system))
+            return _REAL_SERVICE_OP(kind, system, verb, home, run_as_user=run_as_user)
+        return real_fake_op(kind, system, verb, home, run_as_user=run_as_user)
+
+    monkeypatch.setattr(gm, "_service_op", _op)
+
+    assert gm.apply_migration(gm.build_migration_plan(), served_wait=0.1) is False
+    out = capsys.readouterr().out
+    # Both apply and rollback attempted the real systemd_install() and converted SystemExit(1).
+    assert install_attempts == [("systemd", False), ("systemd", False)]
+    assert "Restoring one host gateway" in out
+    assert "falling back to a detached gateway" in out
+    assert "Compensated: one host gateway is running" in out
+    assert legacy_unit.exists() and not new_unit.exists()
+    assert _config_flag(fleet.root) is False
+    assert (fleet.root / "gateway.pid").exists()
+    assert not (fleet.root / gm.MANIFEST_NAME).exists()
+
+
 def test_interrupted_apply_is_resumed_from_the_manifest_not_short_circuited(fleet, monkeypatch, capsys):
     """Flag flipped, secondaries gone, default never came up (the process died mid-apply): the re-run
     must finish the migration from the manifest — with the recorded User= — instead of reporting

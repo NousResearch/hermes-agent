@@ -204,7 +204,11 @@ async def test_failed_hot_serve_with_a_live_writer_parks_without_aborting_or_re_
         _served_profile_homes={}, _served_profile_signatures={},
         _live_resource_claims=lambda active: {}, _record_served_profiles=lambda active, homes: None)
     runner.served_profile_names = lambda: sorted(runner._served_profile_homes)
-    runner._serve_profile_runtime = GatewayProfileReconcileMixin._serve_profile_runtime.__get__(runner)
+    for method in ("_serve_profile_runtime", "_apply_profile_diff", "_open_profile_receipts",
+                   "_close_profile_receipts", "_secondary_running_platforms", "_recorded"):
+        setattr(runner, method, getattr(GatewayProfileReconcileMixin, method).__get__(runner))
+    from gateway.run_platform_reconcile import PlatformChangeLedger
+    runner.platform_change_ledger, runner._profile_installs, runner._profile_adapters = PlatformChangeLedger(), {}, {}
 
     async def start_adapters(name, home, claimed):
         started.append(name)

@@ -8,7 +8,12 @@ spawning Node or binding ports.
 """
 from __future__ import annotations
 
+import asyncio
+import importlib.util
 import subprocess
+import sys
+import threading
+from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 import pytest
@@ -17,6 +22,7 @@ from gateway.config import PlatformConfig
 from plugins.platforms.photon import adapter as photon_adapter
 from plugins.platforms.photon import sidecar_paths
 from plugins.platforms.photon.adapter import PhotonAdapter
+from tests.waiting import async_wait_until
 
 
 def _make_adapter(monkeypatch: pytest.MonkeyPatch) -> PhotonAdapter:
@@ -146,7 +152,7 @@ async def test_start_sidecar_spawns_with_stdin_pipe(
 
 @pytest.mark.asyncio
 async def test_spectrum_patch_runs_off_the_event_loop(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path,
 ) -> None:
     """The node patch run must not block the shared gateway event loop.
 
@@ -160,6 +166,7 @@ async def test_spectrum_patch_runs_off_the_event_loop(
     import threading
 
     adapter = _make_adapter(monkeypatch)
+    monkeypatch.setattr(sidecar_paths, "_SIDECAR_DIR", tmp_path)  # the install lock lives in the sidecar dir
     main_thread = threading.current_thread()
     seen: dict[str, Any] = {}
 
@@ -212,3 +219,99 @@ async def test_spectrum_patch_runs_off_the_event_loop(
         "dispatched via asyncio.to_thread so a 10s node spawn can't freeze "
         "every other platform on the gateway loop"
     )
+
+
+def _import_photon_for_another_profile(monkeypatch: pytest.MonkeyPatch, name: str):
+    """Import the plugin package a second time under its own module name, as the plugin loader does for
+    every served profile after the first (``hermes_plugins.<slug>__home_<digest>``)."""
+    plugin_dir = Path(photon_adapter.__file__).parent
+    spec = importlib.util.spec_from_file_location(name, plugin_dir / "__init__.py",
+                                                  submodule_search_locations=[str(plugin_dir)])
+    package = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, name, package)
+    spec.loader.exec_module(package)
+    loaded = {key: sys.modules.pop(key) for key in list(sys.modules) if key.startswith(f"{name}.")}
+    for key, module in loaded.items():  # recorded as new keys, so teardown removes them again
+        monkeypatch.setitem(sys.modules, key, module)
+    return loaded[f"{name}.adapter"], loaded[f"{name}.sidecar_paths"]
+
+
+@pytest.mark.asyncio
+async def test_concurrent_profile_connects_install_shared_sidecar_deps_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path,
+) -> None:
+    """Multiplexed profiles connect concurrently, each through its own import of this plugin, and they all
+    run the one sidecar dir while ``npm ci`` removes node_modules before installing: a connect that starts
+    while another profile's install is running waits for it, even once that install has created
+    spectrum-ts, instead of starting a second install or spawning against the half-written tree."""
+    other_adapter, other_paths = _import_photon_for_another_profile(monkeypatch, "photon_second_profile_import")
+    state = {"installed": False, "running": 0, "overlap": 0, "installs": 0}
+    guard, second_reached, install_running_at_second_check = threading.Lock(), threading.Event(), []
+
+    def reinstall() -> None:
+        with guard:
+            state["running"] += 1
+            state["installs"] += 1
+            state["overlap"] = max(state["overlap"], state["running"])
+            state["installed"] = True  # npm creates node_modules/spectrum-ts before the install completes
+        second_reached.wait(5)  # finish once the second connect has started looking at the sidecar dir
+        with guard:
+            state["running"] -= 1
+
+    def installed_seen_by(module) -> bool:
+        if module is other_adapter:
+            with guard:  # recorded before the installer is released, so the result cannot race it
+                install_running_at_second_check.append(state["running"] > 0)
+            second_reached.set()
+        return state["installed"]
+
+    def second_sidecar_dir() -> Path:
+        second_reached.set()
+        return tmp_path
+
+    for module, paths in ((photon_adapter, sidecar_paths), (other_adapter, other_paths)):
+        monkeypatch.setattr(paths, "_SIDECAR_DIR", tmp_path)
+        monkeypatch.setattr(module, "sidecar_deps_installed", lambda module=module: installed_seen_by(module))
+        monkeypatch.setattr(module, "_sidecar_deps_stale", lambda: False)
+        monkeypatch.setattr(module, "_reinstall_sidecar_deps", reinstall)
+        monkeypatch.setattr(module, "find_node_executable", lambda _name: "/pm/node")
+    monkeypatch.setattr(other_adapter, "_sidecar_dir", second_sidecar_dir)
+    monkeypatch.setenv("PHOTON_PROJECT_ID", "test-project-id")
+    monkeypatch.setenv("PHOTON_PROJECT_SECRET", "test-project-secret")
+    first, second = (module.PhotonAdapter(PlatformConfig(enabled=True, token="", extra={}))
+                     for module in (photon_adapter, other_adapter))
+
+    first_connect = asyncio.ensure_future(first._ensure_sidecar_deps())
+    await async_wait_until(lambda: state["running"] == 1, timeout=5, what="the first profile's install to start")
+    await asyncio.gather(first_connect, second._ensure_sidecar_deps())
+
+    assert (state["installs"], state["overlap"], install_running_at_second_check) == (1, 1, [False])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("writable", "installed", "outcome"), [
+    (True, True, ("SIDECAR_LOCK_FAILED", True)),  # another profile may be installing: retry, never go on
+    (False, True, None),  # a read-only tree with baked deps starts as it is
+    (False, False, ("SIDECAR_DEPS_MISSING", False)),
+])
+async def test_unopenable_install_lock_never_installs_unlocked(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, writable: bool, installed: bool, outcome,
+) -> None:
+    """Without the install lock a connect cannot know whether another profile is installing, so it never runs
+    npm, and in a writable sidecar dir it does not start on deps another profile may be rewriting."""
+    adapter = _make_adapter(monkeypatch)
+    monkeypatch.setattr(sidecar_paths, "_SIDECAR_DIR", tmp_path)
+    (tmp_path / ".photon-install.lock").mkdir()  # opening it as a file fails
+    installs = []
+    monkeypatch.setattr(photon_adapter, "_dir_writable", lambda _path: writable)
+    monkeypatch.setattr(photon_adapter, "sidecar_deps_installed", lambda: installed)
+    monkeypatch.setattr(photon_adapter, "_sidecar_deps_stale", lambda: True)
+    monkeypatch.setattr(photon_adapter, "_reinstall_sidecar_deps", lambda: installs.append(1))
+
+    if outcome is None:
+        await adapter._ensure_sidecar_deps()
+    else:
+        with pytest.raises(photon_adapter.PhotonSidecarStartupError) as raised:
+            await adapter._ensure_sidecar_deps()
+        assert (raised.value.code, raised.value.retryable) == outcome
+    assert installs == []

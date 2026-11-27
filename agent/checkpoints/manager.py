@@ -61,6 +61,7 @@ import time
 from pathlib import Path, PurePosixPath
 from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import selected_git_env, windows_hide_flags
+from hermes_platform.resolver.git import resolve_usable_git
 from typing import Optional
 
 from utils import env_int
@@ -461,7 +462,7 @@ def _run_git(
     env = _git_env(store, str(normalized_working_dir), index_file=index_file)
     if extra_env:
         env.update(extra_env)
-    git = shutil.which("git", path=env.get("PATH", ""))
+    git = resolve_usable_git(env)
     if git is None:
         return False, "", "git is not installed or not on PATH"
     cmd = [git, *args]
@@ -616,7 +617,7 @@ def _init_store(store: Path, working_dir: str) -> Optional[str]:
               "GIT_ALTERNATE_OBJECT_DIRECTORIES"):
         init_env.pop(k, None)
     try:
-        git = shutil.which("git", path=init_env.get("PATH", ""))
+        git = resolve_usable_git(init_env)
         if git is None:
             return "Shadow store init failed: git is not installed or not on PATH"
         result = subprocess.run(

@@ -26,15 +26,19 @@ _SPEC.loader.exec_module(rbt)
 def release_body(monkeypatch):
     state = {'body': '# Notes\n\n<!-- HERMES_BUILDS_TABLE -->\n\n## Changes\n- x\n', 'edits': []}
 
+    # gh as PATH and PATHEXT resolve it (gh.cmd on Windows); both calls must run that path.
+    resolved = '/fake/bin/gh.cmd'
+
     def gh(argv, **kwargs):
-        if argv[:3] == ['gh', 'release', 'view']:
+        if argv[:3] == [resolved, 'release', 'view']:
             return subprocess.CompletedProcess(argv, 0, json.dumps({'body': state['body']}), '')
-        assert argv[:3] == ['gh', 'release', 'edit']
+        assert argv[:3] == [resolved, 'release', 'edit']
         state['body'] = kwargs['input']
         state['edits'].append(state['body'])
         return subprocess.CompletedProcess(argv, 0, '', '')
 
     monkeypatch.setattr(rbt.subprocess, 'run', gh)
+    monkeypatch.setattr(rbt.shutil, 'which', lambda name: resolved if name == 'gh' else None)
     return state
 
 

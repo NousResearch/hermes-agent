@@ -446,7 +446,12 @@ async def main():
             raise RuntimeError("settle failed")
         await asyncio.Event().wait()
 
-    if ending != "completes":
+    def quiesce_fails(*_args, **_kwargs):
+        raise RuntimeError("quiesce failed")
+
+    if ending == "late_phase_raises":
+        run_shutdown.GatewayShutdownMixin._stop_quiesce_and_close_session_dbs = quiesce_fails
+    elif ending != "completes":
         run_runtime.settle_gateway_runtime = settle
     runner, adapter = make_restart_runner()
     adapter.disconnect = AsyncMock()
@@ -513,3 +518,59 @@ def test_stop_that_completes_disarms_the_watchdog(tmp_path):
     assert "watchdog stood down" in proc.stdout, output
     assert proc.returncode == 0, output
     assert "Gateway shutdown watchdog fired" not in proc.stderr, output
+
+
+def test_stop_that_fails_after_shutdown_began_disarms_the_watchdog(tmp_path):
+    """Once the shutdown event is set, the caller runs the shutdown tail and exits on its own, as
+    after a completed stop. A phase that raises after that point leaves the watchdog disarmed, so
+    it cannot cut the tail (cron drain, housekeeping, MCP shutdown) short."""
+    proc = _run_stop_child(tmp_path, "late_phase_raises")
+
+    output = f"{proc.stdout}\n{proc.stderr[-3000:]}"
+    assert "stop ended: RuntimeError" in proc.stdout, output
+    assert "shutdown_event set: True armed: 1" in proc.stdout, output
+    assert "watchdog stood down" in proc.stdout, output
+    assert proc.returncode == 0, output
+    assert "Gateway shutdown watchdog fired" not in proc.stderr, output
+    assert "RuntimeError: quiesce failed" in proc.stderr, output  # still logged
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("service_restart, code", [(False, 1), (True, 75)], ids=["stop", "service_restart"])
+async def test_start_gateway_turns_a_failed_stop_into_an_exit_verdict(monkeypatch, service_restart, code):
+    """A stop that failed after the shutdown began reaches start_gateway()'s caller as a SystemExit, which
+    the entry points send to their hard exit, never as the raw exception: that one would reach interpreter
+    finalization, which joins live non-daemon workers for as long as they run. An exit code the shutdown
+    tail already chose (75 for a service restart) is kept; otherwise it is 1."""
+    import threading
+
+    from gateway import run_bootstrap, run_runtime, run_shutdown
+    from gateway.config import GatewayConfig
+    from hermes_constants import get_hermes_home
+
+    get_hermes_home().chmod(0o700)
+    stopped, threads = threading.Event(), []
+
+    def start_owned_threads(runner):
+        threads.extend(threading.Thread(target=stopped.wait, daemon=True) for _ in range(2))
+        for thread in threads:
+            thread.start()
+        return stopped, None, *threads
+
+    async def serve_until_stop(runner):
+        if service_restart:
+            runner._restart_requested = runner._restart_via_service = True
+
+    def quiesce_fails(*_args, **_kwargs):
+        raise RuntimeError("quiesce failed")
+
+    monkeypatch.setattr(run_bootstrap, "_start_gateway_start_cron_and_housekeeping", start_owned_threads)
+    monkeypatch.setattr(run_runtime, "wait_gateway_runtime", serve_until_stop)
+    monkeypatch.setattr(run_shutdown.GatewayShutdownMixin, "_stop_quiesce_and_close_session_dbs", quiesce_fails)
+    try:
+        with pytest.raises(SystemExit) as exc_info:
+            await asyncio.wait_for(run_bootstrap.start_gateway(GatewayConfig()), 30)
+        assert exc_info.value.code == code
+        assert stopped.is_set() and all(not thread.is_alive() for thread in threads)  # the tail ran
+    finally:
+        stopped.set()

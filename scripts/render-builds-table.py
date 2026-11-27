@@ -44,6 +44,7 @@ import html
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -575,8 +576,10 @@ def main() -> int:
         return _finish_commit_build(args, parser, archive, block, names)
 
     # Keep the per-tag diagnostic page even when GitHub cannot supply a draft.
+    # Resolved through PATH and PATHEXT: Windows' CreateProcess would only ever look for gh.exe.
+    gh = shutil.which("gh") or "gh"
     view = subprocess.run(
-        ["gh", "release", "view", args.tag, "--repo", args.repo,
+        [gh, "release", "view", args.tag, "--repo", args.repo,
          "--json", "body"],
         capture_output=True, text=True, encoding="utf-8", errors="replace",
         check=False,
@@ -598,7 +601,7 @@ def main() -> int:
         return 0
 
     edit = subprocess.run(
-        ["gh", "release", "edit", args.tag, "--repo", args.repo,
+        [gh, "release", "edit", args.tag, "--repo", args.repo,
          "--notes-file", "-"],
         input=new_body, capture_output=True, text=True, encoding="utf-8",
         errors="replace",

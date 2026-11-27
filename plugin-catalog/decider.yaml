@@ -1,0 +1,15 @@
+name: decider
+repo: https://github.com/greqone/hermes-decider
+sha: 4ad533a6c5864b380bea0889ce00e925da9512cb
+description: "System-1 Decider (/v1/systemone) auto-router for subagent delegation. Batch-evaluates unassigned delegate_task spawns (noul specialist gate + route choice) against your local decision server (e.g. Ollama pplx-decider:27b-nvfp4), as delegation.backend: decider or alongside model_map. Local-only by default (fallback off, zero os.environ/.env reads, host-locked HTTPS keys via secret_scope.get_secret). Includes CLI (hermes decider), slash (/decider), and Desktop UI. Disclosure — when enabled with a model-routes delegation backend, sends the start and end of each unassigned subagent task's goal and context, plus your route names and descriptions, to the /v1/systemone decision server you configure (http://127.0.0.1:11434 by default; a second endpoint is used only if you opt in), keeps a local log of recent routing decisions with the first 140 characters of each goal under the profile's cache/decider folder, and its /decider mode command, CLI and settings page can change your delegation.backend setting."
+maintainer: greqone
+tier: community
+category: automation
+requires_hermes: ">=0.22.5"
+version: "1.2.0"
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

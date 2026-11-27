@@ -33,7 +33,7 @@ def _install_plugin_platform_context(monkeypatch, runner, adapter):
     _install_secondary_reconnect_context(monkeypatch, runner, adapter)
     monkeypatch.setattr(
         "gateway.config.load_gateway_config",
-        lambda: GatewayConfig(
+        lambda **_: GatewayConfig(
             multiplex_profiles=True,
             platforms={
                 Platform("irc"): PlatformConfig(enabled=True, token="plugin-token")
@@ -66,7 +66,7 @@ def _install_none_buildable_context(monkeypatch, runner, platform):
     _install_secondary_reconnect_context(monkeypatch, runner, _SecondaryRecoveryAdapter())
     monkeypatch.setattr(
         "gateway.config.load_gateway_config",
-        lambda: GatewayConfig(
+        lambda **_: GatewayConfig(
             multiplex_profiles=True,
             platforms={
                 platform: PlatformConfig(enabled=True, token="probe-token")
@@ -368,7 +368,7 @@ class TestSecondaryAdapterUnavailableRecovery:
         runner._profile_bot_platforms = {"reviewer": {Platform("irc")}}  # an earlier tick's claim
         config = PlatformConfig(enabled=cause != "disabled", token="plugin-token")
         monkeypatch.setattr("gateway.config.load_gateway_config",
-                            lambda: GatewayConfig(multiplex_profiles=True, platforms={Platform("irc"): config}))
+                            lambda **_: GatewayConfig(multiplex_profiles=True, platforms={Platform("irc"): config}))
         monkeypatch.setattr(gateway_run, "_platform_has_bot_credential",
                             lambda platform, cfg: cause != "no credential")
         if cause == "duplicate":

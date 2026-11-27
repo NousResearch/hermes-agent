@@ -12,8 +12,9 @@ from typing import Any, Dict, List
 from agent.ssl_verify import requests_verify
 
 from plugins.web._common import (
-    SEARCH_LIMIT_CAP, BaseWebSearchProvider, document, http_status_detail, keenable_origin_error, keyless_extract, keyless_search,
-    keyless_variant_schema, page_error, provider_env, run_extract, run_search, search_fail, search_ok, use_keyless, web_hit,
+    SEARCH_LIMIT_CAP, BaseWebSearchProvider, document, http_status_detail, keenable_fetch_page, keenable_origin_error,
+    keenable_page_failure, keyless_extract, keyless_search, keyless_variant_schema, page_error, provider_env, run_extract,
+    run_search, search_fail, search_ok, use_keyless, web_hit,
 )
 
 logger = logging.getLogger(__name__)
@@ -72,14 +73,21 @@ class KeenableWebSearchProvider(BaseWebSearchProvider):
             results: list[dict[str, Any]] = []
             for url in urls:
                 try:
-                    response = requests.get(f"{_KEENABLE_API_URL}/v1/fetch", params={"url": url}, headers=_keenable_headers(api_key), timeout=30, verify=requests_verify())
+                    # GET /v1/fetch is deprecated (Sunset 2027-03-01); POST takes the same URL as ``urls``.
+                    response = requests.post(f"{_KEENABLE_API_URL}/v1/fetch", json={"urls": [url]}, headers=_keenable_headers(api_key), timeout=30, verify=requests_verify())
                     if response.status_code >= 400:
                         if origin := keenable_origin_error(response.status_code, response.text):
                             results.append(page_error(url, origin))
                             continue
                         raise ValueError(http_status_detail(response))
-                    data = response.json()
-                    results.append(document(data.get("url") or url, data.get("title") or "", data.get("content") or "", source_url=url))
+                    page = keenable_fetch_page(response.json())
+                    if failure := keenable_page_failure(page):
+                        status, body = failure
+                        if origin := keenable_origin_error(status, body):
+                            results.append(page_error(url, origin))
+                            continue
+                        raise ValueError(body)
+                    results.append(document(page.get("url") or url, page.get("title") or "", page.get("content") or "", source_url=url))
                 except Exception as exc:
                     results.append(page_error(url, f"Keenable extract failed: {exc}"))
             return results

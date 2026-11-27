@@ -124,6 +124,20 @@ def keenable_origin_error(status: Any, body: str) -> Optional[str]:
     return origin_http_error(status, message) if _KEENABLE_ORIGIN_MESSAGE_RE.match(message) else None
 
 
+def keenable_fetch_page(data: Any) -> dict[str, Any]:
+    """The one page of a single-URL ``POST /v1/fetch`` reply (``{"results": [page]}``)."""
+    results = data.get("results") if isinstance(data, dict) else None
+    return results[0] if isinstance(results, list) and results and isinstance(results[0], dict) else {}
+
+
+def keenable_page_failure(page: dict[str, Any]) -> Optional[tuple[Any, str]]:
+    """``(status, body)`` for a page ``POST /v1/fetch`` marks failed. A failed page arrives inside a
+    200 with the status and message the single-URL GET used to send as the HTTP reply, so callers
+    classify it as before."""
+    error = page.get("error")
+    return (error.get("status"), json.dumps(error)) if isinstance(error, dict) else None
+
+
 def with_origin_status(entry: dict[str, Any], status: Any, reason: Any = None) -> dict[str, Any]:
     """Set ``error`` on an extract entry whose target answered >= 400; the error page body
     stays in ``content`` (it can still explain the refusal)."""

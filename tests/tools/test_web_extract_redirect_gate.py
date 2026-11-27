@@ -49,10 +49,10 @@ def _keenable(monkeypatch, target):
         status_code = 200
 
         def json(self):
-            return {"url": target, "title": "T", "content": "TARGET PAGE"}
+            return {"results": [{"url": target, "title": "T", "content": "TARGET PAGE"}]}
 
     import requests
-    monkeypatch.setattr(requests, "get", lambda *a, **k: (calls.append(k.get("params")), _Response())[1])
+    monkeypatch.setattr(requests, "post", lambda *a, **k: (calls.append(k.get("json")), _Response())[1])
     monkeypatch.setattr(keenable, "provider_env", lambda _k: "test-key")
     monkeypatch.setattr(keenable, "use_keyless", lambda *_a: False)
     return keenable.KeenableWebSearchProvider(), calls

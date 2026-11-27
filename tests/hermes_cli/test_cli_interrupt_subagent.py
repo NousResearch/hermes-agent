@@ -4,7 +4,8 @@ Reproduces the exact scenario:
 1. Parent agent calls delegate_task
 2. Child agent is running (simulated with a slow tool)
 3. User "types a message" (simulated by calling parent.interrupt from another thread)
-4. Child should detect the interrupt and stop
+4. The parent is interrupted, but the child must NOT be cancelled — a soft
+   interrupt (typing while busy) leaves running subagents alone (#136087).
 
 This tests the COMPLETE path including _run_single_child, _active_children
 registration, interrupt propagation, and child detection.
@@ -158,11 +159,13 @@ class TestCLISubagentInterrupt(unittest.TestCase):
         if delegate_error[0]:
             raise delegate_error[0]
 
-        assert detected, "Child never detected the interrupt!"
+        # A soft interrupt must NOT cancel the child: the parent stops its current
+        # action, but the running subagent keeps going and completes normally.
+        assert not detected, "Child should NOT have detected the soft interrupt"
         result = delegate_result[0]
         assert result is not None, "Delegate returned no result"
-        assert result["status"] == "interrupted", f"Expected 'interrupted', got '{result['status']}'"
-        print(f"✓ Interrupt detected! Result: {result}")
+        assert result["status"] == "completed", f"Expected 'completed', got '{result['status']}'"
+        print(f"✓ Soft interrupt left the subagent running; delegate completed: {result}")
 
 
 if __name__ == "__main__":

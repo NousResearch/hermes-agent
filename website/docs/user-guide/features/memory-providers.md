@@ -709,6 +709,9 @@ ByteRover and RetainDB used to ship inside Hermes. They now install from the plu
 **not supported**, and likely not maintained going forward. Fixes from the community are welcome.
 A profile that already had `memory.provider: byterover` or `retaindb` gets the plugin installed
 automatically (same migration as the other providers below) with a one-time notice saying so.
+When a cron job migrates first, the notice waits for your next CLI, TUI, Desktop or chat session.
+A profile whose `plugins.disabled` lists the provider is left alone. The plugins need Hermes 0.22.0
+or newer.
 :::
 
 **ByteRover** — persistent memory via the external `brv` CLI: a hierarchical knowledge tree with

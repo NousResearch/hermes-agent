@@ -54,8 +54,12 @@ def _warn_memory_provider_unavailable(name: str, reason: str = "", say=None) -> 
     ), say=say)
 
 
-def resolve_memory_provider(name: str, say=None):
-    """The configured provider ready to add, or None after telling the user why not (once per home)."""
+def resolve_memory_provider(name: str, say=None, *, agent=None):
+    """The configured provider ready to add, or None after telling the user why not (once per home).
+    When *agent* runs unattended (a cron run) nobody sees this start, so a migration's outcome waits in
+    the home for its next watched turn (``deliver_kept_startup_notices``) instead of going to *say*."""
+    from agent.side_question_lease import is_unattended_turn
+    attended = agent is None or not is_unattended_turn(agent)
     from plugins.memory import find_provider_dir, load_memory_provider, parked_provider_notice
 
     provider = load_memory_provider(name)
@@ -69,7 +73,7 @@ def resolve_memory_provider(name: str, say=None):
             # The provider left core for the catalog (or was never installed): fetch it once.
             from hermes_cli.memory_provider_migration import recover_at_startup
 
-            if recover_at_startup(name, say=say):
+            if recover_at_startup(name, say=say if attended else None):
                 provider = load_memory_provider(name)
         # Installed (now or before) yet not loading: neither "not installed" nor an install notice explains that.
         if provider is None and find_provider_dir(name) is not None:

@@ -22,6 +22,7 @@ chat platform), never only ``agent.log``: a provider that silently stays missing
 
 from __future__ import annotations
 
+import enum
 import logging
 import sys
 import time
@@ -97,6 +98,26 @@ def configured_provider(home: Path) -> str:
     return str(memory.get("provider") or "").strip()
 
 
+def provider_disabled(name: str, home: Path) -> bool:
+    """*home*'s ``plugins.disabled`` names provider *name* (bare or as ``<kind>/<name>``): the user's own
+    off switch, which an install (it enables what it places) must never override."""
+    from pm.plugins_state import read_home_selection
+    disabled = ((read_home_selection(home) or {}).get("plugins") or {}).get("disabled") or []
+    return any(entry.rsplit("/", 1)[-1] == name for entry in disabled)
+
+
+def _still_wanted(name: str, home: Path) -> bool:
+    """*home* still selects *name* and has not disabled it (read now, not when the attempt began)."""
+    return configured_provider(home) == name and not provider_disabled(name, home)
+
+
+class _Outcome(enum.Enum):
+    """What one install attempt left in the home."""
+    PRESENT = "present"          # installed now, or by another Hermes process meanwhile
+    FAILED = "failed"            # tried (or locked out) and reported
+    NOT_WANTED = "not_wanted"    # the user changed the selection or disabled it meanwhile: nothing owed
+
+
 def provider_present(name: str, home: Path) -> bool:
     """True when the provider resolves anywhere Hermes looks for *home* (bundled, that home's user
     plugins, entry point). The lookup reads the active home, so it is bound explicitly: the update
@@ -143,6 +164,11 @@ def _pending_provider(home: Path, *, say: Callable[[str], None]) -> Optional[str
     from agent.memory_provider import is_core_memory_provider
     if is_core_memory_provider(name) or provider_present(name, home):
         return None
+    if provider_disabled(name, home):
+        say(f"  ⚠ Memory provider '{name}' is turned off: plugins.disabled lists it, so Hermes did not install "
+            f"its plugin and external memory is off (built-in memory still works). To use it, run "
+            f"`{_install_command(name, home)}`." + _LABS_NOTICES.get(name, ""))
+        return None
     if catalog_source(name) is None:
         say(f"  ⚠ Memory provider '{name}' is configured but not installed and not in the plugin catalog. "
             f"Install it with `{_profile_command('plugins install <source>', home)}` or change memory.provider.")
@@ -174,21 +200,26 @@ def kept_off_sentence(name: str, home: Path) -> str:
 
 
 def _install_pending(home: Path, name: str, *, install: Callable[[str], dict],
-                     say: Callable[[str], None], wait: float = 900.0) -> bool:
+                     say: Callable[[str], None], wait: float = 900.0) -> _Outcome:
     """Install *name* into *home* under the installer lock every unattended plugin installer holds
-    (:func:`default_plugins.installer_lock`). True when the provider is in *home* afterwards, also when
-    another Hermes process placed it while this one waited (nothing reported: that one reports its own)."""
+    (:func:`default_plugins.installer_lock`). The home is read again under the lock: another Hermes
+    process may have placed the provider while this one waited (nothing reported: that one reports its
+    own), and the user may have switched to another provider or disabled this one (nothing owed)."""
     from hermes_cli.default_plugins import installer_lock
     try:
         with installer_lock(wait):
             if provider_present(name, home):
                 logger.info("memory provider '%s' was installed for %s by another Hermes process meanwhile", name, home)
-                return True
-            return _install_locked(home, name, install=install, say=say)
+                return _Outcome.PRESENT
+            if not _still_wanted(name, home):
+                logger.info("memory provider '%s' is no longer selected (or is disabled) for %s; not installing it",
+                            name, home)
+                return _Outcome.NOT_WANTED
+            return _Outcome.PRESENT if _install_locked(home, name, install=install, say=say) else _Outcome.FAILED
     except TimeoutError:  # nothing was tried, so no failure is stamped
         say(f"  ⚠ Memory provider '{name}': another Hermes process is still installing plugins, so its plugin "
             f"was not installed now. Run `{_install_command(name, home)}`." + _LABS_NOTICES.get(name, ""))
-        return False
+        return _Outcome.FAILED
 
 
 def _install_locked(home: Path, name: str, *, install: Callable[[str], dict],
@@ -226,7 +257,7 @@ def migrate_home(home: Path, *, install: Callable[[str], dict], say: Callable[[s
     name = _pending_provider(home, say=say)
     if name is None:
         return None
-    return name if _install_pending(home, name, install=install, say=say, wait=wait) else None
+    return name if _install_pending(home, name, install=install, say=say, wait=wait) is _Outcome.PRESENT else None
 
 
 def _interactive() -> bool:
@@ -312,8 +343,10 @@ def migrate_all_homes(*, say: Callable[[str], None] = print) -> list[str]:
                     f"questions apply to all of them.")
             with shared_dependency_answers():
                 for index, home in enumerate(homes):
-                    if _install_pending(home, name, install=_install_into(home), say=labelled(home)):
+                    outcome = _install_pending(home, name, install=_install_into(home), say=labelled(home))
+                    if outcome is _Outcome.PRESENT:
                         installed.append(name)
+                    if outcome is not _Outcome.FAILED:
                         continue
                     rest = homes[index + 1:]
                     if rest:
@@ -329,7 +362,13 @@ def migrate_all_homes(*, say: Callable[[str], None] = print) -> list[str]:
 
 def recover_at_startup(name: str, *, say: Optional[Callable[[str], None]] = None) -> bool:
     """Agent-init hook for a configured provider that resolved nowhere. One attempt per process per
-    home and name; honours ``security.allow_lazy_installs`` because it installs code. True when installed."""
+    home and name; honours ``security.allow_lazy_installs`` because it installs code. True when installed.
+
+    Without *say* nobody watches this start (a cron run): the outcome of an install attempt (with the
+    one-time Labs notice) is kept in the home for its next turn someone sees
+    (``left_core_migration.claim_kept_notices``) instead of only being logged; repeated per-start
+    lines (lazy installs off, a recent failure) are logged only, the watched start says them itself."""
+    from hermes_cli.left_core_migration import defer_startup_notice
     from hermes_constants import get_hermes_home, hermes_home_key
 
     home = get_hermes_home()
@@ -367,5 +406,9 @@ def recover_at_startup(name: str, *, say: Optional[Callable[[str], None]] = None
                f"Its automatic install failed recently: run `{_install_command(name, home)}`.")
         return False
     from hermes_cli.left_core_migration import startup_lock_wait
-    return migrate_home(home, install=_install_into(home, consent=True), say=report,
-                        wait=startup_lock_wait(gateway_start=False)) == name
+    if _pending_provider(home, say=report) != name:
+        return False
+    outcome = _install_pending(home, name, install=_install_into(home, consent=True),
+                               say=report if say is not None else defer_startup_notice,
+                               wait=startup_lock_wait(gateway_start=False))
+    return outcome is _Outcome.PRESENT

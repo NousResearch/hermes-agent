@@ -444,3 +444,98 @@ def test_install_waits_for_another_installer_and_installs_once(tmp_path, monkeyp
         holder.join(10)
     assert installs == [] and said == []
     assert not mig._failure_stamp(tmp_path, "byterover").exists()
+
+
+@pytest.mark.parametrize("entry", ["byterover", "memory/byterover"])
+def test_a_disabled_labs_provider_is_never_installed_or_enabled(tmp_path, monkeypatch, entry):
+    """`plugins.disabled` naming the provider is the user's own off switch: neither `hermes update` nor
+    an agent start installs (and so enables) it, and the user is told why external memory is off."""
+    from pm import install as pm_install
+
+    config = f"memory:\n  provider: byterover\nplugins:\n  disabled:\n  - {entry}\n"
+    (tmp_path / "config.yaml").write_text(config, encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(mig, "_attempted", set())
+    monkeypatch.setattr(mig, "catalog_source", lambda n: n)
+    monkeypatch.setattr(pm_install, "lazy_installs_allowed", lambda: True)
+    monkeypatch.setattr(mig, "_install_into", lambda home, **_kw: lambda n: pytest.fail("must not install"))
+    said: list[str] = []
+    assert mig.recover_at_startup("byterover", say=said.append) is False
+    assert mig.migrate_home(tmp_path, install=lambda n: pytest.fail("must not install"), say=said.append) is None
+    assert len(said) == 2 and all("plugins.disabled" in line for line in said)
+    assert (tmp_path / "config.yaml").read_text(encoding="utf-8") == config
+
+
+@pytest.mark.parametrize("change", ["memory:\n  provider: ''\n",
+                                    "memory:\n  provider: retaindb\nplugins:\n  disabled:\n  - retaindb\n"])
+def test_a_selection_changed_while_waiting_for_the_installer_lock_installs_nothing(tmp_path, monkeypatch, change):
+    """The user switches back to built-in memory (or disables the provider) while this start waits for
+    another installer: the selection is read again under the lock, and the old one is not cloned or enabled."""
+    import threading
+    from hermes_cli import default_plugins
+    from pm import install as pm_install
+
+    (tmp_path / "config.yaml").write_text("memory:\n  provider: retaindb\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(mig, "_attempted", set())
+    monkeypatch.setattr(mig, "catalog_source", lambda n: n)
+    monkeypatch.setattr(pm_install, "lazy_installs_allowed", lambda: True)
+    installs: list[str] = []
+    monkeypatch.setattr(mig, "_install_into", lambda home, **_kw: lambda n: installs.append(n) or {"ok": True})
+    held, release = threading.Event(), threading.Event()
+
+    def other_installer():
+        with default_plugins.installer_lock(5):
+            held.set()
+            release.wait(10)
+            (tmp_path / "config.yaml").write_text(change, encoding="utf-8")
+
+    holder = threading.Thread(target=other_installer)
+    holder.start()
+    assert held.wait(10)
+    threading.Timer(0.5, release.set).start()
+    said: list[str] = []
+    try:
+        assert mig.recover_at_startup("retaindb", say=said.append) is False
+    finally:
+        release.set()
+        holder.join(10)
+    assert installs == [] and said == []
+    assert not mig._failure_stamp(tmp_path, "retaindb").exists()
+
+
+def test_a_labs_notice_from_a_cron_migration_waits_for_the_next_watched_turn(tmp_path, monkeypatch):
+    """A cron run's agent migrates first and nobody sees its startup output: the one-time Labs notice is
+    kept in the profile and handed exactly once to the next turn someone watches, in whichever process."""
+    from agent.status_output import deliver_kept_startup_notices
+    from pm import install as pm_install
+    from run_agent import AIAgent
+
+    (tmp_path / "config.yaml").write_text("memory:\n  provider: byterover\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(mig, "_attempted", set())
+    monkeypatch.setattr(mig, "catalog_source", lambda n: n)
+    monkeypatch.setattr(pm_install, "lazy_installs_allowed", lambda: True)
+
+    def installer(home, *, consent=None):
+        def install(plugin):
+            (home / "plugins" / plugin).mkdir(parents=True)
+            (home / "plugins" / plugin / "__init__.py").write_text("class P(MemoryProvider): ...\n", encoding="utf-8")
+            return {"ok": True}
+        return install
+
+    monkeypatch.setattr(mig, "_install_into", installer)
+
+    def agent(platform):
+        return AIAgent(model="probe-model", api_key="probe", base_url="http://127.0.0.1:9/v1", provider="custom",
+                       quiet_mode=True, platform=platform, skip_context_files=True)
+
+    cron = agent("cron")
+    assert (tmp_path / "plugins" / "byterover").is_dir()
+    deliver_kept_startup_notices(cron)  # the cron run's own turn: nobody watching, nothing claimed
+    seen: list[str] = []
+    for _session in range(2):
+        watched = agent("cli")
+        monkeypatch.setattr(watched, "_emit_warning", lambda message, **_kw: seen.append(message))
+        deliver_kept_startup_notices(watched)
+    assert len([m for m in seen if "ByteRover is now a Hermes Labs plugin" in m]) == 1, seen

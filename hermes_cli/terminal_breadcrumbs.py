@@ -1,6 +1,6 @@
-"""Per-terminal session breadcrumbs for ``hermes -c`` / ``--continue``. Strictly best-effort: no
-function raises; without a stable terminal identity (no tty, no known multiplexer env var) ``-c``
-falls back to latest-session. Gated by ``session.terminal_continue`` (default true)."""
+"""Best-effort terminal session bindings: breadcrumbs for ``hermes -c`` / ``--continue`` and
+client-owned Herdr identity. Breadcrumbs require a stable terminal identity and are gated by
+``session.terminal_continue`` (default true); Herdr reporting is independent of that setting."""
 
 from __future__ import annotations
 
@@ -8,6 +8,8 @@ import json
 import os
 import re
 import sys
+import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -22,6 +24,49 @@ _TERMINAL_ENV_VARS = ("ZELLIJ_PANE_ID", "TMUX_PANE", "KITTY_WINDOW_ID", "WEZTERM
 _STALE_AFTER_SECONDS = 30 * 24 * 60 * 60
 
 _SANITIZE_RE = re.compile(r"[^A-Za-z0-9._-]")
+
+_herdr_last_seq = 0
+_herdr_seq_lock = threading.Lock()
+
+
+def _herdr_resume_argv(session_id: str, profile: str | None) -> list[str]:
+    """Resume command for a named profile; empty keeps Herdr's built-in ``hermes --resume <id>``,
+    which opens the default profile and so cannot find a named profile's session. A home that is
+    not a profile (``profile_name_for_home`` is None) cannot be named with ``-p``."""
+    if not profile or profile == "default":
+        return []
+    return ["--", "hermes", "-p", profile, "--resume", session_id]
+
+
+def report_agent_session(session_id: str) -> None:
+    """Bind this frontend's durable identity to its Herdr pane, independently of breadcrumbs.
+
+    Explicit gateway URLs (including loopback tunnels) may own a different session DB.
+    Only automatically discovered local owners can safely bind to this host's Herdr.
+    Herdr keeps the resume command only while it sees this Hermes process in the pane; a
+    refused command (``resume_not_accepted``) still records the session identity.
+    """
+    global _herdr_last_seq
+    try:
+        pane = os.environ.get("HERDR_PANE_ID", "")
+        if (os.environ.get("HERDR_ENV") != "1" or not pane or not session_id
+                or os.environ.get("HERMES_TUI_GATEWAY_URL", "").strip()
+                or os.environ.get("HERMES_TUI_SIDECAR_URL", "").strip()):
+            return
+        with _herdr_seq_lock:
+            seq = max(time.time_ns(), _herdr_last_seq + 1)
+            _herdr_last_seq = seq
+        from hermes_constants import get_hermes_home, profile_name_for_home
+        subprocess.run(
+            [os.environ.get("HERDR_BIN_PATH") or "herdr", "pane", "report-agent-session", pane,
+             "--source", "herdr:hermes", "--agent", "hermes", "--seq", str(seq),
+             "--agent-session-id", session_id, "--session-start-source", "resume",
+             *_herdr_resume_argv(session_id, profile_name_for_home(get_hermes_home()))],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=1, check=False,
+        )
+    except Exception:
+        pass  # Terminal identity reporting must never break chat or print binary/transport errors.
 
 
 def _breadcrumbs_dir() -> Path:

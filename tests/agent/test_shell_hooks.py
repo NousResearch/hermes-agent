@@ -165,6 +165,25 @@ class TestCallbackSubprocess:
         )
         assert msg == "blocked-by-shell"
 
+    def test_transform_tool_result_rewrites_only_matched_tools(self, tmp_path, monkeypatch):
+        """A configured transform_tool_result hook replaces the model-bound result, and its
+        ``matcher`` scopes it per tool like post_tool_call (main ignored both)."""
+        from hermes_cli import plugins
+
+        script = _write_script(
+            tmp_path, "rewrite.sh", "#!/usr/bin/env bash\ncat >/dev/null\nprintf '\"REDACTED\"\\n'\n",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        plugins._plugin_manager = plugins.PluginManager()
+        cfg = {"hooks": {"transform_tool_result": [{"matcher": "terminal", "command": str(script)}]}}
+        assert len(shell_hooks.register_from_config(cfg, accept_hooks=True)) == 1
+
+        def fire(tool):
+            return plugins.invoke_hook("transform_tool_result", tool_name=tool, args={}, result="secret")
+
+        assert fire("terminal") == ["REDACTED"]
+        assert fire("read_file") == []
+
     def test_approve_reaches_the_human_gate_through_plugin_manager(self, tmp_path, monkeypatch):
         """End to end: a shell hook's approve directive escalates to request_tool_approval with its
         message and rule_key, and the gate's denial blocks the tool (#92553)."""

@@ -42,7 +42,7 @@ _DEFAULT_BLOCK_MESSAGE = "Blocked by shell hook."
 BLOCK_EXIT_CODE = 2
 # Events whose block directive is honored downstream; exit-2 blocking and fail_closed only apply here.
 _BLOCKING_EVENTS = frozenset({"pre_tool_call"})
-_TOOL_EVENTS = frozenset({"pre_tool_call", "post_tool_call"})
+_TOOL_EVENTS = frozenset({"pre_tool_call", "post_tool_call", "transform_tool_result"})
 _STDERR_MESSAGE_LIMIT = 400
 _TRUTHY = {"1", "true", "yes", "on"}
 # kwargs promoted to top-level payload keys; everything else lands under ``extra``.
@@ -425,7 +425,7 @@ def _parse_single_entry(event: str, index: int, raw: Any) -> Optional[ShellHookS
         matcher = None
     if matcher is not None and event not in _TOOL_EVENTS:
         warn(".matcher=%r will be ignored at runtime — the matcher field is only honored for "
-             "pre_tool_call / post_tool_call.  The hook will fire on every %s event.", matcher, event)
+             "pre_tool_call / post_tool_call / transform_tool_result.  The hook will fire on every %s event.", matcher, event)
         matcher = None
     try:
         timeout = int(raw.get("timeout", DEFAULT_TIMEOUT_SECONDS))

@@ -232,6 +232,10 @@ class GatewayPluginInjectionMixin:
         future.add_done_callback(_log_result)
         return True
 
+    def _plugin_submission(self, **kwargs) -> dict:
+        from gateway.plugin_submission.service import call
+        return call(self, **kwargs)
+
     def _plugin_injection_accepting(self) -> bool:
         return getattr(self, "_running", False) and not getattr(self, "_draining", False)
 

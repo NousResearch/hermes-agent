@@ -446,44 +446,47 @@ def test_a_gateway_that_does_not_start_again_after_the_restore_reaches_the_actio
     assert _import_report(log, 4242)["gateway_down"] == "gateway-default: s6-svc -u gateway-default: timed out"
 
 
+def _deny_reading(monkeypatch, blocked: Path) -> None:
+    """Make the archive writer fail on *blocked* the way a root-owned file fails for the agent."""
+    real_write = zipfile.ZipFile.write
+
+    def write(self, filename, arcname=None, *args, **kwargs):
+        if Path(filename).resolve() == blocked.resolve():
+            raise PermissionError(13, "Permission denied", str(filename))
+        return real_write(self, filename, arcname, *args, **kwargs)
+
+    monkeypatch.setattr(zipfile.ZipFile, "write", write)
+
+
 def test_keep_host_transfer_skips_unreadable_portal_recovery_and_preserves_host_dirs(homes, monkeypatch):
     """Regression for #158231: root-owned portal-recovery/ and lost+found/ on a Cloud destination
     must neither break the pre-transfer undo point nor be overwritten/pruned by --keep-host."""
     src, dst, tmp = homes
     archive = _backup(monkeypatch, src, tmp / "src.zip")
-    # Also simulate an older archive carrying a stray portal-recovery/ entry.
     with zipfile.ZipFile(archive, "a") as zf:
         zf.writestr("portal-recovery/snapshots/last-ready/config.yaml", "from-archive: true\n")
+        zf.writestr("lost+found/orphan.bin", "from-archive\n")
         zf.writestr("lost+found/from-archive.bin", "from-archive\n")
 
     _write(dst, "portal-recovery/snapshots/last-ready/config.yaml", "host-recovery: true\n")
     _write(dst, "lost+found/orphan.bin", "host-orphan\n")
     host_snapshot = dst / "portal-recovery/snapshots/last-ready/config.yaml"
-    host_lost = dst / "lost+found/orphan.bin"
-    real_write = zipfile.ZipFile.write
-
-    def deny_portal_recovery(self, filename, arcname=None, *args, **kwargs):
-        if Path(filename).resolve() == host_snapshot.resolve():
-            raise PermissionError(13, "Permission denied", str(filename))
-        return real_write(self, filename, arcname, *args, **kwargs)
-
-    monkeypatch.setattr(zipfile.ZipFile, "write", deny_portal_recovery)
+    _deny_reading(monkeypatch, host_snapshot)
 
     _import(monkeypatch, dst, archive, keep_host=True)
 
-    undo = _undo_point(dst)
-    with zipfile.ZipFile(undo) as zf:
-        names = set(zf.namelist())
-        assert not any(n.startswith("portal-recovery/") or n.startswith("lost+found/") for n in names)
+    with zipfile.ZipFile(_undo_point(dst)) as zf:
+        assert not any(n.startswith(("portal-recovery/", "lost+found/")) for n in zf.namelist())
     assert not list((dst / "backups").glob("pre-transfer-*.incomplete.zip"))
     assert host_snapshot.read_text() == "host-recovery: true\n"
-    assert host_lost.read_text() == "host-orphan\n"
+    assert (dst / "lost+found/orphan.bin").read_text() == "host-orphan\n"
+    assert not (dst / "lost+found/from-archive.bin").exists()
 
 
 @pytest.mark.platforms("posix")
 @pytest.mark.skipif(getattr(os, "geteuid", lambda: 1)() == 0, reason="root bypasses chmod 0o000")
 def test_keep_host_transfer_succeeds_with_chmod_0000_portal_recovery_on_posix(homes, monkeypatch):
-    """Real POSIX kernel EACCES on portal-recovery/snapshots/last-ready/config.yaml (#158231)."""
+    """The same transfer with a host file the agent really cannot read (mode 0o000)."""
     src, dst, tmp = homes
     archive = _backup(monkeypatch, src, tmp / "src.zip")
     _write(dst, "portal-recovery/snapshots/last-ready/config.yaml", "host-recovery: true\n")
@@ -491,49 +494,53 @@ def test_keep_host_transfer_succeeds_with_chmod_0000_portal_recovery_on_posix(ho
     host_snapshot.chmod(0o000)
     try:
         _import(monkeypatch, dst, archive, keep_host=True)
-        undo = _undo_point(dst)
-        with zipfile.ZipFile(undo) as zf:
+        with zipfile.ZipFile(_undo_point(dst)) as zf:
             assert not any(n.startswith("portal-recovery/") for n in zf.namelist())
         assert host_snapshot.exists()
     finally:
         host_snapshot.chmod(0o600)
 
 
-def test_full_backup_excludes_root_portal_recovery_and_lost_and_found_only(tmp_path, monkeypatch):
-    """Regression for #158231: root-owned portal-recovery/ and lost+found/ are excluded at home roots
-    so full backups complete cleanly, while nested user directories of the same name are kept."""
+def test_full_backup_excludes_portal_recovery_and_lost_and_found_at_the_hermes_root_only(tmp_path, monkeypatch):
+    """Only the Hermes root's portal-recovery/ and lost+found/ belong to the host. Same-named folders
+    in a skill or a named profile are user data: they stay in backups (and so in undo points)."""
     from hermes_cli.backup import _write_full_zip_backup
 
     home = tmp_path / ".hermes"
-    home.mkdir()
-    (home / "config.yaml").write_text("model: test\n")
-    blocked = home / "portal-recovery" / "snapshots" / "last-ready" / "config.yaml"
-    blocked.parent.mkdir(parents=True)
-    blocked.write_text("root-only\n")
-    lost = home / "lost+found" / "orphan.bin"
-    lost.parent.mkdir(parents=True)
-    lost.write_text("orphan\n")
-    nested = home / "skills" / "demo" / "portal-recovery" / "notes.md"
-    nested.parent.mkdir(parents=True)
-    nested.write_text("user skill content\n")
-
-    real_write = zipfile.ZipFile.write
-
-    def deny_blocked(self, filename, arcname=None, *args, **kwargs):
-        if Path(filename).resolve() == blocked.resolve():
-            raise PermissionError(13, "Permission denied", str(filename))
-        return real_write(self, filename, arcname, *args, **kwargs)
-
-    monkeypatch.setattr(zipfile.ZipFile, "write", deny_blocked)
+    _write(home, "config.yaml", "model: test\n")
+    _write(home, "portal-recovery/snapshots/last-ready/config.yaml", "root-only\n")
+    _write(home, "lost+found/orphan.bin", "orphan\n")
+    kept = ("skills/demo/portal-recovery/notes.md", "profiles/work/portal-recovery/notes.md",
+            "profiles/work/lost+found/notes.md")
+    for rel in kept:
+        _write(home, rel, "user content\n")
+    _deny_reading(monkeypatch, home / "portal-recovery/snapshots/last-ready/config.yaml")
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
     out_zip = home / "backups" / "pre-transfer-test.zip"
-    out_zip.parent.mkdir(parents=True, exist_ok=True)
-    published = _write_full_zip_backup(out_zip, home)
-    assert published == out_zip
+    out_zip.parent.mkdir(parents=True)
+    assert _write_full_zip_backup(out_zip, home) == out_zip
     with zipfile.ZipFile(out_zip) as zf:
         names = set(zf.namelist())
-        assert "config.yaml" in names
-        assert "skills/demo/portal-recovery/notes.md" in names
-        assert not any(n.startswith("portal-recovery/") or n.startswith("lost+found/") for n in names)
+    assert {"config.yaml", *kept} <= names
+    assert not any(n.startswith(("portal-recovery/", "lost+found/")) for n in names)
+
+
+def test_plain_import_of_an_older_archive_leaves_the_hosts_portal_recovery_alone(homes, monkeypatch):
+    """Archives made before the backup exclusion still carry portal-recovery/: a plain import must not
+    write it (on Hermes Cloud the folder is root-owned, so the write fails and the import reports incomplete)."""
+    src, dst, tmp = homes
+    archive = _backup(monkeypatch, src, tmp / "src.zip")
+    with zipfile.ZipFile(archive, "a") as zf:
+        zf.writestr("portal-recovery/portal-selected-model", "from-archive\n")
+        zf.writestr("lost+found/from-archive.bin", "from-archive\n")
+        zf.writestr("profiles/work/config.yaml", "model: test\n")
+        zf.writestr("profiles/work/portal-recovery/notes.md", "user content\n")
+    _write(dst, "portal-recovery/portal-selected-model", "host\n")
+
+    _import(monkeypatch, dst, archive)
+
+    assert (dst / "portal-recovery/portal-selected-model").read_text() == "host\n"
+    assert not (dst / "lost+found").exists()
+    assert (dst / "profiles/work/portal-recovery/notes.md").read_text() == "user content\n"

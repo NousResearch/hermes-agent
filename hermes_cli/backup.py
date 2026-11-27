@@ -30,7 +30,8 @@ from hermes_cli.backup_sqlite import _safe_copy_db
 from hermes_cli.backup_staging import prune_backup_staging, reclaim_backup_staging, staged_backup_file, warn_legacy_backup_file
 from hermes_cli.config_backend import drop_other_access, require_file_tooling, supports_file_tooling
 from hermes_cli.home_data_layout import (
-    BRIDGE_LOG_PARTS, PM_RUNTIME_ROOT_DIRS, PROVIDER_PLUGIN_SNAPSHOT_PARTS, SECRET_CACHE_FILES, profile_root_entry)
+    BRIDGE_LOG_PARTS, HOST_MANAGED_ROOT_DIRS, PM_RUNTIME_ROOT_DIRS, PROVIDER_PLUGIN_SNAPSHOT_PARTS, SECRET_CACHE_FILES,
+    profile_root_entry)
 from hermes_cli.sizefmt import format_bytes as _format_size
 
 from hermes_cli.backup_restore import (
@@ -103,11 +104,9 @@ _EXCLUDED_DIRS = {
 _EXCLUDED_ROOT_DIRS = LOCAL_RUNTIME_ROOT_DIRS | (PM_RUNTIME_ROOT_DIRS - {"cache"})
 
 # Browser Use CLI profile dir (browser.backend: browser-use): Chromium user-data with Login Data / Cookies;
-# the secret caches and Photon sidecar token; host-managed Cloud recovery snapshots (portal-recovery/,
-# written root:root 0640 on Hermes Cloud) and filesystem lost+found/. Root-scoped like models/ — a skill's
-# own browser_profiles/ or portal-recovery/ is user data. Backup-only: do not fold into
-# LOCAL_RUNTIME_ROOT_DIRS (clone-all identity contract).
-_EXCLUDED_BACKUP_ROOT_DIRS = frozenset({"browser_profiles", "portal-recovery", "lost+found", *SECRET_CACHE_FILES})
+# the secret caches and Photon sidecar token. Root-scoped like models/ — a skill's own browser_profiles/ is
+# user data. Backup-only: do not fold into LOCAL_RUNTIME_ROOT_DIRS (clone-all identity contract).
+_EXCLUDED_BACKUP_ROOT_DIRS = frozenset({"browser_profiles", *SECRET_CACHE_FILES})
 
 # ``cache/`` at those same roots mixes regenerable state (model/plugin catalogs, stamps, browser
 # profiles with locked SQLite, tool-output spill) with durable artifacts nothing can rebuild: media
@@ -118,11 +117,13 @@ _KEPT_CACHE_SUBDIRS = {
 
 
 def _in_excluded_root_dir(rel_path: Path) -> bool:
-    """True when *rel_path* is inside a regenerable tree at a profile-home root, or is the bridge log."""
-    root_entry = profile_root_entry(rel_path.parts)
-    if root_entry in _EXCLUDED_ROOT_DIRS or root_entry in _EXCLUDED_BACKUP_ROOT_DIRS:
-        return True
+    """True when *rel_path* is inside a regenerable tree at a profile-home root, a host-managed tree at
+    the Hermes root, or is the bridge log."""
     parts = rel_path.parts
+    root_entry = profile_root_entry(parts)
+    if (root_entry in _EXCLUDED_ROOT_DIRS or root_entry in _EXCLUDED_BACKUP_ROOT_DIRS
+            or parts[0] in HOST_MANAGED_ROOT_DIRS):
+        return True
     if len(parts) >= 3 and parts[0] == "profiles":
         parts = parts[2:]
     return (parts in BRIDGE_LOG_PARTS or parts[:2] == PROVIDER_PLUGIN_SNAPSHOT_PARTS
@@ -608,14 +609,15 @@ def _find_corrupt_members(zf: zipfile.ZipFile, members: list[str]) -> list[str]:
 
 def _import_skipped(rel: str) -> bool:
     """True for a HERMES_HOME-relative member the import deliberately does not restore: runtime
-    state (``_IMPORT_SKIP_NAMES``), PM-local interpreter/dependency roots, or an archived SQLite
-    WAL/SHM/journal. A ``.db`` member is page-restored into the live file, and a sidecar from a
-    different image would replay a foreign WAL on next open (older archives may ship these)."""
+    state (``_IMPORT_SKIP_NAMES``), the host's own root trees (``HOST_MANAGED_ROOT_DIRS``), PM-local
+    interpreter/dependency roots, or an archived SQLite WAL/SHM/journal. A ``.db`` member is
+    page-restored into the live file, and a sidecar from a different image would replay a foreign
+    WAL on next open (older archives may ship these)."""
     try:
         parts = tuple(normalize_archive_parts(rel))
     except ValueError:
         return False  # A rejected traversal is still reported by the import itself.
-    return (parts[-1] in _IMPORT_SKIP_NAMES or
+    return (parts[-1] in _IMPORT_SKIP_NAMES or parts[0] in HOST_MANAGED_ROOT_DIRS or
             profile_root_entry(parts) in PM_RUNTIME_ROOT_DIRS or
             rel.endswith(_SQLITE_SIDECAR_SUFFIXES))
 
@@ -914,7 +916,9 @@ def _import_members_exclusive(
         # reconciler on the target and disconnects hosted instances from the
         # Nous portal. Matched by basename so both the root profile and
         # named profiles (profiles/<name>/gateway_state.json) are covered.
-        if parts[-1] in _IMPORT_SKIP_NAMES or (keep_host is not None and keep_host.skips(parts)):
+        # The host's own root trees (HOST_MANAGED_ROOT_DIRS) are never written either.
+        if (parts[-1] in _IMPORT_SKIP_NAMES or parts[0] in HOST_MANAGED_ROOT_DIRS
+                or (keep_host is not None and keep_host.skips(parts))):
             skipped_runtime.append(rel)
             continue
 

@@ -47,13 +47,16 @@ def home(tmp_path, monkeypatch):
     return home
 
 
-def _child_script(tmp_path: Path, args: tuple[str, ...], *, sleep: float, installed=(), owed=(),
-                  write: bool = True) -> list[str]:
+def _child_script(tmp_path: Path, args: tuple[str, ...], *, sleep: float = 0.0, installed=(), owed=(),
+                  write: bool = True, wait_for_file: Path | None = None) -> list[str]:
     """A real child process standing in for the installer: it parses ``_child --run-id [--home]`` from
-    argv, logs its start, sleeps, then reports through the module's own result writer."""
+    argv, logs its start, optionally waits for *wait_for_file* or sleeps, then reports through the
+    module's own result writer."""
     starts = tmp_path / "child-starts.txt"
+    gate = str(wait_for_file) if wait_for_file is not None else ""
     body = textwrap.dedent(f"""
         import argparse, sys, time
+        from pathlib import Path
         sys.path.insert(0, {str(REPO)!r})
         p = argparse.ArgumentParser()
         sub = p.add_subparsers(dest="cmd", required=True)
@@ -63,9 +66,14 @@ def _child_script(tmp_path: Path, args: tuple[str, ...], *, sleep: float, instal
         ns = p.parse_args(sys.argv[1:])
         with open({str(starts)!r}, "a", encoding="utf-8") as fh:
             fh.write(ns.run_id + " " + (ns.home or "-") + "\\n")
-        time.sleep({sleep!r})
+        gate = {gate!r}
+        if gate:
+            cap = time.monotonic() + 30.0
+            while not Path(gate).exists() and time.monotonic() < cap:
+                time.sleep(0.02)
+        elif {sleep!r} > 0:
+            time.sleep({sleep!r})
         if {write!r}:
-            from pathlib import Path
             from hermes_cli import default_plugins as d
             from pm.environments import dependency_home_root
             d._write_child_result(Path(dependency_home_root()), ns.run_id,
@@ -102,10 +110,11 @@ def test_timed_out_ensure_leaves_no_install_running_in_its_own_process(home, tmp
         return install
 
     second_installers: list = []
+    release_file = tmp_path / "release-child-1"
     monkeypatch.setattr(lcm, "_install_into", install_into)
     monkeypatch.setattr(default_plugins, "spawn_install", lambda home=None: second_installers.append(home) or True)
     monkeypatch.setattr(default_plugins, "_child_argv",
-                        lambda args=(): _child_script(tmp_path, args, sleep=2.0, write=False))
+                        lambda args=(): _child_script(tmp_path, args, wait_for_file=release_file, write=False))
     try:
         started = time.monotonic()
         code, payload = default_plugins.ensure_defaults(timeout=0.3, say=lambda _m: None)
@@ -113,8 +122,9 @@ def test_timed_out_ensure_leaves_no_install_running_in_its_own_process(home, tmp
         still_installing_here = inflight[0]
     finally:
         release.set()
+        release_file.touch()
     assert code == default_plugins.ENSURE_EXIT_TIMEOUT and payload["state"] == "timeout"
-    assert returned_after < 2.0
+    assert returned_after < 10.0
     assert still_installing_here == 0, "ensure returned while its own thread was still installing"
     assert second_installers == [], "a timeout must not start a second installer beside the first"
 
@@ -161,25 +171,59 @@ def test_tree_left_by_an_interrupted_install_is_reinstalled_not_recorded(home, m
 
 
 def test_timeout_returns_promptly_and_the_detached_child_completes(home, tmp_path, monkeypatch):
+    release_file = tmp_path / "release-child"
     monkeypatch.setattr(lcm, "_install_into", lambda *_a, **_k: pytest.fail("ensure must not install in-process"))
     monkeypatch.setattr(default_plugins, "spawn_install", lambda home=None: pytest.fail("no continuation spawn"))
     monkeypatch.setattr(default_plugins, "_child_argv",
-                        lambda args=(): _child_script(tmp_path, args, sleep=1.5, installed=["langfuse"]))
+                        lambda args=(): _child_script(tmp_path, args, wait_for_file=release_file, installed=["langfuse"]))
     started = time.monotonic()
-    code, payload = default_plugins.ensure_defaults(timeout=0.3, say=lambda _m: None)
-    returned = time.monotonic()
-    assert code == default_plugins.ENSURE_EXIT_TIMEOUT
-    assert payload["state"] == "timeout" and payload["pending_before"] == ["langfuse"]
-    assert returned - started < 1.5
-    assert not [t for t in threading.enumerate() if t.name.startswith("default-plugins")]
+    try:
+        code, payload = default_plugins.ensure_defaults(timeout=0.3, say=lambda _m: None)
+        elapsed = time.monotonic() - started
+        assert code == default_plugins.ENSURE_EXIT_TIMEOUT
+        assert payload["state"] == "timeout" and payload["pending_before"] == ["langfuse"]
+        assert elapsed < 10.0
+        assert not _result(home), "child must still be waiting on the release file when ensure returns"
+        assert not [t for t in threading.enumerate() if t.name.startswith("default-plugins")]
+    finally:
+        release_file.touch()
 
     wait_until(lambda: bool(_result(home)), timeout=20, what="detached ensure child result")
     result = _result(home)
     assert result.get("installed") == ["langfuse"], "the child did not finish after ensure returned"
-    assert default_plugins._result_path(home, result["run_id"]).stat().st_mtime > time.time() - (time.monotonic() - returned) - 0.5
     starts = (tmp_path / "child-starts.txt").read_text(encoding="utf-8").splitlines()
     assert len(starts) == 1, f"expected exactly one child, got {starts}"
     assert starts[0].split()[0] == result["run_id"] and starts[0].split()[1] == "-"
+
+
+def test_slow_catalog_discovery_is_bounded_by_timeout_and_returns_3(tmp_path, monkeypatch):
+    """When cache/plugin-catalog.json is missing/expired, ensure_defaults delegates catalog discovery
+    to the detached child instead of blocking synchronously on HTTP, so --timeout bounds it."""
+    home = tmp_path / "uncached-home"
+    home.mkdir()
+    release_file = tmp_path / "release-discovery"
+    monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(default_plugins, "_identity", lambda: "rev-uncached-1")
+    monkeypatch.setattr(pm.plugins_state, "dependency_homes", lambda: [home])
+    monkeypatch.setattr(pc, "fetch_live_catalog", lambda **_k: pytest.fail("parent must not fetch catalog synchronously"))
+    monkeypatch.setattr(pc, "_download_live_catalog", lambda *_a, **_k: pytest.fail("parent must not do HTTP"))
+    monkeypatch.setattr(default_plugins, "_child_argv",
+                        lambda args=(): _child_script(tmp_path, args, wait_for_file=release_file, installed=["langfuse"]))
+    started = time.monotonic()
+    try:
+        code, payload = default_plugins.ensure_defaults(timeout=0.3, say=lambda _m: None)
+        elapsed = time.monotonic() - started
+        assert code == default_plugins.ENSURE_EXIT_TIMEOUT
+        assert payload["state"] == "timeout"
+        assert payload["owed"] == ["live catalog"]
+        assert elapsed < 10.0
+        assert not _result(home)
+    finally:
+        release_file.touch()
+
+    wait_until(lambda: bool(_result(home)), timeout=20, what="detached discovery child result")
+    assert _result(home).get("installed") == ["langfuse"]
 
 
 @pytest.mark.parametrize("installed,owed,code,state", [

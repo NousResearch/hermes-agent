@@ -13,6 +13,7 @@ import {
   buildDefaultPluginsPreflightInvocation,
   createPreflightGatewayRunner,
   DEFAULT_PLUGINS_LOG_PREFIX,
+  DEFAULT_PLUGINS_POOL_PREFLIGHT_TIMEOUT_SECONDS,
   DEFAULT_PLUGINS_PREFLIGHT_TIMEOUT_SECONDS,
   DEFAULT_PLUGINS_TIMEOUT_SECONDS,
   parseDefaultPluginsJsonLine,
@@ -42,16 +43,16 @@ async function writeFakeScript(name: string, body: string): Promise<string> {
   return file
 }
 
-test('resolveDefaultPluginsTimeoutSeconds defaults to 120 and honors HERMES_DEFAULT_PLUGINS_TIMEOUT', () => {
+test('resolveDefaultPluginsTimeoutSeconds defaults to 120 and validates explicit overrides', () => {
   expect(DEFAULT_PLUGINS_PREFLIGHT_TIMEOUT_SECONDS).toBe(120)
   expect(DEFAULT_PLUGINS_TIMEOUT_SECONDS).toBe(120)
-  expect(resolveDefaultPluginsTimeoutSeconds({})).toBe(120)
-  expect(resolveDefaultPluginsTimeoutSeconds({ HERMES_DEFAULT_PLUGINS_TIMEOUT: '45' })).toBe(45)
-  expect(resolveDefaultPluginsTimeoutSeconds({ HERMES_DEFAULT_PLUGINS_TIMEOUT: ' 12.5 ' })).toBe(12.5)
-  expect(resolveDefaultPluginsTimeoutSeconds({ HERMES_DEFAULT_PLUGINS_TIMEOUT: '0' })).toBe(120)
-  expect(resolveDefaultPluginsTimeoutSeconds({ HERMES_DEFAULT_PLUGINS_TIMEOUT: '-5' })).toBe(120)
-  expect(resolveDefaultPluginsTimeoutSeconds({ HERMES_DEFAULT_PLUGINS_TIMEOUT: 'not-a-number' })).toBe(120)
-  expect(resolveDefaultPluginsTimeoutSeconds({ HERMES_DEFAULT_PLUGINS_TIMEOUT: '90' }, 15)).toBe(15)
+  expect(resolveDefaultPluginsTimeoutSeconds()).toBe(120)
+  expect(resolveDefaultPluginsTimeoutSeconds(45)).toBe(45)
+  expect(resolveDefaultPluginsTimeoutSeconds(12.5)).toBe(12.5)
+  expect(resolveDefaultPluginsTimeoutSeconds(0)).toBe(120)
+  expect(resolveDefaultPluginsTimeoutSeconds(-5)).toBe(120)
+  expect(resolveDefaultPluginsTimeoutSeconds(Number.NaN)).toBe(120)
+  expect(resolveDefaultPluginsTimeoutSeconds(15)).toBe(15)
 })
 
 test('parseDefaultPluginsJsonLine extracts the last JSON object line even with noisy output', () => {
@@ -211,7 +212,8 @@ test('timeout kills a hanging child process and resolves cleanly', async () => {
     {
       cwd: tmpDir,
       home: tmpDir,
-      parentEnv: { PATH: process.env.PATH, HERMES_DEFAULT_PLUGINS_TIMEOUT: '0.15' },
+      parentEnv: { PATH: process.env.PATH },
+      timeoutSeconds: 0.15,
       killGraceMs: 0,
       forceKillMs: 250,
       log: line => logs.push(line)
@@ -540,9 +542,9 @@ test('bundled payload uses storePython + ticketEnv and keeps backend env parity'
     home: path.join(tmpDir, 'hermes-home'),
     parentEnv: {
       HOME: userHome,
-      HERMES_DESKTOP_DEV_SERVER: 'http://127.0.0.1:5174',
-      HERMES_DEFAULT_PLUGINS_TIMEOUT: '180'
+      HERMES_DESKTOP_DEV_SERVER: 'http://127.0.0.1:5174'
     },
+    timeoutSeconds: 180,
     isWindows: false
   })!
 
@@ -714,4 +716,50 @@ test('createPreflightGatewayRunner aborts cleanly without calling runEnsure when
   await expect(midRunner.run(backend, 'default', { onBefore, onAfter })).rejects.toThrow('aborted during preflight')
   expect(onAfter).not.toHaveBeenCalled()
   expect(runEnsure).not.toHaveBeenCalled()
+})
+
+test('pooled local dial preflight budget fits inside renderer dial timeouts and forwards timeoutSeconds', async () => {
+  const poolTimeoutMs = DEFAULT_PLUGINS_POOL_PREFLIGHT_TIMEOUT_SECONDS * 1000
+  const killGraceMs = Math.min(10_000, Math.max(3_000, Math.round(poolTimeoutMs * 0.1)))
+  const forceKillMs = 1_000
+  const maxPoolPreflightMs = poolTimeoutMs + killGraceMs + forceKillMs
+  const gatewayEnsureMaxMs = 75_000 // GATEWAY_ENSURE_PROTOCOL_DEADLINE_MS (60s) + grace (15s)
+  const sourceSwitchDialTimeoutMs = 135_000 // SOURCE_SWITCH_DIAL_TIMEOUT_MS
+  const legacyPoolDialTimeoutMs = 20_000 // RECONNECT_ATTEMPT_TIMEOUT_MS / DESCRIPTOR_LOOKUP_TIMEOUT_MS
+
+  expect(maxPoolPreflightMs + gatewayEnsureMaxMs).toBeLessThan(sourceSwitchDialTimeoutMs)
+  expect(maxPoolPreflightMs).toBeLessThan(legacyPoolDialTimeoutMs)
+
+  const seenTimeouts: Array<number | undefined> = []
+  const runEnsure = vi.fn(async () => ({ code: 0, stdout: '{}', stderr: '' }))
+
+  const runner = createPreflightGatewayRunner({
+    hermesHome: tmpDir,
+    resolveCwd: () => tmpDir,
+    buildSpawnEnv: env => env,
+    buildParentEnv: () => ({}),
+    runEnsure,
+    log: () => undefined,
+    getSignal: () => new AbortController().signal,
+    runPreflight: async (_backend, opts) => {
+      seenTimeouts.push(opts.timeoutSeconds)
+
+      return {
+        skipped: false,
+        exitCode: 0,
+        timedOut: false,
+        aborted: false,
+        elapsedMs: 1,
+        payload: { state: 'nothing-pending' },
+        error: null,
+        logLine: null
+      }
+    }
+  })
+
+  const backend = { kind: 'python', command: process.execPath, env: {}, shell: false }
+  await runner.run(backend, 'work', { timeoutSeconds: DEFAULT_PLUGINS_POOL_PREFLIGHT_TIMEOUT_SECONDS })
+
+  expect(seenTimeouts).toEqual([DEFAULT_PLUGINS_POOL_PREFLIGHT_TIMEOUT_SECONDS])
+  expect(runEnsure).toHaveBeenCalledTimes(1)
 })

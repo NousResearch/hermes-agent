@@ -556,24 +556,58 @@ def _prefer_in_tree_entry(tree: PluginCatalogEntry, live: PluginCatalogEntry, tr
     return False
 
 
+def entries_from_live_payload(data: Any) -> Optional[list[PluginCatalogEntry]]:
+    """Parse and merge a live-catalog JSON payload with the in-tree catalog (newer pin wins).
+    Returns ``None`` when *data* is not a valid non-empty catalog payload."""
+    if not isinstance(data, dict):
+        return None
+    raw_entries = data.get("entries")
+    if not isinstance(raw_entries, list) or not raw_entries:
+        return None
+    entries = [e for i, raw in enumerate(raw_entries)
+               if (e := entry_from_mapping(raw, f"{LIVE_CATALOG_URL}#{i}")) is not None]
+    if not entries:
+        return None
+    in_tree = {e.name: e for e in load_catalog()}
+    live_t, tree_t = _live_generated_time(data), in_tree_catalog_time()
+    tree_is_newer = (tree_t > live_t) if (live_t is not None and tree_t is not None) else None
+    raw_by_name = {str(raw.get("name")): raw for raw in raw_entries if isinstance(raw, dict)}
+    return [in_tree[e.name] if e.name in in_tree and _prefer_in_tree_entry(in_tree[e.name], e, tree_is_newer)
+            else _with_curated_fields(e, in_tree.get(e.name), raw_by_name.get(e.name) or {})
+            for e in entries]
+
+
+def live_cache_signature() -> Optional[str]:
+    """Fast freshness + file-stat signature of ``cache/plugin-catalog.json`` when present and within TTL."""
+    cache = _live_cache_path()
+    try:
+        st = cache.stat()
+    except OSError:
+        return None
+    if time.time() - st.st_mtime >= LIVE_CATALOG_TTL_SECONDS:
+        return None
+    return f"{st.st_mtime_ns}:{st.st_size}"
+
+
+def load_catalog_cached() -> Optional[list[PluginCatalogEntry]]:
+    """Merged catalog entries from the fresh on-disk live cache (within :data:`LIVE_CATALOG_TTL_SECONDS`),
+    with ZERO network I/O. Returns ``None`` when the cache is missing, expired, or unreadable."""
+    cache = _live_cache_path()
+    try:
+        if time.time() - cache.stat().st_mtime >= LIVE_CATALOG_TTL_SECONDS:
+            return None
+        data = json.loads(cache.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return None
+    return entries_from_live_payload(data)
+
+
 def load_catalog_live() -> list[PluginCatalogEntry]:
     """Entries from the live (or cached) catalog, else the in-tree catalog. When both name an entry at
     different pins the NEWER source supplies it — right after ``hermes update`` bumps an in-tree pin,
     a cache fetched before the bump must not re-install the old one (see :func:`_prefer_in_tree_entry`)."""
-    data = fetch_live_catalog()
-    if data is None:
-        return load_catalog()
-    entries = [e for i, raw in enumerate(data["entries"])
-               if (e := entry_from_mapping(raw, f"{LIVE_CATALOG_URL}#{i}")) is not None]
-    if not entries:
-        return load_catalog()
-    in_tree = {e.name: e for e in load_catalog()}
-    live_t, tree_t = _live_generated_time(data), in_tree_catalog_time()
-    tree_is_newer = (tree_t > live_t) if (live_t is not None and tree_t is not None) else None
-    raw_by_name = {str(raw.get("name")): raw for raw in data["entries"] if isinstance(raw, dict)}
-    return [in_tree[e.name] if e.name in in_tree and _prefer_in_tree_entry(in_tree[e.name], e, tree_is_newer)
-            else _with_curated_fields(e, in_tree.get(e.name), raw_by_name.get(e.name) or {})
-            for e in entries]
+    merged = entries_from_live_payload(fetch_live_catalog())
+    return merged if merged is not None else load_catalog()
 
 
 # Curated display fields a published doc older than the field does not carry. ``generated_at`` is the

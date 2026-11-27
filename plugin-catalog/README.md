@@ -239,8 +239,8 @@ enables it automatically:
 
 - **Foreground preflight before first backend/gateway start:** Docker
   (`docker/stage2-hook.sh`, default 300 s timeout), Desktop (DMG, MSIX,
-  AppImage, and local source backends, default 120 s timeout, overridable via
-  `HERMES_DEFAULT_PLUGINS_TIMEOUT`), and `hermes profile create` (120 s timeout)
+  AppImage, and local source backends, default 120 s timeout), and
+  `hermes profile create` (120 s timeout)
   run `python -m hermes_cli.default_plugins ensure` in the foreground before
   starting the local backend/gateway so default plugins and their Python
   dependencies are live for the very first session. If the deadline is reached,

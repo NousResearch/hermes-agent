@@ -1652,6 +1652,87 @@ class TestOpenRouterUpstreamRateLimit:
         assert result.should_rotate_credential is True
 
 
+class TestOpenRouterUpstreamModelNotFound:
+    """An upstream 404 on OpenRouter is transient deployment unavailability, not a dead slug (#134122).
+
+    OpenRouter relays the upstream provider's ``model_not_found`` as a 404 "Provider returned
+    error" wrapper on a slug that served calls moments earlier. The route exists and the key is
+    healthy, so retry in place (the retry budget's exhaustion path still falls back) instead of
+    declaring the model invalid or leaving it as an unexplained ``unknown``.
+    """
+
+    def test_upstream_404_model_not_found_classified_as_transient(self):
+        """Meta's transient ``model_not_found`` wrapper → server_error, key untouched."""
+        e = MockAPIError(
+            "Error code: 404 - Provider returned error",
+            status_code=404,
+            body={
+                "error": {
+                    "message": "Provider returned error",
+                    "code": 404,
+                    "metadata": {
+                        "provider_name": "Meta",
+                        "provider_error_code": "model_not_found",
+                        "raw": '{"error":{"code":"model_not_found","message":"The requested model was not found.","type":"invalid_request_error"}}',
+                    },
+                }
+            },
+        )
+        result = classify_api_error(e, provider="openrouter", model="meta/muse-spark-1.3-contributor")
+        assert result.reason == FailoverReason.server_error
+        assert result.retryable is True
+        assert result.should_rotate_credential is False
+        assert result.error_context.get("upstream_provider") == "Meta"
+
+    def test_upstream_404_with_pattern_matching_wording_still_transient(self):
+        """Inner wording that matches the model_not_found patterns must not reroute the verdict."""
+        e = MockAPIError(
+            "Error code: 404 - Provider returned error",
+            status_code=404,
+            body={
+                "error": {
+                    "message": "Provider returned error",
+                    "code": 404,
+                    "metadata": {
+                        "provider_name": "Meta",
+                        "raw": '{"error":{"code":"model_not_found","message":"Error: model not found on this provider"}}',
+                    },
+                }
+            },
+        )
+        result = classify_api_error(e, provider="openrouter", model="meta/muse-spark-1.3-contributor")
+        assert result.reason == FailoverReason.server_error
+        assert result.retryable is True
+
+    def test_openrouter_own_404_still_model_not_found(self):
+        """OpenRouter's own 404 (retired :free route, #123180) has no upstream wrapper."""
+        e = MockAPIError(
+            "Error code: 404 - This model is no longer free",
+            status_code=404,
+            body={
+                "error": {
+                    "message": "This model is no longer free. You must add credits to use it.",
+                    "code": 404,
+                }
+            },
+        )
+        result = classify_api_error(e, provider="openrouter", model="vendor/model:free")
+        assert result.reason == FailoverReason.model_not_found
+        assert result.retryable is False
+        assert result.should_fallback is True
+
+    def test_plain_provider_404_invalid_model_unchanged(self):
+        """A direct provider's deterministic invalid-model 404 keeps #58446 semantics."""
+        e = MockAPIError(
+            "Error code: 404 - The model 'gpt-x' does not exist",
+            status_code=404,
+            body={"error": {"message": "The model 'gpt-x' does not exist", "code": "model_not_found"}},
+        )
+        result = classify_api_error(e, provider="openai", model="gpt-x")
+        assert result.reason == FailoverReason.model_not_found
+        assert result.retryable is False
+
+
 class TestCommandCodeUpstreamUnavailable:
     """An explicit upstream outage is not a credential rate limit."""
 

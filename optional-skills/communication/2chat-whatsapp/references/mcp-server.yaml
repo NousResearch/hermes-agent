@@ -1,0 +1,12 @@
+# 2Chat MCP server for Hermes Agent.
+# Add this block to your Hermes config (e.g. ~/.hermes/config.yaml).
+# On first connection Hermes opens a browser for 2Chat OAuth sign-in and
+# stores tokens at ~/.hermes/mcp-tokens/2chat.json (auto-refreshed).
+#
+# No API key is required.
+
+mcp_servers:
+  2chat:
+    url: "https://mcp.2chat.io/mcp"
+    auth: oauth
+    # transport defaults to Streamable HTTP; set `transport: "sse"` only if instructed.

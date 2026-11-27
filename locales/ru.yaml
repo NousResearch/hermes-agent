@@ -2904,6 +2904,10 @@ cli:
     profile:
       profile: "Профиль: {profile}"
       home: "Каталог: {home}"
+      switch_hint: "Переключитесь командой /profile ИМЯ. Другие профили: {profiles}"
+      invalid: "Недопустимый выбор профиля «{request}». Доступные профили: {profiles}"
+      already_on: "Профиль {profile} уже используется."
+      switching: "Переключение на профиль {profile}…"
     handoff:
       usage: "Использование: /handoff <платформа>"
       usage_detail_1: "Передаёт текущий сеанс в домашний канал этой платформы."

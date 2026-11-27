@@ -301,12 +301,96 @@ class CLICommandsSessionToolsMixin:
         from hermes_cli.slash_exec import CommandContext, execute_command
         _say_block(execute_command("autoprune", CommandContext(surface="cli", args=cmd.partition(" ")[2])).text)
 
-    def _handle_profile_command(self):
-        """Display active profile name and home directory."""
+    def _handle_profile_command(self, cmd: str = "/profile") -> bool | None:
+        """Display the active profile, or leave this CLI and reopen another profile."""
         from hermes_cli.slash_exec import CommandContext, execute_command
+
         reply = execute_command("profile", CommandContext(surface="cli"))
-        _say_block(f"  {_t('profile.profile', profile=reply.data['profile'])}",
-                   f"  {_t('profile.home', home=reply.data['home'])}")
+        from hermes_cli.profiles import (
+            format_profile_label,
+            get_active_profile_name,
+            get_profile_dir,
+            list_profile_names,
+            normalize_profile_name,
+            read_profile_meta,
+        )
+
+        choices = {
+            name: format_profile_label(
+                name, read_profile_meta(get_profile_dir(name)).get("display_name")
+            )
+            for name in list_profile_names()
+        }
+        args = _shlex_args(cmd)
+        active = get_active_profile_name()
+        if not args:
+            lines = [
+                f"  {_t('profile.profile', profile=reply.data['profile'])}",
+                f"  {_t('profile.home', home=reply.data['home'])}",
+            ]
+            others = [label for name, label in choices.items() if name != active]
+            if others:
+                lines.append(f"  {_t('profile.switch_hint', profiles=', '.join(others))}")
+            _say_block(*lines)
+            return None
+
+        request = " ".join(args)
+        try:
+            target = normalize_profile_name(args[0]) if len(args) == 1 else ""
+        except ValueError:
+            target = ""
+        if not target or target not in choices:
+            _say_block(
+                f"  {_t('profile.invalid', request=request, profiles=', '.join(choices.values()))}"
+            )
+            return None
+        if target == active:
+            _say_block(f"  {_t('profile.already_on', profile=choices[target])}")
+            return None
+
+        _say_block(f"  {_t('profile.switching', profile=choices[target])}")
+        from tools.bot_mode_probe import BOT_CHAT_TITLE, is_bot_mode_managed
+
+        self._pending_relaunch = ["-p", target, "chat"]
+        # Bot Mode is installation-wide. The target home locates that installation; this does
+        # not ask whether the target profile alone carries Bot Mode metadata.
+        if is_bot_mode_managed(get_profile_dir(target)):
+            self._pending_relaunch.extend(["-c", BOT_CHAT_TITLE, "--create-if-missing"])
+
+        # Build the replacement process's environment without changing the still-running CLI.
+        # Drop only the source profile's routing and session identity; launch policy such as
+        # safe mode remains the user's choice.
+        from gateway.session_context import _VAR_MAP
+
+        source_context = (
+            "HERMES_TUI_GATEWAY_URL",
+            "HERMES_TUI_ACTIVE_SESSION_FILE",
+            "HERMES_TUI_CLIENT_ENV",
+            "HERMES_GATEWAY_SESSION",
+            "HERMES_GATEWAY_DETACHED",
+            "HERMES_SINGLE_QUERY_SESSION",
+            "HERMES_SESSION_SOURCE_EXPLICIT",
+            "HERMES_TURN_AUTHOR",
+            "HERMES_PROFILE",
+            "HERMES_PROFILE_NAME",
+        )
+        from tools.environments.local import served_profile_child_env
+
+        self._pending_relaunch_env = served_profile_child_env(
+            target_home=get_profile_dir(target),
+            inherit_credentials=True,
+        )
+        for name in (*_VAR_MAP, *source_context):
+            self._pending_relaunch_env.pop(name, None)
+
+        if getattr(self, "_agent_running", False):
+            # Match Ctrl+D mid-turn: detach the viewer and leave the gateway-owned turn alive.
+            self._should_exit = True
+            self._detach_on_exit = True
+            app = getattr(self, "_app", None)
+            if app is not None and app.is_running:
+                app.exit()
+        return False
 
 
 def _stop_background_work() -> None:

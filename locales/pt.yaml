@@ -2904,6 +2904,10 @@ cli:
     profile:
       profile: "Perfil: {profile}"
       home: "Home:   {home}"
+      switch_hint: "Altere com /profile NOME. Outros perfis: {profiles}"
+      invalid: "Seleção de perfil inválida «{request}». Perfis disponíveis: {profiles}"
+      already_on: "O perfil {profile} já está em uso."
+      switching: "Alterando para o perfil {profile}…"
     handoff:
       usage: "Uso: /handoff <plataforma>"
       usage_detail_1: "Transfere a sessão atual para o canal inicial dessa plataforma."

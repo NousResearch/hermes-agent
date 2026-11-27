@@ -1444,10 +1444,10 @@ class CLITuiMixin:
         buf.reset(append_to_history=True)
 
     def _tui_enter_inline_command(self, event, text: str, has_images: bool) -> bool:
-        """Run /model, /steer, /bg, /btw directly on the UI thread; True when handled.
+        """Run /model and busy-dispatch commands directly on the UI thread; True when handled.
 
         /model needs the prompt_toolkit terminal-handoff helpers of the interactive pickers.
-        /steer, /bg and /btw while the agent runs must not queue through _pending_input: the
+        /steer, /bg, /btw and /profile while the agent runs must not queue through _pending_input: the
         process loop is blocked inside self.chat(), so they would only run after the foreground
         turn — turning /steer into a next-turn message (defeating mid-run injection, #34569) and
         starting the /bg side task after the turn it should run alongside (#75221). The

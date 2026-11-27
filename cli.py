@@ -1121,7 +1121,7 @@ class HermesCLI(CLIBacktrackMixin, CLIInitMixin, CLITuiRuntimeMixin, CLIProcessN
     _SLASH_DISPATCH: dict[str, tuple[str, bool]] = {
         "exit": ("_cmd_exit", True), "quit": ("_cmd_exit", True), "help": ("_cmd_help", True),
         "palette": ("_open_command_palette", False), "whoami": ("_handle_whoami_command", False),
-        "profile": ("_handle_profile_command", False), "toolsets": ("show_toolsets", False),
+        "profile": ("_handle_profile_command", True), "toolsets": ("show_toolsets", False),
         "config": ("show_config", False), "redraw": ("_cmd_redraw", True), "clear": ("_cmd_clear", True),
         "history": ("show_history", False), "title": ("_cmd_title", True), "new": ("_cmd_new", True),
         "model": ("_handle_model_switch", True), "codex-runtime": ("_handle_codex_runtime", True),
@@ -1519,7 +1519,11 @@ class HermesCLI(CLIBacktrackMixin, CLIInitMixin, CLITuiRuntimeMixin, CLIProcessN
         # main thread (the process_loop thread would skip cleanup / only exit itself on Windows).
         if self._pending_relaunch:
             from hermes_cli.relaunch import relaunch
-            relaunch(self._pending_relaunch, preserve_inherited=False)
+            relaunch(
+                self._pending_relaunch,
+                preserve_inherited=False,
+                env=self._pending_relaunch_env,
+            )
 
 
 def _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url, max_turns, run_budget, verbose, compact, resume, checkpoints, pass_session_id, ignore_rules, skills):

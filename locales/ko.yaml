@@ -2904,6 +2904,10 @@ cli:
     profile:
       profile: "프로필: {profile}"
       home: "홈:     {home}"
+      switch_hint: "/profile 이름으로 전환하세요. 다른 프로필: {profiles}"
+      invalid: "프로필 선택 \"{request}\"이(가) 잘못되었습니다. 사용 가능한 프로필: {profiles}"
+      already_on: "이미 {profile} 프로필을 사용 중입니다."
+      switching: "{profile} 프로필로 전환하는 중…"
     handoff:
       usage: "사용법: /handoff <platform>"
       usage_detail_1: "현재 세션을 해당 플랫폼의 홈 채널로 넘겨요."

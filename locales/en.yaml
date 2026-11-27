@@ -3005,6 +3005,10 @@ cli:
     profile:
       profile: "Profile: {profile}"
       home: "Home:    {home}"
+      switch_hint: "Switch with /profile NAME. Other profiles: {profiles}"
+      invalid: "Invalid profile selection \"{request}\". Available profiles: {profiles}"
+      already_on: "Already using profile {profile}."
+      switching: "Switching to profile {profile}…"
     handoff:
       usage: "Usage: /handoff <platform>"
       usage_detail_1: "Hands the current session off to that platform's home channel."

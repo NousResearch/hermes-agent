@@ -2904,6 +2904,10 @@ cli:
     profile:
       profile: "Profil: {profile}"
       home: "Ana dizin: {home}"
+      switch_hint: "/profile AD ile geçiş yapın. Diğer profiller: {profiles}"
+      invalid: "Geçersiz profil seçimi \"{request}\". Kullanılabilir profiller: {profiles}"
+      already_on: "Zaten {profile} profili kullanılıyor."
+      switching: "{profile} profiline geçiliyor…"
     handoff:
       usage: "Kullanım: /handoff <platform>"
       usage_detail_1: "Geçerli oturumu o platformun ana kanalına devreder."

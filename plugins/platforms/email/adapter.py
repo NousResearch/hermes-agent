@@ -231,7 +231,8 @@ def check_email_requirements() -> bool:
     Treats blank/whitespace-only values as missing so an abandoned setup that left empty ``EMAIL_*`` keys in
     ``.env`` does not enable the platform (#40715).
     """
-    return all(_get_secret(name, "").strip() for name in ("EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_IMAP_HOST", "EMAIL_SMTP_HOST"))
+    # IMAP is optional: address + password + SMTP enables send-only mode (no inbox poll).
+    return all(_get_secret(name, "").strip() for name in ("EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_SMTP_HOST"))
 
 
 def _safe_decode(payload: bytes, charset: Optional[str]) -> str:
@@ -618,11 +619,24 @@ class EmailAdapter(BasePlatformAdapter):
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to the IMAP server and start polling for new messages."""
         # Validate up front so a missing host is an actionable config error, not IMAP4_SSL("") raising ``[Errno 8]``.
-        required = (("EMAIL_ADDRESS", self._address), ("EMAIL_PASSWORD", self._password), ("EMAIL_IMAP_HOST", self._imap_host), ("EMAIL_SMTP_HOST", self._smtp_host))
+        required = (("EMAIL_ADDRESS", self._address), ("EMAIL_PASSWORD", self._password), ("EMAIL_SMTP_HOST", self._smtp_host))
         if missing := [name for name, value in required if not value]:
             message = f"Not configured — missing {', '.join(missing)}. Set it via `hermes gateway setup` (env) or platforms.email in config.yaml."
             # Non-retryable: a blank-but-present env var used to drive an indefinite retry loop that leaked until OOM.
             return self._fail("[Email] %s", message, "email_missing_configuration", message, retryable=False)
+        # Send-only mode — no inbox poll. A blank IMAP host is a deliberate
+        # config choice, not the #40715 retry loop (we never call IMAP4_SSL("")).
+        if not (self._imap_host or "").strip():
+            if not self._probe_smtp():
+                return False
+            logger.info(
+                "[Email] SMTP-only mode for %s (IMAP poll disabled; outbound only)",
+                self._address,
+            )
+            self._running = True
+            self._poll_task = None
+            print(f"[Email] Connected as {self._address} (SMTP-only)")
+            return True
         if not self._probe_imap(is_reconnect) or not self._probe_smtp():
             return False
         if self._require_authenticated_sender and not self._authserv_id and self._address not in EmailAdapter._missing_pin_warned:
@@ -1033,10 +1047,10 @@ def register(ctx) -> None:
         target_ref_syntax_fn=regex_stripped_parser(_SEND_TARGET_RE),
         standalone_send=StandaloneSendPolicy(text_direct=True),
         name="email", label="Email", adapter_factory=EmailAdapter, check_fn=check_email_requirements, is_connected=_is_connected,
-        dashboard_description="Talk to Hermes through an IMAP/SMTP mailbox.",
+        dashboard_description="Talk to Hermes through email. SMTP is required; IMAP is optional (omit it for send-only).",
         docs_url="https://hermes-agent.nousresearch.com/docs/user-guide/messaging/",
         dashboard_env_vars=("EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_IMAP_HOST", "EMAIL_SMTP_HOST"),
-        dashboard_required_env=("EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_IMAP_HOST", "EMAIL_SMTP_HOST"),
+        dashboard_required_env=("EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_SMTP_HOST"),
         required_env=["EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_SMTP_HOST"],
         install_hint="Email uses the Python stdlib (smtplib/imaplib) — no extra deps", cron_deliver_env_var="EMAIL_HOME_ADDRESS", standalone_sender_fn=_standalone_send,
         max_message_length=50_000, pii_safe=True, emoji="📧", allow_update_command=True,

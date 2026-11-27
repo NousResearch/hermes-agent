@@ -53,6 +53,27 @@ class TestCheckRequirements(unittest.TestCase):
         from plugins.platforms.email.adapter import check_email_requirements
         self.assertTrue(check_email_requirements())
 
+    @patch.dict(os.environ, {
+        "EMAIL_ADDRESS": "a@b.com",
+        "EMAIL_PASSWORD": "pw",
+        "EMAIL_IMAP_HOST": "",
+        "EMAIL_SMTP_HOST": "smtp.b.com",
+    }, clear=False)
+    def test_requirements_met_without_imap(self):
+        """IMAP is optional: address + password + SMTP is enough for send-only."""
+        from plugins.platforms.email.adapter import check_email_requirements
+        self.assertTrue(check_email_requirements())
+
+    @patch.dict(os.environ, {
+        "EMAIL_ADDRESS": "a@b.com",
+        "EMAIL_PASSWORD": "pw",
+        "EMAIL_IMAP_HOST": "imap.b.com",
+        "EMAIL_SMTP_HOST": "",
+    }, clear=False)
+    def test_requirements_not_met_without_smtp(self):
+        from plugins.platforms.email.adapter import check_email_requirements
+        self.assertFalse(check_email_requirements())
+
 
 class TestHelperFunctions(unittest.TestCase):
     """Test email parsing helper functions."""
@@ -1270,9 +1291,10 @@ class TestConnectionConfigResolution(unittest.TestCase):
     """Host/address resolution and pre-connect validation (#49736)."""
 
 
-    def test_connect_aborts_without_attempting_imap_when_host_missing(self):
-        """A missing host returns False without the cryptic DNS error, and marks
-        the failure non-retryable so the gateway stops reconnecting (#40715)."""
+    def test_connect_enters_send_only_mode_when_imap_host_is_blank(self):
+        """A blank IMAP host with SMTP configured is send-only: no IMAP
+        connection is attempted, and the adapter stays running without a
+        poll loop. This also covers #40715 (IMAP4_SSL("") is never called)."""
         import asyncio
         from gateway.config import PlatformConfig
         from plugins.platforms.email.adapter import EmailAdapter
@@ -1284,17 +1306,40 @@ class TestConnectionConfigResolution(unittest.TestCase):
         }, clear=False):
             adapter = EmailAdapter(PlatformConfig(enabled=True))
 
+        with patch("imaplib.IMAP4_SSL") as mock_imap, \
+             patch.object(adapter, "_probe_smtp", return_value=True) as mock_smtp:
+            result = asyncio.run(adapter.connect())
+
+        self.assertTrue(result)
+        mock_imap.assert_not_called()
+        mock_smtp.assert_called_once()
+        self.assertTrue(adapter._running)
+        self.assertIsNone(adapter._poll_task)
+        self.assertFalse(adapter.has_fatal_error)
+
+    def test_connect_still_fatal_when_smtp_host_is_missing(self):
+        """SMTP is required. A missing SMTP host is a non-retryable config
+        error so the gateway does not reconnect in a loop (#40715)."""
+        import asyncio
+        from gateway.config import PlatformConfig
+        from plugins.platforms.email.adapter import EmailAdapter
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "",
+        }, clear=False):
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
+
         with patch("imaplib.IMAP4_SSL") as mock_imap:
             result = asyncio.run(adapter.connect())
 
         self.assertFalse(result)
         mock_imap.assert_not_called()
-        # The OOM fix (#40715): a blank host must NOT leave the platform in the
-        # retryable reconnect loop — it is a permanent config error.
         self.assertTrue(adapter.has_fatal_error)
         self.assertEqual(adapter.fatal_error_code, "email_missing_configuration")
         self.assertFalse(adapter.fatal_error_retryable)
-        self.assertIn("EMAIL_IMAP_HOST", adapter.fatal_error_message or "")
+        self.assertIn("EMAIL_SMTP_HOST", adapter.fatal_error_message or "")
 
     def test_blank_present_env_vars_are_not_required(self):
         """Blank/whitespace EMAIL_* values must read as missing (#40715) — an

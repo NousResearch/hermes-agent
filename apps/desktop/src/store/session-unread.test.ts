@@ -1,8 +1,13 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionInfo } from '@/types/hermes'
 
 import { makeSessionInfo } from '../test/session-info'
+
+vi.mock('@/hermes', () => ({
+  setApiRequestProfile: () => {},
+  setSessionUnreadRemote: () => Promise.resolve({ ok: true })
+}))
 
 import { $activeGatewayProfile } from './profile'
 import {
@@ -71,6 +76,13 @@ describe('persisted unread (session-unread)', () => {
     setSessions([session({ id: 's1', message_count: 4 })])
 
     expect($unreadFinishedSessionIds.get()).toEqual(['s1'])
+  })
+
+  it('marks the row unread on a live-edge finish so Focus can share the green dot', () => {
+    setSessions([session({ id: 's1', message_count: 4, unread: false })])
+    markSessionUnreadFinished('s1')
+
+    expect($sessions.get().find(s => s.id === 's1')?.unread).toBe(true)
   })
 
   it('acks watermark + marker when the user opens the session', () => {

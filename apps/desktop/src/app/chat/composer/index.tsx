@@ -87,6 +87,7 @@ import { useSlashCompletions } from './hooks/use-slash-completions'
 import { useStatusDrawer } from './hooks/use-status-drawer'
 import { useSessionStatusPresence } from './hooks/use-status-presence'
 import { shouldConvertPasteToAttachment } from './large-paste'
+import { continueListAtCaret } from './list-continuation'
 import { ActionBadges } from './micro-actions'
 import { chipTypedPathOnSpace, pathifyRefs } from './path-refs'
 import { enterLocked, pausedReplyControls } from './paused-reply'
@@ -713,6 +714,18 @@ export function ChatBar({
     // this guard, pressing Enter to finalise a Korean/Japanese/Chinese IME
     // preedit fires submitDraft() and splits the message mid-word.
     if (composingRef.current || event.nativeEvent.isComposing) {
+      return
+    }
+
+    // Shift+Enter on a list line: continue the list (next number / same bullet)
+    // instead of inserting a bare newline. A marker-only line ends the list,
+    // which is exactly the native Shift+Enter newline, so "ran" covers both.
+    // Runs on the pre-edit DOM state (the same convention as the URL-chip path
+    // below); the undo snapshot captures that pre-edit state too.
+    if (event.key === 'Enter' && event.shiftKey && withUndoPoint(() => continueListAtCaret(event.currentTarget))) {
+      event.preventDefault()
+      flushEditorToDraft(event.currentTarget)
+
       return
     }
 

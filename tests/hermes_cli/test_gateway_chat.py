@@ -4,11 +4,88 @@ import argparse
 import pytest
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("budget,toolsets,refused", [(180.0, "", True), (900.0, "", True),
+                                                       (180.0, "terminal", True), (900.0, "terminal", False)])
+async def test_titled_create_collision_checks_frozen_policy_before_query(monkeypatch, tmp_path, budget, toolsets, refused):
+    from contextlib import asynccontextmanager
+    from hermes_cli import gateway_chat
+    from hermes_cli.gateway_chat_view import GatewayChatView
+    sent = []
+
+    class Peer:
+        async def rpc(self, method, **params):
+            sent.append(method)
+            if method == "runtime.describe":
+                return {"session_create": {"sources": ["cli"], "parameters":
+                    ["source", "request_id", "cwd", "title", "run_budget", "toolsets"]}}
+            assert method == "session.create"
+            return {"stored_session_id": "existing", "info": {"cwd": str(tmp_path),
+                    "launch_request": {"source": "cli", "run_budget": 900.0, "toolsets": ["terminal"]}}}
+
+    @asynccontextmanager
+    async def connected():
+        yield Peer()
+
+    async def run(self, query, *, oneshot):
+        sent.append("prompt.submit")
+        return 0
+
+    monkeypatch.setattr(gateway_chat, "connect_gateway", connected)
+    monkeypatch.setattr(GatewayChatView, "run", run)
+    monkeypatch.chdir(tmp_path)
+    args = argparse.Namespace(continue_last="collision", create_if_missing=True, query="fixture",
+                              run_budget=budget, toolsets=toolsets, quiet=True)
+    if refused:
+        with pytest.raises(gateway_chat.GatewayClientError, match="Resume retains"):
+            await gateway_chat.run_gateway_chat(args)
+        assert sent == ["runtime.describe", "session.create"]
+    else:
+        assert await gateway_chat.run_gateway_chat(args) == 0
+        assert sent == ["runtime.describe", "session.create", "prompt.submit"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("missing_policy", [True, False])
+async def test_titled_create_refuses_unverified_policy_before_query(monkeypatch, tmp_path, missing_policy):
+    from contextlib import asynccontextmanager
+    from hermes_cli import gateway_chat
+    from hermes_cli.gateway_chat_view import GatewayChatView
+    sent = []
+
+    class Peer:
+        async def rpc(self, method, **params):
+            sent.append(method)
+            if method == "runtime.describe":
+                return {"session_create": {"sources": ["cli"], "parameters":
+                    ["source", "request_id", "cwd", "title", "run_budget", "safe_mode"]}}
+            return {"stored_session_id": "existing", "info": {} if missing_policy else
+                    {"launch_request": {"run_budget": 180.0, "safe_mode": False}}}
+
+    @asynccontextmanager
+    async def connected():
+        yield Peer()
+
+    async def run(self, query, *, oneshot):
+        sent.append("prompt.submit")
+        return 0
+
+    monkeypatch.setattr(gateway_chat, "connect_gateway", connected)
+    monkeypatch.setattr(GatewayChatView, "run", run)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HERMES_SAFE_MODE", "1")
+    args = argparse.Namespace(continue_last="collision", create_if_missing=True, query="fixture",
+                              run_budget=180.0, quiet=True)
+    with pytest.raises(gateway_chat.GatewayClientError, match="Resume retains"):
+        await gateway_chat.run_gateway_chat(args)
+    assert sent == ["runtime.describe", "session.create"]
+
+
 def test_unsupported_launch_options_fail_before_connection(monkeypatch, capsys):
     from hermes_cli import gateway_chat
     calls = []
     monkeypatch.setattr(gateway_chat, "connect_gateway", lambda: calls.append(True))
-    for option in ("image", "worktree", "run_budget"):
+    for option in ("image", "worktree"):
         args = argparse.Namespace(**{option: True})
         assert gateway_chat.launch_from_args(args) == 2
         assert option.replace("_", "-") in capsys.readouterr().err
@@ -18,11 +95,11 @@ def test_unsupported_launch_options_fail_before_connection(monkeypatch, capsys):
     assert "create-if-missing" in capsys.readouterr().err
     # Creation flags on resume are judged against the frozen route: repeating the launch
     # flags is fine (scripts re-run one command line), changing one is refused.
-    frozen = {"info": {"launch_request": {"source": "cli", "model": "m", "toolsets": ["file"], "reasoning": "high"},
+    frozen = {"info": {"launch_request": {"source": "cli", "model": "m", "toolsets": ["file"], "reasoning": "high", "run_budget": 180.0},
                        "cwd": "/w"}}
     gateway_chat.check_resume_policy(argparse.Namespace(resume="stored", model="m", toolsets="file",
-                                                        reasoning="high", query="x"), frozen)
-    for override in ({"model": "other"}, {"source": "tui"}, {"toolsets": "browser"}, {"in_dir": "/elsewhere"}):
+                                                        reasoning="high", run_budget=180.0, query="x"), frozen)
+    for override in ({"model": "other"}, {"source": "tui"}, {"toolsets": "browser"}, {"in_dir": "/elsewhere"}, {"run_budget": 181.0}):
         with pytest.raises(gateway_chat.GatewayClientError):
             gateway_chat.check_resume_policy(argparse.Namespace(resume="stored", query="x", **override), frozen)
     # Bypass launches read no profile default model, so one must be explicit.
@@ -43,10 +120,10 @@ def test_refusals_name_the_replacement_and_a_runnable_safe_mode_example(monkeypa
     refusal prints a command they can run as-is."""
     from hermes_cli import gateway_chat
     monkeypatch.setattr(gateway_chat, "connect_gateway", lambda: pytest.fail("connected"))
-    assert gateway_chat.launch_from_args(argparse.Namespace(worktree=True, run_budget=30.0)) == 2
+    assert gateway_chat.launch_from_args(argparse.Namespace(worktree=True)) == 2
     err = capsys.readouterr().err
     assert "--worktree: use" in err and "hermes --tui -w" in err
-    assert "--run-budget: use" in err and "run_budget_seconds" in err
+
     for name in gateway_chat._UNSUPPORTED:
         assert name in gateway_chat._RELOCATED, f"{name} refused without saying where it went"
     assert gateway_chat.launch_from_args(argparse.Namespace(safe_mode=True, query="x")) == 1
@@ -59,7 +136,8 @@ def test_refusals_name_the_replacement_and_a_runnable_safe_mode_example(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_creation_preserves_advertised_cwd_model_and_toolsets(monkeypatch, tmp_path):
+@pytest.mark.parametrize("toolsets, expected_toolsets", [("terminal, file", ["terminal", "file"]), ("", [])])
+async def test_creation_preserves_advertised_cwd_model_and_toolsets(monkeypatch, tmp_path, toolsets, expected_toolsets):
     from contextlib import asynccontextmanager
     from hermes_cli import gateway_chat
     from hermes_cli.gateway_chat_view import GatewayChatView
@@ -71,7 +149,7 @@ async def test_creation_preserves_advertised_cwd_model_and_toolsets(monkeypatch,
             if method == "runtime.describe":
                 return {"session_create": {"sources": ["cli"], "parameters": [
                     "cwd", "model", "toolsets", "request_id", "source", "skills", "checkpoints", "accept_hooks",
-                    "pass_session_id"]}}
+                    "pass_session_id", "run_budget"]}}
             return {"stored_session_id": "stored"}
 
     @asynccontextmanager
@@ -88,16 +166,42 @@ async def test_creation_preserves_advertised_cwd_model_and_toolsets(monkeypatch,
     # `-s a,b -s a` + the session-scoped launch flags + an exported HERMES_ACCEPT_HOOKS=1 ride the
     # create (the classic client is a gateway client; nothing is refused or dropped).
     monkeypatch.setenv("HERMES_ACCEPT_HOOKS", "1")
-    args = argparse.Namespace(query="literal", model="explicit-model", toolsets="terminal, file", quiet=True,
-                              skills=["a,b", "a"], checkpoints=True, pass_session_id=True)
+    args = argparse.Namespace(query="literal", model="explicit-model", toolsets=toolsets,
+                              run_budget=180.0, quiet=True, skills=["a,b", "a"],
+                              checkpoints=True, pass_session_id=True)
     assert await gateway_chat.run_gateway_chat(args) == 0
     create = calls[1][1]
     assert create["cwd"] == str(tmp_path)
     assert create["model"] == "explicit-model"
-    assert create["toolsets"] == ["terminal", "file"]
+    assert create["toolsets"] == expected_toolsets
+    assert create["run_budget"] == 180.0
     assert create["skills"] == ["a", "b"] and create["checkpoints"] is create["pass_session_id"] is True
     assert create["accept_hooks"] is True
     assert create["source"] == "cli" and create["request_id"]
+
+
+@pytest.mark.asyncio
+async def test_gateway_without_run_budget_capability_refuses_before_session_create(monkeypatch, tmp_path):
+    from contextlib import asynccontextmanager
+    from hermes_cli import gateway_chat
+    calls = []
+
+    class Peer:
+        async def rpc(self, method, **params):
+            calls.append(method)
+            if method == "runtime.describe":
+                return {"session_create": {"sources": ["cli"], "parameters": ["cwd", "model", "request_id", "source"]}}
+            pytest.fail(f"unexpected RPC after missing run_budget capability: {method}")
+
+    @asynccontextmanager
+    async def connected():
+        yield Peer()
+
+    monkeypatch.setattr(gateway_chat, "connect_gateway", connected)
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(gateway_chat.GatewayClientError, match="run_budget"):
+        await gateway_chat.run_gateway_chat(argparse.Namespace(query="fixture", model="m", run_budget=180.0, quiet=True))
+    assert calls == ["runtime.describe"]
 
 
 @pytest.mark.asyncio
@@ -262,7 +366,8 @@ async def test_launch_key_flags_are_never_silently_dropped(monkeypatch, tmp_path
         async def rpc(self, method, **params):
             calls.append((method, params))
             if method == "runtime.describe":
-                return {"session_create": {"sources": ["cli"], "parameters": ["cwd", "model", "api_key", "source"]}}
+                return {"capabilities": ["launch-key-verify-v1"],
+                        "session_create": {"sources": ["cli"], "parameters": ["cwd", "model", "api_key", "source"]}}
             if method == "session.info":
                 return {"launch_request": {"source": "cli", "model": "m"}, "cwd": str(tmp_path)}
             return {"stored_session_id": "stored", "execution_generation": 0,

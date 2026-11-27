@@ -582,7 +582,9 @@ def _classic_cli_fields(authority, ref, live, agent, policy):
         with contextlib.suppress(Exception):
             api_mode = (policy.effective(authority, secrets=False)[0].get('model') or {}).get('api_mode')
     hint = None
-    if agent is not None and getattr(agent, 'api_key', None):
+    restricted = policy is not None and any(
+        getattr(policy, name, False) for name in ('safe_mode', 'ignore_user_config', 'ignore_rules'))
+    if not restricted and agent is not None and getattr(agent, 'api_key', None):
         from agent.redact import mask_secret
         hint = mask_secret(str(agent.api_key))
     tools = getattr(agent, 'tools', None) if agent is not None else None

@@ -774,9 +774,11 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
         try:
             from hermes_cli.fallback_config import resolve_entry_api_key
             _fb_explicit_key = resolve_entry_api_key(_fb)
+            _fb_policy_kwargs: dict[str, Any] = {"exclusive_api_key": True} if _fb.get("key_env_exclusive") is True else {}
             _fb_client, _fb_model = resolve_provider_client(
                 _fb["provider"], model=_fb["model"], raw_codex=True,
                 explicit_base_url=_fb.get("base_url"), explicit_api_key=_fb_explicit_key,
+                **_fb_policy_kwargs,
             )
         except Exception as _fb_exc:
             logger.debug("Init-time fallback entry %s failed: %s", _fb_provider, _fb_exc)
@@ -792,6 +794,9 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
             _refused_entries.append((_fb_provider, "no usable credentials"))
             continue
         agent._fallback_activated = True
+        agent._fallback_credential_exclusive = _fb.get("key_env_exclusive") is True
+        if _fb.get("key_env_exclusive") is True:
+            agent._credential_pool = agent._credential_pool_entry_id = None
         if _fb_provider.strip().lower() == "moa":
             # The chokepoint handed back the preset's aggregator client, which only proves the
             # preset resolves and its aggregator has credentials. A MoA entry means the preset

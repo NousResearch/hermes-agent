@@ -31,6 +31,21 @@ def test_bypass_policy_is_typed_frozen_and_safe_implies_ignore(tmp_path):
         restore_policy({**asdict(safe), 'ignore_user_config': False})  # implication must hold in cold receipts too
 
 
+def test_safe_mode_freezes_empty_tools_and_per_session_run_budget(tmp_path):
+    from gateway.session_policy import build_policy
+
+    policy = build_policy({
+        'cwd': str(tmp_path), 'model': 'safe-fixture', 'provider': 'openai-codex',
+        'safe_mode': True, 'toolsets': [], 'max_turns': 1, 'run_budget': 180.0,
+    }, {})
+
+    assert policy.safe_mode is True and policy.ignore_user_config is True
+    assert policy.ignore_rules is True
+    assert policy.toolsets == ()
+    assert policy.max_turns == 1
+    assert (policy.config().get('agent') or {}).get('run_budget_seconds') == 180.0
+
+
 def test_bypass_session_freezes_code_defaults_without_reading_profile(tmp_path, monkeypatch):
     """The frozen snapshot of a bypass session is code defaults + explicit options; the profile's
     (possibly malformed) config.yaml, .env and plugin toolsets are never consulted."""

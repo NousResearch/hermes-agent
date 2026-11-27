@@ -73,6 +73,61 @@ _RELEASED_BRIDGE_CLAIMS_BY_HOME: dict[str, dict[str, tuple[str, str]]] = {}
 _APPLIED_HOMES: set[str] = set()
 _SECRET_SOURCE_CACHE_LOCK = threading.RLock()
 
+# Source-pinned snapshots are independent of merged environment precedence.
+# A revoked object stays revoked even if the same home is hydrated again.
+from dataclasses import dataclass, field
+from types import MappingProxyType
+
+
+@dataclass(frozen=True, slots=True, eq=False, repr=False)
+class _SourceSnapshot:
+    home: str
+    source: str
+    _values: object = field(repr=False)
+
+    def __init__(self, home, source, values):
+        object.__setattr__(self, 'home', home)
+        object.__setattr__(self, 'source', source)
+        object.__setattr__(self, '_values', MappingProxyType(dict(values)))
+
+    def __repr__(self):
+        return '<source snapshot: redacted>'
+
+_PINNED_SOURCES_BY_HOME: dict[str, dict[str, _SourceSnapshot]] = {}
+
+
+def _invalidate_pinned_sources(home_key=None):
+    with _SECRET_SOURCE_CACHE_LOCK:
+        homes = list(_PINNED_SOURCES_BY_HOME) if home_key is None else [home_key]
+        for key in homes:
+            _PINNED_SOURCES_BY_HOME.pop(key, None)
+
+
+def _record_pinned_sources(home_key, report):
+    with _SECRET_SOURCE_CACHE_LOCK:
+        _invalidate_pinned_sources(home_key)
+        sources = {}
+        for src in report.sources:
+            if src.name == 'bitwarden' and src.result.ok:
+                sources[src.name] = _SourceSnapshot(home_key, src.name, src.result.secrets)
+        _PINNED_SOURCES_BY_HOME[home_key] = sources
+
+
+def get_pinned_source_snapshot(hermes_home, source):
+    """Read only: no fetch, environment export or merged-value reconstruction."""
+    with _SECRET_SOURCE_CACHE_LOCK:
+        return _PINNED_SOURCES_BY_HOME.get(str(Path(hermes_home).resolve()), {}).get(source)
+
+
+def read_pinned_source_snapshot(snapshot, home, source, name):
+    """Only the exact currently registered object is valid; old scopes never rebind."""
+    with _SECRET_SOURCE_CACHE_LOCK:
+        issued = _PINNED_SOURCES_BY_HOME.get(home, {}).get(source)
+        if snapshot is not None and issued is snapshot and snapshot.home == home and snapshot.source == source:
+            return snapshot._values.get(name)
+        return None
+
+
 # What THIS process has published from dotenv files, per variable: (value before our first publish, or
 # None if absent; last value we published; load pass that published it). Reloads run per gateway turn and
 # per cron fire, and a line like ``PATH=/x:${PATH}`` interpolated against an environ that already holds the
@@ -236,6 +291,7 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
     if home_key in _APPLIED_HOMES:
         return get_secret_source_values(home)
 
+    _invalidate_pinned_sources(home_key)
     # A retry must not keep serving a partial result after the source is removed, disabled, or can no
     # longer be evaluated. Publish only the snapshot established by this attempt.
     _SECRET_SOURCE_VALUES_BY_HOME.pop(home_key, None)
@@ -287,6 +343,7 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
 
     _refuse_protected_env_from_sources(report, get_config_backend(), env_before, env=local_env, routed_home=home)
 
+    _record_pinned_sources(home_key, report)
     # Routed profiles have no runtime reset path. Keep a failed source retryable so correcting its
     # profile-local bootstrap credentials takes effect on the next turn; successful sources from a
     # mixed report are still snapshotted below and can be used while the failed source recovers.
@@ -317,6 +374,7 @@ def reset_secret_source_cache(hermes_home: str | os.PathLike | None = None) -> N
     this process, and a per-fire cron re-pull or a plugin-discovery refresh for one home must not wipe
     a sibling's hydrated snapshot — the sibling's next scope build would run empty until it re-hydrated
     (#102041)."""
+    _invalidate_pinned_sources(None if hermes_home is None else str(Path(hermes_home).resolve()))
     if hermes_home is None:
         _APPLIED_HOMES.clear()
         _SECRET_SOURCES.clear()
@@ -1194,6 +1252,7 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     if home_key in _APPLIED_HOMES:
         return
 
+    _invalidate_pinned_sources(home_key)
     # Neither early return marks the home applied: a malformed config.yaml would otherwise permanently
     # disable secret loading for this process, and an unmarked home picks up a config change on the next
     # load (the signature-cached read is cheap).
@@ -1254,6 +1313,7 @@ def _apply_external_secret_sources(home_path: Path) -> None:
         _publish_live_source_values(home_key, home_path, {})
         return
     _refuse_protected_env_from_sources(report, backend_before, environ_before, env=staged)
+    _record_pinned_sources(home_key, report)
     _publish_staged_env(staged, environ_before)
 
     # A real fetch attempt happened (success OR error): mark the home so the 3-5 import-time calls per

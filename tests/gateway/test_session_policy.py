@@ -495,7 +495,7 @@ def test_run_budget_is_a_frozen_launch_option(tmp_path):
     assert build_policy(dict(cwd=str(tmp_path), run_budget=120), cfg).run_budget_seconds == 120.0
     assert build_policy(dict(cwd=str(tmp_path)), cfg).run_budget_seconds == 300.0
     assert build_policy(dict(cwd=str(tmp_path)), {}).run_budget_seconds is None
-    for bad in (0, -5, True, 'soon'):
+    for bad in (0, -5, True, 'soon', float('nan'), float('-inf')):
         with pytest.raises(AuthorityRefusal, match='invalid_params'):
             build_policy(dict(cwd=str(tmp_path), run_budget=bad), cfg)
 

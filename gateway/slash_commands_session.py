@@ -67,6 +67,27 @@ def _private_topic_lanes_of_one_chat(current, origin) -> bool:
     return bool(mine) and mine == theirs
 
 
+_WHATSAPP_PLATFORMS = frozenset({Platform.WHATSAPP.value, "whatsapp_cloud"})
+
+
+def _same_platform_id(platform, left: str, right: str) -> bool:
+    """Compare two chat/user identifiers, resolving WhatsApp LID/phone aliases when applicable.
+
+    Preserves exact equality for every other platform and fails closed when alias sets do not
+    intersect (#158542).
+    """
+    if left == right:
+        return True
+    if not left or not right:
+        return False
+    plat_val = getattr(platform, "value", platform)
+    if str(plat_val or "") not in _WHATSAPP_PLATFORMS:
+        return False
+    from gateway.whatsapp_identity import expand_whatsapp_aliases
+    left_aliases = expand_whatsapp_aliases(left)
+    return bool(left_aliases and left_aliases & expand_whatsapp_aliases(right))
+
+
 def _same_dm_origin(current, origin) -> bool:
     """DM-key match: an equal non-empty chat_id IS the DM key. build_session_key falls back to the
     participant (``user_id_alt or user_id`` — Signal/Feishu key on alt) only without a chat_id;
@@ -75,7 +96,7 @@ def _same_dm_origin(current, origin) -> bool:
         return True
     cur_pid = str(current.user_id_alt or current.user_id or "")
     org_pid = str(origin.user_id_alt or origin.user_id or "")
-    return bool(cur_pid) and cur_pid == org_pid
+    return bool(cur_pid) and _same_platform_id(current.platform, cur_pid, org_pid)
 
 
 def _manual_compression_reply_lines(summary: dict, compressor, focus_topic) -> list[str]:
@@ -409,7 +430,8 @@ class GatewaySessionCommandsMixin:
         (IDOR); only an explicitly shared group/thread shares."""
         if origin is None or current is None:
             return False
-        if origin.platform != current.platform or origin.chat_id != current.chat_id:
+        if (origin.platform != current.platform
+                or not _same_platform_id(current.platform, _sattr(origin, "chat_id"), _sattr(current, "chat_id"))):
             return False
         # Topic lanes of one Telegram private chat are the same person's own DM: /resume may move
         # a conversation between them (#57821). Every other thread is a different session.
@@ -439,7 +461,7 @@ class GatewaySessionCommandsMixin:
         org_pid = origin.user_id_alt or origin.user_id
         if not org_pid and getattr(current, "shared_session", False):
             return True
-        return bool(cur_pid and org_pid) and cur_pid == org_pid
+        return bool(cur_pid and org_pid) and _same_platform_id(current.platform, cur_pid, org_pid)
 
     def _is_shared_session_source(self, source: SessionSource) -> bool:
         """Whether *source*'s session key is shared by every participant (not per-user); mirrors
@@ -499,9 +521,11 @@ class GatewaySessionCommandsMixin:
         row_chat = str(row.get("chat_id") or "")
         caller_chat = _sattr(source, "chat_id")
         caller_keys_on_alt = bool(_sattr(source, "user_id_alt"))
+        uid_match = bool(row_uid) and _same_platform_id(source.platform, row_uid, caller_uid)
+        chat_match = _same_platform_id(source.platform, row_chat, caller_chat)
         # A no-chat_id DM is keyed PURELY on the participant (alt-keyed caller fails closed).
         dm_proven = (not (caller_keys_on_alt and not (row_chat and caller_chat))
-                     and bool(row_uid) and row_uid == caller_uid and row_chat == caller_chat)
+                     and uid_match and chat_match)
         chat_type = _sattr(source, "chat_type").lower()
         if chat_type in _DM_CHAT_TYPES:
             return dm_proven
@@ -509,7 +533,7 @@ class GatewaySessionCommandsMixin:
         if not (chat_type.strip() or dm_proven):
             return False
         # Non-DM: both sides must carry chat_id and match (legacy NULL-chat rows fail closed).
-        if not (row_chat and caller_chat and row_chat == caller_chat):
+        if not (row_chat and caller_chat and chat_match):
             return False
         # A SHARED group/thread is one session for everyone: same-chat proof suffices (a user-id
         # check would block co-members). A per-user key still requires the same owner. The ROW's key
@@ -519,7 +543,7 @@ class GatewaySessionCommandsMixin:
             return True
         if caller_keys_on_alt:
             return False
-        return bool(row_uid) and row_uid == caller_uid
+        return uid_match
 
     async def _resume_target_allowed(self, source: SessionSource, target_id: str,
                                      allow_override: bool = False) -> bool:

@@ -978,3 +978,64 @@ class TestBlankChatTypeOwnershipProof:
         row = {"source": "telegram", "chat_id": "-100", "chat_type": "group", "user_id": "victim"}
         assert runner._persisted_row_proves_owner(self._src("mallory", chat_type), row) is False
         assert runner._persisted_row_proves_owner(self._src("victim", chat_type), row) is True
+
+
+class TestWhatsAppLidAliasOwnershipProof:
+    """Regression for #158542: WhatsApp /resume IDOR guards must treat linked LID and phone
+    identifiers as the same DM owner while still rejecting unrelated users."""
+
+    @staticmethod
+    def _seed_lid_mapping(tmp_path, monkeypatch, phone: str, lid: str) -> None:
+        session_dir = tmp_path / "whatsapp" / "session"
+        session_dir.mkdir(parents=True, exist_ok=True)
+        (session_dir / f"lid-mapping-{phone}.json").write_text(f'"{lid}"', encoding="utf-8")
+        (session_dir / f"lid-mapping-{lid}_reverse.json").write_text(f'"{phone}"', encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    def test_persisted_lid_dm_row_matches_phone_caller_and_rejects_other_user(self, tmp_path, monkeypatch):
+        self._seed_lid_mapping(tmp_path, monkeypatch, phone="15551234567", lid="987654321098765")
+        runner = _make_runner()
+        row = {
+            "source": "whatsapp",
+            "chat_id": "987654321098765@lid",
+            "chat_type": "dm",
+            "user_id": "987654321098765@lid",
+        }
+        owner = SessionSource(
+            platform=Platform.WHATSAPP,
+            chat_id="15551234567@s.whatsapp.net",
+            chat_type="dm",
+            user_id="15551234567@s.whatsapp.net",
+        )
+        other = SessionSource(
+            platform=Platform.WHATSAPP,
+            chat_id="15559999999@s.whatsapp.net",
+            chat_type="dm",
+            user_id="15559999999@s.whatsapp.net",
+        )
+        assert runner._persisted_row_proves_owner(owner, row) is True
+        assert runner._persisted_row_proves_owner(other, row) is False
+
+    def test_same_origin_chat_matches_lid_and_phone_and_rejects_other_user(self, tmp_path, monkeypatch):
+        self._seed_lid_mapping(tmp_path, monkeypatch, phone="15551234567", lid="987654321098765")
+        runner = _make_runner()
+        phone_origin = SessionSource(
+            platform=Platform.WHATSAPP,
+            chat_id="15551234567@s.whatsapp.net",
+            chat_type="dm",
+            user_id="15551234567@s.whatsapp.net",
+        )
+        lid_caller = SessionSource(
+            platform=Platform.WHATSAPP,
+            chat_id="987654321098765@lid",
+            chat_type="dm",
+            user_id="987654321098765@lid",
+        )
+        other_lid = SessionSource(
+            platform=Platform.WHATSAPP,
+            chat_id="111111111111111@lid",
+            chat_type="dm",
+            user_id="111111111111111@lid",
+        )
+        assert runner._same_origin_chat(lid_caller, phone_origin) is True
+        assert runner._same_origin_chat(other_lid, phone_origin) is False

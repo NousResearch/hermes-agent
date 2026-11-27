@@ -75,6 +75,51 @@ export function tokensPerSecondLabel(usage: UsageStats): string {
   return typeof tps === 'number' && Number.isFinite(tps) && tps > 0 ? `${Math.round(tps)} t/s` : ''
 }
 
+/** `↓12.3k ↑4.2k` — session-cumulative prompt in / completion out; '' before the first call.
+ *  The status bar's token readout, paired with the context meter (occupancy) and the cache hit
+ *  rate (how much of the prompt was served from cache). */
+export function sessionTokensLabel(usage: UsageStats): string {
+  const input = usage.input ?? 0
+  const output = usage.output ?? 0
+
+  if (!input && !output) {
+    return ''
+  }
+
+  return `↓${compactNumber(input)} ↑${compactNumber(output)}`
+}
+
+/** Money formatting sized to what these sessions actually cost: sub-cent turns keep four
+ *  decimals (`$0.0027`) instead of collapsing to a useless `$0.00`. */
+export function formatCostUsd(cost: number): string {
+  if (cost >= 1) {
+    return `$${cost.toFixed(2)}`
+  }
+
+  if (cost >= 0.01) {
+    return `$${cost.toFixed(3)}`
+  }
+
+  return `$${cost.toFixed(4)}`
+}
+
+/** `~$0.0312` for estimated spend, the provider's own figure when it reported one, and ''
+ *  when the route has no pricing entry (the backend omits `cost_usd` rather than sending $0).
+ *  `included` rides through as its own label: a subscription session has no per-turn price. */
+export function sessionCostLabel(usage: UsageStats, includedLabel = 'included'): string {
+  if (usage.cost_status === 'included') {
+    return includedLabel
+  }
+
+  const cost = usage.cost_usd
+
+  if (typeof cost !== 'number' || !Number.isFinite(cost)) {
+    return ''
+  }
+
+  return `${usage.cost_status === 'estimated' ? '~' : ''}${formatCostUsd(cost)}`
+}
+
 export function LiveDuration({ since }: { since: number | null | undefined }) {
   const [now, setNow] = useState(() => Date.now())
 

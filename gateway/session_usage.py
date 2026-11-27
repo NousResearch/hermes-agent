@@ -98,6 +98,15 @@ def usage_stats(agent) -> dict:
                  model=str(getattr(agent, "model", "") or ""), provider=str(getattr(agent, "provider", "") or ""),
                  fallback_model=(str(getattr(agent, "model", "") or "") or None)
                  if getattr(agent, "_fallback_activated", False) is True else None)
+    # Money: the agent's own per-call accumulation (``agent/turn_usage.py`` prices every response
+    # through ``estimate_usage_cost``, cache reads/writes at their own rates). ``None`` means
+    # "not priced" — a route with no pricing entry — and must stay absent rather than read as $0.
+    cost = getattr(agent, "session_estimated_cost_usd", None)
+    estimated_cost = (round(float(cost), 6)
+                      if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None)
+    stats.update(estimated_cost_usd=estimated_cost,
+                 cost_status=str(getattr(agent, "session_cost_status", "") or "") or None,
+                 cost_source=str(getattr(agent, "session_cost_source", "") or "") or None)
     if (gauge := plan_gauge(agent)) is not None:  # absent off a window plan, as on the embedded path
         stats["plan_gauge"] = gauge
     return stats
@@ -149,6 +158,18 @@ def tui_usage(stats: dict) -> dict:
     prompt_total, cache_read = stats.get("prompt_tokens") or 0, stats.get("cache_read_tokens") or 0
     if prompt_total > 0 and cache_read > 0:
         usage["cache_hit_pct"] = max(0, min(100, round(cache_read / prompt_total * 100)))
+    # The raw cache counts ride along so a client can show "8.4k cached / 1.2k written" beside the
+    # percentage; omitted at zero, like the hit rate.
+    for key, source_key in (("cache_read", "cache_read_tokens"), ("cache_write", "cache_write_tokens")):
+        if stats.get(source_key):
+            usage[key] = stats[source_key]
+    # Session spend (USD, estimated from the provider's published rates) — absent when the route
+    # has no pricing entry, so a client shows no money figure instead of a false $0.
+    cost = stats.get("estimated_cost_usd")
+    if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+        usage["cost_usd"] = round(float(cost), 6)
+    if stats.get("cost_status"):
+        usage["cost_status"] = stats["cost_status"]
     for key, source_key in (("avg_latency_s", "avg_latency_s"), ("avg_tps", "tokens_per_s")):
         if isinstance(stats.get(source_key), (int, float)):
             usage[key] = round(float(stats[source_key]), 1)

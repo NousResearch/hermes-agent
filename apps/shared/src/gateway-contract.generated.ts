@@ -5001,6 +5001,9 @@ export interface SessionStats {
   model: string
   provider: string
   fallback_model?: string | null
+  estimated_cost_usd?: number | null
+  cost_status?: string | null
+  cost_source?: string | null
   plan_gauge?: PlanGauge | null
 }
 export interface SessionAccountUsageParams {
@@ -6130,6 +6133,9 @@ export interface SessionUsagePayload {
   model?: string | null
   provider?: string | null
   fallback_model?: string | null
+  estimated_cost_usd?: number | null
+  cost_status?: string | null
+  cost_source?: string | null
   plan_gauge?: PlanGauge | null
 }
 /** ``prompt_turn._invoke_agent`` ``_on_session_title`` hook. */

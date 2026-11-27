@@ -350,6 +350,12 @@ class SessionUsagePayload(Payload):
     model: str | None = None
     provider: str | None = None
     fallback_model: str | None = None
+    # Session spend in USD (``agent/turn_usage.py`` prices every response) and how it was derived:
+    # ``estimated`` from published rates, ``included`` in a subscription, ``actual`` when the provider
+    # billed it. All three stay None when the route has no pricing entry — never a false $0.
+    estimated_cost_usd: float | None = None
+    cost_status: str | None = None
+    cost_source: str | None = None
     plan_gauge: PlanGauge | None = None
 
 

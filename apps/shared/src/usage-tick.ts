@@ -9,6 +9,9 @@ export interface TickUsage {
   avg_latency_s?: number
   avg_tps?: number
   cache_hit_pct?: number
+  /** Prompt-cache tokens read / written this session (`cache_read_tokens` / `cache_write_tokens`). */
+  cache_read?: number
+  cache_write?: number
   calls: number
   completion: number
   compressions?: number
@@ -17,6 +20,9 @@ export interface TickUsage {
   context_percent?: number
   context_source?: string
   context_used?: number
+  /** Estimated session spend in USD (`estimated_cost_usd`) and how it was derived. */
+  cost_status?: string
+  cost_usd?: number
   input: number
   model?: string
   output: number
@@ -99,6 +105,27 @@ function rateFields(p: UsageTickPayload): Partial<TickUsage> {
 
   if (subagents !== undefined) {
     fields.active_subagents = subagents
+  }
+
+  // Cache counts and money: only when the owner reports them (a route with no pricing entry has
+  // no `estimated_cost_usd` at all, and $0 there would read as "this session was free").
+  const cacheWrite = num(p.cache_write_tokens)
+  const cost = num(p.estimated_cost_usd)
+
+  if (cacheRead) {
+    fields.cache_read = cacheRead
+  }
+
+  if (cacheWrite) {
+    fields.cache_write = cacheWrite
+  }
+
+  if (cost !== undefined) {
+    fields.cost_usd = cost
+  }
+
+  if (p.cost_status) {
+    fields.cost_status = p.cost_status
   }
 
   return fields

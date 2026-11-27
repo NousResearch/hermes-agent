@@ -1293,6 +1293,19 @@ def _get_usage(agent) -> dict:
         _cache_read = int(getattr(agent, "session_cache_read_tokens", 0) or 0)
         if _prompt_total > 0 and _cache_read > 0:
             usage["cache_hit_pct"] = max(0, min(100, round(_cache_read / _prompt_total * 100)))
+        # Raw cache counts beside the percentage, so a client can show what was cached vs written.
+        if _cache_read:
+            usage["cache_read"] = _cache_read
+        if _cache_write := int(getattr(agent, "session_cache_write_tokens", 0) or 0):
+            usage["cache_write"] = _cache_write
+    # Session spend in USD: the agent's own accumulation (``agent/turn_usage.py`` prices each response
+    # through ``estimate_usage_cost``). Absent when the route has no pricing entry — never a false $0.
+    with contextlib.suppress(Exception):
+        _cost = getattr(agent, "session_estimated_cost_usd", None)
+        if isinstance(_cost, (int, float)) and not isinstance(_cost, bool):
+            usage["cost_usd"] = round(float(_cost), 6)
+        if _cost_status := str(getattr(agent, "session_cost_status", "") or ""):
+            usage["cost_status"] = _cost_status
     with contextlib.suppress(Exception):  # a status-bar readout must never break usage reporting
         _lhist = list(getattr(agent, "_api_latency_history", []) or [])
         _ohist = list(getattr(agent, "_api_output_history", []) or [])

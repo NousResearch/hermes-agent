@@ -5,11 +5,11 @@
  * (or `<launcher> --run-module hermes_cli.default_plugins ensure --json --timeout <secs>` for
  * PM-managed CLI launchers) using the exact same runtime and environment as `runGatewayEnsure`.
  *
- * Bounded (default 120 s, overridable via `HERMES_DEFAULT_PLUGINS_TIMEOUT`), awaited before the
- * local backend starts, and strictly fail-open: every non-zero exit (2 = owed, 3 = timeout
- * continuing in background, 4 = skipped by policy), timeout kill, or interpreter crash is logged
- * as one `[default-plugins]` line to desktop.log and startup continues. Never runs for remote
- * backends.
+ * Bounded (default 120 s on primary boot; 5 s on pooled local dials so they stay well inside
+ * renderer dial budgets), awaited before the local backend starts, and strictly fail-open: every
+ * non-zero exit (2 = owed, 3 = timeout continuing in background, 4 = skipped by policy), timeout
+ * kill, or interpreter crash is logged as one `[default-plugins]` line to desktop.log and startup
+ * continues. Never runs for remote backends.
  */
 
 import { spawn } from 'node:child_process'
@@ -18,8 +18,12 @@ import { mountFreeEnv } from './relaunch-target'
 import { hiddenWindowsChildOptions, windowsShellCommand } from './windows-child-options'
 
 export const DEFAULT_PLUGINS_PREFLIGHT_TIMEOUT_SECONDS = 120
+// Pooled local dials (`dialPoolBackend`) have no pausable boot timer and are bounded by
+// SOURCE_SWITCH_DIAL_TIMEOUT_MS (135s) / RECONNECT_ATTEMPT_TIMEOUT_MS (20s): 5s + 3s grace + 1s
+// force-kill (9s ceiling) fits cleanly inside both alongside `runGatewayEnsure` (75s), while a
+// still-installing detached child finishes in the background.
+export const DEFAULT_PLUGINS_POOL_PREFLIGHT_TIMEOUT_SECONDS = 5
 export const DEFAULT_PLUGINS_TIMEOUT_SECONDS = DEFAULT_PLUGINS_PREFLIGHT_TIMEOUT_SECONDS
-export const DEFAULT_PLUGINS_TIMEOUT_ENV = 'HERMES_DEFAULT_PLUGINS_TIMEOUT'
 export const DEFAULT_PLUGINS_LOG_PREFIX = '[default-plugins]'
 export const DEFAULT_PLUGINS_BOOT_PHASE = 'backend.default-plugins'
 export const DEFAULT_PLUGINS_BOOT_MESSAGE = 'Installing default plugins...'
@@ -69,7 +73,7 @@ export interface RunDefaultPluginsPreflightOptions {
   execPath?: string
   log?: (line: string) => void
   signal?: AbortSignal
-  /** Explicit timeout in seconds; defaults to HERMES_DEFAULT_PLUGINS_TIMEOUT or 120. */
+  /** Explicit timeout in seconds; defaults to 120. */
   timeoutSeconds?: number
   /** Extra grace beyond `--timeout` before Desktop sends SIGTERM so Python can emit exit-3 JSON. */
   killGraceMs?: number
@@ -83,22 +87,9 @@ export interface RunDefaultPluginsPreflightOptions {
   isWindows?: boolean
 }
 
-export function resolveDefaultPluginsTimeoutSeconds(
-  env: NodeJS.ProcessEnv = process.env,
-  explicitSeconds?: number
-): number {
+export function resolveDefaultPluginsTimeoutSeconds(explicitSeconds?: number): number {
   if (typeof explicitSeconds === 'number' && Number.isFinite(explicitSeconds) && explicitSeconds > 0) {
     return explicitSeconds
-  }
-
-  const raw = env?.[DEFAULT_PLUGINS_TIMEOUT_ENV]
-
-  if (typeof raw === 'string' && raw.trim() !== '') {
-    const parsed = Number(raw.trim())
-
-    if (Number.isFinite(parsed) && parsed > 0) {
-      return parsed
-    }
   }
 
   return DEFAULT_PLUGINS_PREFLIGHT_TIMEOUT_SECONDS
@@ -165,7 +156,7 @@ export function buildDefaultPluginsPreflightInvocation(
   }
 
   const { HERMES_DESKTOP_DEV_SERVER: _devServer, ...env } = mountFreeEnv(merged, rawCommand, execPath)
-  const timeoutSeconds = resolveDefaultPluginsTimeoutSeconds(env, options.timeoutSeconds)
+  const timeoutSeconds = resolveDefaultPluginsTimeoutSeconds(options.timeoutSeconds)
   const ensureArgs = ['ensure', '--json', '--timeout', String(timeoutSeconds)]
 
   const args =
@@ -547,6 +538,7 @@ export interface PreflightGatewayCallOptions {
   once?: { ran: boolean }
   onBefore?: () => Promise<void> | void
   onAfter?: () => Promise<void> | void
+  timeoutSeconds?: number
   ensureOptions?: { timeoutMs?: number; label?: string; execPath?: string }
 }
 
@@ -592,7 +584,8 @@ export function createPreflightGatewayRunner<TResult>(deps: PreflightGatewayRunn
         home: deps.hermesHome,
         parentEnv,
         log: deps.log,
-        signal
+        signal,
+        ...(options.timeoutSeconds !== undefined ? { timeoutSeconds: options.timeoutSeconds } : {})
       })
 
       throwIfPreflightAborted(signal, result.aborted)

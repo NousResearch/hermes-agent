@@ -693,7 +693,7 @@ if [ "$_config_backend" = "remote" ]; then
     echo "[stage2] HERMES_CONFIG_BACKEND=remote: skipping default plugins preflight"
 else
     s6-setuidgid hermes "$INSTALL_DIR/.venv/bin/python" -m hermes_cli.default_plugins ensure \
-        --json --timeout "${HERMES_DEFAULT_PLUGINS_TIMEOUT:-300}" \
+        --json --timeout 300 \
         || echo "[stage2] Warning: default plugins not settled; continuing"
 fi
 

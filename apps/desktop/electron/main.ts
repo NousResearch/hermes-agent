@@ -220,7 +220,7 @@ import { describeCrashReason, installCrashForensics } from './crash-forensics'
 import { adoptServedDashboardToken } from './dashboard-token'
 import { resolveDesktopUserData } from './data-paths'
 import { extractDeepLink, handleLaunchDeepLink, registerDeepLinkProtocol as registerDeepLinkProtocolWith } from './deep-link-protocol'
-import { createPreflightGatewayRunner, DEFAULT_PLUGINS_BOOT_MESSAGE, DEFAULT_PLUGINS_BOOT_PHASE } from './default-plugins-preflight'
+import { createPreflightGatewayRunner, DEFAULT_PLUGINS_BOOT_MESSAGE, DEFAULT_PLUGINS_BOOT_PHASE, DEFAULT_PLUGINS_POOL_PREFLIGHT_TIMEOUT_SECONDS } from './default-plugins-preflight'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import { formatDesktopLogLine, formatLogStamp } from './desktop-log-line'
 import {
@@ -11004,7 +11004,7 @@ async function dialPoolBackend(profile, entry, opts: { forceLocal?: boolean; poo
     assertPoolEntryStillOwned(poolKey, entry)
 
     // Never another profile's dotenv credentials from the Desktop env (#68367).
-    return preflightGateway.run(backend, profile, { once: preflightOnce, onAfter: () => { localBackendLifecycle.assertCanStart(); profileDeletionGate.assertCanStart(profile); assertPoolEntryStillOwned(poolKey, entry) } })
+    return preflightGateway.run(backend, profile, { once: preflightOnce, timeoutSeconds: DEFAULT_PLUGINS_POOL_PREFLIGHT_TIMEOUT_SECONDS, onAfter: () => { localBackendLifecycle.assertCanStart(); profileDeletionGate.assertCanStart(profile); assertPoolEntryStillOwned(poolKey, entry) } })
   }, async () => {
     // Same update mutual exclusion as the primary's waitForLocalStart (#73822);
     // a held update shows the window's blocked screen for this profile too.

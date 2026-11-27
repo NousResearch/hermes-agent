@@ -509,10 +509,11 @@ def test_ensure_offline_fails_open_without_attempting_installs(tmp_path, monkeyp
     assert sorted(name for _, name in calls) == ["hermes-security", "langfuse"]
 
 
-def test_ensure_offline_with_expired_stale_cache_fails_open_without_spawning(tmp_path, monkeypatch, capsys):
+def test_ensure_offline_with_expired_stale_cache_fails_open_without_installing(tmp_path, monkeypatch, capsys):
     """Returning user goes offline with an expired (>6h, <24h) stale cache/plugin-catalog.json:
-    fetch_live_catalog fails HTTP and returns the stale entries, so ensure_defaults must still detect
-    the failed fetch via live_fetch_recently_failed() and fail open with exit=2 and zero child spawns."""
+    ensure_defaults delegates catalog discovery to the ensure child (bounding slow HTTP by --timeout),
+    the child detects the failed fetch via live_fetch_recently_failed(), and fails open with exit=2
+    and zero installs."""
     home = tmp_path / "home"
     cache = home / "cache"
     cache.mkdir(parents=True)
@@ -543,11 +544,6 @@ def test_ensure_offline_with_expired_stale_cache_fails_open_without_spawning(tmp
         lambda _httpx: (_ for _ in ()).throw(OSError("network unreachable")),
     )
     monkeypatch.setattr(
-        default_plugins,
-        "_launch_ensure_child",
-        lambda *_a, **_k: pytest.fail("must not spawn ensure child when offline with stale cache"),
-    )
-    monkeypatch.setattr(
         lcm,
         "_install_into",
         lambda *_a, **_k: pytest.fail("must not install when offline with stale cache"),
@@ -560,6 +556,123 @@ def test_ensure_offline_with_expired_stale_cache_fails_open_without_spawning(tmp
     assert payload["installed"] == []
     assert set(payload["owed"]) == {"live catalog", "hermes-security"}
     assert pc.live_fetch_recently_failed() is True
+
+
+def test_manually_placed_unrecorded_default_is_recorded_so_removal_sticks(tmp_path, monkeypatch, capsys):
+    """A manually placed default tree with no _default_plugins_installed entry must NOT be treated
+    as settled by either step_install_default_plugins or ensure_defaults until recorded; once
+    recorded, removing the tree keeps it removed."""
+    entries = [_entry("hermes-security")]
+    live = [{"entries": [_entry_dict("hermes-security")]}]
+    home = _setup_env(tmp_path, monkeypatch, entries, live)
+    calls: list[tuple[Path, str]] = []
+    monkeypatch.setattr(lcm, "_install_into", _fake_install_into(calls))
+
+    # Manually placed plugin tree + pre-existing settled marker matching identity & defaults hash,
+    # but config.yaml has NO _default_plugins_installed entry for hermes-security.
+    (home / "plugins" / "hermes-security").mkdir(parents=True)
+    default_plugins._write_settled(
+        home / "cache" / "default-plugins.settled",
+        "rev-ensure-1",
+        default_plugins._defaults_hash(entries),
+        default_names=["hermes-security"],
+    )
+
+    # step_install_default_plugins must NOT treat this home as settled yet.
+    spawned: list = []
+    monkeypatch.setattr(default_plugins, "spawn_install", lambda h=None: spawned.append(h) or True)
+    assert default_plugins.step_install_default_plugins().get("owed") is True
+    assert len(spawned) == 1
+
+    # Restore settled marker; ensure_defaults must record hermes-security (without reinstalling).
+    default_plugins._write_settled(
+        home / "cache" / "default-plugins.settled",
+        "rev-ensure-1",
+        default_plugins._defaults_hash(entries),
+        default_names=["hermes-security"],
+    )
+    code = default_plugins.main(["ensure", "--json"])
+    payload = _parse_single_json_line(capsys.readouterr().out)
+    assert code == 0 and payload["state"] == "nothing-pending"
+    assert calls == []
+    assert "hermes-security" in default_plugins._recorded(home)
+
+    # Now user removes the plugin: both ensure_defaults and step_install_default_plugins keep it removed.
+    (home / "plugins" / "hermes-security").rmdir()
+    assert default_plugins.main(["ensure", "--json"]) == 0
+    assert _parse_single_json_line(capsys.readouterr().out)["state"] == "nothing-pending"
+    assert not (home / "plugins" / "hermes-security").exists()
+    assert calls == []
+    assert default_plugins.step_install_default_plugins() == {"ok": True}
+
+
+def test_disabled_plugin_with_stale_installing_marker_is_not_reinstalled(tmp_path, monkeypatch, capsys):
+    """If a previous automatic install crashed leaving installing-<name>, and the user subsequently
+    added the plugin to plugins.disabled, retry must treat it as settled, never delete/reinstall/
+    re-enable it, and clear the stale installing marker."""
+    entries = [_entry("langfuse")]
+    live = [{"entries": [_entry_dict("langfuse")]}]
+    home = _setup_env(tmp_path, monkeypatch, entries, live)
+
+    plugin_dir = home / "plugins" / "langfuse"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "keep.txt").write_text("user tree", encoding="utf-8")
+    (home / "config.yaml").write_text("plugins:\n  disabled:\n    - langfuse\n", encoding="utf-8")
+    marker = default_plugins._installing(home, entries[0])
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.touch()
+
+    monkeypatch.setattr(lcm, "_install_into", lambda *_a, **_k: lambda *_n, **_k2: pytest.fail("must not reinstall disabled plugin"))
+    assert default_plugins._settled(home, entries[0]) is True
+    assert default_plugins._pending_names([home], entries) == []
+
+    code = default_plugins.main(["ensure", "--json"])
+    payload = _parse_single_json_line(capsys.readouterr().out)
+    assert code == 0 and payload["state"] == "nothing-pending"
+    assert (plugin_dir / "keep.txt").is_file()
+    assert "langfuse" in default_plugins._recorded(home)
+    assert not marker.exists()
+
+
+def test_record_only_pass_never_installs_in_process_when_new_home_appears_mid_lock(tmp_path, monkeypatch):
+    """When pending_before is empty before taking the lock, a newly created profile discovered after
+    acquiring installer_lock must route to the detached child instead of calling _install_into in-process."""
+    from contextlib import contextmanager
+
+    entries = [_entry("langfuse")]
+    live = [{"entries": [_entry_dict("langfuse")]}]
+    home = _setup_env(tmp_path, monkeypatch, entries, live)
+    (home / "plugins" / "langfuse").mkdir(parents=True)
+
+    new_profile = tmp_path / "new-profile"
+    new_profile.mkdir()
+    homes_list = [home]
+    monkeypatch.setattr(pm.plugins_state, "dependency_homes", lambda: list(homes_list))
+
+    @contextmanager
+    def lock_with_mid_lock_profile(_wait):
+        if new_profile not in homes_list:
+            homes_list.append(new_profile)
+        yield
+
+    monkeypatch.setattr(default_plugins, "installer_lock", lock_with_mid_lock_profile)
+    monkeypatch.setattr(lcm, "_install_into", lambda *_a, **_k: pytest.fail("record-only pass must never install in-process"))
+
+    launched: list[tuple[str, Path | None]] = []
+
+    def fake_launch(run_id: str, target_home: Path | None):
+        launched.append((run_id, target_home))
+        default_plugins._write_child_result(home, run_id, {"installed": ["langfuse"], "owed": []})
+        return _FinishedChild(0)
+
+    monkeypatch.setattr(default_plugins, "_launch_ensure_child", fake_launch)
+
+    code, payload = default_plugins.ensure_defaults(timeout=30, say=lambda _m: None)
+    assert code == 0
+    assert payload["state"] == "installed"
+    assert payload["installed"] == ["langfuse"]
+    assert payload["pending_before"] == ["langfuse"]
+    assert len(launched) == 1 and launched[0][1] is None
 
 
 def test_install_and_record_reports_every_pass_of_a_rescanned_run(tmp_path, monkeypatch):

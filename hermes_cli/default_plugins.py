@@ -24,7 +24,6 @@ one off (an hour, doubling to a week).
 
 from __future__ import annotations
 
-import argparse
 import hashlib
 import inspect
 import json
@@ -37,19 +36,18 @@ import time
 from pathlib import Path
 from typing import Callable, Optional
 
+from hermes_cli.default_plugins_ensure import (
+    DEFAULT_ENSURE_TIMEOUT, ENSURE_EXIT_OK, ENSURE_EXIT_OWED, ENSURE_EXIT_SKIPPED, ENSURE_EXIT_TIMEOUT,
+    PROFILE_CREATE_ENSURE_TIMEOUT, _CHILD_LOCK_WAIT, _RESULT_MAX_AGE, _check_ensure_fast_path,
+    _cleanup_stale_results, _ensure_child_work, _ensure_payload, _install_subset_and_record,
+    _launch_ensure_child, _pending_names, _read_child_result, _record_settled_only, _result_path,
+    _run_child, _write_child_result, ensure_defaults, main,
+)
+
 logger = logging.getLogger(__name__)
 
 _INSTALLED_KEY = "_default_plugins_installed"
 _BACKOFF = "default-plugins"  # memory_provider_migration failure-stamp name, in the default home
-
-ENSURE_EXIT_OK = 0
-ENSURE_EXIT_OWED = 2
-ENSURE_EXIT_TIMEOUT = 3
-ENSURE_EXIT_SKIPPED = 4
-DEFAULT_ENSURE_TIMEOUT = 300.0
-PROFILE_CREATE_ENSURE_TIMEOUT = 120.0
-_CHILD_LOCK_WAIT = 900.0  # an ensure child waits out another installer instead of exiting with nothing done
-_RESULT_MAX_AGE = 3600.0  # prune orphaned per-run result files older than 1 hour
 
 
 def _is_remote_config_backend(home: Optional[Path] = None) -> bool:
@@ -74,58 +72,32 @@ def _runs_here(entry) -> bool:
     return True
 
 
+def _filter_defaults(entries: list) -> list:
+    from hermes_cli.plugin_catalog import DEFAULT_TIERS
+    return [entry for entry in entries if entry.default and entry.tier in DEFAULT_TIERS and _runs_here(entry)]
+
+
 def default_entries() -> list:
     """Catalog entries marked default that this OS and this Hermes can run (live catalog, else in-tree).
     The tier is checked here too: the live/in-tree merge can carry ``default`` onto a community entry."""
-    from hermes_cli.plugin_catalog import DEFAULT_TIERS, load_catalog_live
-    return [entry for entry in load_catalog_live() if entry.default and entry.tier in DEFAULT_TIERS and _runs_here(entry)]
+    from hermes_cli.plugin_catalog import load_catalog_live
+    return _filter_defaults(load_catalog_live())
 
 
 _UNPATCHED_DEFAULT_ENTRIES = default_entries
-
-
-def _entries_from_catalog_doc(data: dict) -> Optional[list]:
-    """Resolve default entries from an already-loaded live-catalog JSON dict without network I/O."""
-    from hermes_cli import plugin_catalog as pc
-    raw_entries = data.get("entries")
-    if not isinstance(raw_entries, list) or not raw_entries:
-        return None
-    entries = [e for i, raw in enumerate(raw_entries)
-               if (e := pc.entry_from_mapping(raw, f"{pc.LIVE_CATALOG_URL}#{i}")) is not None]
-    if not entries:
-        return None
-    in_tree = {e.name: e for e in pc.load_catalog()}
-    live_t, tree_t = pc._live_generated_time(data), pc.in_tree_catalog_time()
-    tree_is_newer = (tree_t > live_t) if (live_t is not None and tree_t is not None) else None
-    raw_by_name = {str(raw.get("name")): raw for raw in raw_entries if isinstance(raw, dict)}
-    merged = [
-        in_tree[e.name] if e.name in in_tree and pc._prefer_in_tree_entry(in_tree[e.name], e, tree_is_newer)
-        else pc._with_curated_fields(e, in_tree.get(e.name), raw_by_name.get(e.name) or {})
-        for e in entries
-    ]
-    return [entry for entry in merged if entry.default and entry.tier in pc.DEFAULT_TIERS and _runs_here(entry)]
 
 
 def _cached_default_entries() -> Optional[list]:
     """Default entries readable without network I/O, or ``None`` when the live cache is missing/expired.
 
     Honours a monkeypatched :func:`default_entries` in tests; otherwise reads ``cache/plugin-catalog.json``
-    only while it is within ``LIVE_CATALOG_TTL_SECONDS`` so CLI startup never blocks on HTTP.
+    via :func:`hermes_cli.plugin_catalog.load_catalog_cached` so startup never blocks on HTTP.
     """
     if default_entries is not _UNPATCHED_DEFAULT_ENTRIES:
         return default_entries()
-    from hermes_cli.plugin_catalog import LIVE_CATALOG_TTL_SECONDS, _live_cache_path
-    cache = _live_cache_path()
-    try:
-        st = cache.stat()
-        if time.time() - st.st_mtime >= LIVE_CATALOG_TTL_SECONDS:
-            return None
-        data = json.loads(cache.read_text(encoding="utf-8-sig"))
-    except (OSError, ValueError):
-        return None
-    if not isinstance(data, dict):
-        return None
-    return _entries_from_catalog_doc(data)
+    from hermes_cli.plugin_catalog import load_catalog_cached
+    merged = load_catalog_cached()
+    return None if merged is None else _filter_defaults(merged)
 
 
 def _recorded(home: Path, *, own_only: bool = False) -> set[str]:
@@ -135,6 +107,17 @@ def _recorded(home: Path, *, own_only: bool = False) -> set[str]:
     config = _read_config(home)
     keys = (_INSTALLED_KEY,) if own_only else (_INSTALLED_KEY, _LEFT_CORE_KEY)
     return {str(n) for key in keys if isinstance(config.get(key), list) for n in config[key]}
+
+
+def _all_recorded(homes: list[Path], entries: list) -> bool:
+    """True when every home in *homes* has recorded every entry in *entries*."""
+    if not entries:
+        return True
+    for home in homes:
+        done = _recorded(home)
+        if any(entry.name not in done for entry in entries):
+            return False
+    return True
 
 
 def _record(home: Path, names: set[str]) -> None:
@@ -170,28 +153,37 @@ def _installed_dir(home: Path, entry) -> Optional[Path]:
     return plugins / entry.name if (plugins / entry.name).is_dir() else None
 
 
+def _entry_spellings(entry, target: Optional[Path]) -> tuple[str, ...]:
+    """Every config-list spelling that may name *entry* (catalog key, installed dir name, manifest name)."""
+    names = {entry.name}
+    if target is not None:
+        names.add(target.name)
+        try:
+            from hermes_yaml import safe_load
+            names.add(str((safe_load((target / "plugin.yaml").read_text(encoding="utf-8-sig")) or {}).get("name") or ""))
+        except (OSError, ValueError, AttributeError):  # no or malformed manifest: the dir names count
+            pass
+    return tuple(sorted(names - {""}))
+
+
 def _settled(home: Path, entry) -> bool:
-    """*home* already has *entry*: a tree the user put there (enabled or not, it is theirs), or one an
-    earlier automatic attempt left that someone has since enabled or disabled. A tree a refused enable
-    left behind (stamped by that attempt, in neither list) is retried, and so is anything an install that
-    never finished left (its ``installing`` marker survives a kill, crash or power loss)."""
+    """*home* already has *entry*: a plugin the user explicitly disabled, a tree the user put there
+    (enabled or not, it is theirs), or one an earlier automatic attempt left that someone has since
+    enabled or disabled. Explicit ``plugins.disabled`` is checked before any stale ``installing``
+    marker so a crashed automatic attempt never deletes or re-enables a plugin the user disabled."""
     from hermes_cli.left_core_migration import _plugins_listed
     from hermes_cli.memory_provider_migration import _failure_stamp
+    target = _installed_dir(home, entry)
+    enabled, disabled = _plugins_listed(home, _entry_spellings(entry, target))
+    if disabled:
+        return True
     if _installing(home, entry).exists():
         return False
-    target = _installed_dir(home, entry)
     if target is None:
         return _placed(home, entry).exists()  # the tree a failed attempt left is gone: the user removed it
     if not _failure_stamp(home, _attempt(entry)).exists():
         return True
-    names = {entry.name, target.name}
-    try:
-        from hermes_yaml import safe_load
-        names.add(str((safe_load((target / "plugin.yaml").read_text(encoding="utf-8-sig")) or {}).get("name") or ""))
-    except (OSError, ValueError, AttributeError):  # no or malformed manifest: the dir names count
-        pass
-    enabled, disabled = _plugins_listed(home, tuple(names - {""}))
-    return enabled or disabled
+    return enabled
 
 
 def _attempt(entry) -> str:
@@ -279,6 +271,7 @@ def install_defaults(home: Path, *, say: Callable[[str], None] = logger.info,
     install = _install_into(home, consent=True)  # a reviewed default: its dependencies come with it
     for entry in pending:
         if entry.name in have:
+            _installing(home, entry).unlink(missing_ok=True)
             continue
         on_step, timing = _phase_timer()
         try:
@@ -420,51 +413,34 @@ def _defaults_hash(entries: list) -> str:
 
 def _live_cache_signature() -> Optional[str]:
     """Fast freshness + file-stat signature of ``cache/plugin-catalog.json`` when present and within TTL."""
-    from hermes_cli.plugin_catalog import LIVE_CATALOG_TTL_SECONDS, _live_cache_path
-    cache = _live_cache_path()
-    try:
-        st = cache.stat()
-    except OSError:
-        return None
-    if time.time() - st.st_mtime >= LIVE_CATALOG_TTL_SECONDS:
-        return None
-    return f"{st.st_mtime_ns}:{st.st_size}"
+    from hermes_cli.plugin_catalog import live_cache_signature
+    return live_cache_signature()
 
 
 def _read_settled_record(path: Path) -> dict:
-    """Read the settled marker record from ``cache/default-plugins.settled``.
-
-    Legacy settled files written by older code store only a plain identity string; those return
-    ``defaults_hash=None`` so callers treat them as unsettled-for-hash safely (one extra pass, no crash).
-    """
+    """Read ``cache/default-plugins.settled``; legacy plain-text identity files return ``defaults_hash=None``."""
     empty = {"identity": "", "defaults_hash": None, "defaults": None, "live_cache_sig": None}
-    if not path.is_file():
-        return empty
     try:
-        raw = path.read_text(encoding="utf-8-sig").strip()
+        raw = path.read_text(encoding="utf-8-sig").strip() if path.is_file() else ""
     except OSError:
         return empty
     if not raw:
         return empty
-    if raw.startswith("{"):
-        try:
-            data = json.loads(raw)
-        except ValueError:
-            return empty
-        if isinstance(data, dict):
-            identity = data.get("identity")
-            dhash = data.get("defaults_hash")
-            defaults = data.get("defaults")
-            live_sig = data.get("live_cache_sig")
-            return {
-                "identity": identity if isinstance(identity, str) else "",
-                "defaults_hash": dhash if isinstance(dhash, str) and dhash else None,
-                "defaults": [str(n) for n in defaults] if isinstance(defaults, list) else None,
-                "live_cache_sig": live_sig if isinstance(live_sig, str) and live_sig else None,
-            }
+    if not raw.startswith("{"):
+        return {**empty, "identity": raw}
+    try:
+        data = json.loads(raw)
+    except ValueError:
         return empty
-    # Legacy plain-text identity file (pre-hash format).
-    return {**empty, "identity": raw}
+    if not isinstance(data, dict):
+        return empty
+    dhash, live_sig, defaults = data.get("defaults_hash"), data.get("live_cache_sig"), data.get("defaults")
+    return {
+        "identity": data["identity"] if isinstance(data.get("identity"), str) else "",
+        "defaults_hash": dhash if isinstance(dhash, str) and dhash else None,
+        "defaults": [str(n) for n in defaults] if isinstance(defaults, list) else None,
+        "live_cache_sig": live_sig if isinstance(live_sig, str) and live_sig else None,
+    }
 
 
 def _read_settled(path: Path) -> tuple[str, Optional[str]]:
@@ -473,14 +449,8 @@ def _read_settled(path: Path) -> tuple[str, Optional[str]]:
     return rec["identity"], rec["defaults_hash"]
 
 
-def _write_settled(
-    path: Path,
-    identity: str,
-    defaults_hash: str,
-    *,
-    default_names: Optional[list[str]] = None,
-    live_cache_sig: Optional[str] = None,
-) -> None:
+def _write_settled(path: Path, identity: str, defaults_hash: str, *,
+                   default_names: Optional[list[str]] = None, live_cache_sig: Optional[str] = None) -> None:
     from utils import atomic_write_text
     path.parent.mkdir(parents=True, exist_ok=True)
     payload: dict = {"identity": identity, "defaults_hash": defaults_hash}
@@ -493,9 +463,7 @@ def _write_settled(
 
 def _is_settled_for(root: Path, entries: list) -> bool:
     saved_id, saved_hash = _read_settled(_state(root, "settled"))
-    if saved_hash is None:
-        return False
-    return saved_id == _identity() and saved_hash == _defaults_hash(entries)
+    return saved_hash is not None and saved_id == _identity() and saved_hash == _defaults_hash(entries)
 
 
 def _fast_settled_hit(root: Path, allowed_homes: list[Path]) -> bool:
@@ -507,20 +475,13 @@ def _fast_settled_hit(root: Path, allowed_homes: list[Path]) -> bool:
     if rec["defaults_hash"] is None or rec["live_cache_sig"] is None or rec["defaults"] is None:
         return False
     live_sig = _live_cache_signature()
-    if live_sig is None or live_sig != rec["live_cache_sig"]:
-        return False
-    if rec["identity"] != _identity():
+    if live_sig is None or live_sig != rec["live_cache_sig"] or rec["identity"] != _identity():
         return False
     expected = rec["defaults"]
-    if expected:
-        for home in allowed_homes:
-            done = _recorded(home)
-            if any(name not in done for name in expected):
-                return False
-    return True
+    return not expected or all(all(name in _recorded(home) for name in expected) for home in allowed_homes)
 
 
-# ── detached child: first start, profile create, ensure handoff ──────────────
+# ── detached child & boot-bootstrap step ─────────────────────────────────────
 
 def _child_argv(args: tuple[str, ...] = ()) -> list[str]:
     """The installer child's command: this installation's runtime running this module."""
@@ -570,99 +531,6 @@ def spawn_install(home: Optional[Path] = None) -> bool:
         return False
     _popen_detached(_child_argv())
     return True
-
-
-def _launch_ensure_child(run_id: str, home: Optional[Path]) -> subprocess.Popen:
-    """The detached child an ``ensure`` waits on: it installs (for *home* only, when given, else every
-    home), then writes its outcome under *run_id* to ``cache/default-plugins.result-<run_id>.json``."""
-    args: list[str] = ["_child", "--run-id", run_id]
-    if home is not None:
-        args += ["--home", str(home)]
-    return _popen_detached(_child_argv(tuple(args)))
-
-
-def _result_path(root: Path, run_id: str) -> Path:
-    safe = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in str(run_id)) or "run"
-    return _state(root, f"result-{safe}.json")
-
-
-def _cleanup_stale_results(root: Path, *, max_age: float = _RESULT_MAX_AGE) -> None:
-    cache_dir = _state(root, "result").parent
-    cutoff = time.time() - max_age
-    try:
-        for candidate in cache_dir.glob("default-plugins.result-*.json"):
-            try:
-                if candidate.stat().st_mtime < cutoff:
-                    candidate.unlink(missing_ok=True)
-            except OSError:
-                pass
-    except OSError:
-        pass
-
-
-def _write_child_result(root: Path, run_id: str, outcome: dict) -> None:
-    from utils import atomic_write_text
-    path = _result_path(root, run_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    _cleanup_stale_results(root)
-    payload = {"run_id": run_id, "installed": [str(x) for x in outcome.get("installed") or ()],
-               "owed": [str(x) for x in outcome.get("owed") or ()]}
-    atomic_write_text(path, json.dumps(payload), tmp_prefix=f"{path.name}.tmp-")
-
-
-def _read_child_result(root: Path, run_id: str) -> Optional[dict]:
-    """The result *run_id*'s child wrote, else None (none yet, unreadable, or another run's).
-    Unlinks *run_id*'s result file once read so completed runs do not accumulate in cache."""
-    path = _result_path(root, run_id)
-    try:
-        data = json.loads(path.read_text(encoding="utf-8-sig"))
-    except (OSError, ValueError):
-        return None
-    if not isinstance(data, dict) or data.get("run_id") != run_id:
-        return None
-    path.unlink(missing_ok=True)
-    return {key: [str(x) for x in data.get(key) or ()] for key in ("installed", "owed")}
-
-
-def _ensure_child_work(run_id: str, home: Optional[Path], *, say: Callable[[str], None]) -> int:
-    """The ensure child's pass (every home, or *home* only), its outcome written under *run_id* whatever
-    happens short of the process dying (that leaves no result: the waiting ensure reports it owed)."""
-    from hermes_cli.memory_provider_migration import _note_failure
-    from pm.environments import dependency_home_root
-    root = Path(dependency_home_root())
-    outcome: dict = {"installed": [], "owed": []}
-    try:
-        if home is None:
-            outcome = install_and_record(say=say, wait=_CHILD_LOCK_WAIT)
-        else:
-            outcome = _install_subset_and_record([home], default_entries(), root, say=say, wait=_CHILD_LOCK_WAIT)
-    except Exception as exc:  # health: allow BLE001 -- reported to the waiting ensure as owed, and backed off
-        logger.exception("default plugin install failed")
-        _note_failure(root, _BACKOFF)
-        outcome = {"installed": [], "owed": [f"error: {exc}"]}
-    _write_child_result(root, run_id, outcome)  # not on a BaseException: no result reads as owed
-    return 1 if outcome["owed"] else 0
-
-
-def _run_child(*, run_id: str = "", home: Optional[Path] = None) -> int:
-    """The detached child; one that finds another installer running leaves its request to that one. Started
-    by an ``ensure`` (with *run_id*), it waits for the lock and reports to that ensure."""
-    from pm.environments import dependency_home_root
-    root = Path(dependency_home_root())
-    (root / "logs").mkdir(parents=True, exist_ok=True)
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s default-plugins %(message)s",
-                        filename=str(root / "logs" / "default-plugins.log"))
-    if run_id:
-        return _ensure_child_work(run_id, home, say=logger.info)
-    try:
-        return 1 if install_and_record(say=logger.info, wait=1.0)["owed"] else 0
-    except TimeoutError:
-        return 0
-    except Exception:  # health: allow BLE001 -- a detached child has no stderr: log the cause and back off
-        from hermes_cli.memory_provider_migration import _note_failure
-        logger.exception("default plugin install failed")
-        _note_failure(root, _BACKOFF)
-        return 1
 
 
 def install_and_record(*, say: Callable[[str], None] = print, wait: float = 900.0) -> dict:
@@ -718,8 +586,8 @@ def install_and_record(*, say: Callable[[str], None] = print, wait: float = 900.
 
 def step_install_default_plugins() -> dict:
     """Boot-bootstrap step, never blocking startup on the network: owed until a pass reports every default
-    settled for this revision AND the current cached catalog's default set; when local files cannot prove
-    settled (e.g. cache missing or expired), spawns the detached child immediately without HTTP."""
+    settled for this revision AND recorded in every allowed home for the cached catalog's default set;
+    when local files cannot prove settled (e.g. cache missing/expired), spawns the detached child."""
     from pm.environments import dependency_home_root
     from pm.plugins_state import dependency_homes
     try:
@@ -742,7 +610,7 @@ def step_install_default_plugins() -> dict:
                 if (
                     cached_entries is not None
                     and saved_hash == _defaults_hash(cached_entries)
-                    and not _pending_names(allowed_homes, cached_entries)
+                    and _all_recorded(allowed_homes, cached_entries)
                 ):
                     return {"ok": True}
         return {"ok": True, "spawned": spawn_install(), "owed": True}
@@ -750,294 +618,12 @@ def step_install_default_plugins() -> dict:
         return {"ok": False, "error": str(exc), "owed": True}
 
 
-# ── foreground ensure (Docker, Desktop, profile create) ──────────────────────
-
-def _pending_names(homes: list[Path], entries: list) -> list[str]:
-    pending: list[str] = []
-    seen: set[str] = set()
-    for home in homes:
-        done = _recorded(home)
-        for entry in entries:
-            if entry.name not in done and not _settled(home, entry):
-                if entry.name not in seen:
-                    seen.add(entry.name)
-                    pending.append(entry.name)
-    return pending
-
-
-def _ensure_payload(
-    state: str,
-    pending_before: list[str],
-    installed: list[str],
-    owed: list[str],
-    started_monotonic: float,
-) -> dict:
-    return {
-        "state": state,
-        "pending_before": list(pending_before),
-        "installed": list(installed),
-        "owed": list(owed),
-        "elapsed_ms": max(0, round((time.monotonic() - started_monotonic) * 1000)),
-    }
-
-
-def _install_subset_and_record(
-    target_homes: list[Path],
-    entries: list,
-    root: Path,
-    *,
-    say: Callable[[str], None],
-    wait: float,
-) -> dict:
-    from hermes_cli.memory_provider_migration import _note_failure
-    outcome = _install_defaults_for_homes(target_homes, say=say, wait=wait, entries=entries)
-    if outcome["owed"]:
-        failed = set(outcome["owed"]) - set(outcome.get("raced", ()))
-        if failed:
-            _note_failure(root, _BACKOFF)
-        _state(root, "settled").unlink(missing_ok=True)
-    return outcome
-
-
-def _check_ensure_fast_path(
-    homes: Optional[list[Path]],
-    allowed_homes: list[Path],
-    unreadable_homes: list[Path],
-    root: Path,
-    entries: list,
-    pending_before: list[str],
-    t0: float,
-) -> Optional[tuple[int, dict]]:
-    """Return a settled/owed response immediately when no install or record write is needed."""
-    if pending_before or unreadable_homes:
-        return None
-    if homes is None:
-        if _is_settled_for(root, entries):
-            return ENSURE_EXIT_OK, _ensure_payload("nothing-pending", [], [], [], t0)
-        return None
-    if allowed_homes and _live_catalog_unreachable():
-        _state(root, "settled").unlink(missing_ok=True)
-        return ENSURE_EXIT_OWED, _ensure_payload("owed", [], [], ["live catalog"], t0)
-    needs_record = any(entry.name not in _recorded(home) for home in allowed_homes for entry in entries)
-    if not needs_record:
-        return ENSURE_EXIT_OK, _ensure_payload("nothing-pending", [], [], [], t0)
-    return None
-
-
-def ensure_defaults(
-    *,
-    timeout: float = DEFAULT_ENSURE_TIMEOUT,
-    homes: Optional[list[Path]] = None,
-    say: Optional[Callable[[str], None]] = None,
-) -> tuple[int, dict]:
-    """Ensure every default catalog plugin is installed before a service starts (bounded foreground pass).
-
-    The install itself runs in one detached child (:func:`_launch_ensure_child`) that this call waits on
-    until the deadline; the child survives this process, so a timeout never cuts an install short.
-
-    Returns ``(exit_code, payload)`` where ``exit_code`` is:
-    - ``0`` (``nothing-pending`` or ``installed``)
-    - ``2`` (``owed`` — offline / failed / unreadable home; retried next start)
-    - ``3`` (``timeout`` — hard deadline hit; the detached installer child keeps going and finishes)
-    - ``4`` (``skipped`` — fetch policy denied for all target homes)
-    """
-    from pm.environments import dependency_home_root
-    from pm.plugins_state import dependency_homes
-
-    t0 = time.monotonic()
-    budget = max(0.0, float(timeout))
-    deadline = t0 + budget
-    emit: Callable[[str], None] = say if say is not None else (lambda msg: print(msg, file=sys.stderr))
-
-    target_homes = list(dependency_homes()) if homes is None else [Path(h) for h in homes]
-    policies = {home: fetch_policy(home) for home in target_homes}
-    if target_homes and all(policy == "denied" for policy in policies.values()):
-        return ENSURE_EXIT_SKIPPED, _ensure_payload("skipped", [], [], [], t0)
-
-    allowed_homes = [home for home, policy in policies.items() if policy == "allowed"]
-    unreadable_homes = [home for home, policy in policies.items() if policy == "unreadable"]
-    root = Path(dependency_home_root())
-
-    # Zero-parse fast path: install identity, fresh live catalog cache, and recorded defaults unchanged.
-    if homes is None and not unreadable_homes and _fast_settled_hit(root, allowed_homes):
-        return ENSURE_EXIT_OK, _ensure_payload("nothing-pending", [], [], [], t0)
-
-    entries = default_entries() if allowed_homes else []
-    pending_before = _pending_names(allowed_homes, entries)
-
-    fast = _check_ensure_fast_path(homes, allowed_homes, unreadable_homes, root, entries, pending_before, t0)
-    if fast is not None:
-        return fast
-
-    # Offline: the live catalog read just failed, so every git/uv install would fail too, each after its
-    # own network timeout. Fail open at once; the next start retries (same backoff and owed state).
-    if pending_before and allowed_homes and _live_catalog_unreachable():
-        from hermes_cli.memory_provider_migration import _note_failure
-        _state(root, "settled").unlink(missing_ok=True)
-        _note_failure(root, _BACKOFF)
-        emit("  ⚠ Default plugins not installed: the plugin catalog is unreachable (offline?). "
-             "Hermes retries at a later start.")
-        return ENSURE_EXIT_OWED, _ensure_payload("owed", pending_before, [],
-                                                 ["live catalog", *pending_before], t0)
-
-    if not pending_before:
-        # Nothing to fetch: only records (defaults already on disk) and the settled marker are written, each
-        # atomically, so this short pass runs here, synchronously (no thread, no child interpreter start).
-        return _record_only_pass(None if homes is None else target_homes, entries, root, emit, deadline, t0)
-
-    # The install runs in a detached child, never in a thread of this process: at the deadline this
-    # returns at once and the child carries on (a thread would die with this process, possibly between
-    # placing a tree and admitting its dependencies, while still holding the machine lock).
-    import uuid
-    run_id = uuid.uuid4().hex
-    log_tail = _LogTail(root / "logs" / "default-plugins.log")
-    try:
-        child = _launch_ensure_child(run_id, target_homes[0] if homes is not None and len(target_homes) == 1 else None)
-    except OSError as exc:
-        emit(f"default plugins ensure failed: could not start the installer: {exc}")
-        return ENSURE_EXIT_OWED, _ensure_payload("owed", pending_before, [], list(pending_before) or [str(exc)], t0)
-
-    result = _wait_for_child(child, root, run_id, deadline, log_tail, emit)
-    if result == "timeout":
-        emit(f"default plugins: still installing after {budget:.0f}s; continuing in the background "
-             f"(pid {child.pid}, log {root / 'logs' / 'default-plugins.log'})")
-        return ENSURE_EXIT_TIMEOUT, _ensure_payload("timeout", pending_before, [], list(pending_before), t0)
-    if result is None:
-        emit(f"default plugins ensure failed: the installer exited ({child.returncode}) without a result")
-        return ENSURE_EXIT_OWED, _ensure_payload("owed", pending_before, [], list(pending_before)
-                                                 or [f"installer exit {child.returncode}"], t0)
-    return _outcome_exit(pending_before, result, t0)
-
-
-def _outcome_exit(pending_before: list[str], outcome: dict, t0: float) -> tuple[int, dict]:
-    installed, owed = list(outcome.get("installed") or []), list(outcome.get("owed") or [])
-    if owed:
-        return ENSURE_EXIT_OWED, _ensure_payload("owed", pending_before, installed, owed, t0)
-    if installed:
-        return ENSURE_EXIT_OK, _ensure_payload("installed", pending_before, installed, [], t0)
-    return ENSURE_EXIT_OK, _ensure_payload("nothing-pending", pending_before, [], [], t0)
-
-
-def _record_only_pass(subset: Optional[list[Path]], entries: list, root: Path, emit: Callable[[str], None],
-                      deadline: float, t0: float) -> tuple[int, dict]:
-    """The in-process pass when nothing is pending: every home (*subset* None) or *subset* only."""
-    wait = max(0.0, deadline - time.monotonic())
-    try:
-        if subset is None:
-            outcome = install_and_record(say=emit, wait=wait)
-        else:
-            outcome = _install_subset_and_record(subset, entries, root, say=emit, wait=wait)
-    except TimeoutError:  # another installer holds the lock; its pass covers this one
-        return ENSURE_EXIT_TIMEOUT, _ensure_payload("timeout", [], [], [], t0)
-    except Exception as exc:  # health: allow BLE001 -- reported as owed, retried next start
-        emit(f"default plugins ensure failed: {exc}")
-        return ENSURE_EXIT_OWED, _ensure_payload("owed", [], [], [str(exc)], t0)
-    return _outcome_exit([], outcome, t0)
-
-
-def _wait_for_child(child, root: Path, run_id: str, deadline: float, log_tail: _LogTail,
-                    emit: Callable[[str], None]):
-    """*run_id*'s result once the child wrote it, None when it exited without one, or ``"timeout"`` at
-    the deadline (the child is left running). Relays the child's log lines meanwhile."""
-    while True:
-        log_tail.pump(emit)
-        result = _read_child_result(root, run_id)
-        if result is not None:
-            break
-        if child.poll() is not None:
-            result = _read_child_result(root, run_id)  # written just before it exited
-            break
-        if time.monotonic() >= deadline:
-            return "timeout"
-        time.sleep(0.05)
-    log_tail.pump(emit)
-    return result
-
-
-class _LogTail:
-    """Relays the lines the installer child appends to its log (per-plugin timing included) to the
-    ensure's own output while it waits. Starts at the log's current end."""
-
-    def __init__(self, path: Path) -> None:
-        self.path = path
-        try:
-            self.offset = path.stat().st_size
-        except OSError:
-            self.offset = 0
-        self.partial = b""
-
-    def pump(self, emit: Callable[[str], None]) -> None:
-        try:
-            with self.path.open("rb") as fh:
-                fh.seek(self.offset)
-                chunk = fh.read()
-        except OSError:
-            return
-        if not chunk:
-            return
-        self.offset += len(chunk)
-        *lines, self.partial = (self.partial + chunk).split(b"\n")
-        for line in lines:
-            text = line.decode("utf-8", "replace").rstrip("\r")
-            if text.strip():
-                emit(text)
-
-
-def main(argv: Optional[list[str]] = None) -> int:
-    """CLI entry point for ``python -m hermes_cli.default_plugins``.
-
-    Bare invocation (no args) preserves the detached-child behavior (:func:`_run_child`).
-    ``ensure [--timeout SECONDS] [--json]`` runs the bounded foreground preflight.
-    ``_child --run-id ID [--home PATH]`` is the internal detached installer spawned by ``ensure``.
-    """
-    args_list = list(sys.argv[1:] if argv is None else argv)
-    if not args_list:
-        return _run_child()
-
-    parser = argparse.ArgumentParser(prog="python -m hermes_cli.default_plugins")
-    subparsers = parser.add_subparsers(dest="command", required=True)
-    ensure_p = subparsers.add_parser("ensure", help="Install pending default catalog plugins in the foreground")
-    ensure_p.add_argument(
-        "--timeout",
-        type=float,
-        default=DEFAULT_ENSURE_TIMEOUT,
-        help="Seconds to wait for the detached installer child before returning 3 (default: 300)",
-    )
-    ensure_p.add_argument(
-        "--json",
-        action="store_true",
-        help="Emit a single JSON status line on stdout (human/log output goes to stderr)",
-    )
-    child_p = subparsers.add_parser("_child", help=argparse.SUPPRESS)
-    child_p.add_argument("--run-id", required=True)
-    child_p.add_argument("--home", default="")
-    parsed = parser.parse_args(args_list)
-    if parsed.command == "_child":
-        target = parsed.home.strip()
-        return _run_child(run_id=parsed.run_id.strip(), home=Path(target) if target else None)
-    if parsed.command == "ensure":
-        real_stdout = sys.stdout
-        if parsed.json:
-            sys.stdout = sys.stderr
-        try:
-            code, payload = ensure_defaults(
-                timeout=parsed.timeout,
-                say=lambda msg: print(msg, file=sys.stderr),
-            )
-            if parsed.json:
-                real_stdout.write(json.dumps(payload) + "\n")
-                real_stdout.flush()
-            else:
-                print(
-                    f"default-plugins ensure: state={payload['state']} "
-                    f"installed={len(payload['installed'])} owed={len(payload['owed'])} "
-                    f"elapsed_ms={payload['elapsed_ms']}",
-                    file=sys.stderr,
-                )
-            return code
-        finally:
-            sys.stdout = real_stdout
-    return 0
+__all__ = [
+    "DEFAULT_ENSURE_TIMEOUT", "ENSURE_EXIT_OK", "ENSURE_EXIT_OWED", "ENSURE_EXIT_SKIPPED",
+    "ENSURE_EXIT_TIMEOUT", "PROFILE_CREATE_ENSURE_TIMEOUT", "default_entries", "ensure_defaults",
+    "fetch_allowed", "fetch_policy", "install_and_record", "install_defaults",
+    "install_defaults_all_homes", "installer_lock", "main", "spawn_install", "step_install_default_plugins",
+]
 
 
 if __name__ == "__main__":

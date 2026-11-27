@@ -1,0 +1,611 @@
+{
+  "graze_description": {
+    "message": "je 1-klikněte sledovat, oblíbené, boost, a záložku pro Mastodon, bez ohledu na to, jakou instanci voláte domů.",
+    "description": "Graze main home description"
+  },
+  "mastodon_instance_name_description": {
+    "message": "Název instance Mastodon",
+    "description": "Instance Name description."
+  },
+  "need_help": {
+    "message": "Potřebujete pomoci?",
+    "description": "Need help anchor link"
+  },
+  "connect_account_btn": {
+    "message": "Připojit účet",
+    "description": "Submit button that connects to the new account."
+  },
+  "back_to_account_btn": {
+    "message": "Zpět na účty",
+    "description": "Button that returns the user back to their accounts list."
+  },
+  "not_yet_on_mastodon": {
+    "message": "Ještě ne v Mastodon?",
+    "description": "Button that returns the user back to their accounts list."
+  },
+  "instance_error": {
+    "message": "Nelze najít tuto instanci, prosím zkontrolujte adresu a zkuste to znovu.",
+    "description": "Error message that gets displayed when trying to connect to invalid instance name."
+  },
+  "accounts_container_title": {
+    "message": "Účty"
+  },
+  "add_account": {
+    "message": "+ PŘIDAT ÚČET",
+    "description": "Link to add account."
+  },
+  "show_notifications": {
+    "message": "Zobrazit oznámení",
+    "description": "Toggle button for notifications."
+  },
+  "nevermind": {
+    "message": "Nevadí",
+    "description": "Nevermind button when logging out a user."
+  },
+  "remove_account": {
+    "message": "Odebrat účet",
+    "description": "Remove account button when logging out a user."
+  },
+  "by": {
+    "message": "od"
+  },
+  "or": {
+    "message": "nebo"
+  },
+  "send_feedback": {
+    "message": "Odeslat zpětnou vazbu",
+    "description": "Send feedback anchor link."
+  },
+  "report_bug": {
+    "message": "Nahlásit chybu",
+    "description": "Report bug anchor link."
+  },
+  "get_support": {
+    "message": "Získat podporu",
+    "description": "Get support anchor link."
+  },
+  "donate": {
+    "message": "Darování",
+    "description": "Donate anchor link."
+  },
+  "graze_on_connect_success_1": {
+    "message": "Graze pro Mastodon je připraven k použití!",
+    "description": "Success message when successfully connected to the server. -P1"
+  },
+  "graze_on_connect_success_2": {
+    "message": "Tato karta se zavře",
+    "description": "Success message when successfully connected to the server. -P2"
+  },
+  "graze_on_connect_success_3": {
+    "message": "sekundy",
+    "description": "Success message when successfully connected to the server. -P3"
+  },
+  "example": {
+    "message": "Např.",
+    "description": "For example (e.g.) placeholder in input field."
+  },
+  "follow": {
+    "message": "Sledovat",
+    "description": "Follow button on Mastodon webpage."
+  },
+  "follows_you": {
+    "message": "Sleduje tě",
+    "description": "Follows you overlay"
+  },
+  "unfollow": {
+    "message": "Nesledovat",
+    "description": "Follow button on Mastodon webpage."
+  },
+  "mention": {
+    "message": "Zmínka",
+    "description": "Mention menu item on Mastodon webpage."
+  },
+  "direct_message": {
+    "message": "Přímá zpráva",
+    "description": "Direct message menu item on Mastodon webpage."
+  },
+  "share": {
+    "message": "Sdílení",
+    "description": "Share menu item on Mastodon webpage."
+  },
+  "mute": {
+    "message": "Ztlumit",
+    "description": "Mute menu item on Mastodon webpage."
+  },
+  "block": {
+    "message": "Blokování",
+    "description": "Block menu item on Mastodon webpage."
+  },
+  "report": {
+    "message": "Nahlásit",
+    "description": "Report menu item on Mastodon webpage."
+  },
+  "block_domain": {
+    "message": "Blokovat doménu",
+    "description": "Block domain menu item on Mastodon webpage."
+  },
+  "open_original_page": {
+    "message": "Otevřít původní stránku",
+    "description": "Open original page menu item on Mastodon webpage."
+  },
+  "copy_link": {
+    "message": "Kopírovat odkaz na příspěvek",
+    "description": "Copy link to post menu item on Mastodon webpage."
+  },
+  "embed": {
+    "message": "Vložený",
+    "description": "Embed menu item on Mastodon webpage."
+  },
+  "feature_on_profile": {
+    "message": "Funkce v profilu",
+    "description": "Feature on profile menu item on Mastodon webpage."
+  },
+  "change_subscribed_languages": {
+    "message": "Změnit odebírané jazyky",
+    "description": "Change subscribed languages menu item on Mastodon webpage."
+  },
+  "hide_boosts_from": {
+    "message": "Skrýt vzedy od",
+    "description": "Hide boosts from menu item on Mastodon webpage."
+  },
+  "add_or_remove_from_lists": {
+    "message": "Přidat nebo odebrat ze seznamů",
+    "description": "Add or Remove from lists menu item on Mastodon webpage."
+  },
+  "hour": {
+    "message": "hod",
+    "description": "hour in time."
+  },
+  "under": {
+    "message": "pod",
+    "description": "context: less than"
+  },
+  "user_voted": {
+    "message": "Hlasovali jste pro tuto odpověď",
+    "description": "Title of the icon of the voted poll answer."
+  },
+  "settings": {
+    "message": "Nastavení",
+    "description": "settings title."
+  },
+  "theme": {
+    "message": "motiv"
+  },
+  "graze_theme_p": {
+    "message": "Graze se automaticky shoduje s vaším motivem, můžete jej přepsat, pokud chcete.",
+    "description": "options theme section paragraph"
+  },
+  "mastodon_dark": {
+    "message": "Tmavě Mastodon",
+    "description": "Dropdown menu theme options"
+  },
+  "mastodon_light": {
+    "message": "Světlo Mastodon",
+    "description": "Dropdown menu theme options"
+  },
+  "graze_color_p": {
+    "message": "Potlačit barvu akcentu motivu Mastodon",
+    "description": "options color section paragraph"
+  },
+  "home_instance_color_p": {
+    "message": "Override your home instance color.",
+    "description": "options home instance color paragraph"
+  },
+  "language": {
+    "message": "jazyk"
+  },
+  "Afrikaans": {
+    "message": "Afrikánština"
+  },
+  "Arabic": {
+    "message": "Arabština"
+  },
+  "Bengali": {
+    "message": "Bengalština"
+  },
+  "Bulgarian": {
+    "message": "Bulharsky"
+  },
+  "Chinese_Simplified": {
+    "message": "Zjednodušená čínština"
+  },
+  "Chinese_Traditional": {
+    "message": "Čínština tradiční"
+  },
+  "Czech": {
+    "message": "Čeština"
+  },
+  "Danish": {
+    "message": "dánština"
+  },
+  "Dutch": {
+    "message": "Holandština"
+  },
+  "English": {
+    "message": "anglický"
+  },
+  "Finnish": {
+    "message": "Finský"
+  },
+  "French": {
+    "message": "Francouzština"
+  },
+  "German": {
+    "message": "Německý"
+  },
+  "Greek": {
+    "message": "Řečtina"
+  },
+  "Hawaiian": {
+    "message": "Havajština"
+  },
+  "Hebrew": {
+    "message": "Hebrejština"
+  },
+  "Hindi": {
+    "message": "Hindština"
+  },
+  "Hungarian": {
+    "message": "Maďarsky"
+  },
+  "Icelandic": {
+    "message": "Islandština"
+  },
+  "Indonesian": {
+    "message": "indonéština"
+  },
+  "Italian": {
+    "message": "Italský"
+  },
+  "Japanese": {
+    "message": "Japonština"
+  },
+  "Korean": {
+    "message": "Korejština"
+  },
+  "Malay": {
+    "message": "malajština"
+  },
+  "Maori": {
+    "message": "Maorština"
+  },
+  "Norwegian": {
+    "message": "norština"
+  },
+  "Polish": {
+    "message": "Polsky"
+  },
+  "Portuguese": {
+    "message": "Portugalština"
+  },
+  "Portuguese_Brazilian": {
+    "message": "portugalština, brazilská"
+  },
+  "Romanian": {
+    "message": "Rumunský"
+  },
+  "Russian": {
+    "message": "Ruština"
+  },
+  "Serbian_Cyrillic": {
+    "message": "srbština (cyrilice)"
+  },
+  "Spanish_Modern": {
+    "message": "Španělština (moderní)"
+  },
+  "Swedish": {
+    "message": "Švédština"
+  },
+  "Tamil": {
+    "message": "Tamilské"
+  },
+  "Thai": {
+    "message": "thajština"
+  },
+  "Turkish": {
+    "message": "Turečtina"
+  },
+  "Ukrainian": {
+    "message": "Ukrajinština"
+  },
+  "Urdu_India": {
+    "message": "urdština (Indie)"
+  },
+  "Vietnamese": {
+    "message": "Vietnamština"
+  },
+  "Welsh": {
+    "message": "Velšsky"
+  },
+  "convenience": {
+    "message": "pohodlí"
+  },
+  "graze_convenience_p": {
+    "message": "Graze může maskovat jméno uživatele do odkazů okolo webu.",
+    "description": "options theme section paragraph"
+  },
+  "linkify_user_label": {
+    "message": "Linkifikovat jména uživatelů Mastodon",
+    "description": "Checkbox label for linkify "
+  },
+  "linkify_user": {
+    "message": "Graze může maskovat jméno uživatele do odkazů okolo webu.",
+    "description": "Checkbox description for linkify "
+  },
+  "display_hovercards_label": {
+    "message": "Zobrazit karty Hovercard",
+    "description": "Checkbox label for display hovercards"
+  },
+  "display_hovercards": {
+    "message": "Hoverkarty mohou zobrazovat rychlé informace o uživateli, když podržíte ukazatel myši nad svým jménem.",
+    "description": "Checkbox description for hovercards"
+  },
+  "show_federated_notification": {
+    "message": "Zobrazit vyskakovací okno pro instance, které nejsou federovány",
+    "description": "Checkbox description for federated peers notification"
+  },
+  "show_federated_notification_label": {
+    "message": "Navrhnout instance federace při návštěvě",
+    "description": "Checkbox label for federated peers notification"
+  },
+  "show_missing_account_notification": {
+    "message": "Zobrazit vyskakovací okno při přihlášení do účtu, který není přidán do Graze",
+    "description": "Checkbox description for missing account notification"
+  },
+  "show_missing_account_notification_label": {
+    "message": "Zobrazit vyskakovací okno pro přidání účtu",
+    "description": "Checkbox label for missing account peers notification"
+  },
+  "graze_language_p": {
+    "message": "Potlačit automatický jazyk v Graze",
+    "description": "options language section paragraph"
+  },
+  "reply_from": {
+    "message": "Klepnete-li na odpověď na vzdálený server nebo \"toot this page\" Graze může otevřít rychlou odpověď nebo vás odnést do své domovské instance.",
+    "description": "Reply from toggle button description"
+  },
+  "reply_from_graze": {
+    "message": "Odpověď z Graze",
+    "description": "Reply from toggle button description"
+  },
+  "reply_from_home": {
+    "message": "Odpověď z domovské instance",
+    "description": "Reply from toggle button description"
+  },
+  "redirect_explore_description": {
+    "message": "Na vzdálené instanci je lokální časová osa mnohem blíže odráží uživatele a obsah této instance.",
+    "description": "Redirect to explore checkbox description"
+  },
+  "redirect_explore_label": {
+    "message": "Redirect <strong>Prozkoumat</strong> až <strong>Lokální časová osa</strong>",
+    "description": "Redirect explore checkbox description"
+  },
+  "content": {
+    "message": "obsah",
+    "description": "Content title"
+  },
+  "graze_content_p": {
+    "message": "Učinit zobrazení obsahu vzdálené instance odpovídá vašim vlastním nebo promíchejte.",
+    "description": "options language section paragraph"
+  },
+  "content_writing_label": {
+    "message": "Zobrazit obsah za varováními obsahu (CW)",
+    "description": "Content writing label"
+  },
+  "play_gifs": {
+    "message": "Automaticky přehrávat GIF",
+    "description": "Play GIFS label"
+  },
+  "display_NSFW": {
+    "message": "Zobrazit NSFW/Citlivé obrazy",
+    "description": "Display NSFW label"
+  },
+  "set_active": {
+    "message": "nastavit aktivní účet",
+    "description": "Active account message"
+  },
+  "drag_title": {
+    "message": "Přetažením změníte pořadí",
+    "description": "Drag title"
+  },
+  "messages_title": {
+    "message": "Zprávy pro {username}",
+    "description": "Messages title"
+  },
+  "notifications_title": {
+    "message": "Oznámení pro {username}",
+    "description": "Notifications title"
+  },
+  "take_actions": {
+    "message": "PROVÉST AKCE Z TOHOTO ÚČTU",
+    "description": "Notifications title"
+  },
+  "taking_actions": {
+    "message": "Provedení akcí jako {username}",
+    "description": "Notifications title"
+  },
+  "show_rounded_avatars_label": {
+    "message": "Zobrazit kruhové obrázky avataru",
+    "description": "Checkbox label for showing rounded avatars"
+  },
+  "show_graze_context_menu_p": {
+    "message": "Zobrazit sdílení odkazů, obrázků a snippetů z kontextové nabídky přes web",
+    "description": "Checkbox paragraph for show graze context menu"
+  },
+  "show_graze_context_menu_label": {
+    "message": "Zobrazit kontextovou nabídku Graf",
+    "description": "Checkbox label for show graze context menu"
+  },
+  "redirect_automatically_p": {
+    "message": "Přesměrujte prázdné (nefederované) profily na domovské instance, abyste bezpečně klepli na tlačítko",
+    "description": "Checkbox paragraph for redirect automatically to unfederated profiles"
+  },
+  "redirect_automatically_label": {
+    "message": "Automaticky přesměrovat",
+    "description": "Checkbox label for redirect automatically to unfederated profiles"
+  },
+  "expand_mastodon_links_p": {
+    "message": "Rozbalit odkazy na příspěvky Mastodon ve vašich časových osách",
+    "description": "Checkbox paragraph for expanded mastodon link previews"
+  },
+  "expand_mastodon_links_label": {
+    "message": "Zobrazit rozbalené in-line příspěvky",
+    "description": "Checkbox label for expanded link mastodon previews"
+  },
+  "dedupe_label": {
+    "message": "Dedupe příspěvky obrázky a náhledy odkazů",
+    "description": "Checkbox label for deduping post images and link mastodon previews"
+  },
+  "expand_link_preview_p": {
+    "message": "Nahraďte výchozí náhledy odkazů s většími obrázky a celým textem úseku kódu",
+    "description": "Checkbox paragraph for expand link previews"
+  },
+  "expand_link_preview_label": {
+    "message": "Zobrazit náhledy s rozšířeným odkazem",
+    "description": "Checkbox label for expand link previews"
+  },
+  "show_alt_text_p": {
+    "message": "Graze může zobrazit popis obrázků \"Alt Text\" pod obrázky rathr, než jen v popisu pro snadnější čtení",
+    "description": "Checkbox label for show alt text"
+  },
+  "show_alt_text_label": {
+    "message": "Zobrazit popisy obrázků pod obrázky",
+    "description": "Checkbox label for show alt text"
+  },
+  "invalid_version_number_error": {
+    "message": "Graze je kompatibilní pouze s instancemi Mastodon verze 4.0.0 nebo vyšší",
+    "description": "Error message for incompatible Mastodon version"
+  },
+  "no_instance_found_error": {
+    "message": "Tento příklad nelze najít, prosím zkontrolujte adresu a zkuste to znovu.",
+    "description": "Error message for unfound instance"
+  },
+  "general_error": {
+    "message": "Došlo k chybě. Opakujte akci později.",
+    "description": "General error message"
+  },
+  "posts": {
+    "message": "Příspěvky",
+    "description": "Posts title"
+  },
+  "followers": {
+    "message": "Sledující",
+    "description": "Followers title"
+  },
+  "following": {
+    "message": "Sledovat",
+    "description": "Following title"
+  },
+  "no_thanks": {
+    "message": "Ne díky",
+    "description": "No thanks button"
+  },
+  "go_to_profile_directory": {
+    "message": "Přejít do adresáře profilu",
+    "description": "Go to profile directory button"
+  },
+  "go_to_local_timeline": {
+    "message": "Přejít na místní Timeline",
+    "description": "Go to local timeline button"
+  },
+  "follow_account_local_feed": {
+    "message": "Sledujte účet z místního kanálu a začněte sledovat obsah ve vašem domovském kanálu.",
+    "description": "Federated popup description"
+  },
+  "not_federated": {
+    "message": "Nejste federovaní do $username$",
+    "description": "Not federated popup title",
+    "placeholders": {
+      "username": {
+        "content": "$1"
+      }
+    }
+  },
+  "add_account_to_graze_description": {
+    "message": "Budete moci jednat z tohoto účtu na libovolné instanci.",
+    "description": "Add account to graze description"
+  },
+  "add_account_to_graze_title": {
+    "message": "Přidat $display_name$ do Grazu?",
+    "description": "Add account to graze title. Expects <span>display name</span> as a placeholder",
+    "placeholders": {
+      "display_name": {
+        "content": "$1",
+        "example": "<span>Mastodon</span>"
+      }
+    }
+  },
+  "add_to_graze": {
+    "message": "Přidat do Graze",
+    "description": "Add to graze button"
+  },
+  "account_switching_non_supported": {
+    "message": "Account switching is disabled on non supported instances",
+    "description": "Account switching disabled on unsupported instances"
+  },
+  "account_switching_logged_in": {
+    "message": "Account switching is disabled on logged in instances",
+    "description": "Account switching disabled when user is logged in"
+  },
+  "file_not_image_error": {
+    "message": "File is not an image",
+    "description": "File upload error message"
+  },
+  "upload_aborted_error": {
+    "message": "The upload was aborted.",
+    "description": "File upload aborted message"
+  },
+  "file_read_error": {
+    "message": "An error occurred while reading the file.",
+    "description": "File reading error message"
+  },
+  "image_empty_error": {
+    "message": "Image is empty",
+    "description": "Image empty error message"
+  },
+  "image_load_aborted_error": {
+    "message": "Image load was aborted.",
+    "description": "Image load aborted message"
+  },
+  "image_load_error": {
+    "message": "An error occurred while loading image.",
+    "description": "Image load error message"
+  },
+  "participants": {
+    "message": "Participants",
+    "description": "Participants title"
+  },
+  "posts_today": {
+    "message": "Posts today",
+    "description": "Posts today title"
+  },
+  "learn_more_about_hashtag": {
+    "message": "Learn more about #$hashtag$ hashtag across the",
+    "description": "Hashtag hovercard description",
+    "placeholders": {
+      "hashtag": {
+        "content": "$1"
+      }
+    }
+  },
+  "show_more": {
+    "message": "...more",
+    "description": "Truncated bio more text"
+  },
+  "mirror_content_settings_p": {
+    "message": "",
+    "description": "Intro text for mirroring content settings"
+  },
+  "mirror_sensitive_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring sensitive media display"
+  },
+  "mirror_cw_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring CW expansion"
+  },
+  "mirror_gif_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring GIF autoplay"
+  }
+}

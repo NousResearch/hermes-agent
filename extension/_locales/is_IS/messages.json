@@ -1,0 +1,240 @@
+{
+  "graze_description": {
+    "message": "er 1-smellur fylgja, uppáhalds, boost, og bókamerki fyrir Mastodon, sama hvaða tilvik þú kallar heim.",
+    "description": "Graze main home description"
+  },
+  "mastodon_instance_name_description": {
+    "message": "Nafnið þitt á Mastodon tilvikinu",
+    "description": "Instance Name description."
+  },
+  "need_help": {
+    "message": "Þurfa hjálp?",
+    "description": "Need help anchor link"
+  },
+  "connect_account_btn": {
+    "message": "Tengja reikning",
+    "description": "Submit button that connects to the new account."
+  },
+  "back_to_account_btn": {
+    "message": "Til baka í reikninga",
+    "description": "Button that returns the user back to their accounts list."
+  },
+  "not_yet_on_mastodon": {
+    "message": "Ekki enn á Mastodon?",
+    "description": "Button that returns the user back to their accounts list."
+  },
+  "instance_error": {
+    "message": "Finn ekki þetta tilvik, vinsamlegast athugaðu heimilisfangið og reyndu aftur.",
+    "description": "Error message that gets displayed when trying to connect to invalid instance name."
+  },
+  "accounts_container_title": {
+    "message": "Reikningar"
+  },
+  "add_account": {
+    "message": "+ BÆTA REIKNINGI við",
+    "description": "Link to add account."
+  },
+  "take_actions": {
+    "message": "Gríptu til aðgerða FRÁ ÞESSUM REIKNINGI",
+    "description": "Take actions string on active account."
+  },
+  "show_notifications": {
+    "message": "Sýna tilkynningar",
+    "description": "Toggle button for notifications."
+  },
+  "nevermind": {
+    "message": "Skiptir engu",
+    "description": "Nevermind button when logging out a user."
+  },
+  "remove_account": {
+    "message": "Fjarlægja reikning",
+    "description": "Remove account button when logging out a user."
+  },
+  "by": {
+    "message": "af"
+  },
+  "or": {
+    "message": "eða"
+  },
+  "send_feedback": {
+    "message": "Senda athugasemdir",
+    "description": "Send feedback anchor link."
+  },
+  "report_bug": {
+    "message": "Tilkynna villu",
+    "description": "Report bug anchor link."
+  },
+  "get_support": {
+    "message": "Fáðu stuðning",
+    "description": "Get support anchor link."
+  },
+  "donate": {
+    "message": "Gefðu",
+    "description": "Donate anchor link."
+  },
+  "graze_on_connect_success_1": {
+    "message": "Graze for Mastodon er tilbúið til notkunar!",
+    "description": "Success message when successfully connected to the server. -P1"
+  },
+  "graze_on_connect_success_2": {
+    "message": "Þessi flipi mun lokast",
+    "description": "Success message when successfully connected to the server. -P2"
+  },
+  "graze_on_connect_success_3": {
+    "message": "sekúndur",
+    "description": "Success message when successfully connected to the server. -P3"
+  },
+  "example": {
+    "message": "t.d.",
+    "description": "For example (e.g.) placeholder in input field."
+  },
+  "follow": {
+    "message": "Fylgja",
+    "description": "Follow button on Mastodon webpage."
+  },
+  "unfollow": {
+    "message": "Affylgja",
+    "description": "Follow button on Mastodon webpage."
+  },
+  "mention": {
+    "message": "Minnst á",
+    "description": "Mention menu item on Mastodon webpage."
+  },
+  "direct_message": {
+    "message": "Bein skilaboð",
+    "description": "Direct message menu item on Mastodon webpage."
+  },
+  "share": {
+    "message": "Deila",
+    "description": "Share menu item on Mastodon webpage."
+  },
+  "mute": {
+    "message": "Þagga",
+    "description": "Mute menu item on Mastodon webpage."
+  },
+  "block": {
+    "message": "Verja",
+    "description": "Block menu item on Mastodon webpage."
+  },
+  "report": {
+    "message": "Skýrsla",
+    "description": "Report menu item on Mastodon webpage."
+  },
+  "block_domain": {
+    "message": "Lokaðu léni",
+    "description": "Block domain menu item on Mastodon webpage."
+  },
+  "open_original_page": {
+    "message": "Opnaðu upprunalega síðu",
+    "description": "Open original page menu item on Mastodon webpage."
+  },
+  "copy_link": {
+    "message": "Afritaðu tengil á færslu",
+    "description": "Copy link to post menu item on Mastodon webpage."
+  },
+  "embed": {
+    "message": "Fella inn",
+    "description": "Embed menu item on Mastodon webpage."
+  },
+  "feature_on_profile": {
+    "message": "Birta á notandasniði",
+    "description": "Feature on profile menu item on Mastodon webpage."
+  },
+  "change_subscribed_languages": {
+    "message": "Breyta tungumálum í áskrift",
+    "description": "Change subscribed languages menu item on Mastodon webpage."
+  },
+  "hide_boosts_from": {
+    "message": "Fela uppörvun frá",
+    "description": "Hide boosts from menu item on Mastodon webpage."
+  },
+  "add_or_remove_from_lists": {
+    "message": "Bæta við eða fjarlægja af listum",
+    "description": "Add or Remove from lists menu item on Mastodon webpage."
+  },
+  "hour": {
+    "message": "klukkustund",
+    "description": "hour in time."
+  },
+  "under": {
+    "message": "undir",
+    "description": "context: less than"
+  },
+  "user_voted": {
+    "message": "Þú kaust þetta svar",
+    "description": "Title of the icon of the voted poll answer."
+  },
+  "home_instance_color_p": {
+    "message": "Override your home instance color.",
+    "description": "options home instance color paragraph"
+  },
+  "account_switching_non_supported": {
+    "message": "Account switching is disabled on non supported instances",
+    "description": "Account switching disabled on unsupported instances"
+  },
+  "account_switching_logged_in": {
+    "message": "Account switching is disabled on logged in instances",
+    "description": "Account switching disabled when user is logged in"
+  },
+  "file_not_image_error": {
+    "message": "File is not an image",
+    "description": "File upload error message"
+  },
+  "upload_aborted_error": {
+    "message": "The upload was aborted.",
+    "description": "File upload aborted message"
+  },
+  "file_read_error": {
+    "message": "An error occurred while reading the file.",
+    "description": "File reading error message"
+  },
+  "image_empty_error": {
+    "message": "Image is empty",
+    "description": "Image empty error message"
+  },
+  "image_load_aborted_error": {
+    "message": "Image load was aborted.",
+    "description": "Image load aborted message"
+  },
+  "image_load_error": {
+    "message": "An error occurred while loading image.",
+    "description": "Image load error message"
+  },
+  "participants": {
+    "message": "Participants",
+    "description": "Participants title"
+  },
+  "posts_today": {
+    "message": "Posts today",
+    "description": "Posts today title"
+  },
+  "learn_more_about_hashtag": {
+    "message": "Learn more about #$hashtag$ hashtag across the",
+    "description": "Hashtag hovercard description",
+    "placeholders": {
+      "hashtag": {
+        "content": "$1"
+      }
+    }
+  },
+  "show_more": {
+    "message": "...more",
+    "description": "Truncated bio more text"
+  },
+  "mirror_content_settings_p": {
+    "message": "",
+    "description": "Intro text for mirroring content settings"
+  },
+  "mirror_sensitive_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring sensitive media display"
+  },
+  "mirror_cw_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring CW expansion"
+  },
+  "mirror_gif_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring GIF autoplay"
+  }
+}

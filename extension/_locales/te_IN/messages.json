@@ -1,0 +1,611 @@
+{
+  "graze_description": {
+    "message": "Mstodon కోసం 1-క్లిక్ వెంట, ఇష్టం, బూస్ట్, మరియు బుక్మార్క్, మీరు ఇంటికి కాల్ ఏమి విషయం.",
+    "description": "Graze main home description"
+  },
+  "mastodon_instance_name_description": {
+    "message": "మీ Mastodon ఉదాహరత పేరు",
+    "description": "Instance Name description."
+  },
+  "need_help": {
+    "message": "నీడ్ సహాయం?",
+    "description": "Need help anchor link"
+  },
+  "connect_account_btn": {
+    "message": "ఖాతాను కనెక్ట్ చేయండి",
+    "description": "Submit button that connects to the new account."
+  },
+  "back_to_account_btn": {
+    "message": "అకౌంట్లుకు తిరిగి",
+    "description": "Button that returns the user back to their accounts list."
+  },
+  "not_yet_on_mastodon": {
+    "message": "మాస్టోడన్ లో ఇంకా లేదు?",
+    "description": "Button that returns the user back to their accounts list."
+  },
+  "instance_error": {
+    "message": "ఈ ఉదాహరను కనుగొనలేము, చిరునామాను పరిశీలించి మళ్ళీ ప్రయత్నించండి.",
+    "description": "Error message that gets displayed when trying to connect to invalid instance name."
+  },
+  "accounts_container_title": {
+    "message": "అకౌంటు"
+  },
+  "add_account": {
+    "message": "ఖాతాలు జతచేయుము",
+    "description": "Link to add account."
+  },
+  "show_notifications": {
+    "message": "నోటీసులు చూపించు",
+    "description": "Toggle button for notifications."
+  },
+  "nevermind": {
+    "message": "Nevermind",
+    "description": "Nevermind button when logging out a user."
+  },
+  "remove_account": {
+    "message": "ఖాతా తొలగించు",
+    "description": "Remove account button when logging out a user."
+  },
+  "by": {
+    "message": "ద్వారా"
+  },
+  "or": {
+    "message": "లేదా"
+  },
+  "send_feedback": {
+    "message": "ఫీడ్బ్యాక్ పంపించు",
+    "description": "Send feedback anchor link."
+  },
+  "report_bug": {
+    "message": "బగ్ నివేదిక",
+    "description": "Report bug anchor link."
+  },
+  "get_support": {
+    "message": "సహాయం పొందు",
+    "description": "Get support anchor link."
+  },
+  "donate": {
+    "message": "డొనెట్",
+    "description": "Donate anchor link."
+  },
+  "graze_on_connect_success_1": {
+    "message": "మాస్టోడన్ కోసం గ్రాజ్ ఉపయోగించడానికి సిద్ధంగా ఉంది!",
+    "description": "Success message when successfully connected to the server. -P1"
+  },
+  "graze_on_connect_success_2": {
+    "message": "ఈ టాబ్ లో దగ్గరవుతుంది",
+    "description": "Success message when successfully connected to the server. -P2"
+  },
+  "graze_on_connect_success_3": {
+    "message": "సెకనులు",
+    "description": "Success message when successfully connected to the server. -P3"
+  },
+  "example": {
+    "message": "ఉదా.",
+    "description": "For example (e.g.) placeholder in input field."
+  },
+  "follow": {
+    "message": "అనుసరి",
+    "description": "Follow button on Mastodon webpage."
+  },
+  "follows_you": {
+    "message": "నిన్ను వెంటాడుతుంటారు",
+    "description": "Follows you overlay"
+  },
+  "unfollow": {
+    "message": "అనుమతిచేయి",
+    "description": "Follow button on Mastodon webpage."
+  },
+  "mention": {
+    "message": "మెన్షన్",
+    "description": "Mention menu item on Mastodon webpage."
+  },
+  "direct_message": {
+    "message": "ప్రత్యక్ష సందేశం",
+    "description": "Direct message menu item on Mastodon webpage."
+  },
+  "share": {
+    "message": "పంచుకోండి",
+    "description": "Share menu item on Mastodon webpage."
+  },
+  "mute": {
+    "message": "మ్యూట్ చేయి",
+    "description": "Mute menu item on Mastodon webpage."
+  },
+  "block": {
+    "message": "నిరోధించు",
+    "description": "Block menu item on Mastodon webpage."
+  },
+  "report": {
+    "message": "నివేదిక",
+    "description": "Report menu item on Mastodon webpage."
+  },
+  "block_domain": {
+    "message": "బ్లాక్ డొమైన్",
+    "description": "Block domain menu item on Mastodon webpage."
+  },
+  "open_original_page": {
+    "message": "మూల పేజీ తెరువండి",
+    "description": "Open original page menu item on Mastodon webpage."
+  },
+  "copy_link": {
+    "message": "లింకు పోస్ట్ కు నకలుతీయుము",
+    "description": "Copy link to post menu item on Mastodon webpage."
+  },
+  "embed": {
+    "message": "ఎమ్బెడ్",
+    "description": "Embed menu item on Mastodon webpage."
+  },
+  "feature_on_profile": {
+    "message": "ప్రొఫైల్ పై ఫీచర్",
+    "description": "Feature on profile menu item on Mastodon webpage."
+  },
+  "change_subscribed_languages": {
+    "message": "చందమామ భాషలను మార్చుము",
+    "description": "Change subscribed languages menu item on Mastodon webpage."
+  },
+  "hide_boosts_from": {
+    "message": "నుండి బూస్లను మరుగుచేయి",
+    "description": "Hide boosts from menu item on Mastodon webpage."
+  },
+  "add_or_remove_from_lists": {
+    "message": "జాబితాల నుండి చేర్చు లేదా తీసివేయి",
+    "description": "Add or Remove from lists menu item on Mastodon webpage."
+  },
+  "hour": {
+    "message": "గంట",
+    "description": "hour in time."
+  },
+  "under": {
+    "message": "క్రింద",
+    "description": "context: less than"
+  },
+  "user_voted": {
+    "message": "మీరు ఈ సమాధానం కోసం ఓటు వేశారు",
+    "description": "Title of the icon of the voted poll answer."
+  },
+  "settings": {
+    "message": "అమరిక",
+    "description": "settings title."
+  },
+  "theme": {
+    "message": "థీమ్"
+  },
+  "graze_theme_p": {
+    "message": "గ్రాజ్ స్వయంచాలితంగా మీ థీమ్ను సరిపోతుంది, మీరు ఇష్టమైతే దానిని అధిగమించవచ్చు.",
+    "description": "options theme section paragraph"
+  },
+  "mastodon_dark": {
+    "message": "మాస్టోడన్ డార్క్",
+    "description": "Dropdown menu theme options"
+  },
+  "mastodon_light": {
+    "message": "మాస్టోడన్ లైట్",
+    "description": "Dropdown menu theme options"
+  },
+  "graze_color_p": {
+    "message": "Mastodon థీమ్ ఆక్సెంట్ రంగు ఎవర్రైడ్",
+    "description": "options color section paragraph"
+  },
+  "home_instance_color_p": {
+    "message": "Override your home instance color.",
+    "description": "options home instance color paragraph"
+  },
+  "language": {
+    "message": "భాష"
+  },
+  "Afrikaans": {
+    "message": "ఆఫ్రికాన్Name"
+  },
+  "Arabic": {
+    "message": "అరబిక్"
+  },
+  "Bengali": {
+    "message": "బెంగాలీ"
+  },
+  "Bulgarian": {
+    "message": "బల్గేరియాName"
+  },
+  "Chinese_Simplified": {
+    "message": "చైనీస్ సింప్లిఫైడ్"
+  },
+  "Chinese_Traditional": {
+    "message": "చైనీస్ సాంప్రదాయాలు"
+  },
+  "Czech": {
+    "message": "చెక్"
+  },
+  "Danish": {
+    "message": "డానిష్"
+  },
+  "Dutch": {
+    "message": "డచ్"
+  },
+  "English": {
+    "message": "ఆంగ్లం"
+  },
+  "Finnish": {
+    "message": "ఫినిష్"
+  },
+  "French": {
+    "message": "ఫ్రెంచ్"
+  },
+  "German": {
+    "message": "జర్మన్"
+  },
+  "Greek": {
+    "message": "గ్రీకు"
+  },
+  "Hawaiian": {
+    "message": "హవాయిన్Name"
+  },
+  "Hebrew": {
+    "message": "హిబ్రూ"
+  },
+  "Hindi": {
+    "message": "హిందీ"
+  },
+  "Hungarian": {
+    "message": "హంగేరియన్"
+  },
+  "Icelandic": {
+    "message": "ఐస్లాండిక్"
+  },
+  "Indonesian": {
+    "message": "Name"
+  },
+  "Italian": {
+    "message": "ఇటాలియన్"
+  },
+  "Japanese": {
+    "message": "జపనీస్"
+  },
+  "Korean": {
+    "message": "కొరియా"
+  },
+  "Malay": {
+    "message": "మాలీName"
+  },
+  "Maori": {
+    "message": "మావొరి"
+  },
+  "Norwegian": {
+    "message": "నార్వేజియన్"
+  },
+  "Polish": {
+    "message": "పోలిష్"
+  },
+  "Portuguese": {
+    "message": "పోర్చుగీస్"
+  },
+  "Portuguese_Brazilian": {
+    "message": "పోర్చుగీస్, బ్రెజిలియన్"
+  },
+  "Romanian": {
+    "message": "రొమేనియన్"
+  },
+  "Russian": {
+    "message": "రష్యన్"
+  },
+  "Serbian_Cyrillic": {
+    "message": "సెర్బియన్ (సిరిలిక్)"
+  },
+  "Spanish_Modern": {
+    "message": "స్పానిష్ (ఆధునిక)"
+  },
+  "Swedish": {
+    "message": "స్వీడిష్"
+  },
+  "Tamil": {
+    "message": "తమిళం"
+  },
+  "Thai": {
+    "message": "థాయ్"
+  },
+  "Turkish": {
+    "message": "టర్కిష్"
+  },
+  "Ukrainian": {
+    "message": "ఉక్రేనియన్"
+  },
+  "Urdu_India": {
+    "message": "ఉర్దూ (భారతదేశం)"
+  },
+  "Vietnamese": {
+    "message": "వియత్నాంName"
+  },
+  "Welsh": {
+    "message": "వెల్ష్"
+  },
+  "convenience": {
+    "message": "సౌలభ్యం"
+  },
+  "graze_convenience_p": {
+    "message": "గ్రేజ్ వెబ్ చుట్టూ మాస్టోడో వినియోగదారు పేరు లింకులుగా చేయవచ్చు.",
+    "description": "options theme section paragraph"
+  },
+  "linkify_user_label": {
+    "message": "మాస్టోడన్ యూజర్ పేర్లు లిన్కిName",
+    "description": "Checkbox label for linkify "
+  },
+  "linkify_user": {
+    "message": "గ్రేజ్ వెబ్ చుట్టూ మాస్టోడో వినియోగదారు పేరు లింకులుగా చేయవచ్చు.",
+    "description": "Checkbox description for linkify "
+  },
+  "display_hovercards_label": {
+    "message": "Hoverకార్డులను ప్రదర్శించుము",
+    "description": "Checkbox label for display hovercards"
+  },
+  "display_hovercards": {
+    "message": "మీరు వారి పేరును పెంచేటప్పుడు Hoverకార్డులు వినియోగదారుని గురించి శీఘ్ర సమాచారాన్ని తెలియజేయవచ్చు.",
+    "description": "Checkbox description for hovercards"
+  },
+  "show_federated_notification": {
+    "message": "మీరు ఫెడరేట్ చేయని సందర్భాల కోసం పాపప్‌ను చూపించు",
+    "description": "Checkbox description for federated peers notification"
+  },
+  "show_federated_notification_label": {
+    "message": "సందర్శించినప్పుడు ఫెడరట్ కు సూచించిన సందేశాలను సూచించు",
+    "description": "Checkbox label for federated peers notification"
+  },
+  "show_missing_account_notification": {
+    "message": "గ్రేజ్కు జతచేయబడని ఖాతాలో లాగిన్ చేయబడినప్పుడు పాపప్ చూపుము",
+    "description": "Checkbox description for missing account notification"
+  },
+  "show_missing_account_notification_label": {
+    "message": "ఖాతాను జోడించు త్వరిత లాగిన్ పాపప్‌ను చూపించు",
+    "description": "Checkbox label for missing account peers notification"
+  },
+  "graze_language_p": {
+    "message": "గ్రాజ్లో స్వయంచాలక భాషను ఓపెరైడ్ చేయుము",
+    "description": "options language section paragraph"
+  },
+  "reply_from": {
+    "message": "మీరు ఒక సుదూర సర్వర్ పై సమాధానం నొక్కి నొక్కినప్పుడు లేదా \"ఈ పేజ్ టూట్\" గ్రాజ్ త్వరగా సమాధానం తెరుచుకోవచ్చు లేదా మీ ఇంటి ఉదాహరణం తీసుకోవచ్చు.",
+    "description": "Reply from toggle button description"
+  },
+  "reply_from_graze": {
+    "message": "గ్రేజ్ నుండి జతచేయి",
+    "description": "Reply from toggle button description"
+  },
+  "reply_from_home": {
+    "message": "ఇంటి ఉదాహరణం నుండి జతచేయి",
+    "description": "Reply from toggle button description"
+  },
+  "redirect_explore_description": {
+    "message": "రిమోట్ వేదికపై స్థానిక కాలరేఖ మరింత దగ్గరగా వినియోగదారులు మరియు విషయం యొక్క సారూప్యాలను ప్రతిబింబించింది.",
+    "description": "Redirect to explore checkbox description"
+  },
+  "redirect_explore_label": {
+    "message": "Redirect <strong>Explore</strong> to <strong>Local</strong> timeline",
+    "description": "Redirect explore checkbox description"
+  },
+  "content": {
+    "message": "విషయం",
+    "description": "Content title"
+  },
+  "graze_content_p": {
+    "message": "(u) రిమోట్ ఇన్సారిటి ప్రదర్శన మీ సొంత, లేదా దానిని అప్ మిళితం చేయండి.",
+    "description": "options language section paragraph"
+  },
+  "content_writing_label": {
+    "message": "(CW) విషయ వార్నికల వెనుక సారాంశమును చూపుము",
+    "description": "Content writing label"
+  },
+  "play_gifs": {
+    "message": "స్వయంచాలక GIFను ఆడుతుంది",
+    "description": "Play GIFS label"
+  },
+  "display_NSFW": {
+    "message": "NSFW/సెన్సిటివ్ చిత్రాలను ప్రదర్శించుము",
+    "description": "Display NSFW label"
+  },
+  "set_active": {
+    "message": "క్రియాశీల ఖాతా అమర్చు",
+    "description": "Active account message"
+  },
+  "drag_title": {
+    "message": "పునర్క్రమణకు డ్రాగ్ చేయుము",
+    "description": "Drag title"
+  },
+  "messages_title": {
+    "message": "{username} కొరకు సందేశములు",
+    "description": "Messages title"
+  },
+  "notifications_title": {
+    "message": "{username} కొరకు నోటీసులు",
+    "description": "Notifications title"
+  },
+  "take_actions": {
+    "message": "చర్యలు {username} గా తీసుకోండి",
+    "description": "Notifications title"
+  },
+  "taking_actions": {
+    "message": "{username} గా చర్యలు తీసుకుంటారు.",
+    "description": "Notifications title"
+  },
+  "show_rounded_avatars_label": {
+    "message": "రౌండ్ అవతారము చిత్రాలు చూపుము",
+    "description": "Checkbox label for showing rounded avatars"
+  },
+  "show_graze_context_menu_p": {
+    "message": "సవరణ, ప్రతిబింబము, మరియు టెక్స్ట్ స్నిపెట్ పంపిణీ చూపుము",
+    "description": "Checkbox paragraph for show graze context menu"
+  },
+  "show_graze_context_menu_label": {
+    "message": "గ్రేజ్ సంప్రదాయ మెనూను చూపుము",
+    "description": "Checkbox label for show graze context menu"
+  },
+  "redirect_automatically_p": {
+    "message": "మీరు ఒక క్లిక్ మీకు సురక్షితంగా ఖాళీ (unfederated) profiles to home instances to home instances",
+    "description": "Checkbox paragraph for redirect automatically to unfederated profiles"
+  },
+  "redirect_automatically_label": {
+    "message": "స్వయంచాలక రీడైరెక్ట్",
+    "description": "Checkbox label for redirect automatically to unfederated profiles"
+  },
+  "expand_mastodon_links_p": {
+    "message": "మీ సమర్పణలో మాస్టోడన్ పోస్టుకు లింకులు",
+    "description": "Checkbox paragraph for expanded mastodon link previews"
+  },
+  "expand_mastodon_links_label": {
+    "message": "-వరుసల జాబితాలో విస్తరించబడినది",
+    "description": "Checkbox label for expanded link mastodon previews"
+  },
+  "dedupe_label": {
+    "message": "Dedupe పోస్ట్ బొమ్మలు మరియు లింకు అభిప్రాయాలు",
+    "description": "Checkbox label for deduping post images and link mastodon previews"
+  },
+  "expand_link_preview_p": {
+    "message": "అప్రమేయ లింకు అభిప్రాయాలను పెద్ద చిత్రాలు మరియు పూర్తి స్నిపెట్ టెక్స్ట్ తో ప్రతిస్థాపించుము",
+    "description": "Checkbox paragraph for expand link previews"
+  },
+  "expand_link_preview_label": {
+    "message": "ధృతమైన లింకు అభిప్రాయాలను ప్రదర్శించుము",
+    "description": "Checkbox label for expand link previews"
+  },
+  "show_alt_text_p": {
+    "message": "గ్రేజ్ ప్రతిబింబము డిస్క్రిప్టిన్లను \"Alt Text\" చిత్రాల క్రింద చూపవచ్చు, సులభంగా చదువుకున్న టూల్టిప్ లో కంటే",
+    "description": "Checkbox label for show alt text"
+  },
+  "show_alt_text_label": {
+    "message": "ప్రతిబింబమును క్రింద ప్రతిబింబమును ప్రదర్శించుము",
+    "description": "Checkbox label for show alt text"
+  },
+  "invalid_version_number_error": {
+    "message": "గ్రాజ్ మాత్రమే మాస్టోడన్ వర్షన్ 4.0.0 లేదా పైన నడుస్తున్న ఇన్స్టెన్సుతో మాత్రమే సరిపోతుంది",
+    "description": "Error message for incompatible Mastodon version"
+  },
+  "no_instance_found_error": {
+    "message": "ఈ ఉదాహరను కనుగొనలేము, చిరునామాను పరిశీలించి మళ్ళీ ప్రయత్నించండి.",
+    "description": "Error message for unfound instance"
+  },
+  "general_error": {
+    "message": "ఒక దోషము సంభవించింది. తరువాత మళ్ళీ ప్రయత్నించండి.",
+    "description": "General error message"
+  },
+  "posts": {
+    "message": "పోస్టులు",
+    "description": "Posts title"
+  },
+  "followers": {
+    "message": "అనుచరులు",
+    "description": "Followers title"
+  },
+  "following": {
+    "message": "అనుసరిస్తున్నారు",
+    "description": "Following title"
+  },
+  "no_thanks": {
+    "message": "ధన్యవాదాలు",
+    "description": "No thanks button"
+  },
+  "go_to_profile_directory": {
+    "message": "ప్రొఫైల్ డైరెక్టరీకు వెళ్ళు",
+    "description": "Go to profile directory button"
+  },
+  "go_to_local_timeline": {
+    "message": "స్థానిక టైమ్లైన్ కు వెళ్ళు",
+    "description": "Go to local timeline button"
+  },
+  "follow_account_local_feed": {
+    "message": "మీ హోమ్ ఫీడ్ లో సారూప్యత చూడటానికి స్థానిక ఫీడ్ నుండి ఒక ఖాతా అనుసరి.",
+    "description": "Federated popup description"
+  },
+  "not_federated": {
+    "message": "మీరు $username$ కు ఫెడరల్ కాదు",
+    "description": "Not federated popup title",
+    "placeholders": {
+      "username": {
+        "content": "$1"
+      }
+    }
+  },
+  "add_account_to_graze_description": {
+    "message": "మీరు ఏ ఇన్స్టెన్కు ఈ ఖాతా నుండి చర్యలు తీసుకోవాలి.",
+    "description": "Add account to graze description"
+  },
+  "add_account_to_graze_title": {
+    "message": "గ్రేజ్కు $display_name$ జతచేయాలి?",
+    "description": "Add account to graze title. Expects <span>display name</span> as a placeholder",
+    "placeholders": {
+      "display_name": {
+        "content": "$1",
+        "example": "<span>Mastodon</span>"
+      }
+    }
+  },
+  "add_to_graze": {
+    "message": "గ్రేజ్కు జతచేయుము",
+    "description": "Add to graze button"
+  },
+  "account_switching_non_supported": {
+    "message": "Account switching is disabled on non supported instances",
+    "description": "Account switching disabled on unsupported instances"
+  },
+  "account_switching_logged_in": {
+    "message": "Account switching is disabled on logged in instances",
+    "description": "Account switching disabled when user is logged in"
+  },
+  "file_not_image_error": {
+    "message": "File is not an image",
+    "description": "File upload error message"
+  },
+  "upload_aborted_error": {
+    "message": "The upload was aborted.",
+    "description": "File upload aborted message"
+  },
+  "file_read_error": {
+    "message": "An error occurred while reading the file.",
+    "description": "File reading error message"
+  },
+  "image_empty_error": {
+    "message": "Image is empty",
+    "description": "Image empty error message"
+  },
+  "image_load_aborted_error": {
+    "message": "Image load was aborted.",
+    "description": "Image load aborted message"
+  },
+  "image_load_error": {
+    "message": "An error occurred while loading image.",
+    "description": "Image load error message"
+  },
+  "participants": {
+    "message": "Participants",
+    "description": "Participants title"
+  },
+  "posts_today": {
+    "message": "Posts today",
+    "description": "Posts today title"
+  },
+  "learn_more_about_hashtag": {
+    "message": "Learn more about #$hashtag$ hashtag across the",
+    "description": "Hashtag hovercard description",
+    "placeholders": {
+      "hashtag": {
+        "content": "$1"
+      }
+    }
+  },
+  "show_more": {
+    "message": "...more",
+    "description": "Truncated bio more text"
+  },
+  "mirror_content_settings_p": {
+    "message": "",
+    "description": "Intro text for mirroring content settings"
+  },
+  "mirror_sensitive_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring sensitive media display"
+  },
+  "mirror_cw_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring CW expansion"
+  },
+  "mirror_gif_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring GIF autoplay"
+  }
+}

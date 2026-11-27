@@ -1,0 +1,611 @@
+{
+  "graze_description": {
+    "message": "1-کلک فالو, پسندیدہ, حوصلہ افزائی, اور مستفیدون کے لئے بک مارک, کوئی بات نہیں جو آپ کو گھر کہتے ہیں.",
+    "description": "Graze main home description"
+  },
+  "mastodon_instance_name_description": {
+    "message": "آپ کے Mastodon مثال کے نام",
+    "description": "Instance Name description."
+  },
+  "need_help": {
+    "message": "مدد کی ضرورت?",
+    "description": "Need help anchor link"
+  },
+  "connect_account_btn": {
+    "message": "اکاؤنٹ مربوط کریں",
+    "description": "Submit button that connects to the new account."
+  },
+  "back_to_account_btn": {
+    "message": "واپس اکاؤنٹس",
+    "description": "Button that returns the user back to their accounts list."
+  },
+  "not_yet_on_mastodon": {
+    "message": "ابھی تک Mastodon پر نہیں?",
+    "description": "Button that returns the user back to their accounts list."
+  },
+  "instance_error": {
+    "message": "اس مثال کو تلاش نہیں کر سکتے, براہ مہربانی ایڈریس چیک کریں اور دوبارہ کوشش کریں.",
+    "description": "Error message that gets displayed when trying to connect to invalid instance name."
+  },
+  "accounts_container_title": {
+    "message": "اکاؤنٹس"
+  },
+  "add_account": {
+    "message": "+ مزید اکاؤنٹ",
+    "description": "Link to add account."
+  },
+  "show_notifications": {
+    "message": "اطلاع دیں",
+    "description": "Toggle button for notifications."
+  },
+  "nevermind": {
+    "message": "نیمن",
+    "description": "Nevermind button when logging out a user."
+  },
+  "remove_account": {
+    "message": "اکاونٹ کو ہٹائیں",
+    "description": "Remove account button when logging out a user."
+  },
+  "by": {
+    "message": "دوارہ"
+  },
+  "or": {
+    "message": "یا"
+  },
+  "send_feedback": {
+    "message": "تاثرات بھیجیں",
+    "description": "Send feedback anchor link."
+  },
+  "report_bug": {
+    "message": "رپورٹ بگ",
+    "description": "Report bug anchor link."
+  },
+  "get_support": {
+    "message": "سپورٹ حاصل کریں",
+    "description": "Get support anchor link."
+  },
+  "donate": {
+    "message": "عطیہ",
+    "description": "Donate anchor link."
+  },
+  "graze_on_connect_success_1": {
+    "message": "Mastodon کے لئے Graze استعمال کرنے کے لئے تیار ہے!",
+    "description": "Success message when successfully connected to the server. -P1"
+  },
+  "graze_on_connect_success_2": {
+    "message": "یہ ٹیب میں بند ہوگا",
+    "description": "Success message when successfully connected to the server. -P2"
+  },
+  "graze_on_connect_success_3": {
+    "message": "سیکنڈ",
+    "description": "Success message when successfully connected to the server. -P3"
+  },
+  "example": {
+    "message": "جیسے.",
+    "description": "For example (e.g.) placeholder in input field."
+  },
+  "follow": {
+    "message": "پیروی",
+    "description": "Follow button on Mastodon webpage."
+  },
+  "follows_you": {
+    "message": "آپ کر رہے ہیں",
+    "description": "Follows you overlay"
+  },
+  "unfollow": {
+    "message": "غیر پیروی",
+    "description": "Follow button on Mastodon webpage."
+  },
+  "mention": {
+    "message": "ذکر",
+    "description": "Mention menu item on Mastodon webpage."
+  },
+  "direct_message": {
+    "message": "براہ راست پیغام",
+    "description": "Direct message menu item on Mastodon webpage."
+  },
+  "share": {
+    "message": "شیئر ٹویٹ",
+    "description": "Share menu item on Mastodon webpage."
+  },
+  "mute": {
+    "message": "مٹے",
+    "description": "Mute menu item on Mastodon webpage."
+  },
+  "block": {
+    "message": "بلاک",
+    "description": "Block menu item on Mastodon webpage."
+  },
+  "report": {
+    "message": "رپورٹ",
+    "description": "Report menu item on Mastodon webpage."
+  },
+  "block_domain": {
+    "message": "بلاک ڈومین",
+    "description": "Block domain menu item on Mastodon webpage."
+  },
+  "open_original_page": {
+    "message": "اصلی صفحہ کھولیں",
+    "description": "Open original page menu item on Mastodon webpage."
+  },
+  "copy_link": {
+    "message": "پوسٹ کا لنک کاپی کریں",
+    "description": "Copy link to post menu item on Mastodon webpage."
+  },
+  "embed": {
+    "message": "حاصل کیجئے",
+    "description": "Embed menu item on Mastodon webpage."
+  },
+  "feature_on_profile": {
+    "message": "پروفائل پر فیچر",
+    "description": "Feature on profile menu item on Mastodon webpage."
+  },
+  "change_subscribed_languages": {
+    "message": "سبسکرائب کرنے والی زبانیں",
+    "description": "Change subscribed languages menu item on Mastodon webpage."
+  },
+  "hide_boosts_from": {
+    "message": "سے نفرت بڑھاتا ہے",
+    "description": "Hide boosts from menu item on Mastodon webpage."
+  },
+  "add_or_remove_from_lists": {
+    "message": "فہرستوں سے ہٹا دیں یا ریلیں",
+    "description": "Add or Remove from lists menu item on Mastodon webpage."
+  },
+  "hour": {
+    "message": "گھنٹے",
+    "description": "hour in time."
+  },
+  "under": {
+    "message": "کے تحت",
+    "description": "context: less than"
+  },
+  "user_voted": {
+    "message": "آپ اس جواب کے لئے ووٹ دیا",
+    "description": "Title of the icon of the voted poll answer."
+  },
+  "settings": {
+    "message": "سیٹنگز",
+    "description": "settings title."
+  },
+  "theme": {
+    "message": "تھیم"
+  },
+  "graze_theme_p": {
+    "message": "آپ کی تھیم کو خود کار طریقے سے کھاتا ہے, آپ اسے پسند کرتے ہیں اگر آپ پسند کرتے ہیں.",
+    "description": "options theme section paragraph"
+  },
+  "mastodon_dark": {
+    "message": "Mastodon گہرا",
+    "description": "Dropdown menu theme options"
+  },
+  "mastodon_light": {
+    "message": "Mastodon پرکاش",
+    "description": "Dropdown menu theme options"
+  },
+  "graze_color_p": {
+    "message": "اووررائڈ Mastodon Theme Accent رنگین",
+    "description": "options color section paragraph"
+  },
+  "home_instance_color_p": {
+    "message": "Override your home instance color.",
+    "description": "options home instance color paragraph"
+  },
+  "language": {
+    "message": "زبان"
+  },
+  "Afrikaans": {
+    "message": "ایفریکانز"
+  },
+  "Arabic": {
+    "message": "عربي"
+  },
+  "Bengali": {
+    "message": "بنگالی"
+  },
+  "Bulgarian": {
+    "message": "بلغا"
+  },
+  "Chinese_Simplified": {
+    "message": "چینی آسان"
+  },
+  "Chinese_Traditional": {
+    "message": "چینی روایتی"
+  },
+  "Czech": {
+    "message": "چیک"
+  },
+  "Danish": {
+    "message": "دانش"
+  },
+  "Dutch": {
+    "message": "ڈچ"
+  },
+  "English": {
+    "message": "انگریزی"
+  },
+  "Finnish": {
+    "message": "فننش"
+  },
+  "French": {
+    "message": "فرانسیسی"
+  },
+  "German": {
+    "message": "جرمن"
+  },
+  "Greek": {
+    "message": "یونانی"
+  },
+  "Hawaiian": {
+    "message": "ہوائی"
+  },
+  "Hebrew": {
+    "message": "عبرانی"
+  },
+  "Hindi": {
+    "message": "ہندی"
+  },
+  "Hungarian": {
+    "message": "ہنگیرین"
+  },
+  "Icelandic": {
+    "message": "برفستانی"
+  },
+  "Indonesian": {
+    "message": "انڈونیشیائی"
+  },
+  "Italian": {
+    "message": "اٹالین"
+  },
+  "Japanese": {
+    "message": "جاپانی"
+  },
+  "Korean": {
+    "message": "کورین"
+  },
+  "Malay": {
+    "message": "مالے"
+  },
+  "Maori": {
+    "message": "ماؤری"
+  },
+  "Norwegian": {
+    "message": "ناروے"
+  },
+  "Polish": {
+    "message": "پولینڈ"
+  },
+  "Portuguese": {
+    "message": "پرتگالی"
+  },
+  "Portuguese_Brazilian": {
+    "message": "پرتگالی, برازیل"
+  },
+  "Romanian": {
+    "message": "رومانیہ"
+  },
+  "Russian": {
+    "message": "روسی"
+  },
+  "Serbian_Cyrillic": {
+    "message": "سربیا (سیریلک)"
+  },
+  "Spanish_Modern": {
+    "message": "سپینش (آدھونک)"
+  },
+  "Swedish": {
+    "message": "سویڈش"
+  },
+  "Tamil": {
+    "message": "تمل"
+  },
+  "Thai": {
+    "message": "تھائی"
+  },
+  "Turkish": {
+    "message": "ترکی"
+  },
+  "Ukrainian": {
+    "message": "یوکرائين"
+  },
+  "Urdu_India": {
+    "message": "اردو (ہند)"
+  },
+  "Vietnamese": {
+    "message": "ویتنامی"
+  },
+  "Welsh": {
+    "message": "ویلش"
+  },
+  "convenience": {
+    "message": "سہولت"
+  },
+  "graze_convenience_p": {
+    "message": "Graze ویب کے ارد گرد لنکس میں مشت زنی صارف نام کر سکتے ہیں.",
+    "description": "options theme section paragraph"
+  },
+  "linkify_user_label": {
+    "message": "مستوئی مستوات کے نام",
+    "description": "Checkbox label for linkify "
+  },
+  "linkify_user": {
+    "message": "Graze ویب کے ارد گرد لنکس میں مشت زنی صارف نام کر سکتے ہیں.",
+    "description": "Checkbox description for linkify "
+  },
+  "display_hovercards_label": {
+    "message": "ڈسپلے ہائیڈ کارڈز",
+    "description": "Checkbox label for display hovercards"
+  },
+  "display_hovercards": {
+    "message": "Hoverکارڈوں صارف کے بارے میں فوری معلومات ظاہر کر سکتے ہیں جب آپ ان کے نام پر hover.",
+    "description": "Checkbox description for hovercards"
+  },
+  "show_federated_notification": {
+    "message": "آپ کو وفاق نہیں کر رہے ہیں کے لئے پاپ اپ دکھائیں",
+    "description": "Checkbox description for federated peers notification"
+  },
+  "show_federated_notification_label": {
+    "message": "جب دورہ کیا گیا تو وفاق کو تجویز پیش کی گئی",
+    "description": "Checkbox label for federated peers notification"
+  },
+  "show_missing_account_notification": {
+    "message": "گرپ میں شامل نہیں ایک اکاؤنٹ میں لاگ ان جب پاپ شو",
+    "description": "Checkbox description for missing account notification"
+  },
+  "show_missing_account_notification_label": {
+    "message": "دکھائیں اضافہ اکاؤنٹ فوری لوین پاپپ",
+    "description": "Checkbox label for missing account peers notification"
+  },
+  "graze_language_p": {
+    "message": "گریزے میں خودکار زبان اوورٹیک",
+    "description": "options language section paragraph"
+  },
+  "reply_from": {
+    "message": "جب آپ ریموٹ سرور پر جواب کلک کریں یا \"toot this page\" Graze ایک فوری جواب کھول سکتے ہیں یا آپ کو اپنے ہوم مثال کے طور پر لے سکتے ہیں.",
+    "description": "Reply from toggle button description"
+  },
+  "reply_from_graze": {
+    "message": "Reply سے جواب",
+    "description": "Reply from toggle button description"
+  },
+  "reply_from_home": {
+    "message": "Reply ہوم مثال سے جواب",
+    "description": "Reply from toggle button description"
+  },
+  "redirect_explore_description": {
+    "message": "مثال کے طور پر, مقامی ٹائم لائن زیادہ باریک بینی سے صارفین اور اس کے مواد کی عکاسی کرتی ہے.",
+    "description": "Redirect to explore checkbox description"
+  },
+  "redirect_explore_label": {
+    "message": "<strong>دریافت کریں</strong> کو <strong>مقامی</strong> ٹائم لائن پر بھیجیں۔",
+    "description": "Redirect explore checkbox description"
+  },
+  "content": {
+    "message": "سامگری",
+    "description": "Content title"
+  },
+  "graze_content_p": {
+    "message": "ریموٹ مثال کے طور پر مواد کو اپنی مرضی سے مماثل کریں, یا اسے مکس کریں.",
+    "description": "options language section paragraph"
+  },
+  "content_writing_label": {
+    "message": "کونٹینٹ وارنگس (CW) کے پیچھے دکھانا",
+    "description": "Content writing label"
+  },
+  "play_gifs": {
+    "message": "خود کار طریقے سے GIFs کھیلتے",
+    "description": "Play GIFS label"
+  },
+  "display_NSFW": {
+    "message": "ڈسپلے NSFW/Sensitive تصاویر",
+    "description": "Display NSFW label"
+  },
+  "set_active": {
+    "message": "فعال اکاؤنٹ قائم",
+    "description": "Active account message"
+  },
+  "drag_title": {
+    "message": "Reorder to reorder)",
+    "description": "Drag title"
+  },
+  "messages_title": {
+    "message": "میسجز {username}",
+    "description": "Messages title"
+  },
+  "notifications_title": {
+    "message": "اطلاعات {username} پر",
+    "description": "Notifications title"
+  },
+  "take_actions": {
+    "message": "اس حساب سے کارروائیاں کریں",
+    "description": "Notifications title"
+  },
+  "taking_actions": {
+    "message": "کارروائیاں کرتے ہوئے {username}",
+    "description": "Notifications title"
+  },
+  "show_rounded_avatars_label": {
+    "message": "شو راؤنڈ اوتار تصاویر",
+    "description": "Checkbox label for showing rounded avatars"
+  },
+  "show_graze_context_menu_p": {
+    "message": "شو لنک, تصویر, اور متن کے ٹکڑوں کو ویب بھر میں سیاق و سباق کے مینو سے شیئر کریں",
+    "description": "Checkbox paragraph for show graze context menu"
+  },
+  "show_graze_context_menu_label": {
+    "message": "شو گریزے تناظر مینو",
+    "description": "Checkbox label for show graze context menu"
+  },
+  "redirect_automatically_p": {
+    "message": "براہ راست خالی (unوفاق) پروفائلز آپ کو ایک کلک محفوظ کرنے کے لئے گھر کے واقعات کو پروفائلز",
+    "description": "Checkbox paragraph for redirect automatically to unfederated profiles"
+  },
+  "redirect_automatically_label": {
+    "message": "براہ راست خود کار",
+    "description": "Checkbox label for redirect automatically to unfederated profiles"
+  },
+  "expand_mastodon_links_p": {
+    "message": "آپ کے ٹائم لائنز میں Mastodon پوسٹس کرنے کی توقع",
+    "description": "Checkbox paragraph for expanded mastodon link previews"
+  },
+  "expand_mastodon_links_label": {
+    "message": "لائن پوسٹس میں توسیع",
+    "description": "Checkbox label for expanded link mastodon previews"
+  },
+  "dedupe_label": {
+    "message": "Dedupe پوسٹ کی تصاویر اور لنک مناظر",
+    "description": "Checkbox label for deduping post images and link mastodon previews"
+  },
+  "expand_link_preview_p": {
+    "message": "پہلے سے طے شدہ لنک کی طرف سے وسیع تر تصاویر اور مکمل سراغرسانی کا متن",
+    "description": "Checkbox paragraph for expand link previews"
+  },
+  "expand_link_preview_label": {
+    "message": "مایوس کن امیر لنک پیش کریں",
+    "description": "Checkbox label for expand link previews"
+  },
+  "show_alt_text_p": {
+    "message": "Graze تصویر کو ایک ٹول ٹپ میں صرف آسانی سے پڑھنے کے لئے کی نسبت تصاویر rathrer کے ذیل میں تصویر کو ظاہر کر سکتے ہیں.",
+    "description": "Checkbox label for show alt text"
+  },
+  "show_alt_text_label": {
+    "message": "ڈسپلے کی تصاویر کے نیچے تصاویر کی وضاحت",
+    "description": "Checkbox label for show alt text"
+  },
+  "invalid_version_number_error": {
+    "message": "Graze صرف مستوڈان ورژن 4.0.0 یا اس سے اوپر واقعات کے ساتھ مطابقت رکھتا ہے",
+    "description": "Error message for incompatible Mastodon version"
+  },
+  "no_instance_found_error": {
+    "message": "اس مثال کو تلاش نہیں کر سکتے, براہ مہربانی ایڈریس چیک کریں اور دوبارہ کوشش کریں.",
+    "description": "Error message for unfound instance"
+  },
+  "general_error": {
+    "message": "ایک غلطی ہوئی. بعد میں دوبارہ کوشش کریں.",
+    "description": "General error message"
+  },
+  "posts": {
+    "message": "تحريرات",
+    "description": "Posts title"
+  },
+  "followers": {
+    "message": "پیروکار",
+    "description": "Followers title"
+  },
+  "following": {
+    "message": "پیر",
+    "description": "Following title"
+  },
+  "no_thanks": {
+    "message": "نہیں شکریہ",
+    "description": "No thanks button"
+  },
+  "go_to_profile_directory": {
+    "message": "پیشہ ورانہ ڈائریکٹری میں جائیں",
+    "description": "Go to profile directory button"
+  },
+  "go_to_local_timeline": {
+    "message": "مقامی ٹائم لائن پر جائیں",
+    "description": "Go to local timeline button"
+  },
+  "follow_account_local_feed": {
+    "message": "اپنے ہوم فیڈ میں مواد دیکھ کر شروع کرنے کے لئے مقامی فیڈ سے ایک اکاؤنٹ پر عمل کریں.",
+    "description": "Federated popup description"
+  },
+  "not_federated": {
+    "message": "آپ کو وفاق نہیں ہے $username$",
+    "description": "Not federated popup title",
+    "placeholders": {
+      "username": {
+        "content": "$1"
+      }
+    }
+  },
+  "add_account_to_graze_description": {
+    "message": "آپ کسی بھی موقف پر اس حساب سے کارروائیاں کر سکیں گے.",
+    "description": "Add account to graze description"
+  },
+  "add_account_to_graze_title": {
+    "message": "گریزے کے لیے $display_name$ پر ربط کریں?",
+    "description": "Add account to graze title. Expects <span>display name</span> as a placeholder",
+    "placeholders": {
+      "display_name": {
+        "content": "$1",
+        "example": "<span>Mastodon</span>"
+      }
+    }
+  },
+  "add_to_graze": {
+    "message": "گریزے میں شامل کریں",
+    "description": "Add to graze button"
+  },
+  "account_switching_non_supported": {
+    "message": "Account switching is disabled on non supported instances",
+    "description": "Account switching disabled on unsupported instances"
+  },
+  "account_switching_logged_in": {
+    "message": "Account switching is disabled on logged in instances",
+    "description": "Account switching disabled when user is logged in"
+  },
+  "file_not_image_error": {
+    "message": "File is not an image",
+    "description": "File upload error message"
+  },
+  "upload_aborted_error": {
+    "message": "The upload was aborted.",
+    "description": "File upload aborted message"
+  },
+  "file_read_error": {
+    "message": "An error occurred while reading the file.",
+    "description": "File reading error message"
+  },
+  "image_empty_error": {
+    "message": "Image is empty",
+    "description": "Image empty error message"
+  },
+  "image_load_aborted_error": {
+    "message": "Image load was aborted.",
+    "description": "Image load aborted message"
+  },
+  "image_load_error": {
+    "message": "An error occurred while loading image.",
+    "description": "Image load error message"
+  },
+  "participants": {
+    "message": "Participants",
+    "description": "Participants title"
+  },
+  "posts_today": {
+    "message": "Posts today",
+    "description": "Posts today title"
+  },
+  "learn_more_about_hashtag": {
+    "message": "Learn more about #$hashtag$ hashtag across the",
+    "description": "Hashtag hovercard description",
+    "placeholders": {
+      "hashtag": {
+        "content": "$1"
+      }
+    }
+  },
+  "show_more": {
+    "message": "...more",
+    "description": "Truncated bio more text"
+  },
+  "mirror_content_settings_p": {
+    "message": "",
+    "description": "Intro text for mirroring content settings"
+  },
+  "mirror_sensitive_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring sensitive media display"
+  },
+  "mirror_cw_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring CW expansion"
+  },
+  "mirror_gif_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring GIF autoplay"
+  }
+}

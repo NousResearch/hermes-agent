@@ -524,14 +524,17 @@ def _(rid, params: dict) -> dict:
 
 
 @method("client.capabilities")
-def _(rid, params: dict) -> dict:
+def client_capabilities(rid, params: dict, transport=None, *, canonical=False) -> dict:
     """What the calling client handles. ``server_requests: true`` marks this connection as one that answers
     server→client requests; a WebSocket client that never sends it gets every such request failed fast
     instead of stalling the agent for the deadline (#112548)."""
     from hermes_cli.process_identity import local_desktop_client
     from tui_gateway import server_requests
     from tui_gateway.contracts import registry as contracts
-    transport = _caller_transport()
+    transport = _caller_transport() if transport is None else transport
+    if 'canonical_clarify_projection_v1' in params:
+        if not canonical or not getattr(transport, 'batch_projection_offered', False):
+            return _err(rid, 4001, 'invalid_params')
     # Each call updates what it names: the Desktop sends ``desktop_local`` on its own, so a backend older
     # than the field refuses only that call and keeps the ``server_requests`` it already accepted.
     # A refused ``client`` answers before anything else in the call takes effect.
@@ -540,6 +543,8 @@ def _(rid, params: dict) -> dict:
         if problem := client_problem(params["client"]):
             return _err(rid, 4001, f"client {problem}")
         transport.client_identity = normalized_client(params["client"])
+    if 'canonical_clarify_projection_v1' in params:
+        transport.canonical_clarify_projection = params['canonical_clarify_projection_v1'] is True
     if "server_requests" in params:
         server_requests.advertise(transport, bool(params.get("server_requests")))
     if "desktop_local" in params and hasattr(transport, "auth_identity"):
@@ -547,7 +552,10 @@ def _(rid, params: dict) -> dict:
         if transport.desktop_local:
             from tui_gateway import server
             server.begin_local_desktop_boot()
+    if canonical:
+        transport.batch_projection_offered = True
     return _ok(rid, {"server_requests": sorted(contracts.SERVER_REQUESTS), "declines_not_shown": True,
+                     **({'canonical_clarify_projection_v1': True} if canonical else {}),
                      "canonical_clarify_batch": True,
                      "client_activity": getattr(transport, "client_presence", None) is not None})
 

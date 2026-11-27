@@ -281,7 +281,8 @@ class FanoutTransport:
         except Exception:
             logger.debug("fanout overflow close failed; membership already dropped", exc_info=True)
 
-    def write(self, obj: dict, *, overflow: Callable[[Transport], Optional[dict]] | None = None) -> bool:
+    def write(self, obj: dict, *, overflow: Callable[[Transport], Optional[dict]] | None = None,
+              select: Callable[[Transport], bool] | None = None) -> bool:
         """Fan *obj* out. A peer whose bounded backlog is full loses its subscription; *overflow*
         (called with its transport, under the membership lock) may return one final frame that
         replaces the dropped backlog, so a socket that is still healthy learns it must resume
@@ -295,7 +296,7 @@ class FanoutTransport:
         overflowed: list[Transport] = []
         with self._lock:
             for peer in list(self._peers):
-                if not peer.attached:
+                if not peer.attached or (select is not None and not select(peer.transport)):
                     continue
                 if (len(peer.pending) >= self._MAX_PENDING_FRAMES
                         or peer.pending_bytes + size > self._MAX_PENDING_BYTES):

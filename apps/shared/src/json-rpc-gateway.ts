@@ -204,6 +204,7 @@ export class JsonRpcGatewayClient {
     }
     this.channel = new JsonRpcRequestChannel({
       clientIdentity: () => this.clientIdentity(),
+      canonicalClarifyProjection: () => this.selectCanonicalClarifyProjection(),
       createRequestId: this.options.createRequestId,
       desktopLocal: () => this.isDesktopLocal(),
       heartbeatDeadlineMs: this.options.heartbeatDeadlineMs,
@@ -226,6 +227,14 @@ export class JsonRpcGatewayClient {
   }
 
   /** The connected canonical owner admits `clarify_batch` on `prompt.submit` (`client.capabilities`). */
+  protected selectCanonicalClarifyProjection(): boolean { return false }
+
+  protected waitForCapabilities(timeoutMs: number, signal?: AbortSignal): Promise<void> {
+    return this.channel.waitForCapabilities(timeoutMs,signal)
+  }
+
+  protected get canonicalClarifyProjection(): boolean { return this.channel.canonicalClarifyProjection }
+
   protected get backendClarifyBatch(): boolean {
     return this.channel.clarifyBatch
   }
@@ -855,7 +864,7 @@ export class JsonRpcGatewayClient {
     this.setState('closed')
   }
 
-  private dispatchEvent(event: GatewayEvent): void {
+  protected dispatchEvent(event: GatewayEvent): void {
     // Tag the frame with the process epoch this socket adopted so a consumer
     // holding several sockets to one backend can recognise the same event
     // arriving on each of them; the epoch is per process, not per socket.

@@ -32,6 +32,7 @@ method("gateway.capabilities", params=PingParams, result=GatewayCapabilitiesResu
 
 
 class ClientCapabilitiesParams(Params):
+    canonical_clarify_projection_v1: bool = Field(default=False, strict=True)
     #: The client answers server→client requests (clarify, approval, sudo, …) — with a result or a -32601
     #: error for methods it has no handler for. A WebSocket client that never says so is treated as a
     #: build older than server→client requests and every such request fails fast for it.
@@ -50,6 +51,7 @@ class ClientCapabilitiesParams(Params):
 
 
 class ClientCapabilitiesResult(Result):
+    canonical_clarify_projection_v1: bool = False
     #: Server→client request methods this backend may send.
     server_requests: list[str]
     #: This backend counts a ``4404`` "no window here shows this session" error from a window-owned

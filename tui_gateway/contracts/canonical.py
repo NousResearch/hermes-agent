@@ -20,9 +20,46 @@ from .groups_bot_relay import (
     GroupsPeerInviteResult, GroupsPeerRegisterResult, GroupsPeerRevokeResult, RoomParams, RoomTaskReceipt,
 )
 from .prompt_voice import ClarifyLockParams, ClarifyLockResult
+from .liveness import ClientCapabilitiesParams, ClientCapabilitiesResult
+from .server_requests import CanonicalClarifyIdentity
 from .registry import canonical_method, canonical_namespace, method
 
 # ── admissions ────────────────────────────────────────────────────────────────────────────────
+
+
+canonical_method('client.capabilities', params=ClientCapabilitiesParams, result=ClientCapabilitiesResult,
+                 doc='Advertise support, then explicitly select canonical batch projection v1 per connection.')
+
+
+class CanonicalBatchParams(Params):
+    session_id: str = Field(min_length=1, strict=True)
+    request_id: str = Field(min_length=1, strict=True)
+    identity: CanonicalClarifyIdentity
+    profile: str | None = None
+
+
+class CanonicalBatchLockParams(CanonicalBatchParams):
+    question_id: str = Field(min_length=1, strict=True)
+    answer: str | list[str] | None
+
+
+class CanonicalBatchTerminal(Result):
+    answers: dict[str, str | None]
+    outcome: Literal['submitted', 'cancelled', 'timed_out']
+
+
+class CanonicalBatchRespondParams(CanonicalBatchParams):
+    result: CanonicalBatchTerminal
+
+
+class CanonicalBatchRespondResult(Result):
+    status: Literal['ok', 'expired']
+
+
+canonical_method('clarify.batch.lock', params=CanonicalBatchLockParams, result=ClarifyLockResult,
+                 doc='Exact-identity per-question lock against the existing native batch waiter.')
+canonical_method('clarify.batch.respond', params=CanonicalBatchRespondParams, result=CanonicalBatchRespondResult,
+                 doc='Exact-identity full ClarifyResult settlement against the existing native batch waiter.')
 
 
 class CanonicalSessionRef(Result):

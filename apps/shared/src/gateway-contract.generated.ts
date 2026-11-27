@@ -2048,6 +2048,7 @@ export interface GatewayCapabilitiesResult {
   per_session_exclusive_submit: boolean
 }
 export interface ClientCapabilitiesParams {
+  canonical_clarify_projection_v1?: boolean
   server_requests?: boolean
   desktop_local?: boolean
   client?: CanonicalClientIdentity | null
@@ -2059,6 +2060,7 @@ export interface CanonicalClientIdentity {
   kind?: string | null
 }
 export interface ClientCapabilitiesResult {
+  canonical_clarify_projection_v1?: boolean
   server_requests: string[]
   declines_not_shown?: boolean
   canonical_clarify_batch?: boolean
@@ -4845,6 +4847,34 @@ export interface CanonicalShellExecParams {
   command: string
   profile?: string | null
 }
+export interface CanonicalBatchLockParams {
+  session_id: string
+  request_id: string
+  identity: CanonicalClarifyIdentity
+  profile?: string | null
+  question_id: string
+  answer: string | string[] | null
+}
+export interface CanonicalClarifyIdentity {
+  profile_id: string
+  authority_epoch: number
+  stream_id: string
+  execution_generation: number
+}
+export interface CanonicalBatchRespondParams {
+  session_id: string
+  request_id: string
+  identity: CanonicalClarifyIdentity
+  profile?: string | null
+  result: CanonicalBatchTerminal
+}
+export interface CanonicalBatchTerminal {
+  answers: Record<string, string | null>
+  outcome: 'submitted' | 'cancelled' | 'timed_out'
+}
+export interface CanonicalBatchRespondResult {
+  status: 'ok' | 'expired'
+}
 export interface PromptReceiptParams {
   session_id: string
   admission_id: string
@@ -5295,6 +5325,8 @@ export interface CanonicalSnapshot {
   pending_connection?: ConnectionRequestPayload | null
   todo_state?: TodoState | null
   open_requests?: OpenRequestEntry[] | null
+  clarify_batches?: CanonicalClarifyBatch[] | null
+  clarify_batch_watermark?: CanonicalClarifyBatchWatermark | null
 }
 export interface CanonicalPendingAdmission {
   admission_id: string
@@ -5362,6 +5394,23 @@ export interface CanonicalSnapshotInfo {
   tool_count?: number | null
   credential_hint?: string | null
   config_warning?: string | null
+}
+export interface CanonicalClarifyBatch {
+  request_id: string
+  identity: CanonicalClarifyIdentity
+  questions: ClarifyQuestion[]
+  answers: Record<string, string | null>
+  replayed: boolean
+}
+export interface ClarifyQuestion {
+  qid: string
+  question: string
+  choices?: string[] | null
+  multi_select?: boolean
+}
+export interface CanonicalClarifyBatchWatermark {
+  replay_epoch: string
+  last_sequence: number
 }
 export interface CanonicalResumeParams {
   profile?: string | null
@@ -5461,6 +5510,8 @@ export interface CanonicalEventsResult {
   snapshot_required: boolean
   count: number
   open_requests?: OpenRequestEntry[] | null
+  clarify_batches?: CanonicalClarifyBatch[] | null
+  clarify_batch_watermark?: CanonicalClarifyBatchWatermark | null
 }
 export interface CanonicalReplayEvent {
   type: string
@@ -5492,6 +5543,7 @@ export interface CanonicalSubmitParams {
   api_text?: string | null
   model_override?: CanonicalModelOverride | null
   clarify_batch?: boolean
+  clarify_projection?: 'canonical_batch_v1' | null
 }
 export interface CanonicalAttachment {
   path: string
@@ -5690,12 +5742,6 @@ export interface ClarifyRequestParams {
   session_id: string
   questions: ClarifyQuestion[]
   answers?: Record<string, string | null> | null
-}
-export interface ClarifyQuestion {
-  qid: string
-  question: string
-  choices?: string[] | null
-  multi_select?: boolean
 }
 /** ``{answers}`` for the whole set (early locks go through the ``clarify.lock`` RPC); a response without ``answers`` is cancel-all. ``outcome`` (optional): how the viewer's own panel ended, as main's classic CLI reports it (``timed_out`` keeps the answers locked before its deadline). */
 export interface ClarifyResult {
@@ -5923,6 +5969,7 @@ export interface RequestCancelPayload {
   id: string
   method: string
   reason: string
+  identity?: CanonicalClarifyIdentity | null
 }
 export interface DisplayStatusPayload {
   profile: string
@@ -7216,10 +7263,16 @@ export interface CanonicalRpcMethods {
   'bot_relay.cancel': { params: CanonicalBotCancelParams; result: CanonicalBotCancelResult }
   'bot_relay.deliver': { params: CanonicalBotDeliverParams; result: BotRelayDeliverResult }
   'bot_relay.settle': { params: CanonicalBotDeliverParams; result: BotRelayDeliverResult }
+  /** Exact-identity per-question lock against the existing native batch waiter. */
+  'clarify.batch.lock': { params: CanonicalBatchLockParams; result: ClarifyLockResult }
+  /** Exact-identity full ClarifyResult settlement against the existing native batch waiter. */
+  'clarify.batch.respond': { params: CanonicalBatchRespondParams; result: CanonicalBatchRespondResult }
   /** Lock one answer of the owner's batch clarify request (editable until every question is locked); only a viewer attached to that session with session:respond may lock. */
   'clarify.lock': { params: ClarifyLockParams; result: ClarifyLockResult }
   /** Generation-fenced answer to a pending clarify prompt (empty answer = skipped). */
   'clarify.respond': { params: ClarifyRespondParams; result: PromptResponseResult }
+  /** Advertise support, then explicitly select canonical batch projection v1 per connection. */
+  'client.capabilities': { params: ClientCapabilitiesParams; result: ClientCapabilitiesResult }
   /** Fire-only: a recognized command the classic CLI or the TUI runs itself; the gateway fires `pre_command` for it in the session's profile after replying (`queued` false: not fired). */
   'command.observe': { params: CommandObserveParams; result: CommandObserveResult }
   'config.get': { params: ConfigGetParams; result: CanonicalConfigGetResult }
@@ -7307,8 +7360,11 @@ export const CANONICAL_RPC_METHODS = [
   'bot_relay.cancel',
   'bot_relay.deliver',
   'bot_relay.settle',
+  'clarify.batch.lock',
+  'clarify.batch.respond',
   'clarify.lock',
   'clarify.respond',
+  'client.capabilities',
   'command.observe',
   'config.get',
   'config.set',
@@ -7438,6 +7494,7 @@ export interface BackendGatewayEventMap {
   'browser.progress': BrowserProgressPayload
   /** A /btw side question was answered. */
   'btw.complete': SideAgentCompletePayload
+  'clarify.batch.request': CanonicalClarifyBatch
   /** A connection operation opened on this session; the desktop renders its card. */
   'connection.request': ConnectionRequestPayload
   /** One transition or the settlement of an open connection operation. */
@@ -7591,6 +7648,7 @@ export const GATEWAY_EVENT_TYPES = [
   'bot_relay.outbox.pending',
   'browser.progress',
   'btw.complete',
+  'clarify.batch.request',
   'connection.request',
   'connection.update',
   'cron.changed',

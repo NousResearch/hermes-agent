@@ -1,3 +1,4 @@
+export { CanonicalBatchAdapter } from './canonical-clarify-batch'
 export { hasAnsi, sanitizeAnsiForRender, stripAnsi } from './ansi'
 export { backendScopeKey, backendScopePrefix, LOCAL_CONNECTION_ID, registryBackendScopeKey } from './backend-scope'
 export {

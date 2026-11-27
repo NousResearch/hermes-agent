@@ -72,7 +72,7 @@ class SessionEvents:
                 self.sequence = 0
             return self.epoch, self.sequence
 
-    def publish(self, session_id, payload, *, event_type="message.complete", execution=None):
+    def publish(self, session_id, payload, *, event_type="message.complete", execution=None, select=None):
         # ``execution`` stamps this frame alone; the shared stamp is read without the lock elsewhere.
         with self.lock:
             self.watermark()
@@ -98,7 +98,7 @@ class SessionEvents:
                 return {'jsonrpc': '2.0', 'method': 'event', 'params': {
                     'type': 'session.replay_gap', 'session_id': session_id,
                     'payload': {'replay_epoch': self.epoch, 'latest_seq': self.sequence}}}
-            delivered = self.fanout.write(frame, overflow=overflow)
+            delivered = self.fanout.write(frame, overflow=overflow, **({'select': select} if select else {}))
             for observer in tuple(self.observers):
                 try:
                     observer(frame)
@@ -132,7 +132,7 @@ class SessionEvents:
                        or event_replay.latest_seq(self._key) != latest)
             events = [] if missing else [
                 {**frame, 'session_id': self._public_id} if frame.get('session_id') == self._key else frame
-                for frame in frames]
+                for frame in frames if frame.get('type') != 'clarify.batch.request']
             return {'events': events, 'latest_seq': latest, 'last_sequence': latest,
                     'epoch': current_epoch, 'replay_epoch': current_epoch,
                     'truncated': missing, 'snapshot_required': missing, 'count': len(events)}

@@ -60,6 +60,24 @@ server_request("clarify", params=ClarifyRequestParams, result=ClarifyResult,
                doc="The clarify tool: ask the user 1-5 questions.")
 
 
+class CanonicalClarifyIdentity(Params):
+    profile_id: str = Field(min_length=1, strict=True)
+    authority_epoch: int = Field(ge=1, strict=True)
+    stream_id: str = Field(min_length=1, strict=True)
+    execution_generation: int = Field(ge=1, strict=True)
+
+
+class CanonicalClarifyBatch(Payload):
+    request_id: str
+    identity: CanonicalClarifyIdentity
+    questions: list[ClarifyQuestion]
+    answers: dict[str, str | None]
+    replayed: bool
+
+
+event('clarify.batch.request', CanonicalClarifyBatch)
+
+
 
 # ── setup_beat (first-run onboarding) ─────────────────────────────────────────────────────────
 
@@ -421,6 +439,7 @@ class RequestCancelPayload(Payload):
     id: str
     method: str
     reason: str  # a RequestCancelReason value; callers in tools/approval may pass their own wording
+    identity: CanonicalClarifyIdentity | None = None
 
 
 event("request.cancel", RequestCancelPayload,

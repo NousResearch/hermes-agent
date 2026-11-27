@@ -1,4 +1,5 @@
 import {
+  CanonicalBatchAdapter,
   type CanonicalClientIdentity,
   type ConnectionState,
   type GatewayEvent,
@@ -95,6 +96,8 @@ function requestDeadline(timeoutMs: number | undefined): number {
 export type GatewaySessionWire = 'canonical' | 'legacy'
 
 export class HermesGateway extends JsonRpcGatewayClient {
+  protected override selectCanonicalClarifyProjection(): boolean { return true }
+
   private canonical = false
   private nativeDial = false
   private readonly readiness = new DialReadiness(() => super.connectionState === 'open')
@@ -111,6 +114,23 @@ export class HermesGateway extends JsonRpcGatewayClient {
   // Frames of an ambiguous (session, epoch) parked until its owner probes settle.
   private readonly parkedFrames = new Map<string, Array<() => void>>()
   private connectionGeneration = 0
+  private readonly batchOwnerIds = new Map<string, string>()
+  // Only locally-created withdrawal payloads carry this provenance. Never trust a wire profile hint.
+  private readonly batchWithdrawals = new WeakMap<object, string>()
+  private readonly batches = new CanonicalBatchAdapter({
+    deliver: (request, profile) => {
+      recordCanonicalOwner(request, this.displayProfiles.get(canonicalSessionKey(String(request.params.session_id), profile)) ?? profile)
+      for (const handler of this.promptHandlers) { if (handler(request) !== false) return }
+      request.fail(-32601, 'No batch renderer')
+    },
+    withdraw: (id, owner) => {
+      const payload = {id,method:'clarify',reason:'resolved'}
+      this.batchWithdrawals.set(payload,owner.profile)
+      this.dispatchEvent({type:'request.cancel',session_id:owner.sessionId,payload})
+    },
+    rpc: <T>(method: string, params: Record<string, unknown>) => super.request<T>(method,params),
+    recover: owner => this.request('session.resume',{session_id:owner.sessionId,profile:owner.profile})
+  })
 
   override onRequest(handler: ServerRequestHandler): () => void {
     this.promptHandlers.add(handler)
@@ -186,6 +206,8 @@ export class HermesGateway extends JsonRpcGatewayClient {
 
   override close(): void {
     this.readiness.fail()
+    this.batches.reset()
+    this.batchOwnerIds.clear()
     this.connectionGeneration++
     this.deliveredPrompts.clear()
     this.sessionProfiles.clear()
@@ -262,6 +284,7 @@ export class HermesGateway extends JsonRpcGatewayClient {
     this.profileAliases.set(canonicalSessionKey(sid, previous), profile)
 
     if (typeof snapshot.info?.profile_id === 'string') {
+      this.batchOwnerIds.set(canonicalSessionKey(sid, profile), snapshot.info.profile_id)
       this.profileAliases.set(canonicalSessionKey(sid, snapshot.info.profile_id), profile)
     }
 
@@ -279,7 +302,8 @@ export class HermesGateway extends JsonRpcGatewayClient {
     const owner = event.replay_epoch ? this.replayProfiles.get(event.replay_epoch) : undefined
     const profiles = this.sessionProfiles.get(event.session_id)
 
-    let profile = owner?.sessionId === event.session_id ? owner.profile : this.eventRoutes.get(event) ??
+    const localBatchOwner = event.payload && typeof event.payload === 'object' ? this.batchWithdrawals.get(event.payload) : undefined
+    let profile = localBatchOwner ?? (owner?.sessionId === event.session_id ? owner.profile : this.eventRoutes.get(event)) ??
       (profiles?.size === 1 ? profiles.values().next().value : profiles?.size ? undefined : 'default')
 
     if (profile === undefined) {
@@ -294,6 +318,15 @@ export class HermesGateway extends JsonRpcGatewayClient {
     event.profile = this.displayProfiles.get(canonicalSessionKey(event.session_id, profile)) ?? profile
     recordCanonicalOwner(event, event.profile)
     this.protocol.event({ ...event, profile })
+    if (event.type === 'request.cancel') {
+      const payload = event.payload as Record<string, unknown> | undefined
+      if (payload?.identity !== undefined && typeof payload.id === 'string' && !this.batches.owns(payload.id)) {
+        const profileId = this.batchOwnerIds.get(canonicalSessionKey(event.session_id,profile))
+        const id = profileId && this.batches.cancel({sessionId:event.session_id,profile,profileId},payload.id,payload.identity)
+        if (!id) return false
+        event.payload = { ...payload,id } as typeof event.payload
+      }
+    }
 
     return true
   }
@@ -359,6 +392,8 @@ export class HermesGateway extends JsonRpcGatewayClient {
 
   override async connect(wsUrl: string): Promise<void> {
     if (this.connectionState === 'open' || this.connectionState === 'connecting') { return this.readiness.promise }
+    this.batches.reset()
+    this.batchOwnerIds.clear()
     const generation = ++this.connectionGeneration
     this.nativeDial = new URL(wsUrl).searchParams.has('native_dial')
     this.canonical = this.nativeDial
@@ -429,6 +464,7 @@ export class HermesGateway extends JsonRpcGatewayClient {
 
   override async request<T>(method: string, params: Record<string, unknown> = {}, timeoutMs?: number, signal?: AbortSignal): Promise<T> {
     const generation = this.connectionGeneration
+    const batchCheckpoint = this.batches.checkpoint()
     const deadline = requestDeadline(timeoutMs)
 
     // Once readiness has settled (always, on a native dial) a request sends at once, as on main.
@@ -440,6 +476,10 @@ export class HermesGateway extends JsonRpcGatewayClient {
     }
 
     if (!this.canonical) { return super.request<T>(method, legacyParams(method, params), remainingRequestBudget(deadline, signal), signal) }
+    if (['session.create','session.resume','session.activate','session.events.since','prompt.submit'].includes(method)) {
+      await this.waitForCapabilities(remainingRequestBudget(deadline,signal),signal)
+      this.requireConnectionGeneration(generation)
+    }
     const redirected = this.canonicalRedirect<T>(method, params, timeoutMs, deadline, signal)
 
     if (redirected) { return redirected }
@@ -460,7 +500,9 @@ export class HermesGateway extends JsonRpcGatewayClient {
     // The clarify card answers a whole question set as one form: declared, the owner asks the
     // turn's multi-question clarify as ONE request; undeclared, one card per question. An older
     // owner refuses the unknown key, so it rides only where `client.capabilities` advertised it.
-    if (method === 'prompt.submit' && this.backendClarifyBatch) { params = { ...params, clarify_batch: true } }
+    if (method === 'prompt.submit' && this.backendClarifyBatch) {
+      params = { ...params, clarify_batch: true, ...(this.canonicalClarifyProjection ? { clarify_projection: 'canonical_batch_v1' } : {}) }
+    }
 
     let prepared = this.protocol.prepare(method, params)
     const wireMethod = this.protocol.wire(method, prepared)
@@ -485,6 +527,8 @@ export class HermesGateway extends JsonRpcGatewayClient {
         prepared = this.snapshotRoute(prepared, result)
       }
 
+      this.reconcileBatchSnapshot(method, prepared, result, batchCheckpoint)
+
       // A settle follow-up (compress -> resume) inherits the caller's deadline and cancellation.
       const followUp = (m: string, p: Record<string, unknown>) => {
         this.requireConnectionGeneration(generation)
@@ -506,9 +550,28 @@ export class HermesGateway extends JsonRpcGatewayClient {
     }
   }
 
+  private reconcileBatchSnapshot(method: string, prepared: Record<string, unknown>, result: unknown, batchCheckpoint: number): void {
+    if (!this.canonicalClarifyProjection || !['session.resume','session.create','session.activate','session.events.since'].includes(method)) return
+    const raw = result as { session_id?: string; clarify_batches?: unknown; replay_epoch?: unknown; last_sequence?: unknown; clarify_batch_watermark?: { replay_epoch?: unknown; last_sequence?: unknown } }
+    const sid = raw.session_id ?? prepared.session_id
+    const profile = canonicalProfile(prepared.profile)
+    const profileId = typeof sid === 'string' && this.batchOwnerIds.get(canonicalSessionKey(sid,profile))
+    if (typeof sid !== 'string' || !profileId || raw.clarify_batches === undefined) return
+    // New producers stamp the registry read itself. Older producers expose
+    // only the earlier attach cursor, still a safe (possibly lower) fence.
+    const stamp = raw.clarify_batch_watermark ?? raw
+    const watermark = typeof stamp.replay_epoch === 'string' && stamp.replay_epoch.length > 0 &&
+      typeof stamp.last_sequence === 'number' && Number.isSafeInteger(stamp.last_sequence) && stamp.last_sequence >= 0
+      ? {epoch:stamp.replay_epoch,sequence:stamp.last_sequence} : undefined
+    this.batches.snapshot({sessionId:sid,profile,profileId},raw.clarify_batches,batchCheckpoint,watermark)
+  }
+
   // Requests the canonical wire answers as other requests: a truncating submit (edit / regenerate /
   // restore) is the owner's rewind, then the submit; a clarify lock is the prompt owner's respond.
   private canonicalRedirect<T>(method: string, params: Record<string, unknown>, timeoutMs: number | undefined, deadline: number, signal?: AbortSignal): Promise<T> | null {
+    if (method === 'clarify.lock' && this.batches.owns(params.request_id)) {
+      return this.batches.lock(params.request_id,params.question_id,params.answer) as Promise<T>
+    }
     const rewind = method === 'prompt.submit' ? splitRewindSubmit(params) : null
 
     if (rewind) {
@@ -598,11 +661,25 @@ export class HermesGateway extends JsonRpcGatewayClient {
     super.on('gateway.ready', event => this.readiness.adoptReady(this.connectionGeneration, () => {
       this.canonical = event.payload?.session_authority === true
     }))
-    super.onState(state => this.readiness.trackTransport(state))
+    super.onState(state => {
+      this.readiness.trackTransport(state)
+      if (state === 'closed' || state === 'error') { this.batches.reset(); this.batchOwnerIds.clear() }
+    })
     this.onEvent(event => {
       if (!this.canonical) { return }
 
-      if (event.type in CANONICAL_PROMPT_EVENTS) {
+      if (event.type === 'clarify.batch.request' && this.canonicalClarifyProjection) {
+        const profile = this.eventRoutes.get(event)
+        const profileId = profile && this.batchOwnerIds.get(canonicalSessionKey(event.session_id!, profile))
+        const identity = (event.payload as { identity?: { execution_generation?: unknown; authority_epoch?: unknown } } | undefined)?.identity
+        if (profile && profileId && event.session_id && event.execution_generation === identity?.execution_generation &&
+            (event.authority_epoch === undefined || event.authority_epoch === identity?.authority_epoch)) {
+          const cursor = typeof event.replay_epoch === 'string' && event.replay_epoch.length > 0 &&
+            typeof event.seq === 'number' && Number.isSafeInteger(event.seq) && event.seq > 0
+            ? {epoch:event.replay_epoch,sequence:event.seq} : undefined
+          this.batches.open({sessionId:event.session_id,profile,profileId}, event.payload, event.replayed === true,cursor)
+        }
+      } else if (event.type in CANONICAL_PROMPT_EVENTS) {
         this.deliverCanonicalPrompt({ ...event, profile: this.eventRoutes.get(event) }, false)
       } else if (event.type.endsWith('.settled')) {
         const id = (event.payload as { prompt_id?: unknown } | undefined)?.prompt_id

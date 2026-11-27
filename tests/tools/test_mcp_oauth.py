@@ -1106,6 +1106,46 @@ def test_humanize_non_registration_403_passthrough():
     )
 
 
+@pytest.mark.parametrize(
+    ("status", "path"),
+    [(403, "/mcp"), (404, "/mcp/registrations")],
+)
+def test_humanize_resource_http_error_passthrough(status, path):
+    """Resource failures keep their original diagnostics (GH#138637)."""
+    import httpx2
+    from tools.mcp_oauth import humanize_oauth_registration_error
+
+    url = f"https://example.com{path}"
+    request = httpx2.Request("POST", url)
+    response = httpx2.Response(status, request=request)
+    with pytest.raises(httpx2.HTTPStatusError) as error:
+        response.raise_for_status()
+
+    assert humanize_oauth_registration_error("srv", error.value, server_url=url) is None
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("Registration failed: 403", "rejected client registration (403)"),
+        ("Registration failed: 404", "does not support automatic client registration"),
+        ("Could not read authorization-server metadata (403 Forbidden)", None),
+    ],
+)
+def test_humanize_registration_error_reads_the_wrapped_sdk_error(message, expected):
+    from mcp.client.auth import OAuthRegistrationError
+    from tools.mcp_oauth import humanize_oauth_registration_error
+
+    exc = ConnectionError("MCP transport failed")
+    exc.__cause__ = ExceptionGroup("MCP session failed", [OAuthRegistrationError(message)])
+    result = humanize_oauth_registration_error("srv", exc)
+    if expected is None:
+        assert result is None
+    else:
+        assert result is not None
+        assert expected in result
+
+
 def test_humanize_404_registration_error_guidance():
     """A 404 on the registration endpoint surfaces pre-registered-client
     guidance instead of the raw SDK traceback (GH#78190 — Google's hosted

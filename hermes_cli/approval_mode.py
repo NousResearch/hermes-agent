@@ -44,6 +44,11 @@ def run_approval_mode_command(requested_mode: Optional[str]) -> ApprovalModeResu
     # policy through stderr + SystemExit, and the fail-closed write guard raises RuntimeError on an
     # unparseable config.yaml; capture both for slash-command output instead of terminating the
     # interactive worker.
+    # This function does NOT stamp the operator grant: the SANCTIONED HUMAN-ACTOR HANDLERS do
+    # (the gateway /approvals handler after its enabled-admin check, and the interactive REPL
+    # /approvals where the human is at the TTY). An in-process caller of THIS function (agent
+    # code) gets no grant, so the writer refuses — there is no importable token to forge
+    # (#104059 class, #104697 review rounds 2-3).
     from hermes_cli.config import set_config_value
     output = StringIO()
     try:
@@ -64,3 +69,23 @@ def run_approval_mode_command(requested_mode: Optional[str]) -> ApprovalModeResu
     return ApprovalModeResult(
         True, effective, effective != current, f"Approval mode: {effective} (persistent profile setting).",
     )
+
+
+def handle_repl_approvals_command(cmd_original: str, _cp) -> None:
+    """Handle the interactive REPL /approvals command."""
+    parts = (cmd_original or "").strip().split(None, 1)
+    if len(parts) <= 1:
+        result = run_approval_mode_command(None)
+        _cp(f"  {result.message}")
+        return
+    from tools.approval_context import grant_operator_policy_write, reset_operator_policy_write
+    try:
+        token = grant_operator_policy_write()
+    except RuntimeError as exc:
+        _cp(f"  ✗ {exc}")
+        return
+    try:
+        result = run_approval_mode_command(parts[1])
+    finally:
+        reset_operator_policy_write(token)
+    _cp(f"  {result.message}")

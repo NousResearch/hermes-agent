@@ -25,7 +25,7 @@ from agent.credential_pool import (  # custom_provider_pool_key_candidates is re
 from agent.secret_scope import get_secret_str
 from hermes_cli.auth import (  # resolve_external_process_provider_credentials is read via origin by runtime_provider_backends
     ACTUAL_LOCAL_NOAUTH_PLACEHOLDER, AuthError, DEFAULT_CODEX_BASE_URL, DEFAULT_QWEN_BASE_URL, DEFAULT_XAI_OAUTH_BASE_URL,
-    PROVIDER_REGISTRY, _agent_key_is_usable, _nous_inference_env_override, _qwen_base_url, format_auth_error, resolve_provider,
+    PROVIDER_REGISTRY, _PROVIDER_ALIASES, _agent_key_is_usable, _nous_inference_env_override, _qwen_base_url, format_auth_error, resolve_provider,
     resolve_nous_runtime_credentials, resolve_codex_runtime_credentials, resolve_xai_oauth_runtime_credentials,
     resolve_qwen_runtime_credentials, resolve_api_key_provider_credentials,
     resolve_external_process_provider_credentials,
@@ -232,12 +232,25 @@ def _resolve_plain_custom_api_mode(model_cfg: dict[str, Any], base_url: str) -> 
     return configured_mode or detected_mode or "chat_completions"
 
 
+def _canonical_spelling(provider: str) -> str:
+    """The canonical id for a documented alias spelling (``lm-studio`` → ``lmstudio``); an
+    unknown or already-canonical name answers itself. ``_PROVIDER_ALIASES`` is the table
+    ``resolve_provider`` itself reads, so a spelling can only pair when it also resolves here."""
+    key = (provider or "").strip().lower()
+    return _PROVIDER_ALIASES.get(key, key)
+
+
 def _same_registered_provider(provider: str, configured_provider: str) -> bool:
     """Profile aliases share an auth registry ID; unrelated routes must stay distinct."""
     if provider == configured_provider:
         return True
-    pconfig = PROVIDER_REGISTRY.get(provider)
-    configured = PROVIDER_REGISTRY.get(configured_provider)
+    p, c = _canonical_spelling(provider), _canonical_spelling(configured_provider)
+    if p == c:
+        # ``custom`` is one auth row for several endpoints (ollama, vllm, …): a stored base_url
+        # names one of them, so those spellings keep answering for themselves only.
+        return p != "custom"
+    pconfig = PROVIDER_REGISTRY.get(p)
+    configured = PROVIDER_REGISTRY.get(c)
     return bool(pconfig and configured and pconfig.id == configured.id)
 
 
@@ -371,10 +384,9 @@ def _cfg_provider(model_cfg: dict[str, Any]) -> str:
 
 def _config_base_url_for_provider(model_cfg: dict[str, Any], provider: str) -> str:
     """``model.base_url`` (stripped, no trailing slash) only when ``model.provider`` is
-    ``provider`` — a stale base_url must not leak into another provider."""
+    ``provider`` — a stale base_url must not leak into another provider, and an alias spelling
+    of *provider* is the same provider (``_same_registered_provider``)."""
     configured_provider = _cfg_provider(model_cfg)
-    if provider == "actual":
-        configured_provider = _models.normalize_provider(configured_provider)
     return str(model_cfg.get("base_url") or "").strip().rstrip("/") if _same_registered_provider(provider, configured_provider) else ""
 
 

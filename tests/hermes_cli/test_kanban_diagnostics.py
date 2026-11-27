@@ -117,6 +117,40 @@ def test_stuck_in_blocked_fires_past_threshold():
 
 
 
+def test_needs_input_block_clears_prior_crash_streak():
+    """A human-input handoff means the prior crash loop is no longer active."""
+    task = _task(status="blocked")
+    runs = [
+        _run(outcome="crashed", run_id=1, error="missing skill"),
+        _run(outcome="crashed", run_id=2, error="missing skill"),
+        _run(outcome="blocked", run_id=3),
+    ]
+    event = _event("blocked")
+    event["payload"] = {"kind": "needs_input"}
+    event["run_id"] = 3
+
+    diags = kd.compute_task_diagnostics(task, [event], runs)
+
+    assert not any(d.kind == "repeated_crashes" for d in diags)
+
+
+def test_non_input_block_does_not_clear_crash_streak():
+    """Only an explicit needs_input handoff clears the crash diagnostic."""
+    task = _task(status="blocked")
+    runs = [
+        _run(outcome="crashed", run_id=1, error="worker failure"),
+        _run(outcome="crashed", run_id=2, error="worker failure"),
+        _run(outcome="blocked", run_id=3),
+    ]
+    event = _event("blocked")
+    event["payload"] = {"kind": "capability"}
+    event["run_id"] = 3
+
+    diags = kd.compute_task_diagnostics(task, [event], runs)
+
+    assert any(d.kind == "repeated_crashes" for d in diags)
+
+
 # ---------------------------------------------------------------------------
 # Severity sorting
 # ---------------------------------------------------------------------------

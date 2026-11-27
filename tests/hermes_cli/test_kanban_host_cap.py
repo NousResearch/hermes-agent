@@ -133,6 +133,26 @@ def test_max_in_progress_counts_other_boards(
     # Host budget (2) already consumed by the second board → nothing spawns.
     assert not spawns
     assert not res.spawned
+    assert res.spawn_budget_hold == "host_capacity"
+    assert kbd.describe_suppression([res]) == "host_capacity=1"
+
+
+def test_board_budget_reports_board_capacity(kanban_home, all_assignees_spawnable):
+    with kbc.connect() as conn:
+        busy = kb.create_task(conn, title="busy", assignee="alice")
+        assert kb.claim_task(conn, busy) is not None
+        kb.create_task(conn, title="waiting", assignee="alice")
+        res = kbd.dispatch_once(conn, spawn_fn=_fake_spawn_factory([]), max_spawn=1)
+    assert res.spawn_budget_hold == "board_capacity"
+    assert kbd.describe_suppression([res]) == "board_capacity=1"
+
+
+def test_budget_hold_empty_when_spawn_has_capacity(kanban_home, all_assignees_spawnable):
+    with kbc.connect() as conn:
+        kb.create_task(conn, title="ready", assignee="alice")
+        res = kbd.dispatch_once(conn, spawn_fn=_fake_spawn_factory([]), max_in_progress=2)
+    assert res.spawn_budget_hold is None
+    assert kbd.describe_suppression([res]) == ""
 
 
 def test_max_in_progress_partial_budget_across_boards(

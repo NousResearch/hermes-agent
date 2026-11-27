@@ -847,6 +847,9 @@ compression:
   # those cache breaks episodic (like a compression boundary) instead of
   # per-turn.
   proactive_prune_tokens: 0
+  # Opt in to lossless repeated-line projection; unknown tools/results stay whole.
+  # Applied only at existing compaction boundaries; off by default.
+  structured_tool_pruning: false
 
   # The prune's summarize pass only touches tool results larger than this many
   # characters (clamped to >= 200 so a generated summary can't be

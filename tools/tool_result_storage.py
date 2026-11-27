@@ -203,8 +203,11 @@ def _write_to_spillover(content: str, filename: str, subdir: str = SPILLOVER_SUB
         spill_dir = get_hermes_home() / subdir
         spill_dir.mkdir(parents=True, exist_ok=True)
         path = spill_dir / filename
-        with open(path, "xb" if exclusive else "wb") as fh:  # exclusive: never overwrite another original
-            created = True
+        flags = os.O_WRONLY | os.O_CREAT | (os.O_EXCL if exclusive else os.O_TRUNC)
+        descriptor = os.open(path, flags, 0o600)
+        created = True
+        with os.fdopen(descriptor, "wb") as fh:
+            os.chmod(path, 0o600)
             fh.write(data)
         persisted_size = os.stat(path).st_size
         # Size first (cheap), then the bytes: the content is already in memory.

@@ -119,6 +119,7 @@ def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
     default_tail = str(_compressor_ctor_default("tail_mode", "lean"))
     mode = str(compression.get("tail_mode", default_tail) or default_tail).strip().lower()
     cc.tail_mode = mode if mode in ("legacy", "lean") else default_tail
+    cc.structured_tool_pruning = is_truthy_value(compression.get("structured_tool_pruning"), default=False)
     for key, fallback, min_value in _COMPRESSION_INT_KEYS:
         default = int(_compressor_ctor_default(key, fallback))
         raw = compression.get(key, default)

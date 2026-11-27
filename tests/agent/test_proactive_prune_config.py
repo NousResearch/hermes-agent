@@ -60,6 +60,10 @@ def _make_agent(monkeypatch, tmp_path: Path, **prune_keys):
 
 class TestProactivePruneConfig:
 
+    def test_structured_policy_reaches_the_builtin_compressor(self, monkeypatch, tmp_path):
+        agent = _make_agent(monkeypatch, tmp_path, structured_tool_pruning=True)
+        assert agent.context_compressor.structured_tool_pruning is True
+
     def test_custom_values_are_honored(self, monkeypatch, tmp_path):
         agent = _make_agent(
             monkeypatch,

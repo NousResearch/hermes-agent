@@ -2667,7 +2667,7 @@ class ContextCompressor(
         model_thresholds: dict[str, float] | None = None, threshold_tokens_cap: Any = None,
         proactive_prune_tokens: int = 0, proactive_prune_min_result_chars: int = 8000,
         proactive_prune_min_reclaim_tokens: int = 4096, min_tail_user_messages: int = 1, tail_mode: str = "lean",
-        custom_providers: list | None = None,
+        custom_providers: list | None = None, structured_tool_pruning: bool = False,
     ):
         self.model, self.base_url, self.api_key, self.provider, self.api_mode = model, base_url, api_key, provider, api_mode
         # "lean" = small clamped tail + verbatim-user summary section; "legacy" = 0.20*window tail.
@@ -2702,6 +2702,7 @@ class ContextCompressor(
         self.min_tail_user_messages = min_tail_user_messages
         self.summary_target_ratio = max(0.10, min(summary_target_ratio, 0.80))
         self.quiet_mode = quiet_mode
+        self.structured_tool_pruning = structured_tool_pruning
         # Usable input = context_length - max_tokens; only a positive int counts as a reservation.
         self.max_tokens = self._coerce_max_tokens(max_tokens)
         # True: summary failure aborts (messages unchanged); False: insert deterministic handoff and drop middle.
@@ -3019,18 +3020,17 @@ class ContextCompressor(
     def _dedupe_tool_results(result: list[dict[str, Any]]) -> int:
         """Pass 1: keep the newest copy of identical tool results, back-reference older ones."""
         pruned = 0
-        content_hashes: set = set()
+        seen_content: set[str] = set()
         for i in range(len(result) - 1, -1, -1):
             msg = result[i]
             content = msg.get("content") or ""
             # Non-string/multimodal-envelope shapes can't be hashed by text.
             if msg.get("role") != "tool" or not isinstance(content, str) or len(content) < _PRUNE_MIN_CHARS:
                 continue
-            h = hashlib.md5(content.encode("utf-8", errors="replace")).hexdigest()[:12]
-            if h in content_hashes:
+            if content in seen_content:
                 result[i] = {**msg, "content": "[Duplicate tool output — same content as a more recent call]"}
                 pruned += 1
-            content_hashes.add(h)
+            seen_content.add(content)
         return pruned
 
     @staticmethod
@@ -3161,15 +3161,13 @@ class ContextCompressor(
         # Pass 2: summarize old tool results. Tool-call arguments are canonical execution
         # records and are never rewritten; summary input is bounded separately by
         # _render_tool_call_for_summary().
-        pruned += sum(
-            self._demote_tool_result_at(result, i, call_id_to_tool, min_prune_chars, protected_skills)
-            for i in range(max(0, prune_boundary))
-        )
+        pruned += self._project_old_tool_result_bodies(result, prune_boundary, call_id_to_tool, min_prune_chars, protected_skills)
         # Pass 3: retire image payloads inside the protected tail; re-sent embeds otherwise make
         # compression look ineffective and trip anti-thrash. Newest frames stay live.
         # Newest frames stay live for follow-up QA; unread spared results stay live too. See #92699.
-        pruned += _retire_stale_tool_result_images(result, spared=spared)
-        if protect_tail_tokens is not None and protect_tail_tokens > 0 and result:
+        if not self.structured_tool_pruning:
+            pruned += _retire_stale_tool_result_images(result, spared=spared)
+        if not self.structured_tool_pruning and protect_tail_tokens is not None and protect_tail_tokens > 0 and result:
             pruned += self._pressure_demote_tail(
                 result, prune_boundary, protect_tail_tokens, call_id_to_tool, min_prune_chars, spared,
             )

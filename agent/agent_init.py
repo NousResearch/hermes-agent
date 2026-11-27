@@ -1393,9 +1393,8 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
         max_attempts=min(max_attempts, 10),
         # Opt-in proactive tool-result prune trigger (0 = disabled; negatives = disabled).
         proactive_prune_tokens=max(0, _parse_config_int(cfg.get("proactive_prune_tokens", 0), 0)),
-        proactive_prune_min_chars=_parse_config_int(
-            cfg.get("proactive_prune_min_result_chars", 8000), 8000
-        ),
+        structured_tool_pruning=_cfg_flag(cfg, "structured_tool_pruning", False),
+        proactive_prune_min_chars=_parse_config_int(cfg.get("proactive_prune_min_result_chars", 8000), 8000),
         proactive_prune_min_reclaim=max(
             0, _parse_config_int(cfg.get("proactive_prune_min_reclaim_tokens", 4096), 4096)
         ),
@@ -1840,6 +1839,7 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
             max_tokens=_compressor_max_tokens(agent), model_thresholds=cs.model_thresholds,
             threshold_tokens_cap=cs.threshold_tokens,
             proactive_prune_tokens=cs.proactive_prune_tokens,
+            structured_tool_pruning=cs.structured_tool_pruning,
             proactive_prune_min_result_chars=cs.proactive_prune_min_chars,
             proactive_prune_min_reclaim_tokens=cs.proactive_prune_min_reclaim,
             min_tail_user_messages=cs.min_tail_users, tail_mode=cs.tail_mode,

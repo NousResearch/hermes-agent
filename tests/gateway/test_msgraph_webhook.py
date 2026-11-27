@@ -340,9 +340,13 @@ class TestMSGraphUnboundMeetingPipeline:
             assert await adapter.connect() is True
             await adapter._handle_notification(_FakeRequest(json_payload=payload(0)))
             assert turns == []
+            # A half-saved edit that does not parse keeps the last good decision (no agent turns).
+            (home / "config.yaml").write_text("plugins: [unclosed\n", encoding="utf-8")
+            await adapter._handle_notification(_FakeRequest(json_payload=payload(1)))
+            assert turns == []
             (home / "config.yaml").write_text("plugins:\n  enabled: [teams-pipeline]\n  disabled: [teams-pipeline]\n",
                                               encoding="utf-8")
-            await adapter._handle_notification(_FakeRequest(json_payload=payload(1)))
+            await adapter._handle_notification(_FakeRequest(json_payload=payload(2)))
         finally:
             await adapter.disconnect()
         assert len(turns) == 1

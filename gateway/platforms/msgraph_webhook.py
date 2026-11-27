@@ -125,6 +125,7 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         # meeting pipeline expects its notifications there, never as agent turns, even while the plugin is
         # not bound (install pending, failed load, refused by ``plugins.isolation: host``).
         self._profile_home: Optional[Path] = None
+        self._pipeline_selected = False  # the last selection read cleanly; a broken edit keeps it
         self._unbound_pipeline_warned = False
         self._seen_receipts: set[str] = set()
         self._seen_receipt_order: deque[str] = deque()
@@ -149,6 +150,7 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
             return False
         from hermes_constants import get_hermes_home
         self._profile_home = Path(get_hermes_home())
+        self._pipeline_expected()
         app = web.Application(client_max_size=self._max_body_bytes)
         app.router.add_get(self._health_path, self._handle_health)
         app.router.add_get(self._webhook_path, self._handle_validation)
@@ -332,8 +334,12 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         await self._admit_notification(event)
 
     def _pipeline_expected(self) -> bool:
-        from hermes_cli.left_core_migration import teams_pipeline_in_use
-        return self._profile_home is not None and teams_pipeline_in_use(self._profile_home)
+        from hermes_cli.left_core_migration import teams_pipeline_selected
+        if self._profile_home is not None:
+            selected = teams_pipeline_selected(self._profile_home)
+            if selected is not None:
+                self._pipeline_selected = selected
+        return self._pipeline_selected
 
     @property
     def token(self):

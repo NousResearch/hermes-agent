@@ -265,3 +265,19 @@ def test_a_local_plugin_under_an_old_bundled_key_keeps_its_own_dependencies(home
     with (home / "config.yaml").open("w", encoding="utf-8") as f:
         yaml.safe_dump({"plugins": {"enabled": ["google_meet"], "disabled": ["google-meet"]}}, f)
     assert enabled_member_dirs() == [local]
+
+
+def test_a_staged_catalog_update_never_replaces_a_local_plugin_under_the_old_key(homes):
+    """A staged ``plugins/google-meet`` replaces the tree at its own path. While the home's own
+    ``plugins/google_meet`` is what ``google_meet`` selects, the union keeps the local plugin, not the
+    staged catalog copy, whether or not ``google-meet`` is disabled."""
+    import hermes_yaml as yaml
+    from pm.workspace import enabled_plugin_entries, selected_plugin_dir
+    home, _ = homes
+    local = home / "plugins" / "google_meet"
+    local.mkdir(parents=True)
+    staged = home / "plugins" / "google-meet"
+    assert selected_plugin_dir(home / "plugins", "google_meet", installing=staged) == local
+    with (home / "config.yaml").open("w", encoding="utf-8") as f:
+        yaml.safe_dump({"plugins": {"enabled": ["google_meet"], "disabled": ["google-meet"]}}, f)
+    assert [tree for _d, _n, tree in enabled_plugin_entries(installing=staged)] == [local]

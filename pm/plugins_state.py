@@ -113,23 +113,32 @@ def _enabled_from_config(config: dict[str, Any], plugins_dir: Path | None = None
 
 def _disable_spellings(name: str, plugins_dir: Path | None, installing: Path | None) -> set[str]:
     """The ``plugins.disabled`` names that turn off the plugin *name* selects, as the loader's gate reads them:
-    the key and its bare leaf, plus, when the tree it selects is a left-core catalog plugin, that plugin's
-    name and old bundled keys (``google_meet`` <-> ``google-meet``). Resolved like ``selected_plugin_dir``
-    (the home's own ``<name>`` dir first), so a local plugin that happens to use an old key keeps its own."""
+    the key and its bare leaf, plus, when the tree it selects (:func:`selected_home_tree`) is a left-core
+    catalog plugin, that plugin's name and old bundled keys (``google_meet`` <-> ``google-meet``)."""
     spellings = {name, name.rsplit("/", 1)[-1]}
-    if plugins_dir is None:
+    tree = selected_home_tree(plugins_dir, name, installing=installing) if plugins_dir is not None else None
+    if tree is None:
         return spellings
-    from hermes_cli.left_core_migration import legacy_plugin_alias, legacy_plugin_keys
-
-    def selected(path: Path) -> bool:
-        return _is_directory(path) or (installing is not None and path.resolve() == installing.resolve())
-
-    if selected(plugins_dir / name):
+    from hermes_cli.left_core_migration import legacy_plugin_keys
+    if tree == plugins_dir / name:
         return spellings | legacy_plugin_keys(name)
+    return spellings | {tree.name} | legacy_plugin_keys(tree.name)
+
+
+def selected_home_tree(plugins_dir: Path, name: str, *, installing: Path | None = None) -> Path | None:
+    """The tree in a home's plugins dir that the selection key *name* names, chosen once for both the
+    dependency union and the disable check: the home's own ``<name>`` (on disk, or the install in flight
+    at that path) first, then the catalog plugin a left-core bundled key now selects (``google_meet`` ->
+    ``google-meet``), else None. A staged update replaces the tree at its own path, never another one."""
+    def present(path: Path) -> bool:
+        return (installing is not None and path.resolve() == installing.resolve()) or _is_directory(path)
+
+    own = plugins_dir / name
+    if present(own):
+        return own
+    from hermes_cli.left_core_migration import legacy_plugin_alias
     alias = legacy_plugin_alias(name)
-    if alias and selected(plugins_dir / alias):
-        return spellings | {alias} | legacy_plugin_keys(alias)
-    return spellings
+    return plugins_dir / alias if alias and present(plugins_dir / alias) else None
 
 
 def _is_directory(path: Path) -> bool:

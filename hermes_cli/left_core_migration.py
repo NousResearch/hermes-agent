@@ -312,6 +312,19 @@ def google_meet_in_use(home: Path, *, process_env: bool = False) -> bool:
     return _plugins_listed(home, ("google_meet",))[0] and not _plugin_lists(home, "google-meet")[1]
 
 
+def teams_pipeline_selected(home: Path) -> Optional[bool]:
+    """Whether *home* enables the Teams meeting pipeline (:func:`teams_pipeline_in_use`), or ``None`` when its
+    config does not read cleanly right now (a half-saved edit): the caller keeps its last answer, as the
+    gateway keeps its last good config."""
+    from gateway import config_loader
+    try:
+        config_loader.read_yaml_layers(home)
+    except Exception:  # whatever the reader raises on a bad file: this answer is "unknown", not "off"
+        logger.debug("left-core: unreadable config for %s; keeping the last pipeline decision", home, exc_info=True)
+        return None
+    return teams_pipeline_in_use(home)
+
+
 def teams_pipeline_in_use(home: Path, *, process_env: bool = False) -> bool:
     """What made core run the Teams meeting pipeline for *home*: the bundled ``teams_pipeline`` selected
     (:func:`_bundled_plugin_selected`; core's gateway wiring also accepted ``teams-pipeline``). The plugin was

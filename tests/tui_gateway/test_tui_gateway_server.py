@@ -1139,6 +1139,38 @@ def test_write_json_redacts_session_prompt_from_headless_fallback_only(monkeypat
         server._sessions.pop(sid, None)
 
 
+def test_write_json_redacts_session_prompt_on_dashboard_stdio_paths(monkeypatch):
+    """`hermes dashboard` does not set HERMES_SERVE_HEADLESS, and its stdout is a log sink too. Cover both
+    routes to that sink: a vanished session (fallback) and a session registered on ``_stdio_transport``."""
+    soul_marker = "SOUL_MARKER_MUST_NEVER_REACH_DASHBOARD_LOGS_4b1e"
+    sid = "dashboard-log-sid"
+    frame = server._event_frame("session.info", sid, {"model": "m", "system_prompt": soul_marker})
+    out = _ChunkyStdout()
+    monkeypatch.delenv("HERMES_SERVE_HEADLESS", raising=False)
+    monkeypatch.setattr(server, "_stdio_is_rpc_channel", False)
+    monkeypatch.setattr(server, "_real_stdout", out)
+    monkeypatch.setattr(server, "current_transport", lambda: None)
+    server._sessions.pop(sid, None)
+    try:
+        assert server.write_json(frame) is True
+        server._sessions[sid] = {"transport": server._stdio_transport}
+        assert server.write_json(frame) is True
+    finally:
+        server._sessions.pop(sid, None)
+
+    log_text = "".join(out.parts)
+    assert log_text.count('"session.info"') == 2
+    assert soul_marker not in log_text
+    assert frame["params"]["payload"]["system_prompt"] == soul_marker
+
+    # The real `hermes --tui` stdio mode: stdout IS the client, so the prompt must still arrive.
+    out = _ChunkyStdout()
+    monkeypatch.setattr(server, "_real_stdout", out)
+    monkeypatch.setattr(server, "_stdio_is_rpc_channel", True)
+    assert server.write_json(frame) is True
+    assert soul_marker in "".join(out.parts)
+
+
 def test_write_json_serializes_concurrent_writes(monkeypatch):
     """Assert StdioTransport holds _stdout_lock across the full stream.write.
 

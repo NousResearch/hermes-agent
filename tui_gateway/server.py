@@ -643,8 +643,10 @@ def _default_session_cwd() -> str:
 
 
 def _headless_server_log_frame(obj: dict) -> dict:
-    """Return a log-safe copy of a headless server's fallback frame."""
-    if not os.getenv("HERMES_SERVE_HEADLESS") or obj.get("method") != "event":
+    """Return a log-safe copy of a frame bound for stdio when stdio is a server log sink, not a client."""
+    # _stdio_is_rpc_channel (below) is set only by tui_gateway.entry (`hermes --tui`); in-process hosts
+    # (`hermes dashboard`, `hermes serve`) leave it False because their stdout is a server log sink.
+    if _stdio_is_rpc_channel or obj.get("method") != "event":
         return obj
     params = obj.get("params")
     if not isinstance(params, dict) or params.get("type") != "session.info":
@@ -676,11 +678,11 @@ def write_json(obj: dict) -> bool:
         project_room_member_activity(obj, _sessions)
         sid = ((params or {}).get("session_id")) if isinstance(params, dict) else ""
         if sid and (t := (_sessions.get(sid) or {}).get("transport")) is not None:
-            return t.write(obj)
+            return t.write(_headless_server_log_frame(obj) if t is _stdio_transport else obj)
     if (transport := current_transport()) is not None:
         return transport.write(obj)
-    # Under the headless `serve` command, stdio is a server log sink (systemd persists it in journald), not the
-    # authenticated client transport. Keep the frame intact for WS clients; make this last-resort path log-safe.
+    # Under `hermes serve` / `hermes dashboard`, stdio is a server log sink (systemd persists it in journald), not
+    # the authenticated client transport. Keep the frame intact for WS clients; make this last-resort path log-safe.
     return _stdio_transport.write(_headless_server_log_frame(obj))
 
 

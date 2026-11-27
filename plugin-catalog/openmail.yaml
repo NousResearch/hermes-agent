@@ -1,8 +1,8 @@
 name: openmail
 repo: https://github.com/openmailsh/hermes-plugin
-sha: 98335a83c037197c34b69dbd5895967fdb19508e
-version: "0.3.7"
-description: "Gives a Hermes agent its own email address. Inbound mail wakes the agent over a websocket, and replies stay in-thread. Agents can read and send mail, create, review and edit HTML drafts, send or schedule approved drafts, delete unsent drafts, and provision inboxes. Disclosure — sends a fixed `X-OpenMail-Client: hermes` header and an `openmail-hermes/<version>` User-Agent with every request to the OpenMail API (api.openmail.sh, or your OPENMAIL_BASE_URL) so OpenMail can attribute usage to this plugin; the agent can send and delete drafts and send mail without a Hermes approval prompt."
+sha: 82a7188bed96a679e6540c962585875c9b1360f5
+version: "0.4.0"
+description: "Gives a Hermes agent an email address. Inbound mail can wake the agent and replies stay in-thread. The agent can manage drafts, send or schedule mail, manage queued sends, organise folders, move or restore messages, and provision inboxes. Requests to api.openmail.sh or the configured OPENMAIL_BASE_URL include the X-OpenMail-Client: hermes header and the plugin version in the User-Agent. With the configured key, tools can send mail, change or cancel scheduled delivery, delete drafts or custom folder trees, and move mail into or out of Trash without a separate Hermes approval prompt."
 maintainer: openmailsh
 tier: community
 category: platform
@@ -23,6 +23,14 @@ capabilities:
   - openmail_list_threads
   - openmail_read_thread
   - openmail_list_messages
+  - openmail_create_folder
+  - openmail_rename_folder
+  - openmail_delete_folder
+  - openmail_move_message
+  - openmail_restore_message
+  - openmail_list_scheduled_sends
+  - openmail_reschedule_scheduled_send
+  - openmail_cancel_scheduled_send
   - openmail_list_folders
   - openmail_list_folder_messages
   - openmail_attachment_text

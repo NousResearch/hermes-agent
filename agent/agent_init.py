@@ -1197,7 +1197,7 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
             if not is_core_memory_provider(_mem_provider_name):
                 from agent.memory_manager import MemoryManager as _MemoryManager
                 agent._memory_manager = _MemoryManager()
-                _mp = resolve_memory_provider(_mem_provider_name, say=agent._emit_startup_warning)
+                _mp = resolve_memory_provider(_mem_provider_name, say=agent._emit_startup_warning, agent=agent)
                 if _mp is not None:
                     agent._memory_manager.add_provider(_mp)
                 if agent._memory_manager.providers and agent._memory_manager.initialize_for_agent(

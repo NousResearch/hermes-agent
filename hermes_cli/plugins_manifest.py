@@ -108,7 +108,7 @@ def _manifest_list(data: Mapping, key: str, field_name: str, what: str, coerce: 
 
 
 def _config_key_path(item: object) -> Optional[str]:
-    """A ``config_keys`` entry: a dotted path at least two segments deep (``memory.retaindb``), else None.
+    """A ``config_keys`` entry: a dotted path at least two segments deep (``memory.mem0``), else None.
     A bare section (``agent``) would silence typo notices for the whole section."""
     parts = item.strip().split(".") if isinstance(item, str) else []
     return ".".join(parts) if len(parts) >= 2 and all(parts) else None
@@ -414,7 +414,7 @@ class PluginManifest:
     # ``{endonym, rtl}`` from the mapping form of a ``provides_locales`` entry.
     provides_locales: list[str] = field(default_factory=list)
     locale_metadata: dict[str, dict[str, Any]] = field(default_factory=dict)
-    # Dotted paths in Hermes' own config sections the plugin reads (``memory.retaindb``), so
+    # Dotted paths in Hermes' own config sections the plugin reads (``memory.mem0``), so
     # ``hermes config get/set`` recognizes them while the plugin is active (hermes_cli/config_runtime_keys.py).
     config_keys: list[str] = field(default_factory=list)
 

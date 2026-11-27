@@ -104,19 +104,6 @@ def test_project_dir_is_discovered_when_opted_in(tmp_path, monkeypatch):
     assert memory_plugins.find_provider_dir("projectmem") == provider
 
 
-def test_bundled_still_wins_over_project(tmp_path, monkeypatch):
-    """Precedence here is bundled-first, the reverse of the general
-    PluginManager's later-wins order. A provider is activated by name, so a
-    directory dropped into the working tree must not be able to shadow a
-    shipped one and silently redirect the agent's memory."""
-    _write_provider_dir(tmp_path / ".hermes" / "plugins", "byterover")
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("HERMES_ENABLE_PROJECT_PLUGINS", "1")
-
-    resolved = memory_plugins.find_provider_dir("byterover")
-    assert resolved == Path(memory_plugins.__file__).parent / "byterover"
-
-
 # ---------------------------------------------------------------------------
 # Pip entry-point providers
 # ---------------------------------------------------------------------------

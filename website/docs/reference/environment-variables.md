@@ -185,11 +185,11 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `MEM0_HOST` | Base URL of a self-hosted Mem0 server (switches the plugin off the Platform API) |
 | `MEM0_USER_ID` | Override the user id Mem0 memories are stored under |
 | `MEM0_AGENT_ID` | Override the agent id Mem0 memories are tagged with |
-| `RETAINDB_API_KEY` | RetainDB API key for persistent memory ([retaindb.com](https://retaindb.com)) |
-| `RETAINDB_BASE_URL` | Base URL for self-hosted RetainDB instances (default: `https://api.retaindb.com`) |
+| `RETAINDB_API_KEY` | RetainDB API key, read by the [`retaindb` Hermes Labs plugin](https://github.com/NousResearch/hermes-labs-plugins/tree/main/retaindb) ([retaindb.com](https://retaindb.com)) |
+| `RETAINDB_BASE_URL` | Base URL for self-hosted RetainDB instances (default: `https://api.retaindb.com`), read by the `retaindb` plugin |
 | `OPENVIKING_API_KEY` | OpenViking API key (leave blank for local dev mode) |
 | `OPENVIKING_ENDPOINT` | OpenViking server URL (default: `http://127.0.0.1:1933`) |
-| `BRV_API_KEY` | ByteRover API key (optional, for cloud sync — local-first by default) ([app.byterover.dev](https://app.byterover.dev)) |
+| `BRV_API_KEY` | ByteRover cloud-sync key (optional, local-first by default), read by the [`byterover` Hermes Labs plugin](https://github.com/NousResearch/hermes-labs-plugins/tree/main/byterover) |
 | `SUPERMEMORY_API_KEY` | Semantic long-term memory with profile recall and session ingest ([supermemory.ai](https://supermemory.ai)) |
 | `DAYTONA_API_KEY` | Daytona cloud sandboxes ([daytona.io](https://daytona.io/)) |
 | `SPRITES_TOKEN` | Sprites cloud sandboxes, read by the [`sprites` plugin](https://github.com/NousResearch/hermes-plugin-sprites) ([fly.io/sprites](https://fly.io/sprites)) |

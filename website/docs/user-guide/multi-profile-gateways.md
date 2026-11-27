@@ -714,13 +714,13 @@ clear error — it never falls back to the default profile's bot.
 Tool and memory-provider credentials follow the same rule. Hosted OCR
 (`FIRECRAWL_API_KEY`), Modal / Browser Use cloud gates, the mem0 OSS OpenAI
 key, xAI video, and every memory-provider identity (`MEM0_USER_ID`,
-`SUPERMEMORY_CONTAINER_TAG`, `RETAINDB_PROJECT`, `OPENVIKING_ACCOUNT/USER`,
+`SUPERMEMORY_CONTAINER_TAG`, `OPENVIKING_ACCOUNT/USER`,
 `HINDSIGHT_BANK_ID`, `HERMES_HONCHO_HOST`) are read from the routed profile's
 `.env`, so a secondary profile's memories land in **its** account/bank/project
 (or the provider's per-profile default), never the default profile's. Custom
 endpoints travel with their keys — `OPENAI_BASE_URL`, `XAI_BASE_URL`,
 `NOUS_INFERENCE_BASE_URL`, `GATEWAY_PROXY_URL`, Firecrawl / Browserbase /
-RetainDB / Supermemory / Honcho / Hindsight URLs — so a profile's key is never
+Supermemory / Honcho / Hindsight URLs — so a profile's key is never
 sent to another profile's proxy or self-hosted server. `WEIXIN_HOME_CHANNEL`,
 `HERMES_LANGUAGE` and `display.language`, and `hooks.outbound[].secret_env` are
 likewise per profile, and end-of-session memory extraction for an evicted

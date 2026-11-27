@@ -11,7 +11,7 @@ Four owners supply them:
   preset's own fields and its aggregator slot fields qualify, not arbitrary descendants of ``moa.presets``.
 * ACTIVE plugins: a ``config_keys`` list in ``plugin.yaml`` (or ``extensions.com.nousresearch.hermes``
   in a portable ``plugin.json``) names core-section paths the plugin's code reads, e.g.
-  ``memory.retaindb``. Plugins are found and gated by the loader's own discovery
+  ``memory.mem0``. Plugins are found and gated by the loader's own discovery
   (``plugins_discovery``), plus the memory provider ``memory.provider`` selects. A declared path is
   at least two segments deep, is ignored when DEFAULT_CONFIG already defines it, and covers itself
   and everything below it.

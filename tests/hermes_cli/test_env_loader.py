@@ -832,3 +832,24 @@ def test_lowercase_managed_dir_line_cannot_repoint_launch_value_on_windows(tmp_p
     load_hermes_dotenv(load_external_secrets=False)
 
     assert os.environ["HERMES_MANAGED_DIR"] == str(tmp_path / "admin")
+
+
+@pytest.mark.parametrize("key", ["BRV_API_KEY", "RETAINDB_API_KEY", "RETAINDB_BASE_URL"])
+def test_reload_env_clears_a_deleted_labs_memory_provider_key(tmp_path, monkeypatch, key):
+    """ByteRover/RetainDB left core with no setup prompt, but `/reload` after deleting their key from
+    .env must still drop it from the running process, as it did while they were bundled."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text("RELOAD_TEST_KEY=kept\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv(key, "deleted-from-dotenv")
+    monkeypatch.delenv("RELOAD_TEST_KEY", raising=False)  # restored after the test; reload_env sets it
+
+    from hermes_cli import config as cfg
+    cfg.invalidate_env_cache()
+    try:
+        cfg.reload_env()
+    finally:
+        cfg.invalidate_env_cache()
+
+    assert key not in os.environ

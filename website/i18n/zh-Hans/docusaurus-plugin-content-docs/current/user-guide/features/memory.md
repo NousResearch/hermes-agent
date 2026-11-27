@@ -221,7 +221,7 @@ memory:
 
 ## 外部记忆提供商
 
-对于超出 MEMORY.md 和 USER.md 范围的更深层持久化记忆，Hermes 内置了 8 个外部记忆提供商插件——包括 Honcho、OpenViking、Mem0、Hindsight、Holographic、RetainDB、ByteRover 和 Supermemory。
+对于超出 MEMORY.md 和 USER.md 范围的更深层持久化记忆，可使用外部记忆提供商插件——包括 Honcho、OpenViking、Mem0、Hindsight、Holographic 和 Supermemory。
 
 外部提供商与内置记忆**并行**运行（而非替代），并增加了知识图谱、语义搜索、自动事实提取和跨会话用户建模等能力。
 

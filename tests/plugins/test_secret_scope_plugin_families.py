@@ -1,7 +1,7 @@
 """Regression tests: plugin-family credential reads honor the profile secret scope.
 
-Class-closure follow-up to the profile secret-scope cluster (#76462). Memory,
-image_gen, and browser plugins, plus a handful of tier-3 tool helpers, read
+Class-closure follow-up to the profile secret-scope cluster (#76462). Image_gen
+and browser plugins, plus a handful of tier-3 tool helpers, read
 credentials straight from ``os.environ``. Under a multiplexed gateway the
 process environment may hold ANOTHER profile's key (or none), so every
 credential read must route through ``agent.secret_scope.get_secret`` and honor
@@ -48,31 +48,6 @@ def multiplex_scope():
     for token in tokens:
         reset_secret_scope(token)
     set_multiplex_active(False)
-
-
-# ---------------------------------------------------------------------------
-# Family A — memory plugins
-# ---------------------------------------------------------------------------
-
-class TestMemoryFamily:
-    def test_retaindb_scoped_key_wins(self, multiplex_scope, monkeypatch):
-        monkeypatch.setenv("RETAINDB_API_KEY", "env-other-profile")
-        multiplex_scope({"RETAINDB_API_KEY": "scoped-key"})
-
-        from plugins.memory.retaindb import RetainDBMemoryProvider
-
-        assert RetainDBMemoryProvider().is_available() is True
-
-    def test_retaindb_scoped_miss_does_not_borrow_environ(
-        self, multiplex_scope, monkeypatch
-    ):
-        # Env holds another profile's key; the active profile's scope has none.
-        monkeypatch.setenv("RETAINDB_API_KEY", "env-other-profile")
-        multiplex_scope({})
-
-        from plugins.memory.retaindb import RetainDBMemoryProvider
-
-        assert RetainDBMemoryProvider().is_available() is False
 
 
 # ---------------------------------------------------------------------------

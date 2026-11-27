@@ -635,20 +635,6 @@ class TestMemoryManager:
 class TestPluginMemoryDiscovery:
     """Memory providers are discovered from plugins/memory/ directory."""
 
-    def test_discover_finds_providers(self):
-        """discover_memory_providers returns available providers."""
-        from plugins.memory import discover_memory_providers
-        providers = discover_memory_providers()
-        names = [name for name, _, _ in providers]
-        assert "byterover" in names  # bundled
-
-    def test_load_provider_by_name(self):
-        """load_memory_provider returns a working provider instance."""
-        from plugins.memory import load_memory_provider
-        p = load_memory_provider("byterover")
-        assert p is not None
-        assert p.name == "byterover"
-
     def test_load_nonexistent_returns_none(self):
         """load_memory_provider returns None for unknown names."""
         from plugins.memory import load_memory_provider
@@ -696,37 +682,6 @@ class TestUserInstalledProviderDiscovery:
         assert p is not None
         assert p.name == "myexternal"
         assert p.is_available()
-
-    def test_bundled_takes_precedence(self, tmp_path, monkeypatch):
-        """Bundled provider wins when user plugin has the same name."""
-        from plugins.memory import load_memory_provider, discover_memory_providers
-        # Create user plugin named "byterover" (same as bundled)
-        plugin_dir = tmp_path / "plugins" / "byterover"
-        plugin_dir.mkdir(parents=True)
-        (plugin_dir / "__init__.py").write_text(
-            "from agent.memory_provider import MemoryProvider\n"
-            "class Fake(MemoryProvider):\n"
-            "    @property\n"
-            "    def name(self): return 'byterover-FAKE'\n"
-            "    def is_available(self): return True\n"
-            "    def initialize(self, **kw): pass\n"
-            "    def sync_turn(self, *a, **kw): pass\n"
-            "    def get_tool_schemas(self): return []\n"
-            "    def handle_tool_call(self, *a, **kw): return '{}'\n"
-        , encoding="utf-8")
-        monkeypatch.setattr(
-            "plugins.memory._get_user_plugins_dir",
-            lambda: tmp_path / "plugins",
-        )
-        # Load should return bundled (name "byterover"), not user (name "byterover-FAKE")
-        p = load_memory_provider("byterover")
-        assert p is not None
-        assert p.name == "byterover"  # bundled wins
-
-        # discover should not duplicate
-        providers = discover_memory_providers()
-        count = sum(1 for n, _, _ in providers if n == "byterover")
-        assert count == 1
 
 
 class TestUserInstalledProviderCli:

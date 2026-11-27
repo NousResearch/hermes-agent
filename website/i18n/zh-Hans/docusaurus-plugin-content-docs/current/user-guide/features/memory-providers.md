@@ -1,12 +1,12 @@
 ---
 sidebar_position: 4
 title: "Memory Providers"
-description: "外部记忆提供者插件 — Honcho、OpenViking、Mem0、Hindsight、Holographic、RetainDB、ByteRover、Supermemory"
+description: "外部记忆提供者插件 — Honcho、OpenViking、Mem0、Hindsight、Holographic、Supermemory、ByteRover、RetainDB"
 ---
 
 # Memory Providers
 
-Hermes Agent 内置 8 个外部记忆提供者插件，为 Agent 提供跨会话的持久化知识，超越内置的 MEMORY.md 和 USER.md。同一时间只能激活**一个**外部提供者——内置记忆始终与其并行工作。
+外部记忆提供者插件，为 Agent 提供跨会话的持久化知识，超越内置的 MEMORY.md 和 USER.md。同一时间只能激活**一个**外部提供者——内置记忆始终与其并行工作。
 
 ## 快速开始
 
@@ -22,7 +22,7 @@ hermes memory off        # 禁用外部提供者
 
 ```yaml
 memory:
-  provider: openviking   # 或 honcho, mem0, hindsight, holographic, retaindb, byterover, supermemory
+  provider: openviking   # 或 honcho, mem0, hindsight, holographic, supermemory, byterover, retaindb
 ```
 
 ## 工作原理
@@ -417,57 +417,27 @@ hermes config set memory.provider holographic
 
 ---
 
-### RetainDB
+### ByteRover 与 RetainDB（Hermes Labs）
 
-云端记忆 API，具备混合搜索（向量 + BM25 + 重排序）、7 种记忆类型和增量压缩。
+:::caution Hermes Labs 插件：不提供支持
+ByteRover 和 RetainDB 曾内置于 Hermes，现在作为 [Hermes Labs](https://github.com/NousResearch/hermes-labs-plugins) 插件从插件目录安装：由 Nous Research 构建，**不提供支持**，今后很可能不再维护，欢迎社区修复。已配置 `memory.provider: byterover` 或 `retaindb` 的 profile 会自动安装该插件，并收到一次性提示。
+:::
 
-| | |
-|---|---|
-| **适合场景** | 已使用 RetainDB 基础设施的团队 |
-| **依赖** | RetainDB 账号 + API key |
-| **数据存储** | RetainDB Cloud |
-| **费用** | $20/月 |
+**ByteRover**：通过外部 `brv` CLI 实现持久化记忆（分层知识树 + 分层检索），本地优先，可选云端同步（`BRV_API_KEY`）。工具：`brv_query`、`brv_curate`、`brv_status`。
 
-**工具：** `retaindb_profile`（用户 profile）、`retaindb_search`（语义搜索）、`retaindb_context`（任务相关上下文）、`retaindb_remember`（带类型和重要性的存储）、`retaindb_forget`（删除记忆）
-
-**安装：**
 ```bash
-hermes memory setup    # 选择 "retaindb"
-# 或手动配置：
-hermes config set memory.provider retaindb
-echo "RETAINDB_API_KEY=your-key" >> ~/.hermes/.env
-```
-
----
-
-### ByteRover
-
-通过 `brv` CLI 实现持久化记忆——具备分层知识树和分层检索（模糊文本 → LLM 驱动搜索）。本地优先，可选云端同步。
-
-| | |
-|---|---|
-| **适合场景** | 希望使用可移植、本地优先记忆和 CLI 的开发者 |
-| **依赖** | ByteRover CLI（`npm install -g byterover-cli` 或[安装脚本](https://byterover.dev)） |
-| **数据存储** | 本地（默认）或 ByteRover Cloud（可选同步） |
-| **费用** | 免费（本地）或 ByteRover 定价（云端） |
-
-**工具：** `brv_query`（搜索知识树）、`brv_curate`（存储事实/决策/模式）、`brv_status`（CLI 版本 + 树状统计）
-
-**安装：**
-```bash
-# 先安装 CLI
-curl -fsSL https://byterover.dev/install.sh | sh
-
-# 然后配置 Hermes
-hermes memory setup    # 选择 "byterover"
-# 或手动配置：
+npm install -g byterover-cli          # brv CLI（需单独安装）
+hermes plugins install byterover
 hermes config set memory.provider byterover
 ```
 
-**主要特性：**
-- 自动预压缩提取（在上下文压缩丢弃内容前保存洞察）
-- 知识树存储于 `$HERMES_HOME/byterover/`（profile 范围隔离）
-- SOC2 Type II 认证的云端同步（可选）
+**RetainDB**：云端记忆 API（付费 RetainDB 账号，`RETAINDB_API_KEY`；自托管实例用 `RETAINDB_BASE_URL`），混合搜索覆盖 7 种记忆类型。
+
+```bash
+hermes plugins install retaindb
+hermes config set memory.provider retaindb
+echo "RETAINDB_API_KEY=your-key" >> ~/.hermes/.env
+```
 
 ---
 
@@ -563,9 +533,9 @@ Base URL 优先级为 `supermemory.json` → `SUPERMEMORY_BASE_URL` → `https:/
 | **Mem0** | 云端 | 付费 | 3 | `mem0ai` | 服务端 LLM 提取 |
 | **Hindsight** | 云端/本地 | 免费/付费 | 3 | `hindsight-client` | 知识图谱 + reflect 合成 |
 | **Holographic** | 本地 | 免费 | 2 | 无 | HRR 代数 + 信任评分 |
-| **RetainDB** | 云端 | $20/月 | 5 | `requests` | 增量压缩 |
-| **ByteRover** | 本地/云端 | 免费/付费 | 3 | `brv` CLI | 预压缩提取 |
 | **Supermemory** | 云端/自托管 | 免费/付费 | 4 | `supermemory` | 上下文隔离 + 会话图谱导入 + 多容器 |
+| **ByteRover**（Hermes Labs，不提供支持） | 本地/云端 | 免费/付费 | 3 | `hermes plugins install byterover` + `brv` CLI | 预压缩提取 |
+| **RetainDB**（Hermes Labs，不提供支持） | 云端 | 付费 | 10 | `hermes plugins install retaindb` | 增量压缩 |
 
 ## Profile 隔离
 
@@ -575,6 +545,8 @@ Base URL 优先级为 `supermemory.json` → `SUPERMEMORY_BASE_URL` → `https:/
 - **配置文件提供者**（Honcho、Mem0、Hindsight、Supermemory）将配置存储在 `$HERMES_HOME/` 中，每个 profile 拥有独立凭证
 - **云端提供者**（RetainDB）自动派生 profile 范围的项目名称
 - **环境变量提供者**（OpenViking）通过每个 profile 的 `.env` 文件配置
+
+ByteRover 和 RetainDB 没有找到维护者，因此移入 [Hermes Labs](https://github.com/NousResearch/hermes-labs-plugins) 仓库（由 Nous Research 构建，不提供支持）。`hermes update` 或下一次 Agent 启动会为配置了它们的 profile 安装插件目录中的插件，并提示一次它现在是不受支持的 Hermes Labs 插件。你的配置、数据目录和密钥保持不变。
 
 ## 构建记忆提供者
 

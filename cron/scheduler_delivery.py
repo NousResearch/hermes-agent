@@ -713,6 +713,12 @@ def _resolve_single_delivery_target(
         # must reach the adapter as written or the job's output is silently lost.
         chat_id, thread_id, resolution_error = resolve_send_target(
             platform_key, rest, pass_unresolved_references=True)
+        if resolution_error and moved_platform_hint(platform_key) and (
+                _preflight._delivery_platform_routed_from_primary_gateway(platform_key)):
+            # No plugin here to parse it, but the primary's bot may serve it: the exact route match at send
+            # time decides, and a miss names the install.
+            chat_id, _, thread_id = rest.partition(":")
+            thread_id, resolution_error = thread_id or None, None
         if resolution_error:
             logger.warning("Invalid cron delivery target '%s': %s", deliver_value, resolution_error)
             return None
@@ -1215,6 +1221,9 @@ def _resolve_target_transport(
             transport = DeliveryTransport(
                 shared, replace(own, enabled=True) if own is not None else PlatformConfig(enabled=True),
                 platform)
+    if transport is None and moved_platform_hint(platform_name):
+        # Left core and its plugin is not loaded here: only a shared route (above) can still reach it.
+        return None, unknown_platform_error(platform_name)
     if transport is None:
         transport = resolve_delivery_transport(platform, config, target_adapters)
     if transport is not None:
@@ -1663,9 +1672,6 @@ def _prepare_target_delivery(
     platform_name = target["platform"]
     chat_id = target["chat_id"]
     thread_id = target.get("thread_id")
-    if moved_platform_hint(platform_name):  # a saved origin on a platform whose plugin is not loaded
-        _note_target_error(job, unknown_platform_error(platform_name), delivery_errors)
-        return None
 
     origin = _resolve_origin(job) or {}
     origin_thread = origin.get("thread_id")
@@ -1700,7 +1706,9 @@ def _prepare_target_delivery(
     try:
         platform = Platform(platform_name.lower())
     except (ValueError, KeyError):
-        _note_target_error(job, f"unknown platform '{platform_name}'", delivery_errors)
+        error = unknown_platform_error(platform_name) if moved_platform_hint(platform_name) else (
+            f"unknown platform '{platform_name}'")
+        _note_target_error(job, error, delivery_errors)
         return None
 
     resolved, resolve_err = _resolve_target_transport(

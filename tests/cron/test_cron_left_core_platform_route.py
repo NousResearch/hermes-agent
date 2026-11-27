@@ -96,3 +96,74 @@ def test_origin_on_a_moved_platform_names_the_install(feature):
          "origin": {"platform": feature.platform, "chat_id": "chat-1"}},
         "the report", adapters=None, loop=None)
     assert error and f"hermes plugins install {feature.plugin}" in error
+
+
+def _satellite(tmp_path, monkeypatch, platform):
+    """A credentialless ``fitness`` profile the primary routes ``<platform>:chat-1`` to; returns its home."""
+    import hermes_yaml as yaml
+    root = tmp_path / "root"
+    home = root / "profiles" / "fitness"
+    home.mkdir(parents=True)
+    (root / "config.yaml").write_text(yaml.safe_dump({"gateway": {"multiplex_profiles": True, "profile_routes": [
+        {"platform": platform, "chat_id": "chat-1", "profile": "fitness"}]}}), encoding="utf-8")
+    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
+    return home
+
+
+@pytest.mark.parametrize("deliver,reached", [("origin", True), ("{p}:chat-1", True), ("{p}:chat-2", False)],
+                         ids=["origin", "explicit", "unrouted"])
+@pytest.mark.parametrize("feature", _MOVED, ids=[f.platform for f in _MOVED])
+def test_satellite_route_rides_the_primarys_bot_without_the_plugin(tmp_path, monkeypatch, feature, deliver, reached):
+    """A secondary profile without the plugin whose chat the primary's bot serves delivers through that bot:
+    the install hint is for a destination nothing can reach, not one a shared route reaches. A chat the
+    primary does not route here stays closed and names the install."""
+    from unittest.mock import MagicMock
+    from cron.scheduler_preflight import _preflight_check_delivery, shared_route_adapters_for_current_home
+    from hermes_constants import hermes_home_key, reset_hermes_home_override, set_hermes_home_override
+
+    sent = []
+
+    async def send(chat_id, content, metadata=None):
+        sent.append(chat_id)
+        return {"success": True, "message_id": "m1"}
+
+    primary = MagicMock()
+    primary.send = send
+    loop = MagicMock()
+    loop.is_running.return_value = True
+
+    def run_now(coro, _loop):
+        import asyncio
+        from concurrent.futures import Future
+        future = Future()
+        future.set_result(asyncio.run(coro))
+        return future
+
+    job = {"id": "j1", "name": "Report", "deliver": deliver.format(p=feature.platform),
+           "origin": {"platform": feature.platform, "chat_id": "chat-1"}}
+    home = _satellite(tmp_path, monkeypatch, feature.platform)
+    # The primary's plugin registers the platform in the primary's scope only; its adapter map keys it.
+    primary_scope = hermes_home_key(home.parent.parent)
+    platform_registry.register(PlatformEntry(
+        name=feature.platform, label=feature.label, adapter_factory=lambda cfg: None, check_fn=lambda: True),
+        scope=primary_scope)
+    token = set_hermes_home_override(str(home.parent.parent))
+    primary_adapters = {Platform(feature.platform): primary}
+    reset_hermes_home_override(token)
+    token = set_hermes_home_override(str(home))
+    try:
+        assert platform_registry.get(feature.platform) is None
+        assert _preflight_check_delivery(job) is None
+        adapters = shared_route_adapters_for_current_home(primary_adapters)
+        with patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=run_now):
+            error = _deliver_result(job, "the report", adapters=adapters, loop=loop)
+    finally:
+        reset_hermes_home_override(token)
+        platform_registry.unregister(feature.platform, scope=primary_scope)
+    if reached:
+        assert error is None, error
+        assert sent == ["chat-1"]
+    else:
+        assert error and f"plugins install {feature.plugin}" in error
+        assert sent == []

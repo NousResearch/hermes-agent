@@ -18,6 +18,7 @@ from agent.prompt_cache_lifecycle.economics import (
     CacheWarmingDecision,
     evaluate_economics,
 )
+from agent.prompt_cache_lifecycle.in_flight import in_flight_window, request_tokens
 from agent.prompt_cache_lifecycle.edge import (
     EdgeDecision,
     _compaction_reason,
@@ -137,6 +138,9 @@ class _Run:
     #: That request's ``prompt_cache_clock.attempt_facts`` (the agent's ``_prompt_cache_attempt``): each
     #: keep-alive moves its send time on, so the reply folds from the latest renewal, not from its send.
     attempt: Optional[dict[str, Any]] = None
+    #: That request's own reply was folded (:meth:`PromptCacheWarmer.fold_reply`): a keep-alive reply
+    #: landing later folds after it as a later read of the same prompt.
+    settled: bool = False
     #: ``prompt_cache_clock.response_upstream`` of the reply that last cached this prefix.
     upstream: Optional[str] = None
     #: Rough size of the stable system + tools prefix: a miss that read at least half of it was a routing blip.
@@ -299,7 +303,7 @@ class PromptCacheWarmer:
         refused = self._refusal(api_kwargs) or self._in_flight_refusal()
         if refused is not None:
             return self._stop(refused, lifecycle=True)
-        window = _in_flight_window(agent, api_kwargs)
+        window = in_flight_window(agent, api_kwargs)
         if window is None or cache_warming_delay_s(window[1]) is None:
             return self._stop("no cache window to keep warm (no markers, nothing proven)", lifecycle=True)
         window, learned = learned_window(agent, window, self._marked)
@@ -309,7 +313,7 @@ class PromptCacheWarmer:
         if refused is not None:
             return self._stop(refused, lifecycle=True)
         # The whole prompt of this request is in the cache once it is sent; its reply's usage is not known yet.
-        cached_tokens = _request_tokens(api_kwargs)
+        cached_tokens = request_tokens(api_kwargs)
         decision = self._decide(cached_tokens, 0)
         if decision.action != "warm":
             return self._stop(decision.stop_reason, lifecycle=True)
@@ -628,8 +632,6 @@ class PromptCacheWarmer:
         finally:
             run.refreshing = False
         miss = self._record(run, message, decision, sent_at, reserved)
-        if miss is None or miss.startswith("cache refresh missed"):
-            self._carry_renewal(run, sent_at)
         self._set_in_flight(None)  # the reply is folded: the clock is the touch again (a miss renewed nothing)
         if miss is not None and not miss.startswith("cache refresh missed"):
             self._stop_if_current(run, miss)
@@ -674,16 +676,6 @@ class PromptCacheWarmer:
                 return
             run.deadline_at, run.ttl_s = window
             self._schedule(run)
-
-    def _carry_renewal(self, run: _Run, sent_at: float) -> None:
-        """A keep-alive of the request still awaiting its reply read (or re-wrote) that request's whole
-        prompt at ``sent_at``: the reply, folded later from the agent's attempt, counts its entry from
-        there. Untouched once the reply replaced the run (its fold already happened)."""
-        with self._lock:
-            agent = self.agent
-            if (run.awaiting_reply and run.attempt is not None and self._run is run
-                    and getattr(agent, "_prompt_cache_attempt", None) is run.attempt):
-                run.attempt = agent._prompt_cache_attempt = dict(run.attempt, sent_at=sent_at)
 
     def _miss_ends_warming(self, run: _Run, message: Any) -> bool:
         """Whether this keep-alive miss ends warming for the session. Not when the reply came from another
@@ -857,19 +849,41 @@ class PromptCacheWarmer:
         return the ``prompt_cache_clock`` column for its token row. A reply to a prefix a
         compaction or route switch has since replaced is accounted but certifies nothing: the
         event is stamped with the arm-time witness, so a rewrite committing even now leaves the
-        clock unknown rather than vouching for the new prefix."""
-        from agent.prompt_cache_clock import attempt_facts, record_cache_response, response_upstream
+        clock unknown rather than vouching for the new prefix.
+
+        A keep-alive of a request still awaiting its reply also moves that request's attempt send time
+        to its own, in the same locked step, so the reply (folded by :func:`fold_reply` under this lock)
+        counts its entry from the latest renewal. One whose reply was already folded (``settled``) is
+        folded after it as an ordinary later read of the same prompt, unless a rewrite intervened."""
+        from agent.prompt_cache_clock import attempt_facts, context_witness, record_cache_response, response_upstream
         from agent.turn_usage import cache_clock_column
 
         agent, b = self.agent, run.billing
         with self._lock:
-            if self._run is not run or self._stale_reason(run) is not None:
+            if run.settled:
+                stale = context_witness(agent) != run.witness
+            else:
+                stale = self._run is not run or self._stale_reason(run) is not None
+            if stale:
                 return {}
             attempt = dict(attempt_facts(run.api_kwargs) or {}, sent_at=sent_at, replay=True)
             event = record_cache_response(agent, canonical, model=b["model"], provider=b["provider"],
                                           base_url=b["base_url"], api_mode=b["api_mode"], attempt=attempt,
                                           witness=run.witness, upstream=response_upstream(message))
+            if (event is not None and run.awaiting_reply and not run.settled and run.attempt is not None
+                    and getattr(agent, "_prompt_cache_attempt", None) is run.attempt):
+                run.attempt = agent._prompt_cache_attempt = dict(run.attempt, sent_at=sent_at)
         return cache_clock_column(event)
+
+    def fold_reply(self, fold: Callable[[], Any]) -> Any:
+        """Fold the loop's own reply (``fold``, the clock write) under the lock keep-alive folds take:
+        a keep-alive of the request awaiting it either renewed the attempt before (the reply counts from
+        there) or folds after it (``settled``), never in between."""
+        with self._lock:
+            run = self._run
+            if run is not None and run.awaiting_reply:
+                run.settled = True
+            return fold()
 
     def _add_to_session_totals(self, canonical: Any, amount: Optional[float]) -> None:
         # Not session_api_calls: that counter is the conversation's request sequence (and the
@@ -967,36 +981,6 @@ class PromptCacheWarmer:
 
     def _prefix(self) -> str:
         return getattr(self.agent, "log_prefix", "") or ""
-
-
-def _in_flight_window(agent: Any, api_kwargs: dict[str, Any]) -> Optional[tuple[float, float]]:
-    """``(deadline, tier seconds)`` of the entry the request going out now writes or reads: from its send,
-    for the tier it asks (clamped by the route's ceiling; the clock's tier when it names none). A request
-    with ``cache_control`` markers declares its tier (the clock's Anthropic-spec rule); an automatic cache
-    must have proven itself on the clock first (a proven or declared window, expired or not). ``None``
-    otherwise."""
-    from agent.prompt_cache_clock import DECLARED, PROVEN, attempt_facts, cache_window
-    from agent.prompt_caching import TTL_SECONDS, route_ttl_ceiling
-
-    window = cache_window(agent)
-    facts = getattr(agent, "_prompt_cache_attempt", None) or attempt_facts(api_kwargs) or {}
-    proven = window is not None and window.confidence in (PROVEN, DECLARED)
-    if not proven and facts.get("marker_ttl") is None:
-        return None
-    tier = facts.get("marker_ttl") or facts.get("openai_ttl") or getattr(window, "tier", None) or ""
-    ceiling = route_ttl_ceiling(getattr(agent, "provider", "") or "", getattr(agent, "base_url", "") or "")
-    ttl_s = min(TTL_SECONDS.get(tier, 0), TTL_SECONDS.get(ceiling or "", float("inf")))
-    if not ttl_s:
-        return None
-    return float(facts.get("sent_at") or time.time()) + ttl_s, float(ttl_s)
-
-
-def _request_tokens(api_kwargs: dict[str, Any]) -> int:
-    """Rough prompt size of a request payload (messages and tools, plus an Anthropic ``system``)."""
-    from agent.chat_completion_helpers import estimate_request_context_tokens
-
-    system = api_kwargs.get("system")
-    return estimate_request_context_tokens(api_kwargs) + (estimate_request_context_tokens([system]) if system else 0)
 
 
 def _stable_prefix_tokens(api_kwargs: dict[str, Any], api_mode: str) -> int:
@@ -1108,6 +1092,12 @@ def start_prompt_cache_warming(agent: Any, api_kwargs: Any, response: Any) -> No
         get_prompt_cache_warmer(agent).start(api_kwargs, response)
     except Exception:
         logger.debug("prompt cache warming did not arm", exc_info=True)
+
+
+def fold_reply(agent: Any, fold: Callable[[], Any]) -> Any:
+    """:meth:`PromptCacheWarmer.fold_reply` for any agent (no warmer: nothing to order against)."""
+    warmer = getattr(agent, "_prompt_cache_warmer", None)
+    return warmer.fold_reply(fold) if isinstance(warmer, PromptCacheWarmer) else fold()
 
 
 def start_in_flight_prompt_cache_warming(agent: Any, api_kwargs: Any) -> None:

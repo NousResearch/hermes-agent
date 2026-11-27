@@ -478,3 +478,48 @@ def test_an_automatic_cache_that_never_proved_itself_arms_nothing_for_the_reques
         finally:
             warmer.cancel()
             db.close()
+
+
+def test_a_keep_alive_reply_landing_after_its_requests_own_reply_still_renews_the_window(tmp_path, monkeypatch):
+    """The request's reply lands (and is folded, and replaces the run) while its keep-alive is still on
+    the wire: the keep-alive's reply folds after it as a later read of the same prompt, so the window
+    counts from the keep-alive, not from the request's send."""
+    import time
+
+    from agent.prompt_cache_clock import cache_certainly_warm, record_attempt_sent
+    from agent.prompt_cache_lifecycle.warmer import fold_reply
+
+    with _endpoint() as (client, server):
+        agent, warmer, run, db = _armed(tmp_path, client, sid=uuid.uuid4().hex)
+        try:
+            warmer.cancel("new request in flight")
+            request = _next_request(agent)
+            t0 = time.time()
+            now = [t0]
+            monkeypatch.setattr(time, "time", lambda: now[0])
+            record_attempt_sent(agent, request)
+            pcw.start_in_flight_prompt_cache_warming(agent, request)
+            run = warmer._run
+            run.timer.cancel()
+            server.release.clear()
+            now[0] = t0 + 250
+            worker = threading.Thread(target=warmer._refresh, args=(run,))
+            worker.start()
+            assert server.entered.wait(5)
+            now[0] = t0 + 255  # the request's own reply lands while the keep-alive is on the wire
+            usage = SimpleNamespace(input_tokens=0, output_tokens=9_000, cache_read_input_tokens=_READ,
+                                    cache_creation_input_tokens=400)
+            fold_reply(agent, lambda: record_cache_response(
+                agent, normalize_usage(usage, provider=agent.provider, api_mode=agent.api_mode), model=agent.model,
+                provider=agent.provider, base_url=agent.base_url, api_mode=agent.api_mode))
+            warmer.cancel("the reply replaced the run")
+            server.release.set()
+            worker.join(10)
+            assert not worker.is_alive()
+            window = cache_window(agent)
+            assert window.refreshed_at == pytest.approx(t0 + 250, abs=1)
+            assert cache_certainly_warm(window, now=t0 + 390)
+        finally:
+            server.release.set()
+            warmer.cancel()
+            db.close()

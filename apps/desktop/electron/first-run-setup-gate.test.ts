@@ -106,6 +106,24 @@ test('repair reset clears the local install confirmation and shows the gate agai
   await next
 })
 
+test('a previously ready local gateway only allows setup again for explicit repair', async () => {
+  const gate = createFirstRunSetupGate({ stuckAfterMs: 0 })
+  const initialSetup = gate.wait(bootstrapBackend)
+
+  gate.continueLocal()
+  await initialSetup
+  gate.markLocalGatewayReady()
+
+  await assert.rejects(gate.wait(bootstrapBackend), /Retry the gateway connection/)
+
+  gate.resetForRepair()
+  const repair = gate.wait(bootstrapBackend, true)
+
+  assert.equal(gate.hasWaiter(), true)
+  gate.continueLocal()
+  assert.equal(await repair, 'continue-local')
+})
+
 test('remote apply settles the gated boot for remote re-resolution and hides the choice', async () => {
   let hidden = 0
   const gate = createFirstRunSetupGate({ hideChoice: () => hidden++, stuckAfterMs: 0 })

@@ -88,6 +88,39 @@ test('a first-run bootstrap-needed remote apply connects without ensuring or boo
   assert.equal(notifyConnectionApplied.mock.calls.length, 0)
 })
 
+test('recovering a previously ready local gateway does not prompt or install when the runtime probe fails', async () => {
+  const promptChoice = vi.fn()
+  const gate = createFirstRunSetupGate({ promptChoice, stuckAfterMs: 0 })
+  const installed = { kind: 'command' }
+  let resolved = installed
+  const ensureLocalRuntime = vi.fn(async backend => backend)
+  const start = () =>
+    runPrimaryBackendStartup({
+      assertCurrentAttempt: () => {},
+      connectRemote: async () => assert.fail('expected a local gateway'),
+      ensureLocalRuntime,
+      prepareLocalBackend: () => resolved,
+      resolveRemote: async () => null,
+      waitForDecision: gate.wait,
+      waitForLocalStart: async () => {}
+    })
+
+  assert.deepEqual(await start(), { kind: 'local', backend: installed })
+  gate.markLocalGatewayReady()
+  resolved = { kind: 'bootstrap-needed' }
+
+  // An accidental first-run prompt must fail the test without parking it.
+  promptChoice.mockImplementation(() => {
+    throw new Error('unexpected first-run setup prompt')
+  })
+  await assert.rejects(start(), /Retry the gateway connection/)
+  assert.equal(ensureLocalRuntime.mock.calls.length, 1)
+
+  gate.resetForRetry()
+  resolved = installed
+  assert.deepEqual(await start(), { kind: 'local', backend: installed })
+})
+
 test('a primary apply without an active first-run gate tears down before reconnect notification', async () => {
   const order: string[] = []
   const clearLocalBootstrapFailure = vi.fn(() => order.push('clear-failure'))

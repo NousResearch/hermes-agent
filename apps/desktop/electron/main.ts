@@ -2555,6 +2555,17 @@ function resetBootstrapSnapshot(): void {
 }
 
 function promptFirstRunSetupChoice(backend) {
+  updateBootProgress(
+    {
+      error: null,
+      message: 'Waiting for first-run setup choice',
+      phase: 'bootstrap.choice',
+      progress: 12,
+      running: true
+    },
+    { allowDecrease: true }
+  )
+
   broadcastBootstrapEvent({
     type: 'setup-choice',
     active: true,
@@ -2593,27 +2604,6 @@ function getFirstRunSetupGate() {
   }
 
   return firstRunSetupGate
-}
-
-async function waitForFirstRunSetupChoice(backend) {
-  const gate = getFirstRunSetupGate()
-
-  if (!gate.shouldGate(backend)) {
-    return 'continue-local'
-  }
-
-  updateBootProgress(
-    {
-      error: null,
-      message: 'Waiting for first-run setup choice',
-      phase: 'bootstrap.choice',
-      progress: 12,
-      running: true
-    },
-    { allowDecrease: true }
-  )
-
-  return gate.wait(backend)
 }
 
 function continueFirstRunLocalBootstrap() {
@@ -11439,7 +11429,7 @@ async function startHermes(requestedProfile?: string, inheritsPrimary = false) {
 
         return resolveRemoteBackend(primaryProfile, { primary: true, forceRegistryPrimary: true })
       },
-      waitForDecision: waitForFirstRunSetupChoice,
+      waitForDecision: backend => getFirstRunSetupGate().wait(backend, bootstrapRepairRequested),
       // Mutual exclusion with an in-app update (#50238). Remote connections
       // return before this waiter; local starts park until the updater exits.
       waitForLocalStart: waitForUpdateToFinish
@@ -11476,6 +11466,7 @@ async function startHermes(requestedProfile?: string, inheritsPrimary = false) {
     backendConnectionState.assertCurrentAttempt(connectionAttempt)
 
     backendStartFailure = null
+    getFirstRunSetupGate().markLocalGatewayReady()
     rememberLog('[backend] Hermes gateway is ready')
     updateBootProgress({ phase: 'backend.ready', message: 'Hermes gateway is ready', progress: 94, running: true, error: null })
     bootstrapRepairAttempt = 0

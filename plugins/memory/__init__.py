@@ -197,10 +197,14 @@ def list_memory_provider_names() -> list[str]:
 
 def discover_memory_providers() -> list[tuple[str, str, bool]]:
     """``[(name, description, is_available), ...]``; bundled wins on name collisions,
-    then user directories, then pip."""
+    then user directories, then pip. A user provider that ``plugins.disabled`` lists is listed from
+    its manifest as not available without running its code; ``load_memory_provider`` refuses it too."""
+    choice = _loader.read_plugin_choice()
     results = [
-        (name, _loader.read_plugin_description(child),
-         _loader.probe_availability(lambda c=child: _load_provider_from_dir(c, register_skills=False)))
+        _loader.describe_without_import(name, child)
+        if not _is_bundled(child) and choice.is_disabled(child, name)
+        else (name, _loader.read_plugin_description(child),
+              _loader.probe_availability(lambda c=child: _load_provider_from_dir(c, register_skills=False)))
         for name, child in _iter_provider_dirs()
     ]
     seen = {name for name, _, _ in results}
@@ -593,35 +597,13 @@ def parked_provider_notice(name: str) -> Optional[str]:
     effect = (", so external memory is off (built-in memory still works)"
               if cfg_get(config, "memory", "provider") == name else "")
     return (f"⚠ Memory provider '{name}' is turned off: plugins.disabled lists it{effect}.{why} "
-            f"Turn it back on with {_enable_command(name)}.")
-
-
-def _enable_command(name: str) -> str:
-    """``plugins enable`` for the active home from any shell, so HERMES_HOME names that home. A
-    profile-shaped HERMES_HOME already beats the sticky profile; any other home needs ``-p default``,
-    which resolves to HERMES_HOME itself (:func:`hermes_cli.profiles.profile_root_for_env_home`)."""
-    from hermes_cli.profiles import profile_root_for_env_home
-    from hermes_constants import get_hermes_home
-    home = get_hermes_home()
-    selector = "" if profile_root_for_env_home(str(home), home) != home else "-p default "
-    return f"`hermes {selector}plugins enable {name}` with HERMES_HOME set to {home}"
+            f"Turn it back on with {_loader.enable_command(name)}.")
 
 
 def _explicitly_disabled(name: str, provider_dir: Path) -> bool:
     """True when a NON-bundled provider is parked in ``plugins.disabled`` under any spelling the
     plugin commands write: the provider name, its directory name or its manifest ``name:``."""
-    if _is_bundled(provider_dir):
-        return False
-    try:
-        from hermes_cli.config import load_config
-        disabled = cfg_get(load_config(), "plugins", "disabled")
-    except Exception:
-        return False
-    if not isinstance(disabled, list):
-        return False
-    from pm.plugins_state import plugin_spellings
-
-    return bool(plugin_spellings(provider_dir, name) & {v for v in disabled if isinstance(v, str)})
+    return not _is_bundled(provider_dir) and _loader.read_plugin_choice().is_disabled(provider_dir, name)
 
 
 def _prune_inactive_memory_provider_skills(active_provider: Optional[str] = None) -> None:

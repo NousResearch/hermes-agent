@@ -470,3 +470,19 @@ def test_the_pruner_finds_the_canary_channel_by_policy_not_name(monkeypatch):
     keys.append("releases/channels/canary.json")
     with pytest.raises(RuntimeError, match="More than one protected canary-release channel"):
         r2.prune(14, dry_run=True, now_epoch=now)
+
+
+def test_channel_releases_cli_publishes_canary_and_refuses_stable(tmp_path, monkeypatch):
+    """Stable publication runs only through the sequencer's advance_stable, which checks the final
+    release receipt and the stable-release concurrency group; the standalone CLI is canary-only."""
+    from scripts.releases import channel_releases
+
+    published = []
+    monkeypatch.setattr(channel_releases, "publish_release",
+                        lambda policy, env, root: published.append(policy) or {"policy": policy})
+    with pytest.raises(SystemExit) as refused:
+        channel_releases.main(["stable", "--root", str(tmp_path)])
+    assert refused.value.code == 2
+    assert published == []
+    channel_releases.main(["canary", "--root", str(tmp_path)])
+    assert published == ["canary-release"]

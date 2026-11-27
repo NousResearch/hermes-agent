@@ -7,14 +7,15 @@ import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/s
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { runTour } from '@/lib/tour'
 import { $previewTabs, closeRightRail, openPreview, setPreviewTabPinned } from '@/store/preview'
+import { clearAllPrompts, sessionApprovalRequests } from '@/store/prompts'
 import { hasOpenServerRequest, resetServerRequestsForTests } from '@/store/server-requests'
 import { setActiveSessionId, setSelectedStoredSessionId, setSessions } from '@/store/session'
 import { $sessionStates, $sessionTiles, dropSessionState, publishSessionState } from '@/store/session-states'
 import { $toursEnabled } from '@/store/tours'
 import type { SessionInfo } from '@/types/hermes'
 
+import type { ServerRequestContext } from './server-request-context'
 import { handleServerRequest, previewSessionRoute, requestNamesActiveSession } from './server-requests'
-import type { ServerRequestContext } from './server-requests'
 
 vi.mock('@/lib/tour', () => ({ runTour: vi.fn(async () => ({ ok: true })) }))
 
@@ -94,6 +95,7 @@ describe('approval request routing', () => {
 
   afterEach(() => {
     delete desktopWindow.hermesDesktop
+    clearAllPrompts()
     setSessions([])
     setActiveSessionId(null)
   })
@@ -107,6 +109,173 @@ describe('approval request routing', () => {
 
     expect(notify).toHaveBeenCalledWith(
       expect.objectContaining({ kind: 'approval', title: expect.stringContaining('Fix the flaky test') })
+    )
+  })
+
+  it('parks a folder card with its target and risk, and notifies with folder copy', () => {
+    deliver(
+      'approval',
+      {
+        access: 'read_write',
+        choices: ['once', 'always', 'deny'],
+        command: '',
+        description: 'Allow read and write access to C:\\docs',
+        kind: 'access',
+        path: 'C:\\docs',
+        request_id: 'sandbox-card-1',
+        risk: 'The agent can change and delete files in this folder.',
+        session_id: 'session-c'
+      },
+      'session-b'
+    )
+
+    expect(sessionApprovalRequests('session-c').get()).toEqual([
+      expect.objectContaining({
+        kind: 'access',
+        requestId: 'sandbox-card-1',
+        risk: 'The agent can change and delete files in this folder.',
+        serverRequestId: 'srq-1',
+        target: { access: 'read_write', path: 'C:\\docs' }
+      })
+    ])
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actions: [
+          { id: 'approve:sandbox-card-1', text: 'Allow' },
+          { id: 'reject:sandbox-card-1', text: 'Deny' }
+        ],
+        body: 'Read and write: C:\\docs',
+        kind: 'approval',
+        title: expect.stringMatching(/^Folder access needed — /)
+      })
+    )
+  })
+
+  it('says in the folder notification that the request is to read and write the folder', () => {
+    // The notification's Allow button answers the card, so it says what the card says.
+    deliver(
+      'approval',
+      {
+        access: 'read_write',
+        choices: ['once', 'always', 'deny'],
+        command: '',
+        description: 'Allow read and write access to C:\\docs',
+        kind: 'access',
+        path: 'C:\\docs',
+        request_id: 'sandbox-card-7',
+        session_id: 'session-rw'
+      },
+      'session-b'
+    )
+
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ body: 'Read and write: C:\\docs' }))
+  })
+
+  it('says "Read only" for a read-only folder, and names the folder alone when the request gives no level', () => {
+    const folder = { choices: ['once', 'deny'], command: '', kind: 'access', path: 'C:\\ref' }
+
+    deliver(
+      'approval',
+      { ...folder, access: 'read', request_id: 'sandbox-card-8', session_id: 'session-ro' },
+      'session-b'
+    )
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ body: 'Read only: C:\\ref' }))
+
+    deliver('approval', { ...folder, request_id: 'sandbox-card-9', session_id: 'session-bare' }, 'session-b')
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ body: 'C:\\ref' }))
+  })
+
+  it.each([
+    ['a folder request that names no folder', { kind: 'access' }],
+    ['a folder request that names a site', { host: 'example.com', kind: 'access' }],
+    ['a site request that names no site', { kind: 'network' }]
+  ])('refuses %s: the sender gets an error, no card is parked and nothing is notified', (_name, fields) => {
+    const { fail, respond } = deliver(
+      'approval',
+      {
+        choices: ['once', 'always', 'deny'],
+        command: '',
+        request_id: 'sandbox-card-5',
+        session_id: 'session-n',
+        ...fields
+      },
+      'session-b'
+    )
+
+    expect(fail).toHaveBeenCalledWith(-32602, expect.stringMatching(/path.*host/))
+    expect(respond).not.toHaveBeenCalled()
+    expect(sessionApprovalRequests('session-n').get()).toEqual([])
+    expect(notify).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    [
+      'folders',
+      'a run of spaces inside',
+      { kind: 'access', path: 'C:\\Project  Files' },
+      { kind: 'access', path: 'C:\\Project Files' }
+    ],
+    ['folders', 'a space at the end', { kind: 'access', path: 'C:\\docs ' }, { kind: 'access', path: 'C:\\docs' }],
+    [
+      'sites',
+      'a run of spaces inside',
+      { host: 'example.com', kind: 'network', label: 'Web  search' },
+      { host: 'example.com', kind: 'network', label: 'Web search' }
+    ]
+  ])('names two %s that differ only by %s differently in the notification', (what, how, first, second) => {
+    // The operating system draws the notification, and its Allow button answers the card. Where a
+    // run of spaces is drawn as one blank, the two names must still not read the same.
+    const drawn = (text: string) => text.replace(/[ \t\n]+/g, ' ').trim()
+    const id = `${what}-${how.length}`
+
+    deliver(
+      'approval',
+      { ...first, command: '', request_id: `card-${id}-1`, session_id: `session-${id}-1` },
+      'session-b'
+    )
+    deliver(
+      'approval',
+      { ...second, command: '', request_id: `card-${id}-2`, session_id: `session-${id}-2` },
+      'session-b'
+    )
+
+    const [one, two] = notify.mock.calls.map(([notice]) => drawn(String(notice.body)))
+
+    expect(notify).toHaveBeenCalledTimes(2)
+    expect(one).not.toBe(two)
+  })
+
+  it('parks a site card with its label and names the site in the notification', () => {
+    deliver(
+      'approval',
+      {
+        choices: ['once', 'always', 'deny'],
+        command: '',
+        description: 'Allow the sandbox to reach Web search (api.keenable.ai)',
+        host: 'api.keenable.ai',
+        kind: 'network',
+        label: 'Web search (api.keenable.ai)',
+        request_id: 'sandbox-card-3',
+        risk: 'The web search tool uses this site.',
+        session_id: 'session-e'
+      },
+      'session-b'
+    )
+
+    expect(sessionApprovalRequests('session-e').get()[0]).toMatchObject({
+      choices: ['once', 'always', 'deny'],
+      kind: 'network',
+      target: { host: 'api.keenable.ai', label: 'Web search (api.keenable.ai)' }
+    })
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actions: [
+          { id: 'approve:sandbox-card-3', text: 'Allow' },
+          { id: 'reject:sandbox-card-3', text: 'Deny' }
+        ],
+        body: 'Web search (api.keenable.ai)',
+        title: expect.stringMatching(/^Website access needed — /)
+      })
     )
   })
 })

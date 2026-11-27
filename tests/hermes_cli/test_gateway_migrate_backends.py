@@ -19,6 +19,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from hermes_cli import gateway as gw
 from hermes_cli import gateway_migrate as gm
 from hermes_cli import gateway_migrate_backends as gmb
 from hermes_cli import main_dashboard
@@ -113,6 +114,13 @@ def host(monkeypatch, tmp_path):
     monkeypatch.setattr("hermes_cli.dashboard_procs._pid_environ", lambda pid: None)
     monkeypatch.setattr(main_dashboard, "_loaded_launchd_backend_jobs", list)
     monkeypatch.delenv("HERMES_DESKTOP_CHILD_PID", raising=False)
+    # On Linux every scan sets the user bus env up from /run/user/<uid>: start without it, never read this
+    # machine's runtime dir, and restore both vars afterwards (setenv records them; a bare delenv would not).
+    for name in ("XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"):
+        monkeypatch.setenv(name, "")
+        monkeypatch.delenv(name)
+    monkeypatch.setattr("hermes_cli.gateway._runtime_dir_is_ours", lambda path: False)
+    monkeypatch.setattr("hermes_cli.gateway._path_exists_safe", lambda path: False)
     home = tmp_path / "hermes-home"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
@@ -178,6 +186,105 @@ def test_cgroup_without_mainpid_is_not_claimed_by_the_unit(host, no_writes):
 
     (item,) = [i for i in gmb.collect_backends() if i.pid == 4201]
     assert item.supervisor == "manual" and item.unit is None
+
+
+@pytest.mark.platforms("linux")
+def test_user_unit_dashboard_is_one_systemd_backend_from_a_shell_without_the_user_bus(host, no_writes,
+                                                                                    monkeypatch):
+    """A headless shell has no XDG_RUNTIME_DIR / DBUS_SESSION_BUS_ADDRESS, so `systemctl --user` fails
+    there; the user unit's dashboard was then reported twice, as a manual backend and as its unit."""
+    uid = os.getuid()  # windows-footgun: ok — linux-only test
+    env = {k: v for k, v in os.environ.items() if k not in ("XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS")}
+    monkeypatch.setattr(os, "environ", env)
+    monkeypatch.setattr("hermes_cli.gateway._runtime_dir_is_ours", lambda path: path == f"/run/user/{uid}")
+    fake_run = host.run
+
+    def run_needing_the_user_bus(cmd, *args, **kwargs):
+        if cmd[0] == "systemctl" and "--user" in cmd and "XDG_RUNTIME_DIR" not in os.environ:
+            host.calls.append([str(c) for c in cmd])
+            return subprocess.CompletedProcess(cmd, 1, "", "Failed to connect to bus: No medium found")
+        return fake_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", run_needing_the_user_bus)
+    host.proc(4301, _argv("dashboard", "--port", "9119"), ppid=900,
+              cgroup=f"/user.slice/user-{uid}.slice/user@{uid}.service/app.slice/hermes-dashboard.service")
+    host.unit("user", "hermes-dashboard.service", main_pid=4301,
+              path="/home/u/.config/systemd/user/hermes-dashboard.service")
+
+    items = gmb.collect_backends()
+
+    assert [(i.supervisor, i.pid, i.unit, i.scope) for i in items] == [
+        ("systemd", 4301, "hermes-dashboard.service", "user")]
+
+
+@pytest.mark.platforms("linux")
+def test_a_rescan_after_a_user_systemctl_call_finds_the_same_systemd_backend(host, no_writes, monkeypatch):
+    """#160028: the plan picks the backend from a first scan, a later `systemctl --user` step through the
+    gateway sets the bus env up, and _owner_blockers' rescan then saw the same PID as its unit (a second
+    backend). Real systemctl fails `show` and `list-unit-files` alike without XDG_RUNTIME_DIR."""
+    uid = os.getuid()  # windows-footgun: ok — linux-only test
+    env = {k: v for k, v in os.environ.items() if k not in ("XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS")}
+    monkeypatch.setattr(os, "environ", env)
+    monkeypatch.setattr("hermes_cli.gateway._runtime_dir_is_ours", lambda path: path == f"/run/user/{uid}")
+    fake_run = host.run
+
+    def run_needing_the_user_bus(cmd, *args, **kwargs):
+        if cmd[0] == "systemctl" and "--user" in cmd and "XDG_RUNTIME_DIR" not in os.environ:
+            host.calls.append([str(c) for c in cmd])
+            return subprocess.CompletedProcess(cmd, 1, "", "Failed to connect to bus: No medium found")
+        return fake_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", run_needing_the_user_bus)
+    host.proc(4302, _argv("dashboard", "--port", "9119"), ppid=900,
+              cgroup=f"/user.slice/user-{uid}.slice/user@{uid}.service/app.slice/hermes-dashboard.service")
+    host.unit("user", "hermes-dashboard.service", main_pid=4302,
+              path="/home/u/.config/systemd/user/hermes-dashboard.service")
+
+    def scan():
+        return [(i.supervisor, i.pid, i.unit, i.scope) for i in gmb.collect_backends()]
+
+    first = scan()
+    gw._systemctl_cmd()  # what each SystemHost `systemctl --user` step runs first
+    want = [("systemd", 4302, "hermes-dashboard.service", "user")]
+    assert (first, scan()) == (want, want)
+
+
+@pytest.mark.platforms("linux")
+def test_user_bus_env_preserves_existing_own_runtime_dir_and_absent_bus(host, no_writes, tmp_path, monkeypatch):
+    """Existing user-owned runtime/bus env is never overwritten, and an absent runtime dir is not fabricated."""
+    runtime = tmp_path / "custom-runtime"
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+    monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/custom/bus")
+    monkeypatch.setattr("hermes_cli.gateway._runtime_dir_is_ours", lambda path: path == str(runtime))
+
+    assert gmb.collect_backends() == []
+    assert os.environ["XDG_RUNTIME_DIR"] == str(runtime)
+    assert os.environ["DBUS_SESSION_BUS_ADDRESS"] == "unix:path=/custom/bus"
+
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
+    monkeypatch.setattr("hermes_cli.gateway._runtime_dir_is_ours", lambda path: False)
+    monkeypatch.setattr("hermes_cli.gateway._path_exists_safe", lambda path: False)
+
+    assert gmb.collect_backends() == []
+    assert "XDG_RUNTIME_DIR" not in os.environ
+    assert "DBUS_SESSION_BUS_ADDRESS" not in os.environ
+
+
+@pytest.mark.platforms("macos", "windows")
+def test_non_linux_backend_scan_skips_user_systemd_env(host, no_writes, monkeypatch):
+    """macOS and Windows never call the Linux-only user-systemd env helper (which uses os.getuid())."""
+    family = gmb.os_family()
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
+    monkeypatch.setattr(main_dashboard, "_launchd_plist_dirs", list)
+    monkeypatch.setattr("hermes_cli.gateway_migrate_backends_windows.wmic_missing", lambda: False)
+    monkeypatch.setattr("hermes_cli.gateway._ensure_user_systemd_env",
+                        lambda: pytest.fail(f"_ensure_user_systemd_env called on {family}"))
+
+    assert gmb.collect_backends() == []
+    assert "XDG_RUNTIME_DIR" not in os.environ
+    assert "DBUS_SESSION_BUS_ADDRESS" not in os.environ
 
 
 def test_installed_enabled_unit_that_is_not_running_is_reported_once(host, no_writes):
@@ -505,6 +612,61 @@ def test_the_pointer_names_the_default_profile_for_the_default_home(monkeypatch)
     item = gmb.BackendItem(supervisor="manual", running=True, pid=4701, argv=_argv("dashboard"), this_home=True)
 
     assert gmb.format_report([item])[-1].endswith(": hermes -p default gateway migrate --backends --apply --dry-run")
+
+
+# ── a profile a plugin runs elsewhere (hermes_cli.profiles_run_elsewhere) ────────────
+
+
+def _elsewhere_line(profile: str) -> str:
+    return (f"Profile '{profile}' runs elsewhere (the 'sandbox-plugin' plugin runs its backend): Hermes does not "
+            "move this backend to the gateway on this host.")
+
+
+@pytest.mark.platforms("linux")  # the fake process table is read through `ps`
+@pytest.mark.parametrize("profile,marked", [("default", False), ("default", True), ("work", True)])
+def test_a_backend_of_a_profile_a_plugin_runs_elsewhere_is_listed_as_that(host, monkeypatch, capsys, profile,
+                                                                          marked):
+    """The backend a plugin runs for a profile can be a ``serve`` process of this machine, which the scan
+    finds like any other. Its row says a plugin runs the profile elsewhere, in the text report and in JSON,
+    for this home's profile and for another profile's home."""
+    from hermes_cli import profiles_run_elsewhere as pre
+    backend_home = host.home if profile == "default" else host.home / "profiles" / profile
+    backend_home.mkdir(parents=True, exist_ok=True)
+    if marked:
+        pre.mark_profile_run_elsewhere(profile, "sandbox-plugin", root=host.home)
+    host.proc(4801, _argv("serve", "--isolated", "--host", "127.0.0.1", "--port", "47999"), ppid=1)
+    monkeypatch.setattr("hermes_cli.dashboard_procs._hermes_home_for_pid", lambda pid: str(backend_home))
+
+    (item,) = gmb.collect_backends()
+    assert (_elsewhere_line(profile) in item.notes) is marked, item.notes
+
+    gm.cmd_migrate(SimpleNamespace(backends=True, json=False, dry_run=False, yes=False, multiplex=False))
+    text = capsys.readouterr().out
+    assert "PID 4801" in text and (f"    note:    {_elsewhere_line(profile)}" in text) is marked, text
+    gm.cmd_migrate(SimpleNamespace(backends=True, json=True, dry_run=True, yes=False, multiplex=False))
+    (row,) = json.loads(capsys.readouterr().out)["backends"]
+    assert (_elsewhere_line(profile) in row["notes"]) is marked, row
+
+
+@pytest.mark.parametrize("marked", [False, True])
+def test_the_report_points_at_no_dry_run_for_a_profile_a_plugin_runs_elsewhere(tmp_path, monkeypatch, marked):
+    """The last line offers the dry run of this home's move. For a profile a plugin runs elsewhere that
+    move is blocked, and the backend listed for its home may be the one the plugin runs: no line offers it."""
+    from hermes_cli import profiles_run_elsewhere as pre
+    root = tmp_path / ".hermes"
+    profile = root / "profiles" / "work"
+    profile.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: profile)
+    if marked:
+        pre.mark_profile_run_elsewhere("work", "sandbox-plugin", root=root)
+    item = gmb.BackendItem(supervisor="manual", running=True, pid=4701, argv=_argv("serve"), this_home=True)
+
+    pointers = [line for line in gmb.format_report([item]) if "--apply --dry-run" in line]
+
+    assert pointers == ([] if marked else
+                        ["To see what moving it to the gateway would do (changes nothing): "
+                         "hermes -p work gateway migrate --backends --apply --dry-run"])
 
 
 def test_the_scan_lists_its_own_process_only_when_that_process_is_a_backend(monkeypatch):

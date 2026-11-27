@@ -360,7 +360,7 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
       // too (#86577). Bystander sessions keep their prompts: the clear is
       // scoped to this sessionId.
       if (!payload!.running && (knownState?.busy || knownState?.awaitingResponse)) {
-        clearAllPrompts(sessionId)
+        clearAllPrompts(sessionId, 'turn-end')
         // Same wipe class as the turn-end clears (#83319): a reconnect can
         // replay a pre-clarify snapshot with running=false while the server
         // bridge is still parked on the open clarify request — keep the card

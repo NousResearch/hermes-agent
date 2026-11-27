@@ -95,7 +95,11 @@ for provider,mode,raw in cases:
     usage_rows.append({'provider':provider,'mode':mode,**fresh,'long_lived_budget':long_budget})
 # Raw native adapter response -> production conversion -> writer -> budget.
 from agent.bedrock_adapter import normalize_converse_response
-from agent.gemini_native_adapter import _usage_from_metadata
+import importlib
+import providers as _providers
+
+_providers.get_provider_profile("gemini")
+_usage_from_metadata = importlib.import_module("plugins.model_providers.google.native_adapter")._usage_from_metadata
 native=[]
 for provider, raw in [('bedrock',normalize_converse_response({'usage':{'inputTokens':5000,'cacheReadInputTokens':20000,'cacheWriteInputTokens':5000,'outputTokens':100}}).usage),('google',_usage_from_metadata({'promptTokenCount':30000,'cachedContentTokenCount':25000,'candidatesTokenCount':100,'totalTokenCount':30100}))]:
     b=parent(provider); values=record(b,raw); assert values['prompt']==30000

@@ -1,0 +1,18 @@
+name: 0g-provider
+repo: https://github.com/dragon888code/hermes-0g-provider
+sha: af186b72b44512bd61e6a1ea33d58d7f83c52adc
+title: "0G Private Computer"
+description: "0G Private Computer models (GLM, DeepSeek, Kimi and more) via the OpenAI-compatible API at router-api.0g.ai/v1, with the model list read from 0G's public catalog. Disclosure — model provider; prompts, tool schemas and your OG_API_KEY go to router-api.0g.ai, or to OG_BASE_URL when you set it; the plugin also makes one unauthenticated GET /v1/models per process (retried at most every 10 minutes) to read the public catalog. No tools, hooks, file access or background processes."
+maintainer: dragon888code
+tier: community
+category: models
+requires_hermes: ">=0.23.3"
+docs_url: https://github.com/dragon888code/hermes-0g-provider#readme
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - OG_API_KEY

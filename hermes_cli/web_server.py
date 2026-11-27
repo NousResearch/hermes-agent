@@ -117,8 +117,10 @@ def _start_desktop_cron_ticker(stop_event: threading.Event, interval: int = 60) 
     own_home = Path(get_hermes_home())
     own_name = profile_name_for_home(own_home) or "default"
     # Ownership is re-checked every tick, not once at startup, so Desktop takes over when the
-    # gateway stops (#126822).
-    profile_gate = lambda name, home: not _gateway_owns_cron(name, home)
+    # gateway stops (#126822). A profile a plugin runs elsewhere is never ticked here, even through
+    # the single-store fallback below.
+    from hermes_cli.profiles_run_elsewhere import run_elsewhere_for_home
+    profile_gate = lambda name, home: not _gateway_owns_cron(name, home) and run_elsewhere_for_home(home) is None
 
     start_kwargs: dict = {"interval": interval}
     if isinstance(provider, InProcessCronScheduler):

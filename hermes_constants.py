@@ -38,6 +38,7 @@ def set_hermes_home_override(path: str | Path | None):
     (``agent.runtime_scope.bind_profile_scope``).
     """
     from hermes_scope import current_scope, push_state
+    path = _expand_hermes_home(str(path)) if path else path
     if current_scope() is not None:
         from agent.runtime_scope import legacy_switch
         switched = legacy_switch(path)
@@ -208,7 +209,7 @@ def get_hermes_home() -> Path:
     """Hermes home: context-local override → ``HERMES_HOME`` env var → platform default."""
     override = get_hermes_home_override()
     if override:
-        return _expand_hermes_home(override)
+        return Path(override)  # Bound profile directories are literal; expand at the input boundary.
     if not os.environ.get("HERMES_HOME", "").strip():
         _warn_profile_fallback_once()
     return get_process_hermes_home()
@@ -919,12 +920,15 @@ def socket_safe_tmpdir() -> str:
 # otherwise relocate SOUL.md, config.yaml, plugins, skills and cron on the next start (#144685).
 # ``GATEWAY_STATUS_REPORT_URL`` turns on gateway status reports to a URL the hosting deployment
 # chose (``gateway/status_report``): the launch stamp is its opt-in, so no user-writable layer may
-# turn reports on or point them somewhere else.
+# turn reports on or point them somewhere else. ``HERMES_INSTALL_STATE_DIR`` names the folder a
+# launcher gave its process for install state (``pm.environments.named_install_state_dir``): a value
+# read from a file after start-up would move every later lock and marker somewhere else.
 # Skipped by ``hermes_cli.env_loader._load_dotenv_with_fallback``,
 # ``hermes_cli.config.reload_env``, ``agent.secret_sources.registry.apply_all`` (reported as
 # ``skipped_protected``) and ``onepassword.apply_onepassword_secrets``; refused by the ``.env``
 # writers (``validate_env_var_name_for_write``) and never mirrored by ``_publish_env_value``.
-LAUNCH_ONLY_ENV_KEYS = frozenset({"HERMES_MANAGED_DIR", "HERMES_HOME", "GATEWAY_STATUS_REPORT_URL"})
+LAUNCH_ONLY_ENV_KEYS = frozenset({"HERMES_MANAGED_DIR", "HERMES_HOME", "GATEWAY_STATUS_REPORT_URL",
+                                  "HERMES_INSTALL_STATE_DIR"})
 
 
 def is_launch_only_env_key(name: str) -> bool:

@@ -428,9 +428,11 @@ def _mirror_secret(path: Path, launch_home: Path, name: str, wanted) -> bool:
 
 
 def _env_over_stub(src: Path, dst: Path) -> bool:
-    """Mirror .env only over the seeded comment-only stub, never over a clone's own secrets."""
+    """Mirror .env only over the seeded comment-only stub, never over a clone's own secrets. The
+    destination is read as the file it is: in a home a plugin runs elsewhere it otherwise reads as
+    empty, and a clone made under a marked name would lose its keys to the launch profile's."""
     from agent.secret_scope import load_env_file
-    return bool(load_env_file(src)) and not load_env_file(dst)
+    return bool(load_env_file(src)) and not load_env_file(dst, for_overwrite_check=True)
 
 
 def _mirror_voice_sections(path: Path) -> bool:

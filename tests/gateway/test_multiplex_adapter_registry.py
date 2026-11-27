@@ -903,11 +903,10 @@ class TestSecondaryProfileConfigHandling:
         }
         runner.pairing_store = runner.pairing_stores["default"]
 
-        async def fake_start_one(profile_name, profile_home, claimed):
+        async def fake_start_one(profile_name, profile_home, claimed, batch):
             if profile_name == "bad":
                 raise RuntimeError("bad profile blew up at startup")
             runner._profile_adapters[profile_name] = {}
-            return 2
 
         def fake_profiles_to_serve(multiplex, **kw):
             assert multiplex is True
@@ -925,7 +924,7 @@ class TestSecondaryProfileConfigHandling:
             "hermes_cli.profiles.get_active_profile_name",
             lambda: "default",
         )
-        monkeypatch.setattr(runner, "_start_one_profile_adapters", fake_start_one)
+        monkeypatch.setattr(runner, "_prepare_one_profile_adapters", fake_start_one)
         status = {}
         monkeypatch.setattr(
             "gateway.status.publish_runtime_status",
@@ -935,7 +934,7 @@ class TestSecondaryProfileConfigHandling:
         caplog.set_level(logging.WARNING, logger="gateway.run")
         connected = await runner._start_secondary_profile_adapters()
 
-        assert connected == 2
+        assert connected == 0
         assert status["served_profiles"] == ["default", "bad", "good"]
         assert "good" in runner._profile_adapters
         assert "bad" not in runner._profile_adapters
@@ -970,7 +969,7 @@ class TestSecondaryProfileConfigHandling:
         runner.adapters = {}
         runner._profile_adapters = {}
 
-        async def fake_start_one(profile_name, profile_home, claimed):
+        async def fake_start_one(profile_name, profile_home, claimed, batch):
             raise MultiplexConfigError(
                 f"Profile '{profile_name}' enables open policy without allow-all opt-in"
             )
@@ -986,7 +985,7 @@ class TestSecondaryProfileConfigHandling:
             "hermes_cli.profiles.get_active_profile_name",
             lambda: "default",
         )
-        monkeypatch.setattr(runner, "_start_one_profile_adapters", fake_start_one)
+        monkeypatch.setattr(runner, "_prepare_one_profile_adapters", fake_start_one)
 
         with pytest.raises(MultiplexConfigError, match="open policy"):
             await runner._start_secondary_profile_adapters()

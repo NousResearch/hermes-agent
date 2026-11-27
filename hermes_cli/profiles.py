@@ -25,6 +25,7 @@ from hermes_cli.profiles_remove import _rmtree_make_writable, _rmtree_with_retry
 from hermes_cli.profiles_export_scrub import (
     GATEWAY_CONNECTION_STORE_RE as _GATEWAY_CONNECTION_STORE_RE, GATEWAY_CONNECTION_STORES as _GATEWAY_CONNECTION_STORES,
     scrub_export_secrets as _scrub_export_secrets)
+from hermes_cli.profiles_run_elsewhere import own_profile_dir_when_unlistable, without_profiles_run_elsewhere
 from hermes_constants import (
     LOCAL_RUNTIME_ROOT_DIRS, PROFILE_ID_RE, clear_named_profile_deleted, mark_named_profile_deleted,
     named_profile_delete_incomplete, named_profile_has_identity, named_profile_is_deleted, named_profile_is_live,
@@ -488,13 +489,21 @@ def _iter_named_profile_dirs(*, incomplete_only: bool = False) -> list[Path]:
     cron/logging side-effects and pre-tombstone ghost shells leave marker-less dirs that must
     not be listed, served, ticked, or ``.env``-seeded — that seeding is what turned a ghost
     shell into a "real" profile on the next ``hermes update`` (#95188, #94823, #99392).
-    Incomplete deletes are shown only in the CLI recovery list, never served."""
+    Incomplete deletes are shown only in the CLI recovery list, never served.
+    A named profile's process denied the profiles folder (a backend a plugin runs elsewhere) sees
+    only its own, and none in the recovery list; any other process gets the error."""
     eligible = named_profile_delete_incomplete if incomplete_only else named_profile_is_live
     profiles_root = _get_profiles_root()
-    if not profiles_root.is_dir():
-        return []
+    try:
+        if not profiles_root.is_dir():
+            return []
+        entries = sorted(profiles_root.iterdir())
+    except PermissionError as denied:
+        # A denied backend sees the profile it runs; the recovery list of unfinished deletes is the host's.
+        own = own_profile_dir_when_unlistable(profiles_root, denied, live_only=True)
+        return [] if incomplete_only else own
     return [
-        entry for entry in sorted(profiles_root.iterdir())
+        entry for entry in entries
         if entry.name != "default" and _PROFILE_ID_RE.match(entry.name) and eligible(entry)
     ]
 
@@ -1086,8 +1095,8 @@ def profile_is_parked(home: Path) -> bool:
 _parked_default_warned: set[Path] = set()
 
 
-def profiles_to_serve(multiplex: bool, *, include_standalone: bool = False,
-                      include_parked: bool = False) -> list[tuple[str, Path]]:
+def profiles_to_serve(multiplex: bool, *, include_standalone: bool = False, include_parked: bool = False,
+                      include_run_elsewhere: bool = False) -> list[tuple[str, Path]]:
     """``(profile_name, hermes_home)`` pairs a gateway should serve — the single chokepoint
     for "which profiles does the inbound gateway handle".
 
@@ -1098,8 +1107,9 @@ def profiles_to_serve(multiplex: bool, *, include_standalone: bool = False,
 
     Named profiles that authored ``gateway.standalone: true`` are skipped because they opted
     out of the host multiplexer; a ``gateway.parked`` marker (``hermes -p X gateway stop``) skips
-    a profile the host would otherwise serve. Callers enumerating INSTALLED profiles pass
-    ``include_standalone=True, include_parked=True``; serving/ticking callers pass neither."""
+    a profile the host would otherwise serve; a profile a plugin runs elsewhere (default included,
+    ``profiles_run_elsewhere``) is never served here. Callers enumerating INSTALLED profiles pass
+    the ``include_*`` flags they need; serving/ticking callers pass none."""
     active = get_active_profile_name() or "default"
     default = _get_default_hermes_home()
     if profile_is_parked(default) and default not in _parked_default_warned:
@@ -1111,7 +1121,7 @@ def profiles_to_serve(multiplex: bool, *, include_standalone: bool = False,
     serve.extend((entry.name, entry) for entry in _iter_named_profile_dirs()
                  if (include_standalone or not profile_is_standalone(entry))
                  and (include_parked or not profile_is_parked(entry)))
-    return serve
+    return serve if include_run_elsewhere else without_profiles_run_elsewhere(serve)
 
 
 def _resolve_clone_source(clone_from: Optional[str]) -> Path:
@@ -1126,16 +1136,6 @@ def _resolve_clone_source(clone_from: Optional[str]) -> Path:
     if not source_dir.is_dir():
         raise FileNotFoundError(f"Source profile '{clone_from or 'active'}' does not exist at {source_dir}")
     return source_dir
-
-
-def _seed_file_if_missing(path: Path, text: str, mode: Optional[int] = None) -> None:
-    """Best-effort: write *text* to *path* unless it already exists; never raises."""
-    if path.exists():
-        return
-    with contextlib.suppress(OSError):
-        path.write_text(text, encoding="utf-8")
-        if mode is not None:
-            os.chmod(str(path), mode)
 
 
 def _clone_file(source_dir: Path, profile_dir: Path, relpath: str) -> None:
@@ -2120,8 +2120,7 @@ def export_profile(name: str, output_path: str, extra_files: Optional[dict[str, 
     force-redacted first. Returns the output file path."""
     import tempfile
     canon, profile_dir = _existing_profile_dir(name)
-    # Archive base name without extension (.tar.gz appended by the writer).
-    base = str(Path(output_path)).removesuffix(".tar.gz").removesuffix(".tgz")
+    base = str(Path(output_path)).removesuffix(".tar.gz").removesuffix(".tgz")  # writer appends .tar.gz
 
     # The default profile IS ~/.hermes (dir name ".hermes"), so both paths stage a filtered
     # copy under a temp dir named after the canonical id: root allow-list for default,
@@ -2144,7 +2143,7 @@ def export_profile(name: str, output_path: str, extra_files: Optional[dict[str, 
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8")
         _scrub_export_secrets(staged)
-        return Path(make_targz(base, tmpdir, canon))
+        return Path(make_targz(base, tmpdir, canon, link_source=profile_dir))  # import refuses absolute links
 
 
 def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
@@ -2181,7 +2180,7 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
     # clears the read-only bits extraction re-applies, which a plain rmtree can't delete on Windows.
     with _create_lock(canon), tempfile.TemporaryDirectory(  # publish as create does: a racing publish wins
             prefix=f".{canon}.staging-", dir=profile_dir.parent, ignore_cleanup_errors=True) as staging_root:
-        safe_extract_targz(archive, Path(staging_root))
+        safe_extract_targz(archive, Path(staging_root), allow_symlinks=True)  # export keeps links
         extracted = Path(staging_root) / archive_root
         if not extracted.is_dir():
             raise ValueError(f"Profile archive root is missing or invalid: {archive_root}")

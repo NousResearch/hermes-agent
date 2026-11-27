@@ -1456,7 +1456,7 @@ def _provider_supplied_client(agent, client_kwargs: dict) -> Any | None:
     try:
         return profile.create_client(**client_kwargs)
     except Exception:
-        if getattr(profile, "auth_type", "") == "external_process":
+        if getattr(profile, "auth_type", "") == "external_process" or getattr(profile, "strict_client", False):
             raise
         _ra().logger.warning(
             "Provider profile %r failed to create a client; falling back to the standard client path",
@@ -1476,6 +1476,8 @@ def _profile_for_base_url(base_url: str) -> Any | None:
         return None
     target = base_url.rstrip("/").lower()
     for candidate in candidates or []:
+        if getattr(candidate, "hidden", False):
+            continue
         own = str(getattr(candidate, "base_url", "") or "").rstrip("/").lower()
         if own and (target == own or target.startswith(own + "/")):
             return candidate
@@ -1497,27 +1499,6 @@ def _ensure_route_client_headers(client_kwargs: dict, provider: str) -> None:
         if hk.lower() not in existing_lower:
             existing[hk] = hv
     client_kwargs["default_headers"] = existing
-
-
-def _gemini_native_client(agent, client_kwargs: dict, httpx_verify, *, reason: str, shared: bool):
-    """Native Gemini client when the base_url is the Gemini API, else None."""
-    from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
-    base_url = str(client_kwargs.get("base_url", "") or "")
-    if not is_native_gemini_base_url(base_url):
-        return None
-    safe_kwargs = {
-        k: v for k, v in client_kwargs.items()
-        if k in {"api_key", "base_url", "default_headers", "timeout", "http_client"}
-    }
-    if "http_client" not in safe_kwargs:
-        keepalive_http = agent._build_keepalive_http_client(base_url, verify=httpx_verify)
-        if keepalive_http is not None:
-            safe_kwargs["http_client"] = keepalive_http
-    client = GeminiNativeClient(**safe_kwargs)
-    _ra().logger.info(
-        "Gemini native client created (%s, shared=%s) %s", reason, shared, agent._client_log_context()
-    )
-    return client
 
 
 def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: bool) -> Any:
@@ -1579,11 +1560,6 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
             agent.provider, reason, shared, agent._client_log_context(),
         )
         return provider_client
-    from agent.auxiliary_client import _GEMINI_NATIVE_PROVIDER_NAMES
-    if agent.provider in _GEMINI_NATIVE_PROVIDER_NAMES:
-        client = _gemini_native_client(agent, client_kwargs, httpx_verify, reason=reason, shared=shared)
-        if client is not None:
-            return client
     # TCP keepalives so dead provider connections are detected (~60s) instead of hanging in
     # CLOSE-WAIT. Injected into the local copy only, so each client gets its own httpx.Client;
     # pinned by tests/agent/test_create_openai_client_reuse.py. What IS shared across those per-client wrappers is the

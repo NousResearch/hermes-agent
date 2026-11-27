@@ -415,8 +415,11 @@ def default_ls_remote(source: str) -> str:
     # Through the plugin git runner, like clone and pull: no terminal and no ambient credential
     # helper (PM's PortableGit names a GUI chooser there, which outlives the timeout below), and a
     # stored credential only when the remote asks for one.
-    proc = _run_plugin_git(_resolve_git_executable() or "git", Path.cwd(), "ls-remote", source, "HEAD",
-                           timeout=30, auth_url=source)
+    git = _resolve_git_executable()
+    if git is None:
+        # A bare "git" would find the PATH's own: on a Mac without the tools, Apple's CLT stub.
+        raise RuntimeError("git is not available")
+    proc = _run_plugin_git(git, Path.cwd(), "ls-remote", source, "HEAD", timeout=30, auth_url=source)
     if proc.returncode != 0:
         raise RuntimeError((proc.stderr or "ls-remote failed").strip()[:200])
     # 'sha\trefs/heads/...' or empty

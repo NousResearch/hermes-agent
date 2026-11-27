@@ -2,6 +2,7 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
+import { frApproval } from './fr_approval'
 import { frBoot } from './fr_boot'
 import { frClarify } from './fr_clarify'
 import { frConnectorAccounts } from './fr_connector_accounts'
@@ -499,6 +500,14 @@ export const frOverrides = {
       approvalTitleNamed: session => `Approbation requise — ${session}`,
       approveAction: 'Approuver',
       rejectAction: 'Rejeter',
+      accessTitle: 'Accès au dossier requis',
+      accessTitleNamed: session => `Accès au dossier requis — ${session}`,
+      accessReadBody: folder => `Lecture seule : ${folder}`,
+      accessReadWriteBody: folder => `Lecture et écriture : ${folder}`,
+      networkTitle: 'Accès au site requis',
+      networkTitleNamed: session => `Accès au site requis — ${session}`,
+      allowAction: 'Autoriser',
+      denyAction: 'Refuser',
       inputTitle: 'Saisie requise',
       inputTitleNamed: session => `Saisie requise — ${session}`,
       inputBody: 'Hermes attend votre réponse.',
@@ -2919,6 +2928,20 @@ export const frOverrides = {
     }
   },
   messaging: {
+    catalog: {
+      sectionTitle: 'Disponibles à installer',
+      badges: { official: 'Officiel', verified: 'Vérifié' },
+      notInstalled: 'Non installé',
+      intro: (name: string) => `${name} est un plugin du catalogue Hermes. L'installation l'active, puis vous pouvez saisir ses identifiants ici.`,
+      disclosure: 'Divulgation :',
+      install: 'Installer',
+      installing: 'Installation…',
+      installed: (name: string) => `${name} installé`,
+      installedDetail: 'Saisissez ses identifiants pour le connecter.',
+      installFailed: (name: string) => `Impossible d'installer ${name}`,
+      lazyOff: 'Les installations automatiques de plugins sont désactivées (security.allow_lazy_installs) : Hermes ne l\'installe donc pas d\'ici.',
+      runCommand: 'L\'installer depuis un terminal :',
+    },
     search: 'Rechercher dans la messagerie...',
     statusFilter: {
       all: 'Tous',
@@ -3310,6 +3333,8 @@ export const frOverrides = {
     remoteOverride: {
       menuItem: 'Se connecter à un hôte distant…',
       badge: (host: string) => `S'exécute sur ${host}`,
+      runHere: 'Exécuter sur cet ordinateur…',
+      sandboxed: 'En bac à sable',
       title: (profile: string) => `Connecter ${profile} à un hôte distant`,
       description:
         "Les sessions de ce profil s'exécuteront sur le système Hermes distant indiqué, plutôt que sur cet ordinateur.",
@@ -4585,6 +4610,8 @@ export const frOverrides = {
       messagingPlatforms: 'Plateformes de messagerie'
     },
     approvalMode: {
+      perProfile: 'Par profil',
+      perProfileDescription: 'Le mode d’approbation est défini par profil. Ouvrez un bot ou un profil pour modifier son mode.',
       title: "Mode d'approbation",
       ariaLabel: mode => `Mode d'approbation : ${mode}`,
       manual: 'Manuel',
@@ -5161,25 +5188,7 @@ export const frOverrides = {
       sendEdited: 'Envoyer le message modifié',
       attachingFile: 'Ajout en cours…'
     },
-    approval: {
-      gatewayDisconnected: "La Gateway Hermes n'est pas connectée",
-      sendFailed: "Impossible d'envoyer la réponse d'approbation",
-      reconnect: 'Se reconnecter',
-      timedOutSystemLine:
-        "Le délai d'approbation a expiré — la commande n'a pas été exécutée. Demandez à Hermes de réessayer ou augmentez la limite dans Paramètres → Sécurité → Délai d'approbation.",
-      openSafetySettings: 'Ouvrir les paramètres de sécurité',
-      run: 'Exécuter',
-      command: 'Commande',
-      moreOptions: "Plus d'options d'approbation",
-      allowSession: 'Autoriser cette session',
-      alwaysAllowMenu: 'Toujours autoriser…',
-      jumpToApproval: 'Approbation requise',
-      reject: 'Rejeter',
-      alwaysTitle: 'Toujours autoriser cette commande ?',
-      alwaysDescription: pattern =>
-        `Cela ajoute le motif « ${pattern} » à votre liste d'autorisation permanente (~/.hermes/config.yaml). Hermes ne redemandera plus pour ce type de commande — que ce soit dans cette session ou dans une session future.`,
-      alwaysAllow: 'Toujours autoriser'
-    },
+    approval: frApproval,
     clarify: frClarify,
     themePicker: frThemePicker,
     catalogInstall: {

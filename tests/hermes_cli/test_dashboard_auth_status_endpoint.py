@@ -95,3 +95,104 @@ def test_status_withholds_host_detail_in_gated_mode(gated_client):
     assert not leaked, f"/api/status leaked host detail under the gate: {leaked}"
 
 
+
+
+# ``webapp_url`` drives the SPA's "your dashboard is moving" modal: only a hosted (Hermes Cloud)
+# agent's signed-in standalone dashboard gets it, never a local one and never the Webapp itself.
+_WEBAPP_URL = "https://otter--app.agents.nousresearch.com"
+
+
+def _login(client) -> None:
+    r1 = client.get("/auth/login?provider=stub", follow_redirects=False)
+    state = r1.headers["location"].split("state=")[1]
+    client.get(f"/auth/callback?code=stub_code&state={state}", follow_redirects=False)
+
+
+_READY = {"state": "ready", "url": _WEBAPP_URL}
+
+
+@pytest.fixture
+def hosted_webapp(monkeypatch):
+    from hermes_cli.web_routers import status
+    monkeypatch.setattr(status, "_hosted_webapp_move", lambda: _READY)
+
+
+def test_status_names_the_webapp_to_a_signed_in_hosted_dashboard(gated_client, monkeypatch):
+    from hermes_cli.web_routers import status
+    monkeypatch.setattr(status, "_hosted_webapp_move", lambda: pytest.fail("asked for a signed-out caller"))
+    signed_out = gated_client.get("/api/status").json()  # signed out: gateway not queried
+    assert "webapp_url" not in signed_out and "webapp_state" not in signed_out
+    monkeypatch.setattr(status, "_hosted_webapp_move", lambda: _READY)
+    _login(gated_client)
+    body = gated_client.get("/api/status").json()
+    assert (body["webapp_state"], body["webapp_url"]) == ("ready", _WEBAPP_URL)
+
+
+@pytest.mark.parametrize("state", ["starting", "down", "not_available"])
+def test_status_reports_a_webapp_that_is_not_up_without_an_address(gated_client, monkeypatch, state):
+    from hermes_cli.web_routers import status
+    monkeypatch.setattr(status, "_hosted_webapp_move", lambda: {"state": state, "url": None})
+    _login(gated_client)
+    body = gated_client.get("/api/status").json()
+    assert body["webapp_state"] == state and "webapp_url" not in body
+
+
+def test_status_omits_the_webapp_on_a_local_dashboard(loopback_client, hosted_webapp):
+    body = loopback_client.get("/api/status").json()
+    assert "webapp_url" not in body and "webapp_state" not in body
+
+
+def test_status_omits_the_webapp_on_the_webapp_itself(gated_client, hosted_webapp, monkeypatch):
+    monkeypatch.setattr(web_server.app.state, "ui_surface", "webapp", raising=False)
+    _login(gated_client)
+    body = gated_client.get("/api/status").json()
+    assert "webapp_url" not in body and "webapp_state" not in body
+
+
+def _access(state="serving", *, enabled=True, public_url=_WEBAPP_URL, served_port=9120):
+    """``webapp_access.access_status()`` for a config asking for the Webapp on port 9120."""
+    url = f"http://127.0.0.1:{served_port}" if state == "serving" else None
+    return {"enabled": enabled, "port": 9120, "public_url": public_url,
+            "gateway": {"state": state, "url": url, "reason": None}}
+
+
+def _move(state, url=None):
+    return {"state": state, "url": url}
+
+
+# ``layout`` is the hosted ``/opt/data`` home; ``stamp`` is the Portal's ``HERMES_HOSTING``.
+@pytest.mark.parametrize("layout,stamp,access,expected", [
+    (True, None, _access(), _move("ready", _WEBAPP_URL)),
+    (False, "nous_cloud", _access(), _move("ready", _WEBAPP_URL)),  # stamped, another layout
+    (False, None, _access(), None),  # not Hermes Cloud
+    (False, "self_hosted", _access(), None),
+    (True, None, _access("starting"), _move("starting")),  # gateway coming up
+    (True, None, _access(served_port=9999), _move("starting")),  # not restarted onto the config yet
+    (True, None, _access("stopped"), _move("down")),  # no gateway answers
+    (True, None, _access("unavailable"), _move("down")),
+    (True, None, _access("off"), _move("down")),  # a gateway older than the Webapp
+    # Not turned on: only the Portal's stamp says this is Cloud, since the Docker image shares
+    # the /opt/data layout.
+    (True, "nous_cloud", _access(enabled=False), _move("not_available")),
+    (True, "nous_cloud", _access(public_url=""), _move("not_available")),
+    (True, None, _access(enabled=False), None),
+    (True, None, _access(public_url=""), None),
+])
+def test_hosted_webapp_move(monkeypatch, layout, stamp, access, expected):
+    from hermes_cli import web_server_files, webapp_access
+    from hermes_cli.web_routers import status
+    monkeypatch.setattr(web_server_files, "_default_hermes_root_is_opt_data", lambda: layout)
+    monkeypatch.delenv("HERMES_HOSTING", raising=False)
+    if stamp:
+        monkeypatch.setenv("HERMES_HOSTING", stamp)
+    monkeypatch.setattr(webapp_access, "access_status", lambda: access)
+    assert status._hosted_webapp_move() == expected
+
+
+def test_local_dashboard_never_asks_the_gateway_about_the_webapp(monkeypatch):
+    from hermes_cli import web_server_files, webapp_access
+    from hermes_cli.web_routers import status
+    monkeypatch.setattr(web_server_files, "_default_hermes_root_is_opt_data", lambda: False)
+    monkeypatch.delenv("HERMES_HOSTING", raising=False)
+    monkeypatch.setattr(webapp_access, "access_status", lambda: pytest.fail("queried the gateway"))
+    assert status._hosted_webapp_move() is None

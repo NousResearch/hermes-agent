@@ -128,7 +128,7 @@ import {
 } from './bundle-swap'
 import { CHALLENGE_PARTITION } from './challenge-window'
 import { registerChallengeWindowIpc } from './challenge-window-ipc'
-import { provisionCliLinks } from './cli-provision'
+import { provisionCliLinks, shouldProvisionBundledCliLinks } from './cli-provision'
 import { readClipboardImagePng } from './clipboard-image'
 import { registerClipboardTextIpc } from './clipboard-ipc'
 import { closeStopFailureMessage, finishWindowsCloseStop, type RuntimeLock } from './close-stop-kill'
@@ -161,12 +161,12 @@ import {
   modeIsRemoteLike,
   normalizeRemoteBaseUrl,
   normalizeRemoteHeaders,
-  normalizeRemoteProfileName,
   normalizeSshConfig,
   normAuthMode,
   pathForRegistryBackendRequest,
   pathWithGlobalRemoteProfile,
   profileHasRemoteConnection,
+  profileLauncher,
   profileRemoteOverride,
   type ProfileRouteOptions,
   profileSshOverride,
@@ -182,6 +182,7 @@ import {
   withTransientRetries
 } from './connection-config'
 import { applyConnectionConfigAtomically } from './connection-config-apply'
+import { sanitizeConnectionProfiles } from './connection-profiles'
 import {
   backendScopeKey,
   backendScopePrefix,
@@ -334,6 +335,7 @@ import type { InstallStamp } from './install-stamp'
 import { createKeepAwakeController } from './keep-awake-controller'
 import { launchBuildIdentity } from './launch-build-identity'
 import { applyLaunchProfileOverride, parseLaunchProfile } from './launch-profile'
+import { createLaunchedProfileHost } from './launched-profile-host'
 import { fetchLinkTitle, resolveFaviconCached } from './link-metadata'
 import { CHROMIUM_LOG_FILENAME, enableLinuxCrashDiagnostics, linuxCrashDiagnostics } from './linux-crash-diagnostics'
 import {
@@ -360,10 +362,12 @@ import { resolveIpcFileReadPath, resolveMediaStreamFile, resolvePreviewTargetPat
 import { resolveDesktopClientVersion } from './local-runtime-version'
 import { localSkinProfileKey, registerLocalSkinIpc } from './local-skin'
 import { ACTIVE_LOG_POLL_MS, planLogRotation, reclaimActiveLogIfOversized } from './log-rotation'
+import { guardMacApplicationsLaunch, type MacApplicationsGuardResult } from './mac-applications-guard'
+import { resolveMacAppBundle } from './mac-bundle-location'
 import { registerMachineProfile } from './machine-profile'
 import { resolveMainHermesHome } from './main-hermes-home'
 import { createMainProcessLagWatchdog } from './main-process-lag-watchdog'
-import { activateWindow, ensureMainWindow, shouldQuitOnLastChatClosed } from './main-window-lifecycle'
+import { activateWindow, ensureMainWindow, handleSecondInstance, shouldQuitOnLastChatClosed } from './main-window-lifecycle'
 import {
   assertManagedUpdatePreflightClear,
   executeManagedRemoteUpdate,
@@ -441,9 +445,10 @@ import {
 import { createPortalSession, resolvePortalBaseUrl } from './portal-session'
 import { readPreUpdateBackupEnabled } from './pre-update-backup-config'
 import { registerPreparedSubmissions } from './prepared-submissions'
+import { attachPresenceSource, sendToEveryWindow } from './presence'
 import { capturePreviewContents } from './preview-capture'
 import { onPreviewWatchOwnerDestroyed, sendPreviewFileChangedToOwner } from './preview-file-watch'
-import { hasClosePreviewFlag, previewGuestInputAction } from './preview-guest-escape'
+import { previewGuestInputAction } from './preview-guest-escape'
 import { registerPreviewGuestIpc } from './preview-guest-ipc'
 import { commandFocusedGuest } from './preview-guest-offscreen'
 import { applyPreviewGuestAttachPrefs } from './preview-guest-throttle'
@@ -456,6 +461,7 @@ import { rehomePrimaryConnection } from './primary-connection-rehome'
 import { PrimaryProfilePin, resolveLaunchProfile } from './primary-profile-pin'
 import { connectPrimaryRemote } from './primary-remote-startup'
 import { applyDesktopIdentity, PRODUCT_IDENTITY } from './product-identity'
+import { registerProfileBackendIpc } from './profile-backend-ipc'
 import {
   assertLocalProfileCanStart,
   decideProfileDeleteAction,
@@ -1907,6 +1913,7 @@ const backendPool = new Map() // scope key -> { connectionPromise, remoteBaseUrl
 // Escape hatch: a dedicated, private backend for this app instead of the host's.
 const ISOLATED_BACKEND = process.env.HERMES_DESKTOP_ISOLATED_BACKEND === '1'
 const profileDeletionGate = new ProfileDeletionGate()
+let macGuardResult: MacApplicationsGuardResult | null = null
 
 // rememberLog() state. Declared before any top-level caller that logs during
 // module evaluation; declaring these later crashed launch with `undefined.push`
@@ -3649,7 +3656,7 @@ function resolveCheckoutUpdateStrategy(): CheckoutStrategy {
         log
       })
     },
-    runningAppBundle,
+    runningAppBundle: () => resolveMacAppBundle(app.getPath('exe'), process.platform),
     markQuittingForHandoff: () => {
       isQuittingForHandoff = true
     },
@@ -4469,22 +4476,6 @@ async function handOffWindowsBootstrapRecovery(reason) {
   return true
 }
 
-// The running app's .app bundle (packaged macOS): execPath is
-// <App>.app/Contents/MacOS/<exe>; climb three levels to the bundle root.
-function runningAppBundle() {
-  if (!IS_MAC) {
-    return null
-  }
-
-  let dir = path.dirname(app.getPath('exe')) // .../Contents/MacOS
-
-  for (let i = 0; i < 2; i++) {
-    dir = path.dirname(dir)
-  } // -> .../X.app
-
-  return dir.endsWith('.app') ? dir : null
-}
-
 // macOS/Linux update hand-off: spawn the repo-owned posix orchestrator
 // (scripts/desktop-update/posix.sh) detached and QUIT. The script waits us
 // out, runs `hermes update`, swaps/relaunches the app bundle, and writes
@@ -4825,7 +4816,7 @@ async function resolveHermesBackend(backendArgs: string[], progress?: typeof adv
   const payload = await runnableBundledPayload(rememberLog, progress)
 
   if (payload) {
-    if (!IS_WINDOWS) {
+    if (shouldProvisionBundledCliLinks(payload.root, rememberLog)) {
       provisionCliLinks(payload.commands, path.join(os.homedir(), '.local', 'bin'), rememberLog)
     }
 
@@ -6189,14 +6180,7 @@ function broadcastBatteryState(next: boolean) {
   }
 
   onBatteryPower = next
-
-  for (const win of BrowserWindow.getAllWindows()) {
-    const { webContents } = win
-
-    if (webContents && !webContents.isDestroyed()) {
-      webContents.send('hermes:power-battery', next)
-    }
-  }
+  sendToEveryWindow(BrowserWindow.getAllWindows(), 'hermes:power-battery', next)
 }
 
 function registerPowerResumeListeners() {
@@ -6228,6 +6212,12 @@ function registerPowerResumeListeners() {
   } catch {
     // powerMonitor is unavailable before app 'ready' on some platforms; the
     // caller registers after 'ready', so this should not normally throw.
+  }
+
+  try {
+    attachPresenceSource({ app, ipc: ipcMain, monitor: powerMonitor, windows: BrowserWindow.getAllWindows() })
+  } catch (error) {
+    rememberLog(`[presence] attach failed, power listeners kept: ${error instanceof Error ? error.message : error}`)
   }
 }
 
@@ -8172,109 +8162,6 @@ function installRemoteHeaderRules() {
   installRemoteHeaderRulesOnSession(session.defaultSession)
 }
 
-// Validate + normalize the per-profile remote overrides map read from disk.
-// Drops malformed names/entries and keeps only the recognized fields so a
-// hand-edited or stale connection.json can't inject junk into resolution.
-function sanitizeConnectionProfiles(raw: Record<string, any>) {
-  if (!raw || typeof raw !== 'object') {
-    return {}
-  }
-
-  const out = {}
-
-  for (const [name, entry] of Object.entries(raw)) {
-    if (!entry || typeof entry !== 'object') {
-      continue
-    }
-
-    if (name !== 'default' && !PROFILE_NAME_RE.test(name)) {
-      continue
-    }
-
-    if (entry.mode === 'ssh') {
-      const ssh = normalizeSshConfig(entry)
-
-      if (ssh) {
-        if (entry.token && typeof entry.token === 'object') {
-          ssh.token = entry.token
-        }
-
-        out[name] = ssh
-      }
-
-      continue
-    }
-
-    const cleaned: {
-      mode: 'remote' | 'local' | 'cloud'
-      url?: string
-      authMode?: string
-      token?: object
-      headers?: object
-      org?: string
-      name?: string
-      remoteProfile?: string
-      savedSsh?: object
-    } = {
-      mode: modeIsRemoteLike(entry.mode) ? entry.mode : 'local'
-    }
-
-    if (cleaned.mode === 'local') {
-      const savedSsh = normalizeSshConfig(entry.savedSsh)
-
-      if (savedSsh) {
-        cleaned.savedSsh = savedSsh
-      }
-    }
-
-    const url = String(entry.url || '').trim()
-
-    if (url) {
-      cleaned.url = url
-    }
-
-    cleaned.authMode = normAuthMode(entry.authMode)
-
-    if ((entry as any).token && typeof entry.token === 'object') {
-      cleaned.token = entry.token
-    }
-
-    // A URL-remote/cloud per-profile override can map its Desktop routing label
-    // onto the backend's profile namespace (same contract as SSH remoteProfile).
-    const remoteProfileName = normalizeRemoteProfileName((entry as any).remoteProfile)
-
-    if (remoteProfileName) {
-      cleaned.remoteProfile = remoteProfileName.remoteProfile
-    }
-
-    const headers = normalizeRemoteHeaders((entry as any).headers)
-
-    if (Object.keys(headers).length > 0) {
-      cleaned.headers = headers
-    }
-
-    // Preserve the Hermes Cloud org tag on cloud-mode entries so Settings can
-    // reopen into the same org for a per-profile cloud connection.
-    if (cleaned.mode === 'cloud') {
-      const cloudName = String(entry.name || '').trim()
-
-      if (cloudName) {
-        cleaned.name = cloudName
-      }
-
-      const org = String(entry.org || '').trim()
-
-      if (org) {
-        cleaned.org = org
-      }
-    }
-
-    out[name] = cleaned
-  }
-
-  return out
-}
-
 function readDesktopConnectionConfig() {
   // Check if file changed on disk since last read (e.g. modified by another
   // process or an external tool).  Our own writes update the cache inline
@@ -8660,7 +8547,8 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
     sshRemoteProfile: (ssh || savedSsh)?.remoteProfile || '',
     // The env override only forces the global/primary connection; a per-profile
     // scope is never overridden by HERMES_DESKTOP_REMOTE_URL.
-    envOverride
+    envOverride,
+    launcher: profileLauncher(config, key)
   }
 }
 
@@ -9743,6 +9631,8 @@ async function resolveRemoteBackend(
       undefined,
       route.headers
     )
+    // A plugin's launcher serves this route: the renderer lists the host's profiles, not its own.
+    connection.launcher = route.launcher
   }
 
   return route.connectionId ? { ...connection, connectionId: route.connectionId } : connection
@@ -10088,6 +9978,18 @@ function primaryProfileKey() {
   return primaryProfilePin.resolve(readActiveDesktopProfile)
 }
 
+// Profiles a desktop plugin runs elsewhere (host.setProfileBackend): the host
+// answers their profile listing and refuses to start them locally.
+const launchedProfiles = createLaunchedProfileHost({
+  ensureProfileBackend: profile => ensureBackend(profile),
+  fetchJson: (backend, requestPath, opts) => fetchJsonForBackend(backend, requestPath, opts),
+  hermesHome: HERMES_HOME,
+  isProfileName: name => PROFILE_NAME_RE.test(name),
+  primaryProfile: primaryProfileKey,
+  readConfig: readDesktopConnectionConfig,
+  startPrimary: () => startHermes()
+})
+
 // Options describing the current connection setup for `resolveProfileBackendRoute`.
 function profileRouteOptions(
   profile: string | null | undefined,
@@ -10098,7 +10000,7 @@ function profileRouteOptions(
   const urlOverride = profileRemoteOverride(config, profile)
   const key = connectionScopeKey(profile) || primaryProfileKey()
 
-  return {
+  return launchedProfiles.routeOptions(config, {
     // A desktop profile can be only a client-side routing alias. Keep backend
     // endpoint filters in the target's namespace (e.g. mara → default for a
     // managed SSH, gris → main-gris for a URL-remote/cloud per-profile host).
@@ -10116,7 +10018,7 @@ function profileRouteOptions(
     isolatedBackend: ISOLATED_BACKEND,
     requestMethod: request?.method,
     requestPath: request?.path
-  }
+  })
 }
 
 // Resolve a backend connection for the given profile, per the routing table in
@@ -10184,11 +10086,13 @@ async function ensureBackend(
   const route = resolveProfileBackendRoute(key, routeOpts)
 
   if (route.backend === 'primary') {
-    const joined = await joinPrimaryBoot(request, route, {
-      primaryKey: primaryProfileKey,
-      resolveRoute: next => resolveProfileBackendRoute(next, profileRouteOptions(next, opts.request)),
-      start: boot => startHermes(boot.key, boot.inheritsPrimary)
-    })
+    const joined = await launchedProfiles.serveByScope(key, routeOpts, () =>
+      joinPrimaryBoot(request, route, {
+        primaryKey: primaryProfileKey,
+        resolveRoute: next => resolveProfileBackendRoute(next, profileRouteOptions(next, opts.request)),
+        start: boot => startHermes(boot.key, boot.inheritsPrimary)
+      })
+    )
 
     setWslBridgeProfileState(joined.key, joined.connection.mode !== 'remote')
 
@@ -11085,7 +10989,7 @@ async function dialPoolBackend(profile, entry, opts: { forceLocal?: boolean; poo
     directoryExists(path.join(HERMES_HOME, 'profiles', key))
   )
 
-  const connection = await ensureLocalGateway(async () => {
+  const connection = await launchedProfiles.startLocally(profile, ensureLocalGateway, async () => {
     const backend = await ensureRuntime(
       await resolveHermesBackend(['--profile', profile, 'gateway', 'ensure', '--json']),
       () => assertPoolEntryStillOwned(poolKey, entry)
@@ -11513,11 +11417,12 @@ async function startHermes(requestedProfile?: string, inheritsPrimary = false) {
       connectRemote,
       ensureLocalRuntime: backend =>
         ensureRuntime(backend, () => backendConnectionState.assertCurrentAttempt(connectionAttempt)),
-      prepareLocalBackend: async () => {
-        await advanceBootProgress('backend.runtime', 'Resolving Hermes runtime', 28)
+      prepareLocalBackend: () =>
+        launchedProfiles.startLocally(activeProfile || primaryProfile, async () => {
+          await advanceBootProgress('backend.runtime', 'Resolving Hermes runtime', 28)
 
-        return resolveHermesBackend(backendArgs, advanceBootProgress)
-      },
+          return resolveHermesBackend(backendArgs, advanceBootProgress)
+        }),
       resolveRemote: () => {
         // Classify immediately before each throwing resolve. This callback runs
         // both for an already-saved remote and after first-run remote Apply.
@@ -14522,7 +14427,7 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
             const descriptor: any = await withEnumerationDeadline(
               Promise.resolve(
                 backendDialClaims.run(backendScopeKey(connection.id, null), () =>
-                  ensureRegistryBackend(connection.id, null)
+                  launchedProfiles.rosterBackend(connection.kind, () => ensureRegistryBackend(connection.id, null))
                 )
               ),
               rosterSourceEnumerationTimeoutMs(connection)
@@ -15046,6 +14951,21 @@ ipcMain.handle('hermes:connection-config:save', async (_event, payload) => {
   })
 
   return sanitizeDesktopConnectionConfig(config, payload?.profile)
+})
+// Plugin SDK host.setProfileBackend / clearProfileBackend — see profile-backend-ipc.ts.
+registerProfileBackendIpc(ipcMain, {
+  assertCanMutateRouting: assertCanMutateManagedPrimaryRouting,
+  cancelAndWait: scope => sshBootstrapCoordinator.cancelAndWait(scope),
+  encryptToken: token => encryptDesktopSecret(token, { allowPlainText: true }),
+  forgetDial: claimKey => backendDialClaims.forget(claimKey),
+  mainWindow: () => mainWindow,
+  primaryProfile: primaryProfileKey,
+  profileExists: profile => PROFILE_NAME_RE.test(profile) && directoryExists(path.join(HERMES_HOME, 'profiles', profile)),
+  readConfig: readDesktopConnectionConfig,
+  stopPool: stopPoolBackend,
+  teardownPrimary: () => teardownPrimaryBackendAndWait({ soft: true }),
+  teardownSsh: scope => teardownSshConnection(scope || null),
+  writeConfig: writeDesktopConnectionConfig
 })
 ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
   assertCanMutateManagedPrimaryRouting()
@@ -15635,6 +15555,22 @@ async function handleHermesApiRequest(request) {
   // Explicit `local` stays registry-pinned so it cannot inherit a v1 remote.
   const registryConnectionId = apiRequestRegistryConnectionId(request)
 
+  // A launched profile's listing is this computer's to answer, also when the
+  // request is pinned to "This device"; a pinned remote gateway answers its own.
+  return launchedProfiles.answerOr(
+    request,
+    registryConnectionId
+      ? {
+          dial: () => ensureRegistryBackend(registryConnectionId, null),
+          kind: () => registryConnectionKind(registryConnectionId)
+        }
+      : undefined,
+    () => forwardHermesApiRequest(request, registryConnectionId)
+  )
+}
+
+// Every request the launched-profile host does not answer itself.
+async function forwardHermesApiRequest(request, registryConnectionId) {
   if (registryConnectionId) {
     if (isAllProfilesSessionListRequest(request?.method, request?.path)) {
       const aggregate = await interceptSessionRequestForRemote(request, registryConnectionId)
@@ -16679,6 +16615,7 @@ ipcMain.on('hermes:logs:renderer-line', (_event, line) => {
 // Local filesystem + plugin-root IPC (readDir/reveal/rename/trash/…) — see fs-ipc.ts.
 registerFsIpc({
   hermesHome: HERMES_HOME,
+  isLaunchedProfile: launchedProfiles.homeIsSandboxed,
   readActiveDesktopProfile,
   expandUserPath,
   resolveRequestedPathForIpc,
@@ -17333,34 +17270,17 @@ if (!isPrimaryInstance) {
     console.error('[hermes] failed to persist --profile launch override:', error)
   }
 
-  app.on('second-instance', (_event, argv) => {
-    // --close-preview: the same escape hatch as hermes://close-preview, for
-    // environments where spawning a URL is harder than a flag (kiosk launchers,
-    // SSH-started sessions). Checked before deep links so a carried `hermes://`
-    // URL still routes normally when no flag is present.
-    if (hasClosePreviewFlag(argv)) {
-      handleDeepLink('hermes://close-preview')
-    }
-
-    const url = extractDeepLink(argv, DEEPLINK_SCHEMES)
-
-    if (url) {
-      handleDeepLink(url)
-    }
-
-    // #130810: a second Start-menu / shortcut / Hermes.exe launch must never
-    // silently exit. Log it so a future silent exit stays diagnosable, then
-    // restore a live primary with activation (restore + show + focus), or
-    // re-create it when it was destroyed.
-    rememberLog(`[second-instance] relaunch (deepLink=${url ? 'yes' : 'no'})`)
-    ensureMainWindow(mainWindow, {
-      isReady: app.isReady(),
+  app.on('second-instance', (_event, argv) =>
+    handleSecondInstance(argv, {
+      mainWindow,
+      launchGuard: macGuardResult,
+      deepLinkSchemes: DEEPLINK_SCHEMES,
+      handleDeepLink,
       createWindow,
       focusWindow: activateWindow,
-      // deep-link delivery focuses a live window after its renderer is ready.
-      focusExisting: !url
+      log: rememberLog
     })
-  })
+  )
 }
 
 // macOS delivers deep links via 'open-url' — register early (can fire before
@@ -17370,7 +17290,20 @@ app.on('open-url', (event, url) => {
   handleDeepLink(url)
 })
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  macGuardResult = await guardMacApplicationsLaunch({
+    app,
+    dialog,
+    appName: APP_NAME,
+    isPackaged: IS_PACKAGED,
+    installStamp: INSTALL_STAMP,
+    log: rememberLog
+  })
+
+  if (macGuardResult.action === 'relaunching') {
+    return
+  }
+
   if (NVIDIA_DRIVER_MAJOR !== null) {
     rememberLog(nvidiaEglRecovery.startupMessage)
   }

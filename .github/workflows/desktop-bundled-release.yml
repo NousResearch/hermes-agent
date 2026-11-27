@@ -974,7 +974,7 @@ jobs:
       matrix:
         target:
           - label: darwin-arm64
-            runner: macos-15
+            runner: blacksmith-12vcpu-macos-15
     env: &darwin-env
       CHANNEL_BUILD: ${{ needs.validate.outputs.channel-build }}
       HERMES_DESKTOP_VARIANT: bundled
@@ -1356,7 +1356,7 @@ jobs:
       && needs.validate.outputs.darwin-arm64 == 'true'
       && inputs.release-phase == 'candidate' && startsWith(inputs.tag, 'commit.')
       && needs.build-darwin-arm64-commit.result == 'success'
-    runs-on: macos-15
+    runs-on: blacksmith-6vcpu-macos-15
     environment: release-signing
     cache-mode: read
     permissions:

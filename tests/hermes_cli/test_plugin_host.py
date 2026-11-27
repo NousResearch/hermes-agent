@@ -125,6 +125,110 @@ def test_isolation_host_keeps_every_user_import_path_out_of_process(tmp_path, mo
 
 
 
+def test_the_host_never_imports_a_package_planted_in_the_profile_home(tmp_path, monkeypatch):
+    """The host process starts in the profile home. A home a plugin's backend writes (a profile it runs
+    elsewhere) must not put a ``hermes_cli`` package of its own ahead of Hermes's."""
+    home = _home_with_plugins(tmp_path, monkeypatch, {"quietprobe": "def register(ctx):\n    pass\n"})
+    planted = tmp_path / "planted.ran"
+    (home / "hermes_cli").mkdir()
+    (home / "hermes_cli" / "__init__.py").write_text(f"open({str(planted)!r}, 'a').write('ran')\n", encoding="utf-8")
+    manager = PluginManager()
+    manager.discover_and_load()
+    try:
+        assert not planted.exists()
+        assert manager._plugins["quietprobe"].error is None
+    finally:
+        manager.unload()
+        manager._plugin_host().shutdown()
+
+
+def test_an_empty_pythonpath_entry_does_not_put_the_profile_home_back_on_the_hosts_path(tmp_path, monkeypatch):
+    """``-P`` keeps the home the host starts in off its import path, but an empty ``PYTHONPATH`` entry means
+    the current directory again (``export PYTHONPATH=$PYTHONPATH:/x`` with it unset writes one)."""
+    home = _home_with_plugins(tmp_path, monkeypatch, {"quietprobe": "def register(ctx):\n    pass\n"})
+    planted = tmp_path / "planted.ran"
+    (home / "json.py").write_text(f"open({str(planted)!r}, 'a').write('ran')\n", encoding="utf-8")
+    userlib = tmp_path / "userlib"
+    userlib.mkdir()
+    monkeypatch.setenv("PYTHONPATH", os.pathsep + str(userlib))
+    manager = PluginManager()
+    manager.discover_and_load()
+    try:
+        assert not planted.exists()
+        assert manager._plugins["quietprobe"].error is None
+    finally:
+        manager.unload()
+        manager._plugin_host().shutdown()
+
+
+def test_a_marked_profiles_own_launcher_is_not_used(tmp_path, monkeypatch):
+    """``plugins.host.launcher`` is an argv prefix the host starts under. The backend of a profile a plugin
+    runs elsewhere writes that profile's config.yaml, so only the managed overlay's launcher counts there."""
+    from hermes_cli import profiles_run_elsewhere as pre
+    from hermes_cli.plugin_isolation import host_launcher
+
+    home = _home_with_plugins(tmp_path, monkeypatch, {})
+    (home / "config.yaml").write_text(yaml.safe_dump(
+        {"plugins": {"isolation": "host", "host": {"launcher": ["profile-runner"]}}}), encoding="utf-8")
+    assert host_launcher() == ["profile-runner"]
+    pre.mark_profile_run_elsewhere("default", "sandbox-plugin", root=home)
+    assert host_launcher() == []
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    (managed / "config.yaml").write_text(yaml.safe_dump(
+        {"plugins": {"host": {"launcher": ["operator-runner"]}}}), encoding="utf-8")
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+    assert host_launcher() == ["operator-runner"]
+
+
+def test_a_managed_launcher_expands_its_env_refs_for_a_marked_profile_too(tmp_path, monkeypatch):
+    """``${VAR}`` refs in the managed overlay expand against the process env. A profile a plugin runs
+    elsewhere takes its launcher from that overlay alone, and gets the same expanded value as any profile."""
+    from hermes_cli import profiles_run_elsewhere as pre
+    from hermes_cli.plugin_isolation import host_launcher
+
+    home = _home_with_plugins(tmp_path, monkeypatch, {})
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    (managed / "config.yaml").write_text(yaml.safe_dump(
+        {"plugins": {"host": {"launcher": ["${PLUGIN_RUNNER}", "--quiet"]}}}), encoding="utf-8")
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+    monkeypatch.setenv("PLUGIN_RUNNER", "operator-runner")
+    assert host_launcher() == ["operator-runner", "--quiet"]
+    pre.mark_profile_run_elsewhere("default", "sandbox-plugin", root=home)
+    assert host_launcher() == ["operator-runner", "--quiet"]
+
+
+@pytest.mark.platforms("posix")  # the stand-in launcher is a shell script
+def test_a_marked_profile_linked_out_of_the_root_does_not_get_its_own_launcher(tmp_path, monkeypatch):
+    """``hermes -p ops`` names the home ``<root>/profiles/ops``, a link to a directory outside the root;
+    discovery binds the directory it leads to, where no marker folder is. The marker is asked by the name."""
+    from hermes_cli import profiles_run_elsewhere as pre
+
+    outside = _home_with_plugins(tmp_path / "outside", monkeypatch, {"quietprobe": "def register(ctx):\n    pass\n"})
+    ran = tmp_path / "launcher.ran"
+    runner = tmp_path / "runner"
+    runner.write_text(f'#!/bin/sh\necho ran >> "{ran}"\nexec "$@"\n', encoding="utf-8")
+    runner.chmod(0o755)
+    (outside / "config.yaml").write_text(yaml.safe_dump({"plugins": {
+        "enabled": ["quietprobe"], "isolation": "host", "host": {"launcher": [str(runner)]}}}), encoding="utf-8")
+    root = tmp_path / ".hermes"
+    (root / "profiles").mkdir(parents=True)
+    (root / "profiles" / "ops").symlink_to(outside, target_is_directory=True)
+    pre.mark_profile_run_elsewhere("ops", "sandbox-plugin", root=root)
+    monkeypatch.setenv("HERMES_HOME", str(root / "profiles" / "ops"))
+    plugins_mod._reset_plugin_managers_for_tests()
+    manager = plugins_mod.get_plugin_manager()
+    manager.discover_and_load()
+    try:
+        assert not ran.exists()
+        assert manager._plugins["quietprobe"].error is None
+    finally:
+        manager.unload()
+        manager._plugin_host().shutdown()
+        plugins_mod._reset_plugin_managers_for_tests()
+
+
 def test_managed_scope_pins_host_isolation_over_the_profiles_own_config(tmp_path, monkeypatch):
     """The isolated party must not be able to opt out: an operator pin in the managed scope
     (/etc/hermes/config.yaml) wins over a profile config that says in_process."""

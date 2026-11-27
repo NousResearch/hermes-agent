@@ -1,8 +1,8 @@
 name: tripo
 title: Tripo3D
 repo: https://github.com/Tripo-Developer/tripo-hermes-plugin
-sha: f758f554c99acb86f7b1ad2700619f1dcf00264a
-version: "0.1.0"
+sha: 693b923fbec0b52304af416d456395f38c9a1125
+version: "0.1.1"
 description: >-
   Tripo's official plugin, made by VAST, the company behind Tripo. Tripo's own tripo-cli (pinned
   tripo-cli@0.11.1) runs locally as an MCP server with 26 tools for text, image and multiview to 3D,
@@ -32,7 +32,7 @@ tier: verified
 category: tools
 requires_hermes: ">=0.22.3"
 docs_url: https://github.com/Tripo-Developer/tripo-hermes-plugin#readme
-image: https://raw.githubusercontent.com/Tripo-Developer/tripo-hermes-plugin/3163c3c5598792dff3a1bfc3a05cfe905bda4c94/assets/catalog-banner.jpg
+image: https://raw.githubusercontent.com/Tripo-Developer/tripo-hermes-plugin/693b923fbec0b52304af416d456395f38c9a1125/assets/catalog-banner.jpg
 platforms: [windows, macos, linux]
 capabilities:
   provides_tools: []
@@ -40,3 +40,4 @@ capabilities:
   provides_middleware: []
   requires_env:
     - TRIPO_API_KEY
+

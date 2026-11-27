@@ -1818,3 +1818,16 @@ def test_bot_id_cache_skips_a_deleted_or_renamed_profile_home(adapter, tmp_path,
     monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: home)
     adapter._save_cached_bot_id("users/123")  # never raises
     assert not home.exists()
+
+
+@pytest.mark.parametrize("move", ("delete", "rename"))
+def test_thread_count_store_skips_a_deleted_or_renamed_profile_home(tmp_path, move):
+    """Counts stay in memory; the write never recreates the home (#155595 U3)."""
+    from plugins.platforms.google_chat.adapter import _ThreadCountStore
+    from tests.fixtures.dead_profile_home import dead_named_home
+
+    home = dead_named_home(tmp_path, move)
+    store = _ThreadCountStore(home / "google_chat_thread_counts.json")
+    assert store.incr("spaces/a", "spaces/a/threads/t") == 0  # never raises
+    assert store.incr("spaces/a", "spaces/a/threads/t") == 1
+    assert not home.exists()

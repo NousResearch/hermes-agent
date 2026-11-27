@@ -50,7 +50,8 @@ from hermes_cli.models_catalog_static import (
     _PROVIDER_MODELS,
     _PROVIDER_RETIRED_ALIASES,
     _SILENT_DEFAULT_PROVIDERS,
-    _xai_finalize_catalog)
+    _xai_finalize_catalog,
+    static_catalog_providers)
 from hermes_cli.models_reasoning_caps import (
     _OPENROUTER_CATALOG_URL,
     _seed_reasoning_caps)
@@ -573,13 +574,6 @@ def static_catalog(provider: str) -> list[str]:
     from providers import get_provider_profile
     profile = get_provider_profile(provider) if provider else None
     return list(profile.static_models) if profile is not None else []
-
-
-def static_catalog_providers() -> list[str]:
-    """Every provider with a static catalog row in the bound home: built-ins, then plugin profiles."""
-    from providers import list_providers
-    plugin_rows = [p.name for p in list_providers() if p.static_models and p.name not in _PROVIDER_MODELS]
-    return [*_PROVIDER_MODELS, *dict.fromkeys(plugin_rows)]
 
 
 def get_default_model_for_provider(provider: str) -> str:

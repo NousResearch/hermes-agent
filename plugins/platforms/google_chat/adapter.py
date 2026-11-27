@@ -345,8 +345,9 @@ class _ThreadCountStore:
 
     def _save(self) -> None:
         """Atomic write; failure is non-fatal (in-memory counts stay consistent)."""
+        from hermes_constants import mkdir_under_hermes_home
         try:
-            self._path.parent.mkdir(parents=True, exist_ok=True)
+            mkdir_under_hermes_home(self._path.parent)  # a dead profile home: skipped, not recreated
             tmp = self._path.with_suffix(self._path.suffix + ".tmp")
             tmp.write_text(json.dumps(self._counts, separators=(",", ":")), encoding="utf-8")
             os.replace(tmp, self._path)

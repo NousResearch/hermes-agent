@@ -1,0 +1,27 @@
+name: handsoff-handoff
+repo: https://github.com/percyhendrux123-prog/hermes-handsoff-handoff
+sha: "7a7686125c5ba243c7089c0c35ad6a18f37880a2"
+version: "0.1.1"
+title: "Handsoff Handoff"
+description: "Keeps long computer_use work going across sessions. Requires the HandyDandy plugin in handoff mode: HandyDandy decides when a session is too long and has the agent write a handoff; while the agent is driving the computer (a computer_use call in the last 30 minutes), this plugin also asks for an Outcome line, open checkboxes and a Next action in that handoff. When the handoff says the work is not delivered, the Desktop app opens a new chat with its own New chat action and sends a seed prompt pointing at the handoff, as if you had typed it, up to 2 automatic continues per task. Desktop is the only surface that continues on its own; on the CLI, TUI and messaging chats it posts one line saying where the handoff is. Saying \"no auto handoff\" turns it off for the chat. Disclosure — observer hooks post_tool_call, pre_llm_call and post_llm_call; reads HandyDandy's plugin-data/handydandy/state.json and the handoff file it points to, read-only; writes state.json, state.lock and events.log (session ids, decisions and handoff paths, never handoff contents), plus test-handoffs/ in test mode, only under <HERMES_HOME>/plugin-data/handsoff-handoff/; dashboard routes GET /pending, POST /claim and POST /result behind the dashboard auth gate touch only that state; with auto_continue on (the default) the Desktop half runs ctx.runAction('session.new') and host.composer.submit once per claimed continuation, sending a seed prompt you did not type that tells the new chat to continue from the handoff, so the new chat asks for approvals exactly where a chat you open by hand would; posts one line with ctx.post_message in the session that wrote the handoff; uses hermes_constants, plugins.plugin_storage and hermes_cli.plugin_events, each failing open; makes no network calls, runs no subprocesses, shell commands or Hermes child sessions, starts no background services, stores no credentials, approves nothing and sends no telemetry."
+maintainer: percyhendrux123-prog
+tier: community
+category: automation
+requires_hermes: ">=0.23.3"
+docs_url: https://github.com/percyhendrux123-prog/hermes-handsoff-handoff/blob/7a7686125c5ba243c7089c0c35ad6a18f37880a2/README.md
+readme: true
+platforms: [macos, linux]
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - post_tool_call
+    - pre_llm_call
+    - post_llm_call
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - "Requires the handydandy plugin enabled with mode: handoff (declared in plugin.yaml requires_plugins). Without it the plugin does nothing."
+  - "Only the Desktop app continues automatically. Hermes gives a Python plugin no way to start a new session, so the CLI, TUI and messaging chats get one line saying where the handoff is and to send /new, then from handoff <path>."
+  - "Approvals granted for this session in the old chat do not carry over, so the continued chat may ask again."
+  - "Unattended runs (cron, Kanban workers) never continue."
+  - "The README's line saying the Desktop half has not run in a real Desktop window predates the author's live relay check, which passed on Hermes Desktop with this pin."

@@ -12,6 +12,7 @@ import pytest
 
 from hermes_cli.update_channel import release_version
 
+from scripts.releases.downloads_page import recorded_build
 from tests.scripts.test_release_r2 import r2_server
 
 _SPEC = importlib.util.spec_from_file_location(
@@ -25,15 +26,19 @@ _SPEC.loader.exec_module(rbt)
 def release_body(monkeypatch):
     state = {'body': '# Notes\n\n<!-- HERMES_BUILDS_TABLE -->\n\n## Changes\n- x\n', 'edits': []}
 
+    # gh as PATH and PATHEXT resolve it (gh.cmd on Windows); both calls must run that path.
+    resolved = '/fake/bin/gh.cmd'
+
     def gh(argv, **kwargs):
-        if argv[:3] == ['gh', 'release', 'view']:
+        if argv[:3] == [resolved, 'release', 'view']:
             return subprocess.CompletedProcess(argv, 0, json.dumps({'body': state['body']}), '')
-        assert argv[:3] == ['gh', 'release', 'edit']
+        assert argv[:3] == [resolved, 'release', 'edit']
         state['body'] = kwargs['input']
         state['edits'].append(state['body'])
         return subprocess.CompletedProcess(argv, 0, '', '')
 
     monkeypatch.setattr(rbt.subprocess, 'run', gh)
+    monkeypatch.setattr(rbt.shutil, 'which', lambda name: resolved if name == 'gh' else None)
     return state
 
 
@@ -74,7 +79,7 @@ def test_tag_publication_pending_rerun_stale_and_dry_run(monkeypatch, r2_server,
         page = response.read().decode()
     release_url = rbt.r2.public_url_for('https://github.com/o/r/releases/tag', tag)
     assert set(re.findall(r'href="(http[^"]+)"', page)) == expected | {release_url}
-    assert rbt.recorded_build(page) == tag and 'Bundle environment' not in page
+    assert recorded_build(page) == tag and 'Bundle environment' not in page
     assert all(name not in page and name not in body for name in hidden)
     assert 'Linux' not in body.split('Native install/chat smoke')[0]
     for url in expected:

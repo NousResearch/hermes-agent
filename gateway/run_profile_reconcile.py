@@ -26,6 +26,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from gateway.run_platform_reconcile import GatewayPlatformReconcileMixin
 from gateway.run_shutdown import _log_suppressed
 from hermes_cli.config_backend import ConfigBackendUnavailable
 from utils import file_cache_version
@@ -75,8 +76,9 @@ def _added_profile_blocker(launch: Path) -> Optional[str]:
     return implicit_multiplex_blocker()
 
 
-class GatewayProfileReconcileMixin:
-    """Runtime reconciliation of the multiplexed served-profile set (hot add / unroute / credential-add)."""
+class GatewayProfileReconcileMixin(GatewayPlatformReconcileMixin):
+    """Runtime reconciliation of the multiplexed served-profile set (hot add / unroute / credential-add);
+    each profile's own platform adapters follow its config through the platform reconcile base."""
 
     _served_profile_homes: Optional[dict[str, Path]] = None
     _served_profile_signatures: Optional[dict[str, tuple]] = None
@@ -114,12 +116,15 @@ class GatewayProfileReconcileMixin:
         (every gateway), then rescan ``profiles/`` when multiplexing (creators signal the control
         socket for an immediate rescan); a gateway standalone only because the host had one profile
         starts multiplexing here once a second one exists."""
+        await self._start_primary_platform_watch()
         while self._running:
             await asyncio.sleep(interval)
             if not self._running:
                 return
             try:
                 await self._sync_hooks_on_consent_change()
+                # Every gateway: the launch profile's own platforms follow its config/.env too.
+                await self._reconcile_primary_platforms_if_changed()
                 # A standalone gateway never runs a profile reconcile from the watcher, unless it is the
                 # single-profile boot that starts multiplexing in place for a newly created profile.
                 if self._multiplex_on() or await self._multiplex_for_added_profile():
@@ -232,8 +237,9 @@ class GatewayProfileReconcileMixin:
             retry_parked = reason == "control-socket"
             added = [n for n in live if n not in known and n != active and (retry_parked or n not in parked)]
             removed = [n for n in known if n not in live and n != active]
+            unreadable = getattr(self, "_unreadable_signatures", None) or {}
             changed = [n for n in live if n in known and n != active and n not in added
-                       and profile_serve_signature(live[n]) != sigs.get(n)]
+                       and profile_serve_signature(live[n]) not in (sigs.get(n), unreadable.get(n))]
             current = {n: h for n, h in live.items() if n in known or n == active}
             return await self._apply_profile_changes(
                 current, added, removed, changed, reason=reason, live=live, result=result)
@@ -243,7 +249,16 @@ class GatewayProfileReconcileMixin:
         """Apply a selected diff under the reconcile lock, shared by the watcher and the
         serve/unserve control verbs. New profiles first get a runtime (reservation + store); one
         whose home another gateway owns or whose store is unusable is parked, not served."""
+        result, _receipts = await self._apply_profile_diff(
+            current, added, removed, changed, reason=reason, live=live, result=result)
+        return result
+
+    async def _apply_profile_diff(self, current, added, removed, changed, *, reason,
+                                  live=None, result=None) -> tuple:
+        """``(result, {profile: platform receipt})``: the one apply every named-profile path goes
+        through; each served profile it applied records its receipt in the PlatformChangeLedger."""
         from gateway.run import MultiplexConfigError
+        from gateway.run_platform_reconcile import PlatformConfigUnreadable
         from gateway.run_runtime import park_profile, unpark_profile
         from hermes_cli.profiles import profiles_to_serve
         active = getattr(self, "_primary_profile_name", None) or "default"
@@ -253,7 +268,8 @@ class GatewayProfileReconcileMixin:
         known = dict(self._served_profile_homes or {})
         sigs = self._served_profile_signatures or {}
         if not (added or removed or changed):
-            return {**result, "served_profiles": self.served_profile_names()}
+            return {**result, "served_profiles": self.served_profile_names()}, {}
+        before = self._open_profile_receipts(added, changed)
         for name in removed:
             await self._unserve_profile(name, known[name])
             result["removed"].append(name)
@@ -288,6 +304,11 @@ class GatewayProfileReconcileMixin:
                 result["parked"].append(name)
                 config_parked.add(name)
                 continue
+            except PlatformConfigUnreadable as exc:
+                # Its adapters and cached config stay as they are; the signature stays unacknowledged.
+                self._note_unreadable_platform_config(name, scan_signature, exc)
+                result.setdefault("unreadable", {})[name] = str(exc)
+                continue
             except Exception:
                 logger.error("[MULTIPLEX] Failed to start adapters for profile '%s'", name, exc_info=True)
                 connected = 0
@@ -296,6 +317,7 @@ class GatewayProfileReconcileMixin:
                 transient_failed.add(name)
             else:
                 sigs[name] = scan_signature
+                (getattr(self, "_unreadable_signatures", None) or {}).pop(name, None)
             if name in added:
                 logger.info("[MULTIPLEX] Now serving profile '%s' (%s adapter(s) connected; %s)", name, connected, reason)
                 result["added"].append(name)
@@ -323,12 +345,13 @@ class GatewayProfileReconcileMixin:
             configs = getattr(self, "_profile_configs", None)
             if isinstance(configs, dict):
                 configs.pop(name, None)
+        receipts = self._close_profile_receipts(before, result.get("unreadable") or {})
         if added:
             from gateway.run_runtime import recover_served_native_rows
             await recover_served_native_rows(self)
             await self._after_profiles_added([(n, current[n]) for n in added])
         result["served_profiles"] = self.served_profile_names()
-        return result
+        return result, receipts
 
     def _drop_stale_platform_verdicts(self, name: str) -> None:
         """Before a changed profile's rescan, drop its ``<name>:<platform>`` status entries for
@@ -381,7 +404,8 @@ class GatewayProfileReconcileMixin:
             launch = get_process_hermes_home().resolve()
             if launch != get_default_hermes_root().resolve():
                 return False  # only the default home runs the multiplexer (``_launch_home_may_multiplex``)
-            if len(profiles_to_serve(multiplex=True, include_parked=True)) < 2:
+            # A parked or run-elsewhere profile can come back without a host restart: count it.
+            if len(profiles_to_serve(multiplex=True, include_parked=True, include_run_elsewhere=True)) < 2:
                 return False
             blocker = await self._run_housekeeping_in_executor(_added_profile_blocker, launch)
             if blocker is not None:

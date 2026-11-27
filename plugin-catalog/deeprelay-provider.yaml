@@ -1,0 +1,33 @@
+name: deeprelay-provider
+title: deeprelay
+repo: https://github.com/deeprelay-dev/hermes-plugin-deeprelay
+sha: e7381884efd0bd8815d870be6e0dfa68eff0a5dd
+description: >-
+  deeprelay as a Hermes model provider: one OpenAI-compatible key for open-weight chat models
+  (DeepSeek V4.1 Flash and V4 Pro, Kimi K3.1 Pro and K3, GLM 5.3, 5.3 Flash and 5.2, Qwen 3.5-4,
+  MiniMax M3.1 Flash, Meta Muse, gpt-oss-120b), each with its context window, tool support,
+  reasoning and image input declared, reasoning effort sent as the top-level reasoning_effort
+  clamped to each model's levels, and the cost Hermes records taken from the amount deeprelay
+  charged (usage.cost). Pick deeprelay in `hermes model` or use `--provider deeprelay`.
+  Disclosure — registers one model provider at import and nothing else (no tools, hooks,
+  middleware, commands, background work or file access); chat requests (prompts, tool schemas and
+  results, attached images) and the model list go to https://api.deeprelay.ai/v1 (or
+  DEEPRELAY_BASE_URL) through Hermes's own client with DEEPRELAY_API_KEY, which Hermes reads; usage
+  is billed to your deeprelay account; the plugin itself opens no connections.
+maintainer: deeprelay-dev
+tier: community
+category: models
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/deeprelay-dev/hermes-plugin-deeprelay#readme
+version: "1.0.0"
+readme: true
+platforms: []
+known_issues:
+  - "The model list is fixed per release. A new deeprelay chat model appears after a reviewed SHA bump."
+  - "glm-5.3 and qwen3.5-9b always think: turning reasoning off sends their lowest level."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - DEEPRELAY_API_KEY

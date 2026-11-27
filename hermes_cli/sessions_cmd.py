@@ -333,6 +333,23 @@ def _default_exclude(args):
     return None if getattr(args, "source", None) else ["tool"]
 
 
+# Sources nobody types into: a cron tick writes a row every run (most stay empty), webhook and push
+# deliveries one each. They buried the conversations you resume, so the human list leaves them out.
+_AUTOMATED_SOURCES = ("cron", "webhook", "push", "kanban", "tool", "oneshot")
+
+
+def _listing_scope(args) -> dict:
+    """``list_sessions_rich`` scope of ``sessions list`` / ``browse``: human threads ranked by their
+    last message, one row per compression lineage (the tip you resume). ``--all`` brings back
+    automated (``tool`` included) and empty rows; an explicit ``--source`` does for its own rows."""
+    source = getattr(args, "source", None)
+    show_all = getattr(args, "all", False)
+    unfiltered = show_all or bool(source)
+    exclude = None if show_all else _default_exclude(args) if source else list(_AUTOMATED_SOURCES)
+    return dict(source=source, exclude_sources=exclude, min_message_count=0 if unfiltered else 1,
+                order_by_last_active=True)
+
+
 def _surface_reader(store):
     """``--source cli`` also matches a gateway row stored as ``local`` with that created surface."""
     from hermes_cli.gateway_session_store import SurfaceLabelReader
@@ -343,10 +360,9 @@ def _cmd_list(args, *, persistence=None):
     from persistence.conversation.sessions import workspace_key as _ws_key
     # LIMIT lives in the query, so probe one row past the cap: it is the only way to know the
     # page was cut without a second COUNT query (``--limit 0`` is ``LIMIT 0``: no rows, no probe).
-    limit = args.limit
+    limit = getattr(args, "limit", 20)
     sessions = _surface_reader(persistence).list_sessions_rich(
-        source=args.source, exclude_sources=_default_exclude(args), limit=limit + 1 if limit > 0 else limit,
-    )
+        limit=limit + 1 if limit > 0 else limit, **_listing_scope(args))
     truncated = limit > 0 and len(sessions) > limit
     sessions = sessions[:limit] if truncated else sessions
 
@@ -1014,9 +1030,7 @@ def _cmd_retitle_skills(args, *, persistence=None):
 
 def _cmd_browse(args, *, persistence=None):
     limit = getattr(args, "limit", 500) or 500
-    sessions = _surface_reader(persistence).list_sessions_rich(
-        source=getattr(args, "source", None), exclude_sources=_default_exclude(args), limit=limit
-    )
+    sessions = _surface_reader(persistence).list_sessions_rich(limit=limit, **_listing_scope(args))
     if not sessions:
         persistence.close()
         print("No sessions found.")
@@ -1475,6 +1489,8 @@ _HELD_STORE_ACTIONS = frozenset({"optimize", "optimize-storage", "prune"})
 
 
 def cmd_sessions(args, sessions_parser=None):
+    if args.sessions_action is None:  # bare `hermes sessions`: pick one to resume on a terminal, else the list
+        args.sessions_action = "browse" if sys.stdin.isatty() and sys.stdout.isatty() else "list"
     action = args.sessions_action
     pre = _PRE_DB_HANDLERS.get(action)
     if pre is not None:

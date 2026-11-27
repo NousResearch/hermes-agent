@@ -441,6 +441,13 @@ def _groups_changed_payload(before: dict, after: dict) -> dict:
     return {**scope, "broadcast_id": f"{replay_epoch()}:{next(_groups_broadcast_count)}"}
 
 
+def _platforms_sig():
+    """What the Messaging page lists moved (:func:`hermes_cli.catalog_platform_listing.platform_list_signature`;
+    the dashboard polls the same digest)."""
+    from hermes_cli.catalog_platform_listing import platform_list_signature
+    return platform_list_signature(_watcher_home())
+
+
 def _skills_sig():
     """The skill roots' stat signature for every scope a session resolved commands in (each profile
     home and session repo, not only the launch one: ``agent.skill_commands.published_scopes_signature``):
@@ -462,7 +469,7 @@ _CHANGE_WATCHES: dict[str, tuple[float, Any, Any] | tuple[float, Any, Any, Any]]
     # Projects created/switched by CLI or agent tooling write projects.db without any
     # state.db movement, so sessions.changed never fires and the desktop Projects
     # sidebar goes stale until a manual refresh (#56757).
-    "platforms.changed": (2.0, lambda: _home_mtime_ns("gateway_state.json"), dict),
+    "platforms.changed": (2.0, _platforms_sig, dict),
     "projects.changed": (2.0, _projects_sig, dict),
     "pairing.changed": (2.0, _pairing_sig, dict),
     "skills.changed": (2.0, _skills_sig, dict),

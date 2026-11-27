@@ -17,8 +17,8 @@ async def probe(peer, creator):
     from websockets.asyncio.client import connect
     from gateway.run import GatewayRunner
     from gateway.run_bootstrap import _start_gateway_start_control_socket
-    from gateway.run_runtime import (initialize_gateway_runtime, start_gateway_runtime_api,
-                                     publish_gateway_runtime_ready)
+    from gateway.run_runtime import initialize_gateway_runtime, publish_gateway_runtime_ready
+    from gateway.run_runtime_listener import start_gateway_runtime_api
     from gateway.runtime_ownership import process_ownership
     from hermes_cli import web_server
     from hermes_cli.dashboard_auth import register_provider, clear_providers

@@ -1,0 +1,19 @@
+name: testmu-ai
+title: TestMu AI
+repo: https://github.com/LambdaTest/mcp-server-guide
+sha: e1a6e759b67c4b32232c753dce2e3ff19ead52a4  # main tip 2026-11-23, merge of mcp-server-guide#19 (Hermes trust: untrusted)
+description: "TestMu AI (Formerly LambdaTest) is an Agentic AI Quality Engineering platform that assures AI deployments across the enterprise and the real world. It runs agentic testing for web and mobile apps on 3,000+ browsers and 50,000+ real devices, and for chat, voice, IVR, video, and image agents. This plugin connects Hermes to the TestMu AI cloud through TestMu AI's hosted MCP server (Streamable HTTP, OAuth browser sign-in): run, debug and triage tests across web automation, HyperExecute, SmartUI visual testing, accessibility scans and Test Manager, with the Kane CLI skill for browser and mobile test automation and the Rook CLI skill for testing AI agents. Portable Agent Plugins v1 package (plugin.json + mcp.json + skills/). Disclosure — Disclosure: hosted connector with no local code: every MCP tool call goes to TestMu AI's server at mcp.lambdatest.com, signed in as the user, and results join the session context, so they reach the user's model provider. Some tools change account data (start accessibility scans and phone-call suite runs, upload apps and screenshots, create or update Test Manager items, approve or reject SmartUI comparisons) and some stop or delete builds, sessions, tunnels and uploaded files; every tool declares readOnlyHint, destructiveHint and openWorldHint. plugin.json sets the server to trust: untrusted, so Hermes asks before any tool that is not annotated readOnlyHint: true and refuses those tools in unattended runs. The tool list comes from TestMu AI's server at run time, so the pinned commit doesn't cover it. The Kane CLI and Rook CLI skills run those command-line tools on the user's machine when the user asks for them (offering to install the latest Kane CLI from npm first), store their settings and any context-sync keys under ~/.testmuai, and their runs use TestMu AI credits. Connect with browser sign-in, `hermes mcp add testmu-ai --url https://mcp.lambdatest.com/mcp --auth oauth --connect-timeout 300` (Hermes stores and refreshes the OAuth tokens)."
+maintainer: TestMu AI
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://www.testmuai.com/support/docs/testmu-mcp-server/
+version: "1.2.1"
+platforms: []
+known_issues:
+  - "Sign in once after installing: hermes mcp add testmu-ai --url https://mcp.lambdatest.com/mcp --auth oauth --connect-timeout 300"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

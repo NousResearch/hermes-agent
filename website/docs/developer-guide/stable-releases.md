@@ -62,11 +62,29 @@ run it again and let every mutation verify its current state before continuing.
 The final tag is the custody receipt. Never rebuild or replace accepted bytes to
 repair a pointer.
 
-Promotion replaces the stable downloads page at `releases/stable/index.html` on
-the R2 public origin. Canary tag builds own `releases/canary/index.html`, and
-a commit build owns only its claim archive's page,
-`releases/tag/commit.<stamp>-v<version>/index.html`. Pages list only staged,
-receipt-backed objects; an older run cannot regress a protected channel.
+Promotion replaces the stable downloads page at `releases/stable/index.html` and
+the unversioned stable macOS Apple Silicon installer at
+`releases/darwin/stable/HermesBundled-mac-arm64.dmg` (server-side R2 `CopyObject`
+from the accepted attempt archive, served with `Cache-Control: no-store` and
+`Content-Disposition: attachment; filename="HermesBundled-mac-arm64.dmg"`) on
+the R2 public origin, alongside `releases/darwin/stable/stable-mac.yml` and
+`releases/win32/stable/stable.appinstaller`. Canary tag builds own
+`releases/canary/index.html`, and a commit build owns only its claim archive's
+page, `releases/tag/commit.<stamp>-v<version>/index.html`. Pages list only
+staged, receipt-backed objects; an older run cannot regress a protected channel.
+Only the publication controller promotes stable. The standalone
+`python -m scripts.bundles.release_artifacts promote` refuses a stable candidate
+because it skips the published-release check, and
+`python -m scripts.releases.channel_releases` refuses the `stable` role because
+it skips the check of the candidate digest against the final release receipt.
+Both would also run outside the serialized `stable-release` group. Repair a partial stable publication by
+running Stable Release Publication again. A rerun repeats only an unfinished
+advance (a head, candidate pointer or Docker alias still behind); it never
+re-promotes a release that finished, so it never backfills the unversioned DMG
+or the downloads page. The DMG changes only with a full-desktop promotion. The
+page also changes when `complete` renders a full-desktop release, which can put
+it ahead of an older advance still pending; that promotion then leaves the
+newer page as it is.
 
 ## Run, publish, or abandon a stable release
 
@@ -173,7 +191,8 @@ What a release publishes follows what it built:
   manifest with exactly the targets it built, and submits the Store bundle when
   `windows-store` is on. A Store-only release has no package rows, only the Store
   bundle file, and moves no channel. The protected R2 stable head, the App Installer and macOS
-  feeds, the APT channel, downloads page,
+  feeds, the unversioned stable macOS DMG (`releases/darwin/stable/HermesBundled-mac-arm64.dmg`),
+  the APT channel, downloads page (`releases/stable/index.html`),
   `releases/stable/release-candidates.json` and the signed-package baseline stay
   on the previous full release. Source checkouts of the official repository on
   `stable`, their default channel, do not stay: that channel is GitHub's latest

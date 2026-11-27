@@ -3,6 +3,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introJa } from './intro-ja'
+import { jaApproval } from './ja_approval'
 import { jaBoot } from './ja_boot'
 import { jaCatalog, jaSkillDeepLink } from './ja_catalog'
 import { jaClarify } from './ja_clarify'
@@ -187,6 +188,14 @@ export const jaOverrides = {
       approvalTitleNamed: session => `承認が必要です — ${session}`,
       approveAction: '承認',
       rejectAction: '拒否',
+      accessTitle: 'フォルダーアクセスが必要です',
+      accessTitleNamed: session => `フォルダーアクセスが必要です — ${session}`,
+      accessReadBody: folder => `読み取り専用: ${folder}`,
+      accessReadWriteBody: folder => `読み取り/書き込み: ${folder}`,
+      networkTitle: 'サイトへのアクセスが必要です',
+      networkTitleNamed: session => `サイトへのアクセスが必要です — ${session}`,
+      allowAction: '許可',
+      denyAction: '拒否',
       inputTitle: '入力が必要です',
       inputTitleNamed: session => `入力が必要です — ${session}`,
       inputBody: 'Hermes が応答を待っています。',
@@ -1605,6 +1614,20 @@ export const jaOverrides = {
   },
 
   messaging: {
+    catalog: {
+      sectionTitle: 'インストール可能',
+      badges: { official: '公式', verified: '検証済み' },
+      notInstalled: '未インストール',
+      intro: (name: string) => `${name} は Hermes カタログのプラグインです。インストールすると有効になり、ここで認証情報を入力できます。`,
+      disclosure: '開示:',
+      install: 'インストール',
+      installing: 'インストール中…',
+      installed: (name: string) => `${name} をインストールしました`,
+      installedDetail: '認証情報を入力して接続してください。',
+      installFailed: (name: string) => `${name} をインストールできませんでした`,
+      lazyOff: 'プラグインの自動インストールがオフ (security.allow_lazy_installs) のため、ここからはインストールしません。',
+      runCommand: 'ターミナルでインストール:',
+    },
     search: 'メッセージングを検索...',
     statusFilter: {
       all: 'すべて',
@@ -1852,6 +1875,8 @@ export const jaOverrides = {
     remoteOverride: {
       menuItem: 'リモートホストに接続…',
       badge: (host: string) => `${host} で実行中`,
+      runHere: 'このコンピューターで実行…',
+      sandboxed: 'サンドボックス化',
       title: (profile: string) => `${profile} をリモートホストに接続`,
       description: 'このプロファイルのセッションは、このパソコンではなく指定したリモートの Hermes で実行されます。',
       urlLabel: 'リモートアドレス',
@@ -2992,6 +3017,8 @@ export const jaOverrides = {
       messagingPlatforms: 'メッセージングプラットフォーム'
     },
     approvalMode: {
+      perProfile: 'プロファイルごと',
+      perProfileDescription: '承認モードはプロファイルごとに設定されます。変更するには、対象のボットまたはプロファイルを開いてください。',
       title: '承認モード',
       ariaLabel: mode => `承認モード: ${mode}`,
       manual: '手動',
@@ -3476,21 +3503,7 @@ export const jaOverrides = {
       sendEdited: '編集済みメッセージを送信',
       attachingFile: '添付中…'
     },
-    approval: {
-      gatewayDisconnected: 'Hermes ゲートウェイが接続されていません',
-      sendFailed: '承認応答を送信できませんでした',
-      run: '実行',
-      command: 'コマンド',
-      moreOptions: 'その他の承認オプション',
-      allowSession: 'このセッションで許可',
-      alwaysAllowMenu: '常に許可…',
-      jumpToApproval: '承認が必要',
-      reject: '拒否',
-      alwaysTitle: 'このコマンドを常に許可しますか？',
-      alwaysDescription: pattern =>
-        `これにより "${pattern}" パターンが永続的な許可リスト (~/.hermes/config.yaml) に追加されます。Hermes はこのセッションや将来のセッションで、このようなコマンドについて再度尋ねません。`,
-      alwaysAllow: '常に許可'
-    },
+    approval: jaApproval,
     clarify: jaClarify,
     themePicker: jaThemePicker,
     tool: {

@@ -1,0 +1,39 @@
+name: galaxymem
+repo: https://github.com/k1ng0mar/galaxymem
+sha: ccac81a63969bb79666d7c7cc6a99dab18ba6729
+description: "Entity-scoped memory provider with four epistemic networks (world, experience, opinion, observation), decay, hybrid vector and keyword recall, temporal queries, spreading activation and autonomous reflection, all in one local SQLite file. Exposes 18 gm_* tools and injects bright memories into the prompt. Disclosure — batched extraction, reflection, query expansion, reasoning and session-summary compression send turn text to the LLM configured for auxiliary.galaxymem through Hermes credentials, which follows your active model unless you set an override; embeddings run locally with fastembed, and first use downloads BAAI/bge-small-en-v1.5 from Hugging Face (about 100 MB); the optional reranker downloads cross-encoder/ms-marco-MiniLM-L-6-v2 from Hugging Face; the model can change the persistent reflection mission and directives through gm_config; data lives in $HERMES_HOME/galaxymem/ or GALAXYMEM_DB_PATH; no telemetry, no self-updater."
+maintainer: k1ng0mar
+tier: community
+category: memory
+requires_hermes: ">=0.23.0"
+version: "0.2.3"
+docs_url: https://github.com/k1ng0mar/galaxymem#readme
+capabilities:
+  provides_tools:
+  - gm_store
+  - gm_recall
+  - gm_reflect
+  - gm_create_entity
+  - gm_merge_entity
+  - gm_entity_card
+  - gm_stats
+  - gm_config
+  - gm_mental_model
+  - gm_reflect_now
+  - gm_flush
+  - gm_forget
+  - gm_update_entity
+  - gm_link_identity
+  - gm_export
+  - gm_session_search
+  - gm_reason
+  - gm_explain_recall
+  provides_hooks:
+  - system_prompt_block
+  - prefetch
+  - queue_prefetch
+  - sync_turn
+  - on_session_end
+  - shutdown
+  provides_middleware: []
+  requires_env: []

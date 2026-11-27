@@ -1694,14 +1694,14 @@ def _is_handoff_event(kind: str, payload: Optional[str]) -> bool:
 
 
 def _profile_exists_fn() -> Optional[Callable[[str], bool]]:
-    """``profile_exists`` from ``hermes_cli.profiles``; ``None`` when it cannot be
-    imported and no allowlist is set (callers then trust the assignee).
+    """``profile_exists_here``; ``None`` when unimportable and no allowlist is set (callers then trust the assignee).
 
     With ``kanban.dispatch_profiles`` set (#110995) the predicate also requires the
     assignee to be listed, fail-closed: a ``default`` card is only claimable by homes that
     opted in, and a set allowlist whose gate cannot be built claims nothing (#147531)."""
     try:
-        from hermes_cli.profiles import normalize_profile_name, profile_exists
+        from hermes_cli.profiles import normalize_profile_name
+        from hermes_cli.profiles_run_elsewhere import profile_exists_here as profile_exists
     except Exception:
         if _dispatch_profile_allowlist(str) is None:
             return None

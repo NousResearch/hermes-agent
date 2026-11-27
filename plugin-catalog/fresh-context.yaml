@@ -1,14 +1,15 @@
 name: fresh-context
 repo: https://github.com/frendo22/hermes-fresh-context
-sha: 1187738ec895f97b69c9e3aa24a266ced6e52c9a
+sha: 11d6cf687fb3adb3a38e65397759ed55e10010c9
 description: Start the model's working context fresh after an idle break, in the same conversation.
 maintainer: frendo22
 tier: community
 category: general
 requires_hermes: ">=0.23.4"
-version: "0.1.0"
+version: "0.2.0"
 capabilities:
-  provides_tools: []
+  provides_tools:
+    - open_items
   provides_hooks: []
   provides_middleware: []
   requires_env: []

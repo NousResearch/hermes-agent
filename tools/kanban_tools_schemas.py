@@ -176,7 +176,8 @@ KANBAN_BLOCK_SCHEMA = _schema(
         "``reason`` is shown to the human on the board. If a task keeps "
         "getting unblocked and re-blocked for the same reason, it is "
         "auto-escalated to triage. Use for genuine blockers only — don't "
-        "block on things you can resolve yourself."
+        "block on things you can resolve yourself. Goal-mode workers must explain "
+        "a genuine external blocker to the judge; 'dependency' requires an unfinished parent."
     ),
     {
         "task_id": _prop("string", _DESC_TASK_ID_DEFAULT),
@@ -191,7 +192,8 @@ KANBAN_BLOCK_SCHEMA = _schema(
             "description": (
                 "Why you're blocked. 'dependency' waits in todo and "
                 "resumes automatically when an incomplete parent finishes; "
-                "if no parent is open it is recorded as needs_input instead. "
+                "with no open parent, ordinary workers record needs_input instead. "
+                "A Goal worker must have an incomplete parent and pass its judge gate. "
                 "The others surface to a human. Omit only if none apply."
             ),
         },

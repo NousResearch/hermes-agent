@@ -44,6 +44,7 @@ DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES = 3
 # Consecutive transport failures (401, timeout, DNS) before auto-pause: a broken API key returns
 # 401 every call and must not spend every turn on an unreachable judge.
 DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES = 5
+_JUDGE_IMPORT_FAILURE = "auxiliary client import failed; check the Hermes installation"
 
 # Quality gates: deterministic shell commands that must pass before the judge may declare DONE. A
 # failed gate short-circuits the judge — its output IS the continuation prompt, so the agent works
@@ -904,8 +905,10 @@ def judge_goal(
         from agent.auxiliary_client import call_llm
         from agent.auxiliary_unavailable import AuxiliaryClientUnavailable
     except Exception as exc:
-        logger.debug("goal judge: auxiliary client import failed: %s", exc)
-        return "continue", "auxiliary client unavailable", False, None, False
+        # No judge can run: an outage like AuxiliaryClientUnavailable below, not a "continue" verdict.
+        logger.warning("goal judge: auxiliary client import failed (%s)", type(exc).__name__)
+        logger.debug("goal judge: auxiliary client import traceback", exc_info=True)
+        return "continue", _JUDGE_IMPORT_FAILURE, False, None, True
 
     # Prompt priority: contract > subgoals > plain. With both, subgoals fold into the contract
     # block as extra criteria so the judge sees a single source of truth.
@@ -1532,6 +1535,8 @@ class GoalManager:
         # goal_judge config so a broken judge can't burn the whole turn budget.
         n_tx, n_parse = state.consecutive_transport_failures, state.consecutive_parse_failures
         if n_tx >= DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES:
+            if reason == _JUDGE_IMPORT_FAILURE:
+                return self._pause_decision(reason, "continue", reason, f"⏸ Goal paused — {reason}.")
             return self._pause_decision(
                 f"judge API unreachable {n_tx} turns in a row (check auxiliary.goal_judge provider/key in config.yaml)",
                 "continue", reason,
@@ -1615,6 +1620,45 @@ _KANBAN_TERMINAL_STATUSES = {
 }
 
 
+KANBAN_EXTERNAL_BLOCK_KINDS = frozenset({"needs_input", "dependency"})
+
+
+def kanban_goal_block_reason(task, reason: str, kind: str | None, *, parents, judge=None) -> tuple[str, str | None]:
+    """Return the reason to record, or an error refusing the worker's block."""
+    if kind not in KANBAN_EXTERNAL_BLOCK_KINDS:
+        return reason, "goal_mode tasks can only block on a genuine dependency or missing human input"
+    if not reason.strip():
+        return reason, "Explain what only an external party can provide and why work cannot continue."
+    if kind == "dependency" and not parents:
+        return reason, "No unfinished Kanban parent exists; use needs_input for a genuine human decision."
+    from agent.portal_tags import get_affinity_scope, reset_affinity_scope, set_affinity_scope
+
+    evidence = f"Requested external blocker ({kind}): {reason}"
+    if parents:
+        evidence += "\nUnfinished Kanban parents: " + ", ".join(f"{pid} ({status})" for pid, status in parents)
+    goal = ("Evaluate whether this task genuinely cannot progress without the claimed external "
+            "dependency or human input. An unfinished deliverable alone is not an external blocker. "
+            "Use BLOCKED only when the evidence supports the external blocker.\n\n"
+            f"{task.title}\n\n{task.body or ''}")
+    affinity_token = None if get_affinity_scope() else set_affinity_scope(f"kanban:{task.id}")
+    try:
+        verdict, detail, _, _, unreachable = (judge or judge_goal)(goal=goal, last_response=evidence)
+    except Exception:
+        logger.warning("goal block judge failed", exc_info=True)
+        verdict, detail, unreachable = "continue", "judge unavailable", True
+    finally:
+        if affinity_token is not None:
+            reset_affinity_scope(affinity_token)
+    if unreachable:
+        if kind == "needs_input":
+            # This is a request for human judgment, not a substitute judge verdict.
+            return f"Goal judge unavailable; operator must verify the reported blocker: {reason}", None
+        return reason, "Goal block not recorded: judge unavailable."
+    if verdict != "blocked":
+        return reason, f"Goal block rejected by judge: {detail}. Continue the work on this card."
+    return reason, None
+
+
 def run_kanban_goal_loop(
     *,
     task_id: str,
@@ -1622,6 +1666,7 @@ def run_kanban_goal_loop(
     run_turn,
     task_status_fn,
     block_fn,
+    claim_is_live=None,
     max_turns: int = DEFAULT_MAX_TURNS,
     first_response: str = "",
     log=None,
@@ -1641,14 +1686,32 @@ def run_kanban_goal_loop(
             except Exception:
                 pass
 
-    def _block(message: str) -> None:
-        try:
-            block_fn(message)
-        except Exception as exc:
-            _log(f"kanban goal loop: block_fn failed ({exc})")
-
     def _result(outcome: str, reason: str) -> dict[str, Any]:
         return {"outcome": outcome, "turns_used": turns_used, "reason": reason}
+
+    def _status_stop() -> dict[str, Any] | None:
+        try:
+            status = task_status_fn()
+        except Exception:
+            logger.warning("kanban goal loop: status check failed; stopping", exc_info=True)
+            return _result("stopped", "status check failed")
+        if (terminal := _KANBAN_TERMINAL_STATUSES.get(status)) is not None:
+            outcome, reason, log_fmt = terminal
+            _log("kanban goal loop: " + log_fmt.format(task_id=task_id, turns=turns_used))
+            return _result(outcome, reason)
+        if status not in ("running", "ready"):
+            # Reclaimed, edited or unexpected — let the dispatcher own it.
+            _log(f"kanban goal loop: task {task_id} status={status!r}; stopping")
+            return _result("stopped", f"status={status}")
+        return None
+
+    def _block(outcome: str, reason: str, message: str) -> dict[str, Any]:
+        try:
+            if block_fn(message) is not False:
+                return _result(outcome, reason)
+        except Exception as exc:
+            _log(f"kanban goal loop: block_fn failed ({exc})")
+        return _result("stopped", "could not record Goal block")
 
     max_turns = int(max_turns or DEFAULT_MAX_TURNS)
     if max_turns < 1:
@@ -1659,32 +1722,29 @@ def run_kanban_goal_loop(
     nudged_to_finalize = False
 
     while True:
-        try:
-            status = task_status_fn()
-        except Exception as exc:
-            _log(f"kanban goal loop: status check failed ({exc}); stopping")
-            return _result("stopped", "status check failed")
-
-        terminal = _KANBAN_TERMINAL_STATUSES.get(status)
-        if terminal is not None:
-            outcome, reason, log_fmt = terminal
-            _log("kanban goal loop: " + log_fmt.format(task_id=task_id, turns=turns_used))
-            return _result(outcome, reason)
-        if status not in ("running", "ready"):
-            # Reclaimed / archived / unexpected — let the dispatcher own it.
-            _log(f"kanban goal loop: task {task_id} status={status!r}; stopping")
-            return _result("stopped", f"status={status}")
+        if (stopped := _status_stop()) is not None:
+            return stopped
 
         from agent.portal_tags import get_affinity_scope, reset_affinity_scope, set_affinity_scope
         affinity_token = None if get_affinity_scope() else set_affinity_scope(f"kanban:{task_id}")
         try:
             verdict, reason, _parse_failed, _wait, _transport_failed = judge_goal(goal_text, last_response)
+        except Exception:
+            logger.warning("kanban goal loop: judge failed on turn %s; stopping", turns_used, exc_info=True)
+            return _result("stopped", "judge unavailable")
         finally:
             if affinity_token is not None:
                 reset_affinity_scope(affinity_token)
+        if (stopped := _status_stop()) is not None:
+            return stopped
         if _transport_failed:
+            if reason == _JUDGE_IMPORT_FAILURE:
+                return _result("stopped", reason)
             _log(f"kanban goal loop: judge transport failed on turn {turns_used}; stopping")
             return _result("stopped", "judge transport failure")
+        if claim_is_live is not None and not claim_is_live():
+            # The judge can run long enough for the dispatcher lease to expire.
+            return _result("stopped", "Kanban claim lost while judging")
         if verdict == "wait":
             verdict = "continue"
         _log(f"kanban goal loop: turn {turns_used}/{max_turns} verdict={verdict} reason={_truncate(reason, 120)}")
@@ -1694,18 +1754,18 @@ def run_kanban_goal_loop(
             # re-poking an impossible goal, and never let it land in done.
             # The judge ruled the goal cannot be satisfied at all — this is NOT done (#100954).
             _log(f"kanban goal loop: task {task_id} judged unachievable; blocking")
-            _block(f"Goal-mode judge ruled the goal unachievable: {reason}")
-            return _result("blocked_unachievable", f"judge verdict blocked: {reason}")
+            return _block("blocked_unachievable", f"judge verdict blocked: {reason}",
+                          f"Goal-mode judge ruled the goal unachievable: {reason}")
 
         if verdict == "done":
             if nudged_to_finalize:
                 # Already asked once to call kanban_complete — block for review rather than spin.
                 _log(f"kanban goal loop: task {task_id} judged done but worker won't finalize; blocking")
-                _block(
+                return _block("blocked_budget", "judged done, never finalized",
                     f"Goal-mode worker's output looked complete but it never "
                     f"called kanban_complete after a finalize nudge ({reason})."
                 )
-                return _result("blocked_budget", "judged done, never finalized")
+
             prompt = KANBAN_GOAL_FINALIZE_TEMPLATE.format(reason=_truncate(reason, 400))
             nudged_to_finalize = True
         else:
@@ -1714,18 +1774,18 @@ def run_kanban_goal_loop(
         # Budget check BEFORE spending another turn.
         if turns_used >= max_turns:
             _log(f"kanban goal loop: task {task_id} exhausted {turns_used}/{max_turns} turns; blocking")
-            _block(
+            return _block("blocked_budget", "turn budget exhausted",
                 f"Goal-mode worker exhausted its turn budget "
                 f"({turns_used}/{max_turns}) without completing the task. "
                 f"Last judge verdict: {_truncate(reason, 300)}"
             )
-            return _result("blocked_budget", "turn budget exhausted")
 
         try:
             result = run_turn(prompt)
             if isinstance(result, dict):
-                last_response = result.get("response", "") or ""
-                failed = bool(result.get("failed", False))
+                last_response = result.get("response", result.get("final_response", "")) or ""
+                failed = (result.get("failed") or result.get("partial") or result.get("interrupted")
+                          or result.get("completed") is False)
                 failure_reason = result.get("failure_reason") or "unknown"
             else:
                 # backward compatibility: assume it's a string

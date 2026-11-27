@@ -465,7 +465,7 @@ Dispatcher-owned workers receive their task lifecycle tools automatically.
 | `kanban_complete` | Finish with `summary` + `metadata` structured handoff. | at least one of `summary` / `result` |
 | `kanban_request_review` | Start same-card review with a durable `summary`, optional `metadata`, and optional reviewer profile. The task moves to `review`; this is not a block. | `summary` |
 | `kanban_request_changes` | Reviewer verdict from an active review run. Closes that run, reapplies parent gating, and routes the task to its original implementer without block-loop accounting. | `reason` |
-| `kanban_block` | Stop work and route by why: `kind=dependency` (waits in `todo`, auto-resumes when an incomplete parent finishes; with no open parent it is recorded as `needs_input` instead, since the wait could never be satisfied), `needs_input`/`capability`/`transient` (surface to a human). Repeated same-kind re-blocks auto-escalate to `triage`. | `reason` |
+| `kanban_block` | Stop work and route by why: `kind=dependency` waits in `todo` for an incomplete parent. With no open parent, ordinary workers record `needs_input`; Goal workers refuse the dependency handoff and require judge approval when a parent is open. `needs_input`/`capability`/`transient` surface to a human. Repeated same-kind re-blocks auto-escalate to `triage`. | `reason` |
 | `kanban_heartbeat` | Signal liveness during long operations. Pure side-effect. | — |
 | `kanban_comment` | Append a durable note to the task thread. | `task_id`, `body` |
 | `kanban_attach` | Attach a file to a task by passing its bytes inline (base64); stored under the task's attachments dir (25 MB cap). | file bytes + name |
@@ -611,6 +611,9 @@ guard is active only for the dispatcher-spawned worker itself (`HERMES_KANBAN_TA
 set and the run owns that task) — `delegate_task` children and cron jobs run inside
 the worker inherit the variable but are never nudged, since they have no board tools —
 and can be disabled with `HERMES_KANBAN_STOP_NUDGE=0`.
+For a worker in Goal mode, an intermediate result goes to the Goal controller
+instead: the judge can ask for another turn in the same attempt. A terminal
+board action still settles the attempt.
 
 **Dispatcher-side recovery:** If the nudges are exhausted or the worker crashes
 before reaching the nudge, the dispatcher gives the violation a **bounded retry**
@@ -728,6 +731,8 @@ hermes kanban create "Translate the docs site to French" \
 Use it for open-ended, multi-step, or "keep going until X is true" cards. Skip it for cheap one-shot work — the per-turn judge overhead isn't worth it, and the dispatcher's existing retry/circuit-breaker already handles transient worker failures. The judge is only as good as your goal text, so write the body as **explicit acceptance criteria**.
 
 The judge gate on `kanban complete` / `kanban request-review` (and the matching `kanban_complete` / `kanban_request_review` tools) only rejects on a **real verdict**. If the judge call itself fails — relay error, auth, timeout — the handoff is allowed and a `goal judge unreachable … allowing lifecycle handoff` warning lands in the log, so an unreachable judge never blocks a human approval. The headless CLI gate sends the same per-task relay-affinity key (`kanban:<task-id>`) as `specify`/`decompose`, so relays that require a session key accept the judge request.
+
+In goal mode the worker's own `kanban_block` / `hermes kanban block` is judged as well: it is accepted only for `needs_input`, or for `dependency` while an unfinished parent exists, and only when the judge agrees that the card cannot progress without that external input. If no judge route responds, a `needs_input` request is still recorded and marked unverified for the operator, while a `dependency` block is refused. A human operator's `hermes kanban block` is not judged.
 
 A goal-mode worker's **Worker log** (dashboard drawer, `hermes kanban log <id>`) carries the same live tool feed as any other worker's, plus one `kanban goal loop: turn N/M verdict=…` line per judged turn, so you can follow what the loop is doing while the card is running.
 

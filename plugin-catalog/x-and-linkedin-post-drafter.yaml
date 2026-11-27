@@ -1,0 +1,18 @@
+name: x-and-linkedin-post-drafter
+title: X and LinkedIn Post Drafter
+repo: https://github.com/KellerAI/x-and-linkedin-post-drafter
+sha: a931f44fc6653e51b1b4eb51e11f96f1d1636ac8
+description: "Skills-only plugin. Drafts X and LinkedIn posts and replies in the user's own voice from a short voice card, with a claim check and a character count on every draft. Never posts. Disclosure: no network calls of its own, no model calls of its own, no shell, no stored credentials, no telemetry."
+maintainer: KellerAI
+tier: community
+category: general
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/KellerAI/x-and-linkedin-post-drafter#readme
+version: "0.1.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

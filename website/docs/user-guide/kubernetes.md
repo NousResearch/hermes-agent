@@ -81,7 +81,7 @@ Run Hermes in a **dedicated namespace with nothing else in it**. `create pods` i
 
 ### `kubeconfig` / `context`
 
-*strings, default `""`.* `kubeconfig` is the path to the kubeconfig file. `context` selects a context in it; both are ignored in-cluster.
+*strings, default `""`.* `kubeconfig` is the path to the kubeconfig file. `terminal.kubernetes.context` selects a context in it; both are ignored in-cluster.
 
 ### `apiVersion` / `kind`
 
@@ -126,7 +126,7 @@ way to learn it.
 
 ### `owned_selector`
 
-*mapping, default `{}` meaning `{app.kubernetes.io/managed-by: hermes-agent}`.* The labels that mark an object as this backend's. Used twice: stamped into `metadata.labels` when absent, and matched before a 409 is treated as "resume this pod".
+*mapping, default `{}` meaning `{app.kubernetes.io/managed-by: hermes-agent}`.* `terminal.kubernetes.owned_selector` holds the labels that mark an object as this backend's. Used twice: stamped into `metadata.labels` when absent, and matched before a 409 is treated as "resume this pod".
 
 Configurable so an operator can relabel session pods for their own platform conventions (chargeback, a different `managed-by` value) without falling out of the ownership check against their own pods. The ownerReference UID remains the actual proof; this is the cheap filter — **and it is what the NetworkPolicy below selects on**, so if you change it, change the policy to match. A non-empty value **replaces** the default entirely; nothing is merged, so rebranding does not silently keep a label you never wrote.
 
@@ -136,7 +136,7 @@ Configurable so an operator can relabel session pods for their own platform conv
 
 ### `owner_reference`
 
-*`auto` (default) or `off`.* Stamps the agent's own pod as owner so session pods are garbage-collected when the agent dies. "Dies" means the agent **Pod object is deleted** — ownerReference GC follows object deletion, so a crash-looping agent container keeps its pod, and therefore keeps its session pod.
+*`auto` (default) or `off`.* `terminal.kubernetes.owner_reference` stamps the agent's own pod as owner so session pods are garbage-collected when the agent dies. "Dies" means the agent **Pod object is deleted** — ownerReference GC follows object deletion, so a crash-looping agent container keeps its pod, and therefore keeps its session pod.
 
 :::warning Quote it
 YAML 1.1 parses an unquoted `off` as the boolean `false`. Hermes accepts both, but `owner_reference: "off"` is unambiguous.

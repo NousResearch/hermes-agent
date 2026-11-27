@@ -1,8 +1,8 @@
 name: openmail
 repo: https://github.com/openmailsh/hermes-plugin
-sha: 12f42aee87ff4664b63bccead43205eab242cc12
-version: "0.3.2"
-description: "Gives a Hermes agent its own email address. Inbound mail wakes the agent over a websocket, and replies stay in-thread. Agents can read and send mail, create, review and edit HTML drafts, send approved drafts, delete unsent drafts, and provision inboxes. Disclosure — sends a fixed `X-OpenMail-Client: hermes` header and an `openmail-hermes/<version>` User-Agent with every request to the OpenMail API (api.openmail.sh, or your OPENMAIL_BASE_URL) so OpenMail can attribute usage to this plugin; the agent can send and delete drafts and send mail without a Hermes approval prompt."
+sha: 98335a83c037197c34b69dbd5895967fdb19508e
+version: "0.3.7"
+description: "Gives a Hermes agent its own email address. Inbound mail wakes the agent over a websocket, and replies stay in-thread. Agents can read and send mail, create, review and edit HTML drafts, send or schedule approved drafts, delete unsent drafts, and provision inboxes. Disclosure — sends a fixed `X-OpenMail-Client: hermes` header and an `openmail-hermes/<version>` User-Agent with every request to the OpenMail API (api.openmail.sh, or your OPENMAIL_BASE_URL) so OpenMail can attribute usage to this plugin; the agent can send and delete drafts and send mail without a Hermes approval prompt."
 maintainer: openmailsh
 tier: community
 category: platform
@@ -23,6 +23,8 @@ capabilities:
   - openmail_list_threads
   - openmail_read_thread
   - openmail_list_messages
+  - openmail_list_folders
+  - openmail_list_folder_messages
   - openmail_attachment_text
   - openmail_list_inboxes
   - openmail_create_inbox

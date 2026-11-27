@@ -89,8 +89,24 @@ test('does not treat Ctrl+Shift+W as Close Tab', () => {
   assert.equal(windowAcceleratorAction(chord({ key: 'w', control: true, shift: true }), false), 'ignore')
 })
 
-test('does not treat Ctrl+Shift+R as Reload', () => {
-  assert.equal(windowAcceleratorAction(chord({ key: 'r', control: true, shift: true }), false), 'ignore')
+test('claims Ctrl/Cmd+Shift+R as one force reload on both platforms', () => {
+  assert.equal(windowAcceleratorAction(chord({ key: 'r', control: true, shift: true }), false), 'force-reload')
+  assert.equal(windowAcceleratorAction(chord({ key: 'R', meta: true, shift: true }), true), 'force-reload')
+})
+
+test('does not force reload for a key-up after Shift is released first', () => {
+  assert.equal(
+    windowAcceleratorAction(chord({ type: 'keyUp', key: 'r', control: true, shift: false }), false),
+    'ignore'
+  )
+})
+
+test('swallows repeated and post-focus Ctrl/Cmd+Shift+R without another reload', () => {
+  assert.equal(
+    windowAcceleratorAction(chord({ key: 'r', control: true, shift: true, isAutoRepeat: true }), false),
+    'swallow'
+  )
+  assert.equal(windowAcceleratorAction(chord({ key: 'r', meta: true, shift: true }), true, 0), 'swallow')
 })
 
 test('does not treat Ctrl+Shift+0 as zoom reset', () => {

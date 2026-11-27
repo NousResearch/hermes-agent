@@ -41,20 +41,33 @@ def _row_source(session_id, row):
 
 
 def restore_desktop_session(authority, session_id, actor=None):
-    """Publish *session_id* as a cold Desktop row; raises ``not_found`` when the row is gone and
-    ``admission_conflict`` when the generated route already names another conversation.
+    """Publish *session_id* as a cold Desktop row; raises ``not_found`` when the row is gone or
+    stamped for another owner, and ``admission_conflict`` when the generated route already names
+    another conversation.
 
-    NOTE (merge 27.11): the stamp is NOT ownership-checked here, in parity with the production
-    port. Upstream's tightened adoption rules (#140183 F1) refuse a foreign-stamped row at legacy
-    adoption and upstream's test_legacy_session_migration expects the row to stay unmounted, while
-    this family mounts ANY desktop row for the authorize chain's fall-through — the two
-    expectations conflict; the owner must pick a side (gate vs upstream test)."""
+    Ownership gate (upstream #140183 F1's identity rule, the same predicate legacy adoption
+    applies in ``session_rules.legacy_local``): a row with no ``user_id`` stamp mounts, so does a
+    stamp that :func:`gateway.owner_identity.same_owner` reads as the host owner's (the served
+    dashboard's login labels) and a Nous account label on a desktop row (a label, not an owner).
+    Any OTHER stamp — a stranger's — must stay unmounted with its stamp untouched, refusing bare
+    ``not_found`` exactly like the families before this one; both call sites (the ``authorize``
+    fall-through and ``resolve_local_target``'s fall-through) inherit the gate from here."""
     from gateway.session_authority import LiveSession
     from gateway.session_contract import SessionRef
     persistence = authority_persistence(authority)
     row = persistence.sessions.get(session_id)
     if row is None or row.source != 'desktop':
         raise AuthorityRefusal('not_found')
+    # Upstream's identity rule (#140183 F1): a desktop row stamped for someone other than the host
+    # owner must stay unmounted with its stamp intact — the same refusal legacy adoption gives, so
+    # the predicate is the one adoption itself reads (gateway.owner_identity.same_owner over the
+    # host OwnerRule, plus the Nous account label exemption, which is a label and not an owner).
+    if row.user_id:
+        from gateway.owner_identity import host_owner_subject, same_owner
+        from session_rules.legacy_local import legacy_account_label
+        if not legacy_account_label({'source': row.source, 'user_id': row.user_id}) \
+                and not same_owner(row.user_id, host_owner_subject()):
+            raise AuthorityRefusal('not_found')
     # A compression continuation mounts as its lineage root or not at all — the routed family's
     # own policy for children (``_mount_plan`` refuses them; resume maps to the root): the
     # conversation's admission identity is the root, so mounting the child would fork its FIFO

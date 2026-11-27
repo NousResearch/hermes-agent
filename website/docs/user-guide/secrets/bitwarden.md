@@ -2,6 +2,15 @@
 
 Pull API keys from [Bitwarden Secrets Manager](https://bitwarden.com/products/secrets-manager/) at process startup instead of storing them in plaintext inside `~/.hermes/.env`. One bootstrap secret (a machine-account access token) replaces N per-provider keys, and rotating a credential becomes a single change in the Bitwarden web app.
 
+> **This is the `bws` integration, not the password manager.** Hermes has two
+> independent Bitwarden integrations: this one uses the Secrets Manager `bws`
+> CLI with a machine-account token to inject API keys at process startup, while
+> the agent's website logins come from the Bitwarden *password manager* through
+> the separate `bw` CLI — see [Passwords & Logins](../features/credential-vault.md#already-using-1password-or-bitwarden).
+> A working setup here does not install or sign in `bw`, so Desktop can
+> correctly report Bitwarden unavailable in **Settings → Passwords & Logins**
+> while Secrets Manager is configured and pulling keys.
+
 ## How it works
 
 1. You create a **machine account** in Bitwarden Secrets Manager, give it read access to a project, and generate an **access token**.
@@ -73,7 +82,7 @@ From now on, every `hermes` invocation pulls fresh secrets at startup. You'll se
 | `hermes secrets bitwarden status` | Show config + binary version + token presence/validation |
 | `hermes secrets bitwarden token` | Rotate the access token: validate the new token against Bitwarden, then store it in `.env` |
 | `hermes secrets bitwarden sync` | Dry-run: pull secrets now and show what would be applied |
-| `hermes secrets bitwarden sync --apply` | Pull and export into the current shell's environment |
+| `hermes secrets bitwarden sync --apply` | Pull and set the values into the current Hermes process's environment (a child process cannot change its caller's shell) |
 | `hermes secrets bitwarden install` | Install or repair the PM-pinned `bws` binary. No Bitwarden authentication required. |
 | `hermes secrets bitwarden install --force` | Check and repair the managed copy. Valid entries can be reused without another download. |
 | `hermes secrets bitwarden disable` | Flip `enabled: false`; leaves token + project id in place |

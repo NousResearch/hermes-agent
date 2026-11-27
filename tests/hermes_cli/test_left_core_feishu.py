@@ -214,20 +214,21 @@ def test_the_default_installer_skips_feishu_the_left_core_migration_placed(tmp_p
     assert default_plugins._recorded(home, own_only=True) == set()
 
 
-@pytest.mark.parametrize(("config", "reported"), [("", False), ("plugins:\n  disabled: [feishu]\n", True)],
-                         ids=["feishu-pending", "feishu-disabled"])
-def test_a_feishu_override_is_reported_only_when_nothing_serves_the_feishu_credentials(tmp_path, monkeypatch,
-                                                                                         config, reported):
-    """The real catalog's ``hermes-tag`` requires ``FEISHU_APP_ID``/``FEISHU_APP_SECRET``. A Feishu home whose
-    feishu plugin is not there yet is not told 'hermes-tag' is missing (the left-core install serves those
-    credentials and reports its own outcome, as core's bundled Feishu served them); one that disables feishu is."""
+@pytest.mark.parametrize("config", ["", *(f"plugins:\n  disabled: [{name}]\n"
+                                        for name in ("feishu", "platforms/feishu", "feishu-platform"))],
+                         ids=["feishu-pending", "disabled-feishu", "disabled-platforms/feishu", "disabled-feishu-platform"])
+def test_feishu_credentials_never_name_the_hermes_tag_override(tmp_path, monkeypatch, config):
+    """The real catalog's ``hermes-tag`` requires ``FEISHU_APP_ID``/``FEISHU_APP_SECRET``. Those credentials are
+    Feishu's: a home whose feishu plugin is not there yet is not told 'hermes-tag' is missing (the left-core
+    install serves them and reports its own outcome, as core's bundled Feishu served them), and neither is one
+    that turned Feishu off under any of its names (hermes-tag extends the Feishu adapter, so it is no substitute)."""
     import hermes_cli.plugin_catalog as catalog
     from hermes_cli import catalog_platforms
     home = _home(tmp_path, env=_CREDS, config=config)
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(catalog, "fetch_live_catalog", lambda **kwargs: None)
     assert "hermes-tag" in {entry.name for entry in catalog.load_catalog()}
-    assert ("hermes-tag" in {entry.name for entry in catalog_platforms.pending_entries(home)}) is reported
+    assert "hermes-tag" not in {entry.name for entry in catalog_platforms.pending_entries(home)}
 
 
 @pytest.mark.parametrize("placed", ["left-core", "default"])

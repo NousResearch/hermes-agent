@@ -65,13 +65,13 @@ def _catalog_entries(*, allow_network: bool) -> list:
     return cached if cached is not None else load_catalog()
 
 
-def _left_core_env(home: Path) -> set[str]:
-    """Credentials of the platforms that left core and *home* does not disable: their plugin serves them
-    once installed, and until then the left-core migration installs it and reports how that went."""
-    from hermes_cli.left_core_migration import LEFT_CORE, _plugins_listed
-    return {name for feature in LEFT_CORE if feature.platform
-            and not _plugins_listed(home, (feature.plugin, feature.plugin_key or feature.plugin))[1]
-            for name in feature.enable_env}
+def _left_core_env() -> set[str]:
+    """Credentials of the platforms that left core. They are that platform's whether *home* runs it or
+    turned it off under any of its names: its plugin serves them once installed (the left-core migration
+    installs it and reports how that went), and a disable is the user's choice about that platform, not a
+    request for another plugin that reads the same env."""
+    from hermes_cli.left_core_migration import LEFT_CORE
+    return {name for feature in LEFT_CORE if feature.platform for name in feature.enable_env}
 
 
 def pending_entries(home: Path, *, _catalog: list | None = None) -> list:
@@ -80,8 +80,8 @@ def pending_entries(home: Path, *, _catalog: list | None = None) -> list:
     An entry whose required env a platform plugin *home* already has also requires is not pending: those
     credentials are served (``hermes-tag`` overrides Feishu with the same ``FEISHU_*``), so naming it would
     tell a working Feishu user on every start that a plugin they do not need is missing. A platform that
-    left core serves its credentials too while its plugin is not there yet: the left-core migration
-    installs it and reports that outcome."""
+    left core claims its credentials too, while its plugin is not there yet or *home* disables it
+    (:func:`_left_core_env`)."""
     from hermes_cli.default_plugins import _installed_dir, _recorded, fetch_allowed
     from hermes_cli.left_core_migration import LEFT_CORE, _plugins_listed
     from hermes_cli.plugin_identity import plugin_identity
@@ -92,7 +92,7 @@ def pending_entries(home: Path, *, _catalog: list | None = None) -> list:
                   if entry.category == "platform" and entry.name not in owned and entry.name not in done
                   and _configured(entry, home) and _installed_dir(home, entry) is None
                   and not _plugins_listed(home, plugin_identity(entry.name))[1]]
-    served = _served_env(home) | _left_core_env(home) if candidates else set()
+    served = _served_env(home) | _left_core_env() if candidates else set()
     return [entry for entry in candidates if not set(entry.capabilities.requires_env) <= served]
 
 

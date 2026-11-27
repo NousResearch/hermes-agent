@@ -118,10 +118,13 @@ _ROUTES = {"routed": [{"chat_id": "chat-1"}, {"chat_id": "oc_chat", "thread_id":
 _CORPUS = [(shape, origin, routes, loaded, primary_parser, False)
            for shape in _SHAPES for origin in _ORIGINS for routes in _ROUTES
            for loaded in (False, True) for primary_parser in (False, True)] + [
-           (shape, origin, routes, False, False, True) for shape in _SHAPES for origin in _ORIGINS for routes in _ROUTES]
+           (shape, origin, routes, False, False, True) for shape in _SHAPES for origin in _ORIGINS for routes in _ROUTES] + [
+           # ``home``: the satellite's own ``<PLATFORM>_HOME_CHANNEL``, read for a bare platform destination.
+           (shape, origin, routes, loaded, False, False, home) for shape in ("{p}", "origin", "all")
+           for origin in _ORIGINS for routes in _ROUTES for loaded in (False, True) for home in ("chat-1", "chat-2")]
 
 
-def _run_case(root, feature, shape, origin, routes, loaded, primary_parser, own_bot=False):
+def _run_case(root, feature, shape, origin, routes, loaded, primary_parser, own_bot=False, home_chat=None):
     """``(preflight error, delivery error, [(chat, thread)] the primary's bot sent, origin read as absent)`` for
     one corpus case: a credentialless ``fitness`` profile the primary's bot serves through ``profile_routes``."""
     import asyncio
@@ -168,11 +171,14 @@ def _run_case(root, feature, shape, origin, routes, loaded, primary_parser, own_
     primary_adapters = {Platform(feature.platform): primary}
     reset_hermes_home_override(token)
     token = set_hermes_home_override(str(home))
+    home_env = {f"{feature.platform.upper()}_HOME_CHANNEL": home_chat} if home_chat else {}
     try:
-        with patch("gateway.config.load_gateway_config", return_value=_config("telegram" if own_bot else None)):
+        with patch.dict("os.environ", home_env), \
+             patch("gateway.config.load_gateway_config", return_value=_config("telegram" if own_bot else None)):
             preflight, unresolved = _preflight_check_delivery(job), _origin_unresolved(job)
         with patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
              patch("gateway.config.load_gateway_config", return_value=_config("telegram" if own_bot else None)), \
+             patch.dict("os.environ", home_env), \
              patch("asyncio.run_coroutine_threadsafe", side_effect=run_now):
             delivered = _deliver_result(job, "the report", adapters={Platform.TELEGRAM: MagicMock()} if own_bot else (
                 shared_route_adapters_for_current_home(primary_adapters)), loop=loop)
@@ -204,7 +210,9 @@ def test_preflight_is_a_dry_run_of_delivery_for_a_moved_platform(tmp_path, monke
         # and a run with preflight off must not file an origin delivery names the install as "no origin".
         if (verdict == "install") != (outcome == "install") or (outcome == "reached" and verdict != "pass") or (
                 not case[3] and verdict == "pass" and outcome != "reached" and feature.platform in (delivered or "")
-        ) or (outcome == "install" and unresolved):
+        ) or (outcome == "install" and unresolved) or (
+                # A bare destination's home address is a parsed chat like any other: an exact route serves it.
+                case[0] == "{p}" and len(case) > 6 and {"chat_id": case[6]} in _ROUTES[case[2]] and outcome != "reached"):
             counterexamples.append((case, preflight, delivered, sent))
     assert counterexamples == []
     # The corpus exercises both verdicts on the unloaded side, and the loaded side never names the install.
@@ -221,3 +229,13 @@ def test_satellite_topic_rides_the_primarys_bot_without_the_plugin(tmp_path, mon
     preflight, delivered, sent, _unresolved = _run_case(
         tmp_path, feature, "{p}:oc_chat:omt_topic", None, "routed", False, primary_parser)
     assert (preflight, delivered, sent) == (None, None, [("oc_chat", "omt_topic")])
+
+
+@pytest.mark.parametrize("feature", _MOVED, ids=[f.platform for f in _MOVED])
+def test_satellite_home_channel_rides_the_primarys_bot_without_the_plugin(tmp_path, monkeypatch, feature):
+    """Bare ``deliver: <platform>`` on a satellite without the plugin reads its own home address and sends it
+    through the primary's bot where an exact route serves that chat, as an explicit ``<platform>:<chat>`` does."""
+    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: tmp_path)
+    preflight, delivered, sent, _unresolved = _run_case(
+        tmp_path, feature, "{p}", None, "routed", False, False, home_chat="chat-1")
+    assert (preflight, delivered, sent) == (None, None, [("chat-1", None)])

@@ -426,7 +426,7 @@ def _plugin_cron_env_var(platform_name: str) -> str:
 def _is_known_delivery_platform(platform_name: str) -> bool:
     """Valid cron delivery platform: built-in, or plugin with a ``cron_deliver_env_var``."""
     name = platform_name.lower()
-    return name in _KNOWN_DELIVERY_PLATFORMS or bool(_plugin_cron_env_var(name))
+    return name in _KNOWN_DELIVERY_PLATFORMS or bool(_resolve_home_env_var(name))
 
 
 def moved_platform_hint(platform_name: str) -> str:
@@ -439,14 +439,21 @@ def moved_platform_hint(platform_name: str) -> str:
     return "" if platform_registry.get(name) else platform_install_hint(name)
 
 
-def _moved_platform_ref(platform_key: str, ref: str) -> tuple[str, Optional[str]]:
-    """``(chat_id, thread_id)`` of a moved platform's ref when its plugin is not loaded here: the
-    primary's already-loaded plugin parser when it reads the ref, else core's generic
-    ``chat[:thread]`` split. Only an exact route match on the result sends anything."""
+def _primary_registration(platform_key: str):
+    """The primary's loaded ``PlatformEntry`` for *platform_key* (``None`` when it has none): what a
+    satellite without the plugin reads a moved platform's ref syntax and home env var name from."""
     from gateway.platform_registry import platform_registry
     from hermes_constants import get_default_hermes_root, hermes_home_key
     entry, _loader = platform_registry.snapshot_registration(
         platform_key, scope=hermes_home_key(get_default_hermes_root()))
+    return entry
+
+
+def _moved_platform_ref(platform_key: str, ref: str) -> tuple[str, Optional[str]]:
+    """``(chat_id, thread_id)`` of a moved platform's ref when its plugin is not loaded here: the
+    primary's already-loaded plugin parser when it reads the ref, else core's generic
+    ``chat[:thread]`` split. Only an exact route match on the result sends anything."""
+    entry = _primary_registration(platform_key)
     parse = entry.parse_target_ref_fn if entry is not None else None
     parsed = None
     if parse is not None:
@@ -474,8 +481,15 @@ def resolve_cron_destination(
 
 
 def _resolve_home_env_var(platform_name: str) -> str:
-    """Env var name for a platform's cron home channel (``PlatformEntry.cron_deliver_env_var``)."""
-    return _plugin_cron_env_var(platform_name.lower())
+    """Env var name for a platform's cron home channel (``PlatformEntry.cron_deliver_env_var``). A moved
+    platform whose plugin is not loaded here takes the name from the primary's registration, so its home
+    address resolves like an explicit chat and ``resolve_cron_destination`` sends it only where a route serves it."""
+    name = platform_name.lower()
+    env_var = _plugin_cron_env_var(name)
+    if env_var or not moved_platform_hint(name):
+        return env_var
+    entry = _primary_registration(name)
+    return (entry.cron_deliver_env_var or "") if entry is not None else ""
 
 
 def _get_config_home_channel(platform_name: str):

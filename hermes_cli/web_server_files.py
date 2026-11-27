@@ -437,6 +437,10 @@ def _resolve_managed_path(
     policy = _managed_files_policy(request, create_root=create_root)
     text = _path_text(raw_path)
     root = policy.locked_root
+    if root is not None and text:
+        aliased = _translate_hosted_fs_alias(Path(text), root)
+        if aliased != Path(text):
+            text = os.fspath(aliased)
 
     if for_agent_read and text and not text.startswith("file:") and (
             os.name == "nt" or not os.access(text, os.R_OK)):
@@ -480,10 +484,70 @@ def _managed_response_meta(policy: ManagedFilesPolicy) -> dict[str, Any]:
     return {"root": locked_root, "locked_root": locked_root, "can_change_path": policy.can_change_path}
 
 
+# Container name for the bind-mounted workspace. Local backends keep this name
+# even when it is the same directory as a child of the locked files root.
+_HOSTED_FS_ALIAS_PREFIXES = ("/workspace",)
+
+
+def _is_real_dir(path: Path) -> bool:
+    try:
+        return not path.is_symlink() and path.is_dir()
+    except OSError:
+        return False
+
+
+def _same_real_dir(left: Path, right: Path) -> bool:
+    """True when both are real directories and the same inode (a bind mount)."""
+    try:
+        if not _is_real_dir(left) or not _is_real_dir(right):
+            return False
+        return left.samefile(right)
+    except OSError:
+        return False
+
+
+def _alias_dir_under_root(prefix: Path, root: Path) -> Path | None:
+    """A real directory under *root* that is the same inode as *prefix*, or None."""
+    if not _is_real_dir(prefix):
+        return None
+    if _same_real_dir(prefix, root):
+        return root
+    try:
+        children = list(root.iterdir())
+    except OSError:
+        return None
+    for child in children:
+        if _same_real_dir(prefix, child):
+            return child
+    return None
+
+
+def _translate_hosted_fs_alias(target: Path, root: Path | None) -> Path:
+    """Rewrite a bind-mounted ``/workspace`` path onto the same directory under *root*.
+
+    ``resolve()`` keeps the container name, so a file that is already inside the
+    locked root 403s. A symlink is not an alias (``resolve()`` follows those).
+    ``..`` is left untouched so the caller's boundary check sees the escaped path.
+    """
+    if root is None or ".." in target.parts:
+        return target
+    for raw in _HOSTED_FS_ALIAS_PREFIXES:
+        prefix = Path(raw)
+        try:
+            relative = target.relative_to(prefix)
+        except ValueError:
+            continue
+        alias = _alias_dir_under_root(prefix, root)
+        if alias is None:
+            continue
+        return alias / relative
+    return target
+
+
 def _hosted_fs_path_allowed(root: Path, target: Path) -> bool:
     from hermes_cli.web_routers.files import _is_local_sensitive_path, _is_sensitive_path
 
-    resolved = _canonical_path(target)
+    resolved = _canonical_path(_translate_hosted_fs_alias(target, root))
     return (_path_is_under(root, resolved)
             and not _is_sensitive_path(target) and not _is_local_sensitive_path(resolved))
 

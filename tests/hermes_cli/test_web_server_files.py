@@ -508,6 +508,68 @@ def test_managed_reads_reject_docker_mount_outside_locked_root(
         assert response.status_code == 403, response.text
 
 
+def test_local_backend_read_guard_accepts_workspace_bind_alias(monkeypatch, tmp_path):
+    """#160672: local backend, ``/workspace`` is another name for a directory inside the locked root.
+
+    ``resolve()`` keeps the mount name, so preview and download 403 even when ``samefile()``
+    says that directory is under the managed root. A path that is not that alias stays refused.
+    """
+    from fastapi import HTTPException
+
+    root = tmp_path / "opt-data"
+    box = root / "box-workspace"
+    box.mkdir(parents=True)
+    report = box / "report.html"
+    report.write_text("report", encoding="utf-8")
+    outside = tmp_path / "etc"
+    outside.mkdir()
+    (outside / "passwd").write_text("no", encoding="utf-8")
+
+    monkeypatch.setenv("HERMES_DASHBOARD_FILES_ROOT", str(root))
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.delenv("TERMINAL_DOCKER_VOLUMES", raising=False)
+
+    workspace = Path("/workspace")
+    real_is_dir = Path.is_dir
+    real_is_symlink = Path.is_symlink
+    real_samefile = Path.samefile
+
+    def is_dir(self, *args, **kwargs):
+        if self == workspace:
+            return True
+        return real_is_dir(self, *args, **kwargs)
+
+    def is_symlink(self):
+        if self == workspace:
+            return False
+        return real_is_symlink(self)
+
+    def samefile(self, other):
+        if {Path(self), Path(other)} == {workspace, box}:
+            return True
+        return real_samefile(self, other)
+
+    monkeypatch.setattr(Path, "is_dir", is_dir)
+    monkeypatch.setattr(Path, "is_symlink", is_symlink)
+    monkeypatch.setattr(Path, "samefile", samefile)
+
+    try:
+        guarded = web_server_files._hosted_fs_read_guard(workspace / "report.html")
+    except HTTPException as exc:
+        pytest.fail(f"bind-mounted /workspace was refused: {exc.status_code} {exc.detail}")
+    assert guarded == root.resolve()
+
+    with pytest.raises(HTTPException) as refused:
+        web_server_files._hosted_fs_read_guard(outside / "passwd")
+    assert refused.value.status_code == 403
+    assert refused.value.detail == "Path is outside the managed read boundary"
+
+    _policy, resolved, _display = web_server_files._resolve_managed_path(
+        "/workspace/report.html", None,
+    )
+    assert resolved == report.resolve()
+
+
 _PNG = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\0" * 16).decode()
 
 

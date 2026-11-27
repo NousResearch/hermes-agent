@@ -63,7 +63,10 @@ def probe_with_rollback(
             no_token.failure_class = "auth_required"  # type: ignore[attr-defined]
             raise no_token
     except Exception as exc:
-        if not details.get("initialized"):
+        # Initialize succeeding is not authorization: a probe that raised before writing any
+        # token file destroyed the previous grant and replaced it with nothing, so the attempt
+        # failed — restore the snapshot and surface the error instead of committing tokenless.
+        if not (details.get("initialized") and _oauth_tokens_present(server_name)):
             undo()
             raise
         tools, discovery_error = [], exception_message(exc)

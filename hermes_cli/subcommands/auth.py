@@ -48,6 +48,13 @@ def build_auth_parser(subparsers, *, cmd_auth: Callable) -> None:
     auth_reset.add_argument(
         "target", nargs="?",
         help="Optional credential index, entry id, or exact label; clears every credential when omitted")
+    auth_reset_scope = auth_reset.add_mutually_exclusive_group()
+    auth_reset_scope.add_argument(
+        "--all-profiles", action="store_true",
+        help="Clear matching credential status in the default and every named profile")
+    auth_reset_scope.add_argument(
+        "--current-profile-only", action="store_true",
+        help="Only clear the active profile's local auth store")
     auth_priority = auth_subparsers.add_parser(
         "priority", help="Move a pooled credential to a priority (0 = tried first under fill_first)")
     auth_priority.add_argument("provider", help="Provider id")

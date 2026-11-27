@@ -6,9 +6,8 @@ description: 'Google Meet for Hermes: the agent joins a meet.google.com call you
   scrapes live captions into a transcript (meet_status, meet_transcript), can speak in the call in
   realtime mode (meet_say), leaves (meet_leave), and can run a transcribe-only bot on another machine
   through a remote node; `hermes meet setup|install|auth|join|node`. Explicit by design: it only joins
-  URLs passed in, with no calendar scanning or auto-dial. Known limitation: Hermes runs on_session_end
-  after every agent turn and the plugin then stops the bot, so a meeting joined with meet_join is left
-  when that turn ends (hermes-official-plugins#518). Formerly built into Hermes core; existing users
+  URLs passed in, with no calendar scanning or auto-dial. Known limitation: a bot joined with meet_join
+  leaves when that agent turn ends (hermes-official-plugins#518). Formerly built into Hermes core; existing users
   are migrated automatically. Disclosure: Python dependencies playwright and websockets; `hermes meet
   install` downloads Chromium through Hermes and, with --realtime, asks before running apt-get or brew
   for audio tools. The bot opens the Meet URL in headless Chromium, so Google Meet receives the guest
@@ -31,6 +30,8 @@ docs_url: https://github.com/NousResearch/hermes-official-plugins/tree/main/goog
 platforms:
   - linux
   - macos
+known_issues:
+  - "An agent meet_join bot is stopped when the turn that joined ends (NousResearch/hermes-official-plugins#518); remote nodes run transcribe mode only"
 capabilities:
   provides_tools:
     - meet_join

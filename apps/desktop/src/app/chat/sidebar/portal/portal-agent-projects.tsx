@@ -1,21 +1,24 @@
 import { useStore } from '@nanostores/react'
 import { type ReactNode, useState } from 'react'
 
+import { requestComposerFocus } from '@/app/chat/composer/focus'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { Tip } from '@/components/ui/tooltip'
 import type { SessionInfo } from '@/hermes'
-import { ChevronRight, MoreVertical, Pencil, Trash2 } from '@/lib/icons'
+import { ChevronRight, MoreVertical, Pencil, Plus, Trash2 } from '@/lib/icons'
 import type { AgentSidebarOwner } from '@/store/agent-sidebar-preferences'
 import { notify } from '@/store/notifications'
 import {
   $portalProjectExpanded,
+  armPortalProjectNewChat,
   deletePortalProject,
   PORTAL_PROJECT_NAME_MAX,
   type PortalProject,
@@ -23,7 +26,12 @@ import {
   setPortalProjectExpanded
 } from '@/store/portal-projects'
 
+import { startSimplifiedAgentSession } from '../simplified-new-session-model'
+import type { SimplifiedAgent } from '../use-simplified-agents'
+
 interface ProjectRowProps {
+  agent: SimplifiedAgent
+  allAgentSessionIds: readonly string[]
   owner: AgentSidebarOwner
   project: PortalProject
   sessions: SessionInfo[]
@@ -31,7 +39,15 @@ interface ProjectRowProps {
   renderChats: (sessions: SessionInfo[]) => ReactNode
 }
 
-function PortalProjectRow({ open, owner, project, renderChats, sessions }: ProjectRowProps) {
+function PortalProjectRow({
+  agent,
+  allAgentSessionIds,
+  open,
+  owner,
+  project,
+  renderChats,
+  sessions
+}: ProjectRowProps) {
   const [truncated, setTruncated] = useState(false)
   const [renaming, setRenaming] = useState(false)
   const [draft, setDraft] = useState(project.name)
@@ -40,6 +56,12 @@ function PortalProjectRow({ open, owner, project, renderChats, sessions }: Proje
     if (node) {
       setTruncated(node.scrollWidth > node.clientWidth + 1)
     }
+  }
+
+  const startChatInProject = () => {
+    armPortalProjectNewChat(owner, project.id, allAgentSessionIds)
+    startSimplifiedAgentSession(agent)
+    requestComposerFocus()
   }
 
   const commitRename = () => {
@@ -53,10 +75,7 @@ function PortalProjectRow({ open, owner, project, renderChats, sessions }: Proje
   }
 
   const labelSpan = (
-    <span
-      className="portal-project-name"
-      onMouseEnter={event => checkTruncation(event.currentTarget)}
-    >
+    <span className="portal-project-name" onMouseEnter={event => checkTruncation(event.currentTarget)}>
       {project.name}
     </span>
   )
@@ -73,6 +92,7 @@ function PortalProjectRow({ open, owner, project, renderChats, sessions }: Proje
               className="portal-project-rename-input"
               maxLength={PORTAL_PROJECT_NAME_MAX}
               onBlur={commitRename}
+              onChange={event => setDraft(event.target.value)}
               onKeyDown={event => {
                 if (event.key === 'Enter') {
                   event.preventDefault()
@@ -110,50 +130,84 @@ function PortalProjectRow({ open, owner, project, renderChats, sessions }: Proje
         )}
 
         {!renaming && (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
+          <div className="portal-project-actions">
+            <Tip label={`New chat in ${project.name}`}>
               <Button
-                aria-label={`Project actions: ${project.name}`}
-                className="portal-row-action portal-project-action"
-                onClick={event => event.stopPropagation()}
+                aria-label={`New chat in ${project.name}`}
+                className="portal-project-action-btn"
+                onClick={event => {
+                  event.stopPropagation()
+                  startChatInProject()
+                }}
                 size="icon-xs"
                 variant="ghost"
               >
-                <MoreVertical aria-hidden />
+                <Plus aria-hidden />
               </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem
-                onSelect={() => {
-                  setDraft(project.name)
-                  setRenaming(true)
-                }}
-              >
-                <Pencil aria-hidden className="size-3.5" />
-                Rename
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                className="text-destructive focus:text-destructive"
-                onSelect={() => {
-                  deletePortalProject(owner, project.id)
-                  notify({ durationMs: 3_000, kind: 'info', message: `${project.name} deleted.` })
-                }}
-                variant="destructive"
-              >
-                <Trash2 aria-hidden className="size-3.5" />
-                Delete project
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+            </Tip>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  aria-label={`Project actions: ${project.name}`}
+                  className="portal-project-action-btn"
+                  onClick={event => event.stopPropagation()}
+                  size="icon-xs"
+                  variant="ghost"
+                >
+                  <MoreVertical aria-hidden />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onSelect={startChatInProject}>
+                  <Plus aria-hidden className="size-3.5" />
+                  New chat
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onSelect={() => {
+                    setDraft(project.name)
+                    setRenaming(true)
+                  }}
+                >
+                  <Pencil aria-hidden className="size-3.5" />
+                  Rename
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  className="text-destructive focus:text-destructive"
+                  onSelect={() => {
+                    deletePortalProject(owner, project.id)
+                    notify({ durationMs: 3_000, kind: 'info', message: `${project.name} deleted.` })
+                  }}
+                  variant="destructive"
+                >
+                  <Trash2 aria-hidden className="size-3.5" />
+                  Delete project
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
         )}
       </div>
 
-      {open && sessions.length > 0 && <div className="portal-project-chats">{renderChats(sessions)}</div>}
+      {open && (
+        <div className="portal-project-chats">
+          {sessions.length > 0 ? (
+            renderChats(sessions)
+          ) : (
+            <button className="portal-project-empty-new" onClick={startChatInProject} type="button">
+              <Plus aria-hidden className="size-3.5" />
+              <span>New chat</span>
+            </button>
+          )}
+        </div>
+      )}
     </div>
   )
 }
 
 export interface PortalAgentProjectsProps {
+  agent: SimplifiedAgent
+  allAgentSessionIds: readonly string[]
   owner: AgentSidebarOwner
   projects: readonly PortalProject[]
   sessionsByProject: ReadonlyMap<string, SessionInfo[]>
@@ -163,6 +217,8 @@ export interface PortalAgentProjectsProps {
 
 /** Projects nested inside an expanded agent block, above its loose chats (Figma 1701:9935). */
 export function PortalAgentProjects({
+  agent,
+  allAgentSessionIds,
   owner,
   projects,
   renderChats,
@@ -188,6 +244,8 @@ export function PortalAgentProjects({
 
         return (
           <PortalProjectRow
+            agent={agent}
+            allAgentSessionIds={allAgentSessionIds}
             key={project.id}
             open={open}
             owner={owner}

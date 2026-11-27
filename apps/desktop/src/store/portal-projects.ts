@@ -102,6 +102,48 @@ export const $portalProjectExpanded = persistentAtom<Record<string, boolean>>(
 /** Modal state for "Create a new project" (Flow A from chat menu, Flow B from agent menu). */
 export const $portalCreateProjectDialog = atom<PortalCreateProjectRequest | null>(null)
 
+export interface PendingPortalProjectNewChat {
+  owner: AgentSidebarOwner
+  projectId: string
+  baselineIds: ReadonlySet<string>
+}
+
+/** Armed when the user starts a new chat from inside a project; files the first newly created
+ *  session for that agent into the project automatically. */
+export const $pendingPortalProjectForNewChat = atom<PendingPortalProjectNewChat | null>(null)
+
+export function armPortalProjectNewChat(
+  owner: AgentSidebarOwner,
+  projectId: string,
+  existingSessionIds: Iterable<string>
+): void {
+  setPortalProjectExpanded(projectId, true)
+  $pendingPortalProjectForNewChat.set({
+    baselineIds: new Set(existingSessionIds),
+    owner,
+    projectId
+  })
+}
+
+export function clearPendingPortalProjectNewChat(): void {
+  if ($pendingPortalProjectForNewChat.get() !== null) {
+    $pendingPortalProjectForNewChat.set(null)
+  }
+}
+
+export function claimPendingPortalProjectSession(owner: AgentSidebarOwner, sessionId: string): boolean {
+  const pending = $pendingPortalProjectForNewChat.get()
+
+  if (!pending || agentSidebarKey(pending.owner) !== agentSidebarKey(owner) || pending.baselineIds.has(sessionId)) {
+    return false
+  }
+
+  moveSessionToPortalProject(pending.owner, sessionId, pending.projectId)
+  $pendingPortalProjectForNewChat.set(null)
+
+  return true
+}
+
 export function openPortalCreateProjectDialog(request: PortalCreateProjectRequest): void {
   $portalCreateProjectDialog.set(request)
 }

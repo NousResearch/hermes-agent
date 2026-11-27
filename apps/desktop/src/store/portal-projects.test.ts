@@ -3,9 +3,12 @@ import { beforeEach, describe, expect, it } from 'vitest'
 
 import { agentSidebarKey } from '@/store/agent-sidebar-preferences'
 import {
+  $pendingPortalProjectForNewChat,
   $portalAgentProjects,
   $portalProjectExpanded,
   agentPortalProjectsFor,
+  armPortalProjectNewChat,
+  claimPendingPortalProjectSession,
   createPortalProject,
   deletePortalProject,
   moveSessionToPortalProject,
@@ -68,5 +71,18 @@ describe('portal-projects store', () => {
     rekeyPortalAgentProjects(fromKey, agentSidebarKey(toOwner))
     expect(agentPortalProjectsFor($portalAgentProjects.get(), owner).projects).toHaveLength(0)
     expect(agentPortalProjectsFor($portalAgentProjects.get(), toOwner).projects[0].name).toBe('Launch v2')
+  })
+
+  it('arms and automatically files a newly created session into the chosen project without stealing baseline chats', () => {
+    const p1 = createPortalProject(owner, 'Q4 planning')!.project
+    armPortalProjectNewChat(owner, p1.id, ['existing-1'])
+    expect($portalProjectExpanded.get()[p1.id]).toBe(true)
+
+    expect(claimPendingPortalProjectSession(owner, 'existing-1')).toBe(false)
+    expect(claimPendingPortalProjectSession({ connectionId: null, profile: 'other' }, 'new-1')).toBe(false)
+
+    expect(claimPendingPortalProjectSession(owner, 'new-1')).toBe(true)
+    expect($pendingPortalProjectForNewChat.get()).toBeNull()
+    expect(agentPortalProjectsFor($portalAgentProjects.get(), owner).sessionProject['new-1']).toBe(p1.id)
   })
 })

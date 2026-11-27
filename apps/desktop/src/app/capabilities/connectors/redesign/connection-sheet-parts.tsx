@@ -1199,7 +1199,7 @@ export function DisconnectModal({
       <div
         aria-label={copy.disconnect.title(appName)}
         aria-modal="true"
-        className="conn-disconnect-modal relative flex h-full w-[25rem] max-w-full flex-col border-r-[3px] border-r-(--portal-surface-brand) bg-(--portal-surface-elevated) p-6 shadow-2xl"
+        className="conn-disconnect-modal relative flex h-full w-[25rem] max-w-full flex-col bg-(--portal-surface-elevated) p-6 shadow-2xl"
         role="alertdialog"
       >
         <h2 className="[font-family:var(--portal-font-display)] text-[length:var(--portal-type-display-lg-size)] leading-tight font-light tracking-[var(--portal-tracking-display)] text-(--portal-text-primary)">

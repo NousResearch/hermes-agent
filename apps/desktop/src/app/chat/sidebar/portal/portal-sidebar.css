@@ -1696,18 +1696,56 @@ button.portal-section-title:hover {
   opacity: 0;
 }
 
-.portal-project-action {
+.portal-project-actions {
   position: absolute;
   inset-inline-end: 0.375rem;
+  display: flex;
+  align-items: center;
+  gap: 0.125rem;
   opacity: 0;
 }
 
-.portal-project-item:is(:hover, :focus-within, :has([data-state='open'])) .portal-project-action {
+.portal-project-action-btn {
+  color: var(--portal-text-secondary);
+}
+
+.portal-project-action-btn:hover {
+  color: var(--portal-text-primary);
+}
+
+.portal-project-item:is(:hover, :focus-within, :has([data-state='open'])) .portal-project-actions {
   opacity: 1;
 }
 
 .portal-project-chats {
   padding-inline-start: 0.75rem;
+}
+
+.portal-project-empty-new {
+  display: flex;
+  width: 100%;
+  min-height: var(--portal-sidebar-chat-row);
+  align-items: center;
+  gap: 0.5rem;
+  padding-inline: var(--portal-sidebar-chat-start) var(--portal-sidebar-chat-end);
+  border: 0;
+  border-radius: var(--portal-sidebar-row-radius);
+  background: transparent;
+  color: var(--portal-sidebar-meta);
+  cursor: pointer;
+  font-family: var(--portal-font-body);
+  font-size: var(--portal-type-meta-size);
+  text-align: start;
+}
+
+.portal-project-empty-new:hover {
+  background: var(--portal-sidebar-hover);
+  color: var(--portal-text-primary);
+}
+
+.portal-project-empty-new:focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-inset);
 }
 
 .portal-project-rename-input {
@@ -1729,33 +1767,10 @@ button.portal-section-title:hover {
   font-size: var(--portal-type-meta-size);
 }
 
-:root[data-shell='portal'] .portal-create-project-dialog {
-  padding: 2rem;
-  border-inline-end: 3px solid var(--portal-brand-fill);
-}
-
 :root[data-shell='portal'] .portal-create-project-form {
   display: flex;
   flex-direction: column;
-  gap: 1.5rem;
-}
-
-:root[data-shell='portal'] .portal-create-project-header {
-  gap: 0.75rem;
-}
-
-:root[data-shell='portal'] .portal-create-project-title {
-  font-family: var(--portal-font-display);
-  font-size: var(--portal-type-display-lg-size);
-  font-weight: 300;
-  letter-spacing: var(--portal-tracking-display);
-  line-height: 1.1;
-}
-
-:root[data-shell='portal'] .portal-create-project-body {
-  color: var(--portal-text-secondary);
-  font-family: var(--portal-font-body);
-  font-size: var(--portal-type-body-size);
+  gap: 1.25rem;
 }
 
 :root[data-shell='portal'] .portal-create-project-field {
@@ -1773,8 +1788,9 @@ button.portal-section-title:hover {
 
 :root[data-shell='portal'] .portal-create-project-label {
   color: var(--portal-text-primary);
-  font-family: var(--portal-font-mono);
-  font-size: var(--portal-type-meta-size);
+  font-family: var(--portal-font-body);
+  font-size: var(--portal-type-ui-size);
+  font-weight: 500;
 }
 
 :root[data-shell='portal'] .portal-create-project-counter {
@@ -1792,8 +1808,4 @@ button.portal-section-title:hover {
 
 :root[data-shell='portal'] .portal-create-project-input.is-error {
   border-color: var(--portal-status-error-ink);
-}
-
-:root[data-shell='portal'] .portal-create-project-footer {
-  gap: 0.75rem;
 }

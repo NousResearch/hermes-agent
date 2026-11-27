@@ -223,7 +223,7 @@
   gap: 1rem;
   overflow-y: auto;
   padding: 1.5rem;
-  border-inline-end: 3px solid var(--portal-surface-brand);
+  border-inline-start: 1px solid var(--portal-stroke-floating);
   background: var(--portal-surface-elevated);
   box-shadow: var(--portal-shadow-floating);
   color: var(--portal-text-primary);

@@ -81,12 +81,12 @@ export function PortalCreateProjectDialog() {
       }}
       open={request !== null}
     >
-      <DialogContent className="portal-create-project-dialog sm:max-w-[25.375rem]" data-slot="portal-create-project-dialog">
+      <DialogContent className="sm:max-w-md" data-slot="portal-create-project-dialog">
         {request ? (
           <form className="portal-create-project-form" noValidate onSubmit={handleSubmit}>
-            <DialogHeader className="portal-create-project-header">
-              <DialogTitle className="portal-create-project-title">Create a new project</DialogTitle>
-              <DialogDescription className="portal-create-project-body">
+            <DialogHeader>
+              <DialogTitle>Create a new project</DialogTitle>
+              <DialogDescription>
                 {request.session
                   ? `Create a project for ${request.agentLabel} and move ${request.session.title}.`
                   : `Create a project for ${request.agentLabel}.`}
@@ -111,7 +111,7 @@ export function PortalCreateProjectDialog() {
                 aria-invalid={tooLong || undefined}
                 autoComplete="off"
                 autoFocus
-                className={cn('portal-create-project-input', tooLong && 'is-error')}
+                className={cn(tooLong && 'portal-create-project-input is-error')}
                 id={inputId}
                 onChange={event => setName(event.target.value)}
                 placeholder="Launch prep"
@@ -125,13 +125,11 @@ export function PortalCreateProjectDialog() {
               ) : null}
             </div>
 
-            <DialogFooter className="portal-create-project-footer">
-              <Button onClick={closePortalCreateProjectDialog} type="button" variant="ghost">
+            <DialogFooter>
+              <Button onClick={closePortalCreateProjectDialog} type="button" variant="outline">
                 Cancel
               </Button>
-              <Button className="portal-create-project-submit" type="submit">
-                {request.session ? 'Create and move' : 'Create project'}
-              </Button>
+              <Button type="submit">{request.session ? 'Create and move' : 'Create project'}</Button>
             </DialogFooter>
           </form>
         ) : null}

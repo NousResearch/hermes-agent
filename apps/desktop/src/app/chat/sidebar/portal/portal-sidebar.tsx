@@ -15,10 +15,16 @@ import {
 } from '@/store/agent-sidebar-preferences'
 import { $activeConnectionId } from '@/store/connections'
 import { setPinnedSessionOrder } from '@/store/layout'
-import { $portalAgentProjects, agentPortalProjectsFor } from '@/store/portal-projects'
+import {
+  $pendingPortalProjectForNewChat,
+  $portalAgentProjects,
+  agentPortalProjectsFor,
+  claimPendingPortalProjectSession,
+  clearPendingPortalProjectNewChat
+} from '@/store/portal-projects'
 import { $activeGatewayProfile, $newChatProfile } from '@/store/profile'
 import { $projectTree, refreshProjectTree } from '@/store/projects'
-import { $gatewayState, sessionPinId } from '@/store/session'
+import { $gatewayState, $selectedStoredSessionId, sessionPinId } from '@/store/session'
 
 import type { ChatSidebar } from '../index'
 import { SidebarLoadMoreRow } from '../load-more-row'
@@ -187,8 +193,46 @@ export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
   const chatOrder = useStore($portalAgentChatOrder)
   const showAll = useStore($portalAgentShowAll)
   const allProjects = useStore($portalAgentProjects)
+  const pendingProjectNewChat = useStore($pendingPortalProjectForNewChat)
+  const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const activeConnection = useStore($activeConnectionId)
   const activeProfile = useStore($activeGatewayProfile)
+
+  // When a user clicked "+" / "New chat" inside a project, file the first newly created session
+  // for that agent directly into that project; clear if they switch to an existing baseline chat.
+  useEffect(() => {
+    if (!pendingProjectNewChat) {
+      return
+    }
+
+    if (selectedStoredSessionId) {
+      if (pendingProjectNewChat.baselineIds.has(selectedStoredSessionId)) {
+        clearPendingPortalProjectNewChat()
+
+        return
+      }
+
+      if (claimPendingPortalProjectSession(pendingProjectNewChat.owner, selectedStoredSessionId)) {
+        return
+      }
+    }
+
+    const ownerKey = agentSidebarKey(pendingProjectNewChat.owner)
+
+    for (const agent of agents.agents) {
+      if (agentSidebarKey(agentOwner(agent)) !== ownerKey) {
+        continue
+      }
+
+      const list = agents.sessionsByAgent.get(agentKey(agent)) ?? []
+      const fresh = list.find(row => row.id && !pendingProjectNewChat.baselineIds.has(row.id))
+
+      if (fresh) {
+        claimPendingPortalProjectSession(pendingProjectNewChat.owner, fresh.id)
+        break
+      }
+    }
+  }, [agents, pendingProjectNewChat, selectedStoredSessionId])
   useEffect(() => {
     const el = sectionsRef.current
 
@@ -316,6 +360,8 @@ export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
               return (
                 <div className="portal-agent-sessions">
                   <PortalAgentProjects
+                    agent={agent}
+                    allAgentSessionIds={ordered.map(row => row.id)}
                     owner={owner}
                     projects={agentProjects.projects}
                     renderChats={projectChats => (

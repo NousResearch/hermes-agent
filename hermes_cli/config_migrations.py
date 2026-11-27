@@ -814,9 +814,10 @@ def _migrate_to_54(results: dict[str, Any], quiet: bool) -> None:
 
 
 def _migrate_to_55(results: dict[str, Any], quiet: bool) -> None:
-    # 54 → 55: DingTalk left core for the dingtalk Hermes Labs plugin. A home that ran it is recorded from its
-    # pre-v55 files, so its left-core row installs the plugin once; a home from v55 on that adds DingTalk
-    # credentials is told the install command instead (Labs code is installed only when asked).
+    # 54 → 55: the Hermes Labs platforms leaving core in this release (every LEFT_CORE row with left_at=55).
+    # A home that ran one is recorded from its pre-v55 files, so its left-core row installs the plugin once; a
+    # home from v55 on that sets one up is told the install command instead (Labs code is installed only when
+    # asked). One step for all of them: each further Labs platform move adds its row here, not a new step.
     from pathlib import Path
 
     from hermes_cli.left_core_migration import record_core_use
@@ -1002,7 +1003,7 @@ MIGRATIONS: tuple[tuple[int, Callable[[dict[str, Any], bool], None]], ...] = (
         message="  ✓ Lowered agent.clarify_timeout from 3600 to 90 seconds (unanswered questions no longer hold the chat for an hour)")),
     # 53 → 54: prompt_caching.cache_ttl defaults to "auto" (see _migrate_to_54).
     (54, _migrate_to_54),
-    # 54 → 55: record a home's core-era DingTalk use (see _migrate_to_55).
+    # 54 → 55: record a home's core-era use of the Labs platforms leaving core (see _migrate_to_55).
     (55, _migrate_to_55),
 )
 

@@ -25,5 +25,7 @@ Every name stays the same: the `DINGTALK_*` environment variables (`DINGTALK_CLI
 :::info Upgrading from a release that bundled DingTalk
 Nothing to do. Every profile that was already using DingTalk (`DINGTALK_CLIENT_ID` plus `DINGTALK_CLIENT_SECRET` in its `.env`, or `platforms.dingtalk` enabled in `config.yaml`) gets the plugin installed automatically from the catalog by `hermes update`, or the first time the profile starts (agent or gateway start; this honours `security.allow_lazy_installs`). A failed attempt is retried with a backoff; `hermes update` always retries. This happens once per profile: if you later remove the plugin (`hermes plugins remove dingtalk`), it stays removed. A webhook-only profile (`DINGTALK_WEBHOOK_URL` for cron delivery) counts as using DingTalk too.
 
-A profile that sets DingTalk up after upgrading gets nothing installed: Hermes Labs code is installed only when you ask, so the agent and gateway print one line naming `hermes plugins install dingtalk`.
+A profile that sets DingTalk up after upgrading gets nothing installed: Hermes Labs code is installed only when you ask, so the agent and gateway print one line naming `hermes plugins install dingtalk`. Run it (or use the DingTalk card's install action in the dashboard or Desktop, where offered) to install and enable the plugin.
+
+"After upgrading" means the profile's `config.yaml` carries the new schema stamp (`_config_version` 55 or later) and recorded no DingTalk use when it reached it. A profile with DingTalk settings only in `.env` and no stamped `config.yaml` looks exactly like one from before the move, so it is migrated automatically.
 :::

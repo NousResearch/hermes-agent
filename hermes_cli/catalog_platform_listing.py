@@ -181,14 +181,15 @@ def platforms_of(plugin_name: str) -> list[str]:
 def install_catalog_platform(name: str) -> dict[str, Any]:
     """Install and enable catalog platform *name* into the bound home. ``{"ok": True, "plugin_name",
     "platforms": [ids], "warnings"}`` on success; else ``{"ok": False, "error", "install_command"}``.
-    Only a row :func:`available_catalog_platforms` offers installs: a community (Hermes Labs included)
-    or unknown name is refused here, never installed past the list's tier rule."""
+    Only a row :func:`available_catalog_platforms` offers installs, plus the plugin a platform that left
+    core moved to once this home has that platform set up (:func:`_left_core_choice`): any other community
+    (Hermes Labs included) or unknown name is refused here, never installed past the list's tier rule."""
     from hermes_cli.left_core_migration import _first_cause
     from hermes_cli.plugins_cmd_install import dashboard_install_plugin
 
     if (present := _already_installed(name)) is not None:
         return present
-    row = next((r for r in available_catalog_platforms() if r.name == name), None)
+    row = next((r for r in available_catalog_platforms() if r.name == name), None) or _left_core_choice(name)
     if row is None:
         return {"ok": False, "error": f"'{name}' is not a catalog platform this home can add.", "install_command": ""}
     if row.blocked:
@@ -202,6 +203,34 @@ def install_catalog_platform(name: str) -> dict[str, Any]:
     refresh_platform_plugins()
     return {"ok": True, "plugin_name": plugin_name, "platforms": platforms_of(plugin_name),
             "warnings": list(result.get("warnings") or [])}
+
+
+@dataclass(frozen=True)
+class _LeftCoreChoice:
+    """The install a platform's own channel card offers for the plugin its core adapter moved to."""
+
+    blocked: str
+    install_command: str
+
+
+def _left_core_choice(name: str) -> Optional[_LeftCoreChoice]:
+    """*name* is the catalog plugin a ``LEFT_CORE`` platform row moved to and the bound home has that platform
+    set up (the row's ``in_use``: credentials or ``platforms.<x>``), else None. A home from after the split is
+    never installed Labs code unasked (the left-core migration only names the command there); the user's
+    "Install and enable" on that platform's card is the asking. The not-installed listing still never
+    offers a Labs entry: a home that never set the platform up gets no card for it."""
+    from hermes_cli.default_plugins import fetch_allowed
+    from hermes_cli.left_core_migration import LEFT_CORE, feature_in_use
+    from hermes_cli.memory_provider_migration import _install_command
+    from hermes_cli.plugin_catalog import get_live_catalog_entry
+    from hermes_constants import get_hermes_home
+
+    home = get_hermes_home()
+    entry = get_live_catalog_entry(name)
+    if entry is None or entry.category != "platform" or not any(
+            feature.plugin == name and feature.platform and feature_in_use(feature, home) for feature in LEFT_CORE):
+        return None
+    return _LeftCoreChoice(blocked="" if fetch_allowed(home) else LAZY_OFF, install_command=_install_command(name, home))
 
 
 def _already_installed(name: str) -> Optional[dict[str, Any]]:

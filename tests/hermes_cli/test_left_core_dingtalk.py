@@ -165,6 +165,7 @@ def test_the_plugin_platform_keeps_its_cron_home_target_slot(monkeypatch):
     monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda *a, **k: None)
     assert list(delivery._iter_home_target_platforms()) == ["dingtalk", "feishu"]
 
+
 def _migrate_config(home: Path) -> None:
     from hermes_cli.config import migrate_config
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
@@ -191,10 +192,12 @@ def test_an_upgrade_crossing_v55_still_installs_the_plugin(tmp_path, monkeypatch
     assert installed == ["dingtalk"]
 
 
-def test_a_home_from_v55_on_that_adds_dingtalk_is_told_the_install_command(tmp_path):
+@pytest.mark.parametrize(("env", "config"), [(_CREDS, ""), ("", "platforms:\n  dingtalk:\n    enabled: true\n")],
+                         ids=["credentials", "enabled-only"])
+def test_a_home_from_v55_on_that_adds_dingtalk_is_told_the_install_command(tmp_path, env, config):
     """Labs code is installed only when asked: a home that never ran core's DingTalk gets one line naming
     `hermes plugins install dingtalk`, and nothing is installed or written."""
-    home = _home(tmp_path, env=_CREDS, config="_config_version: 55\n")
+    home = _home(tmp_path, env=env, config="_config_version: 55\n" + config)
     before = (home / "config.yaml").read_bytes()
     said = []
     assert lcm.migrate_home(home, install=lambda name: pytest.fail("Labs code is installed only when asked"),
@@ -202,3 +205,29 @@ def test_a_home_from_v55_on_that_adds_dingtalk_is_told_the_install_command(tmp_p
     assert len(said) == 1 and "hermes plugins install dingtalk" in said[0]
     assert (home / "config.yaml").read_bytes() == before
 
+
+def test_the_dingtalk_card_installs_the_labs_plugin_once_dingtalk_is_set_up(monkeypatch):
+    """The explicit choice a home from v55 on gets besides the command: "Install and enable" on the platform's
+    own card (``install_catalog_platform``) takes a Labs entry once that home has the platform set up, and still
+    refuses it for a home that never did (the not-installed listing never offers Labs)."""
+    import hermes_cli.plugins_cmd_install as pci
+    from hermes_cli import plugin_catalog
+    from hermes_cli.catalog_platform_listing import available_catalog_platforms, install_catalog_platform
+    from hermes_cli.plugin_catalog import PluginCatalogEntry
+    from hermes_constants import get_hermes_home
+
+    entry = PluginCatalogEntry(name="dingtalk", repo="https://github.com/NousResearch/hermes-labs-plugins",
+                               sha="1" * 40, description="DingTalk.", maintainer="Nous Research", tier="community",
+                               category="platform")
+    monkeypatch.setattr(plugin_catalog, "load_catalog_live", lambda: [entry])
+    monkeypatch.setattr(plugin_catalog, "load_catalog", lambda *a, **k: [entry])
+    monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+    asked = []
+    monkeypatch.setattr(pci, "dashboard_install_plugin",
+                        lambda *a, **k: asked.append(k["catalog_name"]) or {"ok": True, "plugin_name": "dingtalk"})
+    home = get_hermes_home()
+    (home / "config.yaml").write_text("_config_version: 55\n", encoding="utf-8")
+    assert install_catalog_platform("dingtalk")["ok"] is False and asked == []
+    (home / ".env").write_text(_CREDS, encoding="utf-8")
+    assert "dingtalk" not in {row.name for row in available_catalog_platforms(provided=())}
+    assert install_catalog_platform("dingtalk")["ok"] is True and asked == ["dingtalk"]

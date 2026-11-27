@@ -94,6 +94,81 @@ def _policy_error_block_directive(hook_name: str, cb: Callable, exc: BaseExcepti
     return {"action": "block",
             "message": f"{hook_name} plugin callback {callback_name} raised {type(exc).__name__}: {str(exc)[:200]}"}
 
+
+# ``(plugin key, reason)`` pairs already logged by :func:`fail_closed_plugin_block`: a missing guard
+# blocks every tool call, but the operator needs the WARNING once, not once per call.
+_FAIL_CLOSED_PLUGIN_WARNED: set[tuple[str, str]] = set()
+
+
+def _entry_fail_closed(entry: Any) -> Optional[bool]:
+    """Explicit ``fail_closed`` from a ``plugins.entries.<id>`` mapping (top level, then ``settings``
+    / its legacy ``config`` spelling); ``None`` when the entry does not say."""
+    if not isinstance(entry, Mapping):
+        return None
+    if isinstance(entry.get("fail_closed"), bool):
+        return entry["fail_closed"]
+    settings = entry.get("settings")
+    if not isinstance(settings, Mapping):
+        settings = entry.get("config")
+    if isinstance(settings, Mapping) and isinstance(settings.get("fail_closed"), bool):
+        return settings["fail_closed"]
+    return None
+
+
+def _manifest_fail_closed(manifest: Any) -> bool:
+    """A manifest's own default: top-level ``fail_closed: true``, or a ``pre_tool_call`` plugin whose
+    ``config_schema.fail_closed.default`` is true (the setting a guard plugin reads to decide)."""
+    if getattr(manifest, "fail_closed", False) is True:
+        return True
+    schema = (getattr(manifest, "config_schema", None) or {}).get("fail_closed")
+    return ("pre_tool_call" in (getattr(manifest, "provides_hooks", None) or [])
+            and isinstance(schema, Mapping) and schema.get("default") is True)
+
+
+def _missing_fail_closed_plugin(manager: Any, plugins_cfg: Mapping[str, Any]) -> Optional[tuple[str, str]]:
+    """``(plugin key, reason)`` for the first fail-closed plugin the operator turned on that is not
+    running in ``manager``; ``None`` when every such plugin is loaded (or explicitly disabled)."""
+    disabled = plugins_cfg.get("disabled")
+    disabled = {str(n) for n in disabled} if isinstance(disabled, list) else set()
+    enabled = plugins_cfg.get("enabled")
+    # A bare string is a malformed one-item list: discovery ignores it, but the intent is clear.
+    enabled = {str(n) for n in enabled} if isinstance(enabled, list) else ({enabled} if isinstance(enabled, str) else set())
+    entries = plugins_cfg.get("entries")
+    entries = entries if isinstance(entries, Mapping) else {}
+    known: set[str] = set()
+    for key, loaded in dict(getattr(manager, "_plugins", {}) or {}).items():
+        manifest = loaded.manifest
+        names = {str(key), str(getattr(manifest, "name", "") or key)}
+        known |= names
+        if names & disabled or loaded.enabled:
+            continue
+        entry = next((entries[n] for n in (key, manifest.name) if n in entries), None)
+        explicit = _entry_fail_closed(entry)
+        if explicit is False or not (explicit or _manifest_fail_closed(manifest)):
+            continue
+        if explicit or names & enabled:
+            return str(key), loaded.error or "not loaded"
+    for plugin_id, entry in entries.items():
+        if _entry_fail_closed(entry) is True and str(plugin_id) not in known | disabled:
+            return str(plugin_id), "not installed or not discovered"
+    return None
+
+
+def fail_closed_plugin_block(manager: Any, plugins_cfg: Any) -> Optional[str]:
+    """Block message when a ``fail_closed`` plugin that should guard tool calls is not running:
+    enabled (or ``plugins.entries.<id>.fail_closed: true``) but failed to import, raised in
+    ``register()``, missed its Hermes version or dependency, or is missing from disk. ``None`` to
+    proceed. ``plugins.disabled`` and an explicit ``fail_closed: false`` opt out."""
+    missing = _missing_fail_closed_plugin(manager, plugins_cfg) if isinstance(plugins_cfg, Mapping) else None
+    if missing is None:
+        return None
+    if missing not in _FAIL_CLOSED_PLUGIN_WARNED:
+        _FAIL_CLOSED_PLUGIN_WARNED.add(missing)
+        logger.warning("fail_closed plugin '%s' is not running (%s); blocking tool calls until it loads or "
+                       "is disabled", *missing)
+    return (f"BLOCKED: fail_closed plugin '{missing[0]}' is not running ({missing[1][:200]}); "
+            f"fix it or add it to plugins.disabled")
+
 # System-prompt sections are tightly bounded: they become high-trust prompt bytes charged every turn.
 SYSTEM_PROMPT_SECTION_POSITIONS = frozenset({"after_memory"})
 DEFAULT_SYSTEM_PROMPT_SECTION_MAX_CHARS = 4_000

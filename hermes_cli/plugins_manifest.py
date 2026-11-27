@@ -36,6 +36,7 @@ _KNOWN_MANIFEST_FIELDS: set[str] = {
     "manifest_version", "api_version", "requires_plugins", "python_dependencies", "config_schema",
     "license", "homepage", "tags", "capabilities", "emits", "listens", "hermes", "depends",
     "requires_hermes", "python_runtime", "provides_locales", "requires_auth", "oauth", "config_keys",
+    "fail_closed",
 }
 
 # Highest manifest schema version this Hermes understands.
@@ -417,6 +418,10 @@ class PluginManifest:
     # Dotted paths in Hermes' own config sections the plugin reads (``memory.retaindb``), so
     # ``hermes config get/set`` recognizes them while the plugin is active (hermes_cli/config_runtime_keys.py).
     config_keys: list[str] = field(default_factory=list)
+    # ``fail_closed: true`` marks a policy plugin whose absence must stop tools: when it is enabled but
+    # failed to load, every ``pre_tool_call`` blocks instead of running unchecked (see
+    # ``plugins_dispatch.fail_closed_plugin_block``). ``plugins.entries.<id>.fail_closed`` overrides it.
+    fail_closed: bool = False
 
 
 def parse_provides_locales(raw: Any, key: str = "") -> tuple[list[str], dict[str, dict[str, Any]]]:
@@ -580,6 +585,7 @@ def parse_manifest_file(
             **_parse_manifest_v2_fields(data, key), emits=data.get("emits") or [],
             listens=data.get("listens") or [],
             provides_locales=provides_locales, locale_metadata=locale_metadata,
+            fail_closed=data.get("fail_closed") is True,
         )
     except Exception as exc:
         logger.warning("Failed to parse %s: %s", manifest_file, exc, exc_info=_plugins_debug())

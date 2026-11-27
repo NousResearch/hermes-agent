@@ -53,7 +53,7 @@ from hermes_cli.plugins_dispatch import (
     SYSTEM_PROMPT_SECTION_POSITIONS, _EVENT_EMIT_DEPTH_CAP, _EVENT_PENDING_CAP,
     _HOOK_CALLBACK_TIMEOUT_SECS, _HOOK_TIMEOUT_SUPPRESSION_SECONDS, _MAX_HOOK_CALLBACK_TIMEOUT_SECS,
     _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE, PluginDispatchMixin, PluginSystemPromptSection,
-    RenderedPluginSystemPromptSection, _EventSubscription, format_system_prompt_sections,
+    RenderedPluginSystemPromptSection, _EventSubscription, fail_closed_plugin_block, format_system_prompt_sections,
     is_valid_system_prompt_section_id, resolve_plugin_command_result,
 )
 from hermes_cli.plugins_capability_ctx import PluginCapabilityCtxMixin
@@ -1267,6 +1267,26 @@ def _dispatch_pre_tool_call_hooks(
     block_msg = _resolve_block_from_details(
         details, tool_name, **{k: hook_kwargs.get(k, "") for k in ("turn_id", "tool_call_id", "session_id")})
     return (block_msg, details.modified_args)
+
+
+def evaluate_pre_tool_call(
+    tool_name: str, args: Optional[dict[str, Any]], **hook_kwargs: Any
+) -> tuple[Optional[str], Any]:
+    """The one ``pre_tool_call`` seam every tool surface calls: ``(block_message, final_args)``, with
+    ``final_args`` the hook-modified args or ``args`` itself. Fails closed: a ``fail_closed`` plugin
+    that is not running, or a dispatch/discovery error, blocks instead of letting the tool run."""
+    from agent.safe_worker_policy import safe_worker_enabled
+
+    try:
+        block_msg = None if safe_worker_enabled() else fail_closed_plugin_block(
+            _delivery_manager(), (load_config_readonly() or {}).get("plugins"))
+        modified_args = None
+        if block_msg is None:
+            block_msg, modified_args = _dispatch_pre_tool_call_hooks(tool_name, args, **hook_kwargs)
+    except Exception as exc:
+        logger.warning("pre_tool_call dispatch for %s failed; blocking the call", tool_name, exc_info=True)
+        return f"BLOCKED: pre_tool_call check for {tool_name} failed ({type(exc).__name__}: {str(exc)[:200]})", args
+    return block_msg, (args if modified_args is None else modified_args)
 
 
 def get_pre_verify_continue_message(

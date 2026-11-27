@@ -52,7 +52,7 @@ def _make_dist_info(site_dir: Path, name: str, version: str) -> None:
 
 def _locked_core(tmp_path: Path, deps: list[str], wheels: Path) -> Path:
     core = tmp_path / "core"
-    core.mkdir(exist_ok=True)
+    core.mkdir(parents=True, exist_ok=True)
     (core / "pyproject.toml").write_text(
         '[project]\nname = "fake-core"\nversion = "0.1.0"\nrequires-python = ">=3.11"\n'
         f"dependencies = {json.dumps(deps)}\n"
@@ -160,7 +160,7 @@ def test_tool_uv_package_true_with_core_satisfied_deps_still_requires_workspace_
 
 
 def test_vcs_or_url_source_requires_workspace_member(tmp_path):
-    # uv workspace VCS/URL/path override via [tool.uv.sources]
+    # uv workspace VCS/URL/path override via [tool.uv.sources] (direct dep)
     plugin = _write_plugin(
         tmp_path / "vcs-plug",
         pyproject=(
@@ -173,15 +173,72 @@ def test_vcs_or_url_source_requires_workspace_member(tmp_path):
     assert unsatisfied_requirements(decl, project_root=REPO_ROOT) == ("cryptography>=50,<51",)
     assert needs_workspace_member(decl, project_root=REPO_ROOT) is True
 
-    # Direct PEP 508 URL requirement passed into a declaration object is never treated as satisfied.
-    class _UrlDecl(PythonDeclaration):
-        @property
-        def install_requirements(self) -> tuple[str, ...]:
-            return ("cryptography @ https://example.invalid/cryptography-50.0.2-py3-none-any.whl",)
+    # Direct PEP 508 URL requirement paired with a core-satisfied dep via a real pyproject.toml
+    # must NOT be bypassed by applicable_requirements() URL stripping.
+    mixed_url_plugin = _write_plugin(
+        tmp_path / "mixed-url-plug",
+        pyproject=(
+            '[project]\nname = "mixed-url-plug"\nversion = "1.0.0"\nrequires-python = ">=3.11"\n'
+            'dependencies = ["httpx>=0.27,<1", "custom @ https://example.invalid/p.whl"]\n'
+        ),
+    )
+    mixed_decl = read_python_declaration(mixed_url_plugin)
+    assert unsatisfied_requirements(mixed_decl, project_root=REPO_ROOT) == (
+        "custom @ https://example.invalid/p.whl",
+    )
+    assert needs_workspace_member(mixed_decl, project_root=REPO_ROOT) is True
 
-    url_decl = _UrlDecl(files=(), pyproject=None, requirements=(), manifest={})
-    assert unsatisfied_requirements(url_decl, project_root=REPO_ROOT) == url_decl.install_requirements
-    assert needs_workspace_member(url_decl, project_root=REPO_ROOT) is True
+    # Direct PEP 508 URL requirement alone via a real pyproject.toml.
+    url_only_plugin = _write_plugin(
+        tmp_path / "url-only-plug",
+        pyproject=(
+            '[project]\nname = "url-only-plug"\nversion = "1.0.0"\nrequires-python = ">=3.11"\n'
+            'dependencies = ["cryptography @ https://example.invalid/cryptography-50.0.2-py3-none-any.whl"]\n'
+        ),
+    )
+    url_only_decl = read_python_declaration(url_only_plugin)
+    assert unsatisfied_requirements(url_only_decl, project_root=REPO_ROOT) == (
+        "cryptography @ https://example.invalid/cryptography-50.0.2-py3-none-any.whl",
+    )
+    assert needs_workspace_member(url_only_decl, project_root=REPO_ROOT) is True
+
+    # Marker-gated direct URL only applies on the matching target platform.
+    gated_url_plugin = _write_plugin(
+        tmp_path / "gated-url-plug",
+        pyproject=(
+            '[project]\nname = "gated-url-plug"\nversion = "1.0.0"\nrequires-python = ">=3.11"\n'
+            'dependencies = ["httpx>=0.27,<1", "winpkg @ https://example.invalid/w.whl ; sys_platform == \'win32\'"]\n'
+        ),
+    )
+    gated_decl = read_python_declaration(gated_url_plugin)
+    linux_env = {
+        "implementation_name": "cpython", "implementation_version": "3.14.9",
+        "os_name": "posix", "platform_machine": "x86_64", "platform_python_implementation": "CPython",
+        "platform_release": "6.8.0", "platform_system": "Linux", "platform_version": "",
+        "python_full_version": "3.14.9", "python_version": "3.14", "sys_platform": "linux",
+    }
+    win_env = {
+        **linux_env, "os_name": "nt", "platform_machine": "AMD64",
+        "platform_release": "11", "platform_system": "Windows", "sys_platform": "win32",
+    }
+    assert needs_workspace_member(gated_decl, project_root=REPO_ROOT, target_env=linux_env) is False
+    assert needs_workspace_member(gated_decl, project_root=REPO_ROOT, target_env=win_env) is True
+
+
+def test_transitive_tool_uv_sources_override_requires_workspace_member(tmp_path):
+    """Any non-empty ``[tool.uv.sources]`` (even overriding a transitive like ``socksio`` under
+    ``httpx[socks]``) must conservatively require a workspace member."""
+    plugin = _write_plugin(
+        tmp_path / "transitive-uv-source",
+        pyproject=(
+            '[project]\nname = "transitive-uv-source"\nversion = "1.0.0"\nrequires-python = ">=3.11"\n'
+            'dependencies = ["httpx[socks]>=0.27,<1"]\n'
+            '[tool.uv.sources]\nsocksio = { git = "https://example.invalid/socksio.git" }\n'
+        ),
+    )
+    decl = read_python_declaration(plugin)
+    assert unsatisfied_requirements(decl, project_root=REPO_ROOT) == ("httpx[socks]>=0.27,<1",)
+    assert needs_workspace_member(decl, project_root=REPO_ROOT) is True
 
 
 def test_unverified_extra_is_conservatively_unsatisfied(tmp_path):
@@ -379,7 +436,8 @@ def test_enabling_core_satisfied_plugin_skips_venv_rebuild_and_never_piggybacks_
     assert len(apply_calls) == 1
     gen_with_a = selected_venv(core)
     assert gen_with_a != base_gen
-    assert ws.enabled_member_dirs() == [plug_a]
+    # Once plug-a forces a shared solve, mobile-connector joins too so its corelib>=50,<51 pin stays enforced.
+    assert ws.enabled_member_dirs() == [satisfied, plug_a]
 
     # 3. Plugin B ALSO needs `plugonly>=1,<2` (currently installed in gen_with_a ONLY because of plug-a!).
     #    Plugin B MUST STILL be a workspace member so removing plug-a never breaks plug-b.
@@ -396,7 +454,7 @@ def test_enabling_core_satisfied_plugin_skips_venv_rebuild_and_never_piggybacks_
         {"mobile-connector", "plug-a", "plug-b"}, set(), active_plugins_dir=home / "plugins"
     )
     assert len(apply_calls) == 2
-    assert ws.enabled_member_dirs() == [plug_a, plug_b]
+    assert ws.enabled_member_dirs() == [satisfied, plug_a, plug_b]
 
     # 4. Core upgrades and bumps corelib to 51.0.0 -> mobile-connector's >=50,<51 is now UNSATISFIED!
     _fixtures._wheel(wheels, "corelib", "51.0.0")
@@ -589,3 +647,200 @@ def test_consent_and_update_skip_prompt_for_core_satisfied_deps_while_summary_st
         plugins_transaction._refresh_declared_dependencies(
             before, unsat, {"name": "sat-plug"}, interactive=False
         )
+
+
+# ── Pre-push review regression tests (Findings #1, #2, #3) ───────────────────
+
+
+@pytest.mark.skipif(shutil.which("uv") is None, reason="uv not on PATH")
+def test_generation_workspace_never_shadows_canonical_core_root(tmp_path, monkeypatch):
+    """Finding #1: running from ``environments/<gen>/workspace`` whose ``uv.lock`` includes a
+    plugin package (``langfuse==4.15.2``) must read the canonical core root, never the generation
+    workspace's lock."""
+    import pm.paths
+    from pm.environments import install_key
+
+    wheels = tmp_path / "wheels"
+    wheels.mkdir()
+    _fixtures._wheel(wheels, "corelib", "50.0.2")
+    _fixtures._wheel(wheels, "langfuse", "4.15.2")
+
+    real_core = _locked_core(tmp_path / "real-checkout", ["corelib==50.0.2"], wheels)
+
+    state = tmp_path / "home" / "installs" / install_key(real_core)
+    gen_ws = state / "environments" / "gen01" / "workspace"
+    gen_ws.mkdir(parents=True)
+    (gen_ws / "pyproject.toml").write_text(
+        '[project]\nname = "fake-core"\nversion = "0.1.0"\nrequires-python = ">=3.11"\n'
+        'dependencies = ["corelib==50.0.2", "langfuse==4.15.2"]\n'
+        "[tool.uv]\npackage = false\nno-index = true\n"
+        f"find-links = [{json.dumps(wheels.as_posix())}]\n",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        [shutil.which("uv"), "lock", "--python", sys.executable],
+        cwd=gen_ws,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    langfuse_plug = _write_plugin(
+        tmp_path / "langfuse-plug",
+        name="langfuse-plug",
+        pyproject=(
+            '[project]\nname = "langfuse-plug"\nversion = "1.0.0"\nrequires-python = ">=3.11"\n'
+            'dependencies = ["langfuse==4.15.2"]\n'
+        ),
+    )
+    core_plug = _write_plugin(
+        tmp_path / "core-plug",
+        name="core-plug",
+        pyproject=(
+            '[project]\nname = "core-plug"\nversion = "1.0.0"\nrequires-python = ">=3.11"\n'
+            'dependencies = ["corelib>=50,<51"]\n'
+        ),
+    )
+    langfuse_decl = read_python_declaration(langfuse_plug)
+    core_decl = read_python_declaration(core_plug)
+
+    monkeypatch.setattr(pm.paths, "repo_root", lambda: gen_ws)
+
+    # 1a. HERMES_INSTALL_ROOT points at the canonical core root.
+    monkeypatch.setenv("HERMES_INSTALL_ROOT", str(real_core))
+    assert needs_workspace_member(langfuse_decl) is True
+    assert needs_workspace_member(core_decl) is False
+
+    # 1b. No HERMES_INSTALL_ROOT, but state/inputs/.project-root names the canonical core root.
+    monkeypatch.delenv("HERMES_INSTALL_ROOT", raising=False)
+    (state / "inputs").mkdir(parents=True, exist_ok=True)
+    (state / "inputs" / ".project-root").write_text(str(real_core.resolve()), encoding="utf-8")
+    assert needs_workspace_member(langfuse_decl) is True
+    assert needs_workspace_member(core_decl) is False
+
+    # 1c. Neither HERMES_INSTALL_ROOT nor .project-root: fail conservatively, never trust gen_ws/uv.lock.
+    (state / "inputs" / ".project-root").unlink()
+    assert needs_workspace_member(langfuse_decl) is True
+    assert needs_workspace_member(core_decl) is True
+
+
+@pytest.mark.skipif(shutil.which("uv") is None, reason="uv not on PATH")
+def test_core_satisfied_plugin_constraints_survive_when_another_plugin_forces_shared_solve(
+    tmp_path, monkeypatch
+):
+    """Finding #2: plugin A (core-satisfied ``idna==3.20``) alone produces ``members == []``,
+    but when plugin B (unsatisfied ``idna==3.18``) forces a shared solve, BOTH A and B stay in
+    ``members`` so uv catches the conflict instead of downgrading ``idna`` and breaking A."""
+    import importlib
+    from hermes_cli import plugins_admission as admission
+    from pm.install import sync_venv
+    from pm.publication import candidate_members
+    import pm.paths
+
+    wheels = tmp_path / "wheels"
+    wheels.mkdir()
+    _fixtures._wheel(wheels, "idna", "3.20")
+    _fixtures._wheel(wheels, "idna", "3.18")
+    core = _locked_core(tmp_path, ["idna>=3.18,<4"], wheels)
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text("plugins:\n  enabled: [plug-a]\n", encoding="utf-8")
+
+    plug_a = _write_plugin(
+        home / "plugins" / "plug-a",
+        name="plug-a",
+        pyproject=(
+            '[project]\nname = "plug-a"\nversion = "1.0.0"\nrequires-python = ">=3.11"\n'
+            'dependencies = ["idna==3.20"]\n'
+        ),
+    )
+    plug_b = _write_plugin(
+        home / "plugins" / "plug-b",
+        name="plug-b",
+        pyproject=(
+            '[project]\nname = "plug-b"\nversion = "1.0.0"\nrequires-python = ">=3.11"\n'
+            'dependencies = ["idna==3.18"]\n'
+        ),
+    )
+
+    ensure = importlib.import_module("pm.install")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "tools"))
+    monkeypatch.delenv("HERMES_INSTALL_ROOT", raising=False)
+    monkeypatch.setattr(pm.paths, "repo_root", lambda: core)
+    monkeypatch.setattr(ws.paths, "repo_root", lambda: core)
+    monkeypatch.setattr(ensure, "lazy_installs_allowed", lambda: True)
+    monkeypatch.setattr("pm.client.sync_venv", lambda *a, project_root=None, **kw: ensure.sync_venv(*a, **kw))
+    monkeypatch.setattr("pm._uv._toolchain", lambda **kw: (Path(shutil.which("uv")), Path(sys.executable)))
+
+    # Plugin A alone (core locked idna==3.20): zero members -> zero rebuild.
+    assert needs_workspace_member(read_python_declaration(plug_a), project_root=core) is False
+    assert needs_workspace_member(read_python_declaration(plug_b), project_root=core) is True
+    assert ws.enabled_member_dirs() == []
+    assert candidate_members() == []
+
+    # Plugin A + Plugin B: B forces a shared solve -> BOTH A and B MUST be in members!
+    (home / "config.yaml").write_text("plugins:\n  enabled: [plug-a, plug-b]\n", encoding="utf-8")
+    assert ws.enabled_member_dirs() == [plug_a, plug_b]
+    assert candidate_members() == [plug_a, plug_b]
+
+    # End-to-end: sync core with plug-a enabled, then attempt to admit plug-b -> uv MUST detect
+    # the idna==3.20 vs idna==3.18 conflict rather than silently downgrading idna to 3.18!
+    (home / "config.yaml").write_text("plugins:\n  enabled: [plug-a]\n", encoding="utf-8")
+    sync_venv(explicit=True)
+    with pytest.raises(admission.DependencyConflict):
+        admission.admit_plugin_set_change({"plug-a", "plug-b"}, set(), active_plugins_dir=home / "plugins")
+
+
+def test_admission_evaluates_markers_against_target_interpreter_not_worker_python(tmp_path, monkeypatch):
+    """Finding #3: worker running Python 3.14.6 admitting a plugin for target managed Python
+    3.14.9 with ``fixturedep; python_full_version >= '3.14.8'`` MUST include the plugin."""
+    import packaging.markers
+    import pm.paths
+    from pm.publication import candidate_members
+
+    home = tmp_path / "home"
+    home.mkdir()
+    plugin = _write_plugin(
+        home / "plugins" / "marker-plug",
+        name="marker-plug",
+        pyproject=(
+            '[project]\nname = "marker-plug"\nversion = "1.0.0"\nrequires-python = ">=3.11"\n'
+            'dependencies = ["fixturedep>=1; python_full_version >= \'3.14.8\'"]\n'
+        ),
+    )
+    (home / "config.yaml").write_text("plugins:\n  enabled: [marker-plug]\n", encoding="utf-8")
+
+    worker_env = {
+        "implementation_name": "cpython", "implementation_version": "3.14.6",
+        "os_name": "posix", "platform_machine": "x86_64", "platform_python_implementation": "CPython",
+        "platform_release": "6.8.0", "platform_system": "Linux", "platform_version": "",
+        "python_full_version": "3.14.6", "python_version": "3.14", "sys_platform": "linux",
+    }
+    target_env = {
+        **worker_env,
+        "implementation_version": "3.14.9",
+        "python_full_version": "3.14.9",
+    }
+    fake_target_py = tmp_path / "managed" / "python3"
+
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_INSTALL_ROOT", raising=False)
+    monkeypatch.setattr(pm.paths, "repo_root", lambda: REPO_ROOT)
+    monkeypatch.setattr(ws.paths, "repo_root", lambda: REPO_ROOT)
+    monkeypatch.setattr(packaging.markers, "default_environment", lambda: dict(worker_env))
+
+    # Case A: managed target Python 3.14.9 is installed and probed via _toolchain(realize=False).
+    monkeypatch.setattr("pm._uv._toolchain", lambda **kw: (tmp_path / "uv", fake_target_py))
+    monkeypatch.setattr(ws, "_target_environment", lambda py: dict(target_env) if py == fake_target_py else dict(worker_env))
+    assert candidate_members() == [plugin]
+    assert ws.enabled_member_dirs() == [plugin]
+
+    # Case B: target interpreter cannot be determined (_toolchain returns None) -> conservatively
+    # treat marker-sensitive requirement as needing admission rather than dropping it on 3.14.6.
+    monkeypatch.setattr("pm._uv._toolchain", lambda **kw: None)
+    assert candidate_members() == [plugin]
+    assert ws.enabled_member_dirs() == [plugin]

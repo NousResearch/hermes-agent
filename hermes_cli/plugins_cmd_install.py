@@ -985,9 +985,13 @@ def dashboard_install_plugin(
     needs_python_sync = False
     if deps:
         from pm.plugin_declarations import needs_workspace_member, read_python_declaration
+        from pm.workspace import enabled_member_dirs
 
         try:
-            needs_python_sync = needs_workspace_member(read_python_declaration(target))
+            decl = read_python_declaration(target)
+            needs_python_sync = needs_workspace_member(decl) or (
+                decl.installs_packages and bool(enabled_member_dirs())
+            )
         except (OSError, ValueError):
             needs_python_sync = True
     if enable and (refused := _enable_placed(installed_name, needs_python_sync, step)):

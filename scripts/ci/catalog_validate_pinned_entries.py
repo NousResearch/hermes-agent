@@ -253,6 +253,22 @@ def _workspace_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
+def _escape_gha_property(value: str) -> str:
+    """Escape a GitHub Actions workflow-command property value (e.g. ``file=...``)."""
+    return (
+        value.replace("%", "%25")
+        .replace("\r", "%0D")
+        .replace("\n", "%0A")
+        .replace(":", "%3A")
+        .replace(",", "%2C")
+    )
+
+
+def _escape_gha_data(value: str) -> str:
+    """Escape a GitHub Actions workflow-command message body."""
+    return value.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+
+
 def _check_default_venv_rebuild(
     entry: str,
     plugin_dir: str,
@@ -278,7 +294,7 @@ def _check_default_venv_rebuild(
         message = f"default: true plugin could not be checked for venv rebuild impact: {detail}"
         if fail_on_rebuild:
             raise EntryRejected(message) from exc
-        print(f"::warning file={entry}::{message}")
+        print(f"::warning file={_escape_gha_property(entry)}::{_escape_gha_data(message)}")
         return
 
     if not result.triggers_rebuild:
@@ -289,7 +305,7 @@ def _check_default_venv_rebuild(
     summary = f"default: true plugin triggers a PM venv rebuild ({reason}). {guidance}"
     if fail_on_rebuild:
         raise EntryRejected(summary)
-    print(f"::warning file={entry}::{summary}")
+    print(f"::warning file={_escape_gha_property(entry)}::{_escape_gha_data(summary)}")
     print(
         f"⚠ default: true venv rebuild warning for {entry}:\n"
         f"  Trigger: {reason}\n"

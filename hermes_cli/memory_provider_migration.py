@@ -325,17 +325,20 @@ def _unattended_consent() -> bool:
     return not _interactive() and lazy_installs_allowed()
 
 
-def _in_home(home: Path, read: Callable[[], bool]) -> bool:
+def _home_consent(home: Path) -> bool:
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     token = set_hermes_home_override(home)
     try:
-        return read()
+        return _unattended_consent()
     finally:
         reset_hermes_home_override(token)
 
 
-def _home_consent(home: Path) -> bool:
-    return _in_home(home, _unattended_consent)
+def _home_allows_lazy_installs(home: Path) -> bool:
+    from agent.runtime_scope import bind_profile_scope
+    from pm.install import lazy_installs_allowed
+    with bind_profile_scope(home, hydrate_secrets=False):
+        return lazy_installs_allowed()
 
 
 def _update_may_install(home: Path, name: str, *, say: Callable[[str], None]) -> bool:
@@ -344,13 +347,11 @@ def _update_may_install(home: Path, name: str, *, say: Callable[[str], None]) ->
     and is asked about dependencies). The dependency-consent flag is not this gate: a plugin that
     declares no dependencies (ByteRover) is placed and enabled whatever it says, so without this a
     stale ``memory.provider`` alone would fetch and activate code."""
-    from pm.install import lazy_installs_allowed
-
     if name not in _LEFT_CORE:
         say(f"  ⚠ Memory provider '{name}' is configured but not installed. It never shipped with Hermes, so "
             f"`hermes update` does not install it: run `{_install_command(name, home)}`.")
         return False
-    if not _interactive() and not _in_home(home, lazy_installs_allowed):
+    if not _interactive() and not _home_allows_lazy_installs(home):
         say(f"  ⚠ Memory provider '{name}' moved out of core and is not installed. security.allow_lazy_installs "
             f"is off, so `hermes update` did not fetch it: run `{_install_command(name, home)}`."
             + _LABS_NOTICES.get(name, ""))

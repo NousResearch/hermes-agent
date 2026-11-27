@@ -50,6 +50,7 @@ tts:
   streaming:
     provider: gemini      # or "auto"
     min_len: 20           # shortest first sentence (chars) spoken on its own; CJK setups use ~6
+    # next_min_len: 160       # optional: threshold for every chunk after the first (short opener, larger blocks after)
   gemini:
     model: gemini-2.5-flash-preview-tts
     voice: Kore

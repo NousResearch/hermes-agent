@@ -237,8 +237,20 @@ Full contract in `agent/image_gen_provider.py`. The methods you'll typically ove
 | `is_available()` | — | `True` | Gate for missing creds/deps |
 | `list_models()` | — | `[]` | Catalog for `hermes tools` model picker |
 | `default_model()` | — | first from `list_models()` | Fallback when no model is configured |
-| `get_setup_schema()` | — | minimal | Picker metadata + env-var prompts |
+| `get_setup_schema()` | — | minimal | Picker metadata + env-var and non-secret config prompts |
 | `generate(prompt, aspect_ratio, **kwargs)` | ✅ | — | The call |
+
+Providers that require non-secret settings can also return `config_fields` from
+`get_setup_schema()`: a list of `{"key": "image_gen.my_backend.base_url", "prompt": "Base URL"}`
+entries. Keys are config.yaml dotpaths; values are required strings. The CLI's shared
+`hermes tools` / `hermes setup` flow collects them after credentials and persists them
+through the normal config writer. Existing values are kept when enabling a provider;
+reconfiguration prompts again, with Enter keeping the current value. Missing fields
+leave the provider marked as needing setup, not configured. Credentials belong only
+in `env_vars`, never in `config_fields`. A field can declare ordered `fallback_keys`
+(config.yaml dotpaths): readiness and prompt defaults use the first non-blank string,
+checking `key` first. New input is written to `key`; enabling an already configured
+provider does not copy fallback values into it.
 
 ## Response format
 
@@ -277,6 +289,42 @@ Some backends return image URLs (fal, Replicate); others return base64 payloads 
 ## User overrides
 
 Drop a user plugin at `~/.hermes/plugins/image_gen/<name>/` with the same `name` property as a bundled one and enable it via `hermes plugins enable <name>` — the registry is last-writer-wins, so your version replaces the built-in. Useful for pointing an `openai` plugin at a private proxy, or swapping in a custom model catalog.
+
+## OpenAI-compatible image endpoint
+
+The existing `openai` provider already supports custom model IDs, `base_url`, `key_env`,
+and named chat endpoints. Use `openai-compatible` when you need a separate, text-only
+provider with a fixed profile credential, custom sizes/parameters, and no redirects.
+It requires the OpenAI Images API (`POST /v1/images/generations`).
+
+Run `hermes tools` (also available from `hermes setup`) → **Image Generation** →
+**OpenAI-compatible**. Setup asks for the bearer token, endpoint base URL, and model ID.
+The token goes to the active profile's secret store; the endpoint and model go to
+`image_gen.openai_compatible` in `config.yaml`. Skipping a required field leaves setup
+incomplete. An existing `image_gen.openai_compatible.model` takes precedence over
+`image_gen.model`; setup accepts either, just like generation, without requesting a
+duplicate scoped model. Advanced settings can be added in config.yaml:
+
+```yaml
+image_gen:
+  provider: openai-compatible
+  model: vendor/image-model
+  openai_compatible:
+    display_name: Local Image Service
+    base_url: http://localhost:30122/v1
+    size_by_aspect:
+      square: 512x512
+      landscape: 1024x576
+      portrait: 576x1024
+    params:
+      num_inference_steps: 8
+      guidance_scale: 1.0
+    timeout: 600
+```
+
+Store the bearer token as `OPENAI_COMPATIBLE_IMAGE_API_KEY` in the active profile's `.env` or configured external secret source. Literal credentials and authorization headers are intentionally not accepted in `config.yaml`.
+
+`base_url` may be either the service root or its `/v1` API root; Hermes appends exactly one `/v1/images/generations` path. It must not contain embedded credentials, a query string, or a fragment. The provider accepts `b64_json` or URL outputs and caches the result under `$HERMES_HOME/cache/generated/images/` before returning it. A cache/download failure is an error, not a bare URL fallback. Hermes returns one image per call, so `image_gen.openai_compatible.n` must be the integer `1` (the string `"1"` is also accepted). Timeout must be positive, finite, and within the platform's supported timeout range. Booleans, fractional counts, non-finite numbers, and overflowing values are rejected before networking. Optional compatibility-sensitive fields such as `response_format` are sent only when explicitly configured.
 
 ## Testing
 

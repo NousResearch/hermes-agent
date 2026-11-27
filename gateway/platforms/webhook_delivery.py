@@ -60,8 +60,16 @@ def snapshot_destination(adapter, delivery):
     result = validate_destination(delivery)
     if result['deliver'] not in {'log', 'github_comment'} and not result['deliver_extra'].get('chat_id'):
         profile = result.get('profile')
+        try:
+            platform = Platform(result['deliver'])
+        except ValueError:
+            # A platform that left core, plugin not loaded: the route stays loaded (``is_known_platform``), and
+            # the refusal names the install so the retryable 503 is not the operator's only clue.
+            from hermes_cli.left_core_migration import platform_install_hint
+            raise AuthorityRefusal('not_found', field='deliver',
+                                   detail=platform_install_hint(result['deliver']).lstrip('. ') or None) from None
         with adapter._profile_scope(profile):
-            home = adapter._delivery_config(profile).get_home_channel(Platform(result['deliver']))
+            home = adapter._delivery_config(profile).get_home_channel(platform)
         if home is None:
             raise AuthorityRefusal('not_found')
         result['deliver_extra']['chat_id'] = home.chat_id

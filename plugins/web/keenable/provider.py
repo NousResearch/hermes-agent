@@ -73,7 +73,6 @@ class KeenableWebSearchProvider(BaseWebSearchProvider):
             results: list[dict[str, Any]] = []
             for url in urls:
                 try:
-                    # GET /v1/fetch is deprecated (Sunset 2027-03-01); POST takes the same URL as ``urls``.
                     response = requests.post(f"{_KEENABLE_API_URL}/v1/fetch", json={"urls": [url]}, headers=_keenable_headers(api_key), timeout=30, verify=requests_verify())
                     if response.status_code >= 400:
                         if origin := keenable_origin_error(response.status_code, response.text):

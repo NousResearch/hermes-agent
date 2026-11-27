@@ -168,8 +168,9 @@ def test_the_manual_rollback_steps_enable_the_label_before_loading_it(home, plis
 
     steps = engine._manual_rollback_steps(engine.read_manifest(home))
 
-    assert steps[-1] == (f"mv {plist}.disabled {plist}; launchctl enable {_DOMAIN}/{_LABEL}; "
+    assert steps[-2] == (f"mv {plist}.disabled {plist}; launchctl enable {_DOMAIN}/{_LABEL}; "
                          f"launchctl bootstrap {_DOMAIN} {plist}")
+    assert steps[-1].startswith("# ") and engine.MANIFEST_NAME in steps[-1]
 
 
 def test_restore_enables_the_label_before_it_loads_the_job_again(home, plist):
@@ -342,9 +343,10 @@ def test_manual_rollback_steps_use_sudo_for_system_launchdaemon_when_disabled(ho
 
     steps = engine._manual_rollback_steps(m)
 
-    assert steps[-1] == (f"sudo mv {_SYSTEM_PLIST}.disabled {_SYSTEM_PLIST}; "
+    assert steps[-2] == (f"sudo mv {_SYSTEM_PLIST}.disabled {_SYSTEM_PLIST}; "
                          f"sudo launchctl enable system/{_SYSTEM_LABEL}; "
                          f"sudo launchctl bootstrap system {_SYSTEM_PLIST}")
+    assert "gateway migrate --backends --restore" in steps[-1]
 
 
 def test_manual_rollback_steps_for_system_launchdaemon_failed_at_stop_omit_mv_and_use_sudo(home):
@@ -352,9 +354,9 @@ def test_manual_rollback_steps_for_system_launchdaemon_failed_at_stop_omit_mv_an
 
     steps = engine._manual_rollback_steps(m)
 
-    assert steps[-1] == (f"sudo launchctl kickstart system/{_SYSTEM_LABEL} || "
+    assert steps[-2] == (f"sudo launchctl kickstart system/{_SYSTEM_LABEL} || "
                          f"sudo launchctl bootstrap system {_SYSTEM_PLIST}")
-    assert ".disabled" not in steps[-1] and "launchctl enable" not in steps[-1]
+    assert ".disabled" not in steps[-2] and "launchctl enable" not in steps[-2]
 
 
 def test_manual_rollback_steps_for_legacy_manifest_failed_at_stop_include_enable_without_mv(home, tmp_path):
@@ -366,9 +368,9 @@ def test_manual_rollback_steps_for_legacy_manifest_failed_at_stop_include_enable
 
     steps = engine._manual_rollback_steps(m)
 
-    assert steps[-1] == (f"launchctl enable {_DOMAIN}/org.example.agent; "
+    assert steps[-2] == (f"launchctl enable {_DOMAIN}/org.example.agent; "
                          f"launchctl kickstart {_DOMAIN}/org.example.agent || launchctl bootstrap {_DOMAIN} {p}")
-    assert ".disabled" not in steps[-1]
+    assert ".disabled" not in steps[-2]
 
 
 def test_manual_rollback_steps_quote_plist_paths_and_labels_with_spaces(home):
@@ -376,7 +378,7 @@ def test_manual_rollback_steps_quote_plist_paths_and_labels_with_spaces(home):
     m = _system_manifest(home, stopped=True, disabled=True, stop_state="done")
     m["old_backend"]["unit_path"] = spaced_plist
 
-    step = engine._manual_rollback_steps(m)[-1]
+    step = engine._manual_rollback_steps(m)[-2]
     cmds = [shlex.split(part) for part in step.split(";")]
 
     assert cmds == [
@@ -406,7 +408,7 @@ def test_manual_rollback_steps_with_missing_unit_path_instruct_bootstrap_not_kic
                          stop_state="done" if not legacy else "failed", legacy=legacy)
     m["old_backend"].update(scope=scope, unit_path=unit_path)
 
-    step = engine._manual_rollback_steps(m)[-1]
+    step = engine._manual_rollback_steps(m)[-2]
 
     assert "kickstart" not in step
     assert f"locate the original plist for {_SYSTEM_LABEL} and run: {prefix}launchctl bootstrap {scope} <plist-path>" in step
@@ -434,8 +436,8 @@ def test_manual_rollback_steps_omit_mv_when_restore_already_renamed_plist_before
     assert plist.exists() and not disabled_plist.exists()
 
     steps = engine.status_payload(host)["manual_steps"]
-    assert steps[-1] == f"launchctl enable {_DOMAIN}/{_LABEL}; launchctl bootstrap {_DOMAIN} {plist}"
-    assert ".disabled" not in steps[-1]
+    assert steps[-2] == f"launchctl enable {_DOMAIN}/{_LABEL}; launchctl bootstrap {_DOMAIN} {plist}"
+    assert ".disabled" not in steps[-2]
 
 
 def test_manual_rollback_steps_when_old_stop_fails_omit_mv_and_skip_old_enable(home, plist):
@@ -449,8 +451,8 @@ def test_manual_rollback_steps_when_old_stop_fails_omit_mv_and_skip_old_enable(h
     manifest = engine.read_manifest(home)
     assert manifest["old_backend_stopped"] is False and manifest["old_backend_disabled"] is False
     steps = engine.status_payload(host)["manual_steps"]
-    assert steps[-1] == f"launchctl kickstart {_DOMAIN}/{_LABEL} || launchctl bootstrap {_DOMAIN} {plist}"
-    assert ".disabled" not in steps[-1] and "launchctl enable" not in steps[-1] and "sudo " not in steps[-1]
+    assert steps[-2] == f"launchctl kickstart {_DOMAIN}/{_LABEL} || launchctl bootstrap {_DOMAIN} {plist}"
+    assert ".disabled" not in steps[-2] and "launchctl enable" not in steps[-2] and "sudo " not in steps[-2]
 
 
 def test_interrupted_old_stop_records_unknown_stop_state_and_safe_manual_steps(home, plist):
@@ -469,19 +471,19 @@ def test_interrupted_old_stop_records_unknown_stop_state_and_safe_manual_steps(h
     m = engine.read_manifest(home)
     assert m["old_backend_stopped"] is None and m["old_backend_disabled"] is False
 
-    step_with_path = engine._manual_rollback_steps(m)[-1]
+    step_with_path = engine._manual_rollback_steps(m)[-2]
     assert step_with_path == f"launchctl kickstart {_DOMAIN}/{_LABEL} || launchctl bootstrap {_DOMAIN} {plist}"
     assert ".disabled" not in step_with_path and "launchctl enable" not in step_with_path and "sudo " not in step_with_path
 
     for missing in (None, ""):
         m_missing = {**m, "old_backend": {**m["old_backend"], "unit_path": missing}}
-        step_missing = engine._manual_rollback_steps(m_missing)[-1]
+        step_missing = engine._manual_rollback_steps(m_missing)[-2]
         assert step_missing == f"locate the original plist for {_LABEL} and run: launchctl bootstrap {_DOMAIN} <plist-path>"
         assert "kickstart" not in step_missing and "launchctl enable" not in step_missing and ".disabled" not in step_missing
 
     sys_m = _system_manifest(home, stopped=None, disabled=False, stop_state="running")
     sys_m["old_backend"]["unit_path"] = None
-    sys_step = engine._manual_rollback_steps(sys_m)[-1]
+    sys_step = engine._manual_rollback_steps(sys_m)[-2]
     assert sys_step == f"locate the original plist for {_SYSTEM_LABEL} and run: sudo launchctl bootstrap system <plist-path>"
     assert "kickstart" not in sys_step and "launchctl enable" not in sys_step and ".disabled" not in sys_step
 
@@ -510,8 +512,8 @@ def test_manual_rollback_steps_when_old_disable_fails_before_rename_omit_mv(home
     assert engine.cmd_apply(host, _args()) == engine.EXIT_ROLLBACK_INCOMPLETE
 
     steps = engine.status_payload(host)["manual_steps"]
-    assert steps[-1] == f"launchctl enable {_DOMAIN}/{_LABEL}; launchctl bootstrap {_DOMAIN} {plist}"
-    assert ".disabled" not in steps[-1]
+    assert steps[-2] == f"launchctl enable {_DOMAIN}/{_LABEL}; launchctl bootstrap {_DOMAIN} {plist}"
+    assert ".disabled" not in steps[-2]
 
 
 def test_manual_rollback_steps_when_old_disable_fails_after_rename_keep_mv(home, plist):
@@ -529,7 +531,7 @@ def test_manual_rollback_steps_when_old_disable_fails_after_rename_keep_mv(home,
     assert engine.cmd_apply(host, _args()) == engine.EXIT_ROLLBACK_INCOMPLETE
 
     steps = engine.status_payload(host)["manual_steps"]
-    assert steps[-1] == (f"mv {plist}.disabled {plist}; launchctl enable {_DOMAIN}/{_LABEL}; "
+    assert steps[-2] == (f"mv {plist}.disabled {plist}; launchctl enable {_DOMAIN}/{_LABEL}; "
                          f"launchctl bootstrap {_DOMAIN} {plist}")
 
 
@@ -541,8 +543,8 @@ def test_manual_rollback_steps_when_old_enable_succeeded_and_old_start_failed_om
     assert engine.cmd_apply(host, _args()) == engine.EXIT_ROLLBACK_INCOMPLETE
 
     steps = engine.status_payload(host)["manual_steps"]
-    assert steps[-1] == f"launchctl bootstrap {_DOMAIN} {plist}"
-    assert ".disabled" not in steps[-1] and "launchctl enable" not in steps[-1]
+    assert steps[-2] == f"launchctl bootstrap {_DOMAIN} {plist}"
+    assert ".disabled" not in steps[-2] and "launchctl enable" not in steps[-2]
 
 
 def test_manual_rollback_steps_before_stop_old_backend_emit_no_launchctl_step(home, plist):

@@ -81,6 +81,33 @@ def test_a_qqbot_home_gets_the_plugin_once_with_no_placement_notice(tmp_path):
     assert "'qqbot'" in said[0] and "not supported" not in said[0] and "Labs" not in said[0]
 
 
+def test_a_qqbot_disable_survives_the_automatic_install(tmp_path, monkeypatch):
+    """Greptile #159651 (the same path for QQ): a credentialed home core ran QQ Bot for despite a bare
+    ``qqbot`` in plugins.disabled gets the plugin through the real install and enable path, yet the entry stays
+    and QQ Bot stays off; the outcome line names the enable that turns it on."""
+    from types import SimpleNamespace
+    import hermes_cli.plugins_cmd_install as pci
+    monkeypatch.setattr(pci, "_resolve_source", lambda identifier, catalog_name: (
+        SimpleNamespace(name=catalog_name, known_issues=()), catalog_name, [], None))
+
+    def place(entry, identifier, **_kw):  # the clone, network-free
+        target = home / "plugins" / entry.name
+        target.mkdir(parents=True)
+        (target / "plugin.yaml").write_text(f"name: {entry.name}\nversion: 1.0.0\nkind: platform\n", encoding="utf-8")
+        return target, {"name": entry.name}, entry.name
+    monkeypatch.setattr(pci, "_place_tree", place)
+    monkeypatch.setattr("hermes_cli.plugins_admission.admit_plugin_set_change",
+                        lambda *a, **k: pytest.fail("the automatic install enabled a plugin the home disabled"))
+    home = _home(tmp_path, env=_CREDS, config="plugins:\n  disabled: [qqbot]\n")
+    said = []
+
+    assert lcm.migrate_home(home, install=lcm._install_into(home, consent=True), say=said.append) == ["qqbot"]
+    from hermes_cli.config import read_user_config_raw
+    plugins = read_user_config_raw(home / "config.yaml")["plugins"]
+    assert plugins["disabled"] == ["qqbot"] and "qqbot" not in (plugins.get("enabled") or [])
+    assert "`hermes plugins enable qqbot` turns it on" in said[0]
+
+
 @pytest.mark.parametrize(("config", "sentence"), [
     ("plugins:\n  disabled: [qqbot]\n", "plugins.disabled lists 'qqbot', which now turns QQ Bot off"),
     ("plugins:\n  isolation: host\n", "This profile sets plugins.isolation: host"),

@@ -226,7 +226,8 @@ def _qqbot_notice(home: Path, *, process_env: bool = False) -> str:
     notes = []
     # Core's adapter ignored a bare ``qqbot`` in plugins.disabled; the catalog plugin does not (see _yuanbao_notice).
     if plugin_present("qqbot", home) and _plugins_listed(home, ("qqbot",))[1]:
-        notes.append("plugins.disabled lists 'qqbot', which now turns QQ Bot off; remove it to keep using QQ Bot.")
+        notes.append(f"plugins.disabled lists 'qqbot', which now turns QQ Bot off: "
+                     f"`{_enable_command('qqbot', home)}` turns it on.")
     # The bundled adapter was exempt from host isolation; a catalog platform adapter cannot run in the host.
     if isolation_mode(_read_config(home)) == ISOLATION_HOST:
         notes.append("This profile sets plugins.isolation: host, where platform adapters cannot load: QQ Bot "

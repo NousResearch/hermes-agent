@@ -489,6 +489,7 @@ function AppearanceThemeSettings({ compact, query, setQuery }: AppearanceThemeSe
           {NATIVE_CONTROL_OFFERED.themeMarketplace(redesign) && (
             <SearchField
               containerClassName="mt-3 w-full"
+              escapeClears
               inputClassName="flex-1"
               onChange={setQuery}
               placeholder={a.themeSearchPlaceholder}

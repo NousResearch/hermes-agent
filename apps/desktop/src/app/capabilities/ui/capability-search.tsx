@@ -35,8 +35,8 @@ export function CapabilitySearch({
   const field = (
     <SearchField
       containerClassName="h-10 w-full min-w-0 rounded-2xl bg-(--dt-card) py-0"
+      escapeClears
       hints={hints}
-      // The redesign's tab (or the page's H2) already names the scope; Figma's field has no chip.
       leadingContent={
         redesigned ? undefined : (
           <Badge size="xs" variant="muted">

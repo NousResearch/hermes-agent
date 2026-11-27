@@ -318,6 +318,7 @@ export function LibraryPage(props: ComponentProps<'section'>) {
     <SearchField
       aria-label={copy.search[tab]}
       containerClassName="library-search"
+      escapeClears
       inputRef={searchRef}
       onChange={value => {
         setQueries(current => ({ ...current, [tab]: value }))

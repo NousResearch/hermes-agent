@@ -173,6 +173,7 @@ function ShortcutSettings({ includeScreenshot }: { includeScreenshot: boolean })
               <SearchField
                 aria-label={k.search}
                 containerClassName="w-full"
+                escapeClears
                 onChange={setQuery}
                 placeholder={k.search}
                 value={query}

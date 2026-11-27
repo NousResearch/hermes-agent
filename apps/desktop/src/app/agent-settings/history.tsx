@@ -284,6 +284,7 @@ function AgentHistoryContent({ owner, onClose }: AgentHistoryProps) {
           <div className="agent-history-toolbar">
             <SearchField
               containerClassName="agent-history-search"
+              escapeClears
               loading={Boolean(search && recent.isFetching)}
               onChange={value => {
                 setSearch(value)

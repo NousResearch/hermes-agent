@@ -80,15 +80,36 @@ export function ConnectionToolsToolbar({
           autoComplete="off"
           className="conn-tools-search-input"
           onChange={event => onFilterChange({ query: event.target.value })}
+          onKeyDown={event => {
+            if (event.key === 'Escape' && filter.query.length > 0) {
+              event.preventDefault()
+              event.stopPropagation()
+              onFilterChange({ query: '' })
+            }
+          }}
           placeholder={copy.tools.searchAppTools(appName)}
           ref={field}
           spellCheck={false}
           type="text"
           value={filter.query}
         />
-        <Kbd aria-hidden size="sm">
-          /
-        </Kbd>
+        {filter.query.length > 0 ? (
+          <button
+            aria-label={copy.search.clear}
+            className="conn-search-clear"
+            onClick={() => {
+              onFilterChange({ query: '' })
+              field.current?.focus()
+            }}
+            type="button"
+          >
+            <Codicon aria-hidden name="close" size="0.875rem" />
+          </button>
+        ) : (
+          <Kbd aria-hidden size="sm">
+            /
+          </Kbd>
+        )}
       </div>
 
       <ToolFilterPopover

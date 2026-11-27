@@ -186,6 +186,7 @@ export function AgentDirectory({ onClose }: { onClose: () => void }) {
         <SearchField
           aria-label={t.profiles.title}
           containerClassName="mb-6"
+          escapeClears
           onChange={setQuery}
           placeholder={t.titlebar.search}
           value={query}

@@ -615,6 +615,7 @@ export function ProvidersSettings({
             <SearchField
               aria-label={t.settings.providers.searchKeys}
               containerClassName="w-full"
+              escapeClears
               onChange={setKeyQuery}
               placeholder={t.settings.providers.searchKeys}
               value={keyQuery}
@@ -738,6 +739,7 @@ function RedesignProviderKeys({
             <SearchField
               aria-label={t.settings.providers.searchKeys}
               containerClassName="w-full"
+              escapeClears
               onChange={onQueryChange}
               placeholder={t.settings.providers.searchKeys}
               value={query}

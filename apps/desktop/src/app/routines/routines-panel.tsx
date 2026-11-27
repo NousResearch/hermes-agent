@@ -79,6 +79,7 @@ export function RoutineGroups({ actions, shown, source }: RoutineGroupsProps) {
         <SearchField
           aria-label={copy.search}
           containerClassName="page-sidebar-search"
+          escapeClears
           onChange={setQuery}
           placeholder={copy.search}
           value={query}

@@ -1,0 +1,47 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: fastmetal
+description: Ask, compare and route across FastMetal's 80+ hosted models; images, video, quota.
+source: https://fastmetal.ai/docs/guides/mcp
+
+# Official vendor-hosted remote MCP (Streamable HTTP) — nothing to install
+# locally. The MCP host is mcp.fastmetal.ai; api.fastmetal.ai serves only the
+# inference API and has no MCP route.
+transport:
+  type: http
+  url: https://mcp.fastmetal.ai/mcp
+
+# Bearer auth with an ordinary FastMetal API key (the same key the `fastmetal`
+# model provider reads from FASTMETAL_API_KEY). The catalog's http + api_key
+# contract references MCP_<NAME>_API_KEY in the Authorization header, so the key
+# is declared under that name; a per-key budget cap on the dashboard bounds
+# what the agent can spend through either surface.
+auth:
+  type: api_key
+  env:
+    - name: MCP_FASTMETAL_API_KEY
+      prompt: "FastMetal API key (https://fastmetal.ai/dashboard)"
+      required: true
+      secret: true
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - fastmetal
+  hosts:
+    - fastmetal.ai
+
+post_install: |
+  Tools are available as soon as the session restarts (or after /reload-mcp).
+  Twelve tools: ask, compare, decide, generate_image, analyze_image,
+  generate_video, get_video, list_models, get_model, model_compatibility,
+  quota and health_check (verified live 2026-09-22).
+
+  Every ask/compare/generate call is billed per token against the key's
+  prepaid balance in JPY; quota reports what is left. Issue a dedicated key
+  with a budget cap on the FastMetal dashboard for agent use.
+
+  Re-run the tool checklist any time with:
+    hermes mcp configure fastmetal

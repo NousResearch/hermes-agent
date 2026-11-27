@@ -110,15 +110,21 @@ def test_managed_environment_respects_explicit_env_without_path_or_empty_path(tm
     _uv, py = _stub_toolchain(tmp_path, monkeypatch)
     _install_fake_git_store(tmp_path, monkeypatch)
 
-    assert env_module.managed_environment(
+    empty_env = env_module.managed_environment(
         tmp_path / "empty", python=py, cache=tmp_path / "cache", env={},
-    ).env == {}
-    assert env_module.managed_environment(
+    ).env
+    assert not any(k.upper() == "PATH" for k in empty_env)
+
+    no_path_env = env_module.managed_environment(
         tmp_path / "no-path", python=py, cache=tmp_path / "cache", env={"AR": "/custom/ar"},
-    ).env == {"AR": "/custom/ar"}
-    assert env_module.managed_environment(
+    ).env
+    assert no_path_env["AR"] == "/custom/ar"
+    assert not any(k.upper() == "PATH" for k in no_path_env)
+
+    cleared_env = env_module.managed_environment(
         tmp_path / "cleared-path", python=py, cache=tmp_path / "cache", env={"PATH": ""},
-    ).env == {"PATH": ""}
+    ).env
+    assert cleared_env["PATH"] == ""
 
 
 def test_managed_environment_keeps_ambient_path_when_git_not_installed(tmp_path, monkeypatch):

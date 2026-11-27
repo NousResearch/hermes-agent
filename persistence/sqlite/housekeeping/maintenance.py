@@ -472,8 +472,12 @@ class SQLiteSessionMaintenance(SessionPortability):
             fields = tuple(field for field in SESSION_PROJECTION_FIELDS if field in available)
             if not fields:
                 return None
-            order = " ORDER BY id" if "id" in available else ""
-            rows = conn.execute(f"SELECT {', '.join(fields)} FROM sessions{order}")
+            # Scan the table and sort here: ``ORDER BY id`` walks the id autoindex and fetches each row by
+            # rowid, which re-reads the table page per row once it outgrows the page cache (~5x the table's
+            # bytes per digest), and the change watcher runs this on every state.db write.
+            rows = conn.execute(f"SELECT {', '.join(fields)} FROM sessions").fetchall()
+            if "id" in available:  # SESSION_PROJECTION_FIELDS leads with id
+                rows.sort(key=lambda row: row[0])
             digest = hashlib.blake2b(digest_size=16)
             for row in rows:
                 digest.update(repr(tuple(row)).encode("utf-8", "backslashreplace"))

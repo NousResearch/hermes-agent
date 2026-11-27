@@ -49,9 +49,12 @@ def _travels(name: str, secret=None) -> bool:
     """A toolchain name may travel unless it is a credential by execute_code's secret policy (even when
     listed: ``NODE_AUTH_TOKEN`` matches ``NODE_``; secrets reach tools through ``terminal.env_passthrough``)
     or a Hermes control name (a delegated child's markers, Kanban pins). ``secret``: a session's frozen
-    copy of that policy's substrings."""
+    copy of that policy's substrings. ``PAPERCLIP_*`` never travels this way even if explicitly named in
+    a profile's ``client_env_passthrough``: it only ever reaches a child through
+    ``agent.paperclip_context.child_environ``, applied after this allowlist."""
     hidden = is_secret_env_name(name) if secret is None else any(s in name.upper() for s in secret)
-    return not hidden and not name.startswith('HERMES_')
+    from agent.paperclip_context import NAMES as _PAPERCLIP_NAMES
+    return not hidden and not name.startswith('HERMES_') and name not in _PAPERCLIP_NAMES
 
 
 def client_env_rules(config, *, local=True) -> dict:

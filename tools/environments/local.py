@@ -900,7 +900,11 @@ def _make_run_env(env: dict) -> dict:
     if published:
         run_env.update(published)
         run_env.pop("WAYLAND_DISPLAY", None)  # X11 desktop; a leaked Wayland socket flips GTK/Chromium backends
-    return run_env
+    # Paperclip run identity never comes from the daemon's own inherited environment or any
+    # env_passthrough declaration (both can carry a stale/foreign PAPERCLIP_* value): the bound
+    # per-turn context is the sole source of truth, applied last so it cannot be shadowed.
+    from agent.paperclip_context import child_environ as _paperclip_child_environ
+    return _paperclip_child_environ(run_env)
 
 
 # --- Hermes venv / repo-root detection (module-level, computed once) ---

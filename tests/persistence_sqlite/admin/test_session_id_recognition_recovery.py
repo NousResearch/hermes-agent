@@ -18,6 +18,7 @@ from persistence.sqlite._holder import StoreHolder
 from persistence.sqlite.admin._lost_and_found import _is_session_id, map_lost_and_found_rows
 from persistence.sqlite.admin._recovery import _quoted_columns, _table_columns
 from persistence.sqlite.conversation._store.sessions import create_session
+from persistence.sqlite.conversation._store.usage import record_auxiliary_usage, update_token_counts
 
 # Exactly as the minting sites build them.
 CRON_ID = "cron_0b36145ae5c7_20260626_100059"
@@ -140,5 +141,46 @@ def test_salvage_preserves_a_committed_local_session(backend, scope_a, tmp_path)
     try:
         assert recovered.execute("SELECT id, title, source FROM sessions").fetchall() == [
             (session_id, "Local session to recover", "cli")]
+    finally:
+        recovered.close()
+
+
+def test_salvage_preserves_canonical_local_model_usage(tmp_path) -> None:
+    """A local session's per-model usage rows must survive schema-less recovery."""
+    with StoreHolder(tmp_path / "state.db") as holder:
+        create_session(holder, LOCAL_ID, source="cron", model="usage-model", cwd=str(tmp_path))
+        update_token_counts(
+            holder, LOCAL_ID, model="usage-model", api_call_count=2,
+            input_tokens=42, output_tokens=18,
+        )
+        record_auxiliary_usage(
+            holder, LOCAL_ID, "vision", model="aux-model",
+            input_tokens=100, output_tokens=25,
+        )
+
+    source = sqlite3.connect(str(tmp_path / "state.db"))
+    try:
+        columns = _table_columns(source, "session_model_usage")
+        quoted = _quoted_columns(columns)[0]
+        rows = [tuple(row) for row in source.execute(
+            f"SELECT {quoted} FROM session_model_usage ORDER BY task"
+        )]
+    finally:
+        source.close()
+
+    assert len(rows) == 2
+    report = _map_as_salvage(tmp_path, columns, rows)
+    assert report["mapped"]["session_model_usage"] == 2
+    assert report["unmapped_rows"] == 0
+    assert report["unrecognized_layout_rows"] == 0
+    recovered = sqlite3.connect(str(tmp_path / "mapped.db"))
+    try:
+        assert recovered.execute(
+            "SELECT session_id, model, task, api_call_count, input_tokens, output_tokens "
+            "FROM session_model_usage ORDER BY task"
+        ).fetchall() == [
+            (LOCAL_ID, "usage-model", "", 2, 42, 18),
+            (LOCAL_ID, "aux-model", "vision", 1, 100, 25),
+        ]
     finally:
         recovered.close()

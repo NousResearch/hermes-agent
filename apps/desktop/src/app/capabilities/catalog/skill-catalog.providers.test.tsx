@@ -164,6 +164,41 @@ it('serializes two ready providers within a profile and shows both without a bus
   expect(screen.queryByText(/429 Catalog search is busy/)).toBeNull()
 })
 
+it('skips queued searches superseded by the current search text', async () => {
+  const searches: string[] = []
+  let release!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  const original = api.getMockImplementation()!
+  api.mockImplementation(async (request: { path: string }) => {
+    if (!request.path.includes('/search?')) { return original(request) }
+
+    const query = new URL(request.path, 'http://fixture').searchParams.get('q')!
+    searches.push(query)
+
+    if (query === '') { await gate }
+
+    return { results: [], next_cursor: null }
+  })
+
+  const renderQuery = (query: string) => (
+    <QueryClientProvider client={queryClient}>
+      <SkillCatalog profile={profile} query={query} renderInstalledDetail={() => null} skills={[]} />
+    </QueryClientProvider>
+  )
+
+  const view = render(renderQuery(''))
+
+  try {
+    await waitFor(() => expect(searches).toEqual(['']))
+    view.rerender(renderQuery('e'))
+    view.rerender(renderQuery('ex'))
+    view.rerender(renderQuery('example'))
+  } finally { await act(async () => release()) }
+
+  await waitFor(() => expect(searches).toContain('example'))
+  expect(searches).toEqual(['', 'example'])
+})
+
 it('surfaces a real provider search 429 without retrying it', async () => {
   const original = api.getMockImplementation()!
   api.mockImplementation((request: { path: string }) => {

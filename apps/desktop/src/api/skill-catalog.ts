@@ -22,14 +22,20 @@ export function catalogRequest<T>(profile: ProfileScope, path: string, body?: un
 // Core admits one catalog search per profile, including searches from different query keys.
 const searchQueues = new Map<string, Promise<unknown>>()
 
-export function searchProvider(profile: ProfileScope, source: string, query: string, cursor: string | null) {
+export function searchProvider(profile: ProfileScope, source: string, query: string, cursor: string | null, signal?: AbortSignal) {
   const pin = capabilityScoped(profile)
   const scope = profileScopeKey(pin)
   const params = new URLSearchParams({ source, q: query, limit: '20' })
 
   if (cursor) { params.set('cursor', cursor) }
 
-  const request = (searchQueues.get(scope) ?? Promise.resolve()).then(() => catalogRequest<ProviderSearchPage>(pin, `search?${params}`))
+  const request = (searchQueues.get(scope) ?? Promise.resolve()).then(() => {
+    // Query text or source changes can retire this search while it waits for its turn.
+    signal?.throwIfAborted()
+
+    return catalogRequest<ProviderSearchPage>(pin, `search?${params}`)
+  })
+
   const tail = request.then(() => undefined, () => undefined)
   searchQueues.set(scope, tail)
   void tail.then(() => {

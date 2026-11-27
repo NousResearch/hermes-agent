@@ -41,8 +41,8 @@ export function useProviderCatalog(sources: CatalogSource[], profile: ProfileSco
 
   const result = useInfiniteQuery({
     queryKey: [PROVIDER_CATALOG_KEY, scope, ready.map(source => source.id), query],
-    queryFn: async ({ pageParam }) => Promise.all(Object.entries(pageParam).map(async ([source, cursor]) => {
-      try { return { source, ...await searchProvider(profile, source, query, cursor) } }
+    queryFn: async ({ pageParam, signal }) => Promise.all(Object.entries(pageParam).map(async ([source, cursor]) => {
+      try { return { source, ...await searchProvider(profile, source, query, cursor, signal) } }
       catch (error) { return { source, results: [], next_cursor: null, provider_errors: [{ source, code: 'provider_unavailable', message: String(error instanceof Error ? error.message : error) }] } }
     })),
     initialPageParam: Object.fromEntries(ready.map(source => [source.id, null])) as Record<string, string | null>,

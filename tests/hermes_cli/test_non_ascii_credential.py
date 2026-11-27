@@ -69,3 +69,20 @@ class TestEnvLoaderSanitization:
         captured = capsys.readouterr()
         assert "GOOGLE_API_KEY" in captured.err
         assert "U+200B" in captured.err
+
+
+def test_env_writer_preserves_unicode_paths_and_non_credentials(tmp_path, monkeypatch):
+    from dotenv import dotenv_values
+    from hermes_cli.config import save_env_value
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    env_path = tmp_path / "custom.env"
+    ssh_path = r"C:\Users\张三\.ssh\id_ed25519"
+    save_env_value("TERMINAL_SSH_KEY", ssh_path, env_path)
+    save_env_value("HERMES_SIGNAL_NAME", "Jörg", env_path)
+    save_env_value("OPENAI_API_KEY", "sk-test-abcʋdef", env_path)
+
+    values = dotenv_values(env_path)
+    assert values["TERMINAL_SSH_KEY"] == ssh_path
+    assert values["HERMES_SIGNAL_NAME"] == "Jörg"
+    assert values["OPENAI_API_KEY"] == "sk-test-abcdef"

@@ -223,6 +223,23 @@ def refuse_redacted_config_sets(sets: Mapping[str, Any], read_old: Callable[[], 
     refuse_redacted_config_credentials(doc, read_old)
 
 
+_HEADER_CREDENTIAL_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET")
+
+
+def _is_header_credential_env_name(key: str) -> bool:
+    """Whether an environment variable requires ASCII for HTTP-header transport.
+
+    Registered password metadata wins. Unregistered values retain the header-shaped
+    suffix fallback; a bare ``_KEY`` suffix does not imply a header credential.
+    """
+    from hermes_cli.config_defaults import OPTIONAL_ENV_VARS
+
+    meta = OPTIONAL_ENV_VARS.get(key.upper())
+    if isinstance(meta, dict):
+        return meta.get("password") is True
+    return key.upper().endswith(_HEADER_CREDENTIAL_SUFFIXES)
+
+
 def _check_non_ascii_credential(key: str, value: str) -> str:
     """Strip non-ASCII characters from a credential (HTTP header values must be ASCII) and warn.
     Lookalike glyphs typically come from copy-pasting out of a PDF or rich-text editor."""

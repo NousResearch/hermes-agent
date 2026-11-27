@@ -75,7 +75,8 @@ class RunIdempotencyStore:
                 db_path = ":memory:"
         self._db_path = None if db_path == ":memory:" else db_path
         try:
-            self._conn = sqlite3.connect(db_path, check_same_thread=False, timeout=30)
+            from hermes_cli.sqlite_util import connect_store
+            self._conn = connect_store(db_path, db_label="runs_idempotency.db", check_same_thread=False, timeout=30)
         except Exception as exc:
             # Docker may create the container object before `docker run` fails to start it (e.g. exit code
             # 125 when the daemon isn't ready, or a timeout mid-pull). That orphan is left in "Created"
@@ -86,8 +87,6 @@ class RunIdempotencyStore:
                 "process memory, so replay will not survive a restart: %s", exc)
             self._conn = sqlite3.connect(":memory:", check_same_thread=False)
             self._db_path = None
-        from sqlite_support import apply_wal_with_fallback
-        apply_wal_with_fallback(self._conn, db_label="runs_idempotency.db")
         self._conn.execute(
             """CREATE TABLE IF NOT EXISTS run_idempotency (
                 scope TEXT NOT NULL,
@@ -115,7 +114,8 @@ class RunIdempotencyStore:
         self._tighten_permissions()
 
     def _tighten_permissions(self) -> None:
-        for suffix in ("", "-wal", "-shm") if self._db_path else ():
+        from hermes_cli.sqlite_util import is_sqlite_file
+        for suffix in ("", "-wal", "-shm") if self._db_path and is_sqlite_file(self._conn) else ():
             candidate = Path(self._db_path + suffix)
             try:
                 if candidate.exists():

@@ -437,8 +437,10 @@ def _messages(home: _Root) -> bool:
     from persistence.core.errors import StoreContention
     from persistence_assembly import open_persistence_reader
 
+    from persistence_assembly import session_store_exists
+
     db = home.file("state.db")
-    if not db.is_file():
+    if not session_store_exists(db.parent):
         return False
     # The read-only door, never a writer: that would migrate a schema we do not own.
     try:

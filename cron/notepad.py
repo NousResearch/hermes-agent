@@ -136,8 +136,10 @@ def list_notes(job_id: str) -> list[dict[str, Any]]:
 
 def clear_notepad(job_id: str) -> int:
     """Delete every key for one job (called from ``cron.jobs.remove_job``). Returns row count;
-    no-ops without creating the DB when no notepad file exists yet."""
-    if not _current_notepad_file().exists():
+    no-ops without creating the DB when no notepad store exists yet."""
+    from persistence_assembly import file_store_exists
+
+    if not file_store_exists(_current_notepad_file()):
         return 0
     with _transaction() as conn:
         cur = conn.execute(

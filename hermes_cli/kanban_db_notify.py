@@ -222,7 +222,8 @@ def count_notify_subs(
     unreadable — callers pick their own fallback.
     """
     path = db_path if db_path is not None else _kb.kanban_db_path(board=board)
-    if not path.exists():
+    from persistence_assembly import file_store_exists
+    if not file_store_exists(path):
         return 0
     owner_where, owner_params = _notify_profile_filter(
         notifier_profiles, include_unowned=include_unowned,
@@ -243,7 +244,8 @@ def count_notify_subs(
     query = "SELECT COUNT(*) FROM kanban_notify_subs"
     if clauses:
         query += " WHERE " + " AND ".join(clauses)
-    conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+    from hermes_cli.sqlite_util import connect_read_only
+    conn = connect_read_only(path)
     try:
         try:
             row = conn.execute(query, params).fetchone()

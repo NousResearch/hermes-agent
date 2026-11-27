@@ -40,6 +40,18 @@ def open_db(
     from sqlite_support import apply_wal_with_fallback
 
     path = Path(path)
+    # A profile whose persistence provider keeps its file stores too is served from there (no file, no PRAGMAs).
+    from persistence_assembly import open_compat_store
+
+    compat = open_compat_store(path, row_factory=row_factory)
+    if compat is not None:
+        try:
+            if initialize is not None:
+                initialize(compat)
+        except BaseException:
+            compat.close()
+            raise
+        return compat
     path.parent.mkdir(parents=True, exist_ok=True)
     # Resolved at call time: fd-leak tests patch ``sqlite3.connect`` through the caller's module.
     conn = sqlite3.connect(path, timeout=busy_timeout_ms / 1000, check_same_thread=check_same_thread)
@@ -65,6 +77,78 @@ def open_db(
         conn.close()
         raise
     return conn
+
+
+def connect_store(path: Path | str, *, db_label: str, wal: bool = True, row_factory=None, **connect_kwargs) -> sqlite3.Connection:
+    """A store that opens its own connection (not through :func:`open_db`): the provider's compatible connection when
+    the profile keeps its file stores there, else ``sqlite3.connect(path, **connect_kwargs)`` with the shared WAL
+    fallback. A ``:memory:`` path is always SQLite."""
+    from sqlite_support import apply_wal_with_fallback
+
+    if str(path) != ":memory:":
+        from persistence_assembly import open_compat_store
+
+        compat = open_compat_store(Path(path), row_factory=row_factory)
+        if compat is not None:
+            return compat
+    conn = sqlite3.connect(path, **connect_kwargs)
+    try:
+        conn.row_factory = row_factory
+        if wal and str(path) != ":memory:":
+            apply_wal_with_fallback(conn, db_label=db_label)
+    except BaseException:
+        conn.close()
+        raise
+    return conn
+
+
+def connect_read_only(path: Path | str, *, row_factory=None, **connect_kwargs) -> sqlite3.Connection:
+    """A read-only connection on the store at ``path``: the provider's (refusing writes) when the profile keeps
+    its file stores there, else ``mode=ro`` on the file."""
+    from persistence_assembly import open_compat_store
+
+    compat = open_compat_store(Path(path), row_factory=row_factory)
+    if compat is not None:
+        compat.read_only = True
+        return compat
+    conn = sqlite3.connect(f"{Path(path).resolve().as_uri()}?mode=ro", uri=True, **connect_kwargs)
+    conn.row_factory = row_factory
+    return conn
+
+
+def copy_store_contents(src: sqlite3.Connection, dst: sqlite3.Connection) -> dict[str, int]:
+    """Copy every table and index of ``src`` into the empty ``dst`` (either side a SQLite file or a provider's
+    store) from ``src``'s own ``sqlite_master`` text, rows in rowid order; one transaction on ``dst``, which the
+    caller commits. Returns the rows copied per table."""
+    if dst.execute("SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").fetchone()[0]:
+        raise sqlite3.OperationalError("refusing to copy into a store that already holds tables")
+    objects = src.execute("SELECT type, name, sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' "
+                          "ORDER BY CASE type WHEN 'table' THEN 0 ELSE 1 END").fetchall()
+    if not dst.in_transaction:
+        dst.execute("BEGIN")
+    counts: dict[str, int] = {}
+    for kind, _name, ddl in objects:
+        if kind in ("table", "index"):
+            dst.execute(ddl)
+    for kind, name, _ddl in objects:
+        if kind != "table":
+            continue
+        columns = [row[1] for row in src.execute(f'PRAGMA table_info("{name}")')]
+        names = ", ".join(f'"{c}"' for c in columns)
+        try:
+            rows = src.execute(f'SELECT {names} FROM "{name}" ORDER BY rowid').fetchall()
+        except sqlite3.OperationalError:  # a WITHOUT ROWID table
+            rows = src.execute(f'SELECT {names} FROM "{name}"').fetchall()
+        if rows:
+            dst.executemany(f'INSERT INTO "{name}" ({names}) VALUES ({", ".join("?" for _ in columns)})',
+                            [tuple(r) for r in rows])
+        counts[name] = len(rows)
+    return counts
+
+
+def is_sqlite_file(conn: sqlite3.Connection) -> bool:
+    """Whether ``conn`` is a real SQLite connection (whose file and sidecars exist on disk), not a provider's."""
+    return isinstance(conn, sqlite3.Connection)
 
 
 @contextlib.contextmanager

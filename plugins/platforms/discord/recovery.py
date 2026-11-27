@@ -33,14 +33,16 @@ class DiscordRecoveryStore:
     def call(self, fn: Callable[[sqlite3.Connection], Any], default: Any = None) -> Any:
         try:
             with self._lock:
+                from hermes_cli.sqlite_util import connect_store, is_sqlite_file
                 path = self.path()
-                conn = sqlite3.connect(path, timeout=0.1)
+                conn = connect_store(path, db_label="discord_recovery.db", wal=not self._initialized, timeout=0.1)
                 try:
                     if not self._initialized:
                         self._initialize(conn)
                         self._initialized = True
-                        with suppress(OSError):
-                            os.chmod(path, 0o600)
+                        if is_sqlite_file(conn):
+                            with suppress(OSError):
+                                os.chmod(path, 0o600)
                     result = fn(conn)
                     conn.commit()
                     return result
@@ -51,8 +53,6 @@ class DiscordRecoveryStore:
             return default
 
     def _initialize(self, conn: sqlite3.Connection) -> None:
-        from sqlite_support import apply_wal_with_fallback
-        apply_wal_with_fallback(conn, db_label="discord_recovery.db")
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS discord_messages (
                 message_id TEXT PRIMARY KEY, channel_id TEXT, thread_id TEXT, parent_channel_id TEXT,

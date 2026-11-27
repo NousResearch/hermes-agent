@@ -23,6 +23,11 @@ def _fail_chunk(backend_name: str, monkeypatch, chunk: int) -> None:
         from persistence.sqlite.conversation._store import messages as module
 
         name = "_insert_message_rows"
+    elif backend_name == "postgres":
+        from tests.contracts._postgres_backend import plugin_module
+
+        module = plugin_module("conversation._transcript")
+        name = "insert_rows"
     else:
         from tests.contracts._reference.conversation import messages_writes as module
 

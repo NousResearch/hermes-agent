@@ -1946,7 +1946,8 @@ def count_running_tasks_other_boards(board: Optional[str] = None) -> int:
             resolved = str(path.resolve())
             if current_path is not None and resolved == current_path:
                 continue
-            if not path.exists():
+            from persistence_assembly import file_store_exists
+            if not file_store_exists(path):
                 continue
             other = _kbc.connect(board=slug)
             try:

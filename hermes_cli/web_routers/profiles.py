@@ -40,7 +40,7 @@ from hermes_cli.web_server_profiles import (
 from hermes_cli.web_server_sessions import _open_session_db_at_path, _session_rows
 from persistence import StorageState
 from persistence.conversation.sessions import SessionCountQuery
-from persistence_assembly import profile_scope, storage_health, store_location
+from persistence_assembly import profile_scope, session_store_exists, storage_health, store_fingerprint
 from starlette.concurrency import run_in_threadpool
 from hermes_cli.web_models import (
     ProfileCreate, ProfileActiveUpdate, ProfileExport, ProfileImport, ProfileRename,
@@ -214,12 +214,9 @@ def _read_profile_db(name: str, home, errors: Optional[list[dict[str, str]]],
     routinely DDL/write-lock another profile's live DB. A store that predates a schema addition
     gets the missing declared tables/columns ONCE from the open helper, and only while no gateway
     owns it; an owned store is reported in ``errors`` with the restart remedy (#140315)."""
+    if not session_store_exists(Path(home)):
+        return None
     db_path = _profile_state_db(home)
-    if db_path is None:
-        _no_store_file(name, errors)
-        return None
-    if not db_path.exists():
-        return None
     store = None
     try:
         store = _open_session_db_at_path(db_path, read_only=True)
@@ -251,20 +248,6 @@ _SIDEBAR_PROFILE_CACHE = OrderedDict()
 _SIDEBAR_PROFILE_CACHE_LOCK = threading.Lock()
 
 
-def _stat_fingerprint(path: Path):
-    """Return identity + mutation metadata without opening the file."""
-    try:
-        stat = path.stat()
-    except OSError:
-        return None
-    return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
-
-
-def _sidebar_db_fingerprint(db_path: Path):
-    """Track SQLite content changes through the main DB and its WAL."""
-    return (_stat_fingerprint(db_path), _stat_fingerprint(Path(f"{db_path}-wal")))
-
-
 def _sidebar_profile_cache_get(key):
     with _SIDEBAR_PROFILE_CACHE_LOCK:
         value = _SIDEBAR_PROFILE_CACHE.get(key)
@@ -294,14 +277,9 @@ def _sidebar_profile_cache_clear():
         _SIDEBAR_PROFILE_CACHE.clear()
 
 
-def _profile_state_db(home) -> Optional[Path]:
-    return store_location(profile_scope(home=Path(home)))
-
-
-def _no_store_file(name: str, errors: Optional[list[dict[str, str]]]) -> None:
-    if errors is not None:
-        errors.append({"profile": name, "error": "the sidebar reads a profile's session store file, and this "
-                                                 "profile's store has no file"})
+def _profile_state_db(home) -> Path:
+    """The path naming the profile's store for the reader door; the configured provider serves it, file or not."""
+    return Path(home) / "state.db"
 
 
 def _slice_has_rows(slices: dict[str, Any]) -> bool:
@@ -526,14 +504,11 @@ def get_profiles_sessions_sidebar(
         if recents_scope != "all" and name != recents_scope:
             continue
         scanned.append((name, home))
+        if not session_store_exists(Path(home)):
+            continue
         db_path = _profile_state_db(home)
-        if db_path is None:
-            _no_store_file(name, errors)
-            continue
-        if not db_path.exists():
-            continue
         recents_subagents = subagent_listing_scope(home, exclude_sources=recents_exclude_list or None)
-        profile_cache_key = (str(db_path), _sidebar_db_fingerprint(db_path), cap["recents"],
+        profile_cache_key = (str(db_path), store_fingerprint(Path(home)), cap["recents"],
                              tuple(recents_exclude_list), cap["cron"], cap["messaging"],
                              tuple(messaging_exclude_list), recents_subagents[0])
         slices = _sidebar_profile_cache_get(profile_cache_key)

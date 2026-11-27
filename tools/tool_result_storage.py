@@ -102,10 +102,11 @@ def referenced_archive_refs(home) -> set | None:
     when the reference set is UNKNOWN (unreadable database/query) so callers fail closed
     and keep the files; a read-only handle is enough, the write path owns the locks."""
     from persistence.core.errors import STORE_FAILURES
-    from persistence_assembly import open_persistence_reader
+    from persistence_assembly import open_persistence_reader, session_store_exists
 
+    # The path names the profile; the configured provider serves its store, file-backed or not.
     db_path = home / "state.db"
-    if not db_path.exists():
+    if not session_store_exists(home):
         return set()
     try:
         refs: set = set()

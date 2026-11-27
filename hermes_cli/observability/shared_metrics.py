@@ -214,7 +214,12 @@ class SharedMetricsStore:
         self.outbox_directory = outbox_directory or root / "outbox"
         _ensure_private(self.database_path.parent, 0o700)
         _ensure_private(self.outbox_directory, 0o700)
-        _ensure_private(self.database_path, 0o600)
+        from persistence_assembly import open_compat_store
+        probe = open_compat_store(self.database_path)
+        if probe is None:  # a SQLite file, not a store the profile's persistence provider serves
+            _ensure_private(self.database_path, 0o600)
+        else:
+            probe.close()
         self._ensure_schema()
         self._deferred: list[Callable[[sqlite3.Connection], None]] = []
         self._deferred_lock = threading.Lock()
@@ -511,10 +516,13 @@ class SharedMetricsStore:
     def _connection(
         self, *, busy_timeout_ms: int = _BUSY_TIMEOUT_MS
     ) -> Iterator[sqlite3.Connection]:
-        connection = sqlite3.connect(self.database_path, timeout=busy_timeout_ms / 1000)
+        from hermes_cli.sqlite_util import connect_store, is_sqlite_file
+
+        connection = connect_store(self.database_path, db_label="metrics.sqlite3", wal=False,
+                                   row_factory=sqlite3.Row, timeout=busy_timeout_ms / 1000)
         try:
-            connection.row_factory = sqlite3.Row
-            connection.execute(f"PRAGMA busy_timeout={busy_timeout_ms}")
+            if is_sqlite_file(connection):
+                connection.execute(f"PRAGMA busy_timeout={busy_timeout_ms}")
             with connection:
                 yield connection
         finally:

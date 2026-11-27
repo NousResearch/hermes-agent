@@ -140,8 +140,9 @@ def _sibling_board_db_files(conn: sqlite3.Connection) -> list[Path]:
                 candidates.append(child / "kanban.db")
     found: list[Path] = []
     seen: set[Path] = set()
+    from persistence_assembly import file_store_exists
     for path in candidates:
-        if not path.is_file():
+        if not file_store_exists(path):
             continue
         resolved = path.resolve()
         if current is not None and resolved == current:
@@ -154,10 +155,9 @@ def _sibling_board_db_files(conn: sqlite3.Connection) -> list[Path]:
 
 
 def _other_board_uses_path(db_file: Path, task_id: str, key: str) -> bool:
-    uri = db_file.as_uri() + "?mode=ro"
-    other = sqlite3.connect(uri, uri=True, timeout=1.0)
+    from hermes_cli.sqlite_util import connect_read_only
+    other = connect_read_only(db_file, row_factory=sqlite3.Row, timeout=1.0)
     try:
-        other.row_factory = sqlite3.Row
         return _conn_uses_path(other, task_id, key, exclude_task_id=False)
     finally:
         other.close()

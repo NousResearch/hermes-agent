@@ -174,7 +174,15 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
         while target.exists():  # rapid double-archive
             target = archive_root / f"{normed}-{ts}-{suffix}"
             suffix += 1
-        d.rename(target)
+        # A board the persistence provider serves has no file to move with the folder: its store moves too.
+        from persistence_assembly import move_file_store
+        moved = move_file_store(d / "kanban.db", target / "kanban.db")
+        try:
+            d.rename(target)
+        except BaseException:
+            if moved:
+                move_file_store(target / "kanban.db", d / "kanban.db")
+            raise
         # Leave an ``archived`` tombstone at the original slug. Stale dashboard
         # tabs / gateway pollers can keep calling connect(board=slug) after the
         # archive; without a marker the resurrect-guard cannot tell an archived
@@ -191,7 +199,9 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
         )
         return {"slug": normed, "action": "archived", "new_path": str(target)}
     import shutil
+    from persistence_assembly import drop_file_store
     shutil.rmtree(d)
+    drop_file_store(d / "kanban.db")
     return {"slug": normed, "action": "deleted", "new_path": ""}
 
 

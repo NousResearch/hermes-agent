@@ -227,7 +227,8 @@ def worker_claim_is_live(
     if task_id is None:
         return False
     db_path = _kanban_db_path() if db_path is None else (db_path.strip() or None)
-    if not db_path or not Path(db_path).exists():
+    from persistence_assembly import file_store_exists
+    if not db_path or not file_store_exists(Path(db_path)):
         logger.warning("kanban claim check: pinned board db %r not found — not retrying in place", db_path)
         return False
     run_id_env = str(run_id if run_id is not None else os.environ.get("HERMES_KANBAN_RUN_ID") or "").strip()
@@ -240,9 +241,9 @@ def worker_claim_is_live(
         return False
     now = _now()
     try:
-        conn = sqlite3.connect(f"{Path(db_path).absolute().as_uri()}?mode=ro", uri=True)
+        from hermes_cli.sqlite_util import connect_read_only
+        conn = connect_read_only(Path(db_path).absolute(), row_factory=sqlite3.Row)
         try:
-            conn.row_factory = sqlite3.Row
             row = conn.execute(
                 "SELECT status, worker_pid, current_run_id, claim_lock, claim_expires "
                 "FROM tasks WHERE id = ?",

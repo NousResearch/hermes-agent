@@ -120,6 +120,19 @@ async def _register(client, provider, cfg):
         if not endpoint:
             raise RuntimeError("Server has no registration endpoint; configure oauth.client_id (and client_secret if required)")
         response = await client.post(str(endpoint), json=metadata)
+        try:
+            error = response.json().get("error")
+        except (ValueError, AttributeError):
+            error = None
+        if response.status_code == 400 and error == "invalid_client_metadata":
+            # Device clients register with response_types=[], which some servers reject as invalid metadata.
+            # The error does not name the field, so retry once without it (the server then applies its default).
+            fallback = {key: value for key, value in metadata.items() if key != "response_types"}
+            response = await client.post(str(endpoint), json=fallback)
+            if not 200 <= response.status_code < 300:
+                raise RuntimeError(
+                    "Server rejected the client registration metadata, and a retry without response_types failed "
+                    f"(HTTP {response.status_code}); configure oauth.client_id (and client_secret if required)")
         data = _payload(response, "Client registration")
     # SEP-2352: bind the credentials to the identifier the SDK's runtime flow compares them against — the
     # advertised authorization server when the resource advertised one, else the metadata issuer (its Step 4

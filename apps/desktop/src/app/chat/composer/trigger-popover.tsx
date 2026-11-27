@@ -197,11 +197,20 @@ export function ComposerTriggerPopover({
           const active = index === activeIndex
           const refKind = referenceKind(rowKind(item, isSlash))
 
+          const path =
+            kind === '@' && (refKind === 'file' || refKind === 'folder') ? /^(.*\/)([^/]+\/?)$/.exec(display) : null
+
           return (
             <Fragment key={item.id}>
               {showHeader && <div className={cn(GROUP_HEADER_CLASS, isFirstHeader ? 'pt-0.5' : 'pt-2')}>{group}</div>}
-              <Tip delayDuration={400} label={kind === '/' ? description : undefined} placement="row" sideOffset={4}>
+              <Tip
+                delayDuration={400}
+                label={path ? display : isSlash ? description : undefined}
+                placement="row"
+                sideOffset={4}
+              >
                 <button
+                  aria-label={path ? display : undefined}
                   className={ROW_CLASS}
                   data-highlighted={active ? '' : undefined}
                   onClick={() => onPick(item)}
@@ -222,7 +231,14 @@ export function ComposerTriggerPopover({
                       <span className="grid size-4 shrink-0 place-items-center text-(--ref-color)" data-ref={refKind}>
                         <Codicon name={referenceStyle(refKind).codicon} size="0.875rem" />
                       </span>
-                      <span className="min-w-0 shrink truncate font-medium leading-5 text-foreground">{display}</span>
+                      {path ? (
+                        <span className="flex min-w-0 shrink leading-5" dir="ltr">
+                          <span className="min-w-0 truncate text-(--ui-text-tertiary)">{path[1]}</span>
+                          <span className="max-w-full shrink-0 truncate font-medium text-foreground">{path[2]}</span>
+                        </span>
+                      ) : (
+                        <span className="min-w-0 shrink truncate font-medium leading-5 text-foreground">{display}</span>
+                      )}
                       {description && (
                         <span className="min-w-0 flex-1 truncate leading-5 text-(--ui-text-tertiary)">
                           {description}

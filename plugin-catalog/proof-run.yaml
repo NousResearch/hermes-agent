@@ -1,0 +1,20 @@
+name: proof-run
+repo: https://github.com/raffieeey/hermes-proof-run
+sha: 581b6e3691c417c21d158127aa0eb8544ad9e842
+subdir: proof-run
+description: "Proof Run records a successful Hermes task at the tool boundary and saves it as a procedure with named inputs. A guided run tells a cheaper follower each step and checks every action before it executes; strict exact guards and checked-execution workflows remain available beside it. Disclosure — recorded tool calls, arguments and results are saved as procedures in the plugin's data folder (values matching common secret patterns are refused); during a guided or guarded run its pre_tool_call hook blocks any tool call that does not match the saved procedure; /proof run continues a run as a background task in the Hermes process; the optional workflow follower sends step prompts only to a local Ollama server on 127.0.0.1/localhost; the checked-execution workflow mode works only on a Hermes build carrying the author's hand-applied host patch (integration/hermes-checked-execution.patch) and refuses to run otherwise; no other network, no telemetry."
+maintainer: raffieeey
+tier: community
+category: automation
+requires_hermes: ">=0.21.0"
+version: "0.3.2"
+platforms: [linux]
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+    - pre_llm_call
+    - on_session_finalize
+  provides_middleware: []
+  requires_env: []

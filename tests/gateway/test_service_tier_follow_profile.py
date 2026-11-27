@@ -7,6 +7,7 @@ import pytest
 from gateway.session_contract import SessionRef
 from gateway.session_policy import policy_for_source
 from hermes_constants import get_hermes_home
+from persistence_assembly import store_location
 from tests.gateway.test_session_create_tier_cwd import _owner
 
 
@@ -23,7 +24,7 @@ async def test_service_tier_choices_follow_profile_model_provider_and_endpoint_t
     before, after = (supported, unsupported) if initially_supported else (unsupported, supported)
     store, runner, authority, owner = _owner(home, monkeypatch, {'model': before})
     try:
-        assert authority.db.db_path.parent.resolve() == home.resolve()
+        assert store_location(authority.persistence.scope).parent.resolve() == home.resolve()
         created = await owner.dispatch({'id': 'create', 'method': 'session.create', 'params': {
             'request_id': 'follow-route', 'source': 'gui', 'cwd': str(tmp_path), 'toolsets': [],
             'follow_profile_config': True,

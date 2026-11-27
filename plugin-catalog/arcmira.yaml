@@ -1,0 +1,23 @@
+name: arcmira
+title: "Arcmira: YouTube Transcript Search"
+repo: https://github.com/arcmira/hermes-plugin
+sha: c492fe7abc326afcb9910fa858cb63830ed67e01
+description: "YouTube transcript search and monitoring for your AI. Arcmira understands YouTube and podcasts like it watched them: the exact quote, often who said it, the full transcript and sponsors. Add \"use arcmira\" to any question to send it to Arcmira first. Sign in with Hermes-managed OAuth in your browser, no key needed, or set ARCMIRA_API_KEY. Bundles Arcmira's hosted MCP server and eleven research skills; portable Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration and Markdown only. Disclosure — hosted-only connector with no local code; every tool call goes to Arcmira's MCP server at mcp.arcmira.com with the search terms, names, video links and JavaScript programs the agent writes (programs run on Arcmira's servers, never on your machine), authenticated with a Hermes-managed OAuth sign-in through api.arcmira.com or ARCMIRA_API_KEY. Reads, transcriptions and alerts use the account's credits. arcmira_execute_write creates and changes monitors that alert by email, Slack or webhook, and starts Premium transcripts; the package marks the server untrusted so Hermes asks before each write-capable call, but a `hermes mcp add arcmira` entry in config.yaml replaces that setting unless it also sets `trust: untrusted`. arcmira_feedback sends the agent's note to Arcmira. Arcmira logs each tool call on the account. The tool list is served at run time and is not covered by the pinned sha."
+maintainer: arcmira
+tier: community
+category: web
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/arcmira/hermes-plugin/blob/c492fe7abc326afcb9910fa858cb63830ed67e01/README.md
+version: "0.10.20"
+image: https://raw.githubusercontent.com/arcmira/hermes-plugin/c492fe7abc326afcb9910fa858cb63830ed67e01/assets/arcmira-catalog-card.svg
+readme: true
+platforms: []
+known_issues:
+  - "Sign in once after installing: merge examples/oauth.yaml from the plugin repo into your profile, then run hermes mcp login arcmira"
+  - "On a machine with no browser, open the printed sign-in link on any device and paste the redirect URL back into Hermes, or use ARCMIRA_API_KEY."
+  - "Hermes does not prompt for ARCMIRA_API_KEY at install. Set it with hermes config set ARCMIRA_API_KEY <key> only if you skip OAuth."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: [ARCMIRA_API_KEY]

@@ -36,16 +36,21 @@ const light = variant === 'light'
 const name = variants[store ? 'bundled' : (variant || '')]
 
 // The electron-updater feed channel this build PUBLISHES to. A canary
-// tag (vX.Y.Z+canary.YYYYMMDDTHHMMSSZ) writes canary.yml / light-canary.yml;
+// tag (canary.YYYYMMDDTHHMMSSZ-vX.Y.Z) writes canary.yml / light-canary.yml;
 // stable tags write latest.yml / light.yml. Keyed on the payload tag so
 // the one release workflow serves both channels — a canary build can
 // never overwrite the stable feed file, and vice versa.
-const canary = /\+canary\.20\d{6}T\d{6}Z$/.test(process.env.HERMES_PAYLOAD_TAG || '')
+const canary = /^canary\.20\d{6}T\d{6}Z-v\d+\.\d+\.\d+$/.test(process.env.HERMES_PAYLOAD_TAG || '')
 
 // Nonstable installs own their package family and local desktop state. The
 // seven-character commit suffix also names the CLI and fits MSIX's name cap.
 const buildCommitEnv = process.env.HERMES_BUILD_COMMIT || ''
 const buildCommit = /^[a-f0-9]{40}$/.test(buildCommitEnv) ? buildCommitEnv.slice(0, 7) : null
+// A commit build's claim tag (commit.YYYYMMDDTHHMMSSZ-vX.Y.Z) names a commit build: it must carry the
+// commit identity, never fall through to the stable identity and its `latest` feed.
+if (/^commit\./.test(process.env.HERMES_PAYLOAD_TAG || '') && !buildCommit) {
+  throw new Error('A commit build tag requires HERMES_BUILD_COMMIT (the commit identity)')
+}
 const displayName = buildCommit
   ? `${name.display} ${buildCommit}`
   : canary
@@ -55,8 +60,10 @@ const displayName = buildCommit
 const kebabSuffix = buildCommit ? `-${buildCommit}` : canary ? '-canary' : ''
 const pascalSuffix = buildCommit ? `Commit${buildCommit}` : canary ? 'Canary' : ''
 const cliName = `${light ? 'hermes-light' : 'hermes'}${kebabSuffix}`
-if (store && (canary || buildCommit)) {
-  throw new Error('Store packaging is only eligible for stable releases')
+// A canary builds the Store package too (the canary runs every stable lane), but only stable
+// releases ever submit one: canary publication never reaches the Store job.
+if (store && buildCommit) {
+  throw new Error('Store packaging is only eligible for release tags')
 }
 
 /** @typedef {import("./product-identity.d.cts")} ProductIdentity */
@@ -78,8 +85,10 @@ const identity = {
     ? {
         storeMsix: {
           // Partner Center publisher identity (the account's publisher ID) —
-          // validated + re-signed by the Store on submission.
-          identityName: 'NousResearchInc.HermesAgent',
+          // validated + re-signed by the Store on submission. Canary builds use
+          // a distinct non-production identity name so a staged canary bundle
+          // can never pass for a stable Partner Center submission.
+          identityName: canary ? 'NousResearchInc.HermesAgentCanary' : 'NousResearchInc.HermesAgent',
           publisher: 'CN=EE6D86E4-606F-4E38-B940-AD7248C9D519',
           publisherDisplayName: 'Nous Research Inc.'
         }

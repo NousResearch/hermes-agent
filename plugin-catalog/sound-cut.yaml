@@ -1,0 +1,26 @@
+name: sound-cut
+title: Sound Cut
+image: https://raw.githubusercontent.com/TakeshiTGAL/hermes-plugin-sound-cut/90591c683e3455f95c1dedb8d8c80e9ff28eb8d0/assets/catalog-banner.png
+repo: https://github.com/TakeshiTGAL/hermes-plugin-sound-cut
+sha: 90591c683e3455f95c1dedb8d8c80e9ff28eb8d0
+description: 'Trim silence from a sound effect and report length, estimated tempo, peak, and MIDI notes. Disclosure — sound_cut_inspect reads a local .wav, .mp3, .flac, .ogg, or .opus file up to 32 MiB, and sound_cut_midi reads a MIDI file up to 8 MiB, without starting ffmpeg; sound_cut_trim, sound_cut_slice, sound_cut_convert, and sound_cut_loop run local ffmpeg and write one new file in the directory you name, leaving an existing file in place; no audio is sent off the machine; enable installs numpy, mido, and miniaudio. macOS only.'
+maintainer: TakeshiTGAL
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/TakeshiTGAL/hermes-plugin-sound-cut#readme
+version: "0.1.0"
+platforms:
+  - macos
+capabilities:
+  provides_tools:
+    - sound_cut_inspect
+    - sound_cut_midi
+    - sound_cut_trim
+    - sound_cut_slice
+    - sound_cut_convert
+    - sound_cut_loop
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

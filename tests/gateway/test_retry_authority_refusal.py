@@ -20,6 +20,7 @@ from gateway.run_runtime import initialize_gateway_runtime
 from gateway.runtime_ownership import process_ownership
 from gateway.session import SessionSource
 from gateway.session_ingress_context import native_callback, register_transport_home
+from persistence_assembly import close_stores_under
 
 
 class _FakeAdapter:
@@ -32,8 +33,6 @@ def served(tmp_path, monkeypatch):
     root.mkdir(mode=0o700)
     monkeypatch.setattr(Path, 'home', lambda: tmp_path)
     monkeypatch.setenv('HERMES_HOME', str(root))
-    import hermes_state
-    monkeypatch.setattr(hermes_state, 'DEFAULT_DB_PATH', hermes_state._IMPORT_DEFAULT_DB_PATH)
     homes = [('default', root)]
     config = GatewayConfig()
     config._runtime_profile_homes = tuple(homes)
@@ -41,7 +40,7 @@ def served(tmp_path, monkeypatch):
     process_ownership.reserve([home for _, home in homes])
     yield runner, root
     for authority in list(getattr(runner, 'session_authorities', []) or []):
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
     for _, home in homes:
         process_ownership.release(home)
 
@@ -94,8 +93,8 @@ async def test_retry_into_a_draining_authority_keeps_the_exchange(served):
 async def test_retry_into_a_full_fifo_keeps_the_exchange(served, monkeypatch):
     runner, root = served
     source, sid, sent = await _exchange(runner, root)
-    import hermes_state_runtime
-    monkeypatch.setattr(hermes_state_runtime, 'ADMISSION_QUEUE_MAX', 0)
+    monkeypatch.setattr('persistence.sqlite.authority._admission_store.ADMISSION_QUEUE_MAX', 0)
+    monkeypatch.setattr('persistence.authority.vocabulary.ADMISSION_QUEUE_MAX', 0)
 
     reply = await _retry(runner, root, source)
 
@@ -124,9 +123,8 @@ async def _admitting_exchange(runner, root, rows=None):
 
 
 def _queued_texts(authority, sid):
-    import hermes_state_runtime
-    rows = hermes_state_runtime.list_session_admissions(authority.db, session_id=authority.logical_owner(sid))
-    return [row['payload']['text'] for row in rows if row['status'] == 'queued']
+    rows = authority.persistence.admissions.list(session_id=authority.logical_owner(sid))
+    return [row.payload['text'] for row in rows if row.status == 'queued']
 
 
 @pytest.mark.asyncio

@@ -1,0 +1,32 @@
+name: hermes-canvas
+title: Hermes Canvas
+repo: https://github.com/0xbyt4/hermes-canvas
+sha: "d6eeff0d6f7ec653262537bdd7bb001cc6d3c7f8"
+description: "Your agent's plan, wired to its real work. The agent draws its plan as hand-drawn boxes in a Desktop pane next to the chat. Each box is bound to files and a check command: hooks mark a box doing when the agent writes one of its files, and done or failed when its check command exits. The user steers the running build on the canvas: answer a question box, link boxes, leave a note (it reaches the subagent that builds the box), remove a box (its next write is blocked), add a drift write to the plan, replay every revision. Disclosure — hooks read tool arguments and results (file paths, terminal commands and their output); canvas documents, revisions and user edits are stored in this profile's plugin database; pre_tool_call blocks write_file, patch, terminal and execute_code calls that would write files of a box the user removed, and nothing else; canvas edits and a short plan summary are added to the model input (pre_llm_call, transform_tool_result); pre_verify keeps the agent working while one of its boxes is failing, capped by agent.max_verify_nudges; the inspector diff runs read-only git (rev-parse, cat-file) in the canvas project folder and reads the files a box wrote there, up to 512 KB each; serves /api/plugins/hermes-canvas/ on the plugin host; never writes project files; no network calls, no credentials, no background processes, no self-update."
+maintainer: 0xbyt4
+tier: community
+category: desktop
+requires_hermes: ">=0.22.7"
+version: "0.1.0"
+docs_url: https://github.com/0xbyt4/hermes-canvas#readme
+# image: needs a 2:1 picture committed to the repo (e.g. 1200x600), pinned to the sha. None exists yet.
+screenshots:
+  - https://raw.githubusercontent.com/0xbyt4/hermes-canvas/d6eeff0d6f7ec653262537bdd7bb001cc6d3c7f8/docs/replay.gif
+  - https://raw.githubusercontent.com/0xbyt4/hermes-canvas/d6eeff0d6f7ec653262537bdd7bb001cc6d3c7f8/docs/all-green.jpg
+platforms: []
+capabilities:
+  provides_tools:
+    - canvas_draw
+    - canvas_update
+    - canvas_get
+    - canvas_next
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+    - subagent_start
+    - subagent_stop
+    - pre_llm_call
+    - transform_tool_result
+    - pre_verify
+  provides_middleware: []
+  requires_env: []

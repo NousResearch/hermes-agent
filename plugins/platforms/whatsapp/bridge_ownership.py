@@ -64,7 +64,8 @@ def secondary_bridge_port(home: Path, explicit) -> int:
                      if p not in claimed and port_is_free(p)), None)
         if port is None:
             raise ValueError(f"No free bridge port in {SECONDARY_PORT_FIRST}..{SECONDARY_PORT_LAST}")
-        record.parent.mkdir(parents=True, exist_ok=True)
+        from hermes_constants import mkdir_under_hermes_home
+        mkdir_under_hermes_home(record.parent)  # a dead profile home raises instead of coming back
         record.write_text(str(port), encoding="utf-8")
     if not 1 <= port <= 65535:
         raise ValueError(f"Invalid bridge port {port}")

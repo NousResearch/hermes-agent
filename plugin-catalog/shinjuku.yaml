@@ -1,0 +1,24 @@
+name: shinjuku
+title: Shinjuku private wallet
+repo: https://github.com/ShinjukuStaition/hermes-shinjuku
+sha: 86cb9fef135a4011e56a287d7ea47b20bd22a17d
+version: "0.2.0"
+description: "A private USDC wallet for Hermes that the user holds. It pays paid web services and APIs (x402) privately: the seller and the blockchain do not see which wallet paid. From plain requests Hermes checks a price, finds paid APIs, pays, and shows a wallet card (/shinjuku:wallet), receipts, add funds and a send back to the user's own wallet. Agent Plugins v1 package (plugin.json + mcp.json + skills/ + a small launch.mjs). The plugin starts the Shinjuku wallet the user installs (the npm package shinjuku, started as shinjuku mcp; shinjuku.cmd on Windows), with no version of its own: the user installs it once (npm install -g shinjuku; npm.cmd on Windows) and sets it up in a terminal (shinjuku setup; shinjuku.cmd on Windows). The plugin never installs or updates the wallet. On Linux and macOS, when the wallet runs from a folder that is not npm's usual one, the plugin puts the update lines for that folder at the start of one tool description in the wallet's tool list; it changes nothing else the wallet sends. Disclosure — Crypto payments: runs the user's own closed-source Shinjuku wallet (the Shinjuku wallet the user installs (npm shinjuku), not covered by the pinned sha) as an untrusted MCP server; Hermes asks before every wallet call except the read-only ones: every price check, payment (also a private AI question), send, deposit address, backup, stop and every other call that changes something asks first, while searches, receipts, balance reads and the wallet's other read-only status reads run without asking, and a balance read (and wallet start) moves USDC the user added into the user's own private balance. Payments go through Shinjuku's payment service (pay.shinjukustaition.com or its .onion), which takes a per-payment fee, and a paid AI answer sends the prompt either to api.usepod.ai over Tor or, for the Lyber models, to Shinjuku's AI address (its .onion, only with Tor on), whose server asks Lyber with one Shinjuku key, so Shinjuku's server and Lyber read that prompt; with Tor on, traffic goes over Tor, and on Windows and Linux x64 the wallet runs its own Tor in the background from the Tor files in its npm package, each checked by its pinned sha256. Keys stay in the wallet's folder in the user's account."
+maintainer: Shinjuku StAItion
+tier: community
+category: tools
+docs_url: https://github.com/ShinjukuStaition/hermes-shinjuku
+requires_hermes: ">=0.23.1"
+readme: true
+image: https://raw.githubusercontent.com/ShinjukuStaition/shinjuku-shield/c1f14362c33c844759afeb51fd696f4b28ee75d2/docs/hermes/shinjuku-hermes-card.png
+screenshots:
+  - https://raw.githubusercontent.com/ShinjukuStaition/shinjuku-shield/f1e63ac0134a6da00f671cf0542177551fbfddb2/docs/hermes/hermes-install-from-git.png
+  - https://raw.githubusercontent.com/ShinjukuStaition/shinjuku-shield/f1e63ac0134a6da00f671cf0542177551fbfddb2/docs/hermes/hermes-price-and-approval.png
+platforms: [windows, linux]
+known_issues:
+  - "Install the wallet first, in a terminal: npm install -g shinjuku, then shinjuku setup (on Windows npm.cmd install -g shinjuku, then shinjuku.cmd setup). Then reload the wallet in Hermes: /reload-mcp (in the desktop app: Ctrl+K, Restart gateway)."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

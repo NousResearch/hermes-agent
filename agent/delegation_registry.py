@@ -71,9 +71,14 @@ def _load_bundled(name: str) -> Optional[DelegationProvider]:
     plugin_dir = get_bundled_plugins_dir() / "delegation" / name
     if not (plugin_dir / "plugin.yaml").is_file():
         return None
-    module = plugin_loader.load_plugin_module(
-        f"plugins.delegation.{name.replace('-', '_')}", plugin_dir, parents=("plugins", "plugins.delegation"),
-        logger=logger)
+    package = f"{plugin_loader.__package__}.delegation"
+    try:
+        module = plugin_loader.load_plugin_module(
+            f"{package}.{name.replace('-', '_')}", plugin_dir, parents=(plugin_loader.__package__, package),
+            logger=logger)
+    except Exception as exc:  # health: allow BLE001 -- a broken strategy fails closed with its reason, never the tool
+        logger.warning("Bundled delegation strategy '%s' failed to import: %s", name, exc)
+        return None
     if module is None:
         return None
     module.register(_BundledRegistrar(name))

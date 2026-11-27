@@ -163,8 +163,14 @@ export function ModelOptionsContent({
 
   const hasFast = fastControl.kind !== 'none'
   const unsupportedSpeed = fastControl.kind === 'param' && fastControl.canEnable === false
-  const ultrafastOn = serviceTier === 'ultrafast'
-  const fastOn = fastControl.kind === 'none' ? false : fastControl.on && !ultrafastOn
+  const ultrafastOn = ultrafastSupported && serviceTier === 'ultrafast'
+
+  const fastOn =
+    fastControl.kind === 'none'
+      ? false
+      : fastControl.kind === 'variant'
+        ? fastControl.on
+        : fastControl.on && serviceTier !== 'ultrafast'
 
   return !hasFast && !ultrafastSupported && !daybreak && !reasoning ? (
     <div className="px-2.5 py-3 text-xs text-(--ui-text-tertiary)">{copy.noOptions}</div>

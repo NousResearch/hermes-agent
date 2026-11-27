@@ -5,6 +5,7 @@ import {
   isStableOpen,
   JSON_RPC_METHOD_NOT_FOUND,
   JsonRpcGatewayError,
+  LOCAL_CONNECTION_ID,
   reconnectBackoffDelayMs
 } from '@hermes/shared'
 import { useEffect, useRef } from 'react'
@@ -52,8 +53,10 @@ import {
   gatewayActivationEpoch,
   isActivePrimary,
   liveSecondaryConnectionIds,
+  primaryGatewayProfile,
   pruneSecondaryGateways,
   reconnectSecondaryGateways,
+  redialProfileGateway,
   reportPrimaryGatewayState,
   type ScopedServerRequest,
   setPrimaryGateway,
@@ -70,10 +73,12 @@ import {
 } from '@/store/gateway-switch'
 import { watchLocalRuntimeJobs } from '@/store/local-runtime-jobs'
 import { notify, notifyError, RECOVERY_ACTIONS } from '@/store/notifications'
+import { startPresenceReporter } from '@/store/presence'
 import {
   $activeGatewayProfile,
   currentProfileSelectionRevision,
   ensureGatewayProfile,
+  foregroundShows,
   normalizeProfileKey,
   refreshActiveProfile
 } from '@/store/profile'
@@ -113,6 +118,7 @@ import { stashGatewaySurvivor, survivorIsStale, takeGatewaySurvivor } from './ga
 import { notifyPrimaryReauth } from './primary-reauth-notice'
 import { useConnectionsRegistry } from './use-connections-registry'
 import { useDefaultProfilePreference } from './use-default-profile-preference'
+import { useLauncherTransitions } from './use-launcher-transitions'
 
 // After the reconnect loop has been failing for this long, raise a NON-blocking
 // warning toast. Full-screen BootFailureOverlay used to lock the user out of
@@ -269,6 +275,78 @@ interface GatewayBootOptions {
   refreshSessions: (shouldPublish?: () => boolean) => Promise<void>
 }
 
+/**
+ * A plugin moved one profile's backend (host.setProfileBackend /
+ * clearProfileBackend): redial only that profile's socket, in place, so the
+ * page never blanks and the window stays on the profile it shows. Which socket
+ * serves the profile is this window's own record; main's primary can differ
+ * after a renderer reload. False: run the full switch instead.
+ *
+ * The profile is one of THIS computer's. `otherGateway`: the window's primary
+ * socket is a registered gateway's, whose profile of the same name did not
+ * move. That socket and whatever the window shows through it stay as they are;
+ * only a socket the window dialed for the local profile itself is redialed.
+ */
+// The newest move of a profile owns its redial.
+const redialTurns = new Map<string, number>()
+
+async function redialMovedProfile(
+  profile: string,
+  redialPrimary: (profile: string) => Promise<boolean>,
+  otherGateway: boolean,
+  stopped: () => boolean
+): Promise<boolean> {
+  const turn = (redialTurns.get(profile) ?? 0) + 1
+
+  redialTurns.set(profile, turn)
+
+  try {
+    if (!otherGateway && profile === normalizeProfileKey(primaryGatewayProfile())) {
+      // A socket the window dialed for the profile beside its primary one moved too.
+      await redialProfileGateway(profile)
+
+      return await redialPrimary(profile)
+    }
+  } catch (error) {
+    console.warn(`[gateway] redial of "${profile}" after its backend moved failed`, error)
+
+    return true
+  }
+
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      // The redial moves the window only while it shows the profile, and
+      // after a pick that is still connecting has landed.
+      const shown = await foregroundShows(profile)
+
+      await redialProfileGateway(profile, { shown: shown && !(otherGateway && isActivePrimary()) })
+
+      return true
+    } catch (error) {
+      console.warn(`[gateway] redial of "${profile}" after its backend moved failed`, error)
+    }
+
+    // The route could not be read, so a profile the window shows through the
+    // primary socket is still on the backend it left (this computer's own,
+    // when a plugin took the profile over). Ask again, with the reconnect
+    // backoff. A profile that reached a socket of its own meanwhile is left
+    // on it, one the window no longer shows asks nothing, and a redial that
+    // waited here stops once the profile has moved again.
+    await new Promise(resolve => setTimeout(resolve, reconnectBackoffDelayMs(attempt)))
+
+    if (stopped() || redialTurns.get(profile) !== turn || !isActivePrimary()) {
+      return true
+    }
+  }
+}
+
+/** A registered gateway on another machine, not this computer's own backend ("This device"). */
+function isOtherGateway(connection: HermesConnection | null): boolean {
+  return Boolean(
+    connection?.registryScoped && connection.connectionId && connection.connectionId !== LOCAL_CONNECTION_ID
+  )
+}
+
 export function useGatewayBoot({
   beforeConnectionSwitch,
   handleGatewayEvent,
@@ -300,6 +378,11 @@ export function useGatewayBoot({
     refreshHermesConfig,
     refreshSessions
   }
+
+  useLauncherTransitions()
+
+  // One presence reporter per window, beside the connection it reports on; it never renders.
+  useEffect(() => startPresenceReporter(), [])
 
   useEffect(() => {
     let cancelled = false
@@ -852,10 +935,63 @@ export function useGatewayBoot({
       }
     }
 
+    const redialPrimaryInPlace = async (profile: string): Promise<boolean> => {
+      // The window's primary profile moved; main already retired its backend.
+      // Redial the primary socket the way a manual reconnect does: the session
+      // lists, the open chat and the shown profile stay. False while booting,
+      // during a switch, or for a registry-scoped primary.
+      if (!bootCompleted || $gatewaySwitching.get() || primaryConnection?.registryScoped) {
+        return false
+      }
+
+      // A reconnect still looking up the OLD route drops it and looks again.
+      primaryRouteRevision += 1
+      primaryReauthError = null
+      reauthNotified = false
+      livenessProbeFailures = 0
+      clearLivenessReprobeTimer()
+      ownCloseReason = 'manual'
+      gateway.close()
+      clearReconnectTimer()
+      resetReconnectBackoff()
+
+      if (reconnecting) {
+        return true
+      }
+
+      const shown = normalizeProfileKey($activeGatewayProfile.get())
+
+      await attemptReconnect({ profile: shown, activationEpoch: gatewayActivationEpoch() })
+
+      // A profile still shown THROUGH the primary socket (the shared host
+      // backend) resolves its own route again now that the primary moved.
+      if (!cancelled && shown !== profile && (await foregroundShows(shown)) && isActivePrimary()) {
+        await ensureGatewayProfile(shown).catch(error => {
+          console.warn(`[gateway] redial of "${shown}" after "${profile}" moved failed`, error)
+        })
+      }
+
+      return true
+    }
+
     // Soft gateway-mode apply: main tore down the primary without reloading.
     // Wipe session lists so skeletons retrigger, then re-dial in place.
-    const softSwitch = async () => {
+    const softSwitch = async (detail?: { profile?: string }) => {
       if (cancelled) {
+        return
+      }
+
+      // Only one profile's backend moved. Any other apply raises its switch
+      // barrier in this same tick.
+      if (
+        detail?.profile &&
+        (await redialMovedProfile(
+          normalizeProfileKey(detail.profile),
+          redialPrimaryInPlace,
+          isOtherGateway(primaryConnection),
+          () => cancelled
+        ))
+      ) {
         return
       }
 
@@ -1286,7 +1422,7 @@ export function useGatewayBoot({
     }
 
     const offPowerResume = desktop.onPowerResume?.(() => void forceReconnectNow())
-    const offConnectionApplied = desktop.onConnectionApplied?.(() => void softSwitch())
+    const offConnectionApplied = desktop.onConnectionApplied?.(detail => void softSwitch(detail))
 
     const offGatewayReconnect = registerGatewayReconnect(async (options?: GatewayReconnectOptions) => {
       if (cancelled || !bootCompleted || $gatewaySwitching.get()) {

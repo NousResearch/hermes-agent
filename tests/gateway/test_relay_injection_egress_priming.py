@@ -20,7 +20,9 @@ session replayed in August burned a 102K-token context).
 """
 
 import json
+import sqlite3
 import time
+from contextlib import closing
 from types import SimpleNamespace
 
 import pytest
@@ -28,6 +30,7 @@ import pytest
 from gateway.config import Platform
 from gateway.relay.adapter import RelayAdapter
 from gateway.session import SessionSource
+from persistence_assembly import profile_scope, store_location
 
 
 def _bare_relay_adapter():
@@ -127,7 +130,7 @@ def test_prime_routing_cache_never_raises_on_malformed_event():
 def _isolated_delegation_db(tmp_path, monkeypatch):
     import tools.async_delegation as ad
 
-    monkeypatch.setattr(ad, "_db_path", lambda: tmp_path / "state.db")
+    monkeypatch.setattr(ad, "_scope", lambda: profile_scope(home=tmp_path))
     return ad
 
 
@@ -138,7 +141,9 @@ def _insert_pending(ad, delegation_id, completed_at):
         "session_key": "agent:main:slack:dm:D1:2",
         "status": "completed",
     }
-    with ad._DB_LOCK, ad._transaction() as conn:
+    with ad._ledger() as store:
+        store.ready()
+    with ad._DB_LOCK, closing(sqlite3.connect(store_location(ad._scope()))) as conn, conn:
         conn.execute(
             """INSERT INTO async_delegations
                (delegation_id, origin_session, origin_ui_session_id,
@@ -183,7 +188,7 @@ def test_restore_drops_completions_older_than_replay_cap(_isolated_delegation_db
     )
     assert restored == 1
     # The stale row must converge to a terminal state, not replay forever.
-    with ad._DB_LOCK, ad._transaction() as conn:
+    with ad._DB_LOCK, closing(sqlite3.connect(store_location(ad._scope()))) as conn:
         state = conn.execute(
             "SELECT delivery_state FROM async_delegations WHERE delegation_id='deleg_stale'"
         ).fetchone()[0]

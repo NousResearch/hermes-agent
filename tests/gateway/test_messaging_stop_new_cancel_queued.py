@@ -3,7 +3,7 @@
 Under session authority every busy follow-up is admitted to the durable FIFO, so clearing the
 adapter's pending slot no longer reached it: /stop let the drain RUN the message the user meant
 to cancel, and /new stranded it queued on the abandoned session. Real GatewayRunner busy
-dispatch, real DiscordAdapter, real authority over a real SessionDB; only the turn executor is
+dispatch, real DiscordAdapter, real authority over a real store; only the turn executor is
 recorded.
 """
 import asyncio
@@ -21,7 +21,6 @@ async def test_busy_stop_and_new_cancel_the_queued_messaging_followup(tmp_path, 
     from gateway.session_ingress import admit_message
     from gateway.session_ingress_context import native_callback
     from hermes_constants import get_hermes_home
-    from hermes_state_runtime import list_session_admissions
     from plugins.platforms.discord.adapter import DiscordAdapter
 
     monkeypatch.setattr(SessionAuthority, '_schedule', lambda self, ref: None)
@@ -43,7 +42,7 @@ async def test_busy_stop_and_new_cancel_the_queued_messaging_followup(tmp_path, 
             await asyncio.sleep(0.01)
     key = runner.session_store._generate_session_key(source)
     owner = runner.session_store.peek_session_id(key)
-    assert [r['status'] for r in list_session_admissions(authority.db, session_id=owner)] == ['queued']
+    assert [r.status for r in authority.persistence.admissions.list(session_id=owner)] == ['queued']
 
     class RunningAgent:
         interrupted = []
@@ -58,8 +57,8 @@ async def test_busy_stop_and_new_cancel_the_queued_messaging_followup(tmp_path, 
 
     # B is settled silently (no pause notice, no reply) and never runs.
     assert await asyncio.wait_for(waiter, 5) is None
-    rows = list_session_admissions(authority.db, session_id=owner, pending_only=False)
-    assert [(r['request_id'], r['status'], r['outcome']) for r in rows] == [('B', 'terminal', 'cancelled')]
+    rows = authority.persistence.admissions.list(session_id=owner, pending_only=False)
+    assert [(r.request_id, r.status, r.outcome) for r in rows] == [('B', 'terminal', 'cancelled')]
     executed = []
 
     async def handle(event):

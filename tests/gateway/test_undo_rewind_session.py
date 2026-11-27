@@ -2,7 +2,7 @@
 
 The gateway /undo backs up N user turns by soft-deleting the truncated rows
 in state.db (active=0, kept for audit, hidden from re-prompts/search) via
-SessionDB.rewind_to_message, rather than the old hard rewrite_transcript.
+the store's messages.rewind_user_turn, rather than the old hard rewrite_transcript.
 load_transcript returns only the active view. See issue #21910.
 """
 
@@ -12,26 +12,27 @@ from pathlib import Path
 
 import pytest
 
-from hermes_state import SessionDB
 from gateway.config import GatewayConfig
 from gateway.session import SessionStore
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_holder import raw_holder, rewind_store_operation
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 
 @pytest.fixture()
 def store(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    db = SessionDB(db_path=tmp_path / "state.db")
     s = SessionStore(sessions_dir=tmp_path / "sessions", config=GatewayConfig())
-    s._db = db  # use the same DB instance the fixture seeds
-    return s
+    yield s
+    s.close_all_db_handles()
 
 
 def _seed(store, sid, source="telegram", turns=3):
-    store._db.create_session(sid, source=source)
+    seed_session(store.persistence, sid, source)
     for i in range(1, turns + 1):
-        store._db.append_message(sid, "user", f"q{i}")
-        store._db.append_message(sid, "assistant", f"a{i}")
+        seed_messages(store.persistence, sid, {"role": "user", "content": f"q{i}"},
+                      {"role": "assistant", "content": f"a{i}"})
     return sid
 
 
@@ -56,12 +57,12 @@ def test_rewind_n_turns(store):
 
 def test_rewind_pins_raw_active_ids_when_projection_hides_review_harness(store):
     sid = _seed(store, "gw-review-harness", turns=2)
-    store._db.append_message(
+    seed_messages(
+        store.persistence,
         sid,
-        "user",
-        "Review the conversation above and update the skill library safely",
+        {"role": "user", "content": "Review the conversation above and update the skill library safely"},
+        {"role": "assistant", "content": "curator-only reply"},
     )
-    store._db.append_message(sid, "assistant", "curator-only reply")
 
     # Legacy background-review rows are intentionally absent from replay, but
     # they remain physical active rows that the rewind CAS must pin.
@@ -87,22 +88,23 @@ def test_rewind_fails_closed_when_transcript_changes_after_snapshot(
     store, monkeypatch
 ):
     sid = _seed(store, "gw-cas", turns=2)
-    sibling = SessionDB(db_path=store._db.db_path)
-    original_rewind = store._db.rewind_to_message
+    sibling = open_persistence(profile_scope(home=store.persistence.scope.profile_dir))
+    original_rewind = rewind_store_operation("rewind_to_message")  # the store's write behind messages.rewind_user_turn
 
     def _append_then_rewind(*args, **kwargs):
-        sibling.append_message(sid, "assistant", "concurrent tail")
+        seed_messages(sibling, sid, {"role": "assistant", "content": "concurrent tail"})
         return original_rewind(*args, **kwargs)
 
-    monkeypatch.setattr(store._db, "rewind_to_message", _append_then_rewind)
+    monkeypatch.setattr("persistence.sqlite.conversation._store.rewind.rewind_to_message", _append_then_rewind)
 
     assert store.rewind_session(sid) is None
 
-    rows = store._db._conn.execute(
-        "SELECT content, active FROM messages "
-        "WHERE session_id = ? ORDER BY id",
-        (sid,),
-    ).fetchall()
+    with raw_holder(store.persistence)._read_ctx() as conn:
+        rows = conn.execute(
+            "SELECT content, active FROM messages "
+            "WHERE session_id = ? ORDER BY id",
+            (sid,),
+        ).fetchall()
     assert [tuple(row) for row in rows] == [
         ("q1", 1),
         ("a1", 1),
@@ -117,28 +119,29 @@ def test_rewind_fails_closed_when_new_turn_lands_after_id_snapshot(
     store, monkeypatch
 ):
     sid = _seed(store, "gw-snapshot-order", turns=2)
-    sibling = SessionDB(db_path=store._db.db_path)
-    original_load = store._db.get_messages_as_conversation
+    sibling = open_persistence(profile_scope(home=store.persistence.scope.profile_dir))
+    original_load = rewind_store_operation("get_messages_as_conversation")  # the reads behind messages.rewind_user_turn
 
     calls = []
 
     def _load_then_append(*args, **kwargs):
         snapshot = original_load(*args, **kwargs)
         if not calls:  # one new turn lands between the id snapshot and the write, however often the DB is read
-            sibling.append_message(sid, "user", "q3-from-other-process")
-            sibling.append_message(sid, "assistant", "a3-from-other-process")
+            seed_messages(sibling, sid, {"role": "user", "content": "q3-from-other-process"},
+                          {"role": "assistant", "content": "a3-from-other-process"})
         calls.append(1)
         return snapshot
 
-    monkeypatch.setattr(store._db, "get_messages_as_conversation", _load_then_append)
+    monkeypatch.setattr("persistence.sqlite.conversation._store.rewind.get_messages_as_conversation", _load_then_append)
 
     assert store.rewind_session(sid) is None
 
-    rows = store._db._conn.execute(
-        "SELECT content, active FROM messages "
-        "WHERE session_id = ? ORDER BY id",
-        (sid,),
-    ).fetchall()
+    with raw_holder(store.persistence)._read_ctx() as conn:
+        rows = conn.execute(
+            "SELECT content, active FROM messages "
+            "WHERE session_id = ? ORDER BY id",
+            (sid,),
+        ).fetchall()
     assert [tuple(row) for row in rows] == [
         ("q1", 1),
         ("a1", 1),

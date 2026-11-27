@@ -4,17 +4,26 @@ The job's output becomes one message in the room's log, labelled with the job's 
 only for the members it @mentions (``@all`` addresses everyone); without a mention it is only a message in
 the room, so a feed of scheduled results never makes every Bot answer it. Failure notices never start a
 round. The post is appended to the hosting gateway's room store directly; the room worker picks it up on
-its next poll, so delivery does not need the Desktop open.
+its next poll, so delivery does not need the Desktop open. A room store is a home and a placement: the home's
+``state.db`` (``'profile'``) or its install's ``shared-state.db`` (``'shared'``), reached through a storage
+handle on that home; the probes create and migrate nothing.
 """
 
 from __future__ import annotations
 
 import logging
 import re
-import sqlite3
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from persistence_assembly import Persistence
+
+# A room store: the home whose storage handle reaches it, and the placement that names its file.
+RoomStore = tuple[Path, str]
 
 logger = logging.getLogger(__name__)
 
@@ -41,42 +50,53 @@ def resolve_room_target(job: dict, address: str) -> Optional[dict]:
     return {"platform": ROOM_PLATFORM, "chat_id": address, "thread_id": None}
 
 
-def _room_stores(profile: Optional[str]) -> list[Path]:
+def _room_stores(profile: Optional[str]) -> tuple[RoomStore, RoomStore]:
     """Where a room can live: the hosting profile's session store (rooms its gateway owns), then the
     install's shared room store (rooms the dashboard backend owns)."""
-    from gateway.hosted_rooms import default_db_path
     from hermes_constants import get_hermes_home
     if profile:
         from hermes_cli.profiles import get_profile_dir
         home = get_profile_dir(profile)
     else:
         home = get_hermes_home()
-    return [home / "state.db", default_db_path()]
+    return (home, "profile"), (get_hermes_home(), "shared")
 
 
-def _find_room_store(room_id: str, profile: Optional[str]) -> Optional[Path]:
+@contextmanager
+def _handle(store: RoomStore) -> Iterator[Persistence]:
+    """A storage handle on the store's home, closed on exit."""
+    from persistence_assembly import open_persistence, profile_scope
+    with open_persistence(profile_scope(home=store[0])) as handle:
+        yield handle
+
+
+def _find_room_store(room_id: str, profile: Optional[str]) -> Optional[RoomStore]:
     """The store whose worker serves ``room_id``. The session store counts only when its gateway holds
     the room's owner entry: the shared-store import copies rooms out of ``state.db`` without deleting
     them, and nothing serves that leftover copy, so a post there would never reach the visible room."""
-    from gateway.hosted_rooms import probe_hosted_room
+    from gateway.hosted_rooms import default_db_path, probe_hosted_room
     session_store, shared_store = _room_stores(profile)
     if _serves(session_store, room_id):
         return session_store
-    if not probe_hosted_room(shared_store, room_id=room_id):
-        return None
+    with _handle(shared_store) as handle:
+        if not probe_hosted_room(handle, placement=shared_store[1], room_id=room_id):
+            return None
     # A shared room the root gateway imported is fenced here and lives on in the ROOT home's state.db
     # (only that gateway imports), whichever profile's view advertised the target.
     from gateway.hosted_rooms_gateway_import import handed_room_ids
-    root_store = shared_store.with_name("state.db")
-    if room_id in handed_room_ids(shared_store) and _serves(root_store, room_id):
+    shared_file = default_db_path()
+    root_store = (shared_file.parent, "profile")
+    if room_id in handed_room_ids(shared_file) and _serves(root_store, room_id):
         return root_store
     return shared_store
 
 
-def _serves(store: Path, room_id: str) -> bool:
+def _serves(store: RoomStore, room_id: str) -> bool:
     from gateway.hosted_rooms import probe_hosted_room
     from gateway.session_hosted_service import probe_native_room_owner
-    return probe_hosted_room(store, room_id=room_id) and probe_native_room_owner(store, room_id=room_id)
+    with _handle(store) as handle:
+        return (probe_hosted_room(handle, placement=store[1], room_id=room_id)
+                and probe_native_room_owner(handle, room_id=room_id))
 
 
 def deliver_to_room(job: dict, content: str, address: str, *, for_failure: bool = False) -> Optional[str]:
@@ -84,6 +104,7 @@ def deliver_to_room(job: dict, content: str, address: str, *, for_failure: bool 
     from cron.scheduler_delivery import _redact_cron_payload
     from gateway.hosted_room_context import post_scheduled_message
     from gateway.hosted_rooms import AuthorityConflictError
+    from persistence import PersistenceError
 
     target = f"room:{address}"
     match = _ROOM_TOKEN_RE.fullmatch(address)
@@ -100,16 +121,17 @@ def deliver_to_room(job: dict, content: str, address: str, *, for_failure: bool 
         job_id = str(job.get("id") or "job")
         # The durable execution id makes a re-delivered run idempotent; direct helper calls get a fresh key.
         run_key = str(job.get("execution_id") or job.setdefault("_room_run_key", uuid.uuid4().hex))
-        event = post_scheduled_message(
-            store, room_id=room_id, job_id=job_id,
-            job_name=_redact_cron_payload(str(job.get("name") or job_id), "job name"),
-            run_key=run_key, text=_redact_cron_payload(content, "room payload"), notice=for_failure)
+        with _handle(store) as handle:
+            event = post_scheduled_message(
+                handle, placement=store[1], room_id=room_id, job_id=job_id,
+                job_name=_redact_cron_payload(str(job.get("name") or job_id), "job name"),
+                run_key=run_key, text=_redact_cron_payload(content, "room payload"), notice=for_failure)
         logger.info("Job '%s': %s Group Chat %s (seq %s)", job_id,
                     "already posted this run to" if event.get("idempotent") else "posted to", room_id, event.get("seq"))
         return None
     except AuthorityConflictError as exc:
         return f"{target} delivery failed: {exc} {_profile_hint(room_id, profile)}"
-    except (ValueError, OSError, sqlite3.Error) as exc:  # room/validation errors are ValueErrors
+    except (ValueError, OSError, PersistenceError) as exc:  # room/validation errors are ValueErrors
         return f"{target} delivery failed: {exc}"
 
 

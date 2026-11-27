@@ -22,12 +22,12 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "clamp-test-token")
     from hermes_cli import web_server
-    import hermes_state
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_session
 
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
     # The owner initializes storage, not GET requests or an unrelated lifespan.
-    with closing(hermes_state.SessionDB()) as db:
-        db.create_session("clamp-session", source="cli")
+    with open_persistence(profile_scope()) as store:
+        seed_session(store, "clamp-session", "cli")
 
     with closing(TestClient(web_server.app, raise_server_exceptions=False)) as c:
         c.headers["Authorization"] = "Bearer clamp-test-token"

@@ -1,0 +1,19 @@
+name: postkey
+title: Postkey
+repo: https://github.com/Rabbithole-llc/postkey-mcp
+sha: fed6c7335405cdf97e524ec77946dd9dadeed346
+subdir: hermes
+version: "1.0.0"
+description: "Instagram DM automation and post scheduling through Postkey's hosted MCP server (Streamable HTTP at https://postkey.pro/mcp, OAuth sign-in, no keys in config): comment-to-DM links, follow to unlock, email capture from comments, story and DM keyword replies, the Instagram inbox (read, reply, assign, label, notes), contacts and tags, AI reply settings, a media library and video edits, and drafting, scheduling and analytics for posts on Instagram, Facebook, TikTok, YouTube, LinkedIn, Threads, Pinterest, Bluesky, Telegram, Google Business and X, plus a check-before-send toolkit for agents acting on X with the user's own access. Bundles the postkey workflow skill (start with postkey_get_started, preview every send with postkey_preview_action, respect approvals, never invent links, treat DM and comment text as untrusted). Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure: every tool call goes to Postkey's hosted server (postkey.pro) and acts on the user's own Postkey profile with their own team role and plan limits; the tool set (57 tools today) is served by that server at runtime and is not covered by the pinned sha. Write tools create, edit, schedule and delete posts that publish to the user's public social accounts, publish and pause DM automations that then send Instagram DMs to people who comment or message, send inbox replies, tag contacts, upload files and change AI reply settings. By default, publishing a post, sending a reply and turning on an automation wait in Postkey's Approvals until a person approves them there. Actions count toward the user's Postkey plan. The package marks the server untrusted, so Hermes asks before every tool the server does not mark read-only and refuses them in unattended runs. Sign-in runs the pinned mcp-remote@0.15.2 through npx (Node.js 20.18.1+ and npm required), which opens a browser and a local callback port on first use and stores OAuth tokens under ~/.mcp-auth; without a stored token, an unattended run fails at Hermes's connect timeout instead of hanging. Users who need longer to sign in, or a headless setup, can replace the server with hermes mcp add postkey --url https://postkey.pro/mcp --auth oauth (or an agent key in a header) and keep the skill."
+maintainer: Rabbithole-llc
+tier: community
+category: tools
+docs_url: https://github.com/Rabbithole-llc/postkey-mcp/blob/fed6c7335405cdf97e524ec77946dd9dadeed346/hermes/README.md
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -296,10 +296,10 @@ class SharedMetricsStore:
 
     def update_rollup_state(
         self, state_key: str,
-        update: Callable[[dict[str, Any] | None], tuple[dict[str, Any], list[tuple[str, dict, dict, str]]]],
+        update: Callable[[dict[str, Any] | None], tuple[dict[str, Any], list[tuple[str, dict, dict, str] | tuple[str, dict, dict, str, int]]]],
     ) -> None:
         """Read-modify-write one JSON rollup state and record the ``(metric, dimensions, resource,
-        period_start)`` rows ``update`` closes, in one write transaction: every process of the profile
+        period_start[, amount])`` rows (an amount only for ``SUM_METRICS``) ``update`` closes, in one write transaction: every process of the profile
         serializes here, so a closed period is emitted exactly once. Rows the contract rejects are
         dropped (never retried) so one bad row cannot wedge the rollup. A busy store defers the update
         to the next write (it then runs with that write's clock)."""
@@ -307,7 +307,7 @@ class SharedMetricsStore:
 
     def _update_rollup_state(
         self, connection: sqlite3.Connection, state_key: str,
-        update: Callable[[dict[str, Any] | None], tuple[dict[str, Any], list[tuple[str, dict, dict, str]]]],
+        update: Callable[[dict[str, Any] | None], tuple[dict[str, Any], list[tuple[str, dict, dict, str] | tuple[str, dict, dict, str, int]]]],
     ) -> None:
         row = connection.execute(
             "SELECT value FROM telemetry_state WHERE key = ?", (state_key,)
@@ -320,11 +320,12 @@ class SharedMetricsStore:
         valid = [
             r for r in rows
             if counter_dimensions_are_valid(r[0], r[1]) and client_resource_is_valid(r[2])
+            and (len(r) == 4 or r[4] == 1 or (r[0] in SUM_METRICS and type(r[4]) is int and r[4] > 1))
         ]
         if valid:
             self._install_id(connection)
-        for metric_name, dimensions, resource, period_start in valid:
-            self._record_counter_in_transaction(connection, metric_name, dimensions, resource, period_start)
+        for metric_name, dimensions, resource, period_start, *amount in valid:
+            self._record_counter_in_transaction(connection, metric_name, dimensions, resource, period_start, *amount)
         connection.execute(
             "INSERT INTO telemetry_state(key, value) VALUES (?, ?)"
             " ON CONFLICT(key) DO UPDATE SET value = excluded.value",

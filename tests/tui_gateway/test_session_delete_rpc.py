@@ -3,6 +3,10 @@ the onboarding run a deleted chat ends first (moved out of test_tui_gateway_serv
 
 from pathlib import Path
 
+import persistence_assembly
+import session_retention
+from persistence.conversation.sessions import NewSession
+from persistence_assembly import open_persistence, profile_scope
 from tui_gateway import server
 
 
@@ -169,23 +173,32 @@ def test_session_delete_honors_params_profile_sessions_dir(monkeypatch, tmp_path
     """Issue #62503: delete must target the profile state.db + sessions dir."""
     profile_home = tmp_path / "profiles" / "mlperf"
     (profile_home / "sessions").mkdir(parents=True)
+    with open_persistence(profile_scope(home=profile_home)) as seed:
+        seed.sessions.create(NewSession(session_id="old-ml", source="tui"))
     captured: dict = {}
+    real_open, real_removed = persistence_assembly.open_persistence, session_retention.after_sessions_removed
 
-    class ProfileDB(_NoOnboardingRun):
-        def __init__(self, db_path=None):
-            captured["db_path"] = db_path
+    def open_store(scope, **kwargs):
+        store = real_open(scope, **kwargs)
+        captured["db_path"] = persistence_assembly.store_location(scope)
+        real_close = store.close
 
-        def delete_session(self, sid, sessions_dir=None, **_kw):
-            captured["sid"] = sid
-            captured["sessions_dir"] = sessions_dir
-            return True
-
-        def close(self):
+        def close():
             captured["closed"] = True
+            real_close()
+
+        store.close = close
+        return store
+
+    def sessions_removed(store, profile_dir, removed, *, sessions_dir=None, **kwargs):
+        captured["sid"] = kwargs.get("primary")
+        captured["sessions_dir"] = sessions_dir
+        return real_removed(store, profile_dir, removed, sessions_dir=sessions_dir, **kwargs)
 
     monkeypatch.setattr(server, "_profile_home", lambda p: profile_home if p == "mlperf" else None)
     monkeypatch.setattr(server, "_get_db", lambda: None)
-    monkeypatch.setattr("hermes_state_registry.acquire", ProfileDB)
+    monkeypatch.setattr(persistence_assembly, "open_persistence", open_store)
+    monkeypatch.setattr(session_retention, "after_sessions_removed", sessions_removed)
 
     resp = server.handle_request(
         {
@@ -196,6 +209,9 @@ def test_session_delete_honors_params_profile_sessions_dir(monkeypatch, tmp_path
     )
     assert "result" in resp, resp
     assert resp["result"] == {"deleted": "old-ml"}
-    assert str(captured["db_path"]).endswith("state.db")
+    assert captured["db_path"] == (profile_home / "state.db").resolve()
+    assert captured["sid"] == "old-ml"
     assert Path(captured["sessions_dir"]) == profile_home / "sessions"
     assert captured.get("closed") is True
+    with open_persistence(profile_scope(home=profile_home)) as store:
+        assert store.sessions.get("old-ml") is None

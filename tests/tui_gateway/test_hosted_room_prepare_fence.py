@@ -7,11 +7,12 @@ import pytest
 
 from gateway import hosted_room_driver as driver, hosted_rooms
 from gateway.session_hosted_service import CanonicalHostedRoomService
-from hermes_state import SessionDB
-from hermes_state_runtime import begin_runtime_epoch
+from persistence.gateway.hosted_rooms import InvalidTaskTransitionError, StaleTaskError
+from persistence_assembly import open_persistence, profile_scope
 from tests.tui_gateway.test_hosted_room_peer_recovery import _peer_service
 from tests.tui_gateway.test_hosted_room_service import _FakePeerClient, _FakeRPC
-from tests.tui_gateway.test_hosted_room_approval_lifetime import pending_approval as pending_approval_fixture
+from tests.tui_gateway.test_hosted_room_approval_lifetime import (
+    close_storage_handles, pending_approval as pending_approval_fixture)
 
 pending_approval = pending_approval_fixture
 
@@ -75,17 +76,16 @@ class _HandoffLock:
 def preparation(tmp_path, monkeypatch, nested):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     peer = _Peer()
-    with SessionDB(tmp_path / "state.db") as db:
-        seeded = _peer_service(db.db_path, peer)
+    with open_persistence(profile_scope(home=tmp_path)) as db:
+        seeded = _peer_service(db, peer)
         route = seeded.peer_routes[("room-1", "member-peer")]
-        authority = SimpleNamespace(db=db, profile_id=str(tmp_path),
-                                    epoch=begin_runtime_epoch(db, instance_id="test"))
+        authority = SimpleNamespace(db=db, persistence=db, profile_id=str(tmp_path),
+                                    epoch=db.runtime.begin_epoch(instance_id="test"))
         service = CanonicalHostedRoomService(authority, None)
         service.local_profiles = lambda: ("default",)
         service.peer_clients[("room-1", "member-peer")] = peer
         peer.service = service
-        service.authorize_room("alice", "room-1", create=True)
-        service.create_room(room_id="room-1", name="Preparation fencing", members=[
+        service.create_room(room_id="room-1", name="Preparation fencing", owner="alice", members=[
             {"member_id": "default", "profile": "default", "handle": "home"},
             {"member_id": "member-peer", "profile": "reviewer", "handle": "reviewer", "target": {
                 "kind": "peer", "peer_id": "peer-review", "installation_id": "install-peer",
@@ -93,13 +93,13 @@ def preparation(tmp_path, monkeypatch, nested):
         binding, = service.bindings()
         if nested:
             service.send(room_id="room-1", event_id="local", payload={"text": "@home first", "thread_id": "thread"})
-            local, = driver.list_tasks(db.db_path, room_id="room-1")
-            old = driver.acquire_lease(db.db_path, room_id="room-1", gateway_id=binding.gateway_id,
+            local, = driver.list_tasks(db, placement="profile", room_id="room-1")
+            old = driver.acquire_lease(db, placement="profile", room_id="room-1", gateway_id=binding.gateway_id,
                 authority_epoch=binding.authority_epoch, process_generation="old", ttl_seconds=1,
                 clock=lambda: 1)
-            driver.start_task(db.db_path, local["identity"], old, expected_cancel_generation=0, clock=lambda: 1)
+            driver.start_task(db, local["identity"], old, placement="profile", expected_cancel_generation=0, clock=lambda: 1)
             lease = service.runtime._ensure_lease(binding)
-            driver.recover_room(db.db_path, lease, clock=service.runtime.clock)
+            driver.recover_room(db, lease, placement="profile", clock=service.runtime.clock)
             receipts = []
             local_rpc = SimpleNamespace(ref=SimpleNamespace(session_id="local-session"),
                 discard=lambda **kwargs: receipts.append(kwargs) or {"discarded": True})
@@ -115,7 +115,7 @@ def preparation(tmp_path, monkeypatch, nested):
         else:
             lease = service.runtime._ensure_lease(binding)
             invoke = lambda: service.prepare_room(binding)
-        hosted_rooms.append_event(db.db_path, room_id="room-1", event_id="peer", kind="message.user",
+        hosted_rooms.append_event(db, placement="profile", room_id="room-1", event_id="peer", kind="message.user",
             actor={"kind": "user", "id": "test"}, payload={"text": "@reviewer next", "thread_id": "thread"},
             authority_gateway_id=binding.gateway_id, authority_epoch=binding.authority_epoch)
         service.runtime._wake.clear()
@@ -128,7 +128,7 @@ def preparation(tmp_path, monkeypatch, nested):
 def test_fenced_preparation_is_durable_before_unlock_and_worker_acknowledges(
         preparation, monkeypatch, running, stop_first):
     p = preparation
-    service, db = p.service, p.service.db_path
+    service, db = p.service, p.service.store
     lock = service._policy_lock = _HandoffLock()
     admitted, task_ready = [], threading.Event()
     admit = driver.admit_task
@@ -140,10 +140,10 @@ def test_fenced_preparation_is_durable_before_unlock_and_worker_acknowledges(
         task = admit(*args, **kwargs)
         admitted.append(task)
         if running:
-            driver.start_task(db, task["identity"], p.lease, expected_cancel_generation=0,
+            driver.start_task(db, task["identity"], p.lease, placement="profile", expected_cancel_generation=0,
                               clock=service.runtime.clock)
         if not stop_first:
-            hosted_rooms.request_room_stop(db, room_id="room-1", cancel_id="racing-stop",
+            hosted_rooms.request_room_stop(db, placement="profile", room_id="room-1", cancel_id="racing-stop",
                 expected_gateway_id=p.binding.gateway_id, expected_epoch=p.binding.authority_epoch)
         lock.armed = True
         task_ready.set()
@@ -154,10 +154,10 @@ def test_fenced_preparation_is_durable_before_unlock_and_worker_acknowledges(
         try:
             assert task_ready.wait(10), "preparation never admitted the task"
             with lock:
-                task = driver.get_task(db, admitted[0]["identity"])
+                task = driver.get_task(db, admitted[0]["identity"], placement="profile")
                 if not running:
-                    with pytest.raises((driver.InvalidTaskTransitionError, driver.StaleTaskError)):
-                        driver.start_task(db, task["identity"], p.lease,
+                    with pytest.raises((InvalidTaskTransitionError, StaleTaskError)):
+                        driver.start_task(db, task["identity"], p.lease, placement="profile",
                             expected_cancel_generation=0, clock=service.runtime.clock)
                 return task
         finally:
@@ -182,7 +182,7 @@ def test_fenced_preparation_is_durable_before_unlock_and_worker_acknowledges(
         assert repeated["cancel_id"] == observed["cancel_id"]
         assert service.stop_room("room-1", cancel_id="operator-stop") == 1
         service.runtime._process_room(p.binding)
-        assert driver.get_task(db, identity)["status"] == "stopping"
+        assert driver.get_task(db, identity, placement="profile")["status"] == "stopping"
         p.peer.acknowledge = True
         service.runtime._process_room(p.binding)
         assert "stop" in [operation for operation, _ in p.peer.calls]

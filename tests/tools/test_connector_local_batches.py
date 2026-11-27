@@ -36,7 +36,8 @@ def test_local_batches_rejected_before_any_entry_executes(monkeypatch, mixed):
 def test_single_local_unwrap_keeps_session_db_todo_store_and_setup_callback(tmp_path, flatten_probe):
     from agent.tool_executor import _unwrap_tool_search_call
     from agent.agent_runtime_helpers import invoke_tool
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_messages, seed_session
     from tools.connectors import live
     from tools.connectors.contract import SettleReason
     from tools.connectors.mcp import apply_answer
@@ -47,9 +48,9 @@ def test_single_local_unwrap_keeps_session_db_todo_store_and_setup_callback(tmp_
     # A desktop session: the MCP card exists only there.
     set_session_vars(source="desktop", session_key="current-session", session_id="current-session")
 
-    db = SessionDB(tmp_path / "recall.db")
-    db.create_session("past-session", source="cli")
-    db.append_message("past-session", role="user", content="live-db-proof")
+    db = open_persistence(profile_scope(home=tmp_path))
+    seed_session(db, "past-session", "cli")
+    seed_messages(db, "past-session", {"role": "user", "content": "live-db-proof"})
     callbacks = []
     def connection(payload):
         callbacks.append(payload)
@@ -66,7 +67,7 @@ def test_single_local_unwrap_keeps_session_db_todo_store_and_setup_callback(tmp_
     agent = SimpleNamespace(
         enabled_toolsets=["todo", "session_search", "connections"], disabled_toolsets=[],
         session_id="current-session", _todo_store=TodoStore(), _memory_manager=None,
-        _get_session_db_for_recall=lambda: db, connection_callback=connection,
+        _get_session_db_for_recall=lambda: db, persistence=db, connection_callback=connection,
     )
     calls = [
         {"name": "session_search", "arguments": {"session_id": "past-session"}},

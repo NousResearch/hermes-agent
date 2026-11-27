@@ -126,14 +126,14 @@ async def test_ancillary_polls_take_the_event_lock_off_the_loop(monkeypatch):
 async def test_ancillary_poll_of_a_session_retired_mid_read_is_not_found(monkeypatch):
     """A chat deleted or pruned while its poll waits in the worker answers not_found (what the loop-side
     check answers), not an internal error from the projection re-indexing ``authority.sessions``."""
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
 
     def retire_then_index(authority, ref):
         authority.sessions.pop("s1")
         return authority.sessions["s1"]  # physical_target / _require_current_route re-index like this
 
     session_ancillary, connection, ref, _lock = _ancillary_fixture(monkeypatch, snapshot=retire_then_index)
-    with pytest.raises(RuntimeStoreError) as exc:
+    with pytest.raises(AuthorityRefusal) as exc:
         await session_ancillary.read(connection, ref, {"session_id": "s1"}, kind="control")
     assert str(exc.value) == "not_found"
 
@@ -144,13 +144,13 @@ async def test_real_projection_paused_while_the_session_is_retired_is_not_found(
     """The real projection (no stubs past the lock) paused on the event lock while delete/prune retires the
     session: ``retire_live_sessions`` pops ``authority.sessions`` on the loop without that lock, and the
     projection's own re-index (``_require_current_route``) must answer not_found, not a dispatch crash."""
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
 
     holder = {}
     session_ancillary, connection, ref, lock = _ancillary_fixture(
         monkeypatch, on_enter=lambda: holder["authority"].sessions.pop("s1"))
     holder["authority"] = connection.authority
-    with pytest.raises(RuntimeStoreError) as exc:
+    with pytest.raises(AuthorityRefusal) as exc:
         await session_ancillary.read(connection, ref, {"session_id": "s1", **params}, kind=kind)
     assert str(exc.value) == "not_found"
     assert lock.threads and threading.get_ident() not in lock.threads

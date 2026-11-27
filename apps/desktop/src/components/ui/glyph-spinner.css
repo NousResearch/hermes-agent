@@ -93,7 +93,7 @@
 
 /* Parked, for either of two reasons: the pane is a kept-alive but inactive tab
    (usePaneVisible), or the caller passed `paused` to hold the spinner still
-   while it stays mounted through a fade-out (ChatSwapOverlay). Hidden panes
+   while it stays mounted through a fade-out. Hidden panes
    normally get `content-visibility: hidden`, which already stops animations in
    the skipped subtree, but that containment has a runtime kill switch and
    older pane layers only set `visibility: hidden` — which does NOT stop an

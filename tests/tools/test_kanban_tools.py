@@ -12,6 +12,8 @@ import json
 
 import pytest
 
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
+
 
 # ---------------------------------------------------------------------------
 # Gating
@@ -1191,19 +1193,18 @@ def test_create_tui_subscription_binds_to_live_session_after_compaction_fork(mon
     """#110068: the inherited HERMES_SESSION_KEY can name a session already superseded
     by a compaction fork. Auto-subscribe must bind to the live continuation tip resolved
     from the session store, not the stale key the process was launched with."""
-    import hermes_state
-    from hermes_state import SessionDB
+    from hermes_constants import get_hermes_home
+    from tests.fixtures.storage_seed import seed_messages, seed_session
     from tools import kanban_tools as kt
 
     stale, live = "20260912_231110_stale", "20260913_000649_live"
-    db = SessionDB(tmp_path / "state.db")
-    db.create_session(stale, source="tui")
-    db.append_message(stale, role="user", content="pre-fork turn")
-    db.end_session(stale, "compression")
-    db.create_session(live, source="tui", parent_session_id=stale)
-    db.append_message(live, role="assistant", content="post-fork turn")
+    db = storage_handle(get_hermes_home())
+    seed_session(db, stale, "tui")
+    seed_messages(db, stale, {"role": "user", "content": "pre-fork turn"})
+    db.sessions.end(stale, "compression")
+    seed_session(db, live, "tui", parent_session_id=stale)
+    seed_messages(db, live, {"role": "assistant", "content": "post-fork turn"})
 
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
     monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
     monkeypatch.delenv("HERMES_SESSION_CHAT_ID", raising=False)
     monkeypatch.setenv("HERMES_SESSION_KEY", stale)
@@ -1228,18 +1229,18 @@ def test_live_tui_session_key_uses_profile_store(monkeypatch, tmp_path):
     """A named-profile session's lineage lives in profiles/<x>/state.db, not the default
     store: resolution must open THAT store."""
     from hermes_cli import profiles as profiles_mod
-    from hermes_state import SessionDB
+    from tests.fixtures.storage_seed import seed_messages, seed_session
     from tools import kanban_tools as kt
 
     stale, live = "stale-teamx", "live-teamx"
     store = tmp_path / "profiles" / "teamx"
     store.mkdir(parents=True)
-    db = SessionDB(store / "state.db")
-    db.create_session(stale, source="tui")
-    db.append_message(stale, role="user", content="pre-fork turn")
-    db.end_session(stale, "compression")
-    db.create_session(live, source="tui", parent_session_id=stale)
-    db.append_message(live, role="user", content="post-fork turn")
+    db = storage_handle(store)
+    seed_session(db, stale, "tui")
+    seed_messages(db, stale, {"role": "user", "content": "pre-fork turn"})
+    db.sessions.end(stale, "compression")
+    seed_session(db, live, "tui", parent_session_id=stale)
+    seed_messages(db, live, {"role": "user", "content": "post-fork turn"})
 
     monkeypatch.setattr(profiles_mod, "profile_exists", lambda name: name == "teamx")
     monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda name: str(store))
@@ -1249,13 +1250,13 @@ def test_live_tui_session_key_uses_profile_store(monkeypatch, tmp_path):
 def test_live_tui_session_key_fails_open_to_original_key(monkeypatch):
     """Store unavailability must degrade to current behaviour (subscribe to the inherited
     key), never fail the kanban_create call."""
-    import hermes_state_registry as registry
+    import persistence_assembly
     from tools import kanban_tools as kt
 
-    def _boom(db_path=None):
+    def _boom(*args, **kwargs):
         raise RuntimeError("store unavailable")
 
-    monkeypatch.setattr(registry, "acquire", _boom)
+    monkeypatch.setattr(persistence_assembly, "open_persistence", _boom)
     assert kt._live_tui_session_key("stale-key", "default") == "stale-key"
     assert kt._live_tui_session_key("stale-key", None) == "stale-key"
     # An unresolvable profile also falls through to the default store path.

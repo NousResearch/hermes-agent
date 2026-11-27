@@ -20,12 +20,13 @@ from agent.conversation_compression import (
     _mark_compressor_working_attempt,
     compress_context,
 )
-from hermes_state import SessionDB
+from tests.fixtures.storage_seed import seed_messages, seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 def _build_agent(tmp_path: Path, session_id: str):
-    db = SessionDB(db_path=tmp_path / "state.db")
-    db.create_session(session_id, source="cli")
+    db = storage_handle(tmp_path)
+    seed_session(db, session_id, "cli")
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
         from run_agent import AIAgent
 
@@ -34,7 +35,7 @@ def _build_agent(tmp_path: Path, session_id: str):
             base_url="https://openrouter.ai/api/v1",
             model="test/model",
             quiet_mode=True,
-            session_db=db,
+            persistence=db,
             session_id=session_id,
             skip_context_files=True,
             skip_memory=True,
@@ -79,7 +80,7 @@ class TestSupersessionKeysOnWorkingAttempts:
             "claims — the compression livelock (#112482)"
         )
         assert live != original or out is not live
-        assert db.get_compression_lock_holder("LIVELOCK") is None
+        assert db.coordination.get_compression_lock_holder(session_id="LIVELOCK") is None
 
     def test_genuinely_newer_working_attempt_still_discards_late_candidate(
         self, tmp_path: Path
@@ -106,5 +107,5 @@ class TestSupersessionKeysOnWorkingAttempts:
             "attempt must be discarded, never committed over newer state"
         )
         assert live == original
-        assert db.get_compression_lock_holder("WORKING_SUPERSEDE") is None
-        db.append_message("WORKING_SUPERSEDE", "assistant", "still writable")
+        assert db.coordination.get_compression_lock_holder(session_id="WORKING_SUPERSEDE") is None
+        seed_messages(db, "WORKING_SUPERSEDE", {"role": "assistant", "content": "still writable"})

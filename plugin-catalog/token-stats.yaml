@@ -1,0 +1,23 @@
+name: token-stats
+repo: https://github.com/amitamit10/hermes-token-stats
+sha: cef55778cb31bae1e753e55931f1a739ffd06067
+subdir: ""
+title: Token Stats
+description: "Lifetime token usage page for Hermes Desktop: totals across every profile on the connected (local or remote) gateway, a per-model table (share, input/output, cache read and cache %, calls, tokens per call, measured speed, cost), API-equivalent cost and savings from free models, subscription plans and prompt caching, a provider and profile split, activity streaks and month-over-month trend, daily chart, and top tools, skills and background (aux) work; plus a status-bar lifetime chip. Disclosure — read-only: calls the gateway's /api/analytics/models and /api/analytics/usage routes for each profile through the raw window.hermesDesktop.api bridge (no typed SDK helper exists for them), lists profiles and connections, and listens to message/usage events to time turns. Stores speed samples, a pruning ledger (so lifetime totals survive sessions.auto_prune) and the last loaded numbers in plugin storage, and reads an optional user-made archive.json from its own ctx.files data folder. Cost uses a bundled snapshot of models.dev list prices. No network calls of its own, no telemetry, no credentials."
+maintainer: amitamit10
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/amitamit10/hermes-token-stats#readme
+version: "1.0.0"
+platforms: []
+readme: true
+screenshots:
+  - https://raw.githubusercontent.com/amitamit10/hermes-token-stats/cef55778cb31bae1e753e55931f1a739ffd06067/assets/overview.png
+  - https://raw.githubusercontent.com/amitamit10/hermes-token-stats/cef55778cb31bae1e753e55931f1a739ffd06067/assets/models.png
+  - https://raw.githubusercontent.com/amitamit10/hermes-token-stats/cef55778cb31bae1e753e55931f1a739ffd06067/assets/tools-profiles.png
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

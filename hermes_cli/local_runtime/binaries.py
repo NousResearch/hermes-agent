@@ -79,7 +79,8 @@ def unavailable_reason(backend: str, target: str | None = None) -> str | None:
     if name is None:
         return f"unknown backend {backend}"
     target = target or pm.current_target()
-    reason = pm.get_package(name).missing_reason(target)
+    package = pm.get_package(name)
+    reason = package.missing_reason(target) or package.native_abi_reason(target)
     if reason:
         return reason
     lock = pm.Lockfile(pm.paths.lockfile_path())

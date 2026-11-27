@@ -9,8 +9,9 @@ from pathlib import Path
 import pytest
 
 from agent import onboarding_record
-from agent.onboarding_flow import PENDING, Answered, Facts, Shown
+from session_rules.onboarding_flow import PENDING, Answered, Facts, Shown
 from hermes_cli.config import read_user_config_raw
+from persistence.conversation.messages import NewMessage
 from tui_gateway import server
 
 FACTS = Facts(os="macos", arch="arm64", machine_kind="Mac", plugins=())
@@ -40,7 +41,8 @@ def client(root, monkeypatch):
 
     def submit(rid, params):
         calls.append(("submit", params))
-        server._get_db().append_message(params["session_id"].removeprefix("rt-"), "user", params["text"])
+        server._get_db().messages.append(params["session_id"].removeprefix("rt-"),
+                                         NewMessage(role="user", content=params["text"]))
         return {"result": {"status": "streaming"}}
 
     monkeypatch.setitem(server._methods, "session.resume", resume)
@@ -71,23 +73,27 @@ def test_a_new_launch_deletes_the_unfinished_chat_and_starts_over_at_the_name_be
     first = _start({"fresh_launch": True})
     old = first["stored_session_id"]
     db = server._get_db()
-    old_title = db.get_session(old)["title"]
+    old_title = db.sessions.get(old).title
     # The user got past the name card, then quit the app.
-    onboarding_record.advance(db, old, Shown("name"))
-    onboarding_record.advance(db, old, Answered("name", {"name": "Sid"}))
-    assert onboarding_record.load(db, old)["beats"]["name"] != PENDING
+    onboarding_record.advance(db, old, Shown("name"), persistence=db)
+    onboarding_record.advance(db, old, Answered("name", {"name": "Sid"}), persistence=db)
+    assert onboarding_record.load(db, old, persistence=db)["beats"]["name"] != PENDING
+    transcript = root / "sessions" / f"{old}.jsonl"
+    transcript.parent.mkdir(exist_ok=True)
+    transcript.write_text("{}\n", encoding="utf-8")
 
     again = _start({"fresh_launch": True})
     new = again["stored_session_id"]
 
     assert new != old and again["resumed"] is False and again["run_id"] != first["run_id"]
-    assert db.get_session(old) is None
+    assert db.sessions.get(old) is None
+    assert not transcript.exists()  # the delete's after-commit work removed its transcript file
     assert [(e["stored_session_id"], e["outcome"]) for e in ended] == [(old, "deleted")]
-    record = onboarding_record.load(db, new)
-    assert onboarding_record.active_session_id(db) == new and record["beats"]["name"] == PENDING
+    record = onboarding_record.load(db, new, persistence=db)
+    assert onboarding_record.active_session_id(db, persistence=db) == new and record["beats"]["name"] == PENDING
     # The fresh chat plays the opening again, under the title the deleted chat had.
     assert [kind for kind, _ in client] == ["resume", "submit", "resume", "submit"]
-    assert db.get_session(new)["title"] == old_title
+    assert db.sessions.get(new).title == old_title
     assert _run_flag(root) is True
 
 
@@ -105,9 +111,9 @@ def test_a_new_launch_closes_the_unfinished_chat_still_live_here_before_deleting
     closed = []
     monkeypatch.setitem(server._sessions, "rt-live", {"session_key": old})
     monkeypatch.setattr(server, "_close_session_by_id",
-                        lambda sid, **kw: closed.append((sid, server._get_db().get_session(old) is not None)))
+                        lambda sid, **kw: closed.append((sid, server._get_db().sessions.get(old) is not None)))
 
     _start({"fresh_launch": True})
 
     assert closed == [("rt-live", True)]
-    assert server._get_db().get_session(old) is None
+    assert server._get_db().sessions.get(old) is None

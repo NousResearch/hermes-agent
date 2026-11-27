@@ -14,7 +14,7 @@ from __future__ import annotations
 import threading
 from typing import Any
 
-from agent.message_content import flatten_message_text
+from session_rules.turns import flatten_message_text
 
 _QUEUED = "_plugin_live_notes"
 _IN_BATCH = "_plugin_notes_in_tool_batch"
@@ -41,7 +41,9 @@ def pop_plugin_notices(agent: Any) -> str:
         notes = _queued(agent)
         if notes:
             setattr(agent, _QUEUED, {})
-    return "\n\n".join(notes.values())
+    from agent.redact_secret_sources import redact_secret_source_values
+
+    return redact_secret_source_values("\n\n".join(notes.values()))
 
 
 def attach_to_tool_message(agent: Any, message: dict) -> None:

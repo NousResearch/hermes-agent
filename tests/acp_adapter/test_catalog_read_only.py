@@ -2,7 +2,8 @@
 import sqlite3
 
 from acp_adapter.session import SessionManager
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 
 def test_empty_catalog_does_not_initialize_storage(tmp_path, monkeypatch):
@@ -16,9 +17,9 @@ def test_empty_catalog_does_not_initialize_storage(tmp_path, monkeypatch):
 def test_catalog_reads_committed_history_without_schema_writes(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     path = tmp_path / "state.db"
-    with SessionDB(path) as db:
-        db.create_session(session_id="catalog", source="acp", model="fixture", model_config={"cwd": str(tmp_path)})
-        db.append_message("catalog", "user", "catalog input")
+    with open_persistence(profile_scope(home=tmp_path)) as store:
+        seed_session(store, "catalog", "acp", model="fixture", model_config={"cwd": str(tmp_path)})
+        seed_messages(store, "catalog", {"role": "user", "content": "catalog input"})
     with sqlite3.connect(path) as conn:
         conn.execute("PRAGMA journal_mode=DELETE")
     before = path.read_bytes()

@@ -1,0 +1,19 @@
+name: affiliateo
+title: Affiliateo
+repo: https://github.com/affiliateo/agent
+sha: e08724753dda10a522b668ab10a81c87990dee11
+version: "1.1.0"
+description: "Run an Affiliateo business from Hermes through Affiliateo's hosted MCP server (Streamable HTTP at https://affiliateo.com/api/mcp, API key header): affiliate programs, affiliates, commissions and payouts, products and sales pages, revenue, MRR and customers, invoices, leads and booked calls, paid ads on Meta, TikTok, Google Ads, Apple Search Ads, Snapchat and X, funnels and visitor analytics, courses, events, community, support tickets and Live Chat. Bundles the affiliateo workflow skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure: every tool call goes to Affiliateo's hosted server (affiliateo.com) and acts on the user's Affiliateo account with the permissions of the API key they set; the tool set is served by that server at runtime and is not covered by the pinned sha. The key is a config_schema secret (AFFILIATEO_API_KEY) kept by Hermes and sent only as the Authorization header to affiliateo.com. Write tools can email real people (invoices, booking changes, app invites), pay affiliates from the user's wallet (only with a key whose Payouts switch is on, within its daily limit), delete records, and pause, resume or re-budget ads; new ad campaigns are always created paused. The package marks the server untrusted, so Hermes asks before every tool the server does not mark read-only and refuses them in unattended runs. No local code, no telemetry."
+maintainer: Affiliateo
+tier: community
+category: tools
+docs_url: https://github.com/affiliateo/agent#hermes-agent
+requires_hermes: ">=0.23.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+

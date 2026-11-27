@@ -93,10 +93,6 @@ def _normalize_env_dict(env: dict | None) -> dict[str, str]:
     return normalized
 
 
-# Module-level binding: tests patch ``docker._load_hermes_env_vars`` to fake the .env file.
-_load_hermes_env_vars = load_hermes_env_vars
-
-
 # Docker label values must match [a-zA-Z0-9_.-] and stay <=63 chars to round-trip
 # through `docker ps --filter label=key=value`.
 _LABEL_VALUE_OK_RE = re.compile(r"[^A-Za-z0-9_.-]")
@@ -1086,7 +1082,7 @@ class DockerEnvironment(BaseEnvironment):
 
     def _resolve_passthrough_env(self) -> tuple[dict[str, str], set[str]]:
         """See ``remote_common.resolve_passthrough_env``; explicit docker_forward_env bypasses the blocklist."""
-        return resolve_passthrough_env(self._forward_env, hermes_env_loader=_load_hermes_env_vars)
+        return resolve_passthrough_env(self._forward_env, hermes_env_loader=load_hermes_env_vars)
 
     def _build_runtime_env_args_with_unsets(self) -> tuple[list[str], tuple[str, ...], dict[str, str]]:
         """Runtime name-only forwarding args, names absent from scope, and the values
@@ -1104,7 +1100,10 @@ class DockerEnvironment(BaseEnvironment):
         values are re-injected on every command because one container can be shared by
         multiple routed profiles in a gateway process."""
         assert self._container_id, "Container not started"
-        cmd = [self._docker_exe, "exec"]
+        # Docker exec inherits the container's configured -w. If that directory
+        # was removed, OCI refuses to launch bash before the session wrapper can
+        # recover its logical cwd. Start at /; the wrapper cd's to the right place.
+        cmd = [self._docker_exe, "exec", "-w", "/"]
         if stdin_data is not None:
             cmd.append("-i")
 
@@ -1294,6 +1293,7 @@ class DockerEnvironment(BaseEnvironment):
         the thread to finish before the interpreter exits, so ``docker stop`` / ``docker rm`` actually
         completes when we do trigger it.
         """
+        self.stop_all_processes()  # streams into the container: their host-side exec clients too
         container_id = self._container_id
         if not container_id:
             # Bind-mount dirs are still dropped in non-persistent mode.

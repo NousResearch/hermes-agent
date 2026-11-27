@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 
 # Harmless child: on Stop it keeps streaming valid deltas and never sends its result.
 CHATTY = """import json, sys, threading, time
@@ -36,7 +36,7 @@ def test_valid_output_after_stop_does_not_renew_the_ack_budget():
         worker.control({'type': 'stop'})
         started = time.monotonic()
         async with asyncio.timeout(10):
-            with pytest.raises(RuntimeStoreError) as stopped:
+            with pytest.raises(AuthorityRefusal) as stopped:
                 while True:
                     frames.append(await worker.next_frame(None, ack=ack))
                     if len(frames) == 5:

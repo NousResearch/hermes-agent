@@ -30,8 +30,9 @@ def test_real_agent_resolves_auto_from_its_platform(tmp_path, monkeypatch):
     interactive = AIAgent(session_id="p-cli", platform="cli", **kw)
     scheduled = AIAgent(session_id="p-cron", platform="cron", **kw)
     try:
-        assert interactive._cache_ttl == "1h"
-        assert scheduled._cache_ttl == "5m"
+        # A person's chat starts on 5m and is marked to move to 1h at its first pause; cron never is.
+        assert (interactive._cache_ttl, interactive._cache_ttl_adaptive) == ("5m", True)
+        assert (scheduled._cache_ttl, getattr(scheduled, "_cache_ttl_adaptive", False)) == ("5m", False)
         assert interactive._use_prompt_caching and scheduled._use_prompt_caching
         assert not interactive._cache_disabled and not scheduled._cache_disabled
     finally:

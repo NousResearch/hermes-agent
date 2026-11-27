@@ -25,6 +25,8 @@ export const HOST_CAPABILITIES = Object.freeze({
   browserContextMenu: 'browser',
   /** Shortcuts whose native chord the browser takes first (new tab, close tab) default to another chord. */
   browserShortcutDefaults: 'browser',
+  /** Hermes Cloud sign-in runs here (a portal window); the Webapp signs in from Settings ▸ Providers. */
+  cloudPortalLogin: 'native',
   /** Writes go through Electron's clipboard IPC before `navigator.clipboard`. */
   clipboardIpc: 'native',
   /** Gateway connection management (switch, connect, recover) lives on this host. */

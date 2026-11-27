@@ -854,7 +854,7 @@ class TestDefaultInteractionDispatch:
 
         resolve_calls = []
 
-        def fake_resolve(session_key, choice, resolve_all=False):
+        def fake_resolve(session_key, choice, resolve_all=False, request_id=None):
             resolve_calls.append((session_key, choice, resolve_all))
             return 1
 
@@ -869,7 +869,7 @@ class TestDefaultInteractionDispatch:
                 "id": "i",
                 "chat_type": 2,
                 "user_openid": "u-42",
-                "data": {"resolved": {"button_data": "approve:agent:main:qqbot:dm:u-42:allow-once"}},
+                "data": {"resolved": {"button_data": "approve:agent:main:qqbot:dm:u-42:allow-once:req-1"}},
             })
             await adapter._default_interaction_dispatch(event)
         finally:
@@ -883,7 +883,7 @@ class TestDefaultInteractionDispatch:
         adapter = self._make_adapter()
         resolve_calls = []
 
-        def fake_resolve(session_key, choice, resolve_all=False):
+        def fake_resolve(session_key, choice, resolve_all=False, request_id=None):
             resolve_calls.append((session_key, choice, resolve_all))
             return 1
 
@@ -975,7 +975,7 @@ class TestProfileNamespaceApprovalAuthz:
 
         resolve_calls = []
 
-        def fake_resolve(session_key, choice, resolve_all=False):
+        def fake_resolve(session_key, choice, resolve_all=False, request_id=None):
             resolve_calls.append((session_key, choice, resolve_all))
             return 1
 
@@ -988,7 +988,7 @@ class TestProfileNamespaceApprovalAuthz:
                 "id": "i",
                 "chat_type": 2,
                 "user_openid": "u-42",
-                "data": {"resolved": {"button_data": "approve:agent:coder:qqbot:c2c:u-42:allow-once"}},
+                "data": {"resolved": {"button_data": "approve:agent:coder:qqbot:c2c:u-42:allow-once:req-1"}},
             })
             await adapter._default_interaction_dispatch(event)
         finally:
@@ -1003,7 +1003,7 @@ class TestProfileNamespaceApprovalAuthz:
 
         resolve_calls = []
 
-        def fake_resolve(session_key, choice, resolve_all=False):
+        def fake_resolve(session_key, choice, resolve_all=False, request_id=None):
             resolve_calls.append((session_key, choice, resolve_all))
             return 1
 
@@ -1016,7 +1016,7 @@ class TestProfileNamespaceApprovalAuthz:
                 "id": "i", "chat_type": 1,
                 "group_openid": "g-1",
                 "group_member_openid": "owner",
-                "data": {"resolved": {"button_data": "approve:agent:coder:qqbot:group:g-1:owner:allow-once"}},
+                "data": {"resolved": {"button_data": "approve:agent:coder:qqbot:group:g-1:owner:allow-once:req-1"}},
             })
             await adapter._default_interaction_dispatch(event)
         finally:
@@ -1031,7 +1031,7 @@ class TestProfileNamespaceApprovalAuthz:
 
         resolve_calls = []
 
-        def fake_resolve(session_key, choice, resolve_all=False):
+        def fake_resolve(session_key, choice, resolve_all=False, request_id=None):
             resolve_calls.append((session_key, choice, resolve_all))
             return 1
 
@@ -1044,7 +1044,7 @@ class TestProfileNamespaceApprovalAuthz:
                 "id": "i", "chat_type": 1,
                 "group_openid": "g-1",
                 "group_member_openid": "attacker",
-                "data": {"resolved": {"button_data": "approve:agent:coder:qqbot:group:g-1:owner:allow-once"}},
+                "data": {"resolved": {"button_data": "approve:agent:coder:qqbot:group:g-1:owner:allow-once:req-1"}},
             })
             await adapter._default_interaction_dispatch(event)
         finally:

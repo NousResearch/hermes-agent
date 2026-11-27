@@ -58,7 +58,7 @@ This API is lifecycle-managed asynchronous execution. Child construction and
 completion use the same host-owned path as `delegate_task`, including parent
 tool-resolution restoration, memory notification, serialized `subagent_stop`
 hooks, resource cleanup, and child-cost rollup. It does not change the
-synchronous `delegate_task` tool, batch delegation, or its gateway/TUI display.
+`delegate_task` tool, batch delegation, or its gateway/TUI display.
 The initial implementation retains metadata and terminal results in-process for
 one hour.
 After a process restart, `reconnect` returns `RECONNECT_UNAVAILABLE` and never

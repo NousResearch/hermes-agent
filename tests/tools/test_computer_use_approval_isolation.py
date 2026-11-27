@@ -16,9 +16,10 @@ reset in ``tests/conftest.py`` stays and the polluter/observer pair below keeps 
 import json
 
 import pytest
+from tests.computer_use_fakes import reset_backend
 
 
-def _install_backend(cu_tool):
+def _install_backend(cu_tool, monkeypatch):
     class _RecordingBackend:
         def __init__(self):
             self.calls = []
@@ -47,8 +48,8 @@ def _install_backend(cu_tool):
             )
 
     backend = _RecordingBackend()
-    cu_tool.reset_backend_for_tests()
-    cu_tool._backend = backend
+    reset_backend()
+    monkeypatch.setattr(cu_tool, "_new_backend", lambda mode: backend)
     return backend
 
 
@@ -69,7 +70,7 @@ def test_no_callback_refuses_unless_yolo(_nobody_to_ask, monkeypatch):
     from tools import approval
     from tools.computer_use import tool as cu_tool
 
-    backend = _install_backend(cu_tool)
+    backend = _install_backend(cu_tool, monkeypatch)
     result = json.loads(cu_tool.handle_computer_use({"action": "click", "element": 3}))
     assert result["error"].startswith("BLOCKED"), result
     assert result["action"] == "click"
@@ -125,6 +126,6 @@ def test_b_still_dispatches_after_the_polluter(monkeypatch):
 
     monkeypatch.setenv("HERMES_INTERACTIVE", "1")
     monkeypatch.setattr("tools.terminal_tool._get_approval_callback", lambda: lambda command, description, **kw: "once")
-    backend = _install_backend(cu_tool)
+    backend = _install_backend(cu_tool, monkeypatch)
     result = cu_tool.handle_computer_use({"action": "click", "element": 3})
     assert [name for name, _ in backend.calls] == ["click"], f"leaked approval callback poisoned this test: {result!r}"

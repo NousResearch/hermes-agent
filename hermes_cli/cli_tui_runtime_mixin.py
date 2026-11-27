@@ -31,6 +31,7 @@ class CLITuiRuntimeMixin:
     def _tui_process_loop(self):
         """REPL worker thread: drain ``_pending_input``, run idle housekeeping, dispatch each input."""
         held = None
+        self._sync_program_status()
         while not self._should_exit:
             try:
                 if held is not None:
@@ -156,7 +157,9 @@ class CLITuiRuntimeMixin:
             from hermes_cli.cli_inline_images import print_inline_images
             print_inline_images(self, submit_images)
 
+        self._program_turn_outcome = None
         self._agent_running = self._interactive_turn = True
+        self._sync_program_status()
         self._pet_turn_error = self._pet_reasoning = False
         self._turn_summary_begin()
         self._app.invalidate()
@@ -185,6 +188,7 @@ class CLITuiRuntimeMixin:
         """Post-turn bookkeeping after chat() returns (normal, error, or interrupt)."""
         from cli import _DIM, _RST, _cprint
         self._agent_running = self._pet_reasoning = False
+        self._sync_program_status()  # setup failures and early returns land here too
         self._spinner_text = self._last_scrollback_tool = ""
         self._tool_start_time = 0.0
         self._pending_tool_info.clear()
@@ -235,7 +239,7 @@ class CLITuiRuntimeMixin:
             self._drain_process_notifications("cli-post-turn")
 
     def _tui_signal_handler(self, signum, frame):
-        """SIGHUP/SIGTERM -> graceful shutdown.
+        """SIGHUP/SIGTERM -> graceful shutdown; a gateway viewer only disconnects (the session lives on).
 
         The agent is hard-interrupted first so its daemon thread can kill the tool's
         setsid subprocess group before the main thread unwinds (else an orphan child).
@@ -253,7 +257,14 @@ class CLITuiRuntimeMixin:
         # Arm the exit backstop now that shutdown intent is unambiguous — covers wedges in the unwind below
         # that would otherwise leave the process alive with no watchdog (#65998 class).
         _arm_exit_watchdog_on_shutdown_signal()
-        if self._agent_running:
+        from hermes_cli.cli_shutdown import _is_gateway_viewer
+        if _is_gateway_viewer(self):
+            # A lost terminal (SIGHUP, or the emulator's SIGTERM) is a disconnect, not /exit: the
+            # gateway keeps the turn and its background subagents, as for a dropped socket. A signal
+            # landing after /exit or Ctrl+D already asked to close keeps that close (and --delete).
+            if not self._should_exit:
+                self._viewer_disconnected = self._detach_on_exit = True
+        elif self._agent_running:
             _interrupt_agent_for_signal(self.agent, signum)
         # Prefer app.exit() over raising KeyboardInterrupt: a KBI from a signal handler
         # lands in a pt Task ("Unhandled exception in event loop" + "Press ENTER to
@@ -285,8 +296,12 @@ class CLITuiRuntimeMixin:
                 print("\n" * (_term_lines - 1), end="", flush=True)
 
         from hermes_cli.gateway_client import GatewayClientError
+        from hermes_cli.gateway_owner_restart import SuccessorWaitStopped
         try:
             self._ensure_gateway_session()  # the banner shows the gateway session's id and inventory
+        except SuccessorWaitStopped as exc:  # Ctrl+C while the gateway restarted: nothing was opened
+            print(str(exc), file=sys.stderr)
+            raise SystemExit(130) from None
         except GatewayClientError as exc:
             # A refused open (a changed launch flag on --resume) is a startup error, not a traceback.
             print(f"Error: {exc}", file=sys.stderr)
@@ -411,8 +426,8 @@ class CLITuiRuntimeMixin:
 
     def _run_startup_maintenance(self):
         with suppress(Exception):
-            from agent.curator import maybe_run_curator
-            maybe_run_curator(
+            from hermes_cli.plugins_idle_tasks import run_idle_jobs
+            run_idle_jobs(
                 idle_for_seconds=float("inf"),  # CLI startup = fully idle
                 on_summary=lambda msg: self._console_print(f"[dim #6b7684]💾 {msg}[/]"),
             )
@@ -510,6 +525,9 @@ class CLITuiRuntimeMixin:
         """Teardown after the app exits: interrupt agent, stop voice/pet, persist + close session, cleanup, exit summary."""
         from cli import _DIM, _RST, _cprint, _invoke_interrupted_session_end, _run_cleanup, set_approval_callback, set_secret_capture_callback, set_sudo_password_callback
         self._should_exit = True
+        # First, before anything that can hang or be cut short by the exit watchdog: a pane back at its
+        # shell must not keep listing Hermes as an agent (OSC 7501 idle/done outlive the process).
+        self._clear_program_status()
         self._pet_stop_anim()
         # Without this line the terminal sits silent through the whole cleanup window.
         with suppress(Exception):
@@ -538,6 +556,10 @@ class CLITuiRuntimeMixin:
         self._persist_active_session_before_close()
 
         _closing_sid = self._closing_session_id()
+        if self._viewer_disconnected:
+            # No detach: the socket drops at exit and the owner treats that as an orphaned viewer
+            # (``ws_orphan_reap`` after its grace), never as a close that stops delegations.
+            _closing_sid = None
         if self._session_db and _closing_sid:
             try:
                 self._session_db.end_session(_closing_sid, "cli_close")

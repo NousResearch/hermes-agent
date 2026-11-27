@@ -26,6 +26,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from gateway.run_platform_reconcile import GatewayPlatformReconcileMixin
 from gateway.run_shutdown import _log_suppressed
 from hermes_cli.config_backend import ConfigBackendUnavailable
 from utils import file_cache_version
@@ -75,8 +76,9 @@ def _added_profile_blocker(launch: Path) -> Optional[str]:
     return implicit_multiplex_blocker()
 
 
-class GatewayProfileReconcileMixin:
-    """Runtime reconciliation of the multiplexed served-profile set (hot add / unroute / credential-add)."""
+class GatewayProfileReconcileMixin(GatewayPlatformReconcileMixin):
+    """Runtime reconciliation of the multiplexed served-profile set (hot add / unroute / credential-add);
+    each profile's own platform adapters follow its config through the platform reconcile base."""
 
     _served_profile_homes: Optional[dict[str, Path]] = None
     _served_profile_signatures: Optional[dict[str, tuple]] = None
@@ -114,12 +116,15 @@ class GatewayProfileReconcileMixin:
         (every gateway), then rescan ``profiles/`` when multiplexing (creators signal the control
         socket for an immediate rescan); a gateway standalone only because the host had one profile
         starts multiplexing here once a second one exists."""
+        await self._start_primary_platform_watch()
         while self._running:
             await asyncio.sleep(interval)
             if not self._running:
                 return
             try:
                 await self._sync_hooks_on_consent_change()
+                # Every gateway: the launch profile's own platforms follow its config/.env too.
+                await self._reconcile_primary_platforms_if_changed()
                 # A standalone gateway never runs a profile reconcile from the watcher, unless it is the
                 # single-profile boot that starts multiplexing in place for a newly created profile.
                 if self._multiplex_on() or await self._multiplex_for_added_profile():
@@ -232,8 +237,9 @@ class GatewayProfileReconcileMixin:
             retry_parked = reason == "control-socket"
             added = [n for n in live if n not in known and n != active and (retry_parked or n not in parked)]
             removed = [n for n in known if n not in live and n != active]
+            unreadable = getattr(self, "_unreadable_signatures", None) or {}
             changed = [n for n in live if n in known and n != active and n not in added
-                       and profile_serve_signature(live[n]) != sigs.get(n)]
+                       and profile_serve_signature(live[n]) not in (sigs.get(n), unreadable.get(n))]
             current = {n: h for n, h in live.items() if n in known or n == active}
             return await self._apply_profile_changes(
                 current, added, removed, changed, reason=reason, live=live, result=result)
@@ -243,7 +249,16 @@ class GatewayProfileReconcileMixin:
         """Apply a selected diff under the reconcile lock, shared by the watcher and the
         serve/unserve control verbs. New profiles first get a runtime (reservation + store); one
         whose home another gateway owns or whose store is unusable is parked, not served."""
+        result, _receipts = await self._apply_profile_diff(
+            current, added, removed, changed, reason=reason, live=live, result=result)
+        return result
+
+    async def _apply_profile_diff(self, current, added, removed, changed, *, reason,
+                                  live=None, result=None) -> tuple:
+        """``(result, {profile: platform receipt})``: the one apply every named-profile path goes
+        through; each served profile it applied records its receipt in the PlatformChangeLedger."""
         from gateway.run import MultiplexConfigError
+        from gateway.run_platform_reconcile import PlatformConfigUnreadable
         from gateway.run_runtime import park_profile, unpark_profile
         from hermes_cli.profiles import profiles_to_serve
         active = getattr(self, "_primary_profile_name", None) or "default"
@@ -253,7 +268,8 @@ class GatewayProfileReconcileMixin:
         known = dict(self._served_profile_homes or {})
         sigs = self._served_profile_signatures or {}
         if not (added or removed or changed):
-            return {**result, "served_profiles": self.served_profile_names()}
+            return {**result, "served_profiles": self.served_profile_names()}, {}
+        before = self._open_profile_receipts(added, changed)
         for name in removed:
             await self._unserve_profile(name, known[name])
             result["removed"].append(name)
@@ -288,6 +304,11 @@ class GatewayProfileReconcileMixin:
                 result["parked"].append(name)
                 config_parked.add(name)
                 continue
+            except PlatformConfigUnreadable as exc:
+                # Its adapters and cached config stay as they are; the signature stays unacknowledged.
+                self._note_unreadable_platform_config(name, scan_signature, exc)
+                result.setdefault("unreadable", {})[name] = str(exc)
+                continue
             except Exception:
                 logger.error("[MULTIPLEX] Failed to start adapters for profile '%s'", name, exc_info=True)
                 connected = 0
@@ -296,6 +317,7 @@ class GatewayProfileReconcileMixin:
                 transient_failed.add(name)
             else:
                 sigs[name] = scan_signature
+                (getattr(self, "_unreadable_signatures", None) or {}).pop(name, None)
             if name in added:
                 logger.info("[MULTIPLEX] Now serving profile '%s' (%s adapter(s) connected; %s)", name, connected, reason)
                 result["added"].append(name)
@@ -323,12 +345,13 @@ class GatewayProfileReconcileMixin:
             configs = getattr(self, "_profile_configs", None)
             if isinstance(configs, dict):
                 configs.pop(name, None)
+        receipts = self._close_profile_receipts(before, result.get("unreadable") or {})
         if added:
             from gateway.run_runtime import recover_served_native_rows
             await recover_served_native_rows(self)
             await self._after_profiles_added([(n, current[n]) for n in added])
         result["served_profiles"] = self.served_profile_names()
-        return result
+        return result, receipts
 
     def _drop_stale_platform_verdicts(self, name: str) -> None:
         """Before a changed profile's rescan, drop its ``<name>:<platform>`` status entries for
@@ -381,7 +404,8 @@ class GatewayProfileReconcileMixin:
             launch = get_process_hermes_home().resolve()
             if launch != get_default_hermes_root().resolve():
                 return False  # only the default home runs the multiplexer (``_launch_home_may_multiplex``)
-            if len(profiles_to_serve(multiplex=True, include_parked=True)) < 2:
+            # A parked or run-elsewhere profile can come back without a host restart: count it.
+            if len(profiles_to_serve(multiplex=True, include_parked=True, include_run_elsewhere=True)) < 2:
                 return False
             blocker = await self._run_housekeeping_in_executor(_added_profile_blocker, launch)
             if blocker is not None:
@@ -514,11 +538,17 @@ class GatewayProfileReconcileMixin:
                     await self._bounded_adapter_teardown(adapter, platform, profile=name)
                     self._release_secondary_claims(name, platform, adapter)  # its bot is free once it is down
             finally:
-                # Every hold of the profile goes, a fatal teardown's still disconnecting included (the profile
-                # is gone, so its handler queues nothing): none may block a re-serve.
+                # The profile's holds go, but an adapter still tearing down elsewhere (a fatal teardown) keeps its
+                # own while its bot is up, moved out of the (profile, platform) slot a re-serve takes: it blocks
+                # only OTHER profiles, and that teardown's own finally releases it however it ends.
                 held = getattr(self, "_secondary_held_claims", None) or {}
                 for key in [key for key in held if key[0] == name]:
-                    del held[key]
+                    owner, claims = held.pop(key)
+                    if not isinstance(owner, asyncio.Future) and not any(owner is popped for popped in adapters.values()):
+                        teardown = getattr(self, "_teardown_held_claims", None)
+                        if teardown is None:
+                            teardown = self._teardown_held_claims = {}
+                        teardown[id(owner)] = (owner, key, claims)
             # Its ``<name>:<platform>`` runtime entries describe a profile that no longer exists.
             _write_runtime_status_quiet(drop_profile_platforms=name)
             for attr in ("pairing_stores", "_busy_text_modes_by_profile", "_busy_input_modes_by_profile",
@@ -546,9 +576,9 @@ class GatewayProfileReconcileMixin:
             # The reservation (gateway.lock) is released LAST: a deleter waiting on it may rmtree the
             # home as soon as it goes, so every handle this process holds there must close first.
             try:
-                with _log_suppressed(logging.DEBUG, "profile handle release failed", exc_info=True):
-                    from hermes_state_registry import close_all_under
-                    close_all_under(home)
+                with _log_suppressed(logging.DEBUG, "profile store release failed", exc_info=True):
+                    from persistence_assembly import close_stores_under
+                    close_stores_under(home)
                 with _log_suppressed(logging.DEBUG, "memory-store release failed", exc_info=True):
                     from plugins.memory import import_provider_module  # catalog plugin since it left core
                     import_provider_module("holographic", "store").MemoryStore.release_all_under(home)
@@ -614,8 +644,9 @@ def _profile_lifecycle_verb(runner, *, serve: bool):
             # Keep running: the client must not interpret an incomplete teardown as stopped.
             return {"pending": True, "served_profiles": runner.served_profile_names()}
         except Exception as exc:
+            from storage_user_copy import error_type_name
             logger.warning("Profile lifecycle request failed", exc_info=True)
-            return {"error": f"{type(exc).__name__}: {exc}"}
+            return {"error": f"{error_type_name(exc)}: {exc}"}
 
     return handler
 
@@ -692,6 +723,15 @@ def profile_scoped_chore(runner, chore):
     return lambda: _for_each_served_profile(runner, lambda _label: chore())
 
 
+def _identity_verb_error(exc: Exception) -> str:
+    """``<class>: <message>`` for a failed identity verb, naming the class the store raised underneath: a
+    collision is a ``ValueError``, a store failure the SQLite error the contract error chains."""
+    from persistence.housekeeping.profile_identity import ProfileIdentityCollision
+    from storage_user_copy import error_type_name
+    name = ValueError.__name__ if isinstance(exc, ProfileIdentityCollision) else error_type_name(exc)
+    return f"{name}: {exc}"
+
+
 def migrate_profile_identity_verb(runner):
     """Build the ``migrate-profile-identity`` control-verb handler for ``hermes profile rename``
     (#111926). The live multiplexer owns the routing index in memory and writes it back
@@ -708,26 +748,25 @@ def migrate_profile_identity_verb(runner):
             return {"ok": False, "error": "live gateway has no session store"}
         acquired = []
         try:
-            from hermes_state_registry import acquire, release_or_close
+            from persistence_assembly import open_persistence, profile_scope, store_exists
             db_counts: dict[str, dict[str, int]] = {}
-            routing_db = getattr(store, "_routing_db", None)
-            if routing_db is not None and hasattr(routing_db, "rekey_profile_state"):
-                db_counts["routing"] = routing_db.rekey_profile_state(old, new)
+            if (routing := getattr(store, "_routing_persistence", None)) is not None:
+                db_counts["routing"] = routing.profile_identity.rekey_profile(old, new).as_dict()
             routing_home = getattr(store, "_routing_home", None)
-            profile_path = Path(routing_home) / "profiles" / new / "state.db" if routing_home else None
-            if profile_path is not None and profile_path.exists():
-                profile_db = acquire(profile_path)
-                acquired.append(profile_db)
-                db_counts["profile"] = profile_db.rekey_profile_state(old, new)
+            scope = profile_scope(home=Path(routing_home) / "profiles" / new) if routing_home else None
+            if scope is not None and store_exists(scope):
+                profile_store = open_persistence(scope)
+                acquired.append(profile_store)
+                db_counts["profile"] = profile_store.profile_identity.rekey_profile(old, new).as_dict()
             rekeyed = store.rekey_profile_routing(old, new)
             return {"ok": True, "rekeyed": rekeyed, "db": db_counts}
         except Exception as exc:
             logger.warning("Profile identity migration failed for %r->%r: %s", old, new, exc)
-            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+            return {"ok": False, "error": _identity_verb_error(exc)}
         finally:
-            for db in acquired:
+            for profile_store in acquired:
                 try:
-                    release_or_close(db)
+                    profile_store.close()
                 except Exception:
                     logger.debug("Failed to release renamed profile state DB", exc_info=True)
 
@@ -755,13 +794,12 @@ def purge_profile_identity_verb(runner):
             return {"ok": False, "error": "live gateway has no session store"}
         try:
             db_counts: dict[str, dict[str, int]] = {}
-            routing_db = getattr(store, "_routing_db", None)
-            if routing_db is not None and hasattr(routing_db, "purge_profile_state"):
-                db_counts["routing"] = routing_db.purge_profile_state(name)
+            if (routing := getattr(store, "_routing_persistence", None)) is not None:
+                db_counts["routing"] = routing.profile_identity.purge_profile(name).as_dict()
             dropped = store.purge_profile_routing(name)
             return {"ok": True, "dropped": dropped, "db": db_counts}
         except Exception as exc:
             logger.warning("Profile identity purge failed for %r: %s", name, exc)
-            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+            return {"ok": False, "error": _identity_verb_error(exc)}
 
     return _handler

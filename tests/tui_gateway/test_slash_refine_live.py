@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import contextlib
 import threading
+from types import SimpleNamespace
 from unittest.mock import patch
 
+from persistence.conversation.messages import ConversationMessage
 from tui_gateway import server
 from tui_gateway.transport import StdioTransport
 
@@ -35,19 +37,24 @@ class _Agent:
         self.spawned.append(kwargs)
 
 
-class _DB:
-    def get_messages_as_conversation(self, key, include_ancestors=True, **_kwargs):
+class _Messages:
+    def read_conversation(self, key, request):
         assert key == "refine-key"
-        assert include_ancestors is True
-        return [
-            {"role": "user", "content": "persisted question"},
-            {"role": "assistant", "content": "persisted answer"},
-        ]
+        assert request.include_lineage is True
+        return (
+            ConversationMessage(role="user", content="persisted question", db_persisted=False),
+            ConversationMessage(role="assistant", content="persisted answer", db_persisted=False),
+        )
 
 
 @contextlib.contextmanager
 def _fake_session_db(_session):
-    yield _DB()
+    yield object()
+
+
+def _persistence_with(messages):
+    """A stand-in for ``server._persistence_for`` yielding a handle whose transcript is ``messages``."""
+    return lambda _db: contextlib.nullcontext(SimpleNamespace(messages=messages))
 
 
 def test_refine_spawns_review_from_persisted_transcript():
@@ -61,6 +68,7 @@ def test_refine_spawns_review_from_persisted_transcript():
         with (
             patch.object(server, "_session_uses_compute_host", return_value=False),
             patch.object(server, "_session_db", _fake_session_db),
+            patch.object(server, "_persistence_for", _persistence_with(_Messages())),
         ):
             out = server._live_slash_command_output(sid, session, "refine", "save the workflow")
     finally:
@@ -80,14 +88,9 @@ def test_refine_spawns_review_from_persisted_transcript():
     }]
 
 
-class _DBEmpty:
-    def get_messages_as_conversation(self, key, include_ancestors=True, **_kwargs):
-        return []
-
-
-@contextlib.contextmanager
-def _fake_session_db_empty(_session):
-    yield _DBEmpty()
+class _MessagesEmpty:
+    def read_conversation(self, key, request):
+        return ()
 
 
 def test_refine_spawns_review_from_in_memory_history_mid_conversation():
@@ -105,7 +108,8 @@ def test_refine_spawns_review_from_in_memory_history_mid_conversation():
     try:
         with (
             patch.object(server, "_session_uses_compute_host", return_value=False),
-            patch.object(server, "_session_db", _fake_session_db_empty),
+            patch.object(server, "_session_db", _fake_session_db),
+            patch.object(server, "_persistence_for", _persistence_with(_MessagesEmpty())),
         ):
             out = server._live_slash_command_output(sid, session, "refine", "")
     finally:

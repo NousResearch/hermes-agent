@@ -117,19 +117,19 @@ _UNUSABLE_CHILD = _DROP_PRIVILEGES + textwrap.dedent(r"""
     logging.getLogger().addHandler(handler)
     logging.getLogger().setLevel(logging.DEBUG)
 
-    from gateway import run_api, run_runtime
-    from hermes_state import SessionDB
+    from gateway import run_api, run_runtime_listener
+    from persistence_assembly import open_persistence, profile_scope
 
     async def api(_runner):
         return SimpleNamespace(api_origin="http://127.0.0.1:1")
 
     run_api.start_gateway_api = api
-    db = SessionDB(home / "state.db")
+    db = open_persistence(profile_scope(home=home))
     try:
-        runner = SimpleNamespace(session_authority=SimpleNamespace(db=db, waiters={}),
+        runner = SimpleNamespace(session_authority=SimpleNamespace(persistence=db, waiters={}),
                                  session_runtime_descriptor={})
         # The step start_gateway runs per authority; on main it raised and aborted the gateway.
-        asyncio.run(run_runtime.start_gateway_runtime_api(runner))
+        asyncio.run(run_runtime_listener.start_gateway_runtime_api(runner))
     finally:
         db.close()
     print(json.dumps({"denied": True, "api_origin": runner.session_runtime_descriptor.get("api_origin"),

@@ -31,6 +31,7 @@ Four review findings on the original branch:
 
 import asyncio
 from datetime import datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -44,6 +45,7 @@ from gateway.relay.ws_transport import (
 )
 from gateway.run import GatewayRunner, _USER_BOUNDARY_END_REASONS
 from gateway.session import AsyncSessionStore, SessionEntry
+from persistence_assembly import profile_scope, store_location
 
 
 # ---------------------------------------------------------------------------
@@ -61,13 +63,20 @@ def _entry(session_id, session_key="agent:main:slack:dm:U1"):
     )
 
 
+def _record(row):
+    """A session row as the storage interface's record: the fields the resolver reads, as attributes."""
+    if row is None:
+        return None
+    return SimpleNamespace(**{"ended_at": None, "end_reason": None, "source": None, "model_config": {}, **row})
+
+
 def _runner_with_rows(rows, *, switched_entry=None):
     runner = object.__new__(GatewayRunner)
-    db = MagicMock()
-    db.get_session = AsyncMock(side_effect=lambda session_id: rows.get(session_id))
-    db.get_compression_tip = AsyncMock(return_value=None)
-    runner._session_db = db
+    handle = MagicMock()
+    handle.aio.sessions.get = AsyncMock(side_effect=lambda session_id: _record(rows.get(session_id)))
+    handle.aio.lineage.tip = AsyncMock(return_value=None)
     runner.session_store = MagicMock()
+    runner.session_store.persistence = handle
     runner.session_store.switch_session = MagicMock(return_value=switched_entry)
     runner.session_store.advance_compression_session = MagicMock(
         return_value=switched_entry
@@ -372,11 +381,14 @@ def test_durable_dispatch_persists_and_recovers_scope_id(tmp_path, monkeypatch):
     """End-to-end restart shape: dispatch with a scoped session context bound,
     simulate owner death, recover — the recovered completion event must carry
     scope_id/user_id, and the reconstructed SessionSource must prime them."""
+    import sqlite3
+    from contextlib import closing
+
     import tools.async_delegation as ad
     from gateway.session_context import clear_session_vars, set_session_vars
 
     ad._reset_for_tests()
-    monkeypatch.setattr(ad, "_db_path", lambda: tmp_path / "state.db")
+    monkeypatch.setattr(ad, "_scope", lambda: profile_scope(home=tmp_path))
 
     tokens = set_session_vars(
         platform="discord",
@@ -409,7 +421,7 @@ def test_durable_dispatch_persists_and_recovers_scope_id(tmp_path, monkeypatch):
     monkeypatch.setattr("gateway.status._pid_exists", lambda pid: False)
     ad.recover_abandoned_delegations()
 
-    with ad._transaction() as conn:
+    with closing(sqlite3.connect(store_location(ad._scope()))) as conn:
         row = conn.execute(
             "SELECT event_json FROM async_delegations WHERE delegation_id='d-scope-1'"
         ).fetchone()
@@ -456,7 +468,7 @@ def test_live_completion_event_carries_scope_id(tmp_path, monkeypatch):
     class _PR:
         completion_queue = _Q()
 
-    monkeypatch.setattr(ad, "_db_path", lambda: tmp_path / "state.db")
+    monkeypatch.setattr(ad, "_scope", lambda: profile_scope(home=tmp_path))
     monkeypatch.setattr(
         "tools.process_registry.process_registry", _PR(), raising=False
     )

@@ -14,6 +14,7 @@ import {
   type ComposerDraftSyncMode,
   freshDraftScope,
   isFreshDraftScope,
+  newSessionDraftAnnouncedFor,
   onComposerDraftSyncRequest,
   reloadPersistedDrafts,
   savedDraftAt,
@@ -52,7 +53,8 @@ import {
   onComposerFocusRequest,
   onComposerInsertRefsRequest,
   onComposerInsertRequest,
-  releaseActiveComposer
+  releaseActiveComposer,
+  takeUnclaimedTypedChars
 } from '../focus'
 import { type InlineRefInput, insertInlineRefsIntoEditor } from '../inline-refs'
 import {
@@ -181,6 +183,11 @@ export function useComposerDraft({
   // session switch mid-flight files one session's draft under another's key
   // (#54527).
   const draftScopeRef = useRef(activeQueueSessionKey)
+  // Latch for the swap effect's first run (mount); see the remount handoff there.
+  const scopeSwapRanRef = useRef(false)
+  // The session whose announced new-chat handoff this mount adopted, if any:
+  // only that chat takes the keys held while no composer was mounted.
+  const adoptedHandoffKeyRef = useRef<string | null>(null)
   // The draft (text + attachment occurrences) this window last loaded from or
   // stashed for draftScopeRef's scope. Another window can send (clear) or
   // rewrite that draft while this editor still shows it, so every save path
@@ -323,15 +330,20 @@ export function useComposerDraft({
   // stays mounted behind the front tab; this covers true unmounts.)
   useEffect(() => () => releaseActiveComposer(target), [target])
 
+  // eslint-disable-next-line no-restricted-syntax -- consumes a one-shot handoff token, not a mirrored atom
   useEffect(() => {
     if (inputDisabled) {
       return undefined
     }
 
-    const offFocus = onComposerFocusRequest(({ target: requested, typeChar }) => {
+    const offFocus = onComposerFocusRequest(detail => {
+      const { target: requested, typeChar } = detail
+
       if (requested !== target) {
         return
       }
+
+      detail.claimed = true
 
       // Type-to-focus appends at end; bare Enter just focuses.
       if (typeChar) {
@@ -343,6 +355,19 @@ export function useComposerDraft({
 
       setFocusRequestId(id => id + 1)
     })
+
+    // Keys typed while this target had no composer (the cold-start resume
+    // unmounts it behind the restored chat's loading view) were held for the
+    // next one: append them after the draft this mount restored, in order.
+    // Only the handoff's destination chat takes them — another chat mounting
+    // on the same target first (a sidebar click mid-restore) gets nothing.
+    const heldChars = takeUnclaimedTypedChars(target, adoptedHandoffKeyRef.current)
+    adoptedHandoffKeyRef.current = null
+
+    if (heldChars) {
+      paintDraft(`${draftRef.current}${heldChars}`, false)
+      focusInput()
+    }
 
     const offInsert = onComposerInsertRequest(({ mode, target: requested, text, token }) => {
       if (requested === target) {
@@ -710,14 +735,28 @@ export function useComposerDraft({
     // is restored — so the text the user kept typing follows the chat instead
     // of vanishing. Keyed on the scope alone: the runtime id can land a resume
     // later than the route flips the scope, so it is not a usable signal here.
-    if ((isFreshDraftScope(draftScopeRef.current) || !draftScopeRef.current) && activeQueueSessionKey) {
-      const freshKey = draftScopeRef.current || freshDraftScope()
+    //
+    // The handoff can also span a remount: the cold-start resume navigates to
+    // a session whose loading view mounts no composer, so the fresh chat's
+    // composer unmounts (stashing the typed text under the fresh key) and a
+    // new one mounts already scoped to the restored id. That first run has no
+    // fresh previous scope, yet the announcement names its key; without this
+    // the text typed while the app was booting vanished from the composer.
+    const firstScopeRun = !scopeSwapRanRef.current
+    scopeSwapRanRef.current = true
+    const fromFresh = isFreshDraftScope(draftScopeRef.current) || !draftScopeRef.current
+
+    // A first run on any other session (a split pane, a preview tile) must not
+    // consume an announcement meant for the restored chat's composer.
+    if ((fromFresh || (firstScopeRun && newSessionDraftAnnouncedFor(activeQueueSessionKey))) && activeQueueSessionKey) {
+      const freshKey = fromFresh ? draftScopeRef.current || freshDraftScope() : freshDraftScope()
 
       // A follow-up queued while session.create was in flight sits under the
       // fresh key; it belongs to this chat too. The queue re-key never moves
       // fresh → stored (#139190), so only this announced handoff does.
       if (adoptNewSessionDraft(activeQueueSessionKey)) {
         migrateQueuedPrompts(freshKey, activeQueueSessionKey)
+        adoptedHandoffKeyRef.current = activeQueueSessionKey
       }
     } else if (!activeQueueSessionKey) {
       // The reverse handoff: a session the user was typing into turned out

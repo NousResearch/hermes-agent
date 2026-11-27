@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import errno
 import os
 import re
 import shutil
@@ -59,9 +60,9 @@ _GIT_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exe
 
 def run(cmd, **kwargs) -> NoReturn:
     # Shim to suppress old updater work until relaunch. Do not start its installer.
-    from hermes_cli._old_updater import stop_for_relaunch
+    from hermes_cli._old_updater import stop_historical_updater
 
-    stop_for_relaunch()
+    stop_historical_updater("hermes_cli._subprocess_compat.run")
 
 
 def harden_git_argv(args: Sequence[str]) -> list[str]:
@@ -286,6 +287,9 @@ NO_LAZY_FETCH_ENV = {"GIT_NO_LAZY_FETCH": "1"}
 # GIT_CONFIG_KEY_n/VALUE_n overrides for internal git children: no credential/askpass prompts, no
 # repo-configured fsmonitor/hooks/pager/editor/external-diff programs.
 _GIT_CONFIG_INJECT_PREFIXES = ("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")
+# Variables that point git at a repository other than its cwd (credential/ssh variables stay).
+_GIT_LOCATION_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+                     "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE")
 _GIT_CONFIG_OVERRIDES = {
     "credential.helper": "",
     "core.askPass": "",
@@ -330,6 +334,32 @@ def _safe_directory_cache_key(env: Mapping[str, str]) -> tuple:
 _safe_directory_cache: dict[tuple, list[str]] = {}
 
 
+def _git_resolver():
+    """Import ``hermes_platform.resolver.git`` lazily; returns None during cold bootstrap
+    when ``hermes_platform`` is not yet on ``sys.path``."""
+    try:
+        from hermes_platform.resolver import git as git_resolver
+        return git_resolver
+    except ModuleNotFoundError as exc:
+        if exc.name and exc.name.split(".", 1)[0] == "hermes_platform":
+            return None
+        raise
+
+
+def _git_usable(env: Mapping[str, str] | None = None) -> bool:
+    resolver = _git_resolver()
+    return True if resolver is None else resolver.resolve_usable_git(env) is not None
+
+
+def _git_argv0_unusable(argv: Sequence[str], env: Mapping[str, str] | None = None) -> bool:
+    if not argv:
+        return False
+    resolver = _git_resolver()
+    if resolver is None:
+        return False
+    return resolver.is_git_command(argv[0]) and not resolver.is_usable_git_command(argv[0], env)
+
+
 def _user_safe_directories(base_env: Mapping[str, str]) -> list[str]:
     """The user's configured ``safe.directory`` values, in git's own effective order.
 
@@ -349,6 +379,8 @@ def _user_safe_directories(base_env: Mapping[str, str]) -> list[str]:
     marker, either of which would resurrect a revoked wildcard and widen trust. ``-z`` keeps a
     value containing whitespace or a newline as the single entry git reads it as.
     """
+    if not _git_usable(base_env):
+        return []
     cache_key = _safe_directory_cache_key(base_env)
     cached = _safe_directory_cache.get(cache_key)
     if cached is not None:
@@ -465,6 +497,11 @@ def noninteractive_git_env(base: Mapping[str, str] | None = None) -> dict[str, s
         if key == "GIT_CONFIG_PARAMETERS" or key.startswith(_GIT_CONFIG_INJECT_PREFIXES):
             env.pop(key, None)
     env.pop("GIT_CONFIG_COUNT", None)
+    # An inherited GIT_DIR/GIT_WORK_TREE (a dotfiles alias, a git hook) retargets the call at the
+    # user's other repo instead of the cwd the caller names; a plugin's stash/reset would act on
+    # it (#146032). A caller that needs one sets it on the returned env.
+    for key in _GIT_LOCATION_ENV:
+        env.pop(key, None)
     env["GIT_CONFIG_GLOBAL"] = os.devnull
     env["GIT_CONFIG_SYSTEM"] = os.devnull
     env["GIT_CONFIG_NOSYSTEM"] = "1"
@@ -524,6 +561,8 @@ def noninteractive_repo_git_env(
     bounded and fail-closed: if filter discovery cannot be trusted, callers skip the
     automatic git operation instead of running with only partial hardening.
     """
+    if not _git_usable(base):
+        return None
     env = noninteractive_git_env(base)
     # bounded_probe_run, not subprocess.run: Windows' post-timeout communicate() can deadlock and
     # a bare spawn flashes a console. (Not bounded_git_probe: rc 1 = "no filters" is a verdict.)
@@ -549,10 +588,7 @@ def noninteractive_repo_git_env(
             return None
         origin_path = Path(origin[len("file:"):])
         if not origin_path.is_absolute():
-            # git prints repo-local origins relative to the worktree top level, not to *cwd*; with a
-            # caller-set GIT_DIR/GIT_WORK_TREE they are relative to something else, so refuse.
-            if env.get("GIT_DIR") or env.get("GIT_WORK_TREE"):
-                return None
+            # git prints repo-local origins relative to the worktree top level, not to *cwd*.
             if toplevel is None:
                 top = bounded_probe_run(["git", "-C", str(cwd), "rev-parse", "--show-toplevel"],
                                         timeout=2, env=env)
@@ -599,6 +635,11 @@ def noninteractive_repo_git_env(
 
     start = int(env["GIT_CONFIG_COUNT"])  # always set by noninteractive_git_env
     overrides = [(key, "") for key in keys] + [(key, "false") for key in required]
+    if keys:
+        # With the filters emptied a stat refresh hashes raw bytes: `status` and `diff` must not write
+        # it back to the index, or a file that only the clean filter changes reads clean to the user.
+        env["GIT_OPTIONAL_LOCKS"] = "0"
+        overrides.append(("diff.autoRefreshIndex", "false"))
     for offset, (key, value) in enumerate(overrides):
         env[f"GIT_CONFIG_KEY_{start + offset}"] = key
         env[f"GIT_CONFIG_VALUE_{start + offset}"] = value
@@ -672,6 +713,17 @@ def pid_exists_stdlib(pid: int) -> bool:
     except OSError:  # ProcessLookupError included
         return False
     return True
+
+
+def process_start_time_stdlib(pid: int) -> int | None:
+    """``/proc/<pid>/stat`` field 22 (start time in clock ticks since boot), stdlib only; None
+    without /proc (macOS, Windows) or when the process is gone. ``gateway.status``'s start-time
+    fingerprint reads the same field first, so the two agree on Linux."""
+    try:
+        # Field 22 counted after comm's last ")": comm may hold spaces or non-UTF-8 bytes.
+        return int(Path(f"/proc/{int(pid)}/stat").read_bytes().rsplit(b")", 1)[1].split()[19])
+    except (IndexError, ValueError, OSError):
+        return None
 
 
 def _process_start_time(pid: int) -> int | None:
@@ -825,11 +877,15 @@ def _legacy_kill_process_tree(proc: subprocess.Popen) -> None:
 def bounded_probe_run(
     argv: Sequence[str], *, timeout: float, errors: str = "replace",
     env: Mapping[str, str] | None = None, cwd: str | os.PathLike[str] | None = None,
-    raise_on_spawn_failure: bool = False, input: str | None = None,
+    raise_on_spawn_failure: bool = False, input: str | None = None, owned: bool = False,
 ) -> subprocess.CompletedProcess[str] | None:
     """Deadlock-safe ``subprocess.run(argv, capture_output=True, timeout=…)`` for fail-open probes.
 
     ``input`` is written to the child's stdin (closed afterwards); without it stdin is ``DEVNULL``.
+
+    ``owned=True`` (POSIX) hands the probe's process group to the owner-death supervisor until it
+    finishes, so a probe still running when this process exits (one started from a daemon thread,
+    abandoned by a ``/exit``) dies with it instead of reparenting to init with its helpers.
 
     Returns a ``CompletedProcess`` when the child finished within *timeout* (any exit code), or
     ``None`` on spawn failure or timeout. With ``raise_on_spawn_failure=True`` the ``Popen``
@@ -843,6 +899,10 @@ def bounded_probe_run(
     ``Get-CimInstance Win32_Process`` gateway scan hit exactly this during ``hermes update`` on slow-WMI
     machines (#87134); the git probes hit it first (#68609 / #66037).
     """
+    if _git_argv0_unusable(argv, env):
+        if raise_on_spawn_failure:
+            raise FileNotFoundError(errno.ENOENT, "git is unavailable", os.fspath(argv[0]))
+        return None
     # detached-spawn: ok — awaited probe; a timeout or failure tree-kills its group (kill_and_drain)
     _popen_kwargs: dict = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {"process_group": 0}
     job = None
@@ -862,6 +922,11 @@ def bounded_probe_run(
         if raise_on_spawn_failure:
             raise
         return None
+    owned = owned and not IS_WINDOWS
+    if owned:
+        from hermes_cli.process_identity import own_process_groups, release_process_group_once_empty
+
+        own_process_groups([proc.pid])
     try:
         stdout, stderr = proc.communicate(input=input, timeout=timeout)
     except Exception:
@@ -869,9 +934,14 @@ def bounded_probe_run(
         # drain bounded — leaving it running would leak the suspended-descendant class this guards.
         _close_job(job)
         kill_and_drain(proc, 1)
+        if owned:
+            release_process_group_once_empty(proc.pid, proc=proc)
         return None
     # The probe exited on its own; anything it left behind (`&` jobs) goes with the job.
     _close_job(job)
+    if owned:
+        # A member it left running keeps the group covered, so it still dies with us.
+        release_process_group_once_empty(proc.pid, proc=proc, timeout=0)
     return subprocess.CompletedProcess(list(argv), proc.returncode, stdout, stderr)
 
 
@@ -923,6 +993,8 @@ def bounded_git_probe(argv: Sequence[str], *, timeout: float, env: Mapping[str, 
     openai/codex#36793). ``process_group`` only changes which group the child belongs to; it does not detach
     the terminal or alter the fast path.
     """
+    if _git_argv0_unusable(argv, env):
+        return ""
     result = bounded_probe_run(argv, timeout=timeout, env={**(env or noninteractive_git_env()), **NO_LAZY_FETCH_ENV})
     if result is None or result.returncode != 0:
         return ""

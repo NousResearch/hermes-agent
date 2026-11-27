@@ -21,8 +21,8 @@ from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
 from gateway.session_controls import AuthorityConnection
 from gateway.session_group_peers import room_link
 from gateway.session_hosted_service import CanonicalHostedRoomService
-from hermes_state import SessionDB
-from hermes_state_runtime import begin_runtime_epoch
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_holder import raw_holder
 from tui_gateway.contracts import groups_bot_relay as contract
 from tui_gateway.contracts.registry import CANONICAL_METHODS
 
@@ -34,12 +34,12 @@ def gateway(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setenv('HERMES_HOME', str(home))
     monkeypatch.delenv('HERMES_ROOM_LINK_URL', raising=False)
-    db = SessionDB(home / 'state.db')
+    db = open_persistence(profile_scope(home=home))
     adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={'key': 'target-gateway-api-key'}))
     adapter._run_idempotency_store.close()
     adapter._run_idempotency_store = RunIdempotencyStore(str(tmp_path / 'runs.db'))
-    authority = SimpleNamespace(profile_id=str(home), instance_id='owner', db=db, events={}, sessions={},
-                                epoch=begin_runtime_epoch(db, instance_id='owner'),
+    authority = SimpleNamespace(profile_id=str(home), instance_id='owner', db=db, persistence=db, events={},
+                                sessions={}, epoch=db.runtime.begin_epoch(instance_id='owner'),
                                 runner=SimpleNamespace(adapters={Platform.API_SERVER: adapter}))
     service = authority.hosted_room_service = CanonicalHostedRoomService(authority, None)
     service.runtime.status = lambda: {'running': True, 'stopping': False}
@@ -149,9 +149,9 @@ async def test_home_without_room_link_can_register_and_run_a_lent_member(gateway
 
     home = tmp_path / 'owner'
     home.mkdir()
-    with SessionDB(home / 'state.db') as db:
-        authority = SimpleNamespace(profile_id=str(home), instance_id='home', db=db, events={}, sessions={},
-                                    epoch=begin_runtime_epoch(db, instance_id='home'))
+    with open_persistence(profile_scope(home=home)) as db:
+        authority = SimpleNamespace(profile_id=str(home), instance_id='home', db=db, persistence=db, events={},
+                                    sessions={}, epoch=db.runtime.begin_epoch(instance_id='home'))
         with _profile_runtime_scope(home):
             service = authority.hosted_room_service = CanonicalHostedRoomService(authority, None)
         service.runtime.status = lambda: {'running': True, 'stopping': False}
@@ -258,7 +258,7 @@ async def test_register_binds_only_the_pinned_peer_after_a_live_scoped_probe(gat
     assert registered == {'registered': True, 'mode': 'direct', 'transport_security': 'loopback',
                           'target_install_id': catalog['installation_id'], 'target_profile': 'default'}
     CANONICAL_METHODS['groups.peer.register'].result.model_validate(registered)
-    stored, = hosted_room_links.load_room_links(gateway.db.db_path)
+    stored, = hosted_room_links.load_room_links(gateway.db, placement='profile')
     assert (stored.room_id, stored.member_id, stored.grant, stored.target_url) == (
         'linked', 'reviewer', invitation['grant'], url)
     assert gateway.service.peer_routes[('linked', 'reviewer')].trace_id == stored.trace_id
@@ -333,8 +333,8 @@ async def test_disband_owes_a_renewable_invitation_until_its_status_horizon(gate
     # Disband revokes at the member gateway first: its scope revocation covers the original grant
     # and every renewal of it, so nothing is left owed.
     assert 'tombstone' in await call(gateway.owner, 'groups.disband', room_id=room['room_id'])
-    assert hosted_room_links.load_room_links(gateway.db.db_path) == ()
-    assert _owed(gateway.db.db_path) == []
+    assert hosted_room_links.load_room_links(gateway.db, placement='profile') == ()
+    assert _owed(gateway.db) == []
     for grant in (original, renewed['grant']):
         assert await _grant_error(url, grant) == 'room_reauthorization_required'
 
@@ -369,9 +369,7 @@ async def test_reregistered_route_replays_accepted_work_as_the_same_target_run(g
     first, client = await register()
     accepted = await asyncio.to_thread(client.dispatch, dispatch=dispatch(first), grant=first.grant)
     # The acceptance reply is lost before the home records it.
-    with gateway.db._lock:
-        gateway.db._conn.execute('DELETE FROM hosted_room_remote_runs')
-        gateway.db._conn.commit()
+    raw_holder(gateway.db)._execute_write(lambda conn: conn.execute('DELETE FROM hosted_room_remote_runs'))
     second, client = await register()
     assert second.grant != first.grant
     assert (second.trace_id, second.cancellation_scope_id) == (first.trace_id, first.cancellation_scope_id)
@@ -387,12 +385,11 @@ async def test_reregistered_route_replays_accepted_work_as_the_same_target_run(g
     assert refused.value.status_code == 409 and refused.value.ambiguous
 
 
-def _owed(db_path):
+def _owed(db):
     """The revokes this home still owes, as (room, member, attempts); the grant itself is not read."""
-    import sqlite3
-    with sqlite3.connect(db_path) as conn:
-        return conn.execute('SELECT room_id, member_id, attempts FROM hosted_room_owed_revokes '
-                            'ORDER BY room_id, member_id').fetchall()
+    with raw_holder(db)._read_ctx() as conn:
+        return [tuple(row) for row in conn.execute('SELECT room_id, member_id, attempts FROM hosted_room_owed_revokes '
+                                                   'ORDER BY room_id, member_id').fetchall()]
 
 
 @pytest.mark.parametrize('obligation', ['route', 'held', 'owed', 'expired', 'none'])
@@ -400,8 +397,8 @@ def _owed(db_path):
 def test_disband_without_a_service_requires_coordination_for_peer_routes(tmp_path, monkeypatch, obligation, room_id):
     from gateway.hosted_room_peer import GatewayRoomCatalog, catalog_mapping
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
-    with SessionDB(tmp_path / 'state.db') as db:
-        authority = SimpleNamespace(profile_id=str(tmp_path), instance_id='owner', db=db, events={})
+    with open_persistence(profile_scope(home=tmp_path)) as db:
+        authority = SimpleNamespace(profile_id=str(tmp_path), instance_id='owner', db=db, persistence=db, events={})
         owner = AuthorityConnection(authority, object(), {'user_id': 'owner'})
         endpoint = {'available': True, 'url': 'http://127.0.0.1:9', 'transport_security': 'loopback'}
         catalog = catalog_mapping(installation_id='install:target', persistent_process=True,
@@ -414,27 +411,26 @@ def test_disband_without_a_service_requires_coordination_for_peer_routes(tmp_pat
                 {'member_id': 'host', 'profile': 'default', 'handle': 'host'},
                 {'member_id': 'reviewer', 'profile': 'default', 'handle': 'reviewer', 'target': pinned}])
             if obligation == 'route':
-                hosted_room_links.save_room_link(db.db_path, hosted_room_links.make_stored_link(
+                hosted_room_links.save_room_link(db, hosted_room_links.make_stored_link(
                     room_id='linked', member_id='reviewer', target_url=endpoint['url'], target_profile='default',
                     grant='stored-grant', catalog=GatewayRoomCatalog.from_mapping(catalog),
-                    cancellation_scope_id='cancel-linked', trace_id='trace-linked'))
+                    cancellation_scope_id='cancel-linked', trace_id='trace-linked'), placement='profile')
             if obligation in {'held', 'owed', 'expired'}:
-                with hosted_rooms._transaction(db.db_path, immediate=True) as conn:
-                    hosted_rooms._owe_revoke_locked(conn, room_id='linked', member_id='reviewer',
-                        target_url=endpoint['url'], grant='retained-grant',
-                        expires_at=time.time() + (-1 if obligation == 'expired' else 3600),
-                        now=time.time() - 10, held=obligation != 'owed')
-            owed = _owed(db.db_path)
-            links = hosted_room_links.load_room_links(db.db_path)
+                retain = hosted_rooms.owe_room_grant_revoke if obligation == 'owed' else hosted_rooms.hold_room_grant_revoke
+                retain(db, placement='profile', room_id='linked', member_id='reviewer',
+                       target_url=endpoint['url'], grant='retained-grant',
+                       expires_at=time.time() + (-1 if obligation == 'expired' else 3600), now=time.time() - 10)
+            owed = _owed(db)
+            links = hosted_room_links.load_room_links(db, placement='profile')
             result = await call(owner, 'groups.disband', room_id=room_id)
             if obligation in {'route', 'held', 'owed'}:
                 assert result == 'runtime_coordination_required'
-                assert hosted_rooms.room_state(db.db_path, room_id='linked').get('disbanded_at') is None
+                assert hosted_rooms.room_state(db, placement='profile', room_id='linked').get('disbanded_at') is None
             else:
                 assert 'tombstone' in result
-            assert hosted_room_links.load_room_links(db.db_path) == links
+            assert hosted_room_links.load_room_links(db, placement='profile') == links
             if obligation != 'expired':
-                assert _owed(db.db_path) == owed
+                assert _owed(db) == owed
         asyncio.run(probe())
 
 
@@ -442,15 +438,15 @@ def test_disband_without_a_service_requires_coordination_for_peer_routes(tmp_pat
 async def test_disband_replay_without_service_preserves_later_owed_debt(gateway, linked_peer):
     _, url, _, _ = linked_peer
     first = (await call(gateway.owner, 'groups.disband', room_id='linked'))['tombstone']
-    hosted_rooms.owe_room_grant_revoke(gateway.db.db_path, room_id='linked', member_id='reviewer',
+    hosted_rooms.owe_room_grant_revoke(gateway.db, placement='profile', room_id='linked', member_id='reviewer',
         target_url=url, grant='late-grant', expires_at=time.time() + 3600)
-    debt = _owed(gateway.db.db_path)
+    debt = _owed(gateway.db)
     assert debt
     gateway.authority.hosted_room_service = None
     replay = await call(gateway.owner, 'groups.disband', room_id=' linked ')
     assert isinstance(replay, dict) and 'tombstone' in replay, replay
     assert replay['tombstone'] == {**first, 'idempotent': True, 'event': {**first['event'], 'idempotent': True}}
-    assert _owed(gateway.db.db_path) == debt
+    assert _owed(gateway.db) == debt
 
 
 @pytest.mark.asyncio
@@ -463,7 +459,7 @@ async def test_disband_keeps_the_room_while_its_member_gateway_is_down_and_revok
     from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
     caplog.set_level(logging.DEBUG)
     server, url, catalog, room = linked_peer
-    restarted, db = None, gateway.db.db_path
+    restarted, db = None, gateway.db
     try:
         long_lived, _ = await _seat(gateway, room, url, catalog, ttl_seconds=86400)
         grant, registered = await _seat(gateway, room, url, catalog)  # a re-seat with a one-hour grant
@@ -473,14 +469,14 @@ async def test_disband_keeps_the_room_while_its_member_gateway_is_down_and_revok
 
         refused = await gateway.owner.dispatch({'id': 1, 'method': 'groups.disband', 'params': {'room_id': 'linked'}})
         assert 'error' in refused, refused
-        assert hosted_rooms.room_state(db, room_id='linked').get('disbanded_at') is None
+        assert hosted_rooms.room_state(db, placement='profile', room_id='linked').get('disbanded_at') is None
         assert ('linked', 'reviewer') in gateway.service.peer_routes
-        assert len(hosted_room_links.load_room_links(db)) == 1
+        assert len(hosted_room_links.load_room_links(db, placement='profile')) == 1
 
         restarted, _ = await serve(gateway, monkeypatch, port=port)
         disbanded = await gateway.owner.dispatch({'id': 2, 'method': 'groups.disband', 'params': {'room_id': 'linked'}})
         assert 'tombstone' in disbanded['result'], disbanded
-        assert gateway.service.peer_routes == {} and hosted_room_links.load_room_links(db) == ()
+        assert gateway.service.peer_routes == {} and hosted_room_links.load_room_links(db, placement='profile') == ()
         assert _owed(db) == []  # the held row for the replaced grant goes with the scope revocation
         for revoked in (long_lived, grant):
             assert await _grant_error(url, revoked) == 'room_reauthorization_required'
@@ -497,7 +493,7 @@ def test_an_owed_revoke_settles_on_unknown_or_revoked_and_is_dropped_at_its_gran
     from gateway.hosted_room_peer import issue_room_grant, room_grant_hard_expiry
     from tui_gateway.hosted_room_driver import HostedRoomRuntime
     from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
-    service, db, now = gateway.service, gateway.db.db_path, [time.time()]
+    service, db, now = gateway.service, gateway.db, [time.time()]
     service.runtime.clock = lambda: now[0]
 
     class Member:
@@ -558,7 +554,7 @@ async def test_disband_and_registration_never_leave_a_route_behind(gateway, monk
     assert early == 'invalid_params'
     monkeypatch.setattr(PeerRunsHTTPClient, 'probe', probe)
     # Its gateway saw that grant during the probe: the home owes its revoke and pays it.
-    assert _owed(gateway.db.db_path) == [('linked', 'reviewer', 0)]
+    assert _owed(gateway.db) == [('linked', 'reviewer', 0)]
     assert await asyncio.to_thread(gateway.service.retry_owed_revokes) == 1
     assert await _grant_error(url, early_grant) == 'room_reauthorization_required'
 
@@ -610,8 +606,8 @@ async def test_disband_waits_for_a_registration_even_while_the_driver_stops(gate
     assert race['during_save'] is None, race
     # The route was published first; Disband then revokes it at the member gateway and drops it.
     assert 'tombstone' in race['disband'], race
-    assert hosted_room_links.load_room_links(gateway.db.db_path) == () and gateway.service.peer_routes == {}
-    assert _owed(gateway.db.db_path) == []
+    assert hosted_room_links.load_room_links(gateway.db, placement='profile') == () and gateway.service.peer_routes == {}
+    assert _owed(gateway.db) == []
     assert await _grant_error(url, grant) == 'room_reauthorization_required'
     gateway.service.runtime.status = running
 
@@ -623,7 +619,7 @@ async def test_disband_waits_for_a_registration_even_while_the_driver_stops(gate
     assert refused == 'invalid_params', refused  # the room has ended
     _, refused = await _seat(gateway, room, 'http://127.0.0.1:9', catalog)
     assert refused == 'peer_target_mismatch' and probes == []
-    assert _owed(gateway.db.db_path) == [('linked', 'reviewer', 0)]
+    assert _owed(gateway.db) == [('linked', 'reviewer', 0)]
     monkeypatch.setattr(PeerRunsHTTPClient, 'probe', probe)
     assert await _grant_error(url, after) is None
     assert await asyncio.to_thread(gateway.service.retry_owed_revokes) == 1
@@ -646,30 +642,29 @@ async def _deferred_unreceipted_peer_turn(gateway, monkeypatch, linked_peer):
                        target_url=url, target_profile='default', grant=grant, catalog=catalog))['registered']
     assert (await call(gateway.owner, 'groups.send', room_id='linked', event_id='ask',
                        payload={'text': '@reviewer review this', 'thread_id': 'thread'}))['accepted']
-    db, service = gateway.db.db_path, gateway.service
-    task, = driver.list_tasks(db, room_id='linked', status='queued')
+    db, service = gateway.db, gateway.service
+    task, = driver.list_tasks(db, placement='profile', room_id='linked', status='queued')
     identity, binding = task['identity'], service.bindings()[0]
     route, client = service.peer_routes[('linked', 'reviewer')], service.peer_clients[('linked', 'reviewer')]
 
     def earlier():
         return time.time() - 30
-    crashed = driver.acquire_lease(db, room_id='linked', gateway_id=binding.gateway_id,
+    crashed = driver.acquire_lease(db, placement='profile', room_id='linked', gateway_id=binding.gateway_id,
                                    authority_epoch=binding.authority_epoch, process_generation='crashed',
                                    ttl_seconds=1, clock=earlier)
-    driver.start_task(db, identity, crashed, expected_cancel_generation=0, clock=earlier)
+    driver.start_task(db, identity, crashed, placement='profile', expected_cancel_generation=0, clock=earlier)
     await asyncio.to_thread(client.dispatch, grant=route.grant, dispatch=build_member_dispatch(
         binding=binding, route=route, room_id='linked', task_id=identity.task_id, target_profile='default',
         execution_generation=1, source_event_seq=task['payload']['source_event_seq'],
         prompt=task['payload']['prompt'], trace_id=route.trace_id).as_mapping())
-    with gateway.db._lock:  # the reply is lost and the home restarts before it saves the receipt
-        gateway.db._conn.execute('DELETE FROM hosted_room_remote_runs')
-        gateway.db._conn.commit()
+    # the reply is lost and the home restarts before it saves the receipt
+    raw_holder(db)._execute_write(lambda conn: conn.execute('DELETE FROM hosted_room_remote_runs'))
     service = gateway.authority.hosted_room_service = CanonicalHostedRoomService(gateway.authority, None)
     idle = service.runtime.status
     service.runtime.status = lambda: {**idle(), 'running': True, 'stopping': False}
     lease = service.runtime._ensure_lease(binding)
-    driver.recover_room(db, lease, clock=time.time)
-    recovered = driver.get_task(db, identity)
+    driver.recover_room(db, lease, placement='profile', clock=time.time)
+    recovered = driver.get_task(db, identity, placement='profile')
     service.runtime._fenced(driver.defer_indeterminate_task, None, recovered, lease, reason='member_unavailable')
 
     return service, db, identity
@@ -710,7 +705,7 @@ async def test_discard_keeps_a_deferred_peer_turn_while_its_member_is_down(gatew
     await server.close()
     assert await call(gateway.owner, 'groups.discard', room_id='linked', member_id='reviewer',
                       task_id=identity.task_id, execution_generation=1) == 'peer_unreachable'
-    assert driver.get_task(db, identity)['status'] == 'deferred'
+    assert driver.get_task(db, identity, placement='profile')['status'] == 'deferred'
     with pytest.raises(RuntimeError, match='still stopping'):
         await asyncio.to_thread(service.stop_room, 'linked', cancel_id='d', require_acknowledged=True)
 
@@ -730,12 +725,12 @@ async def test_discard_of_an_admitted_peer_turn_stops_its_run_before_disband(gat
     # The member's gateway is asked to stop that run; until it confirms, the turn holds.
     assert await call(gateway.owner, 'groups.discard', **control) == 'session_busy'
     assert adapter._run_statuses[run_id]['status'] == 'stopping'
-    assert driver.get_task(db, identity)['status'] == 'deferred'
+    assert driver.get_task(db, identity, placement='profile')['status'] == 'deferred'
     assert await call(gateway.owner, 'groups.disband', room_id='linked') == 'room_stop_pending'
     adapter._set_run_status(run_id, 'cancelled')  # the member's run ends
     discarded = await call(gateway.owner, 'groups.discard', **control)
     assert isinstance(discarded, dict) and discarded['discarded'], discarded
-    assert driver.get_task(db, identity)['status'] == 'cancelled'
+    assert driver.get_task(db, identity, placement='profile')['status'] == 'cancelled'
     assert 'tombstone' in await call(gateway.owner, 'groups.disband', room_id='linked')
 
 
@@ -796,8 +791,7 @@ def test_paying_owed_revokes_holds_the_room_supervisor_only_briefly(gateway):
     pays its revoke. Each cycle pays one owed revoke, briefly, and its next attempt is timed from
     when that attempt gave up, so the room supervisor is never held for long."""
     import socket
-    import sqlite3
-    db, service = gateway.db.db_path, gateway.service
+    db, service = gateway.db, gateway.service
     held, now = [], [time.time()]
     service.runtime.clock = lambda: now[0]
     with socket.create_server(('127.0.0.1', 0)) as silent:
@@ -818,9 +812,9 @@ def test_paying_owed_revokes_holds_the_room_supervisor_only_briefly(gateway):
         worker.join(10)
         assert not worker.is_alive()
     assert elapsed < 4, elapsed
-    with sqlite3.connect(db) as conn:
-        rows = conn.execute('SELECT member_id, attempts, next_attempt_at FROM hosted_room_owed_revokes '
-                            'ORDER BY member_id').fetchall()
+    with raw_holder(db)._read_ctx() as conn:
+        rows = [tuple(row) for row in conn.execute('SELECT member_id, attempts, next_attempt_at FROM hosted_room_owed_revokes '
+                                                   'ORDER BY member_id').fetchall()]
     attempted = [row for row in rows if row[1] == 1]
     assert len(attempted) == 1 and len(rows) == 2, rows
     assert attempted[0][2] == now[0] + 5.0, attempted
@@ -857,5 +851,5 @@ async def test_a_refresh_of_the_previous_grant_never_writes_over_a_re_seat(gatew
         execution_generation=1, source_event_seq=1, prompt='review', trace_id=route.trace_id).as_mapping()
     sent = await asyncio.to_thread(transport.client._refresh_grant, {'dispatch': dispatch, 'grant': expiring})
     assert sent['grant'] not in (expiring, *reseated)  # this turn still goes out on its renewal
-    stored, = hosted_room_links.load_room_links(gateway.db.db_path)
+    stored, = hosted_room_links.load_room_links(gateway.db, placement='profile')
     assert service.peer_routes[key].grant == stored.grant == reseated[0]

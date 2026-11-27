@@ -13,11 +13,10 @@ generation, pending admissions, and the local receipt target's ``ended_at``.
 from __future__ import annotations
 
 import asyncio
-import json
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
 from gateway.session_contract import SessionHandle, SessionRef
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 
 # Sessions per worker-thread read; each batch is one await, so the loop serves other work between them.
 LISTING_BATCH = 256
@@ -35,29 +34,14 @@ class LiveEntry:
     closed: bool
 
 
-def _store_facts(db, session_ids):
-    """Worker thread: ``{sid: row}`` and ``{sid: [pending admission]}`` for *session_ids*, in two reads.
+def _store_facts(store, session_ids):
+    """Worker thread: ``{sid: row}`` and ``{sid: [pending admission]}`` for *session_ids*, in one read.
 
-    ``target_ended_at`` is the local receipt target's ``ended_at`` (``closed_and_unviewed``'s read):
-    SQLite extracts the target from the receipt, so no receipt is parsed in Python. A malformed or
-    non-local receipt reads as no target, as ``_local_target`` does."""
-    from hermes_state_local import POLICY_PREFIX
-    ids = json.dumps(list(session_ids))
-    with db._read_ctx() as conn:
-        rows = conn.execute(
-            "SELECT s.id, s.source, s.title, s.started_at, s.ended_at, s.message_count, s.model, s.hidden, "
-            "s.archived, s.runtime_revision, s.runtime_generation, "
-            "(SELECT t.ended_at FROM state_meta m JOIN sessions t ON t.id = CASE WHEN json_valid(m.value) "
-            "THEN json_extract(m.value, '$.entry.session_id') END WHERE m.key = ? || s.id) AS target_ended_at "
-            "FROM sessions s WHERE s.id IN (SELECT value FROM json_each(?))", (POLICY_PREFIX, ids)).fetchall()
-        pending = conn.execute(
-            "SELECT target_session_id, admission_id, seq, status FROM session_admissions "
-            "WHERE target_session_id IN (SELECT value FROM json_each(?)) "
-            "AND status IN ('queued','started','unknown') ORDER BY seq", (ids,)).fetchall()
-    by_session: dict[str, list] = {}
-    for row in pending:
-        by_session.setdefault(row['target_session_id'], []).append(dict(row))
-    return {row['id']: dict(row) for row in rows}, by_session
+    ``target_ended_at`` is the local receipt target's ``ended_at`` (``closed_and_unviewed``'s read). A
+    malformed or non-local receipt reads as no target, as ``_local_target`` does."""
+    facts = store.sessions.live_listing_facts(session_ids)
+    pending = {sid: [{'target_session_id': sid, **asdict(ref)} for ref in refs] for sid, refs in facts.pending.items()}
+    return {sid: asdict(row) for sid, row in facts.rows.items()}, pending
 
 
 def _masked_pending(live, rows):
@@ -81,7 +65,7 @@ def _readable(authority, actor, session_id) -> bool:
     token = LISTING_READ.set(True)
     try:
         authority.authorize(actor, SessionRef(actor.profile_id, session_id), 'session:read')
-    except RuntimeStoreError as exc:
+    except AuthorityRefusal as exc:
         if exc.reason not in _SKIPPED_REASONS:
             raise
         return False
@@ -93,13 +77,14 @@ def _readable(authority, actor, session_id) -> bool:
 async def live_entries(authority, actor) -> list[LiveEntry]:
     """Every live session *actor* may read, with its handle, picker row and closed-and-unviewed verdict."""
     from gateway.session_local_close import closed_idle_unviewed
+    from gateway.session_persistence import authority_persistence
     entries = []
     snapshot = tuple(authority.sessions)
     for start in range(0, len(snapshot), LISTING_BATCH):
         batch = [sid for sid in snapshot[start:start + LISTING_BATCH] if _readable(authority, actor, sid)]
         if not batch:
             continue
-        rows, pending = await asyncio.to_thread(_store_facts, authority.db, batch)
+        rows, pending = await asyncio.to_thread(_store_facts, authority_persistence(authority), batch)
         if authority.retiring or authority.retired:
             return []  # parked or unserved during the read: nothing here is this profile's to list any more
         for sid in batch:

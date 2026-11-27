@@ -163,6 +163,12 @@ def _gateway_owns_session_end(agent) -> bool:
     return isinstance(agent, GatewayAgent)
 
 
+def _is_gateway_viewer(cli) -> bool:
+    """The CLI is a viewer of a gateway-owned session store (its ``end_session`` is a detach)."""
+    from hermes_cli.gateway_session_store import GatewaySessionStore
+    return isinstance(getattr(cli, "_session_db", None), GatewaySessionStore)
+
+
 def _should_emit_cleanup_session_finalize(session_id: str | None) -> bool:
     if _gateway_owns_session_end(_cli()._active_agent_ref):
         return False
@@ -281,12 +287,20 @@ def _flush_one_shot_session_store(cli) -> None:
     db = getattr(agent, "_session_db", None) or getattr(cli, "_session_db", None)
     if db is None:
         return
+    from agent.agent_init_session import agent_interface
+    store = agent_interface(agent)
     try:
-        db.flush_token_counts()
+        if store is not None:
+            store.usage.flush_usage()
+        else:
+            db.flush_token_counts()
     except Exception:
         logger.debug("one-shot token-count drain failed", exc_info=True)
     try:
-        db.end_session(session_id, "cli_close")
+        if store is not None:
+            store.sessions.end(session_id, "cli_close")
+        else:
+            db.end_session(session_id, "cli_close")
     except Exception:
         logger.debug("one-shot end_session failed", exc_info=True)
 
@@ -357,6 +371,11 @@ def _finalize_single_query(cli) -> None:
     """
     import cli as cli_module
     from cli import _flush_one_shot_session_store, _notify_single_query_session_finalize, _run_cleanup, _shutdown_agent_memory_provider, _wait_for_oneshot_background_completions
+    # A non-quiet -q turn reported done/error on the terminal, which outlives the process under
+    # OSC 7501: clear it like /quit does, before the linger keeps the process around.
+    clear_status = getattr(cli, "_clear_program_status", None)
+    if clear_status is not None:
+        clear_status()
     try:
         try:
             _flush_one_shot_session_store(cli)

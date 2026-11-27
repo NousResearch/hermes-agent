@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Runs website/scripts/extract-skills.py and generate-llms-txt.py before
 // docusaurus build/start so that:
-//   - website/static/api/skills.json (lazy-fetched by src/pages/skills/index.tsx)
-//   - website/static/api/skills-meta.json (sidecar metadata for the Skills Hub)
+//   - website/static/api/skills.json (the skills feed the Marketplace syncs from)
+//   - website/static/api/skills-meta.json (sidecar metadata for that feed)
 //   - website/static/llms.txt (agent-friendly short docs index)
 //   - website/static/llms-full.txt (full docs concat for LLM context)
 // all exist without contributors remembering to run Python scripts manually.
@@ -18,7 +18,7 @@
 //
 // If python3 or its deps (ruamel.yaml) aren't available on the local machine, we
 // fall back to writing an empty skills.json so `npm run build` still
-// succeeds — the Skills Hub page just shows an empty state, and llms.txt
+// succeeds with an empty skills feed, and llms.txt
 // generation is skipped. CI always has the deps installed, so production
 // deploys get real data.
 
@@ -48,7 +48,7 @@ function writeEmptyFallback(reason) {
   writeFileSync(outputFile, "[]\n");
   console.warn(
     `[prebuild] extract-skills.py skipped (${reason}); wrote empty skills.json. ` +
-      `Install python3 + ruamel.yaml locally for a populated Skills Hub page.`,
+      `Install python3 + ruamel.yaml locally for a populated skills feed.`,
   );
 }
 
@@ -127,7 +127,7 @@ async function ensureUnifiedIndex() {
 // 0) Pull unified index if we don't have a fresh one.
 await ensureUnifiedIndex();
 
-// 1) skills.json — required for the Skills Hub page.
+// 1) skills.json — the published skills feed.
 if (!existsSync(extractScript)) {
   writeEmptyFallback("extract script missing");
 } else {
@@ -154,10 +154,10 @@ runPython(cronBlueprintsScript, "extract-automation-blueprints.py");
 //     probed only by the scheduled skills-index workflow. Never fails the build.
 runPython(pluginStarsScript, "fetch-plugin-stars.py");
 
-// 4) plugins.json + plugins-meta.json — Plugin Catalog page. The script itself
-//    degrades gracefully (empty catalog, exit 0) when plugin-catalog/ is absent;
-//    if python3 is missing entirely, write the same empty fallback so the page
-//    renders its "just getting started" state instead of a fetch error.
+// 4) plugins.json + plugins-meta.json — the published plugin feed (Marketplace,
+//    Desktop and the CLI read it). The script itself degrades gracefully (empty
+//    catalog, exit 0) when plugin-catalog/ is absent; if python3 is missing
+//    entirely, write the same empty fallback.
 if (!runPython(pluginsScript, "extract-plugins.py")) {
   mkdirSync(dirname(pluginsOutputFile), { recursive: true });
   writeFileSync(pluginsOutputFile, "[]\n");

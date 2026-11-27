@@ -16,6 +16,8 @@ def test_runs_adopt_legacy_declared_session_key(tmp_path):
 
 
 async def probe():
+    from tests.fixtures.storage_read import session_row
+    from tests.fixtures.storage_seed import seed_session
     import aiohttp
     from gateway.config import Platform, PlatformConfig
     from gateway.platforms.api_server import APIServerAdapter
@@ -24,11 +26,11 @@ async def probe():
 
     runner = GatewayRunner()
     authority = await initialize_session_authority(runner, profile_id='default', instance_id='legacy-test')
-    db = authority.db
+    db = authority.persistence
     # Rows exactly as earlier releases left them: the declared key verbatim, no binding receipt.
     for sid in ('legacy1', 'legacy2', 'legacy3'):
-        db.create_session(sid, source='api_server')
-        db.record_gateway_session_peer(sid, source='api_server', session_key='webui:' + sid)
+        seed_session(db, sid, 'api_server')
+        db.routing.record_session_peer(sid, source='api_server', session_key='webui:' + sid)
     adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={'key': 'legacy-probe-secret', 'port': 0}))
     adapter.gateway_runner = runner
     adapter.set_message_handler(runner._handle_message)
@@ -62,7 +64,7 @@ async def probe():
             # Declared key alone (no session id) resolves the legacy conversation, not a new one.
             status, body = await post(client, 'declared', {'input': 'hi'}, 'webui:legacy3')
             assert status == 202, (status, body)
-        route = lambda sid: db.get_session(sid)['session_key']
+        route = lambda sid: session_row(db, sid)['session_key']
         assert route('legacy1') == 'agent:main:api_server:dm:legacy1', route('legacy1')
         assert route('legacy2') == 'webui:legacy2', 'a refused caller must not rewrite the row'
         assert route('legacy3') == 'agent:main:api_server:dm:legacy3', route('legacy3')

@@ -53,6 +53,7 @@ import {
   type AgentProfileRoute,
   ensureGatewayAgent,
   ensureGatewayProfile,
+  invalidateNewChatIntent,
   isLegacyNewChatProfile,
   normalizeProfileKey,
   resolveActiveSourceOwnerRoute,
@@ -72,7 +73,9 @@ import {
   $yoloActive,
   idsShareLineage,
   type NewChatWorkspaceTarget,
+  ownerLookupSessionRows,
   resolveComposerSessionKey,
+  restoreComposerModelSelection,
   rotateFreshDraftKey,
   sessionPinId,
   setActiveSessionId,
@@ -137,6 +140,7 @@ import { dropTranscriptTail, dropTranscriptTailEverywhere, saveTranscriptTail } 
 import { isWatchWindow } from '@/store/windows'
 import type {
   SessionCreateResponse,
+  SessionInfo,
   SessionMessagesResponse,
   SessionResumeResult,
   UsageStats
@@ -192,7 +196,7 @@ import {
 } from './resume-reconcile'
 import { backgroundRuntimeOptions, runtimeOwner, runtimeOwnerProfile } from './runtime-owner'
 import { createGatewaySession, desktopSessionCreateParams } from './session-create-request'
-import { publishWarmSessionRuntime } from './session-usage'
+import { applyStoredUsage, publishWarmSessionRuntime } from './session-usage'
 import {
   createPersistedDisplayTranscriptProvenance,
   hasPersistedDisplayTranscriptProvenance,
@@ -270,16 +274,9 @@ export interface BranchLoadedSessionOptions {
 // if the router never lands on the pending stored id (stuck navigate / lost race).
 const CREATE_GUARD_RELEASE_MS = 3_000
 
-// Reflect a stored row's persisted token counts into the live usage atom
-// (total is derived, so callers can't drift it out of sync with input/output).
-function applyStoredUsage(stored: { input_tokens?: number | null; output_tokens?: number | null }) {
-  const input = stored.input_tokens || 0
-  const output = stored.output_tokens || 0
-
-  setCurrentUsage(current => ({ ...current, input, output, total: input + output }))
-}
-
 interface FreshSessionDraftOptions {
+  /** The rail already owns this draft request; do not supersede its activation. */
+  preserveProfileSwitch?: boolean
   preserveRoute?: boolean
   replaceRoute?: boolean
   rotateFreshDraftKey?: boolean
@@ -503,6 +500,11 @@ export function useSessionActions({
   const startFreshSessionDraft = useCallback(
     (options: boolean | FreshSessionDraftOptions = false) => {
       const draftOptions = typeof options === 'boolean' ? { replaceRoute: options } : options
+
+      if (!draftOptions.preserveProfileSwitch) {
+        invalidateNewChatIntent()
+      }
+
       const preserveRoute = draftOptions.preserveRoute ?? false
       createIntentRef.current = null
       const replaceRoute = draftOptions.replaceRoute ?? false
@@ -552,12 +554,9 @@ export function useSessionActions({
       setCurrentUsage({ calls: 0, input: 0, output: 0, total: 0 })
       setSessionStartedAt(null)
       setTurnStartedAt(null)
-      // The composer's model/effort/fast is sticky UI state (persisted in
-      // localStorage) — a new chat FOLLOWS your last pick instead of snapping
-      // back to the profile default, so we deliberately don't reset it here. The
-      // profile default still owns first-run seeding and profile switches (see
-      // refreshCurrentModel). Keep the canonical service tier too: clearing
-      // it while retaining fast=true would silently downgrade Ultrafast.
+      // Follow the user's sticky pick, not the outgoing runtime/fallback display.
+      restoreComposerModelSelection()
+      // Keep effort/fast/service tier: clearing the tier could downgrade Ultrafast.
       setYoloActive(false)
       setNewChatWorkspaceTarget(hasWorkspaceTarget ? workspaceTarget : undefined)
       // #52589 provenance: only a deliberate string workspace target is an explicit
@@ -1308,7 +1307,7 @@ export function useSessionActions({
         () => isCurrentResume() && !resumedSameSelectedSession && !takeWarmCache()
       )
 
-      const listedStored = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+      const listedStored = ownerLookupSessionRows().find(session => sessionMatchesStoredId(session, storedSessionId))
 
       if (ownerRoute || listedStored?.profile) {
         provisional.paint(transcriptRestScope(ownerRoute, listedStored, ambientConnectionId))
@@ -1379,8 +1378,7 @@ export function useSessionActions({
         const cachedRuntimeId = warmHit.runtimeId
         const cachedState = warmHit.state
 
-        const stored =
-          $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId)) ?? storedForProfile
+        const stored = findListedSession(storedSessionId)?.session ?? storedForProfile
 
         let cachedViewState =
           !cachedState.model && stored?.model != null
@@ -1949,8 +1947,7 @@ export function useSessionActions({
       const runtimeStartedAt = Date.now()
       setSessionStartedAt(runtimeStartedAt)
 
-      const stored =
-        $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId)) ?? storedForProfile
+      const stored = findListedSession(storedSessionId)?.session ?? storedForProfile
 
       applyStoredSessionPreviewRuntimeInfo(stored, storedSessionId, { sameSession: resumedSameSelectedSession })
 
@@ -3297,17 +3294,16 @@ export function useSessionActions({
     ]
   )
 
-  // The Archived view reuses the sidebar row menu; its already-archived rows
-  // dispatch here through the same archive verb (#98813). Mirrors the Settings
-  // → Archived Chats restore (sessions-settings.tsx): flip the persisted flag
-  // back off, drop the archived-view row, and resurface the session in the
-  // sidebar without waiting for a full refresh.
+  // Archived rows (Archived view, search hits) dispatch here through the row
+  // menu's archive verb (#98813); `row` stands in for a cold archive cache.
+  // Like Settings → Archived Chats: flip the flag off, drop the archived-view
+  // row, and resurface the session in the sidebar without a full refresh.
   const unarchiveSession = useCallback(
-    async (storedSessionId: string) => {
+    async (storedSessionId: string, row?: SessionInfo) => {
       clearNotifications()
 
-      const archived = $archivedSessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
-      const profile = archived?.profile?.trim() || undefined
+      const archived = $archivedSessions.get().find(s => sessionMatchesStoredId(s, storedSessionId)) ?? row
+      const profile = archived?.profile?.trim() || (await resolveSessionProfile(storedSessionId))
 
       try {
         await setSessionArchived(storedSessionId, false, profile)
@@ -3324,7 +3320,7 @@ export function useSessionActions({
           // and re-list through the slice router so a messaging/cron row lands
           // back in its own list, not the sessions one.
           untombstoneSessions([storedSessionId, archived._lineage_root_id])
-          restoreListedSession({ ...archived, archived: false })
+          restoreListedSession({ ...archived, archived: false, ...(profile ? { profile } : {}) })
         }
 
         notify({ durationMs: 2_000, kind: 'success', message: copy.restored })

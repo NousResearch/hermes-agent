@@ -74,8 +74,8 @@ SYSTEMD_TIMEOUT_STOP_SEC_FLOOR = 60.0
 LAUNCHD_GUI_EXIT_TIMEOUT_CLAMP_S = 60
 LAUNCHD_STOP_CLEANUP_RESERVE_S = 10.0
 # How far before launchd's SIGKILL the thread watchdog must fire so its
-# faulthandler dump + os._exit actually land (the dump is sub-second; the
-# margin covers a slow disk).
+# stack dump + os._exit actually land. The dump is normally sub-second; the
+# margin covers a slow disk, not a stderr pipe nobody reads (that blocks it).
 LAUNCHD_WATCHDOG_DUMP_MARGIN_S = 2.0
 
 _LAUNCHD_EXIT_TIMEOUT_RE = re.compile(r"^\s*exit timeout\s*=\s*(\d+)\s*$", re.MULTILINE)

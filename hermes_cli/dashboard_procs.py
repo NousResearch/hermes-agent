@@ -163,7 +163,12 @@ def _pid_passwd_home(pid: int) -> str | None:
     return None
 
 
-def _hermes_home_for_pid(pid: int, *, require_launch_identity: bool = False) -> str | None:
+def _discovery_argv(pid: int) -> list[str] | None:
+    from hermes_cli.main_dashboard import _dashboard_cmdline_for_pid
+    return _dashboard_cmdline_for_pid(pid)
+
+
+def _hermes_home_for_pid(pid: int, *, require_launch_identity: bool = False, argv_reader=_discovery_argv) -> str | None:
     """Resolve a process home for discovery, or require pinned launch identity for termination.
 
     By default, ``None`` means an unreadable environment (another user, hardened ``/proc``).
@@ -183,9 +188,8 @@ def _hermes_home_for_pid(pid: int, *, require_launch_identity: bool = False) -> 
     env = _pid_environ(pid)
     if env is None:
         return None
-    from hermes_cli.main_dashboard import _dashboard_cmdline_for_pid
     from hermes_cli.profiles import get_active_profile, normalize_profile_name, profile_root_for_env_home
-    argv = _dashboard_cmdline_for_pid(pid)
+    argv = argv_reader(pid)
     if require_launch_identity and argv is None:
         # The dashboard argv reader has no Windows implementation; psutil does.
         import psutil
@@ -378,6 +382,19 @@ _WRAPPER_HEAD_COMMANDS = frozenset({
     "env", "nohup", "nice", "stdbuf", "timeout", "watch", "xargs",
     "screen", "tmux", "sudo",
 })
+
+
+def _process_listens_on(pid: int, port: int) -> bool | None:
+    """Whether *pid* itself holds a TCP listener on *port*; None when the OS will not say."""
+    try:
+        import psutil
+    except ImportError:
+        return None
+    try:
+        connections = psutil.Process(pid).net_connections(kind="inet")
+    except (psutil.Error, OSError):  # gone, access denied, or the OS has no per-process table
+        return None
+    return any(c.status == psutil.CONN_LISTEN and c.laddr and c.laddr.port == port for c in connections)
 
 
 def _caller_ancestor_pids() -> set[int]:
@@ -790,8 +807,8 @@ def _detect_concurrent_hermes_instances(
     PM stages a fresh generation instead of replacing a mapped hermes.exe.
     Returning an empty list would let old callers continue into that mutation.
     """
-    from hermes_cli._old_updater import stop_for_relaunch
-    stop_for_relaunch()
+    from hermes_cli._old_updater import stop_historical_updater
+    stop_historical_updater("hermes_cli.dashboard_procs._detect_concurrent_hermes_instances")
 
 
 def _is_desktop_local_serve_cmdline(command: str) -> bool:

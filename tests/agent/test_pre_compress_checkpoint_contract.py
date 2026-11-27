@@ -29,6 +29,11 @@ from agent.memory_provider import (
     PRE_COMPRESS_CHECKPOINT_API_VERSION,
     MemoryProvider,
 )
+from persistence.conversation.messages import ConversationRequest
+from persistence_assembly import open_persistence_reader
+from tests.fixtures.storage_read import conversation
+from tests.fixtures.storage_seed import seed_messages, seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 class _BaseStubProvider(MemoryProvider):
@@ -305,6 +310,11 @@ def test_checkpoint_blocked_error_is_prefixed_and_typed():
     assert "no active provider" in str(error)
 
 
+def _resume_model(store, session_id):
+    """The model history a resume of ``session_id`` loads, as replay dicts."""
+    return [m.as_openai_message() for m in store.messages.read_resume_conversations(session_id).model]
+
+
 def test_compressed_summary_marker_survives_restart_via_resume_history(tmp_path):
     """The persistent marker reaches the resumed model history — and only it.
 
@@ -312,51 +322,46 @@ def test_compressed_summary_marker_survives_restart_via_resume_history(tmp_path)
     the resume path carries ``_compressed_summary`` so checkpoint providers
     keep excluding derivative summaries after a process restart.
     """
-    from hermes_state import SessionDB
+    db = storage_handle(tmp_path)
+    seed_session(db, "s1", "cli")
+    seed_messages(db, "s1", {"role": "user", "content": "durable user evidence"})
+    seed_messages(db, "s1", {"role": "assistant", "content": "derivative summary", "_compressed_summary": True})
 
-    db = SessionDB(tmp_path / "state.db")
-    db.create_session("s1", source="cli")
-    db.append_message("s1", "user", "durable user evidence")
-    db.append_message(
-        "s1", "assistant", "derivative summary", _compressed_summary=True
-    )
+    with open_persistence_reader(tmp_path / "state.db") as reopened:
+        model_history = _resume_model(reopened, "s1")
+        by_content = {m.get("content"): m for m in model_history}
+        assert by_content["derivative summary"].get("_compressed_summary") is True
+        assert "_compressed_summary" not in by_content["durable user evidence"]
 
-    reopened = SessionDB(tmp_path / "state.db")
-    model_history, _display = reopened.get_resume_conversations("s1")
-    by_content = {m.get("content"): m for m in model_history}
-    assert by_content["derivative summary"].get("_compressed_summary") is True
-    assert "_compressed_summary" not in by_content["durable user evidence"]
-
-    plain = reopened.get_messages_as_conversation("s1")
-    assert all("_compressed_summary" not in m for m in plain)
+        plain = conversation(reopened, "s1")
+        assert all("_compressed_summary" not in m for m in plain)
 
 
 def test_live_replay_preserves_summary_boundary_without_changing_display(tmp_path):
-    from hermes_state import SessionDB
-
     db_path = tmp_path / "state.db"
-    db = SessionDB(db_path)
-    db.create_session("summary-replay", source="telegram")
-    db.append_message("summary-replay", "user", "Derivative context", _compressed_summary=True)
-    db.append_message("summary-replay", "user", "Original request")
-    db.append_message("summary-replay", "assistant", "Original answer")
-    db.create_session("plain-replay", source="telegram")
-    db.append_message("plain-replay", "user", "First request")
-    db.append_message("plain-replay", "user", "Second request")
+    db = storage_handle(tmp_path)
+    seed_session(db, "summary-replay", "telegram")
+    seed_messages(db, "summary-replay", {"role": "user", "content": "Derivative context", "_compressed_summary": True})
+    seed_messages(db, "summary-replay", {"role": "user", "content": "Original request"})
+    seed_messages(db, "summary-replay", {"role": "assistant", "content": "Original answer"})
+    seed_session(db, "plain-replay", "telegram")
+    seed_messages(db, "plain-replay", {"role": "user", "content": "First request"})
+    seed_messages(db, "plain-replay", {"role": "user", "content": "Second request"})
 
-    reopened = SessionDB(db_path)
-    display_before = reopened.get_messages_as_conversation("summary-replay")
-    replay = reopened.get_messages_as_conversation("summary-replay", repair_alternation=True)
-    assert [m["content"] for m in replay] == [
-        "Derivative context", "Original request", "Original answer"
-    ]
-    assert replay[0].get("_compressed_summary") is True
-    assert all("_compressed_summary" not in m for m in replay[1:])
-    assert reopened.get_messages_as_conversation("summary-replay") == display_before
-    assert all("_compressed_summary" not in m for m in display_before)
-    plain = reopened.get_messages_as_conversation("plain-replay", repair_alternation=True)
-    assert [m["content"] for m in plain] == ["First request\n\nSecond request"]
-    assert all("_compressed_summary" not in m for m in plain)
+    repaired = ConversationRequest(repair_alternation=True)
+    with open_persistence_reader(db_path) as reopened:
+        display_before = conversation(reopened, "summary-replay")
+        replay = conversation(reopened, "summary-replay", repaired)
+        assert [m["content"] for m in replay] == [
+            "Derivative context", "Original request", "Original answer"
+        ]
+        assert replay[0].get("_compressed_summary") is True
+        assert all("_compressed_summary" not in m for m in replay[1:])
+        assert conversation(reopened, "summary-replay") == display_before
+        assert all("_compressed_summary" not in m for m in display_before)
+        plain = conversation(reopened, "plain-replay", repaired)
+        assert [m["content"] for m in plain] == ["First request\n\nSecond request"]
+        assert all("_compressed_summary" not in m for m in plain)
 
 
 def test_compressed_summary_column_is_added_to_legacy_databases(tmp_path):
@@ -368,10 +373,10 @@ def test_compressed_summary_column_is_added_to_legacy_databases(tmp_path):
     """
     import sqlite3
 
-    from hermes_state import SessionDB
-
     db_path = tmp_path / "state.db"
-    SessionDB(db_path)
+    created = storage_handle(tmp_path)
+    created.ready()
+    created.close()
 
     # Simulate a pre-upgrade database: the marker column does not exist.
     conn = sqlite3.connect(db_path)
@@ -383,13 +388,11 @@ def test_compressed_summary_column_is_added_to_legacy_databases(tmp_path):
     conn.close()
     assert "_compressed_summary" not in legacy_cols
 
-    upgraded = SessionDB(db_path)
-    upgraded.create_session("legacy", source="cli")
-    upgraded.append_message(
-        "legacy", "assistant", "derivative summary", _compressed_summary=True
-    )
+    upgraded = storage_handle(tmp_path)
+    seed_session(upgraded, "legacy", "cli")
+    seed_messages(upgraded, "legacy", {"role": "assistant", "content": "derivative summary", "_compressed_summary": True})
 
-    model_history, _display = upgraded.get_resume_conversations("legacy")
+    model_history = _resume_model(upgraded, "legacy")
     assert model_history[-1].get("_compressed_summary") is True
 
 

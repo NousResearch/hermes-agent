@@ -3,7 +3,10 @@ import type { TranslationOverrides } from './define-locale'
 export const arChat = {
   composer: {
     message: 'الرسالة',
-    wakingProfile: profile => `جار إيقاظ ${profile}`,
+    switchingProfile: profile => `جارٍ التبديل إلى ${profile}…`,
+    switchingProfileSlow: 'لا يزال الاتصال جاريًا. الرسائل التي ترسلها الآن ستنتظر ثم تُرسل إلى هذا الوكيل.',
+    switchProfileFailed: profile => `تعذّر التبديل إلى ${profile}`,
+    willSendTo: profile => `سيُرسل إلى ${profile}`,
     placeholderStarting: 'جار بدء Hermes...',
     placeholderReconnecting: 'جار إعادة الاتصال...',
     placeholderFollowUp: 'اكتب متابعة...',
@@ -107,7 +110,7 @@ export const arChat = {
       '/topup': 'عرض رصيد Nous وإدارة الفواتير',
       '/platform': 'إيقاف منصة بوابة متعثرة مؤقتًا أو استئنافها أو عرضها',
       '/version': 'عرض إصدار Hermes Agent',
-      '/debug': 'رفع تقرير تصحيح يتضمن معلومات النظام والسجلات للحصول على رابط قابل للمشاركة',
+      '/debug': 'تقرير تصحيح الأخطاء (الإصدارات وأسماء مفاتيح الإعداد وأعداد الأخطاء؛ دون نص السجلات): يعرض إشعار الخصوصية أولًا؛ /debug upload يشارك الروابط',
       '/model': 'تبديل نموذج هذه الجلسة'
     },
     hotkeyDescs: {

@@ -116,6 +116,7 @@ def agent():
     a.save_trajectories = False
     a.compression_enabled = True
     a.context_compressor = _quiet_compressor()
+    a.context_compressor._session_db = MagicMock()  # the prune only runs where its store archives originals
     return a
 
 
@@ -210,6 +211,14 @@ class TestProactivePruneLoopWiring:
         assert result["completed"] is True
         assert calls == []
         assert agent._checkpoint_gate_suppression_count == 3
+
+    def test_prune_not_consulted_without_a_session_store(self, agent):
+        """Batch runs keep no store: demoted bodies would exist nowhere else."""
+        calls = []
+        agent.context_compressor.prune_tool_results_only = lambda m, current_tokens=None: (calls.append(1), (m, 0))[1]
+        agent.context_compressor._session_db = None
+        assert _run_tool_loop(agent, n_tool_iterations=2)["completed"] is True
+        assert calls == []
 
     def test_committed_prune_replaces_messages(self, agent):
         marker = "[old tool output pruned]"

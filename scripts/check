@@ -100,7 +100,7 @@ exit $status
 
 # name -> argv (relative to the repo root); mirrors the blocking steps in lint.yml, plus the
 # unconditional guards CI runs as steps of repo-guards.yml (case collisions, lazy_deps imports,
-# profile archives, blob size).
+# profile archives, blob size, /tmp literals, Bash shebangs, AGENTS.md sizes).
 _GUARDS = {
     "footguns": ["scripts/check-windows-footguns.py", "--all"],
     "shebangs": ["scripts/check_bash_shebangs.py"],
@@ -109,11 +109,18 @@ _GUARDS = {
     "install-root": ["scripts/install_root_lint.py"],
     "config-writers": ["scripts/check_config_yaml_writers.py"],
     "config-readers": ["scripts/check_config_yaml_readers.py"],
+    "profile-create-entry": ["scripts/check_profile_create_entry.py"],
+    "tool-discovery": ["scripts/check_tool_discovery.py"],
+    "packaged-imports": ["scripts/check_packaged_imports.py"],
     "os-marker-fakes": ["scripts/ci/check_os_marker_fakes.py"],
     "agents-md": ["scripts/ci/check_agents_md_size.py"],
+    "shims": ["scripts/move/generate_shims.py", "--check"],
     "case-collisions": ["scripts/check-case-collisions.py"],
+    "line-endings": ["scripts/ci/check_line_endings.py"],
+    "dockerfile-downloads": ["scripts/ci/check_dockerfile_downloads.py"],
     "lazy-deps": ["scripts/ci/check_lazy_deps_imports.py"],
     "profile-archives": ["scripts/ci/check_profile_archive_boundary.py"],
+    "backend-imports": ["scripts/ci/check_backend_imports.py"],
 }
 # Guards that judge a diff, not a tree: they get the same base/head as the ratchet
 # (the blob-size step of repo-guards.yml).

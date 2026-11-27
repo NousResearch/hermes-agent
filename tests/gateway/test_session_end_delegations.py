@@ -11,7 +11,10 @@ from types import MethodType, SimpleNamespace
 
 import pytest
 
+from persistence_assembly import close_stores_under
 from tools import async_delegation as delegation
+from tests.fixtures.storage_read import session_row, transcript_rows
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 
 @pytest.fixture(autouse=True)
@@ -39,7 +42,7 @@ async def _owner(tmp_path, monkeypatch):
     async def housekeeping(func, *args):
         return func(*args)
 
-    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
+    runner = SimpleNamespace(session_store=store, _session_db=store.persistence, adapters={}, _draining=False,
                              _cached_agent_for=lambda route: None,
                              _evict_cached_agent_at_boundary=lambda key: None,
                              _finalize_session_off_loop=finalize, _FINALIZE_TIMEOUT_S=10.0,
@@ -48,7 +51,7 @@ async def _owner(tmp_path, monkeypatch):
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
     runner._reset_session_off_loop = MethodType(GatewaySessionEndMixin._reset_session_off_loop, runner)
     authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='owner')
-    return store._db, authority
+    return store.persistence, authority
 
 
 async def _call(conn, method, **params):
@@ -59,12 +62,12 @@ async def _call(conn, method, **params):
 
 async def _open(db, authority, tmp_path, session_id):
     from gateway.session_controls import AuthorityConnection
-    db.create_session(session_id, source='cli', model='fake-model', cwd=str(tmp_path))
-    db.append_message(session_id, 'user', 'q')
+    seed_session(db, session_id, 'cli', model='fake-model', cwd=str(tmp_path))
+    seed_messages(db, session_id, {'role': 'user', 'content': 'q'})
     viewer = AuthorityConnection(authority, SimpleNamespace(write=lambda frame: None), {
         'provider': 'local', 'user_id': 'native', 'profile_id': str(tmp_path), 'instance_id': 'owner'})
     resumed = await _call(viewer, 'session.resume', session_id=session_id)
-    db.reopen_session(session_id)
+    db.sessions.reopen(session_id)
     return viewer, resumed['subscription_id']
 
 
@@ -139,7 +142,7 @@ async def test_viewer_reattaching_during_detach_cleanup_keeps_delegations(tmp_pa
 
     assert stopped == []
     assert 'chat' not in authority.pending_closes
-    assert db.get_session('chat')['ended_at'] is None
+    assert session_row(db, 'chat')['ended_at'] is None
 
 
 def _dispatch(route, parent):
@@ -198,15 +201,16 @@ async def _local(tmp_path, monkeypatch):
     from gateway.session_authority import SessionAuthority, initialize_session_authority
     from gateway.session_contract import SessionActor
     from gateway.session_local import create_local_session
-    from hermes_state import AsyncSessionDB, SessionDB
+    from persistence_assembly import open_persistence, profile_scope
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(SessionAuthority, '_schedule', lambda self, ref: None)  # admitted rows stay queued
     runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / 'sessions'))
-    db = SessionDB(tmp_path / 'state.db')
-    runner.session_store._db = db
-    runner._session_db = AsyncSessionDB(db)
-    authority = await initialize_session_authority(runner, profile_id='default', instance_id='lc7', db=db)
+    # The storage interface handle on the same state.db, as the runner and its authority hold one in production.
+    persistence = open_persistence(profile_scope(home=tmp_path))
+    monkeypatch.setattr(GatewayRunner, 'persistence', persistence)
+    authority = await initialize_session_authority(runner, profile_id='default', instance_id='lc7',
+                                                   persistence=persistence)
     actor = SessionActor('test-owner', 'default', frozenset({'session:create', 'session:submit', 'session:read'}),
                       'fixture')
     ref = create_local_session(authority, actor, dict(request_id='lc7', source='cli', model='fixture', toolsets=[]))
@@ -232,13 +236,13 @@ async def _deliver(runner, authority, ref, producer):
 
 
 def _admissions(authority, ref):
-    from hermes_state_runtime import list_session_admissions
-    return [r for r in list_session_admissions(authority.db, session_id=ref.session_id, pending_only=False)
-            if r['principal_id'].startswith('automation:')]
+    from gateway.session_authority import admission_row
+    return [admission_row(r) for r in authority.persistence.admissions.list(session_id=ref.session_id, pending_only=False)
+            if r.principal_id.startswith('automation:')]
 
 
 def _notes(authority, target):
-    return [m for m in authority.db.get_messages(target) if 'RESULT_' in str(m.get('content'))]
+    return [m for m in transcript_rows(authority.persistence, target) if 'RESULT_' in str(m.get('content'))]
 
 
 def _record_turns(runner):
@@ -276,7 +280,7 @@ async def test_unviewed_local_completion_is_a_note_not_a_turn(tmp_path, monkeypa
         await authority._drain(ref)
         assert len(_notes(authority, target)) == 1 and len(_admissions(authority, ref)) == 1
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -297,7 +301,7 @@ async def test_viewed_local_completion_still_starts_its_turn(tmp_path, monkeypat
         await authority._drain(ref)
         assert len(seen) == 1 and len(_admissions(authority, ref)) == 1 and _notes(authority, target) == []
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -309,7 +313,6 @@ async def test_messaging_completion_still_starts_its_turn(tmp_path, monkeypatch)
     from gateway.session_authority import SessionAuthority, initialize_session_authority
     from gateway.session_ingress_context import native_callback
     from hermes_constants import get_hermes_home
-    from hermes_state_runtime import list_session_admissions
     from plugins.platforms.discord.adapter import DiscordAdapter
     from tests.gateway.test_completion_admission import pending
 
@@ -327,15 +330,15 @@ async def test_messaging_completion_still_starts_its_turn(tmp_path, monkeypatch)
     key = runner.session_store._generate_session_key(source)
     sid = runner.session_store.peek_session_id(key)
     assert await runner._deliver_async_delegation_group([dict(pending(key, 'deleg_chat'), parent_session_id=sid)])
-    rows = list_session_admissions(authority.db, session_id=sid, pending_only=False)
-    assert [r['principal_id'].startswith('automation:') for r in rows] == [False, True], rows
+    rows = authority.persistence.admissions.list(session_id=sid, pending_only=False)
+    assert [r.principal_id.startswith('automation:') for r in rows] == [False, True], rows
     seen = _record_turns(runner)
     from gateway.session_contract import SessionRef
     await authority._drain(SessionRef(authority.profile_id, sid))
     assert seen[0] == 'human' and len(seen) == 2 and 'deleg_chat' in seen[1], 'the completion ran as a turn'
-    rows = list_session_admissions(authority.db, session_id=sid, pending_only=False)
-    assert [r['outcome'] for r in rows] == ['completed', 'completed']
-    assert not [m for m in authority.db.get_messages(sid) if 'deleg_chat' in str(m.get('content'))]
+    rows = authority.persistence.admissions.list(session_id=sid, pending_only=False)
+    assert [r.outcome for r in rows] == ['completed', 'completed']
+    assert not [m for m in transcript_rows(authority.persistence, sid) if 'deleg_chat' in str(m.get('content'))]
 
 
 @pytest.mark.asyncio
@@ -354,6 +357,6 @@ async def test_other_local_automation_is_unchanged(tmp_path, monkeypatch):
         assert seen == ['TICK'], 'no viewer, and the wake still runs as its turn'
         assert [r['outcome'] for r in _admissions(authority, ref)] == ['completed']
         target = runner.session_store.lookup_by_session_key(live.route).session_id
-        assert not [m for m in authority.db.get_messages(target) if 'TICK' in str(m.get('content'))]
+        assert not [m for m in transcript_rows(authority.persistence, target) if 'TICK' in str(m.get('content'))]
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)

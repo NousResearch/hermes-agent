@@ -8,23 +8,35 @@ is the inverse that ``restore_primary_runtime`` runs once its gates pass.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, NamedTuple, Optional, Tuple
 
 from utils import base_url_host_matches
 
 logger = logging.getLogger(__name__)
 
 
-def bind_route_entry(agent: Any, entry: dict[str, Any], provider: str, model: str) -> Optional[tuple[str, str]]:
-    """Swap ``agent`` onto ``entry`` (a fallback-chain-shaped dict). Returns ``(old_model,
-    old_provider)``, or None when the provider has no usable client. Sets ``_fallback_activated``
-    so the next turn's ``restore_primary_runtime`` reverts it; raises on a failed swap."""
+class RouteEntryClient(NamedTuple):
+    """What the fallback swap builds for an entry. ``client`` is None when the provider has no
+    usable client; ``model`` is normalized for the provider (a MoA entry keeps its preset name)."""
+
+    client: Any
+    model: str
+    api_mode_explicit: bool
+    api_mode: str
+    pool_choice: Any = None  # hermes_cli.runtime_provider.PoolChoice: the pool entry whose key the client carries
+
+
+def resolve_route_entry_client(entry: dict[str, Any], provider: str, model: str, *,
+                               raw_codex: bool = True) -> RouteEntryClient:
+    """The client :func:`bind_route_entry` binds for ``entry``, shared with ``hermes fallback check
+    --live`` so a readiness probe talks to exactly what the swap would. ``raw_codex=False`` returns
+    the chat-completions adapter for Codex/Responses providers. A registry API-key provider's key
+    comes from its credential pool the way a direct pick takes it; the pool is not touched until the
+    caller commits ``pool_choice``."""
     from agent.auxiliary_client import resolve_provider_client
-    from agent.chat_completion_helpers import (
-        _fallback_api_mode_hint, _fallback_api_mode_resolved, _rebind_fallback_credential_pool,
-        _reresolve_fallback_reasoning_config, _rescope_fallback_extra_body, _update_fallback_context_compressor,
-    )
+    from agent.chat_completion_helpers import _fallback_api_mode_hint
     from hermes_cli.fallback_config import resolve_entry_api_key
+    from hermes_cli.runtime_provider import PoolChoice
     # Pass the entry's base_url/api_key so custom endpoints (Ollama Cloud) resolve instead
     # of falling through to OpenRouter defaults.
     base_url_hint = (entry.get("base_url") or "").strip() or None
@@ -35,10 +47,33 @@ def bind_route_entry(agent: Any, entry: dict[str, Any], provider: str, model: st
     if base_url_hint and base_url_host_matches(base_url_hint, "ollama.com") and not api_key_hint:
         from agent.secret_scope import get_secret
         api_key_hint = get_secret("OLLAMA_API_KEY") or None
-    # raw_codex=True: the main agent needs direct responses.stream() access for Codex providers.
+    choice = PoolChoice(model) if provider != "moa" else None  # MoA keys stay with the preset's own resolution
     client, _resolved_model = resolve_provider_client(
-        provider, model=model, raw_codex=True, explicit_base_url=base_url_hint, explicit_api_key=api_key_hint,
-        api_mode=api_mode)
+        provider, model=model, raw_codex=raw_codex, explicit_base_url=base_url_hint, explicit_api_key=api_key_hint,
+        api_mode=api_mode, pool_choice=choice)
+    if client is not None and provider != "moa":
+        try:
+            from hermes_cli.model_normalize import normalize_model_for_provider
+            model = normalize_model_for_provider(model, provider)
+        except Exception as norm_err:  # health: allow BLE001 -- a bad catalog entry keeps the raw id
+            logger.warning("Could not normalize fallback model %r for provider %r: %s", model, provider, norm_err)
+    return RouteEntryClient(client, model, api_mode_explicit, api_mode, choice if client is not None else None)
+
+
+def bind_route_entry(agent: Any, entry: dict[str, Any], provider: str, model: str, *,
+                     commit_pool_choice: bool = True) -> Optional[tuple[str, str]]:
+    """Swap ``agent`` onto ``entry`` (a fallback-chain-shaped dict). Returns ``(old_model,
+    old_provider)``, or None when the provider has no usable client. Sets ``_fallback_activated``
+    so the next turn's ``restore_primary_runtime`` reverts it; raises on a failed swap.
+    ``commit_pool_choice=False`` leaves the pool's pick uncounted in ``agent._route_pool_choice``
+    for a caller that may still refuse the route (it calls ``.commit()`` once it keeps it)."""
+    from agent.chat_completion_helpers import (
+        _fallback_api_mode_resolved, _rebind_fallback_credential_pool,
+        _reresolve_fallback_reasoning_config, _rescope_fallback_extra_body, _update_fallback_context_compressor,
+    )
+    # raw_codex=True: the main agent needs direct responses.stream() access for Codex providers.
+    route = resolve_route_entry_client(entry, provider, model)
+    client, model, api_mode_explicit, api_mode = route.client, route.model, route.api_mode_explicit, route.api_mode
     if client is None:
         return None
     if provider == "moa":
@@ -47,11 +82,6 @@ def bind_route_entry(agent: Any, entry: dict[str, Any], provider: str, model: st
         # same pins every other MoA build site uses (#112525, #112623).
         base_url, api_mode = "moa://local", "chat_completions"
     else:
-        try:
-            from hermes_cli.model_normalize import normalize_model_for_provider
-            model = normalize_model_for_provider(model, provider)
-        except Exception as norm_err:  # health: allow BLE001 -- moved verbatim from try_activate_fallback; a bad catalog entry keeps the raw id
-            logger.warning("Could not normalize fallback model %r for provider %r: %s", model, provider, norm_err)
         base_url = str(client.base_url)
         from hermes_cli.providers import is_actual_route
         if is_actual_route(provider, base_url):
@@ -74,7 +104,8 @@ def bind_route_entry(agent: Any, entry: dict[str, Any], provider: str, model: st
     reset_route_verdicts(agent)
     agent._fallback_activated = True
 
-    _rebind_fallback_credential_pool(agent, provider, model)
+    choice = agent._route_pool_choice = route.pool_choice
+    _rebind_fallback_credential_pool(agent, provider, model, choice.pool if choice is not None else None)
     if provider == "moa":
         from agent.moa_loop import bind_moa_runtime
         bind_moa_runtime(agent, model)
@@ -91,6 +122,8 @@ def bind_route_entry(agent: Any, entry: dict[str, Any], provider: str, model: st
     _update_fallback_context_compressor(agent)
     _reresolve_fallback_reasoning_config(agent)
     _rescope_fallback_extra_body(agent, old_model, old_provider, old_base_url)
+    if commit_pool_choice and choice is not None:
+        choice.commit()
     return old_model, old_provider
 
 

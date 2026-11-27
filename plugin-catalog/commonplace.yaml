@@ -1,0 +1,16 @@
+name: commonplace
+repo: https://github.com/ChrisAaronNewton/hermes-commonplace
+sha: 2d9f6c9378d51076dd9c0ac5a7a22ce9deda7c3f
+version: "0.1.0"
+description: "Commonplace — local-first curated memory in plain Markdown files on your own machine. Standing rules kept verbatim, a curated store with lexical recall, a handover card for fresh sessions, and a fail-closed pre-compress checkpoint (API v2) that archives the transcript before Hermes may compress it — and blocks compression when the archive cannot be written. No cloud, no API keys, no third-party dependencies. Maintained by Chris Newton. Disclosure — stores everything as plain, unencrypted Markdown under the active Hermes home's `commonplace/` directory, including a verbatim journal of every user/assistant turn and full-transcript archives written before each compression; none of it is pruned automatically. No network calls, credentials or third-party dependencies."
+maintainer: ChrisAaronNewton
+tier: community
+category: memory
+docs_url: https://github.com/ChrisAaronNewton/hermes-commonplace#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+subdir: commonplace
+requires_hermes: ">=0.21.3"

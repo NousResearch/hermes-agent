@@ -27,13 +27,13 @@ def _runner(cache):
 
 @pytest.mark.asyncio
 async def test_an_unopenable_store_is_parked_under_its_open_failure(tmp_path, monkeypatch):
-    from hermes_state_registry import acquire
+    from persistence_assembly import open_persistence, profile_scope
     home = (tmp_path / 'profiles' / 'worker').resolve()
     home.mkdir(parents=True)
     (home / 'state.db').mkdir()  # sqlite cannot open a directory: a store that fails on every open
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     cache = RecoverableHandleCache()
-    assert cache.get(home / 'state.db', lambda: acquire(home / 'state.db')) is None  # the runner's failed open
+    assert cache.get(home, lambda: open_persistence(profile_scope(home=home), eager=True)) is None  # the runner's failed open
 
     with pytest.raises(RuntimeError) as exc:
         await run_runtime._build_profile_authority(_runner(cache), 'worker', home, register=False)

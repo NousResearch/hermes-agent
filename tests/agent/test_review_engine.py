@@ -163,7 +163,7 @@ def test_delegate_task_credentials_cfg_overrides_delegation_config(monkeypatch):
 
     fake_child = MagicMock()
     fake_child._delegate_role = "leaf"
-    monkeypatch.setattr(dt, "_resolve_delegation_credentials", fake_resolve)
+    monkeypatch.setattr("tools.delegate_tool_routes._resolve_delegation_credentials", fake_resolve)
     monkeypatch.setattr(dt, "_build_child_agent", lambda **kw: fake_child)
     monkeypatch.setattr(
         dt, "_run_single_child",
@@ -216,7 +216,7 @@ def test_start_review_dispatches_background_and_completes(monkeypatch):
 
     monkeypatch.setattr(dt, "_build_child_agent", fake_build)
     monkeypatch.setattr(dt, "_run_single_child", fake_run_single_child)
-    monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
+    monkeypatch.setattr("tools.delegate_tool_routes._resolve_delegation_credentials", lambda *a, **k: creds)
     monkeypatch.setattr(re_mod, "_load_review_credentials_cfg", lambda: None)
 
     msgs = [
@@ -333,7 +333,7 @@ def test_start_review_threads_loaded_skills_into_context(monkeypatch):
         return fake_child
 
     monkeypatch.setattr(dt, "_build_child_agent", fake_build)
-    monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
+    monkeypatch.setattr("tools.delegate_tool_routes._resolve_delegation_credentials", lambda *a, **k: creds)
     monkeypatch.setattr(
         dt, "_run_single_child",
         lambda *a, **k: {
@@ -371,9 +371,7 @@ def test_child_system_prompt_embeds_workspace_context(tmp_path):
     (workspace / "AGENTS.md").write_text(
         "# Project Rules\nAll fixes must cover sibling call sites.\n"
     )
-    prompt = _build_child_system_prompt(
-        "do the thing", None, workspace_path=str(workspace)
-    )
+    prompt = _build_child_system_prompt(workspace_path=str(workspace))
     assert "sibling call sites" in prompt
 
 # ---------------------------------------------------------------------------

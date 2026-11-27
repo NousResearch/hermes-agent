@@ -47,7 +47,7 @@ from __future__ import annotations
 import contextlib
 from unittest.mock import MagicMock, patch
 
-from tests.cron.test_scheduler import _run_owned_job
+from tests.cron.test_scheduler import _run_owned_job, close_storage_handles
 
 @contextlib.contextmanager
 def _run_job_patches(tmp_path):
@@ -60,8 +60,7 @@ def _run_job_patches(tmp_path):
     toggles).
     """
     fake_db = MagicMock()
-    fake_db.get_compression_tip.side_effect = lambda session_id: session_id
-    fake_db.db_path = str(tmp_path / "state.db")
+    fake_db.lineage.tip.side_effect = lambda session_id: session_id
     mock_agent = MagicMock()
     mock_agent.run_conversation.return_value = {"final_response": "ok"}
     base = [
@@ -69,7 +68,7 @@ def _run_job_patches(tmp_path):
         patch("cron.scheduler_delivery._resolve_origin", return_value=None),
         patch("hermes_cli.env_loader.load_hermes_dotenv"),
         patch("hermes_cli.env_loader.reset_secret_source_cache"),
-        patch("hermes_state_registry.acquire", return_value=fake_db),
+        patch("persistence_assembly.open_persistence", return_value=fake_db),
         patch(
             "hermes_cli.runtime_provider.resolve_runtime_provider",
             return_value={

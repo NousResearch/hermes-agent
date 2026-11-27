@@ -105,7 +105,7 @@ describe('browser profile folder for a new chat', () => {
 })
 
 describe('browser profile prefs follow rename and delete', () => {
-  it('moves the folder and startup profile with a rename and leaves every other pref', () => {
+  it('moves the folder and startup profile with a rename and leaves every other pref', async () => {
     host()
     putFolder('alpha', '/srv/alpha')
     putFolder('beta', '/srv/beta')
@@ -114,7 +114,7 @@ describe('browser profile prefs follow rename and delete', () => {
     putStartup('alpha', '/other', 'remote-box')
     $defaultProfileRoute.set({ connectionId: 'local', profile: 'alpha' })
 
-    migrateTilesForProfile('alpha', 'renamed')
+    await migrateTilesForProfile('alpha', 'renamed')
 
     expect(localStorage.getItem(browserDefaultProjectDirKey('/hermes', 'alpha'))).toBeNull()
     expect(localStorage.getItem(browserDefaultProjectDirKey('/hermes', 'renamed'))).toBe('/srv/alpha')
@@ -140,7 +140,7 @@ describe('browser profile prefs follow rename and delete', () => {
     { expected: '', research: null }
   ])(
     'gives the renamed profile its own folder ($research), not what a deleted profile left',
-    ({ expected, research }) => {
+    async ({ expected, research }) => {
       host()
       putFolder('work', '/srv/deleted-work')
       putStartup('work', '/hermes', 'local')
@@ -150,7 +150,7 @@ describe('browser profile prefs follow rename and delete', () => {
         putFolder('research', research)
       }
 
-      migrateTilesForProfile('research', 'work')
+      await migrateTilesForProfile('research', 'work')
 
       expect(resolveNewSessionCwd('work')).toBe(expected)
       expect(localStorage.getItem(browserDefaultProjectDirKey('/hermes', 'research'))).toBeNull()
@@ -159,33 +159,33 @@ describe('browser profile prefs follow rename and delete', () => {
     }
   )
 
-  it('drops a blank folder instead of carrying it to the new name', () => {
+  it('drops a blank folder instead of carrying it to the new name', async () => {
     host()
     putFolder('alpha', '   ')
 
-    migrateTilesForProfile('alpha', 'renamed')
+    await migrateTilesForProfile('alpha', 'renamed')
 
     expect(localStorage.getItem(browserDefaultProjectDirKey('/hermes', 'alpha'))).toBeNull()
     expect(localStorage.getItem(browserDefaultProjectDirKey('/hermes', 'renamed'))).toBeNull()
   })
 
-  it('rewrites startup storage when this window is not currently mirroring it', () => {
+  it('rewrites startup storage when this window is not currently mirroring it', async () => {
     host()
     putStartup('alpha')
 
-    migrateTilesForProfile('alpha', 'renamed')
+    await migrateTilesForProfile('alpha', 'renamed')
 
     expect(JSON.parse(localStorage.getItem(browserStartupProfileKey('/hermes'))!).profile).toBe('renamed')
     expect($defaultProfileRoute.get()).toBeNull()
   })
 
-  it('leaves another profile startup mirror alone while the renamed profile folder moves', () => {
+  it('leaves another profile startup mirror alone while the renamed profile folder moves', async () => {
     host()
     putFolder('alpha', '/srv/alpha')
     putStartup('alpha')
     $defaultProfileRoute.set({ connectionId: null, profile: 'beta' })
 
-    migrateTilesForProfile('alpha', 'renamed')
+    await migrateTilesForProfile('alpha', 'renamed')
 
     expect(localStorage.getItem(browserDefaultProjectDirKey('/hermes', 'renamed'))).toBe('/srv/alpha')
     expect(JSON.parse(localStorage.getItem(browserStartupProfileKey('/hermes'))!).profile).toBe('renamed')
@@ -222,7 +222,7 @@ describe('browser profile prefs follow rename and delete', () => {
       localStorage.setItem(browserStartupProfileKey('/hermes'), raw)
       await expect(bridge.profile.getDefault()).resolves.toBeNull()
 
-      migrateTilesForProfile('work', 'renamed')
+      await migrateTilesForProfile('work', 'renamed')
       expect(localStorage.getItem(browserStartupProfileKey('/hermes'))).toBe(raw)
 
       dropTilesForProfile('work')
@@ -246,13 +246,13 @@ describe('browser profile prefs follow rename and delete', () => {
     expect($defaultProfileRoute.get()).toEqual({ connectionId: 'local', profile: 'beta' })
   })
 
-  it('keeps folder and startup prefs when this page is not the browser host', () => {
+  it('keeps folder and startup prefs when this page is not the browser host', async () => {
     win.__HERMES_BASE_PATH__ = '/hermes'
     putFolder('alpha', '/srv/alpha')
     putStartup('alpha')
     $defaultProfileRoute.set({ connectionId: null, profile: 'alpha' })
 
-    migrateTilesForProfile('alpha', 'renamed')
+    await migrateTilesForProfile('alpha', 'renamed')
     dropTilesForProfile('alpha')
 
     expect(localStorage.getItem(browserDefaultProjectDirKey('/hermes', 'alpha'))).toBe('/srv/alpha')

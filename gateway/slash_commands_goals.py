@@ -92,14 +92,21 @@ class GatewayGoalCommandsMixin:
         try:
             adapter, quick_key = self._adapter_and_key_for(event)
             if text and adapter and quick_key:
+                # A kickoff keeps the files the /goal was sent with (a photo caption), as /queue does.
+                media = kickoff and bool(event.media_urls)
                 turn = MessageEvent(
                     text=text,
-                    message_type=MessageType.TEXT,
+                    message_type=event.message_type if media else MessageType.TEXT,
                     source=event.source,
                     message_id=event.message_id if kickoff else None,
+                    edit_revision=event.edit_revision if kickoff else None,  # an edited /goal: own admission id
                     channel_prompt=event.channel_prompt if kickoff else None,
                     auto_skill=event.auto_skill if kickoff else None,
                     inherit_channel_pin=not kickoff,
+                    media_urls=list(event.media_urls) if media else [],
+                    media_types=list(event.media_types) if media else [],
+                    media_text_inlined=list(event.media_text_inlined) if media else [],
+                    media_filenames=list(event.media_filenames) if media else [],
                 )
                 self._enqueue_fifo(quick_key, turn, adapter)
         except Exception as exc:

@@ -76,7 +76,7 @@ Follow the order — each step was earned by a correction the first time round.
 - The renderer rebuilds its whole scene on every draw: a stray `render()` in a hover handler detaches the element under the cursor and the browser stops synthesising clicks — the map looks perfect in a screenshot while nothing responds.
 - Some in-app browsers render `file://` as a static snapshot; verify via a static server, not from disk.
 - Never delete a question — resolve or mark it dropped, so IDs stay stable.
-- After every decision, grep the outputs for stale words (`pending`, the old model name, the rejected design) — the person reads everything.
+- After every decision, `search_files` the outputs for stale words (`pending`, the old model name, the rejected design) — the person reads everything.
 - Large HTML/JS via shell heredocs is brittle; use `write_file` and keep the data block JSON-serializable.
 
 ## Verification

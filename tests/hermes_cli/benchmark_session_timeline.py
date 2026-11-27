@@ -20,14 +20,16 @@ def main():
         os.environ["HERMES_HOME"] = directory
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
-        from hermes_state import SessionDB
         from hermes_cli.web_routers.sessions import manage_router
+        from persistence.conversation.messages import NewMessage
+        from persistence_assembly import open_persistence, profile_scope
+        from tests.fixtures.storage_seed import seed_session
 
         sid = "generated-tool-heavy"
         prompt_count = 600
         rows_per_turn = 10
-        with SessionDB(db_path=Path(directory) / "state.db") as db:
-            db.create_session(session_id=sid, source="desktop")
+        with open_persistence(profile_scope(home=Path(directory))) as db:
+            seed_session(db, sid, "desktop")
             for start in range(0, prompt_count, 100):
                 batch = []
                 for turn in range(start, start + 100):
@@ -40,7 +42,7 @@ def main():
                         batch.append({"role": "tool", "tool_call_id": call_id,
                                       "content": "generated tool output\n" * 800})
                     batch.append({"role": "assistant", "content": f"Finished task {turn}"})
-                db.append_messages_batch(sid, batch)
+                db.messages.append_batch(sid, [NewMessage.from_live(message) for message in batch])
         app = FastAPI()
         app.include_router(manage_router)
         with TestClient(app) as client:

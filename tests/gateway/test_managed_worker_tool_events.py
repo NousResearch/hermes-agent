@@ -6,9 +6,10 @@ and the owner builds the event with the ordinary turn's payload builder (real au
 from types import SimpleNamespace
 
 from agent.managed_worker import encode_frame, read_frame, tool_frame
-from gateway.session_authority import LiveSession, SessionAuthority
-from hermes_state import SessionDB
-from hermes_state_runtime import admit_session_input, begin_runtime_epoch, claim_session_input
+from gateway.session_authority import LiveSession, SessionAuthority, admission_row
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 def _wire(frame):
@@ -18,15 +19,16 @@ def _wire(frame):
 
 def test_worker_tool_frames_publish_the_in_process_payload(tmp_path):
     from gateway.run_turn_progress import _tool_complete_payload, _tool_lifecycle_payload, publish_worker_tool_event
-    db = SessionDB(db_path=tmp_path / 'state.db')
+    db = open_persistence(profile_scope(home=tmp_path))
     try:
-        db.create_session('s', source='cli')
-        epoch = begin_runtime_epoch(db, instance_id='owner')
+        seed_session(db, 's', 'cli')
+        epoch = db.runtime.begin_epoch(instance_id='owner')
         runner = SimpleNamespace(_draining=False, config=SimpleNamespace(multiplex_profiles=False))
-        authority = SessionAuthority(runner, profile_id='owned', instance_id='owner', db=db, epoch=epoch)
+        authority = SessionAuthority(runner, profile_id='owned', instance_id='owner', epoch=epoch,
+                                     persistence=storage_handle(tmp_path))
         live = authority.sessions['s'] = LiveSession(SimpleNamespace(platform=None, user_id='human'), 'route')
-        admit_session_input(db, epoch=epoch, principal_id='human', session_id='s', request_id='r', payload={'text': 'go'})
-        row = claim_session_input(db, epoch=epoch, session_id='s')
+        db.admissions.admit(epoch=epoch, principal_id='human', session_id='s', request_id='r', payload={'text': 'go'})
+        row = admission_row(db.admissions.claim(epoch=epoch, session_id='s'))
         authority._stamp_claim(SimpleNamespace(session_id='s'), live, row)  # the drain's claim stamp
         frames, observed = [], []
         live.event_stream.observers.add(frames.append)

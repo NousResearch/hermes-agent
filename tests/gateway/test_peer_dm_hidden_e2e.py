@@ -23,7 +23,10 @@ from aiohttp import web
 from gateway.config import PlatformConfig
 from gateway.platforms.api_server import APIServerAdapter
 from hermes_cli.subcommands import peer as peer_cmd
-from hermes_state import SessionDB
+from hermes_constants import get_hermes_home
+from persistence.conversation.sessions import SessionQuery, SessionWindow
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_session
 
 API_KEY = "sk-peer-e2e-key-123456"
 
@@ -37,22 +40,23 @@ def _build_app(adapter: APIServerAdapter) -> web.Application:
 
 
 @pytest.fixture()
-def peer_gateway(tmp_path, monkeypatch):
+def peer_gateway(tmp_path, monkeypatch, api_store):
     """A real api_server gateway (own HERMES_HOME + state.db) on a real socket."""
     peer_home = tmp_path / "peer_home"
     peer_home.mkdir()
-    db = SessionDB(peer_home / "state.db")
+    db = open_persistence(profile_scope(home=peer_home))
 
     # Bot Mode's footprint: the canonical Bot Chat exists and is HIDDEN.
-    hidden_id = db.create_session("botchat_hidden_1", "gateway_botmode")
-    assert db.set_session_title(hidden_id, "Bot Chat")
-    assert db.set_session_hidden(hidden_id, True)
+    hidden_id = seed_session(db, "botchat_hidden_1", "gateway_botmode")
+    assert db.sessions.set_title(hidden_id, "Bot Chat")
+    assert db.sessions.set_hidden(hidden_id, True)
     # And a decoy visible session, so the listing isn't trivially empty.
-    other_id = db.create_session("ordinary_1", "api_server")
-    db.set_session_title(other_id, "Ordinary Chat")
+    other_id = seed_session(db, "ordinary_1", "api_server")
+    db.sessions.set_title(other_id, "Ordinary Chat")
 
     adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={"key": API_KEY}))
-    adapter._session_db = db
+    adapter._home_stores[str(get_hermes_home())] = db
+    api_store(db)
 
     async def fake_run_agent(user_message, **kwargs):
         return (
@@ -121,7 +125,8 @@ def test_peer_dm_reaches_hidden_canonical_bot_chat_e2e(peer_gateway, monkeypatch
     assert payload["session_id"] == peer_gateway.hidden_id
 
     # The real DB still holds exactly ONE Bot Chat row and it is still hidden.
-    rows = peer_gateway.db.list_sessions_rich(limit=200, include_hidden=True)
+    rows = [record.as_list_row() for record in peer_gateway.db.sessions.list_sessions(
+        SessionQuery(include_hidden=True), SessionWindow(limit=200))]
     bot_chats = [r for r in rows if (r.get("title") or "").strip() == "Bot Chat"]
     assert [r["id"] for r in bot_chats] == [peer_gateway.hidden_id]
     assert bool(bot_chats[0].get("hidden"))
@@ -149,10 +154,10 @@ def peer_gateway_compressed_hidden(peer_gateway):
     compression tip (issue #106165). The tip is untitled and hidden via the
     lineage; the title lives only on the ended root."""
     db = peer_gateway.db
-    tip_id = db.create_session(
-        "botchat_tip_1", "gateway_botmode", parent_session_id=peer_gateway.hidden_id)
-    db.end_session(peer_gateway.hidden_id, "compression")
-    db.set_session_hidden(peer_gateway.hidden_id, True)  # lineage-hide root+tip
+    tip_id = seed_session(
+        db, "botchat_tip_1", "gateway_botmode", parent_session_id=peer_gateway.hidden_id)
+    db.sessions.end(peer_gateway.hidden_id, "compression")
+    db.sessions.set_hidden(peer_gateway.hidden_id, True)  # lineage-hide root+tip
     peer_gateway.tip_id = tip_id
     return peer_gateway
 
@@ -176,4 +181,4 @@ def test_peer_dm_reaches_compressed_hidden_bot_chat_e2e(
     assert payload["session_id"] == gw.tip_id
 
     # No duplicate "Bot Chat" row was minted; the title still lives on the root.
-    assert gw.db.get_session_by_title("Bot Chat")["id"] == gw.hidden_id
+    assert gw.db.sessions.get_by_title("Bot Chat").session_id == gw.hidden_id

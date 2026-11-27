@@ -8,14 +8,15 @@ import inspect
 import json
 import os
 from pathlib import Path
-from types import SimpleNamespace
 
 
 async def probe():
+    from gateway.config import PlatformConfig
     from gateway.platforms.api_server import APIServerAdapter
     from gateway.session_context import clear_session_vars
     from gateway.wake import persist_delegation_delivery
-    from hermes_state import SessionDB
+    from persistence.conversation.sessions import NewSession
+    from persistence_assembly import open_persistence, profile_scope
     from tools.delegate_tool_dispatch import _resolve_async_wake_sid
 
     decisions = {}
@@ -31,22 +32,23 @@ async def probe():
             decisions[name] = _resolve_async_wake_sid(*args)
         finally:
             clear_session_vars(tokens)
-    db = SessionDB(db_path=Path(os.environ["HERMES_HOME"]) / "state.db")
-    db.create_session("api-parent", source="api_server")
-    db.create_session("stranger", source="api_server")
-    adapter = SimpleNamespace(_ensure_session_db=lambda: db)
+    store = open_persistence(profile_scope(home=Path(os.environ["HERMES_HOME"])), eager=True)
+    store.sessions.create(NewSession(session_id="api-parent", source="api_server"))
+    store.sessions.create(NewSession(session_id="stranger", source="api_server"))
+    # The adapter opens this home's store itself.
+    adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={"key": "fixture-api-key"}))
     evt = {"type": "async_delegation", "delegation_id": "probe-unit-1"}
     await asyncio.gather(*(persist_delegation_delivery(adapter, text="OWNER_RESULT", session_id="api-parent", evt=evt) for _ in range(2)))
-    decisions["replayed_rows"] = len(db.get_messages("api-parent"))
-    db.end_session("api-parent", "compression")
-    db.create_session("api-child", source="api_server", parent_session_id="api-parent")
+    decisions["replayed_rows"] = len(store.messages.read_transcript("api-parent"))
+    store.sessions.end("api-parent", "compression")
+    store.sessions.create(NewSession(session_id="api-child", source="api_server", parent_session_id="api-parent"))
     try:
         await persist_delegation_delivery(adapter, text="LATE_RESULT", session_id="api-parent", evt={**evt, "delegation_id": "probe-unit-2"})
         decisions["rotation"] = "persisted"
     except Exception as exc:
         decisions["rotation"] = type(exc).__name__
-    decisions["child_rows"] = len(db.get_messages("api-child"))
-    db.acquire_session_turn_lease("api-child", "fixture-client-turn", wait_seconds=0)
+    decisions["child_rows"] = len(store.messages.read_transcript("api-child"))
+    store.coordination.try_acquire_turn_lease(session_id="api-child", holder="fixture-client-turn")
     busy_evt = {**evt, "delegation_id": "busy-unit"}
     try:
         await persist_delegation_delivery(adapter, text="BUSY_RESULT", session_id="api-child", evt=busy_evt)
@@ -54,11 +56,12 @@ async def probe():
     except Exception as exc:
         decisions["busy_delivery"] = type(exc).__name__
     finally:
-        db.release_session_turn_lease("api-child", "fixture-client-turn")
+        store.coordination.release_turn_lease(session_id="api-child", holder="fixture-client-turn")
     await persist_delegation_delivery(adapter, text="BUSY_RESULT", session_id="api-child", evt=busy_evt)
-    decisions["after_release_rows"] = len(db.get_messages("api-child"))
-    decisions["stranger_rows"] = len(db.get_messages("stranger"))
-    db.close()
+    decisions["after_release_rows"] = len(store.messages.read_transcript("api-child"))
+    decisions["stranger_rows"] = len(store.messages.read_transcript("stranger"))
+    adapter._close_cached_session_dbs()
+    store.close()
     return decisions
 
 

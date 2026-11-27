@@ -119,6 +119,11 @@ def test_own_tree_sync_reuses_pm_without_writing_an_extra_stamp(admission_env, m
     monkeypatch.setattr("pm.client.is_runtime", lambda: True)
     root, home = admission_env
     core = root / 'core'
+    # This is the tree's first PM sync, which selects [all] as every Hermes tree declares it.
+    pyproject = core / 'pyproject.toml'
+    pyproject.write_text(pyproject.read_text(encoding='utf-8') + '[project.optional-dependencies]\nall = []\n',
+                         encoding='utf-8')
+    subprocess.run(['uv', 'lock', '--offline'], cwd=core, check=True, capture_output=True, timeout=120)
     assert not (core / ".hermes-runtime" / "cache" / "venv-sync.json").exists()
     assert venv_sync.sync(core) == {'state': 'synced', 'ok': True}
     environment = selected_venv(core)

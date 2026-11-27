@@ -42,7 +42,8 @@ from gateway.platforms._shared import (
 )
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.platforms.helpers import compile_mention_patterns, strip_markdown
+from gateway.platforms.helpers import compile_mention_patterns, spoken_mention_clips, strip_markdown
+from gateway.platforms.helpers import bypasses_chat_order, chat_ordered_work, voice_mention_gate_enabled
 from gateway.platforms.helpers import MessageDeduplicator, bounded_put, cancel_task
 from gateway.platforms.send_targets import regex_stripped_parser
 from utils import atomic_json_write
@@ -285,6 +286,69 @@ def _sidecar_deps_stale() -> bool:
     return _lock_newer_than_install(_sidecar_dir())
 
 
+@contextlib.contextmanager
+def _exclusive_lock(handle):
+    """Exclusive, crash-released lock on an open file (flock / msvcrt)."""
+    if os.name == "nt":
+        import msvcrt
+        if handle.seek(0, os.SEEK_END) == 0:
+            handle.write(b"\0")
+            handle.flush()
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)  # gives up after ~10 s: that connect retries
+        try:
+            yield
+        finally:
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _ensure_sidecar_deps_blocking() -> None:
+    """Cold-install or refresh sidecar node_modules before spawn (blocking; run off the loop).
+
+    Every served profile imports this plugin under its own module name and multiplexed profiles connect
+    concurrently, while ``npm ci`` deletes node_modules before installing. So the checks and the install
+    hold a file lock in the shared sidecar dir (a module-level lock is not shared across those imports):
+    mid-install, spectrum-ts exists before npm writes its install marker."""
+    lock_path = _sidecar_dir() / ".photon-install.lock"
+    try:
+        handle = open(lock_path, "a+b")
+    except OSError as exc:
+        if _dir_writable(_sidecar_dir()):  # another profile may be installing here: never go on unlocked
+            raise PhotonSidecarStartupError(
+                f"Cannot open the Photon sidecar install lock {lock_path}: {exc}", code="SIDECAR_LOCK_FAILED") from exc
+        if not sidecar_deps_installed():
+            raise PhotonSidecarStartupError(
+                f"Photon sidecar deps are not installed in the read-only {_sidecar_dir()}. "
+                f"Run: cd {_sidecar_dir()} && npm ci   (or `hermes photon setup`)",
+                code="SIDECAR_DEPS_MISSING", retryable=False) from exc
+        return  # a read-only tree with baked deps: nothing installs there
+    with handle, _exclusive_lock(handle):
+        if not sidecar_deps_installed():
+            # Hosted images have no CLI for `hermes photon setup`: connect bootstraps deps itself.
+            logger.info("[photon] sidecar deps not installed; installing into %s", _sidecar_dir())
+            _reinstall_sidecar_deps()
+            if not sidecar_deps_installed():
+                # Deterministic on immutable images — non-retryable so it doesn't spin silently.
+                raise PhotonSidecarStartupError(
+                    f"Photon sidecar deps could not be installed into "
+                    f"{_sidecar_dir()} (see log for the npm error). "
+                    f"Run: cd {_sidecar_dir()} && npm ci   (or `hermes photon setup`)",
+                    code="SIDECAR_DEPS_MISSING", retryable=False)
+        # `hermes update` bumps the lockfile without reinstalling node_modules; the sidecar
+        # would spawn against stale deps and die on every reconnect.
+        if _sidecar_deps_stale():
+            logger.warning("[photon] sidecar deps are stale (lockfile newer than install); reinstalling before start")
+            _reinstall_sidecar_deps()
+
+
 def _reinstall_sidecar_deps() -> None:
     """Reinstall the sidecar's node_modules from the lockfile (blocking).
 
@@ -452,18 +516,35 @@ def _parse_timestamp(ts_str: str) -> datetime:
 _Normalized = tuple[str, MessageType, list[str], list[str]]  # text, type, media_urls, media_types
 
 
+def _is_voice_payload(payload: dict[str, Any]) -> bool:
+    """A ``voice`` payload, or an attachment that is one: iMessage voice notes are CAF and may arrive
+    "(unnamed)", so MIME is a signal too."""
+    if payload.get("type") == "voice":
+        return True
+    return payload.get("type") == "attachment" and (
+        str(payload.get("name") or "").lower().endswith(".caf") or payload.get("mimeType") == "audio/x-caf")
+
+
+def _cached_media_type(payload: dict[str, Any], mime: str, is_voice: bool) -> str:
+    """A voice payload is cached as audio, so its media type says audio too (a ``.caf`` sent as
+    ``application/octet-stream`` would otherwise count as voice yet never reach STT)."""
+    if not is_voice:
+        return mime or "application/octet-stream"
+    if mime.lower().startswith("audio/"):
+        return mime
+    return "audio/x-caf" if str(payload.get("name") or "").lower().endswith(".caf") else "audio/mp4"
+
+
 def _normalize_binary_payload(payload: dict[str, Any]) -> _Normalized:
     """Cache an inline attachment/voice payload; fall back to a text marker."""
-    is_voice = payload.get("type") == "voice"
+    is_voice = _is_voice_payload(payload)
     name = payload.get("name") or ("voice" if is_voice else "(unnamed)")
     mime = payload.get("mimeType") or ""
-    # iMessage voice notes are CAF and may arrive "(unnamed)", so MIME is a signal too.
-    is_voice = is_voice or name.lower().endswith(".caf") or mime == "audio/x-caf"
     mtype = MessageType.VOICE if is_voice else _attachment_message_type(mime)
     label = "voice" if is_voice else "attachment"
     cached = _cache_inbound_attachment(payload, name, mime, force_audio=is_voice)
     if cached:
-        return f"({label})", mtype, [cached], [mime or ("audio/mp4" if is_voice else "application/octet-stream")]
+        return f"({label})", mtype, [cached], [_cached_media_type(payload, mime, is_voice)]
     duration = payload.get("duration")
     duration_text = f", duration: {duration}s" if isinstance(duration, (int, float)) else ""
     return f"[Photon {label} received: {name} ({mime or 'unknown MIME'}{duration_text})]", mtype, [], []
@@ -503,6 +584,19 @@ _CONTENT_NORMALIZERS: dict[Any, Callable[[dict[str, Any]], _Normalized]] = {
     "group": _normalize_group_content,
 }
 _BINARY_CONTENT_TYPES = {"attachment", "voice", "group"}  # may decode/cache media bytes → run off the event loop
+
+
+def _reply_inner(content: dict[str, Any]) -> dict[str, Any]:
+    """The user's own payload of a threaded reply (``{type: "reply", content}``), else *content*."""
+    inner = content.get("content") if content.get("type") == "reply" else None
+    return inner if isinstance(inner, dict) else content
+
+
+def _carries_voice(content: dict[str, Any]) -> bool:
+    """A voice note, alone or inside a ``group`` envelope: only speech can hold a spoken wake word."""
+    if content.get("type") == "group":
+        return any(map(_is_voice_payload, _group_item_contents(content)))
+    return _is_voice_payload(content)
 
 
 def _mention_gate_text(content: dict[str, Any]) -> str:
@@ -813,10 +907,26 @@ class PhotonAdapter(BasePlatformAdapter):
         msg_id = event.get("messageId")
         if msg_id and self._dedup.is_duplicate(msg_id):
             return
+        # A group voice note may wait on gate-time STT: run it off this single reader, FIFO per chat.
+        chat, transcribes = self._gate_stt_chat(event)
+        work = chat_ordered_work(self)
+        content = _reply_inner(event.get("content") or {})  # a threaded /stop is still an escape hatch
+        command = content.get("type") == "text" and bypasses_chat_order(content.get("text"))
+        if transcribes or (chat and work.busy(chat) and not command):
+            work.submit(chat, lambda: self._dispatch_inbound(event), transcribes=transcribes)
+            return
         try:
             await self._dispatch_inbound(event)
         except Exception:
             logger.exception("[photon] inbound dispatch failed")
+
+    def _gate_stt_chat(self, event: dict[str, Any]) -> tuple[str, bool]:
+        """``(space id, True when the spoken-wake-word gate will transcribe it)``."""
+        space = event.get("space") or {}
+        content = _reply_inner(event.get("content") or {})
+        return space.get("id") or "", bool(
+            space.get("type") == "group" and self.require_mention and _carries_voice(content)
+            and voice_mention_gate_enabled(self.config.extra))
 
     async def _fffc_timeout_handler(self, chat_key: str, message_id: str) -> None:
         await asyncio.sleep(_FFFC_WAIT_SECONDS)
@@ -906,7 +1016,7 @@ class PhotonAdapter(BasePlatformAdapter):
         # Preview art for a just-received URL must not become a second user prompt;
         # suppress before recording it as reactable or decoding image bytes.
         if self._is_recent_richlink_preview(space_id, content):
-            logger.info("[photon] suppressing rich-link preview attachment: %s", _richlink_preview_label(content))
+            logger.debug("[photon] suppressing rich-link preview attachment: %s", _richlink_preview_label(content))
             return
         # Everything past here is a real (reactable) message. Recorded before the mention
         # gate: reacting to a non-wake-word group message is valid.
@@ -926,7 +1036,9 @@ class PhotonAdapter(BasePlatformAdapter):
         # Mention gate BEFORE normalising: _normalize_content persists inline attachment
         # bytes to the media cache, and a dropped group message must not leave files behind.
         gated = chat_type == "group" and self.require_mention
-        if gated and not self._message_matches_mention_patterns(_mention_gate_text(content)):
+        typed = gated and self._message_matches_mention_patterns(_mention_gate_text(content))
+        spoken = gated and not typed and _carries_voice(content) and voice_mention_gate_enabled(self.config.extra)
+        if gated and not (typed or spoken):  # spoken: #102330
             logger.debug("[photon] ignoring group message (require_mention=true, no mention pattern matched)")
             return
         if ctype in _BINARY_CONTENT_TYPES:
@@ -934,6 +1046,18 @@ class PhotonAdapter(BasePlatformAdapter):
             text, mtype, media_urls, media_types = await asyncio.to_thread(_normalize_content, content)
         else:
             text, mtype, media_urls, media_types = _normalize_content(content)
+        # A group envelope may carry photos beside the speech: only its audio enters STT, and a
+        # rejected envelope's other cached files are deleted with it.
+        audio = [u for u, m in zip(media_urls, media_types) if ctype == "voice" or m.lower().startswith("audio/")]
+        if spoken and not await spoken_mention_clips(audio, self._mention_patterns, adapter=self,
+                                                     source=_event("").source):
+            for path in set(media_urls) - set(audio):
+                with contextlib.suppress(OSError):
+                    os.remove(path)
+            logger.debug("[photon] ignoring group voice note (require_mention=true, no wake word spoken)")
+            return
+        if spoken:  # speech admitted it: a DOCUMENT-first envelope must still send its audio to STT
+            mtype = MessageType.VOICE
         if gated:
             text = self._clean_mention_text(text)
         self._record_recent_richlink(space_id, _richlink_url_from_content(content) or text)
@@ -1012,22 +1136,7 @@ class PhotonAdapter(BasePlatformAdapter):
 
     async def _ensure_sidecar_deps(self) -> None:
         """Cold-install or refresh sidecar node_modules before spawn (off the loop)."""
-        if not sidecar_deps_installed():
-            # Hosted images have no CLI for `hermes photon setup`: connect bootstraps deps itself.
-            logger.info("[photon] sidecar deps not installed; installing into %s", _sidecar_dir())
-            await asyncio.to_thread(_reinstall_sidecar_deps)
-            if not sidecar_deps_installed():
-                # Deterministic on immutable images — non-retryable so it doesn't spin silently.
-                raise PhotonSidecarStartupError(
-                    f"Photon sidecar deps could not be installed into "
-                    f"{_sidecar_dir()} (see log for the npm error). "
-                    f"Run: cd {_sidecar_dir()} && npm ci   (or `hermes photon setup`)",
-                    code="SIDECAR_DEPS_MISSING", retryable=False)
-        # `hermes update` bumps the lockfile without reinstalling node_modules; the sidecar
-        # would spawn against stale deps and die on every reconnect.
-        if _sidecar_deps_stale():
-            logger.warning("[photon] sidecar deps are stale (lockfile newer than install); reinstalling before start")
-            await asyncio.to_thread(_reinstall_sidecar_deps)
+        await asyncio.to_thread(_ensure_sidecar_deps_blocking)
 
     async def _apply_spectrum_patch(self, hide_flags: int) -> None:
         """Run the mixed-attachment patch script (best-effort, off the loop: up to 10s, every reconnect)."""
@@ -1404,7 +1513,7 @@ class PhotonAdapter(BasePlatformAdapter):
         lost on restart). Soft-fails (False), never raises."""
         return await self._sidecar_try("/unreact", {"spaceId": chat_id, "messageId": message_id}, "remove_reaction")
 
-    # -- Agent-facing reactions (send_message action="react"): deliberate intents, so NOT
+    # -- Agent-facing reactions: deliberate intents, so NOT
     # gated by PHOTON_REACTIONS.
 
     async def add_reaction(self, chat_id: str, emoji: str, message_id: Optional[str] = None) -> dict[str, Any]:
@@ -1619,15 +1728,15 @@ def _standalone_error(resp: Any) -> dict[str, Any]:
         data = resp.json() or {}
     data = data if isinstance(data, dict) else {}
     error_class = str(data.get("error_class") or "sidecar_error")
-    retryable = bool(data.get("retryable"))
     if error_class == "target_not_allowed":
         error = _TARGET_NOT_ALLOWED_MESSAGE
-        retryable = False
     elif resp.status_code != 200:
         error = f"sidecar returned {resp.status_code}: {resp.text[:200]}"
     else:
         error = str(data.get("error") or "sidecar reported failure")
-    return {**send_error(error), "error_class": error_class, "retryable": retryable}
+    # A standalone result's ``retryable`` means "nothing reached the chat" (cron replays only
+    # those). The sidecar's own flag also covers timeouts that may have delivered, so never pass it on.
+    return {**send_error(error), "error_class": error_class, "retryable": False}
 
 
 def _standalone_token_from_record(port: int) -> tuple[Optional[str], int, str]:

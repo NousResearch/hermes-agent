@@ -39,18 +39,18 @@ def test_scoped_tool_credential_gates_ignore_default_profile_environ(monkeypatch
 
 
 def test_weixin_home_channel_resolves_from_profile_scope_not_environ(monkeypatch, secondary_scope):
-    from tools import send_message_tool
+    from gateway.outbound import send as send_message_tool
 
     class _NoHome:
         def get_home_channel(self, platform):
             return None
 
     monkeypatch.setenv("WEIXIN_HOME_CHANNEL", "wx-default-chat")
-    chat_id, err = send_message_tool._home_chat_id(_NoHome(), None, "weixin")
+    chat_id, _thread, err = send_message_tool._home_chat_id(_NoHome(), None, "weixin")
     assert chat_id is None and err
     # The secondary's own .env value is honoured.
     token = secret_scope.set_secret_scope({"WEIXIN_HOME_CHANNEL": "wx-secondary-chat"})
     try:
-        assert send_message_tool._home_chat_id(_NoHome(), None, "weixin") == ("wx-secondary-chat", None)
+        assert send_message_tool._home_chat_id(_NoHome(), None, "weixin") == ("wx-secondary-chat", None, None)
     finally:
         secret_scope.reset_secret_scope(token)

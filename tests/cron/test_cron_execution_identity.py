@@ -75,6 +75,9 @@ def test_tool_hook_in_a_ticked_job_sees_its_execution_and_none_outside(tmp_path)
     assert seen["tool"] == "read_file"
     ident = seen["identity"]
     assert ident is not None, "pre_tool_call fired inside a cron run saw no cron identity"
+    assert ident.keys() == {
+        "job_id", "job_name", "execution_id", "source", "scheduled_instant", "started_at", "profile",
+    }
     assert ident["job_id"] == "probe"
     assert ident["job_name"] == "identity probe"
     assert ident["execution_id"] == execution["id"]
@@ -88,15 +91,64 @@ def test_tool_hook_in_a_ticked_job_sees_its_execution_and_none_outside(tmp_path)
 def test_identity_is_scoped_and_not_inherited_by_delegated_children():
     from agent.delegation_context import delegated_child_context
     from cron.execution_identity import (
-        current_cron_execution, enter_cron_execution, exit_cron_execution)
+        _current_cron_execution_job, current_cron_execution, enter_cron_execution,
+        exit_cron_execution,
+    )
 
     record = {"source": "builtin", "scheduled_instant": None, "started_at": "2026-10-04T00:00:00"}
     assert current_cron_execution() is None
+    assert _current_cron_execution_job() is None
     token = enter_cron_execution({"id": "j", "name": "J"}, "exec-1", record)
     try:
-        assert current_cron_execution().execution_id == "exec-1"
+        identity = current_cron_execution()
+        assert identity is not None and identity.execution_id == "exec-1"
+        delivery_job = _current_cron_execution_job()
+        assert delivery_job == {"id": "j", "name": "J"}
         with delegated_child_context("child"):
             assert current_cron_execution() is None
+            assert _current_cron_execution_job() is None
+        assert current_cron_execution() is identity
+        assert _current_cron_execution_job() is delivery_job
     finally:
         exit_cron_execution(token)
     assert current_cron_execution() is None
+    assert _current_cron_execution_job() is None
+
+
+def test_firing_job_uses_the_delivery_resolvers_snapshot(monkeypatch):
+    from cron import scheduler_delivery
+    from cron.execution_identity import (
+        _current_cron_execution_job, enter_cron_execution, exit_cron_execution,
+    )
+
+    snapshot = {"id": "j", "name": "J", "deliver": "local"}
+    monkeypatch.setattr(scheduler_delivery, "_snapshot_delivery_job", lambda job: snapshot)
+    token = enter_cron_execution({"id": "j", "name": "J"}, "exec-1", {})
+    try:
+        assert _current_cron_execution_job() is snapshot
+    finally:
+        exit_cron_execution(token)
+
+
+def test_firing_job_snapshot_preserves_normal_routing_without_failure_delivery():
+    from cron.execution_identity import (
+        _current_cron_execution_job, enter_cron_execution, exit_cron_execution,
+    )
+    from cron.scheduler_delivery import _resolve_delivery_targets
+
+    job = {
+        "id": "j", "deliver": ["origin"], "failure_deliver": "local",
+        "origin": {"platform": "telegram", "chat_id": "42", "thread_id": "7"},
+    }
+    expected = _resolve_delivery_targets(job, for_failure=False)
+    assert expected and expected[0]["chat_id"] == "42"
+    assert _resolve_delivery_targets(job, for_failure=True) == []
+    token = enter_cron_execution(job, "exec-1", {})
+    try:
+        job["deliver"].clear()
+        job["origin"]["chat_id"] = "99"
+        snapshot = _current_cron_execution_job()
+        assert snapshot is not None and "failure_deliver" not in snapshot
+        assert _resolve_delivery_targets(snapshot, for_failure=False) == expected
+    finally:
+        exit_cron_execution(token)

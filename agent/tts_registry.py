@@ -14,18 +14,9 @@ import logging
 
 from agent.provider_registry import ProviderRegistry, lower_key
 from agent.tts_provider import TTSProvider
+from tools.tts_command_provider import BUILTIN_TTS_PROVIDERS as _BUILTIN_NAMES
 
 logger = logging.getLogger(__name__)
-
-
-# Names reserved for native built-in TTS handlers. **Kept in sync with
-# ``BUILTIN_TTS_PROVIDERS`` in :mod:`tools.tts_tool`** (``TestBuiltinSync`` in
-# ``tests/agent/test_tts_registry.py`` fails on drift); importing it directly
-# would be a circular import.
-_BUILTIN_NAMES = frozenset({
-    "edge", "elevenlabs", "openai", "minimax", "xai", "mistral", "gemini", "neutts", "kittentts",
-    "piper", "deepinfra",
-})
 
 
 def _warn_builtin_collision(key: str) -> None:

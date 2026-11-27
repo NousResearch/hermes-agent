@@ -40,7 +40,7 @@ When a memory provider is active, Hermes automatically:
 
 The built-in memory (MEMORY.md / USER.md) continues to work exactly as before. The external provider is additive.
 
-Everything Hermes hands a provider (turns, the transcript including tool output, recall queries, session-end and pre-compression transcripts, mirrored memory writes, delegation results and the arguments of the provider's own tools) passes through the same secret scrub as chat-platform and cron delivery first, so a key echoed into tool output is masked before the provider can store it. Like that delivery scrub it applies even with `security.redact_secrets: false`. Credentials with no recognisable shape (an arbitrary password, an opaque token outside a `key=value` or `Bearer` context) are not detected; your local transcript keeps the original text.
+Everything Hermes hands a provider (turns, the transcript including tool output, recall queries, session-end and pre-compression transcripts, mirrored memory writes, delegation results and the arguments of the provider's own tools) passes through the same secret scrub as chat-platform and cron delivery first, so a key echoed into tool output is masked before the provider can store it. Like that delivery scrub it applies even with `security.redact_secrets: false`. Unlike chat delivery, credential-named URL query parameters (`?api_key=…`, `?accessToken=…`) and URL userinfo are masked too in what a provider stores; the arguments of the provider's own tools keep their URLs intact, because a tool may fetch the URL it is given (a pre-signed or share link). A remote image in a synced turn is stored too, so a signed image URL (`?X-Amz-Signature=…`) reaches the provider masked; inline (`data:`) images pass through unchanged. Credentials with no recognisable shape (an arbitrary password, an opaque token outside a `key=value` or `Bearer` context) are not detected; your local transcript keeps the original text.
 
 ## Available Providers
 
@@ -175,7 +175,7 @@ The mapping:
 hermes profile create coder --clone
 ```
 
-`--clone` creates a `hermes.coder` host block in `honcho.json` with `aiPeer: "coder"`, shared `workspace`, inherited `peerName`, `recallMode`, `writeFrequency`, `observation`, etc. The AI peer is eagerly created in Honcho so it exists before the first message.
+`--clone` (which carries `memory.provider: honcho`) lets the Honcho plugin create a `hermes_coder` host block in `honcho.json` with `aiPeer: "coder"`, shared `workspace`, inherited `peerName`, `recallMode`, `writeFrequency`, `observation`, etc. The AI peer is eagerly created in Honcho so it exists before the first message. `hermes profile rename` lets the plugin re-key that host block, keeping its peers. Both need a Honcho plugin version with the profile hooks.
 
 ### Existing profiles, backfill Honcho peers
 
@@ -183,7 +183,7 @@ hermes profile create coder --clone
 hermes honcho sync
 ```
 
-Scans every Hermes profile, creates host blocks for any profile without one, inherits settings from the default `hermes` block, and creates the new AI peers eagerly. Idempotent — skips profiles that already have a host block.
+Scans every Hermes profile, creates host blocks for any profile without one, inherits settings from the default `hermes` block, and creates the new AI peers eagerly. Idempotent — skips profiles that already have a host block. `hermes update` no longer does this for you: run it once for profiles created before Honcho was set up.
 
 ### Per-profile observation
 

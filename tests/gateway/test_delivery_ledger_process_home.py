@@ -7,7 +7,7 @@ reply cut off by a crash runs in the launch context. The ledger used to resolve 
 ``get_hermes_home()``, which follows the override: the row landed in ``profiles/<name>/state.db``,
 the sweep opened the launch ``state.db``, and the reply was never redelivered.
 
-Every other ledger test replaces ``_db_path``; these leave it alone, since the path is what is
+Every other ledger test replaces ``_scope``; these leave it alone, since the launch home is what is
 under test.
 """
 
@@ -24,9 +24,20 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
+from tests.fixtures.storage_holder import raw_holder
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 SESSION_KEY = "agent:research:slack:channel:C1"
 ANSWER = "the final answer"
+
+
+def _holder():
+    """The holder of the ledger's store, for rows the tests read or force by hand."""
+    return raw_holder(storage_handle(dl._scope().profile_dir))
+
+
+def _execute(sql, params=()):
+    _holder()._execute_write(lambda conn: conn.execute(sql, params))
 
 
 class _ServedAdapter(BasePlatformAdapter):
@@ -94,8 +105,7 @@ async def test_boot_sweep_redelivers_a_reply_recorded_under_a_served_profile_sco
     assert await record
 
     # The gateway died after the send began and before the platform acknowledged it.
-    with dl._connect() as conn:
-        conn.execute("UPDATE delivery_obligations SET owner_pid=999999999, owner_started_at=1")
+    _execute("UPDATE delivery_obligations SET owner_pid=999999999, owner_started_at=1")
 
     runner = _runner(adapter)
     assert await runner._redeliver_pending_obligations() == 1

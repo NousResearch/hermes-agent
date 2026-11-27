@@ -21,16 +21,19 @@ def _missing_or_refuse(name):
     from pm.registry import get_package, walk
 
     missing = [package.name for package in walk([name]) if not is_installed(package.name)]
-    target = current_target() if missing else None
+    if not missing:
+        return missing
+    target = current_target()
     for gap in missing:
         # A registry gap (git on POSIX: "uses system git by choice") is static: no worker can
         # install it, so answer with the worker's own refusal here. Asking one anyway cost a PM
         # worker round trip (about a second) on every ``selected_git_env()``, which each
         # checkpoint git child calls, so one gateway /rollback or /diff paid it several times.
-        reason = get_package(gap).missing_reason(target)
+        package = get_package(gap)
+        reason = package.missing_reason(target) or package.native_abi_reason(target)
         if reason is not None:
             raise InstallError(gap, f"unavailable on {target}: {reason}", "none")
-    if missing and not lazy_installs_allowed():
+    if not lazy_installs_allowed():
         raise _refuse_lazy(name, ", ".join(missing))
     return missing
 
@@ -94,6 +97,9 @@ def _raise_worker_error(error: dict):
     if error["type"] == "DownloadPaused":
         from pm.downloader import DownloadPaused
         raise DownloadPaused(error["message"])
+    if error["type"] == "SelectionChanged":
+        from pm.publication import SelectionChanged
+        raise SelectionChanged(error["message"])
     raise _WORKER_ERRORS.get(error["type"], RuntimeError)(error["message"])
 
 
@@ -217,8 +223,9 @@ def ensure(name, *, base_env=None, explicit=False, verify=True, progress=None, p
 def sync_venv(extras=None, *, explicit=False, plugins: PluginInput | None = None, repair=False,
               project_root: Path | None = None, evict_incompatible_plugins: bool = False,
               automatic: list[str] | None = None, carried: list[str] | None = None) -> None:
-    from pm.environments import running_from_selected_environment
+    from pm.environments import refuse_dependency_change, running_from_selected_environment
 
+    refuse_dependency_change()
     if extras and not explicit and not repair and not running_from_selected_environment(
             paths.repo_root() if project_root is None else Path(project_root)):
         # A lazy extra may only extend the environment this process runs from. From any other

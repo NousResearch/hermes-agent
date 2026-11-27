@@ -95,9 +95,8 @@ def _model_flow_ai_gateway(config, current_model=""):
     models_list = ai_gateway_model_ids(force_refresh=True)
     pricing = get_pricing_for_provider("ai-gateway", force_refresh=True)
     selected = _prompt_model_selection(models_list, current_model=current_model, pricing=pricing)
-    # Inline credentials are deliberately left untouched here (historical behavior).
     _finish_model(selected, "ai-gateway", f"Default model set to: {selected} (via Vercel AI Gateway)",
-                  base_url=AI_GATEWAY_BASE_URL, api_mode="chat_completions", clear_creds=False)
+                  base_url=AI_GATEWAY_BASE_URL, api_mode="chat_completions")
 
 
 def _model_flow_moa(config, current_model=""):
@@ -650,36 +649,6 @@ def _select_zai_endpoint(current_base: str) -> str:
     return override.rstrip("/")
 
 
-_GEMINI_FREE_TIER_NOTICE = (
-    "", "❌ This Google API key is on the free tier (<= 250 requests/day for gemini-2.5-flash).",
-    "   Hermes typically makes 3-10 API calls per user turn (tool iterations + auxiliary tasks),",
-    "   so the free tier is exhausted after a handful of messages and cannot sustain",
-    "   an agent session.", "",
-    "   To use Gemini with Hermes, enable billing on your Google Cloud project and regenerate",
-    "   the key in a billing-enabled project: https://aistudio.google.com/apikey", "",
-    "   Alternatives with workable free usage: DeepSeek, OpenRouter (free models), Groq, Nous.", "",
-    "Not saving Gemini as the default provider.")
-
-
-def _gemini_tier_ok(existing_key: str, pconfig, base_url_env: str) -> bool:
-    """Gemini free-tier gate: free-tier daily quotas (<= 250 RPD for Flash) are exhausted in a
-    handful of agent turns, so refuse a free-tier key. The probe is best-effort; network or
-    auth errors fall through without blocking."""
-    try:
-        from agent.gemini_native_adapter import probe_gemini_tier
-    except Exception:
-        return True
-    print("  Checking Gemini API tier...")
-    tier = probe_gemini_tier(existing_key, _env_base_url(base_url_env) or pconfig.inference_base_url)
-    if tier == "free":
-        _say(*_GEMINI_FREE_TIER_NOTICE)
-        return False
-    # "unknown" (network/auth/unexpected response): don't block; the runtime 429 handler
-    # surfaces free-tier guidance if needed.
-    _say("  Tier check: paid ✓" if tier == "paid" else "  Tier check: could not verify (proceeding anyway).", "")
-    return True
-
-
 def _lmstudio_models(pconfig, curated, api_key, base_url):
     """LM Studio: live /api/v1/models probe only."""
     from hermes_cli.auth import AuthError
@@ -781,8 +750,14 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
     _, existing_key, abort = _ensure_flow_api_key(provider_id, pconfig)
     if abort:
         return
-    if provider_id == "gemini" and existing_key and not _gemini_tier_ok(existing_key, pconfig, base_url_env):
-        return
+    if existing_key:
+        from providers import get_provider_profile
+
+        _profile = get_provider_profile(provider_id)
+        if _profile is not None and not _profile.validate_setup_api_key(
+            existing_key, base_url=_env_base_url(base_url_env) or pconfig.inference_base_url,
+        ):
+            return
 
     # Optional base URL override. Precedence: env var → config.yaml model.base_url → registry
     # default; reading config.yaml keeps a saved remote URL from being overwritten with

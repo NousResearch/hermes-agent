@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-10-26T19:00:43Z",
+  "updated_at": "2026-11-23T20:38:09Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -12,6 +12,10 @@
         "note": "Descriptions drive picker badges. Live /api/v1/models filters curated ids by tool-calling support and free pricing. The entry labeled \"default\": true is the model Hermes silently lands on when the user never picked one."
       },
       "models": [
+        {
+          "id": "anthropic/claude-fable-5.2",
+          "description": ""
+        },
         {
           "id": "anthropic/claude-fable-5.1",
           "description": ""
@@ -54,6 +58,22 @@
         },
         {
           "id": "anthropic/claude-haiku-4.5",
+          "description": ""
+        },
+        {
+          "id": "openai/gpt-6.2-astra",
+          "description": ""
+        },
+        {
+          "id": "openai/gpt-6.2-astra-pro",
+          "description": ""
+        },
+        {
+          "id": "openai/gpt-6.2-sol",
+          "description": ""
+        },
+        {
+          "id": "openai/gpt-6.2-sol-pro",
           "description": ""
         },
         {
@@ -118,6 +138,18 @@
         },
         {
           "id": "openai/gpt-5.4-mini",
+          "description": ""
+        },
+        {
+          "id": "google/gemini-4-neon",
+          "description": ""
+        },
+        {
+          "id": "google/gemini-4-hydrogen",
+          "description": ""
+        },
+        {
+          "id": "google/gemini-4-carbon",
           "description": ""
         },
         {
@@ -318,6 +350,9 @@
       },
       "models": [
         {
+          "id": "anthropic/claude-fable-5.2"
+        },
+        {
           "id": "anthropic/claude-fable-5.1"
         },
         {
@@ -343,6 +378,18 @@
         },
         {
           "id": "anthropic/claude-haiku-4.5"
+        },
+        {
+          "id": "openai/gpt-6.2-astra"
+        },
+        {
+          "id": "openai/gpt-6.2-astra-pro"
+        },
+        {
+          "id": "openai/gpt-6.2-sol"
+        },
+        {
+          "id": "openai/gpt-6.2-sol-pro"
         },
         {
           "id": "openai/gpt-6-astra"
@@ -391,6 +438,15 @@
         },
         {
           "id": "openai/gpt-5.4-mini"
+        },
+        {
+          "id": "google/gemini-4-neon"
+        },
+        {
+          "id": "google/gemini-4-hydrogen"
+        },
+        {
+          "id": "google/gemini-4-carbon"
         },
         {
           "id": "google/gemini-4-argon"

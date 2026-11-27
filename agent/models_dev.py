@@ -689,6 +689,13 @@ _DEEPSEEK_FLASH_VISION: dict[str, Any] = {
 }
 
 _BUILTIN_MODEL_METADATA: dict[tuple[str, str], dict[str, Any]] = {
+    # https://developers.openai.com/api/docs/models/gpt-6.2-astra (Sol shares these limits).
+    **{("openai", slug): {
+        "limit": {"context": 1_050_000, "input": 922_000, "output": 128_000},
+        "modalities": {"input": ["text", "image"], "output": ["text"]},
+        "tool_call": True, "reasoning": True, "structured_output": True,
+        "temperature": False, "family": "gpt-6",
+    } for slug in ("gpt-6.2-astra", "gpt-6.2-sol")},
     ("openai", "gpt-6-astra"): {
         "limit": {"context": 1_050_000, "output": 128_000},
         "modalities": {"input": ["text", "image"], "output": ["text"]},

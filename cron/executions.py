@@ -21,6 +21,7 @@ from typing import Any, Dict, Iterator, List, Optional
 
 from hermes_constants import get_hermes_home
 from hermes_time import now as _hermes_now
+from agent.sleep_clock import awake_seconds
 from cron.constants import CLAIM_TTL_INACTIVITY_HEADROOM
 from hermes_cli.observability.shared_metrics_gateway import record_cron_finish
 
@@ -99,6 +100,7 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     add_column_if_missing(conn, "executions", "delivery_outcome", "delivery_outcome TEXT")
     add_column_if_missing(conn, "executions", "scheduled_instant", "scheduled_instant TEXT")
     add_column_if_missing(conn, "executions", "progress_at", "progress_at TEXT")
+    add_column_if_missing(conn, "executions", "progress_awake", "progress_awake REAL")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_executions_occurrence "
         "ON executions(job_id, scheduled_instant) WHERE status='completed'"
@@ -210,14 +212,24 @@ def _claim_age_seconds(claimed_at: str) -> float:
     return (_hermes_now() - datetime.fromisoformat(claimed_at)).total_seconds()
 
 
-def _stale_age_seconds(claimed_at: str, progress_at: Optional[str]) -> float:
+def _stale_age_seconds(claimed_at: str, progress_at: Optional[str],
+                       progress_awake: Optional[float] = None) -> float:
     """Seconds since the owner last proved it was making progress.
 
     A wedged worker (#115692) stops stamping ``progress_at``; a long but healthy run keeps
     stamping it, so the derived stale bound measures silence, not run length. Rows written
     before the column existed have no stamp and fall back to claim age.
+
+    A suspended host freezes the stamper too, so the wall clock reads a night of sleep as
+    silence (#160680). ``progress_awake`` is the machine-wide awake clock at the stamp; while
+    it is comparable (same boot: the clock has not gone backwards), only awake time counts.
     """
-    return _claim_age_seconds(progress_at or claimed_at)
+    age = _claim_age_seconds(progress_at or claimed_at)
+    if progress_awake is not None:
+        awake_now = awake_seconds()
+        if awake_now >= progress_awake:
+            age = min(age, awake_now - progress_awake)
+    return age
 
 
 def touch_execution_progress(execution_id: str) -> bool:
@@ -226,9 +238,9 @@ def touch_execution_progress(execution_id: str) -> bool:
     now = _hermes_now().isoformat()
     with _transaction() as conn:
         cur = conn.execute(
-            """UPDATE executions SET progress_at=?
+            """UPDATE executions SET progress_at=?, progress_awake=?
                WHERE id=? AND status IN ('claimed','running') AND process_id=? AND pid=?""",
-            (now, execution_id, _PROCESS_ID, os.getpid()),
+            (now, awake_seconds(), execution_id, _PROCESS_ID, os.getpid()),
         )
         return cur.rowcount == 1
 
@@ -506,7 +518,8 @@ def recover_interrupted_executions() -> int:
     with _transaction() as conn:
         rows = conn.execute(
             """SELECT id, status, process_id, pid, process_started_at,
-                      handoff_pending, handoff_started_at, claimed_at, progress_at
+                      handoff_pending, handoff_started_at, claimed_at, progress_at,
+                      progress_awake
                FROM executions
                WHERE status IN ('claimed','running')"""
         ).fetchall()
@@ -530,7 +543,8 @@ def recover_interrupted_executions() -> int:
                     stale_after_resolved = True
                 if (
                     stale_after is None
-                    or _stale_age_seconds(row["claimed_at"], row["progress_at"]) <= stale_after
+                    or _stale_age_seconds(row["claimed_at"], row["progress_at"], row["progress_awake"])
+                    <= stale_after
                 ):
                     continue
                 reason = _OWNER_WEDGED_REASON
@@ -551,10 +565,10 @@ def recover_interrupted_executions() -> int:
                    WHERE id=? AND status=? AND process_id=? AND pid=?
                      AND handoff_pending=?
                      AND handoff_started_at IS ?
-                     AND claimed_at=? AND progress_at IS ?""",
+                     AND claimed_at=? AND progress_at IS ? AND progress_awake IS ?""",
                 (now, reason, row["id"], row["status"], row["process_id"], row["pid"],
                  row["handoff_pending"], row["handoff_started_at"],
-                 row["claimed_at"], row["progress_at"]),
+                 row["claimed_at"], row["progress_at"], row["progress_awake"]),
             )
             changed += cur.rowcount
             if cur.rowcount:

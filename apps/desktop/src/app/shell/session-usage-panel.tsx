@@ -1,6 +1,7 @@
 import { compactNumber } from '@hermes/shared'
 
 import { useI18n } from '@/i18n'
+import { formatSourceUsd } from '@/lib/currency'
 import { formatCostUsd } from '@/lib/statusbar'
 import type { UsageStats } from '@/types/hermes'
 
@@ -61,6 +62,12 @@ export function SessionUsagePanel({ usage }: SessionUsagePanelProps) {
         <span className="text-muted-foreground">{copy.cost}</span>
         <span className="shrink-0 tabular-nums font-medium text-foreground">{costValue}</span>
       </div>
+
+      {costKnown && usage.cost_status !== 'included' && (
+        <p className="text-[0.6875rem] text-muted-foreground" data-testid="session-cost-usd">
+          {formatSourceUsd(usage.cost_usd as number)}
+        </p>
+      )}
 
       {usage.cost_status === 'estimated' && (
         <p className="text-[0.6875rem] leading-snug text-muted-foreground">{copy.costNote}</p>

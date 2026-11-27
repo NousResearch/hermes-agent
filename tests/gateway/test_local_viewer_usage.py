@@ -320,3 +320,32 @@ def test_a_resumed_snapshot_keeps_the_persisted_spend():
     assert usage['cost_usd'] == 0.42 and usage['cost_status'] == 'estimated'
     row.update(estimated_cost_usd=0.0, cost_status='unknown')
     assert 'cost_usd' not in snapshot_usage(authority, ref, None)
+
+
+def test_seed_session_totals_adds_the_sessions_history_once():
+    """A resumed agent reports the CONVERSATION, not this process: the stored totals are added to
+    whatever it has accumulated since the restart, tokens and spend together."""
+    from gateway.session_usage import seed_session_totals
+    agent = _agent()  # input 100 / output 40 / cache 10 read + 5 write, cost 0.01234
+    row = {'input_tokens': 1_000, 'output_tokens': 400, 'cache_read_tokens': 5_000,
+           'cache_write_tokens': 100, 'estimated_cost_usd': 1.41, 'cost_status': 'estimated'}
+    assert seed_session_totals(agent, row) is True
+    assert agent.session_input_tokens == 1_100 and agent.session_output_tokens == 440
+    assert agent.session_cache_read_tokens == 5_010 and agent.session_cache_write_tokens == 105
+    # Derived totals are recomputed from the parts, so they cannot drift.
+    assert agent.session_prompt_tokens == 1_100 + 5_010 + 105
+    assert agent.session_completion_tokens == 440
+    assert agent.session_total_tokens == 1_100 + 5_010 + 105 + 440
+    assert round(agent.session_estimated_cost_usd, 5) == round(0.01234 + 1.41, 5)
+    # api_calls stays per-process: it drives the per-turn inflight bookkeeping.
+    assert agent.session_api_calls == 2
+    # Idempotent: a second read of the same agent must not add the history again.
+    assert seed_session_totals(agent, row) is False
+    assert round(agent.session_estimated_cost_usd, 5) == round(0.01234 + 1.41, 5)
+
+
+def test_seed_session_totals_leaves_a_fresh_session_alone():
+    from gateway.session_usage import seed_session_totals
+    agent = _agent()
+    assert seed_session_totals(agent, {'input_tokens': 0, 'output_tokens': 0, 'estimated_cost_usd': 0.0}) is False
+    assert agent.session_estimated_cost_usd == 0.01234

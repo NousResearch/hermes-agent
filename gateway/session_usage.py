@@ -311,3 +311,56 @@ async def stats(connection, ref, params):
     result = usage_stats(agent)
     result["compression_count"] = carried_compression_count(connection.authority.sessions.get(ref.session_id), agent)
     return result
+
+
+# A session's stored counters → the agent attributes the status bar reads. ``input_tokens`` in the
+# session row excludes cache reads/writes (the prompt total adds them back), matching CanonicalUsage.
+_STORED_TO_AGENT = (
+    ("input_tokens", "session_input_tokens"),
+    ("output_tokens", "session_output_tokens"),
+    ("cache_read_tokens", "session_cache_read_tokens"),
+    ("cache_write_tokens", "session_cache_write_tokens"),
+    ("reasoning_tokens", "session_reasoning_tokens"),
+)
+
+
+def seed_session_totals(agent, row) -> bool:
+    """Add a resumed agent's session history to the counters it has accumulated since this process
+    started, so the status bar reports the CONVERSATION (what the session has spent in total), not
+    just what happened after the last gateway restart.
+
+    Both halves are added together and stay consistent: a token count and a spend that describe the
+    same span. Seeding only the cost would show a few thousand tokens next to $1.41.
+
+    Idempotent per agent (``_session_totals_seeded``), and safe against double counting because the
+    destination is additive only once per process while the persistence path writes absolute totals
+    from these attributes — history + every increment since the restart, which is exactly the sum.
+
+    Derived fields (``session_prompt_tokens`` / ``session_completion_tokens`` / ``session_total_tokens``)
+    are recomputed from the seeded parts rather than added, so they cannot drift. ``api_calls`` is
+    deliberately NOT seeded — it drives per-turn inflight bookkeeping.
+    """
+    if agent is None or not isinstance(row, dict) or getattr(agent, "_session_totals_seeded", False):
+        return False
+    stored = {key: int(row.get(key) or 0) for key in
+              ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens")}
+    cost = row.get("estimated_cost_usd")
+    stored_cost = float(cost) if isinstance(cost, (int, float)) and not isinstance(cost, bool) else 0.0
+    if not any(stored.values()) and stored_cost <= 0:
+        agent._session_totals_seeded = True
+        return False
+    for row_key, attr in _STORED_TO_AGENT:
+        if stored[row_key] > 0:
+            setattr(agent, attr, int(getattr(agent, attr, 0) or 0) + stored[row_key])
+    prompt = sum(int(getattr(agent, attr, 0) or 0)
+                 for attr in ("session_input_tokens", "session_cache_read_tokens", "session_cache_write_tokens"))
+    completion = int(getattr(agent, "session_output_tokens", 0) or 0)
+    agent.session_prompt_tokens = prompt
+    agent.session_completion_tokens = completion
+    agent.session_total_tokens = prompt + completion
+    if stored_cost > 0:
+        agent.session_estimated_cost_usd = float(getattr(agent, "session_estimated_cost_usd", 0.0) or 0.0) + stored_cost
+        agent.session_cost_status = row.get("cost_status") or "estimated"
+        agent.session_cost_source = row.get("cost_source") or None
+    agent._session_totals_seeded = True
+    return True

@@ -22,12 +22,12 @@ describe('session token and spend readouts', () => {
     expect(sessionTokensLabel({ ...base, input: 12_345, output: 4_200 })).toBe('↓12.3k ↑4.2k')
   })
 
-  it('keeps four decimals for sub-cent spend and marks an estimate with ~', () => {
-    // A route with no pricing entry sends no cost at all — blank, never $0.0000.
+  it('keeps three or four decimals for sub-yuan spend and marks an estimate with ~', () => {
+    // A route with no pricing entry sends no cost at all — blank, never ¥0.0000.
     expect(sessionCostLabel(base)).toBe('')
-    expect(sessionCostLabel({ ...base, cost_status: 'estimated', cost_usd: 0.0027 })).toBe('~$0.0027')
-    expect(sessionCostLabel({ ...base, cost_status: 'actual', cost_usd: 0.0312 })).toBe('$0.031')
-    expect(sessionCostLabel({ ...base, cost_status: 'estimated', cost_usd: 1.5 })).toBe('~$1.50')
+    expect(sessionCostLabel({ ...base, cost_status: 'estimated', cost_usd: 0.0027 })).toBe('~¥0.019')
+    expect(sessionCostLabel({ ...base, cost_status: 'actual', cost_usd: 0.0312 })).toBe('¥0.225')
+    expect(sessionCostLabel({ ...base, cost_status: 'estimated', cost_usd: 1.5 })).toBe('~¥10.80')
   })
 
   it('labels a subscription session instead of pricing it', () => {

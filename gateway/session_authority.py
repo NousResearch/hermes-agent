@@ -335,7 +335,15 @@ class SessionAuthority:
         from gateway.session_detached import running_key
         live = self.sessions[ref.session_id]
         lookup = getattr(self.runner, '_resident_agent_for', None) or self.runner._cached_agent_for
-        return lookup(running_key(self.runner, live.route, ref.session_id))
+        agent = lookup(running_key(self.runner, live.route, ref.session_id))
+        # One DB read per agent lifetime (not per call): a resumed agent starts from the session's
+        # stored token and spend totals instead of zero, so the status bar reports the conversation
+        # rather than the process. See ``session_usage.seed_session_totals``.
+        if agent is not None and not getattr(agent, '_session_totals_seeded', False):
+            with contextlib.suppress(Exception):
+                from gateway.session_usage import seed_session_totals
+                seed_session_totals(agent, self.db.get_session(ref.session_id))
+        return agent
 
     def _pending_rows(self, ref):
         """Pending admissions as the event stream presents them: a settlement committed but not yet

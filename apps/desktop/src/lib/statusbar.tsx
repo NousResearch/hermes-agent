@@ -3,6 +3,7 @@ import { useState } from 'react'
 
 import { StableText } from '@/components/chat/stable-text'
 import { useViewedInterval } from '@/hooks/use-viewed-interval'
+import { formatDisplayCost } from '@/lib/currency'
 import type { UsageStats } from '@/types/hermes'
 
 export function formatDuration(elapsedMs: number): string {
@@ -89,18 +90,11 @@ export function sessionTokensLabel(usage: UsageStats): string {
   return `↓${compactNumber(input)} ↑${compactNumber(output)}`
 }
 
-/** Money formatting sized to what these sessions actually cost: sub-cent turns keep four
- *  decimals (`$0.0027`) instead of collapsing to a useless `$0.00`. */
+/** Money formatting sized to what these sessions actually cost: sub-cent turns keep three or four
+ *  decimals instead of collapsing to a useless `¥0.00`. The backend bills in USD; the conversion
+ *  and the symbol live in `lib/currency.ts` so the stored figure never changes meaning. */
 export function formatCostUsd(cost: number): string {
-  if (cost >= 1) {
-    return `$${cost.toFixed(2)}`
-  }
-
-  if (cost >= 0.01) {
-    return `$${cost.toFixed(3)}`
-  }
-
-  return `$${cost.toFixed(4)}`
+  return formatDisplayCost(cost)
 }
 
 /** `~$0.0312` for estimated spend, the provider's own figure when it reported one, and ''

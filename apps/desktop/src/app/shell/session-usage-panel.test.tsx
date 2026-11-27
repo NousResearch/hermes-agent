@@ -31,7 +31,8 @@ describe('SessionUsagePanel', () => {
     expect(screen.getByText('21k')).toBeTruthy()
     expect(screen.getByText('128.4k')).toBeTruthy()
     expect(screen.getByText('87%')).toBeTruthy()
-    expect(screen.getByText('~$0.031')).toBeTruthy()
+    expect(screen.getByText('~¥0.225')).toBeTruthy()
+    expect(screen.getByText('≈ $0.0312 USD')).toBeTruthy()
     expect(screen.getByText(/Estimated from published rates/)).toBeTruthy()
   })
 
@@ -39,9 +40,9 @@ describe('SessionUsagePanel', () => {
     const bare: UsageStats = { calls: 0, input: 0, output: 0, total: 0 }
     render(<SessionUsagePanel usage={bare} />)
 
-    // No cost_usd → the "no price" label, not $0.0000; no cache data → em dashes.
+    // No cost_usd → the "no price" label, not ¥0.0000; no cache data → em dashes.
     expect(screen.getByText('No price')).toBeTruthy()
-    expect(screen.queryByText('$0.0000')).toBeNull()
+    expect(screen.queryByText('¥0.0000')).toBeNull()
     expect(screen.queryByText(/Estimated from published rates/)).toBeNull()
     expect(screen.getAllByText('—').length).toBe(3)
   })

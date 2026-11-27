@@ -2908,6 +2908,9 @@ cli:
       invalid: "Ongeldige profielkeuse \"{request}\". Beskikbare profiele: {profiles}"
       already_on: "Profiel {profile} word reeds gebruik."
       switching: "Skakel oor na profiel {profile}…"
+      picker_title: "Wissel profiel"
+      picker_stay: "Bly op {profile}"
+      picker_stay_desc: "Hou hierdie sessie"
     handoff:
       usage: "Gebruik: /handoff <platform>"
       usage_detail_1: "Dra die huidige sessie oor na daardie platform se tuiste-kanaal."

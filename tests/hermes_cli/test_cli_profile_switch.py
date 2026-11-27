@@ -100,6 +100,78 @@ def test_bare_profile_has_no_switch_hint_when_no_other_profile(monkeypatch, prof
     assert cli._pending_relaunch is None
 
 
+def _interactive_cli(answer):
+    """A CLI with a running app whose picker returns ``answer`` and records the choices it offered."""
+    cli = _make_cli()
+    cli._app = SimpleNamespace(is_running=True)
+    offered = {}
+
+    def fake_modal(*, title, detail, choices, timeout=120):
+        offered.update(title=title, choices=choices)
+        return answer(choices) if callable(answer) else answer
+
+    cli._prompt_text_input_modal = fake_modal
+    return cli, offered
+
+
+def test_bare_profile_opens_picker_of_other_profiles_and_switches(profile_catalog, capsys):
+    cli, offered = _interactive_cli(lambda choices: choices[1][0])
+
+    assert cli._handle_profile_command("/profile") is False
+
+    assert offered["title"] == t("cli.commands.profile.picker_title")
+    assert [label for _value, label, _desc in offered["choices"]] == [
+        "Builder (work)",
+        "research",
+        t("cli.commands.profile.picker_stay", profile="default"),
+    ]
+    out = capsys.readouterr().out
+    assert t("cli.commands.profile.profile", profile="default") in out
+    assert t("cli.commands.profile.switching", profile="research") in out
+    assert cli._pending_relaunch == ["-p", "research", "chat"]
+
+
+@pytest.mark.parametrize("answer", [None, "cancel", lambda choices: choices[-1][0]])
+def test_picker_cancel_or_stay_keeps_the_session(answer, profile_catalog):
+    cli, _offered = _interactive_cli(answer)
+
+    assert cli._handle_profile_command("/profile") is None
+
+    assert cli._pending_relaunch is None
+
+
+def test_picker_choice_number_typed_without_modal_switches(profile_catalog):
+    cli, _offered = _interactive_cli("1")
+
+    assert cli._handle_profile_command("/profile") is False
+
+    assert cli._pending_relaunch == ["-p", "work", "chat"]
+
+
+def test_profile_named_cancel_is_not_confused_with_dismissal(monkeypatch, profile_catalog):
+    monkeypatch.setattr("hermes_cli.profiles.list_profile_names", lambda: ["default", "cancel"])
+    monkeypatch.setattr("hermes_cli.profiles.get_profile_dir", lambda name: profile_catalog["default"] / name)
+    monkeypatch.setattr("hermes_cli.profiles.read_profile_meta", lambda _path: {})
+    cli, _offered = _interactive_cli("cancel")
+
+    assert cli._handle_profile_command("/profile") is None
+    assert cli._pending_relaunch is None
+
+    cli, _offered = _interactive_cli(lambda choices: choices[0][0])
+    assert cli._handle_profile_command("/profile") is False
+    assert cli._pending_relaunch == ["-p", "cancel", "chat"]
+
+
+def test_busy_bare_profile_prints_hint_instead_of_blocking_picker(profile_catalog, capsys):
+    cli, offered = _interactive_cli("cancel")
+    cli._agent_running = True
+
+    assert cli._handle_profile_command("/profile") is None
+
+    assert offered == {}
+    assert t("cli.commands.profile.switch_hint", profiles="Builder (work), research") in capsys.readouterr().out
+
+
 @pytest.mark.parametrize("command", ["/profile missing", "/profile work extra"])
 def test_invalid_or_extra_arguments_list_profiles_without_relaunch(
     command, profile_catalog, capsys

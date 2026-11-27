@@ -2908,6 +2908,9 @@ cli:
       invalid: "Rogha phróifíle neamhbhailí \"{request}\". Próifílí ar fáil: {profiles}"
       already_on: "Tá próifíl {profile} in úsáid cheana."
       switching: "Ag athrú go próifíl {profile}…"
+      picker_title: "Athraigh próifíl"
+      picker_stay: "Fan ar {profile}"
+      picker_stay_desc: "Coinnigh an seisiún seo"
     handoff:
       usage: "Úsáid: /handoff <platform>"
       usage_detail_1: "Tugann sé an seisiún reatha ar láimh do chainéal baile an ardáin sin."

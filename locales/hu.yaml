@@ -2925,6 +2925,9 @@ cli:
       invalid: "Érvénytelen profilválasztás: „{request}”. Elérhető profilok: {profiles}"
       already_on: "A(z) {profile} profil már használatban van."
       switching: "Váltás a(z) {profile} profilra…"
+      picker_title: "Profilváltás"
+      picker_stay: "Maradás ezen: {profile}"
+      picker_stay_desc: "Ez a munkamenet marad"
     handoff:
       usage: "Használat: /handoff <platform>"
       usage_detail_1: "Átadja a jelenlegi munkamenetet a platform otthoni csatornájának."

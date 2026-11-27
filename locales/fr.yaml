@@ -3190,6 +3190,9 @@ cli:
       invalid: "Sélection de profil « {request} » invalide. Profils disponibles : {profiles}"
       already_on: "Le profil {profile} est déjà utilisé."
       switching: "Passage au profil {profile}…"
+      picker_title: "Changer de profil"
+      picker_stay: "Rester sur {profile}"
+      picker_stay_desc: "Conserver cette session"
     handoff:
       usage: "Usage : /handoff <plateforme>"
       usage_detail_1: "Transmet la session en cours au canal d'accueil de cette plateforme."

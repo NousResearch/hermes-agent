@@ -2908,6 +2908,9 @@ cli:
       invalid: "設定檔選擇「{request}」無效。可用設定檔：{profiles}"
       already_on: "已在使用設定檔 {profile}。"
       switching: "正在切換到設定檔 {profile}…"
+      picker_title: "切換設定檔"
+      picker_stay: "留在 {profile}"
+      picker_stay_desc: "保留此工作階段"
     handoff:
       usage: "用法：/handoff <platform>"
       usage_detail_1: "將目前的工作階段交接到該平台的主頻道。"

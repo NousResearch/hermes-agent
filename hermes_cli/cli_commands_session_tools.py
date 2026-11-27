@@ -328,11 +328,20 @@ class CLICommandsSessionToolsMixin:
                 f"  {_t('profile.profile', profile=reply.data['profile'])}",
                 f"  {_t('profile.home', home=reply.data['home'])}",
             ]
-            others = [label for name, label in choices.items() if name != active]
-            if others:
-                lines.append(f"  {_t('profile.switch_hint', profiles=', '.join(others))}")
+            others = [name for name in choices if name != active]
+            # The picker blocks until answered, so it only opens from the process loop: a busy
+            # /profile runs inline on the UI thread, where waiting on the modal would deadlock.
+            if not others or getattr(self, "_app", None) is None or getattr(self, "_agent_running", False):
+                if others:
+                    hint = ", ".join(choices[name] for name in others)
+                    lines.append(f"  {_t('profile.switch_hint', profiles=hint)}")
+                _say_block(*lines)
+                return None
             _say_block(*lines)
-            return None
+            target = self._pick_profile(active, others, choices, get_profile_dir)
+            if target is None:
+                return None
+            return self._switch_profile(target, choices[target], get_profile_dir)
 
         request = " ".join(args)
         try:
@@ -347,8 +356,41 @@ class CLICommandsSessionToolsMixin:
         if target == active:
             _say_block(f"  {_t('profile.already_on', profile=choices[target])}")
             return None
+        return self._switch_profile(target, choices[target], get_profile_dir)
 
-        _say_block(f"  {_t('profile.switching', profile=choices[target])}")
+    # Picker values carry a prefix so a profile literally named "cancel" cannot collide with the
+    # value Esc/Ctrl+C submit.
+    _PROFILE_PICK_PREFIX = "profile:"
+
+    def _pick_profile(self, active: str, others: list[str], labels: dict[str, str], get_profile_dir) -> str | None:
+        """Arrow-key picker over the other profiles (the /update confirmation modal); None = stay."""
+        from pathlib import Path
+
+        home = str(Path.home())
+
+        def _where(name: str) -> str:
+            path = str(get_profile_dir(name))
+            return "~" + path[len(home):] if path.startswith(home + "/") or path == home else path
+
+        choices = [(f"{self._PROFILE_PICK_PREFIX}{name}", labels[name], _where(name)) for name in others]
+        choices.append(("cancel", _t("profile.picker_stay", profile=labels.get(active, active)),
+                        _t("profile.picker_stay_desc")))
+        raw = self._prompt_text_input_modal(title=_t("profile.picker_title"), detail="", choices=choices)
+        if raw is None:
+            return None
+        value = raw.strip()
+        if not value.startswith(self._PROFILE_PICK_PREFIX):
+            # Typed answers ("1", "2", …) arrive raw; map a choice number to its value.
+            if value.isdigit() and 1 <= int(value) <= len(choices):
+                value = choices[int(value) - 1][0]
+            else:
+                return None
+        name = value[len(self._PROFILE_PICK_PREFIX):] if value.startswith(self._PROFILE_PICK_PREFIX) else ""
+        return name if name in others else None
+
+    def _switch_profile(self, target: str, label: str, get_profile_dir) -> bool:
+        """Schedule the relaunch into ``target`` and leave this CLI (returns False: exit the REPL)."""
+        _say_block(f"  {_t('profile.switching', profile=label)}")
         from tools.bot_mode_probe import BOT_CHAT_TITLE, is_bot_mode_managed
 
         self._pending_relaunch = ["-p", target, "chat"]

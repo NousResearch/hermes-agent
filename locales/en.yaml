@@ -3009,6 +3009,9 @@ cli:
       invalid: "Invalid profile selection \"{request}\". Available profiles: {profiles}"
       already_on: "Already using profile {profile}."
       switching: "Switching to profile {profile}…"
+      picker_title: "Switch profile"
+      picker_stay: "Stay on {profile}"
+      picker_stay_desc: "Keep this session"
     handoff:
       usage: "Usage: /handoff <platform>"
       usage_detail_1: "Hands the current session off to that platform's home channel."

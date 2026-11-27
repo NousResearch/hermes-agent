@@ -310,16 +310,12 @@ class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
         registry.register(
             name=name, toolset=toolset, schema=schema, handler=handler, check_fn=check_fn,
             requires_env=requires_env, is_async=is_async, description=description, emoji=emoji,
-            override=override, scope=scope,
+            override=override, scope=scope, default_platforms=default_platforms,
         )
         registered = registry.snapshot_registration(name, scope=scope)
         handle = None
         if registered is not None and registered is not previous and registered.handler is handler:
             self._manager._plugin_tool_names.add(name)
-            if default_platforms:
-                self._manager._tool_default_platforms[name] = frozenset(map(str, default_platforms))
-            else:
-                self._manager._tool_default_platforms.pop(name, None)
             handle = self._manager._track_scoped_registration(
                 self.manifest, "tool", name, registry, registered, previous,
                 finalize=lambda: self._manager._remove_tool_name_if_unowned(name),

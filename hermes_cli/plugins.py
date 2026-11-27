@@ -307,7 +307,6 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._middleware: dict[str, list[Callable]] = {}
         self._plugin_tool_names: set[str] = set()
         # tool name -> platforms its toolset defaults on for (``register_tool(default_platforms=...)``).
-        self._tool_default_platforms: dict[str, frozenset[str]] = {}
         self._plugin_platform_names: set[str] = set()
         self._cli_commands: dict[str, dict] = {}
         self._plugin_commands: dict[str, dict] = {}
@@ -1473,7 +1472,7 @@ def get_plugin_toolset_default_platforms() -> dict[str, frozenset[str]]:
     for tool_name in manager._plugin_tool_names:
         if (entry := registry.get_entry(tool_name)) is None:
             continue
-        if platforms := manager._tool_default_platforms.get(tool_name):
+        if platforms := entry.default_platforms:
             scoped.setdefault(entry.toolset, set()).update(platforms)
         else:
             everywhere.add(entry.toolset)

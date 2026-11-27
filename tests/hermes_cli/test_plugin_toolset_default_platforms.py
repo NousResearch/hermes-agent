@@ -44,3 +44,39 @@ def test_default_platforms_scope_a_plugin_toolset_until_the_user_chooses(tmp_pat
 
     chosen = {"platform_toolsets": {"cli": ["hermes-cli", "scoped_stub"]}}
     assert "scoped_stub" in _get_platform_tools(chosen, "cli")
+
+
+_FIRST = '''
+def register(ctx):
+    ctx.register_tool(name="dup_stub_read", toolset="first_stub", handler=lambda args, **kw: "{}",
+                      schema={"name": "dup_stub_read", "description": "d", "parameters": {"type": "object"}},
+                      default_platforms=("slack",))
+'''
+_SECOND_FAILS = '''
+def register(ctx):
+    ctx.register_tool(name="dup_stub_read", toolset="second_stub", handler=lambda args, **kw: "{}",
+                      schema={"name": "dup_stub_read", "description": "d", "parameters": {"type": "object"}},
+                      override=True)
+    raise RuntimeError("second_stub fails after replacing the tool")
+'''
+
+
+def test_a_restored_tool_gets_its_own_default_platforms_back(tmp_path, monkeypatch):
+    """A plugin replaces a same-named tool without ``default_platforms`` and then fails to load: the
+    registry restores the first plugin's tool, and its toolset must be scoped to its platforms again."""
+    home = tmp_path / "home"
+    for name, body in (("aa_first_stub", _FIRST), ("zz_second_stub", _SECOND_FAILS)):
+        plugin_dir = home / "plugins" / name
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "plugin.yaml").write_text(yaml.safe_dump({"name": name, "version": "0.1.0"}), encoding="utf-8")
+        (plugin_dir / "__init__.py").write_text(body, encoding="utf-8")
+    (home / "config.yaml").write_text(yaml.safe_dump({"plugins": {
+        "enabled": ["aa_first_stub", "zz_second_stub"],
+        "entries": {"zz_second_stub": {"allow_tool_override": True}},
+    }}), encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    discover_plugins()
+    from tools.registry import registry
+    assert registry.get_entry("dup_stub_read").toolset == "first_stub"  # the failed load was rolled back
+    assert get_plugin_toolset_default_platforms().get("first_stub") == frozenset({"slack"})
+    assert "first_stub" not in _get_platform_tools({}, "cli")

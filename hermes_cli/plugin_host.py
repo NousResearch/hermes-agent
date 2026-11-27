@@ -154,6 +154,9 @@ class PluginHost:
             with lending_launcher(launcher):
                 return _hosted_ambient_credentials(self._home, own, templates)
 
+        # The build read through the name too, and the scan rereads the plugin dirs once their stamps are due.
+        if (moved := home_moved_refusal(self._home)) is not None:
+            raise PluginHomeMoved(moved)
         env.update(self._base_context.run(ambient))
         repo_root = project_root_str()
         # Absolute entries only: the host starts in the profile home, where an empty or relative entry

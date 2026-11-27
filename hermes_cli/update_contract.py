@@ -79,12 +79,38 @@ def _steward_refusal(steward: str) -> UpdateRefusal:
     return UpdateRefusal(code=steward, message=steward_update_message(steward), update_command=command)
 
 
+#: Operator opt-out for fleets that update source checkouts with their own release tooling. When this
+#: file exists, every in-place updater (CLI, dashboard/desktop "Update now", gateway /update) refuses,
+#: so a stray click cannot move a pinned checkout to origin/main. ``.hermes/`` is git-ignored.
+EXTERNAL_UPDATE_MARKER = Path(".hermes") / "updates-managed-externally"
+EXTERNAL_UPDATE_MESSAGE = (
+    "✗ Updates for this install are managed outside Hermes (an operator marker file is present).\n"
+    "\n"
+    "Ask whoever operates this machine to update it with their release tooling."
+)
+
+
+def _external_update_refusal(project_root: Path) -> Optional[UpdateRefusal]:
+    marker = Path(project_root) / EXTERNAL_UPDATE_MARKER
+    try:
+        if not marker.is_file():
+            return None
+        note = marker.read_text(encoding="utf-8", errors="replace").strip()[:500]
+    except OSError:
+        return None
+    message = EXTERNAL_UPDATE_MESSAGE + (f"\n\n{note}" if note else "")
+    return UpdateRefusal(code="managed-externally", message=message, update_command="managed outside Hermes")
+
+
 def evaluate_update_admission(project_root: Path) -> Optional[UpdateRefusal]:
     """Return an :class:`UpdateRefusal` when in-place update must not run.
 
     ``None`` means the install is eligible for in-place update (git checkout or unknown-but-
     mutable). Never raises; on any internal error it falls back to the heuristic layer only.
     """
+    external = _external_update_refusal(project_root)
+    if external is not None:
+        return external
     if is_commit_build(project_root):
         return UpdateRefusal("commit-build", COMMIT_BUILD_UPDATE_MESSAGE, "")
 

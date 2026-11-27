@@ -55,6 +55,10 @@ def _sentence(text: object) -> str:
     return str(text).strip().rstrip(".") + "."
 
 
+def format_local_reset(epoch: float) -> str:
+    return safe_strftime(datetime.fromtimestamp(epoch).astimezone(), "%Y-%m-%d %H:%M %Z")
+
+
 def pool_cooldown_message(provider_id: str, *, rate_limited_only: bool = False) -> Optional[str]:
     """The "all N credentials … are cooling down" error when the provider's pool is fully benched.
 
@@ -82,7 +86,7 @@ def pool_cooldown_message(provider_id: str, *, rate_limited_only: bool = False) 
               if until is not None and until > now]
     if len(resets) != len(live):
         return None
-    when = safe_strftime(datetime.fromtimestamp(min(resets)).astimezone(), "%Y-%m-%d %H:%M %Z")
+    when = format_local_reset(min(resets))
     which = ("its only credential is" if len(live) == 1
              else f"all {len(live)} credentials are")
     return (f"Provider '{provider_id}' is set in config.yaml but {which} cooling down after a "

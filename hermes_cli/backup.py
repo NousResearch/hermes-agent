@@ -910,31 +910,9 @@ def _import_members_exclusive(
             errors.append(f"  {rel}: path traversal blocked")
             continue
 
-        # Never overwrite volatile gateway/process runtime state. These are
-        # namespaced to the machine/container the backup was taken on;
-        # clobbering them (especially gateway_state.json) breaks the gateway
-        # reconciler on the target and disconnects hosted instances from the
-        # Nous portal. Matched by basename so both the root profile and
-        # named profiles (profiles/<name>/gateway_state.json) are covered.
-        # The host's own root trees (HOST_MANAGED_ROOT_DIRS) are never written either.
-        if (parts[-1] in _IMPORT_SKIP_NAMES or parts[0] in HOST_MANAGED_ROOT_DIRS
-                or (keep_host is not None and keep_host.skips(parts))):
-            skipped_runtime.append(rel)
-            continue
-
-        # Older archives may contain PM selections pointing at another machine.
-        # Match their home-root paths; a plugin's own facts.json is user data.
-        if profile_root_entry(parts) in PM_RUNTIME_ROOT_DIRS:
-            skipped_runtime.append(rel)
-            continue
-
-        # A ``.db`` member is page-restored into the live file below; a
-        # WAL/SHM/journal member from the archive describes a different
-        # database image, and installing it beside the restored file (over
-        # a live sidecar, via os.replace) would replay a foreign WAL on
-        # the next open. Current backups never ship these
-        # (_EXCLUDED_SUFFIXES); older or hand-built archives might.
-        if rel.endswith(_SQLITE_SIDECAR_SUFFIXES):
+        # One classification with the integrity pre-flight (_import_skipped): source-machine runtime
+        # state, the host's own root trees, PM-local roots and SQLite sidecars. Keep-host adds the host's setup.
+        if _import_skipped(rel) or (keep_host is not None and keep_host.skips(parts)):
             skipped_runtime.append(rel)
             continue
 

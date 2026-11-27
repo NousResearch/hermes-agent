@@ -97,8 +97,10 @@ From now on, every `hermes` invocation resolves the references at startup. You'l
 | `hermes secrets onepassword set ENV_VAR "op://…"` | Map an env var to a reference (stored stripped + validated) |
 | `hermes secrets onepassword remove ENV_VAR` | Drop a mapping |
 | `hermes secrets onepassword sync` | Dry-run: resolve references now and show what would apply |
-| `hermes secrets onepassword sync --apply` | Resolve and export into the current shell's environment |
+| `hermes secrets onepassword sync --apply` | Resolve and export into this shell's environment (hydrates this shell now, not only the next `hermes` start) |
 | `hermes secrets onepassword disable` | Flip `enabled: false`; leaves mappings in place |
+
+`sync --apply` hydrates **this shell** immediately — not only the next `hermes` start. Values land in this process `os.environ` and are visible to children. Do not put site passwords or identity data on this path; use [Passwords & Logins](/user-guide/features/credential-vault) (`hermes vault`).
 
 `op` and `1password` are accepted as aliases for `onepassword`.
 

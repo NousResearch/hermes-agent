@@ -18,6 +18,8 @@ secrets:
     # command: "secret-tool lookup service hermes-env"
 ```
 
+Applied keys land in this process's `os.environ`. The model, tools, `printenv`, and children can observe them; redaction is display-layer only. Use this for provider keys Hermes needs to call a model. Do not put site passwords or identity data on this path — those belong in [Passwords & Logins](/user-guide/features/credential-vault) (`hermes vault`).
+
 ## Config
 
 | Key | Default | What it does |

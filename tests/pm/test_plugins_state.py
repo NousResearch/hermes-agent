@@ -233,3 +233,21 @@ def test_an_install_in_flight_under_the_catalog_name_counts_for_the_old_key(home
     home, _ = homes
     pending = home / "plugins" / "google-meet"
     assert selected_plugin_dir(home / "plugins", "google_meet", installing=pending) == pending
+
+
+@pytest.mark.parametrize(("enabled", "disabled"), [
+    (["google_meet"], ["google-meet"]),   # core's key enabled, the catalog name disabled
+    (["google-meet"], ["google_meet"]),   # and the other way round: the loader honours both spellings
+])
+def test_a_left_core_plugin_disabled_under_either_name_adds_no_dependencies(homes, enabled, disabled):
+    """The loader keeps the plugin off, so its pins (Playwright) must not join the union where they could
+    block an unrelated install."""
+    import hermes_yaml as yaml
+    from pm.workspace import enabled_member_dirs
+    home, _ = homes
+    plugin = home / "plugins" / "google-meet"
+    plugin.mkdir(parents=True)
+    (plugin / "pyproject.toml").write_text('[project]\ndependencies = ["playwright==1.64.0"]\n')
+    with (home / "config.yaml").open("w", encoding="utf-8") as f:
+        yaml.safe_dump({"plugins": {"enabled": enabled, "disabled": disabled}}, f)
+    assert enabled_member_dirs() == []

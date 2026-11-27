@@ -104,10 +104,19 @@ def _enabled_from_config(config: dict[str, Any]) -> list[str]:
     disabled = set(disabled) if isinstance(disabled, list) else set()
     out: list[str] = []
     for name in enabled:
-        if (isinstance(name, str) and name and name not in out
-                and name not in disabled and name.rsplit("/", 1)[-1] not in disabled):
+        if isinstance(name, str) and name and name not in out and not _spellings(name) & disabled:
             out.append(name)
     return out
+
+
+def _spellings(name: str) -> set[str]:
+    """The names in ``plugins.disabled`` that turn off the plugin *name* selects, as the loader's gate reads
+    them: the key and its bare leaf, plus a left-core plugin's catalog name and its old bundled keys
+    (``google_meet`` <-> ``google-meet``), so a disable under either spelling keeps its dependencies out."""
+    from hermes_cli.left_core_migration import legacy_plugin_alias, legacy_plugin_keys
+
+    alias = legacy_plugin_alias(name)
+    return {name, name.rsplit("/", 1)[-1], *([alias] if alias else []), *legacy_plugin_keys(alias or name)}
 
 
 def _is_directory(path: Path) -> bool:

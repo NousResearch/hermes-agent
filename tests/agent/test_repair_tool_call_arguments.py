@@ -13,6 +13,22 @@ class TestRepairToolCallArguments:
     def test_empty_string_returns_empty_object(self):
         assert _repair_tool_call_arguments("", "t") == "{}"
 
+    # -- Dangling-separator stream cut: refuse, never close the prefix (#138050) --
+
+    @pytest.mark.parametrize("raw", [
+        '{"action": "add", "target": "memory",',
+        '{"target": "memory", "operations": [{"action": "add",',
+        '{"action": "add", "target":',
+    ])
+    def test_dangling_separator_cut_is_refused_not_closed(self, raw):
+        # No valid JSON ends in "," or ":"; closing the prefix would execute a call that
+        # silently lacks every unstreamed key (memory 'content' is emitted last, #138050).
+        assert _repair_tool_call_arguments(raw, "t") == "{}"
+
+    def test_trailing_comma_before_closer_still_repairs(self):
+        # Control: a model-side trailing-comma typo KEEPS its closer and must still repair.
+        assert json.loads(_repair_tool_call_arguments('{"a": [1, 2,]}', "t")) == {"a": [1, 2]}
+
 
 
     # -- Stage 2: Python None literal --

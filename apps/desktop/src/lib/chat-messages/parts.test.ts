@@ -6,10 +6,13 @@ import { appendAssistantTextPart, chatMessageText, mediaTagValues, renderMediaTa
 
 const SPACED = '/home/hermes/Morten - Nobly Kickoff - Opening and cue cards EN.docx'
 const CARD = `[File: Morten - Nobly Kickoff - Opening and cue cards EN.docx](#media:${encodeURIComponent(SPACED)})`
+const SPACED_LATEX = '/home/hermes/research notes/draft (final).tex'
+const LATEX_CARD = `[File: draft (final).tex](#media:${encodeURIComponent(SPACED_LATEX)})`
 
 describe('renderMediaTags with interior spaces', () => {
   it('keeps the whole spaced path in one card on every surface that reads MEDIA tags', () => {
     expect(renderMediaTags(`MEDIA:${SPACED}`)).toBe(CARD)
+    expect(renderMediaTags(`MEDIA:${SPACED_LATEX}`)).toBe(LATEX_CARD)
     expect(renderMediaTags(`Here you go: MEDIA:${SPACED} — enjoy`)).toBe(`Here you go: ${CARD} — enjoy`)
     expect(renderMediaTags('MEDIA:C:\\Users\\Morten\\My Report.docx')).toBe(
       '[File: My Report.docx](#media:C%3A%5CUsers%5CMorten%5CMy%20Report.docx)'

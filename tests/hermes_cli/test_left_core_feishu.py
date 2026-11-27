@@ -258,3 +258,24 @@ def test_a_feishu_home_without_hermes_tag_hears_nothing_about_it(tmp_path):
     lcm.migrate_home(home, install=lambda name: (home / "plugins" / name).mkdir(parents=True) or {"ok": True},
                      say=said.append)
     assert not [line for line in said if "hermes-tag" in line]
+
+
+@pytest.mark.parametrize("recorded", ["_default_plugins_installed: [feishu]\n", ""], ids=["default-placed", "user-placed"])
+def test_a_present_feishu_the_home_disables_is_said_off_once_and_stays_disabled(tmp_path, recorded):
+    # Core ran Feishu despite a bare ``feishu`` in plugins.disabled; the plugin already in the home honours it, so
+    # the upgrade turns Feishu off. The disable stays (nothing installs or enables) and the home is told, once.
+    home = _home(tmp_path, env=_CREDS, config=recorded + "plugins:\n  disabled: [feishu]\n")
+    (home / "plugins" / "feishu").mkdir(parents=True)
+    calls, said = [], []
+
+    def install(name):
+        calls.append(name)
+        return {"ok": True}
+
+    assert lcm.migrate_home(home, install=install, say=said.append) == []
+    assert lcm.migrate_home(home, install=install, say=said.append) == []
+    assert calls == []
+    from hermes_cli.config import read_user_config_raw
+    assert read_user_config_raw(home / "config.yaml")["plugins"]["disabled"] == ["feishu"]
+    off = [line for line in said if "which now turns Feishu off" in line]
+    assert len(off) == 1 and "`hermes plugins enable feishu` turns it on" in off[0], said

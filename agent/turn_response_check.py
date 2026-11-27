@@ -17,7 +17,9 @@ from agent.error_classifier import FailoverReason
 from agent.prompt_cache_lifecycle import start_prompt_cache_warming
 from agent.turn_api_call import stop_thinking_spinner
 from agent.turn_failure_copy import invalid_response_failure_reason, provider_label_for, site_copy, stamp_failure
-from agent.turn_truncation import handle_content_policy_refusal, recover_from_truncation
+from agent.turn_truncation import (
+    clear_refusal_rephrase_nudge, handle_content_policy_refusal, recover_from_truncation,
+)
 from agent.turn_usage import record_response_usage
 
 logger = logging.getLogger("agent.conversation_loop")
@@ -158,7 +160,13 @@ def check_api_response(
     from hermes_cli.observability.shared_metrics_harness import record_reply_finish
     record_reply_finish(agent, response, finish_reason)
 
-    # HTTP-200 refusals are deterministic: one fallback try, else return the refusal.
+    # The rephrase retry's one-shot directive has served its request — restore the system prompt;
+    # a healthy response also refreshes the retry budget (one rephrase retry per refusal streak).
+    clear_refusal_rephrase_nudge(agent)
+    if finish_reason != "content_filter":
+        agent._refusal_rephrase_tried = False
+
+    # HTTP-200 refusals: one same-provider rephrase retry, else return the refusal.
     if finish_reason == "content_filter":
         _rv = handle_content_policy_refusal(
             agent, response, _retry, thinking_spinner=thinking_spinner, messages=messages,

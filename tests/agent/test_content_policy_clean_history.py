@@ -27,6 +27,9 @@ def _agent():
     agent._try_activate_fallback.return_value = False
     agent._extract_reasoning.return_value = ""
     agent._session_db = None
+    agent._refusal_rephrase_tried = True  # budget spent: exercise the terminal path
+    agent._refusal_rephrase_saved_esp = None
+    agent.ephemeral_system_prompt = ""
     return agent
 
 

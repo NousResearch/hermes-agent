@@ -555,7 +555,8 @@ def nonretryable_copy(
 
 def content_policy_copy(*, label: str, summary: str) -> str:
     return (
-        f"{label}'s safety filter refused this request, so the model didn't answer. "
+        f"{label}'s content-risk filter blocked this request, so the model didn't answer. "
+        f"The same model stays active — nothing was switched automatically. "
         f"{CONTENT_POLICY_NEXT_STEPS}\n\nProvider said: {summary}"
     )
 

@@ -1990,6 +1990,13 @@ def try_activate_fallback(agent, reason: FailoverReason | None = None, reset_at=
     construction goes through resolve_provider_client (no duplicated provider→key mappings)."""
     from agent.fallback_cooldown import _arm_rate_limit_cooldown, switch_deferred_by_reset
     from agent.fallback_notice import announce_fallback_switch, fallback_trigger_text
+    # Content-policy refusals must never switch providers (#160728): risk
+    # control is answered by a same-provider rephrase retry + a surfaced notice; the fallback
+    # chain stays reserved for platform outages (rate limit / overload / connection loss).
+    if reason is FailoverReason.content_policy_blocked:
+        logger.info(
+            "Fallback suppressed for content_policy_blocked — risk control must not switch providers")
+        return False
     if switch_deferred_by_reset(agent, reason, reset_at):
         return False
     cooldown_seconds = _arm_rate_limit_cooldown(agent, reason, reset_at=reset_at)

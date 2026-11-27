@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import os
+import shlex
 import stat
 import struct
 import sys
@@ -22,6 +23,7 @@ def xdg_home(tmp_path, monkeypatch) -> Path:
     # Isolate the known-wrapper probe too: tests must never see the real
     # ~/.local/bin/hermes on the dev machine.
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_HOME", raising=False)
     monkeypatch.setattr(lde.sys, "platform", "linux")
     return data_home
 
@@ -907,6 +909,39 @@ def test_refresh_reports_only_tools_that_succeeded(monkeypatch, tmp_path):
 
 def test_run_quiet_swallows_missing_binary(tmp_path):
     assert lde._run_quiet([str(tmp_path / "definitely-not-a-binary")]) is False
+
+
+def test_install_persists_custom_hermes_home_in_exec(tmp_path, xdg_home, monkeypatch):
+    root = _make_project(tmp_path)
+    hermes_bin = tmp_path / "bin" / "hermes"
+    hermes_bin.parent.mkdir()
+    hermes_bin.write_text("", encoding="utf-8")
+    custom_home = tmp_path / "managed Hermes home"
+    monkeypatch.setenv("HERMES_HOME", str(custom_home))
+    monkeypatch.setattr("hermes_cli.relaunch.resolve_hermes_bin", lambda: str(hermes_bin))
+    monkeypatch.setattr(lde.shutil, "which", lambda name: "/usr/bin/env")
+    monkeypatch.setattr(lde, "refresh_desktop_databases", lambda _dir: [])
+
+    entry = lde.install_desktop_entry(root)
+
+    assert shlex.split(_parse(entry.read_text(encoding="utf-8"))["Exec"]) == [
+        "/usr/bin/env", f"HERMES_HOME={custom_home}", str(hermes_bin), "desktop"
+    ]
+
+
+def test_install_does_not_persist_default_hermes_home(tmp_path, xdg_home, monkeypatch):
+    root = _make_project(tmp_path)
+    hermes_bin = tmp_path / "bin" / "hermes"
+    hermes_bin.parent.mkdir()
+    hermes_bin.write_text("", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setattr("hermes_cli.relaunch.resolve_hermes_bin", lambda: str(hermes_bin))
+    monkeypatch.setattr(lde.shutil, "which", lambda name: "/usr/bin/env")
+    monkeypatch.setattr(lde, "refresh_desktop_databases", lambda _dir: [])
+
+    entry = lde.install_desktop_entry(root)
+
+    assert _parse(entry.read_text(encoding="utf-8"))["Exec"] == f"{hermes_bin} desktop"
 
 
 

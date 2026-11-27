@@ -381,3 +381,15 @@ def test_a_present_qqbot_under_host_isolation_is_told_once(tmp_path, recorded):
     assert calls == []
     told = [line for line in said if "plugins.isolation: host" in line]
     assert len(told) == 1 and "QQ Bot" in told[0], said
+
+
+def test_host_isolation_pinned_in_the_managed_layer_is_named(tmp_path, monkeypatch):
+    """Greptile #159651: an administrator's `plugins.isolation: host` in the managed config.yaml keeps the
+    plugin loader from starting the QQ adapter; the notice reads the same layers, not the profile file alone."""
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    (managed / "config.yaml").write_text("plugins:\n  isolation: host\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+    home = _home(tmp_path, env=_CREDS)
+    (home / "plugins" / "qqbot").mkdir(parents=True)
+    assert "plugins.isolation: host" in next(f for f in lcm.LEFT_CORE if f.plugin == "qqbot").notice(home)

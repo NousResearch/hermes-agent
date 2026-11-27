@@ -883,9 +883,7 @@ def queued_route_wake(runner, source, producer, generation=None):
     return False
 
 
-def _goal_wake_identity(identity, producer, metadata):
-    # Restoring a queued row retains the admission identity, not the event metadata.
-    generation = (metadata or {}).get('goal_generation') if producer == 'goal-continuation' else None
+def _goal_wake_identity(identity, generation):
     if generation is None:
         return identity
     return json.dumps([*json.loads(identity), generation], separators=(',', ':'))
@@ -992,6 +990,11 @@ async def admit_route_wake(runner, adapter, source, text, producer, metadata=Non
     authority = active_authority(runner)
     key = runner._session_key_for_source(source)
     restore_completion_route(runner, key)  # a closed local session boot left unrestored has no store entry yet
+    generation = None
+    if producer == 'goal-continuation':
+        # Only the durable identity carries the generation across admission and restore.
+        metadata = dict(metadata or {})
+        generation = metadata.pop('goal_generation', None)
     entry = route_entry(authority, key) if authority is not None else None
     if authority is None or entry is None:
         return False
@@ -1005,7 +1008,7 @@ async def admit_route_wake(runner, adapter, source, text, producer, metadata=Non
         live = found[1] if found is not None else authority.sessions.get(source.chat_id)
         if live is None or live.route != key:
             return False
-        identity = _goal_wake_identity(identity, producer, metadata)
+        identity = _goal_wake_identity(identity, generation)
         event = MessageEvent(text=text, message_type=MessageType.TEXT, source=live.source, internal=True,
                              message_id=identity, metadata={'gateway_session_key': key,
                                                             'gateway_session_id': entry.session_id,
@@ -1019,7 +1022,7 @@ async def admit_route_wake(runner, adapter, source, text, producer, metadata=Non
     # The route's committed source, which ``snapshot_automation`` re-derives and compares.
     restored = restore_native({'text': text, 'native_text_v1': {
         k: v for k, v in envelope.items() if k != 'media'}}, runner)
-    identity = _goal_wake_identity(identity, producer, metadata)
+    identity = _goal_wake_identity(identity, generation)
     event = MessageEvent(text=text, message_type=MessageType.TEXT, source=restored.source, internal=True,
                          message_id=identity, metadata={'gateway_session_key': key,
                                                         'gateway_session_id': entry.session_id,

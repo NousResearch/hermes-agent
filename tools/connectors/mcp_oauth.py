@@ -63,7 +63,10 @@ def probe_with_rollback(
             no_token.failure_class = "auth_required"  # type: ignore[attr-defined]
             raise no_token
     except Exception as exc:
-        if not details.get("initialized"):
+        # ``initialized`` only proves the MCP handshake returned a result; it says nothing about
+        # the OAuth grant. Without a token on disk the attempt ended unauthorized, so committing
+        # it would strand the previous grant that ``manager.remove`` already deleted.
+        if not details.get("initialized") or not _oauth_tokens_present(server_name):
             undo()
             raise
         tools, discovery_error = [], exception_message(exc)

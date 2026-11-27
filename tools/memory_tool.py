@@ -129,15 +129,18 @@ def _batch_op_line(op: dict[str, Any]) -> str:
 
 
 def _apply_write_gate(store: MemoryStore, action: str, target: str, content: Optional[str],
-                      old_text: Optional[str], operations: Optional[list[dict[str, Any]]] = None) -> Optional[str]:
+                      old_text: Optional[str], operations: Optional[list[dict[str, Any]]] = None,
+                      session_id: Optional[str] = None) -> Optional[str]:
     """Gate one mutating op, or (``operations`` set) a whole batch as a single unit."""
     label = "user profile" if target == "user" else "memory"
     if operations is not None:
         return _gate_or_stage(store, f"apply {len(operations)} op(s) to {label}",
                               "\n".join(_batch_op_line(op) for op in operations),
-                              {"action": "batch", "target": target, "operations": operations})
+                              {"action": "batch", "target": target, "operations": operations,
+                               "session_id": session_id})
     return _gate_or_stage(store, *_STORE_ACTIONS[action][1](label, content, old_text),
-                          {"action": action, "target": target, "content": content, "old_text": old_text})
+                          {"action": action, "target": target, "content": content, "old_text": old_text,
+                           "session_id": session_id})
 
 
 def _validate_single_op(store, action, target, content, old_text) -> Optional[str]:
@@ -221,7 +224,7 @@ def _background_delete_gate(store, action, operations, target="memory", content=
 
 def memory_tool(action: str | None = None, target: str = "memory", content: str | None = None, old_text: str | None = None,
                 new_text: str | None = None, operations: Optional[list[dict[str, Any]]] = None,
-                store: Optional[MemoryStore] = None) -> str:
+                store: Optional[MemoryStore] = None, session_id: Optional[str] = None) -> str:
     """Tool entry point; returns a JSON string. Single op (action + content/old_text)
     or batch (``operations``, atomic against the final budget). ``new_text``
     aliases ``content``."""
@@ -229,7 +232,7 @@ def memory_tool(action: str | None = None, target: str = "memory", content: str 
         return tool_error("Memory is not available. It may be disabled in config or this environment.", success=False)
     token = FAILURE_CLASS.set("other")
     try:
-        outcome, result = _memory_tool(action, target, content, old_text, new_text, operations, store)
+        outcome, result = _memory_tool(action, target, content, old_text, new_text, operations, store, session_id)
         failure_class = "none" if outcome == "success" else FAILURE_CLASS.get()
     finally:
         FAILURE_CLASS.reset(token)
@@ -247,7 +250,38 @@ def _invalid(message: str) -> tuple[str, str]:
     return "rejected", tool_error(message, success=False)
 
 
-def _memory_tool(action, target, content, old_text, new_text, operations, store) -> tuple[str, str]:
+def _handoff_adds(operations: list[dict[str, Any]]) -> tuple[list[str], bool]:
+    """Return classified add contents and whether handoff/non-handoff ops were mixed."""
+    from tools.next_session_handoff import looks_like_next_session_handoff
+
+    messages, normal = [], False
+    for op in operations:
+        if not isinstance(op, dict):
+            normal = True
+            continue
+        content = (op or {}).get("content") or (op or {}).get("new_text") or ""
+        if (op or {}).get("action") == "add" and looks_like_next_session_handoff(content):
+            messages.append(str(content).strip())
+        else:
+            normal = True
+    return messages, bool(messages and normal)
+
+
+def _queue_handoffs(messages: list[str], target: str, session_id: Optional[str]) -> tuple[str, str]:
+    """Scan and queue an all-handoff write without touching durable memory."""
+    for message in messages:
+        if scan_error := _scan_memory_content(message):
+            FAILURE_CLASS.set("scan_blocked")
+            return _applied({"success": False, "error": scan_error})
+    from tools.next_session_handoff import queue_next_session_handoffs
+
+    result = queue_next_session_handoffs(
+        messages, source_session_id=session_id or "", source=f"memory:{target}")
+    return _applied(result)
+
+
+def _memory_tool(action, target, content, old_text, new_text, operations, store,
+                 session_id=None) -> tuple[str, str]:
     """``(outcome, result_json)``: ``rejected`` when refused or held before touching the store."""
     # An omitted optional string can arrive as "" (#90468): let the new_text alias fill it.
     if not content and new_text:
@@ -260,13 +294,20 @@ def _memory_tool(action, target, content, old_text, new_text, operations, store)
             return _invalid("operations must be a list of {action, content?, old_text?} objects.")
         if any(isinstance(op, dict) and op.get("action") == "replace" for op in operations):
             return _invalid(_REPLACE_REMOVED)
+        handoffs, mixed = _handoff_adds(operations)
+        if mixed:
+            return _invalid(
+                "Next-session handoffs cannot share a batch with durable memory changes. "
+                "Send the handoff add(s) in one separate memory call; nothing was written or staged.")
         denied = _background_delete_gate(store, action, operations, target)
         if denied is not None:
             return "rejected", denied
         # Approval gate: stages (background/gateway) or prompts inline (CLI); off by default.
-        gate_result = _apply_write_gate(store, "batch", target, None, None, operations)
+        gate_result = _apply_write_gate(store, "batch", target, None, None, operations, session_id)
         if gate_result is not None:
             return "rejected", gate_result
+        if handoffs:
+            return _queue_handoffs(handoffs, target, session_id)
         return _applied(store.apply_batch(target, operations))
     # Reject calls with neither operations[] nor the legacy top-level action.
     # Without this guard the dispatch falls through to the generic
@@ -281,11 +322,15 @@ def _memory_tool(action, target, content, old_text, new_text, operations, store)
         return _invalid(_REPLACE_REMOVED)
     if action not in _STORE_ACTIONS:
         return _invalid(f"Unknown action '{action}'. Use: add, patch, remove")
+    from tools.next_session_handoff import looks_like_next_session_handoff
+    handoff = action == "add" and looks_like_next_session_handoff(content or "")
     invalid = (_validate_single_op(store, action, target, content, old_text)
                or _background_delete_gate(store, action, None, target, content, old_text)
-               or _apply_write_gate(store, action, target, content, old_text))
+               or _apply_write_gate(store, action, target, content, old_text, session_id=session_id))
     if invalid is not None:
         return "rejected", invalid
+    if handoff:
+        return _queue_handoffs([content], target, session_id)
     return _applied(_STORE_ACTIONS[action][0](store, target, content, old_text))
 
 
@@ -363,9 +408,17 @@ def apply_memory_pending(payload: dict[str, Any], store: MemoryStore) -> dict[st
         return {"success": False, "error": "This destructive pending write predates entry pinning and cannot be "
                                            "verified; nothing was applied. Reject it and recreate the change."}
     if action == "batch":
+        handoffs, mixed = _handoff_adds(payload.get("operations") or [])
+        if mixed:
+            return {"success": False, "error": "A staged next-session handoff cannot be mixed with durable writes."}
+        if handoffs:
+            return json.loads(_queue_handoffs(handoffs, target, payload.get("session_id"))[1])
         return store.apply_batch(target, payload.get("operations") or [])
     if action not in _STORE_ACTIONS:
         return {"success": False, "error": f"Unknown staged action '{action}'."}
+    from tools.next_session_handoff import looks_like_next_session_handoff
+    if action == "add" and looks_like_next_session_handoff(payload.get("content") or ""):
+        return json.loads(_queue_handoffs([payload.get("content")], target, payload.get("session_id"))[1])
     return _STORE_ACTIONS[action][0](store, target, payload.get("content") or "", payload.get("old_text") or "",
                                      payload.get("matched_entry"))
 
@@ -393,7 +446,9 @@ MEMORY_SCHEMA = {
         "notes (environment, conventions, tool quirks, lessons).\n\n"
         "SKIP: trivial/obvious info, easily re-discovered facts, raw data dumps, task progress, "
         "completed-work logs, temporary TODO state (use session_search for those). Reusable "
-        "procedures belong in a skill, not memory."
+        "procedures belong in a skill, not memory. An explicit task for the next session may be "
+        "submitted as its own add call; it is delivered once to that session instead of becoming "
+        "durable memory."
     ),
     # Each field is advertised once, inside operations[]. The handler still ACCEPTS the
     # top-level single-op shape (action/content/old_text) and the new_text alias: models
@@ -471,6 +526,7 @@ registry.register(
     schema=MEMORY_SCHEMA,
     handler=lambda args, **kw: memory_tool(
         action=args.get("action", ""), target=args.get("target"), store=kw.get("store"),
+        session_id=kw.get("session_id"),
         **{k: args.get(k) for k in ("content", "old_text", "new_text", "operations")}),
     check_fn=check_memory_requirements,
     emoji="🧠",

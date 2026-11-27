@@ -99,7 +99,8 @@ class CLILoopsMixin:
         _cprint(f"  {_DIM}{t('cli.display.ui_redrawn')}{_RST}")
 
     def _cmd_clear(self, cmd_original: str):
-        from cli import ChatConsole, _build_compact_banner, _clear_output_history, _cprint, get_tool_definitions
+        from cli import (ChatConsole, _build_compact_banner, _clear_output_history, _cprint, _set_chrome_floor,
+                         get_tool_definitions)
         from hermes_cli.banner import build_welcome_banner
         if self._confirm_destructive_slash(
             "clear",
@@ -123,6 +124,11 @@ class CLILoopsMixin:
         out.erase_screen()
         out.cursor_goto(0, 0)
         out.flush()
+        # Forget the erased paint: its cursor row would send the first print's erase back up the screen.
+        self._app.renderer.reset(leave_alternate_screen=False)
+        # As at startup, the banner prints from the top row and the footer fills the rows below it: the
+        # whole screen for now, and each print takes its rows from that (_cprint).
+        _set_chrome_floor(out.get_size().rows)
         cc = ChatConsole()
         # The banner plan startup uses (show_banner): a gateway session's banner is the new
         # session's snapshot (its tools, MCP included, and main's short label), never this

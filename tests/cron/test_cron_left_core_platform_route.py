@@ -63,3 +63,36 @@ def test_webhook_route_stays_loaded_before_the_plugin_registers(feature):
     from gateway.webhook_targets import is_dispatchable_target
     assert platform_registry.get(feature.platform) is None
     assert is_dispatchable_target(feature.platform) is True
+
+
+@pytest.mark.parametrize("route", ["{p}:chat-1", "{p}"], ids=["chat", "home"])
+@pytest.mark.parametrize("feature", _MOVED, ids=[f.platform for f in _MOVED])
+def test_route_beside_a_delivered_one_still_names_the_install(feature, route):
+    """One destination resolving must not hide the moved one it skipped: the run reports the install."""
+    sent = []
+
+    async def sender(pconfig, chat_id, message, **_kw):
+        sent.append(chat_id)
+        return {"success": True, "platform": "standin", "chat_id": chat_id, "message_id": "m1"}
+
+    platform_registry.register(PlatformEntry(
+        name="standin", label="Stand-in", adapter_factory=lambda cfg: None, check_fn=lambda: True,
+        standalone_sender_fn=sender, cron_deliver_env_var="STANDIN_HOME_CHANNEL"))
+    try:
+        with patch("gateway.config.load_gateway_config", return_value=_config("standin")):
+            error = _deliver_result(
+                {"id": "j1", "name": "Report", "deliver": "standin:chat-0," + route.format(p=feature.platform)},
+                "the report", adapters=None, loop=None)
+    finally:
+        platform_registry.unregister("standin")
+    assert sent == ["chat-0"]
+    assert error and f"hermes plugins install {feature.plugin}" in error
+
+
+@pytest.mark.parametrize("feature", _MOVED, ids=[f.platform for f in _MOVED])
+def test_origin_on_a_moved_platform_names_the_install(feature):
+    error = _deliver_result(
+        {"id": "j1", "name": "Report", "deliver": "origin",
+         "origin": {"platform": feature.platform, "chat_id": "chat-1"}},
+        "the report", adapters=None, loop=None)
+    assert error and f"hermes plugins install {feature.plugin}" in error

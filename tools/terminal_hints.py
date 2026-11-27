@@ -76,7 +76,12 @@ _OUTPUT_HINTS: list[Callable[[str, str], Optional[str]]] = [
 # cover per-command. Checked after output patterns.
 _EXIT_CODE_HINTS: dict[int, str] = {
     126: "Exit 126: the file was found but is not executable — `chmod +x` it or invoke it via its interpreter (e.g. `bash script.sh`).",
-    124: "Exit 124: the command hit its timeout. Raise timeout= (foreground max 600s) or run it with background=true and notify_on_complete=true.",
+    # A timeout kills the command partway: re-running a job that writes or sends repeats the part that
+    # already ran (weak-model replay A/B: blind full re-runs 84% -> 62%, legitimate test/build re-runs flat).
+    124: ("Exit 124: the command hit its timeout and was stopped partway. Raise timeout= (foreground max 600s) "
+          "or run it with background=true and notify_on_complete=true. If the command writes, sends, creates or "
+          "charges anything, the part it already did has happened and was not undone: check what finished and "
+          "continue from there instead of re-running all of it."),
 }
 
 # The per-command wrapper runs ``builtin cd -- <cwd> || exit 126`` before the command when it

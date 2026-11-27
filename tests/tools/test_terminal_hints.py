@@ -18,6 +18,11 @@ class TestAnnotateFailureBasics:
         assert "126" in annotate_failure("./run.sh", 126, "")
         assert "timeout" in annotate_failure("sleep 999", 124, "")
 
+    def test_timeout_hint_warns_that_completed_work_was_not_undone(self):
+        hint = annotate_failure("python3 send_reminders.py customers.csv", 124, "sent 1/500\nsent 2/500")
+        assert "background=true" in hint  # the re-run advice for read/build commands stays
+        assert "was not undone" in hint and "instead of re-running all of it" in hint
+
     def test_unknown_failure_returns_none(self):
         assert annotate_failure("./x", 1, "some unrecognized error") is None
 

@@ -110,6 +110,13 @@ class ProcessOutputLogMixin:
                 while True:
                     # Decided BEFORE the read: once the process is gone every byte it wrote is readable.
                     alive = running()
+                    if not alive and drained == 0:
+                        # An adopter may face a large completed log: keep its final diagnostics,
+                        # not the first MiB, while still bounding an orphaned writer's drain.
+                        tail_start = os.fstat(stream.fileno()).st_size - _FINAL_DRAIN_MAX_BYTES
+                        if tail_start > stream.tell():
+                            stream.seek(tail_start)
+                            decoder.reset()
                     chunk = stream.read(65536)
                     if chunk:
                         if text := decoder.decode(chunk):

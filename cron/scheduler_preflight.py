@@ -250,11 +250,14 @@ class SharedRouteAdapters:
         return bool(self._primary) and bool(self._routes)
 
     def get(self, platform, target=None, default=None):
-        if not target or self._dispatch_routes is None:
-            return default
         adapter = self._primary.get(platform)
-        if adapter is None:
-            return default
+        return adapter if adapter is not None and self.serves(platform, target) else default
+
+    def serves(self, platform, target) -> bool:
+        """True when an exact route maps *target* to this profile and dispatch would pick it too;
+        the adapter-free half of ``get``, so preflight asks the same question delivery does."""
+        if not target or self._dispatch_routes is None:
+            return False
         platform_key = str(getattr(platform, "value", platform)).lower()
         chat_id = str(target.get("chat_id") or "") or None
         thread_id = target.get("thread_id")
@@ -286,8 +289,8 @@ class SharedRouteAdapters:
             if not route.matches(str(route.platform), **matched):
                 continue
             if self._dispatch_winner(route, matched, platform_key).profile == route.profile:
-                return adapter
-        return default
+                return True
+        return False
 
     def _dispatch_winner(self, route, matched, platform_key):
         """The route dispatch would pick for the target ``route`` matched: a chat-only route matches
@@ -319,20 +322,18 @@ def has_credential_platform(adapters, owned=None) -> bool:
         getattr(platform, "value", platform) != "local" for platform in adapters or ())
 
 
-def _shared_route_serves(job: dict, part: str) -> bool:
-    """*part* resolves to a target an exact primary route maps to this profile, the same test delivery's
-    ``SharedRouteAdapters`` applies; a bare platform with no origin or home resolves to nothing."""
-    target = _delivery._resolve_single_delivery_target(job, part)
-    if not target:
-        return False
-    served = object()
-    platform = str(target["platform"]).lower()
-    return shared_route_adapters_for_current_home({platform: served}).get(platform, target) is served
+def shared_route_serves(target: dict) -> bool:
+    """An exact primary route maps *target* to the profile being served (``SharedRouteAdapters.serves``)."""
+    routes, dispatch_routes = _primary_route_tables_for_current_home()
+    return SharedRouteAdapters({}, routes, dispatch_routes=dispatch_routes).serves(target["platform"], target)
 
 
 def _preflight_check_delivery(job: dict) -> Optional[str]:
-    """Check delivery targets resolve to configured platforms. ``local``/``origin``/``all`` are
-    never checked (no gateway-config load). Unknown platform always blocks; known platform blocks
+    """Check delivery targets resolve to configured platforms. Every destination (``origin`` and
+    ``all`` expanded) first goes through delivery's own ``resolve_cron_destination``, so a platform
+    that left core is blocked with the install exactly when delivery would name it, and passed when
+    a primary route serves the parsed chat. ``origin``/``all`` get no other check (no gateway-config
+    load). Unknown platform always blocks; known platform blocks
     only if the gateway config loads AND reports it unconnected; config load failures fail OPEN.
     ``failure_deliver`` gets the same rules — a typo'd failure platform would otherwise only
     surface when a failure occurs (NS-788)."""
@@ -342,31 +343,36 @@ def _preflight_check_delivery(job: dict) -> Optional[str]:
     lane_values = [deliver_value]
     if failure_deliver_value != deliver_value:
         lane_values.append(failure_deliver_value)
-    platform_parts: list[tuple[str, str]] = []
+    platform_parts: list[str] = []
     for lane_value in lane_values:
         for part in lane_value.split(","):
             part = part.strip()
-            if not part or part.lower() in {"local", "origin", "all"}:
+            if not part or part.lower() == "local":
                 continue
             # bot-chat targets deliver via a local subprocess; failures land in last_delivery_error.
             if _delivery.parse_bot_chat_deliver_token(part) is not None:
                 continue
             if _delivery.parse_room_deliver_token(part) is not None:
                 continue  # Group Chat posts write the room store directly; no adapter needed.
-            platform_parts.append((part.split(":", 1)[0].strip(), part))
+            for token in _delivery._expand_routing_tokens(part):
+                # A dry run of delivery: the same resolver names the install exactly when delivery would.
+                target, error = _delivery.resolve_cron_destination(job, token, from_broadcast=part.lower() in _delivery._ROUTING_TOKENS)
+                if error:
+                    return f"delivery target '{token}': {error}"
+                if token == part and part.lower() not in {"origin", "all"} and not (
+                        target and _delivery.moved_platform_hint(target["platform"])):
+                    platform_parts.append(part.split(":", 1)[0].strip())
     if not platform_parts:
         return None
 
     connected: Optional[set] = None
-    for platform_name, part in platform_parts:
+    for platform_name in platform_parts:
         if not _delivery._is_known_delivery_platform(platform_name):
-            if _shared_route_serves(job, part):
-                continue  # a satellite without the plugin rides the primary's bot for this exact target
-            unknown = f"delivery platform '{platform_name}' is not a known cron delivery target"
-            if hint := _delivery.moved_platform_hint(platform_name):
-                return unknown + hint
-            return (f"{unknown}. Fix the job's `deliver` value or configure "
-                    "the platform's gateway credentials.")
+            return (
+                f"delivery platform '{platform_name}' is not a known cron "
+                "delivery target. Fix the job's `deliver` value or configure "
+                "the platform's gateway credentials."
+            )
         if connected is None:
             try:
                 from gateway.config import load_gateway_config

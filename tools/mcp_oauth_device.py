@@ -141,6 +141,34 @@ def _positive_seconds(value, label):
     return value
 
 
+def _device_request_scope(context) -> "str | None":
+    """Scope for the device-authorization request, offline_access included when the server supports it.
+
+    The browser flow derives its scope on the SDK's 401-challenge path, which appends
+    ``offline_access`` when the authorization server advertises it (and the client can use refresh
+    tokens) — that is what keeps a refresh token alive. The device flow is Hermes-owned and never
+    sees that path, so it used to send only the user-configured scope and servers that gate refresh
+    tokens behind ``offline_access`` forced a fresh device visit every access-token lifetime.
+    An explicitly configured scope wins as the base (the user may have deliberately narrowed it);
+    only when no scope is configured do we derive the base the same way the SDK's browser flow does.
+    """
+    scope = context.client_metadata.scope
+    metadata = context.oauth_metadata
+    advertised = getattr(metadata, "scopes_supported", None) or []
+    if scope:
+        if advertised and "offline_access" in advertised and "offline_access" not in scope.split():
+            return f"{scope} offline_access"
+        return scope
+    if not advertised or "offline_access" not in advertised:
+        return None
+    try:
+        from mcp.client.auth.utils import get_client_metadata_scopes
+    except ImportError:  # older SDK without the SEP-2207 scope derivation
+        return "offline_access"
+    return get_client_metadata_scopes(None, context.protected_resource_metadata, metadata,
+                                      context.client_metadata.grant_types)
+
+
 async def _authorize(client, provider, cfg):
     from tools.mcp_oauth_provider import google_offline_access_params
     from tools.mcp_tool import sdk_httpx
@@ -148,8 +176,9 @@ async def _authorize(client, provider, cfg):
     context = provider.context
     resource = context.get_resource_url()
     data = {"client_id": context.client_info.client_id, "resource": resource}
-    if context.client_metadata.scope:
-        data["scope"] = context.client_metadata.scope
+    request_scope = _device_request_scope(context)
+    if request_scope:
+        data["scope"] = request_scope
     data.update(google_offline_access_params(context))
     data, headers = context.prepare_token_auth(data, {})
     response = await client.post(str(context.oauth_metadata.device_authorization_endpoint), data=data, headers=headers)

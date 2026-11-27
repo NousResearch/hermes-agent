@@ -53,6 +53,8 @@ def oauth_fixture(mode="success"):
                             "authorization_endpoint": base + "/authorize", "token_endpoint": base + "/token",
                             "response_types_supported": ["code"], "code_challenge_methods_supported": ["S256"],
                             "grant_types_supported": [DEVICE_GRANT, "refresh_token"]}
+                if mode in {"offline", "offline_unscoped"}:
+                    metadata["scopes_supported"] = ["offline_access"]
                 if mode != "unsupported":
                     metadata["device_authorization_endpoint"] = base + "/device"
                 if mode != "preregistered":
@@ -118,6 +120,10 @@ def run_cli(repo, mode):
     with tempfile.TemporaryDirectory(prefix="hermes-device-wire-") as directory, oauth_fixture(mode) as (base, wire):
         home = Path(directory)
         oauth = {"flow": "device", "cimd": False, "scope": "fixture.read", "timeout": 15}
+        if mode == "offline_unscoped":
+            # No user-configured scope: the request scope must still cover what
+            # the authorization server advertises.
+            oauth.pop("scope")
         if mode == "preregistered":
             oauth.update(client_id="fixture-client", client_secret="fixture-client-secret")
         config = {"mcp_servers": {"fixture": {"url": base + "/mcp", "auth": "oauth", "oauth": oauth}}}

@@ -707,3 +707,31 @@ class TestDetachedUpdateExitCodePublication:
             exec(compile(_WINDOWS_UPDATE_HELPER, "<update-helper>", "exec"), {"__name__": "__main__"})
         assert "" not in seen
         assert marker.read_text(encoding="utf-8") == "4"
+
+
+@pytest.mark.asyncio
+async def test_a_routed_chat_reads_the_answering_bots_registration(tmp_path, monkeypatch):
+    """A shared bot's plugin registers its platform in the bot owner's profile only; a chat routed to a profile
+    without that plugin keeps /update (the admitting bot's registration answers, not the chat's profile)."""
+    from gateway.platform_registry import PlatformEntry, platform_registry
+    from hermes_constants import hermes_home_key, reset_hermes_home_override, set_hermes_home_override
+    owner, routed = tmp_path / "owner", tmp_path / "owner" / "profiles" / "routed"
+    routed.mkdir(parents=True)
+    scope = hermes_home_key(owner)
+    platform_registry.register(PlatformEntry(
+        name="sharedbot", label="Shared", adapter_factory=lambda cfg: None, check_fn=lambda: True), scope=scope)
+    token = set_hermes_home_override(str(owner))
+    platform = Platform("sharedbot")
+    reset_hermes_home_override(token)
+    event = _make_event(platform=platform)
+    event.source._authorization_profile_home = str(owner)
+    monkeypatch.setenv("HERMES_MANAGED", "")
+    token = set_hermes_home_override(str(routed))
+    try:
+        assert platform_registry.get("sharedbot") is None
+        with patch("subprocess.Popen"):
+            result = await _make_runner()._handle_update_command(event)
+    finally:
+        reset_hermes_home_override(token)
+        platform_registry.unregister("sharedbot", scope=scope)
+    assert "only available from messaging platforms" not in result

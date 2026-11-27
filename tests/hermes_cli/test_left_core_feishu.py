@@ -89,6 +89,33 @@ def test_a_feishu_home_gets_the_plugin_once_with_no_placement_notice(tmp_path):
     assert config["agent"]["disabled_toolsets"] == ["hermes-feishu", "feishu_doc", "feishu_drive"]
 
 
+def test_a_feishu_disable_survives_the_automatic_install(tmp_path, monkeypatch):
+    """Greptile #159651: a credentialed home core ran Feishu for despite a bare ``feishu`` in plugins.disabled
+    gets the plugin through the real install and enable path, yet the entry stays and Feishu stays off; the
+    outcome line names the enable that turns it on."""
+    from types import SimpleNamespace
+    import hermes_cli.plugins_cmd_install as pci
+    monkeypatch.setattr(pci, "_resolve_source", lambda identifier, catalog_name: (
+        SimpleNamespace(name=catalog_name, known_issues=()), catalog_name, [], None))
+
+    def place(entry, identifier, **_kw):  # the clone, network-free
+        target = home / "plugins" / entry.name
+        target.mkdir(parents=True)
+        (target / "plugin.yaml").write_text(f"name: {entry.name}\nversion: 1.0.0\nkind: platform\n", encoding="utf-8")
+        return target, {"name": entry.name}, entry.name
+    monkeypatch.setattr(pci, "_place_tree", place)
+    monkeypatch.setattr("hermes_cli.plugins_admission.admit_plugin_set_change",
+                        lambda *a, **k: pytest.fail("the automatic install enabled a plugin the home disabled"))
+    home = _home(tmp_path, env=_CREDS, config="plugins:\n  disabled: [feishu]\n")
+    said = []
+
+    assert lcm.migrate_home(home, install=lcm._install_into(home, consent=True), say=said.append) == ["feishu"]
+    from hermes_cli.config import read_user_config_raw
+    plugins = read_user_config_raw(home / "config.yaml")["plugins"]
+    assert plugins["disabled"] == ["feishu"] and "feishu" not in (plugins.get("enabled") or [])
+    assert "`hermes plugins enable feishu` turns it on" in said[0]
+
+
 def test_a_platform_keeps_exactly_the_feishu_toolsets_it_selected(tmp_path):
     """Resolved per toolset: a saved ``feishu_doc`` alone kept the comment tools off; ``hermes-feishu``
     (or a composite) carried both; a platform with no saved list had neither."""

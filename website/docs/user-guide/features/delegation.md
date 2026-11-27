@@ -93,6 +93,8 @@ One exception: when the parent has a resolved workspace directory, every subagen
 
 The `context` and `goal` arrive as the subagent's first user message, context first. Its system prompt carries nothing task-specific, so the subagents of one parent send an identical prompt prefix and can read each other's prompt cache, including a context they share. That first message is kept verbatim through context compression.
 
+Subagents also start with the default Hermes identity, not your `SOUL.md`. Set `delegation.inherit_soul: true` to give default subagents your `SOUL.md` as their identity, the same way cron jobs load it. Memory and cwd context files stay skipped either way. A subagent routed to a profile through `delegation.backends.profile_routes` already uses that profile's `SOUL.md`.
+
 This means the parent agent must pass **everything** the subagent needs in the call:
 
 ```python
@@ -820,6 +822,7 @@ delegation:
   # auto_resume: false                      # Opt-in: the gateway resumes limit/restart-stopped children itself (spends tokens unattended)
   # auto_resume_deadline_minutes: 360       # Give up (one failure to the parent) this long after a child's first stop
   model: "google/gemini-3-flash-preview"             # Optional provider/model override
+  # inherit_soul: false                     # true = default children get SOUL.md as their identity (memory and cwd context files stay skipped)
   provider: "openrouter"                             # Optional built-in provider
 
 # Or use a direct custom endpoint instead of provider:

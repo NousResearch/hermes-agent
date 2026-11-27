@@ -391,14 +391,13 @@ class PluginHost:
         ``TimeoutError`` when no answer comes within ``timeout`` seconds (the host is left running)."""
         from hermes_cli.plugin_isolation import refuse_moved_plugin_dir
         self.ensure_started()
-        # The request waited in its profile's queue, and the host may have just started, since the lookup read
-        # ``dashboard_dir``: its name is checked right before the host loads it.
-        refuse_moved_plugin_dir(dashboard_dir)
+        # The request waited in its profile's queue, and the host may have just started or have releases to flush
+        # first, since the lookup read ``dashboard_dir``: its name is checked right before the host is sent it.
         return self._call("asgi", {"plugin": plugin_name, "dashboard_dir": dashboard_dir, "api_file": api_file,
                                    "method": method, "path": path, "query": query,
                                    "authenticated": authenticated is True,
                                    "headers": [list(h) for h in headers], "body": encode(body)},
-                          timeout=timeout)
+                          timeout=timeout, before_send=lambda: refuse_moved_plugin_dir(dashboard_dir))
 
     def _unload(self, plugin_key: str) -> None:
         self._contexts.pop(plugin_key, None)
@@ -412,8 +411,10 @@ class PluginHost:
 
     # -- parent -> host -----------------------------------------------------------------------------
     def _call(self, method: str, params: dict[str, Any], *, generation: Optional[int] = None,
-              timeout: Optional[float] = None, returns: Any = None) -> Any:
-        """``returns`` is the type a core ABC declares for the result; the reply is rebuilt as it."""
+              timeout: Optional[float] = None, returns: Any = None,
+              before_send: Optional[Callable[[], None]] = None) -> Any:
+        """``returns`` is the type a core ABC declares for the result; the reply is rebuilt as it. ``before_send``
+        runs once the queued releases are flushed, right before *method* is sent."""
         channel = self._channel
         try:
             if channel is None:
@@ -423,6 +424,8 @@ class PluginHost:
             if self._releases:
                 released, self._releases = self._releases, []
                 channel.call("release", {"refs": released})
+            if before_send is not None:
+                before_send()
             resolve = functools.partial(self._resolve_result_ref, base=_host_object_base(returns))
             return restore(decode(channel.call(method, params, timeout=timeout), resolve), returns)
         except PluginHostUnavailable as exc:

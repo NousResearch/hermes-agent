@@ -309,13 +309,14 @@ def test_a_launch_home_name_that_moves_forwards_no_dashboard_plugin(moved, tmp_p
 
 
 @pytest.mark.platforms("posix")  # directory symlinks
-@pytest.mark.parametrize("moved", ["in_the_queue", "while_the_host_starts"])
+@pytest.mark.parametrize("moved", ["in_the_queue", "while_the_host_starts", "while_releases_flush"])
 def test_a_dashboard_plugin_whose_home_name_moves_after_its_lookup_is_not_loaded_by_the_host(moved, tmp_path,
                                                                                             monkeypatch):
     """A forwarded request waits in its profile's queue, and the host may start cold, before the host loads the
     plugin's path. The lookup ran through a second live name for the launch home (ops2) and found the copy read
-    through ops; ops repointed meanwhile would hand the host another directory's plugin code, while ops2 still
-    passes. The host checks the path's own name right before the load."""
+    through ops; ops repointed meanwhile, or while the host is sent releases queued ahead of the request, would hand
+    the host another directory's plugin code, while ops2 still passes. The path's own name is checked right before
+    the host is sent it."""
     from hermes_cli import web_server, web_server_dashboard
     from hermes_cli.plugin_host import PluginHost
     from hermes_cli.plugins_loader import PluginHomeMoved
@@ -344,15 +345,25 @@ def test_a_dashboard_plugin_whose_home_name_moves_after_its_lookup_is_not_loaded
     monkeypatch.setattr(PluginHost, "ensure_started",
                         lambda self: starts.append(1) if len(starts) < 1 or moved != "while_the_host_starts"
                         else (starts.append(1), repoint_ops()))
-    monkeypatch.setattr(PluginHost, "_call", lambda self, method, params, **kw: loaded.append(params["dashboard_dir"]))
+
+    class Channel:  # the host's end: queued releases go first, then the request that hands it the path
+        def call(self, method, params, timeout=None):
+            if method == "release" and moved == "while_releases_flush":
+                repoint_ops()
+            elif method == "asgi":
+                loaded.append(params["dashboard_dir"])
+            return {}
+
     plugins_mod._reset_plugin_managers_for_tests()
     token = set_hermes_home_override(profiles / "ops2")
     try:
         host, dashboard_dir, api_file = web_server_dashboard._hosted_plugin_for_request("dash")
+        host._channel = Channel()
         host.asgi_request("dash", dashboard_dir, api_file, "GET", "/", "", [], b"")
         assert loaded == [dashboard_dir]
         if moved == "in_the_queue":
             repoint_ops()  # while the request waits for its profile's threads
+        host._release(host._generation, 7)  # an object proxy collected meanwhile: its release goes out first
         with pytest.raises(PluginHomeMoved):
             host.asgi_request("dash", dashboard_dir, api_file, "GET", "/", "", [], b"")
         assert loaded == [dashboard_dir]

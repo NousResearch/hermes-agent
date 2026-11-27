@@ -100,9 +100,9 @@ def _note_success(home: Path, plugin: str) -> None:
 
 def _plugin_choice(home: Path):
     """*home*'s ``memory.provider`` and plugin lists as the agent sees them, in one side-effect-free
-    read: the loader's YAML layers (user config, ``${VAR}`` expansion, managed overlay; no defaults)
-    in *home*'s own profile scope, so a reference resolves against that profile's environment, not the
-    launch profile's. This scans every profile on ``hermes update``; the CLI config loader would
+    read: the loader's YAML layers (user config, ``${VAR}`` expansion, managed overlay; no defaults).
+    The active home (an agent start) reads in the scope it has; another home (the update scan) reads its
+    own files only, and a ``${VAR}`` provider there is left to that profile's agent start. This scans every profile on ``hermes update``; the CLI config loader would
     set a profile up (directories, ``SOUL.md``) and the cached effective reader keeps a config backup,
     just to be read. A config that does not parse selects,
     enables and disables nothing, as in the memory loader."""
@@ -112,17 +112,24 @@ def _plugin_choice(home: Path):
     from gateway.config_loader import read_yaml_layers
     from hermes_constants import get_hermes_home, hermes_home_key
     from plugins.plugin_loader import PluginChoice
+    from pm.plugins_state import read_home_selection
     # The active home (agent start) keeps the scope it already has; any other (the update scan) gets its
     # own files only: no vault or helper is asked for secrets just to learn there is nothing to migrate.
     bound = hermes_home_key(get_hermes_home()) == hermes_home_key(home)
     try:
         with nullcontext() if bound else bind_profile_scope(home, hydrate_secrets=False):
             config = read_yaml_layers(home)
+        raw = "" if bound else str(((read_home_selection(home) or {}).get("memory") or {}).get("provider") or "")
     except Exception:  # health: allow BLE001 -- malformed config.yaml: the loader turns nothing on from it either
         logger.debug("memory provider migration: unreadable config for %s", home, exc_info=True)
         return PluginChoice()
     memory, plugins = (config.get(key) if isinstance(config.get(key), dict) else {} for key in ("memory", "plugins"))
     selected = memory.get("provider")
+    if "${" in raw:
+        # A reference may resolve through a secret source this scan does not load: which provider the agent
+        # uses is unknown here, so its own start (full scope) migrates it, never a guess from the scan.
+        logger.info("memory provider migration: %s selects memory.provider %r; left to its agent start", home, raw)
+        selected = ""
     enabled, disabled = (frozenset(v for v in plugins.get(key) if isinstance(v, str))
                          if isinstance(plugins.get(key), list) else frozenset() for key in ("enabled", "disabled"))
     return PluginChoice(selected.strip() if isinstance(selected, str) else "", enabled, disabled)

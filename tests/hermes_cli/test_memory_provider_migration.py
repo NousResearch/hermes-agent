@@ -751,9 +751,12 @@ def test_scanning_a_profile_for_a_missing_provider_writes_nothing_into_it(tmp_pa
     assert sorted(p.name for p in other.iterdir()) == ["config.yaml"]
 
 
-def test_a_provider_reference_resolves_in_the_profile_being_migrated(tmp_path, monkeypatch):
-    """`memory.provider: ${MEMORY_BACKEND}` in a named profile resolves against that profile's `.env`,
-    as its agent does, not the environment of the process running `hermes update`."""
+def test_a_provider_reference_is_migrated_by_its_own_profile_not_guessed_by_the_scan(tmp_path, monkeypatch):
+    """`memory.provider: ${MEMORY_BACKEND}` in a named profile may resolve through a secret source the
+    update scan does not load, so the scan installs nothing for it (never the launch environment's value).
+    The profile's own agent start, in its scope, resolves it from the profile's `.env` and migrates that."""
+    from agent.runtime_scope import bind_profile_scope
+
     profile = tmp_path / "launch" / "profiles" / "work"
     profile.mkdir(parents=True)
     (profile / "config.yaml").write_text("memory:\n  provider: ${MEMORY_BACKEND}\n", encoding="utf-8")
@@ -762,10 +765,17 @@ def test_a_provider_reference_resolves_in_the_profile_being_migrated(tmp_path, m
     monkeypatch.setenv("MEMORY_BACKEND", "byterover")
     monkeypatch.setattr(mig, "catalog_source", lambda n: n)
     installs: list[str] = []
-    assert mig.migrate_home(profile, install=lambda n: installs.append(n) or (profile / "plugins" / n).mkdir(
-        parents=True) or {"ok": True}, say=lambda s: None) == "retaindb"
-    assert installs == ["retaindb"]
 
+    def install(n):
+        installs.append(n)
+        (profile / "plugins" / n).mkdir(parents=True)
+        return {"ok": True}
+
+    assert mig.migrate_home(profile, install=install, say=lambda s: None) is None  # the update scan
+    assert installs == []
+    with bind_profile_scope(profile):  # that profile's agent start
+        assert mig.migrate_home(profile, install=install, say=lambda s: None) == "retaindb"
+    assert installs == ["retaindb"]
 
 def test_a_busy_lock_met_by_cron_is_explained_to_the_next_watched_start(tmp_path, monkeypatch):
     """A cron run meets another installer's lock and only logs it. A chat started in the same process

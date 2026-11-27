@@ -108,7 +108,7 @@ class TestCollectKanbanNotifications:
 
         conn = kbc.connect()
         try:
-            assert kb.archive_task(conn, tid)
+            assert kb.archive_task(conn, tid, reason="cleanup", actor="tester").ok
         finally:
             conn.close()
 

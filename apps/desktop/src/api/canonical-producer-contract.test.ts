@@ -31,6 +31,15 @@ function canonicalContract(): Map<string, Schema> {
 
 const CONTRACT = canonicalContract()
 
+// gateway/session_controls.py::dispatch routes `profile` BEFORE the closed-contract check and
+// strips it (routing-envelope key) on the owner's own home for the strict verbs, which are the
+// methods whose schemas close without `profile`. Mirror that or the fixture is stricter than
+// the owner it claims to reproduce.
+const PROFILE_IMPLICIT = new Set(['session.create', 'session.list', 'session.info', 'session.resume', 'session.detach',
+  'prompt.submit', 'prompt.receipt', 'prompt.cancel', 'prompt.resolve_unknown',
+  'session.interrupt', 'session.events.since', 'session.mutate', 'session.stats',
+  'approval.respond', 'clarify.respond'])
+
 function problems(method: string, params: Record<string, unknown>): string[] {
   const schema = CONTRACT.get(method)
 
@@ -38,9 +47,13 @@ function problems(method: string, params: Record<string, unknown>): string[] {
     return []
   }
 
+  const admitted = PROFILE_IMPLICIT.has(method) && typeof params.profile === 'string' && params.profile
+    ? Object.fromEntries(Object.entries(params).filter(([key]) => key !== 'profile'))
+    : params
+
   return [
-    ...Object.keys(params).filter(key => !(key in schema.properties)),
-    ...(schema.required ?? []).filter(key => !(key in params))
+    ...Object.keys(admitted).filter(key => !(key in schema.properties)),
+    ...(schema.required ?? []).filter(key => !(key in admitted))
   ]
 }
 

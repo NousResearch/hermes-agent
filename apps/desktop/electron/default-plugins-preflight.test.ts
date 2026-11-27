@@ -655,3 +655,63 @@ console.log(JSON.stringify(out))
   expect(gatewayArgv).toEqual(['gateway', 'ensure', '--json'])
   expect(preflightEnv).toEqual(gatewayEnv)
 })
+
+test('createPreflightGatewayRunner aborts cleanly without calling runEnsure when signal is aborted', async () => {
+  const alreadyAborted = new AbortController()
+  alreadyAborted.abort(new Error('lifecycle stopped'))
+
+  const runEnsure = vi.fn(async () => ({ code: 0, stdout: '{}', stderr: '' }))
+  const runPreflight = vi.fn(runDefaultPluginsPreflight)
+  const onBefore = vi.fn()
+  const onAfter = vi.fn()
+
+  const runner = createPreflightGatewayRunner({
+    hermesHome: tmpDir,
+    resolveCwd: () => tmpDir,
+    buildSpawnEnv: env => env,
+    buildParentEnv: () => ({}),
+    runEnsure,
+    log: () => undefined,
+    getSignal: () => alreadyAborted.signal,
+    runPreflight
+  })
+
+  const backend = { kind: 'python', command: process.execPath, env: {}, shell: false }
+
+  await expect(runner.run(backend, 'default', { onBefore, onAfter })).rejects.toThrow('lifecycle stopped')
+  expect(onBefore).not.toHaveBeenCalled()
+  expect(runPreflight).not.toHaveBeenCalled()
+  expect(onAfter).not.toHaveBeenCalled()
+  expect(runEnsure).not.toHaveBeenCalled()
+
+  // Also abort mid-preflight: runPreflight returns aborted=true and runEnsure must still NOT be called.
+  const midFlight = new AbortController()
+
+  const midRunner = createPreflightGatewayRunner({
+    hermesHome: tmpDir,
+    resolveCwd: () => tmpDir,
+    buildSpawnEnv: env => env,
+    buildParentEnv: () => ({}),
+    runEnsure,
+    log: () => undefined,
+    getSignal: () => midFlight.signal,
+    runPreflight: async () => {
+      midFlight.abort(new Error('aborted during preflight'))
+
+      return {
+        skipped: false,
+        exitCode: null,
+        timedOut: false,
+        aborted: true,
+        elapsedMs: 1,
+        payload: null,
+        error: 'aborted while starting',
+        logLine: null
+      }
+    }
+  })
+
+  await expect(midRunner.run(backend, 'default', { onBefore, onAfter })).rejects.toThrow('aborted during preflight')
+  expect(onAfter).not.toHaveBeenCalled()
+  expect(runEnsure).not.toHaveBeenCalled()
+})

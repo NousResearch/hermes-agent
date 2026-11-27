@@ -299,7 +299,7 @@ def _recheck_default_plugins(post_update) -> None:
         return
     try:
         step()
-    except Exception:  # health: allow BLE001 -- a recheck never stops a start
+    except (Exception, SystemExit):  # health: allow BLE001 -- a recheck never stops a start (ConfigBackendUnavailable is a SystemExit)
         logger.debug("default plugin recheck failed", exc_info=True)
 
 

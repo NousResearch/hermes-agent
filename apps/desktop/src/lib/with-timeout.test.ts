@@ -117,4 +117,36 @@ describe('withPausableTimeout', () => {
       vi.useRealTimers()
     }
   })
+
+  it('disposes the pause subscription and cancels the timer when aborted', async () => {
+    vi.useFakeTimers()
+
+    try {
+      const controller = new AbortController()
+      const unsubSpy = vi.fn()
+      const onTimeout = vi.fn()
+
+      const promise = withPausableTimeout(
+        new Promise<never>(() => undefined),
+        1_000,
+        'boot timed out',
+        () => unsubSpy,
+        () => false,
+        onTimeout,
+        controller.signal
+      )
+
+      const caught = promise.catch(err => err)
+
+      controller.abort(new Error('unmounted'))
+      const err = await caught
+      expect((err as Error).message).toBe('unmounted')
+      expect(unsubSpy).toHaveBeenCalledTimes(1)
+
+      await vi.advanceTimersByTimeAsync(10_000)
+      expect(onTimeout).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })

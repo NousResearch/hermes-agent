@@ -181,7 +181,12 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
                   SimpleNamespace(LogLevel=SimpleNamespace(INFO="INFO", WARNING="WARNING"))),
             patch("plugins.platforms.feishu.adapter.EventDispatcherHandler") as mock_handler_class,
             patch("plugins.platforms.feishu.adapter.FeishuWSClient") as mock_ws_client,
-            patch("plugins.platforms.feishu.adapter._run_official_feishu_ws_client"),
+            patch(
+                "plugins.platforms.feishu.adapter._run_official_feishu_ws_client",
+                # The SDK thread reports its own link up once the handshake lands; connect() waits
+                # for that proof before it reports success.
+                side_effect=lambda ws_client, adapter_obj: adapter_obj._ws_link_up(ws_client),
+            ),
             patch("plugins.platforms.feishu.adapter.acquire_scoped_lock", return_value=(True, None)),
             patch("plugins.platforms.feishu.adapter.release_scoped_lock"),
             patch.object(adapter, "_hydrate_bot_identity", new=AsyncMock()),
@@ -195,8 +200,11 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
             future.set_result(None)
 
             class _Loop:
-                def run_in_executor(self, executor, *_args, **_kwargs):
+                def run_in_executor(self, executor, func, *args, **kwargs):
                     submitted_executors.append(executor)
+                    # The SDK thread starts here and reports its link up (see the patched runner);
+                    # connect() waits for that proof.
+                    func(*args)
                     return future
                 def is_closed(self):
                     return False

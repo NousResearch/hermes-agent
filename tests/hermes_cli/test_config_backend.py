@@ -223,9 +223,11 @@ class TestPipelinesConsultTheBackend:
         assert config_effective.load_user_config_effective()["model"]["default"] == "my-model"
         assert {"version", "read"} <= backend.ops(home)
 
-    def test_cli_loader(self, recording):
+    def test_cli_loader(self, recording, monkeypatch):
         from hermes_cli.cli_config_load import load_cli_config
         home, backend = recording
+        # load_cli_config reads cli's import-time home; another file importing cli at collection pins it elsewhere.
+        monkeypatch.setattr("cli._hermes_home", home)
         load_cli_config()
         assert {"exists", "read"} <= backend.ops(home)
 

@@ -1,19 +1,19 @@
 name: hermes-pages
 title: Hermes Pages
 repo: https://github.com/kenhendricks00/hermes-pages-plugin
-sha: 1587b72c6c35963fa7c482d386658fe69892e2d6
+sha: 05c976e56299cc4901b56859781127f5fe6de28f
 description: Offline-first response pages with explicit publishing and guided free Cloudflare Pages hosting.
 maintainer: kenhendricks00
 tier: community
 category: web
 requires_hermes: ">=0.21.6"
-version: "1.0.0"
+version: "1.0.1"
 docs_url: https://github.com/kenhendricks00/hermes-pages-plugin
-image: https://raw.githubusercontent.com/kenhendricks00/hermes-pages-plugin/1587b72c6c35963fa7c482d386658fe69892e2d6/docs/banner.png
+image: https://raw.githubusercontent.com/kenhendricks00/hermes-pages-plugin/05c976e56299cc4901b56859781127f5fe6de28f/docs/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/kenhendricks00/hermes-pages-plugin/1587b72c6c35963fa7c482d386658fe69892e2d6/docs/light.png
-  - https://raw.githubusercontent.com/kenhendricks00/hermes-pages-plugin/1587b72c6c35963fa7c482d386658fe69892e2d6/docs/dark.png
-  - https://raw.githubusercontent.com/kenhendricks00/hermes-pages-plugin/1587b72c6c35963fa7c482d386658fe69892e2d6/docs/phone.png
+  - https://raw.githubusercontent.com/kenhendricks00/hermes-pages-plugin/05c976e56299cc4901b56859781127f5fe6de28f/docs/light.png
+  - https://raw.githubusercontent.com/kenhendricks00/hermes-pages-plugin/05c976e56299cc4901b56859781127f5fe6de28f/docs/dark.png
+  - https://raw.githubusercontent.com/kenhendricks00/hermes-pages-plugin/05c976e56299cc4901b56859781127f5fe6de28f/docs/phone.png
 readme: true
 platforms: [linux, macos, windows]
 known_issues:

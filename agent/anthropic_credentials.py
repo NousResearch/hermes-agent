@@ -138,6 +138,11 @@ _SPENT_ROTATION_LOCK = threading.Lock()
 # Fingerprints of Claude Code refresh tokens the endpoint rejected terminally: the WARNING fires once per token
 # per process and later attempts skip the POST (a re-login rotates the token, so a new one is tried normally).
 _DEAD_REFRESH_TOKEN_FINGERPRINTS: set = set()
+# The non-terminal error this thread's latest borrowed-login refresh hit (DNS down after a wake, token
+# endpoint timeout). ``_refresh_oauth_token`` returns None either way; callers that turn "no token" into a
+# user-facing verdict read it with ``take_refresh_failure`` so an unreachable endpoint is not reported as a
+# missing login.
+_REFRESH_FAILURE = threading.local()
 _SPENT_ROTATION_FINGERPRINTS: OrderedDict[str, None] = OrderedDict()
 _SPENT_ROTATION_MAX_TRACKED = 64
 _SPENT_ROTATION_SIDECAR_COMMENT = (
@@ -470,6 +475,15 @@ def refresh_anthropic_oauth_pure(refresh_token: str, *, use_json: bool = False) 
     return _oauth_token_state(result, fallback_refresh_token=refresh_token)
 
 
+def take_refresh_failure() -> Optional[BaseException]:
+    """Return and clear the non-terminal error this thread's latest Claude Code token refresh hit, or None.
+
+    Call once before resolving (to drop a stale record) and once after a resolve came back empty."""
+    exc = getattr(_REFRESH_FAILURE, "exc", None)
+    _REFRESH_FAILURE.exc = None
+    return exc
+
+
 def _refresh_oauth_token(creds: dict[str, Any]) -> Optional[str]:
     """Refresh an expired Claude Code OAuth token, returning the new access token. Refresh tokens are single-use and
     Claude Code refreshes on its own schedule, so we first re-read the live sources and adopt an already-rotated
@@ -512,6 +526,7 @@ def _refresh_oauth_token(creds: dict[str, Any]) -> Optional[str]:
                         "login. Run 'hermes auth add anthropic' to give Hermes its own login.", e)
                 else:
                     logger.debug("Failed to refresh Claude Code token: %s", e)
+                    _REFRESH_FAILURE.exc = e
                 return None
             # The POST spent ``refresh_token``; this write is the commit step. On failure, fail closed and
             # mark the pre-rotation pair as spent.

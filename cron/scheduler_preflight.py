@@ -62,6 +62,8 @@ def _is_transient_provider_resolve_error(exc: BaseException) -> bool:
         if any(m in module for m in ("httpx", "httpcore", "aiohttp")) and any(
             needle in msg for needle in _TRANSIENT_HTTP_NEEDLES):
             return True
+        if isinstance(cur, TimeoutError):  # socket.timeout; urllib's read timeout
+            return True
         if isinstance(cur, OSError):
             if isinstance(cur, socket.gaierror):
                 if cur.errno in eai_transient:
@@ -114,6 +116,12 @@ def _preflight_check_provider_key(job: dict, cfg: dict) -> Optional[str]:
         if is_rate_limited_auth_error(exc):
             # Quota/rate-limit is not a missing credential: let the real path report it and hold
             # the job through the provider's window (cron/quota_hold.py, #89376).
+            return None
+        if getattr(exc, "code", None) == "refresh_failed" or _is_transient_provider_resolve_error(exc):
+            # A login that exists but could not be refreshed (DNS down after a wake, a timeout, a
+            # token-endpoint 5xx) is not a missing credential: let the real path report it. A
+            # network/timeout cause then fails as model-unreachable and the bounded re-run ladder
+            # (cron/unreachable_retry.py) retries it.
             return None
         return (
             f"provider credential missing: {exc} {_credential_store_scope_label()}. "

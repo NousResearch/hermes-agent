@@ -410,15 +410,25 @@ def _anthropic_cfg_base_url(model_cfg: dict[str, Any]) -> str:
 
 
 def _anthropic_token_or_raise(*, model: str | None = None) -> str:
-    from agent.anthropic_credentials import resolve_anthropic_token
+    from agent.anthropic_credentials import resolve_anthropic_token, take_refresh_failure
+    take_refresh_failure()  # drop a record left by an earlier, unrelated resolve on this thread
     token = resolve_anthropic_token(model=model)
     if not token:
+        refresh_failure = take_refresh_failure()
         # A key the pool benched for *this* model is not a missing credential; telling the
         # user to re-authenticate would send them chasing a cooldown that lifts on its own.
-        if model and resolve_anthropic_token():
+        rate_limited = bool(model and resolve_anthropic_token())
+        take_refresh_failure()  # the probe above may retry the refresh; its record is not news
+        if rate_limited:
             raise AuthError(f"Anthropic credentials are rate-limited for {model}; "
                             "other Claude models remain available (see `hermes auth list`).",
                             provider="anthropic", code="model_rate_limited")
+        if refresh_failure is not None:
+            # An expired login whose refresh failed without a dead grant (endpoint unreachable,
+            # timeout, 5xx) is not a missing login. Chain the cause so callers can classify it
+            # (cron's unreachable-model re-run ladder walks __cause__).
+            raise AuthError(f"Anthropic login is expired and could not be refreshed: {refresh_failure}",
+                            provider="anthropic", code="refresh_failed", retryable=True) from refresh_failure
         raise AuthError(_NO_ANTHROPIC_CREDENTIALS_MSG)
     return token
 

@@ -214,8 +214,6 @@ TOOLSETS = {
     "hermes-feishu": _bundle("Feishu/Lark bot toolset - enterprise messaging via Feishu/Lark (full access)", _FEISHU_TOOLS),
     "hermes-weixin": _bundle("Weixin bot toolset - personal WeChat messaging via iLink (full access)"),
     "hermes-qqbot": _bundle("QQBot toolset - QQ messaging via Official Bot API v2 (full access)"),
-    "hermes-wecom": _bundle("WeCom bot toolset - enterprise WeChat messaging (full access)"),
-    "hermes-wecom-callback": _bundle("WeCom callback toolset - enterprise self-built app messaging (full access)"),
     "hermes-sms": _bundle("SMS bot toolset - interact with Hermes via SMS (Twilio)"),
     "hermes-webhook": _ts("Webhook toolset - receive and process external webhook events", _HERMES_WEBHOOK_SAFE_TOOLS),
     "hermes-gateway": _ts(
@@ -225,7 +223,7 @@ TOOLSETS = {
             "hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack",
             "hermes-signal", "hermes-bluebubbles", "hermes-email",
             "hermes-sms", "hermes-mattermost", "hermes-matrix",
-            "hermes-feishu", "hermes-wecom", "hermes-wecom-callback", "hermes-weixin",
+            "hermes-feishu", "hermes-weixin",
             "hermes-qqbot", "hermes-webhook",
         ],
     ),
@@ -340,7 +338,11 @@ def _plugin_platform_bundle(name: str) -> list[str]:
     try:
         from gateway.platform_registry import platform_registry
         if not platform_registry.is_registered(platform_name):
-            return []
+            # ``hermes-wecom-callback`` names platform ``wecom_callback``: toolset names use dashes
+            # where platform names use underscores (the name core's built-in bundle had).
+            platform_name = platform_name.replace("-", "_")
+            if not platform_registry.is_registered(platform_name):
+                return []
     except Exception:
         return []
     tools = set(_HERMES_CORE_TOOLS)

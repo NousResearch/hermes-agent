@@ -1493,14 +1493,6 @@ platform:
       expired: "Diese Anfrage ist abgelaufen — senden Sie Ihre Nachricht erneut."
     standalone:
       attachments_not_deliverable: "[{count} Anhang/Anhänge erzeugt; aus Cron nicht zustellbar]"
-  wecom:
-    media:
-      kind_image: "Bild"
-      kind_video: "Video"
-      kind_voice: "Sprachnachricht"
-      file_too_large: "Die Dateigröße von {size_mb}MB überschreitet das 20-MB-Limit von WeCom und kann nicht gesendet werden. Versuchen Sie, die Datei zu komprimieren oder zu verkleinern."
-      voice_format_downgraded: "Das Sprachformat {content_type} wird nicht unterstützt (WeCom akzeptiert nur AMR); stattdessen als Datei gesendet."
-      size_downgraded: "{label}-Größe von {size_mb}MB überschreitet das Limit von {cap}; stattdessen als Datei gesendet."
   email:
     image_line: "Bild: {url}"
     standalone_subject: "Hermes Agent"

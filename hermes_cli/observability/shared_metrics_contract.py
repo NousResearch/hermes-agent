@@ -178,7 +178,8 @@ RETIRED_TOOL_NAMES = frozenset({
     "spotify_albums", "spotify_devices", "spotify_library", "spotify_playback", "spotify_playlists",
     "spotify_queue", "spotify_search", "yb_query_group_info", "yb_query_group_members", "yb_search_sticker",
     "yb_send_dm", "yb_send_sticker"})
-RETIRED_TOOLSET_NAMES = frozenset({"hermes-dingtalk", "hermes-yuanbao", "setup", "spotify", "start_chat", "yuanbao"})
+RETIRED_TOOLSET_NAMES = frozenset({"hermes-dingtalk", "hermes-wecom", "hermes-wecom-callback", "hermes-yuanbao", "setup", "spotify",
+                                   "start_chat", "yuanbao"})
 _LIVE_TOOL_NAMES = BUILTIN_TOOL_NAMES | BRIDGE_TOOL_NAMES | {"connector", "mcp", "plugin", "unknown"}
 TOOL_NAMES = _LIVE_TOOL_NAMES | RETIRED_TOOL_NAMES
 TOOL_ERROR_CLASSES = frozenset({

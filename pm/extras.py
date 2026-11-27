@@ -45,7 +45,6 @@ ANCHORS: dict[str, str | tuple[str, ...]] = {
     "slack": "slack_bolt",
     "matrix": ("mautrix", "asyncpg", "aiosqlite", "markdown", "aiohttp_socks"),
     "feishu": "lark_oapi",
-    "wecom": "defusedxml",
     "keychain": "keyring",
     "teams": "microsoft_teams.apps",
     "modal": "modal",

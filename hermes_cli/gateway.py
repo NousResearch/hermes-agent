@@ -4660,7 +4660,7 @@ def _print_info_lines(*lines: str) -> None:
 
 
 
-# WhatsApp/WeCom/Feishu setup flows live in their plugins' adapter.py::interactive_setup.
+# WhatsApp/Feishu setup flows live in their plugins' adapter.py::interactive_setup.
 
 
 def _running_under_s6() -> bool:

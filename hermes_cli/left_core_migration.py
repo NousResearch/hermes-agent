@@ -233,6 +233,32 @@ def dingtalk_in_use(home: Path, *, process_env: bool = False) -> bool:
                 or _home_env(home, "DINGTALK_WEBHOOK_URL", process_env=process_env))
 
 
+# WeCom: one plugin, two platforms. Bot mode enabled on ``extra.bot_id`` alone (the registry pass's
+# ``is_connected``) or on WECOM_BOT_ID + WECOM_SECRET (its env row); callback mode on ``extra.corp_id`` /
+# ``extra.apps`` alone or on WECOM_CALLBACK_CORP_ID + WECOM_CALLBACK_CORP_SECRET. A bare ``wecom`` in
+# plugins.disabled did not stop core's adapter (its manifest was ``wecom-platform``), so it is still use.
+_WECOM_PLUGIN_KEYS = ("platforms/wecom", "wecom-platform")
+wecom_in_use = platform_in_use(
+    "wecom", plugin_keys=_WECOM_PLUGIN_KEYS,
+    cred_sets=((("bot_id",),), (("bot_id", "WECOM_BOT_ID"), ("secret", "WECOM_SECRET"))))
+wecom_callback_in_use = platform_in_use(
+    "wecom_callback", plugin_keys=_WECOM_PLUGIN_KEYS,
+    cred_sets=((("corp_id",),), (("apps",),),
+               (("corp_id", "WECOM_CALLBACK_CORP_ID"), ("corp_secret", "WECOM_CALLBACK_CORP_SECRET"))))
+
+
+_WECOM_NOTICE = ("WeCom is now a Hermes Labs plugin: built by Nous Research, not supported, and likely not "
+                 "maintained going forward. Fixes from the community are welcome.")
+
+
+def _wecom_notice(home: Path, *, process_env: bool = False) -> str:
+    # As for Yuanbao: a bare ``wecom`` that survived the install's enable (a managed overlay pin) now turns it off.
+    if plugin_present("wecom", home) and _plugins_listed(home, ("wecom",))[1]:
+        return (f"{_WECOM_NOTICE} plugins.disabled lists 'wecom', which now turns WeCom off; "
+                "remove it to keep using WeCom.")
+    return _WECOM_NOTICE
+
+
 # ``gateway.config.Platform`` members in neither table above. Named, not imported: gateway.config imports
 # hermes_cli.config, which loads this module (the left-core test asserts every member is covered).
 _GATEWAY_ONLY_PLATFORMS = ("msgraph_webhook", "relay")
@@ -787,6 +813,26 @@ LEFT_CORE: tuple[LeftCoreFeature, ...] = (
         platform="dingtalk", enable_env=("DINGTALK_CLIENT_ID", "DINGTALK_CLIENT_SECRET"), notice=_dingtalk_notice,
         left_at=55, labs=True,  # a home that cannot prove it ran core's DingTalk is told the install command
     ),
+    # One plugin ships both WeCom platforms, so two rows share ``plugin``: whichever a home uses installs
+    # it once (the install marker is per plugin). ``hermes-wecom`` / ``hermes-wecom-callback`` carried
+    # only core tools, so there is no toolset scope to keep.
+    LeftCoreFeature(
+        plugin="wecom", label="WeCom", in_use=wecom_in_use, plugin_key="platforms/wecom",
+        plugin_names=("wecom-platform",),
+        unchanged="WECOM_* settings, platforms.wecom and WECOM_HOME_CHANNEL are unchanged",
+        secret_env=("WECOM_SECRET",),
+        private_env=("WECOM_BOT_ID", "WECOM_WEBSOCKET_URL", "WECOM_ALLOWED_USERS", "WECOM_HOME_CHANNEL"),
+        platform="wecom", enable_env=("WECOM_BOT_ID", "WECOM_SECRET"), notice=_wecom_notice,
+    ),
+    LeftCoreFeature(
+        plugin="wecom", label="WeCom callback", in_use=wecom_callback_in_use, plugin_key="platforms/wecom",
+        plugin_names=("wecom-platform",),
+        unchanged="WECOM_CALLBACK_* settings and platforms.wecom_callback are unchanged",
+        secret_env=("WECOM_CALLBACK_CORP_SECRET", "WECOM_CALLBACK_TOKEN", "WECOM_CALLBACK_ENCODING_AES_KEY"),
+        private_env=("WECOM_CALLBACK_CORP_ID", "WECOM_CALLBACK_AGENT_ID"),
+        platform="wecom_callback", enable_env=("WECOM_CALLBACK_CORP_ID", "WECOM_CALLBACK_CORP_SECRET"),
+        notice=_wecom_notice,
+    ),
 )
 
 
@@ -800,6 +846,7 @@ def _derive_off_platforms(rows: tuple[LeftCoreFeature, ...]) -> tuple[LeftCoreFe
 
 
 LEFT_CORE = _derive_off_platforms(LEFT_CORE)
+
 
 def _install_sentence(feature: LeftCoreFeature, home: Optional[Path] = None) -> str:
     from hermes_constants import get_hermes_home

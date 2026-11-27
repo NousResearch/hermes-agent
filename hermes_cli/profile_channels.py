@@ -30,7 +30,7 @@ from typing import Dict, Iterable, List, Optional, Set, Tuple
 logger = logging.getLogger(__name__)
 
 # Historical env prefixes that do not match a platform's config id. They SUPPLEMENT the canonical
-# ``<PLATFORM>_`` prefix (``WECOM_DM_POLICY`` and ``SMS_WEBHOOK_PORT`` are wecom / sms keys too).
+# ``<PLATFORM>_`` prefix (``SMS_WEBHOOK_PORT`` is an sms key too).
 _PLATFORM_ENV_PREFIX_ALIASES: dict[str, tuple[str, ...]] = {
     "email": ("EMAIL_",),
     "qqbot": ("QQ_",),
@@ -320,7 +320,7 @@ class ChannelKeyIndex:
         self._prefixes: list[tuple[str, str]] = sorted(
             ((prefix, pid) for pid in self.platforms
              for prefix in dict.fromkeys((*platform_env_prefixes(pid), *self.shared.get(pid, ())))),
-            key=lambda item: -len(item[0]),  # longest prefix wins: WECOM_CALLBACK_ before WECOM_
+            key=lambda item: -len(item[0]),  # longest prefix wins: a longer platform prefix before its shorter sibling
         )
 
     def platform_for(self, key: str) -> Optional[str]:

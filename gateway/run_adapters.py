@@ -1373,6 +1373,10 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         if not adapter:
             self._note_unbuilt_secondary_platform(profile_name, platform, heals)
             return None
+        if self._serves_on_shared_listener(profile_name, platform, adapter) and not any(
+                self._default_owns_platform(p) for p in (Platform.API_SERVER, Platform.WEBHOOK)):
+            self._refuse_listenerless_secondary(profile_name, platform)
+            return None
         self._note_secondary_build(profile_name, platform, build_print)
         return adapter
 
@@ -1525,11 +1529,35 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         # Secondary adapters carry their profile so prune paths namespace topic bindings correctly.
         # See #76423.
         adapter._hermes_profile_name = profile_name
-        # A secondary's port-binding adapter never binds: the default profile owns the one shared
-        # listener, which forwards /p/<profile>/<path> to this adapter's app (shared_ingress.py).
-        if self._multiplex_on() and platform.value not in SHARED_LISTENER_MIRROR_PLATFORMS \
-                and _platform_binds_port(platform.value, getattr(getattr(adapter, "config", None), "extra", None)):
+        if self._serves_on_shared_listener(profile_name, platform, adapter):
             adapter._shared_listener_profile = profile_name
+
+    def _serves_on_shared_listener(
+        self, profile_name: str, platform: Platform, adapter: BasePlatformAdapter
+    ) -> bool:
+        """A secondary's port-binding adapter never binds: the default profile owns the one shared
+        listener, which forwards /p/<profile>/<path> to this adapter's app (shared_ingress.py). Read in
+        the owning profile's plugin scope: a plugin platform only that profile installed declares it."""
+        owner_home = self._routed_profile_home(profile_name)
+        return bool(self._multiplex_on() and platform.value not in SHARED_LISTENER_MIRROR_PLATFORMS
+                    and _platform_binds_port(platform.value, getattr(getattr(adapter, "config", None), "extra", None),
+                                             home=None if owner_home is UNRESOLVED_PROFILE_HOME else owner_home))
+
+    def _refuse_listenerless_secondary(self, profile_name: str, platform: Platform) -> None:
+        """A secondary port-binder with no default api_server/webhook to hang ``/p/<profile>/`` off
+        would bind nothing and still read as connected; stamp why it is not served instead."""
+        pv = platform.value
+        message = (f"not served: the default profile runs no api_server or webhook listener for "
+                   f"/p/{profile_name}/; enable one on the default profile")
+        logger.warning(
+            "[MULTIPLEX] Profile '%s': %s binds an inbound port, but under multiplex it is served on the "
+            "default profile's api_server or webhook listener, and the default runs neither. Not starting "
+            "it; enable api_server (or webhook) on the default profile.", profile_name, pv,
+        )
+        self._update_platform_runtime_status(
+            f"{profile_name}:{pv}", platform_state="disabled",
+            error_code="multiplex_no_shared_listener", error_message=message,
+        )
 
     def _make_profile_fatal_error_handler(
         self, profile_name: str, platform: Platform

@@ -256,12 +256,12 @@ def _bundled_env_fallbacks(config: GatewayConfig, entries: list, *, only: Option
     ``gateway.platform_env.bundled_env_rows``. They only run the env steps, never the enable pass."""
     from types import SimpleNamespace
     from gateway.platform_activation import activation_predicate
-    from gateway.platform_env import _BUNDLED_ENV_SIBLINGS, bundled_env_rows
+    from gateway.platform_env import bundled_env_rows
     have = {getattr(e, "name", "") for e in entries}
     if only is not None:  # bundled_env_rows() answers for one name without scanning every manifest
         names = {only.value} - have
     else:
-        names = (set(Platform._scan_bundled_plugin_platforms()[0]) | set(_BUNDLED_ENV_SIBLINGS)) - have
+        names = set(Platform._scan_bundled_plugin_platforms()[0]) - have
     if not names:
         return []
     wanted = activation_predicate(yaml_cfg={}, platform_names=config.platforms)

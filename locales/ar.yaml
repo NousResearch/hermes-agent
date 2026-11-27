@@ -1493,14 +1493,6 @@ platform:
       expired: "انتهت صلاحية هذا الطلب — أرسل رسالتك من جديد."
     standalone:
       attachments_not_deliverable: "[تم إنشاء {count} مرفق(ات)؛ لا يمكن تسليمها من مهمة مجدولة]"
-  wecom:
-    media:
-      kind_image: "صورة"
-      kind_video: "فيديو"
-      kind_voice: "رسالة صوتية"
-      file_too_large: "حجم الملف {size_mb} ميغابايت يتجاوز حد WeCom البالغ 20 ميغابايت ولا يمكن إرساله. جرّب ضغط الملف أو تقليل حجمه."
-      voice_format_downgraded: "صيغة الصوت {content_type} غير مدعومة (WeCom يقبل AMR فقط)؛ أُرسل كملف بدلًا من ذلك."
-      size_downgraded: "حجم {label} البالغ {size_mb} ميغابايت يتجاوز حد {cap}؛ أُرسل كملف بدلًا من ذلك."
   email:
     image_line: "صورة: {url}"
     standalone_subject: "Hermes Agent"

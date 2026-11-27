@@ -1493,14 +1493,6 @@ platform:
       expired: "Daardie versoek het verval — stuur jou boodskap weer."
     standalone:
       attachments_not_deliverable: "[{count} aanhegsel(s) gegenereer; nie afleverbaar vanaf cron nie]"
-  wecom:
-    media:
-      kind_image: "Beeld"
-      kind_video: "Video"
-      kind_voice: "Stemboodskap"
-      file_too_large: "Lêergrootte {size_mb}MB oorskry WeCom se limiet van 20MB en kan nie gestuur word nie. Probeer die lêer saampers of kleiner maak."
-      voice_format_downgraded: "Stemformaat {content_type} word nie ondersteun nie (WeCom aanvaar slegs AMR); eerder as 'n lêer gestuur."
-      size_downgraded: "{label}-grootte {size_mb}MB oorskry die limiet van {cap}; eerder as 'n lêer gestuur."
   email:
     image_line: "Beeld: {url}"
     standalone_subject: "Hermes Agent"

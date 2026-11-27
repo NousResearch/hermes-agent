@@ -1510,14 +1510,6 @@ platform:
       expired: "Ez a kérés lejárt — küldd el újra az üzenetedet."
     standalone:
       attachments_not_deliverable: "[{count} melléklet készült; cronból nem kézbesíthető]"
-  wecom:
-    media:
-      kind_image: "Kép"
-      kind_video: "Videó"
-      kind_voice: "Hangüzenet"
-      file_too_large: "A fájl mérete ({size_mb} MB) meghaladja a WeCom 20 MB-os korlátját, így nem küldhető el. Próbáld tömöríteni vagy kisebbre venni a fájlt."
-      voice_format_downgraded: "A {content_type} hangformátum nem támogatott (a WeCom csak AMR-t fogad); fájlként küldtem el helyette."
-      size_downgraded: "{label} mérete ({size_mb} MB) meghaladja a {cap} korlátot; fájlként küldtem el helyette."
   email:
     image_line: "Kép: {url}"
     standalone_subject: "Hermes Agent"

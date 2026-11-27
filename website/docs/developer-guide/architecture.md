@@ -124,11 +124,11 @@ hermes-agent/
 │
 ├── plugins/platforms/        # Bundled platform plugins: telegram, discord, slack,
 │                             #   whatsapp, matrix, mattermost, email, sms,
-│                             #   feishu, wecom, irc, line, teams, google_chat,
+│                             #   feishu, irc, line, teams, google_chat,
 │                             #   buzz, ntfy, photon, raft, simplex, whatsapp_cloud,
 │                             #   signal, weixin, bluebubbles, qqbot
 │                             #   (Home Assistant: `homeassistant` catalog plugin;
-│                             #    Yuanbao, DingTalk: Hermes Labs plugins)
+│                             #    Yuanbao, DingTalk, WeCom: Hermes Labs plugins)
 │
 ├── acp_adapter/              # ACP server (VS Code / Zed / JetBrains)
 ├── cron/                     # Scheduler (jobs.py, scheduler.py)

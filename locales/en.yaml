@@ -1560,16 +1560,6 @@ platform:
     standalone:
       attachments_not_deliverable: "[{count} attachment(s) generated; not deliverable from cron]"
 
-  wecom:
-    media:
-      # Shipped in Chinese before i18n; zh.yaml keeps that original text.
-      kind_image: "Image"
-      kind_video: "Video"
-      kind_voice: "Voice message"
-      file_too_large: "File size {size_mb}MB exceeds WeCom's 20MB limit and cannot be sent. Try compressing the file or reducing its size."
-      voice_format_downgraded: "Voice format {content_type} is not supported (WeCom only accepts AMR); sent as a file instead."
-      size_downgraded: "{label} size {size_mb}MB exceeds the {cap} limit; sent as a file instead."
-
   email:
     image_line: "Image: {url}"
     standalone_subject: "Hermes Agent"

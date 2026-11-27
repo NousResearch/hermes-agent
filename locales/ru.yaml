@@ -1493,14 +1493,6 @@ platform:
       expired: "Этот запрос истёк — отправьте сообщение ещё раз."
     standalone:
       attachments_not_deliverable: "[Создано вложений: {count}; из cron доставить нельзя]"
-  wecom:
-    media:
-      kind_image: "Изображение"
-      kind_video: "Видео"
-      kind_voice: "Голосовое сообщение"
-      file_too_large: "Размер файла {size_mb} МБ превышает лимит WeCom в 20 МБ, отправить его нельзя. Попробуйте сжать файл или уменьшить его размер."
-      voice_format_downgraded: "Голосовой формат {content_type} не поддерживается (WeCom принимает только AMR); отправлено как файл."
-      size_downgraded: "{label}: размер {size_mb} МБ превышает лимит {cap}; отправлено как файл."
   email:
     image_line: "Изображение: {url}"
     standalone_subject: "Hermes Agent"

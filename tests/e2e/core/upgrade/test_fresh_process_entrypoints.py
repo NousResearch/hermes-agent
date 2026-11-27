@@ -76,7 +76,7 @@ _OPTIONAL_IMPORTS = {
     "acp": "agent-client-protocol", "aiohttp": "aiohttp", "aiohttp_socks": "aiohttp-socks",
     "aiosqlite": "aiosqlite", "anthropic": "anthropic",
     "asyncpg": "asyncpg", "azure": "azure-identity", "boto3": "boto3", "botocore": "boto3",
-    "brotlicffi": "brotlicffi", "daytona": "daytona", "defusedxml": "defusedxml",
+    "brotlicffi": "brotlicffi", "daytona": "daytona",
     "discord": "discord.py", "edge_tts": "edge-tts",
     "elevenlabs": "elevenlabs", "exa_py": "exa-py", "fal_client": "fal-client",
     "faster_whisper": "faster-whisper", "firecrawl": "firecrawl-py", "google": "google-auth",

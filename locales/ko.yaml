@@ -1493,14 +1493,6 @@ platform:
       expired: "요청이 만료됐어요 — 메시지를 다시 보내 주세요."
     standalone:
       attachments_not_deliverable: "[첨부 파일 {count}개 생성됨; 크론에서는 전송할 수 없어요]"
-  wecom:
-    media:
-      kind_image: "이미지"
-      kind_video: "동영상"
-      kind_voice: "음성 메시지"
-      file_too_large: "파일 크기 {size_mb}MB가 WeCom의 20MB 한도를 넘어 보낼 수 없어요. 파일을 압축하거나 크기를 줄여 보세요."
-      voice_format_downgraded: "음성 형식 {content_type}은(는) 지원되지 않아요 (WeCom은 AMR만 허용). 대신 파일로 보냈어요."
-      size_downgraded: "{label} 크기 {size_mb}MB가 {cap} 한도를 넘어 대신 파일로 보냈어요."
   email:
     image_line: "이미지: {url}"
     standalone_subject: "Hermes Agent"

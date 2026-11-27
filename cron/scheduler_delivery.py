@@ -25,10 +25,10 @@ logger = logging.getLogger("cron.scheduler")
 
 
 # Validates user-supplied delivery platform names, preventing env-var enumeration via crafted names.
-# Plugin platforms are known through ``PlatformEntry.cron_deliver_env_var``; these rows have none:
-# ``webhook`` is core-only and ``wecom_callback`` (a ``wecom`` plugin sibling) delivers only to its
-# config.yaml ``home_channel``.
-_KNOWN_DELIVERY_PLATFORMS = frozenset({"webhook", "wecom_callback"})
+# Plugin platforms are known through ``PlatformEntry.cron_deliver_env_var``, or as registered plugin
+# platforms that deliver only to their config.yaml ``home_channel`` (WeCom callback); ``webhook`` is
+# core-only and has neither.
+_KNOWN_DELIVERY_PLATFORMS = frozenset({"webhook"})
 
 # Gateway platforms whose adapter declares ``supports_async_delivery = False`` (request/response
 # only, ``send()`` is a stub) — a cron report can never reach them, so they are never a
@@ -423,9 +423,18 @@ def _plugin_cron_env_var(platform_name: str) -> str:
 
 
 def _is_known_delivery_platform(platform_name: str) -> bool:
-    """Valid cron delivery platform: built-in, or plugin with a ``cron_deliver_env_var``."""
+    """Valid cron delivery platform: built-in, a plugin with a ``cron_deliver_env_var``, or a
+    registered plugin platform (its home target then comes from config.yaml only)."""
     name = platform_name.lower()
-    return name in _KNOWN_DELIVERY_PLATFORMS or bool(_plugin_cron_env_var(name))
+    return name in _KNOWN_DELIVERY_PLATFORMS or bool(_plugin_cron_env_var(name)) or _registered_plugin_platform(name)
+
+
+def _registered_plugin_platform(name: str) -> bool:
+    with contextlib.suppress(Exception):
+        from gateway.platform_registry import platform_registry
+        entry = platform_registry.get(name)
+        return entry is not None and entry.source == "plugin"
+    return False
 
 
 def moved_platform_hint(platform_name: str) -> str:

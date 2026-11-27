@@ -180,10 +180,6 @@ class EnvCred:
 
 # --- bundled rows without the plugin -------------------------------------------
 
-# Entries a bundled plugin registers under a name other than its directory, with the export prefix.
-_BUNDLED_ENV_SIBLINGS = {"wecom_callback": ("wecom", "CALLBACK_")}
-
-
 @functools.cache
 def bundled_sibling(directory: str, stem: str = "gateway_env") -> Any:
     """``plugins/platforms/<directory>/<stem>.py`` (a light declaration module importing only core)
@@ -207,20 +203,18 @@ def bundled_env_rows(name: str) -> Optional[tuple]:
     the plugin. For when its registry entry is absent: discovery suppressed (a parked profile's
     config read, ``HERMES_SAFE_MODE``) or the plugin disabled. These rows were core's own table, and
     the duplicate-credential guard and the explicit-disable warning still need them then."""
-    directory, prefix = _BUNDLED_ENV_SIBLINGS.get(name, (name, ""))
-    module = bundled_sibling(directory)
+    module = bundled_sibling(name)
     if module is None:
         return None
-    return (tuple(getattr(module, f"{prefix}ENV_OVERRIDES", ()) or ()),
-            tuple(getattr(module, f"{prefix}ENV_ENABLE_CREDENTIALS", ()) or ()))
+    return (tuple(getattr(module, "ENV_OVERRIDES", ()) or ()),
+            tuple(getattr(module, "ENV_ENABLE_CREDENTIALS", ()) or ()))
 
 
 def bundled_authz(name: str) -> dict:
     """``AUTHZ`` (allowlist / allow-all / allow-bots / own-policy env names) a bundled platform
     plugin declares in its ``gateway_env.py``, read without the plugin; {} for other names."""
-    directory, prefix = _BUNDLED_ENV_SIBLINGS.get(name, (name, ""))
-    module = bundled_sibling(directory)
-    return dict(getattr(module, f"{prefix}AUTHZ", None) or {}) if module is not None else {}
+    module = bundled_sibling(name)
+    return dict(getattr(module, "AUTHZ", None) or {}) if module is not None else {}
 
 
 def authz_field(name: str, field: str, entry: Any = None) -> Any:

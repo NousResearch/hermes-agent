@@ -158,7 +158,6 @@ plugins/platforms/                  # 插件打包的适配器（每个一个目
 ├── email/adapter.py        # 电子邮件（通过 IMAP/SMTP）
 ├── sms/adapter.py          # 短信（通过 Twilio）
 ├── feishu/adapter.py       # 飞书/Lark WebSocket 或 webhook
-├── wecom/adapter.py        # 企业微信（WeCom）回调
 ├── line/adapter.py         # LINE Messaging API
 ├── teams/adapter.py        # Microsoft Teams
 ├── signal/adapter.py       # Signal（通过 signal-cli HTTP 守护进程，SSE + JSON-RPC）

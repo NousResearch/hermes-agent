@@ -29,7 +29,6 @@ _WIZARDS = [
     ("plugins.platforms.simplex.adapter", "SIMPLEX_WS_URL"),
     ("plugins.platforms.slack.adapter", "SLACK_BOT_TOKEN"),
     ("plugins.platforms.teams.adapter", "TEAMS_CLIENT_ID"),
-    ("plugins.platforms.wecom.adapter", "WECOM_BOT_ID"),
 ]
 
 

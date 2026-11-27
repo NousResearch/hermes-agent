@@ -35,7 +35,6 @@ MIGRATED_ADAPTER_MODULES = [
     ("plugins.platforms.ntfy.adapter", "NTFY_TOKEN"),
     ("plugins.platforms.sms.adapter", "TWILIO_AUTH_TOKEN"),
     ("plugins.platforms.feishu.adapter", "FEISHU_APP_SECRET"),
-    ("plugins.platforms.wecom.adapter", "WECOM_SECRET"),
     ("plugins.platforms.photon.adapter", "PHOTON_PROJECT_SECRET"),
     ("plugins.platforms.photon.auth", "PHOTON_PROJECT_SECRET"),
     ("plugins.platforms.buzz.adapter", "BUZZ_PRIVATE_KEY"),

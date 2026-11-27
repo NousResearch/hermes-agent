@@ -103,8 +103,6 @@ hermes tools                            # curses UI to enable/disable per platfo
 | `hermes-bluebubbles` | 与 `hermes-cli` 相同。 |
 | `hermes-feishu` | 添加了五个 `feishu_doc_*` / `feishu_drive_*` 工具（仅由文档评论处理器使用，不用于常规聊天适配器）。 |
 | `hermes-qqbot` | 与 `hermes-cli` 相同。 |
-| `hermes-wecom` | 与 `hermes-cli` 相同。 |
-| `hermes-wecom-callback` | 与 `hermes-cli` 相同。 |
 | `hermes-weixin` | 与 `hermes-cli` 相同。 |
 | `hermes-webhook` | 与 `hermes-cli` 相同。 |
 | `hermes-gateway` | 内部 gateway 编排器工具集——所有 `hermes-<platform>` 工具集的并集；当 gateway 需要接受任意消息来源时使用。 |

@@ -788,7 +788,6 @@ plugins/platforms/                  # plugin-packaged adapters (one dir each)
 ├── email/adapter.py        # Email via IMAP/SMTP
 ├── sms/adapter.py          # SMS via Twilio
 ├── feishu/adapter.py       # Feishu/Lark WebSocket or webhook
-├── wecom/adapter.py        # WeCom (WeChat Work) callback
 ├── line/adapter.py         # LINE Messaging API
 ├── teams/adapter.py        # Microsoft Teams
 ├── signal/adapter.py       # Signal via signal-cli HTTP daemon (SSE + JSON-RPC)

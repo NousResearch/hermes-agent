@@ -27,8 +27,8 @@ description: "通过 Telegram、Discord、Slack、WhatsApp、Signal、SMS、Emai
 | Matrix | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | DingTalk（Labs 插件） | — | ✅ | ✅ | — | ✅ | — | ✅ |
 | Feishu/Lark | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| WeCom | ✅ | ✅ | ✅ | — | — | — | — |
-| WeCom Callback | — | — | — | — | — | — | — |
+| WeCom（官方插件） | ✅ | ✅ | ✅ | — | — | — | — |
+| WeCom Callback（官方插件） | — | — | — | — | — | — | — |
 | Weixin | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
 | BlueBubbles | — | ✅ | ✅ | — | ✅ | ✅ | — |
 | QQ | ✅ | ✅ | ✅ | — | — | ✅ | — |
@@ -439,8 +439,8 @@ launchd plist 是静态的——如果你在配置网关后安装了新工具（
 | Matrix | `hermes-matrix` | 完整工具，包括终端 |
 | DingTalk（Labs 插件） | `hermes-dingtalk` | 完整工具，包括终端，由 `dingtalk` Hermes Labs 插件提供 |
 | Feishu/Lark | `hermes-feishu` | 完整工具，包括终端 |
-| WeCom | `hermes-wecom` | 完整工具，包括终端 |
-| WeCom Callback | `hermes-wecom-callback` | 完整工具，包括终端 |
+| WeCom（官方插件） | `hermes-wecom` | 完整工具，包括终端，由 `wecom` 插件提供 |
+| WeCom Callback（官方插件） | `hermes-wecom-callback` | 完整工具，包括终端，由 `wecom` 插件提供 |
 | Weixin | `hermes-weixin` | 完整工具，包括终端 |
 | BlueBubbles | `hermes-bluebubbles` | 完整工具，包括终端 |
 | QQBot | `hermes-qqbot` | 完整工具，包括终端 |
@@ -563,8 +563,8 @@ display:
 - [Matrix 配置](matrix.md)
 - [DingTalk](dingtalk.md)（Hermes Labs 插件）
 - [Feishu/Lark 配置](feishu.md)
-- [WeCom 配置](wecom.md)
-- [WeCom Callback 配置](wecom-callback.md)
+- [WeCom](wecom.md)（官方插件）
+- [WeCom Callback](wecom-callback.md)（官方插件）
 - [Weixin 配置（微信）](weixin.md)
 - [BlueBubbles 配置（iMessage）](bluebubbles.md)
 - [QQBot 配置](qqbot.md)

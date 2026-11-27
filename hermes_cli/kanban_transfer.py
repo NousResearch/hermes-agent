@@ -185,15 +185,54 @@ def export_board(
 
 def _available_slug(preferred: str) -> str:
     """``preferred`` or the first free ``<preferred>-N``. ``default`` always
-    exists, so a default-board export lands as ``default-2``."""
-    if not kb.board_exists(preferred):
-        return preferred
+    exists, so a default-board export lands as ``default-2``.
+
+    OBSERVES only -- it does not RESERVE. Two concurrent imports both see the
+    same slug free and both pick it. Use :func:`_reserve_slug`, which walks
+    these candidates and claims one atomically.
+    """
+    for candidate in _slug_candidates(preferred):
+        if not kb.board_exists(candidate):
+            return candidate
+    raise AssertionError("unreachable: _slug_candidates is infinite")
+
+
+def _slug_candidates(preferred: str):
+    """Yield ``preferred`` then ``<stem>-2``, ``<stem>-3``, ... forever."""
+    yield preferred
     # Leave headroom for the suffix inside the 64-char slug limit.
     stem = preferred[:58].rstrip("-_") or "board"
     n = 2
-    while kb.board_exists(f"{stem}-{n}"):
+    while True:
+        yield f"{stem}-{n}"
         n += 1
-    return f"{stem}-{n}"
+
+
+def _reserve_slug(preferred: str) -> tuple[str, Path]:
+    """Atomically claim a free board slug. Returns ``(slug, board_root)``.
+
+    ``_available_slug`` only observes that a slug is free; between that
+    observation and the ``shutil.move`` that installs the DB, another importer
+    can claim the same one. Both then move onto the same ``kanban.db`` and the
+    later write REPLACES the first board -- a silent, total loss of an
+    imported board. Reproduced with two real processes: both chose ``shared``,
+    one board's cards were permanently gone.
+
+    The directory creation IS the reservation: ``mkdir(exist_ok=False)``
+    succeeds for exactly one racer, and the loser advances to the next
+    candidate. The returned root is therefore guaranteed to have been created
+    by THIS call and to be empty.
+    """
+    for candidate in _slug_candidates(preferred):
+        if kb.board_exists(candidate):
+            continue
+        board_root = kb.board_dir(candidate)
+        try:
+            board_root.mkdir(parents=True, exist_ok=False)
+        except FileExistsError:
+            continue  # lost the race for this slug; take the next one
+        return candidate, board_root
+    raise AssertionError("unreachable: _slug_candidates is infinite")
 
 
 def _read_manifest(root: Path) -> dict[str, Any]:
@@ -317,12 +356,13 @@ def import_board(
                 "cannot determine a board name from the archive — pass one "
                 "explicitly with --as <slug>"
             )
-        target = _available_slug(requested)
+        # The slug is RESERVED, not merely observed free: the mkdir inside
+        # _reserve_slug is the atomic claim, so a second importer racing this
+        # one takes the next candidate instead of moving onto this kanban.db.
+        target, board_root = _reserve_slug(requested)
 
         staged_meta = _read_board_metadata(extracted / "board.json")
 
-        board_root = kb.board_dir(target)
-        board_root.mkdir(parents=True, exist_ok=True)
         shutil.move(str(staged_db), str(board_root / "kanban.db"))
         for tree in ("attachments", "logs"):
             src = extracted / tree

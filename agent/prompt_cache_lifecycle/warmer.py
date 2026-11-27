@@ -721,8 +721,51 @@ class PromptCacheWarmer:
             _remember_missed_route(b["session_id"], self._missed_route)
         logger.info("%sprompt cache warming disabled for session: keep-alive missed", self._prefix())
 
-    def _send(self, run: _Run) -> Any:
+    def _live_client_for(self, run: _Run, *, force_nous_refresh: bool = False) -> Any:
+        """The client a keep-alive should use. Nous Portal agent keys are short-lived JWTs that can
+        expire before a long-TTL keep-alive fires, so adopt a fresh key first (or, after a 401, force
+        a refresh) and follow the agent onto its rebuilt client. Other providers keep ``run.client``."""
         client = run.client
+        if run.billing.get("provider") != "nous":
+            return client
+        agent = self.agent
+        name = "_try_refresh_nous_client_credentials" if force_nous_refresh else "_adopt_nous_key_before_expiry"
+        refresh = getattr(agent, name, None)
+        if callable(refresh):
+            try:
+                if force_nous_refresh:
+                    refresh(force=True)
+                else:
+                    refresh()
+            except Exception:
+                logger.debug("%sprompt cache keep-alive: Nous key refresh failed", self._prefix(), exc_info=True)
+        live = getattr(agent, "_anthropic_client" if run.api_mode == "anthropic_messages" else "client", None)
+        if live is not None and getattr(agent, "provider", None) == "nous":
+            client = run.client = live
+            fresh_key = getattr(agent, "api_key", None)
+            if fresh_key:
+                run.billing["api_key"] = fresh_key
+        return client
+
+    @staticmethod
+    def _is_auth_error(exc: Exception) -> bool:
+        if getattr(exc, "status_code", None) == 401:
+            return True
+        return getattr(getattr(exc, "response", None), "status_code", None) == 401
+
+    def _send(self, run: _Run) -> Any:
+        client = self._live_client_for(run)
+        try:
+            return self._send_with(run, client)
+        except Exception as exc:
+            if run.billing.get("provider") != "nous" or not self._is_auth_error(exc):
+                raise
+            fresh = self._live_client_for(run, force_nous_refresh=True)
+            if fresh is client:
+                raise
+            return self._send_with(run, fresh)
+
+    def _send_with(self, run: _Run, client: Any) -> Any:
         with_options = getattr(client, "with_options", None)
         if callable(with_options):
             client = with_options(max_retries=0, timeout=WARM_REQUEST_TIMEOUT_S)

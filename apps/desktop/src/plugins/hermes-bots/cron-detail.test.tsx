@@ -7,12 +7,14 @@
  * and no second mutation path beside the row's own switch and delete.
  */
 
-import type * as HermesSdk from '@hermes/plugin-sdk'
+import * as HermesSdk from '@hermes/plugin-sdk'
 import { cleanup, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { translateBots } from './i18n-test-helper'
 import type { RoutineJob } from './types'
+
+const { relativeTime } = HermesSdk
 
 // Radix calls these on open; jsdom doesn't implement them.
 beforeAll(() => {
@@ -158,7 +160,15 @@ describe('the row is reachable', () => {
     // The card and the inspector make the same call: the stored slot sitting
     // hours in the past is the only visible trace of a scheduler that stopped
     // ticking, so it must not be promised as an upcoming run.
-    expect(screen.getByText(/^Overdue since:.*ago$/)).toBeTruthy()
+    // The label is a catalog string, but the age beside it renders through the
+    // shared formatter, which uses the runtime (host) locale by design. An
+    // assertion that freezes the en-US "…ago" wording is red on every other
+    // host locale, so derive the age from that formatter instead — the same
+    // treatment the desktop UI tests got in "fix(test): make desktop ui tests
+    // locale-agnostic".
+    const overdueAge = relativeTime(new Date(String(overdue.next_run_at)).getTime())
+
+    expect(screen.getByText(`Overdue since: ${overdueAge}`)).toBeTruthy()
     expect(screen.queryByText(/^Next:/)).toBeNull()
     expect(valueOf(routineDetailRows(overdue), 'Overdue since')).toBeTruthy()
     expect(valueOf(routineDetailRows(overdue), 'Next run')).toBeUndefined()
@@ -166,7 +176,9 @@ describe('the row is reachable', () => {
     cleanup()
     render(<RoutineRow job={upcoming} onOpen={() => undefined} owner={{ name: 'notetaker' }} />)
 
-    expect(screen.getByText(/^Next: in /)).toBeTruthy()
+    const upcomingAge = relativeTime(new Date(String(upcoming.next_run_at)).getTime())
+
+    expect(screen.getByText(`Next: ${upcomingAge}`)).toBeTruthy()
     expect(valueOf(routineDetailRows(upcoming), 'Next run')).toBeTruthy()
     expect(valueOf(routineDetailRows({ ...overdue, enabled: false, state: 'paused' }), 'Overdue since')).toBeUndefined()
   })

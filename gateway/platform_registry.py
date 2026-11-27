@@ -194,15 +194,18 @@ class PlatformEntry:
     opus_voice: bool = False
 
 
-def registered_trait(platform, field_name: str, default: Any = None) -> Any:
+def registered_trait(platform, field_name: str, default: Any = None, *, home=None) -> Any:
     """*field_name* of the loaded entry for *platform* (a ``Platform`` or its value), else *default*.
 
     For the transport traits (``binds_port_fn``, ``listen_port``, ``thread_reply_anchor``, ``opus_voice``):
     they describe the adapter's implementation, not a profile, so an entry another profile loaded answers
     when the current scope has none (a plugin installed only in a secondary; a turn routed to a profile
-    without it). Never imports a deferred adapter: the caller may be on the event loop."""
+    without it). *home* is the profile that owns the adapter asked about, when the caller knows it and runs
+    outside that profile's scope: its entry answers first, so two profiles on different builds of one plugin
+    each get their own. Never imports a deferred adapter: the caller may be on the event loop."""
     name = str(getattr(platform, "value", platform) or "").strip().lower()
-    entry = platform_registry.loaded_entry_any_scope(name) if name else None
+    scope = hermes_home_key(home) if home is not None else None
+    entry = platform_registry.loaded_entry_any_scope(name, scope=scope) if name else None
     return getattr(entry, field_name, default) if entry is not None else default
 
 
@@ -445,11 +448,11 @@ class PlatformRegistry:
             unresolved.difference_update(entry.name for entry in entries)
         return entries, any(wanted(name) for name in unresolved)
 
-    def loaded_entry_any_scope(self, name: str) -> Optional[PlatformEntry]:
-        """The materialized entry for *name*: the current scope's, else the process-wide one, else the
-        first other profile scope that loaded it. Never imports a deferred adapter."""
+    def loaded_entry_any_scope(self, name: str, *, scope: Optional[str] = None) -> Optional[PlatformEntry]:
+        """The materialized entry for *name*: *scope*'s (default: the current scope's), else the
+        process-wide one, else the first other profile scope that loaded it. Never imports a deferred adapter."""
         with self._lock:
-            scoped = self._scoped_entries.get(self.current_scope_key(), {})
+            scoped = self._scoped_entries.get(scope or self.current_scope_key(), {})
             found = scoped.get(name) or self._entries.get(name)
             return found or next((entries[name] for entries in self._scoped_entries.values() if name in entries), None)
 

@@ -1227,6 +1227,42 @@ class TestTransportTraitsAcrossProfiles:
         finally:
             platform_registry.unregister("modebinder", scope=hermes_home_key(secondary))
 
+    def test_each_secondary_reads_its_own_profiles_binds_port_rule(self, monkeypatch):
+        """Two profiles load different builds of one platform plugin: one binds a port, the other does not.
+        Startup and reconnect wire each secondary's adapter from the launch scope, so the port rule is the
+        OWNING profile's entry, never whichever other profile loaded the name first."""
+        from types import SimpleNamespace
+
+        from gateway.platform_registry import PlatformEntry, platform_registry
+        from hermes_cli.profiles import get_profile_dir
+        from hermes_constants import hermes_home_key, reset_hermes_home_override, set_hermes_home_override
+
+        homes = {name: get_profile_dir(name) for name in ("binder", "outbound")}
+        for name, home in homes.items():
+            home.mkdir(parents=True, exist_ok=True)
+            platform_registry.register(PlatformEntry(
+                name="forkbinder", label="Fork binder", adapter_factory=lambda cfg: None, check_fn=lambda: True,
+                binds_port_fn=lambda extra, binds=(name == "binder"): binds), scope=hermes_home_key(home))
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=True)
+        monkeypatch.setattr(runner, "_wire_adapter_handlers", lambda *a, **k: None, raising=False)
+        monkeypatch.setattr(runner, "_bind_voice_input_callback", lambda *a, **k: None, raising=False)
+        for maker in ("_make_profile_message_handler", "_make_profile_fatal_error_handler",
+                      "_make_profile_busy_session_handler", "_make_adapter_auth_check",
+                      "_make_profile_platform_event_handler"):
+            monkeypatch.setattr(runner, maker, lambda *a, **k: None, raising=False)
+        token = set_hermes_home_override(str(homes["binder"]))
+        platform = Platform("forkbinder")
+        reset_hermes_home_override(token)
+        try:
+            for owner in ("outbound", "binder", "outbound"):
+                adapter = SimpleNamespace(config=SimpleNamespace(extra={}))
+                runner._configure_profile_adapter(adapter, owner, platform)
+                assert getattr(adapter, "_shared_listener_profile", None) == (owner if owner == "binder" else None)
+        finally:
+            for home in homes.values():
+                platform_registry.unregister("forkbinder", scope=hermes_home_key(home))
+
     def test_a_raising_binds_port_fn_reads_as_no_port(self):
         from gateway.config import platform_binds_port
         from gateway.platform_registry import PlatformEntry, platform_registry

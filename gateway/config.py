@@ -355,13 +355,14 @@ SERVED_PROFILE_MIRROR_PLATFORMS = SHARED_LISTENER_MIRROR_PLATFORMS | frozenset({
 SHARED_LISTENER_MIRROR_PATHS: dict[str, str] = {"api_server": "/v1", "webhook": "/webhooks/<route>"}
 
 
-def platform_binds_port(platform_value: str, extra: Optional[dict] = None) -> bool:
+def platform_binds_port(platform_value: str, extra: Optional[dict] = None, *, home=None) -> bool:
     """True when *platform_value* actually binds a port for *extra* config: a core port-binder, or a plugin
-    platform whose ``PlatformEntry.binds_port_fn`` says so (e.g. only in its webhook connection mode)."""
+    platform whose ``PlatformEntry.binds_port_fn`` says so (e.g. only in its webhook connection mode). *home*:
+    the profile whose adapter this is, read first (``registered_trait``) when the caller is outside its scope."""
     if platform_value in PORT_BINDING_PLATFORM_VALUES:
         return True
     from gateway.platform_registry import registered_trait
-    binds = registered_trait(platform_value, "binds_port_fn")
+    binds = registered_trait(platform_value, "binds_port_fn", home=home)
     if binds is None:
         return False
     try:

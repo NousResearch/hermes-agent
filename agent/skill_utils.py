@@ -94,7 +94,7 @@ def parse_frontmatter(content: str) -> tuple[dict[str, Any], str]:
             logger.warning(
                 "frontmatter: parsed to %s, not a mapping; ignoring", type(parsed).__name__
             )
-    except Exception as exc:
+    except Exception as exc:  # health: allow BLE001 -- deliberate fail-open: any parse failure falls back to line splitting, now logged
         logger.warning("frontmatter: YAML parse failed (%s); falling back to line splitting", exc)
         for line in yaml_content.strip().split("\n"):
             if ":" in line:

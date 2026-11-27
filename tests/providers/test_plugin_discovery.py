@@ -67,6 +67,39 @@ def test_all_profiles_register():
     )
 
 
+def test_bundled_plugins_register_without_app_dependencies(monkeypatch):
+    """Bundled plugins must register even when app-only packages are missing (#135434).
+
+    Discovery runs in short-lived tooling processes (``hermes update``'s tool steps,
+    PM's runtime) before the app environment exists, where third-party packages
+    like ``ruamel`` are absent. A plugin whose import chain reaches ``utils`` →
+    ``hermes_yaml`` → ``ruamel`` (or ``agent.prompt_cache_scope``, which imports
+    ``utils``) at module scope fails to import there and is silently dropped from
+    the registry — exactly what #134233 fixed for solstice's ``httpx`` chain. A
+    ``None`` entry in ``sys.modules`` is the interpreter's "import halted" marker,
+    so it simulates the missing package without a stripped interpreter.
+    """
+    _clear_provider_caches()
+    monkeypatch.setitem(sys.modules, "utils", None)
+    monkeypatch.setitem(sys.modules, "agent.prompt_cache_scope", None)
+
+    try:
+        from providers import list_providers
+
+        plugins_dir = REPO_ROOT / "plugins" / "model-providers"
+        plugin_dir_count = sum(1 for c in plugins_dir.iterdir() if c.is_dir())
+
+        names = sorted(p.name for p in list_providers())
+        assert "custom" in names, "custom was dropped: its utils import must load on first use"
+        assert "openrouter" in names, "openrouter was dropped: its prompt_cache_scope import must load on first use"
+        # No other bundled plugin may fall back to a module-scope app dependency either.
+        assert len(names) >= plugin_dir_count, (
+            f"Expected at least {plugin_dir_count} profiles, got {len(names)}: {names}"
+        )
+    finally:
+        _clear_provider_caches()
+
+
 def test_user_plugin_overrides_bundled(tmp_path, monkeypatch):
     """A user plugin with the same name must override the bundled profile."""
     # Point HERMES_HOME at a fresh temp dir

@@ -908,27 +908,45 @@ def _manually_recovered(host, m: dict) -> bool:
     return old_backend_answers(host, m) is None
 
 
-def _reconcile_manual_recovery(run: Run) -> None:
+def _is_privileged_service(rec: dict) -> bool:
+    """Whether *rec* is a system-scope service whose re-enable requires elevated privileges."""
+    sup = rec.get("supervisor")
+    if sup == "systemd":
+        return rec.get("scope") != "user"
+    if sup == "launchd":
+        return is_system_launchd(rec.get("scope"), rec.get("unit_path"))
+    return False
+
+
+def _reconcile_manual_recovery(run: Run, attempt) -> None:
     """Reconcile a ``state == 'failed'`` manifest whose old backend is already answering by hand.
 
     Still attempts ``old_enable`` when the old backend was recorded disabled (so a user unit or LaunchAgent
-    the operator started without re-enabling is enabled again); an unprivileged enable failure (such as a
-    system LaunchDaemon already re-enabled with ``sudo``) is logged and tolerated because the old backend is
-    already verified answering. Never calls ``old_start`` (avoids failing on system daemons or spawning a
-    duplicate manual backend).
+    the operator started without re-enabling is enabled again). On a privileged system-scope service, an
+    unprivileged enable failure (such as a system LaunchDaemon already re-enabled with ``sudo``) is logged
+    and tolerated without clearing ``old_backend_disabled``; on a user-domain service, enable failure is
+    routed through *attempt* into rollback errors so the manifest stays ``failed`` for retry. Never calls
+    ``old_start`` (avoids failing on system daemons or spawning a duplicate manual backend).
     """
     host, m = run.host, run.data
     rec = m["old_backend"]
     if m.get("old_backend_enabled") and m.get("old_backend_disabled") is not False:
-        try:
-            host.old_enable(rec)
-        except Exception as exc:
-            logger.warning("backend migration rollback: re-enable skipped after manual recovery", exc_info=True)
-            print(f"  ⚠ could not re-enable the old backend ({exc}), but it is already answering on {m['old_address']}")
-        else:
-            print("  ✓ re-enabled the old backend")
-        m["old_backend_disabled"] = False
-        run.save()
+        if _is_privileged_service(rec):
+            try:
+                host.old_enable(rec)
+            except Exception as exc:
+                logger.warning("backend migration rollback: re-enable skipped after manual recovery", exc_info=True)
+                print(
+                    f"  ⚠ could not re-enable the old backend ({exc}), "
+                    f"but it is already answering on {m['old_address']}"
+                )
+            else:
+                m["old_backend_disabled"] = False
+                run.save()
+                print("  ✓ re-enabled the old backend")
+        elif attempt("re-enabled the old backend", lambda: host.old_enable(rec)):
+            m["old_backend_disabled"] = False
+            run.save()
     if rec.get("was_active") or rec.get("was_loaded"):
         m["old_backend_stopped"] = False
         run.save()
@@ -940,7 +958,7 @@ def _undo_old_backend(run: Run, attempt, errors: list[str]) -> None:
     host, m = run.host, run.data
     rec = m["old_backend"]
     if _manually_recovered(host, m):
-        _reconcile_manual_recovery(run)
+        _reconcile_manual_recovery(run, attempt)
         return
     if rec["supervisor"] == "manual" and rec.get("was_active") and (why := _respawn_dies_here(host)) is not None:
         errors.append(f"did not start the old backend again: {why}")

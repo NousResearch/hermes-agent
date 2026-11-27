@@ -200,7 +200,7 @@ def test_reconciles_manually_recovered_system_launchdaemon_manifest(home, mode):
 
     manifest = engine.read_manifest(home)
     assert manifest["state"] == "rolled_back"
-    assert manifest["old_backend_disabled"] is False
+    assert manifest["old_backend_disabled"] is True  # unprivileged enable was skipped, not falsely cleared
     assert manifest["old_backend_stopped"] is False
     assert "old_start" not in host.calls
     status = engine.status_payload(host)
@@ -266,6 +266,62 @@ def test_still_re_enables_user_service_when_operator_only_started_it(home, tmp_p
     assert "old_start" not in host.calls
     assert host.old["enabled"] is True
     assert engine.read_manifest(home)["state"] == "rolled_back"
+
+
+@pytest.mark.parametrize("supervisor", ["systemd", "launchd"])
+@pytest.mark.parametrize("mode", ["restore", "apply"])
+def test_user_service_re_enable_failure_keeps_manifest_failed_without_restarting(
+    home, tmp_path, capsys, supervisor, mode
+):
+    if supervisor == "launchd":
+        plist = _make_plist(tmp_path)
+        host = LaunchdHost(home, plist)
+        expected_enable = "launchctl enable gui/501/"
+    else:
+        plist = None
+        host = FakeHost(home)
+        expected_enable = "systemctl --user enable "
+    host.gateway_lies = True
+    host.fail_at["old_enable"] = RuntimeError("cannot enable")
+    host.fail_at["old_start"] = RuntimeError("cannot start")
+
+    assert engine.cmd_apply(host, _args()) == engine.EXIT_ROLLBACK_INCOMPLETE
+    assert engine.read_manifest(home)["state"] == "failed"
+
+    # Operator brought the user service back up by hand, but re-enabling still fails.
+    if plist is not None:
+        Path(f"{plist}.disabled").rename(plist)
+    host.old.update(active=True, enabled=False)
+    host.calls.clear()
+    capsys.readouterr()
+
+    assert _invoke(host, mode) == engine.EXIT_ROLLBACK_INCOMPLETE
+
+    manifest = engine.read_manifest(home)
+    assert manifest["state"] == "failed"
+    assert manifest["old_backend_disabled"] is True
+    assert host.old["enabled"] is False
+    assert "old_enable" in host.calls
+    assert "old_start" not in host.calls
+    out = capsys.readouterr().out
+    assert "Rollback incomplete" in out
+    status = engine.status_payload(host)
+    assert status["state"] == "failed"
+    assert any(expected_enable in step for step in status["manual_steps"])
+    assert expected_enable in out
+    assert str(engine.manifest_path(home)) in status["manual_steps"][-1]
+    assert status["manual_steps"][-1] in out
+
+    # Once enable recovers, retry re-enables and closes the manifest without restarting the running backend.
+    host.fail_at.pop("old_enable")
+    host.calls.clear()
+    assert _invoke(host, mode) == engine.EXIT_ROLLED_BACK
+    assert "old_enable" in host.calls
+    assert "old_start" not in host.calls
+    assert host.old["enabled"] is True
+    closed = engine.read_manifest(home)
+    assert closed["state"] == "rolled_back"
+    assert closed["old_backend_disabled"] is False
 
 
 # --------------------------------------------------------------------------- negative controls (never falsely succeed)

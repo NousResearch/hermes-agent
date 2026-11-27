@@ -15,7 +15,7 @@ import { makeSessionInfo } from '@/test/session-info'
 
 import { SimplifiedSessionList } from '../simplified-session-list'
 
-import { AGENT_CHAT_CAP, agentChatCount, capAgentChats } from './agent-chat-cap'
+import { AGENT_CHAT_CAP, agentChatCount, capAgentChats, computeAgentChatLimits } from './agent-chat-cap'
 
 const noop = () => {}
 
@@ -71,6 +71,73 @@ describe('capAgentChats', () => {
   it('keeps the most recent rows and any later row that must stay in reach, in order', () => {
     expect(capAgentChats([1, 2, 3, 4, 5], 2, row => row === 4)).toEqual([1, 2, 4])
     expect(capAgentChats([1, 2], 3, () => false)).toEqual([1, 2])
+  })
+})
+
+describe('computeAgentChatLimits', () => {
+  it('falls back to AGENT_CHAT_CAP when height is unmeasured', () => {
+    expect(
+      computeAgentChatLimits({
+        availableHeight: 0,
+        collapsedAgentCount: 0,
+        groupRows: 0,
+        machineCount: 1,
+        openAgents: [{ key: 'a', count: 12 }],
+        pinnedRows: 0
+      })
+    ).toEqual({ a: AGENT_CHAT_CAP })
+  })
+
+  it('expands a single agent to fill available sidebar height instead of folding over blank space', () => {
+    const limits = computeAgentChatLimits({
+      availableHeight: 720,
+      collapsedAgentCount: 0,
+      groupRows: 0,
+      machineCount: 1,
+      openAgents: [{ key: 'a', count: 12, active: true }],
+      pinnedRows: 0
+    })
+    expect(limits.a).toBe(12)
+  })
+
+  it('donates unused slack from small agents to larger ones and keeps the 3-chat floor when tight', () => {
+    const roomy = computeAgentChatLimits({
+      availableHeight: 720,
+      collapsedAgentCount: 0,
+      groupRows: 0,
+      machineCount: 1,
+      openAgents: [
+        { key: 'small', count: 1 },
+        { key: 'busy', count: 12, active: true }
+      ],
+      pinnedRows: 0
+    })
+    expect(roomy.busy).toBeGreaterThan(8)
+
+    const tight = computeAgentChatLimits({
+      availableHeight: 280,
+      collapsedAgentCount: 0,
+      groupRows: 0,
+      machineCount: 1,
+      openAgents: [
+        { key: 'a', count: 10 },
+        { key: 'b', count: 10 }
+      ],
+      pinnedRows: 2
+    })
+    expect(tight).toEqual({ a: AGENT_CHAT_CAP, b: AGENT_CHAT_CAP })
+  })
+
+  it('never hides a single lone overflow chat behind a Show all button', () => {
+    const limits = computeAgentChatLimits({
+      availableHeight: 280,
+      collapsedAgentCount: 0,
+      groupRows: 0,
+      machineCount: 1,
+      openAgents: [{ key: 'a', count: AGENT_CHAT_CAP + 1 }],
+      pinnedRows: 2
+    })
+    expect(limits.a).toBe(AGENT_CHAT_CAP + 1)
   })
 })
 

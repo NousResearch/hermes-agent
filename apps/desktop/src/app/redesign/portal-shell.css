@@ -302,13 +302,6 @@
   block-size: var(--portal-rail-glyph);
 }
 
-/* The developer rail's destinations rest at .8 ink. */
-:root[data-shell='portal']
-  .portal-rail:not([data-slot='global-nav'])
-  .portal-chrome-button:not([aria-current='page'], [aria-pressed='true']) {
-  color: color-mix(in srgb, var(--ui-base) 80%, transparent);
-}
-
 :root[data-shell='portal'] .portal-rail-group {
   display: flex;
   flex-direction: column;
@@ -495,11 +488,10 @@
 
 /* ── Zone tab strips ──────────────────────────────────────────────────────────────────────── */
 
-/* A window-top zone's tabs ride its band as distinct chrome pills matching the session pill and
-   band controls (16292:15285, 16292:15297): each tab sits on --portal-surface-chrome with a
-   hairline rim so inactive tabs read as real clickable tabs over the artwork rather than floating
-   text; the active tab steps up to --portal-surface-chrome-pressed with a stronger border and the
-   brand-ink rule tying it to the pane below. */
+/* Multi-tab titlebar strip: speaks the same chrome tile family as the single-tab pill
+   (.portal-session-tab-title, Figma 16292:15297) — crisp r3 corners, quiet transparent inactive
+   tabs over the band, and a calm filled tile (--portal-surface-chrome + hairline rim) for the
+   active tab with no accent underline bar. */
 :root[data-shell='portal'] [data-tree-group][data-window-top] > [data-panel-header] [data-zone-tabstrip] {
   --pane-tab-strip-bg: transparent;
   --pane-tab-active-bg: transparent;
@@ -535,9 +527,9 @@
 
 :root[data-shell='portal'] [data-zone-tabstrip] [role='tab'] {
   block-size: 1.625rem;
-  border: 1px solid var(--portal-stroke-hairline);
-  border-radius: var(--portal-radius-surface);
-  background-color: var(--portal-surface-chrome);
+  border: 1px solid transparent;
+  border-radius: var(--portal-radius-control);
+  background-color: transparent;
   box-shadow: none;
   color: var(--portal-text-secondary);
   font-size: var(--portal-type-ui-size);
@@ -554,27 +546,32 @@
 }
 
 :root[data-shell='portal'] [data-zone-tabstrip] [role='tab']:hover {
-  border-color: var(--portal-stroke-control);
+  border-color: transparent;
   background-color: var(--portal-surface-chrome-hover);
   box-shadow: none;
   color: var(--portal-text-primary);
 }
 
 :root[data-shell='portal'] [data-zone-tabstrip] [role='tab'][data-active='true'] {
-  border-color: var(--portal-stroke-control);
-  background-color: var(--portal-surface-chrome-pressed);
-  box-shadow: inset 0 -2px 0 var(--portal-brand-ink);
+  border-color: var(--portal-stroke-hairline);
+  background-color: var(--portal-surface-chrome);
+  box-shadow: none;
   color: var(--portal-text-primary);
   font-weight: 500;
+}
+
+:root[data-shell='portal'] [data-zone-tabstrip] [role='tab'][data-active='true']:hover {
+  border-color: var(--portal-stroke-control);
+  background-color: var(--portal-surface-chrome-hover);
 }
 
 /* Overflow scroll buttons wear the same chrome tile family as the tabs they flank. */
 :root[data-shell='portal'] [data-zone-tabstrip] :is([data-slot='pane-tab-scroll-left'], [data-slot='pane-tab-scroll-right']) {
   inline-size: 1.5rem;
   block-size: 1.625rem;
-  border: 1px solid var(--portal-stroke-hairline);
-  border-radius: var(--portal-radius-surface);
-  background-color: var(--portal-surface-chrome);
+  border: 1px solid transparent;
+  border-radius: var(--portal-radius-control);
+  background-color: transparent;
   color: var(--portal-text-secondary);
 }
 
@@ -589,7 +586,7 @@
 :root[data-shell='portal']
   [data-zone-tabstrip]
   :is([data-slot='pane-tab-scroll-left'], [data-slot='pane-tab-scroll-right']):hover {
-  border-color: var(--portal-stroke-control);
+  border-color: var(--portal-stroke-hairline);
   background-color: var(--portal-surface-chrome-hover);
   color: var(--portal-text-primary);
 }

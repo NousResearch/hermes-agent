@@ -1,12 +1,12 @@
 import { useStore } from '@nanostores/react'
 
 import { Button } from '@/components/ui/button'
+import { Codicon } from '@/components/ui/codicon'
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuSeparator,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { FigmaAgentIcon } from '@/components/ui/figma-agent-icon'
@@ -17,6 +17,7 @@ import { useBots } from '@/plugins/hermes-bots/i18n'
 import { botRosterMeta } from '@/plugins/hermes-bots/routing'
 import { toggleBotScreenAutoOpen } from '@/plugins/hermes-bots/screen-open'
 import { setSidebarAgentHidden } from '@/store/agent-sidebar-preferences'
+import { openPortalCreateProjectDialog } from '@/store/portal-projects'
 
 import { useHiddenAgentCopy } from '../hidden-agent-copy'
 import { useBotModeLoaded } from '../simplified-bot-chat-row'
@@ -101,8 +102,11 @@ export function PortalAgentMenu({ agent, hidden, pending, onOpen }: PortalAgentM
           <FigmaAgentIcon className="portal-agent-menu-icon" color="transparent" variant="outline" />
           {c.manageAgent}
         </DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => openPortalCreateProjectDialog({ agentLabel: agent.label, owner })}>
+          <Codicon aria-hidden name="folder" size="1rem" />
+          New project
+        </DropdownMenuItem>
         {botMode && <ScreenItems agent={agent} />}
-        <DropdownMenuSeparator />
         {hidden ? (
           <DropdownMenuItem onSelect={() => setSidebarAgentHidden(owner, false)}>
             <Eye aria-hidden />

@@ -14,6 +14,7 @@ import { $hiddenSidebarAgents, agentSidebarKey } from '@/store/agent-sidebar-pre
 import { $activeConnectionId } from '@/store/connections'
 import { recordAction } from '@/store/desktop-metrics'
 import { recordIaAction } from '@/store/ia-metrics'
+import { $portalAgentProjects, agentPortalProjectsFor } from '@/store/portal-projects'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $sessionProfilesTruncated, $sessionProfilesUsage, knownSessionOwner } from '@/store/session'
 import { $focusedStoredSessionId } from '@/store/session-focus'
@@ -25,7 +26,7 @@ import { useHiddenAgentCopy } from '../hidden-agent-copy'
 import { SimplifiedBotChatRow, useBotModeLoaded } from '../simplified-bot-chat-row'
 import { SimplifiedGatewayHeader } from '../simplified-gateway-header'
 import { startSimplifiedAgentSession } from '../simplified-new-session-model'
-import { agentKey, type SimplifiedAgent, type useSimplifiedAgents } from '../use-simplified-agents'
+import { agentKey, agentOwner, type SimplifiedAgent, type useSimplifiedAgents } from '../use-simplified-agents'
 
 import { type AgentChatCount, agentChatCount } from './agent-chat-cap'
 import type { NewAgentOffer } from './new-agent-offers'
@@ -58,11 +59,12 @@ interface AgentCardProps extends Pick<PortalAgentGroupsProps, 'onToggle' | 'onOp
   hidden: boolean
   /** How many chats the agent has, as far as the list knows: the card's second line when no description. */
   chats: AgentChatCount
+  /** Number of projects scoped to this agent (0 omits the projects prefix per Figma 1701:9935). */
+  projectCount?: number
   /** Whether any of them is in the list under the card: only then is there something to fold. */
   listed: boolean
   children: ReactNode
 }
-
 /** An agent block inside its machine (1250:37611): colour tile, name over a second line, then the
  *  menu and a new chat (hover/focus affordances) and the disclosure, with its chats underneath. */
 function AgentCard({
@@ -72,6 +74,7 @@ function AgentCard({
   forcedOpen,
   hidden,
   chats,
+  projectCount = 0,
   listed,
   onToggle,
   onOpenAgent,
@@ -82,11 +85,15 @@ function AgentCard({
   const c = useHiddenAgentCopy()
   const toggleLabel = `${open ? t.common.collapse : t.common.expand}: ${agent.label}`
 
-  const summary = chats.more
+  const chatSummary = chats.more
     ? t.simplifiedAgents.chatCountAtLeast(chats.value)
     : chats.value
       ? t.simplifiedAgents.chatCount(chats.value)
       : t.simplifiedAgents.noChats
+  const summary =
+    projectCount > 0
+      ? `${projectCount === 1 ? '1 project' : `${projectCount} projects`} · ${chatSummary}`
+      : chatSummary
 
   const headerItems = useContributions(SIDEBAR_PROFILE_GROUP_HEADER_AREA)
   // The disclosure is offered only when folding would hide something: chats or plugin chrome.
@@ -155,13 +162,14 @@ export const agentMatches = (list: PortalAgentGroupsProps['agents'], agent: Simp
 export function PortalAgentGroups(props: PortalAgentGroupsProps) {
   const botMode = useBotModeLoaded()
   const hidden = new Set(useStore($hiddenSidebarAgents))
+  const allProjects = useStore($portalAgentProjects)
   const activeConnection = useStore($activeConnectionId)
   const activeProfile = useStore($activeGatewayProfile)
   const focused = useStore($focusedStoredSessionId)
+  const { agents, sessionsByAgent, owner } = props.agents
   const tiles = useStore($sessionTiles)
   const truncated = useStore($sessionProfilesTruncated)
   const usage = useStore($sessionProfilesUsage)
-  const { agents, sessionsByAgent, owner } = props.agents
   const query = props.query.trim().toLowerCase()
   const chatsOf = (agent: SimplifiedAgent) => sessionsByAgent.get(agentKey(agent)) ?? []
 
@@ -234,11 +242,15 @@ export function PortalAgentGroups(props: PortalAgentGroupsProps) {
                       forcedOpen={Boolean(query)}
                       hidden={isHidden(agent)}
                       key={agent.id}
-                      listed={chatsOf(agent).length > 0}
+                      listed={
+                        chatsOf(agent).length > 0 ||
+                        agentPortalProjectsFor(allProjects, agentOwner(agent)).projects.length > 0
+                      }
                       onOpenAgent={props.onOpenAgent}
                       onToggle={props.onToggle}
                       open={Boolean(query) || (props.expanded[agentKey(agent)] ?? true)}
                       pending={props.pending}
+                      projectCount={agentPortalProjectsFor(allProjects, agentOwner(agent)).projects.length}
                       selected={agentKey(agent) === activeAgentKey}
                     >
                       {/* Each row reads its agent's screen once: only for the machine the list was read from. */}

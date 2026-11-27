@@ -36,6 +36,12 @@ import { exportSession } from '@/lib/session-export'
 import { activeGateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import {
+  $portalAgentProjects,
+  agentPortalProjectsFor,
+  moveSessionToPortalProject,
+  openPortalCreateProjectDialog
+} from '@/store/portal-projects'
+import {
   $projectTree,
   applyRenamedSessionTitle,
   moveSessionToProject,
@@ -280,6 +286,98 @@ function MoveToProjectItems({ kit, sessionId, profile }: { kit: MenuKit; session
   )
 }
 
+function PortalMoveToProjectItems({
+  kit,
+  ownerRoute,
+  profile,
+  sessionId,
+  title
+}: {
+  kit: MenuKit
+  ownerRoute?: SessionOwnerRoute
+  profile?: string
+  sessionId: string
+  title: string
+}) {
+  const allProjects = useStore($portalAgentProjects)
+  const owner = {
+    connectionId: ownerRoute?.connectionId ?? null,
+    profile: ownerRoute?.targetProfile || ownerRoute?.profile || profile || 'default'
+  }
+  const agentLabel = owner.profile
+  const entry = agentPortalProjectsFor(allProjects, owner)
+  const currentProjectId = entry.sessionProject[sessionId] ?? null
+
+  return (
+    <>
+      <div className="portal-project-submenu-heading">{agentLabel} projects</div>
+      {entry.projects.map(project => {
+        const active = project.id === currentProjectId
+
+        return (
+          <kit.Item
+            key={project.id}
+            onSelect={() => {
+              if (active) {
+                return
+              }
+
+              triggerHaptic('selection')
+              const previous = moveSessionToPortalProject(owner, sessionId, project.id)
+              notify({
+                action: {
+                  label: 'Undo',
+                  onClick: () => moveSessionToPortalProject(owner, sessionId, previous ?? null)
+                },
+                durationMs: 4_000,
+                kind: 'success',
+                message: `Moved to ${project.name}.`
+              })
+            }}
+          >
+            <Codicon aria-hidden name="folder" size="0.875rem" />
+            <span className="truncate">{project.name}</span>
+            {active ? <Codicon aria-hidden className="ml-auto" name="check" size="0.75rem" /> : null}
+          </kit.Item>
+        )
+      })}
+      {currentProjectId ? (
+        <kit.Item
+          onSelect={() => {
+            triggerHaptic('selection')
+            const previous = moveSessionToPortalProject(owner, sessionId, null)
+            notify({
+              action: {
+                label: 'Undo',
+                onClick: () => moveSessionToPortalProject(owner, sessionId, previous ?? null)
+              },
+              durationMs: 4_000,
+              kind: 'info',
+              message: 'Removed from project.'
+            })
+          }}
+        >
+          <Codicon aria-hidden name="close" size="0.875rem" />
+          <span>Remove from project</span>
+        </kit.Item>
+      ) : null}
+      {entry.projects.length > 0 && <kit.Separator />}
+      <kit.Item
+        onSelect={() => {
+          triggerHaptic('selection')
+          openPortalCreateProjectDialog({
+            agentLabel,
+            owner,
+            session: { id: sessionId, title }
+          })
+        }}
+      >
+        <Codicon aria-hidden name="add" size="0.875rem" />
+        <span>New project…</span>
+      </kit.Item>
+    </>
+  )
+}
 function matchesAmbientSessionOwner(ownerRoute: SessionOwnerRoute | undefined, profile: string | null): boolean {
   return (
     !ownerRoute ||
@@ -329,9 +427,9 @@ function useSessionActions({
   const r = t.sidebar.row
   const scope = useStore($apiRequestScope)
   const ambientOnly = useStore($sessionListSpansProfiles)
+  const portal = usePortalShell()
 
   const actionScope = sessionActionScope(ownerRoute, profile, ambientOnly, scope.profile)
-
   const [renameOpen, setRenameOpen] = useState(false)
   // The rename item opens a Dialog. When a menu closes, Radix restores focus to
   // its trigger — for a sidebar row that trigger is the row's own <button>, so
@@ -631,12 +729,22 @@ function useSessionActions({
       <kit.Separator />
       {workItems.map(item => renderActionItem(kit, item))}
       <kit.Sub>
-        <kit.SubTrigger disabled={!sessionId || !actionScope.ambient}>
+        <kit.SubTrigger disabled={!sessionId || (!portal && !actionScope.ambient)}>
           <Codicon name="folder" size="0.875rem" />
           <span>{t.sidebar.projects.moveToProject}</span>
         </kit.SubTrigger>
         <kit.SubContent>
-          <MoveToProjectItems kit={kit} profile={profile} sessionId={sessionId} />
+          {portal ? (
+            <PortalMoveToProjectItems
+              kit={kit}
+              ownerRoute={ownerRoute}
+              profile={profile}
+              sessionId={sessionId}
+              title={title}
+            />
+          ) : (
+            <MoveToProjectItems kit={kit} profile={profile} sessionId={sessionId} />
+          )}
         </kit.SubContent>
       </kit.Sub>
       {tabItems.length > 0 && (

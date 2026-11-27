@@ -1,12 +1,5 @@
 /* ── App drawer (640px, Figma 1524:26133) ──────────────────────────────────────────────────── */
 
-:root[data-shell='portal'] .conn-sheet-backdrop {
-  position: fixed;
-  z-index: var(--z-modal-backdrop);
-  inset: 0;
-  background: color-mix(in srgb, var(--portal-surface-scrim) 80%, transparent);
-}
-
 :root[data-shell='portal'] .conn-sheet {
   position: fixed;
   z-index: var(--z-modal);
@@ -72,7 +65,7 @@
   margin: 0;
   color: var(--portal-text-primary);
   font-family: var(--portal-font-display);
-  font-size: calc(var(--portal-type-display-lg-size) * 1.2);
+  font-size: var(--portal-type-display-lg-size);
   font-weight: 300;
   letter-spacing: var(--portal-tracking-display);
   line-height: 1.05;
@@ -221,7 +214,7 @@
 
 :root[data-shell='portal'] .conn-disconnect-modal {
   position: relative;
-  z-index: calc(var(--portal-layer-sheet) + 2);
+  z-index: 1;
   display: flex;
   width: min(25rem, 100vw);
   max-width: 100%;
@@ -239,7 +232,7 @@
 :root[data-shell='portal'] .conn-disconnect-modal h2 {
   margin: 0;
   font-family: var(--portal-font-display);
-  font-size: calc(var(--portal-type-display-lg-size) * 0.8);
+  font-size: var(--portal-type-display-lg-size);
   font-weight: 400;
   letter-spacing: var(--portal-tracking-display);
   line-height: 1.15;
@@ -724,5 +717,4 @@
   height: 2.5rem;
   border-radius: var(--portal-radius-surface);
   background: var(--portal-surface-skeleton);
-  animation: conn-pulse var(--portal-motion-slow) var(--portal-ease) infinite alternate;
 }

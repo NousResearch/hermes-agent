@@ -1,6 +1,6 @@
 import './connections.css'
 
-import { type RefObject, useEffect, useMemo, useRef, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -11,7 +11,7 @@ import { categoryLabel, UNCATEGORISED } from '../derive-tools'
 import type { ToolRowModel } from '../types'
 
 import { type ConnectionsCopy, useConnectionsCopy } from './connections-copy'
-import { onFilterGroupKeyDown } from './connections-filter'
+import { onFilterGroupKeyDown, useSlashShortcut } from './connections-filter'
 import {
   activeToolsChipCount,
   CONNECTION_TOOL_FACETS,
@@ -131,46 +131,6 @@ export function ConnectionToolsToolbar({
       ) : null}
     </div>
   )
-}
-
-/** `/` reaches the tools search from anywhere on the page, as the Figma shortcut promises. */
-function useSlashShortcut(field: RefObject<HTMLInputElement | null>): void {
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== '/' || event.defaultPrevented || event.repeat) {
-        return
-      }
-
-      if (event.metaKey || event.ctrlKey || event.altKey) {
-        return
-      }
-
-      const target = event.target instanceof HTMLElement ? event.target : null
-
-      if (target?.isContentEditable) {
-        return
-      }
-
-      if (target?.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])')) {
-        return
-      }
-
-      if (
-        document.querySelector(
-          '[role="menu"], [data-radix-popper-content-wrapper], [aria-modal="true"]'
-        ) !== null
-      ) {
-        return
-      }
-
-      event.preventDefault()
-      field.current?.focus()
-    }
-
-    window.addEventListener('keydown', onKeyDown)
-
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [field])
 }
 
 function useAreaOptions(copy: ConnectionsCopy, tools: readonly ToolRowModel[]): AreaOption[] {

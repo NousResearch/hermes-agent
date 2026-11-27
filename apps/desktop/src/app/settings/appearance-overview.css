@@ -22,92 +22,17 @@
   min-width: 0;
 }
 
-.appearance-mode-section legend {
-  margin-bottom: 2px;
-  font-size: var(--portal-type-section-size);
-  line-height: 1.1;
-  font-weight: 500;
-}
-
-/* Theme mode cards (856:3413): 188px tall, r8, 5% fill + stroke; selected = brand tint + ring. */
-.appearance-mode-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0.75rem;
-  margin-top: 0.75rem;
-}
-
-.appearance-mode-card {
+.appearance-make-it-yours {
   display: flex;
-  min-width: 0;
-  min-height: 11.75rem;
   flex-direction: column;
-  gap: 0.5rem;
-  padding: 0.75rem;
-  border: 1px solid var(--ui-stroke-tertiary);
-  border-radius: var(--portal-radius-floating);
-  background: var(--ui-bg-card);
-  cursor: pointer;
+  gap: 1rem;
 }
 
-.appearance-mode-card:hover {
-  background: var(--portal-surface-control-hover);
-}
-
-.appearance-mode-card:has(input:checked) {
-  border-color: transparent;
-  box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--portal-brand-ink) 38%, transparent);
-  background: var(--portal-surface-brand-selected);
-}
-
-:root:not(.dark) .appearance-mode-card:has(input:checked) {
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--portal-brand-ink) 45%, transparent);
-  background: var(--portal-surface-brand-selected);
-}
-
-.appearance-mode-card:has(input:focus-visible) {
-  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
-  outline-offset: var(--portal-focus-ring-offset);
-}
-
-.appearance-mode-preview {
-  display: block;
-  height: 4.5rem;
-  flex: 0 0 4.5rem;
-  border: 1px solid var(--ui-stroke-secondary);
-  border-radius: var(--portal-radius-chip);
-}
-
-.appearance-mode-label {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 4px;
-  font-weight: 500;
-}
-
-/* DEFAULT chip (856:3431): green tint, uppercase, tracked. */
-.appearance-mode-default {
-  padding: 0 0.1875rem;
-  border-radius: var(--portal-radius-chip);
-  color: var(--ui-green);
-  background: color-mix(in srgb, var(--ui-green) 14%, transparent);
-  font-size: var(--portal-type-chip-size);
-  font-weight: 500;
-  letter-spacing: var(--portal-tracking-chip);
-  line-height: 0.8125rem;
-  text-transform: uppercase;
-}
-
-@container (max-width: 28rem) {
-  .appearance-mode-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .appearance-mode-card {
-    min-height: 0;
-  }
+.appearance-make-it-yours .discovery-artworks-track {
+  margin-inline: 0;
+  padding-inline: 0;
+  scroll-padding-inline: 0;
+  mask-image: none;
 }
 
 /* Advanced groups (829:2712): a quiet group label over hairline-divided rows. */

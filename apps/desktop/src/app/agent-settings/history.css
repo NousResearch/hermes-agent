@@ -869,7 +869,7 @@
     width: 18%;
   }
 }
-@media (max-width: 600px) {
+@media (max-width: 639.98px) {
   :root[data-shell='portal'] .agent-history-panel[data-slot='dialog-content'] {
     width: 100%;
   }

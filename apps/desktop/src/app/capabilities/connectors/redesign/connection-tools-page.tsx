@@ -35,7 +35,9 @@ import {
   type ConnectionToolsFilterState,
   EMPTY_CONNECTION_TOOLS_FILTER,
   filterConnectionTools,
-  groupToolsByArea
+  groupToolsByArea,
+  isKnownFacet,
+  type ToolFacet
 } from './filter-logic'
 
 /**
@@ -476,16 +478,10 @@ function AreaGroup({
   )
 }
 
-const FACET_BADGES = {
+const FACET_BADGES: Record<ToolFacet, { className: string; symbol: string }> = {
   destructive: { className: 'conn-badge conn-badge-destructive', symbol: '▲' },
   read: { className: 'conn-badge conn-badge-read', symbol: '○' },
   write: { className: 'conn-badge conn-badge-write', symbol: '◐' }
-} as const
-
-type KnownFacet = keyof typeof FACET_BADGES
-
-function isKnownFacet(facet: string): facet is KnownFacet {
-  return facet === 'read' || facet === 'write' || facet === 'destructive'
 }
 
 function ToolRowItem({

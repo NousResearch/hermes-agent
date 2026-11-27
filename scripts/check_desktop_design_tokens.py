@@ -295,7 +295,10 @@ def declaration_findings(decl: Decl) -> list[str]:
         kinds.append("inline-mix")
     if re.fullmatch(r"border(-[a-z]+)*-radius", prop) and _nonzero_lengths(decl.value, ("px", "rem", "em")):
         kinds.append("radius")
-    if prop in ("font-size", "font") and _nonzero_lengths(decl.value, ("px", "rem")):
+    if prop in ("font-size", "font") and (
+        _nonzero_lengths(decl.value, ("px", "rem"))
+        or (prop == "font-size" and "calc(" in decl.value and "--chat-text-scale" not in decl.value)
+    ):
         kinds.append("font-size")
     if prop == "letter-spacing" and _nonzero_lengths(decl.value, ("px", "rem", "em")):
         kinds.append("letter-spacing")
@@ -303,7 +306,10 @@ def declaration_findings(decl: Decl) -> list[str]:
         kinds.append("line-height")
     if prop.startswith(("transition", "animation")) and any(float(x) != 0 for x, _ in _TIME.findall(bare)):
         kinds.append("duration")
-    if prop == "z-index" and re.fullmatch(r"\d+", decl.value.strip()) and int(decl.value) > 1:
+    if prop == "z-index" and (
+        (re.fullmatch(r"\d+", decl.value.strip()) and int(decl.value) > 1)
+        or "calc(" in decl.value
+    ):
         kinds.append("z-index")
     if prop in _BLOCK_START_PROPS and _PAGE_TOP_PULL.search(decl.value):
         kinds.append("page-top")

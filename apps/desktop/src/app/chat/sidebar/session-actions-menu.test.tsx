@@ -433,7 +433,8 @@ describe('SessionActionsMenu', () => {
   // background warm timer (PROJECT_TREE_WARM_MS). Opening this submenu before
   // either fires must not silently show "No other projects" forever — it must
   // pull the authoritative tree itself.
-  it('refreshes the project tree when the "Move to project" submenu opens', async () => {
+  it('refreshes the project tree when the "Move to project" submenu opens in classic', async () => {
+    $shellChoice.set(false)
     renderMenu()
 
     const trigger = screen.getByRole('button', { name: 'Session actions' })
@@ -447,6 +448,19 @@ describe('SessionActionsMenu', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: 'Move to project' }))
 
     await waitFor(() => expect(refreshProjectTree).toHaveBeenCalledTimes(1))
+  })
+
+  it('shows per-agent projects and New project… in redesign Move to project submenu', async () => {
+    $shellChoice.set(true)
+    renderMenu()
+
+    const trigger = screen.getByRole('button', { name: 'Session actions' })
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Move to project' }))
+    expect(await screen.findByRole('menuitem', { name: 'New project…' })).toBeTruthy()
   })
 })
 
@@ -463,12 +477,9 @@ it('exports a remote search result using the exact owner from its row', async ()
   expect(exportSession).toHaveBeenCalledWith('remote-only', { profile: owner, title: 'Remote' })
 })
 
-// Main offers "Move to project" on every row of its one-connection list; only the redesign's
-// cross-machine list holds it back for a row another machine or profile owns.
-it.each([
-  [false, null],
-  [true, 'true']
-])('offers Move to project on another owner’s row as main does in classic (redesign=%s)', async (redesign, disabled) => {
+// Both classic (one-connection list) and redesign (per-agent projects, Figma 1698:99887) offer
+// "Move to project" on every agent's row.
+it.each([false, true])('offers Move to project on another owner’s row (redesign=%s)', async redesign => {
   $shellChoice.set(redesign)
   render(
     <SessionActionsMenu ownerRoute={{ connectionId: 'remote-b', profile: 'research' }} sessionId="remote" title="Remote">
@@ -479,5 +490,5 @@ it.each([
 
   const move = await screen.findByRole('menuitem', { name: 'Move to project' })
 
-  expect(move.getAttribute('aria-disabled')).toBe(disabled)
+  expect(move.getAttribute('aria-disabled')).toBeNull()
 })

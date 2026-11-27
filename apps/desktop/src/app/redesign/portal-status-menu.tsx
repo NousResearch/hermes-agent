@@ -40,7 +40,7 @@ export function PortalStatusMenu({ children }: { children: (close: () => void) =
       <PopoverContent
         align="end"
         aria-label={label}
-        className="portal-rail-popover w-[300px] max-w-[calc(100vw-1rem)] max-h-[calc(100dvh-2rem)] overflow-y-auto p-0"
+        className="portal-rail-popover w-[21.5rem] max-w-[calc(100vw-1rem)] max-h-[calc(100dvh-2rem)] overflow-y-auto p-0"
         collisionPadding={collisionPadding}
         side="right"
         sideOffset={0}

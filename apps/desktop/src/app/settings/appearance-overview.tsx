@@ -1,7 +1,8 @@
+import '../discovery/discovery.css'
 import './appearance-overview.css'
 
 import { useStore } from '@nanostores/react'
-import { type ReactNode, useEffect, useId, useRef } from 'react'
+import { type ReactNode, useEffect, useRef } from 'react'
 
 import { LanguageSwitcher } from '@/components/language-switcher'
 import { SegmentedControl } from '@/components/ui/segmented-control'
@@ -10,8 +11,8 @@ import { triggerHaptic } from '@/lib/haptics'
 import { $chatTextScale, setChatTextScale } from '@/store/chat-text-scale'
 import { $spentTipCount, $tipsEnabled, resetTips, setTipsEnabled } from '@/store/tips'
 import { $toursEnabled, setToursEnabled } from '@/store/tours'
-import { getBaseColors, useTheme } from '@/themes/context'
 
+import { MakeItYours } from '../discovery/make-it-yours'
 import { $artworkChoice, NO_ARTWORK, setArtworkShown } from '../redesign/artwork'
 
 import { appearanceOverviewCopy } from './appearance-overview-copy'
@@ -21,7 +22,6 @@ import { SETTING_IDS, settingElementId } from './settings-manifest'
 import { forHost, useSettingsPagesCopy } from './settings-pages-copy'
 import { useSettingDeepLink } from './use-setting-deep-link'
 
-const modes = ['light', 'dark', 'system'] as const
 const ids = SETTING_IDS.appearance
 
 interface AppearanceOverviewProps {
@@ -32,22 +32,19 @@ export function AppearanceOverview({ advanced }: AppearanceOverviewProps) {
   const { t, locale, isSavingLocale } = useI18n()
   const copy = appearanceOverviewCopy(locale)
   const pages = useSettingsPagesCopy()
-  const { themeName, mode, setMode } = useTheme()
   const chatTextScale = useStore($chatTextScale)
   const tipsEnabled = useStore($tipsEnabled)
   const toursEnabled = useStore($toursEnabled)
   const spentTips = useStore($spentTipCount)
   const artworkChoice = useStore($artworkChoice)
-  const groupName = useId()
   const advancedRef = useRef<HTMLDetailsElement>(null)
   const pendingSetting = useSettingDeepLink('config:appearance')
-  const light = getBaseColors(themeName, 'light').background
-  const dark = getBaseColors(themeName, 'dark').background
 
   // Saved general-setting links must reveal their target before highlighting it.
   useEffect(() => {
     if (
       pendingSetting &&
+      pendingSetting !== ids.theme &&
       pendingSetting !== ids.language &&
       pendingSetting !== ids.chatTextScale &&
       advancedRef.current
@@ -55,52 +52,19 @@ export function AppearanceOverview({ advanced }: AppearanceOverviewProps) {
       advancedRef.current.open = true
     }
   }, [pendingSetting])
-
   return (
     <SettingsContent>
       <p className="appearance-overview-intro" data-slot="page-description">
         {copy.intro}
       </p>
       <div className="appearance-overview" data-slot="appearance-overview">
-        <fieldset className="appearance-mode-section">
-          <legend>{t.settings.appearance.themeTitle}</legend>
-          <p className="appearance-overview-description">{t.settings.appearance.colorModeDesc}</p>
-          <div className="appearance-mode-grid">
-            {modes.map(value => (
-              <label className="appearance-mode-card" key={value}>
-                <input
-                  aria-label={t.settings.modeOptions[value].label}
-                  checked={mode === value}
-                  className="sr-only"
-                  name={groupName}
-                  onChange={() => {
-                    triggerHaptic('crisp')
-                    setMode(value)
-                  }}
-                  type="radio"
-                  value={value}
-                />
-                <span
-                  aria-hidden="true"
-                  className="appearance-mode-preview"
-                  style={{
-                    background:
-                      value === 'system'
-                        ? `linear-gradient(to right, ${light} 50%, ${dark} 50%)`
-                        : value === 'light'
-                          ? light
-                          : dark
-                  }}
-                />
-                <span className="appearance-mode-label">
-                  {t.settings.modeOptions[value].label}
-                  {value === 'system' && <span className="appearance-mode-default">{copy.default}</span>}
-                </span>
-                <span className="appearance-overview-description">{t.settings.modeOptions[value].description}</span>
-              </label>
-            ))}
+        <section aria-label={t.settings.appearance.themeTitle} className="appearance-mode-section appearance-make-it-yours" id={settingElementId(ids.theme)}>
+          <div className="global-settings-section-head">
+            <h3>{t.settings.appearance.themeTitle}</h3>
+            <span>{forHost(pages.savedHere)}</span>
           </div>
-        </fieldset>
+          <MakeItYours />
+        </section>
 
         <section aria-label={copy.reading} className="global-settings-section">
           <div className="global-settings-section-head">

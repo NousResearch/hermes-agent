@@ -2,8 +2,8 @@ import './connections.css'
 
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
 
+import { Sheet, SheetContent } from '@/components/ui/sheet'
 import type { ProfileScope } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { notify, readableError } from '@/store/notifications'
@@ -28,8 +28,7 @@ import {
   type SheetBannerState,
   SheetHeader,
   ToolPermissionsCard,
-  useLocalTools,
-  useSheetFocusTrap
+  useLocalTools
 } from './connection-sheet-parts'
 import { useConnectionsCopy } from './connections-copy'
 
@@ -129,18 +128,6 @@ export function ConnectionSheet({
     onDisconnectDismiss?.()
     sheet.current?.focus()
   }, [onDisconnectDismiss])
-
-  const escaped = useCallback(() => {
-    if (disconnectOpen) {
-      closeDisconnect()
-
-      return
-    }
-
-    onClose()
-  }, [closeDisconnect, disconnectOpen, onClose])
-
-  useSheetFocusTrap(sheet, escaped)
 
   const renameTarget = useMemo(
     () => renameLinkTarget(pendingRename, card.slug, accounts, hosted.accountsLoaded),
@@ -278,17 +265,30 @@ export function ConnectionSheet({
     />
   ) : null
 
-  return createPortal(
-    <>
-      <div className="conn-sheet-backdrop fixed inset-0" onClick={onClose} />
-      <div
+  return (
+    <Sheet
+      onOpenChange={next => {
+        if (!next) {
+          onClose()
+        }
+      }}
+      open
+    >
+      <SheetContent
+        aria-describedby={undefined}
         aria-label={card.name}
-        aria-modal="true"
-        className="conn-sheet fixed inset-y-0 right-0 flex w-full max-w-[40rem] flex-col outline-none"
+        className="conn-sheet gap-0 p-0 outline-none sm:max-w-none"
+        data-page-surface=""
         data-slot="connection-sheet"
+        onEscapeKeyDown={event => {
+          if (disconnectOpen) {
+            event.preventDefault()
+            closeDisconnect()
+          }
+        }}
         ref={sheet}
-        role="dialog"
-        tabIndex={-1}
+        showCloseButton={false}
+        side="right"
       >
         <div aria-hidden={disconnectOpen || undefined} className="flex min-h-0 flex-1 flex-col" inert={disconnectOpen}>
           <SheetHeader card={card} connected={connected} menu={menu} onClose={onClose} />
@@ -356,8 +356,7 @@ export function ConnectionSheet({
             onConfirm={() => void disconnectApp()}
           />
         ) : null}
-      </div>
-    </>,
-    document.body
+      </SheetContent>
+    </Sheet>
   )
 }

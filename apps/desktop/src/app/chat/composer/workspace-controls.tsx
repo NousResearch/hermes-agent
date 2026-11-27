@@ -268,7 +268,7 @@ function ComposerApprovalPill({ disabled, profile }: { disabled: boolean; profil
         <DropdownMenuTrigger asChild>
           <Button
             aria-label={title}
-            className={cn(PILL, mode === 'off' && 'text-foreground')}
+            className={cn(PILL, 'shrink-0', mode === 'off' && 'text-foreground')}
             data-testid="composer-approval-pill"
             disabled={disabled || gatewayState !== 'open'}
             type="button"

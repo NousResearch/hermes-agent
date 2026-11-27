@@ -144,6 +144,12 @@
   color: var(--ui-text-primary);
 }
 
+:root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-model-row'] button[data-testid='composer-approval-pill'] {
+  min-width: max-content;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
 :root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-model-row'] button span {
   overflow: hidden;
   text-overflow: ellipsis;

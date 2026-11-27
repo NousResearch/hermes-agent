@@ -2,7 +2,7 @@ import './discovery.css'
 
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
-import { useLocation } from 'react-router'
+import { useLocation, useNavigate } from 'react-router'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -12,6 +12,7 @@ import { $firstTimeSplashReopenable, reopenFirstTimeSplash } from '@/store/first
 import { $renameSplashReopenable, reopenRenameSplash } from '@/store/rename-splash'
 
 import { useRailMenuCollisionPadding } from '../redesign/portal-status-menu'
+import { NEW_CHAT_ROUTE } from '../routes'
 
 import { useDiscoveryCopy } from './discovery-copy'
 import { notificationTray, TrayItemClearContext } from './tray-items'
@@ -27,6 +28,7 @@ const NOTHING_UNSEEN: ReadonlySet<string> = new Set()
 export function NotificationBell() {
   const copy = useDiscoveryCopy()
   const { pathname, search } = useLocation()
+  const navigate = useNavigate()
   const listed = useStore(notificationTray.$listed)
   const unseen = useStore(notificationTray.$unseen)
   const renameReopenable = useStore($renameSplashReopenable)
@@ -128,6 +130,7 @@ export function NotificationBell() {
                 onClick={() => {
                   handOff()
                   openIntroduction()
+                  navigate(NEW_CHAT_ROUTE)
                 }}
               >
                 {copy.tray.openIntroduction}
@@ -135,7 +138,6 @@ export function NotificationBell() {
             )}
             {hasUnseenListed && (
               <Button
-                className="discovery-welcome-action"
                 onClick={() => setNewOnOpen(NOTHING_UNSEEN)}
                 variant="secondary"
               >

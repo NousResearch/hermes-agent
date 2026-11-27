@@ -79,16 +79,15 @@ describe('AppearanceSettings extra slot', () => {
 })
 
 describe('Appearance overview', () => {
-  it('applies mode cards, text sizes and the combined tips preference through existing stores', () => {
+  it('applies Make it yours mode, text sizes and the combined tips preference through existing stores', () => {
     renderPage('general')
 
-    for (const name of ['Light', 'Dark', 'System']) {
+    for (const name of ['Dark', 'Light']) {
       const radio = screen.getByRole('radio', { name }) as HTMLInputElement
       fireEvent.click(radio)
       expect(radio.checked).toBe(true)
       expect(modePref.resolve(profile)).toBe(name.toLowerCase())
     }
-
     for (const [name, scale] of [
       ['Small', 100],
       ['Large', 125],

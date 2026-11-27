@@ -470,7 +470,7 @@
   margin: 0;
   color: var(--portal-text-primary);
   font-family: var(--portal-font-display);
-  font-size: calc(var(--portal-type-section-size) * 1.5);
+  font-size: var(--portal-type-display-lg-size);
   font-weight: 400;
   letter-spacing: var(--portal-tracking-display);
   line-height: 1.1;
@@ -1102,7 +1102,6 @@
   height: 0.875rem;
   border-radius: var(--portal-radius-chip);
   background: var(--portal-surface-skeleton);
-  animation: conn-pulse var(--portal-motion-slow) var(--portal-ease) infinite alternate;
 }
 
 :root[data-shell='portal'] .conn-skeleton-row {
@@ -1120,7 +1119,6 @@
   flex-shrink: 0;
   border-radius: var(--portal-radius-tile);
   background: var(--portal-surface-skeleton);
-  animation: conn-pulse var(--portal-motion-slow) var(--portal-ease) infinite alternate;
 }
 
 :root[data-shell='portal'] .conn-skeleton-lines {
@@ -1136,7 +1134,6 @@
   height: 0.625rem;
   border-radius: var(--portal-radius-chip);
   background: var(--portal-surface-skeleton);
-  animation: conn-pulse var(--portal-motion-slow) var(--portal-ease) infinite alternate;
 }
 
 :root[data-shell='portal'] .conn-skeleton-line.is-short {
@@ -1149,31 +1146,11 @@
   flex-shrink: 0;
   border-radius: var(--portal-radius-control);
   background: var(--portal-surface-skeleton);
-  animation: conn-pulse var(--portal-motion-slow) var(--portal-ease) infinite alternate;
 }
 
-@keyframes conn-pulse {
-  from {
-    opacity: 1;
-  }
+/* ── Narrow viewports (breakpoints.ts compact: max-width 639.98px) ────────────────────────── */
 
-  to {
-    opacity: 0.55;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  :root[data-shell='portal'] .conn-skeleton-heading,
-  :root[data-shell='portal'] .conn-skeleton-tile,
-  :root[data-shell='portal'] .conn-skeleton-line,
-  :root[data-shell='portal'] .conn-skeleton-cta {
-    animation: none;
-  }
-}
-
-/* ── Narrow viewports ─────────────────────────────────────────────────────────────────────── */
-
-@media (max-width: 699.98px) {
+@media (max-width: 639.98px) {
   :root[data-shell='portal'] .conn-page,
   :root[data-shell='portal'] .conn-tools-page {
     gap: 1.25rem;

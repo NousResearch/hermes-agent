@@ -1,4 +1,4 @@
-import { type FormEvent, type ReactNode, type RefObject, useCallback, useEffect, useMemo, useState } from 'react'
+import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -12,6 +12,7 @@ import {
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
+import { SheetTitle } from '@/components/ui/sheet'
 import { Switch } from '@/components/ui/switch'
 import { Tip } from '@/components/ui/tooltip'
 import type { ProfileScope } from '@/hermes'
@@ -43,11 +44,8 @@ import type {
 import type { SaveResult } from '../use-tools-editor'
 
 import { useConnectionsCopy } from './connections-copy'
-import { type ToolFacet } from './filter-logic'
+import { isKnownFacet } from './filter-logic'
 import { cardCtaKind, taxonomyAppForCard } from './taxonomy'
-
-const FOCUSABLE =
-  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
 
 const NO_DISABLED_TOOLS: readonly string[] = []
 
@@ -133,78 +131,6 @@ export function useLocalTools(
   return { discovered, onSave, rows, savedDisabled, status: localToolsStatus(card, probe) }
 }
 
-/** Keeps Tab inside the sheet and closes it on Escape. Restores the opener's focus on unmount. */
-export function useSheetFocusTrap(sheet: RefObject<HTMLDivElement | null>, onEscape: () => void): void {
-  useEffect(() => {
-    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
-    const root = sheet.current
-
-    root?.querySelector<HTMLElement>(FOCUSABLE)?.focus()
-
-    return () => {
-      opener?.focus()
-    }
-  }, [sheet])
-
-  useEffect(() => {
-    const root = sheet.current
-
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || portalAboveSheet()) {
-        return
-      }
-
-      if (event.key === 'Escape') {
-        event.preventDefault()
-        onEscape()
-
-        return
-      }
-
-      if (event.key !== 'Tab' || !root) {
-        return
-      }
-
-      const items = [...root.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(item => item.closest('[inert]') === null)
-
-      if (items.length === 0) {
-        event.preventDefault()
-        root.focus()
-
-        return
-      }
-
-      const first = items[0]
-      const last = items[items.length - 1]
-      const active = document.activeElement
-
-      if (event.shiftKey && (active === first || !root.contains(active))) {
-        event.preventDefault()
-        last.focus()
-      } else if (!event.shiftKey && (active === last || !root.contains(active))) {
-        event.preventDefault()
-        first.focus()
-      }
-    }
-
-    document.addEventListener('keydown', onKeyDown)
-
-    return () => {
-      document.removeEventListener('keydown', onKeyDown)
-    }
-  }, [onEscape, sheet])
-}
-
-/** A Radix menu, popover or dialog rendered above the sheet owns Escape and Tab while it is open.
- *  Tooltips are excluded: their popper wrapper wraps a `<Tip>` bubble, which takes no focus. */
-function portalAboveSheet(): boolean {
-  return (
-    document.querySelector(
-      '[role="menu"], [role="dialog"]:not([data-slot="connection-sheet"]), [data-slot="popover-content"]'
-    ) !== null
-  )
-}
-
 export function SheetBanner({
   banner,
   busy = false,
@@ -287,9 +213,11 @@ export function SheetHeader({ card, connected, menu, onClose }: SheetHeaderProps
         </span>
         <div className="conn-sheet-heading">
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-            <h2 className="conn-sheet-title [font-family:var(--portal-font-display)] leading-none font-light tracking-[var(--portal-tracking-display)] text-(--portal-text-primary)">
-              {card.name}
-            </h2>
+            <SheetTitle asChild>
+              <h2 className="conn-sheet-title [font-family:var(--portal-font-display)] leading-none font-light tracking-[var(--portal-tracking-display)] text-(--portal-text-primary)">
+                {card.name}
+              </h2>
+            </SheetTitle>
             {connected ? (
               <span className="conn-pill-connected rounded-full border border-[color-mix(in_srgb,var(--portal-status-online)_45%,transparent)] bg-[color-mix(in_srgb,var(--portal-status-online)_12%,transparent)] px-2 py-0.5 text-[length:var(--portal-type-caption-size)] font-semibold tracking-[var(--portal-tracking-chip)] text-(--portal-status-online) uppercase">
                 {copy.sheet.connected}
@@ -1107,9 +1035,6 @@ export interface ToolPermissionsCardProps {
   tools: ConnectorToolsView
 }
 
-function isKnownFacet(facet: string): facet is ToolFacet {
-  return facet === 'read' || facet === 'write' || facet === 'destructive'
-}
 
 export function ToolPermissionsCard({
   card,

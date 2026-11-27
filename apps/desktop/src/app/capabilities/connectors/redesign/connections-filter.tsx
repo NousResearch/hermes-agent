@@ -42,18 +42,48 @@ export interface ConnectionsToolbarProps {
   extraAction?: ReactNode
 }
 
-/** A field's keydown is the surface's own: `/` must not steal a keystroke from it. */
-function isTypingTarget(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) {
-    return false
-  }
+/** `/` focuses a search field from anywhere on the page unless typing or a modal/menu is open. */
+export function useSlashShortcut(
+  field: { current: HTMLInputElement | null },
+  disabled = false
+): void {
+  useEffect(() => {
+    if (disabled) {
+      return
+    }
 
-  return (
-    target.isContentEditable ||
-    target.tagName === 'INPUT' ||
-    target.tagName === 'TEXTAREA' ||
-    target.tagName === 'SELECT'
-  )
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== '/' || event.defaultPrevented || event.repeat) {
+        return
+      }
+
+      if (event.metaKey || event.ctrlKey || event.altKey) {
+        return
+      }
+
+      const target = event.target instanceof HTMLElement ? event.target : null
+
+      if (
+        target?.isContentEditable ||
+        target?.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])')
+      ) {
+        return
+      }
+
+      if (
+        document.querySelector('[role="menu"], [data-radix-popper-content-wrapper], [aria-modal="true"]') !== null
+      ) {
+        return
+      }
+
+      event.preventDefault()
+      field.current?.focus()
+    }
+
+    window.addEventListener('keydown', onKeyDown)
+
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [disabled, field])
 }
 
 const GROUP_KEYS: Record<string, true> = {
@@ -136,40 +166,32 @@ export function ConnectionsToolbar({
     [cards, draftFilter]
   )
 
-  // `/` jumps to search from anywhere on the page; Escape empties the field
-  // without blurring it, which is what a search field is for.
+  useSlashShortcut(input, open)
+
+  // Escape empties the focused search field without blurring it.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey || event.repeat) {
-        return
-      }
-
-      if (event.key === 'Escape' && document.activeElement === input.current) {
-        if (filter.query.length > 0) {
-          event.preventDefault()
-          onFilterChange({ ...filter, query: '' })
-        }
-
-        return
-      }
-
       if (
-        event.key !== '/' ||
-        open ||
-        isTypingTarget(event.target) ||
-        document.querySelector('[aria-modal="true"]') !== null
+        event.key !== 'Escape' ||
+        event.defaultPrevented ||
+        event.metaKey ||
+        event.ctrlKey ||
+        event.altKey ||
+        event.repeat ||
+        document.activeElement !== input.current ||
+        filter.query.length === 0
       ) {
         return
       }
 
       event.preventDefault()
-      input.current?.focus()
+      onFilterChange({ ...filter, query: '' })
     }
 
     window.addEventListener('keydown', onKeyDown)
 
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [filter, onFilterChange, open])
+  }, [filter, onFilterChange])
 
   const changeOpen = (next: boolean) => {
     setOpen(next)

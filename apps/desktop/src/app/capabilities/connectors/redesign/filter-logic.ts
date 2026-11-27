@@ -42,6 +42,9 @@ export const EMPTY_CONNECTIONS_FILTER: ConnectionsFilterState = {
 
 export type ToolFacet = 'destructive' | 'read' | 'write'
 
+export function isKnownFacet(facet: string): facet is ToolFacet {
+  return facet === 'read' || facet === 'write' || facet === 'destructive'
+}
 export type ToolStatusFilter = 'any' | 'off' | 'on'
 
 export interface ConnectionToolsFilterState {

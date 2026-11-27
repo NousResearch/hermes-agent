@@ -212,6 +212,11 @@ def test_hand_rolled_page_column_calc_is_flagged():
     assert "page-column-calc" in _kinds(GATED.format(decl))
 
 
+def test_font_size_and_z_index_calc_hacks_are_flagged():
+    assert "font-size" in _kinds(GATED.format("font-size: calc(var(--portal-type-display-lg-size) * 1.2);"))
+    assert "z-index" in _kinds(GATED.format("z-index: calc(var(--portal-layer-sheet) + 2);"))
+
+
 @pytest.mark.parametrize(
     "decl",
     [

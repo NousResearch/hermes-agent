@@ -164,6 +164,7 @@ function NewVersionCard({ unseen }: TrayCardProps) {
 
 function RenameSplashCard({ close, unseen }: TrayCardProps) {
   const copy = useDiscoveryCopy().renameItem
+  const navigate = useNavigate()
 
   return (
     <TrayCard
@@ -172,6 +173,7 @@ function RenameSplashCard({ close, unseen }: TrayCardProps) {
         run: () => {
           close()
           reopenRenameSplash()
+          navigate(NEW_CHAT_ROUTE)
         }
       }}
       description={copy.description}
@@ -208,6 +210,7 @@ function SignUpCard({ close, unseen }: TrayCardProps) {
 
 function FirstTimeSplashCard({ close, unseen }: TrayCardProps) {
   const copy = useFirstTimeCopy().tray.meet
+  const navigate = useNavigate()
 
   return (
     <TrayCard
@@ -216,6 +219,7 @@ function FirstTimeSplashCard({ close, unseen }: TrayCardProps) {
         run: () => {
           close()
           reopenFirstTimeSplash()
+          navigate(NEW_CHAT_ROUTE)
         }
       }}
       description={copy.description}

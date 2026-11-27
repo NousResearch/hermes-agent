@@ -93,11 +93,11 @@ def test_spent_plan_window_benches_every_model_until_its_reset(pool, claim, acco
         assert abs(_bench_end(pool) - reset) < 5  # benched until the window resets, not one hour
 
 
-@pytest.mark.parametrize("plan_window, rotates_now", [(True, True), (False, False)])
-def test_first_spent_window_429_rotates_instead_of_waiting(pool, plan_window, rotates_now):
+@pytest.mark.parametrize("claim, rotates_now", [("seven_day", True), ("seven_day_opus", True), (None, False)])
+def test_first_spent_window_429_rotates_instead_of_waiting(pool, claim, rotates_now):
     from agent.agent_runtime_helpers import extract_api_error_context, recover_with_credential_pool
 
-    context = (extract_api_error_context(_plan_429("seven_day", time.time() + 63 * 3600)) if plan_window
+    context = (extract_api_error_context(_plan_429(claim, time.time() + 63 * 3600)) if claim
                else {"reason": "rate_limit_error", "message": RATE_LIMIT_MESSAGE})
     agent = SimpleNamespace(
         provider="anthropic", api_key=SPENT, model=FABLE, _credential_pool=pool,
@@ -108,7 +108,7 @@ def test_first_spent_window_429_rotates_instead_of_waiting(pool, plan_window, ro
         agent, status_code=429, has_retried_429=False, error_context=context,
     )
 
-    # A spent window cannot reopen within any retry wait; a plain per-minute 429 keeps its one retry.
+    # A rejected plan window (account or family) stays shut until its reset; a plain per-minute 429 keeps its one retry.
     assert (recovered, has_retried_429) == ((True, False) if rotates_now else (False, True))
     if rotates_now:
         assert agent._swap_credential.call_args[0][0].id == "spare"

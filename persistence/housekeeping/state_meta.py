@@ -1,6 +1,6 @@
 """Core-owned key/value bookkeeping contract.
 
-The production store keeps a small ``state_meta`` table of core-owned bookkeeping keys: scheduler and repair gates (``cli.py`` startup repairs, the kanban retag gate), per-session goal, loop, and heartbeat state (``hermes_cli/goals.py``, ``hermes_cli/loops.py``, ``hermes_cli/heartbeat.py``), and storage-version stamps. Callers reach those keys through ``StateMetaRepository``, a typed, scope-aware get and set.
+The production store keeps a small ``state_meta`` table of core-owned bookkeeping keys: scheduler and repair gates (``cli.py`` startup repairs, the kanban retag gate), per-session goal, loop, and heartbeat state (``hermes_cli/goals.py``, ``hermes_cli/loops.py``, ``hermes_cli/heartbeat.py``), and storage-version stamps. Callers reach those keys through ``StateMetaRepository``, a typed, scope-aware single- and fixed-multi-get and set interface.
 
 Scope of the promise: this is a store for keys the CORE OWNS, addressed by literal string, scope-isolated like every other capability. It is NOT a plugin escape hatch and NOT a generic query surface: there is no enumeration of the whole table, no typed values, no expiry, and no transactional composition with other capabilities (the retag verb that gates itself on a meta key owns that atomicity inside ``SessionRepository.retag_worker_sessions``). A plugin needing durable state uses its own storage; a new core key is a code change in the owning module, never a runtime registration.
 
@@ -35,6 +35,10 @@ class StateMetaRepository(Protocol):
 
     def get(self, key: str) -> Optional[str]:
         """The stored value for ``key`` in this scope, or ``None`` when the key was never set. Empty ``key`` raises ``ValueError`` before any store access."""
+        ...
+
+    def get_many(self, keys: tuple[str, ...]) -> tuple[Optional[str], ...]:
+        """Read a fixed key set in one committed statement, returning values in request order. Unknown keys are ``None``; duplicate keys repeat their value. Empty input and empty keys raise ``ValueError``. This is a pure multi-get, not a general transaction API."""
         ...
 
     def set(self, key: str, value: str) -> None:

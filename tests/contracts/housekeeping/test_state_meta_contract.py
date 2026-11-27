@@ -12,7 +12,7 @@ from persistence.housekeeping.state_meta import StateMetaRepository
 
 
 def test_repository_satisfies_protocol(backend, scope_a):
-    # CONTRACT: the assembled attribute presents both state_meta get and set operations.
+    # CONTRACT: the assembled attribute presents state_meta get, get_many and set operations.
     assert isinstance(backend.open(scope_a).state_meta, StateMetaRepository)
 
 
@@ -31,6 +31,33 @@ def test_set_then_get_and_upsert_overwrites(backend, scope_a):
     store_a.state_meta.set("gate:one", "2")
     # CONTRACT: a second write of the same key overwrites; the read sees the latest value.
     assert store_a.state_meta.get("gate:one") == "2"
+
+
+def test_get_many_preserves_order_absence_empty_values_and_duplicates(backend, scope_a):
+    repo = backend.open(scope_a).state_meta
+    repo.set("a", "1")
+    repo.set("empty", "")
+    repo.set("b", "2")
+    # CONTRACT: one fixed-key read returns values in request order; absence is None, an empty
+    # string is a stored value, and duplicate keys repeat the value at each requested position.
+    assert repo.get_many(("b", "missing", "a", "empty", "a")) == ("2", None, "1", "", "1")
+    repo.set("a", "latest")
+    assert repo.get_many(("a",)) == ("latest",)
+
+
+def test_get_many_rejects_empty_input_and_empty_keys(backend, scope_a):
+    repo = backend.open(scope_a).state_meta
+    with pytest.raises(ValueError):
+        repo.get_many(())
+    with pytest.raises(ValueError):
+        repo.get_many(("valid", ""))
+
+
+def test_get_many_is_scope_isolated(backend, scope_a, scope_b):
+    backend.open(scope_a).state_meta.set("shared", "a")
+    backend.open(scope_b).state_meta.set("shared", "b")
+    assert backend.open(scope_a).state_meta.get_many(("shared", "missing")) == ("a", None)
+    assert backend.open(scope_b).state_meta.get_many(("shared", "missing")) == ("b", None)
 
 
 def test_values_are_opaque_strings(backend, scope_a):

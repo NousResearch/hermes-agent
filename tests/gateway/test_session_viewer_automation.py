@@ -177,3 +177,79 @@ async def test_a_tool_that_moves_the_goal_mid_turn_repaints_the_viewers_once(own
     await tool_completes('tests pass')
     await tool_completes()
     assert [u['control']['goal']['subgoals'] for u in updates] == [['tests pass']]
+
+
+@pytest.mark.asyncio
+async def test_control_read_uses_committed_state_while_a_writer_is_held(owner):
+    """A canonical control-card read must not queue behind an open SQLite write transaction.
+
+    The reader runs with WAL and a pooled reader available. It must see the last committed
+    values (A), not the writer's uncommitted replacements (B), before the writer is released.
+    """
+    import asyncio
+    import threading
+    from hermes_cli.goals import GoalState
+    from hermes_cli.heartbeat import HeartbeatState
+    from hermes_cli.loops import LoopState
+    from gateway.session_ancillary import control_snapshot
+
+    holder = owner.db.state_meta._store.holder()
+    assert holder._wal_active and not holder.read_only
+    states = {
+        'goal': GoalState('A').to_json(),
+        'loop': LoopState('A', interval_seconds=60).to_json(),
+        'heartbeat': HeartbeatState('A', interval_seconds=60).to_json(),
+    }
+    for kind, raw in states.items():
+        owner.db.state_meta.set(f'{kind}:{owner.target}', raw)
+
+    writer_started = threading.Event()
+    release_writer = threading.Event()
+    writer_errors = []
+
+    states_b = {
+        'goal': GoalState('B').to_json(),
+        'loop': LoopState('B', interval_seconds=60).to_json(),
+        'heartbeat': HeartbeatState('B', interval_seconds=60).to_json(),
+    }
+
+    def hold_uncommitted_b(conn):
+        for kind in states:
+            conn.execute('UPDATE state_meta SET value=? WHERE key=?', (states_b[kind], f'{kind}:{owner.target}'))
+        writer_started.set()
+        if not release_writer.wait(10):
+            raise TimeoutError('test writer was not released')
+
+    def run_writer():
+        try:
+            holder._execute_write(hold_uncommitted_b)
+        except BaseException as exc:
+            writer_errors.append(exc)
+
+    writer = threading.Thread(target=run_writer)
+    writer.start()
+    reader = None
+    try:
+        assert await asyncio.to_thread(writer_started.wait, 5), 'writer never held its transaction'
+        reader = asyncio.create_task(asyncio.to_thread(control_snapshot, owner.authority, owner.ref))
+        done, _pending = await asyncio.wait({reader}, timeout=2)
+        assert done, 'control read waited for the held writer'
+        snapshot = reader.result()
+        assert snapshot['goal']['title'] == 'A'
+        assert snapshot['loop']['prompt'] == 'A'
+        assert snapshot['heartbeat']['prompt'] == 'A'
+    finally:
+        release_writer.set()
+        await asyncio.to_thread(writer.join, 10)
+        if reader is not None:
+            done, _pending = await asyncio.wait({reader}, timeout=5)
+            if not done:
+                reader.cancel()
+                raise TimeoutError('control reader did not finish after the writer was released')
+            await reader
+    assert not writer.is_alive()
+    assert not writer_errors
+    later = control_snapshot(owner.authority, owner.ref)
+    assert later['goal']['title'] == 'B'
+    assert later['loop']['prompt'] == 'B'
+    assert later['heartbeat']['prompt'] == 'B'

@@ -1429,6 +1429,13 @@ class StoreHolder:
             row = self._conn.execute("SELECT value FROM state_meta WHERE key = ?", (key,)).fetchone()
         return None if row is None else row[0]
 
+    def get_meta_many(self, keys: tuple[str, ...]) -> tuple[Optional[str], ...]:
+        """Read a fixed key set in one committed statement on the WAL read path, in request order."""
+        placeholders = ",".join("?" for _ in keys)
+        rows = self._read_all(f"SELECT key, value FROM state_meta WHERE key IN ({placeholders})", keys)
+        found = {row[0]: row[1] for row in rows}
+        return tuple(found.get(key) for key in keys)
+
     def set_meta(self, key: str, value: str, *, cursor: Optional[sqlite3.Cursor] = None) -> None:
         """Upsert state_meta[key]; with ``cursor`` the write is inline (the caller already holds a
         transaction — nesting BEGIN IMMEDIATE would deadlock)."""

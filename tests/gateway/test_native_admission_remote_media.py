@@ -7,6 +7,7 @@ from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session_authority import initialize_session_authority
 from gateway.session_envelope import prepare_native
+from persistence_assembly import close_stores_under
 
 CHAT = '15551234567@s.whatsapp.net'
 
@@ -32,7 +33,7 @@ async def test_remote_media_url_is_dropped_with_a_note_instead_of_refusing_the_m
         assert [media['size'] for media in envelope['media']] == [len(b'video-bytes')]
         assert envelope['event']['media_types'] == ['video/mp4']
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -50,4 +51,28 @@ async def test_an_attachment_only_message_stores_just_the_note(tmp_path, monkeyp
         payload = await prepare_native(runner, event)
         assert payload['text'] == '[The user sent an attachment (image/png) that could not be retrieved.]'
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
+
+
+@pytest.mark.asyncio
+async def test_dropping_a_remote_attachment_keeps_original_names_aligned(tmp_path, monkeypatch):
+    """Relay keeps a public URL whose download failed, with its original name; dropping that URL must
+    drop its name too, or the length check refuses the whole message."""
+    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+    monkeypatch.setenv('WHATSAPP_ALLOWED_USERS', '15551234567')
+    runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / 'sessions'))
+    adapter = WhatsAppAdapter(PlatformConfig(enabled=True, extra={'session_path': str(tmp_path / 'wa')}))
+    runner.adapters = {Platform.WHATSAPP: adapter}
+    authority = await initialize_session_authority(runner, profile_id='default', instance_id='remote-media-named')
+    local = tmp_path / 'relay_media_x1.pdf'
+    local.write_bytes(b'%PDF-1.4 bytes')
+    event = MessageEvent(text='see these', message_type=MessageType.DOCUMENT, message_id='m3',
+                         source=adapter.build_source(chat_id=CHAT, user_id=CHAT, chat_type='dm'),
+                         media_urls=['https://cdn.example.com/a.png', str(local)],
+                         media_types=['image/png', 'application/pdf'],
+                         media_filenames=['a.png', 'Q3 plan.pdf'])
+    try:
+        payload = await prepare_native(runner, event)
+        assert payload['native_text_v1']['event']['media_filenames'] == ['Q3 plan.pdf']
+    finally:
+        close_stores_under(authority.persistence.scope.profile_dir)

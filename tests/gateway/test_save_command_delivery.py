@@ -8,20 +8,20 @@ from gateway.config import Platform
 from gateway.platforms.event import MessageEvent
 from gateway.run import GatewayRunner
 from gateway.session import SessionEntry, SessionSource, build_session_key
-from hermes_state import AsyncSessionDB
+from tests.fixtures.storage_seed import seed_messages, seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
-def _runner(entry, adapters):
+def _runner(entry, adapters, home):
     runner = object.__new__(GatewayRunner)
     runner.adapters = adapters
     runner._profile_adapters = {}
     runner.session_store = MagicMock()
     runner.session_store.get_or_create_session.return_value = entry
-    runner._session_db = AsyncSessionDB(MagicMock())
-    runner._session_db._db.export_session.return_value = {
-        "id": "sess-1", "source": "telegram",
-        "messages": [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}],
-    }
+    runner.session_store.persistence = storage_handle(home)
+    db = runner.session_store.persistence
+    seed_session(db, "sess-1", "telegram")
+    seed_messages(db, "sess-1", {"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"})
     return runner
 
 
@@ -37,17 +37,17 @@ def _entry(platform):
                         updated_at=datetime.now(), platform=platform, chat_type="dm")
 
 
-def test_save_sends_document_through_requesting_platform_adapter():
+def test_save_sends_document_through_requesting_platform_adapter(tmp_path):
     adapter = MagicMock()
     adapter.send_document = AsyncMock()
-    runner = _runner(_entry(Platform.TELEGRAM), {Platform.TELEGRAM: adapter})
+    runner = _runner(_entry(Platform.TELEGRAM), {Platform.TELEGRAM: adapter}, tmp_path)
 
     assert _save(runner, Platform.TELEGRAM) == "Export complete."
     kwargs = adapter.send_document.await_args.kwargs
     assert (kwargs["chat_id"], kwargs["file_name"]) == ("c1", "save-stuff.md")
 
 
-def test_save_without_live_adapter_reports_missing_adapter_not_a_crash():
-    runner = _runner(_entry(Platform.DISCORD), {})
+def test_save_without_live_adapter_reports_missing_adapter_not_a_crash(tmp_path):
+    runner = _runner(_entry(Platform.DISCORD), {}, tmp_path)
 
     assert _save(runner, Platform.DISCORD) == "Platform adapter not found to send the document."

@@ -12,7 +12,7 @@ from gateway.session import SessionSource
 from gateway.session_results import execution_result
 
 
-def _committed_error(platform):
+def _committed_error(platform, err=None):
     runner = object.__new__(GatewayRunner)
 
     async def stop_typing(event, source):
@@ -22,7 +22,7 @@ def _committed_error(platform):
     runner._session_state = lambda key: SimpleNamespace(turn=SimpleNamespace(agent=None))
     source = SessionSource(platform=platform, chat_id="c", user_id="u")
     prepared = runner._PreparedTurn([], "", None, None, None, None)
-    err = ImportError("The 'anthropic' package is required for the Anthropic provider: restart Hermes")
+    err = err or ImportError("The 'anthropic' package is required for the Anthropic provider: restart Hermes")
     captured = {}
     token = execution_result.set(captured)
     try:
@@ -42,3 +42,9 @@ def test_local_client_sees_the_raised_cause_and_chat_keeps_the_apology():
 
     chat = _committed_error(Platform.TELEGRAM)
     assert "anthropic" not in chat and "ImportError" not in chat, chat
+
+
+def test_a_storage_refusal_keeps_its_published_class_name_for_a_local_client():
+    from persistence.core.errors import AuthorityRefusal
+
+    assert _committed_error(Platform.LOCAL, AuthorityRefusal("session_busy")) == "RuntimeStoreError: session_busy"

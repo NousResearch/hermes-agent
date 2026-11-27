@@ -122,9 +122,10 @@ def _brief_in_transcript(store, sid):
     """Best-effort read of the session transcript to confirm the brief landed."""
     # Try the SQLite DB first (the mirror writes both JSONL + SQLite).
     try:
-        from hermes_state import SessionDB
-        db = SessionDB()
-        msgs = db.get_messages(sid)
+        from persistence_assembly import open_persistence, profile_scope
+        from tests.fixtures.storage_read import transcript_rows
+        with open_persistence(profile_scope()) as db:
+            msgs = transcript_rows(db, sid)
         for m in msgs:
             if "PRs need review" in str(m.get("content", "")):
                 return True

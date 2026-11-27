@@ -85,11 +85,13 @@ def _server_presence(decl: Any, liveness_raw: Any, title: str) -> Presence:
     if available.state == "version_too_old":
         found = f" (found {available.version})" if available.version else ""
         return Presence("missing_app", f"needs {title} {available.min_version} or newer{found}")
+    if liveness_raw is None:
+        return Presence("present")
     try:
-        live = parse_liveness(liveness_raw) if liveness_raw is not None else None
+        live = parse_liveness(liveness_raw)
     except ValueError:
-        live = None
-    if live is None or live.kind == "static":
+        return UNKNOWN  # a declaration we cannot read is never a guess
+    if live.kind == "static":
         return Presence("present")
     if live.kind == "interactive_session":
         return Presence("present") if facts.interactive_session() else Presence(
@@ -149,7 +151,7 @@ def onboarding_entries() -> list[dict[str, Any]]:
         rows.append({
             "name": entry.name,
             "title": entry.title or entry.name,
-            "description": _first_sentence(entry.description),
+            "description": first_sentence(entry.description),
             "tier": entry.tier,
             "platforms": list(entry.platforms),
             "app_state": found.state,
@@ -177,17 +179,17 @@ def presence_for(names: list[str]) -> list[dict[str, Any]]:
     with ThreadPoolExecutor(max_workers=len(entries)) as pool:
         found = list(pool.map(presence, entries))
     return [{"name": entry.name, "title": entry.title or entry.name, "state": state.state,
-             "sentence": state.sentence, "disclosure": _disclosure(entry.description)}
+             "sentence": state.sentence, "disclosure": disclosure(entry.description)}
             for entry, state in zip(entries, found)]
 
 
-def _disclosure(text: str) -> str:
+def disclosure(text: str) -> str:
     """The sentence after the description's ``Disclosure:`` (or ``Disclosure —``) marker; empty when absent."""
     match = _DISCLOSURE.search(" ".join(str(text or "").split()))
-    return _first_sentence(match.group(1)) if match else ""
+    return first_sentence(match.group(1)) if match else ""
 
 
-def _first_sentence(text: str) -> str:
+def first_sentence(text: str) -> str:
     text = " ".join(str(text or "").split())
     head, dot, _rest = text.partition(". ")
     return f"{head}." if dot else text

@@ -1,0 +1,24 @@
+name: hermes-consult
+repo: https://github.com/dandacompany/hermes-consult
+sha: db65cc68770fc93b5229b723907ea60ef174ff1f
+description: "Website voice consultations with an embedded server and bilingual Desktop settings. Disclosure — starts a local Node consultation server on 127.0.0.1 that you publish through your own HTTPS reverse proxy, so website visitors can send questions that are answered by your active Hermes model (one tool-less ctx.llm call per question, using your provider credits); stores business data, inquiries and usage in <HERMES_HOME>/consult/; voice sends audio to OpenAI, and the optional subscription voice lane launches your installed Codex CLI (its own login) or the Hermes Live module from the same profile; optional Turnstile contacts Cloudflare."
+maintainer: dandacompany
+tier: community
+category: voice
+requires_hermes: ">=0.22.5"
+version: "0.2.3"
+title: hermes-consult
+readme: true
+platforms: [macos, linux]
+screenshots:
+  - https://raw.githubusercontent.com/dandacompany/hermes-consult/db65cc68770fc93b5229b723907ea60ef174ff1f/assets/desktop-assistant.png
+  - https://raw.githubusercontent.com/dandacompany/hermes-consult/db65cc68770fc93b5229b723907ea60ef174ff1f/assets/desktop-safety.png
+known_issues:
+  - Requires Node.js 24 or later and a separately provisioned public HTTPS origin.
+  - Subscription voice requires Hermes Live 0.9.1+ (consultation API; the catalog currently lists 0.9.0) and the user's installed Codex CLI login.
+  - Funded OpenAI API voice E2E and production HTTPS/load verification remain outstanding.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

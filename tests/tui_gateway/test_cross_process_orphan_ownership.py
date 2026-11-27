@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import os
 import subprocess
 import sys
@@ -16,7 +17,28 @@ from hermes_cli.active_sessions import (
     active_session_registry_snapshot,
     try_acquire_active_session,
 )
+from persistence.conversation.sessions import SessionRecord
 from tui_gateway import server
+
+
+def _fake_persistence(source: str, ended: list):
+    """A ``server._persistence_for`` stand-in whose handle reads every row as ``source`` and records each end."""
+    record = SessionRecord(**{f.name: None for f in dataclasses.fields(SessionRecord)} | {"source": source})
+
+    class _Sessions:
+        def get(self, target):
+            return record
+
+    class _Runtime:
+        def end_unless_ledger_busy(self, target, *, session_key, end_reason):
+            ended.append((target, end_reason))
+            return True
+
+    class _Handle:
+        sessions = _Sessions()
+        runtime = _Runtime()
+
+    return lambda _db: contextlib.nullcontext(_Handle())
 
 
 _LEASE_HOLDER_SCRIPT = """
@@ -237,16 +259,11 @@ def test_automatic_cleanup_preserves_corrupt_registry_without_overwrite(
     state_path.write_text(corrupt, encoding="utf-8")
     ended: list[tuple[str, str]] = []
 
-    class _FakeDB:
-        def get_session(self, target: str) -> dict[str, str]:
-            return {"id": target, "source": "desktop"}
-
-        def end_session(self, target: str, reason: str) -> None:
-            ended.append((target, reason))
-
     @contextlib.contextmanager
     def _profile_db(_session: dict):
-        yield _FakeDB()
+        yield object()
+
+    monkeypatch.setattr(server, "_persistence_for", _fake_persistence("desktop", ended))
 
     monkeypatch.setattr(server, "_session_db", _profile_db)
     monkeypatch.setattr(
@@ -313,16 +330,11 @@ def test_automatic_cleanup_reclaims_own_orphan_lease_not_treated_as_sibling(
     )
     ended: list[tuple[str, str]] = []
 
-    class _FakeDB:
-        def get_session(self, target: str) -> dict[str, str]:
-            return {"id": target, "source": "desktop"}
-
-        def end_session(self, target: str, reason: str) -> None:
-            ended.append((target, reason))
-
     @contextlib.contextmanager
     def _profile_db(_session: dict):
-        yield _FakeDB()
+        yield object()
+
+    monkeypatch.setattr(server, "_persistence_for", _fake_persistence("desktop", ended))
 
     monkeypatch.setattr(server, "_sessions", {})
     monkeypatch.setattr(server, "_session_db", _profile_db)
@@ -410,16 +422,11 @@ def test_automatic_desktop_cleanup_preserves_sibling_and_releases_sole_owner_lea
     )
     ended: list[tuple[str, str]] = []
 
-    class _FakeDB:
-        def get_session(self, target: str) -> dict[str, str] | None:
-            return {"id": target, "source": "desktop"}
-
-        def end_session(self, target: str, reason: str) -> None:
-            ended.append((target, reason))
-
     @contextlib.contextmanager
     def _profile_db(_session: dict):
-        yield _FakeDB()
+        yield object()
+
+    monkeypatch.setattr(server, "_persistence_for", _fake_persistence("desktop", ended))
 
     monkeypatch.setattr(server, "_load_cfg", dict)
     monkeypatch.setattr(server, "_get_db", lambda: None)
@@ -628,16 +635,11 @@ def test_taken_over_runtime_finalize_spares_the_new_owners_row(monkeypatch: pyte
     key_interrupts: list = []
     unregistered: list = []
 
-    class _FakeDB:
-        def get_session(self, target):
-            return {"id": target, "source": "tui"}
-
-        def end_session(self, target, reason):
-            ended.append((target, reason))
-
     @contextlib.contextmanager
     def _db(_session):
-        yield _FakeDB()
+        yield object()
+
+    monkeypatch.setattr(server, "_persistence_for", _fake_persistence("tui", ended))
 
     monkeypatch.setattr(server, "_session_db", _db)
     monkeypatch.setattr(server, "_notify_session_boundary", lambda *a, **k: None)

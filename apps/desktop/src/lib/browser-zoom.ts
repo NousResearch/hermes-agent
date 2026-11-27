@@ -16,6 +16,7 @@ export function createBrowserZoom(basePath: string): NonNullable<Window['hermesD
   const apply = (value: number) => {
     percent = normalize(value)
     document.documentElement.style.zoom = String(percent / 100)
+    document.documentElement.style.setProperty('--browser-ui-scale', String(percent / 100))
   }
 
   // Private browsing can deny storage; the current tab can still scale.

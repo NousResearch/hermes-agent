@@ -87,7 +87,7 @@ export const backendSlowStartStatus = (): string => t('userMessages.backend.slow
 // Only real failures: a traceback, a CRITICAL log line, an `XxxError:` / `XxxException:`
 // head, the gateway's own turn/exit markers, or the canonical bootstrap's verdict lines
 // (`gateway incompatible: runtime_protocol`, `gateway inaccessible: …` and their remedy, see
-// ui-tui/scripts/gateway_bootstrap.py failure_message). Dependency `DeprecationWarning` /
+// hermes_cli/gateway_runtime_attach.py failure_message). Dependency `DeprecationWarning` /
 // `UserWarning` lines are noise and stay in /logs only.
 const STDERR_PROBLEM_RE =
   /Traceback|\b[A-Z][A-Za-z]*(?:Error|Exception)\b:|CRITICAL|\[gateway-turn\]|\[gateway-exit\]|^gateway (?:absent|conflict|draining|inaccessible|incompatible|starting|unavailable): /
@@ -104,10 +104,17 @@ export const stderrProblemActivity = (line: string): string => {
 // ── RPC errors ────────────────────────────────────────────────────────────
 
 const VERSION_SKEW_RE = /Extra inputs are not permitted|^unknown method:/
+// Both server routes' answer for a method they do not serve (tui_gateway/contracts/registry.py
+// unknown_method_message). A JSON-RPC client sends no version, so this is not proof of skew.
+const UNAVAILABLE_METHOD_RE = /^unknown method: (\S+) — not available on this Hermes backend$/
 
 /** The Ink bundle and the Python backend disagree on the wire: stale dist or an older attached backend. */
 export const isVersionSkewError = (err: unknown): boolean => {
   const { code, message } = rpcShape(err)
+
+  if (UNAVAILABLE_METHOD_RE.test(message ?? '')) {
+    return false
+  }
 
   return (
     code === RPC_UNKNOWN_METHOD ||
@@ -139,6 +146,7 @@ const RPC_ERROR_ROWS: RpcErrorRow[] = [
   [(_code, text) => text === 'session_read_only', () => t('userMessages.rpc.sessionReadOnly')],
   [(_code, text) => text === 'session_has_children', () => t('userMessages.rpc.sessionHasChildren')],
   [(_code, text) => NOT_CONNECTED_RE.test(text), () => t('userMessages.rpc.notConnected')],
+  [(_code, text) => UNAVAILABLE_METHOD_RE.exec(text), m => t('userMessages.rpc.methodUnavailable', m?.[1] ?? '?')],
   [(_code, text) => text.trim() === 'launch_credentials_unavailable', () => t('userMessages.rpc.launchCredentialsChanged')],
   [(_code, text) => TIMED_OUT_RE.exec(text), m => t('userMessages.rpc.timedOut', m?.[1] ?? '?')]
 ]
@@ -263,6 +271,7 @@ const TURN_CODE_KEY: Record<string, keyof Translations['userMessages']['turn']['
   content_policy_blocked: 'contentPolicyBlocked',
   context_overflow: 'contextOverflow',
   format_error: 'formatError',
+  local_runtime_unavailable: 'localRuntimeUnavailable',
   model_not_found: 'modelNotFound',
   overloaded: 'overloaded',
   payload_too_large: 'payloadTooLarge',

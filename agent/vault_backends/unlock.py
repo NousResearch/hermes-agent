@@ -245,9 +245,11 @@ def is_unlocked(backend: str) -> bool:
     return _tokens.live(_key(backend), False) is not None
 
 
-def can_prompt_here() -> bool:
-    """False in contexts where no human can answer (cron, webhook, api_server, -q)."""
+def can_prompt_here(prompt: Optional[Callable] = None) -> bool:
+    """False in contexts where no human can answer (cron, webhook, api_server, -q). ``prompt`` is the
+    callback the caller is about to use (default: the unlock prompt): a chat surface installs only the
+    one-time-code prompt, and keying off the unlock prompt would report that nobody can answer."""
     from tools.approval_context import _no_user_can_answer
     if _no_user_can_answer():
         return False
-    return get_unlock_prompt_callback() is not None
+    return (prompt if prompt is not None else get_unlock_prompt_callback()) is not None

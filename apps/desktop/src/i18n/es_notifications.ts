@@ -35,6 +35,28 @@ export const esNotifications = {
       description: 'Un complemento de escritorio envió una notificación mientras Hermes estaba en segundo plano.'
     }
   },
+  browserPermission: {
+    title: 'Notificaciones del navegador',
+    allow: 'Permitir',
+    states: {
+      default:
+        'Muestra avisos de este navegador mientras la pestaña está en segundo plano. Hasta que lo permitas, solo parpadea el título de la pestaña.',
+      granted:
+        'Permitido. Los avisos aparecen mientras esta pestaña está en segundo plano; el título de la pestaña también parpadea.',
+      denied: 'Bloqueado en la configuración del sitio de este navegador. El título de la pestaña sigue parpadeando.',
+      insecure: 'Requiere HTTPS, como Tailscale serve. Con HTTP simple solo parpadea el título de la pestaña.',
+      unsupported: 'Este navegador no puede mostrar notificaciones. El título de la pestaña sigue parpadeando.'
+    }
+  },
+  phonePresence: {
+    title: 'Este equipo para notificaciones del teléfono',
+    description: 'Lo que esta ventana le dice a Hermes sobre si estás aquí. Un plugin de notificaciones del teléfono decide qué hacer con ello.',
+    unsupported: 'En este backend, las notificaciones del teléfono no dependen de tu actividad.',
+    disconnected: 'Sin conexión.',
+    watchingComputer: (time: string) => `Mientras haya una conversación abierta en esta ventana, Hermes sabe cuándo usaste este equipo por última vez. Última entrada hace ${time}.`,
+    watchingWindow: (time: string) => `Mientras haya una conversación abierta en esta ventana, Hermes sabe cuándo usaste esta ventana por última vez. Última entrada hace ${time}.`,
+    watchingWindowNoInput: 'Mientras haya una conversación abierta en esta ventana, Hermes sabe cuándo usaste esta ventana por última vez. Aún no se ha detectado ninguna entrada.'
+  },
   test: 'Enviar notificación de prueba',
   testTitle: 'Hermes',
   testBody: 'Las notificaciones funcionan.',

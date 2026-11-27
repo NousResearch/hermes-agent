@@ -20,7 +20,7 @@ import globals from 'globals'
 
 export default [
   {
-    // *.generated.ts is written by scripts/gen_gateway_contracts.py; the on-merge `npm run fix` bot
+    // *.generated.ts is written by scripts/gen_gateway_contracts.py; the on-merge `pnpm run fix` bot
     // must not rewrite it (it stripped the file's own eslint-disable header and left the tree stale).
     ignores: ['**/node_modules/**', '**/dist/**', 'src/**/*.js', '**/package-lock.json', '**/*.generated.ts']
   },

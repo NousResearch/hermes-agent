@@ -102,7 +102,7 @@ def _resolve_stt_client_config() -> dict[str, Any]:
     provider = tt._get_provider(stt_config)
     # Server-host-only: local whisper, the env-var command escape hatch,
     # declared command providers, and anything plugin-registered.
-    if tt._is_local_stt_provider(provider, stt_config):
+    if tt._is_local_stt_provider(provider):
         return _relay("local provider")
     if provider not in tc.BUILTIN_STT_PROVIDERS:
         return _relay("command/plugin provider")
@@ -228,15 +228,19 @@ def _resolve_tts_client_config() -> dict[str, Any]:
     return _relay(f"provider {provider!r} has no client wire")
 
 
-def resolve_client_voice_config() -> dict[str, Any]:
+def resolve_client_voice_config(client_direct: bool = True) -> dict[str, Any]:
     """Resolve both directions for the CURRENT profile scope.
 
     Callers scope the profile via ``hermes_constants.set_hermes_home_override``
     (the web server's ``_config_profile_scope``) before calling — identical to
     how ``/api/audio/transcribe`` scopes ``transcribe_recording``.
+    ``client_direct=False`` is the serving surface's verdict (a browser tab):
+    both directions relay and no key is resolved.
     """
     out: dict[str, Any] = {}
-    if not _client_direct_enabled():
+    if not client_direct:
+        out = {"stt": _relay("browser surface"), "tts": _relay("browser surface")}
+    elif not _client_direct_enabled():
         out = {"stt": _relay("voice.client_direct disabled"), "tts": _relay("voice.client_direct disabled")}
     else:
         for key, resolver in (("stt", _resolve_stt_client_config), ("tts", _resolve_tts_client_config)):

@@ -40,11 +40,13 @@ interface ModelRouteDialogProps {
   /** Names of the other routes (a new name must not collide with them). */
   taken: readonly string[]
   scope: ProfileScope
+  /** Route keys the installed backend declares (`DelegationProvider.route_keys`). */
+  routeKeys: readonly string[]
   onClose: () => void
   onSave: (route: DelegationModelRoute) => Promise<boolean>
 }
 
-export function ModelRouteDialog({ route, taken, scope, onClose, onSave }: ModelRouteDialogProps) {
+export function ModelRouteDialog({ route, taken, scope, routeKeys, onClose, onSave }: ModelRouteDialogProps) {
   const { t } = useI18n()
   const r = t.settings.model.subagents.routing
   const { providers } = useOwnerCatalog(scope)
@@ -55,6 +57,21 @@ export function ModelRouteDialog({ route, taken, scope, onClose, onSave }: Model
   const errors = validateRouteDraft(draft, taken, Boolean(route?.base_url))
   const selected = findCatalogProvider(providers, draft.provider)
 
+  // Offered only when the installed backend runs it (an older plugin would ignore the key) and this account's
+  // Codex catalog lists Daybreak for the model (the main model menu's gate).
+  const daybreakSupported = routeKeys.includes('daybreak')
+
+  const daybreakFor = (provider: string, model: string) =>
+    daybreakSupported && findCatalogProvider(providers, provider)?.capabilities?.[model]?.daybreak === true
+
+  const daybreakOffered = daybreakFor(draft.provider, draft.model)
+
+  const daybreakHint = !daybreakSupported
+    ? r.daybreakNeedsPlugin
+    : daybreakOffered
+      ? r.daybreakHint
+      : r.daybreakUnlisted
+
   const set = (field: RouteField, value: string) => setDraft(current => ({ ...current, [field]: value }))
   const touch = (field: RouteField) => setTouched(current => ({ ...current, [field]: true }))
 
@@ -64,9 +81,18 @@ export function ModelRouteDialog({ route, taken, scope, onClose, onSave }: Model
   const chooseProvider = (slug: string) => {
     const models = findCatalogProvider(providers, slug)?.models ?? []
 
-    // Never carry a model id over to a provider that does not list it.
-    setDraft(current => ({ ...current, provider: slug, model: models.includes(current.model) ? current.model : '' }))
+    // Never carry a model id (or a Daybreak opt-in) over to a provider that does not list it.
+    setDraft(current => {
+      const model = models.includes(current.model) ? current.model : ''
+
+      return { ...current, provider: slug, model, daybreak: current.daybreak && daybreakFor(slug, model) }
+    })
     touch('provider')
+  }
+
+  const chooseModel = (model: string) => {
+    setDraft(current => ({ ...current, model, daybreak: current.daybreak && daybreakFor(current.provider, model) }))
+    touch('model')
   }
 
   async function handleSubmit(event: FormEvent) {
@@ -159,10 +185,7 @@ export function ModelRouteDialog({ route, taken, scope, onClose, onSave }: Model
                   aria-label={r.modelLabel}
                   className="w-full [&_[data-slot=select-value]]:truncate"
                   models={selected?.models ?? []}
-                  onValueChange={model => {
-                    set('model', model)
-                    touch('model')
-                  }}
+                  onValueChange={chooseModel}
                   provider={selected}
                   providerSlug={draft.provider}
                   value={draft.model}
@@ -210,6 +233,26 @@ export function ModelRouteDialog({ route, taken, scope, onClose, onSave }: Model
               <FieldHint>{r.tierHint}</FieldHint>
             </Field>
           </div>
+
+          {(daybreakOffered || draft.daybreak) && (
+            <div className="grid items-start gap-4 sm:grid-cols-2">
+              <Field htmlFor="delegation-route-daybreak" label={r.daybreakLabel} optional optionalLabel={r.optional}>
+                <Select
+                  onValueChange={value => setDraft(current => ({ ...current, daybreak: value === 'on' }))}
+                  value={draft.daybreak ? 'on' : 'off'}
+                >
+                  <SelectTrigger id="delegation-route-daybreak">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="off">{r.daybreakOff}</SelectItem>
+                    <SelectItem value="on">{r.daybreakOn}</SelectItem>
+                  </SelectContent>
+                </Select>
+                <FieldHint error={!daybreakOffered}>{daybreakHint}</FieldHint>
+              </Field>
+            </div>
+          )}
 
           <DialogFooter>
             <Button disabled={busy} onClick={onClose} type="button" variant="ghost">

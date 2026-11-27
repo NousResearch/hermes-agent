@@ -94,6 +94,53 @@ describe('model-status-label', () => {
     expect(formatModelPillLabel('')).toBe('No model')
   })
 
+  it('omits speed tags when fastMode is off or the model does not support the tier', () => {
+    expect(formatModelPillLabel('gemini-4-neon', { fastMode: false, serviceTier: 'ultrafast' })).toBe('Gemini 4 Neon')
+    expect(formatModelPillLabel('gemini-2.5-flash', { fastMode: false, serviceTier: 'ultrafast' })).toBe(
+      'Gemini 2.5 · Flash'
+    )
+    expect(
+      formatModelPillLabel('gemini-4-neon', {
+        fastMode: true,
+        serviceTier: 'ultrafast',
+        supportsFast: false,
+        supportsUltrafast: false
+      })
+    ).toBe('Gemini 4 Neon')
+    expect(
+      formatModelPillLabel('gemini-4-neon', {
+        fastMode: true,
+        serviceTier: 'priority',
+        supportsFast: false,
+        supportsUltrafast: false
+      })
+    ).toBe('Gemini 4 Neon')
+    expect(
+      formatModelPillLabel('anthropic/claude-opus-4.8', {
+        fastMode: true,
+        serviceTier: 'ultrafast',
+        supportsFast: true,
+        supportsUltrafast: false
+      })
+    ).toBe('Opus 4.8')
+    expect(
+      formatModelPillLabel('anthropic/claude-opus-4.8-fast', {
+        fastMode: true,
+        serviceTier: 'ultrafast',
+        supportsFast: false,
+        supportsUltrafast: false
+      })
+    ).toBe('Opus 4.8 · Fast')
+    expect(
+      formatModelPillLabel('openai/gpt-6.1-sol', {
+        fastMode: true,
+        serviceTier: 'ultrafast',
+        supportsFast: true,
+        supportsUltrafast: true
+      })
+    ).toBe('GPT-6.1-sol · Ultrafast')
+  })
+
   it('rides the same variant tags on the pill as the catalog rows (#118083)', () => {
     // A `-flash` id must render its tag on the composer pill too: without it,
     // `gemini-2.5-flash` and `gemini-2.5` produce identical pill text, so a

@@ -12,6 +12,24 @@ interface NotificationHost {
   platform?: NodeJS.Platform
 }
 
+const flashingWindows = new WeakSet<BrowserWindow>()
+
+export function requestAttention(window: BrowserWindow | null | undefined): void {
+  if (!window || window.isDestroyed() || window.isFocused() || flashingWindows.has(window)) {
+    return
+  }
+
+  flashingWindows.add(window)
+  window.flashFrame(true)
+  window.once('focus', () => {
+    flashingWindows.delete(window)
+
+    if (!window.isDestroyed()) {
+      window.flashFrame(false)
+    }
+  })
+}
+
 export function registerNativeNotifications({
   getMainWindow,
   focusWindow,
@@ -22,13 +40,14 @@ export function registerNativeNotifications({
   const deliveries = new Map<string, Promise<boolean>>()
   const linux = platform === 'linux' ? createLinuxNotifications() : undefined
   const notifications = createNotificationRegistry({ releaseOnClose: Boolean(linux) })
+  const supported = () => Boolean(linux) || Notification.isSupported()
 
   ipcMain.handle('hermes:notify', async (event, payload: HermesNotification) => {
     // The source renderer owns runtime bindings and plugin callbacks.
     const sourceWindow = BrowserWindow.fromWebContents(event.sender)
     const targetWindow = () => (sourceWindow && !sourceWindow.isDestroyed() ? sourceWindow : getMainWindow())
 
-    if (!linux && !Notification.isSupported()) {
+    if (!supported()) {
       return false
     }
 
@@ -109,6 +128,9 @@ export function registerNativeNotifications({
     })
     notifications.retain(notification)
 
+    // The toast is transient; flash the taskbar/dock entry until the window is focused.
+    requestAttention(targetWindow())
+
     // Peers share the actual outcome, including pending/failed Linux delivery.
     const delivery = Promise.resolve(notification.show()).then(result => result !== false)
     deliveries.set(key, delivery)
@@ -120,6 +142,9 @@ export function registerNativeNotifications({
 
     return delivery
   })
+  // Read-only, so the renderer can tell ahead of time whether `hermes:notify` could show anything.
+  // Linux asks the session bus for a notification service each time it is asked.
+  ipcMain.handle('hermes:notify:supported', () => (linux ? linux.available() : supported()))
 
   return { dispose: () => linux?.dispose() }
 }

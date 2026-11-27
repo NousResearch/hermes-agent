@@ -4,25 +4,29 @@ import { atom } from 'nanostores'
 import {
   type ComposerAttachment,
   draftHasTerminalChips,
+  isFreshDraftScope,
   revokeAttachmentPreviewUrls,
   revokeDiscardedAttachmentPreviews
 } from './composer'
+import { connectionWire } from './connection-wire'
 import { $connection } from './session'
 import { knownOwnerForSession } from './session-states'
 
-/** Local owner routes use canonical admission; remote legacy queues stay local. */
+/** The owner's connection admits queued input, attachments and rewinds when it negotiated the
+ *  canonical session wire, local or remote; a legacy peer's queue stays in the renderer. */
 export function serverOwnsComposerQueue(sessionId: string | null | undefined): boolean {
   const owner = knownOwnerForSession(sessionId)
-
-  if (owner && typeof owner === 'object' && owner.mode) {
-    return owner.mode === 'local'
-  }
-
+  const route = owner && typeof owner === 'object' ? owner : null
   const connection = $connection.get()
+  const wire = connectionWire(route ?? connection)
 
-  if (owner && typeof owner === 'object' && owner.connectionId !== connection?.connectionId) {
-    return false
-  }
+  if (wire) { return wire === 'canonical' }
+
+  // Before the owner's socket is ready: a local owner is a native dial, and so is a window whose
+  // own socket carries the native-dial marker.
+  if (route?.mode === 'local') { return true }
+
+  if (route && route.connectionId !== connection?.connectionId) { return false }
 
   return Boolean(connection?.wsUrl && new URL(connection.wsUrl).searchParams.has('native_dial'))
 }
@@ -468,6 +472,21 @@ export const removeQueuedPrompt = (
 
   return true
 }
+
+/**
+ * Remove an entry its send has delivered. A new chat's queue (a fresh draft key) moves to the chat's
+ * stored id the moment `session.create` assigns it (use-composer-draft's announced handoff), while the
+ * send that creates the session is still in flight. When that send is the queue's own entry, the
+ * entry has moved too: it is removed from whichever queue holds it now, or it would be sent again.
+ */
+export const removeSentQueuedPrompt = (
+  drainedFrom: string,
+  id: string,
+  options?: RemoveQueuedPromptOptions
+): boolean =>
+  isFreshDraftScope(drainedFrom)
+    ? Object.keys(current()).filter(sid => removeQueuedPrompt(sid, id, options)).length > 0
+    : removeQueuedPrompt(drainedFrom, id, options)
 
 /** Count one more rejected auto-drain attempt against a queued entry and
  *  persist it with the queue (#98015). The in-process retry ladder stays

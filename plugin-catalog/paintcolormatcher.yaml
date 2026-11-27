@@ -1,0 +1,22 @@
+name: paintcolormatcher
+title: PaintColorMatcher
+repo: https://github.com/AbigailDavised/paintcolormatcher-mcp
+sha: cb1b87111d256ae5cbe60621771b31f3e37c92b6
+version: "1.0.3"
+description: "Perceptual CIEDE2000 Delta-E HEX-to-paint swatch matcher (Sherwin-Williams, Benjamin Moore, Behr), cross-brand architectural paint equivalent finder, Light Reflectance Value (LRV) room exposure analyzer, and complementary trim/accent palette calculator through PaintColorMatcher's official MCP server (Streamable HTTP at https://paintcolormatcher.com/api/mcp, no sign-in, no keys in config). Bundles the paintcolormatcher workflow skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure — hosted-only connector with no local runtime code, binaries, hooks, telemetry or self-updater; every tool call goes over HTTPS to paintcolormatcher.com/api/mcp with only the HEX color code, swatch code or room exposure query arguments. All 8 tools are public, free, and annotated read-only (readOnlyHint: true, destructiveHint: false). The package marks the server untrusted (trust: untrusted), so Hermes asks before any tool not annotated read-only and refuses them in unattended runs. The remote tool inventory is served at runtime and is not covered by the pinned sha."
+maintainer: PaintColorMatcher
+tier: community
+category: tools
+docs_url: https://paintcolormatcher.com
+requires_hermes: ">=0.21.6"
+image: https://raw.githubusercontent.com/AbigailDavised/paintcolormatcher-mcp/cb1b87111d256ae5cbe60621771b31f3e37c92b6/assets/cover.png
+screenshots:
+  - https://raw.githubusercontent.com/AbigailDavised/paintcolormatcher-mcp/cb1b87111d256ae5cbe60621771b31f3e37c92b6/assets/screenshot.png
+  - https://raw.githubusercontent.com/AbigailDavised/paintcolormatcher-mcp/cb1b87111d256ae5cbe60621771b31f3e37c92b6/assets/editorial.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

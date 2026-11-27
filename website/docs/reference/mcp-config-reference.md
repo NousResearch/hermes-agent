@@ -58,6 +58,7 @@ mcp_servers:
 | `connect_timeout` | number | both | Initial connection timeout in seconds (default: `60`) |
 | `protocol` | string | both | Protocol-era negotiation: `auto` (default — legacy `initialize` handshake first, falling back to the 2026-07-28 `server/discover` stateless probe when the server rejects the handshake as modern-only), `stateless` (probe `server/discover` first; one legacy retry), or `legacy` (handshake only, no fallback) |
 | `supports_parallel_tool_calls` | bool | both | Allow tools from this server to run concurrently |
+| `single_instance` | bool | stdio | Only one live child may exist system-wide (single-writer datastore). A second context that finds the resource already held parks quietly (no timed self-probe) and revives on an explicit reconnect — see the MCP guide |
 | `skip_preflight` | bool | HTTP | Bypass the fail-fast content-type probe for valid Streamable HTTP endpoints whose HEAD/GET answers a non-MCP content type (default: `false`) |
 | `transport` | string | HTTP | Set to `sse` to use the SSE transport instead of Streamable HTTP |
 | `keepalive_interval` | number | both | Liveness ping cadence in seconds (floored at 5s). HTTP defaults to `180`; set it below the server's session TTL when the server GC's idle sessions quickly. Stdio disables keepalive when omitted; set a value to opt in explicitly |

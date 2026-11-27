@@ -1,0 +1,28 @@
+name: harness2
+repo: https://github.com/shrinedogg/harness2-hermes
+sha: ab03ab81bc54d52575d67eb632bb468b6542b9af
+version: "1.0.0"
+description: "The Harness^2 self-improvement loop for Hermes profiles. The plugin edits the files that shape the agent (system prompt + config overlay + skills) for a class of work. A harness is that set of files. It runs a contrastive Propose-Probe-Compose cycle over isolated probe sessions. A contrastive cycle runs each edit against the unedited base. A probe is a fresh one-shot agent session under one harness. After the cycle, the plugin saves the lessons that the evidence supports. It saves them in a per-profile improvement library. The library is what future tasks read before editing. After each round, the promote stage writes a carry-over report. The report shows what the banked harness changed and what to apply to the live profile. A banked harness is the saved harness from a finished round. A live profile is the profile you use day to day. The user applies it. The plugin never writes the live profile. The fixed machinery (profile materialization, probe runs, structural gate, library) is tools. The judgment stages run in the host session under bundled skills that point at the verbatim stage prompts from arXiv:2610.14224. Disclosure — runs `hermes profile create --clone` and one-shot `hermes -p harness2-<task>-<probe> chat` subprocesses; each probe is a full agent session with the profile's tools (web included), billed to your configured model, with a per-probe time limit (900 seconds by default). It creates and deletes probe profiles named harness2-*, each cloned once from the active profile (configuration and .env under Hermes' own clone policy), and sets only an allowlisted set of overlay keys on them through `hermes config set` while pinning approvals to smart mode with single-query and cron runs denied, subagent auto-approve off and secret redaction on. It writes only its own plugin data and the probe profiles, never your live profile, and sends no telemetry."
+maintainer: shrinedogg
+tier: community
+category: automation
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/shrinedogg/harness2-hermes#readme
+image: https://raw.githubusercontent.com/shrinedogg/harness2-hermes/ab03ab81bc54d52575d67eb632bb468b6542b9af/docs/shots/loop.png
+screenshots:
+- https://raw.githubusercontent.com/shrinedogg/harness2-hermes/ab03ab81bc54d52575d67eb632bb468b6542b9af/docs/shots/loop.png
+- https://raw.githubusercontent.com/shrinedogg/harness2-hermes/ab03ab81bc54d52575d67eb632bb468b6542b9af/docs/shots/library.png
+capabilities:
+  provides_tools:
+  - harness2_init
+  - harness2_probe
+  - harness2_seed
+  - harness2_check
+  - harness2_adopt
+  - harness2_promote
+  - harness2_library
+  - harness2_status
+  - harness2_gc
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

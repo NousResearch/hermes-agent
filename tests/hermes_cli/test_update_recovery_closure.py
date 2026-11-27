@@ -27,6 +27,8 @@ from hermes_cli import _launchers
 SOURCE = Path(__file__).resolve().parents[2]
 # What a minted launcher imports before the application entry.
 BOOT = ("hermes_bootstrap.py", "hermes_constants.py", "hermes_cli/__init__.py", "hermes_cli/_launchers.py",
+        "hermes_agent/__init__.py", "hermes_agent/compat/__init__.py", "hermes_agent/compat/finder.py",
+        "hermes_agent/compat/moves.py",
         "hermes_cli/_early_recovery.py", "hermes_cli/_parser.py", "hermes_cli/runtime_state.py",
         "hermes_cli/venv_sync.py", "hermes_cli/steward.py", "hermes_cli/stderr_timestamp.py",
         "hermes_cli/update_lock.py", "hermes_cli/update_custody.py", "pm/environments.py",

@@ -396,7 +396,10 @@ def test_a_hermes_home_at_a_deleted_profile_is_refused_like_its_profile_flag(wor
     _use_home(world, gone)
     assert launcher.cmd_webapp(_args(**action)) == 1
     refused = capsys.readouterr()
-    assert "Error: Profile 'gone' does not exist. Create it with: hermes profile create gone" in refused.err
+    # A tombstoned home that still holds its files is a delete that did not finish (#141466).
+    expected = (f"Error: Deletion of profile 'gone' did not finish: {gone}" if deleted == "tombstoned"
+                else "Error: Profile 'gone' does not exist. Create it with: hermes profile create gone")
+    assert expected in refused.err
     assert "Signed out" not in refused.out
     assert (world["calls"]["control"], world["calls"]["ensure"], world["calls"]["build"]) == ([], [], 0)
     assert (world["root"] / TOKEN_PATH).read_text().strip() == before

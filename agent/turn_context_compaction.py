@@ -131,14 +131,84 @@ def run_turn_start_compaction(
     active_system_prompt: Optional[str], conversation_history: Optional[list[dict[str, Any]]],
     current_turn_user_idx: int, user_message: Any, effective_task_id: str,
 ) -> CompactionOutcome:
-    """Idle compaction, then preflight compression (or the uncompressed guard)."""
+    """Idle compaction, preflight compression (or the uncompressed guard), then the cold-cache prune."""
     out = CompactionOutcome(
         messages=messages, active_system_prompt=active_system_prompt,
         conversation_history=conversation_history, current_turn_user_idx=current_turn_user_idx,
     )
     _idle_compaction(agent, out, system_message, user_message, effective_task_id)
     _preflight_compression(agent, out, system_message, user_message, effective_task_id)
+    from agent.turn_proactive_prune import turn_start_cold_prune
+
+    turn_start_cold_prune(agent, out, effective_task_id)
     return out
+
+
+def idle_reference_timestamp(messages: list[Any], current_turn_user_idx: Optional[int]) -> Optional[float]:
+    """Newest ``timestamp`` among the transcript rows that precede this turn's user message.
+
+    This is the idle reference for idle compaction (#79357). The in-memory ``_last_activity_ts``
+    cannot serve: every turn entry re-stamps it before the idle check runs (the durable turn
+    lease's ``start()``, the gateway's cached-agent reset), and a rebuilt agent (cache eviction,
+    restart) starts with it set to construction time — so the measured gap was always ~0. The
+    transcript's own timestamps survive all three. Returns ``None`` when no prior row carries a
+    usable timestamp, so the caller can fall back to the in-memory clock.
+    """
+    end = current_turn_user_idx if isinstance(current_turn_user_idx, int) and current_turn_user_idx >= 0 else len(messages)
+    newest: Optional[float] = None
+    for msg in messages[:end]:
+        if not isinstance(msg, dict):
+            continue
+        ts = msg.get("timestamp")
+        if isinstance(ts, bool) or not isinstance(ts, (int, float)) or ts <= 0:
+            continue
+        if newest is None or ts > newest:
+            newest = float(ts)
+    return newest
+
+
+@dataclass(frozen=True)
+class IdleAdmission:
+    """What the idle gates measured when they admitted a compaction."""
+
+    tokens: int
+    floor_tokens: int
+    last_compaction_tokens: int
+
+
+def idle_compaction_admission(
+    agent: Any, messages: list[Any], system_prompt: str, idle_gap: float,
+) -> Optional[IdleAdmission]:
+    """The idle gates (``_should_idle_compact``) for *messages* after *idle_gap* seconds, shared by the
+    turn-start trigger and the gateway's background run: None when they refuse."""
+    from agent import turn_context as _tc
+
+    _compressor = agent.context_compressor
+    # A live or restored native checkpoint must reach its issuer once so real usage,
+    # rather than an opaque ciphertext estimate, decides whether local compression is
+    # still needed.  Threshold and post-tool preflight honor the same latch.
+    if bool(getattr(_compressor, "awaiting_real_usage_after_compression", False)):
+        return None
+    # Route-aware pressure: on compacted native-Codex sessions the durable figure
+    # overstates the wire, so reuse the preflight estimator.
+    tokens = _tc._preflight_request_tokens(agent, messages, system_prompt)
+    # Don't summarise a thread already below the post-compression target size.
+    floor = int(_compressor.threshold_tokens * _compressor.summary_target_ratio)
+    cooldown = getattr(_compressor, "get_active_compression_failure_cooldown", lambda: None)()
+    # What the previous pass actually produced — the honest floor versus the theoretical
+    # ``floor``. Type pin: compressor doubles expose truthy non-ints here; only a real
+    # int may raise the floor, anything else falls back to 0 (original semantics).
+    last = getattr(_compressor, "last_compression_rough_tokens", 0)
+    if not isinstance(last, int) or isinstance(last, bool):
+        last = 0
+    if not _tc._should_idle_compact(
+        enabled=agent.compression_enabled,
+        idle_after_seconds=getattr(agent, "compression_idle_compact_after_seconds", 0),
+        idle_gap_seconds=idle_gap, tokens=tokens, floor_tokens=floor,
+        cooldown_active=bool(cooldown), last_compaction_tokens=last,
+    ):
+        return None
+    return IdleAdmission(tokens=tokens, floor_tokens=floor, last_compaction_tokens=last)
 
 
 def _idle_compaction(
@@ -146,48 +216,28 @@ def _idle_compaction(
     effective_task_id: str,
 ) -> None:
     """Idle-triggered compaction (opt-in; ``idle_compact_after_seconds``): fires on the
-    wall-clock gap since ``_last_activity_ts``; a cheap gap check gates the estimate."""
-    from agent import turn_context as _tc
-
+    wall-clock gap since the newest pre-turn transcript row (``idle_reference_timestamp``;
+    ``_last_activity_ts`` only as a fallback); a cheap gap check gates the estimate."""
     messages = out.messages
     _idle_after = getattr(agent, "compression_idle_compact_after_seconds", 0)
     if not (agent.compression_enabled and _idle_after > 0 and messages):
         return
-    _idle_gap = time.time() - getattr(agent, "_last_activity_ts", time.time())
+    _now = time.time()
+    _idle_ref = idle_reference_timestamp(messages, out.current_turn_user_idx)
+    if _idle_ref is None:
+        _idle_ref = getattr(agent, "_last_activity_ts", _now)
+    _idle_gap = _now - _idle_ref
     if _idle_gap < _idle_after:
         return
+    admitted = idle_compaction_admission(agent, messages, out.active_system_prompt or "", _idle_gap)
+    if admitted is None:
+        return
     _compressor = agent.context_compressor
-    # A live or restored native checkpoint must reach its issuer once so real usage,
-    # rather than an opaque ciphertext estimate, decides whether local compression is
-    # still needed.  Threshold and post-tool preflight honor the same latch.
-    if bool(getattr(_compressor, "awaiting_real_usage_after_compression", False)):
-        return
-    # Route-aware pressure: on compacted native-Codex sessions the durable figure
-    # overstates the wire, so reuse the preflight estimator.
-    _idle_tokens = _tc._preflight_request_tokens(
-        agent, messages, out.active_system_prompt or ""
-    )
-    # Don't summarise a thread already below the post-compression target size.
-    _idle_floor = int(_compressor.threshold_tokens * _compressor.summary_target_ratio)
-    _idle_cooldown = getattr(
-        _compressor, "get_active_compression_failure_cooldown", lambda: None
-    )()
-    # What the previous pass actually produced — the honest floor versus the theoretical
-    # ``_idle_floor``. Type pin: compressor doubles expose truthy non-ints here; only a real
-    # int may raise the floor, anything else falls back to 0 (original semantics).
-    _idle_last_compaction = getattr(_compressor, "last_compression_rough_tokens", 0)
-    if not isinstance(_idle_last_compaction, int) or isinstance(_idle_last_compaction, bool):
-        _idle_last_compaction = 0
-    if not _tc._should_idle_compact(
-        enabled=agent.compression_enabled, idle_after_seconds=_idle_after,
-        idle_gap_seconds=_idle_gap, tokens=_idle_tokens, floor_tokens=_idle_floor,
-        cooldown_active=bool(_idle_cooldown), last_compaction_tokens=_idle_last_compaction,
-    ):
-        return
+    _idle_tokens = admitted.tokens
     logger.info(
         "Idle compaction: %ss idle >= %ss, ~%s tokens > %s floor (last compaction produced ~%s) (session %s)",
-        int(_idle_gap), _idle_after, f"{_idle_tokens:,}", f"{_idle_floor:,}",
-        f"{_idle_last_compaction:,}" if _idle_last_compaction > 0 else "n/a",
+        int(_idle_gap), _idle_after, f"{_idle_tokens:,}", f"{admitted.floor_tokens:,}",
+        f"{admitted.last_compaction_tokens:,}" if admitted.last_compaction_tokens > 0 else "n/a",
         agent.session_id or "none",
     )
     _idle_status = automatic_compaction_status_message(

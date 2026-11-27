@@ -77,6 +77,7 @@ class WakeWordInUse(RuntimeError):
 _DEFAULTS: dict[str, Any] = {
     "enabled": False, "surface": "auto", "input_device": None, "capture": "auto",
     "provider": "auto", "phrase": "hey hermes", "sensitivity": 0.6,
+    # detached-spawn: ok — not a spawn: the wake-word config key (fresh chat session on wake)
     "confirmation_frames": _DEFAULT_CONFIRMATION_FRAMES, "start_new_session": True,
 }
 
@@ -362,12 +363,7 @@ def check_wake_word_requirements(cfg: Optional[dict[str, Any]] = None, *,
 
     supported = supported or extra_supported
     provider = _provider(cfg, supported=supported)
-    if provider == "porcupine":
-        feature = "wake-porcupine"
-    elif provider in ("sherpa", "sherpa-onnx", "kws", "open"):
-        feature = "wake-sherpa"
-    else:
-        feature = "wake-openwakeword"
+    feature = _PROVIDERS.get(provider, _PROVIDERS["openwakeword"])[1]
     deps_ok = pm.available(feature)
     platform_ok = deps_ok or supported(feature)
     lazy_ok = lazy_installs_allowed()

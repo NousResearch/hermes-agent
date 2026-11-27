@@ -10,6 +10,7 @@ import pytest
 
 from hermes_cli.subcommands import computer_use_screen
 from tools.bot_desktop import lease, runtime
+from tests.bot_desktop_lease import reset_lease
 
 
 def _parse(argv):
@@ -25,7 +26,7 @@ def running_screen(monkeypatch):
         profile="default", supported=True, installed=True, missing=[], running=True, pid=4242, display=":20",
         socket="/x/rfb.sock", geometry="1440x900", install_command=None, browser=None))
     yield
-    lease._reset_for_tests()
+    reset_lease()
 
 
 def test_status_never_prints_the_holders_raw_viewer_id(running_screen, capsys):

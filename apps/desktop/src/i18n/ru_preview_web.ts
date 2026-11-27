@@ -49,5 +49,15 @@ export const ruPreviewWeb: TranslationOverride<Translations['preview']['web']> =
   loadFailedConsole: (code, message) => `Не удалось загрузить${code ? ` (${code})` : ''}: ${message}`,
   unreachableDescription: 'Страница предпросмотра недоступна.',
   openTarget: url => `Открыть ${url}`,
-  fallbackTitle: 'Предпросмотр'
+  fallbackTitle: 'Предпросмотр',
+  vaultFill: 'Подставить сохранённый вход',
+  vaultTitle: site => `Сохранённые входы для ${site}`,
+  vaultLoading: 'Загрузка сохранённых входов…',
+  vaultEmpty: 'Для этого сайта нет сохранённого входа',
+  vaultUnlock: name => `Разблокировать ${name}`,
+  vaultOpenSettings: 'Открыть настройки хранилища учётных данных',
+  vaultFilled: label => `${label}: данные подставлены. Проверьте форму и войдите.`,
+  vaultFillFailed: 'Не удалось подставить вход',
+  vaultLoadFailed: 'Не удалось загрузить сохранённые входы',
+  vaultPageNotReady: 'Страница ещё загружается. Повторите, когда загрузка завершится.'
 }

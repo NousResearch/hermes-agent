@@ -57,6 +57,43 @@ def test_the_trial_is_never_claimed_outside_a_first_desktop_install(portal, monk
     assert not anon_auth.free_inference_active()
 
 
+def _person_at_terminal(mp):
+    """A person answering ``hermes setup``: a TTY stdin, no container, no CI, not spawned."""
+    import io
+    import sys
+
+    tty = io.StringIO()
+    tty.isatty = lambda: True
+    mp.setattr(sys, "stdin", tty)
+    mp.setattr("hermes_constants.is_container", lambda: False)
+    mp.delenv("CI", raising=False)
+    mp.delenv("HERMES_NONINTERACTIVE", raising=False)
+
+
+CLI_BLOCKED = {
+    "a container": lambda mp: mp.setattr("hermes_constants.is_container", lambda: True),
+    "CI": lambda mp: mp.setenv("CI", "true"),
+    "piped stdin": lambda mp: mp.setattr("hermes_cli.setup.is_interactive_stdin", lambda: False),
+    "a dashboard-spawned run": lambda mp: mp.setenv("HERMES_NONINTERACTIVE", "1"),
+}
+
+
+@pytest.mark.parametrize("case", [None, *CLI_BLOCKED])
+def test_cli_setup_claims_only_for_a_person_at_a_terminal_once(portal, monkeypatch, case):
+    """First-run ``hermes setup`` may claim the trial when a person answers it in a real terminal;
+    scripted, CI and container runs cannot, and the once-per-user rule still holds."""
+    _person_at_terminal(monkeypatch)
+    if case:
+        CLI_BLOCKED[case](monkeypatch)
+        assert welcome_trial.claim_desktop_free_tier(surface="cli_setup") is None
+        assert portal.creates() == 0
+        return
+    assert welcome_trial.claim_desktop_free_tier(surface="cli_setup")[anon_auth.WELCOME_CLAIM_FLAG] is True
+    assert anon_auth.free_inference_active()
+    assert welcome_trial.claim_blocker(surface="cli_setup") == "a Nous identity exists"
+    assert portal.creates() == 1
+
+
 def test_a_connector_guest_neither_claims_nor_carries_inference(portal, monkeypatch):
     as_local_desktop_backend(monkeypatch)
     anon_auth.ensure_portal_identity(explicit=True)  # the first hosted connector action
@@ -77,12 +114,12 @@ def test_a_claimed_trial_carries_inference_outside_the_desktop_too(portal, monke
 
 
 def _chat(db_path, model: str) -> None:
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_messages, seed_session
 
-    db = SessionDB(db_path)
-    db.create_session("s1", "desktop", model=model)
-    db.append_message("s1", "user", "hi")
-    db.close()
+    with open_persistence(profile_scope(home=db_path.parent)) as db:
+        seed_session(db, "s1", "desktop", model=model)
+        seed_messages(db, "s1", {"role": "user", "content": "hi"})
 
 
 def test_a_lost_claim_is_not_replaced(portal, monkeypatch):
@@ -316,7 +353,7 @@ def _kanban_worker_model(monkeypatch, tmp_path) -> str:
     from hermes_cli.config import load_config
     from hermes_cli.kanban_db_connect import connect
     from hermes_constants import get_hermes_home
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     from gateway.session_kanban import build_kanban_policy
     from gateway.session_policy import restore_policy
 
@@ -332,7 +369,7 @@ def _kanban_worker_model(monkeypatch, tmp_path) -> str:
         kb.recompute_ready(conn)
         task = kb.claim_task(conn, task_id)
     connection = SimpleNamespace(authority=SimpleNamespace(profile_id=home), native_owner=True,
-                                 actor=Principal("owner", home, frozenset({"session:create"}), "transport"))
+                                 actor=SessionActor("owner", home, frozenset({"session:create"}), "transport"))
     params = dict(board="trial", task_id=task.id, run_id=task.current_run_id, claim_lock=task.claim_lock)
     policy, _ = build_kanban_policy(connection, params, load_config())
     return restore_policy(asdict(policy)).model
@@ -369,3 +406,44 @@ def test_a_configured_model_beats_the_trial_for_cron_jobs_and_kanban_workers(por
 
     assert _cron_model() == "anthropic/claude-sonnet-4"
     assert _kanban_worker_model(monkeypatch, tmp_path) == "anthropic/claude-sonnet-4"
+
+
+def test_a_claimed_cli_trial_counts_as_a_configured_provider(portal, monkeypatch):
+    """After "Free, start now", ``hermes`` chats instead of sending the user back to setup, even on a
+    home with no copied model template."""
+    from hermes_cli.main import _has_any_provider_configured
+
+    _person_at_terminal(monkeypatch)
+    assert not _has_any_provider_configured()
+    assert welcome_trial.claim_desktop_free_tier(surface="cli_setup") is not None
+    assert _has_any_provider_configured()
+
+
+def test_a_named_profile_never_looks_ready_on_the_default_profiles_trial(portal, monkeypatch, tmp_path):
+    """The Desktop asks per named profile (``strict_profile_scope``): the default profile's trial is
+    shared at runtime by the root ``auth.json`` fallback, but it is not that profile's setup."""
+    import os
+    from hermes_cli.main import _has_any_provider_configured
+
+    _person_at_terminal(monkeypatch)
+    assert welcome_trial.claim_desktop_free_tier(surface="cli_setup") is not None
+    root = os.environ["HERMES_HOME"]
+    named = tmp_path / "named"
+    (named / "profiles").mkdir(parents=True)
+    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda **_kw: __import__("pathlib").Path(root))
+    monkeypatch.setenv("HERMES_HOME", str(named))
+
+    assert anon_auth.free_inference_active()  # runtime still shares the root trial
+    assert not _has_any_provider_configured(strict_profile_scope=True)
+
+
+def test_first_run_on_the_free_tier_says_which_model_actually_answers(portal, monkeypatch, capsys):
+    """The free tier serves only ``nous/welcome``; the setup summary names it even when the seeded
+    config.yaml still carries the template's ``model.default``."""
+    from hermes_cli import setup_quick
+
+    _person_at_terminal(monkeypatch)
+    assert welcome_trial.claim_desktop_free_tier(surface="cli_setup") is not None
+    setup_quick._print_first_run_primer({"model": {"default": "anthropic/claude-opus-4.6"}})
+
+    assert f"Model: {anon_auth.GUEST_MODEL} (free)" in capsys.readouterr().out

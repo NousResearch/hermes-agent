@@ -10,7 +10,7 @@
  * ---------------
  * electron-builder's final packaging step copies the stock `electron`
  * binary into `release/<platform>-unpacked/` and then renames it to the
- * product name (`Hermes`). If a PREVIOUS `npm run pack` was interrupted
+ * product name (`Hermes`). If a PREVIOUS `pnpm run pack` was interrupted
  * (Ctrl-C, OOM kill, crash, full disk) the unpacked directory is left in a
  * corrupted partial state: it keeps the already-renamed `LICENSE.electron.txt`
  * and the Chromium payload (.pak/.so/icudtl.dat/chrome-sandbox) but is MISSING

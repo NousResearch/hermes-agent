@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import itertools
+from tests.computer_use_fakes import NoopBackend, reset_backend
 
 
 # ---------------------------------------------------------------------------
@@ -22,11 +23,11 @@ def _reset_backend(grant_computer_use_approvals):
     """Tear down the cached backend between tests; destructive actions get an interactive "once"
     through the shared approval gate (the tool fails closed with nobody to ask)."""
     from tools.computer_use import tool as cu_tool
-    cu_tool.reset_backend_for_tests()
+    reset_backend()
     # Force the noop backend.
-    with patch.object(cu_tool, "_new_backend", lambda mode: cu_tool._NoopBackend()):
+    with patch.object(cu_tool, "_new_backend", lambda mode: NoopBackend()):
         yield
-    cu_tool.reset_backend_for_tests()
+    reset_backend()
 
 
 @pytest.fixture
@@ -231,7 +232,7 @@ class TestCaptureResponse:
             def list_apps(self): return []
             def focus_app(self, app, raise_window=False): ...
 
-        cu_tool.reset_backend_for_tests()
+        reset_backend()
         with patch.object(cu_tool, "_new_backend", return_value=FakeBackend()), \
              patch.object(cu_tool, "_should_route_through_aux_vision",
                           return_value=False):
@@ -271,7 +272,7 @@ class TestCaptureResponse:
             def list_apps(self): return []
             def focus_app(self, app, raise_window=False): ...
 
-        cu_tool.reset_backend_for_tests()
+        reset_backend()
         with patch.object(cu_tool, "_new_backend", return_value=FakeBackend()), \
              patch.object(cu_tool, "_should_route_through_aux_vision",
                           return_value=False):
@@ -320,7 +321,7 @@ class TestCaptureResponse:
         from tools.computer_use import tool as cu_tool
 
         fake_backend = self._ax_backend_with(600)
-        cu_tool.reset_backend_for_tests()
+        reset_backend()
         with patch.object(cu_tool, "_new_backend", return_value=fake_backend):
             out = cu_tool.handle_computer_use({"action": "capture", "mode": "ax"})
 
@@ -341,7 +342,7 @@ class TestCaptureResponse:
         from tools.computer_use import tool as cu_tool
 
         fake_backend = self._ax_backend_with(5000)
-        cu_tool.reset_backend_for_tests()
+        reset_backend()
         with patch.object(cu_tool, "_new_backend", return_value=fake_backend):
             out = cu_tool.handle_computer_use(
                 {"action": "capture", "mode": "ax", "max_elements": 10_000}
@@ -896,10 +897,9 @@ class TestCaptureAfterAppContext:
                 return ActionResult(ok=True, action="wait")
 
         backend = TrackingBackend()
-        cu_tool.reset_backend_for_tests()
-        cu_tool._backend = backend
-
-        cu_tool.handle_computer_use({"action": "click", "element": 14, "capture_after": True})
+        reset_backend()
+        with patch.object(cu_tool, "_new_backend", lambda mode: backend):
+            cu_tool.handle_computer_use({"action": "click", "element": 14, "capture_after": True})
 
         # The follow-up capture must have been called with app="Calculator"
         assert len(captured_app_args) == 1
@@ -1017,7 +1017,6 @@ class TestCuaDriverSessionReconnect:
         session._lock = threading.Lock()
         session._started = True
         session._capabilities = {}
-        session._capability_version = ""
         session._ready_event = None  # populated by real _start_lifecycle
         session._shutdown_event = None
         session._lifecycle_future = None
@@ -1962,112 +1961,6 @@ class TestCapabilityDiscovery:
         assert session.supports_capability("anything", tool="never_registered") is False
 
 
-class TestElementTokenAttachment:
-    """Surface 6 (NousResearch/hermes-agent#47072): trycua/cua#1961 added
-    an opaque `element_token` alongside `element_index` so the wrapper
-    can carry per-snapshot handles instead of relying on raw indices that
-    silently re-resolve when the snapshot is superseded.
-
-    The contract the wrapper implements:
-    1. capture() refreshes a per-snapshot {index -> token} map from
-       structuredContent.elements.
-    2. Whenever an action carrying element_index is about to hit cua-driver,
-       look up the matching token and attach it — but ONLY for tools that
-       advertise `accessibility.element_tokens` (Surface 4 gate). Older
-       drivers reject unknown args via additionalProperties=false.
-    3. cua-driver prefers token over index when both are supplied, so
-       sending both is safe and stale-detection becomes explicit.
-    """
-
-    def _backend_with_session(self, capabilities):
-        """Build a backend whose session reports the given capabilities map."""
-        from unittest.mock import MagicMock
-        from tools.computer_use.cua_backend import CuaDriverBackend
-
-        backend = CuaDriverBackend()
-        backend._session = MagicMock()
-        backend._session.call_tool.return_value = {
-            "data": "ok", "images": [], "image_mime_types": [],
-            "structuredContent": None, "isError": False,
-        }
-        # `supports_capability(cap, tool=None)` honors the supplied map.
-        def _supports(cap, tool=None):
-            if tool is not None:
-                return cap in capabilities.get(tool, set())
-            return any(cap in caps for caps in capabilities.values())
-        backend._session.supports_capability = _supports
-        backend._active_pid = 111
-        backend._active_window_id = 222
-        return backend
-
-    def test_token_attached_when_tool_advertises_capability(self):
-        backend = self._backend_with_session({
-            "click": {"input.pointer.click", "accessibility.element_tokens"},
-        })
-        backend._snapshot_tokens = {5: "s0001:5", 6: "s0001:6"}
-        backend.click(element=5, button="left")
-        name, args = backend._session.call_tool.call_args.args
-        assert name == "click"
-        assert args["element_index"] == 5
-        # The matching token rode along — cua-driver will prefer it.
-        assert args["element_token"] == "s0001:5"
-
-    def test_token_attached_when_only_input_schema_advertises_it(self):
-        """cua-driver >= 0.21 dropped the per-tool `capabilities[]` array from tools/list but advertises
-        `element_token` in `click`'s inputSchema and REFUSES a bare element_index (`snapshot_id_required`).
-        The token must ride along from the live schema alone, or every element click is refused."""
-        backend = self._backend_with_session({})  # no capabilities[] at all — the modern shape
-        backend._session.supports_input_property = lambda tool, prop: (tool, prop) == ("click", "element_token")
-        backend._snapshot_tokens = {5: "s00000001:5"}
-        backend.click(element=5, button="left")
-        _, args = backend._session.call_tool.call_args.args
-        assert args["element_token"] == "s00000001:5"
-
-
-    def test_capture_refreshes_snapshot_tokens(self):
-        """A fresh capture should overwrite any stale tokens from a
-        previous snapshot — token cache invariant: only the latest
-        capture's tokens are eligible for attachment."""
-        from unittest.mock import MagicMock
-        from tools.computer_use.cua_backend import CuaDriverBackend
-
-        backend = CuaDriverBackend()
-        backend._session = MagicMock()
-        backend._session.supports_capability = lambda cap, tool=None: True
-        # Pretend an earlier capture left this stale state.
-        backend._snapshot_tokens = {99: "stale:99"}
-
-        windows_payload = {"windows": [{
-            "app_name": "Demo", "pid": 9, "window_id": 1,
-            "is_on_screen": True, "title": "", "z_index": 0,
-        }]}
-
-        def fake_call_tool(name, args):
-            if name == "list_windows":
-                return {"data": "", "images": [], "image_mime_types": [],
-                        "structuredContent": windows_payload, "isError": False}
-            if name == "get_window_state":
-                return {
-                    "data": '✅ Demo — 2 elements, turn 1\n',
-                    "images": [], "image_mime_types": [],
-                    "structuredContent": {"elements": [
-                        {"element_index": 1, "role": "AXButton", "label": "OK",
-                         "element_token": "snap2:1"},
-                        {"element_index": 2, "role": "AXButton", "label": "X",
-                         "element_token": "snap2:2"},
-                    ]},
-                    "isError": False,
-                }
-            return {"data": "", "images": [], "image_mime_types": [],
-                    "structuredContent": None, "isError": False}
-
-        backend._session.call_tool.side_effect = fake_call_tool
-        backend.capture(mode="ax")
-
-        # Stale 99 token is gone; only the two new tokens remain.
-        assert backend._snapshot_tokens == {1: "snap2:1", 2: "snap2:2"}
-
-
 class TestSessionLifecycle:
     """Surface gap (audit June 2026): Hermes never declared a cua-driver
     session, so the agent-cursor overlay was inert and per-run state
@@ -2160,14 +2053,6 @@ class TestCuaToolCoverageExpansion:
         }
         backend._session.supports_capability = lambda cap, tool=None: False
         return backend
-
-    # ── App lifecycle ────────────────────────────────────────────
-
-    def test_launch_app_requires_bundle_id_or_name(self):
-        backend = self._backend()
-        import pytest
-        with pytest.raises(ValueError, match="bundle_id or name"):
-            backend.launch_app()
 
     # ── Generic escape hatch ────────────────────────────────────
 
@@ -2287,33 +2172,33 @@ class TestCapturePayloadBudget:
 class TestBoundsSpaceNote:
     def test_note_present_when_bounds_exceed_image(self):
         from tools.computer_use.backend import UIElement
-        from tools.computer_use.tool import _bounds_space_note
+        from tools.computer_use.tool import _bounds_hints
 
         # Live repro: 1455x791 screenshot, element bounds out to x=3840
         # (native 4K desktop space).
         elems = [UIElement(index=0, role="Button", label="Close",
                            bounds=(3771, 0, 69, 60), app="")]
-        note = _bounds_space_note(elems, 1455, 791)
+        note = _bounds_hints(elems, 1455, 791)[1]
         assert note is not None
         assert "native desktop coordinates" in note
 
     def test_no_note_when_spaces_match(self):
         from tools.computer_use.backend import UIElement
-        from tools.computer_use.tool import _bounds_space_note
+        from tools.computer_use.tool import _bounds_hints
 
         elems = [UIElement(index=0, role="Button", label="OK",
                            bounds=(10, 10, 50, 20), app="")]
-        assert _bounds_space_note(elems, 1455, 791) is None
+        assert _bounds_hints(elems, 1455, 791)[1] is None
 
     def test_no_note_for_empty_or_degenerate(self):
         from tools.computer_use.backend import UIElement
-        from tools.computer_use.tool import _bounds_space_note
+        from tools.computer_use.tool import _bounds_hints
 
-        assert _bounds_space_note([], 1455, 791) is None
+        assert _bounds_hints([], 1455, 791)[1] is None
         zero = [UIElement(index=0, role="B", label="x",
                           bounds=(0, 0, 0, 0), app="")]
-        assert _bounds_space_note(zero, 1455, 791) is None
-        assert _bounds_space_note(zero, 0, 0) is None
+        assert _bounds_hints(zero, 1455, 791)[1] is None
+        assert _bounds_hints(zero, 0, 0)[1] is None
 
 
 class TestElementSpillFile:
@@ -2448,10 +2333,10 @@ class TestBoundsScaleField:
 
     def test_no_scale_when_spaces_match(self):
         from tools.computer_use.backend import UIElement
-        from tools.computer_use.tool import _bounds_scale
+        from tools.computer_use.tool import _bounds_hints
 
         elems = [UIElement(index=0, role="Button", label="OK",
                            bounds=(10, 10, 50, 20), app="")]
-        assert _bounds_scale(elems, 1455, 791) is None
-        assert _bounds_scale([], 1455, 791) is None
-        assert _bounds_scale(elems, 0, 0) is None
+        assert _bounds_hints(elems, 1455, 791)[0] is None
+        assert _bounds_hints([], 1455, 791)[0] is None
+        assert _bounds_hints(elems, 0, 0)[0] is None

@@ -92,6 +92,14 @@ export const uk: Translations = {
     webUi: "Web UI",
   },
 
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: "Активний провайдер пам'яті",
+    noProvider: "немає — лише вбудована",
+    builtinLayer: "Вбудований шар",
+    builtinNote: "MEMORY.md і USER.md — власна пам'ять Hermes, незалежна від зовнішніх провайдерів. Типово обидва файли завантажуються в сесії; перемикачі конфігурації (memory.memory_enabled / memory.user_profile_enabled) вимикають кожен із них. Зовнішній провайдер доповнює їх, але ніколи не замінює.",
+  },
+
   status: {
     actionFailed: "Дія не вдалася",
     actionFinished: "Завершено",
@@ -363,6 +371,13 @@ export const uk: Translations = {
     authRequired: "Потрібна автентифікація",
     authRequiredHint: "Виконайте цю команду, щоб автентифікуватися:",
     updateGit: "Git pull",
+    updateAll: "Оновити всі",
+    updatingAll: "Оновлення плагінів…",
+    updateAllDone: (updated: number, needsReview: number, failed: number) =>
+      `Оновлено ${updated}, потребують перевірки ${needsReview}, з помилкою ${failed}`,
+    autoUpdate: "Автооновлення",
+    autoUpdateDesc: (hours: number) =>
+      `Автоматично застосовувати оновлення плагінів під час перевірки шлюзом (кожні ${hours} год). Оновлений код завантажується в нових сесіях.`,
     versionBadge: "Версія",
     showInSidebar: "Показати у бічній панелі",
     hideFromSidebar: "Сховати з бічної панелі",
@@ -784,5 +799,18 @@ export const uk: Translations = {
       "шлях робочої області (необов'язково, виводиться з виконавця, якщо порожньо)",
     logTruncated: "(показано останні 100 KB — повний журнал у ",
     logAt: ")",
+  },
+  channelsCatalog: {
+    title: "Доступно для встановлення",
+    hint: "Платформи обміну повідомленнями з каталогу плагінів Hermes. Встановлення додає й вмикає плагін, а потім відкриває його налаштування.",
+    badgeOfficial: "Офіційний",
+    badgeVerified: "Перевірений",
+    disclosure: "Розкриття:",
+    lazyInstallsOff: "Автоматичне встановлення плагінів вимкнено (security.allow_lazy_installs).",
+    run: "Виконайте:",
+    install: "Встановити",
+    installing: "Встановлення…",
+    installed: (title: string) => `${title} встановлено. Введіть облікові дані, щоб підключити його.`,
+    installFailed: (title: string) => `Не вдалося встановити ${title}`,
   },
 };

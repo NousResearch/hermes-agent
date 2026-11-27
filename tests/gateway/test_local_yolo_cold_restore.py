@@ -10,7 +10,7 @@ async def test_cold_restore_keeps_the_persisted_yolo_toggle_and_untoggled_follow
     from gateway.config import GatewayConfig
     from gateway.session import SessionStore
     from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     from gateway.session_local import create_local_session
     from gateway.session_managed_worker import _session_yolo
     from tools.approval import clear_session
@@ -18,10 +18,10 @@ async def test_cold_restore_keeps_the_persisted_yolo_toggle_and_untoggled_follow
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
     def runner():
         store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-        return SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False)
+        return SimpleNamespace(session_store=store, _session_db=store.persistence, adapters={}, _draining=False)
     first = runner()
     authority = await initialize_session_authority(first, profile_id='fixture', instance_id='first')
-    actor = Principal('owner', 'fixture', frozenset({'session:create', 'session:read'}), 'socket')
+    actor = SessionActor('owner', 'fixture', frozenset({'session:create', 'session:read'}), 'socket')
     params = {'source': 'cli', 'cwd': str(tmp_path), 'model': 'frozen', 'toolsets': []}
     revoked = create_local_session(authority, actor, {**params, 'request_id': 'revoked'})
     untouched = create_local_session(authority, actor, {**params, 'request_id': 'untouched'})

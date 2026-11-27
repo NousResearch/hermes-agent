@@ -1,6 +1,7 @@
 """Tests for SessionRecoveryMixin.resolve_session_id_for_key — flush-recovery
 session_key → session_id resolution (profile aware)."""
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from gateway.config import GatewayConfig
@@ -8,15 +9,17 @@ from gateway.session import SessionStore
 
 
 class _FakeGatewayDB:
-    """Minimal SessionDB stand-in exposing only the peer finder the resolver uses."""
+    """Minimal store stand-in (legacy handle and storage handle) exposing only the peer finder."""
 
     def __init__(self, rows_by_key):
-        self.rows_by_key = rows_by_key
-        self.queries = []
+        self.rows_by_key, self.queries, self.routing = rows_by_key, [], self
 
-    def find_latest_gateway_session_for_peer(self, *, source, session_key=None, **kwargs):
+    def latest_session_for_peer(self, *, source, session_key=None, **kwargs):
         self.queries.append(session_key)
-        return self.rows_by_key.get(session_key)
+        row = self.rows_by_key.get(session_key)
+        return row and SimpleNamespace(has_messages=False, session=SimpleNamespace(
+            session_id=row["id"], session_key=session_key, started_at=row.get("started_at"),
+            last_activity_at=None, message_count=0, origin=None))
 
 
 def _store(tmp_path, db):
@@ -24,7 +27,8 @@ def _store(tmp_path, db):
     with patch("gateway.session.SessionStore._ensure_loaded"):
         store = SessionStore(sessions_dir=tmp_path, config=config)
     store._loaded = True
-    store._db = db  # pin: _db_for_key returns this db for every key (no profile I/O)
+    store._db = db  # pin: _persistence_for_key returns the handle beside this db for every key (no profile I/O)
+    store._persistence_beside = lambda pinned: pinned
     return store
 
 
@@ -40,12 +44,12 @@ def test_resolve_profile_namespaced_key_does_not_adopt_main_row(tmp_path, monkey
     )
     assert db.queries and all("agent:test-bot" in q for q in db.queries)
     assert not any(q.startswith("agent:main") for q in db.queries)
-    # Fail-closed store: when the profile's home is unresolvable, _db_for_key returns None and the
+    # Fail-closed store: when the profile's home is unresolvable, _persistence_for_key returns None and the
     # resolver must answer None too — even with a routing-map hit — so the flush file is preserved
     # instead of being appended to the ambient root store (#66887/#102157 split-identity class).
     key = "agent:test-bot:whatsapp:dm:15551234567"
     monkeypatch.setattr(store, "peek_session_id", lambda session_key: "routed-sid")
-    monkeypatch.setattr(store, "_db_for_key", lambda session_key: None)
+    monkeypatch.setattr(store, "_persistence_for_key", lambda session_key: None)
     assert store.resolve_session_id_for_key(key) is None
     assert store.resolve_session_id_for_key(key, not_after=1700000000) is None
 

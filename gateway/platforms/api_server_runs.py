@@ -26,9 +26,10 @@ except ImportError:
     # would reset the already-imported ``web`` to None (500 on POST /v1/runs).
     RequestKey = None  # type: ignore[assignment,misc]
 
-from gateway.platforms.api_server_room_grants import _json_error, _room_grant_error_response
+from gateway.platforms.api_server_room_grants import _json_error, _room_grant_error_response, room_run_claims
 from gateway.turn_executor import _UnboundedThreadExecutor
 from gateway.platforms.api_server_run_idempotency import TERMINAL_STATUSES
+from persistence import AuthorityRefusal
 
 
 logger = logging.getLogger("gateway.platforms.api_server")
@@ -419,14 +420,19 @@ def _room_permission_for(request: web.Request) -> str:
 def _run_idempotency_scope(self, request: web.Request, *, _api_server) -> str:
     """Opaque auth/profile namespace; never persist bearer credentials."""
     if self._room_grant_token(request):
-        claims = self._room_grant_claims(request, permission=_room_permission_for(request))
+        claims = room_run_claims(self, request, permission=_room_permission_for(request))
         _remember_room_retention(request, claims)
-        parts = (claims[k] for k in (
-            "room_id", "home_install_id", "authority_gateway_id", "authority_epoch",
-            "member_id", "target_install_id", "target_profile"))
-    else:
-        parts = (_api_server._api_request_profile.get() or "default",
-                 self._expected_api_key() or "unauthenticated-test-listener")
+        return room_run_scope(claims)
+    parts = (_api_server._api_request_profile.get() or "default",
+             self._expected_api_key() or "unauthenticated-test-listener")
+    return hashlib.sha256("\0".join(map(str, parts)).encode()).hexdigest()
+
+
+def room_run_scope(claims: dict[str, Any]) -> str:
+    """The run namespace of one room member, whichever of its grant's permissions authenticated."""
+    parts = (claims[k] for k in (
+        "room_id", "home_install_id", "authority_gateway_id", "authority_epoch",
+        "member_id", "target_install_id", "target_profile"))
     return hashlib.sha256("\0".join(map(str, parts)).encode()).hexdigest()
 
 
@@ -434,7 +440,7 @@ def _check_run_auth(self, request: web.Request, *, permission: str, _api_server)
     if not self._room_grant_token(request):
         return self._check_auth(request)
     try:
-        self._room_grant_claims(request, permission=permission)
+        room_run_claims(self, request, permission=permission)
     except Exception as exc:
         return _room_grant_error_response(exc, _openai_error=_api_server._openai_error)
     return None
@@ -623,12 +629,11 @@ async def _resolve_live_session_id(self, session_id: str) -> str:
     a /v1/runs run bound to a pre-rotation id would otherwise load a stale history slice and
     write its turn into the closed parent (CompressionSessionClosedError). Same canonical
     resolution ``/api/sessions/{id}/messages`` reads use; fails open to the original id."""
-    db = await self._ensure_session_db_async()
-    resolver = getattr(db, "resolve_resume_session_id", None) if db is not None else None
-    if not callable(resolver):
+    store = self._store_beside(await self._ensure_store_async())
+    if store is None:
         return session_id
     try:
-        resolved = await asyncio.to_thread(resolver, session_id)
+        resolved = await store.aio.lineage.resolve_resume_target(session_id)
         return str(resolved) if resolved else session_id
     except Exception:
         logger.debug("/v1/runs live-session resolve failed for %s", session_id, exc_info=True)
@@ -731,7 +736,6 @@ async def _admit_run_to_authority(
     from gateway.platforms.api_server_authority_runs import run_admission, store_error_response
     from gateway.session_api_turn import admit_api_turn_async
     from gateway.session_contract import SessionRef
-    from hermes_state_runtime import RuntimeStoreError
     try:
         with self._profile_scope(launch.request_profile):
             launch.admission = await admit_api_turn_async(self, user_message=launch.user_message,
@@ -745,7 +749,8 @@ async def _admit_run_to_authority(
     except Exception as exc:  # health: allow BLE001 -- answered below; a committed admission is kept
         # A storage failure after the admission committed (a later media-release write) still
         # owns that run: forgetting it would let a keyed retry admit the same work twice.
-        owned = None if isinstance(exc, RuntimeStoreError) else await asyncio.to_thread(run_admission, self, run_id)
+        owned = None if isinstance(exc, AuthorityRefusal) else await asyncio.to_thread(
+            run_admission, self, run_id)
         if owned is not None:
             launch.admission = (owned[0], SessionRef(owned[0].profile_id, owned[1]['target_session_id']), owned[1])
             return None
@@ -1350,9 +1355,6 @@ def _mark_run_event(self, run_id: str, name: str, **fields: Any) -> None:
             q.put_nowait(_run_event(run_id, name, **fields))
 
 
-_APPROVAL_CHOICE_ALIASES = {"approve": "once", "approved": "once", "allow": "once"}
-
-
 async def _handle_run_approval(self, request: web.Request, *, _api_server) -> web.Response:
     """POST /v1/runs/{run_id}/approval — resolve a pending run approval."""
     _openai_error = _api_server._openai_error
@@ -1368,8 +1370,10 @@ async def _handle_run_approval(self, request: web.Request, *, _api_server) -> we
         if self._room_grant_token(request) and body.get('choice') not in {'once', 'deny'}:
             return _json_error(_openai_error, 'Room approvals require once or deny', status=400)
         return await _respond_authority_run(self, run_id, body, kind='approval', _api_server=_api_server)
-    raw_choice = str(body.get("choice", "")).strip().lower()
-    choice = _APPROVAL_CHOICE_ALIASES.get(raw_choice, raw_choice)
+    # Normalize before the allow-list check below so aliases ("approve") aren't rejected here; the
+    # alias map lives in tools.approval (lazy import: this module must not pull it in at load time).
+    from tools.approval import canonical_approval_choice
+    choice = canonical_approval_choice(body.get("choice", ""))
     room_scoped = bool(self._room_grant_token(request))
     raw_request_id = body.get("request_id")
     request_id = raw_request_id.strip() if isinstance(raw_request_id, str) else ""
@@ -1410,11 +1414,10 @@ async def _handle_run_approval(self, request: web.Request, *, _api_server) -> we
 
 async def _respond_authority_run(self, run_id, body, *, kind, _api_server):
     from gateway.platforms.api_server_authority_runs import respond_run, store_error_response
-    from hermes_state_runtime import RuntimeStoreError
     try:
         result = await respond_run(self, run_id, body, kind=kind)
         return web.json_response({'run_id': run_id, **result})
-    except RuntimeStoreError as exc:
+    except AuthorityRefusal as exc:
         return store_error_response(_api_server._openai_error, exc)
 
 
@@ -1462,7 +1465,6 @@ async def _handle_steer_run(self, request: web.Request, *, _api_server) -> web.R
             code="invalid_steer_input", status=400)
     if owned is not None:
         from gateway.session_contract import SessionRef
-        from hermes_state_runtime import RuntimeStoreError
         authority, row = owned
         sid, latched = row['target_session_id'], False
         try:
@@ -1470,11 +1472,12 @@ async def _handle_steer_run(self, request: web.Request, *, _api_server) -> web.R
                 authority.check_approval_generation(sid, row['generation'])
                 # Before the claimed turn adopts its agent the steer is latched for that agent.
                 agent, latched = authority.steer_agent(SessionRef(authority.profile_id, sid), row['generation'], steer_text)
-        except (KeyError, RuntimeStoreError):
+        except (KeyError, AuthorityRefusal):
             agent = None
         if not latched and not hasattr(agent, "steer"):
             return _steer_refused(_openai_error, run_id)
         if latched:
+            _person_steer_joined(owned)
             _mark_run_event(self, run_id, "run.steered", accepted=True)
             return web.json_response({"object": "hermes.run.steer", "run_id": run_id, "accepted": True})
     try:
@@ -1485,8 +1488,21 @@ async def _handle_steer_run(self, request: web.Request, *, _api_server) -> web.R
     if not accepted:
         return _json_error(
             _openai_error, f"Run did not accept steer text: {run_id}", code="steer_not_accepted", status=409)
+    if owned is not None:
+        _person_steer_joined(owned)
     _mark_run_event(self, run_id, "run.steered", accepted=True)
     return web.json_response({"object": "hermes.run.steer", "run_id": run_id, "accepted": True})
+
+
+def _person_steer_joined(owned):
+    """An accepted steer into an owned run's turn: it now carries the caller's input too."""
+    from gateway.session_busy_controls import person_input_joined
+    from gateway.session_contract import SessionRef
+    authority, row = owned
+    try:
+        person_input_joined(authority, SessionRef(authority.profile_id, row['target_session_id']))
+    except KeyError:
+        pass  # the session left the authority meanwhile: no turn to clear
 
 
 async def _handle_stop_run(self, request: web.Request, *, _api_server) -> web.Response:
@@ -1501,10 +1517,9 @@ async def _handle_stop_run(self, request: web.Request, *, _api_server) -> web.Re
     if (getattr(self.gateway_runner, 'session_authority', None) is not None
             and not (task is not None and status.get("delivery_id"))):
         from gateway.platforms.api_server_authority_runs import stop_run, store_error_response
-        from hermes_state_runtime import RuntimeStoreError
         try:
             return web.json_response(await stop_run(self, run_id))
-        except RuntimeStoreError as exc:
+        except AuthorityRefusal as exc:
             return store_error_response(_openai_error, exc)
     if status.get("status") in TERMINAL_STATUSES:
         return web.json_response(status)
@@ -1536,11 +1551,10 @@ async def _handle_resolve_unknown_run(
     except (ValueError, LookupError):  # bad JSON/UTF-8 (ValueError) or unknown charset: no body
         body = None
     from gateway.platforms.api_server_authority_runs import resolve_unknown_run, store_error_response
-    from hermes_state_runtime import RuntimeStoreError
     try:
         result = await resolve_unknown_run(self, run_id, body)
         return web.json_response({'run_id': run_id, **result})
-    except RuntimeStoreError as exc:
+    except AuthorityRefusal as exc:
         return store_error_response(_api_server._openai_error, exc)
 
 

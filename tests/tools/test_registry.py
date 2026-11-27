@@ -434,13 +434,13 @@ class TestThreadSafety:
             check_fn=lambda: False,
         )
 
-        entries, toolset_checks = reg._snapshot_state()
+        entries = reg._snapshot_entries()
 
         def snapshot_then_mutate():
             reg.deregister("alpha")
-            return entries, toolset_checks
+            return entries
 
-        monkeypatch.setattr(reg, "_snapshot_state", snapshot_then_mutate)
+        monkeypatch.setattr(reg, "_snapshot_entries", snapshot_then_mutate)
 
         toolsets = reg.get_available_toolsets()
         assert toolsets["gated"]["available"] is False
@@ -614,6 +614,20 @@ class TestToolsetAvailabilityAggregation:
 
         assert "terminal" not in available
         assert any(item["name"] == "terminal" for item in unavailable)
+
+    def test_toolset_requirements_drop_check_of_deregistered_tool(self):
+        """A toolset's requirements name only checks of tools still registered in it."""
+        reg = ToolRegistry()
+        reg.register(name="gated", toolset="mixed", schema=_make_schema("gated"),
+                     handler=_dummy_handler, check_fn=lambda: False)
+        reg.register(name="plain", toolset="mixed", schema=_make_schema("plain"),
+                     handler=_dummy_handler)
+
+        reg.deregister("gated")
+
+        requirements = reg.get_toolset_requirements()["mixed"]
+        assert requirements["tools"] == ["plain"]
+        assert requirements["check_fn"] is None
 
 
 class TestDeregisterAuthorization:

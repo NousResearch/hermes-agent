@@ -202,11 +202,71 @@ def publish_usage(turn, agent, *, record: bool = False) -> None:
                 captured["session_usage"] = stats
 
 
+_STORED_COUNTERS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens")
+
+
+def _stored_stats(row: dict) -> dict:
+    """A session row's cumulative counters in ``usage_stats``' shape. The row's ``input_tokens`` excludes cache
+    reads and writes, so the prompt total adds them back for the cache hit rate."""
+    counts = {key: int(row.get(key) or 0) for key in _STORED_COUNTERS}
+    return {**counts, "prompt_tokens": counts["input_tokens"] + counts["cache_read_tokens"] + counts["cache_write_tokens"],
+            "completion_tokens": counts["output_tokens"], "total_tokens": counts["input_tokens"] + counts["output_tokens"],
+            "api_calls": int(row.get("api_call_count") or 0), "model": row.get("model") or ""}
+
+
+def snapshot_usage(authority, ref, agent) -> dict | None:
+    """The status-bar ``usage`` a resume / ``session.info`` snapshot carries, so a viewer switching to the
+    session paints its own cache hit and ``t/s`` instead of the last-viewed session's. An agent that has
+    called the model answers as its ``session.usage`` frames do; otherwise (no agent since a restart, or one
+    not used yet) the stored row answers, with no ``t/s`` since latency is not stored."""
+    if agent is not None and getattr(agent, "session_api_calls", 0):
+        result = usage_stats(agent)
+        result["compression_count"] = carried_compression_count(authority.sessions.get(ref.session_id), agent)
+        return tui_usage(result)
+    from gateway.session_persistence import authority_persistence
+    row = authority_persistence(authority).sessions.get(ref.session_id)
+    return tui_usage(_stored_stats(row.as_session_row())) if row else None
+
+
+async def account_usage(connection, ref, params):
+    """``session.account_usage {session_id}``: the CLI's /usage account blocks for the route this
+    session runs (``_session_runtime``: its agent's, else the one its next turn resolves, so
+    ``provider: auto`` is the saved login), fetched off the loop in the owning profile's scope:
+    the provider's plan limits, then the Nous section whenever Nous is signed in (``nous_usage_view``), with
+    the same read's dollar model on a Nous route (``nous_usage``: the classic CLI's two-bar block)."""
+    import asyncio
+    from agent.account_usage import account_limit_lines
+    from agent.account_usage_nous import nous_usage_view
+    from agent.billing_usage import usage_model_wire
+    from agent.billing_links import is_nous_inference_route
+    from gateway.session_authorities import owner_scope
+    from gateway.session_llm_oneshot import _session_runtime
+    from hermes_cli.auth import AuthError
+    await connection.authority.resolve(connection.actor, ref)
+    authority = connection.authority
+    runtime = _session_runtime(authority, ref)
+    credits_state = getattr(authority.agent(ref), "_credits_state", None)  # the last reply's Nous gauges
+
+    def fetch():
+        with owner_scope(authority):
+            try:
+                route = runtime() or {}
+            except AuthError:  # signed out: no route to report limits or a Nous balance for
+                route = {}
+            provider, base_url = route.get("provider") or "", route.get("base_url") or ""
+            lines = account_limit_lines(provider, base_url=base_url or None, api_key=route.get("api_key"))
+            nous_route = is_nous_inference_route(provider, base_url)
+            nous, usage = nous_usage_view(nous_route=nous_route, credits_state=credits_state)
+        dollars = usage_model_wire(usage)
+        return {"lines": lines, "nous_lines": nous, "nous_route": nous_route} | ({"nous_usage": dollars} if dollars else {})
+    return await asyncio.to_thread(fetch)
+
+
 async def stats(connection, ref, params):
     """``session.stats {session_id}``: the same dict ``session.usage`` carries."""
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     if set(params) - {"session_id", "profile"}:
-        raise RuntimeStoreError("invalid_params")
+        raise AuthorityRefusal("invalid_params")
     await connection.authority.resolve(connection.actor, ref)
     agent = connection.authority.agent(ref)
     result = usage_stats(agent)

@@ -125,15 +125,15 @@ class TestResolve:
         ('self', None, None, 'canary', 'canary'),
         ('self', None, None, 'yolo', 'yolo'),
         ('electron-updater', 'v1.2.3', None, None, 'stable'),
-        ('electron-updater', 'v1.2.3+canary.20260819T171926Z', None, 'stable', 'canary'),
-        ('app-installer', 'v1.2.3+canary.20260819T171926Z', None, None, 'canary'),
-        ('microsoft-store', 'v1.2.3+canary.20260819T171926Z', None, None, 'canary'),
+        ('electron-updater', 'canary.20260819T171926Z-v1.2.3', None, 'stable', 'canary'),
+        ('app-installer', 'canary.20260819T171926Z-v1.2.3', None, None, 'canary'),
+        ('microsoft-store', 'canary.20260819T171926Z-v1.2.3', None, None, 'canary'),
         ('electron-updater', 'v1.2.3-canary.20260818', None, None, 'stable'),
         ('electron-updater', None, None, 'canary', 'stable'),
         ('external', 'v1.2.3', 'bundled', 'main', 'stable'),
         ('external', 'v1.2.3', 'light', 'main', 'stable'),
-        ('external', 'v1.2.4+canary.20260911T125822Z', 'bundled', 'main', 'canary'),
-        ('external', 'v1.2.4+canary.20260911T125822Z', 'light', 'main', 'canary'),
+        ('external', 'canary.20260911T125822Z-v1.2.4', 'bundled', 'main', 'canary'),
+        ('external', 'canary.20260911T125822Z-v1.2.4', 'light', 'main', 'canary'),
     ])
     def test_channel_policy(self, tmp_path, mechanism, tag, payload, record, expected):
         if mechanism is not None:
@@ -361,7 +361,7 @@ class TestSetChannelCLI:
         from hermes_cli.main import cmd_update
 
         self._home(tmp_path, monkeypatch)
-        _stamp(tmp_path, "self", "v0.28.0+canary.20260818T000000Z")
+        _stamp(tmp_path, "self", "canary.20260818T000000Z-v0.28.0")
         with pytest.raises(SystemExit) as exc:
             cmd_update(self._args(set_channel="stable"))
         assert exc.value.code == 0

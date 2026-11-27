@@ -36,14 +36,17 @@ _OPENROUTER_DESCRIPTIONS = {
 OPENROUTER_MODELS: list[tuple[str, str]] = [
     (mid, _OPENROUTER_DESCRIPTIONS.get(mid, "free" if mid.endswith(":free") else ""))
     for mid in (
-        "anthropic/claude-fable-5.1", "anthropic/claude-fable-5", "anthropic/claude-opus-5.5",
+        "anthropic/claude-fable-5.2", "anthropic/claude-fable-5.1", "anthropic/claude-fable-5", "anthropic/claude-opus-5.5",
         "anthropic/claude-opus-5", "anthropic/claude-opus-5-fast", "anthropic/claude-opus-4.8", "anthropic/claude-opus-4.8-fast",
         "anthropic/claude-sonnet-5.5", "anthropic/claude-sonnet-5", "anthropic/claude-haiku-5.5", "anthropic/claude-haiku-4.5",
+        "openai/gpt-6.2-astra", "openai/gpt-6.2-astra-pro", "openai/gpt-6.2-sol", "openai/gpt-6.2-sol-pro",
         "openai/gpt-6-astra", "openai/gpt-6-astra-fast", "openai/gpt-6-astra-flex", "openai/gpt-6-astra-pro",
         "openai/gpt-6-astra-pro-fast", "openai/gpt-6-astra-pro-flex",
         "openai/gpt-6.1-sol", "openai/gpt-6.1-sol-pro", "openai/gpt-6.1-terra", "openai/gpt-6-sol", "openai/gpt-6-sol-pro",
         "openai/gpt-6-luna", "openai/gpt-6-luna-pro",
-        "openai/gpt-5.5", "openai/gpt-5.5-pro", "openai/gpt-5.4-mini", "google/gemini-4-argon",
+        "openai/gpt-5.5", "openai/gpt-5.5-pro", "openai/gpt-5.4-mini",
+        "google/gemini-4-neon", "google/gemini-4-hydrogen", "google/gemini-4-carbon",
+        "google/gemini-4-argon",
         "google/gemini-3.1-pro-preview",
         "google/gemini-3.8-flash", "google/gemini-3.7-flash", "x-ai/grok-4.7", "x-ai/grok-4.6",
         "deepseek/deepseek-v4-pro",
@@ -130,10 +133,11 @@ def _xai_finalize_catalog(ids: list[str]) -> list[str]:
 
 def _xai_curated_models() -> list[str]:
     """Offline curated floor for xAI / xAI OAuth pickers: $HERMES_HOME/models_dev_cache.json
-    (no network), else ``_XAI_STATIC_FALLBACK``. Any failure falls through to the static list."""
+    (no network), else ``_XAI_STATIC_FALLBACK``. Any failure falls through to the static list.
+    Reads through the process-wide models.dev copy, so the parse is the one every later reader shares."""
     try:
-        from agent.models_dev import _load_disk_cache
-        data = _load_disk_cache()
+        from agent.models_dev import fetch_models_dev
+        data = fetch_models_dev(allow_network=False)
         xai = data.get("xai") if isinstance(data, dict) else None
         models = xai.get("models") if isinstance(xai, dict) else None
         if isinstance(models, dict) and models:
@@ -143,6 +147,56 @@ def _xai_curated_models() -> list[str]:
     except Exception:
         pass
     return _xai_finalize_catalog(list(_XAI_STATIC_FALLBACK))
+
+
+_XAI_ROWS = ("xai", "xai-oauth")
+
+
+class _CuratedCatalog(dict):
+    """``_PROVIDER_MODELS``: static rows, except xAI's, which come from the models.dev disk cache.
+
+    That cache is a full parse of the whole catalog (tens of MiB resident), so it is read on the first
+    lookup of an xAI row or a whole-table walk, never at import: a process that never asks for xAI
+    never pays for it. Until then the xAI rows hold the static fallback, and they are filled in place,
+    so a list handed out earlier sees the same ids. Overriding ``__iter__`` keeps ``dict(table)`` and
+    ``{**table}`` on the slow path that reads values through ``__getitem__``."""
+
+    _xai_ready = False
+
+    def _ensure_xai(self) -> None:
+        if self._xai_ready:
+            return
+        ids = _xai_curated_models()
+        for row in _XAI_ROWS:
+            current = dict.get(self, row)
+            if isinstance(current, list):
+                current[:] = ids
+        self._xai_ready = True
+
+    def __iter__(self):
+        return dict.__iter__(self)
+
+    def __getitem__(self, key):
+        if key in _XAI_ROWS:
+            self._ensure_xai()
+        return dict.__getitem__(self, key)
+
+    def get(self, key, default=None):
+        if key in _XAI_ROWS:
+            self._ensure_xai()
+        return dict.get(self, key, default)
+
+    def values(self):
+        self._ensure_xai()
+        return dict.values(self)
+
+    def items(self):
+        self._ensure_xai()
+        return dict.items(self)
+
+    def copy(self):
+        self._ensure_xai()
+        return dict(dict.items(self))
 
 
 # Native OpenAI Chat Completions (api.openai.com).
@@ -168,32 +222,26 @@ _ALIBABA_TOKEN_PLAN_MODELS = [
     "qwen3.8-max-0902", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus", "qwen3.6-flash", "deepseek-v4-pro",
     "deepseek-v4-flash", "deepseek-v3.2", "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5", "glm-5.2", "glm-5.1", "glm-5",
 ]
-_XAI_MODELS = _xai_curated_models()
-
 # Curated per-provider lists. ``-cn`` twins share the international catalog on a domestic endpoint.
-_PROVIDER_MODELS: dict[str, list[str]] = {
+_PROVIDER_MODELS: dict[str, list[str]] = _CuratedCatalog({
     "moa": ["default"],
     "nous": [mid for mid, _ in OPENROUTER_MODELS if mid not in _OPENROUTER_ONLY and not mid.endswith(":free")],
     # Used by /model counts and provider_model_ids fallback when /v1/models is unavailable.
     "openai": list(_OPENAI_CHAT_MODELS),
     "openai-api": [
+        "gpt-6.2-sol", "gpt-6.2-astra",
         "gpt-6.1-sol", "gpt-6.1-sol-pro", "gpt-6-sol", "gpt-6-sol-pro", "gpt-6-luna", "gpt-6-luna-pro",
         "gpt-5.6-sol", "gpt-5.6-sol-pro", "gpt-5.6-terra", "gpt-5.6-terra-pro", "gpt-5.6-luna",
         "gpt-5.6-luna-pro", "gpt-5.5", "gpt-5.5-pro", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano",
         "gpt-5-mini", "gpt-5.3-codex", "gpt-4.1", "gpt-4o", "gpt-4o-mini",
     ],
     "openai-codex": _codex_curated_models(),
-    "xai-oauth": list(_XAI_MODELS),
-    "gemini": [
-        # Argon second: [0] is the silent default when no model is configured, and a flagship never is.
-        "gemini-3.8-flash", "gemini-4-argon", "gemini-3.7-flash",
-        "gemini-3.1-pro-preview", "gemini-3-pro-preview", "gemini-3.6-flash", "gemini-3.1-flash-lite-preview",
-    ],
+    "xai-oauth": _xai_finalize_catalog(list(_XAI_STATIC_FALLBACK)),
     "zai": [
         "glm-5.3", "glm-5.3-flash", "glm-5.2", "glm-5.1", "glm-5", "glm-5v-turbo", "glm-5-turbo",
         "glm-4.7", "glm-4.5", "glm-4.5-flash",
     ],
-    "xai": list(_XAI_MODELS),
+    "xai": _xai_finalize_catalog(list(_XAI_STATIC_FALLBACK)),
     # Nemotron flagships, then third-party agentic models hosted on build.nvidia.com.
     "nvidia": [
         "nvidia/nemotron-3.5-super-vl-120b-a12b", "nvidia/nemotron-3-ultra-550b-a55b", "nvidia/nemotron-3-super-120b-a12b",
@@ -216,7 +264,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "minimax-oauth": ["MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.7-highspeed"],
     "minimax-cn": list(_MINIMAX_MODELS),
     "anthropic": [
-        "claude-fable-5.1", "claude-fable-5", "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5",
+        "claude-fable-5-2", "claude-fable-5.1", "claude-fable-5", "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5",
         "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6",
         "claude-sonnet-4-6", "claude-opus-4-5-20251101", "claude-sonnet-4-5-20250929",
         "claude-opus-4-20250514", "claude-sonnet-4-20250514", "claude-haiku-4-5-20251001",
@@ -284,8 +332,8 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "us.anthropic.claude-sonnet-5", "us.anthropic.claude-opus-5-5", "us.anthropic.claude-sonnet-4-6",
         "us.anthropic.claude-opus-4-6-v1",
         "us.anthropic.claude-haiku-4-5-20251001-v1:0", "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
-        "openai.gpt-6-astra", "openai.gpt-6.1-sol", "openai.gpt-6-sol", "openai.gpt-6-luna",
-        "openai.gpt-5.5", "openai.gpt-5.6-sol", "openai.gpt-5.6-terra", "openai.gpt-5.6-luna",
+        "openai.gpt-6-astra", "openai.gpt-6.1-sol", "openai.gpt-6.1-terra", "openai.gpt-6-sol", "openai.gpt-6-luna",
+        "openai.gpt-5.5", "openai.gpt-5.6-sol", "openai.gpt-5.6-terra", "openai.gpt-5.6-luna", "openai.gpt-5.4",
         "us.amazon.nova-pro-v1:0", "us.amazon.nova-lite-v1:0", "us.amazon.nova-micro-v1:0", "deepseek.v3.2",
         "us.meta.llama4-maverick-17b-instruct-v1:0", "us.meta.llama4-scout-17b-instruct-v1:0",
     ],
@@ -295,7 +343,9 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # only shows the configured model. IDs carry the "google/" publisher prefix Vertex expects
     # (see hermes_cli/model_setup_flows.py); validated live against a GCP project (global region).
     "vertex": [
-        "google/gemini-3.8-flash", "google/gemini-4-argon", "google/gemini-3.7-flash",  # [0] = silent default
+        "google/gemini-3.8-flash",  # [0] = silent default; Gemini 4 after it, in the direct gemini list's order
+        "google/gemini-4-neon", "google/gemini-4-hydrogen", "google/gemini-4-carbon", "google/gemini-4-argon",
+        "google/gemini-3.7-flash",
         "google/gemini-3.1-pro-preview", "google/gemini-3-pro-preview", "google/gemini-3.6-flash",
         "google/gemini-3.5-flash", "google/gemini-3.5-flash-lite", "google/gemini-3-flash-preview",
         "google/gemini-3.1-flash-lite-preview", "google/gemini-3.1-flash-lite",
@@ -306,7 +356,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     ],
     # Bare ids derived from the picker snapshot so both stay in sync.
     "ai-gateway": [mid for mid, _ in VERCEL_AI_GATEWAY_MODELS],
-}
+})
 
 
 # ---------------------------------------------------------------------------
@@ -339,7 +389,6 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [ProviderEntry(*row) for row in (
     ("tencent-tokenplan", "Tencent TokenPlan", "Tencent TokenPlan (Hy4 preview via api.lkeap.cloud.tencent.com, Anthropic Messages)"),
     ("nvidia", "NVIDIA NIM", "NVIDIA NIM (Nemotron models via build.nvidia.com or local NIM)"),
     ("huggingface", "Hugging Face", "Hugging Face Inference Providers"),
-    ("gemini", "Google AI Studio", "Google AI Studio (Native Gemini API)"),
     ("vertex", "Google Vertex AI", "Google Vertex AI (Gemini via GCP; OAuth2 service account or ADC, GCP billing/quotas)"),
     ("deepseek", "DeepSeek", "DeepSeek (V3, R1, coder, direct API)"), ("xai", "xAI", "xAI Grok (Direct API)"),
     ("zai", "Z.AI / GLM", "Z.AI / GLM (Zhipu direct API)"),
@@ -458,7 +507,6 @@ PROVIDER_GROUPS: dict[str, tuple[str, str, list[str]]] = {
     "kimi":     ("Kimi / Moonshot", "Coding Plan, Moonshot global & China endpoints", ["kimi-coding", "kimi-coding-cn"]),
     "minimax":  ("MiniMax",         "Global, OAuth Coding Plan & China endpoints",     ["minimax", "minimax-oauth", "minimax-cn"]),
     "xai":      ("xAI Grok",        "Direct API or SuperGrok / Premium+ OAuth",        ["xai", "xai-oauth"]),
-    "google":   ("Google Gemini",   "Google AI Studio (API key)",                     ["gemini"]),
     "openai":   ("OpenAI",          "ChatGPT/Codex subscription or direct OpenAI API", ["openai-codex", "openai-api"]),
     "qwen":     ("Qwen",            "Qwen Cloud / DashScope, Coding Plan, Token Plan & Qwen CLI OAuth", ["alibaba", "alibaba-cn", "alibaba-coding-plan", "alibaba-coding-plan-cn", "alibaba-token-plan", "alibaba-token-plan-cn", "qwen-oauth"]),
     "opencode": ("OpenCode",        "Zen pay-as-you-go or Go subscription", ["opencode-zen", "opencode-go"]),
@@ -483,7 +531,7 @@ def group_providers(slugs):
     members fold into it. Member order inside a group follows ``PROVIDER_GROUPS`` declaration,
     restricted to the members present in ``slugs``.
     """
-    present = set(slugs)
+    present = {str(slug or "").strip().lower() for slug in slugs}  # same normalisation as the rows below
     group_members = {
         gid: [m for m in members if m in present]
         for gid, (_label, _desc, members) in PROVIDER_GROUPS.items()
@@ -564,8 +612,8 @@ class _CatalogAliases(dict):
 
 
 _PROVIDER_ALIASES = _CatalogAliases((
-    ("glm", "zai"), ("z-ai", "zai"), ("z.ai", "zai"), ("zhipu", "zai"), ("google", "gemini"),
-    ("google-gemini", "gemini"), ("google-ai-studio", "gemini"), ("google-vertex", "vertex"), ("vertex-ai", "vertex"),
+    ("glm", "zai"), ("z-ai", "zai"), ("z.ai", "zai"), ("zhipu", "zai"),
+    ("google-vertex", "vertex"), ("vertex-ai", "vertex"),
     ("gcp-vertex", "vertex"), ("vertexai", "vertex"), ("kimi", "kimi-coding"), ("moonshot", "kimi-coding"),
     ("kimi-cn", "kimi-coding-cn"), ("moonshot-cn", "kimi-coding-cn"), ("step", "stepfun"),
     ("stepfun-coding-plan", "stepfun"), ("arcee-ai", "arcee"), ("arceeai", "arcee"), ("gmi-cloud", "gmi"),
@@ -626,6 +674,24 @@ _PROVIDER_RETIRED_ALIASES: dict[str, tuple[str, ...]] = {
 }
 
 
+def static_catalog_providers() -> list[str]:
+    """Every provider with a static catalog row in the bound home: built-ins plus plugin profiles.
+
+    Plugin profiles are inserted before the earliest built-in that follows them in
+    ``CANONICAL_PROVIDERS`` (else appended) so a first-party plugin keeps precedence over
+    multi-vendor/reseller catalogs that appear after it in the picker."""
+    from providers import list_providers
+    rows = list(_PROVIDER_MODELS)
+    canonical_idx = {p.slug: idx for idx, p in enumerate(CANONICAL_PROVIDERS)}
+    for pp in list_providers():
+        if not pp.static_models or pp.name in rows:
+            continue
+        pos = canonical_idx.get(pp.name)
+        later = [i for i, slug in enumerate(rows) if pos is not None and canonical_idx.get(slug, -1) > pos]
+        rows.insert(later[0], pp.name) if later else rows.append(pp.name)
+    return rows
+
+
 # Plugin profiles with ``aggregator=True`` join at sync time (``sync_plugin_provider_catalog``).
 _AGGREGATOR_PROVIDERS: set[str] = {"nous", "openrouter", "ai-gateway", "kilocode"}
 sync_plugin_provider_catalog()  # every table it extends is defined above
@@ -650,10 +716,10 @@ _LIVE_FIRST_PICKER_PROVIDERS: frozenset[str] = frozenset({"opencode-zen", "openc
 # positives are harmless. Codex-series models are excluded — the Codex Responses API doesn't
 # expose service_tier.
 _OPENAI_FAST_MODE_PREFIXES: tuple[str, ...] = ("gpt-", "o1", "o3", "o4")
-# OpenAI Ultrafast (service_tier="ultrafast", 6x Standard): GPT-6 Astra and GPT-6.1 Sol
-# (developers.openai.com/api/docs/guides/ultrafast-mode, 2026-10-08).
+# OpenAI Ultrafast (service_tier="ultrafast"): GPT-6 Astra, GPT-6.1 Sol and GPT-6.2 Astra/Sol.
+# Rates, including GPT-6.2's launch discount, live in agent.usage_pricing.
 # Exact wire slugs, matched after stripping the vendor prefix and the Hermes-side ``-900k`` alias.
-_OPENAI_ULTRAFAST_MODELS: frozenset[str] = frozenset({"gpt-6-astra", "gpt-6.1-sol"})
+_OPENAI_ULTRAFAST_MODELS: frozenset[str] = frozenset({"gpt-6-astra", "gpt-6.1-sol", "gpt-6.2-astra", "gpt-6.2-sol"})
 
 
 # Providers where models.dev is authoritative: the curated list is an offline fallback plus custom

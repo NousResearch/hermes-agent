@@ -27,13 +27,22 @@ from tests.tui_gateway.test_hosted_room_driver_runtime import (
     _runtime,
     _wait_for,
 )
+from persistence_assembly import open_persistence, profile_scope
+
+
+@pytest.fixture(name="store")
+def store_fixture(tmp_path):
+    """A store handle on the test home, closed at teardown."""
+    handle = open_persistence(profile_scope(home=tmp_path))
+    yield handle
+    handle.close()
 
 
 @pytest.fixture
-def db(tmp_path: Path) -> Path:
+def db(tmp_path: Path, store) -> Path:
     path = tmp_path / "state.db"
     hosted_rooms.create_room(
-        path,
+        store, placement="profile",
         room_id=ROOM_ID,
         name="Release room",
         members=[{"profile": PROFILE, "handle": PROFILE}],
@@ -75,11 +84,11 @@ class MemberIdRequiringRPC(FakeSessionRPC):
         )
 
 
-def test_submit_carries_the_target_member_id_the_transport_requires(db: Path):
+def test_submit_carries_the_target_member_id_the_transport_requires(db: Path, store):
     identity = _identity()
     state.admit_task(
-        db,
-        identity,
+        store,
+        identity, placement="profile",
         payload={
             "target_profile": PROFILE,
             "target_member_id": "member-ops",
@@ -89,17 +98,17 @@ def test_submit_carries_the_target_member_id_the_transport_requires(db: Path):
         clock=time.time,
     )
     rpc = MemberIdRequiringRPC()
-    runtime = _runtime(db, rpc)
+    runtime = _runtime(store, rpc)
 
     runtime.start()
-    _wait_for(lambda: state.get_task(db, identity)["status"] == "settled")
+    _wait_for(lambda: state.get_task(store, identity, placement="profile")["status"] == "settled")
     assert runtime.stop(timeout=5.0)
 
     assert rpc.member_ids == ["member-ops"]
-    assert state.get_task(db, identity)["result"]["text"] == "Finished once."
+    assert state.get_task(store, identity, placement="profile")["result"]["text"] == "Finished once."
 
 
-def test_driver_submit_settles_through_the_real_in_process_rpc(db: Path):
+def test_driver_submit_settles_through_the_real_in_process_rpc(db: Path, store):
     from tests.tui_gateway.test_hosted_room_server_rpc import _server
     from tui_gateway.hosted_room_server_rpc import HostedRoomServerRPC
 
@@ -119,8 +128,8 @@ def test_driver_submit_settles_through_the_real_in_process_rpc(db: Path):
     server._methods["prompt.submit"] = prompt_submit
     identity = _identity()
     state.admit_task(
-        db,
-        identity,
+        store,
+        identity, placement="profile",
         payload={
             "target_profile": PROFILE,
             "target_member_id": "member-ops",
@@ -129,14 +138,14 @@ def test_driver_submit_settles_through_the_real_in_process_rpc(db: Path):
         },
         clock=time.time,
     )
-    runtime = _runtime(db, HostedRoomServerRPC(server))
+    runtime = _runtime(store, HostedRoomServerRPC(server))
 
     runtime.start()
     try:
-        _wait_for(lambda: state.get_task(db, identity)["status"] == "settled")
+        _wait_for(lambda: state.get_task(store, identity, placement="profile")["status"] == "settled")
     finally:
         assert runtime.stop(timeout=5.0)
 
     submits = [params for method, params in calls if method == "prompt.submit"]
     assert [params["_hosted_task"]["member_id"] for params in submits] == ["member-ops"]
-    assert state.get_task(db, identity)["result"]["text"] == "Finished once."
+    assert state.get_task(store, identity, placement="profile")["result"]["text"] == "Finished once."

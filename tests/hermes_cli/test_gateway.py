@@ -405,7 +405,11 @@ def test_gateway_install_noninteractive_skips_legacy_unit_prompt(monkeypatch, tm
         "prompt_yes_no",
         lambda question, default=True: calls.append(("prompt", question)) or True,
     )
-    monkeypatch.setattr(gateway, "remove_legacy_hermes_units", lambda interactive=False: calls.append(("remove_legacy",)))
+    monkeypatch.setattr(
+        gateway,
+        "remove_legacy_hermes_units",
+        lambda interactive=False: calls.append(("remove_legacy",)) or (0, []),
+    )
     monkeypatch.setattr(gateway, "print_legacy_unit_warning", lambda: None)
 
     fake_path = tmp_path / "hermes-gateway.service"
@@ -1134,18 +1138,27 @@ def test_service_commands_refuse_on_sealed_apt_termux(
     assert "Termux" in out
 
 
-@pytest.mark.parametrize("installed", [True, False])
-def test_install_if_missing_only_installs_when_no_service_exists(monkeypatch, installed):
+@pytest.mark.parametrize("installed, options", [(True, {}), (False, {}), (False, {"start_now": False})])
+def test_install_if_missing_only_installs_when_no_service_exists(monkeypatch, installed, options):
     """The installer's gateway stage runs after setup, which may have installed
-    the service already. --if-missing must not ask the install questions again."""
+    the service already. --if-missing must not ask the install questions again,
+    and install options it is given go to the explicit install path that honours them."""
+    from hermes_cli import gateway_setup_service
+
     installs = []
     monkeypatch.setattr(gateway, "is_managed", lambda: False)
     monkeypatch.setattr(gateway, "_is_service_installed", lambda: installed)
+    monkeypatch.setattr(gateway_setup_service, "_recorded_choice", lambda: None)
+    monkeypatch.setattr(gateway_setup_service, "_messaging_configured", lambda: True)
+    monkeypatch.setattr(gateway_setup_service, "ensure_gateway_service",
+                        lambda **kw: installs.append(kw) or True)
     monkeypatch.setattr(gateway, "_guard_named_profile_under_multiplexer", lambda force: None)
     monkeypatch.setattr(gateway, "_service_mgmt_blocked", lambda: False)
     monkeypatch.setattr(gateway, "_service_backend", lambda: "launchd")
-    monkeypatch.setattr(gateway, "launchd_install", lambda force, start_now, force_unit_path=False: installs.append(force))
+    monkeypatch.setattr(gateway, "launchd_install",
+                        lambda force, start_now, force_unit_path=False: installs.append({"start_now": start_now}))
 
-    gateway._cmd_install(SimpleNamespace(if_missing=True, force=False, system=False, run_as_user=None))
+    gateway._cmd_install(SimpleNamespace(if_missing=True, force=False, system=False, run_as_user=None, **options))
 
-    assert installs == ([] if installed else [False])
+    expected = [] if installed else [options or {"context": "setup", "interactive": True}]
+    assert installs == expected

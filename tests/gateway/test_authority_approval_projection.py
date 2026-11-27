@@ -12,17 +12,17 @@ import pytest
 
 from gateway.session_authority import LiveSession, SessionAuthority
 from gateway.session_controls import AuthorityConnection
-from hermes_state import SessionDB
-from hermes_state_runtime import begin_runtime_epoch
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 @pytest.mark.asyncio
 async def test_approval_replay_reads_are_served_from_the_owner_projection(tmp_path):
-    with SessionDB(db_path=tmp_path / 'state.db') as db:
-        db.create_session('s', source='test')
-        epoch = begin_runtime_epoch(db, instance_id='current')
+    with storage_handle(tmp_path) as db:
+        seed_session(db, 's', 'test')
+        epoch = db.runtime.begin_epoch(instance_id='current')
         authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id='owned',
-                                     instance_id='current', db=db, epoch=epoch)
+                                     instance_id='current', persistence=db, epoch=epoch)
         live = authority.sessions['s'] = LiveSession(None, 'route')
         live.controls.pending['p1'] = ('route', {
             'kind': 'approval', 'prompt_id': 'p1', 'execution_generation': 1,

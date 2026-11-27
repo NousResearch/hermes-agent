@@ -473,20 +473,19 @@ def test_embedded_revision_keeps_https_ref_advertisement_recovery(installation, 
     monkeypatch.setattr("hermes_cli.config.get_project_root", lambda: home)
     monkeypatch.setattr("hermes_cli.config.detect_install_method", lambda root: "nix")
     responses[MAIN_CHANNEL] = (200, source_channel("main", "NousResearch/hermes-agent"))
-    original = subprocess.run
     probes = []
 
     def advertise(args, **kwargs):
-        if "ls-remote" in args:
-            probes.append((args, kwargs))
-            return subprocess.CompletedProcess(args, 0, head + "\trefs/heads/main\n", "")
-        return original(args, **kwargs)
+        probes.append((args, kwargs))
+        return subprocess.CompletedProcess(args, 0, head + "\trefs/heads/main\n", "")
 
-    monkeypatch.setattr(subprocess, "run", advertise)
+    # The remote probe runs owned and bounded (stdin is always DEVNULL there).
+    monkeypatch.setattr("hermes_cli._subprocess_compat.bounded_probe_run", advertise)
     assert check_for_updates(home=home)["behind"] == 0
     assert len(probes) == 1
+    assert "ls-remote" in probes[0][0]
     assert "https://github.com/NousResearch/hermes-agent.git" in probes[0][0]
-    assert probes[0][1]["stdin"] == subprocess.DEVNULL
+    assert probes[0][1]["owned"] is True
     assert probes[0][1]["env"]["GIT_TERMINAL_PROMPT"] == "0"
 
 
@@ -760,6 +759,31 @@ def test_runtime_lookup_has_one_deadline_with_bounded_parallel_reads(installatio
         checker.join(5)
 
 
+@pytest.mark.parametrize("runtime", [True, False])
+def test_a_release_with_the_state_store_inside_the_package_is_judged_by_its_package_modules(
+        installation, runtime):
+    """After the state store moves under ``hermes_agent/`` a root compat shell stays behind. The
+    verdict must come from the package's modules, which a top-level tree listing does not show."""
+    from hermes_cli import source_check
+    from persistence.sqlite._schema_ddl import SCHEMA_SQL
+
+    _root, _linked, home, _base, sha, responses, requests, _git = installation
+    shell, store = "hermes_state.py", "hermes_agent/hermes_state/common.py"
+    trees = "/repos/fixture/fork/git/trees"
+    # A tree listing is one directory, as GitHub answers without ``recursive``; a release's full
+    # recursive listing is several MiB, beyond what the reader takes in one response.
+    responses[f"{trees}/{sha}"] = (200, {"truncated": False, "tree": [
+        {"path": shell, "type": "blob"}, {"path": "hermes_agent", "type": "tree", "sha": "t-pkg"},
+        {"path": "pad", "type": "blob", "size": 3 * 1024 * 1024}]})
+    responses[f"{trees}/t-pkg"] = (200, {"tree": [{"path": "hermes_state", "type": "tree", "sha": "t-state"}]})
+    responses[f"{trees}/t-state"] = (200, {"tree": [{"path": "common.py", "type": "blob"}]})
+    responses[f"/fixture/fork/{sha}/{shell}"] = (200, "from hermes_agent.compat import finder\n")
+    responses[f"/fixture/fork/{sha}/{store}"] = (200, SCHEMA_SQL if runtime else "SCHEMA_SQL = 'old schema'")
+
+    assert source_check._github_predates_runtime("fixture/fork", sha, home / "runtime.json") is (not runtime)
+    assert not any("recursive" in path for path in requests)
+
+
 @pytest.mark.parametrize("failure", ["tree", "module"])
 @pytest.mark.parametrize("runtime", [True, False])
 def test_unknown_runtime_verdict_expires_but_definite_verdict_does_not(installation, monkeypatch, failure, runtime):
@@ -771,8 +795,8 @@ def test_unknown_runtime_verdict_expires_but_definite_verdict_does_not(installat
     tree = f"/repos/fixture/fork/git/trees/{sha}"
     module = f"/fixture/fork/{sha}/hermes_state_common.py"
     responses[tree] = (200, {"tree": [{"path": "hermes_state_common.py", "type": "blob"}]})
-    from hermes_state_common import SCHEMA_SQL
-    responses[module] = (200, SCHEMA_SQL if runtime else "SCHEMA_SQL = 'old schema'")
+    schema = "SCHEMA_SQL = '''CREATE TABLE IF NOT EXISTS session_admissions (seq INTEGER)'''\n"
+    responses[module] = (200, schema if runtime else "SCHEMA_SQL = 'old schema'")
     failed_path = tree if failure == "tree" else module
     good = responses[failed_path]
     responses[failed_path] = (503, {})
@@ -789,3 +813,18 @@ def test_unknown_runtime_verdict_expires_but_definite_verdict_does_not(installat
     clock[0] += 10 * source_check._UPDATE_CHECK_CACHE_SECONDS
     assert check() is not runtime
     assert requests == seen
+
+
+def test_a_release_whose_ledger_is_only_in_the_backend_schema_does_not_predate_the_runtime(installation):
+    from hermes_cli import source_check
+
+    _root, _linked, home, _base, sha, responses, _requests, _git = installation
+    responses[f"/repos/fixture/fork/git/trees/{sha}"] = (200, {"tree": [
+        {"path": "hermes_state.py", "type": "blob"}, {"path": "persistence", "type": "tree", "sha": "t-pers"}]})
+    responses["/repos/fixture/fork/git/trees/t-pers"] = (200, {"tree": [{"path": "sqlite", "type": "tree", "sha": "t-sqlite"}]})
+    responses["/repos/fixture/fork/git/trees/t-sqlite"] = (200, {"tree": [{"path": "_schema_ddl.py", "type": "blob"}]})
+    responses[f"/fixture/fork/{sha}/hermes_state.py"] = (200, "from persistence_assembly import open_persistence\n")
+    responses[f"/fixture/fork/{sha}/persistence/sqlite/_schema_ddl.py"] = (
+        200, "SCHEMA_SQL = 'CREATE TABLE IF NOT EXISTS session_admissions (seq INTEGER)'\n")
+
+    assert source_check._github_predates_runtime("fixture/fork", sha, home / "runtime.json") is False

@@ -36,7 +36,7 @@ env:
 jobs:
   real-backends:
     name: SSH + Docker backends (real sshd, real daemon)
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 15
     steps:
       - name: Checkout code

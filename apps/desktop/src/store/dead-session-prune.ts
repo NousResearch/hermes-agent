@@ -3,7 +3,7 @@
  * the backend.
  *
  * Pins (`hermes.desktop.pinnedSessions`), composer drafts
- * (`hermes:composer-drafts:v3`), queued prompts
+ * (`hermes:composer-drafts:v4`, mirrored to v3), queued prompts
  * (`hermes.desktop.composerQueue.v1`) and interrupted sends
  * (`hermes:composer-outbox:v1:*`) are keyed by session id and re-asserted
  * or probed at boot. When a session is removed from state.db (retention purge,
@@ -148,8 +148,10 @@ function collectCandidates(): string[] {
     }
   }
 
+  // A new chat's queue is keyed by its fresh draft scope, never a session id (its first message
+  // waits there while the profile's backend restarts).
   for (const key of Object.keys($queuedPromptsBySession.get())) {
-    if (!covered.has(key)) {
+    if (!covered.has(key) && !isFreshDraftScope(key)) {
       candidates.add(key)
     }
   }

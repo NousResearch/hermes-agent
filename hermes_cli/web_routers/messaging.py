@@ -17,14 +17,22 @@ import time
 import urllib.parse
 from datetime import datetime, timezone, UTC
 from pathlib import Path
+from collections.abc import Collection
 from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException
 
+from gateway.config import SHARED_LISTENER_MIRROR_PLATFORMS as _LISTENER_MIRRORS
 from gateway.status import resolve_gateway_liveness, retained_gateway_state
 from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_cli.catalog_platform_listing import (
+    available_catalog_platforms,
+    install_catalog_platform,
+    platform_list_signature,
+)
 from hermes_cli.config import OPTIONAL_ENV_VARS, get_env_path
-from hermes_constants import get_process_hermes_home
+from hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
+from hermes_constants import get_hermes_home, get_process_hermes_home
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_gateway import _restart_gateway_after
 from hermes_cli.web_whatsapp_session import _backup_whatsapp_session
@@ -36,7 +44,7 @@ from hermes_cli.web_routers._common import (
     redacted_credential_preview,
 )
 from hermes_cli.web_models import (
-    MessagingPlatformUpdate, TelegramOnboardingApply, TelegramOnboardingStart,
+    MessagingCatalogInstall, MessagingPlatformUpdate, TelegramOnboardingApply, TelegramOnboardingStart,
     WhatsAppOnboardingApply, WhatsAppOnboardingStart,
 )
 
@@ -52,6 +60,8 @@ _telegram_onboarding_request_sync = late("_telegram_onboarding_request_sync", "h
 _whatsapp_session_path = late("_whatsapp_session_path", "hermes_cli.web_server_messaging")
 _write_platform_enabled = late("_write_platform_enabled", "hermes_cli.web_server_messaging")
 load_env = late("load_env", "hermes_cli.config")
+get_secret_source_values = late("get_secret_source_values", "hermes_cli.env_loader")
+builtin_platform_status = late("builtin_platform_status", "gateway.config_env")
 load_config = late("load_config", "hermes_cli.config")
 read_runtime_status = late("read_runtime_status", "gateway.status")
 remove_env_value = late("remove_env_value", "hermes_cli.config")
@@ -131,8 +141,10 @@ def _validate_messaging_env_value(rules: dict[str, tuple[Any, str]], key: str, v
 _ALLOWLIST_KEY_RE = re.compile(r"_ALLOWED(?:_[A-Z]+)?$")
 
 
-def _messaging_env_info(key: str) -> dict[str, Any]:
-    info = OPTIONAL_ENV_VARS.get(key) or _MESSAGING_ENV_FALLBACKS.get(key) or {}
+def _messaging_env_info(key: str, declared: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    """Field copy and secrecy for *key*: ``declared`` is the card's own declaration (its plugin
+    manifest, read when the card was built), so a plugin installed mid-run is labelled and masked."""
+    info = declared or OPTIONAL_ENV_VARS.get(key) or _MESSAGING_ENV_FALLBACKS.get(key) or {}
     is_password = bool(info.get("password", False))
     return {
         "description": info.get("description", ""),
@@ -157,23 +169,30 @@ def _require_platform(platform_id: str) -> dict[str, Any]:
 
 
 def _platform_enablement(
-    platform_id: str, entry: dict[str, Any], env_on_disk: dict[str, str], scoped: bool
+    platform_id: str, entry: dict[str, Any], env_on_disk: dict[str, str], scoped: bool,
+    source_keys: Collection[str] = (),
 ) -> tuple[bool, bool, dict | None]:
-    """(enabled, configured, home_channel). Profile-scoped: derive from the profile's
-    config.yaml + .env only — load_gateway_config()'s env-override layer reads
-    os.environ and would leak the root install's tokens into the profile's state."""
+    """(enabled, configured, home_channel). Profile-scoped: the profile's config.yaml, .env and
+    enabled secret sources only, never ``load_gateway_config()`` (see ``builtin_platform_status``)."""
     required = entry["required_env"]
     if scoped:
-        configured = bool(required) and all(env_on_disk.get(key) for key in required)
+        # ``source_keys``: names the profile's enabled secret sources resolved (1Password, Bitwarden, a plugin).
+        configured = bool(required) and all(env_on_disk.get(key) or key in source_keys for key in required)
         try:
-            plat_cfg = (load_config().get("platforms") or {}).get(platform_id)
+            config = load_config()
+            plat_cfg = (config.get("platforms") or {}).get(platform_id)
             plat_cfg = plat_cfg if isinstance(plat_cfg, dict) else {}
             hc = plat_cfg.get("home_channel")
-            # Setup writes credentials without a platforms entry; explicit disable wins.
-            raw_enabled = plat_cfg.get("enabled")
-            enabled = False if raw_enabled is False else bool(raw_enabled) or configured
+            status = None if required else builtin_platform_status(platform_id, config)
+            if status is not None:
+                enabled, configured = status  # token-free built-in: nothing to judge but the gateway's verdict
+            else:
+                # Setup writes credentials without a platforms entry; explicit disable wins.
+                raw_enabled = plat_cfg.get("enabled")
+                enabled = False if raw_enabled is False else bool(raw_enabled) or configured
             home_channel = hc if isinstance(hc, dict) else None
-        except Exception:
+        except Exception:  # health: allow BLE001 -- one platform's bad config must not blank the page
+            _log.debug("Profile-scoped status for %s failed", platform_id, exc_info=True)
             enabled, home_channel = False, None
         return enabled, configured, home_channel
     try:
@@ -191,9 +210,27 @@ def _platform_enablement(
     return enabled, configured, home_channel
 
 
+def _relay_disabled_platform_ids(scoped: bool) -> frozenset[str]:
+    """Platforms the GATEWAY_RELAY_URL relay-exclusive rule switches off at gateway load
+    (#141175), read from the same load_gateway_config() the unscoped enablement arm uses, so the
+    page can say "Team Gateway" instead of a bare "Disabled" that reverts every restart.
+    Unscoped arm only: profile-scoped status is judged per profile (``_platform_enablement``)."""
+    if scoped:
+        return frozenset()
+    try:
+        from gateway.config import load_gateway_config
+
+        platforms = load_gateway_config().platforms
+        return frozenset(p.value for p, cfg in platforms.items() if cfg.disabled_by_relay)
+    except Exception:  # health: allow BLE001 -- advisory label; an unreadable config keeps the plain state
+        _log.debug("relay-disabled platform lookup failed", exc_info=True)
+        return frozenset()
+
+
 def _messaging_platform_payload(
     entry: dict[str, Any], env_on_disk: dict[str, str], runtime: dict | None,
-    scoped: bool = False, profile_home: Optional[Path] = None,
+    scoped: bool = False, profile_home: Optional[Path] = None, source_keys: Collection[str] = (),
+    relay_disabled: frozenset[str] = frozenset(), relay_view: tuple[frozenset[str], bool] = (frozenset(), False),
 ) -> dict[str, Any]:
     platform_id = entry["id"]
     rt = runtime if isinstance(runtime, dict) else {}
@@ -226,19 +263,22 @@ def _messaging_platform_payload(
 
     env_vars = []
     for key in entry["env_vars"]:
-        value, info = env_value(key), _messaging_env_info(key)
+        value, info = env_value(key), _messaging_env_info(key, entry.get("env_info", {}).get(key))
         env_vars.append({
-            "key": key, "required": key in entry["required_env"], "is_set": bool(value),
+            "key": key, "required": key in entry["required_env"], "is_set": bool(value) or key in source_keys,
             "redacted_value": redacted_credential_preview(value),
             "value": value if info["is_list"] else None, **info,
         })
 
-    enabled, configured, home_channel = _platform_enablement(platform_id, entry, env_on_disk, scoped)
-    if gateway_running and runtime_platform.get("mirrored_from"):
+    enabled, configured, home_channel = _platform_enablement(platform_id, entry, env_on_disk, scoped, source_keys)
+    if gateway_running and runtime_platform.get("mirrored_from") and platform_id in _LISTENER_MIRRORS:
         # Served secondary: the default's shared listener already answers this platform at
         # /p/<profile>/... (enabling it locally 409s), so the secondary's own empty config
-        # must not project Disabled over the live mirror (#121125).
+        # must not project Disabled over the live mirror (#121125). A mirrored Relay keeps the
+        # profile's own verdict: Relay has a per-profile opt-out, and a disabled one stays Disabled.
         enabled, configured = True, True
+    elif runtime_platform.get("mirrored_from") and not (enabled and configured):
+        runtime_platform = {}  # the default's Relay is not this profile's channel: none of its errors either
 
     state = runtime_platform.get("state")
     if not enabled:
@@ -264,6 +304,11 @@ def _messaging_platform_payload(
         "gateway_running": gateway_running, "state": state, "error_code": error_code,
         "error_message": error_message, "updated_at": runtime_platform.get("updated_at"),
         "home_channel": home_channel, "env_vars": env_vars,
+        "disabled_by_relay": not enabled and platform_id in relay_disabled,
+        # Team Gateway's shared bot carries this platform: setup is linking an account to it, and a
+        # direct bot is switched off at every start when ``relay_exclusive`` (#141546).
+        "relay_fronted": platform_id in relay_view[0],
+        "relay_exclusive": platform_id in relay_view[0] and relay_view[1],
         # Multiplex secondary served on the default's shared listener: the vendor callback URL.
         "ingress_url": runtime_platform.get("ingress_url") if gateway_running else None,
     }
@@ -290,8 +335,26 @@ def _platform_payloads(scoped_dir: Optional[Path], entries) -> list[dict[str, An
     # ``hermes --profile X serve``).
     own_home = scoped_dir if scoped_dir is not None else get_process_hermes_home()
     runtime = served_profile_runtime(own_home, runtime) or runtime
-    return [_messaging_platform_payload(entry, env_on_disk, runtime, scoped=scoped_dir is not None, profile_home=scoped_dir)
+    # Credentials a secret manager supplies have no .env line; only values the profile's enabled
+    # sources resolved (into its secret scope, by ``_profile_scope``) count, and an empty one is unset.
+    scoped = scoped_dir is not None
+    source_values = get_secret_source_values(scoped_dir) if scoped else {}
+    source_keys = frozenset(key for key, value in source_values.items() if str(value).strip())
+    relay_disabled = _relay_disabled_platform_ids(scoped)
+    relay_view = _relay_channel_view(own_home)
+    return [_messaging_platform_payload(entry, env_on_disk, runtime, scoped=scoped, profile_home=scoped_dir,
+                                        source_keys=source_keys, relay_disabled=relay_disabled,
+                                        relay_view=relay_view)
             for entry in entries]
+
+
+def _relay_channel_view(home: Path) -> tuple[frozenset[str], bool]:
+    """The relay serves only the gateway's own (launch) profile; other profiles keep direct setup."""
+    if Path(home).resolve() != Path(get_process_hermes_home()).resolve():
+        return frozenset(), False
+    from gateway.relay.link import relay_channel_view
+
+    return relay_channel_view()
 
 
 @contextlib.contextmanager
@@ -395,7 +458,7 @@ def _ensure_whatsapp_bridge_dependencies(bridge_dir: Path) -> None:
 
 def _spawn_whatsapp_pairing_process(session_path: Path, mode: str) -> subprocess.Popen:
     from gateway.platforms.whatsapp_common import resolve_whatsapp_bridge_dir
-    from hermes_constants import find_node_executable, with_hermes_node_path
+    from hermes_constants import ensure_private_store, find_node_executable, with_hermes_node_path
 
     bridge_dir = resolve_whatsapp_bridge_dir()
     bridge_script = bridge_dir / "bridge.js"
@@ -414,29 +477,36 @@ def _spawn_whatsapp_pairing_process(session_path: Path, mode: str) -> subprocess
             node = str(installed.binary)
         except pm.InstallError as exc:
             raise HTTPException(status_code=500, detail=f"Node.js preparation failed: {exc}") from exc
-    session_path.mkdir(parents=True, exist_ok=True)
+    store_umask = ensure_private_store(session_path)  # pairing writes creds.json + signal keys (#80090)
 
-    env = with_hermes_node_path()
+    from tools.environments.local import hermes_subprocess_env
+    # bridge.js and its npm deps never see Hermes' credentials; it needs only the mode and policy below.
+    env = with_hermes_node_path(hermes_subprocess_env())
     env["WHATSAPP_MODE"] = mode
     env["WHATSAPP_DM_POLICY"] = "pairing"
-    return subprocess.Popen(
+    # Owned: a SIGKILLed dashboard must not leave a pairing bridge holding the session dir.
+    return spawn_owned(
         [node, str(bridge_script), "--pair-only", "--pair-json", "--session", str(session_path)],
-        cwd=str(bridge_dir), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-        encoding="utf-8", errors="replace", start_new_session=True, env=env,
-        creationflags=windows_hide_flags(),
+        purpose="whatsapp-pairing", cwd=str(bridge_dir), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, encoding="utf-8", errors="replace", env=env, creationflags=windows_hide_flags(), umask=store_umask,
     )
 
 
 def _terminate_whatsapp_pairing(proc: subprocess.Popen | None) -> None:
-    if proc is None or proc.poll() is not None:
+    if proc is None:
         return
-    try:
-        proc.terminate()
-        proc.wait(timeout=3)
-    except Exception:
-        with contextlib.suppress(Exception):
-            proc.kill()
+    if proc.poll() is None:
+        try:
+            proc.terminate()
             proc.wait(timeout=3)
+        except Exception:
+            with contextlib.suppress(Exception):
+                proc.kill()
+                proc.wait(timeout=3)
+    if proc.poll() is not None:
+        # Stopped; one we failed to stop stays covered by the owner-death supervisor. timeout=0:
+        # callers run on the event loop.
+        release_process_group_once_empty(proc.pid, proc=proc, timeout=0)
 
 
 def _fail_whatsapp_pairing(pairing_id: str, error: str, *, proc=None, unless=_WHATSAPP_ONBOARDING_TERMINAL_STATUSES) -> None:
@@ -447,6 +517,14 @@ def _fail_whatsapp_pairing(pairing_id: str, error: str, *, proc=None, unless=_WH
         if record and (proc is None or record.proc is proc) and record.status not in unless:
             record.status = "error"
             record.error = error
+
+
+# Readable text for bridge pairing error codes the dashboard displays; other codes show as the bridge sent them.
+_WHATSAPP_PAIRING_ERROR_TEXT = {
+    "passkey_required": "This WhatsApp account requires passkey verification, which dashboard setup cannot do. "
+                        "In a local terminal, run hermes whatsapp --passkey-browser followed by the path to your "
+                        "Chrome or Edge executable.",
+}
 
 
 def _apply_pairing_event(record, payload: dict) -> None:
@@ -468,7 +546,8 @@ def _apply_pairing_event(record, payload: dict) -> None:
         record.error = None
     elif event == "error":
         record.status = "error"
-        record.error = str(payload.get("error") or "WhatsApp pairing failed.")
+        code = str(payload.get("error") or "WhatsApp pairing failed.")
+        record.error = _WHATSAPP_PAIRING_ERROR_TEXT.get(code, code)
     elif event == "disconnected" and record.status == "starting":
         record.status = "waiting"
 
@@ -490,14 +569,15 @@ def _watch_whatsapp_pairing(pairing_id: str, proc: subprocess.Popen) -> None:
                 if record.status not in {"cancelled", "expired"}:
                     _apply_pairing_event(record, payload)
         returncode = proc.wait()
+        release_process_group_once_empty(proc.pid, proc=proc)
     except Exception as exc:
         _fail_whatsapp_pairing(pairing_id, str(exc), proc=proc)
         return
-    # An "error" status from the stream may be overwritten by the exit reason.
+    # An error the bridge streamed names the cause; the exit code only says it stopped.
     _fail_whatsapp_pairing(
         pairing_id, "WhatsApp pairing process exited before pairing completed." if returncode == 0
         else f"WhatsApp pairing process exited with code {returncode}.",
-        proc=proc, unless={"connected", "cancelled", "expired"})
+        proc=proc)
 
 
 def _run_whatsapp_pairing(pairing_id: str, session_path: Path, mode: str) -> None:
@@ -922,11 +1002,44 @@ async def get_messaging_platforms(profile: Optional[str] = None):
         # the gateway status readers do NOT (they resolve process-level paths), so the profile directory is
         # passed explicitly for those (#71211).
         with _profile_scope(profile) as scoped_dir:
+            # Taken before the list is built: a move while it builds shows up as a changed signature on
+            # the page's next poll instead of being lost.
+            signature = platform_list_signature(get_hermes_home())
             return {
+                "signature": signature,
                 "env_path": str(get_env_path()),
                 "gateway_start_command": " ".join(["hermes", *_gateway_subcommand(profile, "start")]),
                 "platforms": _platform_payloads(scoped_dir, _messaging_platform_catalog()),
+                # Catalog platforms this profile can add: picking one installs it (POST below).
+                "available": [row.to_dict() for row in available_catalog_platforms()],
             }
+
+    return await asyncio.to_thread(_run)
+
+
+@router.get("/api/messaging/platforms/signature")
+async def get_messaging_platforms_signature(profile: Optional[str] = None):
+    """The digest ``GET /api/messaging/platforms`` returns as ``signature``, without building the list:
+    the Channels page polls it while visible and reloads when it moves (a platform plugin the background
+    default install or another terminal added, the gateway coming up), the dashboard's twin of Desktop's
+    ``platforms.changed``. Stat-cheap, so it skips ``_profile_scope``'s process-wide lock."""
+    def _run():
+        with _config_profile_scope(profile):
+            return {"signature": platform_list_signature(get_hermes_home())}
+
+    return await asyncio.to_thread(_run)
+
+
+@router.post("/api/messaging/catalog/{name}/install")
+async def install_messaging_catalog_platform(name: str, body: MessagingCatalogInstall, profile: Optional[str] = None):
+    """Install and enable one catalog platform into the target profile, through the catalog install
+    every surface uses (pinned commit, kill list, scan). A refusal is ``ok: false`` with the reason and
+    the one command that installs it; the card's platforms are the ids it registered. The install
+    clones and resolves dependencies, so it runs outside ``_profile_scope``'s process-wide lock (the
+    installer serializes its own config writes), like the Plugins page's installs."""
+    def _run():
+        with _config_profile_scope(body.profile or profile):
+            return install_catalog_platform(name)
 
     return await asyncio.to_thread(_run)
 
@@ -1034,10 +1147,61 @@ async def update_messaging_platform(platform_id: str, body: MessagingPlatformUpd
             "env_keys=%s cleared_keys=%s",
             platform_id, target_profile or "current", body.enabled, sorted(body.env), sorted(body.clear_env),
         )
-        # A live multiplexer serving this named profile builds the adapter from the new token now
-        # (its periodic rescan would otherwise pick it up within a cycle); no gateway restart.
-        hot_served = await asyncio.to_thread(_notify_multiplexer_hot_serve, target_profile)
-        return {"ok": True, "platform": platform_id, "hot_served": hot_served}
+        # The running gateway serving this profile starts/restarts/stops the platform's adapter now
+        # and says whether it could; only a "no" (or no answer) leaves a restart to the user.
+        live = await asyncio.to_thread(_apply_platform_live, target_profile, platform_id)
+        return {"ok": True, "platform": platform_id, "hot_served": live["applied"], "live": live}
+
+
+# Platform states after which a restart would change nothing: it runs (or is reconnecting) live, or
+# the saved config does not enable it.
+_LIVE_SETTLED_STATES = frozenset({"connected", "retrying", "disabled", "not_configured", "shared", None})
+
+
+def _apply_platform_live(profile: Optional[str], platform_id: str) -> dict:
+    """Ask the gateway serving ``profile`` (its own, or the multiplexer serving it) to reconcile that
+    profile's platforms now. ``{"applied", "state"?, "detail"?}``: ``applied`` False means only a restart
+    applies the save (no gateway answered, one predating the verb, or the adapter could not be built)."""
+    from hermes_cli.gateway import _current_profile_name
+    from hermes_cli.gateway_platform_live import reconcile_running_gateway_platforms
+    from hermes_constants import get_hermes_home
+    name = (profile or "").strip() or _current_profile_name() or "default"
+    with _profile_scope(profile):
+        home = Path(get_hermes_home())
+    answer = reconcile_running_gateway_platforms(name, home)
+    if answer is None:
+        # A multiplexer predating the verb still rebuilds a named profile from its rescan.
+        return {"applied": _notify_multiplexer_hot_serve(profile)}
+    if answer.get("pending"):
+        return {"applied": True, "state": "connecting"}
+    state = (answer.get("platforms") or {}).get(platform_id)
+    if state not in _LIVE_SETTLED_STATES and (missing := _missing_credentials(profile, platform_id)):
+        # Enabled before its credentials were saved: a restart would not start it either.
+        return {"applied": True, "state": "not_configured", "detail": f"needs {', '.join(missing)}"}
+    live = {"applied": bool(answer.get("applied")) and state in _LIVE_SETTLED_STATES, "state": state}
+    if answer.get("error"):
+        live["detail"] = str(answer["error"])
+    elif state == "unavailable":
+        live["detail"] = ((answer.get("reasons") or {}).get(platform_id)
+                          or "the running gateway could not build this platform's adapter")
+    return live
+
+
+def _missing_credentials(profile: Optional[str], platform_id: str) -> list[str]:
+    """What ``profile`` still lacks for the gateway to call the platform configured (its own
+    ``get_connected_platforms`` verdict over the env-overlaid config): the registration's unset
+    ``required_env`` names, or ``["credentials"]`` when it names none. Empty when it is configured."""
+    from gateway.config import load_gateway_config
+    from gateway.platform_registry import platform_registry
+    with _profile_scope(profile):
+        config = load_gateway_config()
+        platform = next((p for p in config.platforms if p.value == platform_id), None)
+        if platform is None or platform in config.get_connected_platforms():
+            return []
+        entry = platform_registry.get(platform_id)
+        env = load_env()
+        names = list(entry.required_env) if entry is not None else []
+        return [n for n in names if not str(env.get(n) or "").strip()] or ["credentials"]
 
 
 def _notify_multiplexer_hot_serve(profile: Optional[str]) -> bool:
@@ -1112,7 +1276,7 @@ def _messaging_platform_posture(
     - pairing grants: approved users in the profile's pairing store (the gateway honors
       the store as a UNION with the allowlists)
     - adapter/config-enforced policy (``dm_policy: allowlist`` with an ``allow_from``):
-      the own-policy adapters (WeCom, Weixin, QQBot, WhatsApp, Yuanbao) gate at intake
+      the own-policy adapters (WeCom, Weixin, QQBot, WhatsApp) gate at intake
 
     Everything failing → deny-all: the connection is up but no sender can get through,
     which the Channels "Test" button must not render as a plain green "connected".

@@ -15,6 +15,8 @@ import pytest
 
 from tests.e2e.core.history._helpers import NO_BACKGROUND_REVIEW, OFFLINE_CONFIG
 from tests.fakes.fake_llm_provider import FakeLLMServer, write_hermes_home
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 from tests.tools.test_delegation_backends import OPTIONS, PROBE_PLUGIN, REPO_PLUGINS
 
 
@@ -46,13 +48,12 @@ def options_backend(monkeypatch):
 
 
 def _agent(srv, home, session_id):
-    from hermes_state import SessionDB
     from run_agent import AIAgent
 
-    db = SessionDB(db_path=home / "state.db")
-    db.ensure_session(session_id, source="cli")  # opened before its first turn, as the gateway does
+    db = storage_handle(home)
+    seed_session(db, session_id, "cli")  # opened before its first turn, as the gateway does
     return AIAgent(provider="custom", base_url=srv.base_url, api_key="sk-fake-e2e", model="fake-model",
-                   session_db=db, session_id=session_id, quiet_mode=True, platform="cli")
+                   persistence=db, session_id=session_id, quiet_mode=True, platform="cli")
 
 
 def _sent_task_fields(srv) -> set[str]:

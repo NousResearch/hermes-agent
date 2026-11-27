@@ -29,10 +29,12 @@ def test_relaunched_desktop_does_not_hold_its_app_folder(tmp_path: Path) -> None
     app_dir = tmp_path / 'release' / 'win-unpacked'
     for directory in (home, profile, app_dir):
         directory.mkdir(parents=True)
-    # A console exe with no arguments waits on its own console: a stand-in Desktop
-    # that stays alive until the test kills it.
+    # A stand-in Desktop that stays alive until the test kills it: wscript.exe with no
+    # arguments blocks on its settings dialog. A console exe (cmd.exe) waiting on its own
+    # console is not enough: created through WMI it intermittently exits within seconds,
+    # before its cwd can be read.
     relaunch = app_dir / 'Hermes.exe'
-    shutil.copy2(Path(os.environ.get('SystemRoot', r'C:\Windows')) / 'System32' / 'cmd.exe', relaunch)
+    shutil.copy2(Path(os.environ.get('SystemRoot', r'C:\Windows')) / 'System32' / 'wscript.exe', relaunch)
 
     result = subprocess.run(
         ['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(SCRIPT),

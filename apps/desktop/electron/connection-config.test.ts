@@ -2,7 +2,7 @@
  * Tests for electron/connection-config.ts.
  *
  * Run with: node --test electron/connection-config.test.ts
- * (Wire into npm test:desktop:platforms in package.json.)
+ * (Wire into pnpm run test:desktop:platforms in package.json.)
  *
  * These are the pure helpers behind the remote-gateway connection settings:
  * URL normalization, WS-URL construction (token vs OAuth ticket), auth-mode

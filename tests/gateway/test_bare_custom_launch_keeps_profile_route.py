@@ -1,5 +1,8 @@
 """A bare ``custom`` launch pick stays on the profile's own route whenever that route can serve it."""
 import pytest
+from tests.fixtures.storage_seed import seed_session
+
+pytestmark = pytest.mark.usefixtures('authority_cwd_in_tmp')  # symbolic profile_id: a relative home
 
 LOCAL, RELAY = 'http://127.0.0.1:8000/v1', 'https://relay.example.com/v1'
 
@@ -63,8 +66,8 @@ def test_an_endpointless_bare_custom_profile_still_finds_the_entry_serving_the_m
 
 
 def test_a_launch_key_on_an_endpointless_bare_custom_profile_gets_the_model_only_refusal(tmp_path):
-    from hermes_state_runtime import RuntimeStoreError
-    with pytest.raises(RuntimeStoreError) as refused:
+    from persistence.core.errors import AuthorityRefusal
+    with pytest.raises(AuthorityRefusal) as refused:
         _launch(tmp_path, ENDPOINTLESS, 'sk-launch', model='qwen3-32b')
     assert (refused.value.reason, refused.value.field) == ('invalid_params', 'api_key')
 
@@ -108,11 +111,11 @@ def test_a_named_profile_keeps_its_entry_when_it_serves_the_model(tmp_path):
 
 def test_a_launch_key_is_refused_for_an_entry_only_the_model_chose(tmp_path):
     """Only another entry lists the model: the gateway would guess its host, so the user's key is not sent there."""
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     config = {'model': {'provider': 'custom:local', 'default': 'qwen3-32b'},
               'providers': {'relay': {'api': RELAY, 'key_env': 'RELAY_KEY', 'models': ['relay-only']},
                             'local': {'api': LOCAL, 'key_env': 'LOCAL_KEY', 'default_model': 'qwen3-32b'}}}
-    with pytest.raises(RuntimeStoreError) as refused:
+    with pytest.raises(AuthorityRefusal) as refused:
         _launch(tmp_path, config, model='relay-only', launch_key='sk-launch')
     assert (refused.value.reason, refused.value.field) == ('invalid_params', 'api_key')
 
@@ -120,7 +123,7 @@ def test_a_launch_key_is_refused_for_an_entry_only_the_model_chose(tmp_path):
 def test_a_kanban_custom_provider_override_stays_on_the_profiles_endpoint(tmp_path, monkeypatch):
     from contextlib import closing
     from types import SimpleNamespace
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     from gateway.session_kanban import build_kanban_policy
     from hermes_cli import kanban_db as kb
     from hermes_cli.kanban_db_connect import connect
@@ -135,7 +138,7 @@ def test_a_kanban_custom_provider_override_stays_on_the_profiles_endpoint(tmp_pa
         kb.recompute_ready(conn)
         task = kb.claim_task(conn, task_id)
     connection = SimpleNamespace(authority=SimpleNamespace(profile_id=str(tmp_path)), native_owner=True,
-                                 actor=Principal('owner', str(tmp_path), frozenset({'session:create'}), 'transport'))
+                                 actor=SessionActor('owner', str(tmp_path), frozenset({'session:create'}), 'transport'))
     policy, _secrets = build_kanban_policy(connection, dict(board='owned', task_id=task.id, run_id=task.current_run_id,
                                                             claim_lock=task.claim_lock), BARE_LOCAL)
     model_cfg = policy.effective()[0]['model']
@@ -184,9 +187,9 @@ async def test_adopting_a_legacy_custom_row_recovers_the_entry_serving_its_model
     store, runner, authority, owner = _owner(home)
     runner._peek_session_state = lambda key: None
     try:
-        authority.db.create_session('old-tui', cwd=str(home), source='tui', model='saved-model',
-                                    model_config={'provider': 'custom'})
-        authority.db.end_session('old-tui', 'tui_close')
+        seed_session(authority.persistence, 'old-tui', 'tui', cwd=str(home), model='saved-model',
+                     model_config={'provider': 'custom'})
+        authority.persistence.sessions.end('old-tui', 'tui_close')
         authority._native_legacy_transports = {owner.actor.transport_id: owner.actor}
         live = authority.sessions[resolve_local_target(authority, owner.actor, 'old-tui').session_id]
         assert _route(runner, live) == ('saved-model', RELAY, 'relay-key')

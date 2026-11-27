@@ -18,7 +18,7 @@ async def test_follower_is_claimed_only_after_the_settled_turn_released_its_adop
     from gateway.platforms.event import MessageEvent
     from gateway.run import GatewayRunner
     from gateway.session import AsyncSessionStore
-    from gateway.session_contract import Principal, SessionRef, Submission
+    from gateway.session_contract import SessionActor, SessionRef, Submission
     from gateway.session_ingress import admit_message
     from tests.gateway.test_prompt_attachments import _authority
 
@@ -41,7 +41,7 @@ async def test_follower_is_claimed_only_after_the_settled_turn_released_its_adop
     runner._clear_durable_active_turn = partial(GatewayRunner._clear_durable_active_turn, runner)
     authority.runner._clear_durable_active_turn = runner._clear_durable_active_turn
     adapter = SimpleNamespace(gateway_runner=runner)
-    actor = Principal('human', 'p', frozenset({'session:submit'}), 't')
+    actor = SessionActor('human', 'p', frozenset({'session:submit'}), 't')
     ref = SessionRef('p', 's')
 
     async def admit_native(event):
@@ -62,8 +62,7 @@ async def test_follower_is_claimed_only_after_the_settled_turn_released_its_adop
     follower = await authority.submit(actor, Submission('two', ref, {'text': 'two'}, 'queue'))
     follower_queued.set()
     assert await asyncio.wait_for(first, 10) == 'reply to one'
-    from hermes_state_runtime import get_session_admission
     await async_wait_until(
-        lambda: get_session_admission(authority.db, admission_id=follower.admission_id)['status'] == 'terminal',
+        lambda: authority.persistence.admissions.get(admission_id=follower.admission_id).status == 'terminal',
         timeout=10, what='the follower to settle')
     assert slot_at_follower == [None], "the follower's marker overwrote turn one's before its reply was ledgered"

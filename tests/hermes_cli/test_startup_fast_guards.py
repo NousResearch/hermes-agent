@@ -18,6 +18,8 @@ Two invariants, each of which has been broken before:
 
 import json
 import os
+import runpy
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -98,6 +100,16 @@ def test_startup_fast_import_weight():
 _OFFLINE = {"HTTPS_PROXY": "http://127.0.0.1:9", "HTTP_PROXY": "http://127.0.0.1:9",
             "https_proxy": "http://127.0.0.1:9", "http_proxy": "http://127.0.0.1:9",
             "NO_PROXY": "", "no_proxy": ""}
+
+
+@pytest.mark.parametrize("package", ["hermes_cli", "hermes_agent/hermes_cli"])
+def test_project_root_is_the_folder_that_holds_hermes_agent(tmp_path, package):
+    """The install-root owner gives the same answer before and after hermes_cli moves into the package."""
+    (tmp_path / "hermes_agent" / "compat").mkdir(parents=True)
+    (tmp_path / package).mkdir(parents=True, exist_ok=True)
+    shutil.copy2(REPO_ROOT / "hermes_cli" / "_startup_fast.py", tmp_path / package / "_startup_fast.py")
+    owner = runpy.run_path(str(tmp_path / package / "_startup_fast.py"))["project_root_str"]
+    assert owner() == os.path.realpath(tmp_path)
 
 
 def _run_version(env_overrides: dict) -> subprocess.CompletedProcess:

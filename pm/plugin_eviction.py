@@ -15,9 +15,9 @@ cost an enabled one its place.
 Disabling needs evidence about the plugin itself: its requires-python against the pinned
 interpreter, its manifest contract, a resolver proof, or its build failing. A fetch or
 tooling failure could be the moment, so the plugin gets one retry before it is disabled.
-requires_hermes is judged against a version identity that can lag (a checkout without its
-release tags), so a misfit there only sits out: config is untouched, boot skips it the same
-way, and it rejoins when the verdict flips. A secondary profile whose config cannot be read
+requires_hermes and a plugin's own requirement on hermes-agent are judged against a version
+identity that can lag (a checkout without its release tags), so a misfit there only sits out:
+config is untouched, boot skips it the same way, and it rejoins when the verdict flips. A secondary profile whose config cannot be read
 sits out until its config is fixed.
 """
 from __future__ import annotations
@@ -30,7 +30,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from pm.environment import BuildFailure, ResolutionConflict
+from pm.environment import BuildFailure, ResolutionConflict  # noqa: TID251
 from pm.environments import install_state_dir, runtime_facts_path
 from pm.filesystem import durable_write_bytes, file_digest, native, read_bytes_or_none
 from pm.package import InstallError
@@ -41,7 +41,7 @@ Entry = tuple[Path, str, Path]  # (home plugins dir, selection key, plugin dir)
 
 def _interpreter_version() -> str:
     """The Python the generation is built for; a plugin's requires-python is judged against it."""
-    from pm._uv import _toolchain
+    from pm._uv import _toolchain  # noqa: TID251
 
     tools = _toolchain(explicit=True)
     if tools is None:
@@ -51,10 +51,11 @@ def _interpreter_version() -> str:
     return probe.stdout.strip()
 
 
-def static_verdicts(entries: list[Entry], python_version: str) -> tuple[dict[Path, str], dict[Path, str]]:
+def static_verdicts(entries: list[Entry], python_version: str,
+                    extras: list[str]) -> tuple[dict[Path, str], dict[Path, str]]:
     """``(disable, sit out)`` reasons found without a resolver, keyed by resolved dir."""
-    from hermes_cli.plugins_manifest import requires_hermes_error
     from pm.plugin_declarations import manifest_version_error, read_python_declaration
+    from pm.workspace import hermes_fit_error
 
     reasons: dict[Path, str] = {}
     waiting: dict[Path, str] = {}
@@ -67,8 +68,8 @@ def static_verdicts(entries: list[Entry], python_version: str) -> tuple[dict[Pat
         except (OSError, ValueError, TypeError) as exc:
             reasons[key] = f"its dependency declaration is invalid: {exc}"
             continue
-        # Mirrors enabled_member_dirs, so the recorded stamp is the one boot expects.
-        hermes = requires_hermes_error(declaration.manifest)
+        # Mirrors build_member_dirs, so the recorded stamp is the one boot expects.
+        hermes = hermes_fit_error(declaration, extras)
         if hermes:
             waiting[key] = hermes
             continue
@@ -191,43 +192,49 @@ class PluginEviction:
 
     def __init__(self, entries: list[Entry], reasons: dict[Path, str], rejoined: list[Entry] = (), *,
                  tried: dict[Path, str] | None = None, configs=None):
-        from hermes_yaml import roundtrip_yaml
         from pm.publication import selection_snapshot
 
         # The snapshot the update decided from: a user edit since then refuses publication.
         self.configs = selection_snapshot() if configs is None else configs
-        tried = tried or {}
+        self.tried = tried = tried or {}
         by_home: dict[Path, list[tuple[str, Path, str | None]]] = {}
         for plugins_dir, name, plugin_dir in entries:
             if plugin_dir.resolve() in reasons:
                 by_home.setdefault(plugins_dir.parent, []).append((name, plugin_dir, reasons[plugin_dir.resolve()]))
         for plugins_dir, name, plugin_dir in rejoined:
             by_home.setdefault(plugins_dir.parent, []).append((name, plugin_dir, None))
-        self.edits: list[tuple[Path, bytes | None, bytes]] = []
-        for home, changes in by_home.items():
-            path = home / "config.yaml"
-            previous = read_bytes_or_none(path)  # config-reader: ok — pm publication: byte-level compare-and-swap rewrite of the local file
-            yaml = roundtrip_yaml()
-            config = (yaml.load(previous.decode("utf-8-sig")) if previous else None) or {}
-            # read_home_selection already proved plugins is a mapping and the lists are lists.
-            plugins = config.get("plugins")
-            if plugins is None:
-                plugins = config["plugins"] = {}
-            for name, plugin_dir, reason in changes:
-                if reason is None:
-                    _rejoin(plugins, name, plugin_dir)
-                else:
-                    _disable(plugins, name, plugin_dir, reason, tried.get(plugin_dir.resolve()))
-            _prune_record(plugins)
-            output = io.StringIO()
-            yaml.dump(config, output)
-            self.edits.append((path, previous, output.getvalue().encode("utf-8")))
+        self.changes = by_home
+        self.edits: list[tuple[Path, bytes | None, bytes]] = [self._render(home) for home in by_home]
+
+    def _render(self, home: Path) -> tuple[Path, bytes | None, bytes]:
+        """*home*'s config.yaml as it is now, with this update's edits to its ``plugins`` section."""
+        from hermes_yaml import roundtrip_yaml
+
+        path = home / "config.yaml"
+        previous = read_bytes_or_none(path)  # config-reader: ok — pm publication: byte-level compare-and-swap rewrite of the local file
+        yaml = roundtrip_yaml()
+        config = (yaml.load(previous.decode("utf-8-sig")) if previous else None) or {}
+        # read_home_selection already proved plugins is a mapping and the lists are lists.
+        plugins = config.get("plugins")
+        if plugins is None:
+            plugins = config["plugins"] = {}
+        for name, plugin_dir, reason in self.changes[home]:
+            if reason is None:
+                _rejoin(plugins, name, plugin_dir)
+            else:
+                _disable(plugins, name, plugin_dir, reason, self.tried.get(plugin_dir.resolve()))
+        _prune_record(plugins)
+        output = io.StringIO()
+        yaml.dump(config, output)
+        return path, previous, output.getvalue().encode("utf-8")
 
     def publish(self, project: Path) -> None:
-        from pm.publication import selection_snapshot
+        from pm.publication import SelectionChanged, selection_snapshot
 
         if selection_snapshot() != self.configs:
-            raise ValueError("plugin configuration changed while preparing publication; retry")
+            raise SelectionChanged("plugin configuration changed while preparing publication; retry")
+        # Keys outside the plugin selection may have moved since: re-applied to the bytes as they are.
+        self.edits = [self._render(home) for home in self.changes]
         row = {"configs": [{"config": str(path),
                             "previous": base64.b64encode(previous).decode() if previous is not None else None,
                             "config_after": hashlib.sha256(proposed).hexdigest()}
@@ -264,6 +271,7 @@ def sync_evicting(package, facts, fact: dict, *, extras, shipped, frozen, explic
     and re-enabled when they fit.
     """
     from pm import receipt
+    from pm.install import _target_selection
     from pm.plugins_state import dependency_homes, read_home_selection
     from pm.publication import selection_snapshot
     from pm.workspace import enabled_plugin_entries
@@ -277,10 +285,13 @@ def sync_evicting(package, facts, fact: dict, *, extras, shipped, frozen, explic
             notices.append(f"Skipped the plugins of profile {home}: {exc}; they rejoin once its config.yaml is fixed")
     entries = enabled_plugin_entries(skip_invalid_secondary=True)
     recorded = recorded_evictions()
-    reasons, waiting = static_verdicts([*entries, *recorded], _interpreter_version())
-    update = _EvictingUpdate(package, facts, fact, dict(extras=extras, shipped=shipped, frozen=frozen),
-                             explicit=explicit, configs=configs, entries=entries, recorded=recorded,
-                             reasons=reasons, waiting=waiting)
+    selection = dict(extras=extras, shipped=shipped, frozen=frozen)
+    # Core's extras with no plugin: what every build of this update selects, so the static
+    # verdicts judge plugin extras under the same selection boot's currency check reads.
+    base = _target_selection(package, fact, inputs={"plugin_dirs": []}, repair=False, **selection)[0]
+    reasons, waiting = static_verdicts([*entries, *recorded], _interpreter_version(), base)
+    update = _EvictingUpdate(package, facts, fact, selection, base=base, explicit=explicit, configs=configs,
+                             entries=entries, recorded=recorded, reasons=reasons, waiting=waiting)
     update.run()
     notices += _outcome_notices(entries, recorded, reasons, waiting, update.joined)
     for message in notices:
@@ -291,10 +302,9 @@ def sync_evicting(package, facts, fact: dict, *, extras, shipped, frozen, explic
 class _EvictingUpdate:
     """One update's build: the enabled plugins first, then the recorded ones that are due."""
 
-    def __init__(self, package, facts, fact: dict, selection: dict, *, explicit: bool, configs,
+    def __init__(self, package, facts, fact: dict, selection: dict, *, base: list[str], explicit: bool, configs,
                  entries: list[Entry], recorded: dict[Entry, dict], reasons: dict[Path, str],
                  waiting: dict[Path, str]):
-        from pm.install import _target_selection
         from pm.workspace import _is_member_candidate
 
         self.package, self.facts, self.fact, self.selection = package, facts, fact, selection
@@ -302,7 +312,7 @@ class _EvictingUpdate:
         self.retrying = list(recorded)
         self.tried: dict[Path, str] = {}
         self.verdicts: list[Path] = []  # disabled on a verdict about the plugin: fingerprinted at commit
-        self.base = _target_selection(package, fact, inputs={"plugin_dirs": []}, repair=False, **selection)[0]
+        self.base = base
 
         def fits(plugin_dir: Path) -> bool:
             return plugin_dir.resolve() not in reasons and plugin_dir.resolve() not in waiting

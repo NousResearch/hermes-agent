@@ -51,6 +51,7 @@ class PromptSubmitParams(SessionParams):
     turn_author: JsonValue | None = Field(default=None, exclude=True, alias="_turn_author")
     hosted_terminal_callback: JsonValue | None = Field(
         default=None, exclude=True, alias="_hosted_terminal_callback")
+    hosted_images: JsonValue | None = Field(default=None, exclude=True, alias="_hosted_images")
 
 
 class PromptSubmitStatus(WireEnum):
@@ -330,11 +331,13 @@ method("approval.received", params=ApprovalReceivedParams, result=ApprovalReceiv
 
 class ApprovalRespondParams(SessionParams):
     """``choice`` is one of the offered ``approval`` choices (once / session / always / deny); ``all``
-    resolves every pending approval, ``request_id`` a specific one, neither the oldest."""
+    resolves every pending approval, ``request_id`` a specific one, neither the oldest. ``reason`` is
+    why the user denied an ``access`` or ``network`` card; command approvals ignore it."""
 
     choice: str | None = None  # default "deny"
     all: bool | None = None
     request_id: str | None = None
+    reason: str | None = None
 
 
 class ApprovalRespondResult(Result):

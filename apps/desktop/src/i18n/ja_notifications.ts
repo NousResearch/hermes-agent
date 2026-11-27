@@ -35,6 +35,27 @@ export const jaNotifications = {
       description: 'Hermes がバックグラウンドの間に、デスクトッププラグインが通知を送信しました。'
     }
   },
+  browserPermission: {
+    title: 'ブラウザー通知',
+    allow: '許可',
+    states: {
+      default:
+        'タブがバックグラウンドにある間、このブラウザーで通知を表示します。許可するまではタブのタイトルだけが点滅します。',
+      granted: '許可済み。このタブがバックグラウンドにある間に通知が表示され、タブのタイトルも点滅します。',
+      denied: 'このブラウザーのサイト設定でブロックされています。タブのタイトルは引き続き点滅します。',
+      insecure: 'HTTPS(Tailscale serve など)が必要です。通常の HTTP ではタブのタイトルだけが点滅します。',
+      unsupported: 'このブラウザーは通知を表示できません。タブのタイトルは引き続き点滅します。'
+    }
+  },
+  phonePresence: {
+    title: 'スマートフォン通知でのこのコンピューター',
+    description: 'このウィンドウがあなたの在席について Hermes に伝える内容です。どう扱うかはスマートフォン通知プラグインが決めます。',
+    unsupported: 'このバックエンドでは、スマートフォン通知はアクティビティの影響を受けません。',
+    disconnected: '接続されていません。',
+    watchingComputer: (time: string) => `このウィンドウで会話を開いている間、このコンピューターを最後に使った時刻が Hermes に伝えられます。最後の入力は${time}前です。`,
+    watchingWindow: (time: string) => `このウィンドウで会話を開いている間、このウィンドウを最後に使った時刻が Hermes に伝えられます。最後の入力は${time}前です。`,
+    watchingWindowNoInput: 'このウィンドウで会話を開いている間、このウィンドウを最後に使った時刻が Hermes に伝えられます。まだ入力はありません。'
+  },
   test: 'テスト通知を送信',
   testTitle: 'Hermes',
   testBody: '通知は正常に動作しています。',

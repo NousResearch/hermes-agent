@@ -7,7 +7,7 @@ import json
 import logging
 import time
 from typing import Iterable, Optional
-from tools.mcp_tool_errors import _is_method_not_found_error, _unwrap_exception_group
+from tools.mcp_tool_errors import _is_method_not_found_error
 from tools.mcp_tool_schema import mcp_prefixed_tool_name
 from tools.mcp_tool_common import _core
 from tools import mcp_tool_registration as _registration
@@ -19,8 +19,6 @@ _KEEPALIVE_RPC_TIMEOUT = 30.0
 
 class MCPServerHealthMixin:
     """Methods of :class:`tools.mcp_tool.MCPServerTask` (mixed in; relies on its attributes)."""
-
-    __slots__ = ()
 
     def _is_http(self) -> bool:
         return "url" in self._config
@@ -214,6 +212,7 @@ class MCPServerHealthMixin:
         self._session_proven = True
         self._reconnect_retries = 0
         self._park_reason = None
+        self._parked_probe_failures = 0
         if self._was_parked:
             self._was_parked = False
             logger.warning("MCP server '%s': revived — session healthy again after "
@@ -222,45 +221,10 @@ class MCPServerHealthMixin:
         self._permanent_grace_used = self._teardown_race = False
 
     def mark_suspect(self, reason: str) -> None:
-        """Latch a suspicion (no I/O); the NEXT call verifies via :meth:`ensure_healthy` and recycles on failure.
-
-        The NEXT call verifies via :meth:`ensure_healthy` and recycles the transport if the probe fails,
-        instead of the connection silently staying poisoned until process restart (#81051/#77765/#84132).
-        """
+        """Latch a suspicion (no I/O) and log it once (#81051/#77765/#84132)."""
         if self._suspect_reason is None and reason:
-            logger.warning("MCP server '%s': connection marked suspect (%s); next call will health-check it",
-                           self.name, reason)
+            logger.warning("MCP server '%s': connection marked suspect (%s)", self.name, reason)
         self._suspect_reason = reason or None
-
-    async def ensure_healthy(self, timeout: float = 5.0) -> bool:
-        """Verify a suspect connection before reuse; recycle if dead. True when healthy (suspicion
-        cleared). On failure requests a reconnect, drops the stale session so the caller's
-        no-session path takes over, and returns False. Never raises."""
-        reason = self._suspect_reason
-        if not reason:
-            return True
-        if self.session is None:  # nothing to verify — the reconnect path owns recovery now
-            self._suspect_reason = None
-            self._reconnect_event.set()
-            return False
-        try:
-            await asyncio.wait_for(self._keepalive_probe(), timeout=timeout)
-        except Exception as exc:
-            root = _unwrap_exception_group(exc)
-            logger.warning("MCP server '%s': suspect connection (%s) failed health check (%s: %s) — "
-                           "requesting reconnect (state: suspect → degraded)",
-                           self.name, reason, type(root).__name__, root)
-            self._suspect_reason = None
-            self.mark_suspect(f"health check failed after {reason}")
-            self.session = None
-            self._ready.clear()
-            self._reconnect_event.set()
-            return False
-        logger.info("MCP server '%s': suspect connection passed health check (%s) — clearing suspicion",
-                    self.name, reason)
-        self._suspect_reason = None
-        self._mark_session_proven()
-        return True
 
     def _fail_inflight_calls(self, reason: str) -> None:
         """Cancel every in-flight RPC BEFORE the transport unwinds: the SDK does not always fail

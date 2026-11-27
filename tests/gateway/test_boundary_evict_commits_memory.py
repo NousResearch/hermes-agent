@@ -8,6 +8,7 @@ import pytest
 # conftest server-state fixture from meeting a half-initialized module at teardown.
 import tui_gateway.server
 from gateway.run import GatewayRunner
+from persistence_assembly import close_stores_under
 
 
 def _runner(monkeypatch):
@@ -94,7 +95,7 @@ async def test_reset_and_compress_mutations_use_the_boundary_evict(tmp_path, mon
     runner = run.GatewayRunner.__new__(run.GatewayRunner)
     runner.adapters = {}
     runner.session_store = store
-    runner._session_db = store._db
+    runner._session_db = store.persistence
     runner._draining = False
     runner._evict_cached_agent = lambda route, **kw: evicted['plain'].append(route)
     runner._evict_cached_agent_at_boundary = lambda route: evicted['boundary'].append(route)
@@ -110,4 +111,4 @@ async def test_reset_and_compress_mutations_use_the_boundary_evict(tmp_path, mon
     assert 'result' in reset, reset
     assert evicted['boundary'] == [route] and evicted['plain'] == []
     await conn.close()
-    authority.db.close()
+    close_stores_under(authority.persistence.scope.profile_dir)

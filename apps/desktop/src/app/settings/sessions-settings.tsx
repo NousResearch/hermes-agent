@@ -18,10 +18,12 @@ import { sessionTitle } from '@/lib/chat-runtime'
 import { selectDesktopPaths } from '@/lib/desktop-fs'
 import { pathLeaf } from '@/lib/display-path'
 import { triggerHaptic } from '@/lib/haptics'
+import { hostHas } from '@/lib/host-capabilities'
 import { Archive, ArchiveOff, FolderOpen, Loader2, Trash2 } from '@/lib/icons'
 import { purgeInFlightTurnJournals } from '@/lib/inflight-turn-journal'
-import { isBrowserHostedDesktop } from '@/lib/platform'
+import { formatCombo } from '@/lib/keybinds/combo'
 import { confirm } from '@/store/confirm'
+import { bindingsFor } from '@/store/keybinds'
 import { notify, notifyError } from '@/store/notifications'
 import { $connection, applyConfiguredDefaultProjectDir, ensureDefaultWorkspaceCwd } from '@/store/session'
 import { untombstoneSessions } from '@/store/session-removal'
@@ -33,6 +35,14 @@ import { EmptyState, ListRow, SectionHeading, SettingsContent, SettingsSkeleton,
 import { SETTING_IDS, settingElementId } from './settings-manifest'
 import { useDeepLinkHighlight } from './use-deep-link-highlight'
 import { useSettingDeepLink } from './use-setting-deep-link'
+
+// The toast names the chord the user actually has: a browser tab and a remap
+// both differ from ⌘/Ctrl+N.
+function newSessionShortcut(): null | string {
+  const combo = bindingsFor('session.new')[0]
+
+  return combo ? formatCombo(combo) : null
+}
 
 const DEFAULT_AUTO_ARCHIVE_DAYS = 3
 
@@ -213,7 +223,7 @@ function ArchivedSessionsSettings({ includeDefaultDirectory }: { includeDefaultD
 
 // Opt-in retention: soft-hide chats untouched for N days. The policy itself
 // (last-activity sweep, pin exemption) lives in the backend
-// (sessions.auto_archive in config.yaml + SessionDB.maybe_auto_archive); this
+// (sessions.auto_archive in config.yaml + session_retention.run_auto_archive); this
 // just toggles the config keys, so CLI / gateway / Desktop all honour one
 // setting. Pins are exempt on the backend, so pinned chats survive regardless.
 function AutoArchiveSetting() {
@@ -352,7 +362,7 @@ function DefaultProjectDirSetting() {
     // The folder on screen belongs to the profile this effect loaded. Drop it
     // on a switch so the next paint and the next save both use the profile
     // that is open now.
-    if (isBrowserHostedDesktop()) {
+    if (hostHas('originScopedPrefs')) {
       setDir(null)
     }
 
@@ -383,7 +393,7 @@ function DefaultProjectDirSetting() {
     try {
       // A browser tab has no native dialog for the server's disk: pick through the server
       // folder browser Projects already use.
-      const picked = isBrowserHostedDesktop()
+      const picked = !hostHas('nativeFolderPicker')
         ? { dir: (await selectDesktopPaths({ defaultPath: dir ?? undefined, directories: true }))[0] ?? null }
         : await settings.pickDefaultProjectDir()
 
@@ -394,7 +404,7 @@ function DefaultProjectDirSetting() {
       const result = await settings.setDefaultProjectDir(picked.dir)
       setDir(result.dir)
       applyConfiguredDefaultProjectDir(result.dir)
-      notify({ durationMs: 4_000, kind: 'success', message: s.defaultDirUpdated })
+      notify({ durationMs: 4_000, kind: 'success', message: s.defaultDirUpdated(newSessionShortcut()) })
     } catch (err) {
       notifyError(err, s.updateDirFailed)
     } finally {

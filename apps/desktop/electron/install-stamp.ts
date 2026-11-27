@@ -1,7 +1,7 @@
 // install-stamp.ts — the typed build-time install stamp.
 //
 // scripts/write-build-stamp.mjs writes build/install-stamp.json during
-// `npm run build`.
+// `pnpm run build`.
 // bundle-electron-main.mjs bakes that file into the
 // production bundle by defining the __HERMES_INSTALL_STAMP__ global as
 // the stamp.  The stamp is a constant of the artifact.
@@ -93,6 +93,8 @@ export interface InstallStamp {
   channelBuild?: Readonly<ChannelBuildRequest>
   /** Cross-application receiver shipped in this artifact, absent on older builds. */
   receiverProtocol?: 1
+  /** Outer macOS DMG signed and notarized by this build's packaging hooks. */
+  signedDmg?: true
   /** Pinned release tag; null for channel builds, one-offs and bootstrap. */
   tag: string | null
 }

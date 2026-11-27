@@ -11,7 +11,7 @@ if TYPE_CHECKING:
     from agent.context_compressor import _HandoffScan
 
 
-def _accepts_keyword_argument(callable_obj: Any, name: str) -> bool:
+def accepts_keyword_argument(callable_obj: Any, name: str) -> bool:
     """Return whether an inspectable callable accepts ``name`` as a keyword."""
     try:
         parameters = inspect.signature(callable_obj).parameters
@@ -89,7 +89,7 @@ class SummaryDispatchMixin:
             "focus_topic": focus_topic or self._derive_auto_focus_topic(messages),
             "memory_context": memory_context,
         }
-        if _accepts_keyword_argument(self._generate_summary, "bypass_cooldown"):
+        if accepts_keyword_argument(self._generate_summary, "bypass_cooldown"):
             summary_kwargs["bypass_cooldown"] = bypass_cooldown
         try:
             return self._generate_summary(turns_to_summarize, **summary_kwargs)

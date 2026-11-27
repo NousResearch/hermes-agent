@@ -340,7 +340,7 @@ tools. Refresh happens automatically before `expires_in` elapses.
 
 1. **Do not assume "headless" means "OAuth impossible."** The built-in flow works fine for local CLI; the issue is strictly remote deployments where the user's browser and the Hermes process are on different machines. Check the execution environment before claiming OAuth isn't an option.
 
-2. **Read the source, not just the skill docs.** `tools/mcp_oauth.py` and the MCP config reference in `website/docs/` are the authoritative references. Grep the tree before telling the user a feature "doesn't exist."
+2. **Read the source, not just the skill docs.** `tools/mcp_oauth.py` and the MCP config reference in `website/docs/` are the authoritative references. `search_files` the tree before telling the user a feature "doesn't exist."
 
 3. **Cloudflare UA filter.** Many MCP/OAuth providers front their infra with Cloudflare, which 403s `python-urllib/*` user agents on metadata endpoints even though those endpoints are public. Set `User-Agent: python-httpx/0.27` (or any browser-like string) on every request in this flow. Hermes itself uses httpx, so this is never a problem in the real connection path.
 
@@ -376,7 +376,7 @@ tools. Refresh happens automatically before `expires_in` elapses.
 
 - **Don't use `mcp-remote` as a fallback.** It runs an npx subprocess whose OAuth callback server ALSO sits on the remote container's localhost — same problem. `mcp-remote` only helps when the MCP client doesn't speak remote HTTP at all (Hermes does natively).
 - **Don't push "paste your API token and I'll add headers"** if the user explicitly asked for OAuth. Offer the static-token shortcut only after explaining why the native OAuth flow fails in remote deployments. Respect the user's choice to do the extra legwork for rotation-free, scope-limited access.
-- **Don't claim Hermes doesn't support a feature without reading the source.** Grep the source tree before making capability claims.
+- **Don't claim Hermes doesn't support a feature without reading the source.** `search_files` the source tree before making capability claims.
 
 ## Quick Reference Files
 

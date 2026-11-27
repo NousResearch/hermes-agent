@@ -123,7 +123,7 @@ def enrich_model_switch_warnings_for_gateway(
     source: Any,
     custom_providers: list | None = None,
     load_gateway_config: Callable[[], dict] | None = None) -> None:
-    """Gateway helper: cached agent + session DB messages."""
+    """Gateway helper: cached agent + the session's stored transcript."""
     lock = getattr(runner, "_agent_cache_lock", None)
     cache = getattr(runner, "_agent_cache", None)
     agent = None
@@ -156,7 +156,7 @@ def enrich_model_switch_warnings_for_gateway(
     if db is not None and store is not None:
         try:
             entry = store.get_or_create_session(source)
-            messages = db.get_messages_as_conversation(entry.session_id)
+            messages = [m.as_openai_message() for m in db.messages.read_conversation(entry.session_id)]
         except Exception:
             pass
 

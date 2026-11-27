@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from tools.tour_presets import TourPreset
 
@@ -170,8 +170,30 @@ class ApprovalChoice(WireEnum):
     deny = "deny"
 
 
+class ApprovalKind(WireEnum):
+    command = "command"
+    access = "access"
+    network = "network"
+
+
+class ApprovalAccessLevel(WireEnum):
+    read = "read"
+    read_write = "read_write"
+
+
 class ApprovalRequestParams(ServerRequestParams):
-    """``tui_gateway/server.py::_approval_request_payload`` — the command is redacted server-side."""
+    """``tui_gateway/server.py::_approval_request_payload`` — the command is redacted server-side.
+
+    ``kind`` selects the card; absent means ``command``. A sandbox asks for a folder with
+    ``access`` (``path``, and ``access`` read or read_write) and for a site with ``network``
+    (``host``, and an optional display ``label``). ``risk`` is one short line shown under the
+    folder or site. On those two kinds ``once`` allows until the sandbox is switched off and
+    ``always`` saves the rule; a ``deny`` answer may carry the user's ``reason``.
+
+    An ``access`` request without a ``path`` and a ``network`` request without a ``host`` are
+    refused: the desktop answers with an error and shows no card. A card that outlives its turn
+    stays on screen only while its sender lists it in ``approval.pending``: the desktop removes
+    a card that list does not name."""
 
     request_id: str
     command: str = ""
@@ -182,18 +204,35 @@ class ApprovalRequestParams(ServerRequestParams):
     smart_denied: bool | None = None
     tool_name: str | None = None
     session_id_hint: str | None = Field(default=None, alias="gateway_session_id")
+    kind: ApprovalKind | None = None
+    path: str | None = None
+    access: ApprovalAccessLevel | None = None
+    host: str | None = None
+    label: str | None = None
+    risk: str | None = None
     # The approval queue entry carries tool-specific context the card may render; the closed set
     # of keys is owned by tools/approval.py, so it stays open here.
     model_config = Params.model_config | {"extra": "allow"}
 
+    @model_validator(mode="after")
+    def _names_its_folder_or_site(self) -> ApprovalRequestParams:
+        if self.kind == ApprovalKind.access and not (self.path or "").strip():
+            raise ValueError("an access request needs a path")
+        if self.kind == ApprovalKind.network and not (self.host or "").strip():
+            raise ValueError("a network request needs a host")
+        return self
+
 
 class ApprovalResult(Result):
+    """``reason``: why the user denied an ``access`` or ``network`` card; command approvals ignore it."""
+
     choice: ApprovalChoice
     all: bool | None = None
+    reason: str | None = None
 
 
 server_request("approval", params=ApprovalRequestParams, result=ApprovalResult,
-               doc="A dangerous command awaits the user's decision.")
+               doc="A dangerous command, or a sandbox's folder or site request, awaits the user's decision.")
 
 
 # ── one-string prompts ────────────────────────────────────────────────────────────────────────
@@ -266,6 +305,14 @@ server_request("window.read", params=EmptyRequestParams, result=ValueResult,
                doc="Enumerate the native window below the app (JSON text answer).")
 
 
+class PreviewVaultOperation(Params):
+    """Internal vault transport, never arguments exposed to the model."""
+
+    operation: Literal["open", "evaluate", "close"]
+    target: str | None = None
+    expression: str | None = None
+
+
 class PreviewActRequestParams(ServerRequestParams):
     """``tools/drive_preview_tool.py`` and ``tools/annotate_preview_tool.py`` field sets."""
 
@@ -280,6 +327,7 @@ class PreviewActRequestParams(ServerRequestParams):
     amount: int | None = None
     max: int | None = None
     allow_shortcut: bool | None = None
+    vault: PreviewVaultOperation | None = None
 
 
 server_request("preview.act", params=PreviewActRequestParams, result=ValueResult,

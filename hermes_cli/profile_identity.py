@@ -116,27 +116,36 @@ def _purge_profile_identity(canon: str, live_mux: bool) -> bool:
 
     from hermes_cli.profiles import get_profile_dir
     from hermes_constants import get_default_hermes_root
-    from hermes_state_registry import acquire, release_or_close
+    from persistence_assembly import open_persistence, profile_scope, store_exists, store_location
     root = get_default_hermes_root()
     purged = True
-    for db_path in (root / "state.db", get_profile_dir(canon) / "state.db"):
-        if not db_path.exists():
+    for scope in (profile_scope(home=root), profile_scope(home=get_profile_dir(canon))):
+        if not store_exists(scope):
             continue
-        db = None
+        store = None
         try:
-            db = acquire(db_path)
-            db.purge_profile_state(canon)
+            store = open_persistence(scope)
+            store.profile_identity.purge_profile(canon)
         except Exception as exc:
             purged = False
             print(
-                f"⚠ Profile was deleted, but identity purge failed for {db_path}: "
-                f"{type(exc).__name__}: {exc}",
+                f"⚠ Profile was deleted, but identity purge failed for {store_location(scope) or scope.profile_dir}: "
+                f"{_store_error_text(exc)}",
                 file=sys.stderr)
         finally:
-            if db is not None:
+            if store is not None:
                 with contextlib.suppress(Exception):
-                    release_or_close(db)
+                    store.close()
     return purged
+
+
+def _store_error_text(exc: Exception) -> str:
+    """``<class>: <message>`` for a failed identity rewrite, naming the class the store raised underneath: a
+    collision is a ``ValueError``, a store failure the SQLite error the storage error chains."""
+    from persistence import ProfileIdentityCollision
+    from storage_user_copy import error_type_name
+    name = ValueError.__name__ if isinstance(exc, ProfileIdentityCollision) else error_type_name(exc)
+    return f"{name}: {exc}"
 
 
 def _control_answer_failure(answer) -> str:
@@ -164,7 +173,7 @@ def _gateway_accepts_profile_identity_verb(root: Path) -> bool:
 def _migrate_checkpoint_identity(old_canon: str, new_canon: str) -> bool:
     """Rekey checkpoint projects whose absolute workdirs moved with the profile directory."""
     from hermes_cli.profiles import get_profile_dir
-    from tools.checkpoint_manager_profile_rename import migrate_profile_checkpoint_projects
+    from agent.checkpoints.manager_profile_rename import migrate_profile_checkpoint_projects
 
     old_dir = get_profile_dir(old_canon)
     new_dir = get_profile_dir(new_canon)
@@ -215,25 +224,41 @@ def _migrate_profile_identity(old_canon: str, new_canon: str, live_mux: bool) ->
         return False
 
     from hermes_cli.profiles import get_profile_dir
-    from hermes_state_registry import acquire, release_or_close
     from hermes_constants import get_default_hermes_root
+    from persistence_assembly import open_persistence, profile_scope, store_exists, store_location
     root = get_default_hermes_root()
     migrated = checkpoint_migrated
-    for db_path in (root / "state.db", get_profile_dir(new_canon) / "state.db"):
-        if not db_path.exists():
+    for scope in (profile_scope(home=root), profile_scope(home=get_profile_dir(new_canon))):
+        if not store_exists(scope):
             continue
-        db = None
+        store = None
         try:
-            db = acquire(db_path)
-            db.rekey_profile_state(old_canon, new_canon)
+            store = open_persistence(scope)
+            store.profile_identity.rekey_profile(old_canon, new_canon)
         except Exception as exc:
             migrated = False
             print(
-                f"⚠ Profile was renamed, but identity migration failed for {db_path}: "
-                f"{type(exc).__name__}: {exc}",
+                f"⚠ Profile was renamed, but identity migration failed for {store_location(scope) or scope.profile_dir}: "
+                f"{_store_error_text(exc)}",
                 file=sys.stderr)
         finally:
-            if db is not None:
+            if store is not None:
                 with contextlib.suppress(Exception):
-                    release_or_close(db)
+                    store.close()
     return migrated
+
+
+def _record_profile_rename(new_dir: Path, old_canon: str) -> None:
+    """Append ``old_canon`` to the renamed profile's ``previous_names`` history.
+    Best-effort: never raises, so a metadata write failure cannot fail the rename.
+
+    Only reached for a real slug change — ``rename_profile`` returns early for the
+    default profile (display-name only) and refuses ``old == new`` (target exists)."""
+    from hermes_cli import profiles as _profiles
+    try:
+        history = _profiles.read_profile_meta(new_dir).get("previous_names") or []
+        if old_canon not in history:
+            history = [*history, old_canon]
+        _profiles.write_profile_meta(new_dir, previous_names=history)
+    except Exception as exc:  # unwritable / corrupt profile.yaml — history is advisory
+        _profiles.logger.debug("profile rename: could not record previous name %r in %s: %s", old_canon, new_dir, exc)

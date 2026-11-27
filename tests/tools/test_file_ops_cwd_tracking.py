@@ -40,7 +40,7 @@ class _FakeEnv:
         import subprocess
         self.calls.append({"command": command, "cwd": cwd})
         # Simulate cd by updating self.cwd (the real env does the same
-        # via _extract_cwd_from_output after a successful command)
+        # via _update_cwd after a successful command)
         if command.strip().startswith("cd "):
             new = command.strip()[3:].strip()
             self.cwd = new

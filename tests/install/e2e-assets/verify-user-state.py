@@ -27,6 +27,10 @@ Two things are deliberately NOT failed on:
   home's own tree and every profile's. It changes on an ordinary release, so it
   is advisory-only. The exception is ``skills/.archive/**``, which holds
   restorable *user* skills and therefore is judged like everything else.
+* ``profiles/<name>/cache/**`` mostly holds derived data the product rebuilds
+  (the schema-columns memo moves whenever a release changes the session schema),
+  so it is advisory, except the subdirs backup keeps because nothing can rebuild
+  them (delivered media, the citations ledger), which stay judged.
 
 Ownership: the ``plugins/**`` trees belong to verify-plugin-preservation.py —
 that contract (nothing deleted or modified, additions tolerated) is already
@@ -58,6 +62,10 @@ PROFILES_DIR = "profiles"
 PLUGIN_ROOT = "plugins"
 SKILLS_ROOT = "skills"
 SKILL_ARCHIVE = ".archive"
+CACHE_DIR = "cache"
+# hermes_cli.backup._KEPT_CACHE_SUBDIRS: durable artifacts nothing can rebuild.
+KEPT_PROFILE_CACHE_SUBDIRS = frozenset({
+    "images", "audio", "videos", "documents", "screenshots", "citations", "generated"})
 CHUNK = 1 << 20
 
 # Top-level files whose content must survive verbatim.
@@ -149,14 +157,34 @@ def _owns_plugins(rel: str, *, profiles: bool) -> bool:
 
 
 def _is_bundled_skill(rel: str, *, profiles: bool) -> bool:
-    """skills/** except skills/.archive/**, at both roots (see module docstring)."""
+    """skills/** except skills/.archive/**, at both roots (see module docstring),
+    plus a profile's rebuildable cache (see _is_profile_cache)."""
     parts = rel.split("/")
     if not profiles:
         return parts[0] == SKILLS_ROOT and not (
             len(parts) > 1 and parts[1] == SKILL_ARCHIVE)
+    if _is_profile_cache(parts):
+        return True
     if len(parts) >= 3 and parts[2] == SKILLS_ROOT:
         return not (len(parts) > 3 and parts[3] == SKILL_ARCHIVE)
     return False
+
+
+def _is_profile_cache(parts: list[str]) -> bool:
+    """A profile's cache/ entry the product rebuilds: advisory, not user state.
+
+    Every entry under profiles/ is judged, so a profile's cache was, and its files
+    move on an ordinary release: cache/schema_columns.json is keyed by a hash of the
+    session schema and rewritten whenever a release changes that schema. Only
+    rebuildable entries are advisory. The subdirs hermes_cli/backup.py keeps because
+    nothing can rebuild them (delivered media, the citations ledger) stay judged, as
+    does the cache/ dir itself. *parts* is ``profiles/<name>/...`` from the home
+    walk or ``<name>/...`` from a --profiles-dir walk; both are handled.
+    """
+    if parts and parts[0] == PROFILES_DIR:
+        parts = parts[1:]
+    return (len(parts) >= 3 and parts[1] == CACHE_DIR
+            and parts[2] not in KEPT_PROFILE_CACHE_SUBDIRS)
 
 
 def _env_key_hashes(path: str) -> dict[str, str]:

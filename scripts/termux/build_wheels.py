@@ -66,7 +66,8 @@ def normalize_reqs(export: Path, lock: Path, resolved: Path) -> None:
                 raise ValueError(f"Source requirement does not match one locked package: {name}")
             spec = f"=={matches[0]['version']}"
         rows.append((name, spec, str(req.marker) if req.marker else "", source))
-    resolved.write_text("".join("\t".join(row) + "\n" for row in rows), encoding="utf-8")
+    resolved.write_text("".join("\t".join(row) + "\n" for row in rows),
+                        encoding="utf-8", newline="\n")
 
 
 def load_entries(resolved: Path) -> dict[str, str]:
@@ -95,7 +96,7 @@ def write_reqs_file(resolved: Path, reqs: Path) -> None:
             line += " ; " + marker
         out.append(line)
     body = chr(10).join(out) + chr(10)
-    reqs.write_text(body, encoding="utf-8")
+    reqs.write_text(body, encoding="utf-8", newline="\n")
 
 
 def safe_extract(archive: Path, dest: Path) -> Path:
@@ -290,7 +291,7 @@ def fetch_pure_wheels(build_set: list[str], specs: dict[str, str], wheelhouse: P
     # Build-backend deps the deb-venv's app install resolves offline:
     # the app dir install (even --no-deps) prepares metadata through
     # build-system.requires, which needs setuptools in the find-links.
-    reqs.append("setuptools==83.0.0")
+    reqs.append("setuptools==84.1.0")
     if not reqs:
         return
     proc = subprocess.run(

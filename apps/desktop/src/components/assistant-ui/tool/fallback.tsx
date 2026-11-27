@@ -49,7 +49,7 @@ import { toolResultRecord } from '@/lib/tool-result-metadata'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { recordPreviewArtifact } from '@/store/preview-status'
-import { sessionApprovalRequest } from '@/store/prompts'
+import { sessionCommandApprovalPending } from '@/store/prompts'
 import { $showToolActivity } from '@/store/tool-activity'
 import { $toolRowDismissed, dismissToolRow } from '@/store/tool-dismiss'
 import { $toolProgressFor, formatToolProgress } from '@/store/tool-progress'
@@ -295,8 +295,13 @@ function SearchResultsList({ hits }: { hits: SearchResultRow[] }) {
   )
 }
 
+// Error text is full of filename-shaped tokens (`README.md`, `agent.log`)
+// that the bare-domain branch of the shared linkifier mistakes for hosts, and
+// pretty links replace the displayed text with a fetched page title — either
+// way the painted headline stops matching the raw error string. Match the
+// system-message precedent: explicit URLs only, rendered verbatim.
 function LinkifiedText({ className, text }: { className?: string; text: string }) {
-  return <SharedLinkifiedText className={className} pretty text={cleanVisibleText(text)} />
+  return <SharedLinkifiedText className={className} explicitOnly pretty={false} text={cleanVisibleText(text)} />
 }
 
 function ToolTitle({
@@ -1022,13 +1027,15 @@ const ToolRun: FC<PropsWithChildren<{ endIndex: number; startIndex: number }>> =
   )
 
   const sessionId = useStore(useSessionView().$runtimeId)
-  const approval = useStore(useMemo(() => sessionApprovalRequest(sessionId), [sessionId]))
+  // Only a command approval stands in for the turn's terminal rows; a folder
+  // or site card leaves them as they are.
+  const approval = useStore(useMemo(() => sessionCommandApprovalPending(sessionId), [sessionId]))
   const currentTurn = useAuiState(state => isCurrentTurnMessage(state.thread.messages, state.message.id))
   const disclosureId = `tool-run:${key}`
   const persistedOpen = useStore($toolDisclosureOpen(disclosureId))
   const rowOpen = useStore(useMemo(() => $anyToolDisclosureOpen(entryIds), [entryIds]))
   const enterRef = useEnterAnimation(messageRunning, `tool-run:${key}`)
-  const representedByApproval = !!approval && currentTurn && approvalActivity
+  const representedByApproval = approval && currentTurn && approvalActivity
   const expanded = count < 2 || (persistedOpen ?? rowOpen)
   const collapsed = representedByApproval && !rowOpen && !persistedOpen
   const reduced = useReducedMotion()

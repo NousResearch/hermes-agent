@@ -38,6 +38,12 @@ export interface CatalogEntry {
   imageUrl: string | null
   screenshots?: string[]
   addedAt?: string
+  /** Installed skill the user locked against agent edits. */
+  locked?: boolean
+  /** Installed skill's use count (skills only). */
+  usage?: number
+  /** Installed entry with a newer upstream version. */
+  updateAvailable?: boolean
   updatedAt?: string
   stars: number | null
   /** 1-based curated hero rank from the catalog feed (`catalog-curation.json`). */
@@ -297,7 +303,29 @@ export function useCatalog(kind: CatalogKind) {
 
 /** Warm a catalog while the browser is idle so switching tabs doesn't pay the fetch + parse. */
 export function prefetchCatalogWhenIdle(kind: CatalogKind) {
-  const id = requestIdleCallback(() => void queryClient.prefetchQuery(catalogQuery(kind)), { timeout: 5_000 })
+  const prefetch = () => void queryClient.prefetchQuery(catalogQuery(kind))
 
-  return () => cancelIdleCallback(id)
+  if (typeof window.requestIdleCallback === 'function') {
+    let cancelled = false
+
+    const id = window.requestIdleCallback(() => {
+      if (!cancelled) {
+        prefetch()
+      }
+    }, { timeout: 5_000 })
+
+    return () => {
+      cancelled = true
+
+      if (typeof window.cancelIdleCallback === 'function') {
+        window.cancelIdleCallback(id)
+      }
+    }
+  }
+
+  const id = window.setTimeout(prefetch, 0)
+
+  return () => {
+    window.clearTimeout(id)
+  }
 }

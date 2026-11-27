@@ -24,6 +24,7 @@ from urllib.request import Request, urlopen
 
 def probe(surface, scenario, directory):
     from cli import HermesCLI
+    from persistence_assembly import open_persistence_reader
     from tools import process_registry as pr
     from tools.process_registry_notifications import format_process_notification
     from tui_gateway import server
@@ -76,7 +77,7 @@ def probe(surface, scenario, directory):
     try:
         with contextlib.ExitStack() as stack:
             stack.enter_context(patch.object(pr, 'process_registry', registry))
-            stack.enter_context(patch.object(pr, 'CHECKPOINT_PATH', directory / 'processes.json'))
+            stack.enter_context(patch.object(pr, '_checkpoint_path', return_value=directory / 'processes.json'))
             stack.enter_context(patch.object(server, '_sessions', {'ui-owner': session}))
             stack.enter_context(patch.object(server, '_get_db', lambda: None))
             stack.enter_context(patch.object(server, '_emit', lambda *args: statuses.append(args)))
@@ -154,10 +155,9 @@ def probe(surface, scenario, directory):
             texts = [item['text'] for item in received]
             delegation_delivered = None
             if delegation:
-                with ad._transaction() as conn:
-                    row = conn.execute("SELECT delivery_state, delivery_attempts FROM async_delegations WHERE delegation_id=?",
-                                       (delegation['delegation_id'],)).fetchone()
-                    delegation_delivered = tuple(row) == ('delivered', 1)
+                with open_persistence_reader(ad._scope().profile_dir) as store:
+                    record = store.coordination.get_delegation(delegation_id=delegation['delegation_id'])
+                delegation_delivered = (record.delivery_state, record.delivery_attempts) == ('delivered', 1)
             return {'surface': surface, 'scenario': scenario, 'children': count,
                     'wire_turns': len(texts), 'texts': texts,
                     'delegation_delivered_once': delegation_delivered,

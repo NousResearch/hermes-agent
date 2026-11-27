@@ -1,0 +1,24 @@
+name: quick-prompts
+repo: https://github.com/tozes/hermes-quick-prompts
+sha: c0e4b62a42cfbc920725d9f417962ad088bda100
+title: Quick prompts
+description: 'One-click prompt buttons above the Hermes Desktop chat input: a click fills the input with
+  the prompt and never sends. Prompts are edited under Settings → Plugins and stored in the app''s local
+  storage. Desktop-only (desktop/plugin.js inside the plugin SDK surface, host.composer draft API);
+  no agent tools, hooks, middleware, network calls or env vars.'
+maintainer: tozes
+tier: community
+category: desktop
+requires_hermes: ">=0.21.6"
+version: "0.1.0"
+docs_url: https://github.com/tozes/hermes-quick-prompts#readme
+image: https://raw.githubusercontent.com/tozes/hermes-quick-prompts/c0e4b62a42cfbc920725d9f417962ad088bda100/docs/banner.png
+platforms: []
+screenshots:
+  - https://raw.githubusercontent.com/tozes/hermes-quick-prompts/c0e4b62a42cfbc920725d9f417962ad088bda100/docs/composer.png
+  - https://raw.githubusercontent.com/tozes/hermes-quick-prompts/c0e4b62a42cfbc920725d9f417962ad088bda100/docs/settings.png
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

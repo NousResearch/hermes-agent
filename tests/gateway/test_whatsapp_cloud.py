@@ -1199,6 +1199,7 @@ class TestDispatchInteractiveReplyApproval:
     async def test_approve_tap_calls_resolver_and_confirms(self, monkeypatch):
         adapter = _make_adapter()
         adapter._exec_approval_state["app1"] = "sess-app-1"
+        adapter._approval_request_ids()["app1"] = "req-1"
         adapter._http_client = MagicMock()
         adapter._http_client.post = AsyncMock(
             return_value=_mock_httpx_response(200, {"messages": [{"id": "x"}]})
@@ -1207,7 +1208,7 @@ class TestDispatchInteractiveReplyApproval:
         calls = []
         monkeypatch.setattr(
             "tools.approval.resolve_gateway_approval",
-            lambda session_key, choice: calls.append((session_key, choice)) or 1,
+            lambda session_key, choice, request_id=None: calls.append((session_key, choice)) or 1,
         )
 
         raw = {
@@ -1283,6 +1284,7 @@ class TestDispatchInteractiveReplyAuthorization:
             _allow_from={"15551234567"},
         )
         adapter._exec_approval_state["app1"] = "sess-app-1"
+        adapter._approval_request_ids()["app1"] = "req-1"
         adapter._http_client = MagicMock()
         adapter._http_client.post = AsyncMock(
             return_value=_mock_httpx_response(200, {"messages": [{"id": "x"}]})
@@ -1290,7 +1292,7 @@ class TestDispatchInteractiveReplyAuthorization:
         calls = []
         monkeypatch.setattr(
             "tools.approval.resolve_gateway_approval",
-            lambda session_key, choice: calls.append((session_key, choice)) or 1,
+            lambda session_key, choice, request_id=None: calls.append((session_key, choice)) or 1,
         )
 
         raw = {
@@ -1405,6 +1407,17 @@ class TestAllowlistNormalization:
         ids = {"15551234567@s.whatsapp.net", "+1 (555) 765-4321", "15550000000"}
         normalized = WhatsAppCloudAdapter._normalize_allow_ids(ids)
         assert normalized == {"15551234567", "15557654321", "15550000000"}
+
+    def test_bsuid_allowlist_entries_do_not_collide_on_digit_projection(self):
+        """Regression for #138192: Cloud BSUIDs are principals, not phone aliases."""
+        from plugins.platforms.whatsapp_cloud.adapter import WhatsAppCloudAdapter
+
+        adapter = object.__new__(WhatsAppCloudAdapter)
+        allowlist = {"DE.1A2B3C4D5E"}
+
+        assert adapter._entry_matches(allowlist, "DE.1A2B3C4D5E") is True
+        assert adapter._entry_matches(allowlist, "DE.12345ABCDE") is False
+        assert adapter._entry_matches(allowlist, "12345") is False
 
 
 class TestBoundedInteractiveState:
@@ -1530,3 +1543,22 @@ def test_plugin_register_shape():
     from gateway.config import PlatformConfig
     is_connected = captured["is_connected"]
     assert is_connected(PlatformConfig(enabled=True, extra={"phone_number_id": "1", "access_token": "t"}))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("move", ("delete", "rename"))
+async def test_media_cache_skips_a_deleted_or_renamed_profile_home(tmp_path, move):
+    """Inbound media for a dead profile is dropped (None), never cached into a recreated home (#155595 U3)."""
+    from unittest.mock import patch as _patch
+    import plugins.platforms.whatsapp_cloud.adapter as wac
+    from tests.fixtures.dead_profile_home import dead_named_home
+
+    home = dead_named_home(tmp_path, move)
+    adapter = _make_adapter()
+    adapter._http_client = MagicMock()
+    meta = MagicMock(status_code=200)
+    meta.json = MagicMock(return_value={"url": "https://lookaside.fbsbx.com/x", "mime_type": "image/jpeg"})
+    adapter._http_client.get = AsyncMock(side_effect=[meta, MagicMock(status_code=200, content=b"jpeg")])
+    with _patch.object(wac, "_INBOUND_MEDIA_CACHE", home / "platforms" / "whatsapp_cloud" / "media"):
+        assert await adapter._download_media_to_cache("media_dead") == (None, None)
+    assert not home.exists()

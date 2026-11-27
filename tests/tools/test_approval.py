@@ -349,7 +349,6 @@ class TestCloudMetadataEndpoint:
 def _clear_session(key):
     """Replace for removed clear_session() — directly clear internal state."""
     approval_module._session_approved.pop(key, None)
-    approval_module._pending.pop(key, None)
 
 
 class TestCredentialExfilAndInvisibleChars:
@@ -1542,7 +1541,6 @@ class TestApprovalTimeoutIsNotConsent:
         mod._gateway_notify_cbs.clear()
         mod._session_approved.clear()
         mod._permanent_approved.clear()
-        mod._pending.clear()
 
         self._saved_env = {
             k: os.environ.get(k)

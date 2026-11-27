@@ -48,7 +48,7 @@ _PROBE_REDACTION_RES: Optional[tuple[re.Pattern[str], ...]] = None
 
 
 def _credential_header_names() -> str:
-    from agent.redact import _SECRET_HEADER_NAMES
+    from agent.redact_headers import _SECRET_HEADER_NAMES
 
     return rf"(?:(?:Proxy-)?Authorization|{_SECRET_HEADER_NAMES})"
 
@@ -122,7 +122,7 @@ def redact_mcp_probe_text(text: object) -> str:
     """Fully redact MCP probe/display strings before they leave the process.
 
     Recognized credential header fields (Authorization / Proxy-Authorization
-    and ``agent.redact._SECRET_HEADER_NAMES``) have their complete associated
+    and ``agent.redact_headers._SECRET_HEADER_NAMES``) have their complete associated
     value replaced with ``***``. Bare Bearer/Basic/Token/Digest spans are
     covered the same way. The generic secret redactor then runs with
     ``force=True`` as defense in depth.
@@ -420,6 +420,10 @@ def _probe_single_server(
     Returns ``(tool_name, description)`` tuples; raises on connection failure. ``details`` is an
     out-param filled with ``schema_chars``/``prompts``/``resources`` so the return shape stays stable.
     """
+    # A profile a plugin runs elsewhere: that backend connects its MCP servers, and it writes the entry
+    # this probe would start (stdio) or call (HTTP). Refuse before either, for every caller of the probe.
+    from hermes_cli.profiles_run_elsewhere import require_home_runs_here
+    require_home_runs_here()
     issues = validate_mcp_server_entry(name, config)
     if issues:
         rejected = ValueError("; ".join(issues))
@@ -615,8 +619,28 @@ def _choose_tools(name: str, tools: list[tuple[str, str]], server_config: dict[s
     return len(chosen_names)
 
 
+def _add_probe_timeout(server_config: dict) -> Optional[float]:
+    """Connect bound for the probe ``hermes mcp add`` runs; None keeps the server's connect_timeout.
+
+    An OAuth server's first connect IS the browser sign-in: the probe waits on the callback while the user
+    reads and approves the consent page. It gets the ``hermes mcp login`` window (login_connect_timeout:
+    oauth.timeout + exchange headroom), not the 30 s connect_timeout default, which closed the loopback
+    listener under people still on the consent page — the provider's redirect then hit
+    ERR_CONNECTION_REFUSED, the code was lost, and "Save config anyway?" defaulted to No (#49759).
+    """
+    if server_config.get("auth") != "oauth":
+        return None
+    from tools.mcp_oauth import login_connect_timeout
+
+    return login_connect_timeout(server_config)
+
+
 def cmd_mcp_add(args):
     """Add a new MCP server with discovery-first tool selection."""
+    # A profile a plugin runs elsewhere: refused before a token is asked for and saved, and before the probe,
+    # whose refusal would read below as a failed connection that offers to save the entry anyway.
+    from hermes_cli.profiles_run_elsewhere import exit_if_profile_runs_elsewhere
+    exit_if_profile_runs_elsewhere("mcp add")
     name = args.name
     url = getattr(args, "url", None)
     # --command uses dest="mcp_command" (see hermes_cli/main.py for why the dest is renamed).
@@ -684,7 +708,7 @@ def cmd_mcp_add(args):
     print()
     print(color(f"  Connecting to '{name}'...", Colors.CYAN))
     try:
-        tools = _probe_single_server(name, server_config)
+        tools = _probe_single_server(name, server_config, connect_timeout=_add_probe_timeout(server_config))
     except Exception as exc:
         _error(f"Failed to connect: {_probe_failure_reason(exc)}")
         _info(_probe_failure_next_step(name, exc))
@@ -783,6 +807,10 @@ def cmd_mcp_list(args=None):
 
         enabled = mcp_server_enabled(cfg)
         status = color("✓ enabled", Colors.GREEN) if enabled else color("✗ disabled", Colors.DIM)
+        if not enabled and mcp_server_enabled({k: v for k, v in cfg.items() if k != "disabled"}):
+            escaped = str(name).replace(".", "\\.")
+            status += color(f" (legacy `disabled` key; `hermes config set mcp_servers.{escaped}.enabled true` "
+                            "clears it)", Colors.DIM)
         print(f"  {name:<16} {transport:<30} {tools_str:<12} {status}")
     print()
 
@@ -847,7 +875,8 @@ def cmd_mcp_test(args):
     print()
     print(color(f"  Testing '{name}'...", Colors.CYAN))
     if "url" in cfg:
-        _info(f"Transport: HTTP → {cfg['url']}")
+        from agent.redact import redact_sensitive_text  # the rendered URL can carry a ?token= credential
+        _info(f"Transport: HTTP → {redact_sensitive_text(cfg['url'], force=True, redact_url_credentials=True)}")
     else:
         _info(f"Transport: stdio → {cfg.get('command', '?')}")
 
@@ -886,6 +915,10 @@ def _reauth_oauth_server(name: str, server_config: dict, *, flow: str | None = N
     Browser login clears cached state and re-probes. Device login replaces state only after
     approval. Both verify a token landed. Shared by ``login`` and ``reauth``.
     """
+    from hermes_cli.profiles_run_elsewhere import run_elsewhere_for_home
+    if (elsewhere := run_elsewhere_for_home(get_hermes_home())) is not None:
+        _error(elsewhere.message())  # before the stored tokens are dropped or the entry's server is called
+        return False
     url = server_config.get("url")
     if not url:
         _error(f"Server '{name}' has no URL — not an OAuth-capable server")

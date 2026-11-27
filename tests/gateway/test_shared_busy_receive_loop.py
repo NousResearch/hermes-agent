@@ -59,9 +59,8 @@ async def _busy_owner(monkeypatch, turns):
 
 
 def _statuses(authority):
-    from hermes_state_runtime import list_session_admissions
-    return {row['payload']['text']: row['status'] for session_id in authority.sessions
-            for row in list_session_admissions(authority.db, session_id=session_id, pending_only=False)}
+    return {row.payload['text']: row.status for session_id in authority.sessions
+            for row in authority.persistence.admissions.list(session_id=session_id, pending_only=False)}
 
 
 async def _wait_for(predicate, timeout=5):
@@ -128,6 +127,8 @@ async def test_detached_busy_completion_failure_still_tells_the_user(monkeypatch
     await _wait_for(lambda: len(adapter.sent) == 2 and not adapter._background_tasks)
     # Exactly one reply per input; the error notice may race the first turn's own delivery.
     assert 'FIRST_REPLY' in adapter.sent
-    assert sum('render exploded' in text for text in adapter.sent) == 1, adapter.sent
+    # One generic failure notice for the second input; the exception text stays in the log (#38012).
+    assert sum(text != 'FIRST_REPLY' for text in adapter.sent) == 1, adapter.sent
+    assert not any('render exploded' in text for text in adapter.sent), adapter.sent
     assert _statuses(authority) == {'one': 'terminal', 'two': 'terminal'}
     assert unhandled == []

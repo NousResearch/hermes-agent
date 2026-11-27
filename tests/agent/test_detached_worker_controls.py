@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from agent.managed_worker import WorkerControls, encode_frame, read_frame
-from agent.managed_worker_detach import DetachableChannel
+from agent.managed_worker_detach.channel import DetachableChannel
 from gateway.session_managed_worker import _prompt_frame
 from tools import approval
 from tools.approval_gateway_wait import _await_gateway_decision

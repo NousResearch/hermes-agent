@@ -341,7 +341,7 @@ def _build_systemd_scope_argv(shell_argv: list[str], unit_suffix: str) -> list[s
     return _systemd_scope_argv(binary, f"hermes-worker-{unit_suffix}", *shell_argv)
 
 
-_scope_degraded_warned = False
+_scope_degraded_warned = set()
 
 
 class RestartSafeScopeUnavailable(RuntimeError):
@@ -354,12 +354,10 @@ class RestartSafeScopeUnavailable(RuntimeError):
 
 
 def _warn_scope_degraded_once(detail: str, *, consequence: str) -> None:
-    """Warn once per process: the condition is host-level and the probe verdict
-    is cached, so this would otherwise fire on every cron dispatch."""
-    global _scope_degraded_warned
-    if _scope_degraded_warned:
+    """Warn once per consequence; different callers need their own remedy."""
+    if consequence in _scope_degraded_warned:
         return
-    _scope_degraded_warned = True
+    _scope_degraded_warned.add(consequence)
     logger.warning("%s; %s", detail, consequence)
 
 

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.managed_worker_detach import DetachedRPC
+from agent.managed_worker_detach.channel import DetachedRPC
 from agent.runtime_session_store import WorkerPersistenceError, WorkerRPC, _OwnerLink
 
 

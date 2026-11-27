@@ -394,9 +394,11 @@ class ManagedWorker:
         self._demand.release()
         if self.writer.ident is not None:
             self.writer.join(timeout=5)
-        if not self.writer.is_alive():
-            with suppress(OSError, ValueError):
-                self.process.stdin.close()
+        if self.write_lock.acquire(blocking=False):
+            try:
+                self._hang_up()
+            finally:
+                self.write_lock.release()
         if self.reader is None:
             self.process.stdout.close()
         else:

@@ -159,13 +159,16 @@ class DetachableChannel(WorkerChannel):
             os.unlink(self.path)
         server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         published = False
+        retired = False
 
         def unpublish():
-            nonlocal published
+            nonlocal published, retired
             if published:
                 with contextlib.suppress(FileNotFoundError):
                     os.unlink(self.path)
                 published = False
+            self._release_directory()
+            retired = True
 
         try:
             old = os.umask(0o177)
@@ -183,8 +186,8 @@ class DetachableChannel(WorkerChannel):
                 return
         finally:
             server.close()
-            unpublish()
-            self._release_directory()
+            if not retired:
+                unpublish()
 
     def _reattach(self, conn, *, unpublish=None):
         """Hand the turn to a verified same-user owner: hello, its epoch, then the buffered frames."""

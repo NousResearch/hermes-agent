@@ -3,7 +3,7 @@
 With ``gateway.managed_workers`` and ``gateway.detached_workers`` both true on Linux, a turn's
 worker is told a private unix socket at bootstrap and the reservation writes a durable record of
 it (``RECORD_PREFIX`` + execution id in ``state_meta``, deleted when the execution goes terminal).
-The worker no longer dies with its owner's pipe (``agent/managed_worker_detach.py``); a stopping
+The worker no longer dies with its owner's pipe (``agent/managed_worker_detach/channel.py``); a stopping
 gateway hands its turns over instead of interrupting them (``stop_authority_turns``).
 
 Native admission recovery transfers each opted-in live worker and its still-started admission to
@@ -70,7 +70,7 @@ def socket_path(home, execution_id):
     """The worker's private listener: in its 0700 outbox directory when that fits ``sun_path``
     (a short profile home), else ``hmw-<random>/w.sock`` under the first writable short root it
     fits in, measured in bytes (the random name is not predictable by another user). That directory
-    is the worker's (``agent/managed_worker_detach.py``): it creates it 0700 only while it waits for
+    is the worker's (``agent/managed_worker_detach/channel.py``): it creates it 0700 only while it waits for
     a new owner and removes it once reattached or exiting, so a turn that never changes owner leaves
     nothing behind. None when no root fits: the turn then
     runs without a detached reservation."""

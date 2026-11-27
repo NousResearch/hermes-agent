@@ -1333,7 +1333,8 @@ gateway:
   worker buffers its output and waits on a private unix socket that only your user can connect
   to: in the profile's `worker-outboxes/` directory, or, when that path is too long for a unix
   socket, in a directory of its own under `XDG_RUNTIME_DIR` (or the temp directory) that exists
-  only while it waits. The next gateway reattaches it once its API is up: same worker process,
+  only while it waits. If no writable root can accommodate the socket path, the turn runs without
+  detachment. The next gateway reattaches it once its API is up: same worker process,
   same turn, which then settles normally (`gateway.log` logs `Re-adopted managed worker`).
 - **systemd.** Under a systemd service each such worker runs in its own transient user scope
   (`systemd-run --user --scope`, unit `hermes-worker-mw-<id>`), so the service's restart does not
@@ -1345,7 +1346,7 @@ gateway:
   crashed or was killed first, when its identity check fails, and when the gateway stops in the
   short window after the worker recorded its final result but before the gateway closed the
   turn: that already finished turn is not taken over. A worker killed while it waits can leave
-  its empty socket directory behind.
+  its socket pathname and directory behind.
 
 ## Session Stall Watchdog
 

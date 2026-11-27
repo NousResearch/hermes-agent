@@ -255,7 +255,7 @@ def test_degraded_scope_warning_names_the_managed_worker_consequence(monkeypatch
     monkeypatch.setenv('INVOCATION_ID', 'system-gateway-unit')
     monkeypatch.setattr(process_registry, '_is_supervised_gateway_process', lambda: True)
     monkeypatch.setattr(process_registry, '_systemd_run_user_scope_available', lambda: False)
-    monkeypatch.setattr(process_registry, '_scope_degraded_warned', False)
+    monkeypatch.setattr(process_registry, '_scope_degraded_warned', set())
     monkeypatch.setattr(managed, '_worker_env', lambda authority: None)
     with caplog.at_level(logging.WARNING, logger=process_registry.logger.name):
         assert managed._worker_launch(_owner(), {'admission_id': 'a' * 32}, DETACHED)[2] is False
@@ -305,7 +305,7 @@ def test_gateway_stop_hands_off_without_waiting_for_a_blocked_control_write(tmp_
         releasing.join(15)
         assert not releasing.is_alive(), 'release waited on the blocked control write'
         go.touch()
-        wait_until(received.exists, timeout=30, what='the worker to read its controls to EOF')
+        assert child.wait(timeout=30) == 0
         assert int(received.read_text()) == len(encode_frame(blocked))
     finally:
         go.touch()
@@ -313,4 +313,94 @@ def test_gateway_stop_hands_off_without_waiting_for_a_blocked_control_write(tmp_
         if child.poll() is None:
             child.kill()
         child.wait(timeout=10)
+        child.stdout.close()
+
+
+@pytest.mark.platforms('linux')
+def test_release_does_not_close_under_a_direct_finish_send(tmp_path):
+    """The result path sends finish directly, outside the queued-control writer."""
+    go, received = tmp_path / 'go', tmp_path / 'received'
+    child = subprocess.Popen([sys.executable, '-c', STALLED_READER, str(go), str(received)],
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, start_new_session=True)
+    worker = managed.ManagedWorker(child)
+    sender = threading.Thread(target=worker.send, args=({'type': 'finish', 'pad': 'x' * (1 << 20)},), daemon=True)
+    try:
+        worker.writer.start()
+        sender.start()
+        wait_until(worker.write_lock.locked, timeout=10, what='the direct finish send to block')
+        worker.hand_off()
+        releasing = threading.Thread(target=worker.release, daemon=True)
+        releasing.start()
+        releasing.join(8)
+        assert not releasing.is_alive(), 'release waited on a direct send'
+        go.touch()
+        sender.join(10)
+        assert not sender.is_alive()
+        assert child.wait(timeout=10) == 0
+        from agent.managed_worker import encode_frame
+        assert int(received.read_text()) == len(encode_frame({'type': 'finish', 'pad': 'x' * (1 << 20)}))
+    finally:
+        go.touch()
+        if child.poll() is None:
+            child.kill()
+        child.wait(timeout=10)
+        sender.join(10)
+        child.stdout.close()
+
+
+@pytest.mark.platforms('linux')
+@pytest.mark.parametrize('first', ['cron', 'managed'])
+def test_degraded_scope_warns_for_both_callers(monkeypatch, caplog, first):
+    monkeypatch.setenv('INVOCATION_ID', 'system-gateway-unit')
+    monkeypatch.setattr(process_registry, '_is_supervised_gateway_process', lambda: True)
+    monkeypatch.setattr(process_registry, '_systemd_run_user_scope_available', lambda: False)
+    monkeypatch.setattr(process_registry, '_scope_degraded_warned', set())
+    consequences = {'cron': 'cron consequence', 'managed': 'managed consequence'}
+    with caplog.at_level(logging.WARNING, logger=process_registry.logger.name):
+        for name in (first, 'managed' if first == 'cron' else 'cron', first):
+            process_registry.restart_safe_gateway_child_argv(
+                ['worker'], unit_suffix='test', require_restart_safe_scope=False,
+                degraded_consequence=consequences[name])
+    messages = [record.getMessage() for record in caplog.records]
+    assert len(messages) == 2
+    assert all(sum(value in message for message in messages) == 1 for value in consequences.values())
+
+
+@pytest.mark.platforms('linux')
+def test_result_finish_protocol_delivers_final_result(monkeypatch):
+    """Exercise the real result/finish exchange and the owner's final result publication."""
+    from gateway import run_turn_progress
+
+    child_code = '''import json, sys
+out = sys.stdout.buffer
+out.write((json.dumps({'type': 'result', 'result': {'final_response': 'delivered'}}) + '\\n').encode())
+out.flush()
+assert json.loads(sys.stdin.buffer.readline()) == {'type': 'finish'}
+out.write(b'{"type":"finished"}\\n')
+out.flush()
+'''
+    child = subprocess.Popen([sys.executable, '-c', child_code], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    worker = managed.ManagedWorker(child)
+    controls = SimpleNamespace(snapshot=lambda *_: None)
+    live = SimpleNamespace(controls=controls, event_stream=SimpleNamespace(lock=threading.Lock()))
+    authority = SimpleNamespace(executing={'s': 1}, sessions={'s': live}, pending_results={})
+    ref = SimpleNamespace(session_id='s')
+    row = {'generation': 1, 'admission_id': 'a'}
+    scope = {'session_id': 's', 'execution_id': 'e'}
+    monkeypatch.setattr(run_turn_progress, 'publish_worker_tool_event', lambda *_: False)
+    monkeypatch.setattr(managed, '_settled_session_usage', lambda *_: {})
+
+    async def finalized(*_):
+        return None
+    monkeypatch.setattr(managed, '_finalize_managed_refusal', finalized)
+    try:
+        response = asyncio.run(managed._pump(authority, ref, row, worker, child, scope))
+        assert response == 'delivered'
+        assert authority.pending_results['a']['result']['final_response'] == 'delivered'
+        assert child.returncode == 0
+    finally:
+        if child.poll() is None:
+            child.kill()
+        child.wait(timeout=10)
+        child.stdin.close()
         child.stdout.close()

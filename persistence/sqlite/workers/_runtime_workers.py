@@ -103,6 +103,11 @@ def transfer_detached_workers(conn, epoch):
                                        (epoch, record['admission_id'])).rowcount
         if moved_worker != 1 or moved_admission != 1:
             raise AuthorityRefusal('stale_generation')  # Roll back the entire recovery write.
+        # Child execution IDs encode their reserving ancestry; only live descendants from
+        # this same owner survive with the proven root. Other stale children are retired below.
+        conn.execute("UPDATE worker_executions SET owner_epoch=? WHERE execution_id>=? AND execution_id<? "
+                     "AND kind='child' AND status IN ('registered','running') AND owner_epoch=?",
+                     (epoch, *descendant_range(record['execution_id']), link[0]))
 
 
 def runtime_lineage(conn, session_id):
@@ -165,8 +170,7 @@ def descendant_range(execution_id):
 
 
 def retire_stale_children(conn, epoch):
-    """Owner restart: a child dies with its worker, which dies with its owner, so it is never
-    adoptable; only its root execution can be recovered as ``unknown``."""
+    """Retire stale children not transferred with a proven surviving detached root."""
     _retire_children(conn, conn.execute("SELECT execution_id,session_id FROM worker_executions WHERE kind='child' "
                                         "AND status!='terminal' AND owner_epoch!=?", (epoch,)).fetchall())
 

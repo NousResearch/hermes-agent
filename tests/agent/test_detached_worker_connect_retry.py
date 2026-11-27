@@ -10,9 +10,10 @@ import pytest
 
 import websockets.sync.client as ws_client
 
-from agent import managed_worker_detach, runtime_session_store
+from agent import runtime_session_store
+from agent.managed_worker_detach import channel as managed_worker_detach
 from hermes_cli import gateway_client, gateway_runtime, gateway_runtime_discovery
-from agent.managed_worker_detach import DetachedRPC
+from agent.managed_worker_detach.channel import DetachedRPC
 from agent.runtime_session_store import WorkerRPC
 
 PARAMS = dict(execution_id='fixture', epoch=7, generation=3, sequence=37, operation='transcript.append',

@@ -132,7 +132,7 @@ def test_unusable_temp_dir_does_not_hide_a_root_that_fits(base, monkeypatch):
 
 
 @pytest.mark.platforms('linux')
-@pytest.mark.skipif(os.geteuid() == 0, reason='root writes through any mode')
+@pytest.mark.skipif(getattr(os, 'geteuid', lambda: None)() == 0, reason='root writes through any mode')
 def test_unwritable_root_is_skipped(base, monkeypatch):
     runtime = _private_dir(base / 'run')
     runtime.chmod(0o500)

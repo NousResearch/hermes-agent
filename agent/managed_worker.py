@@ -278,7 +278,7 @@ class WorkerControls:
                 return
             except (EOFError, OSError):
                 # A detachable channel (gateway.detached_workers) outlives its owner: the turn keeps
-                # running and the controls continue on the next owner's socket (managed_worker_detach).
+                # running and the controls continue on the next owner's socket (managed_worker_detach/channel.py).
                 await_owner = getattr(self.channel, 'await_owner', None)
                 stream = await_owner(stream) if await_owner is not None else None
                 if stream is None:
@@ -436,7 +436,7 @@ def execute(frame, channel):
         scope['session_id'], scope['execution_id'], Fence(scope['epoch'], scope['generation'])))
     rpc = WorkerRPC(frame['home'])
     if 'detach_v1' in frame:
-        from agent.managed_worker_detach import DetachedRPC
+        from agent.managed_worker_detach.channel import DetachedRPC
         rpc = DetachedRPC(rpc, channel)
     adopted = rpc('worker.adopt', **{k: v for k, v in scope.items() if k != 'epoch'})
     if adopted['owner_epoch'] != scope['epoch']:
@@ -586,7 +586,7 @@ def main():
         channel.send('hello', **hello())
         frame = validate_bootstrap(read_frame(sys.stdin.buffer))
         if 'detach_v1' in frame:
-            from agent.managed_worker_detach import DetachableChannel, detach_spec, identity
+            from agent.managed_worker_detach.channel import DetachableChannel, detach_spec, identity
             channel = DetachableChannel(channel.stream, detach_spec(frame), identity(frame['scope']))
         execute(frame, channel)
     except Exception:

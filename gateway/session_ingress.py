@@ -299,6 +299,9 @@ def row_turn_author(policy, row):
 async def execute_admission(authority, ref, row):
     busy_turn_started(row['admission_id'])
     from gateway.session_completion_notes import note_if_unviewed
+    live = authority.sessions.get(ref.session_id)
+    if live is not None and 'local_automation_v1' not in row['payload']:
+        live.finite_input = row['payload'].get('finite') is True  # #156255: see note_if_unviewed
     noted = await note_if_unviewed(authority, ref, row)  # #134889 LC-7: no viewer, no turn
     if noted is not None:
         return noted

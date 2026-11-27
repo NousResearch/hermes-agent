@@ -115,6 +115,36 @@ def test_corr_id_pending_set_self_trims():
     assert len(adapter._pending_corr_ids) <= adapter._max_pending_corr + 1
 
 
+@pytest.mark.asyncio
+async def test_cron_delivery_preserves_output_above_delivery_cap(tmp_path, monkeypatch):
+    """Cron output over ``gateway.delivery.MAX_PLATFORM_OUTPUT`` reaches SimpleX intact.
+
+    The adapter posts the whole payload as one SimpleX message (no hard length limit), so it
+    must declare ``splits_long_messages`` — otherwise the delivery layer truncates it at 4,000
+    chars before this adapter ever sees it.
+    """
+    from gateway.config import GatewayConfig, Platform, PlatformConfig
+    from gateway.delivery import MAX_PLATFORM_OUTPUT, DeliveryRouter, DeliveryTarget
+
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+    adapter._ws = AsyncMock()
+    simplex = Platform("simplex")
+    router = DeliveryRouter(GatewayConfig(), adapters={simplex: adapter})
+    target = DeliveryTarget.parse(f"{simplex.value}:contact-42")
+    long_content = "x" * (MAX_PLATFORM_OUTPUT + 1000)
+
+    await router._deliver_to_platform(target, long_content, metadata={"job_id": "long-output"})
+
+    payload = json.loads(adapter._ws.send.call_args[0][0])
+    msg_content = json.loads(payload["cmd"].split(" json ", 1)[1])[0]["msgContent"]
+    assert msg_content["text"] == long_content
+    # The full payload is also kept on disk as the audit copy.
+    saved = list(tmp_path.glob("cron/output/long-output_*.txt"))
+    assert [p.read_text(encoding="utf-8-sig") for p in saved] == [long_content]
+
+
 # ---------------------------------------------------------------------------
 # 7. Outbound send (mocked WS)
 # ---------------------------------------------------------------------------
@@ -174,6 +204,45 @@ async def test_send_group():
     ]
     assert msg_content == {"type": "text", "text": "Hello, group!"}
     assert result.success is True
+
+
+def _encoded_protocol_message_bytes(text: str) -> int:
+    """Size of a representative ``x.msg.new`` text message as SimpleX encodes it.
+
+    ``Simplex.Chat.Protocol.encodeChatMessage`` rejects anything over 15,602 bytes
+    (13,380 for PQ-encrypted connections), so chunks must stay below that even in
+    the strictest case.
+    """
+    message = {
+        "v": "1-22", "msgId": "abcd", "event": "x.msg.new",
+        "params": {"content": {"type": "text", "text": text}}}
+    return len(json.dumps(message, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+
+
+@pytest.mark.asyncio
+async def test_send_splits_text_below_simplex_protocol_limit():
+    """Multibyte text splits on the encoded-size budget, not on character count.
+
+    SimpleX rejects a chat message whose encoded JSON exceeds 15,602 bytes (13,380 with PQ),
+    so CJK/emoji text must go out as several messages, each safely under the cap.
+    """
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+    mock_ws = AsyncMock()
+    adapter._ws = mock_ws
+    content = ("数据备份完成 🎉 " * 1200) + "TAIL-MARKER"
+
+    result = await adapter.send("contact-42", content)
+
+    assert result.success is True
+    texts = [
+        json.loads(json.loads(call[0][0])["cmd"].split(" json ", 1)[1])[0]["msgContent"]["text"]
+        for call in mock_ws.send.call_args_list
+    ]
+    assert len(texts) > 1
+    assert all(_encoded_protocol_message_bytes(t) <= 13_380 for t in texts)
+    assert "TAIL-MARKER" in texts[-1]
 
 
 @pytest.mark.parametrize(("mode", "color"), [
@@ -356,6 +425,43 @@ async def test_standalone_send_defaults_to_local_daemon(monkeypatch):
         sent_payloads[0]["cmd"].split(" json ", 1)[1]
     )[0]["msgContent"]
     assert msg_content == {"type": "text", "text": "hi"}
+
+
+@pytest.mark.asyncio
+async def test_standalone_send_splits_multibyte_content(monkeypatch):
+    """Out-of-process (cron) sends also respect SimpleX's encoded-message limit."""
+    monkeypatch.delenv("SIMPLEX_WS_URL", raising=False)
+    pconfig = MagicMock()
+    pconfig.extra = {"ws_url": "ws://localhost:5225"}
+    sent_payloads = []
+
+    class DummyWs:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def send(self, payload):
+            sent_payloads.append(json.loads(payload))
+
+    def fake_connect(url, **kwargs):
+        return DummyWs()
+
+    import websockets
+    monkeypatch.setattr(websockets, "connect", fake_connect)
+
+    content = ("数据备份完成 🎉 " * 1200) + "TAIL-MARKER"
+    result = await _standalone_send(pconfig, "contact-42", content)
+
+    assert result == {"success": True, "platform": "simplex", "chat_id": "contact-42"}
+    texts = [
+        json.loads(payload["cmd"].split(" json ", 1)[1])[0]["msgContent"]["text"]
+        for payload in sent_payloads
+    ]
+    assert len(texts) > 1
+    assert all(_encoded_protocol_message_bytes(t) <= 13_380 for t in texts)
+    assert "TAIL-MARKER" in texts[-1]
 
 
 @pytest.mark.asyncio

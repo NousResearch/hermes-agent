@@ -118,3 +118,38 @@ def test_task_on_scoped_board_inherits_project(client, project):
         assert kb.get_task(conn, task_id).project_id == project["id"]
     finally:
         conn.close()
+
+
+def test_post_tasks_resolves_workspace_default_from_request_board(client, tmp_path, monkeypatch):
+    """``POST /tasks?board=X`` must resolve the workspace default from board
+    X's ``default_workdir`` — not from whichever board is globally current.
+
+    Regression for #51864: the route resolved ``board`` for its DB connection
+    but dropped it before ``kanban_db.create_task``, which fell back to
+    ``get_current_board()`` for the ``default_workdir`` lookup — so the task
+    inherited the wrong board's workdir whenever sessions raced the
+    current-board pointer."""
+    for var in ("HERMES_KANBAN_BOARD", "HERMES_KANBAN_TASK", "HERMES_SESSION_ID"):
+        monkeypatch.delenv(var, raising=False)
+    alpha_dir = tmp_path / "alpha-proj"
+    beta_dir = tmp_path / "beta-proj"
+    alpha_dir.mkdir()
+    beta_dir.mkdir()
+    kb.create_board("alpha", default_workdir=str(alpha_dir))
+    kb.create_board("beta", default_workdir=str(beta_dir))
+    kb.set_current_board("beta")
+
+    r = client.post(
+        "/api/plugins/kanban/tasks?board=alpha",
+        json={"title": "alpha task", "workspace_kind": "dir"},
+    )
+    assert r.status_code == 200, r.text
+    task_id = r.json()["task"]["id"]
+
+    conn = kbc.connect(board="alpha")
+    try:
+        task = kb.get_task(conn, task_id)
+        assert task is not None
+        assert task.workspace_path == str(alpha_dir)
+    finally:
+        conn.close()

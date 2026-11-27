@@ -737,11 +737,16 @@ def test_another_kind_of_plugin_with_the_same_leaf_name_does_not_park_the_provid
 
 def test_scanning_a_profile_for_a_missing_provider_writes_nothing_into_it(tmp_path, monkeypatch):
     """`hermes update` reads every profile's memory selection: the read must not set the profile up
-    (directories, SOUL.md, config backups) when there is nothing to migrate."""
+    (directories, SOUL.md, config backups) or ask its secret sources (a vault, a helper) for anything
+    when there is nothing to migrate."""
+    from hermes_cli import env_loader
+
     other = tmp_path / "other"
     other.mkdir()
     (other / "config.yaml").write_text("model:\n  default: m\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "launch"))
+    monkeypatch.setattr(env_loader, "hydrate_profile_secret_sources",
+                        lambda home: pytest.fail("the scan must not fetch secrets"))
     assert mig.migrate_home(other, install=lambda n: pytest.fail("must not install"), say=lambda s: None) is None
     assert sorted(p.name for p in other.iterdir()) == ["config.yaml"]
 
@@ -786,3 +791,28 @@ def test_a_busy_lock_met_by_cron_is_explained_to_the_next_watched_start(tmp_path
     for _session in range(2):
         assert mig.recover_at_startup("retaindb", say=said.append) is False
     assert len(said) == 1 and "still installing plugins" in said[0]
+
+
+def test_an_unusable_lock_met_by_cron_is_explained_as_such_to_the_next_watched_start(tmp_path, monkeypatch):
+    """A lock file cron could not open is not "another process is installing": the watched start inside
+    the retry interval is told the real reason, so nobody waits for an installer that is not running."""
+    from contextlib import contextmanager
+    from hermes_cli import default_plugins
+    from pm import install as pm_install
+
+    (tmp_path / "config.yaml").write_text("memory:\n  provider: retaindb\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(mig, "_attempted", set())
+    monkeypatch.setattr(mig, "catalog_source", lambda n: n)
+    monkeypatch.setattr(pm_install, "lazy_installs_allowed", lambda: True)
+
+    @contextmanager
+    def unusable(wait):
+        raise PermissionError(13, "Permission denied")
+        yield
+
+    monkeypatch.setattr(default_plugins, "installer_lock", unusable)
+    assert mig.recover_at_startup("retaindb", say=None) is False
+    said: list[str] = []
+    assert mig.recover_at_startup("retaindb", say=said.append) is False
+    assert len(said) == 1 and "lock could not be taken" in said[0] and "Permission denied" in said[0]

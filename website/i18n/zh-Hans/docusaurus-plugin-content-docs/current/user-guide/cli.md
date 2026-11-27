@@ -45,6 +45,9 @@ hermes chat --verbose
 # 隔离的 git worktree（用于并行运行多个 agent）
 hermes -w                         # 在 worktree 中以交互模式运行
 hermes -w -z "Fix issue #123"     # 在 worktree 中以单次查询模式运行
+
+# 为单次自动化运行写入 JSON 用量报告
+hermes -z "Summarize this repository" --usage-file usage.json
 ```
 
 ## 界面布局
@@ -84,7 +87,7 @@ hermes -w -z "Fix issue #123"     # 在 worktree 中以单次查询模式运行
 | 橙色 | 80–95% | 接近上限 |
 | 红色 | ≥ 95% | 即将溢出——考虑使用 `/compress` |
 
-使用 `/usage` 查看详细分解，包括各类别费用（输入 vs 输出 token）。
+使用 `/usage` 查看详细分解，包括各类别费用（输入 vs 输出 token）。对于非交互式 `-z` 运行，`--usage-file <path>` 会写入 JSON 报告，包含预估费用、token 数量、模型/提供商、API 调用次数以及完成或失败状态。
 
 ### 会话恢复显示
 

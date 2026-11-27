@@ -1809,3 +1809,29 @@ button.portal-section-title:hover {
 :root[data-shell='portal'] .portal-create-project-input.is-error {
   border-color: var(--portal-status-error-ink);
 }
+
+:root[data-shell='portal'] .portal-create-project-folder {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+:root[data-shell='portal'] .portal-create-project-folder-chip {
+  display: flex;
+  min-height: 2rem;
+  align-items: center;
+  gap: 0.5rem;
+  padding-inline: 0.625rem 0.25rem;
+  border: 1px solid var(--portal-stroke-control);
+  border-radius: var(--portal-radius-control);
+  background: var(--portal-surface-control);
+  color: var(--portal-text-primary);
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-meta-size);
+}
+
+:root[data-shell='portal'] .portal-create-project-hint {
+  margin: 0;
+  color: var(--portal-text-tertiary);
+  font-size: var(--portal-type-meta-size);
+}

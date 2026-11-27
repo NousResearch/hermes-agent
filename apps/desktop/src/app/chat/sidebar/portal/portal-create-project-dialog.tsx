@@ -2,18 +2,19 @@ import { useStore } from '@nanostores/react'
 import { type FormEvent, useEffect, useId, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
+import { Codicon } from '@/components/ui/codicon'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import { PathText } from '@/components/ui/path-text'
 import { cn } from '@/lib/utils'
 import { notify } from '@/store/notifications'
 import {
   $portalCreateProjectDialog,
   closePortalCreateProjectDialog,
-  createPortalProject,
-  deletePortalProject,
   PORTAL_PROJECT_NAME_MAX
 } from '@/store/portal-projects'
-
+import { createPortalProjectSynced, deletePortalProjectSynced } from '@/store/portal-projects-sync'
+import { pickProjectFolder } from '@/store/projects'
 /**
  * "Create a new project" modal (Figma 1713:101964, 1713:102008, 1715:9972).
  * Flow A (opened from a chat's Move to project submenu): creates the project and moves that chat.
@@ -23,6 +24,9 @@ import {
 export function PortalCreateProjectDialog() {
   const request = useStore($portalCreateProjectDialog)
   const [name, setName] = useState('')
+  const [folder, setFolder] = useState<string | null>(null)
+  const [pickingFolder, setPickingFolder] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
   const inputRef = useRef<HTMLInputElement | null>(null)
   const inputId = useId()
   const errorId = useId()
@@ -30,38 +34,64 @@ export function PortalCreateProjectDialog() {
   useEffect(() => {
     if (request) {
       setName('')
+      setFolder(null)
+      setSubmitting(false)
       requestAnimationFrame(() => inputRef.current?.focus())
     }
   }, [request])
 
   const trimmed = name.trim()
   const tooLong = name.length > PORTAL_PROJECT_NAME_MAX
-  const canSubmit = trimmed.length > 0 && !tooLong
+  const canSubmit = trimmed.length > 0 && !tooLong && !submitting
 
-  const handleSubmit = (event: FormEvent) => {
+  const handlePickFolder = async () => {
+    if (pickingFolder) {
+      return
+    }
+
+    setPickingFolder(true)
+
+    try {
+      const picked = await pickProjectFolder()
+
+      if (picked) {
+        setFolder(picked)
+      }
+    } catch {
+      // User cancelled or picker unavailable.
+    } finally {
+      setPickingFolder(false)
+    }
+  }
+  const handleSubmit = async (event: FormEvent) => {
     event.preventDefault()
 
     if (!request || !canSubmit) {
       return
     }
 
+    setSubmitting(true)
     const sessionId = request.session?.id
-    const created = createPortalProject(request.owner, trimmed, sessionId)
+    const { owner } = request
+    const created = await createPortalProjectSynced(owner, trimmed, {
+      folder,
+      moveSessionId: sessionId
+    })
+    setSubmitting(false)
 
     if (!created) {
       return
     }
 
-    const { owner } = request
     closePortalCreateProjectDialog()
 
     notify({
       action: {
         label: 'Undo',
         onClick: () => {
-          deletePortalProject(
+          deletePortalProjectSynced(
             owner,
-            created.project.id,
+            created.project,
             sessionId ? { previousProjectId: created.previousProjectId, sessionId } : undefined
           )
         }
@@ -125,11 +155,50 @@ export function PortalCreateProjectDialog() {
               ) : null}
             </div>
 
+            <div className="portal-create-project-folder" data-slot="portal-create-project-folder">
+              <div className="portal-create-project-label-row">
+                <span className="portal-create-project-label">Folder</span>
+                <span className="portal-create-project-counter">Optional</span>
+              </div>
+              {folder ? (
+                <div className="portal-create-project-folder-chip">
+                  <Codicon aria-hidden name="folder-opened" size="0.875rem" />
+                  <PathText className="min-w-0 flex-1 truncate" path={folder} />
+                  <Button
+                    aria-label="Remove folder"
+                    onClick={() => setFolder(null)}
+                    size="icon-xs"
+                    type="button"
+                    variant="ghost"
+                  >
+                    <Codicon aria-hidden name="close" size="0.75rem" />
+                  </Button>
+                </div>
+              ) : (
+                <Button
+                  className="justify-start"
+                  disabled={pickingFolder}
+                  onClick={() => void handlePickFolder()}
+                  size="sm"
+                  type="button"
+                  variant="outline"
+                >
+                  <Codicon aria-hidden name="folder-opened" size="0.875rem" />
+                  {pickingFolder ? 'Choosing folder…' : 'Attach folder…'}
+                </Button>
+              )}
+              <p className="portal-create-project-hint">
+                New chats in this project start in this folder with Git and file tools attached.
+              </p>
+            </div>
+
             <DialogFooter>
               <Button onClick={closePortalCreateProjectDialog} type="button" variant="outline">
                 Cancel
               </Button>
-              <Button type="submit">{request.session ? 'Create and move' : 'Create project'}</Button>
+              <Button disabled={!canSubmit} type="submit">
+                {request.session ? 'Create and move' : 'Create project'}
+              </Button>
             </DialogFooter>
           </form>
         ) : null}

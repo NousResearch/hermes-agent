@@ -9,10 +9,14 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { Tip } from '@/components/ui/tooltip'
 import type { SessionInfo } from '@/hermes'
+import { useI18n } from '@/i18n'
 import { ChevronRight, MoreVertical, Pencil, Plus, Trash2 } from '@/lib/icons'
 import type { AgentSidebarOwner } from '@/store/agent-sidebar-preferences'
 import { notify } from '@/store/notifications'
@@ -20,17 +24,22 @@ import {
   $pendingPortalProjectForNewChat,
   $portalProjectExpanded,
   armPortalProjectNewChat,
-  deletePortalProject,
   PORTAL_PROJECT_NAME_MAX,
   type PortalProject,
-  renamePortalProject,
   setPortalProjectExpanded
 } from '@/store/portal-projects'
+import {
+  addPortalProjectFolderSynced,
+  deletePortalProjectSynced,
+  renamePortalProjectSynced,
+  setPortalProjectAppearanceSynced
+} from '@/store/portal-projects-sync'
+import { pickProjectFolder, requestStartWorkSession, revealPath } from '@/store/projects'
 import { $selectedStoredSessionId } from '@/store/session'
 
+import { ProjectAppearancePicker } from '../projects/project-appearance'
 import { startSimplifiedAgentSession } from '../simplified-new-session-model'
 import type { SimplifiedAgent } from '../use-simplified-agents'
-
 interface ProjectRowProps {
   agent: SimplifiedAgent
   allAgentSessionIds: readonly string[]
@@ -50,11 +59,14 @@ function PortalProjectRow({
   renderChats,
   sessions
 }: ProjectRowProps) {
+  const { t } = useI18n()
   const pendingNewChat = useStore($pendingPortalProjectForNewChat)
   const [truncated, setTruncated] = useState(false)
   const [renaming, setRenaming] = useState(false)
   const [draft, setDraft] = useState(project.name)
   const hasDraftHere = pendingNewChat?.projectId === project.id
+  const iconName = project.icon || 'folder'
+  const iconStyle = project.color ? { color: project.color } : undefined
 
   const checkTruncation = (node: HTMLSpanElement | null) => {
     if (node) {
@@ -64,15 +76,36 @@ function PortalProjectRow({
 
   const startChatInProject = () => {
     armPortalProjectNewChat(owner, project.id, allAgentSessionIds, $selectedStoredSessionId.get())
-    startSimplifiedAgentSession(agent)
+
+    if (project.path) {
+      requestStartWorkSession(project.path, undefined, {
+        owner: owner.connectionId ? { connectionId: owner.connectionId, profile: owner.profile } : undefined
+      })
+    } else {
+      startSimplifiedAgentSession(agent)
+    }
+
     requestComposerFocus()
+  }
+
+  const attachFolder = async () => {
+    try {
+      const picked = await pickProjectFolder()
+
+      if (picked) {
+        addPortalProjectFolderSynced(owner, project, picked)
+        notify({ durationMs: 3_000, kind: 'success', message: `Attached folder to ${project.name}.` })
+      }
+    } catch {
+      // Picker cancelled or unavailable.
+    }
   }
 
   const commitRename = () => {
     const trimmed = draft.trim()
 
     if (trimmed && trimmed.length <= PORTAL_PROJECT_NAME_MAX && trimmed !== project.name) {
-      renamePortalProject(owner, project.id, trimmed)
+      renamePortalProjectSynced(owner, project, trimmed)
     }
 
     setRenaming(false)
@@ -83,13 +116,13 @@ function PortalProjectRow({
       {project.name}
     </span>
   )
-
+  const rowTooltip = project.path ? `${project.name} — ${project.path}` : project.name
   return (
     <div className="portal-project-group" data-open={open || undefined} data-slot="portal-project-group">
       <div className="portal-project-item">
         {renaming ? (
           <div className="portal-project-row is-renaming">
-            <Codicon aria-hidden className="portal-project-icon" name="folder" size="0.875rem" />
+            <Codicon aria-hidden className="portal-project-icon" name={iconName} size="0.875rem" style={iconStyle} />
             <input
               aria-label={`Rename ${project.name}`}
               autoFocus
@@ -120,9 +153,9 @@ function PortalProjectRow({
             onFocus={event => checkTruncation(event.currentTarget.querySelector('.portal-project-name'))}
             type="button"
           >
-            <Codicon aria-hidden className="portal-project-icon" name="folder" size="0.875rem" />
-            {truncated ? (
-              <Tip label={project.name} side="right">
+            <Codicon aria-hidden className="portal-project-icon" name={iconName} size="0.875rem" style={iconStyle} />
+            {truncated || project.path ? (
+              <Tip label={rowTooltip} side="right">
                 {labelSpan}
               </Tip>
             ) : (
@@ -167,6 +200,32 @@ function PortalProjectRow({
                   New chat
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
+                {project.path ? (
+                  <DropdownMenuItem onSelect={() => void revealPath(project.path ?? null)}>
+                    <Codicon aria-hidden name="folder-opened" size="0.875rem" />
+                    Reveal folder
+                  </DropdownMenuItem>
+                ) : null}
+                <DropdownMenuItem onSelect={() => void attachFolder()}>
+                  <Codicon aria-hidden name="new-folder" size="0.875rem" />
+                  {project.path ? 'Add folder…' : 'Attach folder…'}
+                </DropdownMenuItem>
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger>
+                    <Codicon aria-hidden name="symbol-color" size="0.875rem" />
+                    {t.sidebar.projects.menuAppearance}
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent className="w-48 p-2.5">
+                    <ProjectAppearancePicker
+                      color={project.color ?? null}
+                      icon={project.icon ?? null}
+                      noColorLabel={t.sidebar.projects.noColor}
+                      onColor={color => setPortalProjectAppearanceSynced(owner, project, { color })}
+                      onIcon={icon => setPortalProjectAppearanceSynced(owner, project, { icon })}
+                    />
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+                <DropdownMenuSeparator />
                 <DropdownMenuItem
                   onSelect={() => {
                     setDraft(project.name)
@@ -179,7 +238,7 @@ function PortalProjectRow({
                 <DropdownMenuItem
                   className="text-destructive focus:text-destructive"
                   onSelect={() => {
-                    deletePortalProject(owner, project.id)
+                    deletePortalProjectSynced(owner, project)
                     notify({ durationMs: 3_000, kind: 'info', message: `${project.name} deleted.` })
                   }}
                   variant="destructive"

@@ -38,9 +38,10 @@ import { notify, notifyError } from '@/store/notifications'
 import {
   $portalAgentProjects,
   agentPortalProjectsFor,
-  moveSessionToPortalProject,
-  openPortalCreateProjectDialog
+  openPortalCreateProjectDialog,
+  resolvePortalProjectForSession
 } from '@/store/portal-projects'
+import { moveSessionToPortalProjectSynced } from '@/store/portal-projects-sync'
 import {
   $projectTree,
   applyRenamedSessionTitle,
@@ -300,13 +301,14 @@ function PortalMoveToProjectItems({
   title: string
 }) {
   const allProjects = useStore($portalAgentProjects)
+  const session = useStore($sessions).find(row => sessionMatchesStoredId(row, sessionId))
   const owner = {
     connectionId: ownerRoute?.connectionId ?? null,
     profile: ownerRoute?.targetProfile || ownerRoute?.profile || profile || 'default'
   }
   const agentLabel = owner.profile
   const entry = agentPortalProjectsFor(allProjects, owner)
-  const currentProjectId = entry.sessionProject[sessionId] ?? null
+  const currentProjectId = resolvePortalProjectForSession(entry, { cwd: session?.cwd, id: sessionId })
 
   return (
     <>
@@ -323,11 +325,14 @@ function PortalMoveToProjectItems({
               }
 
               triggerHaptic('selection')
-              const previous = moveSessionToPortalProject(owner, sessionId, project.id)
+              const previous = moveSessionToPortalProjectSynced(owner, sessionId, project)
+              const previousProject = previous
+                ? (entry.projects.find(item => item.id === previous) ?? null)
+                : null
               notify({
                 action: {
                   label: 'Undo',
-                  onClick: () => moveSessionToPortalProject(owner, sessionId, previous ?? null)
+                  onClick: () => moveSessionToPortalProjectSynced(owner, sessionId, previousProject)
                 },
                 durationMs: 4_000,
                 kind: 'success',
@@ -335,7 +340,12 @@ function PortalMoveToProjectItems({
               })
             }}
           >
-            <Codicon aria-hidden name="folder" size="0.875rem" />
+            <Codicon
+              aria-hidden
+              name={project.icon || 'folder'}
+              size="0.875rem"
+              style={project.color ? { color: project.color } : undefined}
+            />
             <span className="truncate">{project.name}</span>
             {active ? <Codicon aria-hidden className="ml-auto" name="check" size="0.75rem" /> : null}
           </kit.Item>
@@ -345,11 +355,14 @@ function PortalMoveToProjectItems({
         <kit.Item
           onSelect={() => {
             triggerHaptic('selection')
-            const previous = moveSessionToPortalProject(owner, sessionId, null)
+            const previous = moveSessionToPortalProjectSynced(owner, sessionId, null)
+            const previousProject = previous
+              ? (entry.projects.find(item => item.id === previous) ?? null)
+              : null
             notify({
               action: {
                 label: 'Undo',
-                onClick: () => moveSessionToPortalProject(owner, sessionId, previous ?? null)
+                onClick: () => moveSessionToPortalProjectSynced(owner, sessionId, previousProject)
               },
               durationMs: 4_000,
               kind: 'info',

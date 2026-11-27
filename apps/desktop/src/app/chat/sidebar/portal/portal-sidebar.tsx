@@ -21,10 +21,13 @@ import {
   agentPortalProjectsFor,
   claimPendingPortalProjectSession,
   clearPendingPortalProjectNewChat,
-  markPendingPortalProjectLeftArmed
+  markPendingPortalProjectLeftArmed,
+  mergeBackendPortalProjects,
+  resolvePortalProjectForSession
 } from '@/store/portal-projects'
+import { syncPortalAgentProjects } from '@/store/portal-projects-sync'
 import { $activeGatewayProfile, $newChatProfile } from '@/store/profile'
-import { $projectTree, refreshProjectTree } from '@/store/projects'
+import { $projects, $projectTree, refreshProjectTree } from '@/store/projects'
 import { $gatewayState, $selectedStoredSessionId, sessionPinId } from '@/store/session'
 
 import type { ChatSidebar } from '../index'
@@ -153,6 +156,48 @@ function PortalPinnedShelf() {
   )
 }
 
+/** Sync backend `projects.db` records into `$portalAgentProjects` for every visible agent and
+ *  mirror live `$projects` updates on the active profile so Classic and Redesign stay identical. */
+function useSyncPortalBackendProjects(
+  gatewayState: string,
+  agents: readonly { connectionId: null | string; profile: string; targetProfile?: string }[],
+  activeConnection: null | string,
+  activeProfile: string
+) {
+  const activeBackendProjects = useStore($projects)
+  const agentSyncKeys = agents.map(agent => agentSidebarKey(agentOwner(agent))).join('|')
+
+  useEffect(() => {
+    if (gatewayState !== 'open') {
+      return
+    }
+
+    const seen = new Set<string>()
+
+    for (const agent of agents) {
+      const owner = agentOwner(agent)
+      const key = agentSidebarKey(owner)
+
+      if (!seen.has(key)) {
+        seen.add(key)
+        void syncPortalAgentProjects(owner)
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `agentSyncKeys` tracks the exact agent identity set.
+  }, [agentSyncKeys, gatewayState])
+
+  useEffect(() => {
+    if (gatewayState !== 'open' || activeBackendProjects.length === 0) {
+      return
+    }
+
+    mergeBackendPortalProjects(
+      { connectionId: activeConnection ?? null, profile: activeProfile || 'default' },
+      activeBackendProjects
+    )
+  }, [activeBackendProjects, activeConnection, activeProfile, gatewayState])
+}
+
 export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
   const gatewayState = useStore($gatewayState)
 
@@ -198,6 +243,7 @@ export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const activeConnection = useStore($activeConnectionId)
   const activeProfile = useStore($activeGatewayProfile)
+  useSyncPortalBackendProjects(gatewayState, agents.agents, activeConnection, activeProfile)
 
   // When a user clicked "+" / "New chat" inside a project, file the first newly created session
   // for that agent directly into that project. Never disarm on the pre-switch render while
@@ -297,7 +343,7 @@ export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
 
       const agentProjects = agentPortalProjectsFor(allProjects, owner)
       const agentSessions = agents.sessionsByAgent.get(agentKey(agent)) ?? []
-      const looseCount = agentSessions.filter(row => !agentProjects.sessionProject[row.id]).length
+      const looseCount = agentSessions.filter(row => !resolvePortalProjectForSession(agentProjects, row)).length
       projectRowsOverhead += agentProjects.projects.length
 
       openAgents.push({
@@ -353,9 +399,9 @@ export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
               const looseSessions: typeof ordered = []
 
               for (const row of ordered) {
-                const projectId = agentProjects.sessionProject[row.id]
+                const projectId = resolvePortalProjectForSession(agentProjects, row)
 
-                if (projectId && agentProjects.projects.some(p => p.id === projectId)) {
+                if (projectId) {
                   const list = sessionsByProject.get(projectId) ?? []
                   list.push(row)
                   sessionsByProject.set(projectId, list)

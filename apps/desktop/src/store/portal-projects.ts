@@ -1,8 +1,19 @@
 import { atom } from 'nanostores'
 
+import { isUnderPath } from '@/lib/path-compare'
 import { Codecs, persistentAtom } from '@/lib/persisted'
 import { agentSidebarKey, type AgentSidebarOwner } from '@/store/agent-sidebar-preferences'
 
+export interface BackendProjectRecord {
+  id: string
+  name?: string | null
+  slug?: string | null
+  primary_path?: string | null
+  folders?: readonly { path?: string | null; is_primary?: boolean }[] | null
+  color?: string | null
+  icon?: string | null
+  created_at?: number | null
+}
 /** New project names are capped at 25 characters so they fit cleanly in the sidebar (Figma 1715:9972).
  *  Existing names longer than 25 characters remain intact and truncate with a hover tooltip (1719:9980). */
 export const PORTAL_PROJECT_NAME_MAX = 25
@@ -11,8 +22,15 @@ export interface PortalProject {
   id: string
   name: string
   createdAt: number
+  /** Primary workspace folder (absent/null for lightweight chat-group projects). */
+  path?: string | null
+  /** All workspace folders attached to this project (matches Classic `projects.db`). */
+  folders?: string[]
+  color?: string | null
+  icon?: string | null
+  /** True when backed by `projects.db` (`projects.create` / `projects.list`). */
+  backend?: boolean
 }
-
 export interface AgentPortalProjects {
   projects: PortalProject[]
   /** Session ID -> project ID membership for this agent. */
@@ -34,23 +52,41 @@ const EMPTY_AGENT_PROJECTS: AgentPortalProjects = {
   sessionProject: {}
 }
 
-function isPortalProject(value: unknown): value is PortalProject {
-  return (
-    Boolean(value) &&
-    typeof value === 'object' &&
-    typeof (value as PortalProject).id === 'string' &&
-    typeof (value as PortalProject).name === 'string' &&
-    typeof (value as PortalProject).createdAt === 'number'
-  )
-}
+function sanitizePortalProject(value: unknown): PortalProject | null {
+  if (!value || typeof value !== 'object') {
+    return null
+  }
 
+  const raw = value as Record<string, unknown>
+
+  if (typeof raw.id !== 'string' || typeof raw.name !== 'string' || typeof raw.createdAt !== 'number') {
+    return null
+  }
+
+  const folders = Array.isArray(raw.folders)
+    ? raw.folders.filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0)
+    : undefined
+
+  return {
+    id: raw.id,
+    name: raw.name,
+    createdAt: raw.createdAt,
+    ...(typeof raw.path === 'string' && raw.path.trim() ? { path: raw.path.trim() } : {}),
+    ...(folders && folders.length > 0 ? { folders } : {}),
+    ...(typeof raw.color === 'string' && raw.color.trim() ? { color: raw.color } : {}),
+    ...(typeof raw.icon === 'string' && raw.icon.trim() ? { icon: raw.icon } : {}),
+    ...(raw.backend === true ? { backend: true } : {})
+  }
+}
 function parseAgentProjects(value: unknown): AgentPortalProjects | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return null
   }
 
   const raw = value as Record<string, unknown>
-  const projects = Array.isArray(raw.projects) ? raw.projects.filter(isPortalProject) : []
+  const projects = Array.isArray(raw.projects)
+    ? raw.projects.map(sanitizePortalProject).filter((project): project is PortalProject => project !== null)
+    : []
   const validIds = new Set(projects.map(project => project.id))
   const sessionProject: Record<string, string> = {}
 
@@ -174,6 +210,126 @@ export function agentPortalProjectsFor(
   return all[agentSidebarKey(owner)] ?? EMPTY_AGENT_PROJECTS
 }
 
+/** Resolve which project owns a session: explicit assignment wins (supports folder-less projects
+ *  and manual overrides); otherwise longest matching workspace folder prefix (Classic parity). */
+export function resolvePortalProjectForSession(
+  entry: AgentPortalProjects,
+  session: { id: string; cwd?: string | null }
+): string | null {
+  const explicit = entry.sessionProject[session.id]
+
+  if (explicit && entry.projects.some(project => project.id === explicit)) {
+    return explicit
+  }
+
+  const cwd = session.cwd?.trim()
+
+  if (!cwd) {
+    return null
+  }
+
+  let bestId: string | null = null
+  let bestLength = -1
+
+  for (const project of entry.projects) {
+    const roots = project.folders?.length ? project.folders : project.path ? [project.path] : []
+
+    for (const root of roots) {
+      if (root && isUnderPath(root, cwd) && root.length > bestLength) {
+        bestId = project.id
+        bestLength = root.length
+      }
+    }
+  }
+
+  return bestId
+}
+
+export function projectInfoToPortalProject(project: BackendProjectRecord): PortalProject {
+  const folders = (project.folders ?? [])
+    .map(folder => folder.path?.trim())
+    .filter((folder): folder is string => Boolean(folder))
+  const primary = project.primary_path?.trim() || folders[0] || null
+
+  if (primary && !folders.includes(primary)) {
+    folders.unshift(primary)
+  }
+
+  return {
+    backend: true,
+    color: project.color ?? null,
+    createdAt: project.created_at ?? Date.now(),
+    ...(folders.length > 0 ? { folders } : {}),
+    icon: project.icon ?? null,
+    id: project.id,
+    name: project.name || project.id,
+    ...(primary ? { path: primary } : {})
+  }
+}
+
+/** Merge authoritative backend projects (`projects.list`) into an agent's cached project list.
+ *  Preserves any local-only (`!backend`) fallback projects and valid manual session assignments. */
+export function mergeBackendPortalProjects(
+  owner: AgentSidebarOwner,
+  backendProjects: readonly BackendProjectRecord[]
+): void {
+  const entry = agentPortalProjectsFor($portalAgentProjects.get(), owner)
+  const mapped = backendProjects.map(projectInfoToPortalProject)
+  const backendIds = new Set(mapped.map(project => project.id))
+  const localOnly = entry.projects.filter(project => !project.backend && !backendIds.has(project.id))
+  const merged = [...mapped, ...localOnly]
+  const validIds = new Set(merged.map(project => project.id))
+  const sessionProject: Record<string, string> = {}
+
+  for (const [sessionId, projectId] of Object.entries(entry.sessionProject)) {
+    if (validIds.has(projectId)) {
+      sessionProject[sessionId] = projectId
+    }
+  }
+
+  updateAgentEntry(owner, { projects: merged, sessionProject })
+}
+
+export function upsertPortalProject(
+  owner: AgentSidebarOwner,
+  project: PortalProject,
+  moveSessionId?: string
+): CreatePortalProjectResult {
+  const entry = agentPortalProjectsFor($portalAgentProjects.get(), owner)
+  const previousProjectId = moveSessionId ? entry.sessionProject[moveSessionId] : undefined
+  const exists = entry.projects.some(existing => existing.id === project.id)
+  const projects = exists
+    ? entry.projects.map(existing => (existing.id === project.id ? project : existing))
+    : [...entry.projects, project]
+  const sessionProject = moveSessionId ? { ...entry.sessionProject, [moveSessionId]: project.id } : entry.sessionProject
+
+  updateAgentEntry(owner, { projects, sessionProject })
+
+  if (moveSessionId) {
+    setPortalProjectExpanded(project.id, true)
+  }
+
+  return { previousProjectId, project }
+}
+
+export function patchPortalProject(
+  owner: AgentSidebarOwner,
+  projectId: string,
+  patch: Partial<Pick<PortalProject, 'color' | 'folders' | 'icon' | 'name' | 'path'>>
+): boolean {
+  const entry = agentPortalProjectsFor($portalAgentProjects.get(), owner)
+
+  if (!entry.projects.some(project => project.id === projectId)) {
+    return false
+  }
+
+  updateAgentEntry(owner, {
+    ...entry,
+    projects: entry.projects.map(project => (project.id === projectId ? { ...project, ...patch } : project))
+  })
+
+  return true
+}
 function updateAgentEntry(owner: AgentSidebarOwner, next: AgentPortalProjects): void {
   const key = agentSidebarKey(owner)
   const current = $portalAgentProjects.get()
@@ -200,7 +356,8 @@ export interface CreatePortalProjectResult {
 export function createPortalProject(
   owner: AgentSidebarOwner,
   rawName: string,
-  moveSessionId?: string
+  moveSessionId?: string,
+  folder?: string | null
 ): CreatePortalProjectResult | null {
   const name = rawName.trim()
 
@@ -208,22 +365,16 @@ export function createPortalProject(
     return null
   }
 
-  const entry = agentPortalProjectsFor($portalAgentProjects.get(), owner)
   const id = `pp_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`
-  const project: PortalProject = { id, name, createdAt: Date.now() }
-  const previousProjectId = moveSessionId ? entry.sessionProject[moveSessionId] : undefined
-  const sessionProject = moveSessionId ? { ...entry.sessionProject, [moveSessionId]: id } : entry.sessionProject
-
-  updateAgentEntry(owner, {
-    projects: [...entry.projects, project],
-    sessionProject
-  })
-
-  if (moveSessionId) {
-    setPortalProjectExpanded(id, true)
+  const trimmedFolder = folder?.trim() || null
+  const project: PortalProject = {
+    createdAt: Date.now(),
+    ...(trimmedFolder ? { folders: [trimmedFolder], path: trimmedFolder } : {}),
+    id,
+    name
   }
 
-  return { project, previousProjectId }
+  return upsertPortalProject(owner, project, moveSessionId)
 }
 
 export function deletePortalProject(

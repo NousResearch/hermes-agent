@@ -326,6 +326,13 @@ async def execute_admission(authority, ref, row):
         if 'local_automation_v1' in row['payload']:
             from gateway.session_automation import restore_local_automation
             event = restore_local_automation(authority, ref, row)
+    from gateway.session_kanban_digest import descriptor, is_kanban, refresh_text
+    if is_kanban(row):
+        text = await asyncio.to_thread(refresh_text, descriptor(row['payload']), event.text)
+        if text is None:
+            from gateway.session_results import execution_result
+            return execution_result('completed')
+        event.text = text
     # The claim passed the admission gate, which refuses once a drain begins: a wake claimed here was
     # receipted before any drain and is never re-sent, so a drain starting now runs it rather than
     # answering it with the drain notice and settling it completed unrun (#138123, authority route).

@@ -248,7 +248,7 @@ class AdmissionRepository(Protocol):
 
     # Writes
 
-    def admit(self, *, epoch: int, principal_id: str, session_id: str, request_id: str, payload: Mapping[str, Any], intent: Literal['queue', 'steer', 'redirect'] = 'queue', gate: AdmissionGate = None, replaces: QueuedReplacement | None = None, supersedes: str | None = None, api_target: ApiTargetClaim | None = None, rewrite: TranscriptRewrite | None = None, hosted: HostedMemberGuard | None = None, fold: QueuedFold | None = None) -> tuple[AdmissionRecord, bool]:
+    def admit(self, *, epoch: int, principal_id: str, session_id: str, request_id: str, payload: Mapping[str, Any], intent: Literal['queue', 'steer', 'redirect'] = 'queue', gate: AdmissionGate = None, replaces: QueuedReplacement | None = None, supersedes: str | None = None, api_target: ApiTargetClaim | None = None, rewrite: TranscriptRewrite | None = None, hosted: HostedMemberGuard | None = None, fold: QueuedFold | None = None, retires: tuple[str, ...] = ()) -> tuple[AdmissionRecord, bool]:
         """Admit one input; the bool is ``created``.
 
         The digest covers the target, the payload without the owner's ``surface_v1.client`` stamp (``vocabulary.retry_input``) and the intent; the stored payload keeps the stamp.

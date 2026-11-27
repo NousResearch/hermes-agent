@@ -18,7 +18,9 @@ from persistence.conversation.sessions import CANONICAL_BOT_CHAT_TITLE
 from persistence.core.errors import ExportTooLarge
 from persistence.core.identity import SessionId
 from persistence.housekeeping.maintenance import (
-    SESSION_PROJECTION_FIELDS, PruneCandidate, PruneCriteria, PruneReclaimEstimate, PruneResult, TreeServeFacts,
+    SESSION_PROJECTION_FIELDS,
+    STALE_OPEN_EMPTY_MIN_AGE, STALE_OPEN_EMPTY_SOURCES,
+    PruneCandidate, PruneCriteria, PruneReclaimEstimate, PruneResult, TreeServeFacts,
 )
 
 from .._backend import SQLiteStore, register_repository, translated
@@ -289,6 +291,41 @@ class SQLiteSessionMaintenance(SessionPortability):
             return ids
         with translated():
             removed_ids = self._store.holder()._execute_write(_do) or []
+        return tuple(SessionId(sid) for sid in removed_ids)
+
+    def prune_stale_open_empty_sessions(self, *, media_root: str) -> tuple[SessionId, ...]:
+        cutoff = time.time() - STALE_OPEN_EMPTY_MIN_AGE.total_seconds()
+        srcs = STALE_OPEN_EMPTY_SOURCES
+        def _do(conn):
+            ids = [r[0] for r in conn.execute(f"""
+                SELECT id FROM sessions
+                WHERE ended_at IS NULL
+                  AND {_not_pinned_sql('sessions')}
+                  AND title IS NULL
+                  AND source IN ({_placeholders(srcs)})
+                  AND started_at < ?
+                  AND {_sql_session_last_active('sessions')} < ?
+                  AND NOT EXISTS (
+                      SELECT 1 FROM messages WHERE messages.session_id = sessions.id
+                  )
+            """, (*srcs, cutoff, cutoff)).fetchall()]
+            if not ids:
+                return []
+            # A live turn lease or compression lock means a process is acting in the row right
+            # now; retire_prunable then skips any row whose ledger holds work (one busy row
+            # cannot abort the sweep) and fences reset/compression conversations whole.
+            ids = [sid for sid in ids if not _write_guards_reject(holder, conn, sid)]
+            ids = retire_prunable(conn, ids, media_root=media_root)
+            if not ids:
+                return []
+            for chunk in _id_chunks(ids):
+                conn.execute(f"UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id IN ({_placeholders(chunk)})", chunk)
+                conn.execute(f"DELETE FROM sessions WHERE id IN ({_placeholders(chunk)})", chunk)
+            _delete_unreferenced_system_prompts(conn)
+            return ids
+        with translated():
+            holder = self._store.holder()
+            removed_ids = holder._execute_write(_do) or []
         return tuple(SessionId(sid) for sid in removed_ids)
 
     def sweep_orphaned_sessions(

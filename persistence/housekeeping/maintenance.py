@@ -51,6 +51,19 @@ GHOST_SESSION_SOURCE = "tui"
 #: A ghost row must have started at least this long ago.
 GHOST_SESSION_MIN_AGE = timedelta(hours=24)
 
+#: An open row of a state-owned source must have started at least this long ago for the stale
+#: open-empty prune: an empty row holds nothing to resume, so it does not need the orphan sweep's
+#: full retention window (a crashed fire's row would otherwise sit open, saturating live-session
+#: iteration, for ``retention_days`` before the sweep even closes it).
+STALE_OPEN_EMPTY_MIN_AGE = timedelta(hours=24)
+
+#: The sources the stale open-empty prune reaps: the fire-driven lifecycles whose process can die
+#: before the first turn. ``cli``, ``api_server`` and ``acp`` are excluded on purpose: a LIVE
+#: process there owns an open empty row between turns (an eager ``/new``, a provisioned API
+#: session) with no lease, lock or ledger to fence with, and retiring the id would break that
+#: session's persistence. Those sources keep the orphan sweep's close-after-retention semantics.
+STALE_OPEN_EMPTY_SOURCES: tuple[str, ...] = ("cron", "kanban", "subagent", "tool", "recovered")
+
 #: Sources whose stale open rows the automatic prune reaps.
 AUTO_PRUNE_STALE_OPEN_SOURCES: tuple[str, ...] = ("cli", "cron", "kanban", "acp", "api_server", "subagent", "tool", "recovered")
 
@@ -313,6 +326,10 @@ class SessionMaintenance(Protocol):
 
     def prune_empty_ghost_sessions(self, *, media_root: str) -> tuple[SessionId, ...]:
         """Delete every ended, untitled ``GHOST_SESSION_SOURCE`` row that started more than ``GHOST_SESSION_MIN_AGE`` ago and holds no message row, skipping rows whose ledger holds work, in one write; return the deleted ids. ``media_root`` as for ``SessionRepository.delete``."""
+        ...
+
+    def prune_stale_open_empty_sessions(self, *, media_root: str) -> tuple[SessionId, ...]:
+        """Delete every OPEN row of a ``STALE_OPEN_EMPTY_SOURCES`` source that started more than ``STALE_OPEN_EMPTY_MIN_AGE`` ago, has been equally idle, is untitled and holds no message row, in one write; return the deleted ids. Spared: pinned rows (and continuations of a pinned segment), rows a live turn lease or compression lock guards (expired guards are reclaimed), and rows whose ledger holds work; a local reset/compression conversation is swept only whole, as ``retire_prunable`` fences it. The sources are the fire-driven lifecycles only — a ``cli``/``api_server``/``acp`` row can be a live process's own empty session between turns, so those keep the orphan sweep's close-after-retention semantics. An empty row of a reaped source holds nothing to resume, so unlike the orphan sweep it is deleted outright rather than closed to age another retention window. ``media_root`` as for ``SessionRepository.delete``."""
         ...
 
     def sweep_orphaned_sessions(self, *, max_idle_seconds: float, sources: tuple[str, ...] = ('tui', 'desktop', 'subagent'), exclude_ids: tuple[str, ...] = (), exclude_pinned: bool = False, heartbeat_staleness_seconds: Optional[float] = None, heartbeat_ownership_grace_seconds: Optional[float] = None, respect_gateway_heartbeats: bool = True) -> tuple[SessionId, ...]:

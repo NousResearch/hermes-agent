@@ -151,6 +151,31 @@ def _connect_inputs(server_name: str, config: dict) -> tuple[list, set]:
     return list(_stdio_launch(config)), set()
 
 
+_TEARDOWN_TIMEOUT_S = 30.0
+
+
+class _BoundedExit:
+    """Async context manager wrapper whose exit is time-bounded. The exit runs in the same task under
+    ``asyncio.timeout``, so the cancellation lands inside the stuck close; when it does not finish in time
+    the teardown is abandoned with a warning and the exit reports nothing suppressed, so the body's own
+    return value or exception goes on as it would have (#145292)."""
+
+    def __init__(self, cm, server_name: str, what: str):
+        self._cm, self._server, self._what = cm, server_name, what
+
+    async def __aenter__(self):
+        return await self._cm.__aenter__()
+
+    async def __aexit__(self, exc_type, exc, tb):
+        try:
+            async with asyncio.timeout(_TEARDOWN_TIMEOUT_S):
+                return await self._cm.__aexit__(exc_type, exc, tb)
+        except TimeoutError:
+            logger.warning("MCP server '%s': %s teardown did not finish within %.0fs; abandoned so the server can "
+                           "reconnect", self._server, self._what, _TEARDOWN_TIMEOUT_S)
+            return False
+
+
 def _sdk_unavailable_error(server_name: str) -> ImportError:
     """The connect error when the core ``mcp`` SDK did not import: its own cause when the import
     failed (a broken or mid-update install, retried on the next connect), else not installed."""
@@ -297,16 +322,28 @@ class MCPServerTransportMixin:
         finally:
             if events_task is not None:
                 events_task.cancel()
-        if label and reason == "reconnect":
-            logger.info("MCP server '%s': reconnect requested — tearing down %s session", self.name, label)
+        if reason == "reconnect":
+            # Withdraw the session before the teardown runs, not after it: the in-flight calls were just
+            # failed, so their callers come back at once, and a transport exit can take seconds (a dead
+            # socket, a slow DELETE). Until run() cleared it, a call arriving in that window was admitted
+            # on the closed session and failed instead of waiting for the fresh one (#145292). ``_ready``
+            # stays set: it still means "this attempt had a live session" to _reconnect_or_reraise_group,
+            # and run() clears it before re-entry.
+            self.session = None
+            if label:
+                logger.info("MCP server '%s': reconnect requested — tearing down %s session", self.name, label)
         return reason
 
     async def _serve_transport(self, transport_cm, label: str, connect_timeout: float) -> str:
         """Open *transport_cm*, wrap its streams in a ClientSession and serve it. Streams are indexed,
-        not unpacked (mcp 1.x yields a 3-tuple, 2.x a pair); a TaskGroup drop maps to ``"reconnect"``."""
+        not unpacked (mcp 1.x yields a 3-tuple, 2.x a pair); a TaskGroup drop maps to ``"reconnect"``.
+        Both exits are time-bounded (:class:`_BoundedExit`): a teardown that never finishes would otherwise
+        hold the run loop forever, with no reconnect, park or self-probe (#145292)."""
+        what = label or "MCP"
         try:
-            async with transport_cm as _streams:
-                async with _core.ClientSession(_streams[0], _streams[1], **self._session_kwargs()) as session:
+            async with _BoundedExit(transport_cm, self.name, f"{what} transport") as _streams:
+                async with _BoundedExit(_core.ClientSession(_streams[0], _streams[1], **self._session_kwargs()),
+                                        self.name, f"{what} session") as session:
                     return await self._serve_session(session, connect_timeout, label)
         except BaseExceptionGroup as _eg:
             return self._reconnect_or_reraise_group(_eg)

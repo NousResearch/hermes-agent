@@ -307,6 +307,21 @@ def test_lifecycle_settles_all_overlapping_http_calls(connected, event):
     assert core._mcp_loop.is_running()
 
 
+def test_a_call_during_a_slow_reconnect_teardown_waits_for_the_fresh_session(connected, monkeypatch):
+    """The closed session must be withdrawn before the transport exit, which can take seconds: a call
+    arriving meanwhile waits for the fresh session instead of failing on the closed one (#145292)."""
+    from tools import mcp_tool
+
+    class _SlowTransportExit(mcp_tool.ClientSession):
+        async def __aexit__(self, *exc):
+            out = await super().__aexit__(*exc)
+            await asyncio.sleep(1.0)  # the transport exit after the session closed: a dead socket, a slow DELETE
+            return out
+
+    monkeypatch.setattr(mcp_tool, "ClientSession", _SlowTransportExit)
+    test_lifecycle_settles_all_overlapping_http_calls(connected, "reconnect")
+
+
 def test_overlapping_timeout_cleans_up_every_call(connected):
     from tools.mcp_tool_handlers import _make_tool_handler
 

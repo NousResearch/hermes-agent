@@ -928,3 +928,70 @@ def test_synthesized_run_for_unassigned_card_keeps_null_profile(kanban_home: Pat
             "SELECT profile, outcome FROM task_runs WHERE task_id = ? ORDER BY id DESC LIMIT 1", (tid,),
         ).fetchone()
         assert (run["outcome"], run["profile"]) == ("blocked", None)
+
+
+# ---------------------------------------------------------------------------
+# request_changes clears a stale crash error before handing back to ready
+# ---------------------------------------------------------------------------
+
+
+def test_request_changes_clears_stale_crash_error_for_ready_guard(
+    kanban_home: Path,
+) -> None:
+    """A reviewer crash stamps its benign captured output ("Billing service
+    status: all systems operational") into ``last_failure_error``. A LATER
+    reviewer that claims from ``review`` and calls ``request_changes`` ends that
+    run with ``changes_requested`` (not ``crashed``), so the ready-lane respawn
+    guard would read the stale billing line as a live blocker and park the card
+    forever. The handoff must clear the stale error while preserving the failure
+    count — a review transition is not a success signal.
+    """
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="crash then changes", assignee="implementer")
+        impl = kb.claim_task(conn, tid)
+        assert kb.request_review(
+            conn, tid, summary="please review", reviewer="reviewer",
+            expected_run_id=impl.current_run_id,
+        ) is True
+
+        # First reviewer run crashes. Crash-aftermath convention from the
+        # respawn-guard tests: terminal crashed run + benign captured output,
+        # card back in review, one charged failure. Use the CURRENT second so
+        # this run outranks the earlier review_requested run (guard orders by
+        # ended_at DESC, id DESC) and is superseded by the later changes run.
+        crashed_review = kb.claim_review_task(conn, tid)
+        assert crashed_review is not None
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE task_runs SET outcome='crashed', status='failed', ended_at=? "
+                "WHERE id=?",
+                (int(__import__("time").time()), crashed_review.current_run_id),
+            )
+            conn.execute(
+                "UPDATE tasks SET status='review', current_run_id=NULL, "
+                "claim_lock=NULL, claim_expires=NULL, worker_pid=NULL, "
+                "consecutive_failures=1, last_failure_error=? WHERE id=?",
+                ("Billing service status: all systems operational", tid),
+            )
+        # A crashed run's captured output is context, not a diagnosis.
+        assert kbd.check_respawn_guard(conn, tid, lane="ready") is None
+
+        # A later reviewer claims from review and asks for changes.
+        later_review = kb.claim_review_task(conn, tid)
+        assert later_review is not None
+        assert kb.request_changes(
+            conn, tid, reason="fix the tests",
+            expected_run_id=later_review.current_run_id,
+        ) == (True, "implementer")
+
+        # The ready-lane guard must no longer see the stale billing blocker.
+        assert kbd.check_respawn_guard(conn, tid, lane="ready") is None
+
+        # Stale crash error is gone; the failure count is deliberately kept.
+        row = conn.execute(
+            "SELECT status, consecutive_failures, last_failure_error "
+            "FROM tasks WHERE id=?", (tid,),
+        ).fetchone()
+        assert row["status"] == "ready"
+        assert row["last_failure_error"] is None
+        assert row["consecutive_failures"] == 1

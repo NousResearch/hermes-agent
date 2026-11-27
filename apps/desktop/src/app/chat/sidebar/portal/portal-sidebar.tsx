@@ -424,7 +424,7 @@ export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
         />
         <SidebarStorageCorruptNotice />
         {search.failed && (
-          <p className="text-xs text-destructive" role="alert">
+          <p className="text-[length:var(--portal-type-meta-size)] text-destructive" role="alert">
             {t.errors.genericFailure}
           </p>
         )}

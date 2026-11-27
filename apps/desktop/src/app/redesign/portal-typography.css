@@ -20,14 +20,14 @@
   font-family: var(--portal-font-display);
   font-size: var(--portal-type-display-xl-size);
   line-height: 1.1;
-  font-weight: 300;
+  font-weight: var(--portal-weight-light);
   letter-spacing: var(--portal-tracking-display);
 }
 
 :root[data-shell='portal'] [data-slot='dialog-title'] {
   font-family: var(--portal-font-display);
   font-size: var(--portal-type-display-lg-size);
-  font-weight: 300;
+  font-weight: var(--portal-weight-light);
   letter-spacing: var(--portal-tracking-display);
   line-height: 1.1;
 }

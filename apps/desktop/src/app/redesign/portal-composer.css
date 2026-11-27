@@ -96,7 +96,7 @@
   opacity: 0.4;
   background: linear-gradient(
     to right,
-    var(--portal-brand-fill),
+    var(--portal-surface-brand),
     var(--portal-spectrum-red) 84.135%,
     var(--portal-spectrum-yellow)
   );
@@ -220,7 +220,7 @@
   border-radius: var(--portal-radius-control);
   color: var(--ui-text-primary);
   font-size: var(--portal-type-meta-size);
-  font-weight: 400;
+  font-weight: var(--portal-weight-regular);
   line-height: 1.4;
 }
 
@@ -365,8 +365,8 @@
 }
 
 :root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-attachment']:not([data-kind='image']) {
-  background: var(--portal-brand-fill);
-  color: var(--portal-on-brand);
+  background: var(--portal-surface-brand);
+  color: var(--portal-text-on-brand);
 }
 
 :root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-attachment'][data-upload-error] {
@@ -397,7 +397,7 @@
 :root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-attachment'] > span:last-child > span {
   color: inherit;
   font-size: var(--portal-type-meta-size);
-  font-weight: 400;
+  font-weight: var(--portal-weight-regular);
   line-height: 1.4;
 }
 

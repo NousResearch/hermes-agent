@@ -864,28 +864,7 @@ blocks'; an override under a media query (a width class, a coarse pointer) is no
 | `--portal-surface-switch-hover` | `color-mix(in srgb, var(--ui-base) 20%, transparent)` | ″ |  |
 | `--portal-stroke-checkbox-hover` | `color-mix(in srgb, var(--ui-base) 45%, transparent)` | ″ |  |
 | `--portal-surface-card-inline` | `color-mix(in srgb, var(--ui-base) 5%, var(--ui-chat-surface-background))` | `color-mix(in srgb, var(--ui-base) 2%, var(--ui-chat-surface-background))` |  |
-| `--portal-brand-fill` | `var(--portal-surface-brand)` | ″ | Names in use before the role names; Phase B moves their readers to the role and deletes them. |
-| `--portal-on-brand` | `var(--portal-text-on-brand)` | ″ |  |
-| `--portal-brand-ink` | `var(--portal-text-brand)` | ″ |  |
-| `--portal-selection-background` | `var(--portal-surface-brand-selected)` | ″ |  |
-| `--portal-neutral-selection-background` | `var(--portal-surface-selected)` | ″ |  |
-| `--portal-neutral-selection-stroke` | `var(--portal-stroke-selected)` | ″ |  |
-| `--portal-window-background` | `var(--portal-surface-canvas)` | ″ |  |
 | `--portal-sidebar-panel-background` | `color-mix( in srgb, var(--portal-raw-pure-white) 2%, color-mix(in srgb, var(--portal-raw-black) 85%, color-mix(in srgb, var(--portal-raw-blue) 70%, transparent)) )` | `color-mix(in srgb, var(--portal-raw-pure-white) 98%, transparent)` | The chat sidebar, side tool panels and page navs (Panel 16292:18203): white .02 / black .85 / blue .70, about 96% opaque, so the art still reads through. |
-| `--portal-panel-divider` | `var(--portal-stroke-hairline)` | ″ |  |
-| `--portal-control-fill` | `var(--portal-surface-control)` | ″ |  |
-| `--portal-control-fill-hover` | `var(--portal-surface-control-hover)` | ″ |  |
-| `--portal-control-fill-pressed` | `var(--portal-surface-control-pressed)` | ″ |  |
-| `--portal-control-stroke` | `var(--portal-stroke-control)` | ″ |  |
-| `--portal-field-fill` | `var(--portal-surface-field)` | ″ |  |
-| `--portal-field-stroke` | `var(--portal-stroke-field)` | ″ |  |
-| `--portal-select-fill` | `var(--portal-surface-select)` | ″ |  |
-| `--portal-select-stroke` | `var(--portal-stroke-strong)` | ″ |  |
-| `--portal-control-danger-fill` | `var(--portal-surface-danger-solid)` | ″ |  |
-| `--portal-control-on-danger` | `var(--portal-text-on-danger)` | ″ |  |
-| `--portal-floating-surface` | `var(--portal-surface-elevated)` | ″ |  |
-| `--portal-floating-stroke` | `var(--portal-stroke-floating)` | ″ |  |
-| `--portal-floating-item-hover` | `var(--portal-surface-floating-hover)` | ″ |  |
 
 #### Type (`type.css`)
 
@@ -910,6 +889,10 @@ blocks'; an override under a media query (a width class, a coarse pointer) is no
 | `--portal-settings-row-label-line` | `1.4` | ″ |  |
 | `--portal-settings-section-line` | `1.25rem` | ″ | Section heads: Nous/Compact SemiBold on a 20px line, at the UI step (Figma's 13 drawn at 14). |
 | `--portal-settings-meta-font` | `var(--portal-font-mono)` | ″ |  |
+| `--portal-weight-light` | `300` | ″ | Weights: four steps only (Display Light 300, Body Regular 400, UI Medium 500, SemiBold 600). |
+| `--portal-weight-regular` | `400` | ″ |  |
+| `--portal-weight-medium` | `500` | ″ |  |
+| `--portal-weight-semibold` | `600` | ″ |  |
 | `--portal-tracking-display` | `-0.01em` | ″ | Tracking per role: display titles tighten, small UI opens up, captions and chips open most. |
 | `--portal-tracking-ui` | `0.01em` | ″ |  |
 | `--portal-tracking-chip` | `0.04em` | ″ |  |
@@ -1001,9 +984,6 @@ blocks'; an override under a media query (a width class, a coarse pointer) is no
 | `--portal-composer-gap` | `1rem` | ″ |  |
 | `--portal-conversation-turn-gap` | `1.875rem` | ″ |  |
 | `--portal-conversation-prompt-clearance` | `0.75rem` | ″ |  |
-| `--page-nav-width` | `var(--portal-panel-width)` | ″ | Names in use before the role names; Phase B moves their readers to the role and deletes them. |
-| `--page-panel-inset` | `var(--portal-frame-inset)` | ″ |  |
-| `--portal-chrome-button-size` | `var(--portal-row-chrome)` | ″ |  |
 
 #### Shape: radii, strokes, shadows (`shape.css`)
 
@@ -1027,14 +1007,11 @@ blocks'; an override under a media query (a width class, a coarse pointer) is no
 | `--portal-focus-ring-outset` | `1px` | ″ |  |
 | `--portal-focus-ring-inset` | `calc(-1 * var(--portal-focus-ring-width))` | ″ |  |
 | `--portal-focus-ring-offset` | `var(--portal-focus-ring-outset)` | ″ |  |
+| `--portal-opacity-disabled` | `0.4` | ″ | Disabled controls and muted inactive chrome (DESIGN.md, "States are derived"). |
 | `--portal-shadow-floating` | `0 8px 24px var(--portal-raw-shadow-50)` | `0 1px 2px var(--portal-raw-shadow-4), 0 8px 24px var(--portal-raw-shadow-8)` | Menus, popovers, dialogs (878:6044): one soft drop shadow. |
 | `--portal-shadow-composer` | `none` | ″ | The composer card casts none (msg 16292:15670). |
 | `--portal-shadow-workspace` | `0 -4px 30px var(--portal-raw-shadow-20)` | `0 8px 12px var(--portal-raw-shadow-navy-10)` | The workspace frame lifted off the artwork (16292:14463): a soft shadow up and around it. |
 | `--portal-shadow-workspace-highlight` | `inset 0 1px 2px var(--portal-raw-highlight-5)` | `none` | ...and its inner highlight along the top (inner shadow, 16292:14463): white .05, 1px down, 2px soft. |
-| `--portal-control-radius` | `var(--portal-radius-control)` | ″ | Names in use before the role names; Phase B moves their readers to the role and deletes them. |
-| `--portal-menu-radius` | `var(--portal-radius-card)` | ″ |  |
-| `--portal-panel-radius` | `var(--portal-radius-frame)` | ″ | The panel row's outer corners are the workspace frame's. |
-| `--portal-floating-shadow` | `var(--portal-shadow-floating)` | ″ |  |
 
 #### Motion (`motion.css`)
 

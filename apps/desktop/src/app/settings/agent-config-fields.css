@@ -11,7 +11,7 @@
 .agent-config-fields > section > h3 {
   margin-bottom: 0.75rem;
   font-size: var(--portal-type-section-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   line-height: 1.1;
 }
 

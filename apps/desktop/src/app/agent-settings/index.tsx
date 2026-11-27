@@ -205,7 +205,7 @@ function SkeletonRows({ count, subtitle = false }: { count: number; subtitle?: b
           <CountSkeleton className="w-32" />
         </span>
         {subtitle && (
-          <span className="agent-overview-row-subtitle mt-1 block text-xs">
+          <span className="agent-overview-row-subtitle mt-1 block text-[length:var(--portal-type-meta-size)]">
             <CountSkeleton className="w-20" />
           </span>
         )}
@@ -312,7 +312,7 @@ function SettingRow({
       <span className="min-w-0 flex-1">
         <span className="block truncate">{title}</span>
         {subtitle && (
-          <span className="agent-overview-row-subtitle mt-1 block truncate text-xs text-(--ui-text-tertiary)">
+          <span className="agent-overview-row-subtitle mt-1 block truncate text-[length:var(--portal-type-meta-size)] text-(--ui-text-tertiary)">
             {subtitle}
           </span>
         )}
@@ -361,7 +361,7 @@ function AgentManagementHeader({ gateway, onOpenChat, owner, profile, tabs }: Ag
       leading={
         <FigmaAgentIcon
           className="agent-management-avatar [&>img]:brightness-0 dark:[&>img]:brightness-100"
-          color={profileColorSoft(resolveProfileColor(owner.profile, colors) ?? 'var(--portal-brand-fill)', 30)}
+          color={profileColorSoft(resolveProfileColor(owner.profile, colors) ?? 'var(--portal-surface-brand)', 30)}
         />
       }
       tabs={tabs}

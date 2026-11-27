@@ -24,7 +24,7 @@
   pointer-events: none;
   /* The band reaches the panel's top far corner and takes its radius itself: a blended box is
      not reliably cut by an ancestor's rounded clip. */
-  border-start-end-radius: var(--portal-panel-radius);
+  border-start-end-radius: var(--portal-radius-frame);
 }
 
 /* The content after the hero paints over it: positioned elements paint after in-flow ones, so the

@@ -91,7 +91,11 @@ export function AgentOverviewActions({ owner, profile }: AgentOverviewActionsPro
             <span>{isDefault ? t.profiles.defaultProfile : c.setDefault}</span>
           </DropdownMenuItem>
           {/* A disabled item shows no tooltip, so the reason stays readable under it. */}
-          {!canSetDefault && <p className="px-2 py-1 text-xs text-(--ui-text-tertiary)">{c.defaultUnavailable}</p>}
+          {!canSetDefault && (
+            <p className="px-2 py-1 text-[length:var(--portal-type-meta-size)] text-(--ui-text-tertiary)">
+              {c.defaultUnavailable}
+            </p>
+          )}
           <DropdownMenuItem onSelect={() => setSidebarAgentHidden(sidebarOwner, !hidden)}>
             <Codicon name="eye-closed" />
             <span>{hidden ? shared.showInChatList : shared.hide}</span>
@@ -101,7 +105,10 @@ export function AgentOverviewActions({ owner, profile }: AgentOverviewActionsPro
             <Codicon name="copy" />
             <span className="shrink-0">{c.copyPath}</span>
             {profile?.path && (
-              <PathText className="ms-auto max-w-[45%] text-xs text-(--ui-text-tertiary)" path={profile.path} />
+              <PathText
+                className="ms-auto max-w-[45%] text-[length:var(--portal-type-meta-size)] text-(--ui-text-tertiary)"
+                path={profile.path}
+              />
             )}
           </DropdownMenuItem>
           {profile && !profile.is_default && owner.profile !== 'default' && (

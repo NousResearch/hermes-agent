@@ -31,7 +31,7 @@
 [data-page-surface] .panel-section-label {
   color: var(--ui-text-tertiary);
   font-size: var(--portal-type-caption-size);
-  font-weight: 400;
+  font-weight: var(--portal-weight-regular);
   letter-spacing: var(--portal-tracking-caption);
   line-height: 1.4;
 }

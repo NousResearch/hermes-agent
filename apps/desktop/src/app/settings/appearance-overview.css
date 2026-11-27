@@ -15,7 +15,7 @@
   color: var(--ui-text-tertiary);
   font-size: var(--portal-type-ui-size);
   line-height: 1.4;
-  font-weight: 400;
+  font-weight: var(--portal-weight-regular);
 }
 
 .appearance-mode-section {
@@ -47,7 +47,7 @@
   border-bottom: 1px solid var(--portal-stroke-divider);
   color: var(--ui-text-secondary);
   font-size: var(--portal-type-ui-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   line-height: 1.3;
 }
 

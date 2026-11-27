@@ -16,7 +16,7 @@
 @media (min-width: 1024px) {
   /* Wide (breakpoints.ts): below it the panel is the band menu's sheet, not a column. */
   .ds-page:has(> .page-sidebar-panel) {
-    padding-inline-start: var(--page-nav-width);
+    padding-inline-start: var(--portal-panel-width);
   }
 }
 
@@ -47,7 +47,7 @@
   color: var(--portal-text-primary);
   font-family: var(--portal-font-display);
   font-size: var(--portal-type-display-lg-size);
-  font-weight: 300;
+  font-weight: var(--portal-weight-light);
   letter-spacing: var(--portal-tracking-display);
   line-height: 1.1;
 }
@@ -130,7 +130,7 @@
   margin: 0;
   color: var(--portal-text-primary);
   font-size: var(--portal-type-section-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   line-height: 1.1;
 }
 
@@ -330,7 +330,7 @@
   margin: 0;
   color: var(--portal-text-primary);
   font-size: var(--portal-type-body-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
 }
 
 .ds-entry-head .ds-about {
@@ -499,7 +499,7 @@
   padding: var(--portal-space-tight) var(--portal-settings-row-pad);
   color: var(--portal-text-tertiary);
   font-size: var(--portal-type-caption-size);
-  font-weight: 400;
+  font-weight: var(--portal-weight-regular);
   letter-spacing: var(--portal-tracking-caption);
   text-align: start;
   text-transform: uppercase;

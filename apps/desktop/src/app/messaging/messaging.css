@@ -17,7 +17,7 @@
 
 .agent-messaging-name {
   font-size: var(--portal-type-body-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   line-height: 1.4;
 }
 

@@ -50,7 +50,7 @@
   > div:first-child
   > div:first-child {
   font-size: var(--portal-type-body-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   line-height: 1.4;
 }
 
@@ -99,7 +99,7 @@
 
 .global-settings-section-head h3 {
   font-size: var(--portal-type-section-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   line-height: 1.1;
 }
 
@@ -150,7 +150,7 @@
 
 .global-settings-disclosure-title {
   font-size: var(--portal-type-body-size);
-  font-weight: 600;
+  font-weight: var(--portal-weight-semibold);
   line-height: 1.4;
 }
 
@@ -166,7 +166,7 @@
   border-radius: var(--portal-radius-chip);
   background: var(--portal-raw-ink-10);
   font-size: var(--portal-type-caption-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   line-height: 1.4;
   text-align: center;
 }
@@ -332,7 +332,7 @@
 
 .global-settings-link-row-title {
   font-size: var(--portal-type-body-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   line-height: 1.4;
 }
 
@@ -400,7 +400,7 @@
   color: var(--portal-badge-waiting-ink);
   font-family: var(--portal-font-mono);
   font-size: var(--portal-type-caption-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   letter-spacing: var(--portal-tracking-caption);
   line-height: 1;
   text-transform: uppercase;
@@ -417,7 +417,7 @@
   gap: 0.75rem;
   padding-block: var(--portal-settings-row-pad);
   font-size: var(--portal-type-ui-size);
-  font-weight: 600;
+  font-weight: var(--portal-weight-semibold);
 }
 
 .gateway-connections-card > .global-settings-add-row > :is(.codicon, .global-settings-add-label) {
@@ -590,7 +590,7 @@
   color: var(--ui-text-primary);
   font-size: var(--portal-type-body-size);
   font-variant-numeric: tabular-nums;
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
 }
 
 .billing-summary-value.is-primary {
@@ -640,7 +640,7 @@
 .credential-keys-group > h4 {
   color: var(--ui-text-tertiary);
   font-size: var(--portal-type-caption-size);
-  font-weight: 400;
+  font-weight: var(--portal-weight-regular);
   letter-spacing: var(--portal-tracking-caption);
   line-height: 1.4;
   text-transform: uppercase;
@@ -704,7 +704,7 @@
   :is(.global-settings-section-head h3, fieldset > legend) {
   color: var(--portal-settings-section-ink);
   font-size: var(--portal-type-ui-size);
-  font-weight: 600;
+  font-weight: var(--portal-weight-semibold);
   line-height: var(--portal-settings-section-line);
 }
 
@@ -745,7 +745,7 @@
   > div:first-child
   > div:first-child {
   font-size: var(--portal-settings-row-label-size);
-  font-weight: 400;
+  font-weight: var(--portal-weight-regular);
   line-height: var(--portal-settings-row-label-line);
 }
 
@@ -780,7 +780,7 @@
    art masked in from its leading edge; 20px under the rows, on the title's inset. */
 :root[data-shell='portal'] [data-page-surface] [data-slot='overlay-nav-related'] {
   margin-top: var(--portal-settings-related-gap);
-  padding: 0 0 0 calc(var(--portal-settings-nav-inset) - var(--page-panel-inset));
+  padding: 0 0 0 calc(var(--portal-settings-nav-inset) - var(--portal-frame-inset));
   border: 0;
 }
 
@@ -837,7 +837,7 @@
 }
 
 :root[data-shell='portal'] [data-page-surface] .settings-agent-link-text > span:first-child {
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
 }
 
 :root[data-shell='portal'] [data-page-surface] .settings-agent-link-text > span + span {

@@ -186,11 +186,6 @@
   --portal-composer-gap: 1rem;
   --portal-conversation-turn-gap: 1.875rem;
   --portal-conversation-prompt-clearance: 0.75rem;
-
-  /* Names in use before the role names; Phase B moves their readers to the role and deletes them. */
-  --page-nav-width: var(--portal-panel-width);
-  --page-panel-inset: var(--portal-frame-inset);
-  --portal-chrome-button-size: var(--portal-row-chrome);
 }
 
 /* Over the developer rail, where it has a column, the band's trailing cluster ends on the rail's own

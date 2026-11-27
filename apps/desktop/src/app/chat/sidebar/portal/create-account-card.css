@@ -61,7 +61,7 @@
 /* Nous/Compact Medium 14, then Nous/Metadata at .8 of the on-brand ink (the redesign's 14px body). */
 .portal-account-offer-title {
   font-size: var(--portal-type-body-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   line-height: 1.43;
 }
 

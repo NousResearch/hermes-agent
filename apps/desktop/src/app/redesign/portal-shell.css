@@ -26,8 +26,8 @@
   inset-inline: 0;
   top: var(--zone-band-height, 100%);
   height: 100dvh;
-  border-block-start: 1px solid var(--portal-panel-divider);
-  border-inline-start: 1px solid var(--portal-panel-divider);
+  border-block-start: 1px solid var(--portal-stroke-hairline);
+  border-inline-start: 1px solid var(--portal-stroke-hairline);
   background-color: var(--ui-editor-surface-background);
   pointer-events: none;
 }
@@ -61,11 +61,11 @@
 /* Only the row's outer corners round: the panels inside the workspace frame meet square
    (Content 16292:14463). */
 :root[data-shell='portal'] [data-tree-group][data-window-top][data-window-start] > [data-panel-header]::before {
-  border-start-start-radius: var(--portal-panel-radius);
+  border-start-start-radius: var(--portal-radius-frame);
 }
 
 :root[data-shell='portal'] [data-tree-group][data-window-top][data-window-end] > [data-panel-header]::before {
-  border-start-end-radius: var(--portal-panel-radius);
+  border-start-end-radius: var(--portal-radius-frame);
 }
 
 /* The body clips its pane layers (overflow: hidden), so they take the panel's corners. The
@@ -75,7 +75,7 @@
   > [data-panel-header]
   ~ [data-zone-body]
   > * {
-  border-start-start-radius: var(--portal-panel-radius);
+  border-start-start-radius: var(--portal-radius-frame);
 }
 
 :root[data-shell='portal']
@@ -83,7 +83,7 @@
   > [data-panel-header]
   ~ [data-zone-body]
   > * {
-  border-start-end-radius: var(--portal-panel-radius);
+  border-start-end-radius: var(--portal-radius-frame);
 }
 
 /* ── Workspace frame ── the chat sidebar and the stage (or a page's nav and body), and in developer
@@ -111,7 +111,7 @@
     position: absolute;
     z-index: -1;
     inset: var(--titlebar-band-height) 0 0;
-    border-radius: var(--portal-panel-radius);
+    border-radius: var(--portal-radius-frame);
     box-shadow: var(--portal-shadow-workspace);
     pointer-events: none;
   }
@@ -123,8 +123,8 @@
 
   :root[data-shell='portal'] [data-slot='layout-tree'] {
     overflow: clip;
-    border-end-start-radius: var(--portal-panel-radius);
-    border-end-end-radius: var(--portal-panel-radius);
+    border-end-start-radius: var(--portal-radius-frame);
+    border-end-end-radius: var(--portal-radius-frame);
   }
 
   /* Inside the frame the panels meet without hairlines: their fills tell them apart (Panel and
@@ -139,7 +139,7 @@
   }
 
   :root[data-shell='portal'] [data-overlay-surface][data-page-surface] [data-glass-raised] {
-    border-radius: var(--portal-panel-radius);
+    border-radius: var(--portal-radius-frame);
     box-shadow: var(--portal-shadow-workspace);
   }
 
@@ -165,8 +165,8 @@
 /* 30×30 r3, the band's chrome tile and a 20px glyph matching the global rail (--portal-rail-glyph)
    so left rail, top-right band, and right developer rail read as one uniform icon family. */
 :root[data-shell='portal'] .portal-chrome-button {
-  inline-size: var(--portal-chrome-button-size);
-  block-size: var(--portal-chrome-button-size);
+  inline-size: var(--portal-row-chrome);
+  block-size: var(--portal-row-chrome);
   padding: 0;
   border-radius: var(--portal-radius-control);
   background-color: var(--portal-surface-chrome);
@@ -203,30 +203,30 @@
 }
 
 :root[data-shell='portal'] .portal-chrome-button:is([aria-current='page'], [aria-pressed='true']) {
-  background-color: var(--portal-selection-background);
+  background-color: var(--portal-surface-brand-selected);
   /* 895:17703 draws the ring at ~.6 of the brand fill. */
   box-shadow: inset 0 0 0 1px var(--portal-raw-brand-60);
   color: var(--ui-text-primary);
 }
 
 :root[data-shell='portal'] .portal-chrome-button:disabled {
-  opacity: 0.4;
+  opacity: var(--portal-opacity-disabled);
 }
 
 /* The rail's account square (906:19409): a brand fill that darkens a step on hover and press. */
 :root[data-shell='portal'] .portal-chrome-button.portal-chrome-button-brand {
-  background-color: var(--portal-brand-fill);
-  color: var(--portal-on-brand);
+  background-color: var(--portal-surface-brand);
+  color: var(--portal-text-on-brand);
 }
 
 :root[data-shell='portal'] .portal-chrome-button.portal-chrome-button-brand:hover:not(:disabled) {
   background-color: var(--portal-surface-brand-tile-hover);
-  color: var(--portal-on-brand);
+  color: var(--portal-text-on-brand);
 }
 
 :root[data-shell='portal'] .portal-chrome-button.portal-chrome-button-brand:active:not(:disabled) {
   background-color: var(--portal-surface-brand-tile-pressed);
-  color: var(--portal-on-brand);
+  color: var(--portal-text-on-brand);
 }
 
 /* ── Rails ────────────────────────────────────────────────────────────────────────────────── */
@@ -356,7 +356,7 @@
   border: 1px solid var(--portal-stroke-floating);
   border-radius: var(--portal-radius-surface);
   background-color: var(--portal-surface-elevated);
-  box-shadow: var(--portal-floating-shadow);
+  box-shadow: var(--portal-shadow-floating);
   color: var(--ui-text-secondary);
 }
 
@@ -441,7 +441,7 @@
 :root[data-shell='portal'] [data-slot='pane-subtitle'] {
   color: var(--ui-text-tertiary);
   font-size: var(--portal-type-meta-size);
-  font-weight: 300;
+  font-weight: var(--portal-weight-light);
   letter-spacing: var(--portal-tracking-ui);
   line-height: 1.4;
 }
@@ -461,7 +461,7 @@
   > [data-slot='panel-label'] {
   color: var(--ui-text-tertiary);
   font-size: var(--portal-type-ui-size);
-  font-weight: 400;
+  font-weight: var(--portal-weight-regular);
   letter-spacing: 0;
   text-transform: none;
 }
@@ -475,7 +475,7 @@
 }
 
 :root[data-shell='portal'] [data-project-tree] [data-slot='tree-row'][aria-selected='true'] {
-  background-color: var(--portal-neutral-selection-background);
+  background-color: var(--portal-surface-selected);
 }
 
 /* ── Pages ────────────────────────────────────────────────────────────────────────────────── */
@@ -483,7 +483,7 @@
 /* The page nav is a column of the canvas, divided from the body by the panel hairline
    (Settings 856:2740). */
 :root[data-shell='portal'] [data-overlay-surface][data-page-surface] [data-tour='overlay-nav'] {
-  border-inline-end: 1px solid var(--portal-panel-divider);
+  border-inline-end: 1px solid var(--portal-stroke-hairline);
 }
 
 /* ── Zone tab strips ──────────────────────────────────────────────────────────────────────── */
@@ -533,7 +533,7 @@
   box-shadow: none;
   color: var(--portal-text-secondary);
   font-size: var(--portal-type-ui-size);
-  font-weight: 400;
+  font-weight: var(--portal-weight-regular);
 }
 
 :root[data-shell='portal'] [data-tree-group][data-window-top] > [data-panel-header] [data-zone-tabstrip] [role='tab'] {
@@ -557,7 +557,7 @@
   background-color: var(--portal-rail-fill-selected);
   box-shadow: none;
   color: var(--portal-text-primary);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
 }
 
 :root[data-shell='portal'] [data-zone-tabstrip] [role='tab'][data-active='true']:hover {
@@ -632,11 +632,11 @@
 
 /* Kept-alive pane hosts (terminal, browser) float over their zone's body: the outer corners too. */
 :root[data-shell='portal'] [data-pane-host][data-window-start] {
-  border-start-start-radius: var(--portal-panel-radius);
+  border-start-start-radius: var(--portal-radius-frame);
 }
 
 :root[data-shell='portal'] [data-pane-host][data-window-end] {
-  border-start-end-radius: var(--portal-panel-radius);
+  border-start-end-radius: var(--portal-radius-frame);
 }
 
 /* ── Titlebar band ────────────────────────────────────────────────────────────────────────── */
@@ -696,14 +696,14 @@
   display: block;
   min-width: 0;
   max-inline-size: 18rem;
-  block-size: var(--portal-chrome-button-size);
+  block-size: var(--portal-row-chrome);
   overflow: hidden;
   padding: 0 0.625rem;
   border-radius: var(--portal-radius-control);
   background-color: var(--portal-surface-chrome);
   color: var(--ui-text-primary);
   font-size: var(--portal-type-ui-size);
-  line-height: var(--portal-chrome-button-size);
+  line-height: var(--portal-row-chrome);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -792,10 +792,10 @@
    Both float over the stage, so they take the redesign's floating surface (portal-floating.css):
    r8, hairline, the shared shadow; their buttons hover like menu rows. */
 :root[data-shell='portal'] :is([data-slot='find-bar'], [data-slot='layout-edit-card']) {
-  border-color: var(--portal-floating-stroke);
+  border-color: var(--portal-stroke-floating);
   border-radius: var(--portal-radius-floating);
-  background-color: var(--portal-floating-surface);
-  box-shadow: var(--portal-floating-shadow);
+  background-color: var(--portal-surface-elevated);
+  box-shadow: var(--portal-shadow-floating);
 }
 
 /* The stage's own top row (the machine // agent line and a tile's Agent settings) owns the 48px
@@ -815,7 +815,7 @@
 }
 
 :root[data-shell='portal'] [data-slot='find-bar'] button:hover {
-  background-color: var(--portal-floating-item-hover);
+  background-color: var(--portal-surface-floating-hover);
 }
 
 :root[data-shell='portal'] [data-slot='find-bar'] input {
@@ -830,7 +830,7 @@
 :root[data-shell='portal'] [data-narrow-overlay] {
   position: fixed;
   z-index: var(--portal-layer-sheet);
-  border-color: var(--portal-panel-divider);
+  border-color: var(--portal-stroke-hairline);
   box-shadow: var(--portal-shadow-floating);
   overscroll-behavior: contain;
 }

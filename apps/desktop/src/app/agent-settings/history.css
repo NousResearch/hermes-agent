@@ -36,7 +36,7 @@
 .agent-history-stats {
   min-height: 1.4em;
   font-size: var(--portal-type-section-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   letter-spacing: var(--portal-tracking-ui);
   white-space: pre-wrap;
 }
@@ -45,7 +45,7 @@
 }
 .agent-history-clean-empty {
   color: var(--ui-text-secondary);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   letter-spacing: normal;
   text-decoration: underline;
   text-decoration-color: color-mix(in srgb, currentColor 40%, transparent);
@@ -112,7 +112,7 @@
   overflow: hidden;
   color: var(--ui-text-primary);
   font-size: var(--portal-type-body-size);
-  font-weight: 600;
+  font-weight: var(--portal-weight-semibold);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -156,13 +156,13 @@
   font-size: var(--portal-type-meta-size);
 }
 .agent-history-filter-trigger[data-active] {
-  border-color: var(--portal-brand-ink);
+  border-color: var(--portal-text-brand);
   background: var(--portal-raw-brand-10);
 }
 .agent-history-filter-count {
   padding: 0 4px;
   border-radius: var(--portal-radius-chip);
-  background: var(--portal-brand-fill);
+  background: var(--portal-surface-brand);
   font-size: var(--portal-type-caption-size);
 }
 .agent-history-scope,
@@ -185,7 +185,7 @@
   border-radius: var(--portal-radius-card);
   background: var(--portal-raw-brand-10);
   /* A true half-pixel hairline (a 0.5px border paints a full device pixel at 1x). */
-  box-shadow: inset 0 0 0 0.5px var(--portal-brand-fill);
+  box-shadow: inset 0 0 0 0.5px var(--portal-surface-brand);
   justify-content: flex-start;
   margin-bottom: 12px;
   flex-wrap: wrap;
@@ -194,7 +194,7 @@
   margin-inline-end: auto;
   color: var(--ui-text-primary);
   font-size: var(--portal-type-body-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
 }
 .agent-history-selection > button {
   min-height: 36px;
@@ -241,7 +241,7 @@
   text-align: start;
 }
 .agent-history-table th {
-  font-weight: 400;
+  font-weight: var(--portal-weight-regular);
   text-align: start;
 }
 /* Column labels (877:5968): 10px uppercase, +0.6px tracking, one line. */
@@ -367,7 +367,7 @@
   overflow: hidden;
   color: var(--ui-text-primary);
   font-size: var(--portal-type-body-size);
-  font-weight: 600;
+  font-weight: var(--portal-weight-semibold);
   overflow-wrap: anywhere;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
@@ -425,7 +425,7 @@
   margin-bottom: 6px;
   color: var(--ui-text-primary);
   font-size: var(--portal-type-body-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   line-height: 1.4;
 }
 .agent-history-field [data-slot='segmented-control'] {
@@ -476,13 +476,13 @@
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--portal-on-brand);
+  background: var(--portal-text-on-brand);
   content: '';
   transform: scale(0);
 }
 .agent-history-filter-options input[type='radio']:checked {
-  border-color: var(--portal-brand-fill);
-  background: var(--portal-brand-fill);
+  border-color: var(--portal-surface-brand);
+  background: var(--portal-surface-brand);
 }
 .agent-history-filter-options input[type='radio']:checked::before {
   transform: scale(1);
@@ -502,7 +502,7 @@
   gap: 2px;
   padding: 3px;
   border-radius: var(--portal-radius-surface);
-  background-color: var(--portal-control-fill);
+  background-color: var(--portal-surface-control);
 }
 :root[data-shell='portal'] .agent-history-cleanup-fields [data-slot='segmented-control'] > button {
   min-height: 30px;
@@ -510,13 +510,13 @@
   border-radius: var(--portal-radius-control);
   color: var(--ui-text-secondary);
   font-size: var(--portal-type-body-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
 }
 :root[data-shell='portal']
   .agent-history-cleanup-fields
   [data-slot='segmented-control']
   > button:hover:not([aria-pressed='true']) {
-  background-color: var(--portal-control-fill);
+  background-color: var(--portal-surface-control);
   color: var(--ui-text-primary);
 }
 :root[data-shell='portal'] .agent-history-cleanup-fields [data-slot='segmented-control'] > button[aria-pressed='true'] {
@@ -546,7 +546,7 @@
   background: var(--portal-surface-card);
   color: var(--ui-text-primary);
   font-size: var(--portal-type-body-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
 }
 /* Live dry run (18563:13150): "N items will be deleted" over the quiet "Preview · nothing deleted
    yet", then the item card. */
@@ -561,7 +561,7 @@
 .agent-history-cleanup-preview h3 {
   color: var(--ui-text-primary);
   font-size: var(--portal-type-section-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   line-height: 1.1;
 }
 .agent-history-cleanup-preview > header > span {
@@ -677,7 +677,7 @@
   overflow: hidden;
   color: var(--ui-text-primary);
   font-size: var(--portal-type-section-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   line-height: 1.1;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -762,7 +762,7 @@
   overflow: hidden;
   color: var(--ui-text-primary);
   font-size: var(--portal-type-body-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -800,7 +800,7 @@
   background: color-mix(in srgb, var(--portal-status-pending) 8%, transparent);
   color: var(--ui-text-primary);
   font-size: var(--portal-type-ui-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   line-height: 1.4;
 }
 .agent-history-skipped > svg {

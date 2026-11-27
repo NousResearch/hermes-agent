@@ -279,14 +279,6 @@
   --portal-stroke-checkbox-hover: color-mix(in srgb, var(--ui-base) 45%, transparent);
   --portal-surface-card-inline: color-mix(in srgb, var(--ui-base) 5%, var(--ui-chat-surface-background));
 
-  /* Names in use before the role names; Phase B moves their readers to the role and deletes them. */
-  --portal-brand-fill: var(--portal-surface-brand);
-  --portal-on-brand: var(--portal-text-on-brand);
-  --portal-brand-ink: var(--portal-text-brand);
-  --portal-selection-background: var(--portal-surface-brand-selected);
-  --portal-neutral-selection-background: var(--portal-surface-selected);
-  --portal-neutral-selection-stroke: var(--portal-stroke-selected);
-  --portal-window-background: var(--portal-surface-canvas);
   /* The chat sidebar, side tool panels and page navs (Panel 16292:18203): white .02 / black .85 /
      blue .70, about 96% opaque, so the art still reads through. */
   --portal-sidebar-panel-background: color-mix(
@@ -294,20 +286,6 @@
     var(--portal-raw-pure-white) 2%,
     color-mix(in srgb, var(--portal-raw-black) 85%, color-mix(in srgb, var(--portal-raw-blue) 70%, transparent))
   );
-  --portal-panel-divider: var(--portal-stroke-hairline);
-  --portal-control-fill: var(--portal-surface-control);
-  --portal-control-fill-hover: var(--portal-surface-control-hover);
-  --portal-control-fill-pressed: var(--portal-surface-control-pressed);
-  --portal-control-stroke: var(--portal-stroke-control);
-  --portal-field-fill: var(--portal-surface-field);
-  --portal-field-stroke: var(--portal-stroke-field);
-  --portal-select-fill: var(--portal-surface-select);
-  --portal-select-stroke: var(--portal-stroke-strong);
-  --portal-control-danger-fill: var(--portal-surface-danger-solid);
-  --portal-control-on-danger: var(--portal-text-on-danger);
-  --portal-floating-surface: var(--portal-surface-elevated);
-  --portal-floating-stroke: var(--portal-stroke-floating);
-  --portal-floating-item-hover: var(--portal-surface-floating-hover);
 }
 
 /* Light: Brand rev 491 + AA. The same alphas over #f2f2f2; strokes take one step more to stay visible. */
@@ -383,7 +361,7 @@
    artwork above it render exactly as without Glass. These rules are unlayered on purpose: they hold
    under Glass too (styles.css `@layer base`). */
 :root[data-shell='portal'][data-hermes-glass] body {
-  background: color-mix(in srgb, var(--portal-window-background) var(--translucency-glass-keep, 100%), transparent);
+  background: color-mix(in srgb, var(--portal-surface-canvas) var(--translucency-glass-keep, 100%), transparent);
 }
 
 /* A page's band is canvas like every other screen's: under Glass it shows the material (a route

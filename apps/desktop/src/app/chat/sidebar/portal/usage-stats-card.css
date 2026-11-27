@@ -48,7 +48,7 @@
   padding-inline-end: 1.5rem;
   color: var(--portal-sidebar-offer-title-ink);
   font-size: var(--portal-type-ui-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   line-height: var(--portal-sidebar-row-line);
 }
 
@@ -105,7 +105,7 @@
 
 .portal-sidebar .portal-usage-offer-action:disabled {
   cursor: default;
-  opacity: 0.4;
+  opacity: var(--portal-opacity-disabled);
 }
 
 .portal-sidebar .portal-usage-offer-close {

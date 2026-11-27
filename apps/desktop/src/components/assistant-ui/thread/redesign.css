@@ -154,7 +154,7 @@
 }
 
 :root[data-shell='portal'] .composer-human-message:focus-visible {
-  outline: 2px solid var(--portal-brand-ink);
+  outline: 2px solid var(--portal-text-brand);
   outline-offset: 2px;
 }
 
@@ -217,7 +217,7 @@
 :root[data-shell='portal'] [data-slot='aui_assistant-message-content'] .aui-md :where(h1, h2, h3, h4) {
   margin-block: 1.25rem 0.5rem;
   color: var(--ui-text-primary);
-  font-weight: 600;
+  font-weight: var(--portal-weight-semibold);
   line-height: 1.3;
 }
 
@@ -279,7 +279,7 @@
 
 :root[data-shell='portal'] [data-slot='aui_assistant-message-content'] .aui-md th {
   color: var(--ui-text-secondary);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
 }
 
 /* Blocked-image placeholders (rehype-harden): its span asks for `bg-gray-200` and
@@ -467,7 +467,7 @@
    line. */
 :root[data-shell='portal'] :is([data-slot='aui_turn-activity'], [data-slot='aui_response-loading']) {
   --conversation-scaffold-text: var(--portal-text-primary);
-  font-weight: 400;
+  font-weight: var(--portal-weight-regular);
 }
 
 :root[data-shell='portal']
@@ -482,7 +482,7 @@
 :root[data-shell='portal']
   :is([data-slot='aui_turn-activity'], [data-slot='aui_response-loading'])
   [data-slot='activity-timer'] {
-  color: var(--portal-brand-ink);
+  color: var(--portal-text-brand);
 }
 
 /* Approval and clarify cards (card language of 491:42439): an opaque 6px

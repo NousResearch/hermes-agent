@@ -9,7 +9,7 @@
    overwrites its data-slot, so data-slot='button' would miss half of them. */
 
 :root[data-shell='portal'] :is(button, a)[data-size][data-variant]:not([data-variant='grip']) {
-  border-radius: var(--portal-control-radius);
+  border-radius: var(--portal-radius-control);
 }
 
 /* Flattened with :where() so a context restyles only through the tokens above, never by
@@ -27,8 +27,8 @@
     :is(button, a)[data-size][data-variant][data-variant='secondary'],
     :is(button, a)[data-size][data-variant][data-variant='outline']
   ) {
-  background-color: var(--portal-control-fill);
-  box-shadow: inset 0 0 0 1px var(--portal-control-stroke);
+  background-color: var(--portal-surface-control);
+  box-shadow: inset 0 0 0 1px var(--portal-stroke-control);
   color: var(--ui-text-primary);
 }
 
@@ -37,7 +37,7 @@
     :is(button, a)[data-size][data-variant][data-variant='secondary'],
     :is(button, a)[data-size][data-variant][data-variant='outline']
   ):hover {
-  background-color: var(--portal-control-fill-hover);
+  background-color: var(--portal-surface-control-hover);
 }
 
 :root[data-shell='portal']
@@ -45,7 +45,7 @@
     :is(button, a)[data-size][data-variant][data-variant='secondary'],
     :is(button, a)[data-size][data-variant][data-variant='outline']
   ):active {
-  background-color: var(--portal-control-fill-pressed);
+  background-color: var(--portal-surface-control-pressed);
 }
 
 :root[data-shell='portal']
@@ -54,13 +54,13 @@
     :is(button, a)[data-size][data-variant][data-variant='outline']
   )[aria-pressed='true'] {
   background-color: var(--portal-surface-control-toggled);
-  box-shadow: inset 0 0 0 0.5px var(--portal-brand-ink);
+  box-shadow: inset 0 0 0 0.5px var(--portal-text-brand);
 }
 
 /* Disabled is 40% for every control (DESIGN.md, "States are derived"), not the primitive's 50%: at
    50% a brand-filled primary such as a dialog's "Create group (1)" still read as live. */
 :root[data-shell='portal'] button[data-size][data-variant]:disabled {
-  opacity: 0.4;
+  opacity: var(--portal-opacity-disabled);
 }
 
 :root[data-shell='portal'] :is(button, a)[data-size][data-variant][data-variant='default']:hover {
@@ -76,17 +76,17 @@
    the History selection bar's Delete, row "Remove") take destructiveOutline: the danger tint, stroke
    and ink (tokens/color.css). */
 :root[data-shell='portal'] :is(button, a)[data-size][data-variant][data-variant='destructive'] {
-  background-color: var(--portal-control-danger-fill);
+  background-color: var(--portal-surface-danger-solid);
   box-shadow: none;
-  color: var(--portal-control-on-danger);
+  color: var(--portal-text-on-danger);
 }
 
 :root[data-shell='portal'] :is(button, a)[data-size][data-variant][data-variant='destructive']:hover {
-  background-color: color-mix(in srgb, var(--portal-control-danger-fill) 88%, var(--portal-raw-pure-white));
+  background-color: color-mix(in srgb, var(--portal-surface-danger-solid) 88%, var(--portal-raw-pure-white));
 }
 
 :root[data-shell='portal'] :is(button, a)[data-size][data-variant][data-variant='destructive']:active {
-  background-color: color-mix(in srgb, var(--portal-control-danger-fill) 82%, var(--portal-raw-black));
+  background-color: color-mix(in srgb, var(--portal-surface-danger-solid) 82%, var(--portal-raw-black));
 }
 
 :root[data-shell='portal'] :is(button, a)[data-size][data-variant][data-variant='destructive']:focus-visible {
@@ -155,8 +155,8 @@
   [data-slot='dialog-footer']
   :is(button, a)[data-size][data-variant][data-variant='ghost'] {
   padding-inline: 1rem;
-  background-color: var(--portal-control-fill);
-  box-shadow: inset 0 0 0 1px var(--portal-control-stroke);
+  background-color: var(--portal-surface-control);
+  box-shadow: inset 0 0 0 1px var(--portal-stroke-control);
   color: var(--ui-text-primary);
 }
 
@@ -164,7 +164,7 @@
   [data-slot='dialog-content']
   [data-slot='dialog-footer']
   :is(button, a)[data-size][data-variant][data-variant='ghost']:hover {
-  background-color: var(--portal-control-fill-hover);
+  background-color: var(--portal-surface-control-hover);
 }
 
 /* A list card's row action ("Change plan" 856:1835, "Manage"/"Reconnect" 895:17703), an empty
@@ -215,14 +215,14 @@
 :root[data-shell='portal']
   :is([data-page-surface], [data-slot='dialog-content'])
   :is(button, a)[data-size][data-variant][data-size='icon']:not([data-slot='page-toolbar'] *) {
-  background-color: var(--portal-control-fill);
-  box-shadow: inset 0 0 0 1px var(--portal-control-stroke);
+  background-color: var(--portal-surface-control);
+  box-shadow: inset 0 0 0 1px var(--portal-stroke-control);
 }
 
 :root[data-shell='portal']
   :is([data-page-surface], [data-slot='dialog-content'])
   :is(button, a)[data-size][data-variant][data-size='icon']:not([data-slot='page-toolbar'] *):hover {
-  background-color: var(--portal-control-fill-hover);
+  background-color: var(--portal-surface-control-hover);
 }
 
 /* ── Text fields and select triggers ──────────────────────────────────────── */
@@ -230,9 +230,9 @@
 :root[data-shell='portal']
   :is([data-page-surface], [data-slot='dialog-content'])
   :is([data-slot='input']:not([class~='border-0']), [data-slot='input-group'], [data-slot='textarea']) {
-  border-color: var(--portal-field-stroke);
-  border-radius: var(--portal-control-radius);
-  background-color: var(--portal-field-fill);
+  border-color: var(--portal-stroke-field);
+  border-radius: var(--portal-radius-control);
+  background-color: var(--portal-surface-field);
   font-size: var(--portal-type-body-size);
   line-height: 1.4;
 }
@@ -264,19 +264,19 @@
     [data-slot='textarea'],
     [data-slot='select-trigger']
   ):is(:focus-visible, :focus-within, [data-state='open']) {
-  border-color: var(--portal-brand-ink);
-  box-shadow: inset 0 0 0 0.5px var(--portal-brand-ink);
+  border-color: var(--portal-text-brand);
+  box-shadow: inset 0 0 0 0.5px var(--portal-text-brand);
 }
 
 :root[data-shell='portal'] :is([data-page-surface], [data-slot='dialog-content']) [data-slot='select-trigger'] {
   min-height: 2.25rem;
   gap: 0.625rem;
   padding-inline: 1rem 0.75rem;
-  border-color: var(--portal-select-stroke);
-  border-radius: var(--portal-control-radius);
-  background-color: var(--portal-select-fill);
+  border-color: var(--portal-stroke-strong);
+  border-radius: var(--portal-radius-control);
+  background-color: var(--portal-surface-select);
   font-size: var(--portal-type-body-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   line-height: 1.4;
 }
 
@@ -299,9 +299,9 @@
   min-height: 2.25rem;
   gap: 2px;
   padding: 3px;
-  border-radius: var(--portal-control-radius);
-  background-color: var(--portal-field-fill);
-  box-shadow: inset 0 0 0 1px var(--portal-field-stroke);
+  border-radius: var(--portal-radius-control);
+  background-color: var(--portal-surface-field);
+  box-shadow: inset 0 0 0 1px var(--portal-stroke-field);
 }
 
 :root[data-shell='portal'] [data-page-surface] [data-slot='segmented-control'] > button {
@@ -317,13 +317,13 @@
   [data-page-surface]
   [data-slot='segmented-control']
   > button:hover:not([aria-pressed='true']) {
-  background-color: var(--portal-control-fill);
+  background-color: var(--portal-surface-control);
   color: var(--ui-text-primary);
 }
 
 :root[data-shell='portal'] [data-page-surface] [data-slot='segmented-control'] > button[aria-pressed='true'] {
   background-color: var(--portal-surface-brand-selected);
-  box-shadow: inset 0 0 0 0.5px var(--portal-brand-ink);
+  box-shadow: inset 0 0 0 0.5px var(--portal-text-brand);
   color: var(--ui-text-primary);
 }
 
@@ -345,23 +345,23 @@
 :root[data-shell='portal'] [data-slot='scope-chip'] {
   min-height: 1.75rem;
   padding: 0 0.75rem;
-  border-color: var(--portal-control-stroke);
-  border-radius: var(--portal-control-radius);
-  background-color: var(--portal-control-fill);
+  border-color: var(--portal-stroke-control);
+  border-radius: var(--portal-radius-control);
+  background-color: var(--portal-surface-control);
   color: var(--ui-text-secondary);
   font-size: var(--portal-type-ui-size);
   line-height: 1.4;
 }
 
 :root[data-shell='portal'] [data-slot='scope-chip']:hover:not([aria-pressed='true']) {
-  background-color: var(--portal-control-fill-hover);
+  background-color: var(--portal-surface-control-hover);
   color: var(--ui-text-primary);
 }
 
 :root[data-shell='portal'] [data-slot='scope-chip'][aria-pressed='true'] {
   border-color: transparent;
   background-color: var(--portal-surface-brand-selected);
-  box-shadow: inset 0 0 0 0.5px var(--portal-brand-ink);
+  box-shadow: inset 0 0 0 0.5px var(--portal-text-brand);
   color: var(--ui-text-primary);
 }
 
@@ -390,7 +390,7 @@
 }
 
 :root[data-shell='portal'] [data-slot='switch'][data-state='checked']:not(:disabled) {
-  background: var(--portal-brand-fill);
+  background: var(--portal-surface-brand);
 }
 
 :root[data-shell='portal'] [data-slot='switch-thumb'] {
@@ -398,23 +398,23 @@
 }
 
 :root[data-shell='portal'] [data-slot='switch-thumb'][data-state='checked'] {
-  background: var(--portal-on-brand);
+  background: var(--portal-text-on-brand);
 }
 
 /* ── Checkbox (878:5039): 16px, r3, 28% stroke; checked = brand fill ──────── */
 
 :root[data-shell='portal'] :is([data-slot='checkbox'], [data-slot='checkbox-mark']) {
-  border-color: var(--portal-select-stroke);
-  border-radius: var(--portal-control-radius);
+  border-color: var(--portal-stroke-strong);
+  border-radius: var(--portal-radius-control);
   background-color: var(--portal-raw-ink-2);
   box-shadow: none;
 }
 
 :root[data-shell='portal']
   :is([data-slot='checkbox'], [data-slot='checkbox-mark']):is([data-state='checked'], [data-state='indeterminate']) {
-  border-color: var(--portal-brand-fill);
-  background-color: var(--portal-brand-fill);
-  color: var(--portal-on-brand);
+  border-color: var(--portal-surface-brand);
+  background-color: var(--portal-surface-brand);
+  color: var(--portal-text-on-brand);
 }
 
 :root[data-shell='portal'] [data-slot='checkbox']:hover:not(:disabled, [data-state='checked']) {
@@ -430,8 +430,8 @@
 :root[data-shell='portal']
   :is([data-page-surface], .hermes-floating-surface, [data-slot='dialog-content'])
   [data-slot='kbd'] {
-  border-color: var(--portal-control-stroke);
-  border-radius: var(--portal-control-radius);
+  border-color: var(--portal-stroke-control);
+  border-radius: var(--portal-radius-control);
   background-color: var(--portal-raw-ink-4);
   box-shadow: none;
   color: var(--ui-text-secondary);
@@ -445,11 +445,11 @@
   min-height: 2.25rem;
   gap: 0.625rem;
   padding-inline: 1rem 0.75rem;
-  background-color: var(--portal-select-fill);
-  box-shadow: inset 0 0 0 1px var(--portal-select-stroke);
+  background-color: var(--portal-surface-select);
+  box-shadow: inset 0 0 0 1px var(--portal-stroke-strong);
   color: var(--ui-text-primary);
   font-size: var(--portal-type-body-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   line-height: 1.4;
 }
 
@@ -462,9 +462,9 @@
   min-height: 2.25rem;
   padding-block: 0;
   padding-inline: 0.75rem;
-  border-color: var(--portal-field-stroke);
-  border-radius: var(--portal-control-radius);
-  background-color: var(--portal-field-fill);
+  border-color: var(--portal-stroke-field);
+  border-radius: var(--portal-radius-control);
+  background-color: var(--portal-surface-field);
 }
 
 :root[data-shell='portal']
@@ -476,8 +476,8 @@
 :root[data-shell='portal']
   :is([data-page-surface], [data-slot='dialog-content'])
   [data-slot='search-field'][data-variant='box']:focus-within {
-  border-color: var(--portal-brand-ink);
-  box-shadow: inset 0 0 0 0.5px var(--portal-brand-ink);
+  border-color: var(--portal-text-brand);
+  box-shadow: inset 0 0 0 0.5px var(--portal-text-brand);
 }
 
 :root[data-shell='portal']

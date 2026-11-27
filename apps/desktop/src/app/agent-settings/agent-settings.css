@@ -67,7 +67,7 @@
   background-color: var(--portal-badge-waiting-fill);
   color: var(--portal-badge-waiting-ink);
   font-size: var(--portal-type-micro-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   letter-spacing: var(--portal-tracking-chip);
   line-height: 1;
   text-transform: uppercase;
@@ -122,7 +122,7 @@
   border-radius: var(--portal-radius-card);
   background: var(--portal-surface-danger);
   font-size: var(--portal-type-body-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   line-height: 1.4;
 }
 
@@ -137,7 +137,7 @@
   margin-top: 0.125rem;
   color: var(--ui-text-secondary);
   font-size: var(--portal-type-ui-size);
-  font-weight: 400;
+  font-weight: var(--portal-weight-regular);
 }
 
 /* Status cell (877:4307): 6px dot + label; green when connected, red when it dropped. */
@@ -166,7 +166,7 @@
 }
 
 .agent-channel-status[data-tone='disconnected']::before {
-  background: var(--portal-control-danger-fill);
+  background: var(--portal-surface-danger-solid);
 }
 
 .agent-overview-menu {
@@ -222,7 +222,7 @@
 .agent-overview-section h2 {
   color: var(--ui-text-primary);
   font-size: var(--portal-type-section-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   line-height: 1.1;
 }
 
@@ -268,7 +268,7 @@
   padding: 10px 12px 10px 16px;
   text-align: start;
   font-size: var(--portal-type-body-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   line-height: 1.4;
 }
 
@@ -317,7 +317,7 @@
 
 .agent-overview-row > span:nth-child(2) {
   font-size: var(--portal-type-ui-size);
-  font-weight: 400;
+  font-weight: var(--portal-weight-regular);
 }
 
 .agent-overview-row > .codicon {
@@ -398,7 +398,7 @@
   gap: 0.125rem;
   color: var(--ui-text-secondary);
   font-family: var(--portal-font-body);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
 }
 
 .agent-instructions-preview:hover .agent-instructions-edit {
@@ -438,7 +438,7 @@
   padding: 0 4px;
   border-radius: var(--portal-radius-chip);
   background: var(--portal-surface-brand-selected);
-  box-shadow: inset 0 0 0 0.5px var(--portal-brand-ink);
+  box-shadow: inset 0 0 0 0.5px var(--portal-text-brand);
   color: var(--ui-text-primary);
   font-size: var(--portal-type-chip-size);
   letter-spacing: var(--portal-tracking-chip);
@@ -447,5 +447,5 @@
 }
 
 :root:not(.dark) .agent-management-default {
-  color: var(--portal-brand-ink);
+  color: var(--portal-text-brand);
 }

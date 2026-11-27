@@ -11,7 +11,7 @@ interface FigmaAgentIconProps {
 
 /** Screenshot-backed agent marks; profile colors remain user-owned. */
 export function FigmaAgentIcon({ color, className, size, variant = 'solid' }: FigmaAgentIconProps) {
-  const tileColor = color || 'var(--portal-brand-fill)'
+  const tileColor = color || 'var(--portal-surface-brand)'
   const subtle = variant === 'subtle'
   const outline = variant === 'outline'
 

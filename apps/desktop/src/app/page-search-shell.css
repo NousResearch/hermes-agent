@@ -73,8 +73,8 @@
 
 /* A header action (Library's refresh): the band's 30px chrome button. */
 .portal-page-header-actions .page-header-chrome-button {
-  width: var(--portal-chrome-button-size);
-  height: var(--portal-chrome-button-size);
+  width: var(--portal-row-chrome);
+  height: var(--portal-row-chrome);
   border-radius: var(--portal-radius-control);
   background: var(--portal-surface-chrome);
 }

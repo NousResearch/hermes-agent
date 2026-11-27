@@ -63,6 +63,12 @@
   --portal-settings-section-line: 1.25rem;
   --portal-settings-meta-font: var(--portal-font-mono);
 
+  /* Weights: four steps only (Display Light 300, Body Regular 400, UI Medium 500, SemiBold 600). */
+  --portal-weight-light: 300;
+  --portal-weight-regular: 400;
+  --portal-weight-medium: 500;
+  --portal-weight-semibold: 600;
+
   /* Tracking per role: display titles tighten, small UI opens up, captions and chips open most. */
   --portal-tracking-display: -0.01em;
   --portal-tracking-ui: 0.01em;

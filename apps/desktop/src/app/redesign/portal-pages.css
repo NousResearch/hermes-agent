@@ -49,7 +49,7 @@
 @media (min-width: 1024px) {
   /* Wide (breakpoints.ts): below it the panel is a sheet over the page, not a column beside it. */
   :where(:root[data-shell='portal']) [data-page-surface] .page-stage:has(> .page-sidebar-panel) {
-    --page-stage-nav: var(--page-nav-width);
+    --page-stage-nav: var(--portal-panel-width);
 
     position: relative;
     /* The stage's scrollers (agent-settings.css) span it full width and, being later in DOM order,
@@ -121,7 +121,7 @@
   width: 15rem;
   height: calc(var(--portal-page-tab-height) + 4px);
   border-radius: var(--portal-radius-surface);
-  background-color: var(--portal-control-fill);
+  background-color: var(--portal-surface-control);
 }
 
 /* The eyebrow line (a path) at its loaded line box. */
@@ -155,8 +155,8 @@
    row. It folds from its rail destination, as the chat sidebar does. Both page navs end in the same
    light/5 hairline to the stage (895:17703 x 380). */
 :root[data-shell='portal'] [data-page-surface] :is([data-tour='overlay-nav'], .page-sidebar-panel) {
-  border-start-start-radius: var(--portal-panel-radius);
-  border-inline-end: 1px solid var(--portal-panel-divider);
+  border-start-start-radius: var(--portal-radius-frame);
+  border-inline-end: 1px solid var(--portal-stroke-hairline);
 }
 
 :where(:root[data-shell='portal']) .page-sidebar-head {
@@ -208,17 +208,17 @@
   inset-block: 0;
   inset-inline-start: 0;
   display: flex;
-  width: var(--page-nav-width);
+  width: var(--portal-panel-width);
   flex-direction: column;
   gap: 1.5rem;
-  padding: var(--portal-panel-title-top) var(--page-panel-inset) 1.5rem;
+  padding: var(--portal-panel-title-top) var(--portal-frame-inset) 1.5rem;
 }
 
 /* The chat sidebar's header: the title on its 30px inset and 36px line, the start row under it where
    New chat starts (--portal-panel-first-row). */
 :where(:root[data-shell='portal']) .page-sidebar-panel .page-sidebar-head {
   margin: 0 0 calc(var(--portal-panel-first-row) - var(--portal-panel-title-top) - var(--portal-panel-title-line) - 1.5rem)
-    calc(var(--portal-panel-title-inset) - var(--page-panel-inset));
+    calc(var(--portal-panel-title-inset) - var(--portal-frame-inset));
 }
 
 :where(:root[data-shell='portal']) .page-sidebar-panel .page-sidebar-head .page-nav-title {
@@ -247,9 +247,9 @@
    12px sides, 10px gap, a 16px glyph, Medium label. A secondary button reads its fill and rim from
    the control tokens (portal-controls.css), so the row restyles it through them. */
 :where(:root[data-shell='portal']) .page-sidebar-panel > button {
-  --portal-control-fill: var(--portal-panel-action);
-  --portal-control-fill-hover: var(--portal-panel-action-hover);
-  --portal-control-stroke: transparent;
+  --portal-surface-control: var(--portal-panel-action);
+  --portal-surface-control-hover: var(--portal-panel-action-hover);
+  --portal-stroke-control: transparent;
 
   height: 2.5rem;
   min-height: 2.5rem;
@@ -258,7 +258,7 @@
   padding-inline: 0.75rem;
   border-radius: var(--portal-radius-control);
   font-size: var(--portal-type-ui-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
 }
 
 /* The 16px chrome glyph, as New chat's. */
@@ -289,7 +289,7 @@
   color: var(--ui-text-tertiary);
   font-family: var(--portal-font-mono);
   font-size: var(--portal-type-micro-size);
-  font-weight: 400;
+  font-weight: var(--portal-weight-regular);
   text-transform: uppercase;
 }
 
@@ -340,10 +340,10 @@
 /* The open item: the Settings column's selection (16292:16373), a light/5 fill with no stroke. */
 :where(:root[data-shell='portal']) .page-sidebar-row[aria-current] {
   border-color: transparent;
-  background: var(--portal-neutral-selection-background);
+  background: var(--portal-surface-selected);
   box-shadow: none;
   color: var(--ui-text-primary);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
 }
 
 /* Rows with their own actions: the row keeps its full width and the end glyph sits over its end. */
@@ -454,7 +454,7 @@
 :root[data-shell='portal'] [data-page-surface] [data-tour='overlay-nav'] {
   /* Settings' column (Panel 16292:16359): the title 30px in and down, the rows on the 20px inset,
      4px apart. */
-  padding: var(--portal-settings-nav-inset) var(--page-panel-inset) 1rem;
+  padding: var(--portal-settings-nav-inset) var(--portal-frame-inset) 1rem;
   gap: var(--portal-settings-nav-gap);
 }
 
@@ -463,7 +463,7 @@
   align-items: flex-start;
   justify-content: space-between;
   gap: 0.75rem;
-  margin: 0 calc(var(--portal-settings-nav-inset) - var(--page-panel-inset))
+  margin: 0 calc(var(--portal-settings-nav-inset) - var(--portal-frame-inset))
     calc(var(--portal-settings-nav-head-gap) - var(--portal-settings-nav-gap));
 }
 
@@ -493,7 +493,7 @@
   padding-inline: 0.75rem;
   border-radius: var(--portal-radius-settings-nav-row);
   font-size: var(--portal-type-ui-size);
-  font-weight: 600;
+  font-weight: var(--portal-weight-semibold);
 }
 
 :root[data-shell='portal'] [data-page-surface] [data-tour='overlay-nav'] button[data-tour^='nav-'] > svg {
@@ -511,7 +511,7 @@
 
 /* Selected (16292:16373): a light/5 fill, no stroke, full-strength icon. */
 :root[data-shell='portal'] [data-page-surface] [data-tour='overlay-nav'] [aria-current='page'] {
-  background: var(--portal-neutral-selection-background);
+  background: var(--portal-surface-selected);
   border-color: transparent;
   box-shadow: none;
 }
@@ -570,7 +570,7 @@
 :root[data-shell='portal'] :is([data-page-surface], [data-slot='dialog-content']) [data-slot='empty-state-title'] {
   color: var(--ui-text-primary);
   font-size: var(--portal-type-body-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   line-height: 1.4;
 }
 

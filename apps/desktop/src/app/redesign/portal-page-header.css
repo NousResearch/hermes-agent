@@ -143,7 +143,7 @@
   border-bottom: 2px solid transparent;
   color: var(--portal-text-secondary);
   font-size: var(--portal-type-body-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   line-height: 1.4;
   white-space: nowrap;
 }
@@ -154,8 +154,8 @@
 }
 
 :where(:root[data-shell='portal']) .portal-page-tabs-list > [aria-selected='true'] {
-  border-bottom-color: var(--portal-brand-ink);
-  font-weight: 600;
+  border-bottom-color: var(--portal-text-brand);
+  font-weight: var(--portal-weight-semibold);
 }
 :where(:root[data-shell='portal']) .portal-page-tabs-list > [role='tab']:focus-visible {
   border-radius: var(--portal-radius-control);
@@ -169,7 +169,7 @@
   color: var(--ui-text-quaternary);
   font-size: var(--portal-type-micro-size);
   font-variant-numeric: tabular-nums;
-  font-weight: 400;
+  font-weight: var(--portal-weight-regular);
   letter-spacing: var(--portal-tracking-ui);
   text-align: start;
 }
@@ -190,7 +190,7 @@
   gap: 2px;
   padding: 3px;
   border-radius: var(--portal-radius-surface);
-  background-color: var(--portal-control-fill);
+  background-color: var(--portal-surface-control);
 }
 
 :where(:root[data-shell='portal']) .portal-page-tabs[data-variant='segmented'] .portal-page-tabs-list > [role='tab'] {
@@ -201,14 +201,14 @@
   border-radius: var(--portal-radius-control);
   color: var(--ui-text-secondary);
   font-size: var(--portal-type-ui-size);
-  font-weight: 600;
+  font-weight: var(--portal-weight-semibold);
 }
 
 :where(:root[data-shell='portal'])
   .portal-page-tabs[data-variant='segmented']
   .portal-page-tabs-list
   > [role='tab']:hover:not([aria-selected='true']) {
-  background-color: var(--portal-control-fill-hover);
+  background-color: var(--portal-surface-control-hover);
   color: var(--ui-text-primary);
 }
 

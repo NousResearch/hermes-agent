@@ -62,7 +62,7 @@
   color: var(--ui-text-primary);
   font-family: var(--portal-font-display);
   font-size: var(--portal-sidebar-wordmark-size);
-  font-weight: 300;
+  font-weight: var(--portal-weight-light);
   letter-spacing: var(--portal-sidebar-wordmark-tracking);
   line-height: var(--portal-sidebar-wordmark-line);
 }
@@ -194,7 +194,7 @@
   color: var(--portal-sidebar-key-ink);
   font-family: var(--portal-sidebar-key-font);
   font-size: var(--portal-type-micro-size);
-  font-weight: 400;
+  font-weight: var(--portal-weight-regular);
   text-transform: uppercase;
 }
 
@@ -229,7 +229,7 @@
   background: var(--portal-raw-ink-10);
   color: var(--portal-text-secondary);
   font-size: var(--portal-type-chip-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   letter-spacing: var(--portal-tracking-caption);
   line-height: 1;
 }
@@ -241,9 +241,9 @@
 
 :root[data-shell='portal'] .new-session-picker-label {
   padding-inline: 0.5rem;
-  color: var(--portal-brand-ink);
+  color: var(--portal-text-brand);
   font-size: var(--portal-type-caption-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   letter-spacing: var(--portal-tracking-caption);
   text-transform: uppercase;
 }
@@ -270,7 +270,7 @@
   min-width: 0;
   flex-direction: column;
   overflow: hidden;
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -280,7 +280,7 @@
   overflow: hidden;
   color: var(--ui-text-tertiary);
   font-size: var(--portal-type-micro-size);
-  font-weight: 400;
+  font-weight: var(--portal-weight-regular);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -460,7 +460,7 @@ button.portal-section-title:hover {
   overflow: hidden;
   font-family: var(--portal-sidebar-label-font);
   font-size: var(--portal-sidebar-label-size);
-  font-weight: 400;
+  font-weight: var(--portal-weight-regular);
   line-height: var(--portal-sidebar-label-line);
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -473,10 +473,10 @@ button.portal-section-title:hover {
   padding: 0.1875rem 0.5rem;
   border-radius: var(--portal-sidebar-count-radius);
   background: var(--portal-sidebar-count-fill);
-  color: var(--portal-brand-ink);
+  color: var(--portal-text-brand);
   font-size: var(--portal-sidebar-caption);
   font-variant-numeric: tabular-nums;
-  font-weight: 600;
+  font-weight: var(--portal-weight-semibold);
   line-height: 1.2;
   text-align: center;
 }
@@ -880,7 +880,7 @@ button.portal-section-title:hover {
 }
 
 .portal-machine-status:focus-visible {
-  outline: 2px solid var(--portal-brand-ink);
+  outline: 2px solid var(--portal-text-brand);
   outline-offset: -2px;
 }
 
@@ -1086,7 +1086,7 @@ button.portal-section-title:hover {
 }
 
 .portal-agent-name {
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
 }
 
 .portal-agent-subtitle {
@@ -1352,7 +1352,7 @@ button.portal-section-title:hover {
   background: var(--ui-bg-elevated);
   color: var(--ui-text-secondary);
   font-size: var(--portal-type-ui-size);
-  font-weight: 400;
+  font-weight: var(--portal-weight-regular);
   line-height: 1.5;
 }
 
@@ -1363,7 +1363,7 @@ button.portal-section-title:hover {
 .portal-hidden-explanation strong {
   display: block;
   margin-bottom: 0.75rem;
-  font-weight: 600;
+  font-weight: var(--portal-weight-semibold);
   color: var(--ui-text-primary);
 }
 
@@ -1499,7 +1499,7 @@ button.portal-section-title:hover {
 }
 
 .portal-hidden-dot[data-attention='unread'] {
-  background: var(--portal-brand-ink);
+  background: var(--portal-text-brand);
 }
 
 .portal-sidebar .portal-hidden-show {
@@ -1508,7 +1508,7 @@ button.portal-section-title:hover {
   border-radius: var(--portal-radius-control);
   background: var(--portal-sidebar-card);
   box-shadow: none;
-  font-weight: 400;
+  font-weight: var(--portal-weight-regular);
 }
 
 .portal-sidebar .portal-hidden-show:hover {
@@ -1643,7 +1643,7 @@ button.portal-section-title:hover {
   cursor: pointer;
   font-family: var(--portal-font-body);
   font-size: var(--portal-type-ui-size);
-  font-weight: 600;
+  font-weight: var(--portal-weight-semibold);
   text-align: start;
 }
 
@@ -1790,7 +1790,7 @@ button.portal-section-title:hover {
   color: var(--portal-text-primary);
   font-family: var(--portal-font-body);
   font-size: var(--portal-type-ui-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
 }
 
 :root[data-shell='portal'] .portal-create-project-counter {

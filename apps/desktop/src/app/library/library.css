@@ -16,7 +16,7 @@
 @media (min-width: 1024px) {
   /* Wide (breakpoints.ts): below it the panel is the band menu's sheet, not a column. */
   .library-page:has(> .page-sidebar-panel) {
-    padding-inline-start: var(--page-nav-width);
+    padding-inline-start: var(--portal-panel-width);
   }
 }
 
@@ -63,7 +63,7 @@
 .library-nav-label {
   min-width: 0;
   flex: 1;
-  font-weight: 600;
+  font-weight: var(--portal-weight-semibold);
 }
 
 /* ── Sections (1163:18089): a 14px label and its count, View all at the end ── */
@@ -86,7 +86,7 @@
   margin: 0;
   color: var(--portal-text-primary);
   font-size: var(--portal-type-body-size);
-  font-weight: 600;
+  font-weight: var(--portal-weight-semibold);
 }
 
 .library-section-head h2 span {
@@ -94,7 +94,7 @@
   color: var(--portal-text-tertiary);
   font-family: var(--portal-font-mono);
   font-size: var(--portal-type-micro-size);
-  font-weight: 400;
+  font-weight: var(--portal-weight-regular);
 }
 
 /* ── Image cards (1163:18113): 120px cover thumbnail, name, chat · date ── */
@@ -172,7 +172,7 @@
 .library-card-name {
   color: var(--portal-text-primary);
   font-size: var(--portal-type-body-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
 }
 
 .library-card-sub {
@@ -203,7 +203,7 @@
   color: var(--portal-text-quaternary);
   font-family: var(--portal-font-mono);
   font-size: var(--portal-type-caption-size);
-  font-weight: 400;
+  font-weight: var(--portal-weight-regular);
   letter-spacing: var(--portal-tracking-caption);
   text-align: start;
   text-transform: uppercase;
@@ -346,7 +346,7 @@
 }
 
 .library-pager button:disabled {
-  opacity: 0.4;
+  opacity: var(--portal-opacity-disabled);
 }
 
 /* ── States ── */
@@ -400,7 +400,7 @@
   overflow: hidden;
   color: var(--portal-text-primary);
   font-size: var(--portal-type-section-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -576,7 +576,7 @@
   overflow: hidden;
   color: var(--portal-text-primary);
   font-size: var(--portal-type-body-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   text-overflow: ellipsis;
   white-space: nowrap;
 }

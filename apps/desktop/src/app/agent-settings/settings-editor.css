@@ -31,7 +31,7 @@
   margin: 0 0.625rem 0.375rem;
   color: var(--ui-text-secondary);
   font-size: var(--portal-type-micro-size);
-  font-weight: 600;
+  font-weight: var(--portal-weight-semibold);
   letter-spacing: var(--portal-tracking-caption);
   line-height: 1.4;
   text-transform: uppercase;
@@ -62,10 +62,10 @@
   color: var(--ui-text-primary);
 }
 .agent-settings-nav-group button[aria-current] {
-  background: var(--portal-neutral-selection-background);
-  box-shadow: inset 0 0 0 0.5px var(--portal-neutral-selection-stroke);
+  background: var(--portal-surface-selected);
+  box-shadow: inset 0 0 0 0.5px var(--portal-stroke-selected);
   color: var(--ui-text-primary);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
 }
 .agent-settings-nav-group button:focus-visible {
   outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
@@ -83,7 +83,7 @@
 .agent-settings-body > header h2 {
   font-family: var(--portal-font-display);
   font-size: var(--portal-type-display-lg-size);
-  font-weight: 300;
+  font-weight: var(--portal-weight-light);
   letter-spacing: var(--portal-tracking-display);
   line-height: 1.1;
 }
@@ -122,7 +122,7 @@
 .agent-settings-main-model h3 {
   margin-bottom: 8px;
   font-size: var(--portal-type-section-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
 }
 /* Titled settings groups (895:9666) and their 64px rows with a text column plus controls. */
 .agent-settings-group {
@@ -131,7 +131,7 @@
 }
 .agent-settings-group > h3 {
   font-size: var(--portal-type-section-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   line-height: 1.1;
 }
 .agent-settings-group [data-slot='settings-row'] {
@@ -146,7 +146,7 @@
 }
 .agent-settings-group [data-slot='settings-row'] > div > div:first-child > div:first-child {
   font-size: var(--portal-type-body-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
 }
 .agent-settings-group [data-slot='settings-row'] > div > div:first-child > div:nth-child(2) {
   margin-top: 2px;
@@ -177,7 +177,7 @@
 }
 .agent-settings-instructions-section > header h3 {
   font-size: var(--portal-type-section-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   line-height: 1.15;
 }
 .agent-settings-instructions-section > header p {
@@ -389,7 +389,7 @@
   padding-inline: 0.625rem;
   color: var(--ui-text-primary);
   font-size: var(--portal-type-ui-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   letter-spacing: var(--portal-tracking-ui);
 }
 
@@ -406,9 +406,9 @@
   max-width: 100%;
   height: 2.25rem;
   padding-inline: 0.75rem;
-  border: 1px solid var(--portal-field-stroke);
+  border: 1px solid var(--portal-stroke-field);
   border-radius: var(--portal-radius-control);
-  background: var(--portal-field-fill);
+  background: var(--portal-surface-field);
   color: var(--ui-text-primary);
   font-size: var(--portal-type-body-size);
   text-align: start;

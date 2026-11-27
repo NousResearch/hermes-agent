@@ -18,10 +18,10 @@
     [data-slot='popover-content']:not([data-variant='accent']),
     .hermes-floating-surface
   ) {
-  --popover-surface: var(--portal-floating-surface);
-  border-color: var(--portal-floating-stroke);
-  background-color: var(--portal-floating-surface);
-  box-shadow: var(--portal-floating-shadow);
+  --popover-surface: var(--portal-surface-elevated);
+  border-color: var(--portal-stroke-floating);
+  background-color: var(--portal-surface-elevated);
+  box-shadow: var(--portal-shadow-floating);
   backdrop-filter: none;
 }
 
@@ -36,7 +36,7 @@
   /* Menus draw no stroke (design review 2026-11-17): the solid floating fill and the drop shadow raise
      them. Popovers, dialogs and toasts hold content and keep their hairline. */
   border-width: 0;
-  border-radius: var(--portal-menu-radius);
+  border-radius: var(--portal-radius-card);
   padding: 4px;
 }
 
@@ -107,7 +107,7 @@
     [data-slot='select-item']
   ):is([data-highlighted], [data-state='open']),
 :root[data-shell='portal'] [data-slot='command-item'][data-selected='true'] {
-  background-color: var(--portal-floating-item-hover);
+  background-color: var(--portal-surface-floating-hover);
   color: var(--ui-text-primary);
 }
 
@@ -127,7 +127,7 @@
   padding: 0.5rem 0.625rem 0.25rem;
   color: var(--ui-text-tertiary);
   font-size: var(--portal-type-caption-size);
-  font-weight: 400;
+  font-weight: var(--portal-weight-regular);
   letter-spacing: var(--portal-tracking-caption);
   line-height: 1.4;
   text-transform: uppercase;
@@ -236,10 +236,10 @@
 /* A dialog's text is page text, not chat text: its body reads at the redesign's 14px body size (the
    owner's standing ruling, restated in the design review of 2026-11-17), not the transcript's 13px. */
 :root[data-shell='portal'] [data-slot='dialog-content'] {
-  border-color: var(--portal-floating-stroke);
+  border-color: var(--portal-stroke-floating);
   border-radius: var(--portal-radius-surface);
-  background-color: var(--portal-floating-surface);
-  box-shadow: var(--portal-floating-shadow);
+  background-color: var(--portal-surface-elevated);
+  box-shadow: var(--portal-shadow-floating);
   font-size: var(--portal-type-body-size);
 }
 
@@ -302,7 +302,7 @@
   z-index: 1;
   bottom: 0;
   padding-bottom: var(--dialog-body-padding, 1rem);
-  background-color: var(--portal-floating-surface);
+  background-color: var(--portal-surface-elevated);
 }
 
 :root[data-shell='portal'] [data-slot='popover-arrow'] {
@@ -328,9 +328,9 @@
    "+N more · Clear all" strip under the top stack sits on the same surface so it never floats bare
    over page content. */
 :root[data-shell='portal'] :is(.hermes-toast-surface, .hermes-toast-controls) {
-  border-color: var(--portal-floating-stroke);
-  background-color: var(--portal-floating-surface);
-  box-shadow: var(--portal-floating-shadow);
+  border-color: var(--portal-stroke-floating);
+  background-color: var(--portal-surface-elevated);
+  box-shadow: var(--portal-shadow-floating);
   backdrop-filter: none;
 }
 
@@ -339,8 +339,8 @@
 }
 
 :root[data-shell='portal'] .hermes-toast-controls {
-  border: 1px solid var(--portal-floating-stroke);
-  border-radius: var(--portal-menu-radius);
+  border: 1px solid var(--portal-stroke-floating);
+  border-radius: var(--portal-radius-card);
 }
 
 /* ── Touch and small windows (DESIGN.md › Responsive) ───────────────────────── */

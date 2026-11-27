@@ -39,7 +39,7 @@
   margin: 0;
   overflow: hidden;
   font-size: var(--portal-type-body-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -50,7 +50,7 @@
   color: var(--portal-text-tertiary);
   font-family: var(--portal-font-mono);
   font-size: var(--portal-type-micro-size);
-  font-weight: 400;
+  font-weight: var(--portal-weight-regular);
 }
 
 .chat-items-body {
@@ -86,7 +86,7 @@
   margin: 0;
   color: var(--portal-text-secondary);
   font-size: var(--portal-type-meta-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
 }
 
 .chat-items-see-all {
@@ -230,7 +230,7 @@
 .chat-items-empty-title {
   margin: 0;
   font-size: var(--portal-type-body-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
 }
 
 .chat-items-empty-text {

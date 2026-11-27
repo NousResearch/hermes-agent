@@ -66,7 +66,7 @@
   color: var(--portal-text-primary);
   font-family: var(--portal-font-display);
   font-size: var(--portal-type-display-lg-size);
-  font-weight: 300;
+  font-weight: var(--portal-weight-light);
   letter-spacing: var(--portal-tracking-display);
   line-height: 1.05;
 }
@@ -95,7 +95,7 @@
   color: var(--portal-status-online);
   font-family: var(--portal-font-body);
   font-size: var(--portal-type-chip-size);
-  font-weight: 600;
+  font-weight: var(--portal-weight-semibold);
   letter-spacing: var(--portal-tracking-chip);
   line-height: 1;
   text-transform: uppercase;
@@ -171,7 +171,7 @@
   color: var(--portal-text-primary);
   font-family: var(--portal-font-body);
   font-size: var(--portal-type-ui-size);
-  font-weight: 600;
+  font-weight: var(--portal-weight-semibold);
   letter-spacing: var(--portal-tracking-ui);
 }
 
@@ -233,7 +233,7 @@
   margin: 0;
   font-family: var(--portal-font-display);
   font-size: var(--portal-type-display-lg-size);
-  font-weight: 400;
+  font-weight: var(--portal-weight-regular);
   letter-spacing: var(--portal-tracking-display);
   line-height: 1.15;
 }
@@ -290,7 +290,7 @@
   color: var(--portal-text-primary);
   font-family: var(--portal-font-display);
   font-size: var(--portal-type-display-xl-size);
-  font-weight: 300;
+  font-weight: var(--portal-weight-light);
   letter-spacing: var(--portal-tracking-display);
   line-height: 1.1;
   text-overflow: ellipsis;
@@ -360,7 +360,7 @@
   color: var(--portal-text-primary);
   font-family: var(--portal-font-body);
   font-size: var(--portal-type-body-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
 }
 
 :root[data-shell='portal'] .conn-tools-filter-button:hover {
@@ -406,7 +406,7 @@
   color: var(--portal-text-primary);
   font-family: var(--portal-font-body);
   font-size: var(--portal-type-ui-size);
-  font-weight: 600;
+  font-weight: var(--portal-weight-semibold);
   letter-spacing: var(--portal-tracking-ui);
 }
 
@@ -420,7 +420,7 @@
   cursor: pointer;
   font-family: var(--portal-font-body);
   font-size: var(--portal-type-ui-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
 }
 
 :root[data-shell='portal'] .conn-tools-group-action:focus-visible {
@@ -547,7 +547,7 @@
   flex: 1;
   overflow: hidden;
   font-size: var(--portal-type-body-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -596,7 +596,7 @@
   color: var(--portal-text-secondary);
   font-family: var(--portal-font-body);
   font-size: var(--portal-type-micro-size);
-  font-weight: 600;
+  font-weight: var(--portal-weight-semibold);
   letter-spacing: var(--portal-tracking-chip);
   line-height: 1;
   text-transform: uppercase;
@@ -640,7 +640,7 @@
   color: var(--portal-text-secondary);
   font-family: var(--portal-font-body);
   font-size: var(--portal-type-meta-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   letter-spacing: var(--portal-tracking-ui);
 }
 
@@ -670,7 +670,7 @@
   margin: 0;
   color: var(--portal-text-primary);
   font-size: var(--portal-type-ui-size);
-  font-weight: 600;
+  font-weight: var(--portal-weight-semibold);
 }
 
 :root[data-shell='portal'] .conn-conflict-body {

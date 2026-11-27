@@ -44,7 +44,7 @@
   color: var(--portal-text-primary);
   font-family: var(--portal-font-display);
   font-size: var(--portal-type-display-xl-size);
-  font-weight: 300;
+  font-weight: var(--portal-weight-light);
   letter-spacing: var(--portal-tracking-display);
   line-height: 1.1;
 }
@@ -76,7 +76,7 @@
   cursor: pointer;
   font-family: var(--portal-font-body);
   font-size: var(--portal-type-body-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   letter-spacing: var(--portal-tracking-ui);
   line-height: 1.4;
 }
@@ -106,7 +106,7 @@
 
 :root[data-shell='portal'] .conn-notices :is(button, a) {
   color: var(--portal-text-brand);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   text-decoration: underline;
   text-underline-offset: 2px;
 }
@@ -134,7 +134,7 @@
 
 :root[data-shell='portal'] .conn-banner-text > strong {
   color: var(--portal-text-primary);
-  font-weight: 600;
+  font-weight: var(--portal-weight-semibold);
 }
 
 :root[data-shell='portal'] .conn-banner-success {
@@ -160,7 +160,7 @@
   cursor: pointer;
   font-family: var(--portal-font-body);
   font-size: var(--portal-type-body-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   text-decoration: underline;
   text-underline-offset: 3px;
 }
@@ -266,7 +266,7 @@
   color: var(--portal-text-tertiary);
   font-family: var(--portal-font-body);
   font-size: var(--portal-type-micro-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   line-height: 1;
 }
 
@@ -280,7 +280,7 @@
   color: var(--portal-text-primary);
   font-family: var(--portal-font-body);
   font-size: var(--portal-type-body-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   letter-spacing: var(--portal-tracking-ui);
 }
 
@@ -306,7 +306,7 @@
   color: var(--portal-text-on-brand);
   font-size: var(--portal-type-micro-size);
   font-variant-numeric: tabular-nums;
-  font-weight: 600;
+  font-weight: var(--portal-weight-semibold);
   line-height: 1.2;
   white-space: nowrap;
 }
@@ -325,7 +325,7 @@
   color: var(--portal-text-primary);
   font-family: var(--portal-font-body);
   font-size: var(--portal-type-body-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
 }
 
 :root[data-shell='portal'] .conn-add-btn:hover {
@@ -349,7 +349,7 @@
   color: var(--portal-text-tertiary);
   font-family: var(--portal-font-body);
   font-size: var(--portal-type-meta-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   letter-spacing: var(--portal-tracking-ui);
 }
 
@@ -373,7 +373,7 @@
   cursor: pointer;
   font-family: var(--portal-font-body);
   font-size: var(--portal-type-meta-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   letter-spacing: var(--portal-tracking-ui);
   line-height: 1;
 }
@@ -430,7 +430,7 @@
   cursor: pointer;
   font-family: var(--portal-font-body);
   font-size: var(--portal-type-meta-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   letter-spacing: var(--portal-tracking-ui);
   text-decoration: underline;
   text-underline-offset: 3px;
@@ -478,7 +478,7 @@
   color: var(--portal-text-primary);
   font-family: var(--portal-font-display);
   font-size: var(--portal-type-display-lg-size);
-  font-weight: 400;
+  font-weight: var(--portal-weight-regular);
   letter-spacing: var(--portal-tracking-display);
   line-height: 1.1;
 }
@@ -492,7 +492,7 @@
   cursor: pointer;
   font-family: var(--portal-font-body);
   font-size: var(--portal-type-meta-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   letter-spacing: var(--portal-tracking-ui);
 }
 
@@ -517,7 +517,7 @@
   color: var(--portal-text-primary);
   font-family: var(--portal-font-body);
   font-size: var(--portal-type-body-size);
-  font-weight: 600;
+  font-weight: var(--portal-weight-semibold);
   letter-spacing: var(--portal-tracking-ui);
 }
 
@@ -550,7 +550,7 @@
   cursor: pointer;
   font-family: var(--portal-font-body);
   font-size: var(--portal-type-body-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   letter-spacing: var(--portal-tracking-ui);
   line-height: 1;
 }
@@ -770,7 +770,7 @@
   color: var(--portal-text-on-brand);
   font-family: var(--portal-font-body);
   font-size: var(--portal-type-body-size);
-  font-weight: 600;
+  font-weight: var(--portal-weight-semibold);
   letter-spacing: var(--portal-tracking-ui);
 }
 
@@ -786,7 +786,7 @@
   color: var(--portal-text-on-brand);
   font-family: var(--portal-font-body);
   font-size: var(--portal-type-body-size);
-  font-weight: 600;
+  font-weight: var(--portal-weight-semibold);
 }
 
 :root[data-shell='portal'] .conn-primary:hover {
@@ -894,7 +894,7 @@
   color: var(--portal-text-primary);
   font-family: var(--portal-font-body);
   font-size: var(--portal-type-ui-size);
-  font-weight: 600;
+  font-weight: var(--portal-weight-semibold);
   letter-spacing: var(--portal-tracking-ui);
   line-height: 1.3;
 }
@@ -909,7 +909,7 @@
   cursor: pointer;
   font-family: var(--portal-font-body);
   font-size: var(--portal-type-ui-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   letter-spacing: var(--portal-tracking-ui);
   line-height: 1.3;
 }
@@ -1015,7 +1015,7 @@
   color: var(--portal-text-primary);
   font-family: var(--portal-font-body);
   font-size: var(--portal-type-body-size);
-  font-weight: 600;
+  font-weight: var(--portal-weight-semibold);
   letter-spacing: var(--portal-tracking-ui);
   line-height: 1.25;
   text-overflow: ellipsis;
@@ -1043,7 +1043,7 @@
   color: var(--portal-text-primary);
   font-family: var(--portal-font-body);
   font-size: var(--portal-type-meta-size);
-  font-weight: 600;
+  font-weight: var(--portal-weight-semibold);
   letter-spacing: var(--portal-tracking-ui);
 }
 
@@ -1085,7 +1085,7 @@
   color: var(--portal-text-primary);
   font-family: var(--portal-font-body);
   font-size: var(--portal-type-ui-size);
-  font-weight: 600;
+  font-weight: var(--portal-weight-semibold);
   letter-spacing: var(--portal-tracking-ui);
 }
 

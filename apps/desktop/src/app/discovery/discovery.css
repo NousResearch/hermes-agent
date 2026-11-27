@@ -138,7 +138,7 @@
   margin: 0;
   font-family: var(--portal-font-display);
   font-size: var(--portal-type-display-xl-size);
-  font-weight: 300;
+  font-weight: var(--portal-weight-light);
   letter-spacing: var(--portal-tracking-display);
   line-height: 1.2;
 }
@@ -153,16 +153,16 @@
   margin: 0;
   color: var(--portal-text-secondary);
   font-size: var(--portal-type-body-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   line-height: 1.5;
 }
 
 :root[data-shell='portal'] .discovery-welcome-subtitle[data-tone='regular'] {
-  font-weight: 400;
+  font-weight: var(--portal-weight-regular);
 }
 
 :root[data-shell='portal'] .discovery-welcome-subtitle[data-tone='compact'] {
-  font-weight: 600;
+  font-weight: var(--portal-weight-semibold);
   line-height: 1.43;
 }
 
@@ -226,7 +226,7 @@
   > li[data-active]
   .discovery-welcome-place-name {
   color: var(--portal-text-primary);
-  font-weight: 600;
+  font-weight: var(--portal-weight-semibold);
 }
 
 :root[data-shell='portal']
@@ -282,7 +282,7 @@
 }
 
 :root[data-shell='portal'] [data-splash='first-time'] .discovery-welcome-places .discovery-welcome-place-name {
-  font-weight: 400;
+  font-weight: var(--portal-weight-regular);
 }
 
 :root[data-shell='portal'] .discovery-welcome-place-line {
@@ -340,7 +340,7 @@
   padding: 0;
   color: var(--portal-text-secondary);
   font-size: var(--portal-type-body-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   line-height: 1.5;
 }
 
@@ -366,7 +366,7 @@
   padding-inline: 1rem;
   border-radius: var(--portal-radius-surface);
   font-size: var(--portal-type-body-size);
-  font-weight: 600;
+  font-weight: var(--portal-weight-semibold);
 }
 
 :root[data-shell='portal'] .discovery-welcome-action[data-variant='default'] {
@@ -391,7 +391,7 @@
    tokens; the rim is inset so lighting the button moves nothing. */
 :root[data-shell='portal'][data-discovery-splash] [data-slot='global-nav']
   .portal-chrome-button[data-splash-highlight='true'] {
-  background-color: var(--portal-selection-background);
+  background-color: var(--portal-surface-brand-selected);
   box-shadow:
     inset 0 0 0 1px color-mix(in srgb, var(--portal-text-brand) 80%, transparent),
     0 0 0.75rem color-mix(in srgb, var(--portal-surface-brand) 48%, transparent);
@@ -437,7 +437,7 @@
   color: var(--portal-badge-ink);
   font-family: var(--portal-font-mono);
   font-size: var(--portal-type-caption-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   letter-spacing: var(--portal-tracking-caption);
   line-height: 1;
   text-transform: uppercase;
@@ -517,7 +517,7 @@
   color: var(--portal-text-secondary);
   font-family: var(--portal-font-body);
   font-size: var(--portal-type-body-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
 }
 :root[data-shell='portal'] :is(.discovery-theme-modes, .discovery-theme-colors, .discovery-artworks) {
   min-inline-size: 0;
@@ -612,7 +612,7 @@
   color: var(--portal-text-tertiary);
   cursor: pointer;
   font-size: var(--portal-type-body-size);
-  font-weight: 600;
+  font-weight: var(--portal-weight-semibold);
 }
 
 :root[data-shell='portal'] .discovery-theme-mode:hover {
@@ -687,7 +687,7 @@
   color: var(--portal-text-secondary);
   font-family: var(--portal-font-body);
   font-size: var(--portal-type-meta-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
 }
 
 /* The chosen card: a 2px brand ring around the rim and the SELECTED tag (18695:18096). */
@@ -707,7 +707,7 @@
   color: var(--portal-text-on-brand);
   font-family: var(--portal-font-mono);
   font-size: var(--portal-type-caption-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   letter-spacing: var(--portal-tracking-caption);
   line-height: 1;
   text-transform: uppercase;
@@ -777,7 +777,7 @@
   margin: 0;
   color: var(--portal-text-secondary);
   font-size: var(--portal-type-body-size);
-  font-weight: 600;
+  font-weight: var(--portal-weight-semibold);
   line-height: 1.43;
 }
 
@@ -836,7 +836,7 @@
   .discovery-landing-greeting:is([data-moment='back'], [data-moment='away'])
   .discovery-landing-subtitle {
   color: var(--portal-text-tertiary);
-  font-weight: 400;
+  font-weight: var(--portal-weight-regular);
   line-height: 1.5;
 }
 
@@ -851,7 +851,7 @@
   border-radius: var(--portal-radius-surface);
   box-shadow: none;
   font-size: var(--portal-type-body-size);
-  font-weight: 600;
+  font-weight: var(--portal-weight-semibold);
 }
 
 :root[data-shell='portal'] .discovery-landing-action[data-variant='default'] {
@@ -902,7 +902,7 @@
 /* Their lines are Nous/Body Regular: the check-in's at .8 (18677:28720), the offer's in full ink
    (18677:28610). */
 :root[data-shell='portal'] :is(.discovery-check-in, .discovery-developer-offer) .discovery-landing-subtitle {
-  font-weight: 400;
+  font-weight: var(--portal-weight-regular);
   line-height: 1.5;
 }
 
@@ -1082,7 +1082,7 @@
   border-radius: var(--portal-radius-surface);
   background-color: var(--portal-surface-control);
   font-size: var(--portal-type-body-size);
-  font-weight: 600;
+  font-weight: var(--portal-weight-semibold);
   line-height: 1.43;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
@@ -1111,7 +1111,7 @@
 :root[data-shell='portal'] .discovery-held-title {
   margin: 0;
   font-size: var(--portal-type-body-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   line-height: 1.5;
 }
 
@@ -1244,7 +1244,7 @@
   color: var(--portal-text-primary);
   font-family: var(--portal-font-body);
   font-size: var(--portal-type-ui-size);
-  font-weight: 600;
+  font-weight: var(--portal-weight-semibold);
   letter-spacing: 0;
   line-height: 1.35;
 }
@@ -1284,7 +1284,7 @@
   gap: 0.375rem;
   margin: 0;
   font-size: var(--portal-type-ui-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
 }
 
 :root[data-shell='portal'] .discovery-tray-card .discovery-welcome-place-line,

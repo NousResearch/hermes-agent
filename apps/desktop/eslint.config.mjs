@@ -110,8 +110,8 @@ export default [
     }
   },
   {
-    // Redesign-only markup (mixed files with a classic branch are not judged yet). Warn while the
-    // existing sites burn down (DESIGN.md "To unify in Phase B"); then it becomes an error.
+    // Redesign-only markup (mixed files with a classic branch are not judged yet). Enforced as an
+    // error (HADESK-180) so redesign JSX always reads tokens from src/app/redesign/tokens/.
     files: [
       'src/app/redesign/**/*.tsx',
       'src/app/chat/sidebar/portal/**/*.tsx',
@@ -128,7 +128,7 @@ export default [
     ],
     ignores: ['src/**/*.test.tsx', 'src/app/agent-settings/classic-settings.tsx'],
     plugins: { 'hermes-desktop': { rules: { 'no-portal-arbitrary': noPortalArbitrary } } },
-    rules: { 'hermes-desktop/no-portal-arbitrary': 'warn' }
+    rules: { 'hermes-desktop/no-portal-arbitrary': 'error' }
   },
   {
     files: ['**/*.test.tsx'],

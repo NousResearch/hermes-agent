@@ -247,7 +247,7 @@ export function PortalGatewayMenuPanel({
 
   if (offline) {
     return (
-      <div className="space-y-3 p-3 text-xs">
+      <div className="space-y-3 p-3 text-[length:var(--portal-type-meta-size)]">
         <GatewayHeader name={gatewayName} />
         <GatewayReadiness gatewayState={gatewayState} inferenceStatus={inferenceStatus} />
         <Button className={GATEWAY_PRIMARY} disabled={reconnecting} onClick={reconnect} size="sm" variant="default">
@@ -259,7 +259,7 @@ export function PortalGatewayMenuPanel({
   }
 
   return (
-    <div className="space-y-3 p-3 text-xs">
+    <div className="space-y-3 p-3 text-[length:var(--portal-type-meta-size)]">
       <GatewayHeader
         actions={
           <>
@@ -273,7 +273,7 @@ export function PortalGatewayMenuPanel({
                   <LayoutDashboard />
                 </IconAction>
                 {/* Keep the disruptive restart visibly distinct from connection recovery. */}
-                <span aria-hidden className="h-4 w-px bg-[color-mix(in_srgb,var(--ui-base)_15%,transparent)]" />
+                <span aria-hidden className="h-4 w-px bg-(--portal-stroke-field)" />
                 <IconAction danger label={t.commandCenter.restartGateway} onClick={() => void restart()}>
                   <Power />
                 </IconAction>
@@ -308,7 +308,7 @@ export function PortalGatewayMenuPanel({
       {advanced ? (
         <div className="flex items-center justify-between gap-2">
           <SectionLabel>{copy.recentActivity}</SectionLabel>
-          <Button className="text-(--portal-brand-ink)" onClick={openSystem} size="xs" variant="text">
+          <Button className="text-(--portal-text-brand)" onClick={openSystem} size="xs" variant="text">
             {copy.viewAllLogs}
           </Button>
         </div>
@@ -317,7 +317,7 @@ export function PortalGatewayMenuPanel({
           aria-expanded={activityOpen}
           className={cn(
             GATEWAY_CARD,
-            'min-h-[2.125rem] w-full justify-between font-medium hover:bg-[color-mix(in_srgb,var(--ui-base)_7%,transparent)]'
+            'min-h-[2.125rem] w-full justify-between font-medium hover:bg-(--portal-surface-control-hover)'
           )}
           onClick={() => setActivityOpen(value => !value)}
           size="sm"
@@ -405,7 +405,7 @@ export function MachineStatusPanel({ connectionId, label, onClose }: MachineStat
   const state = source ? (source.reachable ? 'open' : 'closed') : 'connecting'
 
   return (
-    <div className="space-y-3 p-3 text-xs">
+    <div className="space-y-3 p-3 text-[length:var(--portal-type-meta-size)]">
       <GatewayHeader
         actions={
           <IconAction disabled={checking} label={copy.checkAgain} onClick={check}>
@@ -429,7 +429,7 @@ export function MachineStatusPanel({ connectionId, label, onClose }: MachineStat
         </Button>
       )}
       <Button
-        className="text-(--portal-brand-ink)"
+        className="text-(--portal-text-brand)"
         onClick={() => {
           onClose()
           navigate(`${SETTINGS_ROUTE}?tab=connections`)
@@ -500,7 +500,7 @@ function StatusRow({ label, good, waiting, value }: { label: string; good: boole
           className={
             good || waiting
               ? undefined
-              : 'bg-transparent ring-1 ring-[color-mix(in_srgb,var(--ui-base)_60%,transparent)] ring-inset'
+              : 'bg-transparent ring-1 ring-(--portal-stroke-strong) ring-inset'
           }
           tone={good ? 'good' : waiting ? 'warn' : 'muted'}
         />
@@ -529,7 +529,7 @@ function RecentGatewayActivity() {
       )}
       {lines.length > 0 ? (
         <LogView
-          className="max-h-44 rounded-[6px] border-[color-mix(in_srgb,var(--ui-base)_8%,transparent)] text-[length:var(--portal-type-caption-size)] leading-normal"
+          className="max-h-44 rounded-[var(--portal-radius-surface)] border-(--portal-stroke-hairline) text-[length:var(--portal-type-caption-size)] leading-normal"
           ref={scrollRef}
         >
           {lines.map(trimLogLine).join('\n')}
@@ -543,19 +543,18 @@ function RecentGatewayActivity() {
   )
 }
 
-// Gateway popover geometry (616:1685): 28px r6 icon controls and r6 inset cards on 4% fill.
-const GATEWAY_ICON_BUTTON = 'rounded-[6px]'
+// Gateway popover geometry (616:1685): 28px r6 icon controls and r6 inset cards on subtle fill.
+const GATEWAY_ICON_BUTTON = 'rounded-[var(--portal-radius-surface)]'
 
 // The offline frame's one action (616:1781): full-width brand fill, r6.
 const GATEWAY_PRIMARY =
-  'w-full rounded-[6px] bg-(--portal-brand-fill) text-(--portal-on-brand) hover:bg-[color-mix(in_srgb,var(--portal-brand-fill)_86%,var(--ui-base))]'
+  'w-full rounded-[var(--portal-radius-surface)] bg-(--portal-surface-brand) text-(--portal-text-on-brand) hover:bg-(--portal-surface-brand-hover)'
 
 const GATEWAY_CARD =
-  'rounded-[6px] border border-[color-mix(in_srgb,var(--ui-base)_8%,transparent)] bg-[color-mix(in_srgb,var(--ui-base)_4%,transparent)] px-2.5 py-2'
-
+  'rounded-[var(--portal-radius-surface)] border border-(--portal-stroke-hairline) bg-(--portal-surface-control) px-2.5 py-2'
 function SectionLabel({ children }: { children: string }) {
   return (
-    <div className="text-[length:var(--portal-type-caption-size)] font-medium uppercase tracking-[var(--portal-tracking-caption)] text-(--portal-brand-ink)">
+    <div className="text-[length:var(--portal-type-caption-size)] font-medium uppercase tracking-[var(--portal-tracking-caption)] text-(--portal-text-brand)">
       {children}
     </div>
   )

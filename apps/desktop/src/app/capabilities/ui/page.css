@@ -94,7 +94,7 @@
 
 .agent-capability-banner-text > p:first-child {
   font-size: var(--portal-type-body-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
 }
 
 .agent-capability-banner-note {
@@ -121,7 +121,7 @@
 
 .agent-capability-section > header > h3 {
   font-size: var(--portal-type-section-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   line-height: 1.15;
 }
 
@@ -193,7 +193,7 @@
 .agent-capability-row-name {
   overflow-wrap: anywhere;
   font-size: var(--portal-type-body-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   line-height: 1.4;
   letter-spacing: var(--portal-tracking-ui);
 }
@@ -299,7 +299,7 @@
   width: 100%;
   padding: 12px 16px;
   font-size: var(--portal-type-ui-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   line-height: 1.4;
   text-align: start;
   text-decoration: underline;
@@ -345,7 +345,7 @@
 }
 
 .capability-header-scope [data-slot='select-trigger'] {
-  height: var(--portal-chrome-button-size, 30px);
+  height: var(--portal-row-chrome, 30px);
   /* Room for "agent — machine (current)"; a longer pair truncates (portal-controls.css). */
   max-width: min(24rem, 100%);
   gap: 6px;
@@ -367,7 +367,7 @@
   gap: 4px;
   color: var(--portal-text-secondary);
   font-size: var(--portal-type-ui-size);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   text-decoration: underline;
   text-underline-offset: 3px;
   white-space: nowrap;
@@ -388,7 +388,7 @@
 .capability-markdown :is(h1, h2, h3, h4) {
   margin: 20px 0 8px;
   color: var(--ui-text-primary);
-  font-weight: 500;
+  font-weight: var(--portal-weight-medium);
   letter-spacing: 0;
   line-height: 1.4;
 }

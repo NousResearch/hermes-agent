@@ -4,7 +4,7 @@
    two flows below, so the scroller spans the stage's whole width and the wheel scrolls over the
    blank gutters beside the column instead of into dead space. */
 :root[data-shell='portal'] [data-page-surface] [data-slot='overlay-main'] {
-  --portal-settings-gutter: max(var(--page-panel-inset), (100% - var(--portal-settings-column)) / 2);
+  --portal-settings-gutter: max(var(--portal-frame-inset), (100% - var(--portal-settings-column)) / 2);
 
   max-width: none;
   margin-inline: 0;
@@ -48,6 +48,6 @@
 :root[data-shell='portal']
   :is([data-page-surface], [data-slot='dialog-content'])
   :is(button, a)[data-size][data-variant='default'] {
-  background: var(--portal-brand-fill);
-  color: var(--portal-on-brand);
+  background: var(--portal-surface-brand);
+  color: var(--portal-text-on-brand);
 }

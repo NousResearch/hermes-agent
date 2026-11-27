@@ -300,6 +300,8 @@ def declaration_findings(decl: Decl) -> list[str]:
         or (prop == "font-size" and "calc(" in decl.value and "--chat-text-scale" not in decl.value)
     ):
         kinds.append("font-size")
+    if prop == "font-weight" and re.fullmatch(r"\d+|bold|bolder|lighter|normal", decl.value.strip(), re.IGNORECASE):
+        kinds.append("font-weight")
     if prop == "letter-spacing" and _nonzero_lengths(decl.value, ("px", "rem", "em")):
         kinds.append("letter-spacing")
     if prop == "line-height" and _nonzero_lengths(decl.value, ("px", "rem")):

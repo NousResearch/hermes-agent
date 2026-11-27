@@ -310,6 +310,17 @@ def _skills_prompt(agent: Any) -> str:
         _compact_cats = coding_compact_skill_categories(platform=agent.platform, cwd=resolve_context_cwd())
     except Exception:
         _compact_cats = frozenset()
+    # Operator override (2026-11-26 model-stack trial): skills.compact_categories in config.yaml
+    # demotes listed top-level categories to names-only rows in every session, not just focus
+    # mode. Names stay visible; skill_view/skills_list/tool_search unaffected. Merged with, never
+    # replacing, the coding-posture set.
+    try:
+        from hermes_cli.config import load_config_readonly
+        _cfg_cats = frozenset(str(c).strip() for c in
+                              ((load_config_readonly() or {}).get("skills") or {}).get("compact_categories") or ())
+    except Exception:
+        _cfg_cats = frozenset()
+    _compact_cats = frozenset(_compact_cats or ()) | _cfg_cats
     return _pb.build_skills_system_prompt(available_tools=agent.valid_tool_names, available_toolsets=avail_toolsets,
                                          compact_categories=_compact_cats or None, skills_dir_override=_agent_skills_dir(agent))
 

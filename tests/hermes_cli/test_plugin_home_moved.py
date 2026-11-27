@@ -420,13 +420,13 @@ def test_a_provider_extraction_whose_link_is_repointed_while_it_picks_its_launch
 
 
 @pytest.mark.platforms("posix")  # a directory symlink
-@pytest.mark.parametrize("env_builder", ["imported", "not_imported_yet"])
+@pytest.mark.parametrize("moved", ["after_the_launcher", "after_the_launcher_cold", "while_the_env_builds"])
 def test_a_host_start_whose_link_is_repointed_before_it_reads_ambient_credentials_imports_no_provider(
-        env_builder, tmp_path, monkeypatch):
+        moved, tmp_path, monkeypatch):
     """A start reads which providers take ambient credentials by scanning the home's provider plugins, and an
     in-process home imports them into Hermes; so does the first import of the child-env builder, whose blocklist
-    reads the provider registry. A link repointed before either refuses the start, and the other directory's
-    provider code never runs."""
+    reads the provider registry (the cold case). A link repointed before either, or while the child's env is
+    built, refuses the start, and the other directory's provider code never runs."""
     import sys
 
     from hermes_cli.auth import PROVIDER_REGISTRY
@@ -434,7 +434,7 @@ def test_a_host_start_whose_link_is_repointed_before_it_reads_ambient_credential
     from hermes_cli.plugin_isolation import ISOLATION_IN_PROCESS
     from hermes_cli.plugins_loader import PluginHomeMoved
 
-    if env_builder == "not_imported_yet":  # the start is the process's first importer
+    if moved == "after_the_launcher_cold":  # the start is the process's first importer
         for module in ("tools.environments.local", "tools.environments.local_env_policy"):
             monkeypatch.delitem(sys.modules, module, raising=False)
         PROVIDER_REGISTRY.sync_before_first_read()
@@ -454,13 +454,19 @@ def test_a_host_start_whose_link_is_repointed_before_it_reads_ambient_credential
     host = plugins_mod.get_plugin_manager()._plugin_host()
     launcher = PluginHost._launcher
 
-    def repointed_after_the_launcher(self, own):
-        chosen = launcher(self, own)
+    def repoint():
         link.unlink()
         link.symlink_to(other, target_is_directory=True)
-        return chosen
 
-    monkeypatch.setattr(PluginHost, "_launcher", repointed_after_the_launcher)
+    if moved == "while_the_env_builds":
+        import providers
+        from tools.environments import local
+        # The env build outlasts the provider layer's stamp check (1 s): the scan after it re-reads the plugin dirs.
+        monkeypatch.setattr(providers, "_PLUGIN_DIR_STAMP_TTL_SECONDS", 0.0)
+        build = local.served_profile_child_env
+        monkeypatch.setattr(local, "served_profile_child_env", lambda *a, **k: (build(*a, **k), repoint())[0])
+    else:
+        monkeypatch.setattr(PluginHost, "_launcher", lambda self, own: (launcher(self, own), repoint())[0])
     try:
         with pytest.raises(PluginHomeMoved):
             host.ensure_started()

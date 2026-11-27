@@ -79,7 +79,7 @@ tts:
     voice_id: "c69964a6-ab8b-4f8a-9465-ec0925096ec8"  # Paul - Neutral (default)
   gemini:
     model: "gemini-2.5-flash-preview-tts"  # or gemini-3.1-flash-tts-preview
-    voice: "Kore"               # 30 prebuilt voices: Zephyr, Puck, Kore, Enceladus, Gacrux, etc.
+    voice: "Kore"               # 30 prebuilt voices (Zephyr, Puck, Kore, ...) or a designed voice ID (voice_...)
     audio_tags: false           # Enable hidden Gemini 3.1 TTS audio-tag insertion
     persona_prompt_file: ""      # Optional Markdown/text file with Gemini voice direction
   xai:
@@ -137,6 +137,24 @@ tts:
     voice: Algieba
     persona_prompt_file: ~/.hermes/tts/butler-voice.md
 ```
+
+### Gemini Designed Voices
+
+A voice created with Gemini [voice design](https://ai.google.dev/gemini-api/docs/voice-design) is stored in your Google project and has a `voice_...` ID. Set that ID as `tts.gemini.voice` with a model that supports designed voices (`gemini-3.8-flash-tts` or `gemini-3.8-flash-lite-tts`):
+
+```yaml
+tts:
+  provider: gemini
+  gemini:
+    model: gemini-3.8-flash-tts
+    voice: voice_example        # your designed voice ID
+```
+
+Hermes sends `voice_...` IDs to the Interactions endpoint (`{base_url}/interactions`) instead of `generateContent`, using the same `GEMINI_API_KEY` / `GOOGLE_API_KEY` and `tts.gemini.base_url`. Prebuilt voice names keep using `generateContent`. Interactions returns a WAV, which Hermes keeps as-is or converts to the requested output format.
+
+With a designed voice, `persona_prompt_file` is sent as `speech_metadata` style direction next to the text, so only the transcript is spoken. Keep the file to delivery direction for the situation (for example "calm and reassuring"); the voice's permanent character belongs in the voice design itself. A file containing a `{transcript}` placeholder is rejected for designed voices: remove the placeholder and its transcript section.
+
+Streaming playback with a designed voice is buffered per sentence: the Interactions response arrives as one complete WAV, so each sentence starts playing only after its audio has fully arrived. Streaming does not apply `persona_prompt_file`, matching streaming with prebuilt voices.
 
 ### Audio Tags (Gemini, xAI)
 

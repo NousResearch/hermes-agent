@@ -544,6 +544,19 @@ platforms:
 
 Set `require_mention: false` on a `group_rules` entry to skip the @-mention requirement for that specific chat. When omitted, the chat inherits the global `FEISHU_REQUIRE_MENTION` value.
 
+### Topic threads
+
+A group can keep its main chat mention-gated while letting its **topic threads** answer without an `@`:
+
+```yaml
+      group_rules:
+        "oc_group_chat_id_1":
+          require_mention: true          # the group's main chat still needs an @
+          thread_require_mention: false  # every topic in it, including ones created later
+```
+
+`thread_require_mention` is independent of `require_mention`, and it also exists at platform level (`platforms.feishu.extra.thread_require_mention`, or `FEISHU_THREAD_REQUIRE_MENTION`; default `true`). For one inbound message the gate is resolved in this order: a `group_rules` entry keyed by the topic's own `omt_` id → the group's `thread_require_mention` → the group's `require_mention` → the platform `thread_require_mention` → the global `require_mention`. Only the mention gate is thread-scoped; `policy`, `allowlist` and `blacklist` stay keyed by the group `oc_` id.
+
 Groups not listed in `group_rules` fall back to `default_group_policy` (defaults to the value of `FEISHU_GROUP_POLICY`).
 
 ## Deduplication

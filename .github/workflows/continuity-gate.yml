@@ -1,0 +1,72 @@
+name: Continuity contract
+
+on:
+  pull_request:
+    paths:
+      - '.continuity/**'
+      - '.specify/**'
+      - '.claude/settings.json'
+      - '.claude/skills/speckit-*/**'
+      - '.codex/hooks.json'
+      - '.agents/skills/speckit-*/**'
+      - 'AGENTS.md'
+      - 'scripts/continuity_*.py'
+      - 'scripts/install_continuity_adapters.py'
+      - 'scripts/run_tests.sh'
+      - 'specs/**'
+      - 'tests/test_continuity_control_plane.py'
+      - 'tests/test_continuity_spec_completeness.py'
+      - '.github/workflows/continuity-gate.yml'
+      - '.github/actions/retry/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'docs/continuity-pilot.md'
+  push:
+    paths:
+      - '.continuity/**'
+      - '.specify/**'
+      - '.claude/settings.json'
+      - '.claude/skills/speckit-*/**'
+      - '.codex/hooks.json'
+      - '.agents/skills/speckit-*/**'
+      - 'AGENTS.md'
+      - 'scripts/continuity_*.py'
+      - 'scripts/install_continuity_adapters.py'
+      - 'scripts/run_tests.sh'
+      - 'specs/**'
+      - 'tests/test_continuity_control_plane.py'
+      - 'tests/test_continuity_spec_completeness.py'
+      - '.github/workflows/continuity-gate.yml'
+      - '.github/actions/retry/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'docs/continuity-pilot.md'
+
+permissions:
+  contents: read
+
+jobs:
+  static-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.11'
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
+        with:
+          version: '0.9.28'
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+      - name: Install locked test environment
+        uses: ./.github/actions/retry
+        with:
+          command: uv sync --locked --python 3.11 --extra dev
+      - run: .venv/bin/python scripts/install_continuity_adapters.py --repo-root "$PWD" --check
+      - run: .venv/bin/python scripts/continuity_gate.py static --config .continuity/config.json
+      - run: >-
+          scripts/run_tests.sh
+          tests/test_continuity_control_plane.py
+          tests/test_continuity_spec_completeness.py

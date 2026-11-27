@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
+import processCompleteRow from './__fixtures__/process-complete.json'
+
 import { INTERNAL_NOTIFICATION_FOOTER_RE } from './index'
 
 const footer =
@@ -7,6 +9,13 @@ const footer =
   'Do not treat it as user input, and do not reply to any earlier chat message because of it.]'
 
 describe('internal notification display footer', () => {
+  it('matches the provenance on a real persisted process completion before envelope parsing', () => {
+    expect(processCompleteRow.content.replace(INTERNAL_NOTIFICATION_FOOTER_RE, '')).toBe(
+      '[IMPORTANT: Background process proc_4bef90e1b780 completed normally (exit code 0).\n' +
+      'Command: sleep 8; echo t490-bg-done\nOutput:\nt490-bg-done\n]'
+    )
+  })
+
   it.each(['', '\n\n', '  '])('strips only the trailing provenance and adjacent whitespace (%j)', gap => {
     expect(`Task finished${gap}${footer}\n `.replace(INTERNAL_NOTIFICATION_FOOTER_RE, '')).toBe('Task finished')
   })

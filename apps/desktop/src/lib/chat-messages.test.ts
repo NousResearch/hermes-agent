@@ -9,6 +9,8 @@ import { toRuntimeMessage } from '@/lib/chat-runtime'
 import { toolResultRecord } from '@/lib/tool-result-metadata'
 import type { SessionMessage } from '@/types/hermes'
 
+import processCompleteRow from '../../../shared/src/__fixtures__/process-complete.json'
+
 import type { ChatMessage, ChatMessagePart } from './chat-messages'
 import {
   appendAssistantTextPart,
@@ -1565,6 +1567,44 @@ describe('stored machine notifications in the thread', () => {
       expect(card?.textContent).not.toContain('INTERNAL NOTIFICATION')
     }
   )
+
+  it.each(['stored', 'projected'] as const)('hides the real process_complete footer in the expanded %s row', shape => {
+    // Captured before the live session was rewound. Keep the persisted shape intact.
+    const original = JSON.stringify(processCompleteRow)
+
+    const row = shape === 'stored' ? processCompleteRow : {
+      ...processCompleteRow,
+      row_id: processCompleteRow.id,
+      text: processCompleteRow.content,
+      display_metadata: JSON.parse(processCompleteRow.display_metadata)
+    }
+
+    const messages = toChatMessages([row as unknown as SessionMessage])
+
+    const { container, getByRole } = render(createElement(ThreadRuntime, {
+      messages: messages.map(toRuntimeMessage),
+      children: createElement(Thread)
+    }))
+
+    const card = container.querySelector('[data-slot="aui_background-result"]')
+
+    expect(card).not.toBeNull()
+    expect(card?.closest('[data-role="system"]')).not.toBeNull()
+    expect(card?.textContent).toContain('Background Process Finished: sleep 8; echo t490-bg-done')
+    expect(card?.textContent).not.toContain('Output:')
+    fireEvent.click(getByRole('button', { name: /Background Process Finished:/ }))
+    expect(card?.textContent).toContain('Output:')
+    expect(card?.textContent).not.toContain('INTERNAL NOTIFICATION')
+    expect(messages[0].asyncResult).toBe(
+      'Background process proc_4bef90e1b780 completed normally (exit code 0).\n' +
+      'Command: sleep 8; echo t490-bg-done\nOutput:\nt490-bg-done'
+    )
+    expect(JSON.stringify(processCompleteRow)).toBe(original)
+    expect(collectUnspokenTurnSpeech([
+      ...messages,
+      ...toChatMessages([{ role: 'assistant', content: 'Finished.', timestamp: 1795628046 }])
+    ], null)?.text).toBe('Finished.')
+  })
 
   it('keeps an inbound bot message and its reply attributed without a user bubble', () => {
     const messages = toChatMessages([

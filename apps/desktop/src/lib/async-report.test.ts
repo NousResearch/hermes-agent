@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest'
 import { toChatMessages } from '@/lib/chat-messages/hydration'
 import { toRuntimeMessage } from '@/lib/chat-runtime'
 
+import processCompleteRow from '../../../shared/src/__fixtures__/process-complete.json'
+
 const report = '# Report\n\n**Conclusion:** ready\n\n| Task | Status |\n|---|---|\n| probe | ok |'
 
 const envelope = (body: string) =>
@@ -22,6 +24,15 @@ function hydrate(content: string) {
 }
 
 describe('async report hydration', () => {
+  it('strips only the trailing footer before extracting a completion report', () => {
+    const footer = processCompleteRow.content.slice(processCompleteRow.content.indexOf('[INTERNAL NOTIFICATION'))
+    const body = `${report}\n\n${footer}\nStill part of the report.`
+    const content = `${envelope(body)}\n\n${footer}`
+
+    expect(hydrate(content).metadata.custom.asyncResult).toBe(body)
+    expect(hydrate(content).content).toEqual([{ type: 'text', text: '1 background agent finished' }])
+  })
+
   it('keeps only result bodies beside compact system metadata across current and legacy deliveries', () => {
     for (const input of [
       envelope(report),

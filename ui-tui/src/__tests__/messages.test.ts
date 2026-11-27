@@ -5,6 +5,7 @@ import { stripAnsi } from '@hermes/shared/ansi'
 import React from 'react'
 import { describe, expect, it } from 'vitest'
 
+import processCompleteRow from '../../../apps/shared/src/__fixtures__/process-complete.json'
 import { rewindFocusIndex } from '../app/rewindFocusStore.js'
 import { fmtMsgTimestamp, MessageLine } from '../components/messageLine.js'
 import { MAX_HISTORY } from '../config/limits.js'
@@ -88,6 +89,22 @@ describe('toTranscriptMessages', () => {
 
     expect(message).toMatchObject({ kind: 'event', role: 'system', text: title })
     expect(toTranscriptMessages([{ role: 'user', text }])[0]?.text).toBe(text)
+  })
+
+  it('renders the real process_complete row as a clean event without changing stored content', () => {
+    const original = JSON.stringify(processCompleteRow)
+    const meta = JSON.parse(processCompleteRow.display_metadata)
+
+    const [message] = toTranscriptMessages([{
+      ...processCompleteRow,
+      row_id: processCompleteRow.id,
+      text: processCompleteRow.content,
+      display_metadata: meta
+    }])
+
+    expect(message).toEqual({ kind: 'event', role: 'system', text: meta.display_text })
+    expect(message.text).not.toContain('INTERNAL NOTIFICATION')
+    expect(JSON.stringify(processCompleteRow)).toBe(original)
   })
 
   it('projects internal notifications as events outside the user-turn and rewind space', () => {

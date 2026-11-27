@@ -126,3 +126,21 @@ def test_a_missing_plugin_command_under_host_isolation_names_the_setting(tmp_pat
         assert "set plugins.isolation: in_process" in hint and "Enable it" not in hint
     else:
         assert "which is not loaded" in hint and "plugins.isolation" not in hint
+
+
+def test_an_administrator_pinned_host_isolation_is_named_as_theirs(tmp_path, monkeypatch, _no_managed_overlay):
+    """The loader reads plugins.isolation with the managed overlay applied, so the notice does too; a pinned
+    value is not one the user can change, so the notice says whose it is."""
+    import hermes_cli.memory_provider_migration as mpm
+    monkeypatch.setattr(lcm, "_attempted", set())
+    monkeypatch.setattr(mpm, "catalog_source", lambda name: name)
+    (_no_managed_overlay / "config.yaml").write_text("plugins:\n  isolation: host\n", encoding="utf-8")
+    home = _home(tmp_path, config="plugins:\n  enabled: [teams_pipeline]\n")
+    said: list[str] = []
+
+    def install(name):
+        (home / "plugins" / name).mkdir(parents=True)
+        return {"ok": True}
+
+    assert lcm.migrate_home(home, install=install, say=said.append) == ["teams-pipeline"]
+    assert "msgraph_webhook" in said[0] and "your administrator pins plugins.isolation: host" in said[0]

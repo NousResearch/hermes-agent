@@ -264,3 +264,49 @@ class TestMSGraphSourceIPAllowlist:
         assert resp.status == 403
 
 
+
+
+class TestMSGraphUnboundMeetingPipeline:
+    """A profile that enables the Teams meeting pipeline expects its notifications to go to the pipeline. While
+    the plugin is not bound (refused by ``plugins.isolation: host``, not installed yet, failed to load) they must
+    not start agent turns instead, which costs model calls and produces no summaries. A listener whose profile
+    never enabled the pipeline keeps the agent-turn path."""
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(("plugins", "admitted"), [
+        ("plugins:\n  enabled: [teams-pipeline]\n  isolation: host\n", 0),
+        ("plugins:\n  enabled: [teams_pipeline]\n", 0),                      # core's bundled key
+        ("plugins:\n  enabled: [teams-pipeline]\n  disabled: [teams-pipeline]\n", 1),
+        ("", 1),
+    ])
+    async def test_notifications_reach_the_agent_only_without_the_pipeline(self, tmp_path, monkeypatch, caplog,
+                                                                          plugins, admitted):
+        if not AIOHTTP_AVAILABLE:
+            pytest.skip("aiohttp not installed")
+        home = tmp_path / "home"
+        home.mkdir()
+        (home / "config.yaml").write_text(plugins, encoding="utf-8")
+        managed = tmp_path / "managed"
+        managed.mkdir()
+        monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        adapter = _make_adapter(port=0, allowed_source_cidrs=[])
+        turns = []
+
+        async def _admit(event):
+            turns.append(event)
+
+        monkeypatch.setattr(adapter, "_admit_notification", _admit)
+        payload = {"value": [{"id": f"notif-{i}", "subscriptionId": "sub-1", "changeType": "updated",
+                              "resource": f"communications/onlineMeetings/meeting-{i}",
+                              "clientState": "expected-client-state"} for i in range(2)]}
+        try:
+            assert await adapter.connect() is True
+            with caplog.at_level("WARNING", logger="gateway.platforms.msgraph_webhook"):
+                resp = await adapter._handle_notification(_FakeRequest(json_payload=payload))
+        finally:
+            await adapter.disconnect()
+        assert resp.status == 202
+        assert len(turns) == 2 * admitted
+        warned = [r for r in caplog.records if "Teams meeting pipeline is enabled" in r.getMessage()]
+        assert len(warned) == (1 - admitted)  # said once, not once per notification

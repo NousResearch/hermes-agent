@@ -58,8 +58,23 @@ LEFT_CORE_TERMINAL_KEYS = {"terminal.singularity_image": "TERMINAL_SINGULARITY_I
 
 
 def _host_isolated(home: Path) -> bool:
+    """*home*'s effective ``plugins.isolation`` (managed overlay applied, as the loader reads it) is ``host``."""
+    from gateway import config_loader
     from hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
-    return isolation_mode(_read_config(home)) == ISOLATION_HOST
+    try:
+        config = config_loader.read_yaml_layers(home)
+    except Exception:  # malformed config.yaml: the loader falls back to in-process defaults too
+        logger.debug("left-core: unreadable config for %s", home, exc_info=True)
+        return False
+    return isolation_mode(config) == ISOLATION_HOST
+
+
+def _isolation_remedy() -> str:
+    """What restores in-process loading: the user's own setting, or the administrator's when it is pinned."""
+    from hermes_cli.managed_scope import is_key_managed
+    if is_key_managed("plugins.isolation"):
+        return "your administrator pins plugins.isolation: host (managed config), so ask them to allow in_process"
+    return "set plugins.isolation: in_process to keep it"
 
 
 def _isolation_notice(lost: str) -> Callable[..., str]:
@@ -69,8 +84,7 @@ def _isolation_notice(lost: str) -> Callable[..., str]:
     def notice(home: Path, *, process_env: bool = False) -> str:
         if not _host_isolated(home):
             return ""
-        return (f"This profile sets plugins.isolation: host, where {lost}; set plugins.isolation: in_process "
-                "to keep it.")
+        return f"This profile runs with plugins.isolation: host, where {lost}; {_isolation_remedy()}."
     return notice
 
 
@@ -943,7 +957,7 @@ def moved_command_hint(prog: str, value: str, action: str = "") -> str:
     if plugin_present(feature.plugin, home) and _host_isolated(home):
         # The plugin loads in the plugin host, which registers no CLI commands: enabling changes nothing.
         return (f"{label} moved out of core into the '{feature.plugin}' plugin, whose commands are not available "
-                "with plugins.isolation: host; set plugins.isolation: in_process to use them.")
+                f"with plugins.isolation: host; {_isolation_remedy()}.")
     return f"{label} moved out of core into the '{feature.plugin}' plugin, which is not loaded.{get}"
 
 

@@ -466,10 +466,6 @@
   gap: 1.25rem;
 }
 
-[data-slot='overlay-main'] .gateway-mode-cards {
-  margin-inline: calc(1.25rem - var(--portal-settings-inset));
-}
-
 .gateway-mode-card {
   position: relative;
   isolation: isolate;
@@ -657,20 +653,38 @@
    in a card or not, starts at one x. A card nested in another (a disclosure's card) stays put.
    Cards lift off the page with no stroke, radius 15, 16px over and under their rows; row labels in
    the 16px body, descriptions in the mono signal font. */
+/* Every top-level surface or card grid in Global Settings bleeds out from the text column by
+   --portal-settings-inset to one shared 640px edge (never nested surfaces inside a card/disclosure). */
 :root[data-shell='portal']
   [data-page-surface]
   [data-slot='overlay-main']
-  :is(.global-settings-card, .global-settings-disclosure, [data-slot='empty-state'], [data-slot='billing-notice']):not(
-    :is(.global-settings-card, .global-settings-disclosure) *
+  :is(
+    .global-settings-card,
+    .global-settings-disclosure,
+    .appearance-mode-grid,
+    .gateway-mode-cards,
+    .gateway-connection-editor,
+    .billing-summary-grid,
+    [data-slot='billing-notice'],
+    [data-slot='alert'],
+    [data-slot='empty-state'],
+    [data-slot='error-state'],
+    [data-settings-surface]
+  ):not(
+    :is(.global-settings-card, .global-settings-disclosure, [data-slot='billing-notice'], [data-slot='alert']) *
   ) {
   margin-inline: calc(-1 * var(--portal-settings-inset));
 }
 
-:root[data-shell='portal'] [data-page-surface] [data-slot='overlay-main'] [data-slot='billing-notice'] {
+:root[data-shell='portal']
+  [data-page-surface]
+  [data-slot='overlay-main']
+  :is([data-slot='billing-notice'], [data-slot='alert'], [data-slot='error-state']):not(
+    :is(.global-settings-card, .global-settings-disclosure) *
+  ) {
   padding-inline: var(--portal-settings-inset);
   border-radius: var(--portal-radius-settings-card);
 }
-
 :root[data-shell='portal'] [data-page-surface] [data-slot='overlay-main'] .portal-page-header-title > h1 {
   letter-spacing: var(--portal-settings-h1-tracking);
   line-height: var(--portal-settings-h1-line);

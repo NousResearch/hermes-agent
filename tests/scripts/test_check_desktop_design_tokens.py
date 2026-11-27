@@ -176,6 +176,22 @@ def test_only_the_page_stage_contract_lays_the_page_column(tmp_path):
     ]
 
 
+def test_only_settings_contracts_lay_the_settings_column(tmp_path):
+    for rel, css in {
+        "app/redesign/tokens/space.css": ":root { --portal-settings-column: 40rem; --portal-settings-inset: 2rem; }",
+        "app/redesign/portal-layout.css": ".x { max-width: var(--portal-settings-column); padding: var(--portal-settings-inset); }",
+        "app/settings/global-overviews.css": ".y { margin-inline: calc(-1 * var(--portal-settings-inset)); }",
+        "app/settings/custom.css": ".z {\n  max-width: var(--portal-settings-column);\n  margin-inline: calc(-1 * var(--portal-settings-inset));\n}",
+    }.items():
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text(css)
+    _, refs = GUARD.references(tmp_path)
+    assert [str(f) for f in GUARD.settings_column_findings(refs)] == [
+        "app/settings/custom.css:2: settings-column: --portal-settings-column",
+        "app/settings/custom.css:3: settings-column: --portal-settings-inset",
+    ]
+
+
 @pytest.mark.parametrize(
     "decl",
     [

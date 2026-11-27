@@ -70,7 +70,12 @@ BASELINE = REPO / "scripts" / "desktop_design_tokens_baseline.json"
 # The rail pages' one column and the only file outside tokens/ that may lay it out.
 PAGE_COLUMN = "--portal-column-page"
 PAGE_STAGE_CONTRACT = "app/redesign/portal-pages.css"
-
+# Global Settings' one 640px column and surface bleed: only portal-layout.css lays the column, and
+# only portal-layout.css + global-overviews.css may bleed surfaces over --portal-settings-inset.
+SETTINGS_COLUMN = "--portal-settings-column"
+SETTINGS_INSET = "--portal-settings-inset"
+SETTINGS_LAYOUT_CONTRACT = "app/redesign/portal-layout.css"
+SETTINGS_SURFACE_CONTRACTS = (SETTINGS_LAYOUT_CONTRACT, "app/settings/global-overviews.css")
 # Stylesheets whose rules only redesign markup can match: their classes and hooks
 # (``[data-page-surface]``, ``.onboarding-v2``, …) are emitted only on the redesign's branch of the
 # TSX. Which branch emits a class is not visible from the CSS, so the set is named, not derived.
@@ -562,6 +567,20 @@ def page_column_findings(refs: dict[str, list[tuple[str, int]]]) -> list[Finding
     )
 
 
+def settings_column_findings(refs: dict[str, list[tuple[str, int]]]) -> list[Finding]:
+    """Reads of Global Settings' column/inset tokens outside their layout and surface contracts."""
+    out = [
+        Finding(rel, line, "settings-column", SETTINGS_COLUMN)
+        for rel, line in refs.get(SETTINGS_COLUMN, [])
+        if not rel.startswith(TOKENS) and rel != SETTINGS_LAYOUT_CONTRACT
+    ]
+    out += [
+        Finding(rel, line, "settings-column", SETTINGS_INSET)
+        for rel, line in refs.get(SETTINGS_INSET, [])
+        if not rel.startswith(TOKENS) and rel not in SETTINGS_SURFACE_CONTRACTS
+    ]
+    return sorted(out, key=lambda f: (f.file, f.line, f.text))
+
 def ratchet(counts: dict[str, int], baseline: dict[str, int]) -> tuple[list[str], list[str]]:
     """(files over their baseline, files under it)."""
     over = sorted(f for f, n in counts.items() if n > baseline.get(f, 0))
@@ -615,12 +634,13 @@ def main(argv: list[str] | None = None) -> int:
     unused = sorted(name for name in token_names if name not in refs)
     stale = docs_block(markdown) != docs
     own_column = page_column_findings(refs)
+    own_settings_column = settings_column_findings(refs)
     pulled = [f for f in found if f.kind == "page-top"]
 
     if args.list:
         for f in found:
             print(f)
-    failed = bool(over or undefined or stale or own_column or pulled)
+    failed = bool(over or undefined or stale or own_column or own_settings_column or pulled)
     for rel in over:
         print(f"{rel}: {counts[rel]} design-token findings, baseline {baseline.get(rel, 0)} (it may only go down):")
         for f in found:
@@ -630,6 +650,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{f}  (defined nowhere: a typo or a deleted token)")
     for f in own_column:
         print(f"{f}  (mark the page's stage `page-stage`; only {PAGE_STAGE_CONTRACT} lays the column)")
+    for f in own_settings_column:
+        print(f"{f}  (use SettingsCard/SettingsDisclosure/[data-settings-surface]; only {SETTINGS_SURFACE_CONTRACTS} lay the Settings column)")
     for f in pulled:
         print(f"{f}  (a page's first row starts at its top inset; put the row in the flow under it)")
     if stale:

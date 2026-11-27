@@ -332,7 +332,16 @@ _FINISH_REASON_ALIASES = {
     "max_tokens": "length",  # Gemini-native / Anthropic-style cap reason
     "end": "stop",  # some gateways' clean-completion spelling
     "function_call": "tool_calls",  # OpenAI legacy pre-tools spelling
+    # Z.AI (docs.z.ai chat-completion): its safety review ends a reply with "sensitive", and a
+    # prompt plus output that fill the window end with "model_context_window_exceeded".
+    "sensitive": "content_filter",
+    "model_context_window_exceeded": "length",
 }
+
+
+# Reasons that say the reply FAILED (a provider error mid-generation, Z.AI's ``network_error``):
+# retried like a transport error, never kept as the answer.
+PROVIDER_ERROR_FINISH_REASONS = frozenset({"error", "error_finish", "network_error"})
 
 
 def normalize_finish_reason(raw: Any) -> Any:

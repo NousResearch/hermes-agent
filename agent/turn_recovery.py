@@ -27,6 +27,7 @@ from agent.message_sanitization import (
     _sanitize_messages_non_ascii,
     _sanitize_messages_surrogates, _sanitize_structure_non_ascii, _sanitize_structure_surrogates,
     _strip_images_from_messages, _strip_non_ascii, close_interrupted_tool_sequence, record_reasoning_field_rejection,
+    PROVIDER_ERROR_FINISH_REASONS, normalize_finish_reason,
 )
 from agent.thinking_timeout_guidance import build_thinking_timeout_guidance, is_thinking_timeout
 from agent.vision_message_prep import _provider_model_key
@@ -1615,6 +1616,9 @@ def validate_response_shape(agent: Any, response: Any) -> tuple[bool, list[str]]
         detail = "response has no 'choices' attribute"
     elif response.choices is None:
         detail = "response.choices is None"
+    elif response.choices and (_fr := normalize_finish_reason(
+            getattr(response.choices[0], "finish_reason", None))) in PROVIDER_ERROR_FINISH_REASONS:
+        detail = f"provider ended the reply with finish_reason={_fr}"
     else:
         detail = "response.choices is empty"
     return True, [detail]

@@ -26,6 +26,8 @@ from hermes_constants import PARTIAL_STREAM_STUB_ID
         ("end", "stop"),
         ("function_call", "tool_calls"),
         ("content_filter", "content_filter"),  # contract values pass through byte-identical
+        ("sensitive", "content_filter"),  # Z.AI safety review
+        ("model_context_window_exceeded", "length"),  # Z.AI window filled
     ],
 )
 def test_normalize_finish_reason_folds_to_contract(raw, expected):
@@ -78,3 +80,30 @@ def test_streaming_capture_folds_uppercase_finish_reason(_mock_close, mock_creat
 
     assert response.id != PARTIAL_STREAM_STUB_ID
     assert response.choices[0].finish_reason == expected
+
+
+@pytest.mark.parametrize("raw", ["network_error", "error"])
+@patch("run_agent.AIAgent._create_request_openai_client")
+@patch("run_agent.AIAgent._close_request_openai_client")
+def test_failed_finish_reason_is_never_kept_as_the_answer(_mock_close, mock_create, monkeypatch, raw):
+    """Z.AI ends a broken stream with ``network_error`` and no error body: the partial
+    text must raise for retry (stream) and fail validation (non-stream), not be the reply."""
+    from agent.chat_completion_helpers import ProviderStreamError
+    from run_agent import AIAgent
+
+    assert ChatCompletionsTransport().validate_response(_fake_response(raw)) is False
+
+    def _stream():
+        yield _make_stream_chunk(content="Half an ans")
+        yield _make_stream_chunk(finish_reason=raw)
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.side_effect = lambda *a, **kw: _stream()
+    mock_create.return_value = mock_client
+    monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+    agent = AIAgent(api_key="test-key", base_url="https://example.com/v1", model="test/model",
+                    quiet_mode=True, skip_context_files=True, skip_memory=True)
+    agent.api_mode = "chat_completions"
+    agent._interrupt_requested = False
+    with pytest.raises(ProviderStreamError):
+        agent._interruptible_streaming_api_call({})

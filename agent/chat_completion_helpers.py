@@ -45,7 +45,7 @@ from session_rules.turns import flatten_message_text
 from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, append_message, data_use_requirement, stamp_message_timestamp
 from agent.message_sanitization import (
     _sanitize_messages_surrogates, _sanitize_surrogates, _repair_tool_call_arguments,
-    normalize_finish_reason as _normalize_finish_reason, sanitize_outbound_kwargs, strip_images_for_rejecting_model,
+    PROVIDER_ERROR_FINISH_REASONS, normalize_finish_reason as _normalize_finish_reason, sanitize_outbound_kwargs, strip_images_for_rejecting_model,
 )
 from agent.reasoning_summaries import (append_streamed_reasoning_detail, redact_reasoning_fields,
     separate_glued_reasoning_blocks, streamed_reasoning_detail_text)
@@ -58,7 +58,7 @@ from session_rules.turns import _IMAGE_PART_TYPES
 
 logger = logging.getLogger(__name__)
 _OPENROUTER_PROVIDER_SORT_VALUES = {"throughput", "latency", "price"}
-_PROVIDER_STREAM_ERROR_FINISH_REASONS = {"error", "error_finish"}
+_PROVIDER_STREAM_ERROR_FINISH_REASONS = PROVIDER_ERROR_FINISH_REASONS
 _PROVIDER_STREAM_SSE_FIELDS = {"event", "data", "id", "retry"}
 _PROVIDER_STREAM_ERROR_TEXT_LIMIT = 4096
 
@@ -338,10 +338,8 @@ def _provider_stream_text_may_be_sse(text: str) -> bool:
 def _provider_stream_error_from_text(text: str, finish_reason: Optional[str], *,
     response: Any = None) -> Optional[ProviderStreamError]:
     """Convert provider-streamed error text into an exception for retry logic."""
-    if not text:
-        return None
-
-    if str(finish_reason or "").lower() not in _PROVIDER_STREAM_ERROR_FINISH_REASONS:
+    reason = str(finish_reason or "").lower()
+    if reason not in _PROVIDER_STREAM_ERROR_FINISH_REASONS:
         return None
 
     headers = getattr(response, "headers", None) if response is not None else None
@@ -349,6 +347,11 @@ def _provider_stream_error_from_text(text: str, finish_reason: Optional[str], *,
     def _error(payload: dict, status_code: Optional[int]) -> ProviderStreamError:
         return ProviderStreamError(status_code=status_code, body=_provider_error_body(payload, status_code),
             raw_text=text, headers=headers)
+
+    if not (text or "").strip():
+        # The finish reason alone says the reply failed; without this the partial or empty
+        # reply is kept as the answer and never retried.
+        return _error({"error": {"code": reason, "message": f"stream ended with finish_reason={reason}"}}, None)
 
     for event in _parse_provider_sse_events(text):
         is_error_event = str(event.get("event") or "").strip().lower() == "error"
@@ -362,10 +365,7 @@ def _provider_stream_error_from_text(text: str, finish_reason: Optional[str], *,
     payload = _json_object_from_text(text)
     if payload is not None:
         return _error(payload, _status_code_from_payload(payload))
-
-    if text.strip():
-        return _error({}, None)
-    return None
+    return _error({}, None)
 
 
 def _image_part_chars(part: dict[str, Any], image_cost: int) -> int:

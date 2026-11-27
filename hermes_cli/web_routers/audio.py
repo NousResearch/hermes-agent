@@ -220,6 +220,40 @@ def _elevenlabs_voice_label(voice: dict[str, Any]) -> str:
     return f"{name} ({category})" if category else name
 
 
+def _fetch_elevenlabs_voice_list(api_key: str, collection_id: str) -> dict[str, Any]:
+    url = "https://api.elevenlabs.io/v1/voices"
+    params = {"collection_id": collection_id, "page_size": 100}
+    voices = []
+    seen_ids = set()
+    seen_tokens = set()
+    # Bound even an upstream bug that emits endlessly changing cursors.
+    for _ in range(100):
+        if collection_id:
+            url = "https://api.elevenlabs.io/v2/voices?" + urllib.parse.urlencode(params)
+        request = urllib.request.Request(
+            url, headers={"Accept": "application/json", "xi-api-key": api_key},
+        )
+        with urllib.request.urlopen(request, timeout=10) as response:
+            payload = _read_dashboard_json_response(response)
+        if not collection_id:
+            return payload
+        for voice in payload.get("voices") or []:
+            if not isinstance(voice, dict):
+                continue
+            voice_id = str(voice.get("voice_id") or "").strip()
+            if voice_id and voice_id not in seen_ids:
+                voices.append(voice)
+                seen_ids.add(voice_id)
+        if not payload.get("has_more"):
+            return {"voices": voices}
+        token = payload.get("next_page_token")
+        if not isinstance(token, str) or not token.strip() or token in seen_tokens:
+            raise ValueError("Invalid ElevenLabs voice pagination token")
+        seen_tokens.add(token)
+        params["next_page_token"] = token
+    raise ValueError("ElevenLabs voice pagination exceeded 100 pages")
+
+
 @router.get("/api/audio/elevenlabs/voices")
 async def get_elevenlabs_voices(profile: Optional[str] = None):
     """Return ElevenLabs voices when an API key is configured.
@@ -229,8 +263,18 @@ async def get_elevenlabs_voices(profile: Optional[str] = None):
     """
     # Config-only scope (await-safe): the key lookup reads the requested
     # profile's .env, matching the profile the settings UI writes to.
+    from hermes_cli.config import load_config
+    from hermes_cli.config_backend import ConfigBackendUnavailable
+
     with _config_profile_scope(profile):
         api_key = (load_env().get("ELEVENLABS_API_KEY") or "").strip()
+        try:
+            config = await asyncio.to_thread(load_config)
+        except ConfigBackendUnavailable as exc:
+            raise HTTPException(status_code=503, detail="Profile configuration is unavailable") from exc
+        collection_id = str(
+            config.get("tts", {}).get("elevenlabs", {}).get("collection_id") or ""
+        ).strip()
     if not api_key:
         # Fallback for env-only deployments — scope-aware: under multiplex
         # os.environ may hold another profile's key, so honor the installed
@@ -248,17 +292,8 @@ async def get_elevenlabs_voices(profile: Optional[str] = None):
     if not api_key:
         return {"available": False, "voices": []}
 
-    request = urllib.request.Request(
-        "https://api.elevenlabs.io/v1/voices",
-        headers={"Accept": "application/json", "xi-api-key": api_key},
-    )
-
     try:
-        def _fetch() -> dict[str, Any]:
-            with urllib.request.urlopen(request, timeout=10) as response:
-                return _read_dashboard_json_response(response)
-
-        payload = await asyncio.to_thread(_fetch)
+        payload = await asyncio.to_thread(_fetch_elevenlabs_voice_list, api_key, collection_id)
     except urllib.error.HTTPError as exc:
         # An auth failure (bad/expired/scoped key) is a persistent, user-fixable
         # state and the desktop polls this on every settings open/focus, so

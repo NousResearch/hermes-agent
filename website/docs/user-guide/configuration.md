@@ -2370,6 +2370,7 @@ tts:
   elevenlabs:
     voice_id: "pNInz6obpgDQGcFmaJgB"
     model_id: "eleven_multilingual_v2"
+    collection_id: ""           # Optional: ElevenLabs voice dropdown collection filter (this profile only)
   openai:
     model: "gpt-4o-mini-tts"
     voice: "alloy"              # alloy, echo, fable, onyx, nova, shimmer

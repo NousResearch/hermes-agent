@@ -844,3 +844,19 @@ def test_a_managed_pin_over_a_user_reference_is_migrated_by_the_scan(tmp_path, m
     assert mig.migrate_home(profile, install=lambda n: installs.append(n) or (profile / "plugins" / n).mkdir(
         parents=True) or {"ok": True}, say=lambda s: None) == "retaindb"
     assert installs == ["retaindb"]
+
+
+def test_a_managed_reference_is_left_to_the_profile_agent_start_too(tmp_path, monkeypatch):
+    """A managed `memory.provider: ${MEMORY_BACKEND}` is a reference as well: the update scan cannot be
+    sure which value the profile's agent start resolves, so it installs nothing for it."""
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    (managed / "config.yaml").write_text("memory:\n  provider: ${MEMORY_BACKEND}\n", encoding="utf-8")
+    profile = tmp_path / "launch" / "profiles" / "work"
+    profile.mkdir(parents=True)
+    (profile / "config.yaml").write_text("memory:\n  provider: byterover\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "launch"))
+    monkeypatch.setenv("MEMORY_BACKEND", "retaindb")
+    monkeypatch.setattr(mig, "catalog_source", lambda n: n)
+    assert mig.migrate_home(profile, install=lambda n: pytest.fail("must not install"), say=lambda s: None) is None

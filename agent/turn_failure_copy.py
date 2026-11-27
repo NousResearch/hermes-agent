@@ -251,8 +251,9 @@ _NONRETRYABLE_COPY: dict[str, str] = {
         "models with /model."
     ),
     FailoverReason.data_policy_denied.value: (
-        "This conversation holds a result from a connected app that may only go to a model that "
-        "does not train on your data, and '{model}' on {label} can't promise that. Switch models "
+        "This conversation holds a result from a connected app or a plugin, such as health data from "
+        "your device. It may only go to a model that won't train on it (some sources also require that "
+        "the model keeps none of it), and '{model}' on {label} can't promise that. Switch models "
         "with /model, run /compress to summarize the result away, or start fresh with /new. If you "
         "are on the free tier, no free model can take this content: upgrade, or use /compress or /new."
     ),
@@ -312,7 +313,8 @@ FAILURE_CAUSE_GLOSS: dict[str, str] = {
         "the AI model service refused the request because of a policy on the account"
     ),
     FailoverReason.data_policy_denied.value: (
-        "{possessive} context holds a connected-app result that needs a model that does not train on data"
+        "{possessive} context holds a connected-app or plugin result that needs a model with a no-training "
+        "or zero-retention guarantee"
     ),
     "context_overflow": "{possessive} request grew too large for the model",
     "payload_too_large": "{possessive} request grew too large for the model",

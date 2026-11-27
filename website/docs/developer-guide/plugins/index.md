@@ -1325,6 +1325,26 @@ left, and assignments like `API_KEY=…` are masked. Patterns registered with
 `ctx.register_redaction_patterns()` apply too. Without `force`, a user who set
 `security.redact_secrets: false` gets the text back unchanged.
 
+### Mark a tool result that must not be trained on
+
+A tool that returns personal data (health records, a device's sensor history) can
+require that the model reading it doesn't train on it, or keeps none of it. Call
+`ctx.record_data_use(requires)` from the tool handler, sync or `async`:
+
+```python
+def read_heart_rate(args, **kwargs):
+    ctx.record_data_use(["no_training"])  # or ["zero_retention"], or both
+    return json.dumps(fetch_samples(args))
+```
+
+The requirement rides on that tool call's result message, never in the text the
+model sees, and lasts as long as the result stays in the conversation. On Nous
+Portal every later request carrying it goes only to endpoints that honour it; when
+none qualifies, the user is told to switch models, `/compress` or `/new`. Other
+providers don't receive it. Accepted names are `no_training` and `zero_retention`;
+a bare string or any other name raises `ValueError`. It works the same under
+`plugins.isolation: host`.
+
 ### Bundle skills
 
 Plugins can ship skill files that the agent loads via `skill_view("plugin:skill")`. Register them in your `__init__.py`:

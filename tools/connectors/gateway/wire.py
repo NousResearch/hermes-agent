@@ -9,6 +9,8 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from tools.connectors.data_use import DataUseRequirement
+
 CONNECTORS_PATH = "v1/connectors"
 CONNECTOR_SEARCH_PATH = f"{CONNECTORS_PATH}/search"
 CONNECTOR_SCHEMAS_PATH = f"{CONNECTORS_PATH}/schemas"
@@ -189,9 +191,6 @@ class ConnectorExecuteSingleRequest(_Wire):
 
 
 # What a model receiving this result must guarantee; absent when the connector asks nothing.
-DataUseRequirement = Literal["no_training", "zero_retention"]
-
-
 class ConnectorDataUse(_Wire):
     requires: list[DataUseRequirement]
 

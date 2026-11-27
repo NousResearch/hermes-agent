@@ -27,6 +27,8 @@ def test_data_policy_copy_gives_free_tier_users_a_way_out():
                              model="some/model", summary="No endpoint qualifies.")
     free_tier = copy[copy.index("free tier"):]
     assert "'some/model'" in copy and "upgrade" in free_tier and "/compress" in free_tier and "/new" in free_tier
+    # Plugin tools (device health data) block a turn the same way connector results do.
+    assert "connected app" in copy and "plugin" in copy and "/model" in copy
 
 
 def test_limit_reset_line_only_explains_a_limit():

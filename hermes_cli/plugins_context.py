@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 from functools import cached_property
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Mapping, Optional
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping, Optional
 
 from hermes_cli.plugins_capability_ctx import PluginCapabilityCtxMixin
 from hermes_cli.plugins_dispatch import DEFAULT_SYSTEM_PROMPT_SECTION_MAX_CHARS
@@ -22,6 +22,7 @@ from hermes_cli.plugins_loader import _serialized_replacement
 from hermes_cli.plugins_manifest import PluginManifest
 from hermes_cli.plugins_registrars import register_scoped_provider, scoped_provider_registrar
 from hermes_cli.plugins_state import PluginState
+from tools.connectors.data_use import parse_data_use_requirements, record_data_use
 
 if TYPE_CHECKING:
     from hermes_cli.plugins import PluginManager
@@ -538,6 +539,13 @@ class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
             if agent is not None:
                 kwargs["parent_agent"] = agent
         return registry.dispatch(tool_name, args, scope=self._manager.scope_key, **kwargs)
+
+    def record_data_use(self, requires: Iterable[str]) -> None:
+        """Mark the result of the tool call now running as data that may only reach a model honouring
+        *requires* (``"no_training"``, ``"zero_retention"``). Call it from the tool handler; Nous then
+        routes every later request carrying that result to qualifying endpoints only. ``ValueError``
+        for a bare string or an unknown name."""
+        record_data_use(parse_data_use_requirements(requires))
 
     @_serialized_replacement
     def register_context_engine(self, engine) -> Optional[PluginRegistration]:

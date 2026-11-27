@@ -142,8 +142,8 @@ class GatewayKanbanWatchersMixin:
     def _kanban_advance(self, sub: dict, cursor: int, board: Optional[str] = None) -> None:
         self._kanban_sub_op(board, "advance_notify_cursor", sub, new_cursor=cursor)
 
-    def _kanban_unsub(self, sub: dict, board: Optional[str] = None) -> None:
-        self._kanban_sub_op(board, "remove_notify_sub", sub)
+    def _kanban_unsub(self, sub: dict, board: Optional[str] = None, reason: Optional[str] = None) -> None:
+        self._kanban_sub_op(board, "remove_notify_sub", sub, reason=reason)
 
     def _kanban_rewind(self, sub: dict, claimed_cursor: int, old_cursor: int, board: Optional[str] = None) -> None:
         """Undo a claimed notification cursor after send failure."""

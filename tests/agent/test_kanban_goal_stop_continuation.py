@@ -833,6 +833,55 @@ def test_worker_handoff_is_rejected_by_a_genuine_continue_verdict(worker, monkey
         assert task.status == 'running' and task.current_run_id == worker.context['run_id']
 
 
+@pytest.mark.parametrize('surface', ['tool', 'cli'])
+@pytest.mark.parametrize('action, terminal', [('complete', 'done'), ('request_review', 'review'), ('block', 'blocked')])
+@pytest.mark.parametrize('edit_during_judgment', [False, True], ids=['unchanged', 'edited'])
+def test_goal_handoff_cannot_use_verdict_for_previous_requirements(
+        worker, monkeypatch, surface, action, terminal, edit_during_judgment):
+    from argparse import Namespace
+
+    from agent import auxiliary_client
+    from hermes_cli import kanban as kanban_cli
+    from tests.agent.test_run_agent import _mock_response
+    from tools import kanban_tools
+
+    tid, run_id = worker.context['task_id'], worker.context['run_id']
+    observed = []
+    requirement = 'A third section must now be written and verified.'
+
+    def judge_transport(**kwargs):
+        observed.append(str(kwargs['messages']))
+        if edit_during_judgment:
+            with connect_closing() as other:
+                assert kb.edit_task(other, tid, body=requirement)
+        verdict = 'blocked' if action == 'block' else 'done'
+        return _mock_response(content=json.dumps({'verdict': verdict, 'reason': 'The old requirement is settled.'}))
+
+    monkeypatch.setattr(auxiliary_client, 'call_llm', judge_transport)
+    args = {'task_id': tid, 'summary': 'Both required sections are verified.'}
+    if action == 'block':
+        args = {'task_id': tid, 'kind': 'needs_input', 'reason': 'Owner must supply the second section.'}
+        if surface == 'cli':
+            args['reason'] = [args['reason']]
+    if surface == 'tool':
+        reply = json.loads(getattr(kanban_tools, '_handle_' + action)(args))
+        accepted = reply.get('ok', False)
+    else:
+        handler = getattr(kanban_cli, '_cmd_' + action)
+        accepted = handler(Namespace(task_ids=[tid], result=None, **args)) == 0
+    assert len(observed) == 1 and 'Both sections must exist' in observed[0]
+    assert requirement not in observed[0]
+    with connect_closing() as conn:
+        task, run = kb.get_task(conn, tid), kb.latest_run(conn, tid)
+        assert run.id == run_id
+        if edit_during_judgment:
+            assert task.body == requirement
+            assert (task.status, task.current_run_id, run.outcome, run.ended_at) == ('running', run_id, None, None)
+        else:
+            assert task.status == terminal and run.ended_at is not None
+    assert accepted is not edit_during_judgment
+
+
 @pytest.mark.parametrize('worker', [{'goal_mode': False, 'inherited_goal': '1'}], indirect=True)
 def test_false_assignment_overwrites_inherited_goal_and_keeps_terminal_guard(worker, monkeypatch):
     from agent.turn_stop_gates import apply_stop_gates

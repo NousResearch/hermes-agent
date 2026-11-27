@@ -10,7 +10,8 @@ from gateway.config import (
     Platform,
     PlatformConfig,
 )
-from gateway.run import _get_channel_override, GatewayRunner
+from gateway.run import _channel_override_lookup_keys, _get_channel_override, GatewayRunner
+from gateway.run_config_loaders import _effective_allow_silence
 from gateway.session import SessionSource
 
 
@@ -152,5 +153,103 @@ class TestResolveSessionAgentRuntimePriority:
             )
         assert model == "channel/model"
         assert runtime["provider"] == "openrouter"
+
+
+def _forum_config(overrides: dict) -> GatewayConfig:
+    return GatewayConfig(
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(enabled=True, channel_overrides=overrides),
+        },
+    )
+
+
+class TestCompositeChatThreadKey:
+    """``<chat_id>:<thread_id>`` addresses one forum topic exactly.
+
+    On a forum platform ``chat_id`` is the GROUP and ``thread_id`` the topic (Telegram topics),
+    the opposite of Discord, where ``chat_id`` is already the thread's own channel id. Without a
+    composite key the group entry shadows every topic entry, and a bare topic id (``"4"``) is not
+    unique across groups.
+    """
+
+    def test_composite_key_beats_the_group_entry(self):
+        config = _forum_config({
+            "-1001234567890": ChannelOverride(model="group/model"),
+            "-1001234567890:4": ChannelOverride(model="topic/model"),
+        })
+        override = _get_channel_override(
+            config, Platform.TELEGRAM, "-1001234567890", thread_id="4")
+        assert override is not None
+        assert override.model == "topic/model"
+
+    def test_group_entry_still_serves_the_other_topics(self):
+        config = _forum_config({
+            "-1001234567890": ChannelOverride(model="group/model"),
+            "-1001234567890:4": ChannelOverride(model="topic/model"),
+        })
+        override = _get_channel_override(
+            config, Platform.TELEGRAM, "-1001234567890", thread_id="9")
+        assert override is not None
+        assert override.model == "group/model"
+
+    def test_composite_key_does_not_leak_into_another_group(self):
+        config = _forum_config({"-1009999999999:4": ChannelOverride(model="other/topic")})
+        assert _get_channel_override(
+            config, Platform.TELEGRAM, "-1001234567890", thread_id="4") is None
+
+    def test_bare_thread_key_still_matches(self):
+        """Backwards compatibility: the documented bare thread/topic key keeps working."""
+        config = _forum_config({"4": ChannelOverride(model="legacy/topic")})
+        override = _get_channel_override(
+            config, Platform.TELEGRAM, "-1001234567890", thread_id="4")
+        assert override is not None
+        assert override.model == "legacy/topic"
+
+    def test_discord_parent_inheritance_unchanged(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.DISCORD: PlatformConfig(
+                    enabled=True,
+                    channel_overrides={"parent_chan": ChannelOverride(model="parent/model")},
+                ),
+            },
+        )
+        override = _get_channel_override(
+            config, Platform.DISCORD, "thread_chan", parent_id="parent_chan")
+        assert override is not None
+        assert override.model == "parent/model"
+
+    def test_lookup_key_order(self):
+        assert _channel_override_lookup_keys("c", thread_id="t", parent_id="p") == [
+            "c:t", "c", "t", "p"]
+        assert _channel_override_lookup_keys("c") == ["c"]
+        assert _channel_override_lookup_keys("c", parent_id="p") == ["c", "p"]
+        # A thread id equal to the chat id (Discord auto-thread continuity) adds no junk key.
+        assert _channel_override_lookup_keys("c", thread_id="c") == ["c"]
+
+    def test_room_allow_silence_prefers_the_composite_entry(self):
+        platform_config = PlatformConfig(
+            enabled=True,
+            channel_overrides={
+                "-1001234567890": ChannelOverride(allow_silence=False),
+                "-1001234567890:4": ChannelOverride(allow_silence=True),
+            },
+            extra={},
+        )
+        source = SessionSource(
+            platform=Platform.TELEGRAM, chat_id="-1001234567890", chat_type="thread",
+            thread_id="4", user_id="u1")
+        assert _effective_allow_silence(platform_config, source) is True
+
+    def test_idle_compaction_prefers_the_composite_entry(self):
+        runner = object.__new__(GatewayRunner)
+        runner.config = _forum_config({
+            "-1001234567890": ChannelOverride(idle_compact_after_seconds=0),
+            "-1001234567890:4": ChannelOverride(idle_compact_after_seconds=900),
+        })
+        source = SessionSource(
+            platform=Platform.TELEGRAM, chat_id="-1001234567890", chat_type="thread",
+            thread_id="4", user_id="u1")
+        assert runner._idle_compact_after_for_source(source, {}) == 900
 
 

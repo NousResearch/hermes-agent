@@ -355,12 +355,20 @@ platforms:
         system_prompt: "You are the #dev channel code-review specialist."
       "987654321098765432":
         model: openai/gpt-5-mini
+  telegram:
+    enabled: true
+    channel_overrides:
+      "-1001234567890":            # the whole forum group
+        model: openai/gpt-5-mini
+      "-1001234567890:4":          # <group id>:<topic id> — only this topic
+        model: anthropic/claude-sonnet-4.6
 ```
 
 Details:
 
 - `model`, `provider`, and `system_prompt` are optional. Unset fields fall back to the global defaults. A room can also set intentional silence with `allow_silence`, which overrides the platform's own `allow_silence` (below).
-- Lookup order is exact channel/thread id first, then the **parent** channel/forum id — so Discord threads inherit their parent channel's override automatically.
+- Lookup order is most specific first: `<chat id>:<thread id>`, then the exact channel/thread id, then a bare thread id, then the **parent** channel/forum id — so Discord threads inherit their parent channel's override automatically.
+- Use the composite `<chat id>:<thread id>` key for **forum topics** (Telegram topics, where the chat id is the group and the thread id is the topic). It is the only key that is both group-scoped and topic-scoped: a bare topic id such as `"4"` lives in the same flat namespace as the chat ids and would match topic 4 in *every* group, and a group-wide entry outranks it. A composite entry lets a group keep a default with one topic as an exception.
 - Resolution priority for the model is: session `/model` override → `channel_overrides` → global config. A user running `/model` in a chat still wins over the channel default.
 - The `system_prompt` override replaces the global gateway prompt for that channel (it is ephemeral — injected per turn, not stored in history).
 - `idle_compact_after_seconds` sets [`compression.idle_compact_after_seconds`](../configuration.md#context-compression) for that channel only: a positive value compacts this channel's idle chats after that many seconds (in the background, before the next message), `0` turns idle compaction off there even when the global value is on. Unset keeps the global value. It is a channel policy, so it also applies after `/new`; like the other `channel_overrides` fields, an edit takes effect after a gateway restart.
@@ -397,8 +405,9 @@ when a human message needs a reply (or the adapter cannot tell). Internal notifi
 scheduled heartbeats, and messages known to be unaddressed keep their existing silence exemptions,
 even with `allow_silence: false`.
 
-A room's `allow_silence` overrides the platform's. Hermes looks the room up chat ID → thread ID →
-parent ID, as for other channel overrides, and the first matching entry is the room's, including
+A room's `allow_silence` overrides the platform's. Hermes looks the room up `<chat ID>:<thread ID>`
+→ chat ID → thread ID → parent ID, as for other channel overrides, and the first matching entry is
+the room's, including
 an explicit `false`. An entry that sets only other keys (say a thread with just `model:`) also
 matches first, so it takes the platform's value, not its parent channel's: repeat `allow_silence`
 there to keep a parent's room opt-in. A quoted `"false"` counts as `false`; opting in takes a real

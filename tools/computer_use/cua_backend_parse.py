@@ -131,8 +131,16 @@ def _split_tree_text(full_text: str) -> tuple[str, str]:
     summary, _, tree = full_text.partition("\n")
     return summary, tree
 
-_MODIFIER_NAMES = frozenset({"cmd", "command", "shift", "option", "alt", "ctrl", "control", "fn"})
-_KEY_ALIASES = {"command": "cmd", "alt": "option", "control": "ctrl"}
+# super/meta/win/windows are the same physical key. cua-driver accepts
+# super/meta/win/cmd and rejects the schema token "windows", so every alias
+# is sent as "super". Leaving them out made "super+3" a bare press of "3".
+_MODIFIER_NAMES = frozenset({
+    "cmd", "command", "shift", "option", "alt", "ctrl", "control", "fn", "super",
+})
+_KEY_ALIASES = {
+    "command": "cmd", "alt": "option", "control": "ctrl",
+    "meta": "super", "win": "super", "windows": "super",
+}
 
 def _parse_key_combo(keys: str) -> tuple[Optional[str], list[str]]:
     """Parse 'cmd+s' / 'ctrl-alt-t' into (key, modifiers); last non-modifier wins."""

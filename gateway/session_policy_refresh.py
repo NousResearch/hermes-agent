@@ -125,12 +125,39 @@ def _mcp_servers(policy, config, live, toolsets, secrets, replaced):
         config.pop('mcp_servers', None)
     replaced.add('mcp_servers')
     servers = selected & enabled & picked if picked else selected & enabled
-    return tuple(sorted((set(toolsets) - set(sections[0]) - set(sections[1])) | servers))
+    drop = _server_toolsets(set(sections[0]) | set(sections[1]), servers)
+    return tuple(sorted((set(toolsets) - drop) | servers))
 
 
 def _server_name(servers, name):
     """The server a pick name selects: ``mcp-<server>`` is its bare alias unless a server has that name."""
     return name[4:] if name.startswith('mcp-') and name not in servers else name
+
+
+def _server_toolsets(names, kept):
+    """Toolset names owned by these MCP server keys.
+
+    A server's toolset is its key. ``mcp-<key>`` names the same server
+    (``_server_name``) unless a server is literally called ``mcp-<key>``.
+    A built-in or plugin toolset that shares the key stays: discovery
+    registers that server as ``mcp-<key>``, and that form is the server's
+    own toolset to drop once the server is no longer selected. A disabled
+    ``mcp_servers.memory`` entry therefore leaves the built-in ``memory``
+    toolset on a refreshed local session.
+    """
+    from hermes_cli.tools_config import _get_plugin_toolset_keys
+    from toolsets import TOOLSETS
+
+    protected = set(TOOLSETS) | _get_plugin_toolset_keys()
+    known = set(names)
+    owned = {name for name in known if name not in protected}
+    for name in known & protected:
+        if name in kept:
+            continue
+        alias = f'mcp-{name}'
+        if _server_name(known, alias) == name and alias not in protected:
+            owned.add(alias)
+    return owned
 
 
 def _prepare(authority, session_id, mcp_only=False, adopt_only=False):

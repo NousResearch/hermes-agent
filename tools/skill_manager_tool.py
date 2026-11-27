@@ -419,15 +419,21 @@ def _guarded_write(name: str, skill_dir: Path, target: Path, action: str, label:
     if scan_error:
         return _err(scan_error)
     from hermes_constants import mkdir_under_hermes_home
-    mkdir_under_hermes_home(target.parent)
-    atomic_write_text(target, content, preserve_mode=True, create_mode=0o644)
+    from hermes_cli.skill_catalog import admission
+    try:
+        with admission.generic(skill_dir, target):  # skill-granular: any claim in or over the skill refuses
+            mkdir_under_hermes_home(target.parent)
+            atomic_write_text(target, content, preserve_mode=True, create_mode=0o644)
+    except admission.CatalogError as exc:
+        return _err(admission.refusal(exc))
     scan_error = _security_scan_skill(skill_dir, baseline, scope)
     if not scan_error:
         return None
-    if original is not None:
-        atomic_write_text(target, original, preserve_mode=True)
-    else:  # a dangling symlink's write created its destination: remove that, keep the link
-        target.resolve().unlink(missing_ok=True)
+    with admission.generic(skill_dir, target):  # a refused rollback raises: never report a half-reverted write
+        if original is not None:
+            atomic_write_text(target, original, preserve_mode=True)
+        else:  # a dangling symlink's write created its destination: remove that, keep the link
+            target.resolve().unlink(missing_ok=True)
     return _err(scan_error)
 
 
@@ -609,8 +615,13 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> dict[str, A
         return {"success": True,
                 "message": f"Skill '{name}' archived ({archive_msg}).{absorbed_note}",
                 "_archived": True}
-    shutil.rmtree(skill_dir)
-    _rmdir_if_empty(skill_dir.parent, skills_root)  # empty category dir, never the root
+    from hermes_cli.skill_catalog import admission
+    try:
+        with admission.generic(skill_dir):
+            shutil.rmtree(skill_dir)
+            _rmdir_if_empty(skill_dir.parent, skills_root)  # empty category dir, never the root
+    except admission.CatalogError as exc:
+        return _err(admission.refusal(exc))
     return {"success": True, "message": f"Skill '{name}' deleted.{absorbed_note}"}
 
 
@@ -660,8 +671,13 @@ def _remove_file(name: str, file_path: str) -> dict[str, Any]:
         return _err(f"File '{file_path}' not found in skill '{name}'.", available_files=available or None)
     if read_guard := _background_review_read_before_write_guard(name, target, "remove_file", file_path):
         return read_guard
-    target.unlink()
-    _rmdir_if_empty(target.parent, skill_dir)
+    from hermes_cli.skill_catalog import admission
+    try:
+        with admission.generic(skill_dir, target):
+            target.unlink()
+            _rmdir_if_empty(target.parent, skill_dir)
+    except admission.CatalogError as exc:
+        return _err(admission.refusal(exc))
     return {"success": True, "message": f"File '{file_path}' removed from skill '{name}'."}
 
 

@@ -43,11 +43,10 @@ def _read_cfg(home):
 
 class TestRegistry:
     def test_every_capability_has_legacy_gate(self):
-        # llm.side_question, llm.session_fork and conversation.cards postdate the consent flow: declare +
-        # consent is their only gate.
+        # These capabilities postdate consent: declaration + consent is their only gate.
         for spec in CAPABILITY_REGISTRY.values():
             assert bool(spec.legacy_path) is (
-                spec.id not in {"llm.side_question", "llm.session_fork", "conversation.cards"}), spec.id
+                spec.id not in {"llm.side_question", "llm.session_fork", "skills.catalog", "conversation.cards"}), spec.id
             assert spec.description
 
 

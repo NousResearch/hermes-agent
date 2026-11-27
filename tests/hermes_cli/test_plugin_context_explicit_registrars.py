@@ -15,9 +15,21 @@ from hermes_constants import get_hermes_home
 def _provider_for(base_ref: str, name: str):
     module, attr = base_ref.split(":")
     base = getattr(importlib.import_module(module), attr)
-    cls = type(f"Probe{attr}", (base,), {"name": name, "prefix": f"{name}:"})
+    cls = type(f"Probe{attr}", (base,), {"name": name, "prefix": f"{name}:",
+                                                  "label": "Probe", "implementation_revision": "1"})
     cls.__abstractmethods__ = frozenset()
     return cls()
+
+
+def _configure_catalog_row(ctx, method, name):
+    if method != "register_skill_catalog":
+        return name
+    from hermes_cli.config import atomic_config_write
+    from hermes_cli.skill_catalog.identity import source_id
+    ctx.manifest.capabilities = ["skills.catalog"]
+    atomic_config_write(ctx._manager.home_path / "config.yaml", {"plugins": {
+        "enabled": ["probe"], "entries": {"probe": {"granted_capabilities": ["skills.catalog"]}}}})
+    return source_id("probe", name)
 
 
 @pytest.mark.parametrize("row", _SCOPED_PROVIDER_REGISTRARS, ids=lambda row: row[0])
@@ -28,6 +40,7 @@ def test_each_registrar_registers_into_its_rows_registry(row):
     manager = PluginManager()
     ctx = PluginContext(PluginManifest(name="probe", source="bundled"), manager)
     registry = importlib.import_module(registry_mod)
+    name = _configure_catalog_row(ctx, method, name)
 
     handle = getattr(ctx, method)(provider)
     try:
@@ -101,6 +114,7 @@ def test_make_scoped_provider_registrar_still_builds_a_working_method(row, monke
 
     monkeypatch.setattr(plugins_loader, "replacement_coordinator", RecordingCoordinator())
     provider = _provider_for(base_ref, name)
+    name = _configure_catalog_row(ctx, method, name)
     handle = built(ctx, provider)
     try:
         assert handle is not None and handle.kind == kind and transactions == [method]

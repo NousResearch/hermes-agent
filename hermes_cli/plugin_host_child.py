@@ -58,8 +58,10 @@ class RemoteRegistration:
     def dispose(self) -> None:
         if self._disposed:
             return
-        self._disposed = True
+        if self.kind != 'skill_catalog':
+            self._disposed = True
         self._runtime.channel.call("dispose", {"handle": self._id})
+        self._disposed = True
 
 
 class RemoteFacade:
@@ -86,6 +88,24 @@ class RemoteFacade:
 
         remote.__name__ = attr
         return remote
+
+
+class RemoteCatalogMutations(RemoteFacade):
+    """Keep the context manager and writer-owned OS descriptors in this child."""
+
+    def recover(self, operation_id):
+        from hermes_constants import get_hermes_home
+        from hermes_cli.skill_catalog.recovery import recover
+        acquired = self.recovery_acquire(dict(operation_id=operation_id))
+        return recover(self, get_hermes_home(), operation_id, acquired)
+
+    def commit(self, admission, operation_id):
+        from hermes_constants import get_hermes_home
+        from hermes_cli.skill_catalog.writer import commit
+        payload = {key: admission[key] for key in ('registration_id', 'reservation_id',
+            'expected_path_revision', 'expected_installation_revision')}
+        acquired = self.acquire(dict(payload, operation_id=operation_id))
+        return commit(self, get_hermes_home(), admission, operation_id, acquired)
 
 
 class RemotePluginContext:
@@ -117,7 +137,8 @@ class RemotePluginContext:
                                self.manifest.name, name, HOST_SKIPPED_CTX_METHODS[name])
             return skipped
         if name in HOST_REMOTE_FACADES:
-            return self._facades.setdefault(name, RemoteFacade(self._runtime, self._plugin_key, name))
+            factory = RemoteCatalogMutations if name == 'skill_catalog_mutations' else RemoteFacade
+            return self._facades.setdefault(name, factory(self._runtime, self._plugin_key, name))
         if name not in self._methods:
             raise AttributeError(f"'PluginContext' object has no attribute {name!r}")
         return functools.partial(self._runtime.ctx_call, self._plugin_key, name)
@@ -213,6 +234,10 @@ class HostRuntime:
 
     def ctx_call(self, plugin_key: str, method: str, *args: Any, **kwargs: Any) -> Any:
         from hermes_cli.plugin_isolation import HOST_OBJECT_BASES
+        if method == "register_skill_catalog":
+            from hermes_cli.skill_catalog.identity import describe
+            provider, = args
+            args = ({"catalog_descriptor": describe(provider).to_wire(), "object_ref": provider},)
         return self._send_call("ctx", plugin_key, {"method": method, "args": args, "kwargs": kwargs},
                                allow_objects=method in HOST_OBJECT_BASES)
 

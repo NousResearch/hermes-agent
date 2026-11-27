@@ -50,6 +50,10 @@ _CAPABILITY_ROWS = (
     ("llm.session_fork", (),
      "Run a background copy of your agent after a turn. It sees the whole session, including "
      "memory, can use the plugin's own tools, and spends your main model's tokens."),
+    ("skills.catalog", (),
+     "Show this plugin's skill catalog in Hermes. Catalog searches may contact its service. "
+     "When you confirm an install, update or uninstall, the plugin performs it in this profile "
+     "under its own policy. Disabling the plugin leaves its installed files as ordinary local skills."),
     ("conversation.cards", (),
      "Post display-only cards into your conversations (no model call; the model is told a card "
      "was posted, never its text; the card renders in Desktop or as a system line)."),

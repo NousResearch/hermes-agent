@@ -155,8 +155,11 @@ class PluginHost:
             proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                     stderr=subprocess.PIPE, env=self._env(), cwd=str(self._home),
                                     bufsize=0)
-            threading.Thread(target=_pump_stderr, args=(proc, self._home.name), daemon=True,
-                             name=f"plugin-host-{proc.pid}-stderr").start()
+            diagnostic_home = self._home if getattr(self._manager, '_catalog_diagnostics', False) else None
+            from agent.memory_provider import spawn_context_thread
+            stderr_thread = spawn_context_thread(_pump_stderr, args=(proc, self._home.name, diagnostic_home),
+                                                 name=f"plugin-host-{proc.pid}-stderr")
+            stderr_thread.start()
             self._generation += 1
             channel = Channel(proc.stdout, proc.stdin, self._handle,  # type: ignore[arg-type]
                               name=f"plugin-host[{proc.pid}]",
@@ -414,9 +417,13 @@ class PluginHost:
         if method == "session_event":
             return self._serve_session_event(params)
         if method == "dispose":
-            handle = self._handles.pop(int(params["handle"]), None)
+            handle_id = int(params['handle'])
+            handle = self._handles.get(handle_id)
             if handle is not None:
+                if handle.kind != 'skill_catalog':
+                    self._handles.pop(handle_id, None)
                 handle.dispose()
+                self._handles.pop(handle_id, None)
             return None
         raise ValueError(f"unknown plugin host request {method!r}")
 
@@ -439,6 +446,17 @@ class PluginHost:
         resolve = functools.partial(self._resolve_ref, base=base)
         args = decode(params.get("args") or [], resolve)
         kwargs = decode(params.get("kwargs") or {}, resolve)
+        if method == "register_skill_catalog":
+            from hermes_cli.skill_catalog.identity import Descriptor
+            tagged, = args
+            if type(tagged) is not dict or set(tagged) != {"catalog_descriptor", "object_ref"}:
+                raise ValueError("Invalid catalog registration transport.")
+            descriptor = Descriptor.from_wire(tagged["catalog_descriptor"])
+            provider = tagged["object_ref"]
+            if base is None or not isinstance(provider, base):
+                raise ValueError("Invalid catalog object reference.")
+            object.__setattr__(provider, "_skill_catalog_descriptor", descriptor)
+            args = [provider]
         result = getattr(ctx, method)(*args, **kwargs)
         return self._encode_for_host(result)
 
@@ -667,12 +685,15 @@ def _import_ref(ref: str) -> type:
     return getattr(importlib.import_module(module), attr)
 
 
-def _pump_stderr(proc: subprocess.Popen, label: str) -> None:
+def _pump_stderr(proc: subprocess.Popen, label: str, diagnostic_home=None) -> None:
     """Plugin output and host logs go to the Hermes log, tagged with the host's profile."""
     stream = proc.stderr
     if stream is None:
         return
-    for raw in iter(stream.readline, b""):
+    for raw in iter(lambda: stream.readline(4096), b""):
         line = raw.decode("utf-8", "replace").rstrip()
-        if line:
+        if line and diagnostic_home is not None:
+            from hermes_cli.skill_catalog.diagnostics import write
+            write(diagnostic_home, line)
+        elif line:
             logger.info("plugin host [%s]: %s", label, line)

@@ -797,6 +797,8 @@ const sidebars: SidebarsConfig = {
               link: {type: 'doc', id: 'developer-guide/plugins/index'},
               items: [
                 'developer-guide/plugin-llm-access',
+                'developer-guide/skill-catalog-provider',
+                'developer-guide/skill-catalog-provider-contract',
                 'developer-guide/observer-hooks',
                 'developer-guide/middleware',
                 'developer-guide/subagent-lifecycle-api',

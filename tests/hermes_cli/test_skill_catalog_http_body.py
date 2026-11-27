@@ -1,0 +1,162 @@
+"""Oversized hub bodies refuse live authority and preserve providerless stock input."""
+import asyncio
+import json
+
+import pytest
+from starlette.requests import Request
+from starlette.responses import Response
+
+pytest_plugins = ['tests.hermes_cli.test_skill_catalog_http']
+
+CAP = 256 * 1024
+
+
+def _padded(plan, size):
+    raw = json.dumps(dict(identifier=plan['identifier'], action='install')).encode()
+    return raw + b' ' * (size - len(raw))
+
+
+@pytest.mark.parametrize('query', ['', '?profile=default'])
+def test_oversized_live_provider_request_refuses_without_parsing(client, catalog, monkeypatch, query):
+    from hermes_cli.skill_catalog import http
+    entry, plan = catalog
+    calls = []
+    original = http._hint
+
+    def hint(raw):
+        calls.append('parse')
+        return original(raw)
+
+    monkeypatch.setattr(http, '_hint', hint)
+    response = client.post('/api/skills/hub/review' + query, content=_padded(plan, CAP + 1))
+    assert response.status_code == 413, response.text
+    assert response.json()['error']['code'] == 'request_too_large'
+    assert calls == []
+    assert entry.provider.effects == 0
+
+
+def test_oversized_managed_install_never_spawns_stock(client, catalog, monkeypatch):
+    from hermes_cli.web_routers import skills
+    _entry, plan = catalog
+    spawned = []
+    monkeypatch.setattr(skills, 'spawn_profile_action', lambda *a, **kw: spawned.append(kw) or {'ok': True})
+    raw = json.dumps(dict(identifier=plan['identifier'], action='install')).encode()
+    small = client.post('/api/skills/hub/install', content=raw, headers={'content-type': 'application/json'})
+    assert small.status_code == 400
+    assert spawned == []
+    large = client.post('/api/skills/hub/install', content=raw + b' ' * (CAP + 1 - len(raw)),
+                        headers={'content-type': 'application/json'})
+    assert large.status_code == 413, large.text
+    assert spawned == []
+
+
+@pytest.mark.parametrize('query', ['', '?profile=default', '?profile=missing'])
+def test_oversized_body_selected_profile_never_spawns_stock(client, monkeypatch, query):
+    from hermes_constants import get_hermes_home
+    from hermes_cli import profiles
+    from hermes_cli.skill_catalog.registry import snapshot
+    from hermes_cli.web_routers import skills
+    from tests.hermes_cli.test_skill_catalog_service import fixture
+
+    home = get_hermes_home()
+    monkeypatch.setattr(profiles, '_get_default_hermes_home', lambda: home)
+    other = home / 'profiles/other'
+    manager, entry, plan = fixture(other)
+    spawned = []
+    monkeypatch.setattr(skills, 'spawn_profile_action', lambda *a, **kw: spawned.append(kw) or {'ok': True})
+    try:
+        assert snapshot(scope=str(home)) == ()
+        raw = json.dumps(dict(profile='other', identifier=plan['identifier'])).encode()
+        small = client.post('/api/skills/hub/install', content=raw, headers={'content-type': 'application/json'})
+        assert small.status_code == 409, small.text
+        assert small.json()['error']['code'] == 'review_required'
+        large = client.post('/api/skills/hub/install' + query,
+                            content=raw + b' ' * (CAP + 1 - len(raw)),
+                            headers={'content-type': 'application/json'})
+        assert large.status_code == 413, large.text
+        assert large.json()['error']['code'] == 'request_too_large'
+        assert spawned == []
+        assert entry.provider.effects == 0
+    finally:
+        manager.unload()
+
+
+@pytest.mark.parametrize('route, expected', [('review', 405), ('install', 200)])
+def test_oversized_body_ignores_deleted_profile_residue_and_materializes_nothing(client, monkeypatch, route, expected):
+    from hermes_constants import get_hermes_home, mark_named_profile_deleted
+    from hermes_cli import profiles
+    from hermes_cli.web_routers import skills
+
+    home = get_hermes_home()
+    monkeypatch.setattr(profiles, '_get_default_hermes_home', lambda: home)
+    deleted = home / 'profiles/deleted'
+    deleted.mkdir(parents=True)
+    mark_named_profile_deleted(deleted)
+    ghost = home / 'profiles/ghost'
+    ghost.mkdir()
+    spawned = []
+    monkeypatch.setattr(skills, 'spawn_profile_action', lambda *a, **kw: spawned.append(kw) or {'ok': True})
+    raw = json.dumps(dict(identifier='ordinary')).encode()
+    response = client.post('/api/skills/hub/' + route, content=raw + b' ' * (CAP + 1 - len(raw)),
+                           headers={'content-type': 'application/json'})
+    assert response.status_code == expected, response.text
+    assert len(spawned) == (1 if route == 'install' else 0)
+    # Inspecting foreign homes is a pure read: no coordination tree in a tombstoned
+    # or marker-less dir, and nothing beside the tombstone itself.
+    assert list(deleted.iterdir()) == []
+    assert list(ghost.iterdir()) == []
+    assert [path.name for path in (home / 'profiles/.deleted').iterdir()] == ['deleted']
+
+
+def test_exact_body_limit_still_routes_to_provider(client, catalog):
+    _entry, plan = catalog
+    response = client.post('/api/skills/hub/review', content=_padded(plan, CAP))
+    assert response.status_code == 200, response.text
+    assert response.json() == plan
+
+
+def test_providerless_oversized_body_matches_pinned_stock(client):
+    response = client.post('/api/skills/hub/review', content=b'x' * (CAP + 1))
+    assert response.status_code == 405
+    assert response.content == b'{"detail":"Method Not Allowed"}'
+    assert response.headers['allow'] == 'GET'
+
+
+@pytest.mark.parametrize('chunks', [
+    [b'x' * CAP, b'y', b'z' * CAP],
+    [b'x' * (CAP * 2), b'z'],
+])
+def test_oversized_stream_stops_before_tail_then_replays_exact_stock_bytes(monkeypatch, chunks):
+    from hermes_cli.skill_catalog import http
+    received, stock_bodies = [], []
+
+    async def run():
+        messages = iter(dict(type='http.request', body=chunk, more_body=index < len(chunks) - 1)
+                        for index, chunk in enumerate(chunks))
+
+        async def receive():
+            message = next(messages)
+            received.append(message['body'])
+            return message
+
+        request = Request(dict(type='http', method='POST', path='/api/skills/hub/install',
+            scheme='http', server=('test', 80), query_string=b'profile=default', headers=[]), receive)
+
+        async def stock(request):
+            # ASGI receive is chunk-granular; the final transport-owned chunk may
+            # exceed the cap, but no following chunk is read before delegation.
+            assert len(received) == (2 if len(chunks) == 3 else 1)
+            stock_bodies.append(await request.body())
+            return Response(b'stock')
+
+        def forbidden(*args, **kwargs):
+            pytest.fail('oversized extension parsed or inferred a provider scope')
+
+        monkeypatch.setattr(http, '_hint', forbidden)
+        monkeypatch.setattr(http, '_service', forbidden)
+        result = await http.delegate(request, stock)
+        assert result.body == b'stock'
+
+    asyncio.run(run())
+    assert stock_bodies == [b''.join(chunks)]
+    assert received == chunks

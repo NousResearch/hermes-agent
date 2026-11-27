@@ -1,0 +1,378 @@
+{
+  "base_sha": "31ce88f86e6cf4a66ef6aa315e4657a31bcf9915",
+  "boundaries": "Offline catalog reads and process spawn only",
+  "states": {
+    "never-used": [
+      {
+        "method": "GET",
+        "path": "/api/skills",
+        "status": 200,
+        "content_type": "application/json",
+        "body": "[{\"name\":\"local\",\"description\":\"kept local bytes\",\"category\":null,\"locked\":false,\"enabled\":true,\"usage\":0,\"provenance\":\"agent\"}]"
+      },
+      {
+        "method": "GET",
+        "path": "/api/skills/hub/official",
+        "status": 200,
+        "content_type": "application/json",
+        "body": "{\"skills\":[]}"
+      },
+      {
+        "method": "GET",
+        "path": "/api/skills/hub/sources",
+        "status": 200,
+        "content_type": "application/json",
+        "body": "{\"sources\":[],\"index_available\":false,\"featured\":[],\"installed\":{}}"
+      },
+      {
+        "method": "GET",
+        "path": "/api/skills/hub/search?q=fixture",
+        "status": 200,
+        "content_type": "application/json",
+        "body": "{\"results\":[],\"source_counts\":{},\"timed_out\":[],\"installed\":{}}"
+      },
+      {
+        "method": "GET",
+        "path": "/api/skills/hub/updates",
+        "status": 200,
+        "content_type": "application/json",
+        "body": "{\"updates\":[]}"
+      },
+      {
+        "method": "GET",
+        "path": "/api/skills/hub/preview?identifier=fixture/absent",
+        "status": 404,
+        "content_type": "application/json",
+        "body": "{\"detail\":\"Skill not found: fixture/absent\"}"
+      },
+      {
+        "method": "GET",
+        "path": "/api/skills/hub/scan?identifier=fixture/absent",
+        "status": 404,
+        "content_type": "application/json",
+        "body": "{\"detail\":\"Skill not found: fixture/absent\"}"
+      },
+      {
+        "method": "POST",
+        "path": "/api/skills/hub/install",
+        "status": 200,
+        "content_type": "application/json",
+        "body": "{\"ok\":true,\"pid\":123,\"name\":\"stock-action\"}"
+      },
+      {
+        "method": "POST",
+        "path": "/api/skills/hub/uninstall",
+        "status": 200,
+        "content_type": "application/json",
+        "body": "{\"ok\":true,\"pid\":123,\"name\":\"stock-action\"}"
+      },
+      {
+        "method": "POST",
+        "path": "/api/skills/hub/update",
+        "status": 200,
+        "content_type": "application/json",
+        "body": "{\"ok\":true,\"pid\":123,\"name\":\"stock-action\"}"
+      },
+      {
+        "method": "POST",
+        "path": "/api/skills/hub/review",
+        "status": 405,
+        "content_type": "application/json",
+        "body": "{\"detail\":\"Method Not Allowed\"}"
+      },
+      {
+        "method": "POST",
+        "path": "/api/skills/hub/confirm",
+        "status": 405,
+        "content_type": "application/json",
+        "body": "{\"detail\":\"Method Not Allowed\"}"
+      },
+      {
+        "method": "GET",
+        "path": "/api/skills/hub/operation",
+        "status": 404,
+        "content_type": "application/json",
+        "body": "{\"detail\":\"No such API endpoint: /api/skills/hub/operation\"}"
+      }
+    ],
+    "previously-disabled": [
+      {
+        "method": "GET",
+        "path": "/api/skills",
+        "status": 200,
+        "content_type": "application/json",
+        "body": "[{\"name\":\"local\",\"description\":\"kept local bytes\",\"category\":null,\"locked\":false,\"enabled\":true,\"usage\":0,\"provenance\":\"agent\"}]"
+      },
+      {
+        "method": "GET",
+        "path": "/api/skills/hub/official",
+        "status": 200,
+        "content_type": "application/json",
+        "body": "{\"skills\":[]}"
+      },
+      {
+        "method": "GET",
+        "path": "/api/skills/hub/sources",
+        "status": 200,
+        "content_type": "application/json",
+        "body": "{\"sources\":[],\"index_available\":false,\"featured\":[],\"installed\":{}}"
+      },
+      {
+        "method": "GET",
+        "path": "/api/skills/hub/search?q=fixture",
+        "status": 200,
+        "content_type": "application/json",
+        "body": "{\"results\":[],\"source_counts\":{},\"timed_out\":[],\"installed\":{}}"
+      },
+      {
+        "method": "GET",
+        "path": "/api/skills/hub/updates",
+        "status": 200,
+        "content_type": "application/json",
+        "body": "{\"updates\":[]}"
+      },
+      {
+        "method": "GET",
+        "path": "/api/skills/hub/preview?identifier=fixture/absent",
+        "status": 404,
+        "content_type": "application/json",
+        "body": "{\"detail\":\"Skill not found: fixture/absent\"}"
+      },
+      {
+        "method": "GET",
+        "path": "/api/skills/hub/scan?identifier=fixture/absent",
+        "status": 404,
+        "content_type": "application/json",
+        "body": "{\"detail\":\"Skill not found: fixture/absent\"}"
+      },
+      {
+        "method": "POST",
+        "path": "/api/skills/hub/install",
+        "status": 200,
+        "content_type": "application/json",
+        "body": "{\"ok\":true,\"pid\":123,\"name\":\"stock-action\"}"
+      },
+      {
+        "method": "POST",
+        "path": "/api/skills/hub/uninstall",
+        "status": 200,
+        "content_type": "application/json",
+        "body": "{\"ok\":true,\"pid\":123,\"name\":\"stock-action\"}"
+      },
+      {
+        "method": "POST",
+        "path": "/api/skills/hub/update",
+        "status": 200,
+        "content_type": "application/json",
+        "body": "{\"ok\":true,\"pid\":123,\"name\":\"stock-action\"}"
+      },
+      {
+        "method": "POST",
+        "path": "/api/skills/hub/review",
+        "status": 405,
+        "content_type": "application/json",
+        "body": "{\"detail\":\"Method Not Allowed\"}"
+      },
+      {
+        "method": "POST",
+        "path": "/api/skills/hub/confirm",
+        "status": 405,
+        "content_type": "application/json",
+        "body": "{\"detail\":\"Method Not Allowed\"}"
+      },
+      {
+        "method": "GET",
+        "path": "/api/skills/hub/operation",
+        "status": 404,
+        "content_type": "application/json",
+        "body": "{\"detail\":\"No such API endpoint: /api/skills/hub/operation\"}"
+      }
+    ],
+    "flag-off": [
+      {
+        "method": "GET",
+        "path": "/api/skills",
+        "status": 200,
+        "content_type": "application/json",
+        "body": "[{\"name\":\"local\",\"description\":\"kept local bytes\",\"category\":null,\"locked\":false,\"enabled\":true,\"usage\":0,\"provenance\":\"agent\"}]"
+      },
+      {
+        "method": "GET",
+        "path": "/api/skills/hub/official",
+        "status": 200,
+        "content_type": "application/json",
+        "body": "{\"skills\":[]}"
+      },
+      {
+        "method": "GET",
+        "path": "/api/skills/hub/sources",
+        "status": 200,
+        "content_type": "application/json",
+        "body": "{\"sources\":[],\"index_available\":false,\"featured\":[],\"installed\":{}}"
+      },
+      {
+        "method": "GET",
+        "path": "/api/skills/hub/search?q=fixture",
+        "status": 200,
+        "content_type": "application/json",
+        "body": "{\"results\":[],\"source_counts\":{},\"timed_out\":[],\"installed\":{}}"
+      },
+      {
+        "method": "GET",
+        "path": "/api/skills/hub/updates",
+        "status": 200,
+        "content_type": "application/json",
+        "body": "{\"updates\":[]}"
+      },
+      {
+        "method": "GET",
+        "path": "/api/skills/hub/preview?identifier=fixture/absent",
+        "status": 404,
+        "content_type": "application/json",
+        "body": "{\"detail\":\"Skill not found: fixture/absent\"}"
+      },
+      {
+        "method": "GET",
+        "path": "/api/skills/hub/scan?identifier=fixture/absent",
+        "status": 404,
+        "content_type": "application/json",
+        "body": "{\"detail\":\"Skill not found: fixture/absent\"}"
+      },
+      {
+        "method": "POST",
+        "path": "/api/skills/hub/install",
+        "status": 200,
+        "content_type": "application/json",
+        "body": "{\"ok\":true,\"pid\":123,\"name\":\"stock-action\"}"
+      },
+      {
+        "method": "POST",
+        "path": "/api/skills/hub/uninstall",
+        "status": 200,
+        "content_type": "application/json",
+        "body": "{\"ok\":true,\"pid\":123,\"name\":\"stock-action\"}"
+      },
+      {
+        "method": "POST",
+        "path": "/api/skills/hub/update",
+        "status": 200,
+        "content_type": "application/json",
+        "body": "{\"ok\":true,\"pid\":123,\"name\":\"stock-action\"}"
+      },
+      {
+        "method": "POST",
+        "path": "/api/skills/hub/review",
+        "status": 405,
+        "content_type": "application/json",
+        "body": "{\"detail\":\"Method Not Allowed\"}"
+      },
+      {
+        "method": "POST",
+        "path": "/api/skills/hub/confirm",
+        "status": 405,
+        "content_type": "application/json",
+        "body": "{\"detail\":\"Method Not Allowed\"}"
+      },
+      {
+        "method": "GET",
+        "path": "/api/skills/hub/operation",
+        "status": 404,
+        "content_type": "application/json",
+        "body": "{\"detail\":\"No such API endpoint: /api/skills/hub/operation\"}"
+      }
+    ],
+    "signed-out": [
+      {
+        "method": "GET",
+        "path": "/api/skills",
+        "status": 401,
+        "content_type": "application/json",
+        "body": "{\"detail\":\"Unauthorized\"}"
+      },
+      {
+        "method": "GET",
+        "path": "/api/skills/hub/official",
+        "status": 401,
+        "content_type": "application/json",
+        "body": "{\"detail\":\"Unauthorized\"}"
+      },
+      {
+        "method": "GET",
+        "path": "/api/skills/hub/sources",
+        "status": 401,
+        "content_type": "application/json",
+        "body": "{\"detail\":\"Unauthorized\"}"
+      },
+      {
+        "method": "GET",
+        "path": "/api/skills/hub/search?q=fixture",
+        "status": 401,
+        "content_type": "application/json",
+        "body": "{\"detail\":\"Unauthorized\"}"
+      },
+      {
+        "method": "GET",
+        "path": "/api/skills/hub/updates",
+        "status": 401,
+        "content_type": "application/json",
+        "body": "{\"detail\":\"Unauthorized\"}"
+      },
+      {
+        "method": "GET",
+        "path": "/api/skills/hub/preview?identifier=fixture/absent",
+        "status": 401,
+        "content_type": "application/json",
+        "body": "{\"detail\":\"Unauthorized\"}"
+      },
+      {
+        "method": "GET",
+        "path": "/api/skills/hub/scan?identifier=fixture/absent",
+        "status": 401,
+        "content_type": "application/json",
+        "body": "{\"detail\":\"Unauthorized\"}"
+      },
+      {
+        "method": "POST",
+        "path": "/api/skills/hub/install",
+        "status": 401,
+        "content_type": "application/json",
+        "body": "{\"detail\":\"Unauthorized\"}"
+      },
+      {
+        "method": "POST",
+        "path": "/api/skills/hub/uninstall",
+        "status": 401,
+        "content_type": "application/json",
+        "body": "{\"detail\":\"Unauthorized\"}"
+      },
+      {
+        "method": "POST",
+        "path": "/api/skills/hub/update",
+        "status": 401,
+        "content_type": "application/json",
+        "body": "{\"detail\":\"Unauthorized\"}"
+      },
+      {
+        "method": "POST",
+        "path": "/api/skills/hub/review",
+        "status": 401,
+        "content_type": "application/json",
+        "body": "{\"detail\":\"Unauthorized\"}"
+      },
+      {
+        "method": "POST",
+        "path": "/api/skills/hub/confirm",
+        "status": 401,
+        "content_type": "application/json",
+        "body": "{\"detail\":\"Unauthorized\"}"
+      },
+      {
+        "method": "GET",
+        "path": "/api/skills/hub/operation",
+        "status": 401,
+        "content_type": "application/json",
+        "body": "{\"detail\":\"Unauthorized\"}"
+      }
+    ]
+  }
+}

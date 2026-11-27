@@ -638,6 +638,129 @@ def unsatisfied_requirements(
     return tuple(unsatisfied)
 
 
+@dataclass(frozen=True)
+class WorkspaceMembershipAssessment:
+    """Single source of truth for whether a plugin declaration needs a PM uv workspace member."""
+
+    needs_member: bool
+    reasons: tuple[str, ...]
+    unsatisfied_requirements: tuple[str, ...]
+    pyproject_installs: bool
+    python_error: str | None = None
+
+
+def _check_requires_python(
+    declaration: PythonDeclaration,
+    *,
+    env: Mapping[str, str],
+    project_root: Path | None,
+    allow_marker_skip: bool,
+    target_env: Mapping[str, str] | None,
+) -> str | None:
+    """Return a diagnostic if *declaration*'s ``requires-python`` fails to match the target Python."""
+    if not declaration.requires_python or not declaration.installs_packages:
+        return None
+    from packaging.specifiers import InvalidSpecifier, SpecifierSet
+
+    py_version = env.get("python_full_version") or env.get("python_version")
+    if not py_version:
+        return f"cannot verify requires-python {declaration.requires_python!r} without a target Python version"
+    try:
+        spec = SpecifierSet(declaration.requires_python)
+    except InvalidSpecifier:
+        return f"invalid requires-python {declaration.requires_python!r}"
+    if not spec.contains(py_version, prereleases=True):
+        return f"requires-python {declaration.requires_python!r} excludes Python {py_version}"
+    if not allow_marker_skip and target_env is None:
+        from pm import paths
+        from pm.lock import Lockfile
+
+        candidates = ([Path(project_root) / "pm" / "lock.json"] if project_root is not None else []) + [
+            paths.lockfile_path()
+        ]
+        for lock_path in candidates:
+            try:
+                raw = Lockfile(lock_path).version("python")
+            except (OSError, ValueError, KeyError):
+                continue
+            if isinstance(raw, str) and raw.strip():
+                pinned = raw.partition("+")[0].strip()
+                if not spec.contains(pinned, prereleases=True):
+                    return f"requires-python {declaration.requires_python!r} excludes Python {pinned}"
+                break
+    return None
+
+
+def assess_workspace_membership(
+    declaration: PythonDeclaration,
+    *,
+    project_root: Path | None = None,
+    base_site_packages: Path | None = None,
+    target_env: Mapping[str, str] | None = None,
+    allow_marker_skip: bool = True,
+) -> WorkspaceMembershipAssessment:
+    """Assess whether *declaration* requires a PM uv workspace member and why.
+
+    Single source of truth for PM workspace membership: False for external plugins and for
+    pure-metadata plugins whose declared requirements are already guaranteed by Hermes core's
+    base environment (no build-system/extras/groups, no ``[tool.uv.sources]`` overrides,
+    compatible ``requires-python``, and zero unsatisfied or direct-URL dependencies).
+    """
+    if declaration.external or (not declaration.installs_packages and not declaration.requirements):
+        return WorkspaceMembershipAssessment(
+            needs_member=False,
+            reasons=(),
+            unsatisfied_requirements=(),
+            pyproject_installs=False,
+        )
+
+    from packaging.markers import default_environment
+
+    env = dict(default_environment()) if target_env is None else dict(target_env)
+    reasons: list[str] = []
+
+    if declaration.pyproject_installs:
+        triggers = ", ".join(_pyproject_install_triggers(declaration.pyproject)) or "pyproject.toml"
+        reasons.append(f"pyproject.toml triggers package installation ({triggers})")
+
+    uv_sources = _pyproject_uv_sources(declaration.pyproject)
+    if uv_sources is None:
+        reasons.append("pyproject.toml [tool.uv.sources] is unreadable or malformed")
+    elif uv_sources:
+        reasons.append("pyproject.toml declares [tool.uv.sources] overrides")
+
+    python_error = _check_requires_python(
+        declaration,
+        env=env,
+        project_root=project_root,
+        allow_marker_skip=allow_marker_skip,
+        target_env=target_env,
+    )
+    if python_error is not None:
+        reasons.append(python_error)
+
+    unsatisfied = unsatisfied_requirements(
+        declaration,
+        project_root=project_root,
+        base_site_packages=base_site_packages,
+        target_env=env,
+        allow_marker_skip=allow_marker_skip,
+    )
+    if unsatisfied:
+        reasons.append(
+            "unsatisfied Python requirement(s) not in Hermes core base environment: "
+            + ", ".join(unsatisfied)
+        )
+
+    return WorkspaceMembershipAssessment(
+        needs_member=bool(reasons),
+        reasons=tuple(reasons),
+        unsatisfied_requirements=unsatisfied,
+        pyproject_installs=declaration.pyproject_installs,
+        python_error=python_error,
+    )
+
+
 def needs_workspace_member(
     declaration: PythonDeclaration,
     *,
@@ -646,245 +769,11 @@ def needs_workspace_member(
     target_env: Mapping[str, str] | None = None,
     allow_marker_skip: bool = True,
 ) -> bool:
-    """Whether *declaration* requires PM to add the plugin as a uv workspace member.
-
-    False for external plugins and for pure-metadata plugins whose declared requirements are
-    already guaranteed by Hermes core's base environment (no build-system/extras/groups,
-    no ``[tool.uv.sources]`` overrides, compatible ``requires-python``, and zero unsatisfied
-    or direct-URL dependencies).
-    """
-    if declaration.external:
-        return False
-    if not declaration.installs_packages and not declaration.requirements:
-        return False
-    if declaration.pyproject_installs:
-        return True
-    uv_sources = _pyproject_uv_sources(declaration.pyproject)
-    if uv_sources is None or bool(uv_sources):
-        return True
-    if declaration.requires_python and declaration.installs_packages:
-        from packaging.markers import default_environment
-        from packaging.specifiers import InvalidSpecifier, SpecifierSet
-
-        env = default_environment() if target_env is None else target_env
-        py_version = env.get("python_full_version") or env.get("python_version")
-        if not py_version:
-            return True
-        try:
-            spec = SpecifierSet(declaration.requires_python)
-        except InvalidSpecifier:
-            return True
-        if not spec.contains(py_version, prereleases=True):
-            return True
-        if not allow_marker_skip and target_env is None:
-            pinned_full, _ = _pinned_python_version(project_root)
-            if not spec.contains(pinned_full, prereleases=True):
-                return True
-    return bool(unsatisfied_requirements(
+    """Whether *declaration* requires PM to add the plugin as a uv workspace member."""
+    return assess_workspace_membership(
         declaration,
         project_root=project_root,
         base_site_packages=base_site_packages,
         target_env=target_env,
         allow_marker_skip=allow_marker_skip,
-    ))
-
-
-def _pinned_python_version(project_root: Path | None = None) -> tuple[str, str]:
-    """Return ``(python_full_version, python_version)`` from ``pm/lock.json``, defaulting to ``3.14.0``/``3.14``."""
-    import json
-    from pm import paths
-
-    candidates: list[Path] = []
-    if project_root is not None:
-        candidates.append(Path(project_root) / "pm" / "lock.json")
-    candidates.append(paths.lockfile_path())
-    for lock_path in candidates:
-        try:
-            data = json.loads(lock_path.read_text(encoding="utf-8-sig"))
-        except (OSError, ValueError):
-            continue
-        raw = data.get("packages", {}).get("python", {}).get("version") if isinstance(data, dict) else None
-        if not isinstance(raw, str) or not raw.strip():
-            continue
-        full = raw.partition("+")[0].strip()
-        parts = full.split(".")
-        if len(parts) >= 2 and all(part.isdigit() for part in parts[:2]):
-            return full, f"{parts[0]}.{parts[1]}"
-    return "3.14.0", "3.14"
-
-
-def _default_plugin_check_targets(
-    project_root: Path | None = None,
-) -> tuple[tuple[str, str, dict[str, str]], ...]:
-    """Representative desktop targets using Hermes's pinned Python version from ``pm/lock.json``."""
-    full_ver, minor_ver = _pinned_python_version(project_root)
-    return (
-        ("linux", "linux-x64", {
-            "implementation_name": "cpython",
-            "implementation_version": full_ver,
-            "os_name": "posix",
-            "platform_machine": "x86_64",
-            "platform_python_implementation": "CPython",
-            "platform_release": "6.8.0",
-            "platform_system": "Linux",
-            "platform_version": "",
-            "python_full_version": full_ver,
-            "python_version": minor_ver,
-            "sys_platform": "linux",
-        }),
-        ("macos", "darwin-arm64", {
-            "implementation_name": "cpython",
-            "implementation_version": full_ver,
-            "os_name": "posix",
-            "platform_machine": "arm64",
-            "platform_python_implementation": "CPython",
-            "platform_release": "24.0.0",
-            "platform_system": "Darwin",
-            "platform_version": "",
-            "python_full_version": full_ver,
-            "python_version": minor_ver,
-            "sys_platform": "darwin",
-        }),
-        ("windows", "win32-x64", {
-            "implementation_name": "cpython",
-            "implementation_version": full_ver,
-            "os_name": "nt",
-            "platform_machine": "AMD64",
-            "platform_python_implementation": "CPython",
-            "platform_release": "11",
-            "platform_system": "Windows",
-            "platform_version": "10.0.26100",
-            "python_full_version": full_ver,
-            "python_version": minor_ver,
-            "sys_platform": "win32",
-        }),
-    )
-
-_DEFAULT_REBUILD_GUIDANCE = (
-    "default: true plugins install automatically on first launch and updates; triggering a venv "
-    "rebuild forces `uv lock`/`uv sync` and a ~1 GB `uv-cache` seed copy on Windows (minutes on "
-    "first launch). How to avoid triggering a rebuild: "
-    "(1) drop `[build-system]` / `tool.uv.package = true` if the plugin does not need wheel installation; "
-    "(2) use dependencies already shipped in Hermes core (e.g. `httpx`, `PyJWT[crypto]`, "
-    "`cryptography`, `fastapi`, `pydantic`) instead of introducing new third-party packages; or "
-    "(3) if the dependency is genuinely required for a default plugin, add it to Hermes core's "
-    "`pyproject.toml` first."
-)
-
-
-@dataclass(frozen=True)
-class DefaultPluginRebuildCheck:
-    """Result of checking whether a ``default: true`` plugin would trigger a PM venv rebuild."""
-
-    triggers_rebuild: bool
-    reason: str
-    unsatisfied_requirements: list[str]
-    pyproject_installs: bool
-    guidance: str
-
-
-def check_default_plugin_venv_rebuild(
-    plugin_dir: Path,
-    *,
-    project_root: Path | None = None,
-    base_site_packages: Path | None = None,
-    target_env: Mapping[str, str] | None = None,
-    platforms: Iterable[str] | None = None,
-) -> DefaultPluginRebuildCheck:
-    """Check whether *plugin_dir* would trigger a PM venv rebuild as a ``default: true`` plugin.
-
-    Uses the exact same core-base-closure check as PM workspace membership
-    (:func:`needs_workspace_member` / :func:`unsatisfied_requirements`). When *target_env* and
-    *base_site_packages* are omitted, checks Linux, macOS, and Windows (filtered by *platforms*
-    if provided) so platform-specific rebuild triggers are caught in single-OS CI.
-    """
-    declaration = read_python_declaration(Path(plugin_dir))
-    if declaration.external or (not declaration.installs_packages and not declaration.requirements):
-        return DefaultPluginRebuildCheck(
-            triggers_rebuild=False,
-            reason="",
-            unsatisfied_requirements=[],
-            pyproject_installs=False,
-            guidance="",
-        )
-
-    if target_env is not None or base_site_packages is not None:
-        from packaging.markers import default_environment
-
-        env = dict(default_environment()) if target_env is None else dict(target_env)
-        targets: list[tuple[str, Mapping[str, str]]] = [("host", env)]
-    else:
-        check_targets = _default_plugin_check_targets(project_root)
-        allowed = set(platforms) if platforms else None
-        targets = [
-            (label, env)
-            for plat, label, env in check_targets
-            if not allowed or plat in allowed
-        ]
-        if not targets:
-            targets = [(label, env) for _plat, label, env in check_targets]
-
-    unsat_ordered: list[str] = []
-    unsat_seen: set[str] = set()
-    python_errors: list[str] = []
-    any_needs = False
-    for _label, env in targets:
-        if needs_workspace_member(
-            declaration,
-            project_root=project_root,
-            base_site_packages=base_site_packages,
-            target_env=env,
-        ):
-            any_needs = True
-        for spec in unsatisfied_requirements(
-            declaration,
-            project_root=project_root,
-            base_site_packages=base_site_packages,
-            target_env=env,
-        ):
-            if spec not in unsat_seen:
-                unsat_seen.add(spec)
-                unsat_ordered.append(spec)
-        py_ver = env.get("python_full_version") or env.get("python_version")
-        if declaration.requires_python and py_ver:
-            from packaging.specifiers import InvalidSpecifier, SpecifierSet
-
-            try:
-                if not SpecifierSet(declaration.requires_python).contains(py_ver, prereleases=True):
-                    msg = f"requires-python {declaration.requires_python!r} excludes Python {py_ver}"
-                    if msg not in python_errors:
-                        python_errors.append(msg)
-            except InvalidSpecifier:
-                msg = f"invalid requires-python {declaration.requires_python!r}"
-                if msg not in python_errors:
-                    python_errors.append(msg)
-
-    if not any_needs:
-        return DefaultPluginRebuildCheck(
-            triggers_rebuild=False,
-            reason="",
-            unsatisfied_requirements=[],
-            pyproject_installs=False,
-            guidance="",
-        )
-
-    reasons: list[str] = []
-    if declaration.pyproject_installs:
-        triggers = ", ".join(_pyproject_install_triggers(declaration.pyproject)) or "pyproject.toml"
-        reasons.append(f"pyproject.toml triggers package installation ({triggers})")
-    if unsat_ordered:
-        reasons.append(
-            "unsatisfied Python requirement(s) not in Hermes core base environment: "
-            + ", ".join(unsat_ordered)
-        )
-    if python_errors:
-        reasons.extend(python_errors)
-    reason = "; ".join(reasons) or "triggers PM workspace membership"
-
-    return DefaultPluginRebuildCheck(
-        triggers_rebuild=True,
-        reason=reason,
-        unsatisfied_requirements=unsat_ordered,
-        pyproject_installs=declaration.pyproject_installs,
-        guidance=_DEFAULT_REBUILD_GUIDANCE,
-    )
+    ).needs_member

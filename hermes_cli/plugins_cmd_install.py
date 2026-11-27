@@ -88,12 +88,13 @@ def _install_plugin_python_deps(
     *assume_yes* is ``--yes-deps``: the user's own non-interactive answer
     to the Python question, so a headless install is not refused (#122134).
     """
-    from pm.plugin_declarations import needs_workspace_member, read_python_declaration, unsatisfied_requirements
+    from pm.plugin_declarations import assess_workspace_membership, read_python_declaration
 
     try:
         declaration = read_python_declaration(target)
-        deps = unsatisfied_requirements(declaration)
-        has_python = needs_workspace_member(declaration)
+        assessment = assess_workspace_membership(declaration)
+        deps = assessment.unsatisfied_requirements
+        has_python = assessment.needs_member
     except Exception as exc:
         return False, _ConsentRefusal(f"invalid Python dependency declaration: {exc}", "manifest_invalid")
     has_package_json = (target / "package.json").is_file()

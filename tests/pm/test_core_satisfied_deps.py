@@ -13,6 +13,8 @@ import pytest
 
 from pm.plugin_declarations import (
     PythonDeclaration,
+    WorkspaceMembershipAssessment,
+    assess_workspace_membership,
     needs_workspace_member,
     read_python_declaration,
     unsatisfied_requirements,
@@ -844,3 +846,243 @@ def test_admission_evaluates_markers_against_target_interpreter_not_worker_pytho
     monkeypatch.setattr("pm._uv._toolchain", lambda **kw: None)
     assert candidate_members() == [plugin]
     assert ws.enabled_member_dirs() == [plugin]
+
+
+@pytest.mark.skipif(shutil.which("uv") is None, reason="uv not on PATH")
+def test_eviction_retry_keeps_core_satisfied_enabled_plugin_constraints(tmp_path, monkeypatch):
+    """Greptile P1: when enabled plugin A is core-satisfied (``idna==3.20``) and disabled
+    plugin B (``idna==3.18``) is due for retry, eviction retry MUST include A's constraints
+    in the shared solve so uv catches the conflict instead of downgrading ``idna``."""
+    import importlib
+    import pm.paths
+    from pm.environments import selected_venv, site_packages
+    from pm.install import sync_venv
+    from pm.packages import Venv
+
+    wheels = tmp_path / "wheels"
+    wheels.mkdir()
+    _fixtures._wheel(wheels, "idna", "3.20")
+    _fixtures._wheel(wheels, "idna", "3.18")
+    core = _locked_core(tmp_path, ["idna>=3.18,<4"], wheels)
+
+    home = tmp_path / "home"
+    home.mkdir()
+    plug_a = _write_plugin(
+        home / "plugins" / "plug-a",
+        name="plug-a",
+        pyproject=(
+            '[project]\nname = "plug-a"\nversion = "1.0.0"\nrequires-python = ">=3.11"\n'
+            'dependencies = ["idna==3.20"]\n'
+        ),
+    )
+    _write_plugin(
+        home / "plugins" / "plug-b",
+        name="plug-b",
+        pyproject=(
+            '[project]\nname = "plug-b"\nversion = "1.0.0"\nrequires-python = ">=3.11"\n'
+            'dependencies = ["idna==3.18"]\n'
+        ),
+    )
+
+    ensure = importlib.import_module("pm.install")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "tools"))
+    monkeypatch.delenv("HERMES_INSTALL_ROOT", raising=False)
+    monkeypatch.setattr(pm.paths, "repo_root", lambda: core)
+    monkeypatch.setattr(ws.paths, "repo_root", lambda: core)
+    monkeypatch.setattr(ensure, "lazy_installs_allowed", lambda: True)
+    monkeypatch.setattr("pm._uv._toolchain", lambda **kw: (Path(shutil.which("uv")), Path(sys.executable)))
+
+    # Initial sync with plug-a enabled (core-satisfied -> idna==3.20 installed).
+    (home / "config.yaml").write_text("plugins:\n  enabled: [plug-a]\n", encoding="utf-8")
+    sync_venv(explicit=True)
+    base_gen = selected_venv(core)
+    assert any(p.name.startswith("idna-3.20") for p in site_packages(base_gen).iterdir())
+
+    # Record plug-b as previously evicted and due for retry.
+    (home / "config.yaml").write_text(
+        "plugins:\n"
+        "  enabled: [plug-a]\n"
+        "  disabled: [plug-b]\n"
+        "  disabled_by_update:\n"
+        "    plug-b:\n"
+        "      enabled: true\n"
+        "      reason: earlier conflict\n",
+        encoding="utf-8",
+    )
+
+    sync_venv(explicit=True, evict_incompatible_plugins=True)
+
+    cfg = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))["plugins"]
+    assert cfg["enabled"] == ["plug-a"]
+    assert cfg["disabled"] == ["plug-b"]
+    assert "plug-b" in cfg["disabled_by_update"]
+    assert selected_venv(core) == base_gen
+    assert any(p.name.startswith("idna-3.20") for p in site_packages(selected_venv(core)).iterdir())
+
+    # A follow-up update with nothing changed must NOT retry plug-b again or rebuild.
+    builds: list[list[str]] = []
+    real_apply = Venv.apply
+
+    def spy_apply(self, extras, *, plugin_dirs=None, **kwargs):
+        builds.append([Path(p).name for p in plugin_dirs or ()])
+        return real_apply(self, extras, plugin_dirs=plugin_dirs, **kwargs)
+
+    monkeypatch.setattr(Venv, "apply", spy_apply)
+    sync_venv(explicit=True, evict_incompatible_plugins=True)
+    assert builds == []
+
+    # Once plug-a relaxes its constraint, the fingerprint changes -> plug-b retries and rejoins!
+    (plug_a / "pyproject.toml").write_text(
+        '[project]\nname = "plug-a"\nversion = "1.0.0"\nrequires-python = ">=3.11"\n'
+        'dependencies = ["idna>=3.18,<4"]\n',
+        encoding="utf-8",
+    )
+    sync_venv(explicit=True, evict_incompatible_plugins=True)
+    cfg = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))["plugins"]
+    assert cfg["enabled"] == ["plug-a", "plug-b"]
+    assert not cfg.get("disabled")
+    assert "disabled_by_update" not in cfg
+
+
+@pytest.mark.skipif(shutil.which("uv") is None, reason="uv not on PATH")
+def test_eviction_retry_keeps_statically_rejoining_core_satisfied_plugin_constraints(tmp_path, monkeypatch):
+    """A core-satisfied plugin C rejoining without a trial must still contribute its constraints
+    when a sibling retried plugin B forces a workspace solve; when only C rejoins, no rebuild runs."""
+    import importlib
+    import pm.paths
+    from pm.environments import selected_venv
+    from pm.install import sync_venv
+    from pm.packages import Venv
+
+    wheels = tmp_path / "wheels"
+    wheels.mkdir()
+    _fixtures._wheel(wheels, "idna", "3.20")
+    _fixtures._wheel(wheels, "idna", "3.18")
+    core = _locked_core(tmp_path, ["idna>=3.18,<4"], wheels)
+
+    home = tmp_path / "home"
+    home.mkdir()
+    _write_plugin(
+        home / "plugins" / "plug-c",
+        name="plug-c",
+        pyproject=(
+            '[project]\nname = "plug-c"\nversion = "1.0.0"\nrequires-python = ">=3.11"\n'
+            'dependencies = ["idna==3.20"]\n'
+        ),
+    )
+    _write_plugin(
+        home / "plugins" / "plug-b",
+        name="plug-b",
+        pyproject=(
+            '[project]\nname = "plug-b"\nversion = "1.0.0"\nrequires-python = ">=3.11"\n'
+            'dependencies = ["idna==3.18"]\n'
+        ),
+    )
+
+    ensure = importlib.import_module("pm.install")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "tools"))
+    monkeypatch.delenv("HERMES_INSTALL_ROOT", raising=False)
+    monkeypatch.setattr(pm.paths, "repo_root", lambda: core)
+    monkeypatch.setattr(ws.paths, "repo_root", lambda: core)
+    monkeypatch.setattr(ensure, "lazy_installs_allowed", lambda: True)
+    monkeypatch.setattr("pm._uv._toolchain", lambda **kw: (Path(shutil.which("uv")), Path(sys.executable)))
+
+    (home / "config.yaml").write_text("plugins:\n  enabled: []\n", encoding="utf-8")
+    sync_venv(explicit=True)
+    base_gen = selected_venv(core)
+
+    # Case 1: only core-satisfied plug-c rejoins -> zero Venv.apply calls.
+    (home / "config.yaml").write_text(
+        "plugins:\n"
+        "  enabled: []\n"
+        "  disabled: [plug-c]\n"
+        "  disabled_by_update:\n"
+        "    plug-c:\n"
+        "      enabled: true\n"
+        "      reason: earlier misfit\n",
+        encoding="utf-8",
+    )
+    real_apply = Venv.apply
+    rejoin_only_calls: list[list[str]] = []
+
+    def spy_apply(self, extras, *, plugin_dirs=None, **kwargs):
+        rejoin_only_calls.append([Path(p).name for p in plugin_dirs or ()])
+        return real_apply(self, extras, plugin_dirs=plugin_dirs, **kwargs)
+
+    monkeypatch.setattr(Venv, "apply", spy_apply)
+    sync_venv(explicit=True, evict_incompatible_plugins=True)
+    assert rejoin_only_calls == []
+    assert selected_venv(core) == base_gen
+    cfg = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))["plugins"]
+    assert cfg["enabled"] == ["plug-c"]
+
+    # Case 2: BOTH core-satisfied plug-c (rejoins statically) and conflicting plug-b (due for retry).
+    monkeypatch.setattr(Venv, "apply", real_apply)
+    (home / "config.yaml").write_text(
+        "plugins:\n"
+        "  enabled: []\n"
+        "  disabled: [plug-c, plug-b]\n"
+        "  disabled_by_update:\n"
+        "    plug-c:\n"
+        "      enabled: true\n"
+        "      reason: earlier misfit\n"
+        "    plug-b:\n"
+        "      enabled: true\n"
+        "      reason: earlier conflict\n",
+        encoding="utf-8",
+    )
+    sync_venv(explicit=True, evict_incompatible_plugins=True)
+    cfg = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))["plugins"]
+    assert cfg["enabled"] == ["plug-c"]
+    assert cfg["disabled"] == ["plug-b"]
+    assert selected_venv(core) == base_gen
+
+
+def test_assess_workspace_membership_single_source_of_truth(tmp_path):
+    """Greptile P2: assess_workspace_membership returns structured reasons and agrees with
+    needs_workspace_member across satisfied, build-system, uv-sources, requires-python, and
+    unsatisfied-dep cases."""
+    ok_plugin = _write_plugin(
+        tmp_path / "ok",
+        pyproject=(
+            '[project]\nname = "ok"\nversion = "1.0.0"\nrequires-python = ">=3.11"\n'
+            'dependencies = ["cryptography>=50,<51"]\n'
+        ),
+    )
+    ok_decl = read_python_declaration(ok_plugin)
+    ok_res = assess_workspace_membership(ok_decl, project_root=REPO_ROOT)
+    assert isinstance(ok_res, WorkspaceMembershipAssessment)
+    assert ok_res == WorkspaceMembershipAssessment(
+        needs_member=False,
+        reasons=(),
+        unsatisfied_requirements=(),
+        pyproject_installs=False,
+        python_error=None,
+    )
+    assert needs_workspace_member(ok_decl, project_root=REPO_ROOT) is ok_res.needs_member
+
+    multi_plugin = _write_plugin(
+        tmp_path / "multi",
+        pyproject=(
+            '[project]\nname = "multi"\nversion = "1.0.0"\nrequires-python = "<3.12"\n'
+            'dependencies = ["langfuse==4.15.2"]\n'
+            '[build-system]\nrequires = ["setuptools"]\nbuild-backend = "setuptools.build_meta"\n'
+            '[tool.uv.sources]\nlangfuse = { git = "https://example.invalid/langfuse.git" }\n'
+        ),
+    )
+    multi_decl = read_python_declaration(multi_plugin)
+    multi_res = assess_workspace_membership(multi_decl, project_root=REPO_ROOT)
+    assert multi_res.needs_member is True
+    assert multi_res.pyproject_installs is True
+    assert multi_res.unsatisfied_requirements == ("langfuse==4.15.2",)
+    assert multi_res.python_error is not None and "<3.12" in multi_res.python_error
+    assert any("[build-system]" in r for r in multi_res.reasons)
+    assert any("[tool.uv.sources]" in r for r in multi_res.reasons)
+    assert any("langfuse==4.15.2" in r for r in multi_res.reasons)
+    assert needs_workspace_member(multi_decl, project_root=REPO_ROOT) is multi_res.needs_member
+
+

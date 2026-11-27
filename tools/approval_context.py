@@ -188,15 +188,29 @@ def _is_cron_approval_context() -> bool:
 _UNATTENDED_APPROVAL_PLATFORMS = frozenset({"webhook", "msgraph_webhook", "api_server"})
 
 
+def is_unattended_platform(platform: str) -> bool:
+    """True for built-in unattended platforms or plugin platforms registered with ``unattended=True``."""
+    normalized = (platform or "").strip().lower()
+    if not normalized:
+        return False
+    if normalized in _UNATTENDED_APPROVAL_PLATFORMS:
+        return True
+    try:
+        from gateway.platform_registry import platform_registry
+    except ImportError:
+        return False
+    return platform_registry.is_unattended(normalized)
+
+
 def _is_unattended_platform_approval_context() -> bool:
     """True when the session platform is a programmatic/unattended surface.
 
-    Webhook, msgraph_webhook, and api_server sessions bind ``HERMES_SESSION_PLATFORM`` like chat gateways
-    do, but there is no human who can resolve a pending approval. Treating them as gateway approval contexts
-    blocks the session for the full approval timeout (60-300s) and then fails closed anyway — the deadlock
-    in #37284/#87509.
+    Webhook, msgraph_webhook, api_server, and plugin platforms registered with ``unattended=True``
+    bind ``HERMES_SESSION_PLATFORM`` like chat gateways do, but there is no human who can resolve
+    a pending approval. Treating them as gateway approval contexts blocks the session for the full
+    approval timeout (60-300s) and then fails closed anyway — the deadlock in #37284/#87509/#158983.
     """
-    return _get_session_platform() in _UNATTENDED_APPROVAL_PLATFORMS
+    return is_unattended_platform(_get_session_platform())
 
 
 # Platforms where a *registered* gateway notify callback still does not mean a human can answer:
@@ -206,6 +220,14 @@ def _is_unattended_platform_approval_context() -> bool:
 # fire-and-forget ``POST -> 202`` with no reader. Notifier presence is only a meaningful
 # "someone can answer" discriminator on api_server, whose turn paths choose whether to register one.
 _NOTIFIER_BLIND_APPROVAL_PLATFORMS = frozenset({"webhook", "msgraph_webhook"})
+
+
+def _is_notifier_blind_approval_platform(platform: str) -> bool:
+    """True when a registered TurnRunner notifier still cannot deliver an answerable approval."""
+    normalized = (platform or "").strip().lower()
+    if normalized in _NOTIFIER_BLIND_APPROVAL_PLATFORMS:
+        return True
+    return normalized != "api_server" and is_unattended_platform(normalized)
 
 
 def _is_single_query_approval_context() -> bool:

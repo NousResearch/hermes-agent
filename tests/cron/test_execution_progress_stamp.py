@@ -8,6 +8,7 @@ yanked and the run aborted with "lost its durable fire claim ownership".
 
 from __future__ import annotations
 
+import itertools
 import threading
 
 import pytest
@@ -22,11 +23,11 @@ def _ledger(monkeypatch, tmp_path):
     monkeypatch.setattr(executions_mod, "EXECUTIONS_FILE", tmp_path / "cron" / "executions.db")
 
 
-def _progress_at(execution_id: str):
+def _progress_row(execution_id: str):
     with _transaction() as conn:
         return conn.execute(
-            "SELECT progress_at FROM executions WHERE id=?", (execution_id,)
-        ).fetchone()["progress_at"]
+            "SELECT progress_at, progress_awake FROM executions WHERE id=?", (execution_id,)
+        ).fetchone()
 
 
 def test_active_run_stamps_progress_and_idle_run_does_not(monkeypatch):
@@ -59,6 +60,7 @@ def test_active_run_stamps_progress_and_idle_run_does_not(monkeypatch):
     def run(idle_seconds):
         finish.clear()
         execution = create_execution("job-progress", source="cron")
+        claim_awake = _progress_row(execution["id"])["progress_awake"]
         mark_execution_running(execution["id"])
         job = {"id": "job-progress", "execution_id": execution["id"], "schedule": {"kind": "every"}}
         timer = threading.Timer(0.4, finish.set)
@@ -68,10 +70,20 @@ def test_active_run_stamps_progress_and_idle_run_does_not(monkeypatch):
                 Agent(idle_seconds), "probe", job, "job-progress", "job-progress", "task", None)
         finally:
             timer.cancel()
-        return _progress_at(execution["id"])
+        return claim_awake, _progress_row(execution["id"])
 
-    # Active agent (idle 0s): the row is stamped.
-    assert run(idle_seconds=0.0) is not None
+    # The claim carries the awake clock before any progress stamp (#160680): a host that
+    # sleeps inside the first stamp interval is judged on awake time too.
+    claimed = create_execution("job-claim", source="cron")
+    assert _progress_row(claimed["id"])["progress_awake"] is not None
+
+    # Active agent (idle 0s): the row is stamped, and the stamp moves the awake clock forward
+    # (the stale sweep reads it, so a stamper that skips it leaves the claim value behind).
+    clock = itertools.count(1000.0)
+    monkeypatch.setattr(executions_mod, "awake_seconds", lambda: next(clock))
+    claim_awake, row = run(idle_seconds=0.0)
+    assert row["progress_at"] is not None
+    assert row["progress_awake"] > claim_awake
     # An agent that reports idleness past the stamp cadence is silent in the ledger too: a wedged
     # worker must not keep refreshing its own liveness.
-    assert run(idle_seconds=stamp_every * 10) is None
+    assert run(idle_seconds=stamp_every * 10)[1]["progress_at"] is None

@@ -223,6 +223,9 @@ def _stale_age_seconds(claimed_at: str, progress_at: Optional[str],
     A suspended host freezes the stamper too, so the wall clock reads a night of sleep as
     silence (#160680). ``progress_awake`` is the machine-wide awake clock at the stamp; while
     it is comparable (same boot: the clock has not gone backwards), only awake time counts.
+    The claim stamps it too, so a host that sleeps before the first progress stamp is covered.
+    Only rows with a live owner reach this, and an owner cannot outlive a reboot, so a stamp
+    from an earlier boot is not expected here; the ordering check is a fallback, not a boot test.
     """
     age = _claim_age_seconds(progress_at or claimed_at)
     if progress_awake is not None:
@@ -270,10 +273,11 @@ def create_execution(
         conn.execute(
             """INSERT INTO executions
                (id, job_id, source, process_id, pid, process_started_at,
-                status, claimed_at, scheduled_instant)
-               VALUES (?, ?, ?, ?, ?, ?, 'claimed', ?, ?)""",
+                status, claimed_at, scheduled_instant, progress_awake)
+               VALUES (?, ?, ?, ?, ?, ?, 'claimed', ?, ?, ?)""",
             (execution_id, str(job_id), str(source), _PROCESS_ID, pid,
-             _process_start_time(pid), now, canonical_instant(scheduled_instant)),
+             _process_start_time(pid), now, canonical_instant(scheduled_instant),
+             awake_seconds()),
         )
         record = _fetch(conn, execution_id)
     _emit_execution_state(record)

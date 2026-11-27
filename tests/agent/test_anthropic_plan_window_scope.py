@@ -22,13 +22,13 @@ FABLE, OPUS = "claude-fable-5-2", "claude-opus-5-5"
 RATE_LIMIT_MESSAGE = "This request would exceed your account's rate limit. Please try again later."
 
 
-def _plan_429(claim: str, reset: float) -> anthropic.RateLimitError:
+def _plan_429(claim: str, reset: float, retry_after: float | None = None) -> anthropic.RateLimitError:
     """The 429 a spent subscription window returns (headers as captured in #147070 / #149112)."""
     body = {"type": "error", "error": {"type": "rate_limit_error", "message": RATE_LIMIT_MESSAGE}}
     response = httpx.Response(
         429, request=httpx.Request("POST", "https://api.anthropic.com/v1/messages"), json=body,
         headers={
-            "retry-after": str(int(reset - time.time())),
+            "retry-after": str(int(reset - time.time() if retry_after is None else retry_after)),
             "anthropic-ratelimit-unified-status": "rejected",
             "anthropic-ratelimit-unified-representative-claim": claim,
             "anthropic-ratelimit-unified-reset": str(int(reset)),
@@ -38,8 +38,7 @@ def _plan_429(claim: str, reset: float) -> anthropic.RateLimitError:
     return anthropic.RateLimitError(f"Error code: 429 - {body}", response=response, body=body)
 
 
-@pytest.fixture
-def pool(tmp_path, monkeypatch):
+def _isolated_home(tmp_path, monkeypatch):
     root = tmp_path / "hermes-root"
     root.mkdir()
     (tmp_path / "fakehome").mkdir()
@@ -49,7 +48,13 @@ def pool(tmp_path, monkeypatch):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("HERMES_HOME", str(root))
     import hermes_constants
-    hermes_constants._default_hermes_root_memo = None  # type: ignore[attr-defined]
+    monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None, raising=False)
+    return root
+
+
+@pytest.fixture
+def pool(tmp_path, monkeypatch):
+    root = _isolated_home(tmp_path, monkeypatch)
     seats = [("spent", SPENT), ("spare", SPARE)]
     (root / "auth.json").write_text(json.dumps({"credential_pool": {"anthropic": [
         {"id": seat, "label": seat, "auth_type": "api_key", "priority": priority,
@@ -125,3 +130,50 @@ def test_auxiliary_429_keeps_the_plan_window_and_its_reset(pool, monkeypatch):
 
     assert pool.select(model=OPUS).id == "spare"
     assert abs(_bench_end(pool) - reset) < 5
+
+
+def test_account_window_reset_beats_a_shorter_retry_after():
+    """The bench lasts until the window reopens, not until the next request-level retry."""
+    from agent.agent_runtime_helpers import extract_api_error_context
+    from agent.credential_pool_timestamps import _parse_absolute_timestamp
+
+    now = time.time()
+    reset, stale = now + 63 * 3600, now - 600
+    for claim, window_reset, expected in (
+        ("seven_day", reset, reset), ("seven_day_opus", reset, now + 2), ("seven_day", stale, now + 2),
+    ):
+        context = extract_api_error_context(_plan_429(claim, window_reset, retry_after=2))
+        assert abs(_parse_absolute_timestamp(context["reset_at"]) - expected) < 5, (claim, window_reset)
+
+    class _OddBody(Exception):
+        body = {"error": {"type": "rate_limit_error", "reset_at": []}}
+
+    assert extract_api_error_context(_OddBody("quota"))["reason"] == "rate_limit_error"
+
+
+def test_spent_window_holds_env_tokens_and_is_reported_as_a_cooldown(tmp_path, monkeypatch):
+    """``ANTHROPIC_API_KEY`` and borrowed tokens skip pool selection: the bench must still hold them for
+    every model, and a fully benched pool is a cooldown, not "No Anthropic credentials found"."""
+    from agent.agent_runtime_helpers import extract_api_error_context
+    from agent.anthropic_credentials import resolve_anthropic_token
+    from agent.credential_pool import load_pool
+    from hermes_cli.auth import AuthError
+    from hermes_cli.runtime_provider import _anthropic_token_or_raise
+
+    _isolated_home(tmp_path, monkeypatch)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", SPENT)
+    # Control: only a 429 bench holds an env token; an auth bench leaves the user's own key to fail visibly.
+    load_pool("anthropic").mark_exhausted_and_rotate(status_code=401, api_key_hint=SPENT, model=FABLE)
+    assert resolve_anthropic_token(model=OPUS) == SPENT
+    load_pool("anthropic").mark_exhausted_and_rotate(
+        status_code=429, error_context=extract_api_error_context(_plan_429("seven_day", time.time() + 63 * 3600)),
+        api_key_hint=SPENT, failure_reason="rate_limit", model=FABLE,
+    )
+
+    assert resolve_anthropic_token(model=FABLE) is None
+    assert resolve_anthropic_token(model=OPUS) is None
+    assert resolve_anthropic_token() == SPENT  # diagnostics without a model keep the token
+    with pytest.raises(AuthError) as excinfo:
+        _anthropic_token_or_raise(model=OPUS)
+    assert excinfo.value.code == "model_rate_limited"
+    assert "cooling down" in str(excinfo.value) and "No Anthropic credentials" not in str(excinfo.value)

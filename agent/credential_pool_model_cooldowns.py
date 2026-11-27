@@ -30,15 +30,18 @@ _USAGE_LIMIT_MESSAGE_TOKENS = ("usage limit reached", "usage limit has been reac
 
 
 def record_plan_window(context: dict[str, Any], headers: Any) -> None:
-    """Record the Claude plan window a rejected 429 names as ``subscription_window``, and the
-    window's ``anthropic-ratelimit-unified-reset`` as ``reset_at`` when no earlier header set one."""
+    """Record the Claude plan window a rejected response names as ``subscription_window``, and the
+    window's ``anthropic-ratelimit-unified-reset`` as ``reset_at``. An account-wide window's future
+    reset replaces a shorter request-level one (``retry-after``): the credential is benched until
+    the window reopens, not until the next retry."""
     if str(headers.get("anthropic-ratelimit-unified-status") or "").strip().lower() != "rejected":
         return
     claim = str(headers.get("anthropic-ratelimit-unified-representative-claim") or "").strip().lower()
     if claim:
         context["subscription_window"] = claim
     reset_at = _parse_absolute_timestamp(headers.get("anthropic-ratelimit-unified-reset"))
-    if reset_at is not None and "reset_at" not in context:
+    if reset_at is not None and (
+            "reset_at" not in context or (claim in ACCOUNT_WIDE_PLAN_WINDOWS and reset_at > time.time())):
         context["reset_at"] = reset_at
 
 
@@ -103,15 +106,23 @@ def merge_model_cooldowns(*maps: Any) -> dict[str, float]:
 
 class CredentialPoolModelCooldownMixin:
     def token_is_blocked(self, token: str, *, model: Optional[str] = None) -> bool:
-        """Whether a pool cooldown blocks *token* for *model*.
+        """Whether a pool cooldown blocks *token* for *model*: a cooldown on that model, or a
+        credential-wide 429 bench (a spent plan window refuses every model).
 
         Closes the paths that hand out a native Anthropic token without
         selecting it from the pool (env / borrowed credentials). Tokens the
         pool does not know fail open: no row can attribute a cooldown to them.
         """
+        from agent.credential_pool import _exhausted_until
+
+        now = time.time()
         with self._lock:
+            sole = self._is_sole_credential()
             return any(
-                entry.runtime_api_key == token and model_cooldown_until(entry, model) is not None
+                entry.runtime_api_key == token and (
+                    model_cooldown_until(entry, model) is not None
+                    or (entry.last_error_code == 429 and (_exhausted_until(entry, sole_credential=sole) or 0) > now)
+                )
                 for entry in self._entries
             )
 

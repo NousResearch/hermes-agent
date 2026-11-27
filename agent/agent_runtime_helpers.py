@@ -3155,7 +3155,7 @@ def extract_api_error_context(error: Exception) -> dict[str, Any]:
             message = payload.get("error")
         if isinstance(message, str) and message.strip():
             context["message"] = message.strip()
-        reset = next((payload.get(k) for k in ("resets_at", "reset_at") if payload.get(k) not in {None, ""}), None)
+        reset = next((payload.get(k) for k in ("resets_at", "reset_at") if payload.get(k) not in (None, "")), None)
         if reset is not None:
             context["reset_at"] = reset
         elif isinstance(payload.get("resets_in_seconds"), (int, float)):

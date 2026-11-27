@@ -413,8 +413,11 @@ def _anthropic_token_or_raise(*, model: str | None = None) -> str:
     from agent.anthropic_credentials import resolve_anthropic_token
     token = resolve_anthropic_token(model=model)
     if not token:
-        # A key the pool benched for *this* model is not a missing credential; telling the
-        # user to re-authenticate would send them chasing a cooldown that lifts on its own.
+        # A benched key is not a missing credential; telling the user to re-authenticate
+        # would send them chasing a cooldown that lifts on its own.
+        from agent.auxiliary_unavailable import pool_cooldown_message
+        if cooldown := pool_cooldown_message("anthropic"):
+            raise AuthError(cooldown, provider="anthropic", code="model_rate_limited")
         if model and resolve_anthropic_token():
             raise AuthError(f"Anthropic credentials are rate-limited for {model}; "
                             "other Claude models remain available (see `hermes auth list`).",

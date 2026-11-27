@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
+import { $statusSectionCollapsedByKey } from '@/store/status-section-collapse'
 import { $todosBySession } from '@/store/todos'
 
 import { ComposerStatusStack } from './index'
@@ -20,6 +21,7 @@ describe('ComposerStatusStack collapsed todo indicator', () => {
   afterEach(() => {
     cleanup()
     $todosBySession.set({})
+    $statusSectionCollapsedByKey.set({})
   })
 
   it('shows a running indicator next to the collapsed todo label', () => {

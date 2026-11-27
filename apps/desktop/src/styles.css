@@ -397,6 +397,16 @@
     --ui-surface-background: var(--ui-bg-editor);
     --ui-sidebar-surface-background: var(--ui-bg-sidebar);
     --ui-chat-surface-background: var(--ui-bg-chrome);
+    /* Session-colour hooks — the documented seam a desktop plugin tints a chat
+       through (desktop-plugin-sdk.md ▸ Session colour hooks). The chat surface
+       root publishes `--ui-session-color` (its resolved colour, when the chat
+       has one) and `--ui-session-hue` (a stable seed for chats that don't); a
+       theme sets `--ui-session-tint` to mix that colour into the field. The
+       0% default keeps the composed value below exactly `--ui-bg-chrome`, so
+       the stock UI is unchanged, and `--ui-session-tint-max` is the ceiling that
+       keeps a wash inside the contrast the skin was designed for. */
+    --ui-session-tint: 0%;
+    --ui-session-tint-max: 12%;
     --ui-editor-surface-background: var(--ui-bg-chrome);
     /* The integrated terminal wears the transcript's background, not the
        editor's — it reads as part of the conversation surface. Its own token so
@@ -842,6 +852,26 @@
   *::selection {
     background: var(--ui-selection-background);
     color: inherit;
+  }
+
+  /* Session-colour composition. The chat surface owns the field, so the mix
+     lives on the surface root: the tint is the session colour at
+     `--ui-session-tint` of the way, quantised by `--ui-session-tint-max`, over
+     the theme's chrome. `min()` (not `clamp`) because a theme may only ever
+     lower the ceiling. With the 0% default, and with no `--ui-session-color` at
+     all, the whole expression resolves to `--ui-bg-chrome` — byte for byte the
+     value the surface had before this seam existed.
+
+     Scoped to `:not([data-hermes-glass])`: in glass mode the field is
+     deliberately transparent at the ROOT, and a declaration on the surface
+     itself would beat that inherited value and make the window opaque again.
+     A theme that wants a translucent tint composes it inside that mode. */
+  :root:not([data-hermes-glass]) [data-chat-surface] {
+    --ui-chat-surface-background: color-mix(
+      in srgb,
+      var(--ui-session-color, var(--ui-bg-chrome)) min(var(--ui-session-tint, 0%), var(--ui-session-tint-max, 12%)),
+      var(--ui-bg-chrome)
+    );
   }
 }
 
@@ -2106,6 +2136,10 @@ body.guest-pointer-lock :is(webview, iframe) {
 .dark {
   --dock-glow-scale: 1;
   --chat-unfocused-opacity: 0.72;
+  /* A dark field takes a stronger wash before it reads as tinted — and its
+     light ink keeps 4.5:1 further up the scale than a light field's dark ink
+     does. See the session-colour hooks note in `@layer base`. */
+  --ui-session-tint-max: 17%;
 }
 
 /* The whole surface recedes as ONE layer — thread, timeline rail, composer,

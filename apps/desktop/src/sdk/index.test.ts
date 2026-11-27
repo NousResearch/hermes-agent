@@ -421,6 +421,21 @@ describe('host.sessions session-list mutations', () => {
     host.sessions.setColor('row-1', null)
     expect($sessionColorOverrides.get()).toEqual({})
   })
+
+  it('host.state.sessionColors is the read side of setColor', async () => {
+    const session = await import('@/store/session')
+
+    session.$sessions.set([{ id: 'live-1', message_count: 0, title: 'Chat' } as never])
+
+    host.sessions.setColor('live-1', '#ff8800')
+
+    // The picker reads the same map the sidebar dot paints from — a plugin that
+    // writes through setColor and reads here can never disagree with the row.
+    expect(host.state.sessionColors.get()).toEqual({ 'live-1': '#ff8800' })
+
+    host.sessions.setColor('live-1', null)
+    expect(host.state.sessionColors.get()).toEqual({})
+  })
 })
 
 describe('host.openWorkspace approval scope', () => {

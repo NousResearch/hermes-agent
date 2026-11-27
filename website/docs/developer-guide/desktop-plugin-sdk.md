@@ -483,6 +483,64 @@ listener plus a `requestAnimationFrame` loop that polled the transcript's rows
 and scroll position, then toggled its own root attribute): the CSS above is the
 whole migration.
 
+#### Tinting each chat with its session colour — `--ui-session-color`
+
+A theme that colours each chat differently (so the user can see at a glance
+which one they are in) does not need to query core's elements or read core's
+storage. The chat surface root publishes its own colour:
+
+| Hook | Where | What |
+|---|---|---|
+| `--ui-session-color` | inline on `[data-chat-surface]`, only when the chat HAS a colour | The resolved colour as a CSS colour (`hsl()`, `rgb()`, hex …) — the same value the sidebar's dot paints, project inheritance included |
+| `--ui-session-hue` | inline on every `[data-chat-surface]` | Stable hue `0`–`359` derived from the session id, for a chat that has no colour of its own |
+| `data-session-color` | attribute on `[data-chat-surface]`, only when the chat HAS a colour | Same colour, for `:has()`/attribute selectors and for tests |
+| `data-chat-unfocused` | attribute on `[data-chat-surface]`, present while the surface is NOT the focused pane | The focus signal a theme mirrors (dim the inactive pane, draw a rail on the active one) — core clears it on the pane the user is in, and on hover |
+| `--ui-session-tint` | inherited, default `0%` | **The knob a theme sets.** How far the session colour is mixed into the field |
+| `--ui-session-tint-max` | inherited, `12%` light / `17%` dark | The ceiling core clamps the wash to, so a tint can never push the field past the contrast its skin was designed for |
+
+Core composes the field from those values, so a whole feature is one rule:
+
+```css
+/* Give every chat a wash of its own colour (or its seed hue, when it has none)
+   at 11% of the way into the theme background. */
+[data-chat-surface] {
+  --ui-session-tint: 11%;
+  --ui-session-color: var(--ui-session-color, hsl(var(--ui-session-hue) 68% 58%));
+}
+```
+
+- **Zero cost when unused.** `--ui-session-tint` defaults to `0%`, and the mix
+  resolves to exactly `--ui-bg-chrome`, so the stock UI is byte-identical and a
+  theme that never touches these hooks pays nothing.
+- **No JavaScript, no observers.** The value is inline on the surface core
+  already renders; a colour picked in the sidebar menu repaints in the same
+  commit as the dot. Do not read `hermes.desktop.sessionColors` yourself — read
+  `host.state.sessionColors` ([state](#state)), which is the same map.
+- **Legibility is core's job.** `--ui-session-tint-max` is the contract: the
+  skin's authored contrast holds for any colour at or under it. Clamp further
+  for a theme with unusually low contrast rather than thinning per surface in
+  JavaScript.
+
+```css
+/* The rail on the pane the user is in: the session colour, 2px, beside the
+   text — and only on the focused surface. */
+[data-chat-surface]:not([data-chat-unfocused])::before {
+  content: '';
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 0;
+  width: 2px;
+  background: var(--ui-session-color, hsl(var(--ui-session-hue) 68% 58%));
+}
+```
+
+- **`data-chat-unfocused` is the focus contract.** It is present on every
+  surface that is not the pane the user is working in (and while the pane is
+  hovered), so `:not([data-chat-unfocused])` is the supported way to style
+  "the chat I am in". Do not derive focus from a route, a store snapshot or a
+  `MutationObserver` — a split tile and the primary pane are both live surfaces
+  and only core knows which one holds the user.
+
 ### Composer extensions
 
 `COMPOSER_AREAS` (`top`, `bottom`, `underside`, `leading`, `actions`,
@@ -1395,6 +1453,7 @@ host.state.cwd              // ReadableAtom<string>
 host.state.gateway          // ReadableAtom<string>  socket state ('idle' | 'connecting' | 'open' | …)
 host.state.model            // ReadableAtom<string>
 host.state.profile          // ReadableAtom<string>
+host.state.sessionColors    // ReadableAtom<Record<string, string>>  resolved colour per live session id (read side of host.sessions.setColor)
 host.state.viewport         // ReadableAtom<{ width, height, narrow }>
 ```
 

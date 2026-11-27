@@ -19,6 +19,7 @@ import {
   $selectedStoredSessionId,
   $sessions
 } from '@/store/session'
+import { $sessionColorOverrides } from '@/store/session-color'
 
 const threadRenderCount = vi.hoisted(() => ({ current: 0 }))
 
@@ -162,4 +163,95 @@ describe('ChatView render isolation', () => {
     // the transcript (Thread) must not re-render. This is PR #38470's contract.
     expect(threadRenderCount.current).toBe(1)
   })
+})
+
+// The documented plugin seam (desktop-plugin-sdk.md ▸ Session colour hooks):
+// the surface publishes its own colour, so a theme tints each chat with CSS
+// alone — no querySelector, no storage read, no observer.
+describe('ChatView session-colour hooks', () => {
+  const props = {
+    gateway: null,
+    maxVoiceRecordingSeconds: 120,
+    onAddContextRef: vi.fn(),
+    onAddUrl: vi.fn(),
+    onAttachDroppedItems: vi.fn(),
+    onAttachImageBlob: vi.fn(),
+    onBranchInNewChat: vi.fn(),
+    onCancel: vi.fn(),
+    onDeleteSelectedSession: vi.fn(),
+    onEdit: vi.fn(),
+    onPasteClipboardImage: vi.fn(),
+    onPickFiles: vi.fn(),
+    onPickFolders: vi.fn(),
+    onPickImages: vi.fn(),
+    onReload: vi.fn(),
+    onRemoveAttachment: vi.fn(),
+    onRetryResume: vi.fn(),
+    onSteer: vi.fn(),
+    onSubmit: vi.fn(),
+    onThreadMessagesChange: vi.fn(),
+    onToggleSelectedPin: vi.fn(),
+    onTranscribeAudio: vi.fn()
+  }
+
+  function renderChat() {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/stored-1']}>
+          <ChatView {...props} />
+        </MemoryRouter>
+      </QueryClientProvider>
+    )
+  }
+
+  function surfaceOf(container: HTMLElement): HTMLElement {
+    const surface = container.querySelector<HTMLElement>('[data-chat-surface]')
+
+    expect(surface).toBeTruthy()
+
+    return surface as HTMLElement
+  }
+
+  beforeEach(() => {
+    $activeSessionId.set('runtime-1')
+    $awaitingResponse.set(false)
+    $busy.set(false)
+    $contextSuggestions.set([])
+    $currentCwd.set('/work')
+    $currentModel.set('test-model')
+    $currentProvider.set('test-provider')
+    $freshDraftReady.set(false)
+    $gatewayState.set('closed')
+    $messages.set([])
+    $selectedStoredSessionId.set('stored-1')
+    $sessions.set([{ id: 'stored-1', message_count: 1, title: 'Stable chat' } as never])
+  })
+
+  afterEach(() => {
+    cleanup()
+    $sessions.set([])
+    $sessionColorOverrides.set({})
+    $selectedStoredSessionId.set(null)
+  })
+
+  it('publishes the resolved colour and a numeric seed hue', () => {
+    $sessionColorOverrides.set({ 'stored-1': 'hsl(270 68% 58%)' })
+
+    const surface = surfaceOf(renderChat().container)
+
+    expect(surface.dataset.sessionColor).toBe('hsl(270 68% 58%)')
+    expect(surface.style.getPropertyValue('--ui-session-color')).toBe('hsl(270 68% 58%)')
+    expect(surface.style.getPropertyValue('--ui-session-hue')).toMatch(/^(\d{1,3})$/)
+  })
+
+  it('omits the colour hook for a chat without a colour but still seeds a hue', () => {
+    const surface = surfaceOf(renderChat().container)
+
+    expect(surface.hasAttribute('data-session-color')).toBe(false)
+    expect(surface.style.getPropertyValue('--ui-session-color')).toBe('')
+    expect(surface.style.getPropertyValue('--ui-session-hue')).toMatch(/^(\d{1,3})$/)
+  })
+
 })

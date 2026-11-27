@@ -106,6 +106,23 @@ class TestImageTooLargeClassification:
         result = classify_api_error(err, provider="minimax", model="MiniMax-M3")
         assert result.reason != FailoverReason.image_too_large
 
+    def test_anthropic_directsdk_base64_size_message(self):
+        """The Claude subscription DirectSDK transport reports the 5 MB ceiling as
+        "Image base64 size (13.3MB) exceeds API limit (5MB)" — wording the previous
+        patterns missed, so an oversized ``computer_use`` capture was retried
+        unchanged instead of triggering shrink recovery (#133596).
+        """
+        err = _FakeApiError(
+            status_code=400,
+            message=(
+                "Image base64 size (13.3MB) exceeds API limit (5MB). "
+                "Please resize the image before sending."
+            ),
+        )
+        result = classify_api_error(err, provider="anthropic", model="claude-sonnet-5-5")
+        assert result.reason == FailoverReason.image_too_large
+        assert result.retryable is True
+
     _NIM_400 = "Please make sure your payload is below 26214400 bytes in size. For larger payloads, please use the Assets API."
     _DASHSCOPE_400 = (
         "String value length (28049408) exceeds the maximum allowed (28000000, from "

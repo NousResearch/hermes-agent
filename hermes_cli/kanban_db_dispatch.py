@@ -2145,6 +2145,23 @@ def _dispatch_lane_task(
         _kbw.set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
     _kbw._maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
     if lane == "review":
+        from hermes_cli.profiles import get_profile_dir, profile_exists
+        from agent.skill_utils import iter_skill_index_files
+        has_skill = False
+        if claimed.assignee and profile_exists(claimed.assignee):
+            pdir = get_profile_dir(claimed.assignee)
+            for p in iter_skill_index_files(pdir / "skills", "SKILL.md"):
+                if p.parent.name == "sdlc-review":
+                    has_skill = True
+                    break
+        if not has_skill:
+            if _record_task_failure(
+                conn, claimed.id, f"Profile '{claimed.assignee}' lacks required skill 'sdlc-review' for review lane",
+                outcome="spawn_failed", failure_limit=failure_limit, release_claim=True, end_run=True,
+            ):
+                result.auto_blocked.append(claimed.id)
+            return False
+
         # Force-load sdlc-review; the kanban lifecycle is already in every
         # worker's system prompt via KANBAN_GUIDANCE.
         claimed.skills = list(dict.fromkeys([*(claimed.skills or []), "sdlc-review"]))

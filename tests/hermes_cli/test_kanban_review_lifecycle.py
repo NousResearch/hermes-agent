@@ -645,6 +645,10 @@ def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(
         "load_config",
         lambda *args, **kwargs: {"kanban": {"review_dispatch": True}},
     )
+    monkeypatch.setattr(
+        "agent.skill_utils.iter_skill_index_files",
+        lambda _pdir, _glob: [Path("sdlc-review/SKILL.md")],
+    )
     captured: list[list[str]] = []
 
     def spawn(task, workspace):
@@ -682,6 +686,57 @@ def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(
 
     assert task_id in [task[0] for task in result.spawned]
     assert captured == [["domain-specific-review", "sdlc-review"]]
+
+
+def test_review_dispatch_refuses_if_reviewer_lacks_skill(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import hermes_cli.config as cfgmod
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(profmod, "profile_exists", lambda name: True)
+    monkeypatch.setattr(
+        cfgmod,
+        "load_config",
+        lambda *args, **kwargs: {"kanban": {"review_dispatch": True}},
+    )
+    monkeypatch.setattr(
+        "agent.skill_utils.iter_skill_index_files",
+        lambda _pdir, _glob: [],
+    )
+
+    captured: list[list[str]] = []
+
+    def spawn(task, workspace):
+        captured.append(list(task.skills or []))
+
+    with kbc.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="domain review",
+            assignee="reviewer",
+            skills=["domain-specific-review"],
+        )
+        implementation = kb.claim_task(conn, task_id)
+        assert implementation is not None
+        assert kb.request_review(
+            conn,
+            task_id,
+            summary="ready",
+            expected_run_id=implementation.current_run_id,
+        )
+
+        monkeypatch.setattr(kbd, "check_respawn_guard", lambda _conn, _task_id, **_kw: None)
+        result = kbd.dispatch_once(conn, spawn_fn=spawn)
+
+    assert not result.spawned
+    assert len(captured) == 0
+
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, task_id)
+        assert task is not None
+        assert task.status == "review"
+        assert "lacks required skill 'sdlc-review'" in str(task.last_failure_error)
 
 
 def test_review_dispatch_honors_global_and_per_profile_caps(

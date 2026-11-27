@@ -21,6 +21,7 @@ import {
 } from '@/app/chat/composer/focus'
 import { useComposerScope } from '@/app/chat/composer/scope'
 import { useSessionView } from '@/app/chat/session-view'
+import { BoardAnchorContext } from '@/components/assistant-ui/transcript-directive'
 import { SETTINGS_ROUTE } from '@/app/routes'
 import { useBillingApi } from '@/app/settings/billing/api'
 import { dispatchedTo } from '@/components/assistant-ui/thread/agent-delivery'
@@ -107,7 +108,16 @@ const EMPTY_PARTS: readonly unknown[] = []
 // (pending -> complete and back, N rows per stream flush) can no longer
 // descend into the parts subtree at all. Its props were already the module
 // constant MESSAGE_PARTS_COMPONENTS, so nothing per-message is captured here.
-const MESSAGE_PARTS = <MessagePrimitive.Parts components={MESSAGE_PARTS_COMPONENTS} />
+const MessageParts: FC = () => {
+  const messageId = useAuiState(s => s.message.id)
+  const messages = useStore(useSessionView().$messages)
+
+  return (
+    <BoardAnchorContext.Provider value={{ messageId, messages }}>
+      <MessagePrimitive.Parts components={MESSAGE_PARTS_COMPONENTS} />
+    </BoardAnchorContext.Provider>
+  )
+}
 
 interface MessageActionProps {
   messageId: string
@@ -195,7 +205,7 @@ const InterAgentCollapsedNotice: FC<{ sender: string }> = ({ sender }) => (
         show reply
       </summary>
       <div className="mt-1 max-w-[36rem] rounded-lg border border-(--ui-stroke-tertiary) px-3 py-2 text-left text-[0.75rem] leading-5 text-foreground/85">
-        {MESSAGE_PARTS}
+        <MessageParts />
       </div>
     </details>
   </div>
@@ -327,7 +337,7 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
             data-slot="aui_assistant-message-content"
           >
             {/* Todos render in the composer status stack now, not inline. */}
-            {MESSAGE_PARTS}
+            <MessageParts />
             <StoppedNotice />
             <AssistantStatusSlot />
             <AssistantPreviewEmbeds />

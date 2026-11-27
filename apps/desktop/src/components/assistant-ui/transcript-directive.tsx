@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import type { FC, ReactNode } from 'react'
-import { useMemo } from 'react'
+import { createContext, useContext, useMemo } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
 import { type Contribution, useContributions } from '@/contrib'
@@ -12,6 +12,16 @@ import {
   type TranscriptDirectiveContribution,
   type TranscriptParagraphSegment
 } from '@/lib/transcript-directives'
+
+import type { ChatMessage } from '@/lib/chat-messages/types'
+
+/** Current message position in the ordered transcript, supplied by the message
+ *  renderer. Absent (default) outside a message so bare/preview uses of the
+ *  directive leaf keep their exact prior behavior. */
+export const BoardAnchorContext = createContext<{
+  messageId: string | null
+  messages: readonly ChatMessage[]
+}>({ messageId: null, messages: [] })
 
 /**
  * The transcript's directive slot. Given text, renders the plugin component
@@ -56,6 +66,53 @@ const DirectiveEntry: FC<{
   const runtimeId = useStore(view.$runtimeId)
   const sessionId = storedId || runtimeId || null
 
+  // Living-board re-anchor: an addressable directive (a board with an `id`)
+  // draws its live copy only at its LATEST occurrence in the transcript and
+  // nothing at earlier ones, so an updated board MOVES DOWN to the newest reply
+  // instead of being stranded above a pointer. Document order comes from the
+  // ordered message list; the current position is supplied by MessageParts.
+  const anchor = useContext(BoardAnchorContext)
+  const boardId = parsed.attrs.id
+  const staleBoard = useMemo(() => {
+    if (!boardId || !anchor.messageId) {
+      return false
+    }
+
+    const here = anchor.messages.findIndex(message => message.id === anchor.messageId)
+
+    if (here < 0) {
+      return false
+    }
+
+    for (let i = here + 1; i < anchor.messages.length; i += 1) {
+      const message = anchor.messages[i]
+
+      if (message.hidden) {
+        continue
+      }
+
+      for (const part of message.parts) {
+        const value = (part as { text?: unknown }).text
+
+        if (typeof value !== 'string' || !value.includes(boardId)) {
+          continue
+        }
+
+        for (const segment of segmentTranscriptDirectives(value) ?? []) {
+          if (
+            segment.kind === 'directive' &&
+            segment.directive.name === parsed.name &&
+            segment.directive.attrs.id === boardId
+          ) {
+            return true
+          }
+        }
+      }
+    }
+
+    return false
+  }, [anchor, boardId, parsed.name])
+
   // Stable component IDENTITY per (render, parsed) — a fresh type per parent
   // render would remount the widget (card-sized jump). Streaming and the owning
   // session arrive as real props on that stable type, so the settle flip
@@ -74,6 +131,10 @@ const DirectiveEntry: FC<{
       },
     [render, parsed]
   )
+
+  if (staleBoard) {
+    return null
+  }
 
   return (
     <ContribBoundary id={contribution.id} variant="chip">

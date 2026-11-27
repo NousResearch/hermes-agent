@@ -11471,7 +11471,7 @@ async function startHermes(requestedProfile?: string, inheritsPrimary = false) {
       resolveHermesCwd(),
       HERMES_HOME,
       profileBackendParentEnv({ hermesHome: HERMES_HOME, profile: primaryProfile })
-    ), undefined, restartStaleLocalGateway)
+    ), undefined, restartStaleLocalGateway, () => backendConnectionState.assertCurrentAttempt(connectionAttempt))
 
     backendConnectionState.assertCurrentAttempt(connectionAttempt)
 

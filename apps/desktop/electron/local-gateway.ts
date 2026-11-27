@@ -220,11 +220,22 @@ async function reensureDuringRestart(
 export async function ensureLocalGateway(
   run: () => Promise<{ code: number; stdout: string; stderr?: string }>,
   beforeEnsure?: () => Promise<void>,
-  restartStale?: StaleGatewayRestart
+  restartStale?: StaleGatewayRestart,
+  assertPendingStartCurrent?: () => void
 ) {
   await beforeEnsure?.()
   let result = await run()
   let payload = parseGatewayEnsureOutput(result)
+
+  // A cold owner can publish READY just after the first CLI deadline. Keep the primary's
+  // existing startup promise alive for one more bounded ensure against the same profile.
+  if (assertPendingStartCurrent && result.code === 5 && payload.state === 'starting' && payload.reason_code === 'deadline') {
+    assertPendingStartCurrent()
+    result = await run()
+    assertPendingStartCurrent()
+    payload = parseGatewayEnsureOutput(result)
+  }
+
   const stale = restartStale && result.code === 0 && payload.state === 'ready' ? staleGatewayCode(payload) : null
 
   // Attaching would pin a stale owner (503 "Restart required" forever): replace it once, then

@@ -4,41 +4,49 @@ import type { SessionInfo } from '@/types/hermes'
 
 import { reconcileMessagingRefresh } from './session-messaging-pages'
 
-describe('reconcileMessagingRefresh', () => {
-  const row = (id: string, source: string, over: Partial<SessionInfo> = {}): SessionInfo =>
-    ({ archived: false, cwd: null, ended_at: null, id, input_tokens: 0, is_active: false, last_active: 0, message_count: 2, model: null, output_tokens: 0, preview: null, source, started_at: 0, title: id, tool_call_count: 0, ...over }) as SessionInfo
+const row = (id: string, source: string, over: Partial<SessionInfo> = {}): SessionInfo =>
+  ({
+    archived: false,
+    cwd: null,
+    ended_at: null,
+    id,
+    input_tokens: 0,
+    is_active: false,
+    last_active: 0,
+    message_count: 2,
+    model: null,
+    output_tokens: 0,
+    preview: null,
+    profile: 'default',
+    source,
+    started_at: 0,
+    title: id,
+    tool_call_count: 0,
+    ...over
+  }) as SessionInfo
 
-  it('keeps paged-over rows when the cap was hit', () => {
-    const paged = Array.from({ length: 13 }, (_, i) => row(`f-${i}`, 'feishu'))
+describe('reconcileMessagingRefresh', () => {
+  it('a capped seed keeps rows paged in past it, and drops only rows it proves are gone', () => {
+    // 13 Feishu rows loaded through "Load more" (f-0 newest); the next seed
+    // is capped by Telegram traffic and carries only the 4 newest Feishu rows.
+    const paged = Array.from({ length: 13 }, (_, i) => row(`f-${i}`, 'feishu', { last_active: 100 - i }))
+    const gone = row('f-gone', 'feishu', { last_active: 99 }) // newer than the seed's oldest, yet missing
+    const otherProfile = row('w-1', 'feishu', { last_active: 1, profile: 'work' })
+
     const seed = [
-      ...paged.slice(0, 4).map(r => ({ ...r, last_active: r.last_active + 1 })),
-      ...Array.from({ length: 96 }, (_, i) => row(`t-${i}`, 'telegram'))
+      { ...paged[0], title: 'updated' },
+      ...paged.slice(1, 4),
+      ...Array.from({ length: 96 }, (_, i) => row(`t-${i}`, 'telegram', { last_active: 97 }))
     ]
 
-    const result = reconcileMessagingRefresh(paged, seed, true)
+    const result = reconcileMessagingRefresh([gone, ...paged, otherProfile], seed, true, 'default')
+    const feishu = result.filter(s => s.source === 'feishu').map(s => s.id)
 
-    expect(result.filter(s => s.source === 'feishu')).toHaveLength(13)
+    expect(feishu).toEqual(paged.map(s => s.id))
+    expect(result.find(s => s.id === 'f-0')?.title).toBe('updated')
     expect(result.filter(s => s.source === 'telegram')).toHaveLength(96)
-  })
 
-  it('truncates to incoming when not truncated', () => {
-    const paged = Array.from({ length: 5 }, (_, i) => row(`f-${i}`, 'feishu'))
-    const seed = [row('f-0', 'feishu', { last_active: 2 })]
-
-    const result = reconcileMessagingRefresh(paged, seed, false)
-
-    expect(result).toHaveLength(1)
-    expect(result[0].id).toBe('f-0')
-  })
-
-  it('deduplicates paged rows that appear in the incoming seed', () => {
-    const paged = [row('f-0', 'feishu'), row('f-1', 'feishu')]
-    const seed = [row('f-0', 'feishu', { last_active: 10, title: 'updated' })]
-
-    const result = reconcileMessagingRefresh(paged, seed, true)
-
-    expect(result).toHaveLength(2)
-    expect(result[0].title).toBe('updated')
-    expect(result[1].id).toBe('f-1')
+    // A seed under the cap is the whole list.
+    expect(reconcileMessagingRefresh(paged, seed.slice(0, 2), false, 'default').map(s => s.id)).toEqual(['f-0', 'f-1'])
   })
 })

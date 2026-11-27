@@ -44,6 +44,7 @@ import {
   setSessionsLoading,
   stampMessagingRowsWithListServer
 } from '@/store/session'
+import { reconcileMessagingRefresh } from '@/store/session-messaging-pages'
 import {
   $removedSessionIds,
   captureSessionTombstoneGenerations,
@@ -126,6 +127,28 @@ function dropRemovalRaced(sessions: SessionInfo[], snapshot: SessionTombstoneGen
   const kept = sessions.filter(session => !raced(session))
 
   return kept.length === sessions.length ? sessions : kept
+}
+
+/** Publish a messaging refresh page and report whether it hit the cap. A
+ *  capped page keeps the rows "Load more" paged in past it (see
+ *  {@link reconcileMessagingRefresh}); `fetched` is the raw page before the
+ *  messaging-source filter, the length the cap applies to. */
+function publishMessagingRefresh(
+  rows: SessionInfo[],
+  fetched: readonly SessionInfo[] | undefined,
+  profileScope: string,
+  sessionProfile: string
+): boolean {
+  const capped = (fetched?.length ?? 0) >= MESSAGING_SECTION_LIMIT
+  const scopeProfile = botModeFetchScope(profileScope)?.displayProfile ?? sessionProfile
+
+  setMessagingSessions(prev => {
+    const next = reconcileMessagingRefresh(prev, rows, capped, scopeProfile)
+
+    return sameCronSignature(prev, next) ? prev : next
+  })
+
+  return capped
 }
 
 function publishMessagingRows(rows: SessionInfo[], scopeProfile: string): SessionInfo[] {
@@ -239,10 +262,10 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
         sessionProfile
       )
 
-      setMessagingSessions(prev => (sameCronSignature(prev, rows) ? prev : rows))
+      const truncated = publishMessagingRefresh(rows, result.sessions, profileScope, sessionProfile)
       // Hit the cap → at least one platform may have more on disk than loaded,
       // so platform sections offer their own per-platform "load more".
-      setMessagingTruncated(result.sessions.length >= MESSAGING_SECTION_LIMIT)
+      setMessagingTruncated(truncated)
     } catch {
       // Non-fatal: the messaging sections just stay empty/stale.
     }
@@ -524,11 +547,15 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
             sessionProfile
           )
 
-          setMessagingSessions(prev => (sameCronSignature(prev, messagingRows) ? prev : messagingRows))
-          // Hit the cap → at least one platform may have more on disk than loaded.
-          setMessagingTruncated(prev =>
-            messagingErrors?.length ? prev : result.messaging.sessions.length >= MESSAGING_SECTION_LIMIT
+          const messagingCapped = publishMessagingRefresh(
+            messagingRows,
+            result.messaging.sessions,
+            profileScope,
+            sessionProfile
           )
+
+          // Hit the cap → at least one platform may have more on disk than loaded.
+          setMessagingTruncated(prev => (messagingErrors?.length ? prev : messagingCapped))
         }
       } catch (error) {
         if (owns() && showLoading) {

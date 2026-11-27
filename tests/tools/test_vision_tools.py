@@ -112,6 +112,21 @@ class TestImageToBase64DataUrl:
         result = _image_to_base64_data_url(other, mime_type="image/webp")
         assert result.startswith("data:image/webp;base64,")
 
+    def test_sniffed_mime_overrides_mislabeled_hint(self, tmp_path):
+        # The browser paths hardcode mime_type="image/png"; a JPEG on disk labeled PNG is a
+        # non-retryable provider 400 (#139253), so the magic bytes must win over the hint.
+        jpg = tmp_path / "shot.jpg"
+        jpg.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 8)
+        assert _image_to_base64_data_url(jpg, mime_type="image/png").startswith(
+            "data:image/jpeg;base64,")
+
+    def test_resize_short_circuit_labels_sniffed_mime(self, tmp_path):
+        jpg = tmp_path / "shot.jpg"
+        jpg.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 8)
+        data_url = _resize_image_for_vision(
+            jpg, mime_type="image/png", max_base64_bytes=4096)
+        assert data_url.startswith("data:image/jpeg;base64,")
+
     def test_file_not_found_raises(self, tmp_path):
         with pytest.raises(FileNotFoundError):
             _image_to_base64_data_url(tmp_path / "nonexistent.png")

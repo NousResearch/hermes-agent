@@ -108,7 +108,9 @@ def socket_peer_uid(sock: socket.socket) -> int | None:
     (SO_PEERCRED on Linux, getpeereid on macOS); None where neither exists."""
     if hasattr(socket, "SO_PEERCRED"):
         import struct
-        return struct.unpack("3i", sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))[1]
+        # struct ucred is {pid_t pid; uid_t uid; gid_t gid;}. uid_t is unsigned: a uid at or above
+        # 2**31 (Google Cloud OS Login, SSSD/AD ID mapping) must match os.getuid(), not wrap negative.
+        return struct.unpack("iII", sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))[1]
     if sys.platform != "darwin":
         return None
     import ctypes

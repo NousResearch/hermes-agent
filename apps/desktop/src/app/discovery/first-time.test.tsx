@@ -344,8 +344,16 @@ describe('the first-time splash in the shell', () => {
     fireEvent.click(within(mode).getByRole('radio', { name: copy.splash.theme.dark }))
     expect(window.document.documentElement.classList.contains('dark')).toBe(true)
 
+    const spacing = screen.getByRole('group', { name: 'Spacing' })
+    fireEvent.click(within(spacing).getByRole('radio', { name: 'Compact' }))
+    expect(window.localStorage.getItem('hermes.desktop.portalDensity.v1')).toBe('compact')
+    fireEvent.click(within(spacing).getByRole('radio', { name: 'Comfortable' }))
+
     const artworks = screen.getByRole('group', { name: copy.splash.theme.artwork.title })
-    expect(within(artworks).getAllByRole('radio')).toHaveLength(10)
+    expect(within(artworks).getAllByRole('radio')).toHaveLength(11)
+    fireEvent.click(within(artworks).getByRole('radio', { name: 'No background' }))
+    expect($artworkChoice.get()).toBe('none')
+
     fireEvent.click(within(artworks).getByRole('radio', { name: copy.splash.theme.artwork.names.karborn }))
     expect($artworkChoice.get()).toBe('karborn')
     expect(
@@ -354,11 +362,11 @@ describe('the first-time splash in the shell', () => {
     ).toBe(true)
     expect(within(artworks).getByText(copy.splash.theme.artwork.selected)).toBeTruthy()
 
-    // Light offers only what it draws.
+    // Light offers only what it draws (+ No background).
     fireEvent.click(within(mode).getByRole('radio', { name: copy.splash.theme.light }))
     expect(
       within(screen.getByRole('group', { name: copy.splash.theme.artwork.title })).getAllByRole('radio')
-    ).toHaveLength(2)
+    ).toHaveLength(3)
     disposeArtwork()
   })
 

@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useCallback } from 'react'
+import { useCallback, useId, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -15,8 +15,10 @@ import { useSimplifiedAgents } from '../chat/sidebar/use-simplified-agents'
 import { useItemIndex } from '../library/use-item-index'
 
 import { useDiscoveryCopy } from './discovery-copy'
+import { useFirstTimeCopy } from './first-time-copy'
+import { MakeItYours } from './make-it-yours'
 import { useRenamedNames } from './renamed-names'
-import { type SplashRow, SplashSurface } from './splash-surface'
+import { type SplashRow, SplashSurface, useSplashFrame } from './splash-surface'
 
 type Count = null | { value: number; more: boolean }
 
@@ -78,10 +80,59 @@ function RenamedGlyph({ row }: { row: RenamedDestination }) {
 export function RenameSplash({ reopened }: RenameSplashProps) {
   const { locale } = useI18n()
   const copy = useDiscoveryCopy()
+  const themeCopy = useFirstTimeCopy().splash
   const counts = useRenamedCounts()
   const current = useRenamedNames()
   const number = new Intl.NumberFormat(locale)
+  const [step, setStep] = useState<'overview' | 'style'>('overview')
+  const titleId = useId()
+  const subtitleId = useId()
+  const styleTitleRef = useRef<HTMLHeadingElement | null>(null)
   const onEscape = useCallback(() => leave('escape', reopened), [reopened])
+  const styleFrame = useSplashFrame(false, onEscape)
+
+  if (step === 'style') {
+    return (
+      <section
+        aria-describedby={subtitleId}
+        aria-labelledby={titleId}
+        className="discovery-welcome-stage"
+        data-splash="rename"
+        data-step="style"
+        ref={styleFrame}
+        tabIndex={-1}
+      >
+        <div className="discovery-welcome">
+          <div className="discovery-welcome-eyebrow-row">
+            <p className="discovery-welcome-eyebrow">{themeCopy.theme.eyebrow}</p>
+            <Button
+              className="discovery-welcome-back"
+              onClick={() => setStep('overview')}
+              size="inline"
+              variant="text"
+            >
+              <Codicon className="discovery-welcome-back-glyph" name="arrow-left" />
+              {themeCopy.theme.back}
+            </Button>
+          </div>
+          <div className="discovery-welcome-heading">
+            <h1 className="discovery-welcome-title" id={titleId} ref={styleTitleRef} tabIndex={-1}>
+              {themeCopy.theme.title}
+            </h1>
+            <p className="discovery-welcome-subtitle" id={subtitleId}>
+              {themeCopy.theme.subtitle}
+            </p>
+          </div>
+          <MakeItYours />
+          <div className="discovery-welcome-actions">
+            <Button className="discovery-welcome-action" onClick={() => leave('button', reopened)}>
+              {copy.renameSplash.done}
+            </Button>
+          </div>
+        </div>
+      </section>
+    )
+  }
 
   // The rows are the alias table's renames, in its order: one list of what was renamed.
   const rows: SplashRow<RenameSplashRow>[] = OLD_NAME_ALIASES.map(({ code: classic, destination: row }) => {
@@ -112,9 +163,21 @@ export function RenameSplash({ reopened }: RenameSplashProps) {
   return (
     <SplashSurface
       actions={
-        <Button className="discovery-welcome-action" onClick={() => leave('button', reopened)}>
-          {copy.renameSplash.done}
-        </Button>
+        <>
+          <Button className="discovery-welcome-action" onClick={() => leave('button', reopened)}>
+            {copy.renameSplash.done}
+          </Button>
+          <Button
+            className="discovery-welcome-action"
+            onClick={() => {
+              setStep('style')
+              requestAnimationFrame(() => styleTitleRef.current?.focus({ preventScroll: true }))
+            }}
+            variant="secondary"
+          >
+            {themeCopy.style.action}
+          </Button>
+        </>
       }
       eyebrow={copy.renameSplash.eyebrow}
       footnote={copy.renameSplash.footnote}

@@ -491,13 +491,34 @@
 
 :root[data-shell='portal'] .discovery-theme-controls {
   display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+:root[data-shell='portal'] .discovery-theme-controls-row {
+  display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
-  min-block-size: 4rem;
 }
 
+:root[data-shell='portal'] .discovery-theme-density-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--portal-stroke-divider);
+}
+
+:root[data-shell='portal'] .discovery-theme-density-label {
+  color: var(--portal-text-secondary);
+  font-family: var(--portal-font-body);
+  font-size: var(--portal-type-body-size);
+  font-weight: 500;
+}
 :root[data-shell='portal'] :is(.discovery-theme-modes, .discovery-theme-colors, .discovery-artworks) {
   min-inline-size: 0;
   margin: 0;
@@ -651,6 +672,22 @@
   background-blend-mode: var(--discovery-artwork-blend, normal);
   cursor: pointer;
   scroll-snap-align: start;
+}
+
+:root[data-shell='portal'] .discovery-artwork[data-artwork='none'] {
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-start;
+  padding: 1rem;
+  border: 1px solid var(--portal-stroke-control);
+  background: var(--portal-surface-canvas);
+}
+
+:root[data-shell='portal'] .discovery-artwork-none-label {
+  color: var(--portal-text-secondary);
+  font-family: var(--portal-font-body);
+  font-size: var(--portal-type-meta-size);
+  font-weight: 500;
 }
 
 /* The chosen card: a 2px brand ring around the rim and the SELECTED tag (18695:18096). */

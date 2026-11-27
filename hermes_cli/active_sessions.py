@@ -832,6 +832,16 @@ def active_session_registry_snapshot(
     return entries
 
 
+def live_owned_session_ids(registry_home: str | Path | None = None) -> frozenset[str]:
+    """Stored session ids a live process holds right now, for pickers that should skip them
+    (bare ``-c``). An unreadable registry yields nothing: the lease claim still fails closed."""
+    try:
+        entries = active_session_registry_snapshot(registry_home)
+    except (OSError, ValueError, ActiveSessionRegistryError):
+        return frozenset()
+    return frozenset(str(e.get("session_id") or "") for e in entries) - {""}
+
+
 @contextmanager
 def active_session_liveness_guard(
     session_id: str, *, registry_home: str | Path | None = None,

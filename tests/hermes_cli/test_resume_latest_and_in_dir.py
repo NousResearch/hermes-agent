@@ -97,7 +97,7 @@ def test_top_level_in_value_not_mistaken_for_subcommand(monkeypatch):
 
 def test_resume_latest_resolves_to_mru_session(main_mod, launched, monkeypatch):
     monkeypatch.setattr(
-        main_mod, "_resolve_last_session", lambda source="cli": "20260807_120000_abc123"
+        main_mod, "_resolve_last_session", lambda source="cli", **_kw: "20260807_120000_abc123"
     )
     # Keyword must NOT fall through to title resolution.
     monkeypatch.setattr(
@@ -115,7 +115,7 @@ def test_resume_latest_resolves_to_mru_session(main_mod, launched, monkeypatch):
 def test_resume_latest_tui_falls_back_to_cli_source(main_mod, launched, monkeypatch):
     calls = []
 
-    def fake_resolve(source="cli"):
+    def fake_resolve(source="cli", **_kw):
         calls.append(source)
         return "cli_session_1" if source == "cli" else None
 
@@ -130,7 +130,7 @@ def test_resume_latest_tui_falls_back_to_cli_source(main_mod, launched, monkeypa
 
 
 def test_resume_latest_is_case_insensitive(main_mod, launched, monkeypatch):
-    monkeypatch.setattr(main_mod, "_resolve_last_session", lambda source="cli": "sess_1")
+    monkeypatch.setattr(main_mod, "_resolve_last_session", lambda source="cli", **_kw: "sess_1")
     monkeypatch.setattr(main_mod, "_resolve_session_by_name_or_id", lambda v: v)
 
     with pytest.raises(SystemExit):
@@ -139,7 +139,7 @@ def test_resume_latest_is_case_insensitive(main_mod, launched, monkeypatch):
 
 
 def test_resume_latest_no_sessions_exits_with_error(main_mod, monkeypatch, capsys):
-    monkeypatch.setattr(main_mod, "_resolve_last_session", lambda source="cli": None)
+    monkeypatch.setattr(main_mod, "_resolve_last_session", lambda source="cli", **_kw: None)
 
     with pytest.raises(SystemExit) as exc:
         main_mod.cmd_chat(_args(resume="latest"))
@@ -152,7 +152,7 @@ def test_resume_real_id_untouched_by_latest_keyword(main_mod, launched, monkeypa
     monkeypatch.setattr(
         main_mod,
         "_resolve_last_session",
-        lambda source="cli": pytest.fail("MRU lookup must not run for explicit IDs"),
+        lambda source="cli", **_kw: pytest.fail("MRU lookup must not run for explicit IDs"),
     )
     monkeypatch.setattr(main_mod, "_resolve_session_by_name_or_id", lambda v: v)
 
@@ -174,7 +174,7 @@ def test_in_dir_chdirs_before_session_resolution(main_mod, launched, monkeypatch
     start = os.getcwd()
     seen_cwd = {}
 
-    def fake_resolve(source="cli"):
+    def fake_resolve(source="cli", **_kw):
         seen_cwd["at_resolve"] = os.getcwd()
         return "sess_scoped"
 

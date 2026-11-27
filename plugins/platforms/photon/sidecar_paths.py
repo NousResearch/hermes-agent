@@ -26,6 +26,7 @@ SOURCE_SIDECAR_DIR = Path(__file__).parent / "sidecar"
 # the source tree's release-age gate (#134019); `npm ci` from the lockfile never reads it.
 _MIRROR_FILES = (
     "index.mjs",
+    "attachment-read.mjs",
     "package.json",
     "package-lock.json",
     "patch-spectrum-mixed-attachments.mjs",

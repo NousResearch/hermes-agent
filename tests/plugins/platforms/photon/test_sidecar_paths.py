@@ -84,6 +84,9 @@ def test_mirror_refresh_updates_changed_files_and_keeps_node_modules(
     resolved = sidecar_paths.resolve_sidecar_dir(source)
 
     assert resolved == mirror
+    assert (mirror / "attachment-read.mjs").read_text(
+        encoding="utf-8"
+    ) == "// attachment-read.mjs\n"
     assert (mirror / "index.mjs").read_text(encoding="utf-8") == "// index.mjs v2\n"
     assert (mirror / "node_modules" / "installed.txt").exists()
 

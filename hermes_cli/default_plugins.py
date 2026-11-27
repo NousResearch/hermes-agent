@@ -258,7 +258,7 @@ def install_defaults(home: Path, *, say: Callable[[str], None] = logger.info,
     installed, ``owed`` what is still to fetch (a failed install), ``raced`` the owed ones whose enable only
     lost to other writers of the plugin selection (only when there are any). One plugin's failure never raises."""
     from hermes_cli.left_core_migration import _first_cause, _install_into
-    from hermes_cli.memory_provider_migration import _home_label, _note_failure, _note_success
+    from hermes_cli.memory_provider_migration import _home_label, _note_failure, _note_success, kept_off_sentence
     result: dict = {"installed": [], "owed": []}
     policy = fetch_policy(home)
     if policy == "unreadable":
@@ -299,7 +299,9 @@ def install_defaults(home: Path, *, say: Callable[[str], None] = logger.info,
             _installing(home, entry).unlink(missing_ok=True)
             have.add(entry.name)
             result["installed"].append(entry.name)
-            say(f"  ✓ Installed default plugin '{entry.name}' for {_home_label(home)}")
+            say(f"  ⚠ Installed default plugin '{entry.name}' for {_home_label(home)}, but "
+                f"{kept_off_sentence(entry.name, home)}" if outcome.get("kept_disabled") else
+                f"  ✓ Installed default plugin '{entry.name}' for {_home_label(home)}")
             continue
         result["owed"].append(entry.name)
         if outcome.get("raced"):

@@ -1859,3 +1859,72 @@ def test_the_dry_run_names_a_symlinked_backup_folder_as_a_blocker(home, tmp_path
 
     blockers = " ".join(out["plan"]["blockers"])
     assert code == engine.EXIT_BLOCKED and "backend_migration" in blockers and "symbolic link" in blockers, out
+
+
+# --------------------------------------------------------------------------- the restart must land before verify judges
+
+
+_NEW_GATEWAY_PID = _GATEWAY_PID + 1000
+
+
+class _RestartHost(FakeHost):
+    """A supervised restart that only *requests* the restart: the old process keeps the port and answers
+    ``503 gateway_draining`` until it exits, then a replacement PID takes over. ``answer_while_old`` models
+    a hand-off that never lands at all (an already-serving process whose PID does not change)."""
+
+    def __init__(self, home, *, handover_after=2, state="running", answer_while_old=False):
+        super().__init__(home, gateway_installed=True, gateway_active=True)
+        self.handover_after, self.state, self.answer_while_old = handover_after, state, answer_while_old
+        self.pid_reads = 0
+        self.order: list[str] = []
+
+    def gateway_pid(self):
+        self.order.append("pid")
+        self.pid_reads += 1
+        return _GATEWAY_PID if self.pid_reads <= self.handover_after else _NEW_GATEWAY_PID
+
+    def gateway_status(self, host, port):
+        self.order.append("status")
+        if self.pid_reads <= self.handover_after and not self.answer_while_old:
+            return None  # draining: /api/status is a 503 gateway_draining
+        return {"gateway_state": self.state, "auth_required": True, "auth_providers": ["basic"]}
+
+    def pid_listens_on(self, pid, port):
+        return pid in (_GATEWAY_PID, _NEW_GATEWAY_PID) and self._webapp_on_9119()
+
+
+def test_verify_waits_for_the_replacement_process_instead_of_the_draining_old_one(home, monkeypatch):
+    monkeypatch.setattr(engine, "RESTART_HANDOFF_SECONDS", 5.0)
+    host = _RestartHost(home, handover_after=3)
+
+    assert engine.cmd_apply(host, _args()) == engine.EXIT_OK
+
+    # Every probe before the hand-off was a PID read: verification never spent its budget on the process
+    # that was still draining (its /api/status is a 503 until it exits).
+    assert host.order[:3] == ["pid", "pid", "pid"] and "status" not in host.order[:3]
+    assert engine.status_payload(host)["state"] == "done"
+
+
+def test_a_hand_off_that_never_lands_still_verifies_and_says_so(home, capsys):
+    host = _RestartHost(home, handover_after=10 ** 9, answer_while_old=True)  # the fixture's 0 s handoff budget
+
+    assert engine.cmd_apply(host, _args()) == engine.EXIT_OK
+
+    assert f"gateway PID {_GATEWAY_PID} did not hand over" in capsys.readouterr().out
+
+
+def test_a_degraded_gateway_passes_verification_because_the_webapp_still_serves(home, monkeypatch):
+    """A parked adapter pins gateway_state to degraded; the move only needs the Webapp to answer."""
+    monkeypatch.setattr(engine, "RESTART_HANDOFF_SECONDS", 5.0)
+    host = _RestartHost(home, handover_after=0, state="degraded")
+
+    assert engine.cmd_apply(host, _args()) == engine.EXIT_OK
+    assert engine.status_payload(host)["state"] == "done"
+
+
+def test_a_gateway_that_reports_a_down_state_still_fails_and_rolls_back(home, monkeypatch):
+    monkeypatch.setattr(engine, "RESTART_HANDOFF_SECONDS", 5.0)
+    host = _RestartHost(home, handover_after=0, state="stopped")
+
+    assert engine.cmd_apply(host, _args()) == engine.EXIT_ROLLED_BACK
+    assert host.old["active"] is True

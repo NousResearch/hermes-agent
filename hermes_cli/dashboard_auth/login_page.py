@@ -277,13 +277,13 @@ _LOGIN_HTML_TEMPLATE = """\
 </html>
 """
 
-_EMPTY_HTML = """\
+_NOTICE_HTML_TEMPLATE = """\
 <!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sign-in unavailable — Hermes Agent</title>
+<title>{title}</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Mona+Sans:wght@200..900&amp;family=Oswald:wght@200..700&amp;display=swap">
@@ -337,89 +337,71 @@ _EMPTY_HTML = """\
 </head>
 <body>
 <main>
-<h1>Sign-in unavailable</h1>
-<p>This dashboard is bound to a non-loopback host but no authentication
-providers are available.</p>
-<p>Configure the bundled username/password provider or an OAuth provider.
-See the <a href="https://hermes-agent.nousresearch.com/docs/user-guide/features/web-dashboard#authentication-gated-mode">dashboard
-authentication documentation</a> for setup instructions.</p>
-<p>For auth-free local use, bind to <code>127.0.0.1</code> and connect through
-an SSH tunnel or Tailscale.</p>
+<h1>{heading}</h1>
+{body}
 </main>
 </body>
 </html>
 """
 
+
+def _render_notice_html(*, title: str, heading: str, body: str) -> str:
+    """Render a notice-only page in the login design system (literal CSS braces, no ``str.format``)."""
+    return (
+        _NOTICE_HTML_TEMPLATE
+        .replace("{title}", title)
+        .replace("{heading}", heading)
+        .replace("{body}", body)
+    )
+
+
+_EMPTY_HTML = _render_notice_html(
+    title="Sign-in unavailable — Hermes Agent",
+    heading="Sign-in unavailable",
+    body=(
+        "<p>This dashboard is bound to a non-loopback host but no authentication\n"
+        "providers are available.</p>\n"
+        "<p>Configure the bundled username/password provider or an OAuth provider.\n"
+        'See the <a href="https://hermes-agent.nousresearch.com/docs/user-guide/features/web-dashboard#authentication-gated-mode">dashboard\n'
+        "authentication documentation</a> for setup instructions.</p>\n"
+        "<p>For auth-free local use, bind to <code>127.0.0.1</code> and connect through\n"
+        "an SSH tunnel or Tailscale.</p>"
+    ),
+)
+
 # Token-gated deployment (every registered provider is provisioned-credential-only):
 # there is nothing to click, so the page explains the credential channel instead of
 # rendering an empty options list. {provider_names} / {note} are pre-escaped HTML.
-_TOKEN_MODE_HTML = """\
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Token-gated dashboard — Hermes Agent</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Mona+Sans:wght@200..900&amp;family=Oswald:wght@200..700&amp;display=swap">
-<style>
-  :root {
-    --background-base: #170d02;
-    --midground: #ffac02;
-    --foreground: #ffffff;
-    --hairline: color-mix(in srgb, #ffac02 18%, transparent);
-  }
-  *, *::before, *::after { box-sizing: border-box; }
-  html, body {
-    margin: 0; padding: 0; min-height: 100%;
-    background: var(--background-base);
-    color: var(--foreground);
-    font-family: 'Mona Sans', system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-    font-size: 16px; line-height: 1.5;
-    -webkit-font-smoothing: antialiased;
-  }
-  body {
-    display: grid; place-items: center;
-    padding: clamp(1.5rem, 6vh, 6rem) 1.25rem;
-  }
-  main {
-    width: 100%; max-width: 32rem;
-    padding: 2.25rem 2rem;
-    background: color-mix(in srgb, #ffffff 2%, var(--background-base));
-    border: 1px solid var(--hairline);
-    box-shadow:
-      inset 1px 1px 0 0 color-mix(in srgb, #ffffff 5%, transparent),
-      inset -1px -1px 0 0 rgba(0, 0, 0, 0.4),
-      0 24px 60px -20px rgba(0, 0, 0, 0.6);
-  }
-  h1 {
-    margin: 0 0 1rem;
-    font-family: 'Oswald', system-ui, sans-serif;
-    font-weight: 600; font-size: 1.5rem;
-    letter-spacing: 0.05em; text-transform: uppercase;
-    color: var(--midground);
-  }
-  p { margin: 0 0 1rem; }
-  code {
-    background: var(--midground);
-    color: var(--background-base);
-    padding: 0.1em 0.35em;
-    font-family: 'Courier New', monospace;
-    font-size: 0.9em;
-  }
-</style>
-</head>
-<body>
-<main>
-<h1>Token-gated dashboard</h1>
-<p>This deployment authenticates with a provisioned credential
-({provider_names}), not a browser sign-in.</p>
-<p>{note}</p>
-</main>
-</body>
-</html>
-"""
+_TOKEN_MODE_HTML = _render_notice_html(
+    title="Token-gated dashboard — Hermes Agent",
+    heading="Token-gated dashboard",
+    body=(
+        "<p>This deployment authenticates with a provisioned credential\n"
+        "({provider_names}), not a browser sign-in.</p>\n"
+        "<p>{note}</p>"
+    ),
+)
+
+# Loopback gateway-hosted Webapp (``private_launch(app.state)``): browser login cookies on
+# 127.0.0.1 are shared across ports (RFC 6265 §8.5), so the loopback Webapp opens strictly
+# via a ``hermes webapp`` private launch link rather than browser sign-in cookies.
+_PRIVATE_LAUNCH_HTML = _render_notice_html(
+    title="Launch-link sign-in — Hermes Agent",
+    heading="Open with hermes webapp",
+    body=(
+        "<p>This local loopback Webapp opens through a private launch link,\n"
+        "not browser sign-in cookies.</p>\n"
+        "<p>Run <code>hermes webapp</code> on this computer to open and sign\n"
+        "this browser in.</p>\n"
+        "<p>To use browser sign-in over the network, bind the Webapp to a\n"
+        "non-loopback address or set <code>webapp.public_url</code>.</p>"
+    ),
+)
+
+
+def render_private_launch_html() -> str:
+    """Return the notice-only HTML for ``GET /login`` on a loopback Webapp."""
+    return _PRIVATE_LAUNCH_HTML
 
 
 # Emitted ONLY when a ``supports_password`` provider is listed, so OAuth-only

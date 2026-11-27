@@ -1,6 +1,6 @@
 name: quick-prompts
 repo: https://github.com/tozes/hermes-quick-prompts
-sha: d2aa72f3a4dc340dc68ee6d6f73755a84588b52c
+sha: c0e4b62a42cfbc920725d9f417962ad088bda100
 title: Quick prompts
 description: 'One-click prompt buttons above the Hermes Desktop chat input: a click fills the input with
   the prompt and never sends. Prompts are edited under Settings → Plugins and stored in the app''s local
@@ -12,10 +12,11 @@ category: desktop
 requires_hermes: ">=0.21.6"
 version: "0.1.0"
 docs_url: https://github.com/tozes/hermes-quick-prompts#readme
+image: https://raw.githubusercontent.com/tozes/hermes-quick-prompts/c0e4b62a42cfbc920725d9f417962ad088bda100/docs/banner.png
 platforms: []
 screenshots:
-  - https://raw.githubusercontent.com/tozes/hermes-quick-prompts/d2aa72f3a4dc340dc68ee6d6f73755a84588b52c/docs/composer.png
-  - https://raw.githubusercontent.com/tozes/hermes-quick-prompts/d2aa72f3a4dc340dc68ee6d6f73755a84588b52c/docs/settings.png
+  - https://raw.githubusercontent.com/tozes/hermes-quick-prompts/c0e4b62a42cfbc920725d9f417962ad088bda100/docs/composer.png
+  - https://raw.githubusercontent.com/tozes/hermes-quick-prompts/c0e4b62a42cfbc920725d9f417962ad088bda100/docs/settings.png
 capabilities:
   provides_tools: []
   provides_hooks: []

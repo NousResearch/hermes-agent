@@ -43,10 +43,11 @@ from hermes_cli.dashboard_auth.cookies import (
     parse_pkce_payload, read_pkce_cookie, read_session_cookies, set_pkce_cookie,
     set_session_cookies)
 from hermes_cli.dashboard_auth.login_page import (
-    render_login_html, render_native_provider_choice_html)
+    render_login_html, render_native_provider_choice_html, render_private_launch_html)
 from hermes_cli.dashboard_auth.refresh_singleflight import forget as forget_refresh, refresh_session_coalesced
 from hermes_cli.dashboard_auth.request_utils import (
     access_token_max_age, client_ip as _client_ip, is_safe_next_path, is_same_origin_path)
+from hermes_cli.web_server_surface import private_launch
 
 _log = logging.getLogger(__name__)
 
@@ -54,6 +55,37 @@ router = APIRouter()
 
 _NO_STORE = {"Cache-Control": "no-store, no-cache, must-revalidate"}
 _NATIVE_EXPIRED_DETAIL = "Native login expired or unknown; restart sign-in."
+_PRIVATE_LAUNCH_LOGIN_DETAIL = (
+    "This local loopback Webapp opens through a private launch link, not browser login cookies. "
+    "Run `hermes webapp` on this computer to sign in."
+)
+
+
+def _has_active_native_broker(request: Request) -> bool:
+    """True when *request* carries a live RFC 8252 native-app broker handle in its PKCE cookie."""
+    pkce_raw = read_pkce_cookie(request, webapp_sign_in.cookie_gateway(request))
+    broker_state = parse_pkce_payload(pkce_raw).get("broker", "") if pkce_raw else ""
+    if not broker_state:
+        return False
+    try:
+        native_flow.get_pending(broker_state)
+    except native_flow.NativeFlowError:
+        return False
+    return True
+
+
+def _refuse_private_launch_browser_login(request: Request, *, allow_native: bool = False) -> None:
+    """Refuse browser cookie sign-in on a loopback Webapp: launch links are the only way in.
+
+    Cookies on ``127.0.0.1`` are shared across ports (RFC 6265 §8.5), so a loopback Webapp never
+    mints or accepts browser login cookies. RFC 8252 native-app flows never set session cookies
+    and stay allowed when *allow_native* is set and a live broker handle is present.
+    """
+    if not private_launch(request.app.state):
+        return
+    if allow_native and _has_active_native_broker(request):
+        return
+    raise _http(403, _PRIVATE_LAUNCH_LOGIN_DETAIL)
 
 
 def _http(status_code: int, detail: str) -> HTTPException:
@@ -110,6 +142,8 @@ def _clear_pkce(resp, request: Request) -> None:
 
 
 def _set_session(resp, request: Request, session: Session) -> None:
+    if private_launch(request.app.state):
+        raise _http(403, _PRIVATE_LAUNCH_LOGIN_DETAIL)
     set_session_cookies(
         resp, access_token=session.access_token, refresh_token=session.refresh_token,
         access_token_expires_in=access_token_max_age(session), use_https=detect_https(request),
@@ -205,6 +239,8 @@ def _start_upstream_login(request: Request, p, *, audit_failure: bool, extra_pkc
 
 @router.get("/login", name="login_page")
 async def login_page(request: Request) -> HTMLResponse:
+    if private_launch(request.app.state) and not _has_active_native_broker(request):
+        return HTMLResponse(render_private_launch_html(), headers=_NO_STORE)
     # ``next=`` is set by the gate's redirect but /login is reachable directly.
     next_path = _validate_post_login_target(request.query_params.get("next", ""))
     return HTMLResponse(
@@ -212,12 +248,14 @@ async def login_page(request: Request) -> HTMLResponse:
 
 
 @router.get("/api/auth/providers", name="auth_providers")
-async def api_auth_providers() -> Any:
+async def api_auth_providers(request: Request = None) -> Any:  # type: ignore[assignment]  # None when awaited in-process
     # Only interactive providers are sign-in options; fail closed on zero
     # session providers. A deployment authenticated solely by a provisioned
-    # credential (interactive_login False — the session-token provider) answers
-    # an empty list: there is no browser sign-in to offer, which is correct,
-    # not an outage.
+    # credential (interactive_login False — the session-token provider) or a
+    # loopback Webapp (private_launch — launch-link-only) answers an empty list:
+    # there is no browser sign-in to offer, which is correct, not an outage.
+    if request is not None and private_launch(request.app.state):
+        return {"providers": []}
     if not list_session_providers():
         return JSONResponse({"detail": "no auth providers registered"}, status_code=503)
     return {"providers": [
@@ -230,6 +268,7 @@ async def api_auth_providers() -> Any:
 
 @router.get("/auth/login", name="auth_login")
 async def auth_login(request: Request, provider: str, next: str = ""):
+    _refuse_private_launch_browser_login(request)
     p = get_provider(provider)
     if p is None:
         raise _http(404, f"Unknown provider: {provider!r}")
@@ -359,6 +398,7 @@ async def auth_native_authorize(
 async def auth_callback(
     request: Request, code: str = "", state: str = "", error: str = "",
     error_description: str = ""):
+    _refuse_private_launch_browser_login(request, allow_native=True)
     pkce_raw = read_pkce_cookie(request, webapp_sign_in.cookie_gateway(request))
     if not pkce_raw:
         _audit(request, AuditEvent.LOGIN_FAILURE, reason="missing_pkce_cookie")
@@ -473,6 +513,7 @@ async def auth_password_login(request: Request, body: _PasswordLoginBody):
     generic (no username/provider oracle): unknown/non-password provider 404, bad credentials
     401, store unreachable 503, rate limited 429.
     """
+    _refuse_private_launch_browser_login(request, allow_native=True)
     if _password_rate_limited(_client_ip(request)):
         _login_failure(request, body.provider, "rate_limited")
         raise _http(429, "Too many login attempts. Try again shortly.")

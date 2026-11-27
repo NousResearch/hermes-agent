@@ -210,7 +210,9 @@ async def test_start_gateway_does_not_start_cron_after_aborted_startup(tmp_path,
         async def wait_for_shutdown(self):
             return None
 
-        async def stop(self):
+        async def stop(
+            self, *, restart: bool = False, detached_restart: bool = False, service_restart: bool = False
+        ):
             self.session_store.close_all_db_handles()
 
     def fail_if_cron_starts(*args, **kwargs):
@@ -261,7 +263,9 @@ async def test_start_gateway_preserves_service_restart_fallback_after_aborted_st
         async def wait_for_shutdown(self):
             return None
 
-        async def stop(self):
+        async def stop(
+            self, *, restart: bool = False, detached_restart: bool = False, service_restart: bool = False
+        ):
             self.session_store.close_all_db_handles()
 
     def fail_if_cron_starts(*args, **kwargs):
@@ -321,7 +325,9 @@ async def test_start_gateway_classifies_startup_signal_exit(
         async def wait_for_shutdown(self):
             return None
 
-        async def stop(self):
+        async def stop(
+            self, *, restart: bool = False, detached_restart: bool = False, service_restart: bool = False
+        ):
             self.session_store.close_all_db_handles()
 
     def capture_signal_state(runner, state):

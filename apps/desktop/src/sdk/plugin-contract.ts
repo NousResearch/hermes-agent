@@ -25,3 +25,5 @@ export type {
   PluginSettingsSubpage,
   PluginStorage
 } from '@/contrib/plugin'
+
+export type { PluginWorkspaceOptions } from '@/contrib/types'

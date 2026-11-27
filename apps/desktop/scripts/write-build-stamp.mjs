@@ -252,6 +252,7 @@ export function buildStampPayload(stamp, env = process.env, platform = process.p
     base.displayVersion = channelBuild.version
   }
   if (variant === 'bundled') base.receiverProtocol = 1
+  if (variant === 'bundled' && platform === 'darwin') base.signedDmg = true
 
   const updateMechanism = {
     '': 'self',

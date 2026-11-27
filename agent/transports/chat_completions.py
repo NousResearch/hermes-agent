@@ -12,7 +12,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from agent.reasoning_effort import (
-    GEMINI4_THINKING_LEVELS, KIMI_K3_EFFORTS, KIMI_K3_OVERRIDES, chat_endpoint_efforts, clamp_effort,
+    KIMI_K3_EFFORTS, KIMI_K3_OVERRIDES, chat_endpoint_efforts, clamp_effort,
     clamp_reasoning_config, kimi_supported_efforts, requested_effort, tokenhub_effort,
 )
 from agent.message_metadata import DATA_USE, MESSAGE_UID, data_use_requirement
@@ -45,7 +45,6 @@ _STRIP_MSG_KEYS = (
     MESSAGE_UID, DATA_USE,
 )
 RESPONSES_TOOL_CALL_FIELDS = frozenset({"call_id", "response_item_id", "_codex_output_index"})
-_HIGH_EFFORTS = {"high", "xhigh", "max", "ultra"}
 
 
 def _rename_tool_search_bridge_for_xai(tools: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, str]]:
@@ -169,75 +168,15 @@ def _reasoning_config_for_model(model: str, reasoning_config: dict | None, base_
     return clamp_reasoning_config(reasoning_config, chat_endpoint_efforts(model, base_url))
 
 
-def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> dict | None:
-    """Translate Hermes/OpenRouter-style reasoning config to Gemini thinkingConfig."""
-    from agent.gemini_native_adapter import gemini_uses_thinking_level
-
-    if not isinstance(reasoning_config, dict):
-        return None
-    normalized_model = (model or "").strip().lower().removeprefix("google/")
-    # Gemini-only; Gemma/PaLM on the same provider 400 on the field even as ``{"includeThoughts": False}``.
-    # ``thinking_config`` is a Gemini-only request parameter. The same ``gemini`` provider also serves Gemma
-    # (and historically PaLM/Bard); those reject the field with HTTP 400 "Unknown name 'thinking_config':
-    # Cannot find field" — including the polite ``{"includeThoughts": False}`` form. Omit the field entirely
-    # on non-Gemini models. (#17426)
-    if not normalized_model.startswith("gemini"):
-        return None
-    effort = str(reasoning_config.get("effort", "medium") or "medium").strip().lower()
-    if normalized_model.startswith("gemini-4"):
-        # Gemini 4 always thinks: a disable request gets the floor level with thoughts hidden.
-        disabled = reasoning_config.get("enabled") is False or effort == "none"
-        level = "low" if disabled else clamp_effort(effort, GEMINI4_THINKING_LEVELS)
-        return {"includeThoughts": not disabled, "thinkingLevel": level if level in GEMINI4_THINKING_LEVELS else "medium"}
-    if reasoning_config.get("enabled") is False or effort == "none":
-        # ``includeThoughts: False`` only omits thought parts from the returned
-        # response; the model may still reason internally and bill thought
-        # tokens against maxOutputTokens, starving small budgets (title
-        # generation's 64 tokens). Bound thinking as low as each family allows:
-        # Gemini 2.5 documents ``thinkingBudget: 0`` as the off switch, while
-        # Gemini 3+ deprecated that field in favour of the ``thinkingLevel``
-        # string enum (which has no "none"), so use its lowest universally
-        # supported level — "low" (3.6's "minimal" is not accepted by 3.7+ /
-        # 3.1 Pro). ``_thinking_requests_output_headroom`` keeps the small
-        # budget intact for this hidden-thoughts path. (#91927)
-        config: dict[str, Any] = {"includeThoughts": False}
-        if normalized_model.startswith("gemini-2.5-"):
-            config["thinkingBudget"] = 0
-        elif gemini_uses_thinking_level(normalized_model):
-            config["thinkingLevel"] = "low"
-        return config
-    thinking_config: dict[str, Any] = {"includeThoughts": True}
-    # Gemini 2.5 takes thinkingBudget; don't guess one from coarse effort levels.
-    if normalized_model.startswith("gemini-2.5-"):
-        return thinking_config
-    if effort not in {"minimal", "low", "medium", "high", "xhigh", "max", "ultra"}:
-        effort = "medium"
-    # Gemini 3 Pro is strict (low/high); every other thinking-level model (3.x Flash, Gemini 4 Argon)
-    # documents low/medium/high, and "minimal" is not universal (Argon 400s on it). Clamp Hermes' wider
-    # effort set to what each family accepts so we never forward an undocumented level verbatim.
-    if gemini_uses_thinking_level(normalized_model):
-        if "pro" in normalized_model:
-            thinking_config["thinkingLevel"] = "high" if effort in _HIGH_EFFORTS else "low"
-        else:
-            thinking_config["thinkingLevel"] = (
-                "low" if effort in {"minimal", "low"} else "high" if effort in _HIGH_EFFORTS else "medium"
-            )
-    return thinking_config
-
-
-def _snake_case_gemini_thinking_config(config: dict | None) -> dict | None:
-    """Convert Gemini thinking config keys to the OpenAI-compat field names."""
-    if not isinstance(config, dict) or not config:
-        return None
-    translated: dict[str, Any] = {}
-    include, level, budget = config.get("includeThoughts"), config.get("thinkingLevel"), config.get("thinkingBudget")
-    if isinstance(include, bool):
-        translated["include_thoughts"] = include
-    if isinstance(level, str) and level.strip():
-        translated["thinking_level"] = level.strip().lower()
-    if isinstance(budget, (int, float)):
-        translated["thinking_budget"] = int(budget)
-    return translated or None
+from agent.gemini_model_family import (
+    build_gemini_thinking_config as _build_gemini_thinking_config,
+    effective_gemini_max_output_tokens,
+    snake_case_gemini_thinking_config as _snake_case_gemini_thinking_config,
+)
+from agent.gemini_urls import (
+    is_gemini_openai_compat_base_url as _is_gemini_openai_compat_base_url,
+    is_native_gemini_base_url,
+)
 
 
 def _raise_gemini_thinking_max_tokens(model: str, reasoning_config: dict | None, requested: Any) -> Any:
@@ -245,14 +184,7 @@ def _raise_gemini_thinking_max_tokens(model: str, reasoning_config: dict | None,
     thinking_config = _build_gemini_thinking_config(model, reasoning_config)
     if not thinking_config:
         return requested
-    from agent.gemini_native_adapter import _effective_gemini_max_output_tokens
-
-    return _effective_gemini_max_output_tokens(requested, thinking_config)
-
-
-def _is_gemini_openai_compat_base_url(base_url: Any) -> bool:
-    normalized = str(base_url or "").strip().rstrip("/").lower()
-    return bool(normalized) and "generativelanguage.googleapis.com" in normalized and normalized.endswith("/openai")
+    return effective_gemini_max_output_tokens(requested, thinking_config)
 
 
 def _is_openai_api_base_url(base_url: Any) -> bool:
@@ -690,12 +622,7 @@ class ChatCompletionsTransport(ProviderTransport):
             # Native Gemini speaks Google's REST schema: OpenAI-style extra_body
             # keys (tags, reasoning, provider, ...) are unknown fields -> HTTP 400.
             # The native client reads only thinking_config and the long-decode budget.
-            try:
-                from agent.gemini_native_adapter import is_native_gemini_base_url
-                _native_gemini = is_native_gemini_base_url(params.get("base_url"))
-            except Exception:
-                _native_gemini = False
-            if _native_gemini:
+            if is_native_gemini_base_url(params.get("base_url")):
                 extra_body = {k: v for k, v in extra_body.items() if k in ("thinking_config", "thinkingConfig", "max_output_tokens")}
             if extra_body:
                 api_kwargs["extra_body"] = extra_body

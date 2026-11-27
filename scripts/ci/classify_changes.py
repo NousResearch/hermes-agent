@@ -409,6 +409,7 @@ _UPDATE_DEPENDENCIES = (
     "hermes_platform/resolver/__init__.py",  # update_cmd_commit's interpreter lookup
     "hermes_platform/resolver/base.py",
     "hermes_platform/resolver/core.py",
+    "hermes_platform/resolver/git.py",  # macOS CLT git guard used by _subprocess_compat and source_check
     "agent/curator.py",
     "plugins/memory/__init__.py",
     "agent/checkpoints/maintenance.py",

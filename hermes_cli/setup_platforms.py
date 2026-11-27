@@ -293,7 +293,7 @@ def setup_gateway(config: dict):
     print_header("Messaging Platforms")
     _info("Connect to messaging platforms to chat with Hermes from anywhere.",
           "Toggle with Space, confirm with Enter.", None)
-    platforms = _all_platforms()
+    platforms = _all_platforms(catalog=True)
 
     # Build checklist, pre-selecting already-configured platforms.
     statuses = [_platform_status(plat) for plat in platforms]

@@ -82,9 +82,14 @@ def _git_binary() -> str | None:
             return str(installed.binary)
     except Exception as exc:
         logger.debug("pm git lookup failed: %s", exc)
-    import shutil
+    try:
+        from hermes_platform.resolver.git import resolve_usable_git
+    except ModuleNotFoundError as exc:
+        if exc.name and exc.name.split(".", 1)[0] == "hermes_platform":
+            return None
+        raise
 
-    return shutil.which("git")
+    return resolve_usable_git()
 
 
 def current_install_identity(project_root: Path) -> str | None:

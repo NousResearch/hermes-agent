@@ -8,9 +8,11 @@ from __future__ import annotations
 import json
 import os
 import stat
+from subprocess import CompletedProcess
 
 import pytest
 
+from hermes_cli import gateway as gw
 from hermes_cli import gateway_migrate_backends_apply as engine
 from hermes_cli import gateway_migrate_backends_host as host_mod
 from hermes_cli.gateway_migrate_backends_host import SystemHost
@@ -133,6 +135,35 @@ def test_a_failed_move_puts_the_legacy_unit_back(home, tmp_path):
 
     assert "restore_legacy_unit:hermes.service" in host.calls
     assert [u["unit"] for u in host.legacy_records] == ["hermes.service"]
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.parametrize("failed_action", ["stop", "disable"])
+def test_move_rolls_back_when_systemd_cannot_stop_the_legacy_gateway(home, tmp_path, monkeypatch, failed_action):
+    host, path = _legacy_host(home, tmp_path)
+    before = path.read_bytes()
+    real_host = SystemHost(home)
+    monkeypatch.setattr(real_host, "gateway_kind", lambda: "systemd")
+    monkeypatch.setattr(real_host, "unit_props", lambda unit, scope: {})
+    monkeypatch.setattr(gw, "_legacy_unit_search_paths", lambda: [(False, path.parent)])
+    host.remove_legacy_units = real_host.remove_legacy_units
+    calls = []
+
+    def systemctl(args, **kwargs):
+        calls.append(args)
+        return CompletedProcess(args, 1 if args[0] == failed_action else 0)
+
+    monkeypatch.setattr(gw, "_run_systemctl", systemctl)
+    monkeypatch.setattr(host_mod, "_systemctl", lambda scope, args, **kwargs: systemctl(args, **kwargs))
+
+    result = engine.cmd_apply(host, _args())
+
+    assert (result, path.exists(), "gateway_start" in host.calls) == (
+        engine.EXIT_ROLLED_BACK, True, False,
+    )
+    assert path.read_bytes() == before
+    assert [failed_action, "hermes.service"] in calls
+    assert "restore_legacy_unit:hermes.service" in host.calls
 
 
 def test_the_legacy_units_own_gateway_is_replaced_not_reported_as_outside_its_service(home, tmp_path, capsys):

@@ -326,6 +326,7 @@ async def _start_gateway_start_control_socket(runner):
             unserve_profile_verb, serve_profile_verb,
         )
         from gateway.run_plugin_rewire import reload_plugins_verb
+        from gateway.run_platform_reconcile import reconcile_platforms_verb
         from gateway.run_active_work_verb import active_work_verb
         from gateway.relay.link import relay_link_verb
         from gateway.drain_control import RESTART_WAIT_REASON
@@ -409,6 +410,9 @@ async def _start_gateway_start_control_socket(runner):
                            # A plugin installed/enabled by another process loads now and re-wires the
                            # live adapters' handlers (#87770); tools/prompt still wait for the next session.
                            "reload-plugins": reload_plugins_verb(runner, _main_loop),
+                           # A platform saved by another process (dashboard, Desktop, `config set`)
+                           # starts/restarts/stops now; the answer is each platform's live state.
+                           "reconcile-platforms": reconcile_platforms_verb(runner, _main_loop),
                            # The per-gateway relay secret exists only in this process: the dashboard
                            # mints Team Gateway link codes through it.
                            "relay-link": relay_link_verb})
@@ -740,6 +744,52 @@ def _start_gateway_install_signal_handlers(loop, shutdown_signal_handler, restar
         logger.info("Skipping signal handlers (not running in main thread).")
 
 
+async def _start_gateway_listener_and_runner(
+    runner, _signal_initiated_shutdown: list, *, idle_exit: bool
+) -> tuple[Optional[bool], Any, Optional[dict]]:
+    """Start the runtime API listener, record lifecycle startup, and run ``runner.start()``.
+
+    Returns ``(early_verdict, ws_preload, unclean_exit)``. If an operator stop or restart begins
+    during the Webapp address wait, aborts before recording startup, starting keepalive, or
+    discovering MCP tools.
+    """
+    from gateway.run import (
+        _best_effort, _ensure_windows_gateway_venv_imports,
+        _resolve_gateway_exit_verdict, _shutdown_gateway_health_export,
+    )
+    from gateway.run_common import abort_startup_if_shutdown_requested, startup_should_abort
+    from gateway.run_runtime_listener import WEBAPP_ADDRESS_WAIT_SECONDS, start_gateway_runtime_api
+    # A client's own idle-exit gateway (TUI, chat -q) has that client waiting on a hard start budget
+    # (Ink's is 30 s), and the boot race the address wait covers is a supervised unit's.
+    await start_gateway_runtime_api(runner, address_wait=0.0 if idle_exit else WEBAPP_ADDRESS_WAIT_SECONDS)
+    if startup_should_abort(runner):
+        try:
+            await abort_startup_if_shutdown_requested(runner, check=False)
+            await runner.wait_for_shutdown()
+            return _resolve_gateway_exit_verdict(runner, _signal_initiated_shutdown[0]), None, None
+        finally:
+            _shutdown_gateway_health_export(runner)
+    from gateway.run_api import preload_session_socket
+    ws_preload = preload_session_socket() if idle_exit else None  # overlaps the adapter/cron start
+
+    def _lifecycle_record_startup() -> Optional[dict]:
+        # Report if the previous life died uncleanly (SIGKILL / OOM / VM death), then claim the
+        # sentinel for this life. After the PID-file claim so a --replace loser can't clobber it.
+        # The store scan that report used to run here is deferred: see below.
+        from gateway.lifecycle_ledger import record_startup
+        return record_startup()
+
+    def _start_keepalive() -> None:
+        from hermes_cli.nous_auth_keepalive import start_nous_auth_keepalive
+        start_nous_auth_keepalive()
+
+    _unclean_exit = _best_effort(_lifecycle_record_startup, "Lifecycle ledger startup record failed: %s")
+    _best_effort(_start_keepalive, "Nous auth keepalive did not start: %s")
+    _ensure_windows_gateway_venv_imports()
+    preload_stop_path_modules()
+    return await _start_gateway_run_runner(runner, _signal_initiated_shutdown), ws_preload, _unclean_exit
+
+
 async def _start_gateway_run_runner(runner, _signal_initiated_shutdown: list) -> Optional[bool]:
     """MCP discovery, then ``runner.start()``. Returns the exit verdict when the process must end
     before running mode (start failed, clean exit, aborted startup); None to continue into cron."""
@@ -817,9 +867,7 @@ async def _start_gateway_runtime(config: Optional[GatewayConfig] = None, replace
     unmanaged idle exit (``gateway.run_idle_exit``) for a client-started daemon."""
     from gateway.run import (
         GatewayRunner,
-        _best_effort,
         _enable_multiplex_log_routing,
-        _ensure_windows_gateway_venv_imports,
         _gateway_loop_exception_handler,
         _host_attach_or_none,
         _log_standalone_profiles_at_boot,
@@ -894,8 +942,12 @@ async def _start_gateway_runtime(config: Optional[GatewayConfig] = None, replace
     try:
         _start_gateway_configure_logging(verbosity)
 
-        from gateway.run_startup import recover_left_core_at_gateway_start
-        if await asyncio.to_thread(recover_left_core_at_gateway_start) and config is None:
+        # A platform plugin owed to the credentials this profile has installs beside the start, never
+        # long ahead of it: one landing within the head start is in the runner's config; a slower one
+        # (a clone, another installer's lock) leaves the ready platforms serving and starts when it lands.
+        from gateway.run_platform_reconcile import recover_plugins_for_start, start_recovered_platforms
+        _recovered, _plugin_recovery = await recover_plugins_for_start()
+        if _recovered and config is None:
             resolved_config = _reload_config_keeping_multiplex_verdict(resolved_config)
 
         from gateway.run_runtime import initialize_gateway_runtime, pin_launch_store, unpin_launch_store
@@ -959,28 +1011,10 @@ async def _start_gateway_runtime(config: Optional[GatewayConfig] = None, replace
         # Now the attach channel answers: republish the host record with the settled served set.
         _refresh_host_gateway_record(runner)
         _log_standalone_profiles_at_boot(runner)
-        from gateway.run_runtime import start_gateway_runtime_api
-        await start_gateway_runtime_api(runner)
-        from gateway.run_api import await_session_socket_preload, preload_session_socket
-        ws_preload = preload_session_socket() if idle_exit else None  # overlaps the adapter/cron start
-
-        def _lifecycle_record_startup() -> Optional[dict]:
-            # Report if the previous life died uncleanly (SIGKILL / OOM / VM death), then claim the
-            # sentinel for this life. After the PID-file claim so a --replace loser can't clobber it.
-            # The store scan that report used to run here is deferred: see below.
-            from gateway.lifecycle_ledger import record_startup
-            return record_startup()
-
-        def _start_keepalive() -> None:
-            from hermes_cli.nous_auth_keepalive import start_nous_auth_keepalive
-            start_nous_auth_keepalive()
-
-        _unclean_exit = _best_effort(_lifecycle_record_startup, "Lifecycle ledger startup record failed: %s")
-        _best_effort(_start_keepalive, "Nous auth keepalive did not start: %s")
-        _ensure_windows_gateway_venv_imports()
-        preload_stop_path_modules()
-
-        _early_verdict = await _start_gateway_run_runner(runner, _signal_initiated_shutdown)
+        from gateway.run_api import await_session_socket_preload
+        _early_verdict, ws_preload, _unclean_exit = await _start_gateway_listener_and_runner(
+            runner, _signal_initiated_shutdown, idle_exit=idle_exit)
+        start_recovered_platforms(runner, _plugin_recovery)
         if _early_verdict is not None:
             await await_session_socket_preload(ws_preload)  # never left unawaited on the way out
             return _early_verdict

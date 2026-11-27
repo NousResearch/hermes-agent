@@ -181,7 +181,7 @@ def test_a_busy_webapp_port_leaves_the_webapp_unavailable_and_native_clients_a_l
 @pytest.mark.parametrize("host", HOSTS)
 def test_a_bind_error_gives_mains_reason(monkeypatch, tmp_path, host, error):
     """The reason carries the OS's own words for the error, as on main (a fixed error here)."""
-    from gateway import run_api, run_runtime
+    from gateway import run_api, run_runtime_listener
     from gateway.control_socket import GatewayControlServer
 
     home = _home(tmp_path, f"webapp:\n  enabled: true\n  host: '{host}'\n")
@@ -195,6 +195,6 @@ def test_a_bind_error_gives_mains_reason(monkeypatch, tmp_path, host, error):
     monkeypatch.setattr(run_api, "start_gateway_api", start)
     runner = SimpleNamespace(session_runtime_descriptor={}, session_authorities=[],
                              session_control_server=GatewayControlServer(home))
-    asyncio.run(run_runtime.start_gateway_runtime_api(runner))
+    asyncio.run(run_runtime_listener.start_gateway_runtime_api(runner))
     assert runner.webapp_status == {"state": "unavailable", "url": None,
                                     "reason": f"could not listen on {host}:9120 ({error.strerror})"}

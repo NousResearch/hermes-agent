@@ -83,6 +83,8 @@ def test_gemini4_maps_effort_to_thinking_level_and_long_decode_budget(reasoning,
     config = _build_gemini_thinking_config("gemini-4-argon", reasoning)
     assert config == {"includeThoughts": shown, "thinkingLevel": level}  # never thinkingBudget (400 with a level)
     profile = get_provider_profile("gemini")
+    if profile is None:
+        pytest.skip("google model-provider plugin not installed")
     native = profile.build_extra_body(model="gemini-4-argon", reasoning_config=reasoning,
                                       base_url="https://generativelanguage.googleapis.com/v1beta")
     assert native.get("max_output_tokens") == budget
@@ -110,6 +112,8 @@ def test_gemini_provider_sends_xhigh_only_to_the_models_that_take_it(model, effo
     from providers import get_provider_profile
 
     profile = get_provider_profile("gemini")
+    if profile is None:
+        pytest.skip("google model-provider plugin not installed")
     native = profile.build_extra_body(model=model, reasoning_config={"enabled": True, "effort": effort},
                                       base_url="https://generativelanguage.googleapis.com/v1beta")
     assert native["thinking_config"] == {"includeThoughts": True, "thinkingLevel": level}

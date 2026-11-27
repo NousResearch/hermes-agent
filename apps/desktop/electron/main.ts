@@ -128,7 +128,7 @@ import {
 } from './bundle-swap'
 import { CHALLENGE_PARTITION } from './challenge-window'
 import { registerChallengeWindowIpc } from './challenge-window-ipc'
-import { provisionCliLinks } from './cli-provision'
+import { provisionCliLinks, shouldProvisionBundledCliLinks } from './cli-provision'
 import { readClipboardImagePng } from './clipboard-image'
 import { registerClipboardTextIpc } from './clipboard-ipc'
 import { closeStopFailureMessage, finishWindowsCloseStop, type RuntimeLock } from './close-stop-kill'
@@ -362,10 +362,12 @@ import { resolveIpcFileReadPath, resolveMediaStreamFile, resolvePreviewTargetPat
 import { resolveDesktopClientVersion } from './local-runtime-version'
 import { localSkinProfileKey, registerLocalSkinIpc } from './local-skin'
 import { ACTIVE_LOG_POLL_MS, planLogRotation, reclaimActiveLogIfOversized } from './log-rotation'
+import { guardMacApplicationsLaunch, type MacApplicationsGuardResult } from './mac-applications-guard'
+import { resolveMacAppBundle } from './mac-bundle-location'
 import { registerMachineProfile } from './machine-profile'
 import { resolveMainHermesHome } from './main-hermes-home'
 import { createMainProcessLagWatchdog } from './main-process-lag-watchdog'
-import { activateWindow, ensureMainWindow, shouldQuitOnLastChatClosed } from './main-window-lifecycle'
+import { activateWindow, ensureMainWindow, handleSecondInstance, shouldQuitOnLastChatClosed } from './main-window-lifecycle'
 import {
   assertManagedUpdatePreflightClear,
   executeManagedRemoteUpdate,
@@ -446,7 +448,7 @@ import { registerPreparedSubmissions } from './prepared-submissions'
 import { attachPresenceSource, sendToEveryWindow } from './presence'
 import { capturePreviewContents } from './preview-capture'
 import { onPreviewWatchOwnerDestroyed, sendPreviewFileChangedToOwner } from './preview-file-watch'
-import { hasClosePreviewFlag, previewGuestInputAction } from './preview-guest-escape'
+import { previewGuestInputAction } from './preview-guest-escape'
 import { registerPreviewGuestIpc } from './preview-guest-ipc'
 import { commandFocusedGuest } from './preview-guest-offscreen'
 import { applyPreviewGuestAttachPrefs } from './preview-guest-throttle'
@@ -1911,6 +1913,7 @@ const backendPool = new Map() // scope key -> { connectionPromise, remoteBaseUrl
 // Escape hatch: a dedicated, private backend for this app instead of the host's.
 const ISOLATED_BACKEND = process.env.HERMES_DESKTOP_ISOLATED_BACKEND === '1'
 const profileDeletionGate = new ProfileDeletionGate()
+let macGuardResult: MacApplicationsGuardResult | null = null
 
 // rememberLog() state. Declared before any top-level caller that logs during
 // module evaluation; declaring these later crashed launch with `undefined.push`
@@ -3653,7 +3656,7 @@ function resolveCheckoutUpdateStrategy(): CheckoutStrategy {
         log
       })
     },
-    runningAppBundle,
+    runningAppBundle: () => resolveMacAppBundle(app.getPath('exe'), process.platform),
     markQuittingForHandoff: () => {
       isQuittingForHandoff = true
     },
@@ -4473,22 +4476,6 @@ async function handOffWindowsBootstrapRecovery(reason) {
   return true
 }
 
-// The running app's .app bundle (packaged macOS): execPath is
-// <App>.app/Contents/MacOS/<exe>; climb three levels to the bundle root.
-function runningAppBundle() {
-  if (!IS_MAC) {
-    return null
-  }
-
-  let dir = path.dirname(app.getPath('exe')) // .../Contents/MacOS
-
-  for (let i = 0; i < 2; i++) {
-    dir = path.dirname(dir)
-  } // -> .../X.app
-
-  return dir.endsWith('.app') ? dir : null
-}
-
 // macOS/Linux update hand-off: spawn the repo-owned posix orchestrator
 // (scripts/desktop-update/posix.sh) detached and QUIT. The script waits us
 // out, runs `hermes update`, swaps/relaunches the app bundle, and writes
@@ -4829,7 +4816,7 @@ async function resolveHermesBackend(backendArgs: string[], progress?: typeof adv
   const payload = await runnableBundledPayload(rememberLog, progress)
 
   if (payload) {
-    if (!IS_WINDOWS) {
+    if (shouldProvisionBundledCliLinks(payload.root, rememberLog)) {
       provisionCliLinks(payload.commands, path.join(os.homedir(), '.local', 'bin'), rememberLog)
     }
 
@@ -17283,34 +17270,17 @@ if (!isPrimaryInstance) {
     console.error('[hermes] failed to persist --profile launch override:', error)
   }
 
-  app.on('second-instance', (_event, argv) => {
-    // --close-preview: the same escape hatch as hermes://close-preview, for
-    // environments where spawning a URL is harder than a flag (kiosk launchers,
-    // SSH-started sessions). Checked before deep links so a carried `hermes://`
-    // URL still routes normally when no flag is present.
-    if (hasClosePreviewFlag(argv)) {
-      handleDeepLink('hermes://close-preview')
-    }
-
-    const url = extractDeepLink(argv, DEEPLINK_SCHEMES)
-
-    if (url) {
-      handleDeepLink(url)
-    }
-
-    // #130810: a second Start-menu / shortcut / Hermes.exe launch must never
-    // silently exit. Log it so a future silent exit stays diagnosable, then
-    // restore a live primary with activation (restore + show + focus), or
-    // re-create it when it was destroyed.
-    rememberLog(`[second-instance] relaunch (deepLink=${url ? 'yes' : 'no'})`)
-    ensureMainWindow(mainWindow, {
-      isReady: app.isReady(),
+  app.on('second-instance', (_event, argv) =>
+    handleSecondInstance(argv, {
+      mainWindow,
+      launchGuard: macGuardResult,
+      deepLinkSchemes: DEEPLINK_SCHEMES,
+      handleDeepLink,
       createWindow,
       focusWindow: activateWindow,
-      // deep-link delivery focuses a live window after its renderer is ready.
-      focusExisting: !url
+      log: rememberLog
     })
-  })
+  )
 }
 
 // macOS delivers deep links via 'open-url' — register early (can fire before
@@ -17320,7 +17290,20 @@ app.on('open-url', (event, url) => {
   handleDeepLink(url)
 })
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  macGuardResult = await guardMacApplicationsLaunch({
+    app,
+    dialog,
+    appName: APP_NAME,
+    isPackaged: IS_PACKAGED,
+    installStamp: INSTALL_STAMP,
+    log: rememberLog
+  })
+
+  if (macGuardResult.action === 'relaunching') {
+    return
+  }
+
   if (NVIDIA_DRIVER_MAJOR !== null) {
     rememberLog(nvidiaEglRecovery.startupMessage)
   }

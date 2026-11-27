@@ -44,6 +44,9 @@ def test_windows_metadata_is_read_from_package_and_stale_stamp_is_rejected(tmp_p
             }))
 
     write_package(commit)
+    # The native executable's version comes from the sidecar when present;
+    # without it a Windows host probes the unpacked executable instead.
+    (root / 'version-info-x64.json').write_text(json.dumps({'productVersion': '1.2.3.0'}), encoding='utf-8')
     out = root / 'metadata-windows-x64.json'
     original = package.read_bytes()
     record('windows', 'x64', root, tag, commit, out)
@@ -52,6 +55,7 @@ def test_windows_metadata_is_read_from_package_and_stale_stamp_is_rejected(tmp_p
     assert metadata['version'] == '1.2.3.0'
     assert metadata['publisher'] == 'CN=Test'
     assert metadata['applicationId'] == 'App'
+    assert metadata['executableVersion'] == '1.2.3.0'
     assert package.read_bytes() == original
     assert 'receiverProtocol' not in metadata
     write_package(commit, receiver=1)

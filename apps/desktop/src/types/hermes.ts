@@ -417,7 +417,34 @@ export interface RelayLinkCodeState {
   state: 'inactive' | 'pending' | 'refused'
 }
 
+/** A catalog messaging platform the profile has not installed (`available` on the platforms list):
+ *  picking it installs and enables the plugin, then its own card takes over. */
+export interface MessagingCatalogPlatform {
+  badge: 'official' | 'verified'
+  /** '' when a pick can install it; else a reason code (`lazy_installs_off`). */
+  blocked: string
+  blocked_reason: string
+  disclosure: string
+  /** The one command that installs it into this profile from a terminal. */
+  install_command: string
+  name: string
+  summary: string
+  title: string
+}
+
+export interface MessagingCatalogInstallResponse {
+  error?: string
+  install_command?: string
+  ok: boolean
+  /** Platform ids the installed plugin registered (its card to open). */
+  platforms?: string[]
+  plugin_name?: string
+  warnings?: string[]
+}
+
 export interface MessagingPlatformsResponse {
+  /** Absent on backends that predate catalog installs from this page. */
+  available?: MessagingCatalogPlatform[]
   platforms: MessagingPlatformInfo[]
 }
 

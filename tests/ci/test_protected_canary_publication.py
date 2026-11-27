@@ -7,6 +7,8 @@ qualification. No admission, metadata recorder or channel publisher is mocked.
 """
 from __future__ import annotations
 
+import base64
+import gzip
 import hashlib
 import json
 import os
@@ -134,12 +136,31 @@ def native_leg(root, identity, env, platform, arch):
     else:
         name = f"{artifact}-{version}-mac-{arch}"
         (root / f"mac-{arch}/{artifact}.app").mkdir(parents=True)
-        with zipfile.ZipFile(root / f"{name}.zip", "w") as package:
+        zip_path = root / f"{name}.zip"
+        with zipfile.ZipFile(zip_path, "w") as package:
             package.writestr(f"{artifact}.app/Contents/Info.plist", plistlib.dumps({"CFBundleIdentifier": identity["appId"], "CFBundleShortVersionString": version}))
             package.writestr(f"{artifact}.app/Contents/Resources/install-stamp.json", json.dumps(stamp))
-        (root / "canary-mac.yml").write_text(json.dumps({"version": version}))
-        for suffix in ("dmg", "dmg.blockmap", "zip.blockmap"):
-            (root / f"{name}.{suffix}").write_bytes(b"unsigned transport fixture")
+        dmg_bytes = b"unsigned transport fixture"
+        dmg_path = root / f"{name}.dmg"
+        dmg_path.write_bytes(dmg_bytes)
+        blockmap = gzip.compress(json.dumps({
+            "version": "2",
+            "files": [{"name": "file", "offset": 0, "checksums": ["fixture"], "sizes": [len(dmg_bytes)]}],
+        }).encode("utf-8"))
+        (root / f"{name}.dmg.blockmap").write_bytes(blockmap)
+        (root / f"{name}.zip.blockmap").write_bytes(b"unsigned transport fixture")
+        zip_bytes = zip_path.read_bytes()
+        zip_sha = base64.b64encode(hashlib.sha512(zip_bytes).digest()).decode("ascii")
+        dmg_sha = base64.b64encode(hashlib.sha512(dmg_bytes).digest()).decode("ascii")
+        (root / "canary-mac.yml").write_text(hermes_yaml.safe_dump({
+            "version": version or "0.0.0",
+            "files": [
+                {"url": zip_path.name, "sha512": zip_sha, "size": len(zip_bytes)},
+                {"url": dmg_path.name, "sha512": dmg_sha, "size": len(dmg_bytes)},
+            ],
+            "path": zip_path.name,
+            "sha512": zip_sha,
+        }, sort_keys=False))
 
 
 @pytest.mark.parametrize("platform", ["win32", "darwin"])

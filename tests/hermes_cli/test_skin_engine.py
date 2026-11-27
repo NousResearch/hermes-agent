@@ -24,6 +24,19 @@ def reset_skin_state():
 
 
 
+class TestBuiltinHadesSkin:
+    def test_hades_skin_loads_with_spinner_and_identity(self):
+        from hermes_cli.skin_engine import load_skin
+
+        skin = load_skin("hades")
+        assert skin.name == "hades"
+        assert skin.get_spinner_wings()
+        assert "hades" in skin.get_branding("agent_name").lower()
+        border = skin.get_color("banner_border")
+        r, g, b = (int(border[i:i + 2], 16) for i in (1, 3, 5))
+        assert b > r and b > g
+
+
 class TestSkinManagement:
     def test_set_active_skin(self):
         from hermes_cli.skin_engine import set_active_skin, get_active_skin, get_active_skin_name

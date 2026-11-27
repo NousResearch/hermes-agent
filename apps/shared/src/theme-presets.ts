@@ -522,6 +522,34 @@ export const THEME_PRESET_PALETTES = {
       userBubbleBorder: '#004800'
     }
   },
+  hades: {
+    colors: {
+      background: '#0f172a',
+      foreground: '#dcebff',
+      card: '#111827',
+      cardForeground: '#dcebff',
+      muted: '#1e3a8a',
+      mutedForeground: '#94a3b8',
+      popover: '#111827',
+      popoverForeground: '#dcebff',
+      primary: '#7eb8f6',
+      primaryForeground: '#0f172a',
+      secondary: '#1e3a8a',
+      secondaryForeground: '#bfdbfe',
+      accent: '#1d4ed8',
+      accentForeground: '#dcebff',
+      border: '#334155',
+      input: '#334155',
+      ring: '#60a5fa',
+      midground: '#60a5fa',
+      destructive: '#f87171',
+      destructiveForeground: '#0f172a',
+      sidebarBackground: '#0b1120',
+      sidebarBorder: '#1e3a8a',
+      userBubble: '#172554',
+      userBubbleBorder: '#1d4ed8'
+    }
+  },
   slate: {
     colors: {
       background: '#0d1117',

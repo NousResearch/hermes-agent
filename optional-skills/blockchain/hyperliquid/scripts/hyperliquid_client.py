@@ -15,6 +15,7 @@ Usage:
   python3 hyperliquid_client.py state [address] [--dex DEX]
   python3 hyperliquid_client.py spot-balances [address]
   python3 hyperliquid_client.py fills [address] [--hours N] [--limit N]
+  python3 hyperliquid_client.py open-orders [address] [--dex DEX] [--limit N]
   python3 hyperliquid_client.py orders [address] [--limit N]
   python3 hyperliquid_client.py review [address] [--coin COIN] [--hours N]
   python3 hyperliquid_client.py export <coin> [--interval 1h] [--hours N]
@@ -1532,6 +1533,18 @@ def _add_json_flag(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--json", action="store_true", help="Print raw JSON output")
 
 
+def run_open_orders(args: argparse.Namespace) -> dict[str, Any]:
+    from hyperliquid_open_orders import run_open_orders as run
+
+    return run(args, sys.modules[__name__])
+
+
+def render_open_orders(data: dict[str, Any]) -> str:
+    from hyperliquid_open_orders import render_open_orders as render
+
+    return render(data, sys.modules[__name__])
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Hyperliquid CLI Tool for Hermes Agent")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -1609,6 +1622,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_json_flag(fills)
     fills.set_defaults(func=run_fills, renderer=render_fills)
+
+    open_orders = subparsers.add_parser("open-orders", help="Inspect open orders, TP/SL and current position PnL")
+    open_orders.add_argument("user", nargs="?", default="", help=f"Optional address; falls back to ${DEFAULT_USER_ENV}")
+    open_orders.add_argument("--dex", default="", help="Perp dex name; empty means first perp dex")
+    open_orders.add_argument("--limit", type=int, default=20, help="Order rows including children; 0 means all")
+    _add_json_flag(open_orders)
+    open_orders.set_defaults(func=run_open_orders, renderer=render_open_orders)
 
     orders = subparsers.add_parser("orders", help="Inspect a user's historical orders")
     orders.add_argument("user", nargs="?", default="", help=f"Optional address; falls back to ${DEFAULT_USER_ENV}")

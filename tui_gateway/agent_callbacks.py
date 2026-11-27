@@ -197,7 +197,9 @@ def _agent_cbs(sid: str) -> dict:
     return callbacks
 
 
-def _apply_project_workspace(task_id: str, path: str, _name: str = "") -> bool:
+def _apply_project_workspace(
+    task_id: str, path: str, _name: str = "", *, session_key: str | None = None
+) -> bool | dict:
     """Intentional workspace move from the project_* tools: re-anchor the live session's cwd
     and push session.info. The ONLY auto-cwd path — an explicit tool call, never a `cd`.
     False when no live session owns *task_id* (the tool then reports ``moved: false``)."""
@@ -205,11 +207,36 @@ def _apply_project_workspace(task_id: str, path: str, _name: str = "") -> bool:
         return False
     # task_id is the durable session_key; _sessions (and desktop event routing) key by sid.
     key = str(task_id or "")
+    current_home = get_hermes_home().resolve()
     with _sessions_lock:
         sid, session = (key, _sessions[key]) if key in _sessions else next(
             ((s, c) for s, c in _sessions.items()
-             if c.get("session_key") == key or getattr(c.get("agent"), "session_id", None) == key),
+             if (c.get("session_key") == key or getattr(c.get("agent"), "session_id", None) == key)
+             and (session_key is None or (
+                 not c.get("_finalized")
+                 and Path(c.get("profile_home") or _hermes_home).resolve() == current_home
+             ))),
             ("", None))
+    if session_key is not None:
+        if session is None or session.get("_finalized"):
+            return {"success": False, "error": "calling Desktop session is no longer available"}
+        caller_keys = {k for k in (session.get("session_key"), getattr(session.get("agent"), "session_id", None)) if k}
+        if session_key in caller_keys:
+            return {"success": False, "error": "use switch to move this chat into a project"}
+        home = Path(session.get("profile_home") or _hermes_home).resolve()
+        if home != current_home:
+            return {"success": False, "error": "project and calling session profiles do not match"}
+        params = {"session_key": session_key, "cwd": str(path)}
+        if home != Path(_hermes_home).resolve():
+            profile = profile_name_for_home(home)
+            if not profile:
+                return {"success": False, "error": "calling session profile cannot be resolved"}
+            params["profile"] = profile
+        # Reuse the sidebar's operation in this gateway, never a discovered loopback port.
+        response = _methods["session.workspace.move"](None, params)
+        if "error" in response:
+            return {"success": False, "error": response["error"]["message"]}
+        return {"success": True, "session_key": session_key, **response["result"]}
     resolved = os.path.abspath(os.path.expanduser(str(path)))
     if session is None or not os.path.isdir(resolved):
         return False

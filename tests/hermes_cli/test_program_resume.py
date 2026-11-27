@@ -96,13 +96,15 @@ def test_bypass_launch_repeats_its_flag_and_reports_only_a_saved_session(monkeyp
     assert pr.resume_argv("s", "tui")[-3:] == ("--ignore-user-config", "--resume", "s")
 
 
-def test_resume_argv_uses_this_interpreter_for_source_runs_and_bad_launchers(monkeypatch):
-    import sys
+def test_resume_argv_uses_the_install_command_for_source_runs_and_bad_launchers(monkeypatch):
+    from hermes_cli.chat_launch import hermes_command
 
+    install = tuple(hermes_command())  # this install's launcher or inline bootstrap: no PYTHONPATH needed
+    assert "-m" not in install
     pr = _resume_env(monkeypatch, argv0="/src/hermes/hermes_cli/main.py")
-    assert pr.resume_argv("s", "cli")[:3] == (sys.executable, "-m", "hermes_cli.main")
+    assert pr.resume_argv("s", "cli")[:len(install)] == install
     pr = _resume_env(monkeypatch, bin_path="./relative-hermes")
-    assert pr.resume_argv("s", "cli")[:3] == (sys.executable, "-m", "hermes_cli.main")
+    assert pr.resume_argv("s", "cli")[:len(install)] == install
 
 
 def test_resume_argv_is_none_when_no_command_reaches_this_home(monkeypatch):
@@ -248,6 +250,22 @@ def test_program_resume_enabled_reads_the_token_and_setting(written, monkeypatch
     assert gateway_chat.program_resume_enabled(Namespace(safe_mode=True)) is False
 
 
+def test_a_config_file_opt_out_writes_no_report(written, monkeypatch, tmp_path):
+    from argparse import Namespace
+
+    from hermes_cli import gateway_chat
+    from hermes_cli.gateway_chat_view import GatewayChatView
+
+    for name in ("HERMES_SAFE_MODE", "HERMES_IGNORE_USER_CONFIG"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text("display:\n  program_resume: false\n", encoding="utf-8")
+    enabled = gateway_chat.program_resume_enabled(Namespace())  # the real loader reads the file
+    GatewayChatView(object(), {"stored_session_id": "gw-1", "messages": [{"role": "user"}]},
+                    program_resume=enabled)._sync_program_resume()
+    assert enabled is False and written == []
+
+
 def _launch_tui_env(monkeypatch, *, profile):
     import sys
     from pathlib import Path
@@ -342,14 +360,13 @@ def test_argv0_rules_match_the_tui(arg, valid):
     assert _is_valid_osc7577_argv0(arg) is valid
 
 
+@pytest.mark.platforms("posix")
 def test_gateway_chat_view_reports_again_after_sigcont(written, monkeypatch):
     import asyncio
     import signal
 
     from hermes_cli.gateway_chat_view import GatewayChatView
 
-    if not hasattr(signal, "SIGCONT"):
-        pytest.skip("POSIX only")
     calls = []
     view = GatewayChatView(object(), {"stored_session_id": "gw-1", "messages": [{"role": "user"}]})
     view.program_resume_enabled = True

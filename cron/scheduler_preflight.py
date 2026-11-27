@@ -345,16 +345,18 @@ def _preflight_check_delivery(job: dict) -> Optional[str]:
     a primary route serves the parsed chat. ``origin``/``all`` get no other check (no gateway-config
     load). Unknown platform always blocks; known platform blocks
     only if the gateway config loads AND reports it unconnected; config load failures fail OPEN.
-    ``failure_deliver`` gets the same rules — a typo'd failure platform would otherwise only
-    surface when a failure occurs (NS-788)."""
+    ``failure_deliver`` gets the same platform rules — a typo'd failure platform would otherwise only
+    surface when a failure occurs (NS-788) — but a failure-only destination the resolver cannot reach
+    (its ``origin`` or a moved platform without the plugin) never blocks the run: the failure delivery
+    attempt reports it."""
     deliver_value = _delivery._normalize_deliver_value(job.get("deliver", "local"))
     failure_deliver_value = _delivery._normalize_deliver_value(
         _delivery._delivery_lane_value(job, for_failure=True))
-    lane_values = [deliver_value]
+    lane_values = [(deliver_value, False)]
     if failure_deliver_value != deliver_value:
-        lane_values.append(failure_deliver_value)
+        lane_values.append((failure_deliver_value, True))
     platform_parts: list[str] = []
-    for lane_value in lane_values:
+    for lane_value, failure_only in lane_values:
         for part in lane_value.split(","):
             part = part.strip()
             if not part or part.lower() == "local":
@@ -367,6 +369,10 @@ def _preflight_check_delivery(job: dict) -> Optional[str]:
             for token in _delivery._expand_routing_tokens(part):
                 # A dry run of delivery: the same resolver names the install exactly when delivery would.
                 target, error = _delivery.resolve_cron_destination(job, token, from_broadcast=part.lower() in _delivery._ROUTING_TOKENS)
+                if error and failure_only:
+                    # Needed only if the run fails: the failed delivery attempt reports it, the run goes ahead.
+                    logger.info("preflight: failure destination '%s' unresolved: %s", token, error)
+                    continue
                 if error:
                     return f"delivery target '{token}': {error}"
                 if token == part and part.lower() not in {"origin", "all"} and not (

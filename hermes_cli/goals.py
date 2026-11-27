@@ -44,6 +44,7 @@ DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES = 3
 # Consecutive transport failures (401, timeout, DNS) before auto-pause: a broken API key returns
 # 401 every call and must not spend every turn on an unreachable judge.
 DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES = 5
+_JUDGE_IMPORT_FAILURE = "auxiliary client import failed; check the Hermes installation"
 
 # Quality gates: deterministic shell commands that must pass before the judge may declare DONE. A
 # failed gate short-circuits the judge — its output IS the continuation prompt, so the agent works
@@ -906,7 +907,7 @@ def judge_goal(
     except Exception as exc:
         # No judge can run: an outage like AuxiliaryClientUnavailable below, not a "continue" verdict.
         logger.warning("goal judge: auxiliary client import failed (%s)", type(exc).__name__)
-        return "continue", "auxiliary client unavailable", False, None, True
+        return "continue", _JUDGE_IMPORT_FAILURE, False, None, True
 
     # Prompt priority: contract > subgoals > plain. With both, subgoals fold into the contract
     # block as extra criteria so the judge sees a single source of truth.
@@ -1533,6 +1534,8 @@ class GoalManager:
         # goal_judge config so a broken judge can't burn the whole turn budget.
         n_tx, n_parse = state.consecutive_transport_failures, state.consecutive_parse_failures
         if n_tx >= DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES:
+            if reason == _JUDGE_IMPORT_FAILURE:
+                return self._pause_decision(reason, "continue", reason, f"⏸ Goal paused — {reason}.")
             return self._pause_decision(
                 f"judge API unreachable {n_tx} turns in a row (check auxiliary.goal_judge provider/key in config.yaml)",
                 "continue", reason,
@@ -1734,6 +1737,8 @@ def run_kanban_goal_loop(
         if (stopped := _status_stop()) is not None:
             return stopped
         if _transport_failed:
+            if reason == _JUDGE_IMPORT_FAILURE:
+                return _result("stopped", reason)
             _log(f"kanban goal loop: judge transport failed on turn {turns_used}; stopping")
             return _result("stopped", "judge transport failure")
         if claim_is_live is not None and not claim_is_live():

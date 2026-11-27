@@ -203,7 +203,8 @@ def test_goal_receives_partial_then_continues_same_session(worker, monkeypatch, 
     ('kanban_block', {'reason': 'Only the customer can provide the source document.',
                       'kind': 'needs_input'}, 'blocked'),
 ])
-def test_first_turn_handoff_is_not_reopened(worker, monkeypatch, tool, args, status):
+@pytest.mark.parametrize('edit_after_handoff', [False, True])
+def test_first_turn_handoff_is_not_reopened(worker, monkeypatch, tool, args, status, edit_after_handoff):
     from tests.agent.test_run_agent import _mock_response, _mock_tool_call
 
     def unexpected_judge(*args, **kwargs):
@@ -220,19 +221,30 @@ def test_first_turn_handoff_is_not_reopened(worker, monkeypatch, tool, args, sta
     monkeypatch.setattr('agent.auxiliary_client.get_text_auxiliary_client',
                         lambda *a, **kw: (object(), 'inert-judge'))
     transport = worker.agent.client.chat.completions.create
-    transport.side_effect = [
-        _mock_response(content='', finish_reason='tool_calls',
-                       tool_calls=[_mock_tool_call(tool, json.dumps(args))]),
-        _mock_response(content='Handed off.'),
-    ]
+    task_id = worker.context['task_id']
+    run_id = worker.context['run_id']
+
+    def respond(**kwargs):
+        if transport.call_count == 1:
+            return _mock_response(content='', finish_reason='tool_calls',
+                                  tool_calls=[_mock_tool_call(tool, json.dumps(args))])
+        assert transport.call_count == 2
+        with connect_closing() as other:
+            assert kb.goal_run_status(other, task_id, run_id) == status
+            if edit_after_handoff:
+                assert kb.edit_task(other, task_id, body='New requirements for a future attempt.')
+        return _mock_response(content='Handed off.')
+
+    transport.side_effect = respond
 
     result = session_kanban.run_worker_turns(worker.agent, worker.frame, [])
 
     assert result['final_response'] == 'Handed off.'
     assert transport.call_count == 2
     assert len(judgments) == 1
+    assert session_kanban.worker_exit_code(worker.context['db'], worker.context) == 0
+    assert result['completed'] and not result.get('failed')
     with connect_closing() as conn:
-        task_id = worker.context['task_id']
         task = kb.get_task(conn, task_id)
         assert task.status == status and task.current_run_id is None
         assert conn.execute('SELECT id FROM task_runs WHERE task_id=?',
@@ -306,7 +318,7 @@ def test_unavailable_goal_judge_is_not_worker_success(worker, monkeypatch, calle
         assert task.status == 'running' and task.current_run_id == worker.context['run_id']
 
 
-@pytest.mark.parametrize('path', ['partial', 'needs_input'])
+@pytest.mark.parametrize('path', ['sdk-partial', 'cli-partial', 'needs_input'])
 def test_judge_import_failure_is_an_outage_not_a_continue_verdict(worker, monkeypatch, path, caplog):
     from tests.agent.test_run_agent import _mock_response
     from tools import kanban_tools
@@ -324,10 +336,21 @@ def test_judge_import_failure_is_an_outage_not_a_continue_verdict(worker, monkey
     monkeypatch.setattr(kanban_tools, 'judge_goal', judge)
     monkeypatch.setenv('HERMES_KANBAN_STOP_NUDGE', '0')
     tid, run_id = worker.context['task_id'], worker.context['run_id']
-    if path == 'partial':
+    if path != 'needs_input':
+        from hermes_cli.quiet_single_query import TURN_REPORT_FILE_ENV, read_turn_report
+
+        report_path = str(worker.artifact.with_suffix('.json'))
+        monkeypatch.setenv(TURN_REPORT_FILE_ENV, report_path)
         transport = worker.agent.client.chat.completions.create
         transport.side_effect = [_mock_response(content='Section one is ready. Section two remains.')]
-        _run_caller(worker, 'sdk', monkeypatch, expected_exit=1)
+        if path == 'sdk-partial':
+            report = _run_caller(worker, 'sdk', monkeypatch, expected_exit=1)
+        else:
+            _run_caller(worker, 'cli-quiet', monkeypatch, expected_exit=1)
+            report = read_turn_report(report_path, os.getpid())
+        assert report is not None
+        assert 'auxiliary client import failed' in report['error'].lower()
+        assert 'transport failure' not in report['error'].lower()
         assert transport.call_count == 1 and len(judged) == 1
         expected = ('running', run_id)
     else:

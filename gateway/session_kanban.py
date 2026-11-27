@@ -436,13 +436,14 @@ def _run_task_turns(agent, frame, history, context):
     from hermes_cli.kanban_db_connect import connect_closing
     with connect_closing() as conn:
         task = kb.get_task(conn, context['task_id'])
-    if task is None or '\n\n'.join(p for p in (task.title, task.body) if p) != context['goal_text']:
-        return kanban_goal_turn_result(result, {'outcome': 'stopped', 'reason': 'Kanban goal changed since dispatch'})
-    expected_goal = task.title, task.body
+    expected_goal = (task.title, task.body) if task is not None else None
+    changed_since_dispatch = expected_goal is None or '\n\n'.join(p for p in expected_goal if p) != context['goal_text']
 
     def status():
         with connect_closing() as conn:
-            return kb.goal_run_status(conn, context['task_id'], context['run_id'], expected_goal=expected_goal)
+            current = kb.goal_run_status(conn, context['task_id'], context['run_id'], expected_goal=expected_goal)
+        # An edit cannot invalidate a handoff already committed by this run.
+        return 'goal_changed' if changed_since_dispatch and current in ('running', 'ready') else current
     def block(reason):
         with connect_closing() as conn:
             return kb.block_task(conn, context['task_id'], reason=reason, expected_run_id=context['run_id'],

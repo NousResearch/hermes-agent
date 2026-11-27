@@ -315,12 +315,17 @@ async def stats(connection, ref, params):
 
 # A session's stored counters → the agent attributes the status bar reads. ``input_tokens`` in the
 # session row excludes cache reads/writes (the prompt total adds them back), matching CanonicalUsage.
+# ``api_call_count`` rides along because the gateway's cumulative writer sets it absolutely — leaving
+# it out would rewrite the session's call count with this process's few calls. The first-response
+# branches keyed on ``session_api_calls == 1`` are unaffected in practice: a resumed session is not
+# on its first response, and a fresh one seeds nothing.
 _STORED_TO_AGENT = (
     ("input_tokens", "session_input_tokens"),
     ("output_tokens", "session_output_tokens"),
     ("cache_read_tokens", "session_cache_read_tokens"),
     ("cache_write_tokens", "session_cache_write_tokens"),
     ("reasoning_tokens", "session_reasoning_tokens"),
+    ("api_call_count", "session_api_calls"),
 )
 
 
@@ -338,12 +343,13 @@ def seed_session_totals(agent, row) -> bool:
 
     Derived fields (``session_prompt_tokens`` / ``session_completion_tokens`` / ``session_total_tokens``)
     are recomputed from the seeded parts rather than added, so they cannot drift. ``api_calls`` is
-    deliberately NOT seeded — it drives per-turn inflight bookkeeping.
+    seeded too (see ``_STORED_TO_AGENT``) because the cumulative writer stores it absolutely.
     """
     if agent is None or not isinstance(row, dict) or getattr(agent, "_session_totals_seeded", False):
         return False
     stored = {key: int(row.get(key) or 0) for key in
-              ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens")}
+              ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens",
+               "reasoning_tokens", "api_call_count")}
     cost = row.get("estimated_cost_usd")
     stored_cost = float(cost) if isinstance(cost, (int, float)) and not isinstance(cost, bool) else 0.0
     if not any(stored.values()) and stored_cost <= 0:

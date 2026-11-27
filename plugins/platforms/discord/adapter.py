@@ -1189,6 +1189,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordCommandSyncMixin, DiscordAuth
     MAX_MESSAGE_LENGTH = 2000
     _SPLIT_THRESHOLD = 1900  # near the 2000-char split point
     supports_code_blocks = True  # Discord markdown renders fenced code blocks natively
+    supports_spoiler_fold = True  # one ||spoiler|| spans lines and code blocks; "-# " is subtext
     allow_from_covers_groups = True  # no group_allow_from: allow_from is the one user allowlist
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
     # A reply needing more messages goes out as one .md file (#152012; the #86581 flood was 31 messages).

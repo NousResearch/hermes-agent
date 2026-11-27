@@ -866,6 +866,8 @@ gateway:
     task_status_error: "earráid"
     task_line: "- {title} - {status}"
     task_card_title: "Tá Hermes ag obair"
+    tool_fold_summary_one: "🛠️ {count} uirlis · cliceáil le taispeáint"
+    tool_fold_summary_many: "🛠️ {count} uirlisí · cliceáil le taispeáint"
   pairing:
     validity_hour: "{hours} uair an chloig"
     validity_hours: "{hours} uair an chloig"

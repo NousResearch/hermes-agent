@@ -14,11 +14,12 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agent.i18n import t
 from agent.interrupt_compat import _accepts_keyword
+from agent.redact import redact_sensitive_text
 from agent.replay_cleanup import strip_stale_dangerous_confirmations
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
-from gateway.platforms.helpers import typing_metadata_for_turn
+from gateway.platforms.helpers import send_chunks, typing_metadata_for_turn
 from gateway.turn_context import TurnContext
 from hermes_cli.config import cfg_get
 from utils import is_truthy_value
@@ -40,6 +41,85 @@ def _append_progress_repeat_count(message: str, occurrences: int) -> str:
         line_end = "\r\n" if message.endswith("\r\n") else "\n"
         return f"{body}{line_end}{suffix}"
     return f"{message} {suffix}"
+
+
+# ── display.tool_progress_fold: a bubble's progress behind one click-to-reveal spoiler ────────
+#
+# A folded bubble is ``-# 🛠️ N tools · click to show\n||<every line>||``: ONE spoiler (a spoiler per
+# line needs a click per line; ``-#`` inside a spoiler hides only its first line) opening on a text
+# line (``||`` fused to a fence opener does not hide the block). A folding turn queues its lines as
+# ``("__fold__", text, is_tool)``: tool lines, counted, and thinking text (in its own code block);
+# a plain line in the same bubble (the first-run hint) sits in the fold too.
+# Every message the drain sends is self-contained: its own summary, one ``||`` pair, balanced fences.
+
+# A ``||`` would end the spoiler early and a ```` ``` ```` run open or end a code block: a U+200B
+# after the first character breaks each invisibly, so the only fences in a fold are a tool line's
+# own. A form feed between them does not count: Discord's markdown parser drops it before parsing.
+_FOLD_BREAKERS = re.compile(r"\|(?=\f*\|)|`(?=\f*`\f*`)")
+# A tool line's own code block: header, the code, an optional "(×N)" repeat line after the fence.
+_FENCED_TOOL_LINE = re.compile(r"([^\n]+)\n```\n(.*)\n```(?:\n([^\n]*))?", re.DOTALL)
+
+
+def _fold_safe(text: str) -> str:
+    return _FOLD_BREAKERS.sub(lambda m: m.group() + "\u200b", text)
+
+
+def _fold_thinking(text: str) -> tuple:
+    """Thinking text for a fold: in its own code block under the 💬 prefix, like a command, so no
+    markdown it holds can pair with the lines around it (a block needs code to render at all)."""
+    code = _fold_safe(text) if text.strip() else "\u200b"
+    return ("__fold__", f"{t('gateway.progress.thinking_prefix', text='').rstrip()}\n```\n{code}\n```", False)
+
+
+def _fold_tool_line(text: str) -> tuple:
+    """Hidden is no reason to skip redaction: the full command (or verbose args) is redacted, and
+    everything but the line's own fences is made fold-safe (``a || b`` is a common command)."""
+    text = redact_sensitive_text(text)
+    if not (m := _FENCED_TOOL_LINE.fullmatch(text)):
+        # One line: a preview's own line breaks (a path, a memory entry) could start a pipe table.
+        return ("__fold__", _fold_safe(" ".join(text.splitlines())), True)
+    # Only the code is multi-line: a fenced preview (a path holding ```) must not smuggle a
+    # multi-line head or a fence fused to text past the one-line rule above.
+    head, code, tail = m.groups()
+    rest = "" if tail is None else "\n" + _fold_safe(" ".join(tail.splitlines()))
+    return ("__fold__", f"{_fold_safe(' '.join(head.splitlines()))}\n```\n{_fold_safe(code)}\n```{rest}", True)
+
+
+def _is_folded(line) -> bool:
+    return isinstance(line, tuple) and line[:1] == ("__fold__",)
+
+
+def _line_text(line) -> str:
+    return line[1] if _is_folded(line) else str(line)
+
+
+def _fold_summary(count: int) -> str:
+    key = "gateway.progress.tool_fold_summary_one" if count == 1 else "gateway.progress.tool_fold_summary_many"
+    return "-# " + t(key, count=count)
+
+
+def _render_fold(lines: list) -> str:
+    """The summary, then every line of the bubble in one spoiler."""
+    body = "\n".join(_line_text(line) for line in lines)
+    # U+200B pads: a leading | would join the opening ||, a trailing \ escape the closing one.
+    body = ("\u200b" if body.startswith("|") else "") + body + ("\u200b" if body.endswith(("\\", "|")) else "")
+    return f"{_fold_summary(sum(line[2] for line in lines if _is_folded(line)))}\n||{body}||"
+
+
+def _fold_pieces(line, limit: int, len_fn) -> list:
+    """A line of a folding bubble too long for one, as pieces that each fit with their own summary
+    and spoiler. The chunker closes and reopens a tool line's code fence; a continuation repeats the
+    line's header (``💻 terminal …``) so its spoiler opens on text, never fused to the fence."""
+    text = _line_text(line)
+    budget = limit - len_fn(_fold_summary(10 ** 6)) - len_fn("\n||||\u200b\u200b")
+    if len_fn(text) <= budget:
+        return [line]
+    head = text.split("\n", 1)[0]
+    cont = (head if len(head) <= 80 else head[:77] + "...") + " …\n"
+    chunks = BasePlatformAdapter.truncate_message(text, max(1, budget - len_fn(cont)), len_fn=len_fn)
+    chunks = [(cont if i and chunk.startswith("```") else "") + re.sub(r" \(\d+/\d+\)$", "", chunk)
+              for i, chunk in enumerate(chunks)]
+    return [(*line[:1], chunk, *line[2:]) for chunk in chunks] if _is_folded(line) else chunks
 
 
 def _note_flood(st, result) -> bool:
@@ -229,7 +309,8 @@ class GatewayTurnProgressMixin:
         if event_type == "_thinking" or tool_name == "_thinking":
             thinking_text = (preview if tool_name == "_thinking" else tool_name) if ctx._thinking_enabled else None
             if thinking_text:
-                ctx.progress_queue.put(t("gateway.progress.thinking_prefix", text=thinking_text))
+                ctx.progress_queue.put(_fold_thinking(thinking_text) if getattr(ctx, "tool_progress_fold", False)
+                                       else t("gateway.progress.thinking_prefix", text=thinking_text))
             return
         # Native task cards consume the ID-bearing tool_start/tool_complete callbacks instead;
         # name-correlated text events would duplicate cards and mispair concurrent same-tool calls.
@@ -312,18 +393,30 @@ class GatewayTurnProgressMixin:
             logger.debug("tool-progress onboarding hint failed: %s", err)
 
     @staticmethod
+    def folds_tool_progress(disp, adapter) -> bool:
+        """``display.tool_progress_fold: spoiler`` for one turn, decided once when the turn is built
+        (``TurnContext.tool_progress_fold``) and read by every progress path. Needs tool progress on
+        and an adapter whose class sets ``supports_spoiler_fold = True``: it renders one ``||spoiler||``
+        spanning lines and code blocks, and ``-# `` subtext (``is True``: a mock attribute is not one).
+        A native-stream adapter shows tool lines in its stream bubble, never in a progress bubble."""
+        return (bool(disp.tool_progress_enabled) and getattr(adapter, "supports_spoiler_fold", False) is True
+                and not getattr(type(adapter), "SUPPORTS_NATIVE_STREAMING", False)
+                and disp.resolve_display_setting(disp.user_config, disp.platform_key, "tool_progress_fold") == "spoiler")
+
+    @staticmethod
     def _preview_cap() -> int:
         """tool_preview_length (default 40): the one-line preview budget for "all"/"new" modes."""
         from agent.display import get_tool_preview_max_len
         pl = get_tool_preview_max_len()
         return pl if pl > 0 else 40
 
-    def _progress_terminal_blocks(self, adapter, tool_name, args, emoji):
+    def _progress_terminal_blocks(self, adapter, tool_name, args, emoji, fold=False):
         """(full, short) fenced blocks for a terminal command on markdown platforms, else (None, None).
 
         No language tag: Slack mrkdwn renders it as a literal first code line. Verbose shows the FULL
         command; "all"/"new" truncate to one line capped at ``tool_preview_length``. Consecutive
-        terminal calls drop the repeated header so back-to-back commands render as adjacent blocks.
+        terminal calls drop the repeated header so back-to-back commands render as adjacent blocks,
+        except when folded (``fold``): a spoiler must open on a text line, not on a fence.
         """
         if not (
             getattr(adapter, "supports_code_blocks", False) and tool_name == "terminal" and isinstance(args, dict)
@@ -331,7 +424,7 @@ class GatewayTurnProgressMixin:
         ):
             return None, None
         cmd_full = args["command"].rstrip()
-        header = "" if self._ctx.last_was_terminal_block[0] else t("gateway.progress.tool_head", emoji=emoji, tool=tool_name) + "\n"
+        header = "" if self._ctx.last_was_terminal_block[0] and not fold else t("gateway.progress.tool_head", emoji=emoji, tool=tool_name) + "\n"
         cap = self._preview_cap()
         lines = cmd_full.splitlines()
         cmd_short = lines[0] if lines else cmd_full
@@ -350,9 +443,10 @@ class GatewayTurnProgressMixin:
             adapter = self._runner._delivery_adapter_for(ctx.source)
         except Exception:
             adapter = None
-        code_full, code_short = self._progress_terminal_blocks(adapter, tool_name, args, emoji)
+        fold = getattr(ctx, "tool_progress_fold", False)
+        code_full, code_short = self._progress_terminal_blocks(adapter, tool_name, args, emoji, fold)
         verbose = ctx.progress_mode == "verbose"
-        code = code_full if verbose else code_short
+        code = code_full if verbose or fold else code_short  # a folded command is hidden: show it whole
         ctx.last_was_terminal_block[0] = code is not None
         if verbose:
             if code is None and args:
@@ -365,7 +459,7 @@ class GatewayTurnProgressMixin:
             elif code is None:
                 code = (t("gateway.progress.tool_preview", emoji=emoji, tool=tool_name, preview=preview) if preview
                         else t("gateway.progress.tool_pending", emoji=emoji, tool=tool_name))
-            ctx.progress_queue.put(code)
+            ctx.progress_queue.put(_fold_tool_line(code) if fold else code)
             return None
         if code is not None:
             return code
@@ -398,7 +492,7 @@ class GatewayTurnProgressMixin:
         if native:
             sc.on_tool_progress(msg)
         else:
-            ctx.progress_queue.put(msg)
+            ctx.progress_queue.put(_fold_tool_line(msg) if getattr(ctx, "tool_progress_fold", False) else msg)
 
     # ── Slack-native task cards (progress-queue drain) ──────────────────────────────────────
 
@@ -640,8 +734,11 @@ class GatewayTurnProgressMixin:
         # (``raw_response["undelivered_chunks"]``): only that tail is retried, ahead of newer lines.
         owed_tail: Any = None
         owed_tail_failures: int = 0
+        # The turn folds tool progress: its lines are ``("__fold__", text, is_tool)``, and a bubble
+        # holding one is rendered by ``_render_fold``.
+        fold: bool = False
 
-    def _progress_edit_state(self, adapter) -> TurnRunner._ProgressEditState:
+    def _progress_edit_state(self, adapter, fold: bool = False) -> TurnRunner._ProgressEditState:
         ctx = self._ctx
         len_fn = adapter.message_len_fn if isinstance(adapter, BasePlatformAdapter) else len
         try:
@@ -663,6 +760,7 @@ class GatewayTurnProgressMixin:
             _PROGRESS_TEXT_LIMIT=max(1, raw_limit - (64 if raw_limit > 128 else 0)),
             # Overflow edits pass metadata (Telegram topic/thread routing) only when edit_message takes it.
             _edit_accepts_metadata=bool(ctx._progress_metadata) and _accepts_keyword(adapter.edit_message, "metadata"),
+            fold=fold,
         )
 
     async def _edit_progress_message(self, st, message_id: str, content: str):
@@ -676,6 +774,8 @@ class GatewayTurnProgressMixin:
 
     @staticmethod
     def _progress_text(lines: list) -> str:
+        if any(map(_is_folded, lines)):
+            return _render_fold(lines)
         return "\n".join(str(line) for line in lines)
 
     @staticmethod
@@ -683,6 +783,8 @@ class GatewayTurnProgressMixin:
         """One progress item as pieces that each fit the cap: a /verbose terminal block is one item of
         any length, and a group holding it would make the adapter split the message itself, so a
         partial delivery could no longer be settled or carried by line. Fences are closed/reopened."""
+        if getattr(st, "fold", False):
+            return _fold_pieces(line, st._PROGRESS_TEXT_LIMIT, st._progress_len_fn)
         text = str(line)
         if st._progress_len_fn(text) <= st._PROGRESS_TEXT_LIMIT:
             return [line]
@@ -708,6 +810,13 @@ class GatewayTurnProgressMixin:
         )
         self._track_progress_result(result)
         return result
+
+    async def _send_progress_line(self, st, line):
+        """One queued line as its own message (no editable bubble). A folded line goes as cap-sized,
+        self-contained messages: handed whole to the adapter it would be split through the spoiler.
+        They stop at the first failed send, a partial delivery once one landed (``send_chunks``)."""
+        groups = self._split_progress_groups(st, [line]) if getattr(st, "fold", False) else [[line]]
+        return await send_chunks([self._progress_text(g) for g in groups], lambda text: self._send_progress_text(st, text))
 
     @staticmethod
     def _hold_partial_tail(st, result) -> bool:
@@ -828,8 +937,9 @@ class GatewayTurnProgressMixin:
         if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
             _, base_msg, count = raw
             if not st.progress_lines:
-                return base_msg
-            st.progress_lines[-1] = _append_progress_repeat_count(base_msg, count + 1)
+                return _fold_tool_line(base_msg) if getattr(st, "fold", False) else base_msg
+            line = _append_progress_repeat_count(base_msg, count + 1)
+            st.progress_lines[-1] = _fold_tool_line(line) if getattr(st, "fold", False) else line
             return st.progress_lines[-1]
         st.progress_lines.append(raw)
         return raw
@@ -879,7 +989,7 @@ class GatewayTurnProgressMixin:
             st.flood_pending = True  # this tick's lines follow the owed tail of an earlier split
             return False
         if st.can_edit and st.progress_msg_id is not None:
-            result = await self._edit_progress_message(st, st.progress_msg_id, "\n".join(st.progress_lines))
+            result = await self._edit_progress_message(st, st.progress_msg_id, self._progress_text(st.progress_lines))
             if result.success:
                 st.flood_pending = False
                 return True
@@ -895,12 +1005,13 @@ class GatewayTurnProgressMixin:
                 logger.info("[%s] Progress edit flood control, backing off", st.adapter.name)
                 return False
             st.can_edit = False
-            result = await self._send_progress_text(st, msg)
+            result = await self._send_progress_line(st, msg)
             if not self._settle_partial_progress(st, result, []):
                 _settle_progress_send(st, result)
             return True
         # First tool: send all accumulated text as a new message; editing unsupported: just this line.
-        result = await self._send_progress_text(st, "\n".join(st.progress_lines) if st.can_edit else msg)
+        result = await (self._send_progress_text(st, self._progress_text(st.progress_lines)) if st.can_edit
+                        else self._send_progress_line(st, msg))
         if self._settle_partial_progress(st, result, []):
             return True
         if st.owed_fresh and not result.success and not _note_flood(st, result) and _owed_send_failed(st):
@@ -953,7 +1064,7 @@ class GatewayTurnProgressMixin:
         if adapter_edit is None or adapter_edit is BasePlatformAdapter.edit_message:
             self._drain_progress_queue()
             return
-        st = self._progress_edit_state(adapter)
+        st = self._progress_edit_state(adapter, fold=getattr(ctx, "tool_progress_fold", False))
         last_edit_ts = 0.0
         EDIT_INTERVAL = 1.5  # Minimum seconds between edits (Telegram flood control)
         while True:

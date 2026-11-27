@@ -866,6 +866,8 @@ gateway:
     task_status_error: "錯誤"
     task_line: "- {title} - {status}"
     task_card_title: "Hermes 正在處理"
+    tool_fold_summary_one: "🛠️ {count} 個工具 · 點擊顯示"
+    tool_fold_summary_many: "🛠️ {count} 個工具 · 點擊顯示"
   pairing:
     validity_hour: "{hours} 小時"
     validity_hours: "{hours} 小時"

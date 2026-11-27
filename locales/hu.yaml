@@ -878,6 +878,8 @@ gateway:
     task_status_error: "hiba"
     task_line: "- {title} - {status}"
     task_card_title: "A Hermes dolgozik"
+    tool_fold_summary_one: "🛠️ {count} eszköz · kattints a megjelenítéshez"
+    tool_fold_summary_many: "🛠️ {count} eszköz · kattints a megjelenítéshez"
   pairing:
     validity_hour: "{hours} óra"
     validity_hours: "{hours} óra"

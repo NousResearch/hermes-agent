@@ -582,6 +582,50 @@ An unrecognised `tool_progress` value — a typo, or a mode copied from another 
 request for more output: the gateway logs it once and keeps the platform's own default, so a Telegram
 chat whose tier is `off` stays quiet.
 
+### Folding tool progress behind a spoiler (Discord)
+
+With `display.tool_progress_fold: spoiler` (usually set per platform, as
+`display.platforms.<platform>.tool_progress_fold`), each tool-progress bubble hides its tool lines
+behind one click (the hidden block still takes its space in the thread). Defaults to `off` (progress renders exactly as before); `true`
+means `spoiler`, and an unrecognised value is logged once and treated as unset. Only adapters that
+render a multi-line spoiler honour it (currently Discord); others ignore the key.
+
+```yaml
+display:
+  platforms:
+    discord:
+      tool_progress_fold: spoiler   # off | spoiler
+```
+
+A folded bubble is one small subtext summary line and **one** spoiler holding every line of that
+bubble at normal size:
+
+````
+-# 🛠️ 3 tools · click to show
+||🔍 search_files: "parse_config"
+📖 read_file: "src/config.py"
+💻 terminal
+```
+make check | grep -E '^FAIL|^WARN'
+```||
+````
+
+- Applies to the `new`, `all` and `verbose` modes, in both groupings, including the extra messages a
+  long bubble rolls over into. `off` and `log` are unchanged.
+- Terminal commands are shown in full in a code block inside the spoiler, redacted like the rest of
+  the line; verbose arguments are redacted too.
+- Everything else the bubble holds sits in the spoiler too: thinking text (when enabled), in its own
+  code block under the `💬` prefix so markup in it cannot reach the lines around it, and the
+  first-run hint. The count covers tool calls only. Status and failure notices, heartbeats, interim
+  assistant messages, approvals and final replies are separate messages and are never folded.
+- Every message is self-contained and within the platform limit: its own summary and count, exactly
+  one spoiler and balanced code fences (a command too long for one message continues in the next
+  under a repeated `💻 terminal …` header, long thinking text under `💬 …`). Literal `||` and triple
+  backticks in folded content get an invisible zero-width space so they cannot end the spoiler or a
+  code block early. Commands and thinking text sit in code blocks, which Discord's table-to-bullets
+  conversion leaves alone, so their text reaches Discord unchanged.
+- Nothing is deleted; combine with `cleanup_progress` if you also want the bubbles removed.
+
 ### `log` mode — audit file instead of chat messages
 
 Setting `display.tool_progress: log` sends **no** progress bubbles to chat. Instead, each tool call is appended as a line to `~/.hermes/logs/tool_calls.log` — a rotating audit file (5 MB × 3 backups) run through the same secret-redacting formatter as regular logs, so credentials never land on disk. Use it when you want a full tool-call trail without any chat noise.
@@ -1084,6 +1128,8 @@ display:
 ```
 
 Defaults to `false`. Only platforms whose adapter implements `delete_message` honor the setting (currently Telegram and Discord). Failed runs **skip** cleanup so the bubbles remain as breadcrumbs.
+
+To keep the bubbles but hide their lines behind one click, see [`tool_progress_fold`](#folding-tool-progress-behind-a-spoiler-discord).
 
 ## Next Steps
 

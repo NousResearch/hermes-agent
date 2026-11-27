@@ -866,6 +866,8 @@ gateway:
     task_status_error: "오류"
     task_line: "- {title} - {status}"
     task_card_title: "Hermes가 작업 중이에요"
+    tool_fold_summary_one: "🛠️ 도구 {count}개 · 클릭해서 보기"
+    tool_fold_summary_many: "🛠️ 도구 {count}개 · 클릭해서 보기"
   pairing:
     validity_hour: "{hours}시간"
     validity_hours: "{hours}시간"

@@ -866,6 +866,8 @@ gateway:
     task_status_error: "Fehler"
     task_line: "- {title} - {status}"
     task_card_title: "Hermes arbeitet"
+    tool_fold_summary_one: "🛠️ {count} Tool · zum Anzeigen klicken"
+    tool_fold_summary_many: "🛠️ {count} Tools · zum Anzeigen klicken"
   pairing:
     validity_hour: "{hours} Stunde"
     validity_hours: "{hours} Stunden"

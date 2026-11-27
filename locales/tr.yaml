@@ -866,6 +866,8 @@ gateway:
     task_status_error: "hata"
     task_line: "- {title} - {status}"
     task_card_title: "Hermes çalışıyor"
+    tool_fold_summary_one: "🛠️ {count} araç · göstermek için tıkla"
+    tool_fold_summary_many: "🛠️ {count} araç · göstermek için tıkla"
   pairing:
     validity_hour: "{hours} saat"
     validity_hours: "{hours} saat"

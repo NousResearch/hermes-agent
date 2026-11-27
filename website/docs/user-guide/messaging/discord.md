@@ -628,6 +628,21 @@ display:
 - `all` — show all tool calls (truncated to 40 characters in gateway messages)
 - `verbose` — show full tool call details (can produce long messages)
 
+#### `display.platforms.discord.tool_progress_fold`
+
+**Type:** string — **Default:** `"off"` — **Values:** `off`, `spoiler`
+
+Turns each tool-progress bubble into one small `-# 🛠️ N tools · click to show` line followed by a single spoiler holding every tool line: Discord hides the text until one click reveals what ran (the hidden block still takes its space in the thread). Terminal commands appear in full (redacted) in a code block inside the spoiler. Thinking text (when enabled, in its own code block) and the first-run hint sit in the spoiler too; the count covers tool calls only. Status notices, interim assistant messages, approvals and final replies are never folded. `off` sends progress exactly as before.
+
+```yaml
+display:
+  platforms:
+    discord:
+      tool_progress_fold: spoiler
+```
+
+Every folded message stays within Discord's 2,000-character limit with exactly one spoiler and balanced code fences; see [Folding tool progress](./index.md#folding-tool-progress-behind-a-spoiler-discord) for the details.
+
 #### `display.tool_progress_command`
 
 **Type:** boolean — **Default:** `false`

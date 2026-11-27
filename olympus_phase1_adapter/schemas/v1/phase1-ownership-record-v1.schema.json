@@ -1,0 +1,402 @@
+{
+  "$id": "olympus.hermes.phase1.ownership-record/v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "const": "OWNERSHIP_ACQUIRED"
+          }
+        },
+        "required": [
+          "state"
+        ]
+      },
+      "then": {
+        "properties": {
+          "phase0_evidence_directory_name": {
+            "const": null
+          },
+          "phase0_evidence_manifest_digest": {
+            "const": null
+          },
+          "phase0_terminal_report_digest": {
+            "const": null
+          },
+          "previous_record_digest": {
+            "const": null
+          },
+          "reason_code": {
+            "const": null
+          },
+          "receipt_digest": {
+            "const": null
+          },
+          "sequence": {
+            "const": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "const": "INVOCATION_CLAIMED"
+          }
+        },
+        "required": [
+          "state"
+        ]
+      },
+      "then": {
+        "properties": {
+          "phase0_evidence_directory_name": {
+            "const": null
+          },
+          "phase0_evidence_manifest_digest": {
+            "const": null
+          },
+          "phase0_terminal_report_digest": {
+            "const": null
+          },
+          "previous_record_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "reason_code": {
+            "const": null
+          },
+          "receipt_digest": {
+            "const": null
+          },
+          "sequence": {
+            "const": 2
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "const": "PREINVOKE_REJECTED"
+          }
+        },
+        "required": [
+          "state"
+        ]
+      },
+      "then": {
+        "properties": {
+          "phase0_evidence_directory_name": {
+            "const": null
+          },
+          "phase0_evidence_manifest_digest": {
+            "const": null
+          },
+          "phase0_terminal_report_digest": {
+            "const": null
+          },
+          "previous_record_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "reason_code": {
+            "enum": [
+              "CANCELLED_BEFORE_INVOCATION_CLAIM",
+              "PERSISTENCE_CORRUPTION",
+              "RECOVERED_BEFORE_INVOCATION_CLAIM"
+            ],
+            "type": "string"
+          },
+          "receipt_digest": {
+            "const": null
+          },
+          "sequence": {
+            "const": 2
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "const": "ENGINE_EVIDENCE_VERIFIED"
+          }
+        },
+        "required": [
+          "state"
+        ]
+      },
+      "then": {
+        "properties": {
+          "phase0_evidence_directory_name": {
+            "pattern": "^phase0-[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "phase0_evidence_manifest_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "phase0_terminal_report_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "previous_record_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "reason_code": {
+            "const": "PHASE0_TERMINAL"
+          },
+          "receipt_digest": {
+            "const": null
+          },
+          "sequence": {
+            "const": 3
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "const": "INDETERMINATE_NO_RETRY"
+          }
+        },
+        "required": [
+          "state"
+        ]
+      },
+      "then": {
+        "properties": {
+          "phase0_evidence_directory_name": {
+            "const": null
+          },
+          "phase0_evidence_manifest_digest": {
+            "const": null
+          },
+          "phase0_terminal_report_digest": {
+            "const": null
+          },
+          "previous_record_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "reason_code": {
+            "enum": [
+              "CANCELLED_AFTER_INVOCATION_CLAIM",
+              "ENGINE_EXCEPTION_WITHOUT_SEALED_RECEIPT",
+              "EVIDENCE_MISSING",
+              "EVIDENCE_VERIFICATION_FAILED",
+              "PERSISTENCE_CORRUPTION",
+              "RECOVERED_AFTER_INVOCATION_CLAIM",
+              "WORKFLOW_CONSTRUCTION_FAILED"
+            ],
+            "type": "string"
+          },
+          "receipt_digest": {
+            "const": null
+          },
+          "sequence": {
+            "enum": [
+              3,
+              4
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "const": "RECEIPT_FINALIZED"
+          }
+        },
+        "required": [
+          "state"
+        ]
+      },
+      "then": {
+        "properties": {
+          "phase0_evidence_directory_name": {
+            "const": null
+          },
+          "phase0_evidence_manifest_digest": {
+            "const": null
+          },
+          "phase0_terminal_report_digest": {
+            "const": null
+          },
+          "previous_record_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "reason_code": {
+            "const": null
+          },
+          "receipt_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "sequence": {
+            "enum": [
+              3,
+              4,
+              5
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "properties": {
+    "correlation_id": {
+      "pattern": "^corr-[a-z0-9][a-z0-9._-]{0,62}$",
+      "type": "string"
+    },
+    "engine_contract_digest": {
+      "const": "2c5860582fcc73192b4e301544e043189dac1079b47078bad3c1f93371b8ee85"
+    },
+    "gate1_packet_sha256": {
+      "const": "6ef02d1e63d19853e0794b6c324f0e7233ec082744419fae529ed16e6e11cacf"
+    },
+    "idempotency_key_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "operation_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "payload_request_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "payload_request_id": {
+      "pattern": "^req-[a-z0-9][a-z0-9._-]{0,62}$",
+      "type": "string"
+    },
+    "phase0_evidence_directory_name": {
+      "pattern": "^phase0-[0-9a-f]{64}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "phase0_evidence_manifest_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "phase0_terminal_report_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "phase1_contract_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "previous_record_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "reason_code": {
+      "enum": [
+        null,
+        "ACTIVE_OWNER",
+        "CANCELLED_AFTER_INVOCATION_CLAIM",
+        "CANCELLED_BEFORE_INVOCATION_CLAIM",
+        "ENGINE_CONTRACT_MISMATCH",
+        "ENGINE_EXCEPTION_WITHOUT_SEALED_RECEIPT",
+        "ENVELOPE_INVALID_JSON",
+        "ENVELOPE_SCHEMA_MISMATCH",
+        "ENVELOPE_TOO_LARGE",
+        "EVIDENCE_MISSING",
+        "EVIDENCE_VERIFICATION_FAILED",
+        "FAKE_TRANSPORT_INVALID",
+        "KEY_BOUND_TO_DIFFERENT_OPERATION",
+        "PERSISTENCE_CORRUPTION",
+        "PHASE0_PROVENANCE_MISMATCH",
+        "PHASE0_TERMINAL",
+        "RECOVERED_AFTER_INVOCATION_CLAIM",
+        "RECOVERED_BEFORE_INVOCATION_CLAIM",
+        "ROOTS_OVERLAP",
+        "UNSAFE_EVIDENCE_ROOT",
+        "UNSAFE_RECEIPT_ROOT",
+        "UNSAFE_REPOSITORY_ROOT",
+        "WORKFLOW_CONSTRUCTION_FAILED"
+      ],
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "receipt_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "record_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "olympus.hermes.phase1.ownership-record/v1"
+    },
+    "sequence": {
+      "maximum": 8,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "state": {
+      "enum": [
+        "OWNERSHIP_ACQUIRED",
+        "INVOCATION_CLAIMED",
+        "ENGINE_EVIDENCE_VERIFIED",
+        "PREINVOKE_REJECTED",
+        "INDETERMINATE_NO_RETRY",
+        "RECEIPT_FINALIZED"
+      ],
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "gate1_packet_sha256",
+    "phase1_contract_digest",
+    "engine_contract_digest",
+    "sequence",
+    "state",
+    "idempotency_key_digest",
+    "operation_digest",
+    "correlation_id",
+    "payload_request_id",
+    "payload_request_digest",
+    "previous_record_digest",
+    "reason_code",
+    "phase0_terminal_report_digest",
+    "phase0_evidence_manifest_digest",
+    "phase0_evidence_directory_name",
+    "receipt_digest",
+    "record_digest"
+  ],
+  "title": "olympus.hermes.phase1.ownership-record/v1",
+  "type": "object"
+}

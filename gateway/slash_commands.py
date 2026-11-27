@@ -1411,9 +1411,12 @@ class GatewaySlashCommandsMixin(
             "user_id": src.user_id, "session_key": self._session_key_for_source(src),
             "timestamp": datetime.now().isoformat(), "authority": opener_authority(event)}  # who answers its prompts
         # ``profile``: the update watcher (possibly the NEXT gateway process) must answer through the
-        # requester's own profile bot, not the default profile's adapter for the same platform.
+        # requester's own profile bot, not the default profile's adapter for the same platform;
+        # ``transport_profile`` names the bot that received /update when a route re-homed the chat.
+        from gateway.session_identity import transport_profile_of
         pending.update({k: v for k, v in (("thread_id", src.thread_id), ("message_id", event.message_id),
-                                          ("profile", getattr(src, "profile", None))) if v})
+                                          ("profile", getattr(src, "profile", None)),
+                                          ("transport_profile", transport_profile_of(src))) if v})
         _tmp_pending = pending_path.with_suffix(".tmp")
         _tmp_pending.write_text(json.dumps(pending), encoding="utf-8")
         _tmp_pending.replace(pending_path)

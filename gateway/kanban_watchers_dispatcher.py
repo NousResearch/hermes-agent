@@ -41,6 +41,9 @@ class _DispatcherSettings:
     reconcile_orphans: bool
     default_assignee: Optional[str]
     max_in_progress_per_profile: Optional[int]
+    # Fail-closed default: a direct construction (tests, embedders) still guards
+    # the coder profile; ``_resolve_dispatcher_settings`` overrides from config.
+    coder_profiles: tuple[str, ...] = ()
 
 
 def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettings:
@@ -114,6 +117,9 @@ def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettin
         # Per-profile concurrency cap: no single profile's local model / API
         # quota / browser pool gets overwhelmed by a fan-out.
         max_in_progress_per_profile=_positive_int_setting(kanban_cfg, "max_in_progress_per_profile"),
+        # Reviewed-once-hands-back: a pin left on a coder card would run the
+        # implementation on the review model, so the tick refuses it.
+        coder_profiles=_kbd().normalize_coder_profiles(kanban_cfg.get("coder_profiles")),
     )
 
 

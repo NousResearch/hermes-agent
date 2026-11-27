@@ -366,6 +366,10 @@ _SPECS = [
         _arg("--failure-limit", type=int, default=kbd.DEFAULT_FAILURE_LIMIT,
              help=f"Auto-block a task after this many consecutive non-success attempts "
                   f"(spawn_failed, timed_out, or crashed; default: {kbd.DEFAULT_FAILURE_LIMIT})"),
+        _arg("--force-pin", action="store_true",
+             help="Dispatch a card pinned to a kanban.coder_profiles assignee anyway "
+                  "(records pin_forced). Default refuses and blocks it, so a review pin "
+                  "never runs an implementation hop"),
         _json_flag(),
     ], help="One dispatcher pass: reclaim stale, promote ready, spawn workers"),
     _cmd("daemon", [

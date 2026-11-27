@@ -1,0 +1,35 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: search1api
+description: Live web search, news, page reading, sitemaps, and trending topics.
+source: https://github.com/superagents-lab/search1api-mcp
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Native OAuth 2.1: an unauthenticated request gets a
+# 401 whose RFC 9728 protected-resource metadata names the Search1API
+# authorization server, which accepts Hermes's Client ID Metadata Document
+# (Dynamic Client Registration is also enabled). Hermes's MCP client +
+# mcp_oauth_manager handle discovery, PKCE, token exchange, and refresh.
+# Users who prefer an API key can add the server by hand with an
+# `Authorization: Bearer <key>` header instead.
+transport:
+  type: http
+  url: https://mcp.search1api.com/mcp
+
+auth:
+  type: oauth
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - search1api
+  hosts:
+    - search1api.com
+    - s1.dev
+
+post_install: |
+  On first connection Hermes opens a browser to sign in to Search1API
+  (or run `hermes mcp login search1api`). Approve access, then restart
+  the session so tools load.

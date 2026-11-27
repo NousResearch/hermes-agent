@@ -107,6 +107,7 @@ export {
   type WebSocketLike
 } from './json-rpc-gateway'
 export { modelSearchText } from './model-search-text'
+export { INTERNAL_NOTIFICATION_FOOTER_RE } from './notification-display'
 export {
   gaugeScope,
   gaugeTitle,

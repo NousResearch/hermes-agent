@@ -30,6 +30,7 @@ const COMPARED_FIELDS = [
   'recovered',
   'asyncResult',
   'asyncResultKind',
+  'internalNotification',
   'id',
   'role',
   'pending',
@@ -177,6 +178,7 @@ const flagsDiffer = (a: ChatMessage, b: ChatMessage) =>
 // structural compare of their rendered fields. Kept out of the host comparator
 // so its branch count stays within the ratchet.
 const displayDescriptorsDiffer = (a: ChatMessage, b: ChatMessage) =>
+  a.internalNotification !== b.internalNotification ||
   (a.errorSurface?.layer ?? null) !== (b.errorSurface?.layer ?? null) ||
   (a.errorSurface?.code ?? null) !== (b.errorSurface?.code ?? null) ||
   (a.errorSurface?.retryable ?? null) !== (b.errorSurface?.retryable ?? null) ||

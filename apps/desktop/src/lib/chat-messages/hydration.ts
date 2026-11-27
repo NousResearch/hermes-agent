@@ -1,4 +1,4 @@
-import { skillInvocationText } from '@hermes/shared'
+import { INTERNAL_NOTIFICATION_FOOTER_RE, skillInvocationText } from '@hermes/shared'
 
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { splitLeadingAttachmentRefs } from '@/components/assistant-ui/reference-kinds'
@@ -178,6 +178,7 @@ function transcriptContent(
 const NOTICE_DISPLAY_KINDS = [
   'model_switch',
   'async_delegation_complete',
+  'internal_notification',
   'process_complete',
   'auto_continue',
   'personality_switch',
@@ -319,6 +320,9 @@ function messageReactions(metadata: SessionMessage['display_metadata']): Message
 // Only parse producer-owned boundaries, never render the model's task preamble.
 // Older backends can persist an unwrapped result rather than an envelope.
 function asyncResultBody(content: string): string | undefined {
+  // Strip provenance before unwrapping: otherwise the footer's closing bracket
+  // is mistaken for the process envelope's, and leaks into the expanded report.
+  content = content.replace(INTERNAL_NOTIFICATION_FOOTER_RE, '')
   let bodies = [content]
 
   if (content.startsWith('[IMPORTANT: ')) {
@@ -378,7 +382,24 @@ function timelineDisplayContent(message: SessionMessage, content: string): strin
     return timelineDisplayText(message.display_metadata) ?? 'background process finished'
   }
 
+  if (message.display_kind === 'internal_notification') {
+    return timelineDisplayText(message.display_metadata) ?? content.replace(INTERNAL_NOTIFICATION_FOOTER_RE, '')
+  }
+
   return content
+}
+
+// Keep producer-owned notification text out of the user attachment-context parser.
+function storedDisplayContent(message: SessionMessage, content: unknown): string {
+  const role = message.display_kind === 'internal_notification' ? 'system' : message.role
+
+  return timelineDisplayContent(message, displayContentForMessage(role, content))
+}
+
+function internalNotificationField(message: SessionMessage): Pick<ChatMessage, 'internalNotification'> {
+  return message.display_kind === 'internal_notification'
+    ? { internalNotification: parseDisplayMetadata(message.display_metadata)?.completion_admission ? 'note' : 'turn' }
+    : {}
 }
 
 export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
@@ -595,7 +616,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     const rawDisplayContent = transcriptContent(
       message.display_kind,
       message.role,
-      timelineDisplayContent(message, displayContentForMessage(message.role, content))
+      storedDisplayContent(message, content)
     )
 
     const displayRole = isMachineNotice(message.display_kind) ? 'system' : message.role
@@ -760,6 +781,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
         ? { asyncResult: asyncResultBody(displayContentForMessage(message.role, message.content || content)) }
         : {}),
       ...(message.display_kind === 'process_complete' ? { asyncResultKind: 'process' as const } : {}),
+      ...internalNotificationField(message),
       timestamp: earliestTimestamp(message.timestamp, ...parts.map(part => part.timestamp)),
       ...(rowId !== undefined ? { rowId } : {}),
       ...promptSubmission(message),

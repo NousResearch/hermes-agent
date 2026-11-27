@@ -360,7 +360,7 @@ export interface UnspokenTurnSpeech {
  * every earlier assistant turn as one speech string. Bound to the current
  * turn (assistant bubbles after the last user message) instead. Hidden user
  * rows count: a widget intent (`display_kind: hidden`) is a real turn for the
- * agent even though no bubble renders. A slice with no user row (mid-turn
+ * agent even though no bubble renders. Internal notices start agent turns too. A slice with no user row (mid-turn
  * interims only) still collects those assistants.
  */
 export function collectUnspokenTurnSpeech(
@@ -370,10 +370,10 @@ export function collectUnspokenTurnSpeech(
   let spokenIndex = lastSpokenId ? messages.findLastIndex(m => m.id === lastSpokenId) : -1
 
   if (spokenIndex < 0) {
-    const lastUser = messages.findLastIndex(m => m.role === 'user')
+    const lastTurn = messages.findLastIndex(m => m.role === 'user' || m.internalNotification === 'turn')
 
-    if (lastUser >= 0) {
-      spokenIndex = lastUser
+    if (lastTurn >= 0) {
+      spokenIndex = lastTurn
     }
   }
 

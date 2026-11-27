@@ -149,14 +149,14 @@ export const AssistantMessage: FC<AssistantMessageProps> = props => {
     // Shared id->index map: a per-row scan for its own position was
     // mounted-rows x transcript-length on every streamed chunk (#126486).
     for (let j = threadMessageIndex(messages, s.message.id) - 1; j >= 0; j--) {
-      const prev = messages[j] as { content?: unknown; role?: string }
+      const prev = messages[j]
 
       if (prev.role === 'assistant') {
         return null
       }
 
-      if (prev.role === 'user') {
-        const match = AGENT_MESSAGE_RE.exec(messageContentText(prev.content as never).trim())
+      if (prev.role === 'user' || prev.metadata.custom?.internalNotification === 'turn') {
+        const match = AGENT_MESSAGE_RE.exec(messageContentText(prev.content).trim())
 
         if (!match) {
           return null

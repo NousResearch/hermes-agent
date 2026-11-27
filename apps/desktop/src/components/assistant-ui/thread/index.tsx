@@ -1,8 +1,10 @@
+import { MessagePrimitive, useAuiState } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { createContext, memo, useCallback, useContext, useMemo, useRef, useState } from 'react'
 
 import { ChatEmptySlot } from '@/components/assistant-ui/chat-empty-slot'
 import { AssistantMessage } from '@/components/assistant-ui/thread/assistant-message'
+import { messageContentText, PROCESS_NOTIFICATION_RE } from '@/components/assistant-ui/thread/content'
 import { ThreadMessageList } from '@/components/assistant-ui/thread/list'
 import { BackgroundResumeNotice, CenteredThreadSpinner } from '@/components/assistant-ui/thread/status'
 import { SystemMessage } from '@/components/assistant-ui/thread/system-message'
@@ -10,13 +12,42 @@ import { ThreadTimeline } from '@/components/assistant-ui/thread/timeline'
 import { useTranscriptWindow } from '@/components/assistant-ui/thread/transcript-window'
 import { type RestoreMessageTarget } from '@/components/assistant-ui/thread/types'
 import { UserEditComposer } from '@/components/assistant-ui/thread/user-edit-composer'
-import { UserMessage } from '@/components/assistant-ui/thread/user-message'
+import {
+  AGENT_MESSAGE_RE,
+  AgentMessageNote,
+  ProcessNotificationNote,
+  UserMessage
+} from '@/components/assistant-ui/thread/user-message'
 import { Intro, type IntroProps } from '@/components/chat/intro'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { $webappSignedOut } from '@/store/boot'
 import { notifyError } from '@/store/notifications'
+
+function SystemTimelineMessage() {
+  const text = useAuiState(s =>
+    s.message.metadata.custom?.internalNotification ? messageContentText(s.message.content).trim() : ''
+  )
+
+  const Note = PROCESS_NOTIFICATION_RE.test(text)
+    ? ProcessNotificationNote
+    : AGENT_MESSAGE_RE.test(text)
+      ? AgentMessageNote
+      : null
+
+  return Note ? (
+    <MessagePrimitive.Root
+      className="flex w-full min-w-0 flex-col"
+      data-role="system"
+      data-slot="aui_system-message-root"
+    >
+      <Note text={text} />
+    </MessagePrimitive.Root>
+  ) : (
+    <SystemMessage />
+  )
+}
 
 type ThreadLoadingState = 'response' | 'session'
 
@@ -148,7 +179,7 @@ export const Thread = memo(function Thread({
           onDismissError={hasDismissError ? messageId => callbacksRef.current.onDismissError?.(messageId) : undefined}
         />
       ),
-      SystemMessage,
+      SystemMessage: SystemTimelineMessage,
       UserEditComposer: () => {
         const { cwd: editCwd, gateway: editGateway, sessionId: editSessionId } = useContext(ThreadEditContext)
 

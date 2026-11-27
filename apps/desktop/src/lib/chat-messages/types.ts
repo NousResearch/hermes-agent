@@ -44,6 +44,8 @@ export type ChatMessage = {
   /** Result body only; the system text remains the compact completion label. */
   asyncResult?: string
   asyncResultKind?: 'process'
+  /** A typed machine notice may run a turn or simply be recorded between turns. */
+  internalNotification?: 'note' | 'turn'
   timestamp?: number
   completedAt?: number
   pending?: boolean

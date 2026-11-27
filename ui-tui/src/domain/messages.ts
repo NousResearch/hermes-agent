@@ -1,3 +1,4 @@
+import { INTERNAL_NOTIFICATION_FOOTER_RE } from '@hermes/shared'
 import type { SessionInfo } from '@hermes/shared/gateway-types'
 
 import { storedClarifyRows } from '../app/clarifyTranscript.js'
@@ -18,6 +19,39 @@ export const userDisplay = (text: string) => {
   const prefix = (words.length > 1 ? words.slice(0, 4).join(' ') : first).slice(0, 80)
 
   return t('libText.messages.longMessage', prefix || t('libText.messages.messageFallback'))
+}
+
+type TimelineEventText = (row: TranscriptRow, text: string) => string
+
+const backgroundFinished: TimelineEventText = ({ display_kind, display_metadata: meta }) => {
+  const count = meta && typeof meta.task_count === 'number' ? meta.task_count : undefined
+
+  const label =
+    display_kind === 'process_complete'
+      ? t('libText.messages.backgroundProcessFinished')
+      : count === undefined
+        ? t('libText.messages.backgroundAgentWorkFinished')
+        : t(
+            count === 1
+              ? 'libText.messages.backgroundAgentsFinishedOne'
+              : 'libText.messages.backgroundAgentsFinishedOther',
+            count
+          )
+
+  return typeof meta?.display_text === 'string' ? meta.display_text : label
+}
+
+/** The system line each display-only row kind renders as. */
+const TIMELINE_EVENTS: Record<string, TimelineEventText> = {
+  async_delegation_complete: backgroundFinished,
+  auto_continue: () => t('libText.messages.resumedInterruptedTurn'),
+  model_switch: () => t('libText.messages.modelChanged'),
+  personality_switch: () => t('libText.messages.personalityChanged'),
+  internal_notification: ({ display_metadata: meta }, text) =>
+    typeof meta?.display_text === 'string' && meta.display_text.trim()
+      ? meta.display_text
+      : text.replace(INTERNAL_NOTIFICATION_FOOTER_RE, ''),
+  process_complete: backgroundFinished
 }
 
 /** A resumed user row's durable message row (backtrack browsing finds its prompt by it). */
@@ -67,54 +101,16 @@ export const toTranscriptMessages = (rows: unknown): Msg[] => {
       continue
     }
 
-    // Display-only timeline events: render as dim ◈ markers instead of
-    // opaque user messages. Hidden compaction handoffs are skipped entirely.
+    // Hidden compaction handoffs are skipped entirely.
     if (display_kind === 'hidden') {
       continue
     }
 
-    if (display_kind === 'model_switch') {
-      out.push({ kind: 'event', role: 'system', text: t('libText.messages.modelChanged') })
-      pending = []
+    const eventText =
+      display_kind && Object.hasOwn(TIMELINE_EVENTS, display_kind) ? TIMELINE_EVENTS[display_kind] : undefined
 
-      continue
-    }
-
-    if (display_kind === 'auto_continue') {
-      out.push({ kind: 'event', role: 'system', text: t('libText.messages.resumedInterruptedTurn') })
-      pending = []
-
-      continue
-    }
-
-    if (display_kind === 'personality_switch') {
-      out.push({ kind: 'event', role: 'system', text: t('libText.messages.personalityChanged') })
-      pending = []
-
-      continue
-    }
-
-    if (display_kind === 'async_delegation_complete' || display_kind === 'process_complete') {
-      const meta = (row as TranscriptRow).display_metadata
-      const count = meta && typeof meta.task_count === 'number' ? meta.task_count : undefined
-
-      const label =
-        display_kind === 'process_complete'
-          ? t('libText.messages.backgroundProcessFinished')
-          : count === undefined
-            ? t('libText.messages.backgroundAgentWorkFinished')
-            : t(
-                count === 1
-                  ? 'libText.messages.backgroundAgentsFinishedOne'
-                  : 'libText.messages.backgroundAgentsFinishedOther',
-                count
-              )
-
-      out.push({
-        kind: 'event',
-        role: 'system',
-        text: typeof meta?.display_text === 'string' ? meta.display_text : label
-      })
+    if (eventText) {
+      out.push({ kind: 'event', role: 'system', text: eventText(row as TranscriptRow, text) })
       pending = []
 
       continue

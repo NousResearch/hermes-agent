@@ -47,4 +47,16 @@ describe('skinToDesktopTheme', () => {
 
     expect(theme.colors.destructive).toBe(normalizeHex('#ff5566'))
   })
+
+  it('preserves the skin description or falls back to default', () => {
+    const custom = skinToDesktopTheme({
+      name: 'matcha',
+      description: 'Matcha latte & botanical green — Material 3 Expressive palette',
+      colors: { background: '#111612', ui_accent: '#78dc88', banner_text: '#e1e9df' }
+    })!
+    expect(custom.description).toBe('Matcha latte & botanical green — Material 3 Expressive palette')
+
+    const fallback = withColors('plain', { background: '#101010', banner_text: '#ffffff' })!
+    expect(fallback.description).toBe('Hermes skin')
+  })
 })

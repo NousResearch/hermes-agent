@@ -7,7 +7,7 @@ import json
 
 import pytest
 
-from agent.memory_manager import MemoryManager
+from agent.memory_manager import MemoryManager, _redact_for_provider
 from agent.memory_provider import MemoryProvider
 
 _SECRET = "sk-proj-abc123def456ghi789jkl012"
@@ -136,3 +136,65 @@ def test_provider_tool_url_argument_reaches_the_provider_unmasked():
     for url in urls:
         mgr.handle_tool_call("rec_tool", {"url": url})
     assert provider.seen == [{"url": url} for url in urls]
+# Assembled at runtime so this file's own text never contains a token-shaped literal.
+_MODEL = "cn:glm-5.3-flash"
+_CONFIG_KEY = "HINDSIGHT_API_RETAIN_MAX_COMPLETION_TOKENS"
+
+
+def test_an_env_dump_does_not_learn_the_neighbouring_config_key_or_model_id():
+    """A ``*_KEY=`` line's greedy value swallows the following ``=`` pairs inside a JSON-escaped
+    payload, so those strings look 'masked'. Learning them rewrote them everywhere in the
+    hand-off: the config key lost its name (``[redacted]=16384``) and the model id became
+    ``cn:[redacted]`` inside stored memory."""
+    tool = json.dumps({"output": f"HINDSIGHT_API_LLM_API_KEY={_SECRET}\n"
+                                f"HINDSIGHT_API_LLM_MODEL={_MODEL}\n"
+                                f"{_CONFIG_KEY}=16384"})
+    prose = f"建议换成 `{_MODEL}`；新增配置键 `{_CONFIG_KEY}=16384`。"
+    tool_out, prose_out = _redact_for_provider(tool, prose)
+    assert _MODEL in prose_out
+    assert f"{_CONFIG_KEY}=16384" in prose_out
+    assert "[redacted]" not in prose_out
+    assert _SECRET not in tool_out
+
+
+def test_an_escaped_newline_before_an_identifier_is_not_learned_as_part_of_it():
+    """``_TOKEN_RE`` starts a match at the ``n`` of a JSON-escaped ``\\n``, producing
+    ``nHINDSIGHT_API_...`` — a string that occurs nowhere in the source."""
+    tool = json.dumps({"output": f"=== 确认\\n{_CONFIG_KEY}=16384\\n"})
+    prose = f"修复：新增配置键 `{_CONFIG_KEY}=16384`。"
+    _tool_out, prose_out = _redact_for_provider(tool, prose)
+    assert "[redacted]=16384" not in prose_out
+    assert f"{_CONFIG_KEY}=16384" in prose_out
+
+
+def test_a_learned_secret_does_not_eat_a_longer_identifier_that_contains_it():
+    """The re-mask is a whole-token comparison, not a bare substring ``sub``."""
+    secret = "abc123" + "def456ghi789jkl012mno345pqr678"
+    tool = json.dumps({"output": f"TOKEN={secret}"})
+    longer = f"{secret}X"
+    _tool_out, prose_out = _redact_for_provider(tool, f"变量名 {longer} 不是密钥。")
+    assert longer in prose_out
+
+
+@pytest.mark.parametrize("escaped", [False, True])
+def test_a_real_secret_is_still_masked_when_the_model_repeats_it(escaped):
+    """The #115104 contract must hold through the token-boundary change, including when the
+    repetition is JSON-escaped (``\\nsk-...``) or carries trailing sentence punctuation."""
+    secret = "Ab8RN6Jx2kq9Zs0VwT4yLm3PbQe7HcUfGdA1nX5oIr"
+    tool = json.dumps({"output": json.dumps({"embedding": {"api_key": secret}, "model": "gemini"})})
+    repeated = f"\\n{secret}." if escaped else f"{secret}."
+    tool_out, prose_out = _redact_for_provider(tool, f"Your key is {repeated}")
+    assert secret not in tool_out and secret not in prose_out
+
+
+def test_escaped_n_leading_secret_is_masked_without_rewriting_longer_identifiers():
+    """Keep a real n-leading credential whole even when prose prefixes it with a backslash."""
+    secret = "n" + "Ab8RN6Jx2kq9Zs0VwT4yLm3PbQe7HcUfGdA1nX5oIr"
+    tool = json.dumps({"output": f"HINDSIGHT_API_LLM_API_KEY={secret}\n"})
+    longer_identifier = f"{secret}Suffix"
+
+    _tool_out, prose_out = _redact_for_provider(
+        tool, f"Copied value \\{secret}. Safe identifier {longer_identifier}"
+    )
+    assert secret not in prose_out.split("Safe identifier")[0]
+    assert longer_identifier in prose_out

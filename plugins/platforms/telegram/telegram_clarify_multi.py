@@ -124,6 +124,6 @@ async def resolve_clarify_choice(adapter: Any, query: Any, clarify_id: str, prom
         logger.warning("Telegram clarify button: resolve_gateway_clarify returned False (id=%s)", clarify_id)
         return
     await answer_callback(query, f"✓ {shown[:60]}")
-    body = html.escape(query.message.text or "")
-    await adapter._edit_html_quiet(query, f"❓ {body}\n\n<b>{html.escape(user_display)}:</b> {html.escape(shown)}")
+    body = html.escape(query.message.text or "")  # the rendered card, its prefix already included
+    await adapter._edit_html_quiet(query, f"{body}\n\n<b>{html.escape(user_display)}:</b> {html.escape(shown)}")
     log_resolved(query, clarify_id, prompt, shown, user_display)

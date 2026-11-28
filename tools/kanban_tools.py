@@ -785,6 +785,16 @@ def _handle_complete(args: dict, **kw) -> str:
             return tool_error(
                 f"kanban_complete refused: {claim_err}. Nothing changed. Wait for the worker "
                 f"to finish, or an operator can run `hermes kanban complete --force {tid}`.")
+        except kb.ReviewNotClaimedError as review_err:
+            # This tool never passes force=True, so a worker can only reach this by
+            # calling kanban_complete on a 'review'-status card it never claimed via
+            # claim_review_task — exactly the self-approval race this guards against.
+            # Nothing was mutated; point the worker at the real approval path instead
+            # of a silent, unaccountable completion.
+            return tool_error(
+                f"kanban_complete refused: {review_err}. Nothing changed. This task is "
+                f"waiting on its reviewer's own kanban_complete run, not this one — do not "
+                f"retry it from here.")
         except kb.HallucinatedCardsError as hall_err:
             # The gate runs before the write txn, so the task was NOT mutated;
             # say so explicitly or the model treats the error as terminal and

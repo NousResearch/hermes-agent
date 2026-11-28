@@ -1368,14 +1368,27 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
 
         raw_group_rules = extra.get("group_rules", {})
         group_rules: dict[str, FeishuGroupRule] = {}
+        valid_policies = {"open", "allowlist", "blacklist", "admin_only", "disabled"}
         if isinstance(raw_group_rules, dict):
             for chat_id, rule_cfg in raw_group_rules.items():
                 if not isinstance(rule_cfg, dict):
                     continue
+                allowlist = _id_set(rule_cfg.get("allowlist", []))
+                blacklist = _id_set(rule_cfg.get("blacklist", []))
+                if "policy" in rule_cfg:
+                    policy = str(rule_cfg.get("policy", "open")).strip().lower()
+                    if policy not in valid_policies:
+                        policy = "disabled"
+                elif "allowlist" in rule_cfg:
+                    policy = "allowlist"
+                elif "blacklist" in rule_cfg:
+                    policy = "blacklist"
+                else:
+                    policy = "open"
                 group_rules[str(chat_id)] = FeishuGroupRule(
-                    policy=str(rule_cfg.get("policy", "open")).strip().lower(),
-                    allowlist=_id_set(rule_cfg.get("allowlist", [])),
-                    blacklist=_id_set(rule_cfg.get("blacklist", [])),
+                    policy=policy,
+                    allowlist=allowlist,
+                    blacklist=blacklist,
                     # Only override when explicitly set — missing vs false must not collapse.
                     require_mention=_to_boolean(rule_cfg["require_mention"]) if "require_mention" in rule_cfg else None,
                 )

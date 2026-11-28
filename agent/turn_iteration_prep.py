@@ -379,6 +379,11 @@ def begin_iteration(
     # Reset per-turn checkpoint dedup so each iteration can take one snapshot.
     agent._checkpoint_mgr.new_turn()
 
+    # A paused run blocks here, between tool batches and before
+    # the next model request; a stop while paused falls through to the interrupt exit below.
+    from agent.run_pause import wait_while_paused
+    wait_while_paused(agent)
+
     if agent._interrupt_requested:
         interrupted = True
         _issuer = interrupt_issuer(agent)

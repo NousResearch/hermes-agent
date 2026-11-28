@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.hermes_cli.test_plugin_host import _home_with_plugins
+from tests.hermes_cli.plugin_host_support import _home_with_plugins
 from tests.hermes_cli.test_plugin_session_client import DESKTOP, _PairedModel, _terminal
 from tests.waiting import async_wait_until
 

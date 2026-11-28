@@ -18,6 +18,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -65,6 +67,29 @@ class TestAnthropicMcpPrefixStrip:
     def _get_transport(self):
         from agent.transports.anthropic import AnthropicTransport
         return AnthropicTransport()
+
+    @pytest.mark.parametrize("name", ["tool_call", "tool_search", "tool_describe"])
+    @pytest.mark.parametrize("strip_tool_prefix", [True, False])
+    def test_strips_prefix_for_tool_search_bridge_tools(self, name, strip_tool_prefix):
+        """Schema-only bridge tools round-trip without relying on registry membership."""
+        transport = self._get_transport()
+        response = _make_response(_make_tool_use_block("mcp__" + name))
+
+        with patch("tools.registry.registry", _FakeRegistry(set())):
+            result = transport.normalize_response(response, strip_tool_prefix=strip_tool_prefix)
+
+        assert result.tool_calls[0].name == (name if strip_tool_prefix else "mcp__" + name)
+
+    @pytest.mark.parametrize("registered_name", ["mcp__tool_call", "mcp_tool_call"])
+    def test_registered_tool_wins_over_bridge_name(self, registered_name):
+        """Bridge fallback must preserve native ownership of a contested wire name."""
+        transport = self._get_transport()
+        response = _make_response(_make_tool_use_block("mcp__tool_call"))
+
+        with patch("tools.registry.registry", _FakeRegistry({registered_name})):
+            result = transport.normalize_response(response, strip_tool_prefix=True)
+
+        assert result.tool_calls[0].name == registered_name
 
     def test_strips_prefix_for_oauth_injected_native_tool(self):
         """``mcp__read_file`` -> ``read_file`` (bare native tool)."""

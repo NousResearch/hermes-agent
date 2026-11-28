@@ -200,6 +200,20 @@ def hand_written_problems() -> list[str]:
     return problems
 
 
+def _on_disk(rel: str) -> bytes | None:
+    """The file at ``rel`` as this script would write it, or None when there is none.
+
+    ``.gitattributes`` falls under ``* text=auto`` and has no ``eol`` rule, so Git for Windows checks it out
+    with CRLF; :func:`attributes` reads it with universal newlines and writes LF. Compare it with CRLF read
+    as LF, or ``--check`` fails on every Windows checkout. The other files are compared byte for byte.
+    """
+    path = ROOT / rel
+    if not path.is_file():
+        return None
+    data = path.read_bytes()
+    return data.replace(b"\r\n", b"\n") if rel == ATTRIBUTES else data
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--check", action="store_true", help="change nothing; exit 1 when the tree differs")
@@ -209,7 +223,7 @@ def main(argv: list[str] | None = None) -> int:
     missing = missing_startup_files(files)
     hand = hand_written_problems()
     files[ATTRIBUTES] = attributes([p for p in files if p != ATTRIBUTES])
-    changed = [rel for rel, data in files.items() if not (ROOT / rel).is_file() or (ROOT / rel).read_bytes() != data]
+    changed = [rel for rel, data in files.items() if _on_disk(rel) != data]
     for rel in missing:
         print(f"{rel}: listed in [tool.hermes] update-startup-files but not in the tree, so updaters refuse "
               f"the update; fix the list or add the old path to hermes_agent/compat/required_names.py")

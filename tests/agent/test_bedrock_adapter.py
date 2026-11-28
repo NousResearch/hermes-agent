@@ -1301,6 +1301,46 @@ class TestBedrockContextProbe:
         return client
 
 
+    def test_probe_reads_window_from_models_with_a_max_tokens_floor(self):
+        # Kimi K3, Grok 4.6 and the GPT models on Bedrock validate maxTokens >= 16 before the
+        # prompt length, so a probe below that floor never sees the length error.
+        from agent.bedrock_adapter import probe_bedrock_context_length
+
+        def converse(**kwargs):
+            max_tokens = kwargs["inferenceConfig"]["maxTokens"]
+            if max_tokens < 16:
+                raise Exception(
+                    "An error occurred (ValidationException) when calling the Converse operation: "
+                    "The model returned the following errors: Invalid 'max_output_tokens': integer "
+                    f"below minimum value. Expected a value >= 16, but got {max_tokens} instead.")
+            raise Exception(
+                "An error occurred (ValidationException) when calling the Converse operation: "
+                "The model returned the following errors: prompt tokens (1444530) exceed model "
+                "maximum (1048576) for moonshotai.kimi-k3")
+
+        client = MagicMock()
+        client.converse.side_effect = converse
+        with patch("agent.bedrock_adapter._get_bedrock_runtime_client", return_value=client):
+            assert probe_bedrock_context_length("us.moonshotai.kimi-k3", "us-east-1") == 1_048_576
+
+    @pytest.mark.parametrize("msg,expected", [
+        # Converse wording for Kimi K3 and Grok 4.6 (us-east-1, 2026-11-22): the prompt count
+        # comes first and must not win over the model maximum.
+        ("An error occurred (ValidationException) when calling the Converse operation: The model "
+         "returned the following errors: prompt tokens (1444530) exceed model maximum (1048576) "
+         "for moonshotai.kimi-k3", 1_048_576),
+        ("The model returned the following errors: prompt tokens (1444476) exceed model maximum "
+         "(524288) for xai.grok-4.6", 524_288),
+        # GPT on Bedrock names no number: the probe falls back to the static table.
+        ("The model returned the following errors: Your input exceeds the context window of this "
+         "model. Please adjust your input and try again.", None),
+        # Not a prompt-length error: must not be read as a window.
+        ("Number of images (1500) exceeds model maximum (2000)", None),
+    ])
+    def test_parse_model_maximum_wording(self, msg, expected):
+        from agent.model_metadata import parse_context_limit_from_error
+        assert parse_context_limit_from_error(msg) == expected
+
     def test_probe_returns_none_when_client_unavailable(self):
         from agent.bedrock_adapter import probe_bedrock_context_length
         with patch("agent.bedrock_adapter._get_bedrock_runtime_client",

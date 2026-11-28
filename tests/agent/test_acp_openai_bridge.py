@@ -106,6 +106,28 @@ def test_non_string_arguments_are_json_encoded_and_missing_ids_synthesised():
     assert calls[0].id == "acp_call_1"
 
 
+def test_flat_name_arguments_block_becomes_a_call_not_a_final_answer():
+    """``<tool_call>{"name": ..., "arguments": {...}}</tool_call>`` is the Hermes/Qwen
+    template shape. It used to be erased from the text with no call produced, so
+    the turn ended as if the model had answered."""
+    calls, cleaned = extract_tool_calls_from_text(
+        'Reading it.\n<tool_call>{"name": "read_file", "arguments": {"path": "notes.txt"}}</tool_call>'
+    )
+    assert [c.function.name for c in calls] == ["read_file"]
+    assert json.loads(calls[0].function.arguments) == {"path": "notes.txt"}
+    assert calls[0].id == "acp_call_1"
+    assert cleaned == "Reading it."
+
+
+def test_flat_shape_keeps_string_arguments_and_the_given_id():
+    calls, _ = extract_tool_calls_from_text(
+        '<tool_call>{"id": "c7", "name": "memory", '
+        '"arguments": "{\\"action\\": \\"add\\"}"}</tool_call>'
+    )
+    assert [(c.id, c.function.name) for c in calls] == [("c7", "memory")]
+    assert json.loads(calls[0].function.arguments) == {"action": "add"}
+
+
 def test_bare_json_is_a_fallback_only_when_no_block_matched():
     bare = '{"id": "c9", "type": "function", "function": {"name": "memory", "arguments": "{}"}}'
     calls, cleaned = extract_tool_calls_from_text(f"before {bare} after")

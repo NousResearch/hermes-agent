@@ -121,12 +121,17 @@ def render_tool_bridge_sections(
 
 
 def _parse_tool_call(raw_json: str, ordinal: int) -> ChatCompletionMessageToolCall | None:
-    """One ``<tool_call>`` JSON body → tool call, or None when malformed. Missing id → ``acp_call_<ordinal>``."""
+    """One ``<tool_call>`` JSON body → tool call, or None when malformed. Missing id → ``acp_call_<ordinal>``.
+
+    Accepts the OpenAI shape (``{"function": {"name", "arguments"}}``) and the flat ``{"name", "arguments"}``
+    shape of the Hermes/Qwen chat template, which some models write inside ``<tool_call>`` instead."""
     try:
         obj = json.loads(raw_json)
     except Exception:
         return None
     named = _named_function(obj)
+    if named is None and isinstance(obj, dict) and "function" not in obj:
+        named = _named_function({"function": obj})
     if named is None:
         return None
     fn, fn_name = named

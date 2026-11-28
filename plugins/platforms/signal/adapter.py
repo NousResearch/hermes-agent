@@ -181,8 +181,12 @@ class SignalAdapter(BasePlatformAdapter):
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
     splits_long_messages = True  # send() chunks after markdown → Signal formatting conversion
     serial_receive_loop = True  # _sse_listener awaits each envelope before reading the next
-    # No real edit API; declaring it lets streaming suppress the cursor instead of a stale tofu square.
-    SUPPORTS_MESSAGE_EDITING = False
+    # signal-cli can edit a sent message (``--edit-timestamp`` / JSON-RPC ``editTimestamp``), so
+    # streaming and the long-running heartbeat update one message instead of posting a new one per
+    # tick. A daemon too old for it rejects the RPC; ``edit_message`` then reports failure and the
+    # caller sends anew, which is the base contract. The streaming cursor stays suppressed for
+    # Signal in ``run_turn`` (it renders as tofu), which is what this flag used to achieve.
+    SUPPORTS_MESSAGE_EDITING = True
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.SIGNAL)
@@ -731,8 +735,64 @@ class SignalAdapter(BasePlatformAdapter):
             last_result, err = await self._rpc_send(params, "RPC send failed")
             if err:
                 return err
-        # No editable message identifier; message_id=None keeps the stream consumer on the non-edit path.
-        return SendResult(success=True, message_id=None, raw_response=last_result)
+        # Signal identifies a sent message by its send timestamp, which is exactly the handle
+        # ``edit_message`` needs. Only a single-chunk send has one: a chunked body became several
+        # Signal messages with no single edit target, so it keeps ``message_id=None`` and the
+        # consumer stays on the send path rather than editing just the last chunk.
+        message_id = None
+        if len(chunks) == 1 and isinstance(last_result, dict) and last_result.get("timestamp"):
+            message_id = str(last_result["timestamp"])
+        return SendResult(success=True, message_id=message_id, raw_response=last_result)
+
+    async def edit_message(
+        self, chat_id: str, message_id: str, content: str, *, finalize: bool = False,
+    ) -> SendResult:
+        """Replace a previously sent message via signal-cli's ``editTimestamp``.
+
+        Signal has no separate edit endpoint: an edit is an ordinary ``send`` naming the original
+        message's send timestamp, so *message_id* is that timestamp (as returned by ``send``).
+
+        Returns ``success=False`` — which the base contract defines as "caller sends anew" —
+        when the edit cannot be expressed as one message:
+
+        * a *message_id* that is not a Signal timestamp;
+        * content that chunks into several messages, since one edit replaces exactly one message
+          and silently showing only the first chunk would lose the rest.
+
+        ``finalize`` is accepted and ignored: Signal has no "in progress" message state to close,
+        unlike surfaces such as DingTalk AI Cards.
+        """
+        if not content or not content.strip():
+            return SendResult(success=False, error="refusing to edit a message to empty content")
+        try:
+            edit_target = int(str(message_id).strip())
+        except (TypeError, ValueError):
+            return SendResult(success=False, error=f"not a Signal send timestamp: {message_id!r}")
+
+        chunks = self._split_signal_formatted_message(*markdown_to_signal(content), self.MAX_MESSAGE_LENGTH)
+        if len(chunks) != 1:
+            return SendResult(
+                success=False,
+                error=f"edited content needs {len(chunks)} Signal messages; one edit replaces one",
+            )
+
+        plain_text, text_styles = chunks[0]
+        params = await self._with_target({"account": self.account}, chat_id)
+        params["message"] = plain_text
+        params["editTimestamp"] = edit_target
+        if len(text_styles) == 1:
+            params["textStyle"] = text_styles[0]
+        elif text_styles:
+            params["textStyles"] = text_styles
+
+        result, err = await self._rpc_send(params, "RPC edit failed")
+        if err:
+            return err
+        # Keep reporting the ORIGINAL timestamp as the next edit target. signal-cli names "a
+        # previous message" and Signal anchors an edit chain on the first send, so returning the
+        # edit's own new timestamp would walk the target away from the message on screen.
+        # ``_rpc_send`` has already recorded that new timestamp for echo-back filtering.
+        return SendResult(success=True, message_id=str(edit_target), raw_response=result)
 
     def _track_sent_timestamp(self, rpc_result) -> None:
         """Record outbound message timestamp for echo-back filtering."""

@@ -645,7 +645,8 @@ class TestSignalSendDocumentViaHelper:
 
 
 class TestSignalSendReturnsMessageId:
-    """Signal send() should not pretend sent messages are editable."""
+    """Signal send() exposes its send timestamp as the edit handle — but only when exactly one
+    message was sent, since an edit replaces exactly one message (see ``edit_message``)."""
 
     @pytest.mark.asyncio
     async def test_send_chunks_long_messages_without_truncation_footer(self, monkeypatch):
@@ -763,13 +764,28 @@ class TestSignalSendReturnsMessageId:
         adapter._rpc.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_send_returns_none_message_id_even_with_timestamp(self, monkeypatch):
+    async def test_send_returns_the_timestamp_as_message_id(self, monkeypatch):
+        """signal-cli can edit by send timestamp, so a single-message send is editable."""
         adapter = _make_signal_adapter(monkeypatch)
         mock_rpc, _ = _stub_rpc({"timestamp": 1712345678000})
         adapter._rpc = mock_rpc
         adapter._stop_typing_indicator = AsyncMock()
 
         result = await adapter.send(chat_id="+155****4567", content="hello")
+
+        assert result.success is True
+        assert result.message_id == "1712345678000"
+
+    @pytest.mark.asyncio
+    async def test_chunked_send_returns_none_message_id(self, monkeypatch):
+        """Several messages have no single edit target; editing one would drop the rest."""
+        adapter = _make_signal_adapter(monkeypatch)
+        mock_rpc, _ = _stub_rpc({"timestamp": 1712345678000})
+        adapter._rpc = mock_rpc
+        adapter._stop_typing_indicator = AsyncMock()
+
+        result = await adapter.send(chat_id="+155****4567",
+                                    content="x" * (adapter.MAX_MESSAGE_LENGTH + 500))
 
         assert result.success is True
         assert result.message_id is None

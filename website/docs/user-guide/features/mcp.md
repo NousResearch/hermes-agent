@@ -225,6 +225,27 @@ from environment variables (which include everything in `~/.hermes/.env`).
 This is useful when a catalog entry wants to reference a value the user
 configured elsewhere — e.g. `${HOME}/foo` or `${MY_PROVIDER_TOKEN}`.
 
+For a stdio server that expands environment placeholders in its own command
+arguments, escape the reference as `$${VAR}`. Hermes passes that argument to
+the subprocess as a literal `${VAR}` while still resolving normal `${VAR}`
+references. This is useful for programs such as `mcp-remote`, where a header
+template can read a value from the subprocess's `env` block without copying
+the credential into the process argument list:
+
+```yaml
+mcp_servers:
+  remote_api:
+    command: npx
+    args:
+      - -y
+      - mcp-remote
+      - https://mcp.example.com/mcp
+      - --header
+      - "Authorization:$${AUTH_HEADER}"
+    env:
+      AUTH_HEADER: "${REMOTE_API_AUTH_HEADER}"
+```
+
 Cursor-style context variables are also substituted (case-sensitive):
 `${userHome}` (home directory), `${workspaceFolder}` (session workspace
 root), `${workspaceFolderBasename}`, and `${pathSeparator}` / `${/}`

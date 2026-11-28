@@ -1,0 +1,12 @@
+_config_version: 9
+mcp_servers:
+  escaped-stdio:
+    command: npx
+    args:
+      - mcp-remote
+      - --header
+      - 'Authorization:$${AUTH_HEADER}'
+      - --resource
+      - '${RESOURCE_ID}'
+    env:
+      AUTH_HEADER: '${AUTH_HEADER}'

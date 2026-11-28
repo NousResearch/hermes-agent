@@ -72,8 +72,9 @@ def _gc_expired_locked() -> None:
 
 
 def internal_ws_credential() -> str:
-    """Process-lifetime internal WS credential, minted once. Never injected into the SPA or
-    returned over REST — only passed to a spawned child via its environment."""
+    """Process-lifetime internal WS credential, minted once. Never injected into the SPA; it leaves
+    the process only through a spawned child's environment or the loopback-fenced
+    ``/api/session-attach`` handshake (a local ``hermes --tui`` joining a session we own)."""
     global _internal_credential
     with _lock:
         if _internal_credential is None:

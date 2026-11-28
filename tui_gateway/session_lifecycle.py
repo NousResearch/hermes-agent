@@ -62,8 +62,14 @@ _AUTOMATIC_SESSION_END_REASONS = frozenset({"ws_orphan_reap", "ws_disconnect", "
 
 def _lease_metadata(live_session_id: str) -> dict:
     """Writer identity for a lease: ``live_session_id`` is half of ``_is_same_writer``. Bot Chat delivery is
-    admitted by the session authority (gateway/session_bot), never gated on a lease flag."""
-    return {"live_session_id": live_session_id}
+    admitted by the session authority (gateway/session_bot), never gated on a lease flag.
+    ``shared_runtime_url`` (when this runtime advertises one) is how ``hermes --tui --resume`` on the same
+    machine joins this live session instead of being refused — see ``tui_gateway/shared_runtime.py``."""
+    metadata = {"live_session_id": live_session_id}
+    from tui_gateway.shared_runtime import shared_runtime_origin
+    if (origin := shared_runtime_origin()) is not None:
+        metadata["shared_runtime_url"] = origin
+    return metadata
 
 
 def _claim_active_session_slot(

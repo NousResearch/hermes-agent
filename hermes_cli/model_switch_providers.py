@@ -14,7 +14,12 @@ import threading as _threading
 from dataclasses import dataclass, field
 from typing import Any, List, Optional
 from agent.command_token_source import build_command_token_provider, materialize_probe_api_key
-from hermes_cli.providers import custom_provider_aliases, custom_provider_slug, get_label
+from hermes_cli.providers import (
+    custom_provider_aliases,
+    custom_provider_display_prefix,
+    custom_provider_slug,
+    get_label,
+)
 from utils import base_url_host_matches, same_base_url_origin
 
 # Log-record parity with the origin module.
@@ -588,16 +593,11 @@ def _discover_flag(entry: dict):
     return discover
 
 
-def _display_prefix(name: str) -> str:
-    """Text before the per-model separator Hermes's own writer uses ("—" / " - ")."""
-    return next((name.split(sep)[0].strip() for sep in ("—", " - ") if sep in name), name)
-
-
 def _group_display_name(display_name: str) -> str:
     """Section-3 row label: strip the per-model suffix and trailing version tokens ("Palantir
     Claude 4.7 Opus" -> "Palantir Claude") — cut at the first token containing a digit, only when
     >= 2 words remain (avoids over-trimming)."""
-    grp_display = _display_prefix(display_name)
+    grp_display = custom_provider_display_prefix(display_name)
     toks = grp_display.split()
     cut_at = next((i for i, t in enumerate(toks) if any(c.isdigit() for c in t.strip(".,()"))), None)
     if cut_at is not None and cut_at >= 2:
@@ -1125,7 +1125,7 @@ def _lap_custom_provider_rows(b: _PickerBuild, custom_providers: list) -> None:
         api_mode = _entry_api_mode(entry)
         discover = _discover_flag(entry)
         entry_extra_headers = _extra_headers_from_config(entry)
-        prefix = _display_prefix(raw_name)
+        prefix = custom_provider_display_prefix(raw_name)
         provider_key = str(entry.get("provider_key") or "").strip()
         group_key = (api_url, cred_identity, api_mode, tuple(sorted(entry_extra_headers.items())), prefix.lower())
         display_name = prefix or raw_name

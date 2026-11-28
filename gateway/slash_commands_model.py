@@ -61,11 +61,14 @@ def _model_switch_skew_guard() -> Optional[str]:
     )
 
 
-async def _persist_model_switch_to_config(result, config_path) -> None:
+async def _persist_model_switch_to_config(result, config_path) -> set[str]:
     """Write-through a resolved /model switch to the profile config at ``config_path``, off the
-    event loop (the route comparison can do cold-start disk I/O)."""
+    event loop (the route comparison can do cold-start disk I/O).
+
+    Returns a set of dotted keys (e.g. ``model.default``) that are pinned by the managed scope
+    and will be overridden at the next load."""
     from hermes_cli.model_switch import persist_model_selection
-    await asyncio.to_thread(persist_model_selection, result, config_path)
+    return await asyncio.to_thread(persist_model_selection, result, config_path)
 
 
 @dataclasses.dataclass
@@ -211,11 +214,13 @@ class GatewayModelCommandsMixin:
 
     async def _record_model_switch(
         self, result, ctx: _ModelSwitchContext, *, source, one_turn: bool, picker: bool
-    ) -> Optional[str]:
+    ) -> tuple[Optional[str], set[str]]:
         """Persist a committed switch: session DB, next-turn note, config write-through, override map.
 
-        Returns the warning for a ``--global`` switch whose ``config.yaml`` write or stale-override
-        cleanup failed (the switch then stays a session override), else ``None``.
+        Returns a tuple of (global_error, managed_keys) where global_error is the warning for a
+        ``--global`` switch whose ``config.yaml`` write or stale-override cleanup failed (the switch
+        then stays a session override), else ``None``. managed_keys is a set of dotted keys that are
+        pinned by the managed scope and will be overridden at the next load.
         """
         from hermes_cli.model_switch import format_model_for_display
 
@@ -265,15 +270,18 @@ class GatewayModelCommandsMixin:
         # change after a restart (#100314: a stale override resumed `gpt-5.6-sol-900k` as the base
         # 272K model). On failure keep the override so the switch truthfully survives as session-only.
         global_error: Optional[str] = None
+        managed_keys: set[str] = set()
         if ctx.persist_global:
             try:
-                await _persist_model_switch_to_config(result, ctx.config_path)
+                managed_keys = await _persist_model_switch_to_config(result, ctx.config_path)
             except Exception as e:
                 logger.warning("Failed to persist model switch: %s", e)
                 global_error = t("gateway.model.err_config_not_updated", error=str(e) or type(e).__name__)
         # Precedence is session > channel_overrides > config.yaml: in a chat with a channel_overrides
         # model/provider the session override must stay, or the next turn runs the channel model.
-        if ctx.persist_global and global_error is None and self._channel_override_for(source) is None:
+        # If managed keys will override at next load, KEEP the session override so the current
+        # session continues to run the selected model (the managed scope only wins on restart).
+        if ctx.persist_global and global_error is None and self._channel_override_for(source) is None and not managed_keys:
             try:
                 await self.async_session_store.set_model_override(ctx.session_key, None)
             except Exception as e:
@@ -299,11 +307,12 @@ class GatewayModelCommandsMixin:
             except Exception:
                 logger.debug("Failed to persist session model override", exc_info=True)
         self._evict_cached_agent(ctx.session_key)  # next turn builds fresh from the override
-        return global_error
+        return global_error, managed_keys
 
     async def _model_switch_confirmation(
         self, result, ctx: _ModelSwitchContext, *, one_turn: bool, picker: bool,
         global_error: Optional[str] = None,
+        managed_keys: Optional[set[str]] = None,
     ) -> str:
         """Confirmation text with full metadata (display form shortens opaque Palantir IDs)."""
         from gateway.run import _load_gateway_config
@@ -355,6 +364,13 @@ class GatewayModelCommandsMixin:
             # Never claim a clean global commit the disk did not take (#100314).
             lines.append(t("gateway.model.warning_prefix", warning=global_error))
             lines.append(t("gateway.model.session_only_hint"))
+        elif ctx.persist_global and managed_keys:
+            # Config was written but managed keys will override at next load.
+            from hermes_cli import managed_scope
+            source = managed_scope.get_managed_dir() or "the managed scope"
+            for key in sorted(managed_keys):
+                lines.append(t("gateway.model.warning_prefix", warning=f"config.yaml written, but {key} is managed by {source} and wins"))
+            lines.append(t("gateway.model.managed_global_hint"))
         elif ctx.persist_global:
             lines.append(t("gateway.model.saved_global"))
         elif one_turn:
@@ -434,10 +450,11 @@ class GatewayModelCommandsMixin:
             level = effort if parse_reasoning_effort(effort) is not None else ""
             await asyncio.to_thread(defer_local_model_pick, authority, live, result, level)
             self._record_switch_metrics(result, ctx, source)
-            global_error = None
+            global_error: Optional[str] = None
+            managed_keys: set[str] = set()
             if ctx.persist_global:
                 try:
-                    await _persist_model_switch_to_config(result, ctx.config_path)
+                    managed_keys = await _persist_model_switch_to_config(result, ctx.config_path)
                 except Exception as e:
                     logger.warning("Failed to persist model switch", exc_info=True)
                     global_error = t("gateway.model.err_config_not_updated", error=str(e) or type(e).__name__)
@@ -446,10 +463,12 @@ class GatewayModelCommandsMixin:
             if error is not None:
                 return error
             self._record_switch_metrics(result, ctx, source)
-            global_error = await self._record_model_switch(
-                result, ctx, source=source, one_turn=one_turn, picker=picker)
+            global_error, managed_keys = await self._record_model_switch(
+                result, ctx, source=source, one_turn=one_turn, picker=picker
+            )
         reply = await self._model_switch_confirmation(
             result, ctx, one_turn=one_turn, picker=picker, global_error=global_error,
+            managed_keys=managed_keys,
         )
         if level:
             # Committed with the local pick: only the config write-through and the reply remain.

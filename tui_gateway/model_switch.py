@@ -298,8 +298,6 @@ def _apply_model_switch(
         return _reset_session_model_override(sid, session)
     model_input, explicit_provider, one_turn, persist_global, reasoning_effort = _switch_request(
         raw_input, parsed_flags, persist_override)
-    if persist_global:  # refused before switch_model() touches the live session
-        _refuse_managed_model_pick(reasoning_effort)
     agent = session.get("agent")
     if one_turn and not agent:
         raise ValueError("/model --once requires a live session")
@@ -320,8 +318,6 @@ def _apply_model_switch(
         custom_providers=custom_provs)
     if not result.success:
         raise ValueError(result.error_message or "model switch failed")
-    if persist_global:  # the exact plan, incl. conditional clears: still before any confirm or commit
-        _refuse_managed_model_pick(reasoning_effort, result)
     restore_snapshot = _snapshot_agent_model_runtime(agent) if (one_turn and agent) else None
     if agent:
         _merge_preflight_warning(result, agent, session, cfg, custom_provs)
@@ -358,7 +354,15 @@ def _apply_model_switch(
             "base_url": result.base_url, "api_key": result.api_key, "api_mode": result.api_mode}
     if persist_global:
         from hermes_cli.model_switch import persist_model_selection
-        persist_model_selection(result)
+        from hermes_cli import managed_scope
+        managed_keys = persist_model_selection(result)
+        if managed_keys:
+            source = managed_scope.get_managed_dir() or "the managed scope"
+            for key in sorted(managed_keys):
+                _emit("notification.show", sid, {
+                    "text": f"⚠ config.yaml written, but {key} is managed by {source} and wins",
+                    "level": "warn", "kind": "ttl", "ttl_ms": 8000,
+                    "key": "model_switch.managed", "id": f"model_switch.managed.{key}"})
     if reasoning_effort:
         _apply_switch_reasoning(sid, session, agent, reasoning_effort, persist_global=persist_global, one_turn=one_turn)
     if count_switch:

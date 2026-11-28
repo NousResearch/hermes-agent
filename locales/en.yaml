@@ -63,6 +63,7 @@ gateway:
     warning_prefix: "Warning: {warning}"
     saved_global: "Saved to config.yaml (`--global`)"
     session_only_hint: "_(session only — add `--global` to persist)_"
+    managed_global_hint: "_(config written but managed keys win — session override stays active)_"
     current_label: "Current: `{model}` on {provider}"
     current_tag: " (current)"
     more_models_suffix: " (+{count} more)"

@@ -1920,7 +1920,7 @@ def remote_model_selection_guard(before: Any, after: Any) -> None:
 _MISSING = object()
 
 
-def persist_model_selection(result: ModelSwitchResult, config_path: Any = None) -> None:
+def persist_model_selection(result: ModelSwitchResult, config_path: Any = None) -> set[str]:
     """Write a successful :func:`switch_model` result to ``config_path`` (default:
     ``HERMES_HOME/config.yaml`` — the context override or ``HERMES_HOME`` at call time).
 
@@ -1933,13 +1933,26 @@ def persist_model_selection(result: ModelSwitchResult, config_path: Any = None) 
     I/O) is made from a pre-read BEFORE the snapshot; read -> merge -> replace is then a pure
     in-memory section. Only when another writer changed ``model:`` in between are the updates
     recomputed against the fresh block. ``_CONFIG_LOCK`` is in-process only: a cross-process
-    config lock, once one exists, must wrap the same section."""
+    config lock, once one exists, must wrap the same section.
+
+    Returns a set of dotted keys (e.g. ``model.default``) that are pinned by the managed scope
+    and will be overridden at the next load. Callers should warn the user instead of printing
+    a clean success message when this set is non-empty."""
     from pathlib import Path
     from hermes_cli.config import _CONFIG_LOCK, atomic_config_replace, get_config_path, read_user_config_raw
     from hermes_cli.config_backend import supports_file_tooling, write_config_keys
+    from hermes_cli import managed_scope
     path = Path(config_path) if config_path else get_config_path()
     planned_from = read_user_config_raw(path).get("model")
     updates = model_selection_config_updates(result, planned_from)
+
+    # Check which keys are managed before writing
+    managed_keys: set[str] = set()
+    for key in updates:
+        dotted_key = f"model.{key}"
+        if managed_scope.is_key_managed(dotted_key):
+            managed_keys.add(dotted_key)
+
     if not supports_file_tooling():
         # No config file (Remote Config): one keyed write, so a lock on any key refuses the whole
         # switch instead of a document save silently omitting the locked part. The planned-from
@@ -1953,12 +1966,17 @@ def persist_model_selection(result: ModelSwitchResult, config_path: Any = None) 
         write_changes(path, Changes(
             set={f"model.{k}": masked[k] for k in updates if k in masked},
             unset=tuple(f"model.{k}" for k in updates if k not in masked)))
-        return
+        return managed_keys
     with _CONFIG_LOCK:
         config = read_user_config_raw(path)
         model_cfg = config.get("model")
         if model_cfg != planned_from:
             updates = model_selection_config_updates(result, model_cfg)
+            # Re-check managed keys in case the model_cfg changed
+            for key in updates:
+                dotted_key = f"model.{key}"
+                if managed_scope.is_key_managed(dotted_key):
+                    managed_keys.add(dotted_key)
         merged = _merge_selection_updates(model_cfg, updates)
         if isinstance(model_cfg, dict):
             # A YAML anchor on ``model:`` reused elsewhere (``vision: *route``) loads as ONE shared
@@ -1973,6 +1991,7 @@ def persist_model_selection(result: ModelSwitchResult, config_path: Any = None) 
         os.chmod(path, 0o600)
     except (OSError, NotImplementedError):
         pass
+    return managed_keys
 
 
 def _scoped_key_env(name: str) -> str:

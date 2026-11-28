@@ -26,7 +26,8 @@ from hermes_startup_watchdog import report_startup_progress
 from utils import safe_json_loads
 from persistence.sqlite._state.common import (
     TITLE_SOURCE_DERIVED as _TITLE_SOURCE_DERIVED, TITLE_SOURCE_LLM as _TITLE_SOURCE_LLM,
-    TITLE_SOURCE_USER as _TITLE_SOURCE_USER,
+    TITLE_SOURCE_USER as _TITLE_SOURCE_USER, TITLE_SOURCE_BRANCH as _TITLE_SOURCE_BRANCH,
+    TITLE_SOURCE_BRANCH_FALLBACK as _TITLE_SOURCE_BRANCH_FALLBACK,
     escape_like as _escape_like, fts_rebuild_admission,
 )
 from persistence.sqlite._state.holders import _read_proc_argv
@@ -253,7 +254,14 @@ def declared_schema_drift(conn: sqlite3.Connection, home: Path) -> Optional[str]
 TITLE_SOURCE_DERIVED = _TITLE_SOURCE_DERIVED
 TITLE_SOURCE_LLM = _TITLE_SOURCE_LLM
 TITLE_SOURCE_USER = _TITLE_SOURCE_USER
-_TITLE_SOURCE_RANK = {TITLE_SOURCE_DERIVED: 0, TITLE_SOURCE_LLM: 1, TITLE_SOURCE_USER: 2}
+# A branch's inherited title yields to its first-follow-up claim (``branch_fallback``), which only the model
+# title (or the user) replaces.
+TITLE_SOURCE_BRANCH = _TITLE_SOURCE_BRANCH
+TITLE_SOURCE_BRANCH_FALLBACK = _TITLE_SOURCE_BRANCH_FALLBACK
+_TITLE_SOURCE_RANK = {
+    TITLE_SOURCE_BRANCH: -1, TITLE_SOURCE_BRANCH_FALLBACK: 0,
+    TITLE_SOURCE_DERIVED: 0, TITLE_SOURCE_LLM: 1, TITLE_SOURCE_USER: 2,
+}
 
 
 def _dedupe_legacy_system_prompts(holder: StoreHolder, cursor: sqlite3.Cursor) -> None:

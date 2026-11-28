@@ -5,7 +5,8 @@ from __future__ import annotations
 import re
 from typing import Any, Optional
 from persistence.sqlite._schema import (
-    TITLE_SOURCE_DERIVED, TITLE_SOURCE_LLM, TITLE_SOURCE_USER, _TITLE_SOURCE_RANK, _title_rank,
+    TITLE_SOURCE_BRANCH, TITLE_SOURCE_BRANCH_FALLBACK, TITLE_SOURCE_DERIVED, TITLE_SOURCE_LLM, TITLE_SOURCE_USER,
+    _TITLE_SOURCE_RANK, _title_rank,
     next_title_in_lineage,
 )
 from persistence.sqlite._holder import StoreHolder
@@ -164,7 +165,7 @@ def set_session_title(holder: StoreHolder, session_id: str, title: str) -> bool:
 
 def set_auto_title(holder: StoreHolder, session_id: str, title: str, *, source: str) -> bool:
     """Set an automatic title; False (untouched) when a higher-authority title holds the row."""
-    if source not in (TITLE_SOURCE_DERIVED, TITLE_SOURCE_LLM):
+    if source not in (TITLE_SOURCE_BRANCH, TITLE_SOURCE_BRANCH_FALLBACK, TITLE_SOURCE_DERIVED, TITLE_SOURCE_LLM):
         raise ValueError(f"invalid automatic title source: {source!r}")
     return _set_session_title(holder, session_id, title, source=source)
 

@@ -16261,8 +16261,7 @@ def test_session_create_persists_seeded_branch_child(monkeypatch):
             seen["branched_from"] = (spec.model_config or {}).get("_branched_from")
 
         def set_auto_title(self, key, title, *, source):
-            seen["title"] = title
-            seen["title_source"] = source.value
+            seen["title"] = (key, title, source.value)
             return True
 
     class _FakeMessages:
@@ -16315,8 +16314,7 @@ def test_session_create_persists_seeded_branch_child(monkeypatch):
     assert seen.get("created") == key
     assert seen.get("parent") == "20260823_084113_6de211"
     assert seen.get("branched_from") == "20260823_084113_6de211"
-    assert seen.get("title") == "My Parent Session #2"
-    assert seen.get("title_source") == "derived"
+    assert seen.get("title") == (key, "My Parent Session #2", "branch")
 
     # Seeded transcript copied into the durable row so REST prefetch and
     # defer_history hydration both find it immediately.
@@ -16467,6 +16465,7 @@ def test_session_create_seed_failure_after_row_compensates(monkeypatch):
 
     class _FakeMessages:
         def append_batch(self, session_id, messages, **kwargs):
+            seen["transcript_attempt"] = session_id
             raise RuntimeError("transcript write failed")
 
     class _FakeDB:
@@ -16505,6 +16504,7 @@ def test_session_create_seed_failure_after_row_compensates(monkeypatch):
     key = resp["result"]["stored_session_id"]
     # The half-written child was rolled back — no durable empty row left to
     # shadow the lazy seed path.
+    assert seen.get("transcript_attempt") == key
     assert seen.get("deleted") == key
     # pending_title survived: it still lands via the lazy post-turn apply.
     runtime_sid = resp["result"]["session_id"]
@@ -16757,8 +16757,8 @@ def test_session_branch_uses_persisted_display_history_after_compaction(monkeypa
         def set_title(self, _key, _title):
             return True
 
-        def set_auto_title(self, _key, _title, *, source):
-            seen["title_source"] = source.value
+        def set_auto_title(self, key, title, *, source):
+            seen["title"] = (key, title, source.value)
             return True
 
     class ProfileMessages:
@@ -16833,7 +16833,9 @@ def test_session_branch_uses_persisted_display_history_after_compaction(monkeypa
         )
 
         assert "result" in response, response
-        assert seen.get("title_source") == "derived"
+        child = server._sessions[response["result"]["session_id"]]
+        assert child is not None
+        assert seen.get("title") == (child["session_key"], "parent (branch)", "branch")
         assert [message["content"] for message in seen["msgs"]] == [
             "first question",
             "first answer",
@@ -20727,7 +20729,7 @@ def test_session_branch_keeps_reasoning_fields(monkeypatch, tmp_path):
         )
 
         assert resp.get("result"), f"got error: {resp.get('error')}"
-        assert db.sessions.get_title_source("branch-key") == TitleSource.DERIVED
+        assert db.sessions.get_title_source("branch-key") == TitleSource.BRANCH
         assistant = _branched_assistant(db, "branch-key")
         assert assistant["reasoning"] == BRANCH_REASONING
         assert assistant["reasoning_content"] == BRANCH_REASONING_CONTENT

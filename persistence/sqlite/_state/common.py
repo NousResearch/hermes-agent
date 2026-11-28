@@ -19,6 +19,9 @@ from session_rules.turns import SKILL_EXCERPT_JOINT, describe_skill_invocation
 TITLE_SOURCE_DERIVED = "derived"
 TITLE_SOURCE_LLM = "llm"
 TITLE_SOURCE_USER = "user"
+# A Desktop branch's inherited lineage title, then the claimed stable fallback awaiting its model title.
+TITLE_SOURCE_BRANCH = "branch"
+TITLE_SOURCE_BRANCH_FALLBACK = "branch_fallback"
 
 
 _PREVIEW_MAX_CHARS = 60

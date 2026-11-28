@@ -328,8 +328,11 @@ class SessionLineageKind(Enum):
 
 
 class TitleSource(Enum):
-    """Title provenance, lowest to highest authority."""
+    """Title provenance, lowest to highest authority. ``BRANCH`` is a Desktop/TUI branch's inherited lineage
+    title, and ``BRANCH_FALLBACK`` the same title once its first follow-up claimed it, awaiting the model title."""
 
+    BRANCH = "branch"
+    BRANCH_FALLBACK = "branch_fallback"
     DERIVED = "derived"
     LLM = "llm"
     USER = "user"
@@ -926,7 +929,7 @@ class SessionRepository(Protocol):
         ...
 
     def set_auto_title(self, session_id: SessionId, title: str, *, source: TitleSource) -> bool:
-        """Write a derived or llm title over an untitled row or a strictly lower provenance; False otherwise and on the hidden canonical Bot Chat. ``TitleSource.USER`` raises ``ValueError``; a held title raises :class:`TitleConflict`."""
+        """Write a branch, branch_fallback, derived or llm title over an untitled row or a strictly lower provenance; False otherwise and on the hidden canonical Bot Chat. ``TitleSource.USER`` raises ``ValueError``; a held title raises :class:`TitleConflict`."""
         ...
 
     def set_title_source(self, session_id: SessionId, source: TitleSource) -> bool:

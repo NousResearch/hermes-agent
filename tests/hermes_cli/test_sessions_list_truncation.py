@@ -24,9 +24,10 @@ def db(tmp_path):
 
 
 def _list(db, limit, capsys):
+    # --all: these rows carry no workspace, and this file is about the cap, not the scope.
     from persistence_assembly import open_persistence_reader
     with open_persistence_reader(db) as store:
-        sessions_cmd._cmd_list(Namespace(limit=limit, source=None, workspace=None), persistence=store)
+        sessions_cmd._cmd_list(Namespace(limit=limit, source=None, workspace=None, all=True), persistence=store)
     return capsys.readouterr().out
 
 

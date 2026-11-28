@@ -31,6 +31,11 @@ def ensure_launch_provider(args) -> bool:
 
 
 def launch_gateway_chat(args) -> int:
+    # The transport hands `--resume` straight to the session owner as an ID, so a bare one has
+    # nothing to resolve with here — the workspace picker belongs to the classic chat entry point.
+    from hermes_cli.main_resume_args import resolve_bare_resume
+
+    resolve_bare_resume(args, interactive=False)
     try:
         from hermes_cli.main import _confirm_startup_expensive_model_override
         from hermes_cli.gateway_chat import launch_from_args, bypass_launch

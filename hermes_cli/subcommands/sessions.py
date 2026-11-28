@@ -54,6 +54,20 @@ def _add_browse(sessions_subparsers) -> None:
     _flag(browse, "--all", help=_ALL_HELP)
 
 
+def _add_list_parser(sessions_subparsers) -> None:
+    """``sessions list``: this workspace's sessions by default, the whole store with ``--all``."""
+    sessions_list = sessions_subparsers.add_parser(
+        "list", help="List recent sessions (this workspace's, unless --all)")
+    sessions_list.add_argument("--source", help="Filter by source (cli, telegram, discord, etc.)")
+    _flag(sessions_list, "--all", help="List every session in the store: every workspace, every source "
+        "(cron, webhook, push, kanban, tool, one-shot) and sessions with no messages")
+    sessions_list.add_argument("--limit", type=int, default=20, help="Max sessions to show")
+    sessions_list.add_argument("--workspace", metavar="NEEDLE",
+        help="Only sessions in one workspace: a git repo root or project dir "
+        "(matched by path substring or basename). Searches across every "
+        "workspace, like --all.")
+
+
 def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
     """Attach the ``sessions`` subcommand to ``subparsers``."""
     sessions_parser = subparsers.add_parser(
@@ -62,13 +76,7 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
             "conversation to resume (prints the list when not on a terminal)")
     sessions_subparsers = sessions_parser.add_subparsers(dest="sessions_action")
 
-    sessions_list = sessions_subparsers.add_parser("list", help="List recent sessions")
-    sessions_list.add_argument("--source", help="Filter by source (cli, telegram, discord, etc.)")
-    _flag(sessions_list, "--all", help=_ALL_HELP)
-    sessions_list.add_argument("--limit", type=int, default=20, help="Max sessions to show")
-    sessions_list.add_argument("--workspace", metavar="NEEDLE",
-        help="Only sessions in one workspace: a git repo root or project dir "
-        "(matched by path substring or basename).")
+    _add_list_parser(sessions_subparsers)
 
     _filter_args = (
         ("--newer-than", dict(metavar="AGE", help="Only match sessions active within the last AGE "

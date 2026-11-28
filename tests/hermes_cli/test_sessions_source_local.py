@@ -40,8 +40,9 @@ def test_list_includes_a_compression_tip_whose_root_has_no_created_source(tmp_pa
     assert [session_row(db, sid)["created_source"] for sid in ("chain-root", "chain-mid", "chain-tip")] == [
         "cli", "cli", "cli"]
     capsys.readouterr()
+    # --all: rows carry no cwd, and this test is about the surface label, not the workspace scope.
     with open_persistence_reader(tmp_path / "state.db") as store:
-        _cmd_list(Namespace(limit=20, source="cli", workspace=None), persistence=store)
+        _cmd_list(Namespace(limit=20, source="cli", workspace=None, all=True), persistence=store)
         listed = capsys.readouterr().out
         assert "chain-tip" in listed and "chain-root" not in listed
         assert "chain-tip" in [row["id"] for row in SurfaceLabelReader(store).search_sessions(source="cli", limit=10)]

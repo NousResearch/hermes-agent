@@ -4260,6 +4260,8 @@ export interface Translations extends NoticeTranslations {
     readOnlyTranscriptSendBlocked: string
     resumeStrandedTitle: string
     resumeStrandedBody: string
+    viewportZeroHeightTitle: string
+    viewportZeroHeightBody: string
     poolSlotTimeoutBody: string
     poolSlotTimeoutOpenSettings: string
     resumeRetry: string

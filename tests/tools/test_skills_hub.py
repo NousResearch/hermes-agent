@@ -1512,6 +1512,47 @@ class TestInstallPathSafety:
         assert ok is False
         assert (isolated_skills_dir / "bystander" / "SKILL.md").read_text() == "safe"
 
+    def test_uninstall_handles_readonly_entries(self, tmp_path, isolated_skills_dir, patch_lock_file):
+        """Uninstalling a skill whose directory contains read-only entries
+        must succeed without PermissionError (#159440)."""
+        import stat
+        from tools.skills_hub_install import uninstall_skill
+
+        skill_dir = isolated_skills_dir / "my-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text("content")
+        sub_dir = skill_dir / "renderers"
+        sub_dir.mkdir()
+        file_path = sub_dir / "draw.py"
+        file_path.write_text("print(1)")
+
+        file_path.chmod(stat.S_IREAD)
+        sub_dir.chmod(stat.S_IREAD | stat.S_IEXEC)
+
+        lock_path = tmp_path / "lock.json"
+        lock_path.write_text(json.dumps({
+            "installed": {
+                "my-skill": {
+                    "source": "community", "identifier": "x",
+                    "trust_level": "community", "scan_verdict": "pass",
+                    "content_hash": "h",
+                    "install_path": "my-skill",
+                    "files": [], "metadata": {},
+                    "installed_at": "now", "updated_at": "now",
+                }
+            }
+        }))
+
+        patch_lock_file(lock_path)
+        try:
+            ok, msg = uninstall_skill("my-skill")
+            assert ok is True
+            assert not skill_dir.exists()
+        finally:
+            if skill_dir.exists():
+                sub_dir.chmod(stat.S_IRWXU)
+                file_path.chmod(stat.S_IRWXU)
+
     def test_install_from_quarantine_rejects_symlinks(self, tmp_path):
         """Skill install must not follow symlinks that leak file contents
         from outside the quarantine directory."""
@@ -1664,6 +1705,65 @@ class TestInstallPathSafety:
         # The old directory was replaced by the new one.
         assert installed.exists()
         assert (installed / "SKILL.md").read_text().strip() == "---\nname: my-skill\n---\nnew"
+
+    def test_install_from_quarantine_replaces_skill_with_readonly_entries(self, tmp_path):
+        """Updating an existing skill directory containing read-only files and
+        subdirectories must succeed without PermissionError (#159440)."""
+        import stat
+        import tools.skills_hub as hub
+        from tools.skills_guard import ScanResult
+
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+
+        existing = skills_dir / "my-skill"
+        existing.mkdir()
+        (existing / "SKILL.md").write_text("old content")
+        refs_dir = existing / "refs"
+        refs_dir.mkdir()
+        guide_file = refs_dir / "guide.md"
+        guide_file.write_text("old guide")
+
+        # Mark file and subdirectory read-only
+        guide_file.chmod(stat.S_IREAD)
+        refs_dir.chmod(stat.S_IREAD | stat.S_IEXEC)
+
+        quarantine_root = skills_dir / ".hub" / "quarantine"
+        quarantine_root.mkdir(parents=True)
+
+        q_dir = quarantine_root / "pending"
+        q_dir.mkdir()
+        (q_dir / "SKILL.md").write_text("---\nname: my-skill\n---\nnew")
+
+        bundle = SkillBundle(
+            name="my-skill",
+            files={"SKILL.md": "---\nname: my-skill\n---\nnew"},
+            source="community",
+            identifier="x",
+            trust_level="community",
+        )
+        scan_result = ScanResult(
+            skill_name="my-skill",
+            source="community",
+            trust_level="community",
+            verdict="safe",
+        )
+
+        try:
+            with patch.object(hub, "SKILLS_DIR", skills_dir), \
+                 patch.object(hub, "QUARANTINE_DIR", quarantine_root):
+                installed = install_from_quarantine(
+                    q_dir, "my-skill", "", bundle, scan_result,
+                )
+
+            assert installed.exists()
+            assert (installed / "SKILL.md").read_text().strip() == "---\nname: my-skill\n---\nnew"
+        finally:
+            # Restore permissions for tmp_path cleanup on teardown if still present
+            if refs_dir.exists():
+                refs_dir.chmod(stat.S_IRWXU)
+            if guide_file.exists():
+                guide_file.chmod(stat.S_IRWXU)
 
     def test_install_from_quarantine_allows_empty_category_dir(self, tmp_path):
         """Installing into an existing but empty category directory is allowed

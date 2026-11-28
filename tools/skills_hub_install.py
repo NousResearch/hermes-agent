@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import logging
 import hashlib
+import os
 import shutil
+import stat
 from contextlib import suppress
 import tempfile
 import threading
@@ -36,6 +38,20 @@ def _is_path_redirect(path: Path) -> bool:
     either lets a writer in ``skills/`` redirect a later ``rmtree`` outside it.
     ``is_junction`` only exists on Python 3.12+ Windows; gate with ``hasattr``."""
     return path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction())
+
+
+def _rmtree_writable(path: Path) -> None:
+    """rmtree that makes read-only entries and parent directories writable before removal (#159440).
+
+    Handles immutable package sources and Windows read-only directory attributes where removing
+    a child requires write permission on its parent directory (see #34860, #159440).
+    """
+    def _on_error(func, fpath, exc_info):
+        for p in (os.path.dirname(fpath), fpath):
+            with suppress(OSError):
+                os.chmod(p, stat.S_IRWXU)
+        func(fpath)
+    shutil.rmtree(path, onerror=_on_error)
 
 
 def _resolve_lock_install_path(install_path: str, skill_name: str) -> Path:
@@ -196,7 +212,7 @@ def install_from_quarantine(
     install_dir = _resolve_lock_install_path(install_rel_path, safe_skill_name)
     _check_install_target(install_dir)
     if install_dir.exists():
-        shutil.rmtree(install_dir)
+        _rmtree_writable(install_dir)
 
     try:
         skill_size = (quarantine_path / "SKILL.md").stat().st_size
@@ -257,7 +273,7 @@ def uninstall_skill(skill_name: str) -> tuple[bool, str]:
     except ValueError as exc:
         return False, f"Refusing to uninstall '{skill_name}': {exc}"
     if install_path.exists():
-        shutil.rmtree(install_path)
+        _rmtree_writable(install_path)
     lock.record_uninstall(skill_name)
     append_audit_log("UNINSTALL", skill_name, entry["source"], entry["trust_level"], "n/a", "user_request")
     from hermes_cli.observability.shared_metrics_disabled import record_skill_removed

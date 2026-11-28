@@ -19,13 +19,15 @@ import { isLoopbackPreviewUrl, openPreviewTargetInBrowser, remoteHtmlPreviewDocu
 import { isRemoteGateway } from '@/lib/media'
 import {
   addAnnotatePin,
+  type AnnotatePin,
   beginAnnotateMode,
   clearAnnotatePins,
   compactIdentity,
   emptyAnnotateSession,
   emptyAnnotateStack,
   endAnnotateMode,
-  flushAnnotateStack
+  flushAnnotateStack,
+  removeAnnotatePin
 } from '@/lib/preview-annotate'
 import { handoffPreviewAnnotateStack } from '@/lib/preview-annotate/handoff'
 import { admitPreviewExternalUrl, PREVIEW_EXTERNAL_CHANNEL } from '@/lib/preview-external'
@@ -119,6 +121,11 @@ function guestPage(webview: PreviewWebview | null | undefined, fallbackUrl = '')
   } catch {
     return { title: '', url: fallbackUrl }
   }
+}
+
+/** What the in-page overlay needs to draw the saved pins. */
+function pinChrome(pins: AnnotatePin[]) {
+  return pins.map(pin => ({ kind: pin.kind, number: pin.number, rect: pin.rect, selector: pin.identity?.selector }))
 }
 
 /** The live surface a web preview mounts: Electron's `<webview>`, or a plain
@@ -535,15 +542,7 @@ export function PreviewPane({
     setDraftNote('')
 
     if (guest) {
-      await syncAnnotatePins(
-        guest,
-        stack.pins.map(pin => ({
-          kind: pin.kind,
-          number: pin.number,
-          rect: pin.rect,
-          selector: pin.identity?.selector
-        }))
-      ).catch(() => undefined)
+      await syncAnnotatePins(guest, pinChrome(stack.pins)).catch(() => undefined)
       await hideAnnotateDraft(guest).catch(() => undefined)
     }
   }, [annotateGuest, draftNote])
@@ -621,15 +620,7 @@ export function PreviewPane({
 
     try {
       await installAnnotateOverlay(guest, lifetime.signal)
-      await syncAnnotatePins(
-        guest,
-        annotateRef.current.stack.pins.map(pin => ({
-          kind: pin.kind,
-          number: pin.number,
-          rect: pin.rect,
-          selector: pin.identity?.selector
-        }))
-      )
+      await syncAnnotatePins(guest, pinChrome(annotateRef.current.stack.pins))
     } catch (error) {
       if (lifetime.signal.aborted) {
         return
@@ -659,6 +650,18 @@ export function PreviewPane({
         await stopAnnotate()
 
         break
+      }
+
+      if (event.type === 'remove-pin') {
+        const pin = annotateRef.current.stack.pins.find(item => item.number === event.number)
+
+        if (pin) {
+          const stack = removeAnnotatePin(annotateRef.current.stack, pin.id)
+          setAnnotate(session => ({ ...session, stack: removeAnnotatePin(session.stack, pin.id) }))
+          await syncAnnotatePins(guest, pinChrome(stack.pins)).catch(() => undefined)
+        }
+
+        continue
       }
 
       if (event.type === 'reposition') {

@@ -324,7 +324,12 @@ export function serializeTextBefore(editor: HTMLElement, container: Node, offset
 
   walk(editor)
 
-  return text
+  // A touch line break parks the caret in a zero-width node so the browser draws
+  // a line. That node is not part of what the person typed: leaving it in makes
+  // the text before the caret read "\n@", and the trigger patterns require a
+  // line start or whitespace before the sigil — so @ mentions, inline /skill and
+  // :emoji completions never opened on the line a Return just created.
+  return text.replace(/\u200B/g, '')
 }
 
 /** True when the insertion point starts a token — the editor's start, or after
@@ -404,6 +409,53 @@ export function insertComposerContentsAtCaret(editor: HTMLElement, text: string,
   }
 
   revealCaret(editor)
+}
+
+/** Insert a real line break for a keyboard whose only break key is Enter (a
+ *  phone's ↵, which has no Shift to pair with). Chromium's own Enter at the end
+ *  of the text inserts a block wrapper — `<div><br></div>` — and
+ *  normalizeComposerEditorDom strips exactly that shape as the phantom trailing
+ *  line, so on touch the key looked inert: the break landed and was removed on
+ *  the very next flush. A `<br>` between text nodes is the shape our own
+ *  renderer emits for "\n" (appendTextWithBreaks) and it round-trips through
+ *  composerPlainText, so the break survives normalization, repaint and send. */
+export function insertComposerLineBreak(editor: HTMLElement | null): boolean {
+  if (!editor) {
+    return false
+  }
+
+  const breakNode = editor.ownerDocument.createElement('br')
+  const hit = composerSelectionRange(editor)
+
+  if (!hit) {
+    editor.append(breakNode)
+    placeCaretEnd(editor)
+
+    return true
+  }
+
+  hit.range.deleteContents()
+  hit.range.insertNode(breakNode)
+
+  // A trailing <br> alone renders no line box and no caret in Chromium (the
+  // break is only visible once something follows it), which is exactly why the
+  // first versions of this looked inert on the phone: the break WAS in the DOM
+  // and in the serialized text, but nothing appeared. A zero-width space after
+  // it gives the browser a line to put the caret on; composerPlainText strips
+  // it again, so the draft and the sent message never contain it.
+  const caretHome = editor.ownerDocument.createTextNode('\u200B')
+  breakNode.after(caretHome)
+
+  // The caret has to sit AFTER the break, or the next keystroke lands before it
+  // and the line the user just opened swallows nothing.
+  const caret = editor.ownerDocument.createRange()
+  caret.setStart(caretHome, 1)
+  caret.collapse(true)
+  hit.selection.removeAllRanges()
+  hit.selection.addRange(caret)
+  revealCaret(editor)
+
+  return true
 }
 
 /** Range covering exactly `length` serialized characters immediately before a
@@ -603,7 +655,9 @@ export function composerHtml(text: string) {
 /** Walk a DOM subtree back to the plain `@kind:value` text it represents. */
 export function composerPlainText(node: Node): string {
   if (node.nodeType === Node.TEXT_NODE) {
-    return node.textContent || ''
+    // \u200B is insertComposerLineBreak's caret home after a line break — an
+    // invisible artifact, never part of the message.
+    return (node.textContent || '').replace(/\u200B/g, '')
   }
 
   if (node.nodeType !== Node.ELEMENT_NODE) {

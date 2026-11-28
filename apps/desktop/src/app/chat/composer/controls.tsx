@@ -1,5 +1,6 @@
 import { useStore } from '@nanostores/react'
 import type { ReadableAtom } from 'nanostores'
+import { useRef } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -8,6 +9,7 @@ import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { hostHas } from '@/lib/host-capabilities'
 import { Ear, EarOff, iconSize, Layers3, Loader2, Square } from '@/lib/icons'
+import { $touchPointer } from '@/lib/touch-interaction'
 import { cn } from '@/lib/utils'
 import { recordAction } from '@/store/desktop-metrics'
 import { $hudMode, closeHud, resetHudLayout } from '@/store/hud'
@@ -19,9 +21,16 @@ import { ModelPill } from './model-pill'
 import { sendButtonDisabled } from './paused-reply'
 import { ReasoningPill } from './reasoning-pill'
 import { StartVoiceButton } from './start-voice-button'
+import { createTouchSubmitGesture } from './touch-submit-gesture'
 import type { ChatBarState, VoiceStatus } from './types'
 import { VoiceFan } from './voice-fan'
 import { VoiceMenu } from './voice-menu'
+
+/** A pointer event this gesture cares about: pointerType is absent on synthetic
+ *  events, which the browser dispatches for real touches, so treat it as touch. */
+function isTouchPointer(type: string | undefined): boolean {
+  return !type || type === 'touch' || type === 'pen'
+}
 
 // Re-exported: `context-menu.tsx` and other row neighbours have always reached
 // for these here, and the row is where they read as belonging.
@@ -94,6 +103,18 @@ export function ComposerControls({
   const { t } = useI18n()
   const c = t.composer
   const hudMode = useStore($hudMode)
+  // A phone keyboard can keep the typed word inside an open IME composition,
+  // which the composer store never sees — so `canSubmit` reads empty at the
+  // instant of the tap and a disabled primary button (pointer-events: none)
+  // dropped the whole press: Send looked dead on the phone while Enter sent.
+  // Touch keeps the button tappable; submitDraft() reads the live editor DOM
+  // and no-ops on a genuinely empty tap.
+  const touch = useStore($touchPointer)
+  // The press only ARMS; the release inside the button submits once and owns the
+  // click that follows (see touch-submit-gesture). Submitting on pointerdown sent
+  // on a drag-off, and a press held past the click-swallow window submitted twice
+  // — the second one landing on the busy composer's Stop.
+  const touchGesture = useRef(createTouchSubmitGesture())
 
   if (conversation.active) {
     return <ConversationPill {...conversation} disabled={disabled} />
@@ -192,9 +213,67 @@ export function ComposerControls({
           <Button
             aria-label={showStop ? c.stop : sendLabel}
             className={PRIMARY_ICON_BTN}
-            disabled={sendButtonDisabled(disabled, canSubmit, sendWhileDisabled)}
-            onClick={() => recordAction(showStop ? 'composer.cancel' : 'composer.send', 'click')}
+            // Touch: `canSubmit` is derived from composer state that lags the live
+            // editor (an IME keeps the last word out of it), and a disabled primary
+            // carries `pointer-events: none`, so the whole press vanished — the
+            // "Send does nothing on the phone" report. `disabled` itself still
+            // applies; only the lagging payload gate is lifted.
+            disabled={sendButtonDisabled(disabled, canSubmit || touch, sendWhileDisabled)}
+            onClick={event => {
+
+              // A touch gesture (submit, drag-off or cancel) owns the click it
+              // produces; only a real click — mouse, keyboard, or a press this
+              // button never handled — reaches the action.
+              if (touch && touchGesture.current.takeClick()) {
+                event.preventDefault()
+
+                return
+              }
+
+              recordAction(showStop ? 'composer.cancel' : 'composer.send', 'click')
+            }}
             onMouseDown={keepEditorFocus}
+            onPointerCancel={() => {
+              if (touch) {
+                touchGesture.current.cancel()
+              }
+            }}
+            onPointerDown={event => {
+
+              // A phone keyboard made this button read dead: the press blurs the
+              // editor, the keyboard closes and the reflow moves the button out
+              // from under the finger, so Chromium never dispatches the click —
+              // sends only worked once the keyboard was already down (the
+              // "press twice" report). Keep focus and the keyboard where they are
+              // and let the release decide, so a press that slides off the button
+              // (or a scroll started on it) never sends.
+              if (!touch || !isTouchPointer(event.pointerType)) {
+                return
+              }
+
+              event.preventDefault()
+              touchGesture.current.down()
+            }}
+            onPointerEnter={() => {
+              if (touch) {
+                touchGesture.current.enter()
+              }
+            }}
+            onPointerLeave={() => {
+              if (touch) {
+                touchGesture.current.leave()
+              }
+            }}
+            onPointerUp={event => {
+              if (!touch || !isTouchPointer(event.pointerType)) {
+                return
+              }
+
+              if (touchGesture.current.up()) {
+                event.preventDefault()
+                event.currentTarget.form?.requestSubmit()
+              }
+            }}
             type="submit"
           >
             {showStop ? (

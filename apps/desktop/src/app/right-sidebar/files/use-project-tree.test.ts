@@ -526,6 +526,31 @@ describe('useProjectTree', () => {
     expect(readDir).toHaveBeenLastCalledWith('/b')
   })
 
+  // The wiring clears the module atom on a session/connection switch while the
+  // pane stays mounted with unchanged props, so the initial-load effect used to
+  // never re-run: the pane sat on its skeleton forever with the refresh button
+  // disabled (#137843).
+  it('reloads after an external reset clears the atom under a mounted pane', async () => {
+    readDir.mockResolvedValueOnce(ok([{ name: 'src', path: '/p/src', isDirectory: true }]))
+    readDir.mockResolvedValueOnce(ok([{ name: 'after-reset.md', path: '/p/after-reset.md', isDirectory: false }]))
+
+    const { result } = renderHook(() => useProjectTree('/p'))
+
+    await waitFor(() => expect(result.current.data.map(n => n.name)).toEqual(['src']))
+
+    act(() => {
+      resetProjectTreeState()
+    })
+
+    // Cleared atom reads as loading with no rows — the state the skeleton
+    // renders from — and this is where the old code stayed forever.
+    expect(result.current.data).toEqual([])
+    expect(result.current.rootLoading).toBe(true)
+
+    await waitFor(() => expect(result.current.data.map(n => n.name)).toEqual(['after-reset.md']))
+    expect(readDir).toHaveBeenCalledTimes(2)
+  })
+
   it('falls back to the sanitized workspace dir when the session cwd is gone', async () => {
     const sanitizeWorkspaceCwd = vi.fn(async () => ({ cwd: '/home/me/projects', sanitized: true }))
     readDir.mockImplementation(async path => {

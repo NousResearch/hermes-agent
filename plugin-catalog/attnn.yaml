@@ -1,0 +1,29 @@
+name: attnn
+repo: https://github.com/AQEELERRHH/attnn
+sha: 010ffb4fcd931c15e0db4f4bd2d94357135d0440
+subdir: hermes-plugin
+title: Attnn.
+description: "Reach creators on Attnn., the attention marketplace on Arc: find creators by topic (free), read a profile for $0.001 USDC over x402 (Circle Gateway), bid USDC from the agent's own wallet into the Attnn. escrow, check status and read the reply, and claim back unanswered bids after 3 days. The creator is paid only by replying; a decline refunds at once. Bundles the attnn workflow skill. Disclosure crypto payments: ATTNN_AGENT_PRIVATE_KEY (read through Hermes's secret scope; use a dedicated low-balance wallet) signs Arc transactions and x402 payments locally and is never sent anywhere; attnn_place_bid, attnn_fund_reads and attnn_claim_refund each go through Hermes's approval prompt via a pre_tool_call hook (rule_key scoped to the exact action; refused in cron and other unattended runs); bids are capped per bid (max_bid_usd, default $5) and bids plus profile reads per UTC day (daily_budget_usd, default $20), checked before signing; USDC is approved only to the built-in Attnn. escrow or the Circle Gateway wallet for the exact amount, and calldata returned by Attnn.'s API is checked against the bid before signing. Talks to attnn.xyz, the Arc RPC (rpc.mainnet.arc.io by default) and gateway-api.circle.com; stores today's spend total and placed bids (with Attnn. access tokens that can read a bid's status and reply but cannot move money) in the plugin's Hermes state. No telemetry, no shell commands, no background processes, no self-updates."
+maintainer: AQEELERRHH
+tier: community
+category: tools
+docs_url: https://github.com/AQEELERRHH/attnn/tree/main/hermes-plugin#readme
+version: "0.1.0"
+requires_hermes: ">=0.21.5"
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - attnn_find_creators
+    - attnn_read_profile
+    - attnn_wallet_status
+    - attnn_fund_reads
+    - attnn_place_bid
+    - attnn_bid_status
+    - attnn_list_bids
+    - attnn_claim_refund
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env:
+    - ATTNN_AGENT_PRIVATE_KEY

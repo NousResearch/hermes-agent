@@ -4204,6 +4204,59 @@ describe('usePromptActions submit session-context isolation (#54527)', () => {
     })
   })
 
+  it('delivers a first prompt to its minted session after navigating away mid-create (#152701)', async () => {
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
+    let routeToken = '/::'
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      return method === 'prompt.submit'
+        ? ({ submission_id: params?.submission_id, session_id: params?.session_id, status: 'started' } as never)
+        : ({} as never)
+    })
+
+    const createBackendSessionForSend = vi.fn(async (
+      _preview?: string | null,
+      overrides?: { onCreatedInBackground?: (storedSessionId: string) => void }
+    ) => {
+      // The create's original destination was A; the user is now viewing B.
+      selectedStoredSessionIdRef.current = STORED_SESSION_B
+      activeSessionIdRef.current = RUNTIME_SESSION_B
+      routeToken = `/${STORED_SESSION_B}::`
+      overrides?.onCreatedInBackground?.('stored-new-chat')
+
+      return 'rt-new-chat'
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        createBackendSessionForSend={createBackendSessionForSend}
+        getRouteToken={() => routeToken}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={null}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    expect(await handle!.submitText('first prompt for A')).toBe(true)
+    expect(calls.filter(call => call.method === 'prompt.submit')).toHaveLength(1)
+    expect(calls.find(call => call.method === 'prompt.submit')?.params).toMatchObject({
+      session_id: 'rt-new-chat',
+      text: 'first prompt for A'
+    })
+    expect(selectedStoredSessionIdRef.current).toBe(STORED_SESSION_B)
+    expect(activeSessionIdRef.current).toBe(RUNTIME_SESSION_B)
+  })
+
   it('still submits the first message when a background event retargets only the active runtime during create', async () => {
     // A live session's stream retargets activeSessionIdRef while session.create
     // is in flight (#47709). Route and selection still name the chat create

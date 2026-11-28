@@ -690,6 +690,23 @@ export function useSessionActions({
         })
 
         if (drift) {
+          if (stored && createOverrides?.onCreatedInBackground) {
+            // This first send still owns the newly minted session. Publish its
+            // owner and sidebar row, but leave the chat now in view untouched.
+            // The 60-second create owner hold protects the first prompt RPC.
+            if (createIntentRef.current === createIntent) {
+              createIntentRef.current = null
+            }
+
+            ensureSessionState(created.session_id, stored)
+            markSessionCreatedThisRun(stored)
+            upsertOptimisticSession(created, stored, null, preview?.trim() || null, null, undefined, capturedRoute)
+            broadcastSessionsChanged()
+            createOverrides.onCreatedInBackground(stored)
+
+            return created.session_id
+          }
+
           console.warn('[submit-drift-abort]', drift, { phase: 'mid-create' })
 
           // Close on the backend that minted the session: the ambient socket

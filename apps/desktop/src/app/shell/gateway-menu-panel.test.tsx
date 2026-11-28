@@ -50,6 +50,8 @@ vi.mock('@/store/system-actions', () => ({
   runGatewayRestart: vi.fn()
 }))
 
+import { getLogs } from '@/hermes'
+
 import { GatewayMenuPanel } from './gateway-menu-panel'
 
 const renderPanel = (gatewayState: string) =>
@@ -99,5 +101,54 @@ describe('GatewayMenuPanel reconnect action', () => {
     const reconnect = screen.getByRole('button', { name: 'Reconnect gateway' })
     await act(async () => fireEvent.click(reconnect))
     expect(mocks.reconnectGateway).toHaveBeenCalledOnce()
+  })
+})
+
+describe('GatewayMenuPanel recent activity source', () => {
+  const logs = vi.mocked(getLogs)
+
+  beforeEach(() => {
+    logs.mockReset().mockResolvedValue({ file: 'gateway', lines: [] })
+  })
+
+  afterEach(() => {
+    cleanup()
+    logs.mockReset().mockResolvedValue({ file: 'gateway', lines: [] })
+  })
+
+  it('tails the live gateway log instead of a stale gui log (#155027)', async () => {
+    // Under the gateway runtime, gui.log stopped when the backend last ran in
+    // mode="gui": its last lines are days old, while gateway.log is live.
+    logs.mockImplementation(async ({ file }) => ({
+      file: file ?? 'gateway',
+      lines:
+        file === 'gateway'
+          ? ['2026-11-13 13:02:11,004 INFO gateway is alive']
+          : ['2026-11-06 08:14:02,871 WARNING gui stale line']
+    }))
+
+    renderPanel('open')
+
+    expect(await screen.findByText(/gateway is alive/)).toBeTruthy()
+    expect(logs).toHaveBeenCalledWith({ file: 'gateway', lines: 120 })
+    expect(screen.queryByText(/gui stale line/)).toBeNull()
+  })
+
+  it('keeps the year for current and previous-year gateway lines while removing display noise', async () => {
+    const currentYear = new Date().getFullYear()
+    logs.mockResolvedValue({
+      file: 'gateway',
+      lines: [
+        `${currentYear}-11-06 08:14:02,871 [runtime-1] INFO current-year gateway event`,
+        `${currentYear - 1}-11-06 08:14:02,871 [runtime-1] WARNING gateway from a previous year`
+      ]
+    })
+
+    renderPanel('open')
+
+    expect(await screen.findByText(new RegExp(`${currentYear}-11-06 08:14\\s+INFO current-year gateway event`))).toBeTruthy()
+    expect(screen.getByText(new RegExp(`${currentYear - 1}-11-06 08:14\\s+WARNING gateway from a previous year`))).toBeTruthy()
+    expect(screen.queryByText(/,871/)).toBeNull()
+    expect(screen.queryByText(/\[runtime-1\]/)).toBeNull()
   })
 })

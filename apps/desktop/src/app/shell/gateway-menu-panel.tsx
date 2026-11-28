@@ -44,7 +44,10 @@ function useGatewayLogTail(): string[] {
     // error boundary before the .catch even attaches.
     const load = async () => {
       try {
-        const res = await getLogs({ file: 'gui', lines: LOG_TAIL })
+        // Desktop attaches to the per-home gateway owner, which logs in
+        // mode="gateway"; gui.log is only written by the legacy gui backend and
+        // may be days stale (#155027).
+        const res = await getLogs({ file: 'gateway', lines: LOG_TAIL })
 
         if (cancelled) {
           return
@@ -75,11 +78,24 @@ function useGatewayLogTail(): string[] {
 
 const prettyState = (state: string) => state.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase())
 
-// Strip leading "YYYY-MM-DD HH:MM:SS,mmm " and "[runtime_id] " prefixes from
-// log lines so they don't dominate the display. Full text preserved on hover.
+// Keep the full date and minute for each line while dropping seconds,
+// milliseconds, and runtime prefixes that do not help the recent-activity view.
 const TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}[,.\d]*\s+/
 const RUNTIME_BRACKET_RE = /^\[[^\]]+]\s+/
-const trimLogLine = (raw: string) => raw.trim().replace(TIMESTAMP_RE, '').replace(RUNTIME_BRACKET_RE, '')
+
+const trimLogLine = (raw: string) => {
+  const line = raw.trim()
+  const timestamp = line.match(TIMESTAMP_RE)?.[0]?.trim()
+  const message = line.replace(TIMESTAMP_RE, '').replace(RUNTIME_BRACKET_RE, '').trim()
+
+  if (!timestamp) {
+    return message
+  }
+
+  const compactTimestamp = timestamp.slice(0, 16).replace(/[T ]/, ' ')
+
+  return message ? `${compactTimestamp}  ${message}` : compactTimestamp
+}
 
 export function GatewayMenuPanel({
   gatewayState,

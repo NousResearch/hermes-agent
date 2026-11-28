@@ -784,6 +784,8 @@ function EditSoulDialog({
   const [missing, setMissing] = useState(false)
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
+  // A failed read must not leave an empty editor whose Save overwrites the file.
+  const [loadFailed, setLoadFailed] = useState(false)
 
   useEffect(() => {
     if (!profileName) {
@@ -792,6 +794,7 @@ function EditSoulDialog({
 
     let cancelled = false
     setLoading(true)
+    setLoadFailed(false)
     setContent('')
     setMissing(false)
 
@@ -802,14 +805,19 @@ function EditSoulDialog({
           setMissing(soul.exists === false)
         }
       })
-      .catch(err => !cancelled && notifyError(err, p.failedLoadSoul))
+      .catch(err => {
+        if (!cancelled) {
+          setLoadFailed(true)
+          notifyError(err, p.failedLoadSoul)
+        }
+      })
       .finally(() => !cancelled && setLoading(false))
 
     return () => void (cancelled = true)
   }, [p, profileName, scope])
 
   const save = async () => {
-    if (!profileName) {
+    if (!profileName || loadFailed) {
       return
     }
 
@@ -836,7 +844,8 @@ function EditSoulDialog({
         </DialogHeader>
         {missing && <p className="text-xs text-muted-foreground">{p.soulMissing}</p>}
         <div className="h-80">
-          {!loading && profileName && (
+          {loadFailed && <p className="text-xs text-destructive">{p.failedLoadSoul}</p>}
+          {!loading && !loadFailed && profileName && (
             <CodeEditor
               filePath="SOUL.md"
               framed
@@ -852,7 +861,7 @@ function EditSoulDialog({
           <Button disabled={saving} onClick={onClose} type="button" variant="ghost">
             {t.common.cancel}
           </Button>
-          <Button disabled={saving || loading} onClick={() => void save()}>
+          <Button disabled={saving || loading || loadFailed} onClick={() => void save()}>
             {saving ? p.saving : p.saveSoul}
           </Button>
         </DialogFooter>

@@ -80,31 +80,6 @@ def test_a_forwarded_prompt_accepts_an_answer_past_the_one_mib_default(tmp_path,
     assert attached == snapshot
 
 
-def test_the_forward_and_client_paths_share_one_frame_bound(monkeypatch):
-    """The two dials must not drift again: the forward default IS the client default."""
-    from hermes_cli import gateway_client
-
-    bound = gateway_client.DEFAULT_MAX_FRAME_BYTES
-    assert bound == 8 * 1024 * 1024
-    seen = {}
-
-    @__import__("contextlib").asynccontextmanager
-    async def fake_connect(url, **kwargs):
-        seen.update(kwargs)
-        yield SimpleNamespace(subprotocol=gateway_client.GATEWAY_WS_PROTOCOL)
-
-    import websockets.asyncio.client as ws_client
-    monkeypatch.setattr(ws_client, "connect", fake_connect)
-    monkeypatch.setattr(gateway_client, "_session_ticket", lambda *_a, **_k: "ticket")
-
-    async def dial():
-        async with owner_forward.connect_owner(Path("."), SimpleNamespace(api_origin="http://127.0.0.1:1")):
-            pass
-
-    asyncio.run(dial())
-    assert seen["max_size"] == bound
-
-
 def test_an_explicit_frame_bound_is_honoured(tmp_path, monkeypatch):
     """``forward_rpc`` sizes its socket for the largest attachment the room store accepts."""
     import contextlib
@@ -134,30 +109,35 @@ def test_an_explicit_frame_bound_is_honoured(tmp_path, monkeypatch):
     assert seen["max_size"] == expected
 
 
-def test_resume_omits_the_stored_transcript(monkeypatch):
-    """A persisted chat past the frame cap must not be loaded on the forward path.
+def test_a_relay_admits_a_prompt_on_a_chat_whose_transcript_passes_the_frame_bound(tmp_path, monkeypatch):
+    """The relay only needs ``session_id`` from ``session.resume``: a stored transcript past the 8 MiB
+    bound must not ride the reply, or the socket closes with 1009 before ``prompt.submit`` (kvnloo on
+    #156055). The owner here answers the way the real one does: the whole transcript unless
+    ``omit_messages`` is set."""
+    from hermes_cli import gateway_client
 
-    ``_Relay`` only reads ``session_id``. Requesting the whole transcript closed the
-    socket with ``1009 frame exceeds limit`` before ``prompt.submit``.
-    """
-    seen = {}
+    transcript = ["x" * 1024 * 1024 for _ in range(9)]
+    seen = []
 
-    class _Client:
-        async def rpc(self, method, **params):
-            seen.setdefault(method, params)
-            if method == "session.resume":
-                return {"session_id": "long-chat"}
-            return {"status": "queued", "admission_id": "adm-1", "voice_stopped": True}
+    async def answer(ws):
+        async for raw in ws:
+            request = json.loads(raw)
+            seen.append(request["method"])
+            params = request.get("params") or {}
+            if request["method"] == "session.resume":
+                messages = [] if params.get("omit_messages") is True else transcript
+                result = {"session_id": "long-chat", "messages": messages}
+            else:  # prompt.submit: a receipt that admits nothing, so the relay has no turn to follow
+                result = {"voice_stopped": True}
+            await ws.send(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}))
 
-    class _Conn:
-        async def __aenter__(self):
-            return _Client()
+    endpoint, stop = _serve(answer, [gateway_client.GATEWAY_WS_PROTOCOL])
+    monkeypatch.setattr(gateway_client, "_session_ticket", lambda *_a, **_k: "ticket")
+    relay = owner_forward._Relay("sid", {}, "long-chat", Path(tmp_path), endpoint, "hello", lambda *_a: None)
+    try:
+        relay.run()
+    finally:
+        stop()
 
-        async def __aexit__(self, *args):
-            return False
-
-    monkeypatch.setattr(owner_forward, "connect_owner", lambda *a, **k: _Conn())
-    relay = owner_forward._Relay("sid", {}, "long-chat", Path("."), None, "hello", None)
-    asyncio.run(relay._run())
-    assert seen["session.resume"]["omit_messages"] is True
-    assert seen["session.resume"]["session_id"] == "long-chat"
+    assert relay.admitted.result(timeout=0) == {"voice_stopped": True}
+    assert seen == ["session.resume", "prompt.submit"]

@@ -465,7 +465,14 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         # copy of the parent's.
         payload = {'mcp_servers': [s.model_dump(by_alias=True) for s in mcp_servers]} if mcp_servers else {}
         self._unacked.pop(session_id, None)
-        result = await self._mutations.apply(client, session_id, 'branch', payload)
+        try:
+            result = await self._mutations.apply(client, session_id, 'branch', payload)
+        except GatewayClientError as exc:
+            if str(exc) != "session_busy":
+                raise
+            # The owner branches an idle session only; say so rather than a bare "Internal error".
+            raise acp.RequestError(
+                -32603, "Forking applies when the session is idle; try again after this turn.") from exc
         child = result['branched_session_id']
         if self._moved(info, cwd):
             await self._move_workspace(client, child, cwd)

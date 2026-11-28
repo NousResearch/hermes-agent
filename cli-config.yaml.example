@@ -943,6 +943,10 @@ compression:
 #   replay_recent_images: 3
 #
 # auxiliary:
+#   # Auxiliary routing uses only these providers ([] = any). A task pin outside the
+#   # list fails; chains and fallbacks skip unlisted providers.
+#   allowed_providers: []  # e.g. ["openrouter"] or a providers: entry name
+#
 #   # Image analysis: vision_analyze tool + browser screenshots
 #   vision:
 #     provider: "auto"

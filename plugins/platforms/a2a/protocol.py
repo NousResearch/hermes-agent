@@ -21,6 +21,9 @@ from gateway.platforms._shared import coerce_port as _coerce_int
 from hermes_constants import get_hermes_home, mkdir_under_hermes_home
 
 PROTOCOL_VERSION = "1.0"
+# Agent Card ``version`` when the running Hermes release is unknown. The card's ``version`` is the
+# agent's own version; the protocol version is ``supportedInterfaces[].protocolVersion``.
+FALLBACK_AGENT_VERSION = "1.0.0"
 
 # A2A v1.0 task lifecycle states + message roles.
 STATE_SUBMITTED, STATE_WORKING, STATE_INPUT_REQUIRED = "TASK_STATE_SUBMITTED", "TASK_STATE_WORKING", "TASK_STATE_INPUT_REQUIRED"
@@ -59,15 +62,16 @@ def now_iso() -> str:
 
 def build_agent_card(*, name: str, url: str, description: str, skills: Optional[list[dict]] = None,
                      streaming: bool = False, push_notifications: bool = False, auth_required: bool = False,
-                     tenant: str = "") -> dict:
+                     tenant: str = "", version: str = FALLBACK_AGENT_VERSION) -> dict:
     """A2A v1.0 Agent Card. ``tenant`` is the optional multi-tenancy routing key on
-    AgentInterface; when present, clients MUST echo it in request params."""
+    AgentInterface; when present, clients MUST echo it in request params. ``version`` is the
+    agent's own version (the running Hermes release), not the protocol version."""
     iface: dict[str, Any] = {"url": url, "protocolBinding": "JSONRPC", "protocolVersion": PROTOCOL_VERSION, **({"tenant": tenant} if tenant else {})}
     card: dict[str, Any] = {
         "name": name,
         "description": description,
         "url": url,  # convenience for pre-1.0 clients; canonical is supportedInterfaces
-        "version": "1.0.0",
+        "version": version or FALLBACK_AGENT_VERSION,
         "provider": {"organization": os.getenv("A2A_PROVIDER_ORG", "Hermes Agent"), "url": os.getenv("A2A_PROVIDER_URL", "") or url},
         "supportedInterfaces": [iface],
         "capabilities": {"streaming": streaming, "pushNotifications": push_notifications,

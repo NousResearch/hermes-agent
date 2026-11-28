@@ -458,3 +458,35 @@ def test_module_entry_keeps_an_explicit_default_profile_over_the_sticky_one(tmp_
                          env=env, capture_output=True, text=True, timeout=120, check=True).stdout
 
     assert Path(out.strip().splitlines()[-1]).resolve() == (root / "config.yaml").resolve()
+
+
+@pytest.mark.parametrize("console_script", [False, True], ids=["module", "console-script"])
+def test_pytest_can_load_a_plugin_when_collection_imports_the_cli(tmp_path, console_script):
+    """Regression for #158250. pytest owns its -p option during collection."""
+    import shutil
+    import subprocess
+
+    pytest_command = [sys.executable, "-m", "pytest"]
+    if console_script:
+        launcher = shutil.which("pytest", path=str(Path(sys.executable).parent))
+        if launcher is None:
+            pytest.skip("the test interpreter does not have a pytest console script")
+        pytest_command = [launcher]
+
+    repo = Path(__file__).resolve().parents[2]
+    (tmp_path / "example_pytest_plugin.py").write_text(
+        "def pytest_report_header():\n    return 'example plugin loaded'\n", encoding="utf-8",
+    )
+    (tmp_path / "test_import.py").write_text(
+        "import hermes_cli.main\n\ndef test_import():\n    pass\n", encoding="utf-8",
+    )
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("HERMES_", "PYTEST_"))}
+    env.update(HOME=str(tmp_path), USERPROFILE=str(tmp_path), HERMES_HOME=str(tmp_path / "home"),
+               PYTHONPATH=os.pathsep.join((str(tmp_path), str(repo))), PYTEST_DISABLE_PLUGIN_AUTOLOAD="1")
+    result = subprocess.run(
+        [*pytest_command, "-p", "example_pytest_plugin", "test_import.py"],
+        cwd=tmp_path, env=env, capture_output=True, text=True, timeout=120, check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "example plugin loaded" in result.stdout
+    assert "1 passed" in result.stdout

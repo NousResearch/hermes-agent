@@ -414,15 +414,6 @@ def _inside_mcp_add_args(argv: list, index: int) -> bool:
     return True
 
 
-def _looks_like_hermes_invocation() -> bool:
-    """False when ``sys.argv`` belongs to a test runner rather than a ``hermes`` run.
-
-    pytest's own ``-p no:xdist`` reaches ``scan_profile_flag`` through ``sys.argv`` at import
-    time; it must stay a silent skip, while a real ``hermes -p 'Work Bot'`` must fail loudly.
-    """
-    return "pytest" not in (sys.argv[0] or "")
-
-
 def _exit_invalid_profile_name(value: str) -> None:
     from hermes_cli.profiles import _invalid_profile_name_error
 
@@ -446,8 +437,8 @@ def scan_profile_flag(argv: list) -> tuple:
     ``profiles.normalize_profile_name``) before validation so ``-p Work`` selects
     ``work``. A value that cannot be a profile name is rejected so
     resolve_profile_env never sys.exits on it; the rejection is explained (exit 2)
-    only when the flag comes BEFORE the first subcommand token under a real
-    ``hermes`` run — after a subcommand, ``-p`` may belong to that subcommand or a
+    only when the flag comes BEFORE the first subcommand token.
+    After a subcommand, ``-p`` may belong to that subcommand or a
     plugin (`hermes kanban ... -p 8080`), and option-looking values (``no:xdist``,
     ``--flag``) are always a silent skip.
     """
@@ -465,7 +456,7 @@ def scan_profile_flag(argv: list) -> tuple:
             value = raw.strip().casefold()
             if PROFILE_ID_RE.match(value):
                 return value, 2, i
-            if not saw_subcommand and not _looks_like_option_value(raw) and _looks_like_hermes_invocation():
+            if not saw_subcommand and not _looks_like_option_value(raw):
                 _exit_invalid_profile_name(raw)
             break
         if arg.startswith("--profile="):

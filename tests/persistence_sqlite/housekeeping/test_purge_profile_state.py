@@ -200,6 +200,20 @@ class TestPurgeProfileState:
         assert "agent:foo_bar:feishu:dm:chatA" not in routing
         assert "agent:fooXbar:feishu:dm:chatB" in routing
 
+    def test_profile_named_main_purges_its_own_namespace_not_the_default(self, db, store):
+        from gateway.session import _session_key_namespace
+        default_key = f"{_session_key_namespace(None)}:feishu:dm:chatA"
+        main_key = f"{_session_key_namespace('main')}:feishu:dm:chatB"
+        for key in (default_key, main_key):
+            store.routing.upsert_routing_entry(
+                key, json.dumps({"session_key": key}), routing_scope="/root/sessions")
+
+        _purge(store, "main")
+
+        routing = store.routing.load_routing_entries(routing_scope="/root/sessions")
+        assert default_key in routing
+        assert main_key not in routing
+
     def test_purges_legacy_v2_topic_binding_by_session_key(self, db, store):
         """Purge is safe on old tables and leaves unrelated namespace rows intact."""
         create_session(

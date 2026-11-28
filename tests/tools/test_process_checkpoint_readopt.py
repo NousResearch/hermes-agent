@@ -122,7 +122,7 @@ class TestCheckpointReadopt:
                 proc.kill()
                 proc.wait()
 
-    def test_gone_pid_is_pruned_without_a_false_completion(self, registry):
+    def test_gone_pid_is_pruned_without_a_collected_exit(self, registry):
         session = ProcessSession(
             id="proc_gone",
             command="already-dead",
@@ -139,10 +139,17 @@ class TestCheckpointReadopt:
         listed = registry.list_sessions()
         polled = registry.poll(session.id)
 
-        assert session.id not in registry._running
+        assert session.id in registry._running  # pending publication, not a collected exit
         assert all(row["session_id"] != session.id for row in listed)
         assert polled["status"] == "not_found"
-        assert _completions(registry) == []
+        registry._sweep_detached_once()
+        assert session.id not in registry._running
+        # No collected status is invented, but the owning session still learns
+        # that supervision was lost, just as when the detached sweeper wins.
+        event, = _completions(registry)
+        assert event["session_id"] == session.id
+        assert event["completion_reason"] == "lost"
+        assert event["exit_code"] is None
 
     def test_recover_reattaches_live_pid_when_start_probe_fails(
         self, registry, tmp_path, monkeypatch

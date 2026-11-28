@@ -180,3 +180,61 @@ class TestSkillViewDedupRaces:
 
         again = _view("demo-dedup-skill")
         assert again.get("dedup") is True
+
+
+class TestSkillViewDedupSecretCapture:
+    """A repeat view that prompted for (and stored) a missing secret is not "unchanged"."""
+
+    @pytest.fixture
+    def inbox_skill(self, skills_home, monkeypatch):
+        import tools.skills_tool as st
+
+        d = skills_home / "skills" / "demo-inbox"
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text(
+            "---\nname: demo-inbox\ndescription: One-off secret inbox.\n"
+            "required_environment_variables:\n  - name: DEMO_INBOX\n    prompt: Paste it\n---\n"
+            "# Inbox\n\nRoute the value, then clear DEMO_INBOX.\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        monkeypatch.delenv("DEMO_INBOX", raising=False)
+        prompts = []
+
+        def fake_capture(var_name, prompt, metadata=None):
+            from hermes_cli.config import save_env_value
+
+            prompts.append(var_name)
+            save_env_value(var_name, f"value-{len(prompts)}")
+            return {"success": True, "stored_as": var_name, "validated": False, "skipped": False}
+
+        monkeypatch.setattr(st, "_secret_capture_callback", fake_capture, raising=False)
+        return skills_home, prompts
+
+    @staticmethod
+    def _clear_inbox(home, monkeypatch):
+        env = home / ".env"
+        lines = env.read_text(encoding="utf-8-sig").splitlines(True)
+        env.write_text("".join(ln for ln in lines if not ln.startswith("DEMO_INBOX=")), encoding="utf-8")
+        monkeypatch.delenv("DEMO_INBOX", raising=False)
+
+    def test_reprompt_after_clear_returns_full_result(self, inbox_skill, monkeypatch):
+        home, prompts = inbox_skill
+        first = _view("demo-inbox")
+        assert prompts == ["DEMO_INBOX"]
+        assert first["readiness_status"] == "available"
+
+        self._clear_inbox(home, monkeypatch)  # the value was routed; the inbox is empty again
+        again = _view("demo-inbox")
+
+        assert prompts == ["DEMO_INBOX", "DEMO_INBOX"]  # the box opened a second time
+        assert again.get("dedup") is None
+        assert again.get("captured_environment_variables") == ["DEMO_INBOX"]
+
+    def test_view_with_secret_already_present_still_dedups(self, inbox_skill):
+        _home, prompts = inbox_skill
+        _view("demo-inbox")
+        _view("demo-inbox")  # the captured view itself is never cached as a stub source
+        again = _view("demo-inbox")
+        assert prompts == ["DEMO_INBOX"]
+        assert again.get("dedup") is True

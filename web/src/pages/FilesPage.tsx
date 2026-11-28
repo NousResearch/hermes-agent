@@ -61,9 +61,9 @@ function formatBytes(size: number | null): string {
   return `${(size / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
-function downloadDataUrl(dataUrl: string, name: string) {
+function downloadUrl(url: string, name: string) {
   const link = document.createElement("a");
-  link.href = dataUrl;
+  link.href = url;
   link.download = name || "download";
   document.body.appendChild(link);
   link.click();
@@ -241,8 +241,7 @@ export default function FilesPage() {
   const downloadFile = async (entry: ManagedFileEntry) => {
     if (entry.is_directory || entry.broken_link) return;
     try {
-      const file = await api.readFile(entry.path);
-      downloadDataUrl(file.data_url, file.name);
+      downloadUrl(await api.fileDownloadUrl(entry.path), entry.name);
     } catch (e) {
       showToast(`Download failed: ${errorMessage(e)}`, "error");
     }

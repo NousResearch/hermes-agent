@@ -1,0 +1,33 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: drillr
+description: Financial filings, statements, prices and ownership data for US, China A-share and Japan equities.
+source: https://drillr.ai/docs/mcp
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Native OAuth 2.1 + Dynamic Client Registration
+# (verified live: RFC 9728 protected-resource metadata -> AS metadata with
+# registration_endpoint, PKCE S256, public client); Hermes's MCP client +
+# mcp_oauth_manager handle discovery, PKCE, token exchange, and refresh.
+
+transport:
+  type: http
+  url: https://gateway.drillr.ai/mcp/data
+
+auth:
+  type: oauth
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - drillr
+    - sec filing
+  hosts:
+    - drillr.ai
+
+post_install: |
+  On first connection Hermes opens a browser to sign in to drillr
+  (or run `hermes mcp login drillr`). Approve "drillr Data",
+  then restart the session so tools load.

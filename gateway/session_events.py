@@ -33,6 +33,9 @@ class SessionEvents:
         # The running execution's open tool calls and its last frame time; a hosted room's info
         # poll reports them so the room shows which tool a member is in (``progress_for``).
         self._progress = None
+        # ``{generation, from}`` of the local viewer turn whose todo writes this stream carries as
+        # ``todo.updated``: ``from`` is the first revision it wrote (``track_todos``, #158324).
+        self._todo_turn = None
 
     def note_progress(self, generation, event_type, payload):
         """Record one execution frame (the caller holds ``lock`` and passed the generation fence)."""
@@ -46,6 +49,27 @@ class SessionEvents:
         elif event_type == 'tool.complete':
             progress['tools'].pop(tool_id, None)
         progress['at'] = time.time()
+        todo_turn = self._todo_turn
+        if (event_type == 'todo.updated' and isinstance(payload.get('revision'), int) and todo_turn is not None
+                and todo_turn['generation'] == generation and todo_turn['from'] is None):
+            todo_turn['from'] = payload['revision']
+
+    def track_todos(self, generation):
+        """*generation* runs a local viewer turn: its todo writes reach this stream as ``todo.updated``, so a
+        resume can tell a plan it wrote from one an earlier turn left unfinished (#158324). A queued follow-up
+        runs a second TurnRunner in the same generation; the plan the first one wrote stays that execution's."""
+        with self.lock:
+            if self._todo_turn is None or self._todo_turn['generation'] != generation:
+                self._todo_turn = {'generation': generation, 'from': None}
+
+    def from_running_turn(self, generation, revision):
+        """Whether *generation*'s execution wrote the todo plan at *revision*; None when its todo writes are
+        not tracked (a messaging, cron or managed turn publishes no ``todo.updated``)."""
+        with self.lock:
+            todo_turn = self._todo_turn
+            if todo_turn is None or todo_turn['generation'] != generation:
+                return None
+            return todo_turn['from'] is not None and revision >= todo_turn['from']
 
     def progress_for(self, generation):
         """``{"tool", "progress_at"}`` for *generation*'s execution: the newest open tool call

@@ -151,7 +151,7 @@ class _ExecApprovalDeclined(RuntimeError):
     """
 
 
-from gateway.run_turn_progress import GatewayTurnProgressMixin
+from gateway.run_turn_progress import GatewayTurnProgressMixin, local_viewer_turn
 from gateway.session_execution import GatewaySessionAgentMixin
 
 
@@ -258,6 +258,11 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                     raise TypeError("'NoneType' object is not subscriptable")
                 generation = row.runtime_generation
                 self._approval_owner = (authority, owner_id, generation)
+                # A local viewer turn's todo writes reach viewers as ``todo.updated``: from now on a resume can
+                # tell its plan from one an earlier turn left unfinished (#158324). Read once: the session can
+                # be retired since the membership check, and the turn then carries on as publish_execution does.
+                if local_viewer_turn(self) and (live := authority.sessions.get(owner_id)) is not None:
+                    live.event_stream.track_todos(generation)
 
 
     def _publish_execution(self, event_type, payload):

@@ -186,7 +186,10 @@ export function clearActiveSessionTodos(sid: string) {
 
 /** Apply a session.resume/activate or todo.updated full snapshot. Idle
  * sessions keep the existing stale-active guard; running sessions restore the
- * active plan because the backend has proved that turn is still live. */
+ * active plan because the backend has proved that turn is still live — unless
+ * the backend says that turn did not write it: then an earlier turn left it
+ * unfinished, and that turn's end already dropped it (#158324). A live
+ * todo.updated says nothing: it is the running turn's own write. */
 export function restoreSessionTodosFromSnapshot(sid: string, snapshot: unknown, running: boolean) {
   const todos = parseTodos(snapshot)
 
@@ -203,7 +206,8 @@ export function restoreSessionTodosFromSnapshot(sid: string, snapshot: unknown, 
     return
   }
 
-  const visible = running ? todos : todosForHydration(todos)
+  const leftByEarlierTurn = (snapshot as { from_running_turn?: unknown }).from_running_turn === false
+  const visible = running && !leftByEarlierTurn ? todos : todosForHydration(todos)
 
   if (visible !== null) {
     setSessionTodos(sid, visible, revision)

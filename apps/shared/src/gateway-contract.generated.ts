@@ -3410,6 +3410,7 @@ export interface ConnectionDisplay {
 export interface TodoState {
   todos: Record<string, unknown>[]
   revision: number
+  from_running_turn?: boolean | null
 }
 /** A crash-interrupted turn was scheduled to continue right after this resume. */
 export interface AutoContinue {

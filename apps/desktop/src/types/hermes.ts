@@ -868,6 +868,8 @@ export interface SessionResumeResult {
   todo_state?: {
     revision?: number
     todos?: unknown
+    /** While a turn runs: whether that turn wrote this list. */
+    from_running_turn?: boolean | null
   }
   /** Epoch seconds the current turn started, or null when idle. */
   turn_started_at?: number | null

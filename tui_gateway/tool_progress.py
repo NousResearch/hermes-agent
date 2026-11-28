@@ -154,11 +154,30 @@ def _session_todo_state(session: dict) -> dict | None:
     return cached
 
 
+def _note_turn_todo_published(session: dict, revision: int) -> None:
+    """Keep the first todo revision the running turn published. A read, or a rewrite that changes nothing,
+    publishes the list it found without a new revision; from then on it is that turn's live list (#158324)."""
+    if not (session.get("running") and isinstance(session.get("inflight_turn"), dict)):
+        return
+    with session["history_lock"]:
+        turn = session.get("inflight_turn")
+        if isinstance(turn, dict):
+            turn.setdefault("todo_published", revision)
+
+
 def _attach_todo_state(payload: dict, session: dict) -> dict:
-    """Attach the authoritative todo snapshot to a session response."""
+    """Attach the authoritative todo snapshot to a session response. While a turn runs it says whether that
+    turn wrote or published it: any other list is one an earlier turn left unfinished (#158324)."""
     state = _session_todo_state(session)
     if state is not None:
-        payload["todo_state"] = state
+        turn = session.get("inflight_turn")
+        started_from = turn.get("todo_revision") if session.get("running") and isinstance(turn, dict) else None
+        if started_from is None:
+            payload["todo_state"] = state
+        else:
+            published = turn.get("todo_published")
+            payload["todo_state"] = {**state, "from_running_turn": state["revision"] > started_from or (
+                published is not None and state["revision"] >= published)}
     return payload
 
 
@@ -367,6 +386,7 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
         payload.update(todo_state)
         if session is not None:
             _cache_todo_state(session, todo_state)
+            _note_turn_todo_published(session, todo_state["revision"])
     from agent.display import is_neutral_failure
     if (_tool_progress_enabled(sid) or payload.get("inline_diff") or _tool_lifecycle_required_for_ui(name)
             or is_todo_tool_name(name) or _connector_tool_lifecycle(name, args)

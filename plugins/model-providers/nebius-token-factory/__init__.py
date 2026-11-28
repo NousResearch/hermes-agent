@@ -41,9 +41,9 @@ nebius_token_factory = NebiusTokenFactoryProfile(
     models_url="https://api.tokenfactory.nebius.com/v1/models?verbose=true", auth_type="api_key",
     default_aux_model="nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B",
     fallback_models=(
-        "Qwen/Qwen3.5-397B-A17B-fast", "deepseek-ai/DeepSeek-V4-Pro", "zai-org/GLM-5.1", "moonshotai/Kimi-K2.5-fast",
-        "MiniMaxAI/MiniMax-M2.5-fast", "deepseek-ai/DeepSeek-V3.2-fast", "NousResearch/Hermes-4-70B",
-        "openai/gpt-oss-120b-fast", "meta-llama/Llama-3.3-70B-Instruct",
+        "Qwen/Qwen3.8-27B", "deepseek-ai/DeepSeek-V4-Pro-0813", "zai-org/GLM-5.3", "moonshotai/Kimi-K3",
+        "MiniMaxAI/MiniMax-M3", "deepseek-ai/DeepSeek-V4.1-Flash-1017", "moonshotai/Kimi-K3.1-Pro",
+        "zai-org/GLM-5.3-Flash", "nvidia/Nemotron-3_5-Lightning",
     ),
 )
 

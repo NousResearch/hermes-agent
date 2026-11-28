@@ -1,0 +1,32 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: hail
+description: Handle calls, texts, and email from a real phone number and email inbox.
+source: https://hail.so/mcp/hermes
+
+# Hail runs a remote MCP server over Streamable HTTP with OAuth 2.1 and
+# Dynamic Client Registration. Users sign in to a Hail account in the browser.
+transport:
+  type: http
+  url: https://mcp.hail.so
+
+auth:
+  type: oauth
+
+suggest:
+  keywords:
+    - hail
+    - phone number
+    - text message
+    - email inbox
+  hosts:
+    - hail.so
+
+post_install: |
+  On first connection, Hermes opens a browser to sign in to Hail.
+  After you sign in, restart your Hermes session so the Hail tools load.
+
+  Each call, text, and email you send needs a consent confirmation.
+  Buying a number charges your Hail credit.

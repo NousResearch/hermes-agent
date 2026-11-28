@@ -15,10 +15,13 @@ _leases = WeakSet()  # Guarded by approval._lock; does not keep completed worker
 
 
 class NotifyLease:
-    def __init__(self, session_key, callback):
+    def __init__(self, session_key, callback, had_client=False):
         self.session_key = session_key
         self.callback = callback
         self.active = True
+        # Whether the dispatching turn could show prompts at all; a session that never could has nobody
+        # to strand.
+        self.had_client = had_client
 
     def _target_locked(self):
         """The lease's own transport. A surface that published none (CLI, TUI, ACP) keeps main's
@@ -66,7 +69,8 @@ def acquire(session_key):
     from tools import approval
     with approval._lock:
         # Only a transport built to outlive its turn is kept; a turn-scoped callback is not.
-        lease = NotifyLease(session_key, getattr(approval._gateway_notify_cbs.get(session_key), "background_notify", None))
+        notifier = approval._gateway_notify_cbs.get(session_key)
+        lease = NotifyLease(session_key, getattr(notifier, "background_notify", None), had_client=notifier is not None)
         _leases.add(lease)
         return lease
 

@@ -32,6 +32,9 @@ def fixture(tmp_path):
     git(origin, "commit", "--allow-empty", "-qm", "c0")
     clone = tmp_path / "clone"
     subprocess.run(["git", "clone", "-q", "--depth", "1", origin.as_uri(), str(clone)], check=True)
+    # The tests unlink loose objects by path; git 2.54+ auto-maintenance (geometric) packs them away
+    # in the background after a commit or fetch.
+    git(clone, "config", "maintenance.auto", "false"); git(clone, "config", "gc.auto", "0")
     git(origin, "commit", "--allow-empty", "-qm", "c1")
     git(origin, "commit", "--allow-empty", "-qm", "c2")
     git(clone, "fetch", "-q", "--depth", "1", "origin", "main")

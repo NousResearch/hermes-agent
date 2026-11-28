@@ -122,10 +122,10 @@ def chunk_markdown_message(content: str, max_length: int = 4096,
             split_at = table_rollback_point(
                 remaining, split_at, lambda t: _len(t) <= max_length - INDICATOR_RESERVE)
         chunk_body = remaining[:split_at]
-        remaining = remaining[split_at:].lstrip()
-        full_chunk = prefix + chunk_body
-        # Walk only chunk_body (not the prepended prefix) for the fence state.
+        # Walk only chunk_body (not the prepended prefix) for the fence state BEFORE trimming the rest.
         in_code, lang = fence_state_after(chunk_body, carry_lang is not None, carry_lang or "")
+        remaining = _continuation_rest(remaining[split_at:], in_code)
+        full_chunk = prefix + chunk_body
         carry_lang = lang if in_code else None
         carry_header = None if in_code else table_header_to_repeat(full_chunk, remaining, max_length // 4, _len)
         # Close the orphaned fence so the chunk stands alone.
@@ -133,3 +133,13 @@ def chunk_markdown_message(content: str, max_length: int = 4096,
     if len(chunks) > 1:
         chunks = [f"{chunk} ({i + 1}/{len(chunks)})" for i, chunk in enumerate(chunks)]
     return chunks
+
+
+def _continuation_rest(rest: str, in_code: bool) -> str:
+    """What follows a split. Prose drops its leading whitespace; inside a code fence that whitespace is
+    literal code (indentation, blank lines), so only the one separator the split landed on goes: the
+    reopened fence prefix already ends in a newline, and keeping it would open every continuation with a
+    blank line."""
+    if not in_code:
+        return rest.lstrip()
+    return rest[1:] if rest[:1] in ("\n", " ") else rest

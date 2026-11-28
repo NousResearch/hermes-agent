@@ -57,7 +57,7 @@ def test_cron_tick_fails_only_that_fire_and_never_runs_on_defaults(tmp_path, mon
     db = open_persistence(profile_scope(home=tmp_path))
     seed_session(db, "s", "cron")
     monkeypatch.setattr("gateway.session_cron.current_execution", lambda: (SimpleNamespace(persistence=db), "s", "j", "fire"))
-    monkeypatch.setattr(scheduler, "_prepare_job_prompt", lambda *a, **k: (None, "do the thing"))
+    monkeypatch.setattr(scheduler, "_prepare_job_prompt", lambda *a, **k: (None, "do the thing", None))
     monkeypatch.setattr(scheduler, "_reload_dotenv_and_publish_delivery_target", lambda job: None)
     monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
     with db:

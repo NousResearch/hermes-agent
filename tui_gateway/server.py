@@ -552,6 +552,26 @@ def _default_session_cwd() -> str:
     return _launch_configured_cwd() or os.getenv("TERMINAL_CWD") or os.getcwd()
 
 
+def _headless_server_log_frame(obj: dict) -> dict:
+    """Return a log-safe copy of a frame bound for stdio when stdio is a server log sink, not a client."""
+    # _stdio_is_rpc_channel (below) is set only by tui_gateway.entry (`hermes --tui`); in-process hosts
+    # (`hermes dashboard`, `hermes serve`) leave it False because their stdout is a server log sink.
+    if _stdio_is_rpc_channel or obj.get("method") != "event":
+        return obj
+    params = obj.get("params")
+    if not isinstance(params, dict) or params.get("type") != "session.info":
+        return obj
+    payload = params.get("payload")
+    if not isinstance(payload, dict) or "system_prompt" not in payload:
+        return obj
+
+    safe_payload = dict(payload)
+    safe_payload["system_prompt"] = "[redacted from hermes serve log]"
+    safe_params = dict(params)
+    safe_params["payload"] = safe_payload
+    return {**obj, "params": safe_params}
+
+
 def write_json(obj: dict) -> bool:
     """Emit one JSON frame via the most-specific transport: (1) event frames with a session id → that
     session's transport (async events reach the owner even from threads with no contextvar binding);
@@ -568,8 +588,12 @@ def write_json(obj: dict) -> bool:
         project_room_member_activity(obj, _sessions)
         sid = ((params or {}).get("session_id")) if isinstance(params, dict) else ""
         if sid and (t := (_sessions.get(sid) or {}).get("transport")) is not None:
-            return t.write(obj)
-    return (current_transport() or _stdio_transport).write(obj)
+            return t.write(_headless_server_log_frame(obj) if t is _stdio_transport else obj)
+    if (transport := current_transport()) is not None:
+        return transport.write(obj)
+    # Under `hermes serve` / `hermes dashboard`, stdio is a server log sink (systemd persists it in journald), not
+    # the authenticated client transport. Keep the frame intact for WS clients; make this last-resort path log-safe.
+    return _stdio_transport.write(_headless_server_log_frame(obj))
 
 
 def _event_frame(event: str, sid: str, payload: dict | None = None) -> dict:

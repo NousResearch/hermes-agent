@@ -46,9 +46,11 @@ def test_category_defaults_to_other_and_unknown_category_is_rejected(tmp_path):
     (tmp_path / "a.yaml").write_text(yaml.safe_dump(_entry("no-cat")))
     (tmp_path / "b.yaml").write_text(yaml.safe_dump(_entry("mem", category="memory")))
     (tmp_path / "c.yaml").write_text(yaml.safe_dump(_entry("typo", category="memmory")))
+    (tmp_path / "d.yaml").write_text(yaml.safe_dump(_entry("games", category="games")))
     entries = {e.name: e for e in pc.load_catalog(tmp_path)}
-    assert set(entries) == {"no-cat", "mem"}
+    assert set(entries) == {"no-cat", "mem", "games"}
     assert entries["no-cat"].category == "desktop" and entries["mem"].category == "memory"
+    assert entries["games"].category == "games"
     assert entries["mem"].to_dict()["category"] == "memory"
 
 

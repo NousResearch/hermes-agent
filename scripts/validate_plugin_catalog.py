@@ -48,7 +48,7 @@ SHA_RE = re.compile(r"^[0-9a-f]{40}\Z")
 TIERS = ("official", "verified", "community")
 # Tiers whose entries may set ``default: true`` (installed and enabled in every home).
 DEFAULT_TIERS = ("official", "verified")
-CATEGORIES = ("desktop", "memory", "platform", "web", "tools", "voice", "automation", "models", "general")
+CATEGORIES = ("desktop", "memory", "platform", "web", "tools", "voice", "automation", "models", "games", "general")
 PLATFORMS = ("linux", "macos", "windows")
 CAPABILITY_KEYS = (
     "provides_tools",

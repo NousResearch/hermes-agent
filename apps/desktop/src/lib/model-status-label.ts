@@ -199,6 +199,31 @@ export function modelDisplayParts(model: string): { name: string; tag: string } 
   return { name: prettifyBase(base) || model.trim() || 'No model', tag: tags.join(' ') }
 }
 
+/** The routing path ahead of a model id (`cc/claude-opus-5` → `cc`, the whole
+ *  path for a nested route), or empty for a bare id. The prettified display
+ *  name drops it, so a row that shows "Opus 5" says which route it is. */
+export function modelRouteTag(model: string): string {
+  const trimmed = model.trim()
+  const slash = trimmed.lastIndexOf('/')
+
+  return slash > 0 ? trimmed.slice(0, slash) : ''
+}
+
+/** Build exact model-id → route tags for every provider-prefixed model. */
+export function modelRouteTags(models: readonly string[]): ReadonlyMap<string, string> {
+  const tags = new Map<string, string>()
+
+  for (const model of models) {
+    const routeTag = modelRouteTag(model)
+
+    if (routeTag) {
+      tags.set(model, routeTag)
+    }
+  }
+
+  return tags
+}
+
 /** Friendly one-line model name for menus and the status bar. The variant
  *  tag is part of the name: `…-4.8` vs `…-4.8-thinking` must never collapse
  *  to the same label on any surface (#88597). */

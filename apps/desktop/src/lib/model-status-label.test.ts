@@ -5,6 +5,8 @@ import {
   displayModelName,
   formatModelPillLabel,
   modelDisplayParts,
+  modelRouteTag,
+  modelRouteTags,
   modelVariantTag
 } from './model-status-label'
 
@@ -19,6 +21,39 @@ describe('model-status-label', () => {
     expect(modelDisplayParts('claude-sonnet-5[1m]')).toEqual({ name: 'Sonnet 5', tag: '1M' })
     expect(modelDisplayParts('claude-fable-5-1[1m]')).toEqual({ name: 'Fable 5.1', tag: '1M' })
     expect(displayModelName('claude-opus-5[1m]')).not.toContain('[')
+  })
+
+  it('shows the routing path for every routed model', () => {
+    const models = [
+      'cc/claude-opus-5',
+      'claude/claude-opus-5',
+      'no-think/claude/claude-opus-5',
+      'zai/glm-5.3',
+      'local-model'
+    ]
+
+    const tags = modelRouteTags(models)
+
+    expect(tags.get('cc/claude-opus-5')).toBe('cc')
+    expect(tags.get('claude/claude-opus-5')).toBe('claude')
+    expect(tags.get('no-think/claude/claude-opus-5')).toBe('no-think/claude')
+    expect(tags.get('zai/glm-5.3')).toBe('zai')
+    expect(tags.has('local-model')).toBe(false)
+  })
+
+  it('uses one route tag for a base model and its fast sibling', () => {
+    const models = ['anthropic/claude-opus-4.8', 'anthropic/claude-opus-4.8-fast']
+    const tags = modelRouteTags(models)
+
+    expect(tags.get('anthropic/claude-opus-4.8')).toBe('anthropic')
+    expect(tags.get('anthropic/claude-opus-4.8-fast')).toBe('anthropic')
+  })
+
+  it('keeps the whole routing path of one model id and nothing of a bare id', () => {
+    expect(modelRouteTag('cc/claude-opus-5')).toBe('cc')
+    expect(modelRouteTag('no-think/claude/claude-opus-5')).toBe('no-think/claude')
+    expect(modelRouteTag('local-model')).toBe('')
+    expect(modelRouteTag('/leading-slash-only')).toBe('')
   })
 
   it('renders local GGUF ids as a clean name with a quant tag', () => {

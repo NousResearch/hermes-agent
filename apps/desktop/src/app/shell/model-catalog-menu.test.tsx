@@ -393,6 +393,37 @@ describe('the catalog owns model curation', () => {
     })
   })
 
+  it('uses the exact active fast sibling id for the collapsed family tooltip', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          models: ['anthropic/claude-opus-4.8', 'anthropic/claude-opus-4.8-fast'],
+          name: 'OmniRoute',
+          slug: 'omniroute'
+        }
+      ]
+    })
+
+    renderMenu({
+      effort: '',
+      fast: false,
+      model: 'anthropic/claude-opus-4.8-fast',
+      provider: 'omniroute'
+    })
+
+    const triggers = await screen.findAllByText(
+      (_, element) => element?.textContent?.startsWith('Opus 4.8 · anthropic') ?? false
+    )
+
+    const trigger = triggers.find(element => element.getAttribute('data-slot') === 'tooltip-trigger')!
+
+    expect(trigger.getAttribute('title')).toBeNull()
+
+    fireEvent.pointerMove(trigger, { pointerType: 'mouse' })
+
+    expect((await screen.findByRole('tooltip')).textContent).toBe('anthropic/claude-opus-4.8-fast')
+  })
+
   it('offers Edit Models without the host wiring it up', async () => {
     renderMenu()
     await screen.findByText(/Gemini 3\.1 Pro/i)

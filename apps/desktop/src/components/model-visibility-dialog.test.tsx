@@ -141,3 +141,57 @@ describe('Edit Models reset', () => {
     expect(screen.queryByRole('button', { name: /reset to defaults/i })).toBeNull()
   })
 })
+
+describe('ModelVisibilityDialog model routing path', () => {
+  it('shows the routing path and ties the exact model id to the focusable visibility switch', async () => {
+    vi.mocked(requestModelOptions).mockResolvedValue({
+      providers: [
+        {
+          models: ['zai/glm-5.3'],
+          name: 'OmniRoute',
+          slug: 'omniroute'
+        }
+      ]
+    })
+
+    renderDialog()
+
+    // The prettified name keeps its routing path beside it.
+    await screen.findByText(
+      (_, element) => element?.classList.contains('truncate') === true && element.textContent === 'GLM 5.3 · zai'
+    )
+
+    const toggle = screen.getByRole('switch', { name: 'zai/glm-5.3' })
+
+    expect(toggle.getAttribute('data-slot')).toBe('tooltip-trigger')
+    expect(toggle.tabIndex).toBe(0)
+    expect(toggle.getAttribute('title')).toBeNull()
+
+    toggle.focus()
+    expect(toggle.ownerDocument.activeElement).toBe(toggle)
+
+    fireEvent.pointerMove(toggle, { pointerType: 'mouse' })
+    expect((await screen.findByRole('tooltip')).textContent).toBe('zai/glm-5.3')
+  })
+
+  it('gives two look-alike models from different routes their own switch', async () => {
+    vi.mocked(requestModelOptions).mockResolvedValue({
+      providers: [
+        {
+          models: ['cc/claude-opus-5', 'claude/claude-opus-5'],
+          name: 'OmniRoute',
+          slug: 'omniroute'
+        }
+      ]
+    })
+
+    renderDialog()
+
+    await screen.findByText(
+      (_, element) => element?.classList.contains('truncate') === true && element.textContent === 'Opus 5 · cc'
+    )
+
+    expect(screen.getByRole('switch', { name: 'cc/claude-opus-5' })).toBeTruthy()
+    expect(screen.getByRole('switch', { name: 'claude/claude-opus-5' })).toBeTruthy()
+  })
+})

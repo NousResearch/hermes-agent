@@ -45,7 +45,7 @@ import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { isSubmitEnter } from '@/lib/ime'
 import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
-import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
+import { displayModelName, modelDisplayParts, modelRouteTag } from '@/lib/model-status-label'
 import { accountResetMs, formatReset, modelResetMs } from '@/lib/provider-limit'
 import { reasoningEffortLabel } from '@/lib/reasoning-effort'
 import { foldIncludes, normalize } from '@/lib/text'
@@ -1072,6 +1072,9 @@ function ModelFamilyRow({
 
   const isCurrent = activeId !== null
   const { name, tag } = modelDisplayParts(family.id)
+  // The routing path the prettified name drops (`cc/claude-opus-5` → `cc`);
+  // empty for a bare id, so the row says nothing extra.
+  const routeTag = modelRouteTag(family.id)
   const decoration = useModelMenuRowDecoration({ label: name, model: family.id, provider: provider.slug })
   const caps = provider.capabilities?.[family.id]
   const limit = familyLimit(provider, family, isCurrent)
@@ -1190,18 +1193,29 @@ function ModelFamilyRow({
             <Codicon name={favorite ? 'star-full' : 'star-empty'} size="0.75rem" />
           </button>
         </Tip>
-        <span className={cn('flex min-w-0 flex-1 items-center gap-1.5', limit.tone)}>
-          {decoration.icon !== undefined ? <ModelMenuRowIcon icon={decoration.icon} /> : null}
-          <span className="min-w-0 truncate">
-            <HighlightMatches foldSeparators query={search} text={name} />
+        {/* The exact model id (the active fast sibling when that is the live
+            choice) on the identity only: the whole trigger must stay the
+            plain sub trigger, and the star carries its own tip. */}
+        <Tip label={activeId ?? family.id}>
+          <span className={cn('flex min-w-0 flex-1 items-center gap-1.5', limit.tone)}>
+            {decoration.icon !== undefined ? <ModelMenuRowIcon icon={decoration.icon} /> : null}
+            <span className="min-w-0 truncate">
+              <HighlightMatches foldSeparators query={search} text={name} />
+              {routeTag ? <span className="text-(--ui-text-tertiary)"> · {routeTag}</span> : null}
+            </span>
+            {tag ? <ModelChip>{tag}</ModelChip> : null}
+            {decoration.badge ? (
+              <Badge
+                className="shrink-0 uppercase tracking-wide"
+                data-model-menu-row-badge=""
+                size="xs"
+                variant="muted"
+              >
+                {decoration.badge}
+              </Badge>
+            ) : null}
           </span>
-          {tag ? <ModelChip>{tag}</ModelChip> : null}
-          {decoration.badge ? (
-            <Badge className="shrink-0 uppercase tracking-wide" data-model-menu-row-badge="" size="xs" variant="muted">
-              {decoration.badge}
-            </Badge>
-          ) : null}
-        </span>
+        </Tip>
         <ModelResetBadge time={limit.reset} />
         {loadProgress ? (
           <span className="flex shrink-0 items-center gap-1.5" title={copyPicker.loadingIntoMemory}>

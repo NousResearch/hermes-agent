@@ -327,8 +327,8 @@ See [Skills System](../user-guide/features/skills.md) for writing your own, exte
 # Add to ~/.hermes/config.yaml
 mcp_servers:
   github:
-    command: npx
-    args: ["-y", "@modelcontextprotocol/server-github"]
+    command: "docker"
+    args: ["run", "-i", "--rm", "-e", "GITHUB_PERSONAL_ACCESS_TOKEN", "ghcr.io/github/github-mcp-server"]
     env:
       GITHUB_PERSONAL_ACCESS_TOKEN: "ghp_xxx"
 ```

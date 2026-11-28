@@ -4054,6 +4054,21 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             and event.message_type == MessageType.VOICE and text_content and not media_files
             and not self._streaming_tts_turn_completed(session_key, generation, event=event))
 
+    def _delivery_lease(self, description: str = "post-handler delivery"):
+        """Scoped lease holding the gateway's shutdown drain while a post-handler
+        attachment upload runs (final text, TTS playback, MEDIA/local files).
+
+        The agent slot is released before the turn's post-delivery uploads finish;
+        a ``--replace`` restart drained on the slot alone and killed the upload
+        mid-flight (#33711). No-op without a gateway runner (standalone adapters:
+        nothing drains on them).
+        """
+        runner = getattr(self, "gateway_runner", None)
+        lease_factory = getattr(runner, "_delivery_lease", None) if runner is not None else None
+        if lease_factory is None:
+            return contextlib.nullcontext()
+        return lease_factory(description)
+
     async def _play_tts_file(
         self, event: MessageEvent, text_content: str, tts_path: str, first: bool,
         metadata: dict[str, Any], record_delivery: Callable) -> bool:
@@ -4062,8 +4077,9 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         caption = None
         if first and self.platform == Platform.TELEGRAM and text_content and text_content[:1024] == text_content:
             caption = text_content
-        tts_result = await self.play_tts(
-            chat_id=event.source.chat_id, audio_path=tts_path, caption=caption, metadata=metadata)
+        async with self._delivery_lease("post-handler TTS playback"):
+            tts_result = await self.play_tts(
+                chat_id=event.source.chat_id, audio_path=tts_path, caption=caption, metadata=metadata)
         record_delivery(tts_result)
         return bool(caption and getattr(tts_result, "success", False))
 
@@ -4167,8 +4183,9 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                 chat_id=event.source.chat_id, content=text_content, reply_to=reply_to, metadata=metadata)
             stop_reply_clock(delivery_adapter, event.source.chat_id, result)
             return result
-        return await ledger_bracket(self, event, session_key, text_content, _send,
-                                    is_ephemeral_response=is_ephemeral_response)
+        async with self._delivery_lease("post-handler final text"):
+            return await ledger_bracket(self, event, session_key, text_content, _send,
+                                        is_ephemeral_response=is_ephemeral_response)
 
     async def ledger_attempted_final(self, event: MessageEvent, session_key: str, response: str, *,
                                      error: str) -> bool:
@@ -4228,11 +4245,13 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         images, media_files, local_files = extracted.images, extracted.media_files, extracted.local_files
         if images:
             logger.info("[%s] Extracted %d image(s) to send as attachments", self.name, len(images))
-            await live._send_image_batch(event, images, metadata, human_delay, record_delivery)
-        await live._deliver_media_attachments(
-            event, media_files, local_files,
-            force_document_attachments=extracted.force_document_attachments,
-            human_delay=human_delay, metadata=metadata, record_delivery=record_delivery)
+            async with self._delivery_lease("post-handler image batch"):
+                await live._send_image_batch(event, images, metadata, human_delay, record_delivery)
+        async with self._delivery_lease("post-handler attachments"):
+            await live._deliver_media_attachments(
+                event, media_files, local_files,
+                force_document_attachments=extracted.force_document_attachments,
+                human_delay=human_delay, metadata=metadata, record_delivery=record_delivery)
         if not (anything_sent or images or local_files or media_files) and extracted.pre_extract.strip():
             logger.error("[%s] response_delivery_dropped: non-empty response "
                          "(%d chars) produced no delivered message or attachment "

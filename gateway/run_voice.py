@@ -506,7 +506,9 @@ class GatewayVoiceMixin:
                 logger.warning("Auto voice reply TTS failed: %s", result.get("error"))
                 return
             actual_paths = paths
-            await self._deliver_voice_reply(event, actual_paths)
+            # The voice upload outlives the agent slot; hold the shutdown drain while it sends.
+            async with self._delivery_lease("post-handler voice reply"):
+                await self._deliver_voice_reply(event, actual_paths)
         except Exception as e:
             logger.warning("Auto voice reply failed: %s", e, exc_info=True)
         finally:

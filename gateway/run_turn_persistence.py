@@ -812,9 +812,10 @@ class GatewayTurnPersistenceMixin:
             if response and adapter and not agent_result.get("media_already_delivered"):
                 # This media completes the user-visible reply: mark it notify-worthy like the
                 # non-streamed attachments (#144897) — in `important` mode it must still ring.
-                _footer_captioned = await self._deliver_media_from_response(
-                    response, event, adapter, footer_line="" if _intentional_silence else _footer_line,
-                    thread_metadata=_mark_notify_metadata(self._event_thread_metadata(event, source)))
+                async with self._delivery_lease("streamed final attachments"):
+                    _footer_captioned = await self._deliver_media_from_response(
+                        response, event, adapter, footer_line="" if _intentional_silence else _footer_line,
+                        thread_metadata=_mark_notify_metadata(self._event_thread_metadata(event, source)))
             # An uncertain streamed final is ledgered for marked resend (non-reasoning turns only:
             # when show_reasoning is on, the answer is not streamed, so this turn is not already_sent).
             if response and adapter and agent_result.get("delivery_uncertain"):
@@ -822,7 +823,8 @@ class GatewayTurnPersistenceMixin:
             # Streaming delivered the body, but the footer was held back (`not already_sent` gate).
             if _footer_line and adapter and not _intentional_silence and not _footer_captioned:
                 try:
-                    await adapter.send(source.chat_id, _footer_line, metadata=self._event_thread_metadata(event, source))
+                    async with self._delivery_lease("streamed final footer"):
+                        await adapter.send(source.chat_id, _footer_line, metadata=self._event_thread_metadata(event, source))
                 except Exception as _e:
                     logger.debug("trailing footer send failed: %s", _e)
             # Return None so the body isn't sent twice; stash the delivered text on the event for the

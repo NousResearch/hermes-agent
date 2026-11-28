@@ -12,6 +12,7 @@ import {
   $pinnedSessionIds,
   $sidebarMessagingOpenIds,
   $sidebarProjectFilter,
+  $sidebarRowMeta,
   $sidebarShowArchived,
   $sidebarStatusFilter,
   setSidebarAgentsGrouped,
@@ -568,6 +569,33 @@ describe('ChatSidebar messaging owners', () => {
 
     expect(screen.queryByText('default-1')).toBeNull()
     expect(screen.getByText('desk')).toBeTruthy()
+  })
+
+  it('tags flat All Profiles recents without repeating tags under owner headers', () => {
+    const previousRowMeta = $sidebarRowMeta.value
+    $sidebarRowMeta.set([])
+    $messagingSessions.set([])
+    $sessions.set([
+      makeSessionInfo({ connection_id: 'local', id: 'work-recent', last_active: 90, profile: 'work', title: 'Work recent' })
+    ])
+
+    try {
+      setShowAllProfiles(true)
+      setSidebarGrouping('date')
+      mount()
+
+      const recent = () => screen.getByText('Work recent').closest('.group.row-hover') as HTMLElement
+
+      expect(within(recent()).getByRole('img', { name: 'Profile: work' })).toBeTruthy()
+
+      cleanup()
+      setSidebarGrouping('profile')
+      mount()
+
+      expect(within(recent()).queryByRole('img', { name: 'Profile: work' })).toBeNull()
+    } finally {
+      $sidebarRowMeta.set(previousRowMeta)
+    }
   })
 
   it('tags rows with their profile under other groupings and stays flat when scoped to one profile', () => {

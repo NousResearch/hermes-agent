@@ -374,6 +374,14 @@ export type BotsMessages = {
     handBack: string
     handBackForce: string
     handBackForceHint: string
+    copyFromScreen: string
+    copyFromScreenHint: string
+    copied: (chars: number) => string
+    copyEmpty: string
+    copyTooLarge: string
+    copyUnavailable: string
+    pasteSent: string
+    pasteTooLarge: string
     openNeedsUpdate: string
     youControl: string
     otherControls: string

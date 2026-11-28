@@ -341,3 +341,45 @@ def test_switch_sandbox_image_decides_only_a_pending_switch(monkeypatch, tmp_pat
     assert decided == [(switch, False)]
     assert resp["result"]["docker_image"] == "nousresearch/hermes-sandbox:desktop"
     assert resp["result"]["running"] is False and "lease" in resp["result"]
+
+
+def test_clipboard_read_is_only_for_the_viewer_in_control(monkeypatch, tmp_path, _fresh_lease):
+    """Copy-out ships the bot's clipboard, which can hold anything the agent copied: a watcher, an
+    agent-held screen or an id this connection never minted must get nothing, and the read must not
+    even run for them."""
+    from tui_gateway import server
+    from tools.bot_desktop import clipboard, runtime
+
+    reads = []
+    monkeypatch.setattr(runtime, "rfb_socket_path", lambda: tmp_path / "rfb.sock")
+    monkeypatch.setattr(clipboard, "read_text", lambda: reads.append(1) or clipboard.ClipboardRead("SECRET"))
+    mine = _call(server, "display.observe", {})["result"]["viewer_id"]
+
+    agent_holds = _call(server, "display.clipboard.read", {"viewer_id": mine})
+    assert agent_holds["error"]["data"]["code"] == "viewer_mismatch"
+    _fresh_lease.acquire("someone-else")
+    watcher = _call(server, "display.clipboard.read", {"viewer_id": mine})
+    assert watcher["error"]["data"]["code"] == "viewer_mismatch"
+    forged = _call(server, "display.clipboard.read", {"viewer_id": "someone-else"})
+    assert forged["error"]["data"]["code"] == "viewer_mismatch"
+    assert reads == []
+
+    _fresh_lease.acquire(mine)
+    assert _call(server, "display.clipboard.read", {"viewer_id": mine})["result"] == {"text": "SECRET", "reason": None}
+
+
+def test_clipboard_read_across_a_takeover_is_dropped(monkeypatch, tmp_path, _fresh_lease):
+    from tui_gateway import server
+    from tools.bot_desktop import clipboard, runtime
+
+    monkeypatch.setattr(runtime, "rfb_socket_path", lambda: tmp_path / "rfb.sock")
+    mine = _call(server, "display.observe", {})["result"]["viewer_id"]
+    _fresh_lease.acquire(mine)
+
+    def read_while_someone_takes_over():
+        _fresh_lease.acquire("viewer-2")
+        return clipboard.ClipboardRead("SECRET")
+
+    monkeypatch.setattr(clipboard, "read_text", read_while_someone_takes_over)
+    resp = _call(server, "display.clipboard.read", {"viewer_id": mine})
+    assert "result" not in resp and resp["error"]["data"]["code"] == "viewer_mismatch"

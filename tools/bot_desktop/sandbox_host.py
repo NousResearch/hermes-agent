@@ -189,6 +189,20 @@ def grab_jpeg(env: Any, published: dict[str, str], max_size: tuple[int, int], qu
     return proc.stdout
 
 
+def read_clipboard(env: Any, child_env: dict[str, str], argv: list[str], timeout: float):
+    """The sandbox screen's X CLIPBOARD (tools.bot_desktop.clipboard), read INSIDE the sandbox where the X
+    socket lives. None when xclip is missing there or the exec fails; the caller reports that as unavailable."""
+    from tools.bot_desktop.clipboard import _from_bytes
+    try:
+        proc = streams.run_in(env, argv, child_env=child_env, user=_user_for(env), timeout=timeout)
+    except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
+        logger.debug("sandbox clipboard read failed: %s", type(exc).__name__)
+        return None
+    if proc.returncode in (126, 127):  # xclip not in the image
+        return None
+    return _from_bytes(proc.stdout if proc.returncode == 0 else b"")
+
+
 def _user_for(env: Any) -> Optional[str]:
     """DESKTOP_USER when the sandbox has it, else None (exec default). Cached on the env object."""
     cached = getattr(env, "_bd_desktop_user", "unset")

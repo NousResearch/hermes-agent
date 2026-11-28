@@ -157,6 +157,19 @@ method("display.lease.release", params=DisplayLeaseReleaseParams, result=Display
        doc="Hand back. Without a viewer id the release is refused while a human holds unless force.")
 
 
+class DisplayClipboardReadParams(ProfileParams):
+    viewer_id: str
+
+
+class DisplayClipboardReadResult(Result):
+    text: str | None = None
+    reason: str | None = None  # why text is null: empty | too_large | unavailable | not_running
+
+
+method("display.clipboard.read", params=DisplayClipboardReadParams, result=DisplayClipboardReadResult,
+       doc="Copy out: the screen's X CLIPBOARD text, only for the viewer that holds the lease.")
+
+
 # ── server → client ───────────────────────────────────────────────────────────────────────────
 
 

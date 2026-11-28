@@ -32,7 +32,7 @@ Use `read_file` for local files and `web_extract` for URLs to identify files, ve
 
 ### 2. Extract with provenance
 
-Load `pdf`, `pdf`, or `docx`. Extract text/tables while retaining file and page/section coordinates. For scans, record OCR confidence or visible quality issues. Done when every extracted field can cite its source location.
+Load the `pdf` skill (PDF text and scanned pages) or `microsoft-office` (Word, PowerPoint, Excel). Extract text/tables while retaining file and page/section coordinates. For scans, record OCR confidence or visible quality issues. Done when every extracted field can cite its source location.
 
 ### 3. Classify evidence
 

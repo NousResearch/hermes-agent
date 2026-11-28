@@ -86,6 +86,19 @@ class TestModelSwitchMarkerDedup:
         # The real turns are preserved in order.
         assert [h["content"] for h in session["history"] if not _is_marker(h)] == ["q1", "a1"]
 
+    def test_second_switch_preserves_prompt_merged_into_marker(self) -> None:
+        from types import SimpleNamespace
+        from agent.agent_runtime_helpers import repair_message_sequence
+
+        session = {"session_key": "s", "history": [_make_marker_entry("model-a"),
+                   {"role": "user", "content": "FIRST PROMPT\n\nsecond paragraph"}]}
+        repair_message_sequence(SimpleNamespace(), session["history"])
+        assert len(session["history"]) == 1
+        _append_model_switch_marker(session, model="model-b", provider="p")
+        assert session["history"][0]["content"] == "FIRST PROMPT\n\nsecond paragraph"
+        assert "display_kind" not in session["history"][0]
+        assert len(self._markers(session)) == 1
+
     def test_history_version_increments_once_on_replace(self) -> None:
         session: dict = {"session_key": "s", "history": [], "history_version": 0}
         _append_model_switch_marker(session, model="model-a", provider="p")

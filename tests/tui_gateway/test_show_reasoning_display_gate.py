@@ -140,6 +140,32 @@ def test_tool_progress_off_does_not_surface_a_refused_skill_write(monkeypatch):
     assert _lifecycle(events, "tool-broken") == ["tool.complete"]
 
 
+@pytest.mark.parametrize("tool_progress", ["all", "off", "verbose"])
+def test_stale_write_refusal_keeps_model_only_text_out_of_tool_card(monkeypatch, tool_progress):
+    """The real write guard's repair text stays in the model result, not the UI tool part (#155997)."""
+    from tools.file_tools_write_guards import _stale_write_refusal
+
+    events = _capture(monkeypatch)
+    sid = f"stale-write-{tool_progress}"
+    _session(monkeypatch, sid, show_reasoning=False, tool_progress=tool_progress)
+    refusal = json.dumps(_stale_write_refusal("notes.md", "notes.md has not been read in full."))
+    args = {"path": "notes.md", "content": "replacement"}
+    server._on_tool_complete(sid, "stale", "write_file", args, refusal)
+
+    payload = next(p for kind, _, p in events if kind == "tool.complete" and p["tool_id"] == "stale")
+    assert json.loads(refusal)["error"].startswith("Refusing to overwrite")
+    assert payload["result"]["stale_write_blocked"] is True
+    assert payload["result"]["error"] == "Write skipped: file was not modified."
+    assert "Refusing to overwrite" not in json.dumps(payload)
+    assert "Reload the current contents" not in json.dumps(payload)
+
+    # A genuine failed write is not a recoverable stale precondition: preserve its detail.
+    server._on_tool_complete(sid, "io-failure", "write_file", args,
+                             json.dumps({"error": "Permission denied"}))
+    actual_error = next(p for kind, _, p in events if kind == "tool.complete" and p["tool_id"] == "io-failure")
+    assert actual_error["result"]["error"] == "Permission denied"
+
+
 def test_subagent_tool_mirror_follows_tool_progress_not_reasoning(monkeypatch):
     for sid, show_reasoning, tool_progress, expected in (
         ("child-reasoning-off", False, "all", ["tool.start", "tool.complete"]),

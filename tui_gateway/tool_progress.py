@@ -351,6 +351,14 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
         payload["result"] = json.loads(result)
     except Exception:
         payload["result"] = result
+    # The model needs the full read-before-write repair instructions in its tool result,
+    # but the Desktop/TUI tool card lives in the user's transcript. Keep its no-write
+    # outcome without copying the model-facing refusal paragraph into that card.
+    presentation_result = result
+    if (name == "write_file" and isinstance(payload["result"], dict)
+            and payload["result"].get("stale_write_blocked") is True):
+        payload["result"] = {**payload["result"], "error": "Write skipped: file was not modified."}
+        presentation_result = json.dumps(payload["result"], ensure_ascii=False)
     summary = _tool_summary(name, result, duration_s)
     if summary:
         payload["summary"] = summary
@@ -358,7 +366,7 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
     from agent.terminal_image import tool_image_path
     if image_path := tool_image_path(name, args, payload["result"], is_error=_detect_tool_failure(name, result)[0]):
         payload["image_path"] = image_path
-    if _session_verbose(sid) and (result_text := _tool_result_text(result)):
+    if _session_verbose(sid) and (result_text := _tool_result_text(presentation_result)):
         payload["result_text"] = result_text
     from tools.todo_tool import is_todo_tool_name
 

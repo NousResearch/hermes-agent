@@ -20,6 +20,7 @@ Type `@` followed by a reference to inject content directly into your message. H
 | `@staged` | Inject `git diff --staged` (staged changes) |
 | `@git:5` | Inject last N commits with patches (max 10) |
 | `@url:https://example.com` | Fetch and inject web page content |
+| `@symbol:name` | Completion only: pick a function, class, or type and attach its file (see below) |
 
 ## Usage Examples
 
@@ -48,8 +49,26 @@ Trailing punctuation (`,`, `.`, `;`, `!`, `?`) is automatically stripped from re
 In the interactive CLI, typing `@` triggers autocomplete:
 
 - `@` shows all reference types (`@diff`, `@staged`, `@file:`, `@folder:`, `@git:`, `@url:`)
+  (the TUI and desktop app also list `@symbol:`)
 - `@file:` and `@folder:` trigger filesystem path completion with file size metadata
 - Bare `@` followed by partial text shows matching files and folders from the current directory
+
+## Symbol Completion (`@symbol:`)
+
+In the TUI (`hermes --tui`) and the desktop app composer, `@symbol:` fuzzy-searches function, method, class, and type definitions in the current workspace:
+
+```text
+@symbol:loadUser      # matches loadUser, preloadUsers, load_user_rows, ...
+```
+
+Picking a result inserts an `@file:` reference to the file that defines the symbol, so what is sent is an ordinary `@file:` reference and the whole containing file is attached. `@symbol:` is not itself expanded: sent as typed, without picking a result, it stays plain text. The desktop chip shows the symbol name; the underlying reference is still `@file:path`.
+
+How it works and its limits:
+
+- Definitions are found with per-language line patterns, not a parser. Covered: Python, JavaScript/TypeScript, Go, Rust, Ruby, C/C++ (`.c .h .cc .cpp .cxx .hh .hpp .hxx`), Java, C#, Kotlin, Swift, PHP, and Scala. C-family function and method definitions are recognized when the name and its `(` are on the same line and no `;` follows (prototypes and call statements are skipped); a signature split before the name is missed.
+- Files come from the same listing as bare-`@` fuzzy file search (`git ls-files`, honoring `.gitignore`, or a bounded directory walk outside git). The scan is bounded (4,000 source files, files under 1.5 MB, first 6,000 lines of each) and cached for 15 seconds per workspace.
+- Only local terminal backends are indexed. Under a remote `terminal.backend` (Docker, SSH, ...) `@symbol:` returns no results, because the gateway host's files are not the backend's.
+- The classic prompt_toolkit CLI does not offer `@symbol:`.
 
 ## Line Ranges
 

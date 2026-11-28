@@ -10,10 +10,13 @@ _registry = HandlerRegistry()
 method = _registry.method
 _profile_scoped = _registry.profile_scoped
 
-_BUILTIN_AT_PREFIXES = frozenset({"file", "folder", "url", "git", "diff", "staged"})
+_BUILTIN_AT_PREFIXES = frozenset({"file", "folder", "symbol", "url", "git", "diff", "staged"})
 _AT_DIRECTIVE_HINTS = [
     ("@diff", "git diff"), ("@staged", "staged diff"), ("@file:", "attach file"),
-    ("@folder:", "attach folder"), ("@url:", "fetch url"), ("@git:", "git log")]
+    ("@folder:", "attach folder"), ("@symbol:", "jump to a symbol"), ("@url:", "fetch url"),
+    ("@git:", "git log")]
+
+
 def _item(text: str, meta: str, display: str | None = None) -> dict:
     return {"text": text, "display": display if display is not None else text, "meta": meta}
 
@@ -134,6 +137,16 @@ def _fuzzy_basename_items(root: str, path_part: str, prefix_tag: str) -> list[di
             f"@{'folder' if is_dir else tag}:{rel}{'/' if is_dir else ''}",
             "dir" if is_dir else os.path.dirname(rel), basename + ("/" if is_dir else ""))
         for _, rel, basename, is_dir in ranked[:30]]
+
+
+def _symbol_items(root: str, query: str) -> list[dict]:
+    """`@symbol:<query>` rows: fuzzy-ranked definitions whose pick inserts an ``@file:`` ref to the
+    defining file (no new reference kind to expand). ``display`` is the symbol, ``meta`` where it lives."""
+    ranked = [(rank, name, kind, rel) for name, kind, rel in _scan_symbols(root)
+              if (rank := _fuzzy_basename_rank(name, query)) is not None]
+    ranked.sort(key=lambda r: (r[0], r[1], r[3]))
+    return [{**_item(f"@file:{rel}", f"{kind} · {rel}", name), "kind": "symbol"}
+            for _, name, kind, rel in ranked[:50]]
 
 
 def _at_root_items() -> list[dict]:
@@ -258,6 +271,9 @@ def _path_completion_items(word: str, root: str, session_key: str | None, local:
         pfx, _, qval = query.partition(":")
         if pfx not in _BUILTIN_AT_PREFIXES and (plugin_items := _plugin_reference_items(pfx, qval)) is not None:
             return plugin_items
+    # `@symbol` / `@symbol:<q>` reads the gateway host's files, so only a local backend answers it.
+    if is_context and (query == "symbol" or query.startswith("symbol:")):
+        return _symbol_items(root, query.partition(":")[2].strip()) if local else []
     # Bare `@folder` lists as soon as the keyword is typed (the static `@folder:` hint is not accepted).
     if is_context and (query in {"file", "folder"} or query.startswith(("file:", "folder:"))):
         prefix_tag, _, path_part = query.partition(":")

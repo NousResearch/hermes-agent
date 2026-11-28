@@ -1,12 +1,12 @@
 name: andreed
 repo: https://github.com/Agozie180/andreed
-sha: c2338b38f22bff8fbeb72d94fd5da3e6bee0d832
+sha: 482f06793dbd307fcdfc8a9f43ba1d0ced21a4c7
 title: Andreed
-description: "Deterministic Android device-care tools for Hermes: audits storage and bounded total/metered data usage, reports main-process state, restricts metered background data, force-stops selected third-party apps, and requests safe device-wide cache trimming. Disclosure — runs local adb and bounded argv-only adb shell commands; reads device identifiers, Android version, package names, UIDs, storage, netstats and netpolicy state; detailed netstats above its processing cap fall back to since-boot totals without a metered split; mutations require per-call Hermes approval; no raw shell, pm clear, credentials, telemetry or third-party service; ADB may run its standard local server; requires owner-authorized USB or wireless debugging."
+description: "Diagnose overheating, freezes, slowness, low RAM, full storage and cellular data usage on an authorized Android phone over local ADB. Phone changes require fresh human approval through Hermes."
 maintainer: Agozie180
 tier: community
 category: tools
-version: "0.1.0"
+version: "0.2.0"
 requires_hermes: ">=0.21.6"
 docs_url: https://github.com/Agozie180/andreed#readme
 platforms: [windows, macos, linux]
@@ -19,5 +19,7 @@ capabilities:
     - andreed_trim_caches
   provides_hooks:
     - pre_tool_call
+    - post_approval_response
+    - post_tool_call
   provides_middleware: []
   requires_env: []

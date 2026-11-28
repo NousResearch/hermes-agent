@@ -571,7 +571,17 @@ class Download:
                     )
                     self.connections = 1
                     continue
-                raise next((error for error in errors if not is_transient(error)), errors[0])
+                fatal = next((error for error in errors if not is_transient(error)), None)
+                if fatal is not None:
+                    raise fatal
+                if connections > 1:
+                    reduced = max(1, connections // 2)
+                    logging.getLogger(__name__).warning(
+                        "parallel range fetch failed transiently for %s (%s); reducing connections from %d to %d",
+                        source.url, errors[0], connections, reduced,
+                    )
+                    self.connections = reduced
+                raise errors[0]
             written = self._durable_done
             if written != remote.total:
                 raise http.client.IncompleteRead(b"", remote.total - written)
@@ -633,13 +643,19 @@ class Download:
         def worker(start: int, end: int) -> None:
             nonlocal pending
             try:
+                with lock:
+                    if errors:
+                        return
                 self._read_range(source, remote, part, start, end, stop, record)
             except Exception as exc:
                 if isinstance(exc, urllib.error.HTTPError):
                     exc.close()
                 with lock:
                     errors.append(exc)
-                stop.set()
+                # Only fatal errors abort in-flight siblings; transient drops
+                # let active streams finish while queued ranges above stand down.
+                if not is_transient(exc):
+                    stop.set()
             finally:
                 with lock:
                     pending -= 1

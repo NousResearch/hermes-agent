@@ -2055,6 +2055,13 @@ def _final_response_from_result(result: dict, job_id: str, job_name: str, AIAgen
         # The finalizer fills the model name into the explainer; render with the same name (and
         # the bare form) or the comparison below misses and the warning is delivered.
         _model = str(result.get("model") or "")
+        _explainer_variants = []
+        # A rebuilt-restart explanation carries the attempted-vs-untried provider list from
+        # agent state the class-level renderer below cannot see; use the exact text the
+        # finalizer stashed so the silence comparison still matches.
+        _stashed = str(result.get("turn_completion_explanation") or "").strip()
+        if _stashed:
+            _explainer_variants.append(_stashed)
         for _cause in (None, *_causes):
             for _kwargs in ({"model": _model}, {}):
                 try:

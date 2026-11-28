@@ -59,6 +59,7 @@ export interface DesktopThemeCommandOption {
  */
 export type DesktopActionId =
   | 'agents'
+  | 'memory'
   | 'background'
   | 'branch'
   | 'browser'
@@ -247,6 +248,7 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
     surface: action('browser'),
     argumentMode: 'options'
   },
+  { name: '/memory', description: 'Review pending memory writes', surface: action('memory') },
   {
     name: '/journey',
     description: 'Open the memory graph — skills + memories over time',

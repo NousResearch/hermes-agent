@@ -1369,6 +1369,19 @@ platform:
     status:
       thinking: "正在思考..."
       still_working: "仍在处理中…（{elapsed}）"
+    subagent_panel:
+      title: "🔀 *子代理* ({count})"
+      tools: "{count} 次工具"
+      status_completed: "完成"
+      status_interrupted: "已停止"
+      stop: "停止"
+      result: "结果"
+      gone: "此子代理面板已不再有效。"
+      stop_sent: "已请求停止。子代理会在下一步停止。"
+      not_running: "该子代理未在运行。"
+      result_empty: "(子代理没有返回文本。)"
+      result_title: "子代理结果"
+      close: "关闭"
     task_card:
       title: "Hermes 正在处理"
     slash:

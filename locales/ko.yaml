@@ -1369,6 +1369,19 @@ platform:
     status:
       thinking: "생각하는 중..."
       still_working: "아직 작업 중… ({elapsed})"
+    subagent_panel:
+      title: "🔀 *하위 에이전트* ({count})"
+      tools: "도구 {count}회"
+      status_completed: "완료"
+      status_interrupted: "중지됨"
+      stop: "중지"
+      result: "결과"
+      gone: "이 하위 에이전트 패널은 더 이상 활성 상태가 아니에요."
+      stop_sent: "중지를 요청했어요. 하위 에이전트가 다음 단계에서 멈춰요."
+      not_running: "해당 하위 에이전트는 실행 중이 아니에요."
+      result_empty: "(하위 에이전트가 텍스트를 반환하지 않았어요.)"
+      result_title: "하위 에이전트 결과"
+      close: "닫기"
     task_card:
       title: "Hermes가 작업 중이에요"
     slash:

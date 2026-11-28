@@ -1369,6 +1369,19 @@ platform:
     status:
       thinking: "が考えています..."
       still_working: "処理中… ({elapsed})"
+    subagent_panel:
+      title: "🔀 *サブエージェント* ({count})"
+      tools: "ツール {count} 回"
+      status_completed: "完了"
+      status_interrupted: "停止済み"
+      stop: "停止"
+      result: "結果"
+      gone: "このサブエージェントパネルはもう有効ではありません。"
+      stop_sent: "停止を要求しました。サブエージェントは次のステップで停止します。"
+      not_running: "そのサブエージェントは実行中ではありません。"
+      result_empty: "(サブエージェントはテキストを返しませんでした。)"
+      result_title: "サブエージェントの結果"
+      close: "閉じる"
     task_card:
       title: "Hermes が作業中"
     slash:

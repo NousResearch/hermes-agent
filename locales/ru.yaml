@@ -1369,6 +1369,19 @@ platform:
     status:
       thinking: "думает..."
       still_working: "всё ещё работает… ({elapsed})"
+    subagent_panel:
+      title: "🔀 *Субагенты* ({count})"
+      tools: "инструментов: {count}"
+      status_completed: "готово"
+      status_interrupted: "остановлен"
+      stop: "Стоп"
+      result: "Результат"
+      gone: "Эта панель субагентов больше не активна."
+      stop_sent: "Остановка запрошена. Субагент остановится на следующем шаге."
+      not_running: "Этот субагент не запущен."
+      result_empty: "(Субагент не вернул текст.)"
+      result_title: "Результат субагента"
+      close: "Закрыть"
     task_card:
       title: "Hermes работает"
     slash:

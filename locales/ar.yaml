@@ -1369,6 +1369,19 @@ platform:
     status:
       thinking: "يفكّر..."
       still_working: "لا يزال يعمل… ({elapsed})"
+    subagent_panel:
+      title: "🔀 *الوكلاء الفرعيون* ({count})"
+      tools: "{count} أدوات"
+      status_completed: "تم"
+      status_interrupted: "أُوقف"
+      stop: "إيقاف"
+      result: "النتيجة"
+      gone: "لم تعد لوحة الوكلاء الفرعيين هذه نشطة."
+      stop_sent: "طُلب الإيقاف. سيتوقف الوكيل الفرعي عند خطوته التالية."
+      not_running: "هذا الوكيل الفرعي لا يعمل."
+      result_empty: "(لم يُرجع الوكيل الفرعي أي نص.)"
+      result_title: "نتيجة الوكيل الفرعي"
+      close: "إغلاق"
     task_card:
       title: "Hermes يعمل"
     slash:

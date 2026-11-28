@@ -1369,6 +1369,19 @@ platform:
     status:
       thinking: "düşünüyor..."
       still_working: "hâlâ çalışıyor… ({elapsed})"
+    subagent_panel:
+      title: "🔀 *Alt ajanlar* ({count})"
+      tools: "{count} araç"
+      status_completed: "bitti"
+      status_interrupted: "durduruldu"
+      stop: "Durdur"
+      result: "Sonuç"
+      gone: "Bu alt ajan paneli artık etkin değil."
+      stop_sent: "Durdurma istendi. Alt ajan bir sonraki adımında durur."
+      not_running: "Bu alt ajan çalışmıyor."
+      result_empty: "(Alt ajan metin döndürmedi.)"
+      result_title: "Alt ajan sonucu"
+      close: "Kapat"
     task_card:
       title: "Hermes çalışıyor"
     slash:

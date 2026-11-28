@@ -1369,6 +1369,19 @@ platform:
     status:
       thinking: "sta ragionando..."
       still_working: "ancora al lavoro… ({elapsed})"
+    subagent_panel:
+      title: "🔀 *Subagenti* ({count})"
+      tools: "{count} strumenti"
+      status_completed: "fatto"
+      status_interrupted: "fermato"
+      stop: "Ferma"
+      result: "Risultato"
+      gone: "Questo pannello dei subagenti non è più attivo."
+      stop_sent: "Arresto richiesto. Il subagente si ferma al passo successivo."
+      not_running: "Quel subagente non è in esecuzione."
+      result_empty: "(Il subagente non ha restituito testo.)"
+      result_title: "Risultato del subagente"
+      close: "Chiudi"
     task_card:
       title: "Hermes è al lavoro"
     slash:

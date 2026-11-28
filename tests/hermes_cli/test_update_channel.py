@@ -385,8 +385,33 @@ def test_doctor_channel_records_are_read_only(tmp_path, monkeypatch, kind, expec
     if kind == 'healthy':
         state = home / 'installs' / key
         state.mkdir(parents=True)
-        (state / 'install.json').write_text(json.dumps({'root': str(root)}), encoding='utf-8')
+        (state / 'facts.json').write_text(json.dumps({'root': str(root)}), encoding='utf-8')
     before = deepcopy(config)
     assert [(key, reason) for key, _, reason in stale_channel_records(config)] == (
         [(key, expected)] if expected else [])
     assert config == before
+
+
+def test_facts_json_is_the_live_install_marker(tmp_path, monkeypatch):
+    """Pin the live-install marker switchover, both directions.
+
+    Source installs write ``installs/<sha16>/facts.json`` and never an
+    ``install.json`` (the desktop e2e seed fixture names its facts file
+    ``install.json``, so it satisfies a check production can never
+    satisfy — the regression this pins stayed invisible to e2e by
+    construction). A record claimed by legacy ``install.json`` alone must
+    still be reported unclaimed; ``facts.json`` must clear it.
+    """
+    home, root = tmp_path / '.hermes', tmp_path / 'install'
+    monkeypatch.setenv('HERMES_HOME', str(home))
+    root.mkdir()
+    key = install_id(root)
+    config = {'update': {'installs': {key: {'path': str(root), 'channel': 'main'}}}}
+
+    state = home / 'installs' / key
+    state.mkdir(parents=True)
+    (state / 'install.json').write_text(json.dumps({'root': str(root)}), encoding='utf-8')
+    assert stale_channel_records(config) == [(key, config['update']['installs'][key], 'unclaimed')]
+
+    (state / 'facts.json').write_text(json.dumps({'root': str(root)}), encoding='utf-8')
+    assert stale_channel_records(config) == []

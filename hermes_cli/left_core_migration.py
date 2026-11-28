@@ -1360,7 +1360,7 @@ def _said(home: Path, plugin: str) -> Path:
 def _say_once(home: Path, feature: LeftCoreFeature, outcome: str, say: Callable[[str], None], message: str) -> None:
     marker = _said(home, feature.plugin)
     try:
-        if marker.read_text(encoding="utf-8") == outcome:
+        if marker.read_text(encoding="utf-8-sig") == outcome:
             return
     except OSError:
         pass  # never said

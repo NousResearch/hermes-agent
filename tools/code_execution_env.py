@@ -28,11 +28,23 @@ _SAFE_ENV_PREFIXES = ("PATH", "HOME", "USER", "LANG", "LC_", "TERM", "TMPDIR", "
 # COMPASS_DIR / PASSENGER_HOST while PASSWORD/PASSWD already cover credentials.
 _SECRET_SUBSTRINGS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "PASSWD", "AUTH", "DSN",
                       "WEBHOOK", "CREDS", "BEARER", "APIKEY", "COOKIE")
+# git's commit identity — the six names it composes an author/committer from. They name who wrote a
+# commit, not a credential, but the AUTH rule matches them by substring (AUTHOR contains AUTH) and no
+# safe prefix admits GIT_*, so a commit made from execute_code silently fell back to the repository's
+# user.name while the same commit through the terminal tool used the configured identity (#155010).
+_GIT_IDENTITY_ENV_VARS = frozenset({
+    "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_AUTHOR_DATE",
+    "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GIT_COMMITTER_DATE",
+})
 
 
 def is_secret_env_name(name: str) -> bool:
     """The credential-name policy, shared with a local session's client environment (``agent.session_client_env``)."""
-    return any(s in name.upper() for s in _SECRET_SUBSTRINGS)
+    upper = name.upper()
+    if upper in _GIT_IDENTITY_ENV_VARS:
+        return False
+    return any(s in upper for s in _SECRET_SUBSTRINGS)
+
 
 # Non-secret runtime-location flags that repo-root modules a sandbox script
 # imports may read at import time. HERMES_DELEGATED_CHILD_CONTEXT must ride
@@ -60,7 +72,8 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None, toolchain
     Rules, in order: (1) passthrough vars (skill/config-declared) resolve
     through the active profile secret scope — an absent scoped value is
     omitted; (2) secret-substring names are blocked; (3) safe prefixes pass,
-    as do a local session's client ``toolchain`` names (NVM_DIR, GOPATH...);
+    as do a local session's client ``toolchain`` names (NVM_DIR, GOPATH...)
+    and git's commit-identity names (#155010);
     (4) operational HERMES_* pass by exact name; (5) on Windows the
     OS-essential allowlist passes by exact name.
     """
@@ -87,6 +100,7 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None, toolchain
         if is_secret_env_name(k):
             continue
         if (any(k.startswith(p) for p in _SAFE_ENV_PREFIXES) or k in toolchain
+                or k.upper() in _GIT_IDENTITY_ENV_VARS
                 or k in _HERMES_CHILD_ALLOWED
                 or (is_windows and k.upper() in _WINDOWS_ESSENTIAL_ENV_VARS)):
             scrubbed[k] = v

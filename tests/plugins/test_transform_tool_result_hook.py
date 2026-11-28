@@ -22,6 +22,7 @@ def _run_handle_function_call(
     tool_args=None,
     dispatch_result='{"output": "original"}',
     invoke_hook=_UNSET,
+    enabled_tools=None,
 ):
     """Drive ``handle_function_call`` with a mocked registry dispatch."""
     from tools.registry import registry
@@ -48,6 +49,7 @@ def _run_handle_function_call(
         session_id="s1",
         tool_call_id="tc1",
         skip_pre_tool_call_hook=True,
+        enabled_tools=enabled_tools,
     )
 
 
@@ -76,6 +78,7 @@ def test_hook_receives_expected_kwargs(monkeypatch):
     out = _run_handle_function_call(
         monkeypatch,
         tool_name="my_tool",
+        enabled_tools=["my_tool", "rescuer_fetch"],
         tool_args={"a": 1, "b": "x"},
         dispatch_result='{"ok": true}',
         invoke_hook=_hook,
@@ -87,6 +90,7 @@ def test_hook_receives_expected_kwargs(monkeypatch):
     assert captured["task_id"] == "t1"
     assert captured["session_id"] == "s1"
     assert captured["tool_call_id"] == "tc1"
+    assert captured["available_tools"] == ["my_tool", "rescuer_fetch"]
 
 
 

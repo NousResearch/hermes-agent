@@ -14,6 +14,7 @@ from gateway.session_llm_oneshot import DeferredReply
 from gateway.session_persistence import authority_persistence
 from hermes_constants import profile_name_for_home
 from persistence.core.errors import STORE_FAILURES, AuthorityRefusal, PersistenceError
+from persistence.conversation.sessions import CanonicalTitleLocked, TitleConflict
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,16 @@ def _refusal_data(exc: AuthorityRefusal) -> dict:
         # ``bot_relay.settle``; groups.send's words may come back for editing.
         data['admitted'] = False
     return data
+
+
+def _title_refusal(exc) -> AuthorityRefusal:
+    """A rename the store refused (``TitleConflict``: another session holds the title;
+    ``CanonicalTitleLocked``: the canonical Bot Chat's name) as the wire refusal. Desktop and the
+    TUI print ``error.message`` verbatim, so it carries the store's sentence (which names the
+    holder); ``data`` keeps the code and the field."""
+    refusal = AuthorityRefusal('invalid_title', field='title', detail=str(exc))
+    refusal.wire_message = str(exc)
+    return refusal
 
 
 def _profile_label(profile_id) -> str:
@@ -928,7 +939,13 @@ class AuthorityConnection:
             # A live turn lease / compression lock is the same retryable busy verdict a
             # running admission gets (REST maps it to 409), not an internal error.
             raise busy_refusal(exc) from exc
+        except (TitleConflict, CanonicalTitleLocked) as exc:
+            # A held title or the canonical Bot Chat's name: a refusal the user can act on, under
+            # the API server's code for the same check, not a dispatch crash (#160463).
+            raise _title_refusal(exc) from exc
         except AuthorityRefusal as exc:
+            if exc.reason == 'invalid_title' and exc.detail:
+                exc.wire_message = exc.detail  # the store's sentence (a title too long), as _title_refusal
             if exc.reason in {'revision_conflict', 'stale_generation'}:
                 # The fresh fences ride on the refusal, so the client retries once without a re-read.
                 row = await asyncio.to_thread(authority_persistence(self.authority).sessions.get, ref.session_id)

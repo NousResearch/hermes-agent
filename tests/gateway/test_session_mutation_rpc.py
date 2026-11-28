@@ -94,3 +94,88 @@ async def test_ws_mutation_refused_by_live_write_guard_is_session_busy(tmp_path,
             assert db.sessions.get('s') is not None
         finally:
             await owner.close()
+
+
+async def _rename(db, owner, session_id, title):
+    return await owner.dispatch({'id': 9, 'method': 'session.mutate', 'params': {
+        'session_id': session_id, 'request_id': f'rename-{session_id}-{title}',
+        'expected_revision': session_row(db, session_id)['runtime_revision'],
+        'operation': 'rename', 'payload': {'title': title}}})
+
+
+@pytest.mark.asyncio
+async def test_ws_rename_onto_a_held_title_is_a_readable_refusal(tmp_path):
+    """#160463: a rename onto another session's title answered ``-32603 internal error`` (the store's
+    plain ValueError crashed the dispatch). It is an ``invalid_title`` refusal whose message names
+    the holder, and nothing is written."""
+    from tests.fixtures.storage_seed import seed_messages
+    with open_persistence(profile_scope(home=tmp_path)) as db:
+        seed_session(db, 'holder', 'desktop', title='Marketplace Watch')
+        seed_messages(db, 'holder', {'role': 'user', 'content': 'a real chat, not an empty ghost that yields its name'})
+        seed_session(db, 's', 'desktop')
+        epoch = db.runtime.begin_epoch(instance_id='current')
+        authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id='owned',
+                                     instance_id='current', epoch=epoch, persistence=storage_handle(tmp_path))
+        authority.sessions['s'] = LiveSession(None, 'route')
+        owner = AuthorityConnection(authority, object(), {'user_id': 'owner'})
+        revision = session_row(db, 's')['runtime_revision']
+        try:
+            refused = await _rename(db, owner, 's', 'Marketplace Watch')
+            error = refused['error']
+            assert error['code'] == 4001, refused
+            assert error['message'] == "Title 'Marketplace Watch' is already in use by session holder", refused
+            assert error['data']['reason'] == 'invalid_title' and error['data']['field'] == 'title', refused
+            row = session_row(db, 's')
+            assert row['title'] is None and row['runtime_revision'] == revision
+            assert session_row(db, 'holder')['title'] == 'Marketplace Watch'
+            renamed = await _rename(db, owner, 's', 'Marketplace Watch 2')  # a free name still renames
+            assert renamed['result']['title'] == 'Marketplace Watch 2', renamed
+        finally:
+            await owner.close()
+
+
+@pytest.mark.asyncio
+async def test_ws_rename_of_the_canonical_bot_chat_is_a_readable_refusal(tmp_path):
+    """#160463: the canonical Bot Chat's name refusal took the same crash path."""
+    from persistence.conversation.sessions import CANONICAL_BOT_CHAT_TITLE
+    with open_persistence(profile_scope(home=tmp_path)) as db:
+        seed_session(db, 'bot', 'desktop', title=CANONICAL_BOT_CHAT_TITLE, hidden=True)
+        epoch = db.runtime.begin_epoch(instance_id='current')
+        authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id='owned',
+                                     instance_id='current', epoch=epoch, persistence=storage_handle(tmp_path))
+        authority.sessions['bot'] = LiveSession(None, 'route')
+        owner = AuthorityConnection(authority, object(), {'user_id': 'owner'})
+        revision = session_row(db, 'bot')['runtime_revision']
+        try:
+            refused = await _rename(db, owner, 'bot', 'Something else')
+            error = refused['error']
+            assert error['code'] == 4001, refused
+            assert error['message'].startswith("This is the bot's canonical Bot Chat"), refused
+            assert error['data']['reason'] == 'invalid_title', refused
+            row = session_row(db, 'bot')
+            assert row['title'] == CANONICAL_BOT_CHAT_TITLE and row['runtime_revision'] == revision
+        finally:
+            await owner.close()
+
+
+@pytest.mark.asyncio
+async def test_ws_rename_to_a_too_long_title_is_a_readable_refusal(tmp_path):
+    """#160463 review: the store's other title refusal (past MAX_TITLE_LENGTH) took the same crash path."""
+    from persistence.conversation.sessions import MAX_TITLE_LENGTH
+    with open_persistence(profile_scope(home=tmp_path)) as db:
+        seed_session(db, 's', 'desktop')
+        epoch = db.runtime.begin_epoch(instance_id='current')
+        authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id='owned',
+                                     instance_id='current', epoch=epoch, persistence=storage_handle(tmp_path))
+        authority.sessions['s'] = LiveSession(None, 'route')
+        owner = AuthorityConnection(authority, object(), {'user_id': 'owner'})
+        revision = session_row(db, 's')['runtime_revision']
+        try:
+            refused = await _rename(db, owner, 's', 'x' * (MAX_TITLE_LENGTH + 1))
+            error = refused['error']
+            assert error['message'] == f'Title too long ({MAX_TITLE_LENGTH + 1} chars, max {MAX_TITLE_LENGTH})', refused
+            assert error['data']['reason'] == 'invalid_title' and error['data']['field'] == 'title', refused
+            row = session_row(db, 's')
+            assert row['title'] is None and row['runtime_revision'] == revision
+        finally:
+            await owner.close()

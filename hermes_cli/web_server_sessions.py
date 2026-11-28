@@ -245,7 +245,8 @@ async def _mutate_via_gateway_owner(profile, actor, params):
 # (AuthorityRefusal) and the owner forward (GatewayClientError): a storage failure is a
 # server fault (503), never a session conflict.
 _MUTATION_REFUSAL_STATUS = {'permission_denied': 403, 'profile_mismatch': 403, 'not_found': 404,
-                            'invalid_params': 400, 'runtime_draining': 503, 'storage_unavailable': 503}
+                            'invalid_params': 400, 'invalid_title': 400, 'runtime_draining': 503,
+                            'storage_unavailable': 503}
 
 
 async def _mutate_session_request(request, profile, session_id, *, request_id,
@@ -288,11 +289,16 @@ async def _mutate_session_request(request, profile, session_id, *, request_id,
         return {'ok': True, **result}
     except AuthorityRefusal as exc:
         # The offline store and a composed authority's session DB refuse with the same class.
-        raise HTTPException(status_code=_MUTATION_REFUSAL_STATUS.get(exc.reason, 409), detail=exc.reason) from exc
+        # A refused title keeps the store's sentence, as the direct path's ValueError answer does.
+        detail = exc.detail if exc.reason == 'invalid_title' and exc.detail else exc.reason
+        raise HTTPException(status_code=_MUTATION_REFUSAL_STATUS.get(exc.reason, 409), detail=detail) from exc
     except GatewayClientError as exc:
         # The owner's own refusal verdicts (transport failures already became 503 above),
         # wire-shaped like AuthorityRefusal's reasons, so a forwarded write answers as the direct path.
-        raise HTTPException(status_code=_MUTATION_REFUSAL_STATUS.get(str(exc), 409), detail=str(exc)) from exc
+        data = getattr(exc, 'data', None) or {}
+        # A refused title keeps the owner's sentence (bounded error.data), as the direct path does.
+        detail = data.get('detail') if str(exc) == 'invalid_title' and isinstance(data.get('detail'), str) else str(exc)
+        raise HTTPException(status_code=_MUTATION_REFUSAL_STATUS.get(str(exc), 409), detail=detail or str(exc)) from exc
     except MUTATION_GUARD_REFUSALS as exc:
         raise HTTPException(status_code=409, detail='session_busy') from exc
     except ValueError as exc:

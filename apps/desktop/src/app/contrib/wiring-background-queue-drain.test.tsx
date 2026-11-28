@@ -137,7 +137,10 @@ vi.mock('./panes', async () => {
 
   return { $restartPreviewServer: atom(null), useTitlebarToolContributions: () => [] }
 })
-vi.mock('../shell/hooks/use-window-controls-overlay-width', () => ({ useWindowControlsOverlayWidth: () => 0 }))
+vi.mock('../shell/hooks/use-window-controls-overlay-width', () => ({
+  useWindowControlsOverlayWidth: () => null,
+  windowControlsFallback: (_buttons: unknown, nativeOverlayWidth: number) => ({ left: 0, right: nativeOverlayWidth })
+}))
 
 import { ContribWiring } from './wiring'
 

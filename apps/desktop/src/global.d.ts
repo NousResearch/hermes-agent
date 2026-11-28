@@ -5,6 +5,7 @@ import type { TranslucencyState } from '@hermes/shared/translucency'
 import type { ChallengeOutcome } from '../electron/challenge-window'
 import type { ScreenshotApi } from '../electron/command-screenshot-types'
 import type { HudModifierApi } from '../electron/hud-modifier-types'
+import type { LinuxWindowButtons } from '../electron/linux-button-layout'
 import type { MachineProfile } from '../electron/machine-profile'
 import type { HermesNotification } from '../electron/notification-types'
 import type { KeepAwakeMode } from '../electron/power-save'
@@ -1165,6 +1166,10 @@ export interface HermesConnection {
   remoteKind?: 'cloud' | 'ssh' | 'url'
   remoteHermesVersion?: string
   nativeOverlayWidth: number
+  // GNOME/GTK button-layout on plain Linux: how many close/minimize/maximize
+  // buttons sit on each side of the native overlay. Null on macOS, Windows,
+  // WSLg (and older mains without gsettings support).
+  linuxWindowButtons?: LinuxWindowButtons | null
   source?: 'env' | 'local' | 'settings'
   token: string
   wsUrl: string
@@ -1214,6 +1219,7 @@ export interface HermesWindowState {
   isMinimized?: boolean
   isVisible?: boolean
   nativeOverlayWidth: number
+  linuxWindowButtons?: LinuxWindowButtons | null
   windowButtonPosition: { x: number; y: number } | null
 }
 

@@ -45,8 +45,12 @@ export const deNotices = {
     openBilling: 'Billing öffnen',
     addCredits: 'Credits hinzufügen',
     dismiss: 'Schließen'
+  },
+  sessionPins: {
+    pinFailed: 'Session konnte nicht angepinnt werden',
+    unpinFailed: 'Session konnte nicht gelöst werden'
   }
 } satisfies Pick<
   TranslationOverrides,
-  'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer' | 'billingBlock'
+  'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer' | 'billingBlock' | 'sessionPins'
 >

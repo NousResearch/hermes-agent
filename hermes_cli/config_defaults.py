@@ -1841,6 +1841,11 @@ DEFAULT_CONFIG = {
         # Auto-claim tasks in the review column and spawn the assigned profile with the bundled
         # sdlc-review skill. Disable where every review is done manually from the dashboard.
         "review_dispatch": True,
+        # Review rounds (request_changes handbacks) allowed on ONE card before it blocks
+        # needs_input for a human. Each round is a full implement -> review -> send-back cycle.
+        # Without a cap a request_changes <-> re-review ping-pong never trips the failure breaker
+        # (request_changes bypasses block-loop accounting by design). 0 disables the cap.
+        "review_max_rounds": 3,
         # Seconds between dispatcher ticks. Lower = snappier pickup; higher = less SQL pressure.
         "dispatch_interval_seconds": 60,
         # Auto-block after this many consecutive non-success attempts (spawn_failed, timed_out,

@@ -239,7 +239,10 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
     adapter = MatrixAdapter(pconfig)
     try:
         if not await adapter.connect():
-            return _error("Matrix connect failed")
+            # The adapter keeps the real cause; a bare "connect failed" left operators with
+            # nothing to act on when delivery stopped (#111333).
+            reason = getattr(adapter, "last_connect_error", None)
+            return _error(f"Matrix connect failed: {reason}" if reason else "Matrix connect failed")
         return await _matrix_send_core(adapter, chat_id, message, media_files, metadata)
     except Exception as e:
         return _error(f"Matrix send failed: {e}")

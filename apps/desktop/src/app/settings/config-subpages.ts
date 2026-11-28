@@ -26,7 +26,13 @@ const CONFIG_SUBPAGE_DEFINITIONS: Record<string, ConfigSubpageDefinition[]> = {
     {
       id: 'behavior',
       labelKey: 'chatBehavior',
-      fields: ['display.personality', 'timezone', 'display.show_reasoning']
+      fields: [
+        'display.personality',
+        'timezone',
+        'display.show_reasoning',
+        'auxiliary.title_generation.enabled',
+        'auxiliary.title_generation.model_upgrade_enabled'
+      ]
     },
     { id: 'attachments', labelKey: 'chatAttachments', fields: ['agent.image_input_mode'] }
   ],

@@ -76,6 +76,8 @@ agent-browser/
 # Private keys
 *.ppk
 *.pem
+*.key
+*.crt
 privvy*
 images/
 __pycache__/

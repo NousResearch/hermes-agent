@@ -144,9 +144,63 @@ def _attr(obj: Any, name: str) -> str | None:
     return str(getattr(obj, name, "") or "").strip() or None
 
 
-def _resource_link_to_parts(block: ResourceContentBlock) -> list[dict[str, Any]]:
+async def _client_read_text_file(
+    conn: Any,
+    session_id: str | None,
+    uri: str,
+    can_use_client_fs: bool = False,
+) -> str | None:
+    """Fetch an attached file through the ACP client's fs/read_text_file.
+
+    Used when the local disk read of a file URI failed — the path lives on
+    the client's machine (e.g. the host, while the agent runs in a
+    container). Per the ACP spec the reverse fs method is only available
+    when the client advertises fs.readTextFile, so *can_use_client_fs* must
+    be True (from the initialize() capability record). Returns the file
+    text, or None when the client cannot help (capability off, no
+    connection, method absent, request failed, empty result).
+    """
+    if conn is None or not session_id or not can_use_client_fs:
+        return None
+    read_fn = getattr(conn, "read_text_file", None)
+    if read_fn is None:
+        return None
+    # Send the path back in the client's own spelling (its machine's path),
+    # not the container-translated local form.
+    raw_path = uri
+    if raw_path.startswith("file://"):
+        raw_path = unquote(urlparse(raw_path).path)
+    try:
+        resp = await read_fn(path=raw_path, session_id=session_id)
+    except Exception as exc:
+        logger.debug("ACP client fs/read_text_file failed for %s: %s", uri, exc)
+        return None
+    content = getattr(resp, "content", None)
+    if content is None and isinstance(resp, dict):
+        content = resp.get("content")
+    if isinstance(content, str) and content:
+        logger.info(
+            "ACP attached file %s resolved via client fs/read_text_file (%d chars)",
+            uri,
+            len(content),
+        )
+        return content
+    logger.debug("ACP client fs/read_text_file returned no content for %s", uri)
+    return None
+
+
+async def _resource_link_to_parts(
+    block: ResourceContentBlock,
+    conn: Any = None,
+    session_id: str | None = None,
+    can_use_client_fs: bool = False,
+) -> list[dict[str, Any]]:
     """ACP resource_link -> OpenAI content parts: images become a text header + image_url,
-    everything else a single text part with the inlined body (or a binary-omit note)."""
+    everything else a single text part with the inlined body (or a binary-omit note).
+
+    When *conn*/*session_id* are given and the local disk read fails, the file
+    is fetched through the client's fs/read_text_file — this is how an
+    IDE-attached file on the host resolves when Hermes runs in a container."""
     uri = _attr(block, "uri")
     if not uri:
         return []
@@ -185,6 +239,18 @@ def _resource_link_to_parts(block: ResourceContentBlock) -> list[dict[str, Any]]
         note = f"truncated to {_MAX_ACP_RESOURCE_BYTES} of {size} bytes" if size > _MAX_ACP_RESOURCE_BYTES else None
         return _text_parts(**ident, body=text, note=note)
     except OSError as exc:
+        # The URI resolved to a path this agent process cannot read — most
+        # commonly the IDE runs on the host while Hermes runs in a
+        # container, so `file:///home/user/...` points at the host disk,
+        # not ours. ACP's reverse fs/read_text_file lets the client (which
+        # owns that path, including unsaved editor buffers) fetch it.
+        client_text = await _client_read_text_file(
+            conn, session_id, uri, can_use_client_fs=can_use_client_fs
+        )
+        if client_text is not None:
+            return _text_parts(
+                **ident, body=client_text, note="read via IDE file system (fs/read_text_file)"
+            )
         logger.warning("ACP resource read failed: %s", uri, exc_info=True)
         return _text_parts(**ident, body=f"[Could not read attached file: {exc}]")
 
@@ -253,7 +319,12 @@ def _append_parts(parts: list, text_parts: list[str], new_parts: list[dict[str, 
             text_parts.append(part["text"])
 
 
-def _content_blocks_to_openai_user_content(prompt: list[PromptBlock]) -> str | list[dict[str, Any]]:
+async def _content_blocks_to_openai_user_content(
+    prompt: list[PromptBlock],
+    conn: Any = None,
+    session_id: str | None = None,
+    can_use_client_fs: bool = False,
+) -> str | list[dict[str, Any]]:
     """Convert ACP prompt blocks into a Hermes/OpenAI-compatible user content payload."""
     parts: list[dict[str, Any]] = []
     text_parts: list[str] = []
@@ -268,7 +339,10 @@ def _content_blocks_to_openai_user_content(prompt: list[PromptBlock]) -> str | l
             if image_part is not None:
                 parts.append(image_part)
         elif isinstance(block, ResourceContentBlock):
-            _append_parts(parts, text_parts, _resource_link_to_parts(block))
+            resource_parts = await _resource_link_to_parts(
+                block, conn=conn, session_id=session_id, can_use_client_fs=can_use_client_fs
+            )
+            _append_parts(parts, text_parts, resource_parts)
         elif isinstance(block, EmbeddedResourceContentBlock):
             _append_parts(parts, text_parts, _embedded_resource_to_parts(block))
 

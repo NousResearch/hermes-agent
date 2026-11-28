@@ -141,6 +141,8 @@ class GatewayAgent:
         # Set by the CLI after construction: a ``session.control.update`` mid-turn (a tool moved the goal
         # or loop) marks its mirrored managers stale; the dock re-reads them off this thread.
         self.control_update_callback = None
+        # ``callback(plugin_id, payload)`` for ``plugin.<id>.terminal`` chrome; ``(None, None)`` = session left.
+        self._terminal_chrome_callback = None
         self.suppress_status_output = False
         self._print_fn = None
         # Inert private attributes main's CLI writes (CALLMAP §3.2).
@@ -213,6 +215,7 @@ class GatewayAgent:
         state = self._state()
         state.usage_listeners.append(self.apply_session_usage)
         state.request_listeners.append(self._on_request_withdrawn)
+        state.chrome_listeners.append(self._terminal_chrome)
         if state.usage:
             self.apply_session_usage(state.usage)
 
@@ -388,6 +391,8 @@ class GatewayAgent:
             left.usage_listeners.remove(self.apply_session_usage)
         with suppress(ValueError):
             left.request_listeners.remove(self._on_request_withdrawn)
+        with suppress(ValueError):
+            left.chrome_listeners.remove(self._terminal_chrome)
         store = self._session_db
         if store is not None and hasattr(store, "attach"):
             try:
@@ -404,6 +409,9 @@ class GatewayAgent:
             state.usage_listeners.append(self.apply_session_usage)
         if self._on_request_withdrawn not in state.request_listeners:
             state.request_listeners.append(self._on_request_withdrawn)
+        if self._terminal_chrome not in state.chrome_listeners:
+            state.chrome_listeners.append(self._terminal_chrome)
+        self._show_chrome(reset=True)  # this session's chrome replaces the old one's
         self._apply_info(state.info)
         if state.usage:
             self.apply_session_usage(state.usage)
@@ -576,7 +584,7 @@ class GatewayAgent:
         return None
 
     def close(self, *a, **k):
-        return None
+        self._drop_chrome_listeners(lambda agent: agent is self)
 
     def _restore_primary_runtime(self, *a, **k):
         return None
@@ -953,6 +961,54 @@ class GatewayAgent:
         handler = _HANDLERS.get(kind)
         if handler is not None:
             handler(self, payload, stream_callback, starts)
+
+    # -- plugin terminal chrome (``gateway_chat_chrome``) ------------------------------------------
+    @property
+    def terminal_chrome_callback(self):
+        return getattr(self, "_terminal_chrome_callback", None)
+
+    @terminal_chrome_callback.setter
+    def terminal_chrome_callback(self, callback):
+        """Set by the CLI after construction. This agent takes over from any it replaced (a retired
+        agent keeps delivering until then, so the tab stays live between a retire and the rebuild) and
+        starts from the session's current chrome."""
+        self._terminal_chrome_callback = callback
+        if callback is not None:
+            self._drop_chrome_listeners(lambda agent: agent is not self and agent.terminal_chrome_callback == callback)
+        self._show_chrome(reset=False)
+
+    def _show_chrome(self, *, reset):
+        """Hand the CLI this session's latest chrome, after dropping what it shows (``reset``)."""
+        if self.terminal_chrome_callback is None or not self.session_id:
+            return
+        if reset:
+            self._deliver_chrome(None, None)
+        for plugin_id, payload in list(self._state().chrome.items()):
+            self._deliver_chrome(plugin_id, payload)
+
+    def _drop_chrome_listeners(self, drop):
+        """Remove the chrome listener of every agent on this connection that ``drop(agent)`` picks."""
+        states = getattr(getattr(self, "connection", None), "states", None) or {}
+        for state in list(states.values()):
+            for listener in list(state.chrome_listeners):
+                agent = getattr(listener, "__self__", None)
+                if isinstance(agent, GatewayAgent) and drop(agent):
+                    with suppress(ValueError):
+                        state.chrome_listeners.remove(listener)
+
+    def _terminal_chrome(self, session_id, plugin_id, payload):
+        """``SessionState.chrome_listeners`` (loop thread). A frame from a session this agent has left
+        (in flight while ``session_id`` moved) is dropped."""
+        if session_id == self.session_id:
+            self._deliver_chrome(plugin_id, payload)
+
+    def _deliver_chrome(self, plugin_id, payload):
+        callback = self.terminal_chrome_callback
+        if callback is not None:
+            try:
+                callback(plugin_id, payload)
+            except Exception:  # health: allow BLE001 -- decoration must never fail the turn it decorates
+                logger.debug("terminal chrome callback failed", exc_info=True)
 
     # event handlers (agent thread) ------------------------------------------------------------
     def _on_delta(self, payload, stream_callback, starts):

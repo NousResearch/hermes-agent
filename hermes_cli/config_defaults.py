@@ -960,7 +960,7 @@ DEFAULT_CONFIG = {
         # config controls visibility not ordering); empty = default set. Available: model,
         # context_detail, context_pct, cache_hit, latency, tps, compressions, bg_tasks,
         # bg_processes, bg_subagents, goal, git_branch (⎇ current branch, opt-in only), duration,
-        # prompt_elapsed, idle_since, focus, yolo,
+        # prompt_elapsed, idle_since, focus, yolo, plugins (segments plugins push, see gateway_chat_chrome),
         # stash, battery, title, total_tokens (session Σ, opt-in only). Narrow terminals still drop
         # context_detail/prompt_elapsed/idle_since.
         "status_bar": {

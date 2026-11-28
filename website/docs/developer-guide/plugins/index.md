@@ -2311,6 +2311,49 @@ Beyond that, any client the gateway authenticated can call any plugin method wit
 not check callers per method (`SECURITY.md` §2.6, rule 4): treat a plugin method like a plugin tool, validate
 its params, and never expose through it more than the plugin's own data and actions.
 
+### Show status in the user's terminal tab and status bar
+
+The classic `hermes chat` runs no plugin code (the plugin lives in the gateway), so a plugin draws in
+the user's terminal by pushing a `terminal` session event. The classic CLI animates the tab title and
+adds a segment to its status bar (the `plugins` field of `display.status_bar.fields`), styled with the
+user's own skin. The TUI, Desktop and the transport client (`--safe-mode`, stream-json) do not
+render it yet.
+
+```python
+def register(ctx):
+    def working(session_id="", **kwargs):
+        ctx.emit_to_session(session_id, "terminal", {
+            "frames": ["⚒ϟ", "⚒✦", "⚒✧"], "interval_ms": 220,   # tab title prefixes, in turn
+            "label": "Fix the build",                             # text after the frame
+            "status": "forging…", "tone": "strong",               # status-bar segment + skin style
+        })
+
+    def done(session_id="", **kwargs):
+        ctx.emit_to_session(session_id, "terminal", {"frames": ["⚒·"], "label": "Fix the build",
+                                                     "status": "idle", "tone": "dim"})
+
+    ctx.register_hook("pre_llm_call", working)
+    ctx.register_hook("on_session_end", done)
+    ctx.register_hook("on_session_finalize",
+                      lambda session_id="", **kw: session_id and ctx.emit_to_session(session_id, "terminal", {"clear": True}))
+```
+
+- Every field is optional. The latest event from a plugin replaces its previous one, and the client
+  keeps it, so a viewer that attaches or reconnects later starts from the current state. Send one event
+  per state change and let the client animate; never one per frame.
+- `frames`: at most 16, each at most 8 characters. `interval_ms`: 0 or a single frame is static;
+  otherwise 100 ms to 60 s, and each plugin animates on its own clock. `label` and `status`: at most 60
+  characters. `tone`: `strong`, `good`, `warn` or
+  `dim`, drawn with the skin's `status-bar-<tone>` style. Keep `status` short: the bar is
+  shared and trimmed to the terminal width. `{"clear": true}` removes the
+  plugin's chrome. When none is left or the chat ends, the title goes back to the terminal's own on
+  Windows; other terminals cannot report their title, so there it is cleared and the shell's next
+  prompt usually sets it again.
+- The text is untrusted: the client reads at most 512 characters of each string, strips escape
+  sequences and folds every other non-printable character to a space. Frames apply between turns too (a `/summon`-style command can change them
+  while idle). Only an interactive terminal renders them; `-q`, `-z` and JSON modes ignore them. With several plugins, the most recently updated one owns the title and every
+  plugin's `status` shows in the bar.
+
 ### Follow the user's self-learning cadence (`review_signals`)
 
 After every successful turn, `post_llm_call` carries `review_signals`: the counters behind Hermes' own background memory/skill review (`skills.creation_nudge_interval`, `memory.nudge_interval`) and whether that review is due and enabled this turn. A plugin with after-turn work of its own (judging the skills a turn touched, say) can run on the same cadence the user already tuned instead of counting tool calls itself:

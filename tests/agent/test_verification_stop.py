@@ -227,3 +227,47 @@ def test_mixed_doc_and_code_edit_still_nudges(tmp_path, monkeypatch):
     # The doc path is filtered out of the reported set; the code path remains.
     assert code in nudge
     assert doc not in nudge
+
+
+def test_subdir_cd_verify_clears_stop_nudge_from_parent_workspace_cwd(tmp_path, monkeypatch):
+    """When terminal runs ``cd sub && pytest`` from a manifest-less parent workspace cwd,
+    the edited subproject satisfies verify-on-stop without a redundant nudge."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    workspace = tmp_path / "workspace"
+    sub = workspace / "services" / "billing"
+    sub.mkdir(parents=True)
+    (sub / "pyproject.toml").write_text("[tool.pytest.ini_options]\n", encoding="utf-8")
+    changed = str(sub / "calc.py")
+
+    mark_workspace_edited(session_id="s1", cwd=sub, paths=[changed])
+    assert build_verify_on_stop_nudge(session_id="s1", changed_paths=[changed]) is not None
+
+    record_terminal_result(
+        command="cd services/billing && pytest -q",
+        cwd=workspace,
+        session_id="s1",
+        exit_code=0,
+        output="5 passed",
+    )
+    assert build_verify_on_stop_nudge(session_id="s1", changed_paths=[changed]) is None
+
+
+def test_masked_ad_hoc_run_surfaces_did_not_count_warning_in_nudge(tmp_path, monkeypatch):
+    """In a suite-less workspace, ``python hermes-verify-*.py || true`` hides exit status and
+    must surface the same unattributed-run warning in the stop nudge as canonical suites."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    changed = str(tmp_path / "src" / "index.js")
+    mark_workspace_edited(session_id="s1", cwd=tmp_path, paths=[changed])
+    script = Path(tempfile.gettempdir()) / f"hermes-verify-masked-{tmp_path.name}.py"
+    script.write_text("print('check')\n", encoding="utf-8")
+    try:
+        cmd = f"python {script} || true"
+        record_terminal_result(command=cmd, cwd=tmp_path, session_id="s1", exit_code=0)
+        nudge = build_verify_on_stop_nudge(session_id="s1", changed_paths=[changed])
+    finally:
+        script.unlink(missing_ok=True)
+
+    assert nudge is not None
+    assert "did not count" in nudge
+

@@ -13,6 +13,16 @@ from plugins.web._common import BaseWebSearchProvider, http_get_json, provider_e
 
 logger = logging.getLogger(__name__)
 
+# SearXNG's limiter answers 429 for its bot-detection refusals as well as its rate limits, and caps
+# ``format=json`` at a few requests per hour per IP whatever the headers, so only the instance's
+# own configuration can let an API client through. Without this, the bare 429 reads as a quota.
+_STATUS_HINTS = {
+    429: (
+        "likely the instance's limiter (bot detection), which refuses or caps API clients. On an instance you run, "
+        "add the IP SearXNG sees this host as to botdetection.ip_lists.pass_ip in limiter.toml, or set server.limiter: false"
+    ),
+}
+
 
 class SearXNGWebSearchProvider(BaseWebSearchProvider):
     """Search via a user-hosted SearXNG instance."""
@@ -28,6 +38,7 @@ class SearXNGWebSearchProvider(BaseWebSearchProvider):
         data, failure = http_get_json(
             "SearXNG", f"{base_url}/search", params={"q": query, "format": "json", "pageno": 1},
             headers={"Accept": "application/json"}, timeout=15, logger=logger, reach_target=f"SearXNG at {base_url}",
+            status_hints=_STATUS_HINTS,
         )
         if failure is not None:
             return failure

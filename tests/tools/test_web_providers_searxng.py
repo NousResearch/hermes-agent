@@ -105,6 +105,33 @@ class TestSearXNGSearchProviderSearch:
 
         assert calls[0] == "http://localhost:8080/search", f"Got: {calls[0]}"
 
+    @staticmethod
+    def _status_response(url, status_code):
+        import httpx
+        return httpx.Response(status_code, request=httpx.Request("GET", url))
+
+    def test_limiter_429_names_the_instance_settings_to_change(self, monkeypatch):
+        """A limiter 429 says which SearXNG setting lets Hermes through, not just the bare code (#158357)."""
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+        from plugins.web.searxng.provider import SearXNGWebSearchProvider
+
+        with patch("httpx.get", side_effect=lambda url, **kw: self._status_response(url, 429)):
+            result = SearXNGWebSearchProvider().search("query", limit=5)
+
+        assert result["success"] is False
+        assert result["error"].startswith("SearXNG returned HTTP 429")
+        assert "botdetection.ip_lists.pass_ip" in result["error"]
+        assert "server.limiter: false" in result["error"]
+
+    def test_other_http_errors_carry_no_limiter_hint(self, monkeypatch):
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+        from plugins.web.searxng.provider import SearXNGWebSearchProvider
+
+        with patch("httpx.get", side_effect=lambda url, **kw: self._status_response(url, 503)):
+            result = SearXNGWebSearchProvider().search("query", limit=5)
+
+        assert result == {"success": False, "error": "SearXNG returned HTTP 503"}
+
 
 # ---------------------------------------------------------------------------
 # Integration: _is_backend_available recognizes "searxng"

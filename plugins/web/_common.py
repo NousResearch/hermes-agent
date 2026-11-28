@@ -215,16 +215,19 @@ def http_status_detail(response: Any) -> str:
 
 def http_get_json(
     label: str, url: str, *, params: dict[str, Any], headers: dict[str, str], timeout: int,
-    logger: logging.Logger, reach_target: Optional[str] = None,
+    logger: logging.Logger, reach_target: Optional[str] = None, status_hints: Optional[dict[int, str]] = None,
 ) -> tuple[Any, Optional[dict[str, Any]]]:
     """GET ``url`` and parse JSON → ``(data, None)`` or ``(None, failure_dict)``.
-    ``reach_target`` overrides the "Could not reach ..." subject (SearXNG includes its URL)."""
+    ``reach_target`` overrides the "Could not reach ..." subject (SearXNG includes its URL).
+    ``status_hints`` maps an HTTP status to what the user should change, appended to the failure."""
     try:
         resp = httpx.get(url, params=params, headers=headers, timeout=timeout)
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
         logger.warning("%s HTTP error: %s", label, exc)
-        return None, search_fail(f"{label} returned HTTP {exc.response.status_code}")
+        status = exc.response.status_code
+        hint = (status_hints or {}).get(status)
+        return None, search_fail(f"{label} returned HTTP {status}" + (f": {hint}" if hint else ""))
     except httpx.RequestError as exc:
         logger.warning("%s request error: %s", label, exc)
         return None, search_fail(f"Could not reach {reach_target or label}: {exc}")

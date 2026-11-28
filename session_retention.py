@@ -32,6 +32,10 @@ def emit_session_deleted(store_home, deleted_ids, *, reason, primary=None, sessi
     ids = sorted({sid for sid in (deleted_ids or ()) if isinstance(sid, str) and sid})
     if not ids:
         return
+    if reason != "archive":
+        from tools.delegate_tool_config import cleanup_session_budget
+        for session_id in ids:
+            cleanup_session_budget(session_id)
     try:
         from hermes_cli.lifecycle import invoke_hook
         from hermes_constants import (

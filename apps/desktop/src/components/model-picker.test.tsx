@@ -108,6 +108,36 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
+describe('ModelPickerDialog provider selection identity', () => {
+  it.each([
+    {
+      slug: 'minimax-cn',
+      name: 'A relay',
+      aliases: ['custom:a-relay', 'custom:minimax-cn', 'minimax-cn'],
+      expected: 'custom:minimax-cn'
+    },
+    { slug: 'custom:lab', name: 'Lab', aliases: ['custom:custom:lab', 'custom:lab'], expected: 'custom:lab' },
+    {
+      slug: 'custom',
+      name: 'Custom endpoint',
+      aliases: ['custom:custom', 'custom:custom-endpoint'],
+      expected: 'custom'
+    },
+    { slug: 'minimax-cn', name: 'MiniMax China', aliases: [], expected: 'minimax-cn' },
+    { slug: 'minimax-cn', name: 'Lab', aliases: ['custom:lab'], expected: 'minimax-cn' }
+  ])('clicking $slug ($name) emits $expected', async ({ slug, name, aliases, expected }) => {
+    vi.mocked(requestModelOptions).mockResolvedValue({
+      providers: [{ slug, name, aliases, models: ['selection-model'], authenticated: true }]
+    })
+    const onSelect = vi.fn()
+    renderPicker({ onSelect })
+
+    fireEvent.click(await screen.findByText('selection-model'))
+
+    expect(onSelect).toHaveBeenCalledWith({ provider: expected, model: 'selection-model' })
+  })
+})
+
 describe('ModelPickerDialog download rows', () => {
   it('shows an in-flight download as a disabled progress row in the Local group', async () => {
     setRuntimeJobs([DOWNLOAD_JOB])

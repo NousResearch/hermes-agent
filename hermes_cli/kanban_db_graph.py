@@ -5,6 +5,7 @@ import sqlite3
 import time
 from typing import Any, Optional
 
+
 def inherit_creator_origin(
     conn: sqlite3.Connection, task_id: str, creator_task_id: Optional[str], *,
     created_at: int,
@@ -212,3 +213,87 @@ def _insert_decomposed_child(
     )
     inherit_creator_origin(conn, new_id, root_id, created_at=now)
     return new_id
+
+
+def question_triage_task(
+    conn: sqlite3.Connection, task_id: str, *, title: Optional[str] = None,
+    body: Optional[str] = None, reason: Optional[str] = None, author: Optional[str] = None,
+) -> bool:
+    """Rewrite title/body and park ``triage -> blocked`` (``needs_input``) in
+    one txn; False when not in triage.
+
+    The decomposer's question-card path: an entry whose premise rests on a
+    decision nobody has made is not work, so it is never fanned out into an
+    implementation graph nor promoted as a single work item. The card itself
+    becomes the question: it keeps its id (event/comment history stays
+    attached), drops its assignee (an open decision must never be routed to a
+    worker), and parks ``blocked`` with ``block_kind='needs_input'`` so only a
+    human decision moves it. No children are ever created from this path and,
+    unlike the specify promotion, there is deliberately no ``recompute_ready``
+    — a parked question stays parked. ``body`` carries the options as the
+    entry records them; ``reason`` is the block reason shown on the card.
+    """
+    from hermes_cli.kanban_db import (
+        _append_event, _insert_comment, _row_get, write_txn,
+    )
+
+    if title is not None and not title.strip():
+        raise ValueError("title cannot be blank")
+    if body is not None and not (body or "").strip():
+        raise ValueError("body cannot be blank")
+    with write_txn(conn):
+        existing = conn.execute(
+            "SELECT title, body, assignee, block_kind, block_recurrences FROM tasks "
+            "WHERE id = ? AND status = 'triage'",
+            (task_id,),
+        ).fetchone()
+        if existing is None:
+            return False
+        # Same recurrence arithmetic as _route_block: re-parking the same open
+        # question counts toward the block-loop breaker, a fresh park starts
+        # at 1 (a triage card routed here by the breaker keeps its counter).
+        prev_kind = _row_get(existing, "block_kind")
+        recurrences = int(_row_get(existing, "block_recurrences") or 0)
+        recurrences = recurrences + 1 if prev_kind == "needs_input" else 1
+        sets: list[str] = [
+            "status = 'blocked'",
+            "block_kind = 'needs_input'",
+            "block_recurrences = ?",
+            "assignee = NULL",
+        ]
+        params: list[Any] = [recurrences]
+        changed_fields: list[str] = []
+        if title is not None and title.strip() != (existing["title"] or ""):
+            sets.append("title = ?")
+            params.append(title.strip())
+            changed_fields.append("title")
+        if body is not None and (body or "") != (existing["body"] or ""):
+            sets.append("body = ?")
+            params.append(body)
+            changed_fields.append("body")
+        if existing["assignee"]:
+            changed_fields.append("assignee (cleared)")
+        params.append(task_id)
+        cur = conn.execute(
+            f"UPDATE tasks SET {', '.join(sets)} "
+            f"WHERE id = ? AND status = 'triage'",
+            tuple(params),
+        )
+        if cur.rowcount != 1:
+            return False
+        if changed_fields and author and author.strip():
+            # Not add_comment (own txn + 'commented' event); the 'blocked'
+            # event below carries the audit trail.
+            _insert_comment(
+                conn, task_id, author.strip(),
+                "Question card — updated " + ", ".join(changed_fields)
+                + " and parked blocked (needs_input): "
+                + (reason or "open premise, decision required") + ".",
+                int(time.time()),
+            )
+        _append_event(
+            conn, task_id, "blocked",
+            {"kind": "needs_input", "reason": reason, "source_status": "triage",
+             "question": True, "changed_fields": changed_fields},
+        )
+    return True

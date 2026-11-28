@@ -895,7 +895,7 @@ class CheckpointManager:
     enabled : bool
         Master switch (from config / CLI flag).
     max_snapshots : int
-        Keep at most this many checkpoints per directory.
+        Keep at most this many checkpoints per directory; 0 keeps every snapshot.
     max_total_size_mb : int
         Hard ceiling on total store size.  Oldest checkpoints per project
         are dropped when the store exceeds this after a commit.
@@ -912,7 +912,7 @@ class CheckpointManager:
         max_file_size_mb: int = 10,
     ):
         self.enabled = enabled
-        self.max_snapshots = max(1, int(max_snapshots))
+        self.max_snapshots = max(0, int(max_snapshots))
         self.max_total_size_mb = max(0, int(max_total_size_mb))
         self.max_file_size_mb = max(0, int(max_file_size_mb))
         self._checkpointed_dirs: set[str] = set()
@@ -1079,7 +1079,7 @@ class CheckpointManager:
 
         ref = _ref_name(_project_hash(abs_dir))
         ok, stdout, _ = _run_git(
-            ["log", ref, "--format=%H|%h|%aI|%s", "-n", str(self.max_snapshots)],
+            ["log", ref, "--format=%H|%h|%aI|%s", *_log_limit(self.max_snapshots)],
             store, abs_dir,
             allowed_returncodes={128, 129},
         )
@@ -1833,6 +1833,11 @@ class CheckpointManager:
                             "space is reclaimed by the next prune", self.max_total_size_mb)
         except (PruneError, OSError) as exc:
             logger.warning("Checkpoint pruning stopped: %s", exc)
+
+
+def _log_limit(max_snapshots: int) -> list[str]:
+    """``git log`` count arguments for a snapshot budget; ``0`` (keep everything) lists all."""
+    return ["-n", str(max_snapshots)] if max_snapshots > 0 else []
 
 
 def format_checkpoint_list(checkpoints: list[dict], directory: str) -> str:

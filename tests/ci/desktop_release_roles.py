@@ -24,7 +24,7 @@ WORKFLOW = ROOT / ".github" / "workflows" / "desktop-bundled-release.yml"
 SMOKE_WORKFLOW = "./.github/workflows/desktop-bundle-smoke.yml"
 BUILD_CACHE_ACTION = "./.github/actions/desktop-build-cache"
 SHA = "a" * 40
-CANARY_TAG = "v0.28.0+canary.20260818T101010Z"
+CANARY_TAG = "canary.20260818T101010Z-v0.28.0"
 # Native build targets per platform, from the one release-side definition.
 PLATFORM_ARCHES = {platform: tuple(a for p, a in TARGETS if p == platform) for platform, _ in TARGETS}
 PLATFORMS = tuple(PLATFORM_ARCHES)
@@ -110,24 +110,41 @@ def universal_assembler(jobs: dict) -> str:
                  "universal bundle assembly")
 
 
+def termux_builds(jobs: dict) -> dict[str, str]:
+    """``"release" | "commit"`` -> id of that Termux .deb build trust branch."""
+    legs: dict[str, str] = {}
+    for name, job in jobs.items():
+        if needs_of(job) != ["validate"] or not _stages(job, "termux"):
+            continue
+        mode = _MODE_BY_CACHE[job["cache-mode"]]
+        assert mode not in legs, f"{name} and {legs[mode]} both build termux ({mode})"
+        legs[mode] = name
+    assert set(legs) == {"release", "commit"}, legs
+    return legs
+
+
+def commit_claim_stagers(jobs: dict) -> dict[str, str]:
+    """target (or ``"termux"``) -> fresh controller-only job that records/stages a commit claim."""
+    stagers: dict[str, str] = {}
+    expected = set(NATIVE_TARGETS) | {"termux"}
+    for name, job in jobs.items():
+        downloads = [step for step in job.get("steps", [])
+                     if str(step.get("uses", "")).startswith("actions/download-artifact@")
+                     and (step.get("with") or {}).get("artifact-ids") == "${{ env.COMMIT_ARTIFACT_ID }}"]
+        if not downloads:
+            continue
+        env_target = (job.get("env") or {}).get("TARGET")
+        target = env_target if env_target in NATIVE_TARGETS else "termux"
+        assert target not in stagers, f"{name} and {stagers[target]} both stage commit claim {target}"
+        stagers[target] = name
+    assert set(stagers) == expected, stagers
+    return stagers
+
+
 def termux_builder(jobs: dict) -> str:
-    return _only([name for name, job in jobs.items() if _stages(job, "termux")], "termux deb")
-
-
-def updater_publishers(jobs: dict) -> dict[str, str]:
-    """platform -> the job that publishes that platform's updater feed.
-
-    It is the job gated on exactly that platform's smokes; channel publication
-    and summaries need every platform's smoke.
-    """
-    smokes = smoke_callers(jobs)
-    publishers = {}
-    for platform in PLATFORMS:
-        own = {smokes[f"{platform}-{arch}"] for arch in PLATFORM_ARCHES[platform]}
-        publishers[platform] = _only(
-            [name for name, job in jobs.items() if set(needs_of(job)) & set(smokes.values()) == own],
-            f"{platform} updater publisher")
-    return publishers
+    """The Termux selection gate that turns one trust branch into one job result."""
+    pair = set(termux_builds(jobs).values())
+    return _only([name for name, job in jobs.items() if pair <= set(needs_of(job))], "termux deb gate")
 
 
 def _renders(job: dict, flag: str) -> bool:
@@ -143,18 +160,6 @@ def channel_publisher(jobs: dict) -> str:
 def commit_summary(jobs: dict) -> str:
     return _only([name for name, job in jobs.items() if _renders(job, "--summary-commit")],
                  "commit build summary")
-
-
-def tag_summary(jobs: dict) -> str:
-    """The tag build table, which the canary publisher waits on."""
-    canary = jobs[canary_publisher(jobs)]
-    return _only([name for name in needs_of(canary) if _renders(jobs[name], "--tag")], "tag build summary")
-
-
-def canary_publisher(jobs: dict) -> str:
-    return _only([name for name, job in jobs.items()
-                  if any("scripts.releases.channel_releases canary" in step.get("run", "")
-                         for step in job.get("steps", []))], "canary publisher")
 
 
 def phase_result(jobs: dict) -> str:
@@ -181,8 +186,6 @@ def credential_gate(job: dict) -> dict:
 
 # Dispatch shapes that produce downloadable artifacts, keyed by trust branch.
 DOWNLOADABLE_DISPATCHES = {
-    "tag": {"tag": CANARY_TAG, "upload_release": True, "build_commit": "", "channel": "",
-            "release-phase": "", "jobs": ",".join(JOB_GROUPS)},
     "candidate": {"tag": "v0.28.0", "upload_release": False, "build_commit": "", "channel": "",
                   "release-phase": "candidate", "jobs": ",".join(JOB_GROUPS)},
     "commit": {"tag": "", "upload_release": False, "build_commit": SHA, "channel": "",
@@ -236,6 +239,7 @@ def evaluate(expression, inputs, needs, *, cancelled=False, failed=False, job_if
         'always': lambda: True, 'cancelled': lambda: cancelled,
         'success': lambda: not (cancelled or failed), 'failure': lambda: failed,
         'contains': lambda value, needle: needle in value,
+        'startsWith': lambda value, prefix: str(value).startswith(prefix),
         # Expression strings reach eval already rewritten (true -> True), so read them as literals.
         'fromJSON': ast.literal_eval,
     })

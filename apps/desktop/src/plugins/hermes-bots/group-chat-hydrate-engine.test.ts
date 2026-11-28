@@ -9,6 +9,7 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import type * as GroupChatModule from './group-chat'
+import { HELD_GROUP_ROOM } from './group-test-utils'
 import type * as I18nModule from './i18n'
 import type { RosterRow } from './types'
 
@@ -141,5 +142,27 @@ describe('group-chat hydration', () => {
 
     expect($groupChats.get().Mixed.engine).toBe('desktop')
     expect($groupChats.get().Plain.engine).toBeUndefined()
+  })
+
+  it('restores every stored durable field', async () => {
+    $groupChats.set({})
+
+    try {
+      plugin.register({
+        i18n: { register: () => () => undefined },
+        onDispose: () => undefined,
+        register: () => () => undefined,
+        storage: {
+          get: async (key: string) => (key === 'group-chats' ? { Held: structuredClone(HELD_GROUP_ROOM) } : undefined),
+          set: async () => undefined
+        }
+      } as never)
+    } catch {
+      // Registration walks UI surfaces the stub does not model.
+    }
+
+    await vi.waitFor(() => expect($groupChats.get().Held).toBeDefined())
+
+    expect($groupChats.get().Held).toEqual({ ...HELD_GROUP_ROOM, epoch: 0, running: false })
   })
 })

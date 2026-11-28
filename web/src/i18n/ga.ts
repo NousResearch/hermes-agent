@@ -807,4 +807,17 @@ export const ga: Translations = {
     logTruncated: "(taispeántar an 100 KB deireanach — loga iomlán ag ",
     logAt: ")",
   },
+  channelsCatalog: {
+    title: "Ar fáil le suiteáil",
+    hint: "Ardáin teachtaireachta ó chatalóg breiseán Hermes. Cuireann suiteáil an breiseán leis agus cumasaíonn sé é, ansin osclaítear a shocrú.",
+    badgeOfficial: "Oifigiúil",
+    badgeVerified: "Fíoraithe",
+    disclosure: "Nochtadh:",
+    lazyInstallsOff: "Tá suiteálacha uathoibríocha breiseán múchta (security.allow_lazy_installs).",
+    run: "Rith:",
+    install: "Suiteáil",
+    installing: "Á shuiteáil…",
+    installed: (title: string) => `${title} suiteáilte. Cuir isteach a dhintiúir chun é a nascadh.`,
+    installFailed: (title: string) => `Níorbh fhéidir ${title} a shuiteáil`,
+  },
 };

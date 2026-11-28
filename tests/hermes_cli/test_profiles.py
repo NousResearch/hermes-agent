@@ -398,6 +398,21 @@ class TestCreateProfile:
         assert not any((profile_dir / "cron").iterdir())
         assert yaml.safe_load((profile_dir / "config.yaml").read_text(encoding="utf-8-sig"))["model"] == "test"
 
+    def test_clone_all_does_not_carry_the_sources_backend_migration(self, profile_env):
+        """The migration record and its backups name the source home's files and units: a clone that
+        inherited them would restore or roll back the source from the clone."""
+        default_home = profile_env / ".hermes"
+        (default_home / "config.yaml").write_text("model: test", encoding="utf-8")
+        (default_home / "backend_migration.json").write_text(json.dumps({"state": "done"}), encoding="utf-8")
+        (default_home / "backend_migration").mkdir()
+        (default_home / "backend_migration" / "env.bak").write_text("KEY=value\n", encoding="utf-8")
+
+        profile_dir = create_profile("coder", clone_all=True, no_alias=True)
+
+        assert not (profile_dir / "backend_migration.json").exists()
+        assert not (profile_dir / "backend_migration").exists()
+        assert (profile_dir / "config.yaml").exists()
+
     def test_clone_all_does_not_inherit_the_source_screen_or_browser_process_artifacts(self, profile_env):
         """A clone keeps browser data, never the source's screen or Chromium runtime files."""
         default_home = profile_env / ".hermes"

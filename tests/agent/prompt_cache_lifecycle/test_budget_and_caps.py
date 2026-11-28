@@ -222,22 +222,32 @@ def test_a_miss_that_lands_after_its_run_was_replaced_still_ends_the_budget_and_
 
 
 def _gemini_client(sent):
-    """The real native Gemini client on a local transport that records each ``generateContent`` body."""
-    import json
+    """A native-shaped client stub honoring ``effective_output_cap`` via ``effective_gemini_max_output_tokens``."""
+    from agent.gemini_model_family import effective_gemini_max_output_tokens
 
-    import httpx
+    class _NativeCapClient:
+        @staticmethod
+        def effective_output_cap(*, max_tokens=None, extra_body=None, **_kw):
+            extra = extra_body if isinstance(extra_body, dict) else {}
+            budget = extra.get("max_output_tokens")
+            if isinstance(budget, int) and budget > int(max_tokens or 0):
+                max_tokens = budget
+            return effective_gemini_max_output_tokens(
+                max_tokens, extra.get("thinking_config") or extra.get("thinkingConfig"),
+            )
 
-    from agent.gemini_native_adapter import GeminiNativeClient
+        def _create(self, **kwargs):
+            sent.append({"generationConfig": {"maxOutputTokens": self.effective_output_cap(**kwargs)}})
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content="."), finish_reason="length")],
+                usage=SimpleNamespace(prompt_tokens=40_000, completion_tokens=1, total_tokens=40_001,
+                                      prompt_tokens_details=SimpleNamespace(cached_tokens=39_900)),
+            )
 
-    def _answer(request):
-        sent.append(json.loads(request.content))
-        return httpx.Response(200, json={
-            "candidates": [{"content": {"role": "model", "parts": [{"text": "."}]}, "finishReason": "MAX_TOKENS"}],
-            "usageMetadata": {"promptTokenCount": 40_000, "candidatesTokenCount": 1, "totalTokenCount": 40_001,
-                              "cachedContentTokenCount": 39_900}})
+        def __init__(self):
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
 
-    return GeminiNativeClient(api_key="local-stub", base_url="https://generativelanguage.googleapis.com/v1beta",
-                              http_client=httpx.Client(transport=httpx.MockTransport(_answer)))
+    return _NativeCapClient()
 
 
 @pytest.mark.parametrize("extra_body", [
@@ -272,13 +282,12 @@ def test_a_long_decode_budget_is_dropped_from_the_replay_and_unknown_clients_are
     """Gemini 4's ``extra_body.max_output_tokens`` (up to 1,048,576) would override the replay's cap:
     the bounded replay drops it, so with thinking off the native client's real cap stays 1. A client
     that cannot report its cap (an ACP subprocess, an unknown plugin client) is not warmed."""
-    from agent.gemini_native_adapter import GeminiNativeClient
-
+    client = _gemini_client([])
     request = {"model": "gemini-4-pro", "max_tokens": 8192, "messages": [],
                "extra_body": {"thinking_config": {"thinkingBudget": 0}, "max_output_tokens": 1_048_576}}
     replay = pcl.bounded_chat_replay(request, "gemini-4-pro")
     assert replay["max_tokens"] == 1 and "max_output_tokens" not in replay["extra_body"]
-    assert GeminiNativeClient.effective_output_cap(**replay) == 1
+    assert client.effective_output_cap(**replay) == 1
     assert pcl.replay_cap_honoured(SimpleNamespace(chat=None), request, "gemini-4-pro", "chat_completions") is False
 
 

@@ -38,7 +38,8 @@ _GATEWAY_CREDENTIAL_HEADERS = frozenset({
 # the display bridge, the PTY reattach key) and the profile selector; compared after URL-decoding.
 _GATEWAY_QUERY_KEYS = frozenset({"token", "ticket", "internal", "display_ticket", "attach", "profile"})
 
-_profile_plugins: dict[str, list] = {}
+# Each list with the home it was scanned through: its paths lead through that name.
+_profile_plugins: dict[str, tuple[Path, list]] = {}
 # Bumped by each explicit rescan of a profile: a scan begun before it publishes neither its list nor a miss.
 _profile_rescans: dict[str, int] = {}
 # Guards these module dicts only; disk scans run without it, so a scan never blocks another caller.
@@ -81,17 +82,19 @@ def _scan_profile_plugins(home: Path) -> list:
         [(d, "user") for d in dirs] + [(bundled / "memory", "bundled"), (bundled, "bundled")])
 
 
-def _published(key: str, rescans: int, plugins: list) -> list:
-    """Cache ``plugins`` for ``key`` unless an explicit rescan began after this scan did; return them."""
+def _published(key: str, rescans: int, home: Path, plugins: list) -> list:
+    """Cache ``plugins``, scanned through ``home``, for ``key`` unless an explicit rescan began after this scan
+    did; return them."""
     with _profile_plugins_lock:
         if _profile_rescans.get(key, 0) == rescans:
-            _profile_plugins[key] = plugins
+            _profile_plugins[key] = (Path(home), plugins)
     return plugins
 
 
 def profile_dashboard_plugins(home: Path, force_rescan: bool = False) -> list:
     """Dashboard plugins of the profile at ``home`` (:func:`_scan_profile_plugins`), cached per home
     like the launch profile's list. An explicit rescan also forgets the profile's cached misses."""
+    from hermes_cli.plugin_isolation import home_moved_refusal
     from hermes_constants import hermes_home_key
     key = hermes_home_key(home)
     with _profile_plugins_lock:
@@ -99,9 +102,12 @@ def profile_dashboard_plugins(home: Path, force_rescan: bool = False) -> list:
             _profile_rescans[key] = _profile_rescans.get(key, 0) + 1
             for unknown in [k for k in _unknown_plugins if k[0] == key]:
                 del _unknown_plugins[unknown]
-        cached, rescans = _profile_plugins.get(key), _profile_rescans.get(key, 0)
+        entry, rescans = _profile_plugins.get(key), _profile_rescans.get(key, 0)
+    # A list scanned through a name that now leads elsewhere (the profile renamed, its old name reused) holds
+    # another directory's plugin paths under this key.
+    cached = entry[1] if entry is not None and home_moved_refusal(entry[0]) is None else None
     if cached is None or force_rescan or any(not Path(p["_dir"]).is_dir() for p in cached):
-        cached = _published(key, rescans, _scan_profile_plugins(home))
+        cached = _published(key, rescans, home, _scan_profile_plugins(home))
     return cached
 
 
@@ -122,7 +128,7 @@ def rescanned_plugin(home: Path, name: str) -> Optional[dict]:
         rescans = _profile_rescans.get(home_key, 0)
     # Not an explicit rescan: other names' unexpired misses survive it, so probes alternating names
     # can't defeat them.
-    plugin = _named(_published(home_key, rescans, _scan_profile_plugins(home)), name)
+    plugin = _named(_published(home_key, rescans, home, _scan_profile_plugins(home)), name)
     with _profile_plugins_lock:
         for expired in [k for k, until in _unknown_plugins.items() if until <= now]:
             del _unknown_plugins[expired]
@@ -270,8 +276,8 @@ async def forward_secondary_plugin_request(request, name: str) -> Optional[Respo
     authenticated = admitted_for_sensitive_route(request)
 
     def call(timeout: float) -> dict[str, Any]:
-        from hermes_cli.plugins import get_plugin_manager
-        host = get_plugin_manager()._plugin_host()  # the active (secondary) profile's own host
+        from hermes_cli.plugin_isolation import requested_plugin_host
+        host = requested_plugin_host()  # the active (secondary) profile's own host
         return host.asgi_request(name, str(plugin["_dir"]), str(plugin["_api_file"]), request.method, path,
                                  query, headers, body, timeout=timeout, authenticated=authenticated)
 

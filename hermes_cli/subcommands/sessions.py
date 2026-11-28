@@ -43,15 +43,28 @@ def _add_refresh_prompts(sessions_subparsers) -> None:
     _flag(refresh, "--json", help="Machine-readable output")
 
 
+_ALL_HELP = "Show every source (cron, webhook, push, kanban, tool, one-shot) and sessions with no messages"
+
+
+def _add_browse(sessions_subparsers) -> None:
+    browse = sessions_subparsers.add_parser(
+        "browse", help="Interactive session picker — browse, search, and resume sessions")
+    browse.add_argument("--source", help="Filter by source (cli, telegram, discord, etc.)")
+    browse.add_argument("--limit", type=int, default=500, help="Max sessions to load (default: 500)")
+    _flag(browse, "--all", help=_ALL_HELP)
+
+
 def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
     """Attach the ``sessions`` subcommand to ``subparsers``."""
     sessions_parser = subparsers.add_parser(
         "sessions", help="Manage session history (list, rename, export, prune, delete)",
-        description="View and manage the SQLite session store")
+        description="View and manage the SQLite session store; with no subcommand, pick a recent "
+            "conversation to resume (prints the list when not on a terminal)")
     sessions_subparsers = sessions_parser.add_subparsers(dest="sessions_action")
 
     sessions_list = sessions_subparsers.add_parser("list", help="List recent sessions")
     sessions_list.add_argument("--source", help="Filter by source (cli, telegram, discord, etc.)")
+    _flag(sessions_list, "--all", help=_ALL_HELP)
     sessions_list.add_argument("--limit", type=int, default=20, help="Max sessions to show")
     sessions_list.add_argument("--workspace", metavar="NEEDLE",
         help="Only sessions in one workspace: a git repo root or project dir "
@@ -324,11 +337,7 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
     sessions_retitle.add_argument(
         "--limit", type=int, default=200, help="Maximum sessions to examine (default: 200)")
 
-    sessions_browse = sessions_subparsers.add_parser(
-        "browse", help="Interactive session picker — browse, search, and resume sessions")
-    sessions_browse.add_argument("--source", help="Filter by source (cli, telegram, discord, etc.)")
-    sessions_browse.add_argument(
-        "--limit", type=int, default=500, help="Max sessions to load (default: 500)")
+    _add_browse(sessions_subparsers)
 
     sessions_import = sessions_subparsers.add_parser(
         "import", help="Import a Claude Code or Codex CLI session into Hermes",

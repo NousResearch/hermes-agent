@@ -47,6 +47,15 @@ export const enNotifications = {
       unsupported: 'This browser cannot show notifications. The tab title still flashes.'
     }
   },
+  phonePresence: {
+    title: 'This computer for phone notifications',
+    description: 'What this window tells Hermes about you being here. A phone notification plugin decides what to do with it.',
+    unsupported: 'Phone notifications are not affected by activity on this backend.',
+    disconnected: 'Not connected.',
+    watchingComputer: (time: string) => `While a conversation is open in this window, Hermes is told when you last used this computer. Last input ${time} ago.`,
+    watchingWindow: (time: string) => `While a conversation is open in this window, Hermes is told when you last used this window. Last input ${time} ago.`,
+    watchingWindowNoInput: 'While a conversation is open in this window, Hermes is told when you last used this window. No input seen yet.'
+  },
   test: 'Send test notification',
   testTitle: 'Hermes',
   testBody: 'Notifications are working.',

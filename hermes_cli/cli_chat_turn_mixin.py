@@ -13,6 +13,8 @@ import sys
 import threading
 import time
 
+from contextlib import suppress
+from functools import cached_property
 from pathlib import Path
 from rich import box as rich_box
 from rich.panel import Panel
@@ -23,6 +25,23 @@ from agent.i18n import t
 from hermes_cli.cli_agent_setup_mixin import _retire_agent
 
 
+def _program_outcome(result):
+    """OSC 7501 (state, msg) for a finished turn. No result = the monitor gave up on a still-running
+    agent, so claim no outcome (None reads as idle); a cancelled turn is idle per the spec. A failure
+    that kept answer text is done, as the TUI reports it; ``done`` carries no msg, never the reply."""
+    if not result:
+        return None
+    if result.get("interrupted"):
+        return ("idle", "")
+    if result.get("failed"):
+        error = str(result.get("error") or "")
+        text = result.get("final_response")
+        kept = bool(result.get("partial") and isinstance(text, str) and text.strip()
+                    and text.strip() != error.strip())
+        return ("done", "") if kept else ("error", error)
+    return ("done", "")
+
+
 class CLIChatTurnMixin:
     """chat() and its per-turn phase helpers."""
 
@@ -30,6 +49,142 @@ class CLIChatTurnMixin:
     # response string, so one-shot callers that must map an outcome onto a
     # process exit code (see cli._run_single_query_mode) read this instead.
     _last_turn_result = None
+
+    def _report_program_status(self, state: str, *, kind: str = "", message: str = "") -> None:
+        """OSC 7501 Program Status report (idle/working/blocked/done/error) on an interactive terminal only."""
+        from hermes_cli.terminal_notify import program_status_sequence
+        try:
+            seq = program_status_sequence(state, kind=kind, message=message)
+        except (TypeError, ValueError, UnicodeError):
+            return
+        self._write_program_status(seq)
+
+    def _emit_osc_sequence(self, seq: str) -> None:
+        """Write an OSC escape sequence via the prompt_toolkit loop when running, else write_tty."""
+        if getattr(self, "_terminal_io_broken", False) or not sys.stdout.isatty():
+            return
+        from hermes_cli.terminal_notify import write_tty
+        app = getattr(self, "_app", None)
+        if app is None or not getattr(app, "_is_running", False):
+            write_tty(seq)
+            return
+        from hermes_cli.cli_terminal_mixin import _run_on_app_loop, _write_terminal_sequence
+
+        def _emit() -> None:
+            try:
+                _write_terminal_sequence(app, seq)
+            except (OSError, ValueError):
+                pass
+
+        _run_on_app_loop(app, _emit)
+
+    def _write_program_status(self, seq: str) -> None:
+        if not getattr(self, "program_status_enabled", True):
+            return
+        self._emit_osc_sequence(seq)
+
+    _program_resume_interactive: bool = False
+
+    @cached_property
+    def _program_resume(self):
+        from hermes_cli.program_resume import ProgramResumeReporter
+
+        return ProgramResumeReporter(self._write_osc7577)
+
+    def _write_osc7577(self, seq: str) -> None:
+        if not getattr(self, "program_resume_enabled", True):
+            return
+        self._emit_osc_sequence(seq)
+
+    def _resumable_session_id(self) -> str | None:
+        """The active session id once the session store holds its row (only then can a restart resume it)."""
+        agent = getattr(self, "agent", None)
+        sid = (getattr(agent, "session_id", None) if agent is not None else None) or getattr(self, "session_id", None)
+        if not sid:
+            return None
+        sid = str(sid)
+        if sid == getattr(self, "_program_resume_saved_sid", None):
+            return sid
+        from hermes_cli.program_resume import session_saved
+
+        if not session_saved(getattr(self, "_session_db", None), sid):
+            return None
+        self._program_resume_saved_sid = sid
+        return sid
+
+    def _sync_program_resume(self, *, force: bool = False) -> None:
+        """Report or update this pane's OSC 7577 resume command (interactive CLI only)."""
+        if (
+            not self._program_resume_interactive
+            or not getattr(self, "program_resume_enabled", True)
+            or getattr(self, "_terminal_io_broken", False)
+            or not sys.stdout.isatty()
+            or not self._program_resume.active
+        ):
+            return
+        from hermes_cli.program_resume import resume_argv
+
+        # Resolved under the reporter's lock: the SIGCONT thread must not report a session switched away from.
+        self._program_resume.sync(lambda: resume_argv(self._resumable_session_id(), "cli"), force=force)
+
+    def _clear_program_resume(self) -> None:
+        """The user ended Hermes: remove this pane's OSC 7577 record."""
+        self._program_resume.clear()
+
+    # (state, msg) of the last finished turn; None = no outcome to show (fresh, early return, lost result).
+    _program_turn_outcome: tuple[str, str] | None = None
+    _program_status_last = None
+    # Set on quit: the record is cleared and nothing may report again (a turn settling during shutdown).
+    _program_status_closed = False
+
+    def _clear_program_status(self) -> None:
+        """Quit: clear the record this CLI reported. idle/done/error outlive the process under the spec,
+        so without this a pane back at its shell keeps listing Hermes as an agent."""
+        if self._program_status_closed:
+            return
+        self._program_status_closed = True
+        if self._program_status_last is None:
+            return
+        self._program_status_last = None
+        from hermes_cli.terminal_notify import program_status_clear_sequence
+        self._write_program_status(program_status_clear_sequence())
+
+    def _program_prompt_status(self):
+        """(kind, msg) for the blocking prompt on screen, or None. Connection cards block only while
+        they wait on the user (form, browser link, retry), never while the backend works."""
+        approval = getattr(self, "_approval_state", None)
+        if approval:
+            return "permission", str(approval.get("command") or "")
+        clarify = getattr(self, "_clarify_state", None)
+        if clarify:
+            return "question", str(clarify.get("question") or "")
+        confirm = getattr(self, "_slash_confirm_state", None)
+        if confirm:  # billing wall, /reset and other slash confirmations; the TUI's `confirm` twin
+            return "question", str(confirm.get("title") or "")
+        if getattr(self, "_sudo_state", None) or getattr(self, "_secret_state", None):
+            return "auth", ""
+        connection = getattr(self, "_connection_state", None)
+        if connection and connection.get("phase") in {"form", "url", "failed"}:
+            return "auth", ""
+        return None
+
+    def _sync_program_status(self) -> None:
+        """Report what the screen shows: a blocking prompt, else a running turn, else the last turn's
+        outcome (idle when none). One owner, called on every modal repaint and turn boundary, so no
+        prompt or exit path has to remember its own transition."""
+        if self._program_status_closed:
+            return
+        prompt = self._program_prompt_status()
+        if prompt:
+            key = ("blocked", prompt[0], prompt[1])
+        elif getattr(self, "_agent_running", False):
+            key = ("working", "", "")
+        else:
+            state, message = self._program_turn_outcome or ("idle", "")
+            key = (state, "", message)
+        if key != self._program_status_last:
+            self._program_status_last = key
+            self._report_program_status(key[0], kind=key[1], message=key[2])
 
     def _sync_fallback_chain_with_config(self, agent) -> None:
         """Adopt ``fallback_providers`` edits made while this chat is open (#95066) — the same
@@ -127,6 +282,8 @@ class CLIChatTurnMixin:
                 self._chat_settle_turn(turn)
                 return self._chat_render_turn(turn, agent_thread, interrupt_msg)
             except Exception as e:
+                self._program_turn_outcome = ("error", str(e))
+                self._sync_program_status()
                 _cprint(t("gateway.model.error_prefix", error=e))
                 return None
             finally:
@@ -589,6 +746,8 @@ class CLIChatTurnMixin:
         except Exception:
             pass
 
+        self._program_turn_outcome = _program_outcome(turn.result)
+        self._sync_program_status()
         self._ring_bell(context=t("cli.modal.bell_turn_complete"))  # propagates over SSH
         if turn.result and not turn.result.get("completed") and not turn.result.get("interrupted"):
             _api_calls = turn.result.get("api_calls", 0)

@@ -383,6 +383,12 @@ from their root base tokens; do not multiply the global tokens or nest CSS zoom.
   existing components under `src/components/assistant-ui` and
   `src/app/chat/composer`; do not fork a second markdown, message, tool-call, or
   approval renderer for one feature.
+  The composer's local `ComposerStateInput` retains the hidden, non-tabbable
+  plain-textarea binding; the visible contentEditable owns interaction, without
+  an invisible autosizing input's layout work.
+- `ComposerHeartField` in `src/app/chat/index.tsx` owns pet-visibility
+  subscriptions: reaction hearts rise from the composer only when neither the
+  in-window nor popped-out pet is present.
 - **Inline widgets** — a tool result that renders as a panel the user reads or
   acts on (clarify, artifact card) wears `WIDGET_SHELL_CLASS`
   (`src/components/chat/widget-shell.ts`): shared radius, the
@@ -445,6 +451,24 @@ from their root base tokens; do not multiply the global tokens or nest CSS zoom.
 - Install, onboarding, connecting, boot failure, and reauthentication are
   distinct states with shared visual primitives. Preserve their recovery
   semantics when unifying appearance.
+- A profile switch never covers the conversation. `ChatSwitchIndicator`
+  escalates by elapsed time: nothing under 2s, a quiet corner pill tinted with
+  the target profile's colour until 10s, then an inline strip above the thread
+  saying sends will wait. A rejected rail switch ends in that strip's terminal
+  failure with Retry; the rail square shows busy/failed, and the composer names
+  where a send will go while the switch is pending. Paint-first sync (#89843)
+  is the same component's quiet pill.
+  `ProfileSquareContent` in `sidebar/profile-switcher.tsx` owns the square's
+  spinner and badges; failure takes precedence over its inactive-session dot.
+  The enclosing button retains the accessible state and drag/selection gestures.
+  Retrying the same failed profile restarts the quiet grace period; an earlier
+  attempt's stalled indicator must not carry into the new attempt.
+  Send assurances follow the captured draft route or existing session owner,
+  not an older activation still holding the switch queue. A new draft, source,
+  or selected conversation invalidates the old Retry, including saved callbacks;
+  retrying a still-current intent preserves its draft and captured source.
+  Slash profile selections claim their intent before metadata lookup; stale
+  lookups, activations, and launch-restore rollbacks cannot replace a newer draft.
 - Guide startup has a dedicated landing screen with the shared long-operation
   Loader and a localized startup label. It remains active until the guide's
   saved conversation is loaded. No greeting, composer, Skip setup, or statusbar

@@ -172,6 +172,11 @@ export function installBrowserDesktopBridge(): boolean {
       return { count: query && find?.call(window, query) ? 1 : 0 }
     },
     notify: async payload => showBrowserNotification(payload),
+    // A browser has no idle clock that counts other apps; the reporter falls back to input in this tab.
+    presence: {
+      get: async () => ({ system: false, idleSeconds: null, locked: false, suspended: false, seq: 0, sampledAt: Date.now() }),
+      onChange: () => () => undefined
+    },
     onFocusSession: onBrowserFocusSession,
     openExternal,
     openPreviewInBrowser: async url => {

@@ -165,10 +165,12 @@ def _run_workflow(rel: str, *, inputs: dict[str, Any], detect: dict[str, Any] | 
             if not gha.condition(cond, ctx):
                 continue
             entry: dict[str, Any] = {"ctx": ctx, "body": body}
-            if name == "e2e-upgrade-plan":
-                plan = next(s for s in body["steps"] if s.get("id") == "plan")
+            # A planning job (e2e-upgrade-plan, the Windows install + update plan) feeds its
+            # ``shards`` output to a matrix: replay it so the matrix cells are the real ones.
+            plan = next((s for s in body.get("steps", []) if s.get("id") == "plan"), None)
+            if plan is not None and "shards" in (body.get("outputs") or {}):
                 entry["outputs"] = workflow_steps.outputs(plan, ctx, _REPO)
-                assert json.loads(entry["outputs"]["shards"]), "upgrade plan selected no shards"
+                assert json.loads(entry["outputs"]["shards"]), f"{rel}: {name} selected no shards"
             uses = body.get("uses")
             if isinstance(uses, str) and uses.startswith("./.github/workflows/"):
                 called = uses[2:]
@@ -856,6 +858,14 @@ def test_windows_install_update_dispatch_alone_sets_strict():
                        ".github/workflows/windows-install-update-e2e.yml", "install-update",
                        "Run Windows install + update E2E") == "upd-txn"
     assert "workflow_dispatch" in _on(_yaml(".github/workflows/windows-install-update-e2e.yml"))
+
+
+def test_windows_install_update_runs_every_journey_file():
+    """One job per journey file: across the planned matrix, every test file of the suite runs."""
+    jobs = _run_workflow(".github/workflows/windows-install-update-e2e.yml", inputs={})
+    selected = _selected_test_files(jobs["install-update"], "Run Windows install + update E2E")
+    suite = _REPO / "tests/e2e/core/windows_update"
+    assert selected == {p.relative_to(_REPO).as_posix() for p in suite.rglob("test_*.py")}
 
 
 def test_run_tests_forwards_the_strict_switch():

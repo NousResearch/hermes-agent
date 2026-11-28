@@ -7,7 +7,26 @@
 type Writer = (chunk: string) => void
 
 const writers = new Map<string, Writer>()
-const backlog = new Map<string, string>()
+
+/**
+ * Capped backlog kept as a chunk deque, not one string.
+ *
+ * `(backlog + chunk).slice(-MAX)` copied the whole 256K tail twice for EVERY
+ * output event once the cap was reached — a busy agent terminal allocates
+ * hundreds of KB per few-byte chunk. Chunks are appended by reference and
+ * trimmed by dropping whole entries from the head, so a chunk write is O(1)
+ * apart from the rare compaction. The string is materialized only for the
+ * readers that need it (mount replay, snapshot diffing), which run per tab
+ * open / poll rather than per output event.
+ */
+interface BacklogEntry {
+  chunks: string[]
+  /** Dead prefix: chunks before this index have been evicted. */
+  head: number
+  length: number
+}
+
+const backlog = new Map<string, BacklogEntry>()
 const commandHeaders = new Map<string, string>()
 const lastSnapshots = new Map<string, string>()
 const seededCommands = new Set<string>()
@@ -28,6 +47,24 @@ const MAX_BACKLOG = 256_000
 // `syncAgentTerminalSnapshot` re-seeds the tab from the registry's rolling tail.
 const MAX_TRACKED_PROCS = 24
 const MAX_TOTAL_CHARS = 2_000_000
+
+/** Materialize the backlog and keep it as the entry's only chunk. A separate
+ *  memo would hold a second full copy beside the chunks that the character
+ *  ceiling never counts; collapsing keeps one copy and makes repeat reads free. */
+function backlogText(entry: BacklogEntry): string {
+  if (entry.head !== 0 || entry.chunks.length !== 1) {
+    entry.chunks = [entry.chunks.slice(entry.head).join('')]
+    entry.head = 0
+  }
+
+  return entry.chunks[0]
+}
+
+/** Recency order is the Map's insertion order; callers re-insert on every write. */
+function setBacklog(procId: string, text: string): void {
+  backlog.delete(procId)
+  backlog.set(procId, { chunks: [text], head: 0, length: text.length })
+}
 
 /** Forget one process entirely. The four maps are evicted TOGETHER: `lastSnapshots`
  *  is the delta fence for `backlog`, so dropping one without the other would make the
@@ -75,7 +112,7 @@ export function registerAgentTerminalWriter(procId: string, write: Writer): () =
   const history = backlog.get(procId)
 
   if (history) {
-    write(history)
+    write(backlogText(history))
   }
 
   return () => {
@@ -93,11 +130,41 @@ export function writeAgentTerminalChunk(procId: string, chunk: string): void {
     return
   }
 
-  const next = (backlog.get(procId) ?? '') + chunk
+  const entry = backlog.get(procId) ?? { chunks: [], head: 0, length: 0 }
+  entry.chunks.push(chunk)
+  entry.length += chunk.length
+
+  // Evict whole chunks from the head while the remainder still covers the cap.
+  // A single oversized chunk is the only case that needs a copy.
+  while (entry.chunks.length - entry.head > 1 && entry.length - entry.chunks[entry.head].length >= MAX_BACKLOG) {
+    entry.length -= entry.chunks[entry.head].length
+    // Release the evicted string now; keeping the dead slot alive until the
+    // 1k-entry compaction would hide up to head-many chunks from the character
+    // budget that is supposed to bound this cache.
+    entry.chunks[entry.head] = ''
+    entry.head += 1
+  }
+
+  if (entry.head > 1024 && entry.head * 2 > entry.chunks.length) {
+    entry.chunks = entry.chunks.slice(entry.head)
+    entry.head = 0
+  }
+
+  // The loop above only drops whole chunks, so the retained tail can exceed
+  // the cap by less than one head chunk. Trim that overhang from the oldest
+  // chunk (newest characters stay). This is a bounded slice, never a join; a
+  // single oversized chunk lands here too.
+  const overhang = entry.length - MAX_BACKLOG
+
+  if (overhang > 0) {
+    entry.chunks[entry.head] = entry.chunks[entry.head].slice(overhang)
+    entry.length = MAX_BACKLOG
+  }
+
   // delete-then-set moves this process to the tail: a plain re-set would keep its
   // original slot and make the oldest-first eviction below pick a live process.
   backlog.delete(procId)
-  backlog.set(procId, next.length > MAX_BACKLOG ? next.slice(-MAX_BACKLOG) : next)
+  backlog.set(procId, entry)
   writers.get(procId)?.(chunk)
   evictColdProcs()
 }
@@ -126,7 +193,8 @@ export function syncAgentTerminalSnapshot(procId: string, output: string): void 
     return
   }
 
-  const current = backlog.get(procId) ?? ''
+  const entry = backlog.get(procId)
+  const current = entry ? backlogText(entry) : ''
   const header = commandHeaders.get(procId) ?? ''
   const body = header && current.startsWith(header) ? current.slice(header.length) : current
   const previous = lastSnapshots.get(procId) ?? ''
@@ -161,8 +229,7 @@ export function syncAgentTerminalSnapshot(procId: string, output: string): void 
   // A reset is a write like any chunk: refresh recency and answer to the ceilings.
   const next = `${header}${output}`.slice(-MAX_BACKLOG)
   lastSnapshots.set(procId, output)
-  backlog.delete(procId)
-  backlog.set(procId, next)
+  setBacklog(procId, next)
   writers.get(procId)?.(`\x1bc${next}`)
   evictColdProcs()
 }

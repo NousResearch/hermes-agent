@@ -71,8 +71,18 @@ def _attested(data: object) -> tuple[list[str], str]:
     return paths, ""
 
 
+_KNOWN_PLATFORMS = frozenset({"linux", "macos", "windows"})
+
+
+def _platforms(data: object) -> list[str]:
+    platforms = data.get("platforms") if isinstance(data, dict) else None
+    if not isinstance(platforms, list):
+        return []
+    return [p for p in platforms if isinstance(p, str) and p in _KNOWN_PLATFORMS]
+
+
 def source_fields(data: object) -> dict[str, str]:
-    """REPO, SHA, SUBDIR, ATTESTED and the BAD verdict for a parsed entry."""
+    """REPO, SHA, SUBDIR, ATTESTED, DEFAULT, PLATFORMS and the BAD verdict for a parsed entry."""
     mapping = data if isinstance(data, dict) else {}
     repo = str(mapping.get("repo", ""))
     sha = mapping.get("sha", "")
@@ -82,8 +92,15 @@ def source_fields(data: object) -> dict[str, str]:
     subdir = subdir_raw if isinstance(subdir_raw, str) else ""
     attested, attested_bad = _attested(data)
     bad = _rejection(data, repo, sha, subdir_raw, subdir) or attested_bad
-    return {"REPO": repo, "SHA": str(sha), "SUBDIR": subdir, "ATTESTED": "\n".join(attested),
-            "BAD": bad}
+    return {
+        "REPO": repo,
+        "SHA": str(sha),
+        "SUBDIR": subdir,
+        "ATTESTED": "\n".join(attested),
+        "DEFAULT": "true" if mapping.get("default") is True else "",
+        "PLATFORMS": "\n".join(_platforms(data)),
+        "BAD": bad,
+    }
 
 
 def main(argv: list[str] | None = None) -> int:

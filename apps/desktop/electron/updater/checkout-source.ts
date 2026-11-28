@@ -15,7 +15,7 @@ export interface SourceUpdate extends UpdaterStatusWire {}
 
 export interface SourceUpdateProbe {
   python: string | null
-  git: string
+  git: string | null
   updateRoot: string
   hermesHome: string
   branch?: string
@@ -110,7 +110,7 @@ export async function readSourceUpdate(probe: SourceUpdateProbe): Promise<Source
     '--home',
     probe.hermesHome,
     '--git',
-    probe.git,
+    probe.git ?? '',
     ...probeFlags(probe)
   ]
 

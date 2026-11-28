@@ -36,7 +36,7 @@ from gateway.platforms.base import (
     cache_audio_from_bytes_async, cache_document_from_bytes_async, cache_image_from_bytes_async,
 )
 from gateway.platforms.event import MessageEvent, MessageType
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, mkdir_under_hermes_home
 from utils import atomic_json_write
 from gateway.platforms._shared import env_is_connected, extra_or_secret as _extra_or_env, get_scoped_secret as _wx_secret
 from gateway.platforms.send_targets import StandaloneSendPolicy, regex_groups_parser
@@ -160,9 +160,7 @@ def _headers(token: Optional[str], body: str) -> dict[str, str]:
 
 
 def _account_dir(hermes_home: str) -> Path:
-    path = Path(hermes_home) / "weixin" / "accounts"
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+    return mkdir_under_hermes_home(Path(hermes_home) / "weixin" / "accounts")
 
 
 def _read_json(path: Path) -> Any:

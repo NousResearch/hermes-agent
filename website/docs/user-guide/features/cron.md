@@ -736,6 +736,8 @@ error. A delivery failure does not count toward the job's `failure_streak`
 
 Semantics: `all` expands to every platform with a configured home channel. Zero is fine; the job simply produces no delivery targets and is recorded as a delivery failure upstream.
 
+A home channel saved in `config.yaml` for a platform whose plugin is not loaded in that profile (not installed, disabled, or a platform that moved out of core) cannot be reached by `all` or by the origin-less `origin` fallback. The run reports it in `last_delivery_error` and logs one warning naming the platform and the command that fixes it, instead of skipping it silently.
+
 `all` composes with explicit targets. `origin,all` delivers to the origin chat *plus* every other connected home channel, de-duplicating by `(platform, chat_id, thread_id)`.
 
 ### Telegram cron topic (`TELEGRAM_CRON_THREAD_ID`)
@@ -952,6 +954,8 @@ This is useful for monitoring jobs that should only report when something is wro
 Check if nginx is running. If everything is healthy, respond with only [SILENT].
 Otherwise, report the issue.
 ```
+
+A whole reply that is a damaged marker also stays silent: one dropped, extra, swapped or wrong letter (`[SLENT]`, `[SLIENT]`), a missing closing bracket, padding or invisible characters inside the brackets, code formatting (`` `[SILENT]` ``), or a reply cut off mid-marker (`[`, `[SIL`). A reply with any other words in it (`[SLENT] extra words`) or a different bracketed word (`[URGENT]`, `[SILVER]`) is delivered.
 
 Failed jobs always deliver regardless of the `[SILENT]` marker — only successful runs can be silenced. For quiet monitoring jobs, prompt the agent to reply with only `[SILENT]` when there is nothing to report.
 

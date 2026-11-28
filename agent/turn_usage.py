@@ -297,9 +297,11 @@ def record_response_usage(
         _agg_cost_provider = _agg_slot.get("provider") or agent.provider
         _agg_cost_base_url = _agg_slot.get("base_url") or agent.base_url
     from agent.prompt_cache_clock import record_cache_response, response_upstream
-    _cache_event = record_cache_response(
+    from agent.prompt_cache_lifecycle.warmer import fold_reply
+    # Under the warmer's lock: a keep-alive of this request renews its attempt before, or folds after.
+    _cache_event = fold_reply(agent, lambda: record_cache_response(
         agent, aggregator_usage, model=agent.model, provider=agent.provider, base_url=agent.base_url,
-        api_mode=agent.api_mode, upstream=response_upstream(response))
+        api_mode=agent.api_mode, upstream=response_upstream(response)))
     cost_result = estimate_usage_cost(
         _agg_cost_model, _with_declared_write_tier(aggregator_usage, _cache_event), provider=_agg_cost_provider,
         base_url=_agg_cost_base_url, api_key=getattr(agent, "api_key", ""),

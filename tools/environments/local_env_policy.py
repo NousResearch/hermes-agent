@@ -19,10 +19,17 @@ _HERMES_PROVIDER_ENV_FORCE_PREFIX = "_HERMES_FORCE_"
 # blocklisted name (GHSA-rhgp-j443-p4rf), so blocking it would be unrecoverable.
 _AWS_SDK_CREDENTIAL_ENV_VARS = frozenset({"AWS_BEARER_TOKEN_BEDROCK"})
 
-_STATIC_PROVIDER_ENV_BLOCKLIST = frozenset({
+# URLs a hosting deployment stamps into the gateway's launch environment, each with its credential:
+# the status report URL and the brokered sleep URL. Tier 1, so the scrub drops them (the terminal
+# tool, credentialed CLIs) and ``served_profile_child_env`` drops them whatever its base; the
+# gateway launch builders (``gateway_child_env``) put them back.
+DEPLOYMENT_STAMP_ENV: frozenset[str] = frozenset({"GATEWAY_STATUS_REPORT_URL", "GATEWAY_RELAY_SLEEP_URL"})
+
+_STATIC_PROVIDER_ENV_BLOCKLIST = DEPLOYMENT_STAMP_ENV | frozenset({
     "OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_API_BASE", "OPENAI_ORG_ID",
     "OPENAI_ORGANIZATION", "OPENROUTER_API_KEY", "ANTHROPIC_BASE_URL",
     "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "LLM_MODEL", "GOOGLE_API_KEY",
+    "GEMINI_API_KEY", "GEMINI_BASE_URL",
     # Path to a GCP service-account JSON, not a bare key, so OPTIONAL_ENV_VARS
     # marks it password=False and the registry loop skips it.
     "VERTEX_CREDENTIALS_PATH", "GOOGLE_APPLICATION_CREDENTIALS", "DEEPSEEK_API_KEY",
@@ -41,6 +48,8 @@ _STATIC_PROVIDER_ENV_BLOCKLIST = frozenset({
     # The dashboard PTY child's WS URLs carry that token (or the gated internal
     # credential) in their query string; the TUI reads them at start-up, no child does.
     "HERMES_TUI_SIDECAR_URL", "HERMES_TUI_GATEWAY_URL",
+    # OSC 7577 Program Resume token authenticates terminal resume records for the pane.
+    "OSC7577_TOKEN",
     "GATEWAY_ALLOWED_USERS", "GH_TOKEN", "GITHUB_APP_ID", "GITHUB_APP_PRIVATE_KEY_PATH",
     "GITHUB_APP_INSTALLATION_ID", "MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET",
     "DAYTONA_API_KEY", "GATEWAY_RELAY_ID", "GATEWAY_RELAY_SECRET",
@@ -640,6 +649,8 @@ _ALWAYS_STRIP_KEYS: frozenset[str] = frozenset({
     # enumerated here to stay stripped on the inherit_credentials=True path.
     "GATEWAY_RELAY_ID", "GATEWAY_RELAY_SECRET", "GATEWAY_RELAY_DELIVERY_KEY",
     "EMAIL_PASSWORD", "HERMES_DASHBOARD_SESSION_TOKEN", "HERMES_TUI_SIDECAR_URL", "HERMES_TUI_GATEWAY_URL",
+    # OSC 7577 Program Resume token authenticates pane resume records; children must not inherit it.
+    "OSC7577_TOKEN",
     # Dashboard auth: the basic-auth password and session-signing secret, the OIDC client
     # secret and the drain bearer. They let a holder mint or forge dashboard sessions, and no
     # child (credentialed CLIs included) consumes them.
@@ -647,6 +658,6 @@ _ALWAYS_STRIP_KEYS: frozenset[str] = frozenset({
     "HERMES_DASHBOARD_OIDC_CLIENT_SECRET", "HERMES_DASHBOARD_DRAIN_SECRET",
     # Remote-compute / infrastructure secrets
     "MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET", "DAYTONA_API_KEY",
-}) | _ADAPTER_SECRET_ENV | _left_core_env(secrets_only=True) | _secret_source_bootstrap_env()
-# ^ every declared adapter secret and every secret source's bootstrap token is Tier 1
+}) | _ADAPTER_SECRET_ENV | _left_core_env(secrets_only=True) | _secret_source_bootstrap_env() | DEPLOYMENT_STAMP_ENV
+# ^ every declared adapter secret, every secret source's bootstrap token and every deployment stamp is Tier 1
 _ALWAYS_STRIP_FOLDED: frozenset[str] = frozenset(k.upper() for k in _ALWAYS_STRIP_KEYS)

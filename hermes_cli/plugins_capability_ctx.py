@@ -1,6 +1,7 @@
 """Capability-gated ``PluginContext`` surface: ``has_capability`` probing, ``side_question`` (ask
-the session's own agent after a turn, ``llm.side_question``) and ``fork_session`` (run a bounded
-background copy of it, ``llm.session_fork``)."""
+the session's own agent after a turn, ``llm.side_question``), ``fork_session`` (run a bounded
+background copy of it, ``llm.session_fork``) and ``post_card`` (a card in a conversation with no
+model turn, ``conversation.cards``)."""
 
 from __future__ import annotations
 
@@ -86,12 +87,24 @@ class PluginCapabilityCtxMixin:
                 owners.setdefault(registration.key, registration.plugin_key)
         return frozenset(name for name, owner in owners.items() if owner == self.plugin_id)
 
+    def post_card(self, card: dict, *, session_key: Optional[str] = None, origin=None) -> dict:
+        """Post *card* (``text``, ``directive``?, ``id``?) into a conversation of this plugin's
+        profile with no model turn; a result dict, never a raise. Needs ``conversation.cards``.
+        Contract: ``hermes_cli/plugin_cards.py`` and the plugin docs' "Posting a card"."""
+        from hermes_cli.plugin_cards import post
+        return post(self, card, session_key=session_key, origin=origin)
+
+    async def apost_card(self, card: dict, *, session_key: Optional[str] = None, origin=None) -> dict:
+        """``post_card`` for async code on the gateway loop."""
+        from hermes_cli.plugin_cards import apost
+        return await apost(self, card, session_key=session_key, origin=origin)
+
     def _granted_in_own_home(self, capability: str) -> bool:
         """Consent read from THIS manager's profile home: plugins call from their own threads,
         where the active profile may be the launch profile's."""
         try:
             from hermes_cli.config import load_config
-            with _plugin_home_scope(self._manager.home_path):
+            with _plugin_home_scope(self._manager.owner_home):
                 cfg = load_config() or {}
         except Exception:  # health: allow BLE001 -- fail closed: unreadable consent state never grants
             return False

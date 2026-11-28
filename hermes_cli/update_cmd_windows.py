@@ -282,6 +282,9 @@ def _hermes_holder_subcommand(cmdline: str) -> str | None:
         elif token.startswith("-"):
             i += 1
         else:
+            # ``dashboard password`` sets the sign-in and exits: never a dashboard server to scan, stop or reap.
+            if token.lower() == "dashboard" and tokens[i + 1:i + 2] and tokens[i + 1].lower() == "password":
+                return "dashboard-password"
             return token.lower()
     return None
 

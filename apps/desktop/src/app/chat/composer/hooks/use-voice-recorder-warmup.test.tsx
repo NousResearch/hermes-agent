@@ -29,7 +29,7 @@ const micHandle = {
 vi.mock('./use-mic-recorder', () => ({
   useMicRecorder: () => ({
     handle: micHandle,
-    level: 0,
+    levelStore: { get: () => 0, listen: () => () => {}, set: () => {} },
     get recording() {
       return recording
     }

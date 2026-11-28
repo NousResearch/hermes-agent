@@ -24,6 +24,17 @@ export const CONVERSATION_LEASE = `desktop:conversation:${RENDERER_ID}`
 const sent = new Map<string, boolean>()
 const inFlight = new Map<string, Promise<void>>()
 
+/** True while any speech-output lease is held (read-aloud or a conversation). */
+export function anyTtsLeaseActive(): boolean {
+  for (const active of sent.values()) {
+    if (active) {
+      return true
+    }
+  }
+
+  return false
+}
+
 /**
  * Bring the backend's view of `lease` in line with `active`. Idempotent: a
  * repeat of the last sent state is a no-op. The initial `false` (nothing was

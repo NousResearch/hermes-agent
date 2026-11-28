@@ -83,10 +83,13 @@ def test_desktop_build_reaches_the_managed_payload_with_commit_ref(tmp_path, mon
 
 
 
-@pytest.mark.parametrize("tag,commit", [(None, "a" * 40), ("v1.2.3+canary.20260911T120000Z", None)])
-def test_store_build_rejects_nonstable_before_reading_or_preparing_repo(tmp_path, tag, commit):
+# A canary tag is a release selector: it assembles (never submits) its Store package like stable.
+# A commit build, and a tag in the retired canary shape, never package for the Store.
+@pytest.mark.parametrize("tag,commit,message", [(None, "a" * 40, "Store.*stable"),
+                                                ("v1.2.3+canary.20260911T120000Z", None, "")])
+def test_store_build_rejects_nonrelease_before_reading_or_preparing_repo(tmp_path, tag, commit, message):
     absent = tmp_path / "must-not-be-created"
-    with pytest.raises(ValueError, match="Store.*stable"):
+    with pytest.raises(ValueError, match=message):
         desktop.build(absent, tag, "store", [], commit_build=commit)
     assert not absent.exists()
 

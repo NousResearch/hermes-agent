@@ -394,3 +394,63 @@ class TestCoerceToolArgsNested:
         args = {"todos": [_json.dumps({"id": "1", "content": "x", "status": "pending"})]}
         result = coerce_tool_args("todo_list", args)
         assert result["todos"][0] == {"id": "1", "content": "x", "status": "pending"}
+
+
+# ── Scalar unions (anyOf/oneOf) — terminal's `notify` ─────────────────────
+
+
+class TestCoerceScalarUnions:
+    """A property declared as a union has no top-level ``type``; its branches
+    must still be coerced (terminal's ``notify: boolean | array<string>``,
+    #157759)."""
+
+    NOTIFY_SCHEMA = {
+        "anyOf": [
+            {"type": "boolean"},
+            {"type": "array", "items": {"type": "string"}},
+        ]
+    }
+
+    def _schema(self, prop):
+        return {
+            "name": "test_tool",
+            "description": "test",
+            "parameters": {"type": "object", "properties": {"notify": prop}},
+        }
+
+    def test_boolean_branch_of_anyof(self):
+        with patch("tools.arg_coercion.registry.get_schema",
+                   return_value=self._schema(self.NOTIFY_SCHEMA)):
+            assert coerce_tool_args("test_tool", {"notify": "True"})["notify"] is True
+            assert coerce_tool_args("test_tool", {"notify": " false "})["notify"] is False
+
+    def test_array_branch_of_anyof_parses_json_string(self):
+        with patch("tools.arg_coercion.registry.get_schema",
+                   return_value=self._schema(self.NOTIFY_SCHEMA)):
+            result = coerce_tool_args("test_tool", {"notify": '["ERR", "OOM"]'})
+            assert result["notify"] == ["ERR", "OOM"]
+
+    def test_unparseable_union_value_is_kept(self):
+        with patch("tools.arg_coercion.registry.get_schema",
+                   return_value=self._schema(self.NOTIFY_SCHEMA)):
+            assert coerce_tool_args("test_tool", {"notify": "maybe"})["notify"] == "maybe"
+
+    def test_native_values_untouched(self):
+        with patch("tools.arg_coercion.registry.get_schema",
+                   return_value=self._schema(self.NOTIFY_SCHEMA)):
+            assert coerce_tool_args("test_tool", {"notify": True})["notify"] is True
+            assert coerce_tool_args("test_tool", {"notify": ["ERR"]})["notify"] == ["ERR"]
+
+    def test_oneof_integer_branch(self):
+        prop = {"oneOf": [{"type": "integer"}, {"type": "string"}]}
+        with patch("tools.arg_coercion.registry.get_schema",
+                   return_value=self._schema(prop)):
+            result = coerce_tool_args("test_tool", {"notify": "60"})
+            assert result["notify"] == 60
+
+    def test_string_only_union_leaves_text_alone(self):
+        prop = {"anyOf": [{"type": "string"}, {"type": "null"}]}
+        with patch("tools.arg_coercion.registry.get_schema",
+                   return_value=self._schema(prop)):
+            assert coerce_tool_args("test_tool", {"notify": "true"})["notify"] == "true"
+

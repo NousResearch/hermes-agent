@@ -11,7 +11,9 @@ The defaults are deliberately conservative: bounded to half the available cores 
 one build can never monopolize a small host, and a heap ceiling sized from the
 container/cgroup limit (75% of it, same shape as the TUI launcher's sizing) so a
 constrained container gets a graceful V8 allocation failure instead of a silent
-cgroup OOM kill.
+cgroup OOM kill. A host with no cgroup limit (a plain VPS) sizes it from
+``MemAvailable`` instead (60% of it), so a 4 GB box never hands V8 a ceiling
+above its own RAM; without either reading the ceiling stays at the maximum.
 
 User overrides always win: an explicit ``NODE_OPTIONS`` ``--max-old-space-size`` or
 ``RAYON_NUM_THREADS`` in the environment is left untouched, and
@@ -75,12 +77,30 @@ def _bounded_threads() -> int:
     return max(1, min(_MAX_WEB_BUILD_THREADS, _available_cores() // 2 or 1))
 
 
+def _host_available_memory_mb() -> int | None:
+    """``MemAvailable`` in MB from /proc/meminfo, or None when procfs cannot answer."""
+    from hermes_cli.local_runtime import hardware
+
+    text = hardware._linux_meminfo_text()
+    reading = hardware._linux_ram_from_meminfo(text) if text is not None else None
+    if reading is None:
+        return None
+    return reading[1] // (1024 * 1024)
+
+
 def _bounded_heap_mb() -> int:
-    """Heap ceiling from the cgroup limit, clamped to [_MIN, _MAX]."""
+    """Heap ceiling from the cgroup limit, else host MemAvailable, in [_MIN, _MAX]."""
     limit_mb = _cgroup_memory_limit_mb()
-    if not limit_mb:
-        return _MAX_WEB_BUILD_HEAP_MB
-    return max(_MIN_WEB_BUILD_HEAP_MB, min(_MAX_WEB_BUILD_HEAP_MB, int(limit_mb * 0.75)))
+    if limit_mb:
+        sized = int(limit_mb * 0.75)
+    else:
+        available_mb = _host_available_memory_mb()
+        if available_mb is None:
+            return _MAX_WEB_BUILD_HEAP_MB
+        # A smaller share than a dedicated container: the gateway and the rest of the
+        # host keep running beside the build, and its native RSS comes on top.
+        sized = int(available_mb * 0.6)
+    return max(_MIN_WEB_BUILD_HEAP_MB, min(_MAX_WEB_BUILD_HEAP_MB, sized))
 
 
 def _env_flag(env: dict[str, str], name: str) -> bool:

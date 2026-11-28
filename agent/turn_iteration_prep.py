@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Tuple
 from agent.display import KawaiiSpinner
 from agent.interrupt_control import interrupt_issuer, interrupted_during_api_call_reason
 from agent.turn_context_compaction import _reanchor
-from agent.turn_truncation import boosted_output_cap
+from agent.turn_truncation import boosted_output_cap, continuation_base
 
 logger = logging.getLogger("agent.conversation_loop")
 
@@ -547,8 +547,9 @@ def apply_retry_restarts(
 
     if _retry.restart_with_length_continuation:
         # Boost the output budget per retry (shared ladder, see boosted_output_cap).
+        _cap = agent._requested_output_cap_from_api_kwargs(api_kwargs)
         agent._ephemeral_max_output_tokens = boosted_output_cap(
-            agent, agent._requested_output_cap_from_api_kwargs(api_kwargs), length_continue_retries
+            agent, _cap, length_continue_retries, base=continuation_base(agent, _cap, response)
         )
         return _verdict("continue")
 

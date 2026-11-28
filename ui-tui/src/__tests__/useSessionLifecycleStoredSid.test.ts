@@ -10,7 +10,10 @@ import { getUiState, resetUiState } from '../app/uiStore.js'
 import { useSessionLifecycle } from '../app/useSessionLifecycle.js'
 
 /** Mount the real hook and hand its API to the test once the first commit is done. */
-function mountLifecycle(request: (method: string, params: unknown) => Promise<unknown>) {
+function mountLifecycle(
+  request: (method: string, params: unknown) => Promise<unknown>,
+  rpc = vi.fn(async () => null)
+) {
   let api: null | ReturnType<typeof useSessionLifecycle> = null
 
   function Probe() {
@@ -19,7 +22,7 @@ function mountLifecycle(request: (method: string, params: unknown) => Promise<un
       composerActions: { setComposerTokens: vi.fn() } as any,
       gw: { request } as any,
       panel: vi.fn(),
-      rpc: vi.fn(async () => null),
+      rpc,
       scrollRef: { current: null },
       setHistoryItems: vi.fn(),
       setLastUserMsg: vi.fn(),
@@ -75,5 +78,27 @@ describe('useSessionLifecycle durable session id', () => {
     await vi.waitFor(() => expect(getUiState().sid).toBe('runtime-42'))
     expect(request).toHaveBeenCalledWith('session.activate', { session_id: 'durable-key-123' })
     expect(getUiState().storedSid).toBe('durable-key-123')
+  })
+
+  it('resuming a historical session leaves the previous session running', async () => {
+    const request = vi.fn(async () => ({
+      info: { cwd: '/tmp/w', model: 'test', skills: {}, tools: {} },
+      messages: [],
+      running: false,
+      session_id: 'resumed-runtime',
+      stored_session_id: 'resumed-durable',
+      status: 'idle'
+    }))
+
+    const rpc = vi.fn(async () => null)
+    const api = mountLifecycle(request, rpc)
+
+    getUiState().sid = 'running-session'
+
+    await vi.waitFor(() => expect(api()).toBeTruthy())
+    await api().resumeById('historical-session')
+
+    expect(request).toHaveBeenCalledWith('session.resume', { cols: 80, session_id: 'historical-session' })
+    expect(rpc).not.toHaveBeenCalledWith('session.close', { session_id: 'running-session' })
   })
 })

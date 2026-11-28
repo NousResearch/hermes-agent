@@ -1,0 +1,21 @@
+name: weixin
+repo: https://github.com/NousResearch/hermes-official-plugins
+sha: d491bd91ef74d7e8791b1dda7d9600ca1a26add5
+subdir: weixin
+description: "Weixin (personal WeChat) messaging platform over Tencent's iLink Bot API: QR login in `hermes gateway setup`, DMs with pairing or allowlists, native images, video, voice and documents through the encrypted CDN, and cron home-channel delivery (deliver=weixin). Installed by default on every home; it stays idle until you log in. Formerly built into Hermes core; existing users are migrated automatically. Disclosure — messages and media travel between Tencent's iLink servers (ilinkai.weixin.qq.com, novac2c.cdn.weixin.qq.com) and your Hermes gateway using the bot token from your own QR login, which is saved in your profile's .env and weixin/accounts/. The plugin also downloads image URLs that appear in replies so it can send them as native media."
+maintainer: NousResearch
+tier: official
+default: true
+category: platform
+requires_hermes: ">=0.22.3"
+version: "2.0.0"
+docs_url: https://github.com/NousResearch/hermes-official-plugins/tree/main/weixin
+image: https://raw.githubusercontent.com/NousResearch/hermes-official-plugins/d491bd91ef74d7e8791b1dda7d9600ca1a26add5/assets/weixin.jpg
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - WEIXIN_ACCOUNT_ID
+    - WEIXIN_TOKEN

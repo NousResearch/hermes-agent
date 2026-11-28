@@ -141,3 +141,18 @@ def test_malformed_user_yaml_drops_the_yaml_layer_for_both_readers(profile, monk
     assert relay.relay_explicitly_disabled() is False
     assert config.platforms[Platform.RELAY].enabled is True
     assert relay.relay_url() == URL
+
+
+@pytest.mark.parametrize("extra", [None, [1]], ids=["null", "list"])
+def test_malformed_platform_extra_drops_the_yaml_layer_for_both_readers(profile, extra):
+    """One platform's non-mapping ``extra`` makes the loader drop config.yaml; the predicate must
+    drop it too instead of raising, or a standalone cron run fails delivery to every destination.
+    The relay block comes FIRST: the loader must not keep the blocks merged before the bad one."""
+    (profile / "config.yaml").write_text(
+        "platforms:\n  relay:\n    enabled: false\n"
+        f"  discord:\n    enabled: false\n    extra: {json.dumps(extra)}\n")
+    config = load_gateway_config()
+
+    assert relay.relay_explicitly_disabled() is False
+    assert config.platforms[Platform.RELAY].enabled is True
+    assert relay.relay_url() == URL

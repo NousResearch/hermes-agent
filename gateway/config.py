@@ -3,6 +3,7 @@ policies and delivery preferences, loaded from config.yaml / gateway.json / env.
 """
 
 import contextlib
+import copy
 import logging
 import math
 import os
@@ -887,27 +888,20 @@ def load_gateway_config(*, strict: bool = False) -> GatewayConfig:
 def _load_gateway_config_layers(_home: Path, gw_data: dict, strict: bool) -> GatewayConfig:
     from gateway import config_loader
     from gateway.platforms._shared import abort_yaml_env_refresh
-    try:
-        config_loader.load_yaml_layer(_home, gw_data)
-    except Exception as e:
-        if strict:
-            raise
-        abort_yaml_env_refresh()
-        logger.warning(
-            # DingTalk settings → env vars: migrated to the dingtalk plugin's apply_yaml_config_fn hook
-            # (plugins/platforms/dingtalk/adapter.py). #41112 / #3823.
-            # Mattermost config bridge moved into plugins/platforms/mattermost/
-            # adapter.py::_apply_yaml_config — see #25443 (apply_yaml_config_fn).
-            # Matrix settings → env vars: migrated to the matrix plugin's apply_yaml_config_fn hook
-            # (plugins/platforms/matrix/adapter.py). #41112 / #3823.
-            # Feishu settings → env vars: migrated to the feishu plugin's apply_yaml_config_fn hook
-            # (plugins/platforms/feishu/adapter.py). #41112 / #3823.
-            "Failed to process config.yaml — falling back to .env / gateway.json values. "
-            "Check %s for syntax errors. Error: %s",
-            _home / "config.yaml", e,
-        )
+    # Platform settings → env vars live in each plugin's apply_yaml_config_fn hook (#41112 / #3823 / #25443).
+    # The overlay fills a copy: a merge that raises partway (one malformed block after a good one) must not
+    # leave the blocks it already merged in the gateway.json-only fallback the other readers agree with.
+    layered = copy.deepcopy(gw_data)
 
-    config = GatewayConfig.from_dict(gw_data)
+    def overlay() -> dict:
+        config_loader.load_yaml_layer(_home, layered)
+        return layered
+
+    def legacy_only() -> dict:
+        abort_yaml_env_refresh()
+        return gw_data
+
+    config = GatewayConfig.from_dict(config_loader.with_yaml_fallback(_home, overlay, legacy_only, strict=strict))
     _apply_env_overrides(config)
     _validate_gateway_config(config)
     return config

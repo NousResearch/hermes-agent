@@ -1,0 +1,18 @@
+name: retaindb
+repo: https://github.com/NousResearch/hermes-labs-plugins
+sha: 12f341eeec7de7dda9d31f7d064cd700c779207a
+subdir: retaindb
+description: "RetainDB cloud memory provider: hybrid search (vector + BM25 + reranking) over seven memory types, a stable user profile, task context, explicit remember/forget tools and a shared file store (upload, list, read, ingest, delete). Formerly built into Hermes core; existing users are migrated automatically. A Hermes Labs plugin: built by Nous Research, not supported, and likely not maintained going forward. Fixes from the community are welcome. Disclosure — needs a paid RetainDB account (RETAINDB_API_KEY); every turn's user and assistant messages, every entry added to the built-in MEMORY/USER stores, the profile's SOUL.md (seeded as the agent identity) and any file you ask it to upload are sent to the RetainDB API (api.retaindb.com, or RETAINDB_BASE_URL for a self-hosted instance); writes queue in $HERMES_HOME/retaindb_queue.db until delivered."
+maintainer: NousResearch
+tier: community
+version: "2.0.0"
+category: memory
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/NousResearch/hermes-labs-plugins/tree/main/retaindb
+image: https://raw.githubusercontent.com/NousResearch/hermes-labs-plugins/12f341eeec7de7dda9d31f7d064cd700c779207a/assets/retaindb.jpg
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - RETAINDB_API_KEY

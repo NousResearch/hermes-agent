@@ -12,12 +12,14 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional, TypeVar
 
 from gateway.config import UNAUTHORIZED_DM_BEHAVIORS, Platform, PlatformConfig, _coerce_dict, _dict_slot, _normalize_choice
 
 # Logger name parity with the origin module: records stay under "gateway.config".
 logger = logging.getLogger("gateway.config")
+
+T = TypeVar("T")
 
 
 def load_legacy_gateway_json(home: Path) -> Any:
@@ -520,6 +522,26 @@ def read_yaml_layers(home: Path) -> dict:
     # hermes_cli.config.load_config, so managed quick_commands / stt would otherwise be ignored).
     from hermes_cli import managed_scope
     return managed_scope.apply_managed_overlay(yaml_cfg)
+
+
+def with_yaml_fallback(home: Path, read: Callable[[], T], fallback: Callable[[], T], *, strict: bool = False) -> T:
+    """``read()``, under the gateway loader's rule for a config.yaml it cannot process: any failure
+    (unreadable or invalid YAML, a malformed platform block such as ``extra: null``) is warned about
+    and answered by ``fallback()``, the view without config.yaml (gateway.json + env); *strict*
+    re-raises instead. Every reader that merges config.yaml's platform blocks outside the loader
+    goes through here, so a block the gateway itself shrugs off cannot fail a standalone reader
+    (cron delivery, the left-core migration, a routed profile's channel overrides)."""
+    try:
+        return read()
+    except Exception as e:
+        if strict:
+            raise
+        logger.warning(
+            "Failed to process config.yaml — falling back to .env / gateway.json values. "
+            "Check %s for syntax errors. Error: %s",
+            Path(home) / "config.yaml", e,
+        )
+        return fallback()
 
 
 def load_yaml_layer(home: Path, gw_data: dict) -> None:

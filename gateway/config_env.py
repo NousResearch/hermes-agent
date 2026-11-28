@@ -404,20 +404,28 @@ def builtin_platform_status(platform_id: str, yaml_cfg: dict) -> Optional[tuple[
         return None
     from gateway.config_loader import (
         _apply_managed_extra, bridge_platform_shared_keys, merge_platform_sections, snapshot_authored_extra,
+        with_yaml_fallback,
     )
     from hermes_cli.managed_scope import apply_managed_overlay
+    from hermes_constants import get_hermes_home
 
     platform = Platform(platform_id)
     names = {platform_id, Platform.RELAY.value}
-    top, nested = _platform_layers(yaml_cfg, names)
-    platforms = merge_platform_sections(top, nested, gw_data={})
-    authored = snapshot_authored_extra(platforms)  # no gateway.json layer here: the merge is config.yaml only
-    managed_top, managed_nested = _platform_layers(apply_managed_overlay({}), names)
-    _apply_managed_extra(authored, {**managed_top, "gateway": managed_nested}, platforms)
-    bridge_platform_shared_keys(top, nested["platforms"], {}, platforms, [platform, Platform.RELAY], authored=authored)
-    for block in platforms.values():
-        block.pop("home_channel", None)  # status needs none; HomeChannel.from_dict can raise or name another platform
-    config = GatewayConfig.from_dict({"platforms": platforms})
+
+    def yaml_platforms() -> GatewayConfig:
+        top, nested = _platform_layers(yaml_cfg, names)
+        platforms = merge_platform_sections(top, nested, gw_data={})
+        authored = snapshot_authored_extra(platforms)  # no gateway.json layer here: the merge is config.yaml only
+        managed_top, managed_nested = _platform_layers(apply_managed_overlay({}), names)
+        _apply_managed_extra(authored, {**managed_top, "gateway": managed_nested}, platforms)
+        bridge_platform_shared_keys(top, nested["platforms"], {}, platforms, [platform, Platform.RELAY], authored=authored)
+        for block in platforms.values():
+            block.pop("home_channel", None)  # status needs none; HomeChannel.from_dict can raise or name another platform
+        return GatewayConfig.from_dict({"platforms": platforms})
+
+    # A block that makes the gateway's own load drop config.yaml (user or managed layer) leaves this
+    # verdict to env alone, as there; the fallback must not re-read the managed layer that may have raised.
+    config = with_yaml_fallback(get_hermes_home(), yaml_platforms, lambda: GatewayConfig.from_dict({}))
     token = _STATUS_READ.set(True)
     try:
         _apply_env_overrides(config, only=platform)

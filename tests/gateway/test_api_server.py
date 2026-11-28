@@ -947,31 +947,8 @@ class TestCapabilitiesEndpoint:
 
 
 # ---------------------------------------------------------------------------
-# /v1/skills and /v1/toolsets endpoints
+# /v1/toolsets endpoint (/v1/skills: tests/gateway/platforms/api_server/)
 # ---------------------------------------------------------------------------
-
-
-class TestSkillsEndpoint:
-    @pytest.mark.asyncio
-    async def test_skills_returns_list_envelope(self, adapter):
-        fake_skills = [
-            {"name": "github", "description": "GitHub workflow skill", "category": "github"},
-            {"name": "ascii-art", "description": "ASCII art generation", "category": "creative"},
-        ]
-        with patch(
-            "tools.skills_tool.find_all_skills",
-            return_value=list(fake_skills),
-        ):
-            app = _create_app(adapter)
-            async with TestClient(TestServer(app)) as cli:
-                resp = await cli.get("/v1/skills")
-                assert resp.status == 200
-                data = await resp.json()
-                assert data["object"] == "list"
-                names = sorted(s["name"] for s in data["data"])
-                assert names == ["ascii-art", "github"]
-                for entry in data["data"]:
-                    assert set(entry.keys()) >= {"name", "description", "category"}
 
 
 class TestToolsetsEndpoint:

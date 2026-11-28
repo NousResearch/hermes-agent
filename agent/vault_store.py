@@ -154,6 +154,9 @@ def normalize_origin(url_or_origin: str) -> str:
     parts = urlsplit(value)
     scheme = (parts.scheme or "").lower()
     host = (parts.hostname or "").lower()
+    if ":" in host:
+        # An IPv6 literal: ``hostname`` drops the brackets, and ``window.location.origin`` keeps them.
+        host = f"[{host}]"
     if not scheme or not host:
         raise VaultError(f"could not parse origin from {value!r}")
     try:

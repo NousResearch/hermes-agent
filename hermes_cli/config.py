@@ -2355,12 +2355,48 @@ def _sanitize_env_lines(lines: list) -> list:
     Content after the first ``=`` is opaque value data: a known variable name embedded in a value
     must never be reinterpreted as another assignment, so concatenated lines stay on one line."""
     sanitized: list[str] = []
+    open_quote = ""
     for line in lines:
         raw = line.rstrip("\r\n")
+        if open_quote:
+            # Inside a quoted value that spans lines: the text is value data, kept as it is.
+            sanitized.append(raw + "\n")
+            if _closes_quote(raw, open_quote):
+                open_quote = ""
+            continue
         stripped = raw.strip()
         # Blank lines and comments are preserved verbatim.
-        sanitized.append((raw if not stripped or stripped.startswith("#") else stripped) + "\n")
+        if not stripped or stripped.startswith("#"):
+            sanitized.append(raw + "\n")
+            continue
+        open_quote = _unclosed_quote(stripped)
+        # The trailing whitespace of the first line of an open value is value data too.
+        sanitized.append((raw.lstrip() if open_quote else stripped) + "\n")
     return sanitized
+
+
+def _unclosed_quote(assignment: str) -> str:
+    """The quote character of a value that opens on this line and does not close on it, else ``""``."""
+    _key, sep, value = assignment.partition("=")
+    value = value.lstrip()
+    if not sep or not value or value[0] not in "\"'":
+        return ""
+    quote = value[0]
+    return "" if _closes_quote(value[1:], quote) else quote
+
+
+def _closes_quote(text: str, quote: str) -> bool:
+    """True when ``text`` holds the closing ``quote``. In a double-quoted value a backslash escapes
+    the next character."""
+    escaped = False
+    for ch in text:
+        if escaped:
+            escaped = False
+        elif ch == "\\" and quote == '"':
+            escaped = True
+        elif ch == quote:
+            return True
+    return False
 
 
 def sanitize_env_file() -> int:

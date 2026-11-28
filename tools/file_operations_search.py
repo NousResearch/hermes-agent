@@ -110,12 +110,15 @@ _ADMISSION_INTERRUPTED_ERROR = (
     "search on the same root. Retry when ready.")
 
 _SEARCH_TIMEOUT_MARKER_RE = re.compile(r"\n?\[Command timed out after \d+s\]\s*$")
+_SEARCH_INTERRUPT_MARKER_RE = re.compile(r"\n?\[Command interrupted\]\s*$")
 
 
 def _search_stdout_and_limit(result: ExecuteResult) -> tuple[str, Optional[str]]:
-    """Return stdout cleaned for parsing and a limit reason for search timeouts."""
+    """Return cleaned stdout and a limit reason for timed-out or interrupted searches."""
     if result.exit_code == 124:
         return _SEARCH_TIMEOUT_MARKER_RE.sub("", result.stdout), "search_timeout"
+    if result.exit_code == 130:
+        return _SEARCH_INTERRUPT_MARKER_RE.sub("", result.stdout), "search_interrupted"
     return result.stdout, None
 
 

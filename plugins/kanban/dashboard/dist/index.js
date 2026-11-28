@@ -1340,6 +1340,7 @@
         }),
         h(BoardColumns, {
           board: filteredBoard,
+          boardSlug: board,
           boardMeta: boardList.find(function (item) { return item.slug === board; }) || null,
           laneByProfile,
           selectedIds,
@@ -2925,6 +2926,7 @@
           key: col.name,
           column: col,
           boardMeta: props.boardMeta,
+          boardSlug: props.boardSlug,
           laneByProfile: props.laneByProfile,
           selectedIds: props.selectedIds,
           failedIds: props.failedIds,
@@ -3045,11 +3047,12 @@
         colHelp || ""),
       showCreate ? h(InlineCreate, {
         columnName: props.column.name,
+        boardSlug: props.boardSlug,
         allTasks: props.allTasks,
         defaultWorkspaceKind: (props.boardMeta && props.boardMeta.default_workspace_kind) || "scratch",
         defaultWorkspacePath: (props.boardMeta && props.boardMeta.default_workdir) || "",
         onSubmit: function (body) {
-          props.onCreate(body).then(function () { setShowCreate(false); });
+          return props.onCreate(body);
         },
         onCancel: function () { setShowCreate(false); },
       }) : null,
@@ -3287,31 +3290,81 @@
   // resizable-window friendly and every field has a visible label.
   // -------------------------------------------------------------------------
 
+  // Tab-scoped drafts do not survive closing the tab or leak between boards.
+  // Keep an in-memory copy too: storage can be unavailable in private mode.
+  const createDrafts = new Map();
+
+  function createDraftKey(props) {
+    const profile = new URLSearchParams(window.location.search).get("profile")
+      || window.__HERMES_INITIAL_PROFILE__ || "default";
+    return "hermes.kanban.createDraft.v1:" + JSON.stringify([
+      window.location.pathname, profile, props.boardSlug || "default", props.columnName,
+    ]);
+  }
+
+  function readCreateDraft(key) {
+    if (createDrafts.has(key)) return createDrafts.get(key);
+    try {
+      const draft = JSON.parse(window.sessionStorage.getItem(key));
+      if (draft && typeof draft === "object" && !Array.isArray(draft)) return draft;
+    } catch (_e) { /* unavailable storage or an invalid saved draft */ }
+    return {};
+  }
+
+  function writeCreateDraft(key, draft) {
+    if (draft) createDrafts.set(key, draft);
+    else createDrafts.delete(key);
+    try {
+      if (draft) window.sessionStorage.setItem(key, JSON.stringify(draft));
+      else window.sessionStorage.removeItem(key);
+    } catch (_e) { /* the in-memory copy still protects modal dismissal */ }
+  }
+
   function InlineCreate(props) {
     const { t } = useI18n();
-    const [title, setTitle] = useState("");
-    const [assignee, setAssignee] = useState("");
-    const [priority, setPriority] = useState(0);
-    const [parent, setParent] = useState("");
-    const [skills, setSkills] = useState("");
+    const draftKey = createDraftKey(props);
+    const [saved] = useState(function () { return readCreateDraft(draftKey); });
+    const savedText = function (field, fallback) {
+      return typeof saved[field] === "string" ? saved[field] : fallback;
+    };
+    const gesture = useRef({ downOutside: false, upOutside: false });
+    const submitting = useRef(false);
+    const [busy, setBusy] = useState(false);
+    const [submitError, setSubmitError] = useState("");
+    const [title, setTitle] = useState(savedText("title", ""));
+    const [assignee, setAssignee] = useState(savedText("assignee", ""));
+    const [priority, setPriority] = useState(
+      typeof saved.priority === "number" || typeof saved.priority === "string" ? saved.priority : 0);
+    const [parent, setParent] = useState(savedText("parent", ""));
+    const [skills, setSkills] = useState(savedText("skills", ""));
     // A board with a configured workdir defaults to a persistent workspace:
     // worktree for git repositories, dir for ordinary directories. Boards
     // without one keep scratch for disposable research and ops tasks.
     const defaultWorkspaceKind = props.defaultWorkspaceKind || "scratch";
     const defaultWorkspacePath = props.defaultWorkspacePath || "";
-    const [workspaceKind, setWorkspaceKind] = useState(defaultWorkspaceKind);
-    const [workspacePath, setWorkspacePath] = useState(defaultWorkspacePath);
+    const [workspaceKind, setWorkspaceKind] = useState(
+      ["scratch", "dir", "worktree"].includes(saved.workspaceKind) ? saved.workspaceKind : defaultWorkspaceKind);
+    const [workspacePath, setWorkspacePath] = useState(savedText("workspacePath", defaultWorkspacePath));
     // Goal-mode: when on, the dispatched worker runs the Ralph-style /goal
     // loop — a judge re-checks the card after each turn and the worker keeps
     // going in the same session until done, or the turn budget runs out
     // (which blocks the card for review). goalMaxTurns is optional; blank
     // = backend default.
-    const [goalMode, setGoalMode] = useState(false);
-    const [goalMaxTurns, setGoalMaxTurns] = useState("");
+    const [goalMode, setGoalMode] = useState(saved.goalMode === true);
+    const [goalMaxTurns, setGoalMaxTurns] = useState(savedText("goalMaxTurns", ""));
 
-    const submit = function () {
+    useEffect(function () {
+      writeCreateDraft(draftKey, {
+        title, assignee, priority, parent, skills, workspaceKind, workspacePath,
+        goalMode, goalMaxTurns,
+      });
+    }, [draftKey, title, assignee, priority, parent, skills, workspaceKind,
+        workspacePath, goalMode, goalMaxTurns]);
+
+    const cancel = function () { if (!submitting.current) props.onCancel(); };
+    const submit = async function () {
       const trimmed = title.trim();
-      if (!trimmed) return;
+      if (!trimmed || submitting.current) return;
       const body = {
         title: trimmed,
         assignee: assignee.trim() || null,
@@ -3341,10 +3394,19 @@
         const gmt = parseInt(goalMaxTurns, 10);
         if (Number.isFinite(gmt) && gmt > 0) body.goal_max_turns = gmt;
       }
-      props.onSubmit(body);
-      setTitle(""); setAssignee(""); setPriority(0); setParent(""); setSkills("");
-      setWorkspaceKind(defaultWorkspaceKind); setWorkspacePath(defaultWorkspacePath);
-      setGoalMode(false); setGoalMaxTurns("");
+      submitting.current = true;
+      setBusy(true);
+      setSubmitError("");
+      try {
+        await props.onSubmit(body);
+        writeCreateDraft(draftKey, null);
+        props.onCancel();
+      } catch (e) {
+        setSubmitError(parseApiErrorMessage(e));
+      } finally {
+        submitting.current = false;
+        setBusy(false);
+      }
     };
 
     const showPathInput = workspaceKind !== "scratch";
@@ -3360,17 +3422,35 @@
 
     return h("div", {
       className: "hermes-kanban-dialog-backdrop",
-      onClick: function (e) { if (e.target === e.currentTarget) props.onCancel(); },
-      onKeyDown: function (e) { if (e.key === "Escape") props.onCancel(); },
+      onPointerDownCapture: function (e) {
+        gesture.current = { downOutside: e.button === 0 && e.target === e.currentTarget, upOutside: false };
+      },
+      onPointerUpCapture: function (e) {
+        gesture.current.upOutside = e.target === e.currentTarget;
+      },
+      onPointerCancel: function () { gesture.current.downOutside = false; },
+      // Do not let the board's grab-pan handler claim modal selections.
+      onMouseDown: function (e) { e.stopPropagation(); },
+      onClick: function (e) {
+        const dismiss = gesture.current.downOutside && gesture.current.upOutside
+          && e.target === e.currentTarget;
+        gesture.current.downOutside = false;
+        if (dismiss) cancel();
+      },
+      onKeyDown: function (e) { if (e.key === "Escape") cancel(); },
     },
       h("form", {
         className: "hermes-kanban-dialog hermes-kanban-create-dialog",
-        onSubmit: function (e) { e.preventDefault(); submit(); },
+        role: "dialog",
+        "aria-modal": true,
+        "aria-label": tx(t, "newTaskTitle", "New task — {column}",
+          { column: getColumnLabel(t, props.columnName) || props.columnName }),
+        onSubmit: function (e) { e.preventDefault(); return submit(); },
       },
         h("div", { className: "hermes-kanban-dialog-title" },
           tx(t, "newTaskTitle", "New task — {column}",
             { column: getColumnLabel(t, props.columnName) || props.columnName })),
-        h("div", { className: "flex flex-col gap-3" },
+        h("fieldset", { disabled: busy, className: "flex flex-col gap-3 min-w-0" },
           h("div", { className: "flex flex-col gap-1" },
             fieldLabel(tx(t, "taskTitleLabel", "Title")),
             h("textarea", {
@@ -3500,16 +3580,30 @@
             }) : null,
           ),
         ),
+        h("p", { className: "text-xs text-muted-foreground" },
+          tx(t, "draftKeptForTab", "Draft kept for this tab. Cancel keeps it; Discard removes it.")),
+        submitError ? h("div", { role: "alert", className: "text-xs text-destructive" }, submitError) : null,
         h("div", { className: "hermes-kanban-dialog-actions" },
           h(Button, {
             type: "button",
-            onClick: props.onCancel,
+            disabled: busy,
+            onClick: function () {
+              if (submitting.current) return;
+              writeCreateDraft(draftKey, null);
+              props.onCancel();
+            },
+            size: "sm",
+          }, tx(t, "discardDraft", "Discard")),
+          h(Button, {
+            type: "button",
+            onClick: cancel,
+            disabled: busy,
             size: "sm",
           }, tx(t, "cancel", "Cancel")),
           h(Button, {
             type: "submit",
             size: "sm",
-            disabled: !title.trim(),
+            disabled: busy || !title.trim(),
           }, tx(t, "create", "Create")),
         ),
       ),

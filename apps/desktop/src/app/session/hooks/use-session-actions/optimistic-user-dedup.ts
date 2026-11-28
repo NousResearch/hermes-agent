@@ -13,6 +13,29 @@ export function isLiveTailRow(message: ChatMessage): boolean {
   return message.pending === true || isLiveTailReplyId(message.id) || message.interim === true
 }
 
+/** A backfill graft may carry local rows verbatim. They are not acknowledgments:
+ * let pending-turn reconciliation decide whether to preserve or replace them. */
+export function withoutCarriedLocalTurnRows(next: ChatMessage[], previous: ChatMessage[]): ChatMessage[] {
+  const carried = new Set(
+    previous.filter(
+      (message, index) =>
+        (message.role === 'user' && message.id.startsWith('user-')) ||
+        (message.role === 'assistant' &&
+          (message.pending === true ||
+            message.id.startsWith('assistant-stream-') ||
+            (index === previous.length - 1 &&
+              message.rowId === undefined &&
+              !message.hidden &&
+              !message.interim &&
+              chatMessageText(message).trim() !== '')))
+    )
+  )
+
+  const authoritative = next.filter(message => !carried.has(message))
+
+  return authoritative.length === next.length ? next : authoritative
+}
+
 /**
  * The contiguous RUN of optimistic `user-*` rows that belong to the live turn.
  *

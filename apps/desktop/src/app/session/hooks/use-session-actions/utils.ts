@@ -78,7 +78,8 @@ import {
   liveOptimisticUserRun,
   optimisticUserAlreadyRepresented,
   optimisticUserMatchesCommitted,
-  refusedPromptCounterparts
+  refusedPromptCounterparts,
+  withoutCarriedLocalTurnRows
 } from './optimistic-user-dedup'
 import {
   acknowledgedTranscriptBoundary,
@@ -621,6 +622,8 @@ export function preserveLocalPendingTurnMessages(
   if (!previousMessages.length) {
     return nextMessages
   }
+
+  nextMessages = withoutCarriedLocalTurnRows(nextMessages, previousMessages)
 
   const acknowledged = acknowledgedTranscriptBoundary(nextMessages, previousMessages)
   const remainingNext = nextMessages.slice(acknowledged.storedIndex + 1)

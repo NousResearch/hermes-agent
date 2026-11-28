@@ -451,7 +451,7 @@ prompt cache. `agent.disabled_toolsets` remains authoritative. Legacy top-level
 `toolsets: [kanban]` is honoured as a fallback only when no platform selection was
 saved; `all` alone is not a Kanban opt-in.
 
-Dispatcher-owned workers receive their task lifecycle tools automatically.
+Dispatcher-owned workers receive their task lifecycle tools automatically when the profile omits `kanban` from its enabled toolsets. An explicit `agent.disabled_toolsets: [kanban]` also removes these lifecycle tools from the model-facing tool list. A profile using that exclusion needs another handoff path, such as a dedicated review-submission tool.
 `delegate_task` children do not gain permission to mutate the board.
 
 ## How workers interact with the board

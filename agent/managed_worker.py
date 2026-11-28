@@ -430,7 +430,10 @@ def execute(frame, channel):
     from tools.approval_context import set_current_session_key
     set_current_session_key(frame['route'])
     os.environ['HERMES_GATEWAY_SESSION'] = '1'
+    from agent.skill_utils import parse_config_string_list
     from gateway.session_worker_construct import checkpoint_agent_kwargs, construct_kwargs, routing_agent_kwargs
+    config = policy.config()
+    disabled_toolsets = parse_config_string_list((config.get('agent') or {}).get('disabled_toolsets')) or None
     construct = {'ephemeral_system_prompt': policy.skills_prompt, **construct_kwargs(frame)}
     controls = WorkerControls(channel, frame['route'])
     register_gateway_notify(frame['route'], controls.approval)
@@ -442,7 +445,7 @@ def execute(frame, channel):
                 api_key=frame['api_key'], session_db=store, session_id=scope['session_id'],
                 # delegate_task stays offered: each child is reserved by the owner under this
                 # execution (agent/runtime_session_child.py) and retires with it.
-                enabled_toolsets=list(policy.toolsets), max_iterations=policy.max_turns,
+                enabled_toolsets=list(policy.toolsets), disabled_toolsets=disabled_toolsets, max_iterations=policy.max_turns,
                 reasoning_config=policy.reasoning_config,
                 # ``tool`` / ``oneshot`` are storage labels for a CLI-surface agent (session_policy.SURFACES).
                 platform=policy.platform if policy.source in ('tool', 'oneshot') else policy.source,
@@ -450,8 +453,8 @@ def execute(frame, channel):
                 skip_context_files=policy.ignore_rules, load_soul_identity=not policy.ignore_rules,
                 skip_memory=policy.ignore_rules, skip_background_review=True, quiet_mode=True,
                 pass_session_id=policy.pass_session_id,
-                **checkpoint_agent_kwargs(policy.config()), **construct,
-                **routing_agent_kwargs(policy.config(), policy.model, policy.provider, policy.base_url),
+                **checkpoint_agent_kwargs(config), **construct,
+                **routing_agent_kwargs(config, policy.model, policy.provider, policy.base_url),
                 stream_delta_callback=lambda text: channel.send('delta', text=text) if text else None,
                 clarify_callback=controls.clarify,
                 tool_start_callback=lambda call_id, name, args: channel.send('tool.start', **tool_frame(call_id, name, args)),

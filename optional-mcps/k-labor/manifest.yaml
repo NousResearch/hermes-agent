@@ -1,0 +1,29 @@
+manifest_version: 1
+name: k-labor
+description: Korean labor calculations, employment contract checks, and HR form references provided by 일의 무늬.
+source: https://yellowenvelope.kr/ai-tools
+
+transport:
+  type: http
+  url: https://yellowenvelope.kr/api/mcp/mcp
+
+auth:
+  type: none
+
+tools:
+  default_enabled:
+    - calc_holiday_pay
+    - list_hr_forms
+
+suggest:
+  keywords:
+    - k-labor
+    - 일의 무늬
+  hosts:
+    - yellowenvelope.kr
+
+post_install: |
+  No account or token is required. Tool inputs are sent to the remote service;
+  use fictional inputs for testing and do not submit worker identifiers.
+  Check the calculation assumptions and current official sources before
+  relying on results for employment decisions or filings.

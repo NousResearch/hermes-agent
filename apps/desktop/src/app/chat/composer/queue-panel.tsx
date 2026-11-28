@@ -72,18 +72,15 @@ export function QueuePanel({
     return null
   }
 
+  // A server row can be steered only when its owner serves the verb for it.
+  const canSteer = (entry: QueuedPromptEntry) =>
+    busy &&
+    Boolean(onSteerNow) &&
+    (entry.serverStatus ? Boolean(entry.serverControls?.includes('steer')) : isSteerableEntry(entry))
+
   const renderRow = (entry: QueuedPromptEntry) => {
     const isEditing = editingId === entry.id
     const attachmentsCount = entry.attachments.length
-
-    // Steer only surfaces where it can actually deliver: a live turn to
-    // redirect and an entry the redirect can carry (text-only, no slash).
-    // A server row can be steered only when its owner serves the verb for it.
-    const canSteer =
-      busy &&
-      Boolean(onSteerNow) &&
-      (entry.serverStatus ? Boolean(entry.serverControls?.includes('steer')) : isSteerableEntry(entry))
-
     // The owner died mid-turn and recovered this row as `unknown`: the
     // FIFO behind it is paused until someone acknowledges the loss.
     const lost = entry.serverStatus === 'unknown'
@@ -132,7 +129,7 @@ export function QueuePanel({
               onEdit,
               onSendNow,
               onSteerNow,
-              canSteer
+              canSteer: canSteer(entry)
             })}
           </>
         }
@@ -167,6 +164,30 @@ export function QueuePanel({
   // must be on screen without expanding the section, and the header names the pause (#134889 NF2).
   const lostEntries = entries.filter(entry => entry.serverStatus === 'unknown')
   const paused = parked || lostEntries.length > 0
+  const steerPreview = paused ? undefined : entries.find(entry => entry.id !== editingId && canSteer(entry))
+
+  const collapsedPreview = steerPreview ? (
+    <StatusRow
+      trailing={
+        <Button
+          className="h-auto max-w-48 whitespace-normal text-right"
+          onClick={() => onSteerNow?.(steerPreview.id)}
+          size="micro"
+          type="button"
+          variant="text"
+        >
+          {c.queueSteer}
+        </Button>
+      }
+      trailingVisible
+    >
+      <p className="line-clamp-2 min-w-0 break-words text-[0.73rem] leading-4 text-foreground/92">
+        {entryPreview(steerPreview, c)}
+      </p>
+    </StatusRow>
+  ) : lostEntries.length > 0 ? (
+    lostEntries.map(renderRow)
+  ) : undefined
 
   return (
     <StatusSection
@@ -187,7 +208,7 @@ export function QueuePanel({
       }
       icon={<Codicon className="text-muted-foreground/70" name={paused ? 'debug-pause' : 'layers'} size="0.8rem" />}
       label={paused ? c.queuedPaused(entries.length) : c.queued(entries.length)}
-      preview={lostEntries.length > 0 ? lostEntries.map(renderRow) : undefined}
+      preview={collapsedPreview}
     >
       {entries.map(renderRow)}
     </StatusSection>

@@ -578,6 +578,11 @@ declare global {
         /** A grant was added or revoked in any window; returns an unsubscribe. */
         onChanged?: (callback: (change: { pluginId: string }) => void) => () => void
       }
+      /** `ctx.confirmAction`'s door: main shows the native confirmation and
+       *  signs a receipt only on Confirm. The first call returns the door and
+       *  every later call null; the plugin host claims it before any plugin
+       *  runs. Older shells lack it. */
+      claimPluginConfirmation?: () => HermesConfirmPluginAction | null
       // Git-driven worktree management for the "Start work" flow.
       git?: {
         worktreeList: (repoPath: string) => Promise<HermesGitWorktree[]>
@@ -673,7 +678,10 @@ declare global {
       }) => Promise<PreviewSigninsResult>
       // P2-7: the per-profile imported-sign-ins record + cookie jar live in Electron main (userData),
       // so the renderer's local profile rename/delete flow signals main to move/clear them.
-      migratePreviewSigninsForProfile?: (request: { oldProfile: string; newProfile: string }) => Promise<{ ok: boolean }>
+      migratePreviewSigninsForProfile?: (request: {
+        oldProfile: string
+        newProfile: string
+      }) => Promise<{ ok: boolean }>
       dropPreviewSigninsForProfile?: (request: { profile: string }) => Promise<{ ok: boolean }>
       setActiveConnectionRoute?: (
         route: {
@@ -833,6 +841,37 @@ export interface HermesPluginFolderGrant {
   path: string
   grantedAt: string
 }
+
+/** What a plugin asks the user to confirm. Ids are printable tokens; `nonce`
+ *  is the service's single-use challenge (16–128 of `[A-Za-z0-9_-]`). */
+export interface HermesActionProposal {
+  actionId: string
+  revision: string
+  profile: string
+  serviceInstance: string
+  nonce: string
+  title: string
+  detail?: string
+  /** Clamped to 5 s – 10 min; default 2 min. */
+  expiresInMs?: number
+}
+
+/** `payload` is the exact Ed25519-signed UTF-8 JSON receipt. */
+export interface HermesSignedActionReceipt {
+  payload: string
+  signature: string
+  keyId: string
+}
+
+export type HermesConfirmPluginAction = (
+  pluginId: string,
+  proposal: HermesActionProposal
+) => Promise<HermesActionConfirmation>
+
+export type HermesActionConfirmation =
+  | { status: 'approved'; receipt: HermesSignedActionReceipt }
+  | { status: 'cancelled' | 'expired' | 'busy' }
+  | { status: 'refused' | 'unavailable'; error: string }
 
 export type HermesPluginFilesResult<T extends object = Record<string, unknown>> =
   ({ ok: true } & T) | { ok: false; error: string; message: string }

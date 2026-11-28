@@ -1,7 +1,8 @@
 // IPC surface for local filesystem operations the renderer's project/file
 // surfaces use: directory reads, reveal/open in the OS file manager, plugin
-// roots + git installs, rename/write/trash, and the plugin SDK's folder-scoped
-// file door. Extracted from main.ts; path hardening, HERMES_HOME resolution,
+// roots + git installs, rename/write/trash, and the plugin SDK's main-owned
+// doors: the folder-scoped file door and native action confirmation.
+// Extracted from main.ts; path hardening, HERMES_HOME resolution,
 // and the git binary stay injected.
 import fs from 'node:fs'
 import path from 'node:path'
@@ -23,6 +24,7 @@ import {
 import { DESKTOP_PROFILE_NAME_RE } from './desktop-profile'
 import { readDirForIpc } from './fs-read-dir'
 import { gitRootForIpc } from './git-root'
+import { registerPluginConfirmationIpc } from './plugin-confirmation'
 import { registerPluginFilesIpc } from './plugin-files-ipc'
 
 export interface FsIpcDeps {
@@ -66,6 +68,14 @@ export function registerFsIpc({
       path.join(app.getPath('home'), '.hermes')
     ],
     trashItem: target => shell.trashItem(target)
+  })
+
+  // `ctx.confirmAction`: main's native dialog + a receipt signed on Confirm only.
+  registerPluginConfirmationIpc({
+    ipcMain,
+    dialog,
+    windowFor: event => BrowserWindow.fromWebContents(event.sender),
+    hermesHome
   })
 
   ipcMain.handle('hermes:fs:gitRoot', async (_event, startPath) => gitRootForIpc(startPath))

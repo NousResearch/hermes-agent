@@ -29,6 +29,8 @@ const uiPreferencesSnapshot = ipcRenderer.sendSync('hermes:ui-preferences:snapsh
 
 import { unwrapExpectedNotFound } from './api-expected-404'
 
+let pluginConfirmationClaimed = false
+
 contextBridge.exposeInMainWorld('hermesDesktop', {
   glassSupported: translucencySupport?.glass === true,
   translucencySupported: translucencySupport?.translucency === true,
@@ -531,6 +533,18 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
 
       return () => ipcRenderer.removeListener('hermes:pluginFiles:changed', listener)
     }
+  },
+  // `ctx.confirmAction`'s door, handed out ONCE. The app claims it while its
+  // plugin host loads, before any plugin is evaluated, so plugin code sharing
+  // this realm finds it taken and reaches main only through its own gated ctx.
+  claimPluginConfirmation: () => {
+    if (pluginConfirmationClaimed) {
+      return null
+    }
+
+    pluginConfirmationClaimed = true
+
+    return (pluginId, proposal) => ipcRenderer.invoke('hermes:pluginConfirm:request', pluginId, proposal)
   },
   git: {
     worktreeList: repoPath => ipcRenderer.invoke('hermes:git:worktreeList', repoPath),

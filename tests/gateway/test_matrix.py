@@ -1868,6 +1868,90 @@ class TestMatrixReadReceipts:
         self.adapter = _make_adapter()
 
 
+    def _configure_receipt_adapter(self, authorized):
+        self.adapter._is_dm_room = AsyncMock(return_value=True)
+        self.adapter._get_display_name = AsyncMock(return_value="Alice")
+        self.adapter._reactions_enabled = False
+        self.adapter._text_batch_delay_seconds = 0
+        self.adapter.send_read_receipt = AsyncMock(return_value=True)
+        self.adapter.handle_message = AsyncMock()
+        check = MagicMock(return_value=authorized)
+        self.adapter.gateway_runner = types.SimpleNamespace(
+            _is_user_authorized_for_source=check,
+            _profile_name_for_source=MagicMock(return_value="default"),
+        )
+        return check
+
+    async def _receive_dm(self):
+        await self.adapter._handle_text_message(
+            room_id="!dm:example.org",
+            sender="@alice:example.org",
+            event_id="$dm-message",
+            event_ts=0.0,
+            source_content={"msgtype": "m.text", "body": "hello"},
+            relates_to={},
+        )
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        self.adapter.handle_message.assert_awaited_once()
+        return self.adapter.handle_message.await_args.args[0]
+
+    @pytest.mark.asyncio
+    async def test_unauthorized_dm_never_sends_read_receipt_before_admission(self):
+        check = self._configure_receipt_adapter(False)
+        event = await self._receive_dm()
+
+        self.adapter.send_read_receipt.assert_not_awaited()
+        await self.adapter._run_processing_hook("on_processing_start", event)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        self.adapter.send_read_receipt.assert_not_awaited()
+        check.assert_called_once_with(event.source)
+
+    @pytest.mark.asyncio
+    async def test_authorized_dm_sends_read_receipt_once_at_processing_start(self):
+        check = self._configure_receipt_adapter(True)
+        event = await self._receive_dm()
+
+        self.adapter.send_read_receipt.assert_not_awaited()
+        await self.adapter._run_processing_hook("on_processing_start", event)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        self.adapter.send_read_receipt.assert_awaited_once_with("!dm:example.org", "$dm-message")
+        check.assert_called_once_with(event.source)
+
+    @pytest.mark.asyncio
+    async def test_reused_media_context_sends_one_read_receipt_at_processing_start(self):
+        check = self._configure_receipt_adapter(True)
+        args = dict(
+            room_id="!dm:example.org",
+            sender="@alice:example.org",
+            event_id="$media-message",
+            body="voice note",
+            source_content={"msgtype": "m.audio", "body": "voice note"},
+            relates_to={},
+        )
+        ctx = await self.adapter._resolve_message_context(**args)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        self.adapter.send_read_receipt.assert_not_awaited()
+        event = await self.adapter._build_inbound_event(
+            **args, ctx=ctx, message_type=MessageType.VOICE, media_msgtype="m.audio",
+        )
+        assert event is not None
+        assert event.message_type is MessageType.VOICE
+        self.adapter.send_read_receipt.assert_not_awaited()
+
+        await self.adapter._run_processing_hook("on_processing_start", event)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        self.adapter.send_read_receipt.assert_awaited_once_with("!dm:example.org", "$media-message")
+        check.assert_called_once_with(event.source)
+
     @pytest.mark.asyncio
     async def test_send_read_receipt(self):
         """send_read_receipt should call mautrix's real read-marker API."""

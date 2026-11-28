@@ -303,8 +303,140 @@ async def test_bare_mention_claims_parked_voice_only_in_same_room(
 
     dispatched = [(m.args[0].source.chat_id, m.args[0].message_id) for m in adapter.handle_message.await_args_list]
     assert dispatched == ([("!room1:example.org", "$voice")] if claims else [(mention_room, "$text")])
-    if claims:  # the bare mention is the newest event; the read marker must reach it
-        adapter._background_read_receipt.assert_any_call("!room1:example.org", "$text")
+    if claims:
+        # The mention is newer than the voice. Receipts wait for processing start so the
+        # fully-read marker ends on the mention, not on the voice queued first.
+        voice_msg = adapter.handle_message.await_args.args[0]
+        adapter._reactions_enabled = False
+        await adapter.on_processing_start(voice_msg)
+        assert [c.args[1] for c in adapter._background_read_receipt.call_args_list] == ["$voice", "$text"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("authorized, expected_event_ids", [
+    (False, []),
+    (True, ["$voice", "$text"]),
+])
+async def test_voice_claim_reads_receipts_only_after_admission(
+        monkeypatch, authorized, expected_event_ids):
+    import asyncio
+
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    adapter._download_and_cache_media = AsyncMock(return_value="/tmp/voice.ogg")
+    adapter._reactions_enabled = False
+    adapter.send_read_receipt = AsyncMock(return_value=True)
+    check = MagicMock(return_value=authorized)
+    adapter.gateway_runner = SimpleNamespace(
+        _is_user_authorized_for_source=check,
+        _profile_name_for_source=MagicMock(return_value="default"),
+    )
+
+    async def start_processing(message):
+        await adapter._run_processing_hook("on_processing_start", message)
+
+    adapter.handle_message = start_processing
+    voice = _make_event("voice message", event_id="$voice")
+    voice.content.update({
+        "msgtype": "m.audio",
+        "url": "mxc://example.org/v",
+        "info": {"mimetype": "audio/ogg"},
+        "org.matrix.msc3245.voice": {},
+        "m.mentions": {},
+    })
+    await adapter._on_room_message(voice)
+    await adapter._on_room_message(_make_event(
+        "@hermes:example.org", event_id="$text", mention_user_ids=["@hermes:example.org"]))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    assert [call.args[1] for call in adapter.send_read_receipt.await_args_list] == expected_event_ids
+    check.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_voice_claim_receipt_follows_processing_start(monkeypatch):
+    """The real dispatcher returns from handle_message before processing start. The mention
+    receipt has to wait for that hook and go out after the voice, or the fully-read marker
+    lands on the older voice event."""
+    import asyncio
+
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    adapter._download_and_cache_media = AsyncMock(return_value="/tmp/voice.ogg")
+    adapter._reactions_enabled = False
+    adapter.send_read_receipt = AsyncMock(return_value=True)
+    adapter.gateway_runner = SimpleNamespace(
+        _is_user_authorized_for_source=MagicMock(return_value=True),
+        _profile_name_for_source=MagicMock(return_value="default"),
+    )
+    dispatched = []
+
+    async def handle_message(message):
+        dispatched.append(message)
+
+    adapter.handle_message = handle_message
+    voice = _make_event("voice message", event_id="$voice")
+    voice.content.update({
+        "msgtype": "m.audio",
+        "url": "mxc://example.org/v",
+        "info": {"mimetype": "audio/ogg"},
+        "org.matrix.msc3245.voice": {},
+        "m.mentions": {},
+    })
+    await adapter._on_room_message(voice)
+    await adapter._on_room_message(_make_event(
+        "@hermes:example.org", event_id="$text", mention_user_ids=["@hermes:example.org"]))
+    await asyncio.sleep(0)
+
+    assert adapter.send_read_receipt.await_count == 0
+    assert [message.message_id for message in dispatched] == ["$voice"]
+    await adapter.on_processing_start(dispatched[0])
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert [call.args[1] for call in adapter.send_read_receipt.await_args_list] == ["$voice", "$text"]
+
+
+@pytest.mark.asyncio
+async def test_text_batch_receipts_cover_every_merged_event(monkeypatch):
+    """Batching keeps the first event as message_id. The read marker still has to reach the
+    later chunks that were merged into that turn."""
+    import asyncio
+
+    monkeypatch.setenv("MATRIX_REQUIRE_MENTION", "false")
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    adapter._text_batch_delay_seconds = 0.05
+    adapter._reactions_enabled = False
+    adapter.send_read_receipt = AsyncMock(return_value=True)
+    adapter.gateway_runner = SimpleNamespace(
+        _is_user_authorized_for_source=MagicMock(return_value=True),
+        _profile_name_for_source=MagicMock(return_value="default"),
+    )
+    dispatched = []
+
+    async def handle_message(message):
+        dispatched.append(message)
+
+    adapter.handle_message = handle_message
+    await adapter._on_room_message(_make_event("first chunk", event_id="$first"))
+    await adapter._on_room_message(_make_event("second chunk", event_id="$second"))
+    await asyncio.sleep(0.2)
+
+    assert [message.message_id for message in dispatched] == ["$first"]
+    assert "second chunk" in dispatched[0].text
+    await adapter.on_processing_start(dispatched[0])
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert [call.args[1] for call in adapter.send_read_receipt.await_args_list] == ["$first", "$second"]
 
 
 # ---------------------------------------------------------------------------

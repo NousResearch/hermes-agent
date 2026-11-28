@@ -1990,7 +1990,6 @@ class MatrixAdapter(BasePlatformAdapter):
             is_bot=is_bot)
         if thread_id:
             await self._threads.mark_async(thread_id)  # covers real roots and synthetic ones alike
-        self._background_read_receipt(room_id, event_id)
         return body, is_dm, chat_type, thread_id, display_name, source
 
     async def _extract_reply_context(
@@ -2015,7 +2014,7 @@ class MatrixAdapter(BasePlatformAdapter):
         """Gate + normalise an inbound event into a MessageEvent (None => drop). Text body may
         still change (reply-fallback strip); ``extra`` carries media fields / message_type.
         ``ctx`` is a pre-resolved ``_resolve_message_context`` result (media path gates before
-        downloading); resolving it twice would double the read receipt / thread mark."""
+        downloading); resolving it twice would repeat the thread mark."""
         if ctx is None:
             ctx = await self._resolve_message_context(room_id, sender, event_id, body, source_content, relates_to)
         if ctx is None:
@@ -2037,6 +2036,26 @@ class MatrixAdapter(BasePlatformAdapter):
             # Top-level sender fields mirror source.* — downstream prompt code reads them.
             user_id=sender, user_name=display_name, **extra)
 
+    def _enqueue_text_event(self, event: MessageEvent) -> None:
+        """Keep every raw event id the batch merged. ``message_id`` stays the first chunk, and
+        processing start receipts only that id unless the ids are remembered here."""
+        key = self._text_batch_key(event)
+        before = self._pending_text_batches.get(key)
+        before_text = before.text if before is not None else None
+        incoming_id = event.message_id
+        super()._enqueue_text_event(event)
+        holder = self._pending_text_batches.get(key)
+        if holder is None:
+            return
+        if before is not None and holder is before and event is not before and holder.text == before_text:
+            return
+        ids = getattr(holder, "_matrix_receipt_event_ids", None)
+        if ids is None:
+            ids = []
+            holder._matrix_receipt_event_ids = ids
+        if incoming_id and incoming_id not in ids:
+            ids.append(incoming_id)
+
     async def _handle_text_message(
         self, room_id: str, sender: str, event_id: str, event_ts: float, source_content: dict,
         relates_to: dict) -> None:
@@ -2054,8 +2073,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 voice_id, voice_content, voice_relates = parked
                 await self._handle_media_message(
                     room_id, sender, voice_id, event_ts, voice_content, voice_relates, "m.audio",
-                    mention_claimed=True)
-                self._background_read_receipt(room_id, event_id)  # the claim receipted the voice
+                    mention_claimed=True, followup_receipt_id=event_id)
                 return
         msg_event = await self._build_inbound_event(
             room_id, sender, event_id, _normalize_matrix_bang_command(body), source_content, relates_to)
@@ -2068,7 +2086,8 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def _handle_media_message(
         self, room_id: str, sender: str, event_id: str, event_ts: float, source_content: dict,
-        relates_to: dict, msgtype: str, mention_claimed: bool = False) -> None:
+        relates_to: dict, msgtype: str, mention_claimed: bool = False,
+        followup_receipt_id: Optional[str] = None) -> Optional[MessageEvent]:
         body = source_content.get("body", "") or ""
         url = source_content.get("url", "")
         if url and not str(url).startswith("mxc://"):
@@ -2128,7 +2147,10 @@ class MatrixAdapter(BasePlatformAdapter):
             room_id, sender, event_id, body, source_content, relates_to, ctx=ctx, message_type=msg_type,
             media_urls=media_urls, media_types=[media_type] if media_urls else None, media_msgtype=msgtype)
         if msg_event is not None:
+            if followup_receipt_id:
+                msg_event._matrix_followup_receipt_id = followup_receipt_id
             await self.handle_message(msg_event)
+        return msg_event
 
     @staticmethod
     def _classify_inbound_media(
@@ -2333,7 +2355,28 @@ class MatrixAdapter(BasePlatformAdapter):
         self._reaction_redaction_tasks.add(task)
         task.add_done_callback(self._reaction_redaction_tasks.discard)
 
+    async def _ack_admitted_events(self, event: MessageEvent) -> None:
+        """Receipt each raw event this turn covers, oldest first.
+
+        ``send_read_receipt`` also moves the fully-read marker, so the last id has to be the
+        newest. A claimed voice covers the bare mention that admitted it. A merged text batch
+        covers every chunk, not only the first, whose id stays the turn's ``message_id``.
+        """
+        ids: list[str] = []
+        for event_id in getattr(event, "_matrix_receipt_event_ids", None) or ():
+            if event_id and event_id not in ids:
+                ids.append(event_id)
+        if not ids and event.message_id:
+            ids.append(event.message_id)
+        followup = getattr(event, "_matrix_followup_receipt_id", None)
+        if followup and followup not in ids:
+            ids.append(followup)
+        for event_id in ids:
+            await self._run_processing_hook(
+                "_schedule_admitted_read_receipt", event, receipt_event_id=event_id)
+
     async def on_processing_start(self, event: MessageEvent) -> None:
+        await self._ack_admitted_events(event)
         msg_id, room_id = event.message_id, event.source.chat_id
         if self._reactions_enabled and msg_id and room_id:
             reaction_event_id = await self._send_reaction(room_id, msg_id, "\U0001f440")
@@ -2529,6 +2572,13 @@ class MatrixAdapter(BasePlatformAdapter):
                 logger.debug("Matrix: redacted model picker reaction %s (%s)", emoji, evt_id)
             except Exception as exc:
                 logger.debug("Matrix: failed to redact model picker reaction %s: %s", emoji, exc)
+
+    async def _schedule_admitted_read_receipt(
+            self, event: MessageEvent, *, receipt_event_id: Optional[str] = None) -> None:
+        """Queue a receipt behind the activity hook's cached sender-authorization verdict."""
+        room_id, event_id = event.source.chat_id, receipt_event_id or event.message_id
+        if room_id and event_id:
+            self._background_read_receipt(room_id, event_id)
 
     def _background_read_receipt(self, room_id: str, event_id: str) -> None:
 

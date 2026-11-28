@@ -129,6 +129,8 @@ export interface Translations {
     diskElevatedBanner?: string;
     /** Multi-profile host whose gateway boots standalone on a guard — optional, English fallback. */
     multiplexStandaloneBanner?: string;
+    /** config.yaml fails to parse; {error} is the backend summary — optional, English fallback. */
+    configParseErrorBanner?: string;
     dismiss?: string;
     /** First-run shared-metrics offer — optional, English fallback. */
     sharedMetricsTitle?: string;

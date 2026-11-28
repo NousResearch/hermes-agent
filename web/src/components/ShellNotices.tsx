@@ -1,4 +1,5 @@
 import type { StatusResponse } from "@/lib/api";
+import { ConfigParseErrorBanner } from "@/components/ConfigParseErrorBanner";
 import { DashboardMovingModal } from "@/components/DashboardMovingModal";
 import { MemoryPressureBanner } from "@/components/MemoryPressureBanner";
 import { MultiplexStandaloneBanner } from "@/components/MultiplexStandaloneBanner";
@@ -12,6 +13,7 @@ export function ShellNotices({ status }: { status: StatusResponse | null }) {
       <ProfileScopeBanner />
       <MemoryPressureBanner status={status} />
       <MultiplexStandaloneBanner status={status} />
+      <ConfigParseErrorBanner status={status} />
       <SharedMetricsConsentBanner />
       <DashboardMovingModal status={status} />
     </>

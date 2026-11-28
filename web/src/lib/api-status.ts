@@ -44,6 +44,9 @@ export interface StatusResponse {
    * ``hermes gateway migrate --multiplex`` runs. null/absent when it multiplexes or only one
    * profile exists. */
   multiplex_standalone_reason?: string | null;
+  /** Set while config.yaml fails to parse and Hermes runs on fallback settings, e.g. "has a
+   * formatting error at line 4"; never a path or file content. null/absent when it parses. */
+  config_parse_error?: string | null;
   /** Every profile installed on this host (multiplex or not). */
   profiles?: string[];
   gateway_health_url: string | null;

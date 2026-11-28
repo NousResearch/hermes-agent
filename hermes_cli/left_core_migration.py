@@ -801,21 +801,22 @@ def _derive_off_platforms(rows: tuple[LeftCoreFeature, ...]) -> tuple[LeftCoreFe
 
 LEFT_CORE = _derive_off_platforms(LEFT_CORE)
 
-def _install_sentence(feature: LeftCoreFeature) -> str:
+def _install_sentence(feature: LeftCoreFeature, home: Optional[Path] = None) -> str:
     from hermes_constants import get_hermes_home
     return (f"{feature.label} moved out of core into the '{feature.plugin}' plugin: install it with "
-            f"`{_install_command(feature.plugin, Path(get_hermes_home()))}`")
+            f"`{_install_command(feature.plugin, Path(home or get_hermes_home()))}`")
 
 
-def platform_install_hint(platform: str) -> str:
+def platform_install_hint(platform: str, home: Optional[Path] = None) -> str:
     """For an unknown platform name that left core: the sentence that names its install command for
-    the active home (its enable command when installed but off), else ``""``. Appended to "unknown
-    platform" errors (``send_message``, cron delivery)."""
+    *home* (default: the active home; its enable command when installed but off), else ``""``. Appended to
+    "unknown platform" errors (``send_message``, cron delivery). Reads *home*'s files only, never its secrets,
+    so a caller on the event loop passes the routed profile's home instead of entering its runtime scope."""
     from hermes_constants import get_hermes_home
     feature = next((f for f in LEFT_CORE if f.platform and f.platform == platform), None)
-    home = Path(get_hermes_home())
+    home = Path(home or get_hermes_home())
     if feature is None or not plugin_present(feature.plugin, home):
-        return f". {_install_sentence(feature)}" if feature else ""
+        return f". {_install_sentence(feature, home)}" if feature else ""
     install = _install_command(feature.plugin, home)
     enabled, disabled = _plugin_lists(home, feature.plugin)
     if enabled and not disabled:

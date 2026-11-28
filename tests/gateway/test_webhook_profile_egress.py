@@ -109,6 +109,24 @@ async def test_a_moved_platform_hint_names_the_routed_profiles_command(profile_h
 
 
 @pytest.mark.asyncio
+async def test_a_moved_platform_hint_never_waits_on_the_routed_profiles_secrets(profile_homes, tmp_path, monkeypatch):
+    """The hint is worded from the routed profile's files alone: a ``/p/sec/`` route whose secret source is down
+    (the runtime scope cannot be entered) still gets its unknown-platform error with sec's install command, and the
+    gateway event loop never blocks on resolving sec's secrets for it."""
+    import gateway.run
+
+    def secret_source_down(*args, **kwargs):
+        raise RuntimeError("secret source unreachable")
+    monkeypatch.setattr(gateway.run, "_profile_runtime_scope", secret_source_down)
+    adapter = _webhook(_Runner({}, {"sec": {}}, profile_homes))
+
+    res = await adapter._deliver_cross_platform(
+        "dingtalk", "hi", {"deliver": "dingtalk", "deliver_extra": {"chat_id": "cid"}, "profile": "sec"})
+
+    assert not res.success and "hermes -p sec plugins install dingtalk" in res.error, res.error
+
+
+@pytest.mark.asyncio
 async def test_github_comment_authenticates_with_routed_profile_token(profile_homes, monkeypatch):
     seen = {}
 

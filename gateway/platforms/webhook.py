@@ -1048,8 +1048,10 @@ class WebhookAdapter(BasePlatformAdapter):
             target_platform = Platform(platform_name)
         except ValueError:
             from hermes_cli.left_core_migration import platform_install_hint
-            with self._profile_scope(profile):  # the routed profile's plugin state and commands
-                hint = platform_install_hint(platform_name)
+            from hermes_cli.profiles import get_profile_dir
+            # The routed profile's plugin state and commands, read from its home: entering its runtime scope
+            # here would resolve its secrets on the event loop just to word an error.
+            hint = platform_install_hint(platform_name, get_profile_dir(profile) if profile else None)
             return SendResult(success=False, error=f"Unknown platform: {platform_name}{hint}")
         if not (adapter := self._find_adapter(target_platform, profile)):
             return SendResult(success=False, error=f"Platform {platform_name} not connected")

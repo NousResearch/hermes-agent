@@ -79,3 +79,34 @@ def test_set_tokens_stamps_bound_issuer_and_get_tokens_keeps_it_out_of_the_sdk_m
     tokens = asyncio.run(fresh.get_tokens())
     assert fresh.loaded_issuer == "https://as.example.com"
     assert not hasattr(tokens, "hermes_issuer")  # never leaks into the wire model
+
+
+def test_configured_client_secret_is_never_presented_to_another_authorization_server(tmp_path):
+    """A configured ``oauth.client_id``/``client_secret`` signs in once with AS1; when the MCP server
+    later names AS2, the SDK's own credential check must refuse the stored client there (so it
+    registers anew) and a client registered at AS2 must survive the next connect untouched."""
+    from mcp.client.auth.utils import credentials_match_issuer
+    from mcp.shared.auth import OAuthClientInformationFull
+    from tools.mcp_oauth import _build_client_metadata, _maybe_preregister_client
+    from tools.mcp_oauth_provider import bind_configured_client
+
+    as1, as2 = "https://as1.example.com", "https://as2.example.com"
+    cfg = {"client_id": "cfg", "client_secret": "s3cret", "_resolved_port": 1}
+    storage = HermesTokenStorage("srv", hermes_home=tmp_path)
+    _maybe_preregister_client(storage, cfg, _build_client_metadata(cfg))
+    info = asyncio.run(storage.get_client_info())
+    assert credentials_match_issuer(info, as1, None)  # unbound before the first sign-in
+    bind_configured_client(SimpleNamespace(storage=storage, client_info=info, auth_server_url=as1), "cfg")
+
+    _maybe_preregister_client(storage, cfg, _build_client_metadata(cfg))  # next process start
+    info = asyncio.run(storage.get_client_info())
+    assert info.client_secret == "s3cret" and credentials_match_issuer(info, as1, None)
+    assert not credentials_match_issuer(info, as2, None)
+
+    asyncio.run(storage.set_client_info(OAuthClientInformationFull(client_id="dcr-as2", issuer=as2)))
+    _maybe_preregister_client(storage, cfg, _build_client_metadata(cfg))
+    kept = asyncio.run(storage.get_client_info())
+    assert kept.client_id == "dcr-as2" and kept.client_secret is None
+    storage.remove()  # `hermes mcp login` wipes state; the binding is what survives it
+    _maybe_preregister_client(storage, cfg, _build_client_metadata(cfg))
+    assert not credentials_match_issuer(asyncio.run(storage.get_client_info()), as2, None)

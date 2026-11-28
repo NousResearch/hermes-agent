@@ -111,14 +111,17 @@ async def _register(client, provider, cfg):
     context = provider.context
     metadata = context.client_metadata.model_dump(mode="json", exclude_none=True)
     metadata.update(grant_types=[DEVICE_GRANT, "refresh_token"], response_types=[])
-    if cfg.get("client_id"):
+    # A configured client bound to another authorization server keeps its secret: register here instead.
+    bound = context.storage.configured_client_issuer(cfg["client_id"]) if cfg.get("client_id") else None
+    if cfg.get("client_id") and bound in (None, str(context.auth_server_url or context.oauth_metadata.issuer)):
         data = {**metadata, "client_id": cfg["client_id"]}
         if cfg.get("client_secret"):
             data["client_secret"] = cfg["client_secret"]
     else:
         endpoint = context.oauth_metadata.registration_endpoint
         if not endpoint:
-            raise RuntimeError("Server has no registration endpoint; configure oauth.client_id (and client_secret if required)")
+            raise RuntimeError("Server has no registration endpoint; configure oauth.client_id (and client_secret if required)"
+                               + (f" -- the configured client is bound to {bound}" if bound else ""))
         response = await client.post(str(endpoint), json=metadata)
         data = _payload(response, "Client registration")
     # SEP-2352: bind the credentials to the identifier the SDK's runtime flow compares them against — the
@@ -205,7 +208,7 @@ async def login_device(name, server_url, oauth_config):
     """Authorize then commit state in the active profile; failed grants preserve old state."""
     from tools.mcp_oauth import _build_client_metadata
     from tools.mcp_oauth_manager import HermesMCPOAuthProvider, get_manager
-    from tools.mcp_oauth_provider import prepare_oauth_config
+    from tools.mcp_oauth_provider import bind_configured_client, prepare_oauth_config
     from tools.mcp_tool import sdk_httpx
 
     cfg, storage = prepare_oauth_config(name, server_url, oauth_config)
@@ -230,6 +233,7 @@ async def login_device(name, server_url, oauth_config):
         await storage.set_client_info(provider.context.client_info)
         storage.save_oauth_metadata(provider.context.oauth_metadata)
         await storage.set_tokens(tokens)
+        bind_configured_client(provider.context, cfg.get("client_id"))
     except OSError:
         storage.restore(previous)
         raise

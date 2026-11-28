@@ -86,9 +86,12 @@ class HermesProviderMixin:
 
     _hermes_logger: logging.Logger = logger
 
-    def __init__(self, *args: Any, token_user_agent: str | None = None, oauth_flow: str = "browser", **kwargs: Any):
+    def __init__(self, *args: Any, token_user_agent: str | None = None, oauth_flow: str = "browser",
+                 configured_client_id: str | None = None, **kwargs: Any):
         super().__init__(*args, **kwargs)
         self._hermes_oauth_flow = oauth_flow
+        # oauth.client_id from config: its first successful sign-in binds it to that authorization server.
+        self._hermes_configured_client_id = configured_client_id
         # oauth.user_agent — stamped onto token-endpoint requests only; some authorization servers/WAFs
         # reject httpx's default (#75576).
         self._hermes_token_user_agent = token_user_agent
@@ -422,6 +425,7 @@ class HermesProviderMixin:
         self.context.update_token_expiry(token_response)
         bind_issuer_from_context(self.context)
         await self.context.storage.set_tokens(token_response)
+        bind_configured_client(self.context, getattr(self, "_hermes_configured_client_id", None))
 
     async def _handle_token_response(self, response):
         """Accept any 2xx token response; a 2xx body (it carries the tokens) never reaches an error.
@@ -582,6 +586,19 @@ def bind_issuer_from_context(context: Any) -> None:
         storage.bind_issuer(issuer)
 
 
+def bind_configured_client(context: Any, client_id: str | None) -> None:
+    """After a sign-in with the configured ``oauth.client_id``, record which authorization server it
+    went to, so its secret is never presented to another one (``_maybe_preregister_client``). Bound to
+    the resource-advertised server, the exact string the SDK compares stored credentials against
+    (SEP-2352); a server that advertises none stays unbound rather than risk a spurious mismatch."""
+    from tools.mcp_oauth import HermesTokenStorage
+    storage, info = getattr(context, "storage", None), getattr(context, "client_info", None)
+    issuer = str(context.auth_server_url) if getattr(context, "auth_server_url", None) else None
+    if (client_id and issuer and isinstance(storage, HermesTokenStorage)
+            and getattr(info, "client_id", None) == client_id):
+        storage.bind_configured_client(client_id, issuer)
+
+
 def enforce_refresh_token_issuer(context: Any) -> None:
     """Refuse to reuse a refresh token minted by a different issuer.
 
@@ -639,4 +656,5 @@ def build_provider_kwargs(cfg: dict, storage: HermesTokenStorage, *, ssh_proxy_h
         "callback_handler": mo._make_callback_waiter(port, cfg.get("_cimd_url"), timeout=float(cfg.get("timeout", 300))),
         "token_user_agent": mo.token_request_user_agent(cfg),
         "oauth_flow": cfg.get("flow", "browser"),
+        "configured_client_id": cfg.get("client_id") or None,
         **mo.cimd_provider_kwargs(cfg)}

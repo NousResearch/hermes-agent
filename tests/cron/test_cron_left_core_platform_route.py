@@ -318,7 +318,8 @@ def test_satellite_home_channel_rides_the_primarys_bot_without_the_plugin(tmp_pa
 _HOME_PLATFORMS = [f for f in LEFT_CORE if f.platform and f"{f.platform.upper()}_HOME_CHANNEL" in f.private_env]
 
 
-@pytest.mark.parametrize("saved_in", ["env", "config.yaml", "gateway.platforms", "gateway.<platform> over platforms"])
+@pytest.mark.parametrize("saved_in", ["env", "config.yaml", "mixed-case platforms key", "gateway.platforms",
+                                      "gateway.<platform> over platforms"])
 @pytest.mark.parametrize("feature", _HOME_PLATFORMS, ids=[f.platform for f in _HOME_PLATFORMS])
 def test_worker_without_any_registration_reads_the_satellite_home(tmp_path, monkeypatch, feature, saved_in):
     """A managed cron worker holds no registration for the platform (not this profile's, not the primary's): a bare
@@ -347,6 +348,8 @@ def test_worker_without_any_registration_reads_the_satellite_home(tmp_path, monk
                     saved = {"home_channel": {"chat_id": chat}}
                     (home / "config.yaml").write_text(yaml.safe_dump({
                         "config.yaml": {"platforms": {feature.platform: saved}},
+                        # the gateway reads a platform key case-blind (``Platform._missing_``)
+                        "mixed-case platforms key": {"platforms": {feature.platform.title(): saved}},
                         "gateway.platforms": {"gateway": {"platforms": {feature.platform: saved}}},
                         # an older home under platforms: the gateway reads gateway.<platform>'s, and so does cron
                         "gateway.<platform> over platforms": {

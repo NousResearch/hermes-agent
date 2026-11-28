@@ -116,3 +116,10 @@ All default to unsupported/no-op, so existing adapters are untouched. When a
 turn's streaming audio completes, the whole-file auto-TTS reply for that turn
 is suppressed (no double playback); when streaming fails before any audio was
 audible, the gateway falls back to the legacy whole-file voice reply.
+
+Synthesis usually runs ahead of the agent, but a slower engine (a local model
+on a CPU) can still be working through the queued sentences when the reply
+text ends. The gateway keeps waiting as long as new audio keeps arriving, and
+cuts the stream off only after `tts.streaming.finalize_timeout_seconds`
+(default 10) pass without any. Raise it for an engine that takes longer than
+that to produce a single sentence.

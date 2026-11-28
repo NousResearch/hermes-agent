@@ -134,6 +134,8 @@ def _make_consumer(adapter, chat_id, loop, streamer):
     consumer._task = None
     consumer._lock = threading.Lock()
     consumer._strip_markdown = None
+    consumer._finalize_timeout = 10.0
+    consumer._last_audio_at = float("-inf")
     return consumer
 
 
@@ -658,6 +660,95 @@ class TestPostAudioTimeoutAbort:
             assert consumer._aborted is True
 
         _run_test(run)
+
+
+# ---------------------------------------------------------------------------
+# Finalisation waits while audio keeps coming (tts.streaming.finalize_timeout_seconds)
+# ---------------------------------------------------------------------------
+
+
+class _PacedStreamer(FakeStreamer):
+    """One chunk per clause after ``delay`` seconds, like a local engine on a CPU; with ``hang``
+    set, every clause after the first produces no audio until the test releases it."""
+
+    def __init__(self, delay, hang=None):
+        super().__init__(chunks_per_clause=1)
+        self.delay, self.hang = delay, hang
+
+    def stream(self, text):
+        self._clause_count += 1
+        if self.hang is not None and self._clause_count > 1:
+            self.hang.wait(timeout=30.0)
+            return
+        time.sleep(self.delay)  # health: allow HX013 -- the synthesis time is the behaviour under test
+        yield f"chunk-{self._clause_count}".encode()
+
+
+def _finalize_turn(monkeypatch, loop, streamer, tts_config):
+    """Six queued sentences, finalised through the gateway's real turn-end path."""
+    from gateway.run_turn import GatewayTurnMixin
+
+    monkeypatch.setattr("tools.tts_streaming.resolve_streaming_provider", lambda cfg: streamer)
+    adapter = FakeVoiceAdapter()
+    consumer = StreamingTTSConsumer(adapter, "chat1", tts_config, loop)
+    consumer.start()
+    for i in range(6):
+        consumer.on_delta(f"This is spoken sentence number {i}. ")
+    ctx = SimpleNamespace(streaming_tts_consumer_holder=[consumer], session_key="s", run_generation=1)
+    return adapter, consumer, GatewayTurnMixin._run_agent_finalize_streaming_tts(SimpleNamespace(), ctx, adapter)
+
+
+class TestFinalizeWaitsWhileAudioFlows:
+    """Turn end waits for streaming TTS while audio keeps arriving, and cuts it off only after
+    ``tts.streaming.finalize_timeout_seconds`` with none (#138022)."""
+
+    def test_slow_engine_that_keeps_producing_audio_finishes_the_reply(self, monkeypatch):
+        # 6 sentences x 0.5 s outlast the 2 s window, but audio never pauses for 2 s.
+        async def run(loop):
+            adapter, consumer, finalize = _finalize_turn(
+                monkeypatch, loop, _PacedStreamer(0.5), {"streaming": {"finalize_timeout_seconds": 2}})
+            await finalize
+            assert consumer.completed is True
+            assert adapter.abort_count == 0
+            assert len(adapter.written_chunks) == 6
+
+        _run_test(run, timeout=20.0)
+
+    def test_stream_without_new_audio_is_cut_off_after_the_configured_window(self, monkeypatch):
+        from hermes_constants import get_hermes_home
+        from tools.tts_tool import _load_tts_config
+
+        (get_hermes_home() / "config.yaml").write_text("tts:\n  streaming:\n    finalize_timeout_seconds: 2\n")
+        hang = threading.Event()
+
+        async def run(loop):
+            adapter, consumer, finalize = _finalize_turn(
+                monkeypatch, loop, _PacedStreamer(0.0, hang=hang), _load_tts_config())
+            started = loop.time()
+            await finalize
+            # The 2 s window plus the gateway's 2 s wait for the aborted task; the old fixed 10 s
+            # window alone would exceed this.
+            assert loop.time() - started < 8.0
+            assert consumer.completed is False
+            assert adapter.abort_count == 1
+            assert adapter.written_chunks == [b"chunk-1"]
+
+        try:
+            _run_test(run, timeout=20.0)
+        finally:
+            hang.set()
+
+    def test_unusable_window_warns_and_keeps_the_default(self, monkeypatch, caplog):
+        async def run(loop):
+            _, consumer, finalize = _finalize_turn(
+                monkeypatch, loop, _PacedStreamer(0.0), {"streaming": {"finalize_timeout_seconds": "soon"}})
+            await finalize
+            assert consumer.completed is True
+
+        with caplog.at_level("WARNING", logger="gateway.streaming_tts_consumer"):
+            _run_test(run)
+        assert "tts.streaming.finalize_timeout_seconds" in caplog.text
+        assert "'soon'" in caplog.text
 
 
 # ---------------------------------------------------------------------------

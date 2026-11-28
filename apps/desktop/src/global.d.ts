@@ -124,6 +124,8 @@ declare global {
       // reply). Resolves true for the first window to claim a key, false for
       // peers — so N open windows don't all fire the same cue.
       claimAmbientCue: (key: string) => Promise<boolean>
+      // OS Do Not Disturb / Focus; absent off Electron and on older shells.
+      doNotDisturbActive?: () => Promise<boolean>
       // Renderer-drawn min/max/close for WSLg (`custom` true there only), sent
       // over hermes:window-control; Electron/OS chrome owns them elsewhere.
       windowControls: {

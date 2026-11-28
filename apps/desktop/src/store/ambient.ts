@@ -3,6 +3,16 @@
 // process is the race-free owner (see electron/event-dedupe.ts). Off Electron —
 // or when the bridge/claim fails — every window emits, preserving the
 // single-window behavior rather than going silent.
+// Sounds the app synthesizes bypass the OS notification centre, so Do Not
+// Disturb / Focus cannot mute them on its own. Fails open (plays) off Electron.
+export async function doNotDisturbActive(): Promise<boolean> {
+  try {
+    return (await window.hermesDesktop?.doNotDisturbActive?.()) === true
+  } catch {
+    return false
+  }
+}
+
 export async function ownsAmbientCue(key: string): Promise<boolean> {
   const claim = window.hermesDesktop?.claimAmbientCue
 

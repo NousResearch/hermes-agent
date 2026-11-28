@@ -3,7 +3,7 @@
 // ("None") to turn the cue off. Default is variant 1.
 
 import { getAudioContext } from '@/lib/audio-context'
-import { ownsAmbientCue } from '@/store/ambient'
+import { doNotDisturbActive, ownsAmbientCue } from '@/store/ambient'
 import {
   $completionSoundVariantId,
   NO_COMPLETION_SOUND_VARIANT_ID,
@@ -456,14 +456,22 @@ export function playCompletionSound(dedupeKey?: string) {
     return
   }
 
-  const play = () => playVariant($completionSoundVariantId.get())
-
-  if (!dedupeKey) {
-    return play()
+  // A user can mute this window while the ownership or Do Not Disturb read is in flight.
+  const play = async () => {
+    if (!(await doNotDisturbActive()) && !$hapticsMuted.get()) {
+      playVariant($completionSoundVariantId.get())
+    }
   }
 
-  // A user can mute this window while the ownership request is in flight.
-  void ownsAmbientCue(`sound:${dedupeKey}`).then(owns => owns && !$hapticsMuted.get() && play())
+  if (!dedupeKey) {
+    return void play()
+  }
+
+  void ownsAmbientCue(`sound:${dedupeKey}`).then(owns => {
+    if (owns) {
+      void play()
+    }
+  })
 }
 
 interface AirPuffSpec {

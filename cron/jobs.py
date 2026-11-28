@@ -2796,10 +2796,34 @@ def _completed_oneshot_retention_days() -> float:
     return _cron_config_number("completed_retention_days", COMPLETED_ONESHOT_RETENTION_DAYS, float)
 
 
+def _schedule_is_finished(schedule: Any, repeat: Any) -> bool:
+    """True when a schedule can never fire again, so a completed record is safe to sweep.
+
+    ``once`` schedules are finished by definition. A recurring schedule is finished only once its
+    ``repeat.times`` budget is spent: an unbounded cron has no budget, can never legitimately reach
+    ``completed``, and must not be swept on the strength of that state alone. Anything unreadable
+    keeps the record — the sweep must never guess its way into a deletion."""
+    if not isinstance(schedule, dict):
+        return False
+    if schedule.get("kind") == "once":
+        return True
+    if not isinstance(repeat, dict):
+        return False
+    try:
+        times = int(repeat.get("times") or 0)
+        completed = int(repeat.get("completed") or 0)
+    except (TypeError, ValueError):
+        return False
+    return times > 0 and completed >= times
+
+
 def _sweep_completed_oneshots(
     raw_jobs: list[dict[str, Any]], now: datetime, *, removed_ids: Optional[set[str]] = None,
 ) -> bool:
-    """Prune completed one-shot records past retention (in place; True when anything was removed).
+    """Prune finished completed records past retention (in place; True when something was removed).
+
+    The name is historical: the sweep used to consider ``once`` schedules only, which left a
+    finished ``cron`` record (finite ``repeat.times``, budget spent) in the store forever.
     Removed ids go into *removed_ids* so save_jobs's shrink-merge guard allows the delete. Age is
     measured from ``last_run_at``; a record without a parseable one is kept (never guess into
     deletion)."""
@@ -2812,8 +2836,7 @@ def _sweep_completed_oneshots(
         try:
             if rj.get("state") != "completed":
                 continue
-            schedule = rj.get("schedule")
-            if (schedule.get("kind") if isinstance(schedule, dict) else None) != "once":
+            if not _schedule_is_finished(rj.get("schedule"), rj.get("repeat")):
                 continue
             last_run = rj.get("last_run_at")
             last_run_dt = _parse_aware(last_run) if isinstance(last_run, str) else None

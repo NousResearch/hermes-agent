@@ -179,8 +179,8 @@ def compute_prompt_breakdown(platform: str = "cli") -> dict[str, Any]:
     tools = getattr(agent, "tools", None) or []
     sections: list[tuple[str, int, int]] = [
         (label, len(text), _bytes(text))
-        for label, text in (("stable (identity/guidance/skills)", stable), ("context (AGENTS.md/cwd files)", context),
-                            ("volatile (memory/profile/timestamp)", volatile))
+        for label, text in (("stable (identity/guidance)", stable), ("context (AGENTS.md/cwd files)", context),
+                            ("volatile (skills/memory/profile/timestamp)", volatile))
     ]
     return {
         "platform": platform,

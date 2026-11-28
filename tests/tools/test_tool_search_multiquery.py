@@ -89,6 +89,22 @@ class TestStemming:
         names = [h.name for h in search_catalog(catalog, "linear issue slack", limit=5)]
         assert names == ["mq_slack_post_message"]
 
+    def test_function_words_never_gate_admission(self):
+        """A request phrased as a sentence finds what its keywords find. 'me' sits in one
+        description here, so it was the rarest token and gated out the thumbnail tool."""
+        from tools.tool_search import build_catalog, search_catalog
+
+        catalog = build_catalog([
+            _td("render_thumbnail_to_path", "Render a small thumbnail of the scene to a path."),
+            _td("creative_lab", "Turn a photo into a model for me, end to end."),
+            _td("render_viewport", "Render the scene with the current settings."),
+        ])
+        sentence = search_catalog(catalog, "render a thumbnail of the scene to a path for me", limit=3)
+        keywords = search_catalog(catalog, "render thumbnail scene path", limit=3)
+        assert [h.name for h in sentence] == [h.name for h in keywords]
+        assert sentence[0].name == "render_thumbnail_to_path"
+        assert search_catalog(catalog, "for the", limit=3) == []
+
     def test_token_no_document_carries_admits_nothing(self, issue_defs):
         """'send gmail email' against a catalog with no gmail tool returns nothing rather
         than five tools that merely share 'message' or 'email'."""

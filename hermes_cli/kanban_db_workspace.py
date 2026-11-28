@@ -24,6 +24,40 @@ if TYPE_CHECKING:
     from hermes_cli.kanban_db import Task
 
 _REMOVABLE_KINDS = ("scratch", "worktree")
+# Kinds whose workspace is a durable checkout the dispatcher has to materialise.
+PERSISTENT_WORKSPACE_KINDS = frozenset({"dir", "worktree"})
+
+
+def resolve_workspace_path(
+    workspace_kind: str,
+    workspace_path: Optional[str],
+    *,
+    project_repo: Optional[str] = None,
+    board: Optional[str] = None,
+) -> Optional[str]:
+    """Return the path a persistent workspace will be built from, or refuse the task.
+
+    Only persistent kinds inherit the board ``default_workdir`` — a scratch task
+    inheriting it would point cleanup at the user's source tree. With neither a
+    path nor a board default the dispatcher cannot build the workspace, so the
+    card used to be created and die as ``spawn_failed`` twice, then ``gave_up``;
+    that reads downstream as two abnormal exits rather than as a misconfiguration.
+    Raising here puts the fix in the message instead.
+    """
+    if workspace_kind not in PERSISTENT_WORKSPACE_KINDS:
+        return workspace_path
+    if not (workspace_path or "").strip() and project_repo is None:
+        from hermes_cli.kanban_db_boards import read_board_metadata
+
+        default = read_board_metadata(board).get("default_workdir")
+        if default:
+            return str(default)
+        raise ValueError(
+            f"workspace_kind={workspace_kind!r} needs a workspace: pass an absolute "
+            "workspace_path (for worktree, the repo root) or set the board's "
+            "default_workdir. To run without a repo checkout use workspace_kind='scratch'."
+        )
+    return workspace_path
 
 
 def _path_key(path: Path | str | None) -> str:

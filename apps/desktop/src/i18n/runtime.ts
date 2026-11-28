@@ -1,11 +1,14 @@
 import { isRecord } from '@hermes/shared/i18n'
-import { atom } from 'nanostores'
+import { atom, type ReadableAtom } from 'nanostores'
 
 import { DEFAULT_LOCALE } from './languages'
 import { resolveTranslations } from './registry'
 import type { Locale, Translations } from './types'
 
-const $runtimeLocale = atom<Locale>(DEFAULT_LOCALE)
+const $runtimeLocaleState = atom<Locale>(DEFAULT_LOCALE)
+
+/** Read-only view of the active runtime locale for non-React reactive bindings. */
+export const $runtimeLocale: ReadableAtom<Locale> = $runtimeLocaleState
 
 /** The language `display.language` asked for, normalized but NOT yet checked
  *  against what the app can render. A pack-only language (`pl`) lands here
@@ -58,7 +61,7 @@ export function translateFrom(
 }
 
 export function setRuntimeI18nLocale(locale: Locale) {
-  $runtimeLocale.set(locale)
+  $runtimeLocaleState.set(locale)
 }
 
 /** Observe changes to the locale used by non-React plugin contributions. */

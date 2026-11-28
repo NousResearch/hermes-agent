@@ -1,7 +1,9 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { setRuntimeI18nLocale, TRANSLATIONS } from '@/i18n'
 import type { ChatMessage, ChatMessagePart } from '@/lib/chat-messages'
 import type { ComposerAttachment } from '@/store/composer'
+import type { SessionInfo } from '@/types/hermes'
 
 import {
   attachmentDisplayText,
@@ -12,8 +14,10 @@ import {
   createToolMergeCache,
   isSlashCommandText,
   messageCreatedAt,
+  newSessionTitle,
   optimisticAttachmentRef,
   personalityNamesFromConfig,
+  sessionTitle,
   stripAttachmentRefs,
   toRuntimeMessage
 } from './chat-runtime'
@@ -358,5 +362,56 @@ describe('isSlashCommandText', () => {
 
   it('rejects a ref-only message (no command)', () => {
     expect(isSlashCommandText('@image:/tmp/foo.png')).toBe(false)
+  })
+})
+
+describe('sessionTitle and newSessionTitle locale reactivity', () => {
+  afterEach(() => {
+    setRuntimeI18nLocale('en')
+  })
+
+  function sessionRow(overrides: Partial<SessionInfo> = {}): SessionInfo {
+    return {
+      cwd: null,
+      ended_at: null,
+      id: 'session-1',
+      input_tokens: 0,
+      is_active: true,
+      last_active: 1,
+      message_count: 1,
+      model: null,
+      output_tokens: 0,
+      parent_session_id: null,
+      preview: null,
+      source: 'desktop',
+      started_at: 1,
+      title: null,
+      tool_call_count: 0,
+      ...overrides
+    }
+  }
+
+  it('switches newSessionTitle between en and es with setRuntimeI18nLocale', () => {
+    setRuntimeI18nLocale('en')
+    expect(newSessionTitle()).toBe(TRANSLATIONS.en.sidebar.nav['new-session'])
+
+    setRuntimeI18nLocale('es')
+    expect(newSessionTitle()).toBe(TRANSLATIONS.es.sidebar.nav['new-session'])
+
+    setRuntimeI18nLocale('en')
+    expect(newSessionTitle()).toBe(TRANSLATIONS.en.sidebar.nav['new-session'])
+  })
+
+  it('switches untitled sessionTitle placeholder between en and es while preserving explicit title/preview', () => {
+    const untitled = sessionRow()
+
+    setRuntimeI18nLocale('en')
+    expect(sessionTitle(untitled)).toBe(TRANSLATIONS.en.sidebar.row.untitledPlaceholder)
+
+    setRuntimeI18nLocale('es')
+    expect(sessionTitle(untitled)).toBe(TRANSLATIONS.es.sidebar.row.untitledPlaceholder)
+    expect(sessionTitle(sessionRow({ title: '  Custom title  ' }))).toBe('Custom title')
+    expect(sessionTitle(sessionRow({ preview: '  First message  ' }))).toBe('First message')
+    expect(sessionTitle(untitled, 'Explicit fallback')).toBe('Explicit fallback')
   })
 })

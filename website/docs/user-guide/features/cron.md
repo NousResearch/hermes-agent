@@ -654,7 +654,10 @@ Checks per active job:
   gateway down, or a wedged fire-claim),
 - script missing, not a file, or resolving outside `HERMES_HOME/scripts`,
 - `no_agent` job with no script,
-- configured `workdir` that no longer exists.
+- configured `workdir` that no longer exists,
+- the last fire used more than 3× the job's usual tokens (median of its previous 10 fires in
+  `cron/usage_audit.jsonl`, at least 1M tokens); a runaway fire otherwise succeeds and delivers,
+  so it only shows on the bill. This warning clears at the next normal-sized fire.
 
 Doctor never mutates jobs or state — it only reports. Pair it with
 `hermes cron incidents` (durable failure records) and `hermes cron runs`

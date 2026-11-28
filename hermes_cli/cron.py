@@ -703,8 +703,51 @@ def _next_run_overdue_issue(next_run: str) -> Optional[str]:
     return f"next_run_at is {amount} overdue — job is not firing (is the scheduler running?)"
 
 
-def _cron_doctor_issues_for_job(job: dict[str, Any]) -> list[str]:
+# A fire is a spend outlier when it used this many times the job's usual (median) tokens; the
+# floor keeps tiny jobs (a 30k-token digest that once took 120k) out of the report.
+_SPEND_OUTLIER_RATIO = 3
+_SPEND_OUTLIER_MIN_TOKENS = 1_000_000
+
+
+def _cron_spend_outliers() -> dict[str, str]:
+    """Job id -> issue text when the job's LAST fire used far more tokens than its usual fire.
+
+    Reads ``cron/usage_audit.jsonl`` (one line per fire, written by the scheduler). A runaway
+    fire otherwise shows only as a bill: it succeeds, delivers, and every other check is clean.
+    """
+    from collections import deque
+    from statistics import median
+    from cron.jobs import CRON_DIR
+    # Only the last 11 measured fires per job matter; the audit file grows forever, so stream it.
+    fires: dict[str, deque] = {}
+    try:
+        with open(CRON_DIR / "usage_audit.jsonl", encoding="utf-8-sig") as audit:
+            for line in audit:
+                try:
+                    rec = json.loads(line)
+                    # null = the run failed before usage was known, not a zero-token fire.
+                    if rec.get("total_tokens") is not None:
+                        fires.setdefault(str(rec["job_id"]), deque(maxlen=11)).append(int(rec["total_tokens"]))
+                except (ValueError, KeyError, TypeError, AttributeError):
+                    continue
+    except OSError:
+        return {}
+    outliers = {}
+    for job_id, history in fires.items():
+        tokens = list(history)
+        usual = median(tokens[-11:-1]) if len(tokens) >= 4 else 0
+        last = tokens[-1]
+        if usual and last >= _SPEND_OUTLIER_MIN_TOKENS and last > _SPEND_OUTLIER_RATIO * usual:
+            outliers[job_id] = (f"last fire used {last / 1e6:.1f}M tokens, {last / usual:.0f}x its usual "
+                                f"{usual / 1e6:.1f}M (median of the previous {min(len(tokens) - 1, 10)} fires). "
+                                "This warning clears at the next normal-sized fire.")
+    return outliers
+
+
+def _cron_doctor_issues_for_job(job: dict[str, Any], spend_outliers: Optional[dict] = None) -> list[str]:
     issues: list[str] = []
+    if spend_issue := (spend_outliers or {}).get(str(job.get("id"))):
+        issues.append(spend_issue)
     last_status = str(job.get("last_status") or "").strip().lower()
     # "delivery_failed" = the agent run succeeded; the delivery issue below reports it.
     if last_status and last_status not in {"ok", "delivery_failed", "delivery_queued"}:
@@ -758,7 +801,9 @@ def cron_doctor() -> int:
     """Run read-only cron health checks and return a shell-friendly status."""
     from cron.jobs import list_jobs
     jobs = list_jobs(include_disabled=False)
-    findings = [(job, issues) for job in jobs if (issues := _cron_doctor_issues_for_job(job))]
+    spend_outliers = _cron_spend_outliers()
+    findings = [(job, issues) for job in jobs
+                if (issues := _cron_doctor_issues_for_job(job, spend_outliers))]
     if not findings:
         print(color("✓ Cron doctor found no issues", Colors.GREEN))
         note = f"  Checked {len(jobs)} active job(s)." if jobs else "  No active jobs configured."

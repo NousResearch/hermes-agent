@@ -58,7 +58,7 @@ The ONLY import surface is `@hermes/plugin-sdk` (plus `react` /
 `jsx()` calls, not JSX syntax; the file is not compiled).
 
 - `host.state.*` — readonly reactive atoms: `activeSessionId`, `busy`,
-  `awaitingResponse`, `busyBySession`, `cwd`, `gateway` (socket state, not
+  `awaitingResponse`, `busyBySession`, `workingSessionIds`, `cwd`, `gateway` (socket state, not
   turn-busy), `model`, `profile`, `viewport`, plus the tile-aware focused
   session atoms: `focusedSessionId` (runtime id — key for `session.*` RPC),
   `focusedStoredSessionId` (durable id — navigation / list matching),
@@ -69,7 +69,10 @@ The ONLY import surface is `@hermes/plugin-sdk` (plus `react` /
   needed). `busy` is true while the focused chat is working after a send
   (thinking and streaming). `awaitingResponse` is true until the first
   assistant payload. `busyBySession` maps runtime session id → mid-turn,
-  for rosters that watch every session. Prefer the focused atoms for any
+  for rosters that watch every session. `workingSessionIds` is a list of working
+  stored-session ids, including compression-lineage aliases, independent of tile
+  focus; use it for background session indicators, not runtime-id lookup.
+  Prefer the focused atoms for any
   readout that should follow the user between tiles. Read with `.get()`
   in handlers,
   `useValue(atom)` in components.

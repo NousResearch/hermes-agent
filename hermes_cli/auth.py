@@ -48,7 +48,7 @@ from hermes_cli.auth_device_flow import (
     _resolve_verify, _ssh_user_at_host)
 default_httpx_verify = _default_verify
 from hermes_cli.auth_oauth_grants import (
-    SINGLE_USE_REFRESH_POOL_PROVIDERS, _oauth_heal_clean_marks, _oauth_heal_notices,
+    SINGLE_USE_REFRESH_POOL_PROVIDERS, _oauth_heal_clean_marks, _oauth_heal_notices, _pool_rows,
     consume_oauth_heal_notices, heal_forked_single_use_oauth_grants,
     strip_cloned_single_use_oauth_grants)
 from hermes_cli.auth_nous import (
@@ -933,31 +933,30 @@ def is_runtime_provider_routable(provider_id: str) -> bool:
     return True
 
 
-def read_credential_pool(provider_id: Optional[str] = None) -> dict[str, Any]:
-    """Return the persisted credential pool, or one provider slice.
+def _read_credential_pool_slice(provider_id: str) -> tuple[list[Any], bool]:
+    """Return one provider's rows and whether that same snapshot borrowed from root."""
+    _, local = _pool_rows(_load_auth_store(), provider_id)
+    if local:
+        return list(local), False
+    _, root = _pool_rows(_load_global_auth_store(), provider_id)
+    return list(root), bool(root)
 
-    In profile mode the global-root ``auth.json`` is a read-only fallback applied per provider ONLY
-    when the profile has zero entries for it (``hermes auth add`` in the profile shadows global)."""
+
+def read_credential_pool(provider_id: Optional[str] = None) -> dict[str, Any]:
+    """Return the pool or one provider slice, with root fallback per missing provider."""
+    if provider_id is not None:
+        return _read_credential_pool_slice(provider_id)[0]
     pool = _load_auth_store().get("credential_pool")
     pool = pool if isinstance(pool, dict) else {}
     global_pool = _load_global_auth_store().get("credential_pool")
     global_pool = global_pool if isinstance(global_pool, dict) else {}
 
-    if provider_id is None:
-        merged = dict(pool)
-        for gp_key, gp_entries in global_pool.items():
-            existing = merged.get(gp_key)
-            if not (isinstance(gp_entries, list) and gp_entries):
-                continue
-            if not (isinstance(existing, list) and existing):  # profile wins when it has ANY entries
-                merged[gp_key] = list(gp_entries)
-        return merged
-
-    provider_entries = pool.get(provider_id)
-    if isinstance(provider_entries, list) and provider_entries:
-        return list(provider_entries)
-    global_entries = global_pool.get(provider_id)
-    return list(global_entries) if isinstance(global_entries, list) else []
+    merged = dict(pool)
+    for gp_key, gp_entries in global_pool.items():
+        existing = pool.get(gp_key)
+        if isinstance(gp_entries, list) and gp_entries and not (isinstance(existing, list) and existing):
+            merged[gp_key] = list(gp_entries)
+    return merged
 
 
 _POOL_STATUS_FIELDS = (

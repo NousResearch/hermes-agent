@@ -15,14 +15,14 @@ from hermes_cli import auth
 from agent.credential_pool import CredentialPool
 
 
-def test_pending_refresh_sweep_leaves_waiter_windows_between_holds(tmp_path):
+def test_pending_refresh_sweep_leaves_waiter_windows_between_holds(tmp_path, monkeypatch):
     auth_path = tmp_path / "profiles" / "coder" / "auth.json"
     auth_path.parent.mkdir(parents=True)
 
     pool = object.__new__(CredentialPool)
     hold_events = []
 
-    def fake_refresh(entry, *, force):
+    def fake_refresh(pool, entry, *, wait):
         # Same shape as a real single-use refresh: the cross-process lock is held
         # across the "POST" (the sleep), released only when the entry is done.
         with auth._auth_store_lock(timeout_seconds=30.0, target_path=auth_path):
@@ -30,7 +30,7 @@ def test_pending_refresh_sweep_leaves_waiter_windows_between_holds(tmp_path):
             time.sleep(0.05)
             hold_events.append(("released", time.monotonic()))
 
-    pool._refresh_entry = fake_refresh
+    monkeypatch.setattr("agent.credential_pool_deferred_refresh.refresh_deferred_entry", fake_refresh)
     CredentialPool._refresh_pending_entries(pool, [object(), object(), object()])
 
     acquires = [t for kind, t in hold_events if kind == "acquired"]

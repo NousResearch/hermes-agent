@@ -1,6 +1,7 @@
 """Two lifecycle invariants, using real SQLite and a local GitHub HTTP contract."""
 import json
 import os
+import subprocess
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -347,3 +348,147 @@ def test_assigned_card_with_unresolvable_profile_is_auth_not_ambient(tmp_path, m
             "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchone()[0])
     assert receipt["classification"] == "auth"
     assert "'ghost'" in receipt["detail"] and "cannot be resolved" in receipt["detail"]
+
+
+# --- a gh-side blip must never read as an auth problem, and never lose the failed phase ---
+
+def _gh_shim(tmp_path, monkeypatch, script):
+    """A stand-in for the real gh CLI on PATH; `script` is its whole body."""
+    shim = tmp_path / "bin"
+    shim.mkdir()
+    gh = shim / "gh"
+    gh.write_text(f"#!{sys.executable}\n{script}", encoding="utf-8")
+    gh.chmod(0o755)
+    monkeypatch.setenv("PATH", str(shim) + os.pathsep + os.environ["PATH"])
+
+
+# Body shared by the gh-side tests: a counter in $GH_CALLS_FILE, an injected failure
+# at $GH_FAIL_ON (substring of argv[2]) for every call while $GH_FAIL_STICKY=1, only
+# the first matching call otherwise. Any other call returns a complete green page.
+_GH_SCRIPT = (
+    "import json, os, sys\n"
+    "endpoint = sys.argv[2]\n"
+    "path = os.environ['GH_CALLS_FILE']\n"
+    "calls = int(open(path).read()) if os.path.exists(path) else 0\n"
+    "calls += 1\n"
+    "open(path, 'w').write(str(calls))\n"
+    "if os.environ['GH_FAIL_ON'] in endpoint and "
+    "(os.environ.get('GH_FAIL_STICKY') == '1' or calls == int(os.environ.get('GH_FAIL_AT', '1'))):\n"
+    "    sys.stderr.write('HTTP 502 bad gateway token=secret-leak\\n'); sys.exit(1)\n"
+    "sha = 'a' * 40\n"
+    "run = {'id': 42, 'name': 'required', 'head_sha': sha, 'app': {'id': 1},\n"
+    "       'status': 'completed', 'conclusion': 'success', 'html_url': 'https://github.com/acme/repo/c/42'}\n"
+    "value = {\n"
+    "    'graphql': {'data': {'repository': {'pullRequest': {\n"
+    "        'headRefOid': sha, 'baseRefName': 'main', 'state': 'OPEN',\n"
+    "        'baseRef': {'branchProtectionRule': {'requiredStatusChecks': [\n"
+    "            {'context': 'required', 'app': {'databaseId': 1}}]}}}}}},\n"
+    "    'pulls': {'head': {'sha': sha}, 'base': {'ref': 'main'}, 'state': 'open'},\n"
+    "}\n"
+    "if 'rules/branches' in endpoint:\n"
+    "    value = [[]]\n"
+    "elif 'check-runs' in endpoint:\n"
+    "    # --paginate --slurp returns one entry per page; a truncated set = fewer runs\n"
+    "    # than total_count, the shape behind the gate's Incomplete-pagination ValueError.\n"
+    "    if os.environ.get('GH_SHORT_PAGES') == '1':\n"
+    "        value = [{'total_count': 3, 'check_runs': [run, {**run, 'id': 43, 'name': 'other'}]}]\n"
+    "    else:\n"
+    "        value = [{'total_count': 1, 'check_runs': [run]}] * 2\n"
+    "elif 'statuses' in endpoint:\n"
+    "    value = [[]]\n"
+    "elif endpoint == 'graphql':\n"
+    "    value = value['graphql']\n"
+    "elif 'pulls' in endpoint:\n"
+    "    value = value['pulls']\n"
+    "print(json.dumps(value))\n")
+
+
+@pytest.mark.platforms("posix")
+def test_transient_gh_failure_names_phase_and_exit_code_and_retries_once(tmp_path, monkeypatch):
+    """One non-auth gh failure is retried; if it persists, the infra receipt names the failed
+    phase + gh's exit code (never stderr) and keeps the retry wording — not a credential hint."""
+    from hermes_cli import kanban_pr_acceptance as acc
+    monkeypatch.setattr(acc, "_GH_RETRY_DELAY", 0)
+    _gh_shim(tmp_path, monkeypatch, _GH_SCRIPT)
+    calls = tmp_path / "calls"
+    monkeypatch.setenv("GH_CALLS_FILE", str(calls))
+    monkeypatch.setenv("GH_FAIL_ON", "check-runs")
+    monkeypatch.setenv("GH_FAIL_STICKY", "1")
+    receipt = acc.collect_acceptance("acme/repo", "https://github.com/acme/repo/pull/7")
+    assert receipt["classification"] == "infra" and receipt["ok"] is False
+    assert "check-runs" in receipt["detail"] and "exited 1" in receipt["detail"]
+    assert "(2 attempts)" in receipt["detail"] and "retry" in receipt["detail"].lower()
+    assert "secret-leak" not in receipt["detail"]  # gh stderr never persists
+    assert calls.read_text() == "4"  # graphql + rules + both attempts of the failing check-runs call
+
+
+@pytest.mark.platforms("posix")
+def test_retry_success_avoids_the_infra_receipt(tmp_path, monkeypatch):
+    """The observed production flake (t_5f419e01): one transient gh exit, the identical call
+    on the retry succeeds — completion must not be refused for a single blip."""
+    from hermes_cli import kanban_pr_acceptance as acc
+    monkeypatch.setattr(acc, "_GH_RETRY_DELAY", 0)
+    _gh_shim(tmp_path, monkeypatch, _GH_SCRIPT)
+    calls = tmp_path / "calls"
+    monkeypatch.setenv("GH_CALLS_FILE", str(calls))
+    monkeypatch.setenv("GH_FAIL_ON", "check-runs")  # fires on that call's first attempt only
+    receipt = acc.collect_acceptance("acme/repo", "https://github.com/acme/repo/pull/7")
+    assert receipt["ok"] is True and receipt["classification"] == "success"
+    assert calls.read_text() == "5"
+
+
+@pytest.mark.platforms("posix")
+def test_gh_timeout_after_retry_is_infra_naming_the_phase(tmp_path, monkeypatch):
+    """A gh that never returns is an infra blip reporting the timeout and the failed phase,
+    after the single retry — it never reaches the auth clause."""
+    from hermes_cli import kanban_pr_acceptance as acc
+    monkeypatch.setattr(acc, "_GH_RETRY_DELAY", 0)
+    calls = tmp_path / "calls"
+    calls.write_text("0")
+
+    def hang(*args, **kwargs):
+        calls.write_text(str(int(calls.read_text()) + 1))
+        raise subprocess.TimeoutExpired(cmd="gh", timeout=30)
+
+    monkeypatch.setattr(acc.subprocess, "run", hang)
+    receipt = acc.collect_acceptance("acme/repo", "https://github.com/acme/repo/pull/7")
+    assert receipt["classification"] == "infra"
+    assert "timed out" in receipt["detail"] and "graphql" in receipt["detail"]
+    assert calls.read_text() == "2"
+
+
+@pytest.mark.platforms("posix")
+def test_gh_auth_refusal_is_not_retried(tmp_path, monkeypatch):
+    """The retry must not soften an auth refusal: HTTP 401 stderr stays `auth` naming the
+    phase, and gh is invoked exactly once — a refusal is identity, not a blip."""
+    from hermes_cli import kanban_pr_acceptance as acc
+    monkeypatch.setattr(acc, "_GH_RETRY_DELAY", 0)
+    _gh_shim(tmp_path, monkeypatch,
+             "import os, sys\n"
+             "path = os.environ['GH_CALLS_FILE']\n"
+             "calls = (int(open(path).read()) if os.path.exists(path) else 0) + 1\n"
+             "open(path, 'w').write(str(calls))\n"
+             "sys.stderr.write('gh: HTTP 401: Bad credentials (SQLState HY000)\\n'); sys.exit(1)\n")
+    calls = tmp_path / "calls"
+    monkeypatch.setenv("GH_CALLS_FILE", str(calls))
+    receipt = acc.collect_acceptance("acme/repo", "https://github.com/acme/repo/pull/7")
+    assert receipt["classification"] == "auth"
+    assert "HTTP 401" in receipt["detail"] and "graphql" in receipt["detail"]
+    assert calls.read_text() == "1"
+
+
+@pytest.mark.platforms("posix")
+def test_incomplete_pagination_is_internal_not_an_auth_suggestion(tmp_path, monkeypatch):
+    """The gate's own `ValueError("Incomplete check-run pagination")` — a parse bug the old
+    wording dressed up as an auth problem — now reports as a gate bug naming the type."""
+    from hermes_cli import kanban_pr_acceptance as acc
+    _gh_shim(tmp_path, monkeypatch, _GH_SCRIPT)
+    monkeypatch.setenv("GH_CALLS_FILE", str(tmp_path / "calls"))
+    monkeypatch.setenv("GH_FAIL_ON", "")
+    monkeypatch.setenv("GH_SHORT_PAGES", "1")  # a truncated page set: total_count says 2
+    receipt = acc.collect_acceptance("acme/repo", "https://github.com/acme/repo/pull/7")
+    assert receipt["classification"] == "infra"
+    assert "evidence collection failed internally" in receipt["detail"]
+    assert "ValueError" in receipt["detail"]
+    assert "authentication" not in receipt["detail"]
+    assert "credentials" not in receipt["detail"]

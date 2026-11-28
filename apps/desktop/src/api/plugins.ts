@@ -87,6 +87,39 @@ export async function pluginRest<T>(pluginId: string, path: string, opts: Plugin
   })
 }
 
+/** `pluginRest` on the machine that serves a profile route (a descriptor from
+ *  `host.profileRoutes()`): the plugin's own backend namespace there, the way
+ *  `host.requestProfile` reaches that machine's gateway. A Bot on a second
+ *  connection has its own backend, so a plugin showing that Bot's data asks its
+ *  plugin_api.py there instead of the window's. Scoped by construction to
+ *  `/api/plugins/<pluginId>` like `pluginRest`, dialed at background priority. */
+export async function pluginRestProfile<T>(
+  pluginId: string,
+  route: { connectionId: string; profile: string },
+  path: string,
+  opts: PluginRestOptions = {}
+): Promise<T> {
+  if (!window.hermesDesktop?.api) {
+    throw new Error('Hermes desktop bridge unavailable')
+  }
+
+  if (!route?.connectionId?.trim() || !route.profile?.trim()) {
+    throw new Error('pluginRestProfile: route must include connectionId and profile')
+  }
+
+  const suffix = pluginPathSuffix('pluginRestProfile', path)
+
+  return hermesApi<T>({
+    path: `/api/plugins/${pluginId}${suffix}`,
+    method: opts.method,
+    body: opts.body,
+    upload: opts.upload,
+    timeoutMs: opts.timeoutMs,
+    connectionId: route.connectionId,
+    profile: route.profile
+  })
+}
+
 /** Refusals in a row that do not clear by themselves before the socket stops for its current
  *  (connection, profile) scope. Every attempt is gateway traffic that keeps an idle-exit gateway awake. */
 const MAX_REFUSED_PLUGIN_DIALS = 5

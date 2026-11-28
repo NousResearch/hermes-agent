@@ -14,7 +14,7 @@
 
 import type { ReadableAtom } from 'nanostores'
 
-import { pluginRest, type PluginRestOptions, pluginSocket } from '@/hermes'
+import { pluginRest, type PluginRestOptions, pluginRestProfile, pluginSocket } from '@/hermes'
 import { createPluginI18n, type PluginI18n } from '@/i18n'
 import {
   listPluginAppActions,
@@ -152,6 +152,12 @@ export interface PluginContext {
    *  `plugin_api.py` — profile-aware, namespace-scoped by construction. Use
    *  `host.request` for gateway JSON-RPC. */
   rest: <T>(path: string, opts?: PluginRestOptions) => Promise<T>
+  /** `rest` on the machine that serves a profile route from
+   *  `host.profileRoutes()`: this plugin's own namespace on that connection's
+   *  backend, for data that belongs to a Bot on a second connection. Feature-
+   *  detect on older hosts (`typeof ctx.restProfile === 'function'`): an older
+   *  `rest` would send the request to the window's backend instead. */
+  restProfile: <T>(route: { connectionId: string; profile: string }, path: string, opts?: PluginRestOptions) => Promise<T>
   /** Live twin of `rest`: a WebSocket to this plugin's own namespace
    *  ('/events'), JSON frames to `onMessage`, auto-reconnect, disposer
    *  returned. Resolves to a no-op on OAuth remotes — treat it as an
@@ -394,6 +400,8 @@ export function createPluginContext(
     onEvent: (type, listener) => track(onGatewayEvent(type, listener)),
     ...createPluginLifetime(track),
     rest: <T>(path: string, opts?: PluginRestOptions) => pluginRest<T>(pluginId, path, opts),
+    restProfile: <T>(route: { connectionId: string; profile: string }, path: string, opts?: PluginRestOptions) =>
+      pluginRestProfile<T>(pluginId, route, path, opts),
     socket: (path, onMessage) => track(pluginSocket(pluginId, path, onMessage)),
     os: createPluginOs(pluginId),
     pet: createPluginPet(pluginId, track),

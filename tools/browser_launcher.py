@@ -759,6 +759,40 @@ def _terminate(pid: Optional[int], start_time: Optional[int], proc: Optional[sub
             proc.kill()
 
 
+_GRACEFUL_CLOSE_WAIT_S = 5.0
+
+
+def _graceful_close(browser: LaunchedBrowser, proc: Optional[subprocess.Popen]) -> bool:
+    """Ask a persistent-profile Chromium to quit over CDP (``Browser.close``) before any signal.
+
+    On SIGTERM headless Chromium exits without committing its pending cookie writes (the cookie store
+    flushes on a ~30s timer and on an orderly quit), so a sign-in made in the last half minute before the
+    stop never reached ``<profile>/Default/Cookies`` and the next launch was signed out again. A throwaway
+    profile is deleted anyway; a foreign or human-started browser is never stopped here. True once the
+    browser has exited; False sends the caller down its signal path."""
+    if browser.ephemeral or browser.foreign or not browser.owned or not browser.pid or not browser.cdp_url:
+        return False
+    try:
+        from websockets.sync.client import connect
+
+        from agent.proxy_bypass import loopback_connect_kwargs
+        with connect(browser.cdp_url, open_timeout=2, close_timeout=1, **loopback_connect_kwargs(browser.cdp_url)) as ws:
+            ws.send(json.dumps({"id": 1, "method": "Browser.close"}))
+            with contextlib.suppress(Exception):  # the socket usually drops before the reply
+                ws.recv(timeout=2)
+    except Exception as exc:  # health: allow BLE001 -- fall back to the signal path
+        logger.debug("browser: graceful close of pid %s failed: %s", browser.pid, exc)
+        return False
+    deadline = time.monotonic() + _GRACEFUL_CLOSE_WAIT_S
+    while time.monotonic() < deadline:
+        if proc is not None and proc.poll() is not None:
+            return True
+        if proc is None and not _pid_alive(browser.pid):
+            return True
+        time.sleep(_POLL_INTERVAL_S)
+    return False
+
+
 def stop_browser(key: str) -> None:
     """Let go of ``key``'s browser. A throwaway one this process launched is stopped. A shared-profile one is
     stopped only by its LAST holder across Hermes processes (:func:`_last_holder_out`); one a human started is
@@ -777,14 +811,16 @@ def _stop_locked(key: str) -> None:
     record = None if browser.ephemeral else _record_path(browser)
     if record is None:
         if browser.owned:
-            _terminate(browser.pid, browser.start_time, proc)
+            if not _graceful_close(browser, proc):
+                _terminate(browser.pid, browser.start_time, proc)
         with _lock:
             _forget(key, browser)
         return
     from tools.browser_launcher_holders import records_lock
     with records_lock(record.parent):  # the decision and the forget are one step: another key may be the heir
         if _heir_key(browser) is None and _last_holder_out(record, browser):
-            _terminate(browser.pid, browser.start_time, proc)
+            if not _graceful_close(browser, proc):
+                _terminate(browser.pid, browser.start_time, proc)
             record.unlink(missing_ok=True)
         with _lock:
             _forget(key, browser, drop_record=False)

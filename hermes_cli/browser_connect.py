@@ -796,6 +796,14 @@ def cleanup_real_profile_snapshots() -> None:
     """Delete the whole real-profile snapshot store when consent is OFF (idempotent)."""
     root = str(get_hermes_home() / "browser-profile")
     if os.path.isdir(root):
+        # ``~/.hermes/browser-profile`` is also the obvious name for ``browser.user_data_dir``: never delete the
+        # user's persistent automation profile (and every sign-in in it) as if it were a snapshot.
+        from tools.browser_session_cloud import user_data_dir
+        configured = user_data_dir()
+        if configured and (os.path.realpath(configured) + os.sep).startswith(os.path.realpath(root) + os.sep):
+            logger.warning("real-profile: not removing %s: browser.user_data_dir (%s) lives there; choose a "
+                           "different directory for it", root, configured)
+            return
         shutil.rmtree(root, ignore_errors=True)
         logger.info("real-profile: removed snapshot store %s (consent off)", root)
 

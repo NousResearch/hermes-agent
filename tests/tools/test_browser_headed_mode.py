@@ -80,6 +80,20 @@ class TestCleanupTaskResourcesHeadedSkip:
             mock_cb.assert_not_called()
 
 
+    def test_persistent_profile_skips_browser_cleanup(self):
+        """browser.user_data_dir keeps sign-ins across turns: the per-turn teardown must not kill its
+        browser (session cookies and a sign-in waiting on a 2FA code would go with it)."""
+        from agent.chat_completion_helpers import cleanup_task_resources
+        with (
+            patch("tools.browser_session_cloud.is_headed_mode", return_value=False),
+            patch("tools.browser_session_cloud.user_data_dir", return_value="/tmp/hermes-profile"),
+            patch("run_agent.cleanup_vm"),
+            patch("run_agent.cleanup_browser") as mock_cb,
+            patch("agent.chat_completion_helpers.is_persistent_env", return_value=False),
+        ):
+            cleanup_task_resources(_make_agent(), "task-x")
+            mock_cb.assert_not_called()
+
     def test_headed_does_not_skip_vm_cleanup(self):
         """Headed mode only affects the browser; VM teardown is untouched."""
         from agent.chat_completion_helpers import cleanup_task_resources

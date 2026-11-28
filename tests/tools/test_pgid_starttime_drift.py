@@ -92,6 +92,24 @@ def test_local_guard_unreadable_start_time_live_leader_is_best_effort(monkeypatc
     assert _leader_is_ours(67890, RECORDED) is True
 
 
+def test_local_guard_without_baseline_never_signals_the_group(monkeypatch, killpg_calls):
+    """No spawn-time baseline means ownership cannot be proven: refuse the group signal.
+
+    The number may already belong to a process that spawned a moment ago — POSIX hands a freed
+    PGID straight to the next child — so an unguarded ``killpg`` here kills a stranger instead of
+    a leftover. The identity-checked descendant sweep still runs; a rare orphaned grandchild is
+    the cheaper mistake.
+    """
+    from tools.environments.local import _kill_process_group_posix, _leader_is_ours
+
+    assert _leader_is_ours(67890, None) is False
+
+    proc = _fake_proc()
+    del proc._hermes_pgid_start
+    _kill_process_group_posix(proc)
+    assert killpg_calls == []
+
+
 # --- stdio MCP orphan reaper ------------------------------------------------
 
 def _reset_mcp_ledgers():

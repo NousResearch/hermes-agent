@@ -26,6 +26,5 @@ export function PreviewDocumentFrame({ srcDoc, sandbox, ...props }: PreviewDocum
     return <iframe {...props} sandbox={sandbox} srcDoc={srcDoc} />
   }
 
-  return <iframe {...props} onLoad={send} ref={frame}
-    referrerPolicy="no-referrer" sandbox="allow-scripts" src={src} />
+  return <iframe {...props} onLoad={send} ref={frame} referrerPolicy="no-referrer" sandbox="allow-scripts" src={src} />
 }

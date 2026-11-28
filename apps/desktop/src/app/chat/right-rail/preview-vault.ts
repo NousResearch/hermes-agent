@@ -108,7 +108,10 @@ function stillPinned(binding: Binding): boolean {
     return false
   }
 
-  return isUserBinding(binding) || resolveActivePreviewScriptRunner(binding.owner ?? undefined)?.tabId === binding.document.tabId
+  return (
+    isUserBinding(binding) ||
+    resolveActivePreviewScriptRunner(binding.owner ?? undefined)?.tabId === binding.document.tabId
+  )
 }
 
 /** Agent path: pin the requesting session's active tab and its live document. */

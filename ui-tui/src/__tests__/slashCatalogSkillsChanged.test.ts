@@ -8,7 +8,11 @@ describe('refreshSlashCatalogOnSkillsChange', () => {
   beforeEach(() => resetUiState())
 
   it('refetches commands.catalog from the gateway for the live session', async () => {
-    const rpc = vi.fn(async () => ({ canon: { '/new-skill': '/new-skill' }, pairs: [['/new-skill', 'd']], skill_count: 1 }))
+    const rpc = vi.fn(async () => ({
+      canon: { '/new-skill': '/new-skill' },
+      pairs: [['/new-skill', 'd']],
+      skill_count: 1
+    }))
     const setCatalog = vi.fn()
 
     patchUiState({ sid: 'sid-cfg8' })

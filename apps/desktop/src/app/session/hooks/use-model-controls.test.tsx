@@ -340,7 +340,9 @@ describe('useModelControls', () => {
     setCurrentModel('old')
     setCurrentProvider('xai')
     const refusal = Object.assign(new Error('model_resolution_failed'), { data: { reason: 'model_resolution_failed' } })
-    const requestGateway = vi.fn(async () => { throw refusal })
+    const requestGateway = vi.fn(async () => {
+      throw refusal
+    })
     let controls!: Controls
 
     render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)
@@ -930,9 +932,9 @@ describe('useModelControls', () => {
 
     try {
       expect(PRIMARY_SESSION_VIEW.$model.get()).toBe('live-model')
-      await expect(result.current.selectModel({ model: 'unavailable-model', provider: 'unavailable-provider' })).resolves.toBe(
-        false
-      )
+      await expect(
+        result.current.selectModel({ model: 'unavailable-model', provider: 'unavailable-provider' })
+      ).resolves.toBe(false)
 
       expect(requestGateway).toHaveBeenCalledWith('config.set', {
         session_id: runtimeId,
@@ -1099,9 +1101,9 @@ describe('useModelControls', () => {
     const { result } = renderHook(() => useModelControls({ queryClient: new QueryClient(), requestGateway }))
 
     try {
-      await expect(result.current.selectModel({ model: 'unavailable-model', provider: 'unavailable-provider' })).resolves.toBe(
-        false
-      )
+      await expect(
+        result.current.selectModel({ model: 'unavailable-model', provider: 'unavailable-provider' })
+      ).resolves.toBe(false)
 
       expect(PRIMARY_SESSION_VIEW.$reasoningEffortWire.get()).toBe('')
       expect(SessionStates.$sessionStates.get()[runtimeId].reasoningEffortWire).toBe('')

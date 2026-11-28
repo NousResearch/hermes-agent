@@ -164,13 +164,15 @@ it.each([
   ['darwin', false, false],
   ['win32', false, false]
   // Linux asks the session bus instead; notification-linux.test.ts covers it.
-] as const)('on %s with Notification.isSupported() %s, main says it can notify: %s', async (platform, supported, expected) => {
-  host.supported = supported
-  registerNativeNotifications({ getMainWindow: () => null, focusWindow: vi.fn(), platform })
+] as const)(
+  'on %s with Notification.isSupported() %s, main says it can notify: %s',
+  async (platform, supported, expected) => {
+    host.supported = supported
+    registerNativeNotifications({ getMainWindow: () => null, focusWindow: vi.fn(), platform })
 
-  const answer = host.handle.mock.calls.find(([channel]) => channel === 'hermes:notify:supported')?.[1] as
-    | (() => boolean)
-    | undefined
+    const answer = host.handle.mock.calls.find(([channel]) => channel === 'hermes:notify:supported')?.[1] as
+      (() => boolean) | undefined
 
-  expect(answer?.()).toBe(expected)
-})
+    expect(answer?.()).toBe(expected)
+  }
+)

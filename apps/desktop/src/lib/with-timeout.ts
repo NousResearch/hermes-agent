@@ -150,25 +150,28 @@ export function withPausableTimeout<T>(
       }
 
       armedAt = Date.now()
-      timer = setTimeout(() => {
-        if (settled) {
-          return
-        }
+      timer = setTimeout(
+        () => {
+          if (settled) {
+            return
+          }
 
-        settled = true
-        cleanup()
-        const error = new TimeoutError(message)
+          settled = true
+          cleanup()
+          const error = new TimeoutError(message)
 
-        try {
-          onTimeout?.(error)
-        } catch (onTimeoutError) {
-          reject(onTimeoutError)
+          try {
+            onTimeout?.(error)
+          } catch (onTimeoutError) {
+            reject(onTimeoutError)
 
-          return
-        }
+            return
+          }
 
-        reject(error)
-      }, Math.max(1, remainingMs))
+          reject(error)
+        },
+        Math.max(1, remainingMs)
+      )
     }
 
     const pause = () => {

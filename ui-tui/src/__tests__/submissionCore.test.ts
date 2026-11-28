@@ -179,8 +179,12 @@ it('retains a queued submission on ambiguous response and retries the exact iden
 
   for (const stored_session_id of [undefined, 'wrong-target']) {
     patchUiState({ info: { model: 'test', tools: {}, skills: {}, stored_session_id } })
-    request.mockResolvedValueOnce({ admission_id: 'stable-id', target_session_id: 'owner',
-      target_profile_home: captureDestination().profileHome, status: 'queued' })
+    request.mockResolvedValueOnce({
+      admission_id: 'stable-id',
+      target_session_id: 'owner',
+      target_profile_home: captureDestination().profileHome,
+      status: 'queued'
+    })
     submitPrompt(item.text, deps, true, undefined, { skipDetectDrop: true, queueItem: item })
     await Promise.resolve()
     expect(settle).toHaveBeenLastCalledWith(false)
@@ -194,7 +198,13 @@ it('preserves legacy isolated submission after explicit unsupported admission wi
   const item = { text: 'private', display: 'private', submissionId: 'unsupported-id', queued: true, settle }
   let reject!: (error: unknown) => void
 
-  const request = vi.fn().mockReturnValueOnce(new Promise((_, fail) => { reject = fail }))
+  const request = vi
+    .fn()
+    .mockReturnValueOnce(
+      new Promise((_, fail) => {
+        reject = fail
+      })
+    )
     .mockResolvedValueOnce({ status: 'queued' })
 
   const deps = makeDeps({ request } as unknown as GatewayClient)
@@ -217,8 +227,10 @@ it('never downgrades ambiguous or conflicting durable submissions to legacy deli
     const settle = vi.fn()
     const item = { text: 'private', display: 'private', submissionId: 'retained-id', settle }
     const request = vi.fn().mockRejectedValue(Object.assign(new Error('not admitted'), { code }))
-    submitPrompt(item.text, makeDeps({ request } as unknown as GatewayClient), true, undefined,
-      { skipDetectDrop: true, queueItem: item })
+    submitPrompt(item.text, makeDeps({ request } as unknown as GatewayClient), true, undefined, {
+      skipDetectDrop: true,
+      queueItem: item
+    })
     await vi.waitFor(() => expect(settle).toHaveBeenLastCalledWith(false))
     expect(request).toHaveBeenCalledTimes(1)
   }
@@ -246,10 +258,17 @@ describe('submissionCore.submitPrompt — voice marker ownership', () => {
     markNextSubmitVoice('hello')
     submitPrompt('hello', makeDeps(gw), true, undefined, {
       behindTurn: true,
-      queueItem: { controlMethod: 'session.redirect', executionGeneration: 3, submissionId: 'c1', text: 'hello' } as never
+      queueItem: {
+        controlMethod: 'session.redirect',
+        executionGeneration: 3,
+        submissionId: 'c1',
+        text: 'hello'
+      } as never
     })
     submitPrompt('hello', makeDeps(gw))
-    await vi.waitFor(() => expect(request.mock.calls.map(([method]) => method)).toEqual(['session.redirect', 'prompt.submit']))
+    await vi.waitFor(() =>
+      expect(request.mock.calls.map(([method]) => method)).toEqual(['session.redirect', 'prompt.submit'])
+    )
 
     for (const [, params] of request.mock.calls) {
       expect(params).not.toHaveProperty('voice_turn')
@@ -273,10 +292,17 @@ describe('submissionCore.submitPrompt — clarify batch declaration', () => {
 
     submitPrompt('fix it', makeDeps(gw), true, undefined, {
       behindTurn: true,
-      queueItem: { controlMethod: 'session.redirect', executionGeneration: 3, submissionId: 'c1', text: 'fix it' } as never
+      queueItem: {
+        controlMethod: 'session.redirect',
+        executionGeneration: 3,
+        submissionId: 'c1',
+        text: 'fix it'
+      } as never
     })
     submitPrompt('ask me', makeDeps(gw))
-    await vi.waitFor(() => expect(request.mock.calls.map(([method]) => method)).toEqual(['session.redirect', 'prompt.submit']))
+    await vi.waitFor(() =>
+      expect(request.mock.calls.map(([method]) => method)).toEqual(['session.redirect', 'prompt.submit'])
+    )
 
     expect(request.mock.calls[0]?.[1]).not.toHaveProperty('clarify_batch')
     expect(request.mock.calls[1]?.[1]).toMatchObject({ clarify_batch: true })
@@ -387,7 +413,10 @@ describe('submissionCore.submitPrompt — OSC 7577 saved-session signal', () => 
   beforeEach(() => {
     resetUiState()
     resetProgramResumeStateForTests()
-    consumeProgramResumeEnv({ HERMES_TUI_RESUME_ARGV: JSON.stringify(['hermes', '--tui']), OSC7577_TOKEN: 'dummy-token-replace-me' })
+    consumeProgramResumeEnv({
+      HERMES_TUI_RESUME_ARGV: JSON.stringify(['hermes', '--tui']),
+      OSC7577_TOKEN: 'dummy-token-replace-me'
+    })
     patchUiState({ info: { model: 'm', skills: {}, stored_session_id: 'stored-1', tools: {} }, sid: 'sess-1' })
   })
 
@@ -400,15 +429,12 @@ describe('submissionCore.submitPrompt — OSC 7577 saved-session signal', () => 
   })
 
   it('an isolated compute-host turn or a shared gateway receipt marks nothing (no row yet / no attestation)', async () => {
-    const request = vi
-      .fn()
-      .mockResolvedValueOnce({ status: 'streaming', turn_isolation: true })
-      .mockResolvedValueOnce({
-        admission_id: 'r1',
-        status: 'started',
-        target_profile_home: captureDestination().profileHome,
-        target_session_id: 'stored-1'
-      })
+    const request = vi.fn().mockResolvedValueOnce({ status: 'streaming', turn_isolation: true }).mockResolvedValueOnce({
+      admission_id: 'r1',
+      status: 'started',
+      target_profile_home: captureDestination().profileHome,
+      target_session_id: 'stored-1'
+    })
 
     const deps = makeDeps({ request } as unknown as GatewayClient)
 

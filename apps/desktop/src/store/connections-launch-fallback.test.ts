@@ -48,7 +48,9 @@ vi.mock('@/store/profile', () => ({
   $newChatProfile: atom(null),
   $newChatRoute: atom(null),
   $showAllProfiles: atom(false),
-  captureNewChatSource: vi.fn(() => { newChatIntent += 1 }),
+  captureNewChatSource: vi.fn(() => {
+    newChatIntent += 1
+  }),
   currentNewChatIntent: () => newChatIntent,
   ensureGatewayAgent,
   isLegacyNewChatProfile: () => false,

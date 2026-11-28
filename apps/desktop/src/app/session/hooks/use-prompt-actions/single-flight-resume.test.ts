@@ -84,10 +84,7 @@ describe('singleFlightSessionResume', () => {
     })
     release()
 
-    await expect(Promise.all([a, b])).resolves.toEqual([
-      { session_id: 'runtime-a' },
-      { session_id: 'runtime-b' }
-    ])
+    await expect(Promise.all([a, b])).resolves.toEqual([{ session_id: 'runtime-a' }, { session_id: 'runtime-b' }])
   })
 
   it('coalesces a scoped foreground resume with an unscoped recovery for the same runtime under a non-default profile', async () => {

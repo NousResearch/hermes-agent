@@ -118,7 +118,9 @@ function setup(alreadyRunning = false, activatable = !alreadyRunning) {
         StartServiceByName: 1,
         GetNameOwner: owner,
         NameHasOwner: activated,
-        ListActivatableNames: activatable ? ['org.freedesktop.DBus', 'org.freedesktop.Notifications'] : ['org.freedesktop.DBus'],
+        ListActivatableNames: activatable
+          ? ['org.freedesktop.DBus', 'org.freedesktop.Notifications']
+          : ['org.freedesktop.DBus'],
         GetCapabilities: ['actions', 'body'],
         Notify: message.member === 'Notify' ? ++id : id
       }

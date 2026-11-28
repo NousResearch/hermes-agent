@@ -54,7 +54,8 @@ function fakeSystem(initial: Pick<PresenceSnapshot, 'idleSeconds' | 'locked' | '
       snapshot = { ...snapshot, sampledAt: Date.now(), seq: ++seq, ...next }
       listeners.forEach(listener => listener(snapshot))
     },
-    set: (next: Partial<PresenceSnapshot>) => void (snapshot = { ...snapshot, sampledAt: Date.now(), seq: ++seq, ...next })
+    set: (next: Partial<PresenceSnapshot>) =>
+      void (snapshot = { ...snapshot, sampledAt: Date.now(), seq: ++seq, ...next })
   }
 }
 
@@ -128,7 +129,11 @@ describe('presenceEvidence', () => {
     expect(presenceEvidence(page())).toEqual({ active: true, basis: 'page', idleSeconds: 10 })
     expect(presenceEvidence(page({ lastPageInputAt: NOW - 61_000 })).active).toBe(false)
     // Focus and visibility are never evidence: no input means nothing to report.
-    expect(presenceEvidence(page({ lastPageInputAt: null }))).toEqual({ active: false, basis: 'page', idleSeconds: null })
+    expect(presenceEvidence(page({ lastPageInputAt: null }))).toEqual({
+      active: false,
+      basis: 'page',
+      idleSeconds: null
+    })
     expect(presenceEvidence(page({ visible: false })).active).toBe(false)
   })
 })
@@ -265,7 +270,12 @@ describe('createPresenceReporter', () => {
 
     system.push({ idleSeconds: 1, locked: false, suspended: false })
     system.push({ suspended: true })
-    expect(channel.calls).toEqual([expect.objectContaining({ sessions: ['s1'] }), away, expect.objectContaining({ sessions: ['s1'] }), away])
+    expect(channel.calls).toEqual([
+      expect.objectContaining({ sessions: ['s1'] }),
+      away,
+      expect.objectContaining({ sessions: ['s1'] }),
+      away
+    ])
   })
 
   it('reports at once when the session in view changes or can_alert flips', async () => {
@@ -411,7 +421,7 @@ describe('a report counts as told only once the connection accepted it', () => {
   })
 })
 
-describe('main\'s answer about OS notifications', () => {
+describe("main's answer about OS notifications", () => {
   afterEach(() => {
     delete (window as { hermesDesktop?: unknown }).hermesDesktop
     window.location.hash = ''
@@ -501,35 +511,38 @@ describe('can_alert from this window', () => {
     setNativeNotifyKind('turnDone', true)
   })
 
-  it.each(cases)('%s, focused %s, turn-done %s, permission %s -> %s', async (host, focused, turnDone, permission, expected) => {
-    if (host === 'webapp') {
-      document.documentElement.dataset.hermesDesktopHost = 'browser'
-      // The live permission the browser bridge checks, not only the cached store.
-      vi.stubGlobal('isSecureContext', true)
-      vi.stubGlobal('Notification', { permission })
+  it.each(cases)(
+    '%s, focused %s, turn-done %s, permission %s -> %s',
+    async (host, focused, turnDone, permission, expected) => {
+      if (host === 'webapp') {
+        document.documentElement.dataset.hermesDesktopHost = 'browser'
+        // The live permission the browser bridge checks, not only the cached store.
+        vi.stubGlobal('isSecureContext', true)
+        vi.stubGlobal('Notification', { permission })
+      }
+
+      vi.spyOn(document, 'hasFocus').mockReturnValue(focused)
+      setNativeNotifyKind('turnDone', turnDone)
+      $browserNotificationPermission.set(permission)
+      expect($nativeNotifyPrefs.get().kinds.turnDone).toBe(turnDone)
+
+      const channel = fakeChannel()
+      $gateway.set(channel as never)
+      window.location.hash = '#/stored-1'
+      $selectedStoredSessionId.set('stored-1')
+      $activeSessionId.set('s1')
+      $sessionStates.set({ s1: createClientSessionState('stored-1') })
+      // The host can show notifications (Desktop: main says so; a browser asks its permission).
+      const supported = Promise.resolve(true)
+      window.hermesDesktop = { notify: vi.fn(async () => true), notifySupported: () => supported } as never
+      const stop = startPresenceReporter()
+      await supported
+
+      document.dispatchEvent(new Event('pointerdown'))
+      await vi.advanceTimersByTimeAsync(0)
+      stop()
+
+      expect(channel.calls).toEqual([{ basis: 'page', can_alert: expected, idle_seconds: 0, sessions: ['s1'] }])
     }
-
-    vi.spyOn(document, 'hasFocus').mockReturnValue(focused)
-    setNativeNotifyKind('turnDone', turnDone)
-    $browserNotificationPermission.set(permission)
-    expect($nativeNotifyPrefs.get().kinds.turnDone).toBe(turnDone)
-
-    const channel = fakeChannel()
-    $gateway.set(channel as never)
-    window.location.hash = '#/stored-1'
-    $selectedStoredSessionId.set('stored-1')
-    $activeSessionId.set('s1')
-    $sessionStates.set({ s1: createClientSessionState('stored-1') })
-    // The host can show notifications (Desktop: main says so; a browser asks its permission).
-    const supported = Promise.resolve(true)
-    window.hermesDesktop = { notify: vi.fn(async () => true), notifySupported: () => supported } as never
-    const stop = startPresenceReporter()
-    await supported
-
-    document.dispatchEvent(new Event('pointerdown'))
-    await vi.advanceTimersByTimeAsync(0)
-    stop()
-
-    expect(channel.calls).toEqual([{ basis: 'page', can_alert: expected, idle_seconds: 0, sessions: ['s1'] }])
-  })
+  )
 })

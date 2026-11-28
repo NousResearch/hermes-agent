@@ -26,7 +26,10 @@ import { type ProfileBackendIpcDeps, registerProfileBackendIpc } from './profile
 // The user answers every native confirm with its first button (Allow) unless a test holds the dialog open.
 const electron = vi.hoisted(() => ({
   showMessageBox: vi.fn(async (): Promise<{ response: number }> => ({ response: 0 })),
-  windows: [] as { isDestroyed: () => boolean; webContents: { isDestroyed: () => boolean; send: (...args: unknown[]) => void } }[]
+  windows: [] as {
+    isDestroyed: () => boolean
+    webContents: { isDestroyed: () => boolean; send: (...args: unknown[]) => void }
+  }[]
 }))
 
 vi.mock('electron', () => ({

@@ -18,7 +18,10 @@ budget, attached to a fresh tool result while another tool-capable call remains.
 than their penultimate iteration; a one-iteration run has no pre-cap checkpoint window.
 The notice is saved in the session transcript before the next request. Workers should
 call `kanban_complete` only after verifying the task contract, or persist a progress
-comment and continue. A commit or diff alone never automatically completes a task.
+comment and continue. A worker that finished a verified batch but not the whole task can
+call `kanban_complete(disposition='continue', summary=...)`: the run ends as `continued`
+and the same card goes back to `ready` for the next worker, whose context carries the
+handoff. A commit or diff alone never automatically completes a task.
 
 The hard cap, toolless final summary, and consecutive-failure circuit breaker are
 unchanged: workers that still exhaust their budget remain subject to bounded retries.
@@ -462,7 +465,7 @@ Dispatcher-owned workers receive their task lifecycle tools automatically.
 |---|---|---|
 | `kanban_show` | Read the current task (title, body, prior attempts, parent handoffs, comments, full pre-formatted `worker_context`). Defaults to the env's task id. | — |
 | `kanban_list` | List task summaries with filters for `assignee`, `status`, `tenant`, archived visibility, and limit. Intended for orchestrators discovering board work. | — |
-| `kanban_complete` | Finish with `summary` + `metadata` structured handoff. | at least one of `summary` / `result` |
+| `kanban_complete` | Finish with `summary` + `metadata` structured handoff. `disposition='continue'` instead closes this run as `continued` and requeues the same card as `ready` (workspace kept, children not released, no `artifacts`/`created_cards`), so a worker that finished one finite batch hands the rest to the next run without a block. | at least one of `summary` / `result` |
 | `kanban_request_review` | Start same-card review with a durable `summary`, optional `metadata`, and optional reviewer profile. The task moves to `review`; this is not a block. | `summary` |
 | `kanban_request_changes` | Reviewer verdict from an active review run. Closes that run, reapplies parent gating, and routes the task to its original implementer without block-loop accounting. | `reason` |
 | `kanban_block` | Stop work and route by why: `kind=dependency` (waits in `todo`, auto-resumes when an incomplete parent finishes; with no open parent it is recorded as `needs_input` instead, since the wait could never be satisfied), `needs_input`/`capability`/`transient` (surface to a human). Repeated same-kind re-blocks auto-escalate to `triage`. | `reason` |

@@ -7,6 +7,30 @@ import { $sessions, resolveComposerSessionKey } from './session'
 // read-modify-write silently drop an entry another window had just tracked. Per-entry keys make
 // each write touch only the record it owns.
 const ENTRY_PREFIX = 'hermes.desktop.pendingSubmissions.v2:'
+// Entries a full origin quota refused to journal: module memory holds them for the writing
+// window only — reload recovery is exactly what the refused storage could not provide. The reads
+// below merge them back so this window keeps its queue cards, fences and duplicate-send guard,
+// and a later successful write or a removal drops the copy.
+const unstored = new Map<string, PendingSubmission>()
+
+// One journal write, best effort: a browser origin at its storage quota refuses the setItem, and
+// the message the user typed is not the cache's to refuse (#156129). The refused entry lives in
+// this window's memory instead; cross-window sharing and reload recovery degrade, sends do not.
+// Whether the write landed is part of the contract: the v1 migration may only drain a slice once
+// every copy it replaced actually persisted.
+function journalEntry(key: string, entry: PendingSubmission): boolean {
+  try {
+    window.localStorage.setItem(key, JSON.stringify(entry))
+    unstored.delete(key)
+
+    return true
+  } catch {
+    unstored.set(key, entry)
+
+    return false
+  }
+}
+
 // The pre-v2 single blob, read for upgrade and drained per session as entries are rewritten.
 const LEGACY_KEY = 'hermes.desktop.pendingSubmissions.v1'
 interface PendingSubmission {
@@ -52,6 +76,14 @@ export function readPendingSubmissions(session: string): Record<string, PendingS
     if (owner === session && typeof id === 'string' && entry) { entries[id] = entry }
   }
 
+  // This window's refused writes are the freshest records it owns; they win over any older
+  // storage copy (a later successful write deletes them from the map first).
+  for (const [key, entry] of unstored) {
+    const [owner, id] = parse(key.slice(ENTRY_PREFIX.length), [] as unknown[])
+
+    if (owner === session && typeof id === 'string') { entries[id] = entry }
+  }
+
   return entries
 }
 
@@ -74,33 +106,62 @@ export function journaledPendingSessions(): string[] {
     if (typeof owner === 'string' && unsettled(parse<null | PendingSubmission>(window.localStorage.getItem(key), null))) { sessions.add(owner) }
   }
 
+  for (const [key, entry] of unstored) {
+    const [owner] = parse(key.slice(ENTRY_PREFIX.length), [] as unknown[])
+
+    if (typeof owner === 'string' && unsettled(entry)) { sessions.add(owner) }
+  }
+
   return [...sessions]
 }
 
 /** One admission's record without enumerating the journal: its v2 key, else the legacy blob. */
 function readPendingSubmission(session: string, id: string): PendingSubmission | undefined {
-  return parse<null | PendingSubmission>(window.localStorage.getItem(entryKey(session, id)), null) ??
+  return unstored.get(entryKey(session, id)) ??
+    parse<null | PendingSubmission>(window.localStorage.getItem(entryKey(session, id)), null) ??
     parse(window.localStorage.getItem(LEGACY_KEY), {} as Record<string, Record<string, PendingSubmission>>)[session]?.[id]
 }
 
 function writeEntries(session: string, before: Record<string, PendingSubmission>, after: Record<string, PendingSubmission>): void {
   for (const id of Object.keys(before)) {
-    if (!(id in after)) { window.localStorage.removeItem(entryKey(session, id)) }
+    if (!(id in after)) {
+      window.localStorage.removeItem(entryKey(session, id))
+      unstored.delete(entryKey(session, id))
+    }
   }
 
   for (const [id, entry] of Object.entries(after)) {
-    if (JSON.stringify(before[id]) !== JSON.stringify(entry)) { window.localStorage.setItem(entryKey(session, id), JSON.stringify(entry)) }
+    if (JSON.stringify(before[id]) !== JSON.stringify(entry)) { journalEntry(entryKey(session, id), entry) }
   }
 
   // Upgrade: once this session's entries live in v2 keys, drop its slice of the legacy blob.
   const legacy = parse(window.localStorage.getItem(LEGACY_KEY), {} as Record<string, unknown>)
 
   if (session in legacy) {
-    for (const [id, entry] of Object.entries(after)) { window.localStorage.setItem(entryKey(session, id), JSON.stringify(entry)) }
-    delete legacy[session]
+    // Migration guarantee: EVERY surviving entry must be readable from its v2 key before the
+    // slice dies — the loop above skips entries that are unchanged this snapshot (they may live
+    // only in v1), so this copy, not the diff loop, is what v1-only records migrate through.
+    // A quota-refused copy holds the slice closed: the receipt stays durable in the copy the
+    // origin has already accepted (reads merge the slice and prefer any v2 key that did land),
+    // and the next reconcile retries the drain. Deleting the slice before its v2 successor
+    // landed demoted an already-persisted receipt to this window's memory — a reload lost the
+    // card and its fence to the very quota the write refused.
+    let migrated = true
 
-    if (Object.keys(legacy).length) { window.localStorage.setItem(LEGACY_KEY, JSON.stringify(legacy)) }
-    else { window.localStorage.removeItem(LEGACY_KEY) }
+    for (const [id, entry] of Object.entries(after)) {
+      if (!journalEntry(entryKey(session, id), entry)) { migrated = false }
+    }
+
+    if (migrated) {
+      delete legacy[session]
+
+      // A quota-refused legacy rewrite only delays draining the stale slice, and reads prefer the
+      // per-entry keys anyway.
+      try {
+        if (Object.keys(legacy).length) { window.localStorage.setItem(LEGACY_KEY, JSON.stringify(legacy)) }
+        else { window.localStorage.removeItem(LEGACY_KEY) }
+      } catch { /* the drained slice survives in the v2 keys */ }
+    }
   }
 }
 
@@ -180,7 +241,7 @@ export function trackPendingSubmission(storedId: string, entry: PendingSubmissio
   }
 
   const held = readPendingSubmission(key, entry.id)
-  window.localStorage.setItem(entryKey(key, entry.id), JSON.stringify(mergeReceipt(held, entry)))
+  journalEntry(entryKey(key, entry.id), mergeReceipt(held, entry))
 }
 
 // Array.isArray narrows `unknown` to `any[]`; the helpers keep that wire shape.

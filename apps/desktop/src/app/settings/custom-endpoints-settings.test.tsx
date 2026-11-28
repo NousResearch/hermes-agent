@@ -262,4 +262,48 @@ describe('CustomEndpointsSettings', () => {
     // typed bare root would 404 every request even though the test looked green.
     expect(urlInput.value).toBe('http://h.test/v1')
   })
+
+  it('a retest replaces the previous Test toast instead of stacking a stale error (#145348)', async () => {
+    getCustomEndpoints.mockResolvedValue(emptyResponse)
+    validateCustomEndpoint
+      .mockResolvedValueOnce({ ok: false, reachable: true, message: 'The endpoint rejected the API key.', models: [] })
+      .mockResolvedValueOnce({ ok: true, message: '', models: ['model-a'], transport_checked: 'chat_completions' })
+    render(<CustomEndpointsSettings />)
+
+    await screen.findByText('No custom endpoints')
+    fireEvent.change(screen.getByPlaceholderText('http://127.0.0.1:8081/v1'), {
+      target: { value: 'http://h.test/v1' }
+    })
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Test' })))
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Test' })))
+
+    expect(notify).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ id: 'custom-endpoint-test', kind: 'warning' })
+    )
+    expect(notify).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ id: 'custom-endpoint-test', kind: 'success' })
+    )
+  })
+
+  it('shows the Test result inline at the button and clears it when the URL changes (#145349)', async () => {
+    getCustomEndpoints.mockResolvedValue(emptyResponse)
+    validateCustomEndpoint
+      .mockResolvedValueOnce({ ok: false, reachable: true, message: 'The endpoint rejected the API key.', models: [] })
+      .mockResolvedValueOnce({ ok: true, message: '', models: ['model-a'], transport_checked: 'chat_completions' })
+    render(<CustomEndpointsSettings />)
+
+    await screen.findByText('No custom endpoints')
+    const urlInput = screen.getByPlaceholderText('http://127.0.0.1:8081/v1')
+    fireEvent.change(urlInput, { target: { value: 'http://h.test/v1' } })
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Test' })))
+    expect(screen.getByText('The endpoint rejected the API key.')).toBeTruthy()
+
+    // Editing the URL invalidates the stale result; a retest flips the line to success.
+    fireEvent.change(urlInput, { target: { value: 'http://h2.test/v1' } })
+    expect(screen.queryByText('The endpoint rejected the API key.')).toBeNull()
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Test' })))
+    expect(screen.getByText(/Endpoint is reachable/)).toBeTruthy()
+  })
 })

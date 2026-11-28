@@ -6,7 +6,14 @@ With ``display.busy_input_mode: steer`` the follow-up rides inside the latest
 as live user intent — and must pick whichever intent-bearing row is LAST in
 the original transcript, so an older steer never outranks a newer real user
 request.
+
+A marker block is live only when it closes the tool result (#161043): marker
+text quoted inside a tool result — a ``session_search`` result returning a
+stored transcript verbatim, a file read of a persisted tool result — stays
+data and must never be promoted to the session's latest user request.
 """
+
+import json
 
 import pytest
 
@@ -24,6 +31,8 @@ import itertools
 REQUEST_A = "Historical request A: audit the auth module."
 STEER_B = "Steer B: stop, switch to fixing the login bug instead."
 REQUEST_C = "Newer real user request C: now write the release notes."
+REAL_REQUEST = "When do the morning cron jobs run?"
+QUOTED_STEER = "go with option 3"
 
 
 def _tool_turns(start: int, count: int, *, steer_at: int | None = None) -> list[dict]:
@@ -145,3 +154,95 @@ def test_compressed_steer_presence_only_counts_tool_rows(role):
     assert STEER_MARKER_OPEN in quoted["content"]
     live = {"role": "tool", "tool_call_id": "c", "content": f"ok{format_steer_marker(STEER_B)}"}
     assert _compressed_has_busy_steer([live]) is True
+
+
+def _session_search_tool_row() -> dict:
+    """A tool row quoting another session's steer, as ``session_search``
+    returns stored messages verbatim (#161043)."""
+    quoted = format_steer_marker(QUOTED_STEER).strip()
+    search_result = json.dumps(
+        {"success": True, "results": [{"session_id": "other-session", "snippet": quoted}]},
+        ensure_ascii=False,
+    )
+    return {"role": "tool", "tool_call_id": "call-1", "content": search_result}
+
+
+def _search_original() -> list[dict]:
+    return [
+        {"role": "user", "content": REAL_REQUEST},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {"name": "session_search", "arguments": '{"query": "cron"}'},
+                }
+            ],
+        },
+        _session_search_tool_row(),
+        {"role": "assistant", "content": "Checking the cron definitions."},
+    ]
+
+
+def test_quoted_steer_in_search_result_is_not_promoted():
+    """Regression for #161043: marker text quoted inside a tool result stays
+    data — the anchor is the session's own last user message, not the other
+    session's steer."""
+    original = _search_original()
+    compressed = [{"role": "assistant", "content": "Checking the cron definitions."}]
+
+    outcome = _ensure_compressed_has_user_turn(original, compressed)
+
+    assert outcome == "inserted"
+    _assert_alternation(compressed)
+    users = _user_rows(compressed)
+    assert users == [REAL_REQUEST], users
+    assert QUOTED_STEER not in users
+
+
+def test_quoted_marker_in_tail_tool_row_does_not_block_anchor():
+    """Regression for #161043 (related): a quoted marker in a surviving tail
+    tool row must not make the anchor check return ``already_present`` — the
+    real user message is still restored."""
+    assert _compressed_has_busy_steer([_session_search_tool_row()]) is False
+    original = _search_original()
+    compressed = [_summary_row(), _session_search_tool_row()]
+
+    outcome = _ensure_compressed_has_user_turn(original, compressed)
+
+    assert outcome == "inserted"
+    _assert_alternation(compressed)
+    users = _user_rows(compressed)
+    assert REAL_REQUEST in users, users
+    assert QUOTED_STEER not in users
+
+
+def test_live_steer_appended_after_quoted_block_still_wins():
+    """A live steer appended to a tool result whose output already quotes a
+    marker is still restored — the trailing block, not the quoted one, is the
+    delivery."""
+    quoted = _session_search_tool_row()["content"]
+    content = quoted + format_steer_marker(STEER_B)
+    original = [
+        {"role": "user", "content": REQUEST_A},
+        {
+            "role": "assistant",
+            "content": "Working.",
+            "tool_calls": [
+                {"id": "call-9", "type": "function", "function": {"name": "terminal", "arguments": "{}"}}
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call-9", "content": content},
+    ]
+    compressed = [_summary_row(), {"role": "assistant", "content": "Checking the cron definitions."}]
+
+    outcome = _ensure_compressed_has_user_turn(original, compressed)
+
+    assert outcome == "inserted"
+    _assert_alternation(compressed)
+    users = _user_rows(compressed)
+    assert STEER_B in users, users
+    assert QUOTED_STEER not in users
+    assert REQUEST_A not in users

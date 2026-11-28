@@ -85,8 +85,10 @@ orchestrator subagent (depth > 0) is synchronous.
 ## Quick Reference
 
 - Unit must be answerable without sibling output, else it is serial.
-- Delete fake edges: for each "and then" in an existing pipeline, check the next
-  step actually reads the previous step's output; if it does not, run both in parallel.
+- Delete fake edges: an "and then" between two steps is fake only when the next
+  step does not read the previous one's output, they share no mutable state
+  (files, git index, ports, test runners), and the user asked for no order. Then
+  run both in parallel.
 - Manifest: one unit per line in `<run>/manifest.jsonl`; print count + run dir.
 - Per child: ~8-12 mechanical edits, or ~2-3k lines of reading, or ~50-70 KB of
   corpus; size by the LARGEST unit. Structured output goes to files, never the

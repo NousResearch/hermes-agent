@@ -420,6 +420,12 @@ def _markdown_enabled() -> bool:
     return _get_scoped_secret("PHOTON_MARKDOWN", "true").strip().lower() not in {"false", "0", "no"}
 
 
+def _plain_text_style() -> str:
+    """``PHOTON_PLAIN_TEXT_STYLE`` for plain-text sends: strip (default), plain, caps, unicode, emoji,
+    combinable (``caps,emoji``) or ``all``. See gateway/platforms/plain_text_style.py."""
+    return _get_scoped_secret("PHOTON_PLAIN_TEXT_STYLE", "") or ""
+
+
 # Mirrors URL_RE in plugins/platforms/photon/sidecar/send-format.mjs. Keep the
 # two in sync: the sidecar owns the builder choice, this owns the payload that
 # choice implies.
@@ -436,7 +442,7 @@ def _sidecar_payload_text(text: str, send_markdown: bool) -> str:
     """
     if send_markdown and not _SIDECAR_URL_RE.search(text or ""):
         return text
-    return strip_markdown(text, keep_link_targets=True)
+    return strip_markdown(text, keep_link_targets=True, style=_plain_text_style())
 
 
 def _url_only_candidate(text: str) -> Optional[str]:
@@ -1556,7 +1562,7 @@ class PhotonAdapter(BasePlatformAdapter):
 
     def format_message(self, content: str) -> str:
         # Markdown passes through verbatim (sidecar markdown() builder); PHOTON_MARKDOWN=false strips.
-        return content if _markdown_enabled() else strip_markdown(content, keep_link_targets=True)
+        return content if _markdown_enabled() else strip_markdown(content, keep_link_targets=True, style=_plain_text_style())
 
     @staticmethod
     def _is_retryable_error(error: Optional[str]) -> bool:

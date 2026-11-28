@@ -36,7 +36,10 @@ def sanitize_context(text: str) -> str:
 
 
 _NON_TEXT_PART_TYPES = {"image", "image_url", "input_image", "audio", "input_audio"}
+# Typed reasoning blocks that ride inside ``content`` on non-strict OpenAI-compatible wires.
+_THINKING_PART_TYPES = {"thinking", "reasoning", "redacted_thinking", "thought"}
 _TEXT_KEYS = ("text", "content", "input_text", "output_text", "summary_text")
+
 
 
 def _field(value: Any, key: str) -> Any:
@@ -55,6 +58,54 @@ def _text_from_part(part: Any) -> str:
         if isinstance(text, str):
             return text
     return ""
+
+
+def _thinking_from_part(part: Any) -> str:
+    """Thinking text from a typed reasoning block, else ``""``.
+
+    Mistral and other non-strict OpenAI-compatible backends stream reasoning as typed
+    content blocks — ``{"type": "thinking", "thinking": [{"type": "text", "text": "…"}]}`` —
+    with the value as a nested block list, not a string.
+    """
+    if not isinstance(part, Mapping):
+        return ""
+    if str(_field(part, "type") or "").strip().lower() not in _THINKING_PART_TYPES:
+        return ""
+    value = _field(part, "thinking")
+    if value is None:
+        value = _field(part, "reasoning")
+    if value is None:
+        value = _field(part, "text")
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (list, tuple)):
+        return "".join(_text_from_part(sub) for sub in value)
+    return ""
+
+
+def split_thinking_content(content: Any) -> tuple[str, str]:
+    """Split provider content into ``(visible text, thinking text)``.
+
+    Flattening alone silently drops typed thinking blocks, so a caller that only wants the
+    visible answer loses reasoning it was billed for. Reasoning must be routed to the
+    reasoning channel *before* the visible text is flattened.
+    """
+    if isinstance(content, list):
+        visible: list[str] = []
+        thinking: list[str] = []
+        for part in content:
+            thought = _thinking_from_part(part)
+            if thought:
+                thinking.append(thought)
+                continue
+            text = _text_from_part(part)
+            if text:
+                visible.append(text)
+        return "".join(visible), "".join(thinking)
+    thought = _thinking_from_part(content)
+    if thought:
+        return "", thought
+    return flatten_message_text(content, sep=""), ""
 
 
 def flatten_message_text(content: Any, *, sep: str = "\n") -> str:

@@ -30,6 +30,8 @@ _MIRROR_FILES = (
     "package-lock.json",
     "patch-spectrum-mixed-attachments.mjs",
     ".npmrc",
+    "send-format.mjs",
+    "stream-staleness.mjs",
 )
 # Tests monkeypatch these module globals directly; the accessors honor a non-None value.
 _SIDECAR_DIR: Optional[Path] = None

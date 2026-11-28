@@ -22,11 +22,14 @@ Hermes also ships a modern TUI with modal overlays, mouse selection, and non-blo
 # Start an interactive session (default)
 hermes
 
-# Single query mode (non-interactive)
+# Start a session with a first message (on a terminal the session stays open)
 hermes chat -q "Hello"
 
-# Single query from a file or stdin — nothing is shell-interpreted, so
-# arbitrary text (quotes, $(...), backticks) arrives verbatim
+# Single query mode: answer and exit (-Q, or -q with piped stdio, also exit)
+hermes chat --oneshot -q "Hello"
+
+# Query from a file or stdin — nothing is shell-interpreted, so arbitrary
+# text (quotes, $(...), backticks) arrives verbatim
 hermes chat --query-file prompt.txt
 hermes chat --query-file - < prompt.txt
 

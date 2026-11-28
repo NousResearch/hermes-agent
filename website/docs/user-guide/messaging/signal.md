@@ -227,6 +227,7 @@ The adapter monitors the SSE connection and automatically reconnects if:
 | Problem | Solution |
 |---------|----------|
 | **"Cannot reach signal-cli"** during setup | Ensure signal-cli daemon is running: `signal-cli --account +YOUR_NUMBER daemon --http 127.0.0.1:8080` |
+| **HTTP rejection through an SSH loopback tunnel** | Use the same explicit port for the local forward, the remote loopback listener, and Hermes' Signal HTTP URL. signal-cli 0.14.4 validates an explicit HTTP authority port against the daemon's listener port. If the port is occupied locally, choose another port on both ends rather than overriding the Host header or widening the listener's bind address. |
 | **Messages not received** | Check that `SIGNAL_ALLOWED_USERS` includes the sender's number in E.164 format (with `+` prefix) |
 | **"signal-cli not found on PATH"** | Install signal-cli and ensure it's in your PATH, or use Docker |
 | **Connection keeps dropping** | Check signal-cli logs for errors. Ensure Java 17+ is installed. |

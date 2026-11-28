@@ -69,8 +69,8 @@ _PROPERTIES: dict[str, Any] = {
     "window_id": {
         "type": "integer",
         "description": (
-            "Optional exact native window target for action='capture'. Pair with pid when an "
-            "external cua-driver list_windows lookup has already identified the window."
+            "Optional exact native window target for action='capture'. Pair with pid when "
+            "action='list_windows' has already identified the window."
         ),
     },
     "element": {
@@ -170,10 +170,9 @@ _PROPERTIES: dict[str, Any] = {
     "bring_to_front": {
         "type": "boolean",
         "description": (
-            "Optional and only valid with delivery_mode='foreground'. Explicitly invokes "
-            "cua-driver's standalone bring_to_front tool before the input; it is never passed as "
-            "an input property. This persistent focus change has a separate approval scope. "
-            "Default false."
+            "Optional and only valid with delivery_mode='foreground'. Bring the target window "
+            "to the front before the input when supported by the backend. This persistent focus "
+            "change has a separate approval scope. Default false."
         ),
     },
     "capture_after": {
@@ -188,13 +187,13 @@ _PROPERTIES: dict[str, Any] = {
 COMPUTER_USE_SCHEMA: dict[str, Any] = {
     "name": "computer_use",
     "description": (
-        "Drive the desktop via cua-driver: screenshots, mouse, keyboard, scroll, drag. macOS, "
-        "Windows, and Linux. Input is background-FIRST, not background-only: the default delivery "
-        "routes to the target window without stealing the user's cursor or focus (works even on "
-        "hidden/minimized windows), and when a result's `verdict` says to escalate you climb — "
-        "pixel coordinates, or delivery_mode='foreground' (briefly fronts the window; separate "
-        "approval). Each result carries a `verdict` with the next step; follow it — never repeat "
-        "confirmed input, and re-capture to verify an unverifiable one before retrying. Workflow: "
+        "Control and observe desktop applications through the configured computer-use backend: "
+        "screenshots, mouse, keyboard, scroll, drag. Supported platforms and delivery behavior "
+        "depend on the backend. Input defaults to delivery_mode='background'; when a result's "
+        "`verdict` recommends escalation, use a supported option such as pixel coordinates or "
+        "delivery_mode='foreground' (separate approval). Follow the returned status and verdict; "
+        "never repeat confirmed input, and re-capture to verify an unverifiable or unknown outcome "
+        "before retrying. Workflow: "
         "action='capture' (mode='som' gives numbered element overlays), then click by `element` "
         "index; re-capture after state-changing actions (or pass capture_after=true). Image "
         "captures include a shareable `screenshot_path`; deliver it via the platform's MEDIA "

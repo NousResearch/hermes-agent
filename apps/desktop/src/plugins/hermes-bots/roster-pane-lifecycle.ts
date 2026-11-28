@@ -1,12 +1,10 @@
-import { atom, host } from '@hermes/plugin-sdk'
+import { atom } from '@hermes/plugin-sdk'
 import { useEffect } from 'react'
 
-import { $lastRoster } from './data'
+import { $lastRoster, publishWorkspaceOwnerLabels } from './data'
 import type { useRoster } from './data'
-import { displayName } from './labels'
 import { pullServerAvatars } from './profile-ops'
 import { trackInboundActivity } from './roster-actions'
-import { botRosterMeta, botWorkspaceOwnerKey } from './routing'
 import { backfillMessagingProtocol } from './soul'
 import type { GatewaySource } from './types'
 import type { BotMeta, RosterRow } from './types'
@@ -33,11 +31,10 @@ export function usePublishRosterSnapshot({ data, live, roster, allMeta, activeSo
     // writes must settle after render: other subscribers of the same atoms
     // would otherwise be updated while BotsPane was still rendering.
     $lastRoster.set(roster.filter(row => !row?.ghost))
-    // Tabs caption a bot chat by its bot (#99152); republished with the
-    // roster so a rename follows and tiles restored at boot resolve.
-    roster.forEach(bot => {
-      host.setWorkspaceOwnerLabel?.(botWorkspaceOwnerKey(bot), displayName(bot, botRosterMeta(bot, allMeta)))
-    })
+    // Every snapshot already labelled its bots' tabs (#99152) as it was
+    // fetched, pane or not; this adds the render-only rows (an offline
+    // selected owner's ghost) the snapshot itself does not carry.
+    publishWorkspaceOwnerLabels(roster, allMeta, data?.fetchedAt)
 
     if (Array.isArray(data?.sources)) {
       $lastSources.set(data.sources)

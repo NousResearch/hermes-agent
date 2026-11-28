@@ -945,11 +945,38 @@ async function fetchRosterSnapshot(activeConnectionId: null | string | undefined
  *  profile-ops imports this module. */
 async function reconcileBotMeta(rows: RosterRow[], fetchedAt: number): Promise<void> {
   const { mergeServerMeta } = await import('./profile-ops')
+  const real = rows.filter(row => !row?.ghost)
 
-  mergeServerMeta(
-    rows.filter(row => !row?.ghost),
-    fetchedAt
-  )
+  mergeServerMeta(real, fetchedAt)
+  publishWorkspaceOwnerLabels(real, $botMeta.get(), fetchedAt)
+}
+
+/** Issue time of the snapshot that last labelled each owner key. A superseded
+ *  poll's query function still runs to completion after a newer one landed. */
+const ownerLabelIssuedAt = new Map<string, number>()
+
+/** Tabs caption a bot chat by its bot (#99152). Published from every roster
+ *  snapshot, not only from the Bots pane: the pane strip mounts background tabs
+ *  lazily, so a launch restored on the Sessions tab never ran the pane's
+ *  effects and every restored bot tab read "Bot Chat". Presentation only —
+ *  never a title write. */
+export function publishWorkspaceOwnerLabels(
+  rows: RosterRow[],
+  meta: Record<string, BotMeta>,
+  fetchedAt: number | undefined
+): void {
+  const issuedAt = Number(fetchedAt) || 0
+
+  rows.forEach(bot => {
+    const ownerKey = botWorkspaceOwnerKey(bot)
+
+    if (issuedAt < (ownerLabelIssuedAt.get(ownerKey) || 0)) {
+      return
+    }
+
+    ownerLabelIssuedAt.set(ownerKey, issuedAt)
+    host.setWorkspaceOwnerLabel?.(ownerKey, displayName(bot, botRosterMeta(bot, meta)))
+  })
 }
 
 export function useRoster() {

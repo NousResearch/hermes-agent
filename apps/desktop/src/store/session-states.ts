@@ -40,6 +40,13 @@ import { stableArray } from '@/lib/stable-array'
 import { readJson, writeJson } from '@/lib/storage'
 import type { SessionInfo } from '@/types/hermes'
 
+import {
+  type BotChatScopeState,
+  loadBotChatScopes,
+  reownBotChatScopes,
+  saveBotChatScopes,
+  withBotChatScope
+} from './bot-chat-scope-storage'
 import { dropQueuedLaunchPicksForProfile, migrateQueuedLaunchPicksForProfile } from './composer-queued-pick'
 import { dropStatusDrawersForProfile, migrateStatusDrawersForProfile } from './composer-status-drawer'
 import { registryConnectionKind } from './connection-registry-state'
@@ -1899,49 +1906,29 @@ export function storedSessionIdForRuntimeId(sessionId: string): null | string {
   return sessionId === $activeSessionId.get() && selected ? selected : null
 }
 
-const BOT_CHAT_SCOPE_KEY = 'hermes.desktop.botChatSessions.v1'
+const restoredBotChats = loadBotChatScopes()
 
 /** Stored ids last opened as a bot's chat. A tile carries `workspaceMode`, but
  *  a bot chat normally lands in MAIN — `in-place` mints no tile when there is
  *  none to front — and main has no tile to carry the scope on. Kept here so a
  *  surface can still tell a companion chat from a working session, persisted
  *  so that survives a relaunch the way tile scope does. */
-export const $botChatSessionIds = atom<ReadonlySet<string>>(
-  new Set((readJson<unknown>(BOT_CHAT_SCOPE_KEY) as unknown[] | null)?.filter(id => typeof id === 'string') ?? [])
-)
+export const $botChatSessionIds = atom<ReadonlySet<string>>(restoredBotChats.ids)
 
 /** The bot-mode scope each stored id was last opened under, for the main tab
- *  (which has no tile to carry one). Window-local: the caption falls back to
- *  the stored title until the chat is opened again. */
-export const $botChatScopes = atom<Readonly<Record<string, SessionTileWorkspaceScope>>>({})
+ *  (which has no tile to carry one). Persisted with the ids, so a Bot Chat
+ *  restored in main still captions by its bot after a relaunch. */
+export const $botChatScopes = atom<Readonly<Record<string, SessionTileWorkspaceScope>>>(restoredBotChats.scopes)
 
-function rememberBotChatScope(storedSessionId: string, scope: SessionTileWorkspaceScope): void {
-  const isBotChat = scope.workspaceMode === 'bots'
-  const current = $botChatSessionIds.get()
-  const { [storedSessionId]: previous, ...rest } = $botChatScopes.get()
+/** Applies one bot-chat-scope-storage transition (null: nothing changed) and persists it. */
+function setBotChatScopes(change: (state: BotChatScopeState) => BotChatScopeState | null): void {
+  const next = change({ ids: $botChatSessionIds.get(), scopes: $botChatScopes.get() })
 
-  const changed = isBotChat
-    ? previous?.workspaceOwnerKey !== scope.workspaceOwnerKey || previous?.workspaceTabTitle !== scope.workspaceTabTitle
-    : Boolean(previous)
-
-  if (changed) {
-    $botChatScopes.set(isBotChat ? { ...rest, [storedSessionId]: scope } : rest)
+  if (next) {
+    $botChatScopes.set(next.scopes)
+    $botChatSessionIds.set(next.ids)
+    saveBotChatScopes(next)
   }
-
-  if (current.has(storedSessionId) === isBotChat) {
-    return
-  }
-
-  const next = new Set(current)
-
-  if (isBotChat) {
-    next.add(storedSessionId)
-  } else {
-    next.delete(storedSessionId)
-  }
-
-  $botChatSessionIds.set(next)
-  writeJson(BOT_CHAT_SCOPE_KEY, next.size ? [...next] : null)
 }
 
 /** True while this live session is a bot's chat rather than a working session.
@@ -1956,7 +1943,7 @@ export function isBotChatSession(sessionId: null | string | undefined): boolean 
 export function setSessionTileWorkspaceScope(storedSessionId: string, scope: SessionTileWorkspaceScope): boolean {
   // Before the tile lookup: openSession routes every open through here, and a
   // bot chat usually has no tile to record the scope on.
-  rememberBotChatScope(storedSessionId, scope)
+  setBotChatScopes(state => withBotChatScope(state, storedSessionId, scope))
 
   const tile = $sessionTiles.get().find(candidate => candidate.storedSessionId === storedSessionId)
   const workspaceOwnerKey = scope.workspaceMode === 'bots' ? scope.workspaceOwnerKey : undefined
@@ -2756,6 +2743,8 @@ export function dropTilesForProfile(
   }
 
   persistTiles()
+  // Bot chats remembered for MAIN ride the same owner routes as the Bot tiles.
+  setBotChatScopes(state => reownBotChatScopes(state, owner => !ownerMatches(owner)))
   // The rail is a profile-keyed family too (a later same-named profile must not inherit the tabs).
   // F4: the cookie jar lives in LOCAL userData — clear it only for a LOCAL delete, never a remote one.
   dropPreviewTabsForProfile(name, (String(route?.connectionId ?? '').trim() || LOCAL_CONNECTION_ID) === LOCAL_CONNECTION_ID)
@@ -2809,6 +2798,7 @@ export async function migrateTilesForProfile(oldProfile: string, newProfile: str
   }
 
   persistTiles()
+  setBotChatScopes(state => reownBotChatScopes(state, () => true, renamedOwner))
   migrateTranscriptTailsForProfile(from, to)
   migrateRememberedNavigationForProfile(from, to)
   migrateSessionOwnerHintsForProfile(from, to)

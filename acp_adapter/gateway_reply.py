@@ -43,6 +43,49 @@ class GatewayReplyMixin:
                 call_id, name, result=result if isinstance(result, str) else None, function_args=args,
                 is_error=payload.get("is_error") is True))
 
+    async def _open_automation(self, sid, editor_id, aid, card):
+        """An automation admission's ``message.start`` (async delegation or background process result) as the
+        start of a run no ``session/prompt`` owns. A client that asked for run boundaries
+        (``clientCapabilities._meta["bb.dev"].stateUpdate``) gets ACP v2's ``state_update``, carried by the
+        ``_bb.dev/state_update`` extension notification, ``running`` now and ``idle`` at its
+        ``message.complete``; without them it sees loose updates and must guess, from quiet, where a run that
+        pauses to think between steps ends. A prompt's own admission carries no card: its prompt response bounds it."""
+        text = card.get("display_text") if isinstance(card, dict) else None
+        if not aid or not isinstance(text, str) or not text.strip() or (sid, aid) in self._automation_runs:
+            return
+        self._automation_runs.add((sid, aid))
+        await self._send_run_state(editor_id, aid, "running")
+
+    async def _close_automation(self, sid, editor_id, aid, payload):
+        """End an open automation run with its outcome: ``completed`` ``end_turn``, ``cancelled`` ``cancelled``,
+        ``superseded`` (a newer admission started, so it ended unseen) ``end_turn``; ``failed`` and ``unknown``
+        (the gateway link or the reply was lost) are ``error``, which the client shows as a failure."""
+        if (sid, aid) not in self._automation_runs:
+            return
+        self._automation_runs.discard((sid, aid))
+        outcome = payload.get("outcome")
+        if outcome in ("completed", "superseded", None):
+            await self._send_run_state(editor_id, aid, "idle", stop_reason="end_turn")
+        elif outcome == "cancelled":
+            await self._send_run_state(editor_id, aid, "idle", stop_reason="cancelled")
+        else:
+            reason = payload.get("failure_reason")
+            message = reason if isinstance(reason, str) and reason.strip() else (
+                "The background turn failed." if outcome == "failed" else
+                "Lost track of this background turn: the gateway connection or its reply was lost, so its outcome is unknown.")
+            await self._send_run_state(editor_id, aid, "idle", stop_reason="error",
+                                       error={"code": -32603, "message": message})
+
+    async def _send_run_state(self, editor_id, aid, state, *, stop_reason=None, error=None):
+        if not self._state_updates or not self._conn:
+            return
+        update = {"sessionUpdate": "state_update", "state": state, "_meta": {"runId": aid}}
+        if stop_reason is not None:
+            update["stopReason"] = stop_reason
+        if error is not None:
+            update["error"] = error
+        await self._conn.ext_notification("bb.dev/state_update", {"sessionId": editor_id, "update": update})
+
     async def _finish_reply(self, sid, editor_id, aid, payload):
         """Show the settled reply's unseen remainder, then end the turn: its reply's id closes, and a tool
         call it left open (blocked by a guard, an approval denied) ends ``failed``, as the in-process agent
@@ -52,6 +95,7 @@ class GatewayReplyMixin:
             await self._conn.session_update(session_id=editor_id, update=self._chunk(sid, remainder))
         self._end_message(sid)
         await self._flush_open_tools(sid, editor_id, aid)
+        await self._close_automation(sid, editor_id, aid, payload)
 
     async def _flush_open_tools(self, sid, editor_id, aid):
         """Close every call admission *aid* started and never completed (``failed``: it produced no result)."""

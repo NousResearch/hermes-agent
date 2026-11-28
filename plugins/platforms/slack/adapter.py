@@ -2223,7 +2223,8 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
                 # stay stuck on "is thinking..." (#24117).
                 return SendResult(success=True)
             thread_ts = self._resolve_thread_ts(reply_to, metadata)
-            last_result = await self._post_chunks(chat_id, team_id, content, formatted, thread_ts)
+            last_result, message_ids = await self._post_chunks(
+                chat_id, team_id, content, formatted, thread_ts)
             # Clear Slack Assistant status as soon as the final message is posted.
             if thread_ts:
                 await self.stop_typing(chat_id, metadata=metadata)
@@ -2231,11 +2232,19 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
             # without an @mention.
             sent_ts = last_result.get("ts") if last_result else None
             if sent_ts:
-                self._bot_message_ts.add(self._workspace_message_marker(team_id, sent_ts))
+                # Every chunk of a split reply is a bot message: a thread started under any of
+                # them must be answered without an @mention, not only one under the last chunk.
+                for ts in message_ids or (sent_ts,):
+                    self._bot_message_ts.add(self._workspace_message_marker(team_id, ts))
                 if thread_ts:
                     self._bot_message_ts.add(self._workspace_message_marker(team_id, thread_ts))
                 self._trim_bot_message_timestamps()
-            return SendResult(success=True, message_id=sent_ts, raw_response=last_result)
+            # Earlier chunks of a split reply, like the other split-sending adapters report, so
+            # stream cleanup, the message ceiling and reply-context markers see every message.
+            continuation_ids = tuple(mid for mid in message_ids if mid != sent_ts)
+            return SendResult(
+                success=True, message_id=sent_ts, raw_response=last_result,
+                continuation_message_ids=continuation_ids)
         except Exception as e:  # pragma: no cover - defensive logging
             # Clear the status even when the failure preceded thread_ts resolution:
             # stop_typing falls back to metadata / the uniquely tracked status.
@@ -2252,8 +2261,9 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
 
     async def _post_chunks(
         self, chat_id: str, team_id: str, content: str, formatted: str, thread_ts: Optional[str]
-    ) -> Any:
-        """``chat.postMessage`` each ``MAX_MESSAGE_LENGTH`` chunk; returns the last response.
+    ) -> tuple[Any, tuple[str, ...]]:
+        """``chat.postMessage`` each ``MAX_MESSAGE_LENGTH`` chunk; returns the last response and
+        the ``ts`` of every posted chunk, in order.
         Block Kit only for single-chunk messages (a >39k response is pathological for the 50-block /
         3000-char limits); ``text`` stays the notification/accessibility fallback. With
         ``reply_broadcast`` only the first chunk is also posted to the main channel."""
@@ -2261,6 +2271,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         broadcast = self.config.extra.get("reply_broadcast", False)
         blocks = self._maybe_blocks(content) if len(chunks) == 1 else None
         last_result = None
+        message_ids: list[str] = []
         for i, chunk in enumerate(chunks):
             kwargs = {
                 "channel": chat_id, "text": chunk,
@@ -2274,7 +2285,9 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
             client_fn = lambda: self._get_client(chat_id, team_id=team_id)
             last_result = await self._call_with_block_fallback(
                 client_fn, "chat_postMessage", kwargs, "send")
-        return last_result
+            if last_result and last_result.get("ts"):
+                message_ids.append(str(last_result["ts"]))
+        return last_result, tuple(message_ids)
 
     @staticmethod
     def _retry_after_from_exc(e: BaseException) -> Optional[float]:

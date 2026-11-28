@@ -590,8 +590,10 @@ class ProviderProfile:
                     return None
                 url = effective_base.rstrip("/") + "/models"
 
+        import gzip
         import json
         import urllib.request
+        import zlib
 
         from hermes_cli.urllib_security import open_credentialed_url
 
@@ -608,7 +610,19 @@ class ProviderProfile:
 
         try:
             with open_credentialed_url(req, timeout=timeout) as resp:
-                data = json.loads(resp.read().decode())
+                body = resp.read()
+                # Providers that honour ``Accept-Encoding`` (the Kimi Coding profile sends
+                # ``gzip`` in its default headers) answer with a compressed body. Decoding it
+                # straight as UTF-8 raises on the gzip magic bytes, which used to be swallowed
+                # below and silently degraded the picker to the static curated catalog.
+                encoding = (resp.headers.get("Content-Encoding") or "").strip().lower()
+                # Some intermediaries forward the compressed bytes but drop the header, so fall
+                # back to the gzip magic number when nothing was advertised.
+                if encoding in ("gzip", "x-gzip") or (not encoding and body[:2] == b"\x1f\x8b"):
+                    body = gzip.decompress(body)
+                elif encoding == "deflate":
+                    body = zlib.decompress(body)
+                data = json.loads(body.decode())
             items = data if isinstance(data, list) else data.get("data", [])
             from hermes_cli.chat_catalog import chat_catalog_ids
 

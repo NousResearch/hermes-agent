@@ -12,6 +12,7 @@ import logging
 import os
 import shutil
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from agent.lsp.workspace import nearest_root
@@ -290,9 +291,29 @@ _TS_UNTRUSTED_MSG = (
 )
 
 
+def _project_native_tsc(root: str) -> Optional[str]:
+    """The project's own TypeScript 7+ launcher (``node_modules/.bin/tsc``), else ``None``.
+
+    TypeScript 7 ships no ``lib/tsserver.js``, so typescript-language-server cannot load it and
+    silently checks the project with Hermes's older SDK instead; its compiler serves LSP itself."""
+    pkg = os.path.join(root, "node_modules", "typescript")
+    if not os.path.isfile(os.path.join(pkg, "package.json")) or os.path.isfile(os.path.join(pkg, "lib", "tsserver.js")):
+        return None
+    from agent.lsp.install import _first_existing
+    found = _first_existing(Path(root, "node_modules", ".bin", "tsc"))
+    return str(found) if found is not None else None
+
+
 def _spawn_typescript(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
     """typescript-language-server loads the workspace's own ``node_modules/typescript`` unless
-    ``tsserver.path`` names another, so an untrusted workspace is pinned to Hermes's copy."""
+    ``tsserver.path`` names another, so an untrusted workspace is pinned to Hermes's copy. A trusted
+    workspace on TypeScript 7 (no tsserver) is served by its own ``tsc --lsp`` with no
+    typescript-language-server options; an explicit ``typescript`` command override still wins."""
+    if ctx.trusted and "typescript" not in ctx.binary_overrides and (tsc := _project_native_tsc(root)):
+        from pm import env_for
+        env = env_for("node")
+        env.update(ctx.env_overrides.get("typescript", {}))
+        return SpawnSpec([tsc, "--lsp", "--stdio"], root, root, env=env, seed_diagnostics_on_first_push=True)
     bin_path = _find_binary(ctx, "typescript", ("typescript-language-server",), "typescript-language-server")
     if bin_path is None:
         return None
@@ -304,6 +325,19 @@ def _spawn_typescript(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
             return None
         base = {"tsserver": {"path": sdk}}
     return _make_spec(root, ctx, "typescript", [bin_path, "--stdio"], base, seed=True)
+
+
+def _spawn_typescript_native(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
+    """TypeScript 7 speaks LSP directly; a PATH ``tsc`` could still be the legacy compiler."""
+    override = ctx.binary_overrides.get("typescript-native")
+    if override:
+        binary = _which(os.path.expanduser(override[0]))
+        command = [binary, *override[1:]] if binary else None
+    else:
+        from agent.lsp.install import try_install
+        binary = try_install("typescript-native", ctx.install_strategy)
+        command = [binary, "--lsp", "--stdio"] if binary else None
+    return _make_spec(root, ctx, "typescript-native", command) if command else None
 
 
 def _find_pses_bundle(ctx: ServerContext) -> Optional[str]:
@@ -418,6 +452,10 @@ SERVERS: list[ServerDef] = [
     _server("typescript", (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"),
             "JavaScript/TypeScript — typescript-language-server", resolve_root=_root_typescript,
             build_spawn=_spawn_typescript, seed=True),
+    # Selected explicitly by LSPService; the preceding legacy entry remains the default.
+    _server("typescript-native", (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"),
+            "JavaScript/TypeScript — TypeScript 7 native (opt-in)", resolve_root=_root_typescript,
+            build_spawn=_spawn_typescript_native),
     _server("vue-language-server", (".vue",), "Vue.js — @vue/language-server", resolve_root=_root_typescript,
             build_spawn=_spawn_vue),
     _server("svelte-language-server", (".svelte",), "Svelte — svelte-language-server", resolve_root=_root_typescript,

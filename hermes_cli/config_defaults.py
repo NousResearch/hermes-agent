@@ -2330,6 +2330,7 @@ DEFAULT_CONFIG = {
     # dormant and the in-process syntax check is the only tier.
     "lsp": {
         "enabled": True,  # False disables the whole subsystem: no servers, no event loop, no cost.
+        "typescript_backend": "legacy",  # native = TypeScript 7's own LSP (isolated prefix)
         # document = wait up to wait_timeout seconds for the current file's diagnostics; full = also
         # request workspace-wide diagnostics (slower).
         "wait_mode": "document",
@@ -2363,9 +2364,8 @@ DEFAULT_CONFIG = {
         # value, skips the install (no silent fallback to npm) so a pnpm/yarn supply-chain policy is
         # never bypassed.
         "package_manager": "npm",
-        # Idle seconds before a server is shut down (respawned on demand), so long- running
-        # processes don't accumulate stale children (hundreds of MB + pipe FDs each) across
-        # worktrees. 0 = keep servers for process lifetime.
+        # Idle seconds before a server is shut down (respawned on demand), so long-running processes
+        # don't accumulate stale children (hundreds of MB + pipe FDs each). 0 = process lifetime.
         "idle_timeout": 600.0,
         # Per-server overrides keyed by registry server_id (pyright, gopls...): disabled: true;
         # command: ["path/to/server", "--stdio"] (bypasses auto- install); env: {...};

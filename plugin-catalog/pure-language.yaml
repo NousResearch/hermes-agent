@@ -1,0 +1,31 @@
+name: pure-language
+title: Pure Language
+repo: https://github.com/joowon-jang/pure-language
+sha: 699d7cbcc8852e76e65f0f3536327705cba0fe8c
+description: >-
+  Keeps every answer in one language. Picks the target from the user's command or the language they
+  wrote in (54 languages, 22 scripts), injects a short guard, and cleans the final answer of words and
+  characters leaking in from other languages, with Korean Hanja readings from bundled Unihan data.
+  Appends the one-line rule to tool results so progress notes stay in the answer language. Code, URLs,
+  file paths and MEDIA: lines are never changed.
+  Disclosure: rewrites the leaking lines in one bounded ctx.llm call on its own auxiliary slot
+  (pure_language_rewrite, defaults to the user's main model; local word tables only as a fallback,
+  or first with local_fix: first); optional local log of leak snippets, off by default; no network calls of its own, no credentials, no background processes.
+maintainer: joowon-jang
+tier: community
+category: general
+requires_hermes: ">=0.23.4"
+version: "0.2.6"
+docs_url: https://github.com/joowon-jang/pure-language/blob/699d7cbcc8852e76e65f0f3536327705cba0fe8c/README.md
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+    - post_tool_call
+    - transform_tool_result
+    - on_interim_message
+    - transform_llm_output
+  provides_middleware:
+    - llm_request
+  requires_env: []

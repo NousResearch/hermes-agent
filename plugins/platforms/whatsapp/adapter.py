@@ -18,7 +18,8 @@ from gateway.platforms._shared import (
     apply_yaml_bridge as _apply_yaml_bridge, extra_or_secret as _extra_or_secret, get_scoped_secret, send_error
 )
 from gateway.platforms.send_targets import StandaloneSendPolicy, regex_stripped_parser
-from hermes_cli._subprocess_compat import windows_detach_flags
+from hermes_cli._subprocess_compat import (windows_detach_flags,
+                                            windows_detach_flags_without_breakaway)
 from hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
 from hermes_constants import (ensure_private_store, find_node_executable, get_hermes_dir, with_hermes_node_path)
 
@@ -252,9 +253,30 @@ def _spawn_bridge_process(argv: list, log_fh, env: dict, umask: int = -1) -> sub
     reaches it directly, #127047) and dies with this process however this process dies: a SIGKILLed
     or OOM-killed gateway no longer leaves its bridge serving the port and the WhatsApp session.
     ``umask`` is the session store's (``ensure_private_store``): Baileys writes creds.json and the
-    signal keys at the process umask."""
-    return spawn_owned(argv, purpose="whatsapp-bridge", stdin=subprocess.DEVNULL, stdout=log_fh,
-                       stderr=log_fh, env=env, creationflags=windows_detach_flags(), umask=umask)
+    signal keys at the process umask.
+
+    ``windows_detach_flags`` bundles CREATE_BREAKAWAY_FROM_JOB so the bridge outlives a job-wrapped
+    launcher (Electron Desktop, the Tauri bootstrap installer). A parent Job Object that allows
+    neither JOB_OBJECT_LIMIT_BREAKAWAY_OK nor BREAKAWAY_FLAG_SILENT_BREAKAWAY_OK rejects that bit,
+    and CreateProcess fails with ERROR_ACCESS_DENIED (WinError 5) before node ever runs, so the
+    bridge never starts: every reconnect retry fails identically for as long as the launcher stays
+    up (observed live: "Gateway running with 2 platform(s)" and ~1035 consecutive retries over days,
+    then an instant success on the next gateway restart, whose parent had no such job). Drop just
+    that one bit and keep the rest of the bundle (CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW); the
+    bridge then shares the gateway's job lifetime, and connect() respawns it on the next attempt.
+    Mirrors the gateway respawn/watcher fallbacks in hermes_cli.gateway and hermes_cli.gateway_windows.
+    """
+    kwargs = dict(purpose="whatsapp-bridge", stdin=subprocess.DEVNULL, stdout=log_fh,
+                  stderr=log_fh, env=env, umask=umask)
+    try:
+        return spawn_owned(argv, creationflags=windows_detach_flags(), **kwargs)
+    except OSError as exc:
+        error_code = getattr(exc, "winerror", None) or exc.errno
+        logger.warning("[Whatsapp] Bridge breakaway spawn failed (error=%s); retrying without "
+                       "CREATE_BREAKAWAY_FROM_JOB", error_code)
+        # A second failure is NOT swallowed: it propagates to connect()'s handler, which reports the
+        # bridge as unstartable rather than looping on a non-breakaway OSError.
+        return spawn_owned(argv, creationflags=windows_detach_flags_without_breakaway(), **kwargs)
 
 
 def _owner_only_opener(path, flags):

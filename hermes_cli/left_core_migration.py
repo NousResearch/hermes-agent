@@ -950,6 +950,12 @@ def legacy_plugin_alias(name: str) -> str:
     return next((f.plugin for f in LEFT_CORE if f.plugin_key and name in (f.plugin_key, *f.plugin_names)), "")
 
 
+def legacy_platform_alias(name: str) -> str:
+    """The platform a left-core row's old bundled manifest name configured (``platforms.qqbot-platform``
+    read as ``platforms.qqbot``, as core's bundled-alias scan did), else ``""``."""
+    return next((f.platform for f in LEFT_CORE if f.platform and name in f.plugin_names), "")
+
+
 def legacy_plugin_keys(plugin: str) -> set[str]:
     """Bundled keys that now name catalog *plugin* (inverse of :func:`legacy_plugin_alias`)."""
     return {key for f in LEFT_CORE if f.plugin_key and f.plugin == plugin for key in (f.plugin_key, *f.plugin_names)}
@@ -1336,7 +1342,7 @@ def _pending(home: Path, *, say: Callable[[str], None], process_env: bool = Fals
         converting = not _scope_kept(config, feature)
         # Core ran the feature despite that entry; the plugin the home has honours it, so the upgrade turns
         # it off. The disable stays.
-        kept_off = present and _plugins_listed(home, (feature.plugin, *legacy_plugin_keys(feature.plugin)))[1]
+        kept_off = present and _tree_lists(home, feature.plugin)[1]
         try:
             _record_migration(home, feature)
         except Exception as exc:

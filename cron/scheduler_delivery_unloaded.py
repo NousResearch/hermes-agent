@@ -21,9 +21,9 @@ _CORE_HOME_PLATFORMS = frozenset({"local", "relay", "msgraph_webhook"})
 
 def _saved_home_channel(platform_name: str) -> dict:
     """The ``home_channel`` block the job profile saves for *platform_name* (``chat_id``, optional ``thread_id``),
-    from the platform block as the gateway loader merges it (``gateway.platforms`` / ``platforms`` /
-    ``gateway.<name>``, later wins): a platform nothing registers here has no gateway-config home, but the
-    address the profile saved is still its home. ``{}`` when none is saved."""
+    from the platform block as the gateway loader builds it (``left_core_migration._merged_platform_block``): a
+    platform nothing registers here has no gateway-config home, but the address the profile saved is still its
+    home. ``{}`` when none is saved."""
     from hermes_cli.left_core_migration import _merged_platform_block
     from hermes_constants import get_hermes_home
     block = _merged_platform_block(get_hermes_home(), platform_name)
@@ -33,19 +33,16 @@ def _saved_home_channel(platform_name: str) -> dict:
 
 def _unloaded_home_platforms() -> list[str]:
     """Platforms with a home chat saved in config.yaml (what ``/sethome`` writes) that no loaded plugin
-    registers in this profile (not installed, not enabled, failed to load). Read raw, because
-    ``load_gateway_config`` drops a block whose platform nothing registers, so ``origin``/``all`` would
-    otherwise skip that home without a word."""
+    registers in this profile (not installed, not enabled, failed to load), read from the gateway's normalized
+    view (``config_loader.platform_blocks``): ``load_gateway_config`` drops a block whose platform nothing
+    registers, so ``origin``/``all`` would otherwise skip that home without a word."""
+    from gateway import config_loader
     from gateway.platform_registry import platform_registry
-    try:
-        blocks = (_sched.load_config() or {}).get("platforms") or {}
-    except Exception:
-        logger.debug("cron: config.yaml unreadable for saved home channels", exc_info=True)
-        return []
-    saved = sorted(
-        str(name).lower() for name, block in blocks.items()
-        if isinstance(block, dict) and isinstance(block.get("home_channel"), dict)
-        and block["home_channel"].get("chat_id"))
+    from hermes_cli.left_core_migration import LEFT_CORE
+    from hermes_constants import get_hermes_home
+    moved = frozenset(f.platform for f in LEFT_CORE if f.platform)
+    saved = sorted(name for name, block in config_loader.platform_blocks(get_hermes_home(), also=moved).items()
+                   if isinstance(block.get("home_channel"), dict) and block["home_channel"].get("chat_id"))
     list(_delivery._iter_home_target_platforms())  # discovers plugins so the registry lookups below are final
     core_homes = _delivery._KNOWN_DELIVERY_PLATFORMS | _delivery._NON_PUSH_ORIGIN_PLATFORMS | _CORE_HOME_PLATFORMS
     return [n for n in saved if n not in core_homes and platform_registry.get(n) is None]
@@ -102,5 +99,4 @@ def _moved_platform_ref(platform_key: str, ref: str) -> tuple[str, Optional[str]
 
 
 # Late-bound (see module docstring): imported LAST, after both modules define their names.
-from cron import scheduler as _sched
 from cron import scheduler_delivery as _delivery

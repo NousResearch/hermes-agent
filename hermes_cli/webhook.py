@@ -165,9 +165,11 @@ def webhook_command(args):
     """Entry point for 'hermes webhook' subcommand."""
     sub = getattr(args, "webhook_action", None)
     if not sub:
-        print("Usage: hermes webhook {subscribe|list|remove|test}")
+        print("Usage: hermes webhook {subscribe|list|remove|test|history}")
         print("Run 'hermes webhook --help' for details.")
         return
+    if sub == "history":  # past deliveries stay readable after the platform is turned off
+        return _cmd_history(args)
     if not _is_webhook_enabled():
         print(_setup_hint())
         return 1
@@ -188,6 +190,15 @@ def _route_signature(args, existing: dict, is_update: bool) -> dict:
     if not is_update:
         return {"signature": "generic"}
     return {"signature": existing["signature"]} if "signature" in existing else {}
+
+
+def _route_identity(args, existing: dict) -> dict:
+    """The ``identity`` key for the saved route: ``--identity`` when given (``none`` included), else the
+    route's current one, so re-running subscribe never drops a source."""
+    spec = getattr(args, "identity", None)
+    if spec is None:
+        spec = existing.get("identity")
+    return {"identity": spec} if spec else {}
 
 
 def _is_known_delivery_target(target: object) -> bool:
@@ -221,9 +232,12 @@ def _repair_command(name: str, route: dict) -> str:
     return " ".join(parts)
 
 
-def _subscribe_input_error(name: str, deliver: str) -> str | None:
+def _subscribe_input_error(name: str, deliver: str, identity: object = None) -> str | None:
+    from gateway.platforms.webhook_identity import parse_identity
     if not re.match(r'^[a-z0-9][a-z0-9_-]*$', name):
         return f"Error: Invalid name '{name}'. Use lowercase alphanumeric with hyphens/underscores."
+    if identity is not None and (error := parse_identity(identity)[1]):
+        return f"Error: {error}"
     if not _is_known_delivery_target(deliver):
         return (f"Error: Unknown delivery target '{deliver}'. Use a platform name such as 'telegram'; "
                 "pass its chat ID separately with --deliver-chat-id.")
@@ -232,7 +246,7 @@ def _subscribe_input_error(name: str, deliver: str) -> str | None:
 
 def _cmd_subscribe(args):
     name = args.name.strip().lower().replace(" ", "-")
-    if error := _subscribe_input_error(name, args.deliver or "log"):
+    if error := _subscribe_input_error(name, args.deliver or "log", getattr(args, "identity", None)):
         print(error)
         return 1
 
@@ -273,6 +287,7 @@ def _cmd_subscribe(args):
         "deliver": args.deliver or "log",
         "profile": profile,
         **_route_signature(args, existing, is_update),
+        **_route_identity(args, existing),
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
 
     if getattr(args, "deliver_only", False):
@@ -325,6 +340,7 @@ def _cmd_subscribe(args):
     print(f"  Secret: {mask_secret(secret)} (full value in {display_hermes_home()}/{_SUBSCRIPTIONS_FILENAME})")
     print(f"  Events: {', '.join(events) or '(all)'}")
     print(f"  Signature: {route.get('signature', 'any supported scheme (unpinned)')!s}")
+    print(f"  Identity: {route.get('identity', 'delivery-id headers (default)')}")
     print(f"  Deliver: {route['deliver']}")
     if route.get("deliver_only"):
         print("  Mode: direct delivery (no agent, zero LLM cost)")
@@ -381,6 +397,8 @@ def _cmd_list(args):
         print(f"    Profile: {profile}")
         print(f"    Events:  {events}")
         print(f"    Deliver: {deliver}")
+        if route.get("identity"):
+            print(f"    Identity: {route['identity']}")
         if invalid_delivery:
             print(f"    Fix:     {_repair_command(name, route)}")
             print("             (subscribe replaces the whole route; adjust the platform and chat ID as needed)")
@@ -441,6 +459,31 @@ def _test_signature_headers(scheme, secret: str, body: bytes) -> dict[str, str]:
     timestamp = str(int(time.time()))
     v2 = hmac.new(secret.encode(), timestamp.encode() + b"." + body, hashlib.sha256).hexdigest()
     return {"X-Webhook-Signature-V2": v2, "X-Webhook-Timestamp": timestamp}
+
+
+def _cmd_history(args):
+    """Recent deliveries with their outcome: accepted, duplicate, ignored (and why) or failed."""
+    from datetime import datetime
+
+    from gateway.platforms.webhook_receipts import read_history, receipts_path
+    from hermes_constants import get_hermes_home
+    rows = read_history(receipts_path(get_hermes_home()), route=args.route, limit=args.limit,
+                        delivery_id=getattr(args, "delivery", None), outcome=getattr(args, "outcome", None))
+    if getattr(args, "json", False):
+        print(json.dumps(rows, indent=2))
+        return
+    if not rows:
+        scope = f" for route '{args.route}'" if args.route else ""
+        print(f"  No webhook deliveries recorded{scope}.")
+        return
+    print(f"\n  {len(rows)} most recent webhook deliveries (newest first):\n")
+    for row in rows:
+        when = datetime.fromtimestamp(row["received_at"]).strftime("%Y-%m-%d %H:%M:%S")
+        route = row["route"] if row["profile"] == "default" else f"{row['profile']}/{row['route']}"
+        detail = "  ".join(part for part in (row["reason"], row["ref"]) if part)
+        print(f"  {when}  {row['outcome']:<9}  {route}  event={row['event_type'] or '-'}  "
+              f"delivery={row['delivery_id']}" + (f"\n      {detail}" if detail else ""))
+    print()
 
 
 _ACTIONS = {

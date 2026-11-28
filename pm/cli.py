@@ -448,6 +448,7 @@ def _doctor_staged_tool(package, lockfile, store, target, reason) -> int:
 
 
 def cmd_doctor(args) -> int:
+    from pm.defaults import declined
     from pm.install import _identity, _installed_location, sealed
     from pm.store import digest_matches
 
@@ -457,6 +458,8 @@ def cmd_doctor(args) -> int:
     bad = 0
     for name in lockfile.names():
         package = get_package(name)
+        if package.default and not package.internal and name in declined():
+            continue
         reason = package.missing_reason(target)
         if reason is not None:
             print(f"- {name}: n/a on {target} ({reason})")

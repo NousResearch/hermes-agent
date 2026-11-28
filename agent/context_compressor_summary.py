@@ -26,7 +26,31 @@ def accepts_keyword_argument(callable_obj: Any, name: str) -> bool:
     )
 
 
+class SummaryReplyWasToolCall(RuntimeError):
+    """The summarizer answered with a tool call and no text: a request-shape failure, so retry flat."""
+
+
+def summarizer_replied_with_tool_call(response: Any) -> bool:
+    """True when a 200 summary reply carries tool calls, i.e. the model continued the agent's work.
+
+    Typical on local OpenAI-compatible endpoints (#158684): the typed tool rows reach a model trained
+    for agent use with no ``tools`` declared, and it answers ``finish_reason: "tool_calls"`` with empty
+    content instead of a summary, which reads downstream as an empty-content failure.
+    """
+    try:
+        choice = (response.get("choices") or [{}])[0] if isinstance(response, dict) else (response.choices or [None])[0]
+        message = choice.get("message") if isinstance(choice, dict) else getattr(choice, "message", None)
+        calls = message.get("tool_calls") if isinstance(message, dict) else getattr(message, "tool_calls", None)
+    except (AttributeError, IndexError, KeyError, TypeError):
+        return False
+    return bool(calls)
+
+
 class SummaryDispatchMixin:
+    def _summary_route_identity(self) -> tuple[str, str, str]:
+        """The summary route as configured now: a flat-shape verdict belongs to this identity, not the session."""
+        return (self.summary_model or "", self.provider or "", self.base_url or "")
+
     def _apply_summary_route(self, call_kwargs: dict, pinned: Optional[dict[str, Any]] = None) -> None:
         """Pin the summary route onto ``call_kwargs`` for both compression entry points.
 

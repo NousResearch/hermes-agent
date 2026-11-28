@@ -80,3 +80,27 @@ def test_aux_premature_close_wording_is_never_a_large_sessions_overflow(message,
                                  num_messages=250)
     assert (verdict.reason, verdict.should_compress) == (reason, reason is _R.context_overflow)
     assert verdict.error_context.get("transport") == "connection"
+
+
+@pytest.mark.parametrize("message", [
+    "- Tool calls and tool messages are not supported",
+    "Tool messages are not supported by this model",
+    "this endpoint does not support tool calls",
+    "The 'tool' role is not supported",
+    "Tool calls are not supported",
+])
+def test_tool_less_endpoint_maps_to_its_own_reason(message):
+    """A summarizer/proxy with no tool-turn support keeps format_error's recovery flags, under its own reason."""
+    verdict = classify_api_error(_status_error(message, 400))
+    assert verdict.reason is _R.tool_turns_unsupported
+    assert verdict.retryable is False and verdict.should_fallback is True
+
+
+@pytest.mark.parametrize("message", [
+    "Unsupported parameter: tools. Tools are not supported",
+    "tool message content must be a string",
+])
+def test_tool_declaration_and_list_content_rejections_are_not_tool_turn_refusals(message):
+    """Only a refusal of tool *history* flattens the transcript; declaration and list-content 400s keep their own reasons."""
+    verdict = classify_api_error(_status_error(message, 400))
+    assert verdict.reason is not _R.tool_turns_unsupported

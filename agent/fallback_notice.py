@@ -34,6 +34,7 @@ _FALLBACK_REASON_LABELS = {
     FailoverReason.role_alternation: "adjacent same-role messages rejected",
     FailoverReason.invalid_encrypted_content: "encrypted reasoning state rejected",
     FailoverReason.multimodal_tool_content_unsupported: "multimodal tool content unsupported",
+    FailoverReason.tool_turns_unsupported: "endpoint rejects tool turns",
     FailoverReason.thinking_signature: "thinking signature rejected",
     FailoverReason.long_context_tier: "long-context tier unavailable",
     FailoverReason.oauth_long_context_beta_forbidden: "OAuth long-context beta unavailable",

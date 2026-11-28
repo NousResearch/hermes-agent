@@ -21,7 +21,7 @@ _REQUEST_SHAPE = frozenset({
     _R.format_error, _R.role_alternation, _R.multimodal_tool_content_unsupported, _R.reasoning_mandatory,
     _R.llama_cpp_grammar_pattern, _R.image_too_large, _R.image_corrupt, _R.invalid_encrypted_content,
     _R.thinking_signature, _R.context_overflow, _R.payload_too_large,
-    _R.oauth_long_context_beta_forbidden,
+    _R.oauth_long_context_beta_forbidden, _R.tool_turns_unsupported,
 })
 _LABELS = {
     _R.auth: AUTH_ERROR, _R.auth_permanent: AUTH_ERROR, _R.billing: PAYMENT_ERROR,

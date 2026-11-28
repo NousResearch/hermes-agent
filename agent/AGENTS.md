@@ -89,7 +89,8 @@ once on `auxiliary.compression.fallback_chain`, and a repeated stall (a stall-cl
 the cooldown ladder) ends with the deterministic fallback summary through the same pipeline — never a
 prune committed outside the lease/fence. Compression is the sanctioned
 cache break — keep it the only one. Full detail:
-`website/docs/developer-guide/context-compression-and-caching.md`.
+`website/docs/developer-guide/context-compression-and-caching.md`. A summary route that refuses the
+role-typed turns gets one flat retry on that route before the main-model fallback (#158684).
 
 ## Model and provider resolution
 

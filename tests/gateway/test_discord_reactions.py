@@ -3,7 +3,7 @@
 import asyncio
 import sys
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
 
@@ -141,6 +141,30 @@ async def test_reactions_disabled_via_env(adapter, monkeypatch):
     adapter.send.assert_awaited_once()
 
 
+
+
+@pytest.mark.asyncio
+async def test_completion_removes_ack_when_reactions_are_disabled_mid_turn(adapter):
+    """Remove the start reaction if reactions are disabled before completion.
+
+    Args:
+        adapter: Discord adapter fixture.
+
+    Returns:
+        None.
+    """
+    adapter._reactions_enabled = Mock(side_effect=[True, False])
+    raw_message = SimpleNamespace(
+        add_reaction=AsyncMock(),
+        remove_reaction=AsyncMock(),
+    )
+    event = _make_event("5", raw_message)
+
+    await adapter.on_processing_start(event)
+    await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+
+    raw_message.add_reaction.assert_awaited_once_with("👀")
+    raw_message.remove_reaction.assert_awaited_once_with("👀", adapter._client.user)
 
 
 class FakeChannel:

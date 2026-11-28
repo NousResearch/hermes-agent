@@ -61,23 +61,42 @@ class DiscordReactionsMixin:
             return None
 
     async def on_processing_start(self, event: MessageEvent) -> None:
-        """Add an in-progress reaction and record durable handling state."""
+        """Record whether this event received an in-progress reaction.
+
+        Args:
+            event: Incoming message being processed.
+
+        Returns:
+            None.
+        """
         acked = False
         if self._reactions_enabled():
             message = await self._reaction_target(event)
             if hasattr(message, "add_reaction"):
                 acked = await self._add_reaction(message, "👀")
+        event._discord_eyes_sent = acked
         await asyncio.to_thread(self._record_discord_processing_start, event, emoji_ack=acked)
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
-        """Swap the in-progress reaction for final reaction and durable state."""
+        """Clear a sent in-progress reaction and add the enabled outcome reaction.
+
+        Args:
+            event: Incoming message whose processing finished.
+            outcome: Result of processing the message.
+
+        Returns:
+            None.
+        """
         await asyncio.to_thread(self._record_discord_processing_complete, event, outcome)
-        if not self._reactions_enabled():
+        reactions_enabled = self._reactions_enabled()
+        eyes_sent = getattr(event, "_discord_eyes_sent", False)
+        if not reactions_enabled and not eyes_sent:
             return
         message = await self._reaction_target(event)
         if hasattr(message, "add_reaction"):
-            await self._remove_reaction(message, "👀")
-            if outcome == ProcessingOutcome.SUCCESS:
+            if eyes_sent or reactions_enabled:
+                await self._remove_reaction(message, "👀")
+            if reactions_enabled and outcome == ProcessingOutcome.SUCCESS:
                 await self._add_reaction(message, "✅")
-            elif outcome == ProcessingOutcome.FAILURE:
+            elif reactions_enabled and outcome == ProcessingOutcome.FAILURE:
                 await self._add_reaction(message, "❌")

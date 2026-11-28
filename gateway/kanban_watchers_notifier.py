@@ -13,10 +13,12 @@ import re
 from functools import partial
 from pathlib import Path
 import weakref
+from time import monotonic
 from typing import Any, Callable, Optional
 
 from agent.i18n import t
 
+from gateway.config import Platform
 from gateway.kanban_watchers_common import _list_boards, _to_thread_process_service, logger
 from gateway.wake import session_owned_by_profile
 
@@ -160,6 +162,24 @@ def _warn_unroutable_sub_once(sub: dict, platform: Any, message: str, *extra_arg
     _UNROUTABLE_WARNED.add(key)
     logger.warning(message, sub.get("task_id"), getattr(platform, "value", platform),
                    sub.get("chat_id"), *extra_args)
+
+
+_next_unsupported_platform_warning = float("-inf")
+
+
+def _warn_unsupported_platform(slug: str, task_id: str) -> None:
+    """Bound legacy-dead-route logs independently of the number of bad rows."""
+    global _next_unsupported_platform_warning
+    now = monotonic()
+    if now < _next_unsupported_platform_warning:
+        return
+    _next_unsupported_platform_warning = now + 60
+    logger.warning(
+        "kanban notifier: unsupported notification platform on board %s for task %s; "
+        "the subscription will not deliver. Run 'hermes kanban --board %s notify-list' "
+        "to find unsupported entries, then unsubscribe and re-subscribe with a valid platform.",
+        slug, task_id, slug,
+    )
 
 
 def _platform_names(mapping: Any) -> set[str]:
@@ -322,12 +342,21 @@ class _Collector:
         """Claim one subscription's unseen events; None when skipped or nothing new."""
         owner_profile = sub.get("notifier_profile") or None
         platform = (sub.get("platform") or "").lower()
+        if sub["platform"] == "tui":
+            return None  # Desktop/TUI owns this route, not the gateway.
+        try:
+            gateway_platform = Platform(platform)
+        except ValueError:
+            _warn_unsupported_platform(slug, sub["task_id"])
+            return None
+        if gateway_platform.value != platform:
+            _warn_unsupported_platform(slug, sub["task_id"])
+            return None
         if platform not in self.active_platforms:
             logger.debug("kanban notifier: subscription for %s on %s skipped; adapter not connected",
                          sub.get("task_id"), platform or "<missing>")
             return None
-        from gateway.config import Platform
-        if _adapter_for_subscription(self.runner, Platform(platform), sub, owner_profile or self.notifier_profile) is None:
+        if _adapter_for_subscription(self.runner, gateway_platform, sub, owner_profile or self.notifier_profile) is None:
             _warn_anchorless_thread_sub_once(sub, platform)
             return None
         old_cursor, cursor, events = _kbn().claim_unseen_events_for_sub(

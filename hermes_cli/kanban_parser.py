@@ -409,7 +409,8 @@ _SPECS = [
                   "it reads the full board context and replies in its own voice), or "
                   "'wake' (wake the agent only, no passive message). Omit to leave an "
                   "existing subscription's mode unchanged (new subs default to 'notify')."),
-    ], help="Subscribe a gateway source to a task's terminal events (used by /kanban subscribe in the gateway adapter)"),
+    ], help="Subscribe to a task's terminal events via a configured gateway platform, "
+            "or tui with --chat-id <session_key> while the Desktop/TUI session is active"),
     _cmd("notify-list", [_arg("task_id", nargs="?"), _json_flag()],
          help="List notification subscriptions (optionally for a single task)"),
     _cmd("notify-unsubscribe", [_TASK_ID, *_NOTIFY_TARGET], help="Remove a gateway subscription from a task"),

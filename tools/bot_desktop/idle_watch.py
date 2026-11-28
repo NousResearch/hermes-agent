@@ -33,15 +33,17 @@ def next_check_in(limit: float, idle: Optional[float]) -> int:
     return math.ceil(max(min(_MIN_DELAY_S, limit), limit - idle if idle < limit else limit))
 
 
-def _own_launcher(argv: list[str]) -> Optional[tuple[int, float]]:
-    """``(pid, create_time)`` of the launcher that ran this check (its pid is the one argument), so the
-    check stops only that screen and never a replacement started while it waited on ``start.lock``. A
-    launcher already gone gets an identity nothing matches."""
+def _own_launcher(argv: list[str]) -> Optional[tuple[int, object]]:
+    """Identify the launcher that started this check using its persisted incarnation token.
+    A missing/mismatched record must still fence off a replacement screen (not pass None,
+    which means "any screen" to stop_if_idle).
+    """
     pid_s = argv[0] if argv else ""
     if not pid_s.isdigit():
         return None
-    born = runtime._create_time(int(pid_s))
-    return int(pid_s), born if born is not None else -1.0
+    pid = int(pid_s)
+    identity = runtime._launcher_identity()
+    return identity if identity is not None and identity[0] == pid else (pid, -1.0)
 
 
 def main() -> None:

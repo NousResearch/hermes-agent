@@ -1,0 +1,18 @@
+name: lazyads
+repo: https://github.com/camerondwills/lazyads-mcp
+sha: df6443b9e15559923b5b62b3c88dda2181d679e8
+description: "Manage ad campaigns on Meta, Google, TikTok, LinkedIn, Reddit, Apple, Bing, ChatGPT and Snapchat Ads through the hosted Lazy Ads MCP server (Streamable HTTP), with a workflow skill. Portable Agent Plugins v1 package with no executable code; needs a Lazy Ads API key in LAZY_ADS_API_KEY. Disclosure — every tool call is an HTTPS request to mcp.lazyads.ai carrying your API key as a Bearer header (dropped on cross-origin redirects), and the tools create and edit real campaigns that spend your ad budget; the plugin declares trust: untrusted on the lazyads server so Hermes asks before every write-capable call, alongside the bundled skill's confirm-before-spend checklist. No local processes, no telemetry, no self-update."
+maintainer: Lazy Ads
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://lazyads.ai/hermes
+version: "1.0.0"
+title: Lazy Ads
+image: https://raw.githubusercontent.com/camerondwills/lazyads-mcp/df6443b9e15559923b5b62b3c88dda2181d679e8/assets/banner.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

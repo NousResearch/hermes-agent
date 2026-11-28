@@ -9,7 +9,7 @@ import hermes_yaml as yaml
 import pytest
 
 from hermes_cli import plugins as plugins_mod
-from tests.hermes_cli.test_plugin_host import _home_with_plugins
+from tests.hermes_cli.plugin_host_support import _home_with_plugins
 
 UNLOAD_PROBE = (
     "import os\nfrom pathlib import Path\nfrom hermes_constants import get_hermes_home\n"
@@ -20,7 +20,7 @@ UNLOAD_PROBE = (
 def _hosted_provider_behind_a_launcher(tmp_path, home):
     """Install the hosted model provider ``hostmodel`` under *home*, whose config runs the plugin host and
     extractions under a stand-in launcher; return the file that launcher appends to each time it runs."""
-    from tests.hermes_cli.test_plugin_host import _hosted_model_provider
+    from tests.hermes_cli.plugin_host_support import _hosted_model_provider
 
     ran, runner = tmp_path / "launcher.ran", tmp_path / "runner"
     runner.write_text(f'#!/bin/sh\necho ran >> "{ran}"\nexec "$@"\n', encoding="utf-8")

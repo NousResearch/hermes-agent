@@ -404,7 +404,7 @@ def register(ctx):
 @pytest.mark.platforms("any")  # the host is a child process
 def test_a_hook_in_a_plugin_host_reads_firing_delivery_platforms_through_ctx(tmp_path, monkeypatch):
     from hermes_cli.plugins import PluginManager
-    from tests.hermes_cli.test_plugin_host import _home_with_plugins
+    from tests.hermes_cli.plugin_host_support import _home_with_plugins
 
     _home_with_plugins(tmp_path / "plugins", monkeypatch, {"hostedcron": HOSTED_HOOK_PLUGIN}, isolation="host")
     job = jobs.create_job(

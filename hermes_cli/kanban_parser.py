@@ -384,6 +384,10 @@ _SPECS = [
         _arg("--kinds",
              help="Comma-separated event kinds to include (e.g. 'completed,blocked,gave_up,crashed,timed_out')"),
         _arg("--interval", type=float, default=0.5, help="Poll interval in seconds (default: 0.5)"),
+        _arg("--format", choices=("auto", "pretty", "raw"), default="auto",
+             help="pretty: readable, colour-coded lines with task title and summary/reason; "
+                  "raw: one line per event with the full payload; auto (default): pretty on a "
+                  "terminal, raw when piped"),
     ], help="Live-stream task_events to the terminal (Ctrl+C to exit)"),
     _cmd("stats", [_json_flag()], help="Per-status + per-assignee counts + oldest-ready age"),
     _cmd("notify-subscribe", [

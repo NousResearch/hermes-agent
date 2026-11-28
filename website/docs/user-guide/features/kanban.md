@@ -980,6 +980,7 @@ hermes kanban reopen-review  <id>... [--reason "..."]                 # changes 
 hermes kanban tail <id>                                # follow a single task's event stream
 hermes kanban watch [--assignee P] [--tenant T]        # live stream ALL events to the terminal
         [--kinds completed,blocked,…] [--interval SECS]
+        [--format auto|pretty|raw]                     # auto: readable on a TTY, raw when piped
 hermes kanban heartbeat <id> [--note "..."]            # worker liveness signal for long ops
 hermes kanban runs <id> [--json]                       # attempt history (one row per run)
 hermes kanban assignees [--json]                       # profiles on disk + per-assignee task counts
@@ -1485,6 +1486,12 @@ Every transition appends a row to `task_events`. Each row carries an optional `r
 | `gave_up` | `{failures, effective_limit, limit_source, error, terminal_provider?}` | Circuit breaker fired after N consecutive non-successful attempts. Task auto-blocks with the last error. The effective limit resolves as task `max_retries`, then dispatcher `failure_limit` / `kanban.failure_limit`, then the built-in default. `terminal_provider: true` means the worker exited `78` on a provider error a retry cannot fix (credential revoked, model gone) — including a startup credential failure that explicitly requires re-login (`hermes auth` / `setup`), which exits `78` before the first turn; other startup failures exit `1` — and the breaker fired on that first attempt, sticky, regardless of the limit. |
 
 `hermes kanban tail <id>` shows these for a single task. `hermes kanban watch` streams them board-wide.
+
+On a terminal, `watch` renders each event as one readable, colour-coded line with the task title, plus the payload's `summary` / `reason` / `error` wrapped underneath; `heartbeat` events are hidden unless you name them in `--kinds`. When the output is piped (or with `--format raw`) it prints the original one-line-per-event format with the full payload, so scripts keep working. `--format pretty` forces the readable view; `NO_COLOR` disables colour. A handy always-on pane next to your agents (tmux, Herdr, etc.):
+
+```bash
+hermes kanban watch --kinds spawned,completed,blocked,review_requested,gave_up,crashed,timed_out
+```
 
 ## Out of scope
 

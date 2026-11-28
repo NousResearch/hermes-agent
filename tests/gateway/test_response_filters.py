@@ -1,4 +1,6 @@
 from gateway.response_filters import (
+    _AUTONOMOUS_PREFIX_MARKERS,
+    LIVE_GATEWAY_SILENT_MARKERS,
     is_autonomous_silence_response,
     is_intentional_silence_agent_result,
     is_intentional_silence_response,
@@ -175,3 +177,22 @@ def test_damaged_silent_marker_corpus_never_reaches_the_chat_while_real_text_doe
     leaked = [r for r in _DAMAGED_SILENT_REPLIES if not is_autonomous_silence_response(r)]
     swallowed = [r for r in _MUST_DELIVER_REPLIES if is_autonomous_silence_response(r)]
     assert (leaked, swallowed) == ([], [])
+
+
+def test_autonomous_prefix_rule_keeps_audit_reports_deliverable():
+    # The zh audit sentinel is a whole-response-only marker (cron drift label).
+    # A real audit report opens with it and must deliver (#158944).
+    zh_audit = next(
+        m for m in LIVE_GATEWAY_SILENT_MARKERS
+        if m.startswith("[") and any(ord(c) > 127 for c in m)
+        and m not in _AUTONOMOUS_PREFIX_MARKERS
+    )
+    assert not is_autonomous_silence_response(f"{zh_audit} findings to report")
+    # intentional-silence prefix markers still suppress with a note
+    assert is_autonomous_silence_response("[SILENT] nothing new")
+    zh_silent = next(
+        m for m in _AUTONOMOUS_PREFIX_MARKERS if any(ord(c) > 127 for c in m)
+    )
+    assert is_autonomous_silence_response(f"{zh_silent} nothing new")
+    # a lone audit sentinel remains the whole-response marker
+    assert is_autonomous_silence_response(zh_audit)

@@ -29,9 +29,11 @@ LIVE_GATEWAY_SILENT_MARKERS = frozenset({
 
 # Bracketed markers drive the autonomous lane's prefix rule ("[SILENT] nothing
 # new this tick"). Derived from the set above so a new marker cannot be added to
-# one rule and forgotten in the other.
-_BRACKETED_SILENCE_MARKERS = tuple(
-    sorted(m for m in LIVE_GATEWAY_SILENT_MARKERS if m.startswith("["))
+# one rule and forgotten in the other. The zh audit sentinel (``LIVE_GATEWAY_
+# SILENT_MARKERS`` entry added as a whole-response-only cron-drift label) is
+# excluded: real audit reports open with it and carry findings, so they deliver.
+_AUTONOMOUS_PREFIX_MARKERS = tuple(
+    sorted(m for m in LIVE_GATEWAY_SILENT_MARKERS if m.startswith("[") and m != "[审核]")
 )
 
 # The persisted user-row kind of a self-injected MessageEvent(internal=True) turn; only these
@@ -270,7 +272,7 @@ def is_autonomous_silence_response(response: Any) -> bool:
     # Same de-punctuating forms as the interactive rule, so ``【静默】`` / ``静默。`` cannot
     # be suppressed in chat yet delivered by cron.
     return (
-        _canonical_silence_candidate(_strip_leading_code_span(stripped)).startswith(_BRACKETED_SILENCE_MARKERS)
+        _canonical_silence_candidate(_strip_leading_code_span(stripped)).startswith(_AUTONOMOUS_PREFIX_MARKERS)
         or _is_damaged_silent_marker(stripped)
         or any(
             is_intentional_silence_response(c) or is_intentional_silence_response(_strip_code_wrap(c))

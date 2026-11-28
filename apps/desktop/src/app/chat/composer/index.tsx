@@ -83,6 +83,7 @@ import { useComposerVoice } from './hooks/use-composer-voice'
 import { useEmojiCompletions } from './hooks/use-emoji-completions'
 import { useComposerMicroActions } from './hooks/use-micro-actions'
 import { useMiddlewareSubmit } from './hooks/use-middleware-submit'
+import { usePluginImageAttachment } from './hooks/use-plugin-image-attachment'
 import { useSlashCompletions } from './hooks/use-slash-completions'
 import { useStatusDrawer } from './hooks/use-status-drawer'
 import { useSessionStatusPresence } from './hooks/use-status-presence'
@@ -337,6 +338,16 @@ export function ChatBar({
   } = useComposerDraft({ activeQueueSessionKey, focusKey, inputDisabled, queueEditRef, sessionId })
 
   useComposerScreenshot({ sessionKey: activeQueueSessionKey, focusKey, onAttachImageBlob })
+  const attachmentBlocked = useCallback(() => queueEditRef.current !== null, [])
+  usePluginImageAttachment({
+    attachmentBlocked,
+    composerRef,
+    enabled: !inputDisabled,
+    focusKey,
+    onAttachImageBlob,
+    sessionId,
+    sessionKey: activeQueueSessionKey
+  })
 
   // Undo/redo. The rich editor bypasses Chromium's editing pipeline for speed,
   // which also bypasses its undo stack — so we own the stack and every edit

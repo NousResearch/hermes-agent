@@ -1,15 +1,17 @@
 import {
   type ComposerInsertMode,
   type ComposerTarget,
+  getActiveComposer,
   requestComposerFocus,
   requestComposerGetDraft,
   requestComposerInsertAcked,
   requestComposerSetDraft,
   requestComposerSubmit
 } from '@/app/chat/composer/focus'
+import { attachImageToComposerDraft, captureComposerDraft } from '@/app/chat/composer/plugin-image-attachment'
 import { freshDraftScope, takeSessionDraft } from '@/store/composer'
-import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
-import { $sessionStates } from '@/store/session-states'
+import { $activeSessionId, $selectedStoredSessionId, $sessions, resolveComposerSessionKey } from '@/store/session'
+import { $sessionStates, storedSessionIdForRuntimeId } from '@/store/session-states'
 
 /**
  * A plugin's session address resolved for the two composer buses. `target` is
@@ -63,6 +65,23 @@ const resolveComposerAddress = (
  *  resolves to no live surface returns `null`/`false` (or is dropped, for
  *  `focus`) — it never broadcasts and never throws. */
 export const composerHost = {
+  /** Pin the exact visible draft before opening an async plugin editor. */
+  captureDraft(sessionId: null | string = null) {
+    if (typeof sessionId === 'string' && sessionId.trim() === 'new') {
+      return captureComposerDraft('main', 'new')
+    }
+
+    const { ids, stored, target } = resolveComposerAddress(sessionId)
+
+    const canonical =
+      stored && resolveComposerSessionKey(storedSessionIdForRuntimeId(stored) ?? stored, $sessions.get())
+
+    const expected = canonical ? [...ids, canonical] : ids
+
+    return target === null ? null : captureComposerDraft(target === 'active' ? getActiveComposer() : target, expected)
+  },
+  /** Stage a raster image; true only once the captured draft received the chip. */
+  attachImage: attachImageToComposerDraft,
   /** The live draft text of one composer, or null when nothing holds it.
    *  Mounted surfaces answer with their in-DOM text (current, incl.
    *  unsaved keystrokes); an unmounted session falls back to its debounced

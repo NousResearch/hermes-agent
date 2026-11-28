@@ -619,7 +619,10 @@ host.composer.focus(null)
 ```
 
 ```ts
+// ComposerDraftAddress is opaque; obtain it with captureDraft.
 host.composer: {
+  captureDraft(sessionId?: string | null): ComposerDraftAddress | null
+  attachImage(address: ComposerDraftAddress, blob: Blob, opts?: { filename?: string }): Promise<boolean>
   getDraft(sessionId: string | null): Promise<string | null>
   setDraft(sessionId: string | null, text: string): Promise<boolean>
   insertText(sessionId: string | null, text: string, opts?: { mode?: 'block' | 'inline' | 'prefix' }): Promise<boolean>
@@ -660,6 +663,35 @@ and its siblings; the pet-wallet row uses the [pet bubble](#pet-bubble) door):
 
 `sessionId` in the table is the id the plugin's UI is bound to; for a composer
 slot render it is `host.state.focusedSessionId.get()`.
+
+### Composer image attachments {#composer-image-attachments}
+
+Use `host.composer.captureDraft()` **when the user opens** a drawing or image
+editor. It returns an opaque address for that exact mounted draft, or `null` if
+none can accept an image. Use the same session addressing as the draft API:
+`null` (the default) picks the active composer, a session ID addresses that chat,
+and `'new'` selects the primary fresh draft, even before a session exists.
+This operation uses native Desktop's local image staging. `captureDraft`
+returns `null` in a browser-hosted Desktop session.
+
+```javascript
+import { host } from '@hermes/plugin-sdk'
+
+// Keep this address while the user draws; don't recapture after awaiting work.
+const draft = host.composer.captureDraft()
+if (!draft) return
+// Later, from the editor's explicit "Attach sketch" action:
+const attached = await host.composer.attachImage(draft, pngBlob, { filename: 'sketch.png' })
+if (!attached) host.notify({ kind: 'error', message: 'Could not attach the sketch to the original draft.' })
+```
+
+`attachImage` accepts a PNG `Blob` up to 16 MiB, 8,192 pixels per side, and
+24 megapixels total. The filename is a suggestion, not a path. It resolves
+`true` only after Hermes stages the image and inserts an attachment chip, without
+changing draft text or sending a message. It resolves `false` for invalid images,
+failed staging, or a stale address (for example, after a chat switch). It does not fall
+back to whichever composer is now focused. Addresses are valid only in the
+renderer that captured them; do not serialize or persist them.
 
 ### Session rows — decorations + the session list API
 

@@ -1572,6 +1572,7 @@ export {
 /** The main composer's surface pieces, so a plugin composer (Bot Mode rooms) reads as the
  *  same input: the ring, the fill layer behind the editor, and the ghost / primary icon buttons. */
 export { GHOST_ICON_BTN, PRIMARY_ICON_BTN } from '@/app/chat/composer/control-classes'
+export type { ComposerDraftAddress } from '@/app/chat/composer/plugin-image-attachment'
 /** THE session status dot — the one primitive the sidebar row, the pane tabs
  *  and the session switcher render, so a session's status can never disagree
  *  between surfaces. Pass the STORED session id and it resolves the rest

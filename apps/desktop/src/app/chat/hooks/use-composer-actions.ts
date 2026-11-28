@@ -9,6 +9,7 @@ import { attachmentPathNeedsUpload } from '@/lib/attachment-upload-policy'
 import { attachmentId, contextPath, pathLabel } from '@/lib/chat-runtime'
 import { readDesktopFileDataUrlLocalFirst, selectDesktopPaths } from '@/lib/desktop-fs'
 import { downscaleDataUrlForPreview } from '@/lib/image-resize'
+import { isBrowserHostedDesktop } from '@/lib/platform'
 import { isMessagingSource } from '@/lib/session-source'
 import { normalize } from '@/lib/text'
 import {
@@ -668,7 +669,8 @@ export function useComposerActions({
 
         const data = new Uint8Array(buffer)
         const name = blob instanceof File ? blob.name : undefined
-        const savedPath = await window.hermesDesktop?.saveImageBuffer(data, blobExtension(blob), name)
+        const bridge = window.hermesDesktop
+        const savedPath = await bridge?.saveImageBuffer(data, blobExtension(blob), name)
 
         if (!savedPath) {
           notify({ kind: 'error', title: copy.imageAttach, message: copy.imageWriteFailed })
@@ -676,10 +678,18 @@ export function useComposerActions({
           return false
         }
 
-        // Reuse the in-hand blob for the chip preview — do not re-read the
-        // just-written temp file as a data URL. A late component unmount must
-        // not leak the attach: attach only while still current.
-        return isCurrent() ? attachImagePath(savedPath, blob) : false
+        if (!isCurrent()) {
+          // Only the newly staged native copy belongs to this abandoned write;
+          // a browser-host path can belong to a remote filesystem.
+          if (!isBrowserHostedDesktop()) {
+            await bridge?.trashPath?.(savedPath).catch(() => undefined)
+          }
+
+          return false
+        }
+
+        // Reuse the blob for the chip preview without reading the file again.
+        return attachImagePath(savedPath, blob)
       } catch (err) {
         notifyError(err, copy.imageAttachFailed)
 

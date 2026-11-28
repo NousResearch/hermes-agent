@@ -107,6 +107,26 @@ async def test_queued_work_clients_adapters_and_cron_each_keep_it_up(tmp_path, m
         db.close()
 
 
+def test_a_subagent_owed_an_automatic_resume_keeps_it_up(tmp_path, monkeypatch):
+    """A stop that promised ``delegation.auto_resume`` a resume is this gateway's duty until it resumes or
+    reports its give-up; an expired-and-reported or never-promised record is not."""
+    from persistence.authority.subagents import SubagentState, SubagentWrite
+    runner, _home, db, _stops = _runner(tmp_path, monkeypatch)
+    try:
+        def child(sid, **document):
+            write = SubagentWrite(state=SubagentState.RESUMABLE, pinned=True, stop_cause=None, owner_pid=1,
+                                  owner_started_at=1, document={"unit_id": f"u-{sid}", **document}, expires_at=None)
+            assert db.coordination.put_subagent(subagent_id=sid, write=write, expected=None)
+        child("free")
+        child("gave-up", auto_promised=True, auto_gave_up="r")
+        assert run_idle_exit.busy_reason(runner, window=0.2) is None
+        child("owed", auto_promised=True)
+        reason = run_idle_exit.busy_reason(runner, window=0.2)
+        assert reason and "subagent resume owed" in reason
+    finally:
+        db.close()
+
+
 def test_a_profile_still_starting_leaves_the_served_ledgers_readable(tmp_path, monkeypatch):
     """Hot-serve reserves a starting profile's registry slot before its authority exists. The probe
     still reads every built profile's ledger meanwhile, instead of failing on the slot."""

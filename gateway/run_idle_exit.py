@@ -10,7 +10,8 @@ it has served nobody and has nothing to do for ``gateway.unmanaged_idle_exit_sec
 - no messaging adapter configured, connected or reconnecting (any profile);
 - no runnable cron job and no kanban task the dispatcher must act on;
 - no queued/started admission, live managed worker, in-flight agent/cron/API run, background
-  process or async delegation, active heartbeat/loop, pending handoff or hosted-room task.
+  process or async delegation, active heartbeat/loop, pending handoff or hosted-room task;
+- no stopped subagent still owed an automatic resume or its give-up report (``delegation.auto_resume``).
 
 Every probe fails CLOSED: an unreadable source counts as work, so the gateway stays up. A gateway with
 a supervisor (systemd/launchd/Desktop/external) or started without ``--idle-exit`` (installed services,
@@ -133,6 +134,10 @@ def _ledger_busy(runner) -> str | None:
             return f"admissions pending in {authority.profile_id}"
         if store.worker_executions.has_live_worker():
             return f"managed worker live in {authority.profile_id}"
+        # A stopped subagent whose stop promised an automatic resume (or still owes its give-up report) is
+        # this process's scheduler duty (gateway/run_auto_resume.py): exiting would break the promise.
+        if store.coordination.has_owed_subagents():
+            return f"subagent resume owed in {authority.profile_id}"
         service = getattr(authority, "hosted_room_service", None)
         if service is not None:
             status = service.status()

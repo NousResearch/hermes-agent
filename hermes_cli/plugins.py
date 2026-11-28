@@ -1048,7 +1048,7 @@ def _nowait_plugin_set(cache_field: str, live: Callable[[PluginManager], Any], p
     if in_flight:
         with suppress(Exception):
             blob = json.loads(_plugin_toolset_keys_cache_path().read_text(encoding="utf-8-sig"))
-            values = parse(blob.get(cache_field)) if isinstance(blob, dict) else None
+            values = parse(blob.get(cache_field) if cache_field else blob) if isinstance(blob, dict) else None
             if values is not None:
                 return values
     discover_plugins()
@@ -1065,6 +1065,24 @@ def get_plugin_toolset_keys_nowait() -> set[str]:
 def get_portable_mcp_server_names_nowait() -> set[str]:
     """Portable MCP server names; same contract as :func:`get_plugin_toolset_keys_nowait`."""
     return _nowait_plugin_set("portable_mcp", lambda m: set(m.get_portable_mcp_servers()))
+
+
+def _cached_toolset_view(blob: dict) -> tuple[set[str], dict[str, frozenset[str]]] | None:
+    keys = _cached_str_set(blob.get("toolset_keys"))
+    if keys is None:
+        return None
+    if "toolset_default_platforms" not in blob:  # a Hermes before default_platforms: none of its keys had a rule
+        return keys, {}
+    scoped = _cached_platform_map(blob["toolset_default_platforms"])
+    return None if scoped is None else (keys, scoped)
+
+
+def get_plugin_toolset_view_nowait() -> tuple[set[str], dict[str, frozenset[str]]]:
+    """Plugin toolset keys with their default platforms, both from ONE source (live registry, else last
+    launch's cache, else block), so a discovery finishing between two reads cannot pair one source's names
+    with the other's rules; same contract as :func:`get_plugin_toolset_keys_nowait`."""
+    return _nowait_plugin_set("", lambda _m: ({ts_key for ts_key, _, _ in get_plugin_toolsets()},
+                                              get_plugin_toolset_default_platforms()), _cached_toolset_view)
 
 
 def get_plugin_toolset_default_platforms_nowait() -> dict[str, frozenset[str]]:

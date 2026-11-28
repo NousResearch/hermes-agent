@@ -192,6 +192,19 @@ def _plugin_toolset_default_platforms() -> dict[str, frozenset[str]]:
     return get_plugin_toolset_default_platforms_nowait()
 
 
+def _plugin_toolset_view() -> tuple[set[str], dict[str, frozenset[str]]]:
+    """Plugin toolset keys and their ``default_platforms`` read once, from one source (gateway, live registry
+    or last launch's cache)."""
+    try:
+        if (projected := _projected_plugin_toolsets()) is not None:
+            provider = _gateway_plugin_toolset_platforms
+            return {key for key, _, _ in projected[0]}, (provider() if provider is not None else {})
+        from hermes_cli.plugins import get_plugin_toolset_view_nowait
+        return get_plugin_toolset_view_nowait()
+    except Exception:  # health: allow BLE001 -- same fail-soft as _get_plugin_toolset_keys
+        return set(), {}
+
+
 def _checklist_toolset_keys(platform: str) -> set[str]:
     """Toolset keys the ``hermes tools`` checklist offers for ``platform`` (mirrors ``_prompt_toolset_checklist``);
     read-time-resolved toolsets (recovered composites, MCP names) are NOT here."""
@@ -528,12 +541,13 @@ def _composite_toolsets(toolset_names: list[str], platform: str, explicitly_conf
     return enabled - default_off
 
 
-def _enabled_plugin_toolsets(config: dict, platform: str, toolset_names: list[str], plugin_ts_keys: set[str]) -> set[str]:
+def _enabled_plugin_toolsets(config: dict, platform: str, toolset_names: list[str], plugin_ts_keys: set[str],
+                             scoped: Optional[dict[str, frozenset[str]]] = None) -> set[str]:
     """Plugin toolsets: on by default unless default-off (catalog spotify), registered with
     ``default_platforms`` that leave out this platform, or "known" for this platform
     (``known_plugin_toolsets``, written on every save) and absent from the saved list."""
     known_for_platform = set((config.get("known_plugin_toolsets", {}) or {}).get(platform, []) or [])
-    scoped = _plugin_toolset_default_platforms()
+    scoped = _plugin_toolset_default_platforms() if scoped is None else scoped
     return {
         pts for pts in plugin_ts_keys
         if pts in toolset_names or (
@@ -616,7 +630,7 @@ def _get_platform_tools(config: dict, platform: str, *, include_default_mcp_serv
     toolset_names = expanded
 
     configurable_keys = _configurable_keys()
-    plugin_ts_keys = _get_plugin_toolset_keys()
+    plugin_ts_keys, scoped = _plugin_toolset_view()
     platform_default_keys = _platform_default_keys()
     # Plugin toolsets are first-class on a saved list: ``[hermes-cli, a2a]`` must survive filtering.
     # Plugin-provided toolsets are first-class on a platform-toolsets list — explicit config like
@@ -631,7 +645,7 @@ def _get_platform_tools(config: dict, platform: str, *, include_default_mcp_serv
 
     _recover_platform_native_toolsets(enabled_toolsets, platform, skip=configurable_keys | plugin_ts_keys | platform_default_keys)
     if plugin_ts_keys:
-        enabled_toolsets |= _enabled_plugin_toolsets(config, platform, toolset_names, plugin_ts_keys)
+        enabled_toolsets |= _enabled_plugin_toolsets(config, platform, toolset_names, plugin_ts_keys, scoped)
 
     # Context-engine tools are runtime-provided, not in any static composite: keep them for a non-default
     # engine even after an explicit save. An explicit EMPTY list means none, unless ``context_engine`` is added by hand.

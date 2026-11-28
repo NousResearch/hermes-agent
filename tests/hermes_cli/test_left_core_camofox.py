@@ -118,7 +118,7 @@ def test_process_env_url_counts_only_for_the_launch_home(tmp_path, monkeypatch):
 
 def _resolved(home: Path, platform: str, monkeypatch) -> set[str]:
     from hermes_cli import tools_config
-    monkeypatch.setattr(tools_config, "_get_plugin_toolset_keys", lambda: {"camofox"})
+    monkeypatch.setattr(tools_config, "_plugin_toolset_view", lambda: ({"camofox"}, {}))
     return tools_config._get_platform_tools(_config(home), platform, include_default_mcp_servers=False)
 
 

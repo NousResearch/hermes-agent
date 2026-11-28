@@ -1,5 +1,7 @@
 """A plugin toolset registered with ``default_platforms`` defaults on only there; an explicit choice wins."""
 
+import pytest
+
 import hermes_yaml as yaml
 
 from hermes_cli.plugins import discover_plugins, get_plugin_toolset_default_platforms, get_plugin_toolsets
@@ -80,3 +82,51 @@ def test_a_restored_tool_gets_its_own_default_platforms_back(tmp_path, monkeypat
     assert registry.get_entry("dup_stub_read").toolset == "first_stub"  # the failed load was rolled back
     assert get_plugin_toolset_default_platforms().get("first_stub") == frozenset({"slack"})
     assert "first_stub" not in _get_platform_tools({}, "cli")
+
+
+class _Discovering:
+    """Background discovery still importing for the first ``alive`` probes, finished after."""
+
+    def __init__(self, alive: int):
+        self.alive = alive
+
+    def is_alive(self):
+        self.alive -= 1
+        return self.alive >= 0
+
+
+def _cache(home, blob):
+    import json
+    (home / "cache").mkdir(parents=True, exist_ok=True)
+    (home / "cache" / "plugin_toolset_keys.json").write_text(json.dumps(blob), encoding="utf-8")
+
+
+def test_names_and_default_platforms_come_from_one_read(tmp_path, monkeypatch):
+    """Greptile #159651: discovery finishing between the names read (last launch's cache) and the rules read
+    (live registry, which renamed the toolset) left the cached name with no rule: on for every platform."""
+    from hermes_cli import plugins
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    _cache(home, {"toolset_keys": ["renamed_stub"], "portable_mcp": [],
+                  "toolset_default_platforms": {"renamed_stub": ["slack"]}})
+    manager = plugins.get_plugin_manager()
+    monkeypatch.setattr(manager, "_discovered", True)
+    monkeypatch.setattr(plugins, "_background_discovery_thread", _Discovering(alive=1))
+    monkeypatch.setattr(plugins, "get_plugin_toolsets", list)
+    monkeypatch.setattr(plugins, "get_plugin_toolset_default_platforms", dict)
+    assert "renamed_stub" not in _get_platform_tools({}, "telegram")
+
+
+def test_a_cache_from_before_default_platforms_does_not_wait_for_discovery(tmp_path, monkeypatch):
+    """Greptile #159651: the first start after the upgrade reads a cache with names but no rules field; that
+    cache's names had no rule, so it is read as is instead of joining the discovery thread."""
+    from hermes_cli import plugins
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    _cache(home, {"toolset_keys": ["old_stub"], "portable_mcp": []})
+    monkeypatch.setattr(plugins.get_plugin_manager(), "_discovered", False)
+    monkeypatch.setattr(plugins, "_background_discovery_thread", _Discovering(alive=99))
+    monkeypatch.setattr(plugins, "discover_plugins", lambda *a, **k: pytest.fail("joined discovery"))
+    assert "old_stub" in _get_platform_tools({}, "telegram")

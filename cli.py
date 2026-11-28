@@ -218,7 +218,7 @@ try:
     from prompt_toolkit.enums import EditingMode
 except ImportError:  # partial prompt_toolkit stubs in tests
     EditingMode = None
-from prompt_toolkit import print_formatted_text as _pt_print
+from hermes_cli.cli_terminal_input import _pt_print
 from prompt_toolkit.formatted_text import ANSI as _PT_ANSI
 try:
     from prompt_toolkit.cursor_shapes import CursorShape

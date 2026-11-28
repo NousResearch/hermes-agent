@@ -529,6 +529,8 @@ _STYLE_TEMPLATES = {
     "completion-menu.completion.current": "bg:{menu_current_bg} {title}",
     "completion-menu.meta.completion": "bg:{menu_meta_bg} {dim}",
     "completion-menu.meta.completion.current": "bg:{menu_meta_current_bg} {label}",
+    # Menu scrollbar: prompt_toolkit's built-in gray track/thumb ignore the skin otherwise.
+    "scrollbar.background": "bg:{menu_meta_bg}", "scrollbar.button": "bg:{scroll_thumb}",
     "clarify-border": "{input_rule}", "clarify-title": "{title} bold", "clarify-question": "{text} bold",
     "clarify-choice": "{dim}", "clarify-selected": "{title} bold", "clarify-active-other": "{title} italic",
     "clarify-countdown": "{input_rule}",
@@ -551,6 +553,8 @@ def get_prompt_toolkit_style_overrides() -> dict[str, str]:
     palette: dict[str, str] = {}
     for name, key, fallback in _STYLE_PALETTE:
         palette[name] = skin.get_color(key, palette[fallback[1:]] if fallback.startswith("@") else fallback)
+    # The scrollbar thumb is a background too: light-mode darkening would sink it into the dark track.
+    palette["scroll_thumb"] = skin.colors.get("banner_dim", "#555555")
     # This badge paints both sides; foreground-only light remapping destroys its contrast.
     palette["badge_bg"] = skin.colors.get(
         "status_bar_strong", skin.colors.get("banner_title", "#FFD700"))

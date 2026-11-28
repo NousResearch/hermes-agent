@@ -419,9 +419,15 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
         if image_paths:
             session["attached_images"] = []  # claim now so a later paste isn't consumed when the turn yields
     plain_text = _coerce_message_text(text).strip() if not image_paths and _is_text_only_busy_payload(text) else ""
+    # A model pick made mid-turn is stashed for the NEXT turn start (_apply_pending_model_switch), while
+    # session.info already reports it. A steer/redirect reuses the LIVE turn, so the message would be answered by
+    # the OLD model under a pill showing the new one. With a pick pending, skip the in-place correction and take
+    # the queue path below: the message becomes the next turn, which adopts the pick ("interrupt" mode still
+    # stops the live turn first, so the user's "do this now" intent holds).
+    pending_pick = bool(session.get("pending_model_switch"))
     # Text-only corrections steer/redirect in place when supported; media payloads and older agents fall through to
     # the proven interrupt + queue path.
-    if plain_text and agent is not None:
+    if plain_text and agent is not None and not pending_pick:
         supported = {
             "steer": hasattr(agent, "steer"),
             "interrupt": getattr(agent, "_supports_active_turn_redirect", False) is True and hasattr(agent, "redirect")}

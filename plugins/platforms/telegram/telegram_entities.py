@@ -62,7 +62,7 @@ def _rich_lines(blocks: Any, prefix: str = "", depth: int = 0, skip_code: bool =
             lines.append(prefix + _CODE_PLACEHOLDER)
             prefix = ""
             continue
-        for key in ("text", "summary", "expression"):  # paragraph-like, details summary, math block
+        for key in ("text", "summary", "expression", "caption"):  # paragraph-like, details summary, math, media caption
             if key in block:
                 lines.append(prefix + _rich_inline(block[key], skip_code=skip_code, urls=urls))
                 prefix = ""
@@ -127,11 +127,13 @@ def addressing_text(message: Any) -> str:
 
 def rich_message_filter(filters: Any) -> Any:
     """A PTB message filter matching a text-less, attachment-less message that carries ``rich_message``
-    content (a caption-less photo with rich content stays with the media handler)."""
+    content: text or a media block (a top-level photo with rich content stays with the media handler)."""
+    from plugins.platforms.telegram.telegram_rich_media import rich_media_items
+
     class _RichMessage(filters.MessageFilter):
         def filter(self, message: Any) -> bool:
             return (not getattr(message, "text", None) and not getattr(message, "effective_attachment", None)
-                    and bool(rich_message_text(message)))
+                    and bool(rich_message_text(message) or rich_media_items(message)))
     return _RichMessage(name="rich_message")
 
 

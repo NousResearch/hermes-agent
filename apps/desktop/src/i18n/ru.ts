@@ -3463,6 +3463,8 @@ export const ruOverrides = {
     truncated: 'Показаны первые 512 КБ.',
     noInlineTitle: 'Нет inline-предпросмотра',
     noInlineBody: mimeType => `${mimeType || 'Этот тип файла'} всё равно можно прикрепить как контекст.`,
+    model3dLoading: 'Загрузка модели…',
+    model3dFailed: 'Не удалось загрузить эту 3D-модель',
     edit: 'Изменить',
     editing: 'Изменение',
     unsavedChanges: 'Несохранённые изменения',

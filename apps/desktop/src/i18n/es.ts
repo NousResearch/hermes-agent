@@ -4789,6 +4789,8 @@ export const esOverrides = {
     truncated: 'Mostrando los primeros 512 KB.',
     noInlineTitle: 'Sin vista previa inline',
     noInlineBody: mimeType => `${mimeType || 'Este tipo de archivo'} aún puede adjuntarse como contexto.`,
+    model3dLoading: 'Cargando modelo…',
+    model3dFailed: 'No se pudo cargar este modelo 3D',
     edit: 'Editar',
     editing: 'Edición',
     unsavedChanges: 'Cambios no guardados',

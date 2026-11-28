@@ -4804,6 +4804,8 @@ export const deOverrides = {
     truncated: 'Die ersten 512 KB werden angezeigt.',
     noInlineTitle: 'Keine Inline-Vorschau',
     noInlineBody: mimeType => `${mimeType || 'Dieser Dateityp'} kann trotzdem als Kontext angehängt werden.`,
+    model3dLoading: 'Modell wird geladen …',
+    model3dFailed: 'Dieses 3D-Modell konnte nicht geladen werden',
     edit: 'Bearbeiten',
     editing: 'Wird bearbeitet',
     unsavedChanges: 'Nicht gespeicherte Änderungen',

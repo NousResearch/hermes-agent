@@ -4384,6 +4384,8 @@ export const en: Translations = {
     truncated: 'Showing first 512 KB.',
     noInlineTitle: 'No inline preview',
     noInlineBody: mimeType => `${mimeType || 'This file type'} can still be attached as context.`,
+    model3dLoading: 'Loading model…',
+    model3dFailed: "Couldn't load this 3D model",
     edit: 'Edit',
     editing: 'Editing',
     unsavedChanges: 'Unsaved changes',

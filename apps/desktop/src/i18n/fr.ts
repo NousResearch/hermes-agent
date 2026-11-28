@@ -4814,6 +4814,8 @@ export const frOverrides = {
     truncated: 'Affichage des 512 Ko premiers.',
     noInlineTitle: 'Aucun aperçu en ligne',
     noInlineBody: mimeType => `${mimeType || 'Ce type de fichier'} peut tout de même être joint en tant que contexte.`,
+    model3dLoading: 'Chargement du modèle…',
+    model3dFailed: 'Impossible de charger ce modèle 3D',
     edit: 'Modifier',
     editing: 'Modification',
     unsavedChanges: 'Modifications non enregistrées',

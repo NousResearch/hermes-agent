@@ -3782,6 +3782,8 @@ export interface Translations extends NoticeTranslations {
     truncated: string
     noInlineTitle: string
     noInlineBody: (mimeType: string) => string
+    model3dLoading: string
+    model3dFailed: string
     edit: string
     editing: string
     unsavedChanges: string

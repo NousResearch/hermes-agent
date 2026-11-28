@@ -15,6 +15,7 @@ import { getApiRequestConnection } from '@/api/client'
 import { requestComposerFocus, requestComposerInsertRefs } from '@/app/chat/composer/focus'
 import { droppedFileInlineRef } from '@/app/chat/composer/inline-refs'
 import { HERMES_PATHS_MIME } from '@/app/chat/hooks/use-composer-actions'
+import { Model3dPreview } from '@/app/chat/right-rail/preview-model3d'
 import { RichCodeBlock } from '@/components/assistant-ui/embeds'
 import { CodeEditor } from '@/components/chat/code-editor'
 import { FileDiffPanel } from '@/components/chat/diff-lines'
@@ -56,6 +57,8 @@ import { notifyWorkspaceChanged } from '@/store/workspace-events'
 
 const SHIKI_THEME = { dark: 'github-dark-default', light: 'github-light-default' } as const
 const TEXT_PREVIEW_MAX_BYTES = 512 * 1024
+// Kinds loaded as raw bytes (data URL) rather than UTF-8 text; never size/binary-gated.
+const BYTE_PREVIEW_KINDS = new Set<string | undefined>(['image', 'model3d', 'pdf'])
 const SOURCE_CHUNK_LINES = 200
 const SOURCE_LINE_PX = 20
 const SOURCE_OVERSCAN_LINES = 400
@@ -789,6 +792,8 @@ export function LocalFilePreview({
   const filePath = filePathForTarget(target)
   const isImage = target.previewKind === 'image'
   const isPdf = target.previewKind === 'pdf'
+  const isModel3d = target.previewKind === 'model3d'
+  const isBytes = BYTE_PREVIEW_KINDS.has(target.previewKind)
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
@@ -807,7 +812,7 @@ export function LocalFilePreview({
   // when the file is forcibly previewed past the binary refusal screen.
   const isText = target.previewKind === 'text' || target.previewKind === 'binary' || target.previewKind === 'html'
 
-  const blockedByTarget = !isImage && !isPdf && !forcePreview && (target.binary || target.large)
+  const blockedByTarget = !isBytes && !forcePreview && (target.binary || target.large)
 
   useEffect(() => {
     let active = true
@@ -819,7 +824,7 @@ export function LocalFilePreview({
         return
       }
 
-      if (!isImage && !isPdf && !isText) {
+      if (!isBytes && !isText) {
         setState({ loading: false })
 
         return
@@ -828,7 +833,7 @@ export function LocalFilePreview({
       setState({ loading: true })
 
       try {
-        if (isImage || isPdf) {
+        if (isBytes) {
           // Prefer bytes the caller already handed us (a pasted/dropped
           // screenshot) over re-reading a path that may be transient/unreadable.
           const dataUrl = target.dataUrl || (await readDesktopFileDataUrl(filePath, { sessionId }))
@@ -900,8 +905,7 @@ export function LocalFilePreview({
     filePath,
     forcePreview,
     fsCacheKey,
-    isImage,
-    isPdf,
+    isBytes,
     isText,
     reloadKey,
     selfReload,
@@ -1161,8 +1165,7 @@ export function LocalFilePreview({
   }
 
   if (
-    !isImage &&
-    !isPdf &&
+    !isBytes &&
     !forcePreview &&
     (target.binary || target.large || state.binary || (state.byteSize ?? 0) > TEXT_PREVIEW_MAX_BYTES)
   ) {
@@ -1190,6 +1193,10 @@ export function LocalFilePreview({
         />
       </div>
     )
+  }
+
+  if (isModel3d && state.dataUrl) {
+    return <Model3dPreview dataUrl={state.dataUrl} name={target.label} />
   }
 
   if (isPdf && state.dataUrl && pdfUrl) {

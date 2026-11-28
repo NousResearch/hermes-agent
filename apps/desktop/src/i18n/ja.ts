@@ -3212,6 +3212,8 @@ export const jaOverrides = {
     truncated: '最初の 512 KB を表示しています。',
     noInlineTitle: 'インラインプレビューなし',
     noInlineBody: mimeType => `${mimeType || 'このファイルタイプ'} はコンテキストとして添付できます。`,
+    model3dLoading: 'モデルを読み込み中…',
+    model3dFailed: 'この3Dモデルを読み込めませんでした',
     edit: '編集',
     editing: '編集中',
     unsavedChanges: '未保存の変更',

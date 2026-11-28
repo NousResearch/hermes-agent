@@ -2441,6 +2441,8 @@
     "preview.missingBody",
     "preview.missingTarget",
     "preview.missingTitle",
+    "preview.model3dFailed",
+    "preview.model3dLoading",
     "preview.noInlineBody",
     "preview.noInlineTitle",
     "preview.openInBrowser",

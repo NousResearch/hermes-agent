@@ -1760,7 +1760,7 @@ export interface HermesPreviewTarget {
   language?: string
   mimeType?: string
   path?: string
-  previewKind?: 'binary' | 'directory' | 'html' | 'image' | 'missing' | 'pdf' | 'text'
+  previewKind?: 'binary' | 'directory' | 'html' | 'image' | 'missing' | 'model3d' | 'pdf' | 'text'
   renderMode?: 'preview' | 'source'
   source: string
   url: string

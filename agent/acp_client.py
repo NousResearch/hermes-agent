@@ -184,6 +184,28 @@ def _model_selection_request(
     return None if available and requested_model not in available else ("session/set_model", {"sessionId": session_id, "modelId": requested_model})
 
 
+def _context_tier_selection_request(
+    session_id: str, config_options: Any, *, preferred_value: str = "long_context",
+) -> tuple[str, dict[str, str]] | None:
+    """ACP ``session/set_config_option`` request selecting ``preferred_value`` when the session
+    advertises a ``contextTier`` option offering it and is not already on that value."""
+    if not session_id or not isinstance(config_options, list):
+        return None
+    option = next(
+        (o for o in config_options if isinstance(o, dict) and o.get("id") == "contextTier"),
+        None,
+    )
+    if option is None or str(option.get("currentValue") or "").strip() == preferred_value:
+        return None
+    if preferred_value not in _enabled_id_list(option.get("options"), "value"):
+        return None
+    return "session/set_config_option", {
+        "sessionId": session_id,
+        "configId": "contextTier",
+        "value": preferred_value,
+    }
+
+
 def _format_messages_as_prompt(
     messages: list[dict[str, Any]], model: str | None = None, tools: list[dict[str, Any]] | None = None, tool_choice: Any = None,
 ) -> str:
@@ -506,12 +528,15 @@ class ACPClient:
         requested_model = str(model or "").strip()
         with self._session(timeout_seconds) as (session, _request):
             session_id = str(session.get("sessionId") or "").strip()
+            config_options = session.get("configOptions")
             if requested_model and requested_model != self.placeholder_model:
                 try:
                     selection = _model_selection_request(
                         session, requested_model, placeholder=self.placeholder_model, disabled=self.model_entry_disabled)
                     if selection is not None:
-                        _request(*selection)
+                        sel_result = _request(*selection)
+                        if isinstance(sel_result, dict) and isinstance(sel_result.get("configOptions"), list):
+                            config_options = sel_result["configOptions"]
                     else:
                         logger.warning("%s does not offer model %r; using the session default.", self.label, requested_model)
                 # _request raises RuntimeError/TimeoutError/OSError (broken pipe); vendor ``session/new`` payload
@@ -520,6 +545,12 @@ class ACPClient:
                 except (RuntimeError, TimeoutError, OSError, TypeError, AttributeError) as exc:
                     logger.warning("%s model selection for %r failed; continuing with the session default: %s",
                                    self.label, requested_model, exc)
+            if tier_req := _context_tier_selection_request(session_id, config_options):
+                try:
+                    _request(*tier_req)
+                except (RuntimeError, TimeoutError, OSError, TypeError, AttributeError) as exc:
+                    logger.warning("%s contextTier selection failed; continuing with session default: %s",
+                                   self.label, exc)
             text_parts: list[str] = []
             reasoning_parts: list[str] = []
             prompt = {"sessionId": session_id, "prompt": [{"type": "text", "text": prompt_text}]}

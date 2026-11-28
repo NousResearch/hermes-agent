@@ -36,7 +36,7 @@ describe('flattenSessionsWithBranches', () => {
     const branchB = fork('branch-b', 'parent', { last_active: 10 })
 
     expect(flattenSessionsWithBranches([parent, branchA, branchB])).toEqual([
-      { session: parent },
+      { session: parent, childCount: 2 },
       { branchStem: '├─ ', session: branchA },
       { branchStem: '└─ ', session: branchB }
     ])
@@ -47,7 +47,7 @@ describe('flattenSessionsWithBranches', () => {
     const branch = fork('branch', 'root', { last_active: 10 })
 
     expect(flattenSessionsWithBranches([tip, branch])).toEqual([
-      { session: tip },
+      { session: tip, childCount: 1 },
       { branchStem: '└─ ', session: branch }
     ])
   })
@@ -83,7 +83,7 @@ describe('flattenSessionsWithBranches', () => {
     const branch = session('branch', { last_active: 50, parent_session_id: 'root' })
 
     expect(flattenSessionsWithBranches([root, continuation, branch])).toEqual([
-      { session: continuation },
+      { session: continuation, childCount: 1 },
       { branchStem: '└─ ', session: branch }
     ])
   })
@@ -94,7 +94,7 @@ describe('flattenSessionsWithBranches', () => {
     const branch = session('branch', { last_active: 70, parent_session_id: 'old-tip' })
 
     expect(flattenSessionsWithBranches([oldTip, tip, branch])).toEqual([
-      { session: tip },
+      { session: tip, childCount: 1 },
       { branchStem: '└─ ', session: branch }
     ])
   })
@@ -112,7 +112,7 @@ describe('flattenSessionsWithBranches', () => {
     const branch = session('branch', { last_active: 70, parent_session_id: 'tip' })
 
     expect(flattenSessionsWithBranches([oldTip, tip, branch])).toEqual([
-      { session: tip },
+      { session: tip, childCount: 1 },
       { branchStem: '└─ ', session: branch }
     ])
   })
@@ -186,8 +186,73 @@ describe('flattenSessionsWithBranches', () => {
     const branch = session('branch', { last_active: 10, parent_session_id: 'parent' })
 
     expect(flattenSessionsWithBranches([parent, branch])).toEqual([
-      { session: parent },
+      { session: parent, childCount: 1 },
       { branchStem: '└─ ', session: branch }
+    ])
+  })
+
+  it('orders sibling branches by leading title sequence instead of recency', () => {
+    const parent = session('parent', { last_active: 30 })
+    const branch00 = fork('b00', 'parent', { last_active: 1, title: '《典中古罗》00 制作参考' })
+    const branch02 = fork('b02', 'parent', { last_active: 5, title: '《典中古罗》02 分镜' })
+    const branch01 = fork('b01', 'parent', { last_active: 9, title: '《典中古罗》01 剧本拆解' })
+
+    // Recency alone would emit 01(9), 02(5), 00(1); the title sequence wins.
+    expect(
+      flattenSessionsWithBranches([parent, branch00, branch01, branch02]).map(e => ({
+        id: e.session.id,
+        stem: e.branchStem
+      }))
+    ).toEqual([
+      { id: 'parent', stem: undefined },
+      { id: 'b00', stem: '├─ ' },
+      { id: 'b01', stem: '├─ ' },
+      { id: 'b02', stem: '└─ ' }
+    ])
+  })
+
+  it('sorts EP-prefixed branches by episode number', () => {
+    const parent = session('parent', { last_active: 30 })
+    const ep10 = fork('ep10', 'parent', { last_active: 5, title: 'EP10 配音' })
+    const ep1 = fork('ep1', 'parent', { last_active: 1, title: 'EP01 分镜编译' })
+    const ep2 = fork('ep2', 'parent', { last_active: 9, title: 'EP02 调色' })
+
+    expect(flattenSessionsWithBranches([parent, ep10, ep1, ep2]).map(e => e.session.id)).toEqual([
+      'parent',
+      'ep1',
+      'ep2',
+      'ep10'
+    ])
+  })
+
+  it('keeps recency order for siblings without a title sequence and puts numbered ones first', () => {
+    const parent = session('parent', { last_active: 30 })
+    const numbered = fork('numbered', 'parent', { last_active: 1, title: '《书》01 剧本' })
+    const fresh = fork('fresh', 'parent', { last_active: 9 })
+    const stale = fork('stale', 'parent', { last_active: 2 })
+
+    expect(
+      flattenSessionsWithBranches([parent, stale, numbered, fresh]).map(e => e.session.id)
+    ).toEqual(['parent', 'numbered', 'fresh', 'stale'])
+  })
+
+  it('folds branch children away under a collapsed parent while keeping the parent and its count', () => {
+    const parent = session('parent', { last_active: 20 })
+    const branchA = fork('branch-a', 'parent', { last_active: 15 })
+    const branchB = fork('branch-b', 'parent', { last_active: 10 })
+
+    expect(flattenSessionsWithBranches([parent, branchA, branchB], { collapsedParentIds: new Set(['parent']) })).toEqual([
+      { session: parent, childCount: 2 }
+    ])
+  })
+
+  it('folds a collapsed parent entire subtree so a branch-of-branch stays hidden', () => {
+    const parent = session('parent', { last_active: 20 })
+    const branch = fork('branch', 'parent', { last_active: 15 })
+    const sub = fork('sub', 'branch', { last_active: 10 })
+
+    expect(flattenSessionsWithBranches([parent, branch, sub], { collapsedParentIds: new Set(['parent']) })).toEqual([
+      { session: parent, childCount: 1 }
     ])
   })
 })

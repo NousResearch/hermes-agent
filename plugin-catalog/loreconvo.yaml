@@ -1,8 +1,8 @@
 name: loreconvo
 repo: https://github.com/labyrinth-analytics/loreconvo
-sha: adc991d4565d6ad84400dfc2ba96830e664392a2
+sha: 73fc685f99078241e36bd714f1c75bc6aca401ee
 subdir: integrations/hermes
-description: "LoreConvo memory provider: cross-surface persistent session memory with search, recall and structured memory items. Disclosure — stores end-of-session transcripts (truncated, including tool output) and Hermes memory writes in ~/.loreconvo/sessions.db, a store shared across all Hermes profiles and other LoreConvo clients, and injects context from those sessions into each turn; when LoreDocs is installed its session_link_doc tool writes session-to-document links into the LoreDocs database; a Pro license enables a one-time Hugging Face embedding-model download; installs the loreconvo package (BUSL-1.1) with lancedb, fastembed and onnxruntime into the Hermes environment."
+description: "LoreConvo memory provider: cross-surface persistent session memory with search, recall and structured memory items. Disclosure — stores end-of-session transcripts (truncated, including tool output) and Hermes memory writes in ~/.loreconvo/sessions.db, a store shared across all Hermes profiles and other LoreConvo clients, and injects context from those sessions into each turn; when LoreDocs is installed its session_link_doc tool writes session-to-document links into the LoreDocs database; a Pro license enables a one-time Hugging Face embedding-model download, and Pro license keys are checked against a signed revocation list bundled in the package (the provider itself makes no network call for it); installs the loreconvo package (BUSL-1.1) with lancedb, fastembed and onnxruntime into the Hermes environment."
 tier: community
 category: memory
 maintainer: labyrinth-analytics
@@ -41,6 +41,7 @@ capabilities:
     - get_docs_for_session
     - session_link_doc
     - get_server_info
+    - get_retrieval_health
     - get_anti_patterns
     - tag_as_anti_pattern
     - untag_anti_pattern
@@ -58,5 +59,5 @@ capabilities:
     - LORECONVO_HERMES_PROJECT
     - LORECONVO_PRO
 requires_hermes: ">=0.21.0"
-version: "0.12.1"
+version: "0.13.0"
 docs_url: https://github.com/labyrinth-analytics/loreconvo?tab=readme-ov-file#loreconvo

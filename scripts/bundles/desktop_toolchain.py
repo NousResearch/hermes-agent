@@ -7,12 +7,15 @@ from __future__ import annotations
 from collections.abc import Mapping
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import platform
 import subprocess
 import sys
 import uuid
+
+logger = logging.getLogger(__name__)
 
 
 _INSTALL_ENV = {
@@ -260,6 +263,10 @@ if __name__ == "__main__":
     import truststore
 
     # Like pm/launch.py: initialize platform trust before PM creates HTTPS clients.
-    truststore.inject_into_ssl()
+    # Degrade gracefully when truststore is unavailable rather than aborting preparation.
+    try:
+        truststore.inject_into_ssl()
+    except Exception:
+        logger.debug("truststore injection unavailable, continuing without platform trust", exc_info=True)
     sys.argv = sys.argv[1:]
     runpy.run_path(sys.argv[0], run_name="__main__")

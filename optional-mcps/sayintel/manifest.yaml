@@ -1,0 +1,109 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: sayintel
+connector_slug: sayintel
+description: >-
+  Conference outbound for B2B teams. Create a campaign from a conference
+  URL; Sayintel scrapes speakers, qualifies them against your ICP, and
+  drafts a 3-message LinkedIn sequence per lead. Nothing sends without
+  human approval.
+source: https://sayintel.com/docs/mcp
+
+# Sayintel ships a remote MCP server with native OAuth 2.1 + Dynamic
+# Client Registration over Streamable HTTP. Hermes's MCP client +
+# mcp_oauth_manager handle discovery, PKCE, token exchange, and refresh —
+# nothing to install locally. Send-scoped tools are not exposed on this
+# door.
+transport:
+  type: http
+  url: https://sayintel.com/mcp
+
+auth:
+  type: oauth
+  # No `provider:` — this is native MCP OAuth, not a third-party provider
+  # like Google. The MCP client triggers the browser flow on the first
+  # probe / first connect.
+
+# Sayintel's OAuth door exposes a large tool surface (read + write; no
+# send). Leave `default_enabled` unset so the install-time checklist
+# starts with everything pre-checked — users prune what they don't want
+# with `hermes mcp configure sayintel`.
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - sayintel
+    - conference outreach
+    - conference attendee
+    - trade show meetings
+    - speaker list
+  hosts:
+    - sayintel.com
+
+post_install: |
+  On first connection, Hermes will open a browser to authenticate with
+  Sayintel (or run `hermes mcp login sayintel`). After auth, restart your
+  Hermes session so the Sayintel tools are loaded.
+
+  This door has read and write tools only. It cannot send outreach.
+  Pushing to a sending tool stays in the Sayintel app, behind a
+  send-scoped token and a human-armed campaign.
+
+  The server exposes a large tool list. You can prune it any time with:
+    hermes mcp configure sayintel
+
+  Try:
+    list my sayintel campaigns
+    start a campaign from this conference speaker page: <url>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

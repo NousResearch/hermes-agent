@@ -8,6 +8,7 @@ are exposed in the model picker.
 import pytest
 from hermes_cli.model_switch import list_authenticated_providers, switch_model
 from hermes_cli import runtime_provider as rp
+from hermes_cli.model_switch_providers import _finalize_picker_rows
 
 
 @pytest.fixture(autouse=True)
@@ -67,6 +68,71 @@ def test_list_authenticated_providers_includes_full_models_list_from_user_provid
     assert "kimi-k2.5:cloud" in user_prov["models"]
     assert "glm-5.1:cloud" in user_prov["models"]
     assert "qwen3.5:cloud" in user_prov["models"]
+
+
+def test_current_qualified_model_does_not_duplicate_a_bare_catalog_model():
+    """A selected ``provider/model`` id is the same entry as its bare native id."""
+    rows = [{
+        "slug": "radiance-local",
+        "name": "Radiance Local",
+        "is_current": True,
+        "native_catalog_empty": False,
+        "models": ["qwen35"],
+        "total_models": 1,
+    }]
+
+    finalized = _finalize_picker_rows(rows, {}, "radiance-local/qwen35")
+
+    assert finalized[0]["models"] == ["qwen35"]
+    assert finalized[0]["total_models"] == 1
+
+
+def test_current_model_from_another_provider_is_still_injected():
+    """Only this row's provider prefix makes a qualified id match a bare id."""
+    rows = [{
+        "slug": "radiance-local",
+        "name": "Radiance Local",
+        "is_current": True,
+        "native_catalog_empty": False,
+        "models": ["qwen35"],
+        "total_models": 1,
+    }]
+
+    finalized = _finalize_picker_rows(rows, {}, "other-provider/qwen35")
+
+    assert finalized[0]["models"] == ["other-provider/qwen35", "qwen35"]
+    assert finalized[0]["total_models"] == 2
+
+
+def test_current_qualified_alias_does_not_duplicate_grouped_provider_model(monkeypatch):
+    """The active provider may be an alias of a grouped endpoint's first slug."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    user_providers = {
+        "radiance-main": {
+            "base_url": "http://127.0.0.1:8100/v1",
+            "models": ["qwen35"],
+            "discover_models": False,
+        },
+        "radiance-alias": {
+            "base_url": "http://127.0.0.1:8100/v1",
+            "models": ["qwen35"],
+            "discover_models": False,
+        },
+    }
+    rows = list_authenticated_providers(
+        current_provider="radiance-alias",
+        current_model="radiance-alias/qwen35",
+        user_providers=user_providers,
+        custom_providers=[],
+        probe_custom_providers=False,
+    )
+
+    row = next(r for r in rows if r["slug"] == "radiance-main")
+    assert row["is_current"] is True
+    assert row["models"] == ["qwen35"]
+    assert row["total_models"] == 1
 
 
 def test_list_authenticated_providers_enumerates_dict_format_models(monkeypatch):

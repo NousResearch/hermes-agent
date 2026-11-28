@@ -489,6 +489,103 @@ describe('ChatSidebar empty-profile sections', () => {
   })
 })
 
+describe('ChatSidebar messaging rows across grouping modes', () => {
+  // Regression for #157368: Projects grouping hides the per-platform Messaging
+  // sections, so `projects.tree` must carry those rows (assigned → its project,
+  // unassigned → Home). The flat grouping renders the Messaging section instead,
+  // and the project tree is not mounted there.
+  const assigned = makeSessionInfo({
+    connection_id: 'local',
+    id: 'tg-in-project',
+    last_active: 20,
+    profile: 'default',
+    source: 'telegram',
+    title: 'tg-in-project'
+  })
+
+  const unassigned = makeSessionInfo({
+    connection_id: 'local',
+    id: 'tg-home',
+    last_active: 10,
+    profile: 'default',
+    source: 'telegram',
+    title: 'tg-home'
+  })
+
+  const project = {
+    id: 'p_product',
+    label: 'Product',
+    path: '/repos/product',
+    repos: [],
+    sessionCount: 1,
+    sessionIds: [assigned.id],
+    previewSessions: [assigned]
+  }
+
+  const home = {
+    id: '__no_project__',
+    isNoProject: true,
+    label: 'Home',
+    path: null,
+    repos: [],
+    sessionCount: 1,
+    sessionIds: [unassigned.id],
+    previewSessions: [unassigned]
+  }
+
+  beforeEach(() => {
+    $connectionsRegistry.set({
+      version: 2,
+      primary: 'local',
+      secureTokenStorage: true,
+      connections: [{ id: 'local', label: 'This computer', kind: 'local', tokenSet: false, tokenPreview: null }]
+    } as NonNullable<typeof $connectionsRegistry.value>)
+    $profiles.set([{ name: 'default', is_default: true }] as typeof $profiles.value)
+    $sessions.set([])
+    $messagingSessions.set([assigned, unassigned])
+    $messagingTruncated.set(false)
+    $sidebarMessagingOpenIds.set(['telegram'])
+    $sessionsLoading.set(false)
+  })
+
+  afterEach(() => {
+    cleanup()
+    $messagingSessions.set([])
+    $sidebarMessagingOpenIds.set([])
+    $projectTree.set([])
+    setSidebarAgentsGrouped(false)
+    $sessions.set([])
+    $sessionsLoading.set(true)
+  })
+
+  it('renders messaging rows under their project and Home in Projects grouping', () => {
+    setSidebarAgentsGrouped(true)
+    $projectTree.set([project, home])
+
+    renderSidebar('/', 'chat')
+
+    expect(screen.getByText('Projects')).toBeTruthy()
+    expect(screen.getByText('tg-in-project')).toBeTruthy()
+    expect(screen.getByText('tg-home')).toBeTruthy()
+    // The flat Messaging section is not rendered here; the tree is the only door.
+    expect(screen.queryByText('Telegram')).toBeNull()
+  })
+
+  it('renders the Messaging section and no project tree in the flat grouping', () => {
+    setSidebarAgentsGrouped(false)
+    $projectTree.set([project, home])
+
+    renderSidebar('/', 'chat')
+
+    expect(screen.getAllByText('Telegram').length).toBeGreaterThan(0)
+    expect(screen.getByText('tg-in-project')).toBeTruthy()
+    expect(screen.getByText('tg-home')).toBeTruthy()
+    // Project rows are not mounted here, so no conversation is listed twice.
+    expect(screen.queryByText('Product')).toBeNull()
+    expect(screen.queryByText('Projects')).toBeNull()
+  })
+})
+
 describe('ChatSidebar messaging owners', () => {
   const telegram = (id: string, profile: string, last_active: number) =>
     makeSessionInfo({ connection_id: 'local', id, last_active, profile, source: 'telegram', title: id })

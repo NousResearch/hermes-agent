@@ -1,20 +1,22 @@
 name: order-cards
 title: Order Cards
 repo: https://github.com/kenhendricks00/hermes-order-cards
-sha: 996fa90beeca9f35c7c8a6e1fb628c03ec2ca885
-description: "Purchase approval cards for checkouts the agent drives: it stops before the final button and shows an inline card (::preview) with the merchant's items, fees and total, Ship to and Pay with pickers, and Cancel / Pay buttons; after the order goes through the card collapses into an 'Order placed' pill. Portable Agent Plugins v1 package (skills/ only, one stdlib Python script). Disclosure — the skill guides the agent through merchant checkout pages in your browser with Hermes's own browser tools and tells it to submit only after you tap Pay on the card or give a clear yes; that approval is an instruction to the model, not a Hermes approval prompt. Card buttons send fixed prompts back as your message via data-hermes-send; card details go only through browser_vault. The bundled script makes no network calls, reads only the order JSON it is given and writes one HTML file; the rendered card loads merchant favicons from www.google.com/s2/favicons and item images from merchant CDNs. No credentials, telemetry or background processes."
+sha: de5de43d6a9d580dd83ca1479bec8977d1d9ae6d
+description: "Purchase approval cards for checkouts the agent drives: it stops before the final button and shows an inline card (::preview) laid out like Grok Bot's order card: an expandable item row with thumbnails, labelled Summary, Ship to and Pay with sections (with pickers), and Cancel / Pay buttons; after Pay it shows 'Order submitted', and once the order goes through the card collapses into an 'Order placed' pill. Adds static delivery snapshots with four discrete stage milestones (not courier GPS or an exact completion percentage) and readable Pay text on hosts without --card. Portable Agent Plugins v1 package (skills/ only, one stdlib Python script). Disclosure — the skill guides the agent through merchant checkout pages in your browser with Hermes's own browser tools and tells it to submit only after you tap Pay on the card or give a clear yes; that approval is an instruction to the model, not a Hermes approval prompt. Card buttons send fixed prompts back as your message via data-hermes-send; card details go only through browser_vault. If you want tracking, the skill guides the agent to read real merchant/courier email or SMS through separately authorized tools, or check a merchant status page with browser tools; requested scheduled follow-ups require an available scheduling tool. It provides no mail/SMS access, automatic scheduler or tracking service. At most three checks per order (after confirmation, around pickup, near ETA), stopping at delivered, are agent guidance; snapshots are not push updates. Missing status is not fabricated. The bundled script makes no network calls, reads only the order JSON it is given and writes one HTML file; the rendered card loads merchant favicons from www.google.com/s2/favicons and item images from merchant CDNs. Its only frame message is the standard hermes-inline-preview-size height report, sent with the host's own token so collapsed cards leave no gap. No credentials, telemetry or background processes."
 maintainer: kenhendricks00
 tier: community
 category: tools
-version: "1.0.0"
+version: "1.2.1"
 requires_hermes: ">=0.21.6"
 docs_url: https://github.com/kenhendricks00/hermes-order-cards#readme
-image: https://raw.githubusercontent.com/kenhendricks00/hermes-order-cards/996fa90beeca9f35c7c8a6e1fb628c03ec2ca885/docs/banner.png
+image: https://raw.githubusercontent.com/kenhendricks00/hermes-order-cards/de5de43d6a9d580dd83ca1479bec8977d1d9ae6d/docs/banner.png
 screenshots:
-- https://raw.githubusercontent.com/kenhendricks00/hermes-order-cards/996fa90beeca9f35c7c8a6e1fb628c03ec2ca885/docs/pending.png
-- https://raw.githubusercontent.com/kenhendricks00/hermes-order-cards/996fa90beeca9f35c7c8a6e1fb628c03ec2ca885/docs/pending-pickers.png
-- https://raw.githubusercontent.com/kenhendricks00/hermes-order-cards/996fa90beeca9f35c7c8a6e1fb628c03ec2ca885/docs/placed.png
-- https://raw.githubusercontent.com/kenhendricks00/hermes-order-cards/996fa90beeca9f35c7c8a6e1fb628c03ec2ca885/docs/placed-expanded.png
+- https://raw.githubusercontent.com/kenhendricks00/hermes-order-cards/de5de43d6a9d580dd83ca1479bec8977d1d9ae6d/docs/pending.png
+- https://raw.githubusercontent.com/kenhendricks00/hermes-order-cards/de5de43d6a9d580dd83ca1479bec8977d1d9ae6d/docs/pending-pickers.png
+- https://raw.githubusercontent.com/kenhendricks00/hermes-order-cards/de5de43d6a9d580dd83ca1479bec8977d1d9ae6d/docs/submitted.png
+- https://raw.githubusercontent.com/kenhendricks00/hermes-order-cards/de5de43d6a9d580dd83ca1479bec8977d1d9ae6d/docs/placed.png
+- https://raw.githubusercontent.com/kenhendricks00/hermes-order-cards/de5de43d6a9d580dd83ca1479bec8977d1d9ae6d/docs/placed-expanded.png
+- https://raw.githubusercontent.com/kenhendricks00/hermes-order-cards/de5de43d6a9d580dd83ca1479bec8977d1d9ae6d/docs/tracking.png
 platforms: []
 capabilities:
   provides_tools: []

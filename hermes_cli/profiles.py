@@ -74,16 +74,14 @@ _CLONE_ALL_STRIP: list[str] = [
 # allow-list instead (``_DEFAULT_EXPORT_INCLUDE_ROOT``): an archive is a portable snapshot,
 # a clone must run. The runtime trio is ``LOCAL_RUNTIME_ROOT_DIRS``, shared with
 # ``hermes_cli.backup._EXCLUDED_ROOT_DIRS`` so the two lists cannot drift.
-_CLONE_ALL_DEFAULT_EXCLUDE_ROOT: frozenset[str] =  frozenset({
-    "hermes-agent",
-    ".worktrees",
-    "profiles",
-    "bin",
-    "node_modules",
+_CLONE_ALL_DEFAULT_EXCLUDE_ROOT: frozenset[str] = frozenset({
+    "hermes-agent", ".worktrees", "profiles", "bin", "node_modules",
     # Managed runtime trees — install artifacts, never profile state
     # (install/profile bucket split; see test_install_bucket_separation).
-    ".hermes-runtime",
-    "node",
+    ".hermes-runtime", "node",
+    # Shared kanban board (anchored on kanban_home()) at default root (#159604).
+    "kanban.db", "kanban.db-wal", "kanban.db-shm", "kanban.db-journal",
+    "kanban.db.dispatch.lock", "kanban.db.init.lock", "kanban",
 }) | LOCAL_RUNTIME_ROOT_DIRS
 
 # Per-profile history excluded from --clone-all for ANY source: SQLite session store

@@ -13,6 +13,9 @@
  * shape as the 5s readdir poll the directory watch replaced. The breaker is
  * armed on win32 only: that is where the storm happens, and elsewhere a
  * legitimate burst would needlessly demote a watch to polling.
+ *
+ * A watch the OS refuses for lack of inotify budget starts in that same poll
+ * mode instead of failing the caller (see WATCH_LIMIT_ERROR_CODES).
  */
 
 export const WATCH_STORM_MAX_EVENTS = 1000
@@ -38,6 +41,8 @@ export interface GuardedWatchOptions {
   onPollChange: () => void
   /** Called once when the breaker trips (logging). */
   onTrip?: (info: { events: number; windowMs: number }) => void
+  /** Called once when the OS watch limit refused the watch and polling took over (logging). */
+  onWatchLimit?: (code: string) => void
   now?: () => number
   setInterval?: (fn: () => void, ms: number) => unknown
   clearInterval?: (handle: unknown) => void
@@ -49,6 +54,29 @@ export interface GuardedWatchOptions {
 export interface GuardedWatch {
   close(): void
   mode(): 'watch' | 'poll' | 'closed'
+}
+
+/**
+ * Linux refuses a new fs.watch once the user's inotify budget is spent
+ * (ENOSPC: max_user_watches; EMFILE: max_user_instances), a limit shared with
+ * every other process of that user (editors, file sync). That is host state,
+ * not a fault of the watched path, so the watch degrades to the same poll.
+ */
+const WATCH_LIMIT_ERROR_CODES = new Set(['EMFILE', 'ENOSPC'])
+
+function watchLimitErrorCode(error: unknown): string | null {
+  const code = (error as NodeJS.ErrnoException | null)?.code
+
+  return typeof code === 'string' && WATCH_LIMIT_ERROR_CODES.has(code) ? code : null
+}
+
+/** The log lines a watch of `dir` writes when it falls back to polling. */
+export function watchFallbackLogs(dir: string): Pick<GuardedWatchOptions, 'onTrip' | 'onWatchLimit'> {
+  return {
+    onTrip: ({ events, windowMs }) =>
+      console.warn(`[hermes] fs.watch storm on ${dir} (${events} events within ${windowMs}ms); polling instead`),
+    onWatchLimit: code => console.warn(`[hermes] fs.watch refused on ${dir} (${code}: OS watch limit); polling instead`)
+  }
 }
 
 export function stormBreakerArmed(platform: string): boolean {
@@ -83,12 +111,8 @@ export function guardedWatch(options: GuardedWatchOptions): GuardedWatch {
   let pollHandle: unknown = null
   let watcher: ClosableWatcher | null = null
 
-  const trip = () => {
+  const startPolling = () => {
     state = 'poll'
-    watcher?.close()
-    watcher = null
-    options.onTrip?.({ events: count, windowMs })
-
     let last = safeSnapshot(options.snapshot)
 
     pollHandle = startInterval(() => {
@@ -101,7 +125,15 @@ export function guardedWatch(options: GuardedWatchOptions): GuardedWatch {
     }, pollMs)
   }
 
-  watcher = options.watch((eventType, filename) => {
+  const trip = () => {
+    state = 'poll'
+    watcher?.close()
+    watcher = null
+    options.onTrip?.({ events: count, windowMs })
+    startPolling()
+  }
+
+  const listener: WatchListener = (eventType, filename) => {
     if (state !== 'watch') {
       return
     }
@@ -129,7 +161,20 @@ export function guardedWatch(options: GuardedWatchOptions): GuardedWatch {
     }
 
     options.onEvent(eventType, filename)
-  })
+  }
+
+  try {
+    watcher = options.watch(listener)
+  } catch (error) {
+    const code = watchLimitErrorCode(error)
+
+    if (!code) {
+      throw error
+    }
+
+    options.onWatchLimit?.(code)
+    startPolling()
+  }
 
   return {
     close() {

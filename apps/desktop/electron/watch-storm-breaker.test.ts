@@ -204,4 +204,27 @@ describe('guardedWatch', () => {
 
     expect(onPollChange).toHaveBeenCalledTimes(1)
   })
+
+  test('an OS watch-limit refusal polls instead of throwing; any other watch error still throws', () => {
+    const refuse = (code: string) => () => {
+      throw Object.assign(new Error(`${code}: System limit for number of file watchers reached`), { code })
+    }
+
+    for (const code of ['ENOSPC', 'EMFILE']) {
+      const onWatchLimit = vi.fn()
+      const { guard, onPollChange, setSnap } = setup('linux', { onWatchLimit, watch: refuse(code) })
+
+      expect(guard.mode()).toBe('poll')
+      expect(onWatchLimit).toHaveBeenCalledExactlyOnceWith(code)
+      setSnap('b')
+      vi.advanceTimersByTime(WATCH_STORM_POLL_MS)
+      expect(onPollChange).toHaveBeenCalledOnce()
+      guard.close()
+      setSnap('c')
+      vi.advanceTimersByTime(WATCH_STORM_POLL_MS)
+      expect(onPollChange).toHaveBeenCalledOnce()
+    }
+
+    expect(() => setup('linux', { watch: refuse('EACCES') })).toThrow(/EACCES/)
+  })
 })

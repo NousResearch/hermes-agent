@@ -17,19 +17,19 @@ from tools.registry import registry
 logger = logging.getLogger(__name__)
 
 # Set by the GUI gateway: ``(task_id, primary_path, project_name)`` re-anchors that session's
-# workspace. ``None`` in CLI/messaging — the DB write still happens, nothing to move. It returns
-# False when it found no live session for *task_id* (or the folder is gone), and ``"pending"`` when
-# the move is committed at the end of the calling turn; ``None`` (an older callback with no verdict)
-# counts as moved.
-_workspace_callback: Optional[Callable[[str, str, str], object]] = None
+# workspace (and ``session_key=`` moves another stored session). ``None`` in CLI/messaging —
+# the DB write still happens, nothing to move. It returns False when it found no live session for
+# *task_id* (or the folder is gone), and ``"pending"`` when the move is committed at the end of the
+# calling turn; ``None`` (an older callback with no verdict) counts as moved.
+_workspace_callback: Optional[Callable[..., object]] = None
 
 
-def set_project_workspace_callback(fn: Optional[Callable[[str, str, str], object]]) -> None:
+def set_project_workspace_callback(fn: Optional[Callable[..., object]]) -> None:
     global _workspace_callback
     _workspace_callback = fn
 
 
-def get_project_workspace_callback() -> Optional[Callable[[str, str, str], object]]:
+def get_project_workspace_callback() -> Optional[Callable[..., object]]:
     """The installed callback, so a second GUI host can wrap it (``gateway/local_desktop_ui.py``)."""
     return _workspace_callback
 
@@ -178,17 +178,47 @@ def project_switch(project: str, task_id: Optional[str] = None) -> str:
     return _activated(proj, task_id)
 
 
+def project_move(project: str, session_key: str, task_id: Optional[str] = None) -> str:
+    """Re-home a stored thread without activating its destination for the caller."""
+    if not isinstance(session_key, str) or not session_key.strip():
+        return json.dumps({"success": False, "error": "session_key is required for move"})
+    if session_key != session_key.strip():
+        return json.dumps({
+            "success": False,
+            "error": "session_key must be an exact stored session ID without surrounding whitespace",
+        })
+    if session_key == task_id:
+        return json.dumps({"success": False, "error": "use switch to move this chat into a project"})
+    cb = _workspace_callback
+    if cb is None or not task_id:
+        return json.dumps({"success": False, "error": "move requires a connected Desktop session"})
+    from hermes_cli import projects_db as pdb
+    with pdb.connect_closing() as conn:
+        proj = _resolve(conn, project)
+    if proj is None:
+        return json.dumps({"success": False, "error": f"no project matching '{project}'"})
+    primary = _primary_path(proj)
+    if not primary:
+        return json.dumps({"success": False, "error": "destination project has no folder"})
+    result = cb(task_id, primary, proj.name, session_key=session_key)
+    if not isinstance(result, dict):
+        return json.dumps({"success": False, "error": "native move not acknowledged; verify before retrying"})
+    return json.dumps({"id": proj.id, "name": proj.name, **result})
+
+
 _ACTIONS = {
     "list": lambda args, tid: project_list(task_id=tid),
     "create": lambda args, tid: project_create(
         name=args.get("name", ""), path=args.get("path"), task_id=tid),
-    "switch": lambda args, tid: project_switch(project=args.get("name", ""), task_id=tid)}
+    "switch": lambda args, tid: project_switch(project=args.get("name", ""), task_id=tid),
+    "move": lambda args, tid: project_move(
+        project=args.get("name", ""), session_key=args.get("session_key", ""), task_id=tid)}
 
 
 def _handle_project(args, **kw):
     action = _ACTIONS.get((args.get("action") or "").strip())
     if action is None:
-        return json.dumps({"success": False, "error": "action must be one of: create, switch, list."})
+        return json.dumps({"success": False, "error": "action must be one of: create, switch, list, move."})
     return action(args, kw.get("task_id"))
 
 
@@ -201,18 +231,20 @@ registry.register(
     schema={
         "name": "desktop_project",
         "description": (
-            "Create or switch desktop Projects (named workspaces). create: make one; pass path to "
+            "Organize desktop Projects (named workspaces) and move sessions. create: make one; pass path to "
             "anchor it to a repo/folder. This chat stays where it is and the active project is unchanged. "
             "switch: move this chat into an existing project by name/slug/id (the chat's workspace "
             "moves there, the sidebar follows); the intentional way to move the session, not `cd`. "
-            "list: all projects + which one this chat is in."
+            "move: move another thread in this profile by exact session_key into name, without switching "
+            "this chat. list: all projects + which one this chat is in."
         ),
         "parameters": {
             "type": "object",
             "properties": {
-                "action": {"type": "string", "enum": ["create", "switch", "list"]},
-                "name": {"type": "string", "description": "create: human name. switch: name, slug, or id."},
+                "action": {"type": "string", "enum": ["create", "switch", "list", "move"]},
+                "name": {"type": "string", "description": "create: human name. switch/move: name, slug, or id."},
                 "path": {"type": "string", "description": "create: repo/folder to anchor to."},
+                "session_key": {"type": "string", "description": "move: exact stored session ID, not title or runtime ID."},
             },
             "required": ["action"],
         },

@@ -1005,12 +1005,15 @@ def _(rid, params: dict) -> dict:
     if not (raw := _str_param(params, "cwd")):
         return _err(rid, 4016, "cwd required")
     from hermes_constants import translate_cwd_for_wsl_backend
+    # Stored IDs can recur across profiles; only the requested profile's live owner may follow.
+    profile_home = _profile_home(params.get("profile"))
     # Snapshot under the lock — concurrent RPCs mutate _sessions.
     with _sessions_lock:
         live_sid, live = next(
-            ((sid, sess) for sid, sess in list(_sessions.items()) if sess.get("session_key") == target), ("", None))
+            ((sid, sess) for sid, sess in list(_sessions.items())
+             if sess.get("session_key") == target and _live_profile_matches(sess, profile_home)), ("", None))
     # The live session's profile decides (as _set_session_cwd below does); an ssh workspace is never host-validated.
-    home = live.get("profile_home") if live is not None else _profile_home(params.get("profile"))
+    home = live.get("profile_home") if live is not None else profile_home
     try:
         target_cwd = _workspace_cwd(home, translate_cwd_for_wsl_backend(raw))
     except ValueError:

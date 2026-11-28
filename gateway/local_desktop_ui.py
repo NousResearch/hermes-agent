@@ -205,7 +205,9 @@ def _install_workspace_hook() -> None:
     if getattr(previous, "_local_desktop_ui", False):
         return
 
-    def move(task_id, path, name=""):
+    def move(task_id, path, name="", *, session_key=None):
+        if session_key is not None:
+            return previous(task_id, path, name, session_key=session_key) if previous is not None else None
         moved = _move_workspace(task_id, path)
         if moved is None:
             return previous(task_id, path, name) if previous is not None else False

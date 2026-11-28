@@ -41,6 +41,7 @@ import { installSelectionCopyColorGuard } from './lib/selection-copy-colors'
 import { isTransparentWindow } from './lib/transparent-windows'
 import { startUiPreferencesSync } from './lib/ui-preferences/sync'
 import { installBrowserTabTitle } from './store/browser-tab-title'
+import { installWindowTitle } from './store/window-title'
 import { ThemeProvider } from './themes/context'
 
 installClipboardShim()
@@ -50,6 +51,8 @@ installClipboardShim()
 installSelectionCopyColorGuard()
 // Browser host only: the tab carries session status while the user is away.
 installBrowserTabTitle()
+// Electron session window only: the taskbar names the chat this window shows.
+installWindowTitle()
 // One preferences store per machine, shared by native Desktop and its Webapp (#145213).
 startUiPreferencesSync(window.hermesDesktop?.uiPreferences)
 

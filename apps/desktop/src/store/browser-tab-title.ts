@@ -10,10 +10,10 @@
  * a count of unread finished sessions, then one mark — `⚠` when anything is
  * blocked on the user, else `●` while a turn runs — then the session.
  *
- * Browser-hosted only: Electron mirrors `document.title` into the native window
- * title, which is a separate decision. Unsent drafts never name the tab — their
- * text is composer content, and a title lands in browser history and synced
- * tab lists.
+ * Browser-hosted only — a native window's title is `window-title.ts`, which
+ * reuses the caption below but not the profile-wide count. Unsent drafts never
+ * name the tab — their text is composer content, and a title lands in browser
+ * history and synced tab lists.
  */
 
 import { computed } from 'nanostores'
@@ -50,7 +50,7 @@ export function browserTabTitle({ caption, needsInput, unread, working }: Browse
   return [unread > 0 ? `(${unread})` : '', mark, name].filter(Boolean).join(' ')
 }
 
-const $focusedCaption = computed(
+export const $focusedSessionCaption = computed(
   [$focusedStoredSessionId, $sessions, $sessionTiles, $workspaceOwnerLabels],
   (focused, sessions, tiles) => {
     if (!focused) {
@@ -76,7 +76,7 @@ const $focusedCaption = computed(
 )
 
 const $browserTabTitle = computed(
-  [$focusedCaption, $attentionSessionIds, $workingSessionIds, $unreadSessionCount],
+  [$focusedSessionCaption, $attentionSessionIds, $workingSessionIds, $unreadSessionCount],
   (caption, attention, working, unread) =>
     browserTabTitle({ caption, needsInput: attention.length > 0, unread, working: working.length > 0 })
 )

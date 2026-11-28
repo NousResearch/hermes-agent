@@ -9,6 +9,7 @@ import logging
 import math
 import os
 import platform
+import re
 import shlex
 import shutil
 import subprocess
@@ -36,6 +37,90 @@ SAMPLE_WIDTH = 2  # bytes per sample (int16)
 SILENCE_RMS_THRESHOLD = 200  # RMS below this = silence (int16 range 0-32767)
 SILENCE_DURATION_SECONDS = 3.0  # continuous silence before auto-stop
 _TEMP_DIR = os.path.join(tempfile.gettempdir(), "hermes_voice")
+
+
+class _StderrQuiet:
+    """Divert PortAudio's own C-level stderr chatter away from the terminal, keeping real errors.
+
+    PortAudio prints diagnostics (``PaMacCore (AUHAL)|| Error on line 2523: err='-50'``) with
+    ``fprintf(stderr, ...)`` from C — no Python handler, logger or ``print`` sits in that path, so
+    nothing on the Python side can catch or rewrap it. When a stream is rebuilt while another holds
+    the device (CoreAudio refuses the second AUHAL client) those lines land mid-panel and truncate
+    its border.
+
+    For the duration of the ``with`` block fd 2 is pointed at a scratch file. On exit the captured
+    text is split by signature: PortAudio noise is replayed at DEBUG, and **every other line is
+    written back to the real stderr**, so an unrelated traceback raised during the window is still
+    shown. That filter is the reason this is safe to leave on permanently.
+
+    No-op off macOS (ALSA does not print this way) and whenever the fds cannot be manipulated — a
+    failure here must never break audio.
+    """
+
+    #: Lines PortAudio emits itself. Anything else is treated as a real error and passes through.
+    _NOISE = re.compile(r"PaMacCore|PortAudio|PulseAudio|\|\|.*\|\|", re.IGNORECASE)
+    #: Cap the replay so a runaway stream cannot flood the log or memory.
+    _MAX_CAPTURE = 64 * 1024
+
+    def __init__(self, label: str) -> None:
+        self._label = label
+        self._saved_fd: int | None = None
+        self._tmp = None
+
+    def __enter__(self):
+        if sys.platform != "darwin":
+            return self
+        try:
+            self._tmp = tempfile.TemporaryFile(mode="w+b")
+            sys.stderr.flush()
+            self._saved_fd = os.dup(2)
+            os.dup2(self._tmp.fileno(), 2)
+        except (OSError, ValueError):
+            self._close()
+        return self
+
+    def __exit__(self, *exc_info) -> bool:
+        if self._tmp is None:
+            return False
+        try:
+            with suppress(OSError, ValueError):
+                sys.stderr.flush()
+        finally:
+            # Restore first: the pass-through below writes to the user's real stderr.
+            self._restore()
+        try:
+            self._tmp.seek(0)
+            captured = self._tmp.read(self._MAX_CAPTURE).decode("utf-8", "replace")
+        except (OSError, ValueError):
+            captured = ""
+        finally:
+            self._close()
+        for line in captured.splitlines():
+            if not line.strip():
+                continue
+            if self._NOISE.search(line):
+                logger.debug("%s: PortAudio stderr: %s", self._label, line[:500])
+            else:
+                # Straight to the restored fd 2 — the same destination PortAudio uses, so a real
+                # error lands exactly where the user expects it rather than through a wrapper.
+                with suppress(OSError, ValueError):
+                    os.write(2, (line + "\n").encode("utf-8", "replace"))
+        return False
+
+    def _restore(self) -> None:
+        if self._saved_fd is not None:
+            with suppress(OSError, ValueError):
+                os.dup2(self._saved_fd, 2)
+            with suppress(OSError, ValueError):
+                os.close(self._saved_fd)
+            self._saved_fd = None
+
+    def _close(self) -> None:
+        self._restore()
+        if self._tmp is not None:
+            with suppress(OSError, ValueError):
+                self._tmp.close()
+            self._tmp = None
 
 
 # ── Lazy audio imports ──
@@ -809,9 +894,12 @@ class AudioRecorder(_RecorderBase):
         stream = None
         for attempt in range(2):
             try:  # may block on CoreAudio (first call only)
-                stream = sd.InputStream(samplerate=self._sample_rate, channels=CHANNELS, dtype=DTYPE,
-                                        callback=_callback)
-                stream.start()
+                # PortAudio's AUHAL errors are C-level stderr writes: keep them off the terminal
+                # (they truncate an open panel's border) and replay them at DEBUG.
+                with _StderrQuiet("audio input stream"):
+                    stream = sd.InputStream(samplerate=self._sample_rate, channels=CHANNELS, dtype=DTYPE,
+                                            callback=_callback)
+                    stream.start()
                 break
             except Exception as e:
                 with suppress(Exception):
@@ -860,10 +948,12 @@ class AudioRecorder(_RecorderBase):
         stream, self._stream = self._stream, None
 
         def _do_close():
-            with suppress(Exception):
-                stream.stop()
-            with suppress(Exception):
-                stream.close()
+            # Closing an AUHAL stream is where CoreAudio complains to stderr; keep it off the UI.
+            with _StderrQuiet("audio stream close"):
+                with suppress(Exception):
+                    stream.stop()
+                with suppress(Exception):
+                    stream.close()
 
         t = threading.Thread(target=_do_close, daemon=True)
         t.start()
@@ -1436,7 +1526,11 @@ def full_duplex_listen(
         grace_blocks=max(0, grace_ms // 30))
     pre_roll: deque = deque(maxlen=max(1, pre_roll_ms // 30))
     try:
-        with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="int16", blocksize=block) as stream:
+        # This probe opens its own input stream while TTS plays, so it contends with the clarify
+        # panel's recorder for the AUHAL device; PortAudio reports the refusal from C straight onto
+        # the panel. Keep that chatter off the terminal (see _StderrQuiet).
+        with _StderrQuiet("full-duplex barge-in probe"), \
+                sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="int16", blocksize=block) as stream:
             while not should_stop():
                 data, _ = stream.read(block)
                 pre_roll.append(data.copy())

@@ -1469,6 +1469,18 @@ The same key is honored on per-named-provider models (`providers.<name>.models.<
 
 A `model_overrides` entry that only corrects metadata (for example `context_window`) for a model the catalog does not know leaves vision and reasoning capability and the output-token limit **unknown** — `vision_analyze`, `video_analyze` and the reasoning-effort picker stay available. Only an explicit `supports_vision: false` / `supports_reasoning: false` in the override marks the model as text-only or non-reasoning.
 
+**Per-model wire parameters (`extra_body`).** A model whose server-side sampler defaults misbehave — a llama.cpp-style `repeat_penalty` that lets it loop, a vendor `top_k`, any non-standard chat-completions field — can be tuned per model from config. The mapping rides the request's `extra_body` (which the OpenAI SDK flattens into the JSON body top level) rather than a top-level keyword argument, which `openai>=2.54` rejects with a `TypeError`:
+
+```yaml
+model_overrides:
+  ollama-cloud:
+    glm-5.3-flash:
+      extra_body:
+        repeat_penalty: 1.2
+```
+
+Explicit-only by design: a `_default` fill-gap never supplies wire parameters. Works for built-in providers (keyed by Hermes or models.dev id) and named custom providers alike.
+
 **Inheriting a catalogued vendor's metadata (`catalog_provider`).** When a named custom provider (a gateway, proxy or reseller) serves models that Hermes already knows under a built-in provider, point the entry at that vendor and its models inherit the catalogued context window, output limit, vision and reasoning flags — no `model_overrides` needed:
 
 ```yaml

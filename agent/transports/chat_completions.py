@@ -573,6 +573,12 @@ class ChatCompletionsTransport(ProviderTransport):
 
         if params.get("extra_body_additions"):
             extra_body.update(params["extra_body_additions"])
+        # Same per-model ``model_overrides.<provider>.<model>.extra_body`` wire additions on
+        # the legacy (unregistered provider) path, keyed by the caller's provider_name.
+        from agent.models_dev import explicit_model_extra_body
+        _mo_extra = explicit_model_extra_body(str(params.get("provider_name") or ""), model or "")
+        if _mo_extra:
+            extra_body.update(_mo_extra)
         if extra_body:
             api_kwargs["extra_body"] = extra_body
         if params.get("request_overrides"):
@@ -612,6 +618,14 @@ class ChatCompletionsTransport(ProviderTransport):
         for part in (profile_body, extra_body_from_profile, params.get("extra_body_additions")):
             if part:
                 extra_body.update(part)
+        # Per-model wire additions from ``model_overrides.<provider>.<model>.extra_body`` —
+        # the config escape hatch for vendor sampler quirks (llama.cpp-style repeat_penalty
+        # on OpenAI-compat gateways). Rides the extra_body slot, never top-level create()
+        # kwargs: openai>=2.54 type-checks those and raises TypeError on unknown names.
+        from agent.models_dev import explicit_model_extra_body
+        _mo_extra = explicit_model_extra_body(getattr(profile, "name", "") or "", model or "")
+        if _mo_extra:
+            extra_body.update(_mo_extra)
         for k, v in (params.get("request_overrides") or {}).items():
             if k == "extra_body" and isinstance(v, dict):
                 extra_body.update(v)

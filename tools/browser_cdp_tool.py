@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import urllib.parse
 from typing import Any, Callable, Dict, Optional
 
 from tools.registry import registry, tool_error
@@ -222,6 +223,24 @@ def _param_url_literals(value: Any, key: str = "") -> list[str]:
     return []
 
 
+def _unparseable_url_param(value: Any, key: str = "") -> Optional[str]:
+    """The first ``url`` value (any depth) that is an http(s) URL ``urlsplit`` cannot parse, else None.
+    The metadata floor reads one as not metadata, yet a browser may load it (``http://a[@169.254.169.254/``
+    goes to the host after the ``@``), so the floor refuses it instead (fails closed)."""
+    if isinstance(value, dict):
+        return next((u for k, v in value.items() if (u := _unparseable_url_param(v, str(k)))), None)
+    if isinstance(value, (list, tuple)):
+        return next((u for v in value if (u := _unparseable_url_param(v, key))), None)
+    url = value.strip() if key == "url" and isinstance(value, str) else ""
+    if not url.lower().startswith(("http://", "https://")):
+        return None
+    try:
+        urllib.parse.urlsplit(url)
+    except ValueError:
+        return url
+    return None
+
+
 def _fetched_param_urls(method: str, params: dict[str, Any]) -> list[str]:
     """The distinct URLs a call's params could make the browser fetch (none for text input or the
     non-fetching methods above)."""
@@ -251,6 +270,10 @@ def _browser_cdp_private_guard(*, method: str, params: dict[str, Any], endpoint:
     metadata = next((u for u in literals if literal_targets_metadata(u)), None)
     if metadata:
         return _blocked(f"Blocked: CDP {method} targets a cloud metadata endpoint ({metadata}).", method)
+    unparseable = _unparseable_url_param(params or {}) if literals else None
+    if unparseable:
+        return _blocked(f"Blocked: CDP {method} url cannot be parsed to rule out a cloud metadata endpoint "
+                        f"({unparseable}).", method)
     if not guard_active:
         return None
     if guard is None:

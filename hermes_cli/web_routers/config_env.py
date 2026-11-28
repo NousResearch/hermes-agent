@@ -152,8 +152,9 @@ async def update_config(
                 # Strict read: the merge below builds a new dict, so a swallowed read error here
                 # would save the PUT body alone over the whole file.
                 existing = require_readable_config_before_write()
-                incoming = _denormalize_config_from_web(body.config)
-                merged = _deep_merge(existing, incoming)
+                merged = _deep_merge(existing, body.config)
+                # Apply removals after merging so a context reset cannot restore the old value.
+                merged = _denormalize_config_from_web(merged)
                 _drop_carried_route_state(existing, merged)
                 # Compare normalized approvals.mode across the in-memory
                 # documents, not config blocks and not cache re-reads: the page

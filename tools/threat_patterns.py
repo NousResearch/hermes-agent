@@ -74,7 +74,7 @@ _PATTERNS: list[tuple[str, str, str]] = [
     # follow all the setup instructions" or "forget your password? follow the reset instructions" pass.
     (FORGET_RULES_RE, "forget_rules", "all"),
     (rf'act\s{{1,64}}as\s{{1,64}}(if|though)\s{{1,64}}{_FILLER}you\s{{1,64}}{_FILLER}(have\s{{1,64}}no|don\'t\s{{1,64}}have)\s{{1,64}}{_FILLER}(restrictions|limits|rules)', "bypass_restrictions", "all"),
-    (r'<!--[^>]{0,512}(?:ignore|override|system|secret|hidden)[^>]{0,512}-->', "html_comment_injection", "all"),
+    (r'<!--[^>]{0,512}(?<![A-Za-z])(?:ignore|override|system|secret|hidden)(?![A-Za-z])[^>]{0,512}-->', "html_comment_injection", "all"),
     (r'<\s{0,64}div\s{1,64}style\s{0,64}=\s{0,64}["\'][^>]{0,2048}display\s{0,64}:\s{0,64}none', "hidden_div", "all"),
     (
         r"translate\s{1,64}[^\n]{0,512}\s{1,64}into\s{1,64}\w{1,64}(?:[\s-]{1,64}\w{1,64}){0,2}\s{1,64}and\s{1,64}(execute|run|eval)\b",

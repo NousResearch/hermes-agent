@@ -849,34 +849,62 @@ export function setSessionOwnerResolver(resolver: SessionOwnerResolver | null): 
 }
 
 /** The connection pin a session-scoped READ must carry for `id`, or {} when
- *  the caller already pinned a connection, no exact owner is known, or the
- *  owner is the ambient connection. Pins 'local' too (the only way back to
- *  this device when the primary is a remote registry source). When the caller
- *  named no profile, the owner's backend-facing profile rides along: the
- *  answering host resolves ?profile= against ITS OWN profiles. */
+ *  the caller already pinned a connection or no exact owner is known. Pins
+ *  'local' too (the only way back to this device when the primary is a remote
+ *  registry source). When the caller named no profile, the owner's
+ *  backend-facing profile rides along: the answering host resolves ?profile=
+ *  against ITS OWN profiles (#160309). That now holds for EVERY owner shape:
+ *  the owner's connection may legitimately be the ambient one (a local
+ *  secondary profile) or absent, and an ambient connection does not imply the
+ *  ambient profile — dropping the owner's profile there let the unscoped
+ *  request select a different home from the session owner (the authenticated
+ *  ticket's home) and 404 a session the desktop can see on screen. A string
+ *  owner is that profile by definition. A caller that DID name a profile keeps
+ *  it: the owner only supplies the connection pin there. */
 export function sessionReadOwnerPin(id: string, profile?: ProfileScope): { connectionId?: string; profile?: string } {
   if (profile && typeof profile === 'object' && String(profile.connectionId ?? '').trim()) {
     return {}
   }
 
+  // The caller's explicit profile (string form, or object form naming one)
+  // always wins; the owner may still supply the connection pin below.
+  const callerNamedProfile =
+    (typeof profile === 'string' && profile.trim() !== '') ||
+    (profile != null && typeof profile === 'object' && String(profile?.profile ?? '').trim() !== '')
+
   const owner = _sessionOwnerResolver?.(id)
 
-  if (!owner || typeof owner === 'string') {
+  if (!owner) {
     return {}
+  }
+
+  const ownerProfile = typeof owner === 'string'
+    ? owner.trim()
+    : String(owner.targetProfile || owner.profile || '').trim()
+
+  if (typeof owner === 'string') {
+    return callerNamedProfile ? {} : (ownerProfile ? { profile: ownerProfile } : {})
   }
 
   const connectionId = String(owner.connectionId ?? '').trim()
 
-  if (!connectionId || connectionId === (ambientOwnerConnectionId() ?? 'local')) {
-    return {}
+  const pinnedConnection =
+    connectionId && connectionId !== (ambientOwnerConnectionId() ?? 'local') ? connectionId : undefined
+
+  if (callerNamedProfile) {
+    // The caller's profile rides via sessionScoped; only forward the owner's
+    // connection pin (pre-#160309 behavior for this shape).
+    return pinnedConnection ? { connectionId: pinnedConnection } : {}
   }
 
-  const ownerProfile = String(owner.targetProfile || owner.profile || '').trim()
-
-  return {
-    connectionId,
-    ...(profile == null && ownerProfile ? { profile: ownerProfile } : {})
+  if (!ownerProfile) {
+    return pinnedConnection ? { connectionId: pinnedConnection } : {}
   }
+
+  // Caller named no profile: the owner's profile rides along regardless of
+  // whether its connection is the ambient one — an ambient CONNECTION does
+  // not imply the ambient PROFILE, and the serving home 404s the id (#160309).
+  return pinnedConnection ? { connectionId: pinnedConnection, profile: ownerProfile } : { profile: ownerProfile }
 }
 
 /** The backend a gateway FILE request naming session `id` must go to: the owner's

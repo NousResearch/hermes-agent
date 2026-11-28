@@ -254,6 +254,7 @@ export function bindApi(
   persist($collapsedLanes, COLLAPSED_KEY, {})
 
   eventCursorByBoard.clear()
+  authorHint = null
 
   let close: (() => void) | null = null
   let socketGeneration = 0
@@ -384,6 +385,7 @@ export function bindApi(
     close?.()
     rest = null
     os = null
+    authorHint = null
   }
 }
 
@@ -496,8 +498,36 @@ export const bulkTasks = (ids: string[], patch: Record<string, unknown>) =>
     })
   )
 
-export const addComment = (id: string, body: string) =>
-  call(withBoard(`/tasks/${id}/comments`), { method: 'POST', body: { author: 'desktop', body } })
+// ── author attribution ──────────────────────────────────────────────────────
+// On gated gateways the server attributes writes to the verified login no
+// matter what we send (plugin_api `_dashboard_author`). In loopback mode the
+// server trusts the client's `author` — so we do NOT send the old 'desktop'
+// literal: fetch the gateway's identity hint once (`GET /me` → the signed-in
+// Portal account / verified session, '' when logged out) and keep 'desktop'
+// only as the logged-out fallback. An empty or failed hint is not cached, so
+// the next write retries once the gateway is reachable again.
+
+let authorHint: null | Promise<string> = null
+
+function resolveAuthor(): Promise<string> {
+  if (authorHint === null) {
+    authorHint = call<{ author?: unknown }>('/me')
+      .then(response => String(response?.author ?? '').trim())
+      .catch(() => '')
+      .then(label => {
+        if (!label) {
+          authorHint = null
+        }
+
+        return label || 'desktop'
+      })
+  }
+
+  return authorHint
+}
+
+export const addComment = async (id: string, body: string) =>
+  call(withBoard(`/tasks/${id}/comments`), { method: 'POST', body: { author: await resolveAuthor(), body } })
 
 export const reassignTask = (id: string, profile: string) =>
   nudged(call(withBoard(`/tasks/${id}/reassign`), { method: 'POST', body: { profile, reclaim_first: true } }))

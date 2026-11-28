@@ -563,3 +563,113 @@ class TestRefreshAndRevoke:
         ):
             with pytest.raises(RefreshExpiredError, match="verification failed"):
                 provider.refresh_session(refresh_token="rt_old")
+# ---------------------------------------------------------------------------
+# Human-readable identity enrichment (display/attribution only)
+# ---------------------------------------------------------------------------
+
+class TestSessionEnrichment:
+    """Tokens stay the auth gate; the Portal account endpoint supplies the
+    human-readable display identity AFTER verification. Enrichment failures
+    degrade to the pre-enrichment session — never to a login failure."""
+
+    @pytest.fixture
+    def provider(self, rsa_keypair):
+        p = nous_plugin.NousDashboardAuthProvider(
+            client_id="agent:inst123", portal_url="https://portal.example.com"
+        )
+        _patched_jwks(p, rsa_keypair)
+        return p
+
+    def _mock_get(self, status_code, body):
+        resp = MagicMock(spec=httpx.Response)
+        resp.status_code = status_code
+        resp.text = json.dumps(body)
+        resp.json = MagicMock(return_value=body)
+        resp.headers = {"content-type": "application/json"}
+        return resp
+
+    def test_email_from_account_endpoint_user_id_stays_raw_sub(self, provider, rsa_keypair):
+        token = _mint_token(rsa_keypair, sub="nas_user:u1", extra_claims={"jti": "j1"})
+        account = {"user": {"email": "mani@example.com"}}
+        with patch("plugins.dashboard_auth.nous.httpx.get", return_value=self._mock_get(200, account)):
+            session = provider.verify_session(access_token=token)
+        assert session is not None
+        assert session.user_id == "nas_user:u1"  # stable id untouched
+        assert session.email == "mani@example.com"
+        assert session.display_name == ""
+
+    def test_name_and_email_from_account_endpoint(self, provider, rsa_keypair):
+        token = _mint_token(rsa_keypair, extra_claims={"jti": "j2"})
+        account = {"user": {"name": "Mani C", "email": "mani@example.com"}}
+        with patch("plugins.dashboard_auth.nous.httpx.get", return_value=self._mock_get(200, account)):
+            session = provider.verify_session(access_token=token)
+        assert session.display_name == "Mani C"
+        assert session.email == "mani@example.com"
+
+    def test_enrichment_is_post_verification_and_cached_per_jti(self, provider, rsa_keypair):
+        """verify_session runs per gated request; one Portal call per token window."""
+        token = _mint_token(rsa_keypair, extra_claims={"jti": "j3"})
+        account = {"user": {"email": "mani@example.com"}}
+        with patch(
+            "plugins.dashboard_auth.nous.httpx.get", return_value=self._mock_get(200, account)
+        ) as mock_get:
+            s1 = provider.verify_session(access_token=token)
+            s2 = provider.verify_session(access_token=token)
+        assert s1.email == s2.email == "mani@example.com"
+        assert mock_get.call_count == 1
+        # The Bearer is the verified dashboard access token itself.
+        assert mock_get.call_args.kwargs["headers"]["Authorization"] == f"Bearer {token}"
+
+    def test_email_claim_on_token_used_without_http(self, provider, rsa_keypair):
+        """Forward-compat: a contract extension that adds email to dashboard
+        tokens is honored with zero extra calls."""
+        token = _mint_token(rsa_keypair, extra_claims={"email": "claimed@example.com"})
+        with patch("plugins.dashboard_auth.nous.httpx.get") as mock_get:
+            session = provider.verify_session(access_token=token)
+        assert session.email == "claimed@example.com"
+        mock_get.assert_not_called()
+
+    def test_name_claim_on_token_used_without_http(self, provider, rsa_keypair):
+        token = _mint_token(rsa_keypair, extra_claims={"name": "Mani", "email": "claimed@example.com"})
+        with patch("plugins.dashboard_auth.nous.httpx.get") as mock_get:
+            session = provider.verify_session(access_token=token)
+        assert session.display_name == "Mani"
+        mock_get.assert_not_called()
+
+    def test_unreachable_endpoint_degrades_to_raw_sub_session(self, provider, rsa_keypair):
+        """The directory conftest refuses httpx.get (ConnectError) — the session
+        must still mint, exactly as before enrichment existed."""
+        token = _mint_token(rsa_keypair, sub="nas_user:u9", extra_claims={"jti": "j4"})
+        session = provider.verify_session(access_token=token)
+        assert session is not None
+        assert session.user_id == "nas_user:u9"
+        assert session.email == "" and session.display_name == ""
+
+    def test_rejected_status_degrades_and_is_cached_briefly(self, provider, rsa_keypair):
+        token = _mint_token(rsa_keypair, extra_claims={"jti": "j5"})
+        with patch(
+            "plugins.dashboard_auth.nous.httpx.get", return_value=self._mock_get(401, {"error": "denied"})
+        ) as mock_get:
+            s1 = provider.verify_session(access_token=token)
+            s2 = provider.verify_session(access_token=token)
+        assert s1 is not None and s1.email == ""
+        assert s2 is not None and s2.email == ""
+        # Failure cached too: the Portal is not hammered on every click.
+        assert mock_get.call_count == 1
+
+    def test_complete_login_path_enriches_too(self, provider, rsa_keypair):
+        """Login (code exchange) and per-request verify share one enrichment."""
+        access_token = _mint_token(rsa_keypair, extra_claims={"jti": "j6"})
+        token_resp = self._mock_get(200, {"access_token": access_token, "token_type": "Bearer"})
+        account = self._mock_get(200, {"user": {"email": "mani@example.com"}})
+
+        def get(url, **kwargs):
+            return account if url.endswith("/api/oauth/account") else token_resp
+
+        with patch("plugins.dashboard_auth._shared.httpx.post", return_value=token_resp), \
+                patch("plugins.dashboard_auth.nous.httpx.get", side_effect=get):
+            session = provider.complete_login(
+                code="c", state="s", code_verifier="v", redirect_uri="https://h/cb"
+            )
+        assert session.email == "mani@example.com"
+        assert session.user_id == "usr_abc"  # minted sub

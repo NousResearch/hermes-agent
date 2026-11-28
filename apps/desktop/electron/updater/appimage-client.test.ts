@@ -83,15 +83,20 @@ describe('AppImage client wiring', () => {
     expect(client.allowPrerelease).toBe(false)
   })
 
-  it('leaves a build made without a feed to be updated by hand', async () => {
-    packagedResources(null)
-    const strategy = createAppImageStrategy(deps(), IMAGE, 'arm64')
-    expect(strategy.mechanism).toBe('external')
-    await expect(strategy.check()).resolves.toMatchObject({ supported: false, mechanism: 'external' })
-    expect(client.on).not.toHaveBeenCalled()
-  })
+  it.each(['', 'https://updates.example/'])(
+    'leaves a build made without app-update.yml to be updated by hand (feed base %j)',
+    async feedBaseUrl => {
+      packagedResources(null)
+      const strategy = createAppImageStrategy(deps(feedBaseUrl), IMAGE, 'arm64')
+      expect(strategy.mechanism).toBe('external')
+      await expect(strategy.check()).resolves.toMatchObject({ supported: false, mechanism: 'external' })
+      expect(client.on).not.toHaveBeenCalled()
+      expect(client.setFeedURL).not.toHaveBeenCalled()
+    }
+  )
 
   it.each(['stable', 'canary'] as const)('overrides the %s feed with the directory the release publishes', channel => {
+    packagedResources('https://baked.example/releases/linux/stable/')
     createAppImageStrategy(deps('https://updates.example/', channel), IMAGE, 'arm64')
     expect(client.setFeedURL).toHaveBeenCalledWith({
       provider: 'generic',
@@ -103,6 +108,7 @@ describe('AppImage client wiring', () => {
   })
 
   it('takes a loopback test feed but never a plain-http remote one', () => {
+    packagedResources('https://baked.example/releases/linux/canary/')
     createAppImageStrategy(deps('http://127.0.0.1:8765', 'canary'), IMAGE, 'arm64')
     expect(client.setFeedURL).toHaveBeenCalledWith({
       provider: 'generic',

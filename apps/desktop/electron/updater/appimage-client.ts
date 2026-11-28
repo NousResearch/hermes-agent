@@ -161,10 +161,11 @@ export function createAppImageStrategy(
 ): UpdaterStrategy {
   const feed = feedContract.linuxFeed(deps.channel, arch)
   const override: string | null = deps.feedBaseUrl ? `${channelPublicBase(deps.feedBaseUrl)}/${feed.directory}/` : null
-  const feedUrl: string | null = override ?? bakedFeedUrl(process.resourcesPath)
+  const baked: string | null = bakedFeedUrl(process.resourcesPath)
 
-  // A build made without the feed URL (local, or a fork without the R2 vars) has no app-update.yml to check.
-  if (!feedUrl) {
+  // A build made without the feed URL (local, or a fork without the R2 vars) has no app-update.yml. A feed override
+  // doesn't make up for it: electron-updater still reads that file to place its download cache.
+  if (!baked) {
     return new ExternalStrategy()
   }
 
@@ -181,5 +182,5 @@ export function createAppImageStrategy(
     updater.setFeedURL({ provider: 'generic', url: override, channel: feed.channel })
   }
 
-  return new AppImageStrategy({ ...deps, updater, appImage, feedUrl })
+  return new AppImageStrategy({ ...deps, updater, appImage, feedUrl: override ?? baked })
 }

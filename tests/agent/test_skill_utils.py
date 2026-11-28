@@ -490,3 +490,31 @@ class TestBOMToleranceSiblingSites:
         assert fm is not None
         assert fm.get("name") == "bp"
 
+
+# ── parse_frontmatter: fail open, but never fail silent ─────────────────────
+
+
+class TestParseFrontmatterWarnsOnRot:
+    """Failing open is fine; failing *silent* is not: a SKILL.md with a broken fence or a
+    non-mapping block used to enter the skill index with no trigger text and no log line."""
+
+    @pytest.mark.parametrize("content,needle", [
+        ("---\nname: x\ndescription: y\n\n# Body, no closing fence\n", "no closing fence"),
+        ("---\n- just\n- a list\n---\nbody", "not a mapping"),
+    ])
+    def test_broken_frontmatter_warns(self, caplog, content, needle):
+        with caplog.at_level("WARNING", logger="agent.skill_utils"):
+            fm, _ = parse_frontmatter(content)
+        assert fm == {}
+        assert any(needle in r.message for r in caplog.records)
+
+    def test_quiet_for_plain_markdown_valid_frontmatter_and_gated_skills(self, caplog, tmp_path):
+        from agent.prompt_builder import _parse_skill_file
+
+        gated = tmp_path / "SKILL.md"
+        gated.write_text("---\nname: g\nplatforms: [no-such-os]\n---\nBody\n", encoding="utf-8")
+        with caplog.at_level("WARNING"):
+            assert parse_frontmatter("# Just a heading\n\nBody.\n")[0] == {}
+            assert parse_frontmatter("---\nname: ok\ndescription: fine\n---\nBody\n")[0]["name"] == "ok"
+            assert _parse_skill_file(gated)[0] is False
+        assert caplog.records == []

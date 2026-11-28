@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -188,3 +190,92 @@ def test_guess_category_empty_tags(mod):
 def test_guess_category_skips_first_junk_tag_for_later_known_tag(mod):
     # First tag is junk, second is curated — we should still find the curated one.
     assert mod._guess_category(["Some Brand", "security"]) == "security"
+
+
+# --------------------------------------------------------------------------
+# load_git_dates — addedAt / updatedAt for local skills (#158821)
+# --------------------------------------------------------------------------
+
+def _git(repo: Path, *args: str, date: str) -> None:
+    env = {
+        "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com", "GIT_AUTHOR_DATE": date,
+        "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com", "GIT_COMMITTER_DATE": date,
+        "HOME": str(repo), "PATH": os.environ["PATH"],
+    }
+    subprocess.run(["git", *args], cwd=repo, env=env, check=True, capture_output=True)
+
+
+def _write_skill(repo: Path, rel_dir: str, name: str) -> None:
+    skill = repo / rel_dir
+    skill.mkdir(parents=True, exist_ok=True)
+    (skill / "SKILL.md").write_text(f"---\nname: {name}\n---\nBody.")
+
+
+def test_git_dates_added_is_first_commit_updated_is_last_and_renames_keep_added(mod, tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir(parents=True)
+    _git(repo, "init", "-q", "-b", "main", date="2026-01-01T00:00:00+00:00")
+    _write_skill(repo, "skills/creative/old-name", "old-name")
+    _git(repo, "add", ".", date="2026-01-01T00:00:00+00:00")
+    _git(repo, "commit", "-q", "-m", "add", date="2026-01-01T00:00:00+00:00")
+    _git(repo, "mv", "skills/creative/old-name", "skills/creative/new-name", date="2026-03-01T00:00:00+00:00")
+    _git(repo, "commit", "-q", "-m", "rename", date="2026-03-01T00:00:00+00:00")
+
+    monkeypatch.setattr(mod, "REPO_ROOT", str(repo))
+    dates = mod.load_git_dates()
+
+    assert dates["skills/creative/new-name"] == {
+        "addedAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-03-01T00:00:00Z",
+    }
+    assert "skills/creative/old-name" not in dates
+
+
+def test_git_dates_reused_path_name_still_resolves_to_true_origin(mod, tmp_path, monkeypatch):
+    """Regression for a reviewer-caught edge case on #159025.
+
+    A skill renamed a -> b -> a -> c (the name "a" is vacated and then reused for the
+    SAME lineage) must still resolve to the directory's true origin commit, not to
+    whichever intermediate rename the reused name happened to touch last.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir(parents=True)
+    _git(repo, "init", "-q", "-b", "main", date="2025-01-01T00:00:00+00:00")
+    _write_skill(repo, "skills/a", "a")
+    _git(repo, "add", ".", date="2025-01-01T00:00:00+00:00")
+    _git(repo, "commit", "-q", "-m", "add a", date="2025-01-01T00:00:00+00:00")
+    _git(repo, "mv", "skills/a", "skills/b", date="2025-01-02T00:00:00+00:00")
+    _git(repo, "commit", "-q", "-m", "a -> b", date="2025-01-02T00:00:00+00:00")
+    _git(repo, "mv", "skills/b", "skills/a", date="2025-01-03T00:00:00+00:00")
+    _git(repo, "commit", "-q", "-m", "b -> a", date="2025-01-03T00:00:00+00:00")
+    _git(repo, "mv", "skills/a", "skills/c", date="2025-01-04T00:00:00+00:00")
+    _git(repo, "commit", "-q", "-m", "a -> c", date="2025-01-04T00:00:00+00:00")
+
+    monkeypatch.setattr(mod, "REPO_ROOT", str(repo))
+    dates = mod.load_git_dates()
+
+    assert dates["skills/c"] == {"addedAt": "2025-01-01T00:00:00Z", "updatedAt": "2025-01-04T00:00:00Z"}
+    assert "skills/a" not in dates and "skills/b" not in dates
+
+
+def test_git_dates_cyclic_alias_does_not_hang(mod, tmp_path, monkeypatch):
+    """Back-and-forth renames must resolve in bounded time, never spin forever."""
+    repo = tmp_path / "repo"
+    repo.mkdir(parents=True)
+    _git(repo, "init", "-q", "-b", "main", date="2025-01-01T00:00:00+00:00")
+    _write_skill(repo, "skills/a", "a")
+    _git(repo, "add", ".", date="2025-01-01T00:00:00+00:00")
+    _git(repo, "commit", "-q", "-m", "add a", date="2025-01-01T00:00:00+00:00")
+    _git(repo, "mv", "skills/a", "skills/b", date="2025-01-02T00:00:00+00:00")
+    _git(repo, "commit", "-q", "-m", "a -> b", date="2025-01-02T00:00:00+00:00")
+    _git(repo, "mv", "skills/b", "skills/a", date="2025-01-03T00:00:00+00:00")
+    _git(repo, "commit", "-q", "-m", "b -> a", date="2025-01-03T00:00:00+00:00")
+
+    monkeypatch.setattr(mod, "REPO_ROOT", str(repo))
+    dates = mod.load_git_dates()  # must return promptly, not hang
+
+    assert dates["skills/a"] == {"addedAt": "2025-01-01T00:00:00Z", "updatedAt": "2025-01-03T00:00:00Z"}
+
+
+def test_git_dates_are_empty_outside_a_repository(mod, tmp_path, monkeypatch):
+    monkeypatch.setattr(mod, "REPO_ROOT", str(tmp_path))
+    assert mod.load_git_dates() == {}

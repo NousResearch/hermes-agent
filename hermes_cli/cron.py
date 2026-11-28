@@ -1016,6 +1016,35 @@ def cron_cancel(args) -> int:
     return 0
 
 
+def cron_export(args) -> int:
+    from cron.job_export import export_jobs
+
+    try:
+        result = export_jobs(Path(args.directory), git=args.git, message=args.message)
+    except (RuntimeError, ValueError) as exc:
+        print(color(f"Export failed: {exc}", Colors.RED))
+        return 1
+    print(color(f"Exported to {result.directory / 'jobs'}: {len(result.written)} written, "
+                f"{len(result.removed)} removed", Colors.GREEN))
+    for name in result.redacted:
+        print(color(f"  masked a credential in {name}", Colors.YELLOW))
+    if args.git:
+        print(f"  commit: {result.commit}" if result.commit else "  nothing changed; no commit")
+    return 0
+
+
+def cron_import(args) -> int:
+    from cron.job_export import import_jobs
+
+    try:
+        ids = import_jobs(Path(args.directory))
+    except (RuntimeError, ValueError) as exc:
+        print(color(f"Import failed: {exc}", Colors.RED))
+        return 1
+    print(color(f"Imported {len(ids)} job(s); new ones are paused (`hermes cron resume <id>`)", Colors.GREEN))
+    return 0
+
+
 # Late-bound lambdas keep module-level monkeypatching working; list/status/runs return None -> 0.
 _CRON_SUBCOMMANDS = {
     "list": lambda a: cron_list(getattr(a, "all", False)) or 0,
@@ -1025,6 +1054,8 @@ _CRON_SUBCOMMANDS = {
     "runs": lambda a: cron_runs(getattr(a, "job_id", None), getattr(a, "limit", 20)) or 0,
     "incidents": lambda a: cron_incidents(a),
     "notepad": lambda a: cron_notepad(a),
+    "export": lambda a: cron_export(a),
+    "import": lambda a: cron_import(a),
     "create": lambda a: cron_create(a),
     "edit": lambda a: cron_edit(a),
     "pause": lambda a: _job_action("pause", a.job_id, "Paused"),
@@ -1045,5 +1076,5 @@ def cron_command(args):
     if handler is not None:
         return handler(args)
     print(f"Unknown cron command: {subcmd}\n"
-          "Usage: hermes cron [list|create|edit|pause|resume|run|cancel|remove|status|runs|doctor|tick]")
+          "Usage: hermes cron [list|create|edit|pause|resume|run|cancel|remove|status|runs|doctor|export|import|tick]")
     sys.exit(1)

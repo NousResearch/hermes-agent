@@ -551,3 +551,27 @@ def test_model_selection_falls_back_to_legacy_extension():
 
 def test_model_selection_skips_provider_placeholder_slug():
     assert _model_selection_request(_session_with_config_options(), "acme-acp", placeholder="acme-acp") is None
+
+
+# ── teardown closes the child's stdin ───────────────────────────────────────────────────────
+
+
+def test_terminate_process_closes_the_childs_stdin(tmp_path):
+    """Teardown must close the child's stdin, not just reap the process.
+
+    ``Popen`` leaves the pipes open. stdin is the only write end, so once the child is gone a
+    finalizer-time flush of that ``TextIOWrapper`` hits a closed read end and CPython prints an
+    unraisable ``BrokenPipeError`` ("Exception ignored while finalizing file ...") at GC. Closing
+    it in ``_terminate_process`` leaves the finalizer nothing to flush.
+    """
+    client = _AcmeClient(command=sys.executable, args=["-c", "import time; time.sleep(60)"], acp_cwd=str(tmp_path))
+    proc = client._spawn()
+    try:
+        assert proc.stdin is not None and not proc.stdin.closed
+        client._terminate_process(proc)
+        assert proc.poll() is not None, "teardown reaps the child"
+        assert proc.stdin.closed, "teardown closes the write end so GC cannot flush into a dead pipe"
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()

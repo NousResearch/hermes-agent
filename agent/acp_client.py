@@ -354,6 +354,13 @@ class ACPClient:
         except Exception:
             with contextlib.suppress(Exception):
                 proc.kill()
+        # Popen leaves the pipes open, and stdin is the only write end here. Once the child is
+        # gone, a finalizer-time flush of that TextIOWrapper hits a closed read end and CPython
+        # prints an unraisable BrokenPipeError ("Exception ignored while finalizing file ...")
+        # at GC. Close it so the finalizer has nothing left to flush.
+        with contextlib.suppress(Exception):
+            if proc.stdin is not None:
+                proc.stdin.close()
 
     def _release_process(self, proc: subprocess.Popen[str]) -> None:
         """Reap one session's own child. ``is_closed`` flips only when the last live

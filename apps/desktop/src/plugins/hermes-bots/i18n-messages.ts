@@ -324,6 +324,8 @@ export type BotsMessages = {
   screen: {
     title: string
     menu: string
+    /** ⌘K "Open Screen" with no bot chat on screen. */
+    paletteNoBot: string
     unsupportedTitle: string
     unsupportedBody: string
     notInstalledTitle: string

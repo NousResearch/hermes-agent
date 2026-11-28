@@ -296,8 +296,11 @@ class GatewayKanbanWatchersMixin:
             try:
                 # Emergency stop (`hermes pause`): no auto-decompose or
                 # dispatch while paused; running workers finish naturally.
+                # Workers that DIE mid-pause are still released, else their
+                # cards read `running` for as long as the pause lasts.
                 if not _kanban_dispatch_allowed():
                     bad_ticks = 0
+                    await _to_thread_process_service(dispatcher.paused_reclaim)
                 else:
                     # Re-read the auto-decompose toggle live so disabling it
                     # takes effect on the next tick, not on restart.

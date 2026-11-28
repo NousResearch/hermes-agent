@@ -3081,22 +3081,6 @@ def _legacy_gateway_platforms_key(requested_key: str) -> Optional[str]:
     return None
 
 
-def _exit_if_key_managed(key: str, action: str) -> None:
-    """A key pinned by the managed layer cannot be set/unset (the next load would reinstate it):
-    hard-reject and name the source. Distinct from ``is_managed()``; env-shaped keys route to the
-    .env writers, which carry their own guard."""
-    if managed_scope.is_key_managed(key):
-        print(
-            f"Cannot {action} '{key}': it is managed by your administrator ({_managed_source('config.yaml')}) "
-            f"and cannot be changed. Contact your administrator to modify it.", file=sys.stderr)
-        sys.exit(1)
-    level = get_config_backend().locked(get_config_path().parent, key)  # remote locks, prefix-aware (D7)
-    if level:
-        print(f"Cannot {action} '{key}': it is locked by the {level} level of Remote Config and cannot be "
-              "changed from this agent.", file=sys.stderr)
-        sys.exit(1)
-
-
 def _touch_skin_file(key: str, value: Any) -> None:
     """``display.skin`` set means "apply NOW": bump the skin file's mtime so the gateway watcher's
     (name, mtime) signature moves even when the name is unchanged. Best-effort."""
@@ -3159,6 +3143,7 @@ def set_config_value(key: str, value: str, force: bool = False):
     if is_managed():
         managed_error("set configuration values")
         return
+    from hermes_cli.config_section_guard import _exit_if_key_managed, _guard_section_overwrite
     # Empty segments (``"agent."``) would write config["agent"][""] into a live schema section.
     if key != key.strip() or not key.strip():
         _exit_invalid(f"✗ Invalid config key: {key!r} (empty or surrounding whitespace).")
@@ -3198,6 +3183,7 @@ def set_config_value(key: str, value: str, force: bool = False):
     key, _redirect_note = _redirect_platform_display_key(key)
     if _redirect_note:
         print(_redirect_note)
+        _exit_if_key_managed(key, "set")
     is_known, suggestion = _validate_config_key(key)
     # DEFAULT_CONFIG is an incomplete schema: runtime-read settings may deliberately have no
     # seeded default. Refuse only the positive wrong-prefix case from #112003; other unknown
@@ -3221,7 +3207,6 @@ def set_config_value(key: str, value: str, force: bool = False):
     _model_val = user_config.get("model")
     if key.strip().lower().startswith("model.") and isinstance(_model_val, str) and _model_val:
         user_config["model"] = {"default": _model_val}
-    from hermes_cli.config_section_guard import _guard_section_overwrite
     key = _guard_section_overwrite(key, value, user_config, force)
     value = _refuse_container_type_mismatch(key, value, user_config, force)
     from hermes_cli.config_secret_refs import config_set_secret_value, masked_display_value
@@ -3241,6 +3226,7 @@ def set_config_value(key: str, value: str, force: bool = False):
         print(_note)
     # api_base -> base_url alias at set-time too (mirrors _normalize_root_model_keys).
     if key.strip().lower() in ("model.api_base", "api_base"):
+        _exit_if_key_managed("model.base_url", "set")
         # Normalize the api_base → base_url alias at set-time too (issue #8919), so a fresh `hermes config
         # set model.api_base ...` lands on the canonical key the runtime resolver actually reads, instead of
         # being silently ignored.
@@ -3327,6 +3313,7 @@ def unset_config_value(key: str):
     if is_managed():
         managed_error("unset configuration values")
         return
+    from hermes_cli.config_section_guard import _exit_if_key_managed
     _exit_if_key_managed(key, "unset")
 
     if _is_env_config_key(key):
@@ -3363,6 +3350,7 @@ def unset_config_value(key: str):
     if _redirect_note:
         # Mirror set_config_value's display.platforms canonicalization (#71047).
         print(_redirect_note.replace("saved as", "resolved as"))
+        _exit_if_key_managed(key, "unset")
     removed = _unset_nested(user_config, key)
     if legacy_key:
         removed = _unset_nested(user_config, legacy_key) or removed

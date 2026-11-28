@@ -439,7 +439,7 @@ _SPECS = [
              help="Delete task_events older than N days for terminal tasks (default: 30; 0 disables)"),
         _arg("--log-retention-days", type=_nonnegative_int, default=30,
              help="Delete worker log files older than N days (default: 30; 0 disables)"),
-    ], help="Garbage-collect archived-task workspaces, old events, and old logs"),
+    ], help="Garbage-collect done/archived task workspaces, old events, and old logs"),
     _cmd("repair", [_json_flag(help="Emit the repair report as JSON")],
          help="Check kanban.db integrity and auto-repair index-only corruption",
          description=(

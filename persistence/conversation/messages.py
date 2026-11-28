@@ -816,8 +816,11 @@ class TranscriptRead:
     latest: bool = False
     after_id: Optional[MessageId] = None
     include_lineage: bool = False
+    display_segments: tuple[SessionId, ...] = ()
 
     def __post_init__(self) -> None:
+        if self.display_segments and self.view is not TranscriptView.DISPLAY:
+            raise ValueError("display_segments requires the DISPLAY view")
         if self.after_id is not None and (self.latest or self.offset):
             raise ValueError("after_id is incompatible with latest/offset paging")
         if self.after_id is not None and self.view is TranscriptView.DISPLAY:
@@ -1106,11 +1109,13 @@ class MessageRepository(Protocol):
         """The newest valid paired todo tool result of at most ``max_chars`` characters in the session's visible lineage, or ``None``. A result one of whose copies (same display identity or uid) was removed later in the lineage is skipped, as display reads hide it: an undo in a compression child keeps the parent's copy of that plan from coming back."""
         ...
 
-    def read_session_timeline(self, session_id: SessionId, *, limit: int = 500, after_row_id: int = 0) -> SessionTimeline:
+    def read_session_timeline(self, session_id: SessionId, *, limit: int = 500, after_row_id: int = 0,
+                              display_segments: tuple[SessionId, ...] = ()) -> SessionTimeline:
         """The session's human prompts in display order after the ``after_row_id`` cursor, at most ``limit``, from one snapshot."""
         ...
 
-    def read_prompt_page(self, session_id: SessionId, row_id: MessageId, *, limit: int = 120) -> Optional[PromptPage]:
+    def read_prompt_page(self, session_id: SessionId, row_id: MessageId, *, limit: int = 120,
+                         display_segments: tuple[SessionId, ...] = ()) -> Optional[PromptPage]:
         """At most ``limit`` display rows starting at the human prompt ``row_id``; ``None`` when that row is not a displayed prompt."""
         ...
 

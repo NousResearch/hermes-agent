@@ -29,9 +29,10 @@ from hermes_cli.web_routers._common import (
     CORRUPT_STORE_DETAIL, corrupt_store_as_status, corrupt_store_status, log as _log, destructive_profile, http_failure,
     is_transient_store_error,
 )
+from persistence.authority.vocabulary import LEGACY_LOCAL_SOURCES
 from persistence.conversation.messages import TranscriptRead, TranscriptView
 from persistence.conversation.sessions import SessionCountQuery, SessionOrder, SessionQuery, SessionWindow
-from persistence.core.errors import CorruptStoreError, PersistenceError, SearchIndexCorrupt, StoreReplaced
+from persistence.core.errors import AuthorityRefusal, CorruptStoreError, PersistenceError, SearchIndexCorrupt, StoreReplaced
 from persistence.core.health import StorageState
 from persistence.housekeeping.maintenance import PruneCriteria
 from persistence_assembly import profile_scope, storage_health, store_location
@@ -47,6 +48,8 @@ _open_session_db_for_profile = late("_open_session_db_for_profile", "hermes_cli.
 _session_db_path_for_profile = late("_session_db_path_for_profile", "hermes_cli.web_server_sessions")
 
 _NOT_FOUND = "Session not found"
+_LOCAL_HISTORY_SOURCES = LEGACY_LOCAL_SOURCES | {"local"}
+_BINDING_UNAVAILABLE = "Session transcript binding is unavailable"
 
 # CRITICAL — every literal-path route on ``manage_router`` MUST be declared
 # BEFORE the templated ``/api/sessions/{session_id}`` family. Starlette matches
@@ -800,19 +803,66 @@ def _project_for_display(messages: list, *, home=None, inline_images: bool = Tru
     return project_history_commentary(projected_messages, home=home)
 
 
+def _local_history_binding_id(store, row):
+    if row.chat_id:
+        marks = store.bindings.binding_marks(row.chat_id, lineage_of=row.session_id)
+        if marks.policy and (row.session_id == row.chat_id or marks.lineage_owner == row.chat_id):
+            return row.chat_id
+    # An explicitly addressed child can have a drifted chat_id. The stored receipt still
+    # identifies it, so validate that receipt before falling back to a standalone read.
+    if row.parent_session_id:
+        return next((item.owner for item in store.bindings.list_lineages() if row.session_id in item.lineage), None)
+    return None
+
+
+def _local_display_segments(store, session_id, owner):
+    """The validated receipt is the ownership boundary, including for a physical child id."""
+    row = store.sessions.get(session_id)
+    if row is None:
+        return ()
+    binding_id = _local_history_binding_id(store, row)
+    if binding_id is None:
+        return ()
+    root = row if binding_id == session_id else store.sessions.get(binding_id)
+    if root is None or root.source not in _LOCAL_HISTORY_SOURCES or root.profile_name not in (None, owner):
+        return ()
+    try:
+        receipt = store.bindings.restorable(store.bindings.receipt(binding_id))
+    except AuthorityRefusal as exc:
+        raise HTTPException(status_code=503, detail=_BINDING_UNAVAILABLE) from exc
+    if receipt.session_id != binding_id or session_id not in receipt.lineage:
+        raise HTTPException(status_code=503, detail=_BINDING_UNAVAILABLE)
+    if len(receipt.lineage) < 2:
+        return ()
+    reset_seen = False
+    for segment in receipt.lineage:
+        item = store.sessions.get(segment)
+        if (item is None or item.source not in _LOCAL_HISTORY_SOURCES or item.profile_name not in (None, owner)
+                or (item.chat_id, item.user_id, item.session_key) != (receipt.session_id, receipt.principal_id, receipt.route)):
+            raise HTTPException(status_code=503, detail=_BINDING_UNAVAILABLE)
+        reset_seen |= item.end_reason == "session_reset" and segment != receipt.current_target
+    # Preserve the existing compression-only projection for conversations without a reset.
+    return receipt.lineage if reset_seen else ()
+
+
 @manage_router.get("/api/sessions/{session_id}/messages")
 async def get_session_messages(
     session_id: str, profile: Optional[str] = None, limit: Optional[int] = Query(None, ge=0),
     offset: int = Query(0, ge=0), order: Optional[str] = Query(None),
-    include_compacted: bool = Query(False), inline_images: bool = Query(True)):
+    include_compacted: bool = Query(False), inline_images: bool = Query(True),
+    follow_binding: bool = Query(True)):
     if order not in (None, "oldest", "latest"):
         raise HTTPException(status_code=400, detail="order must be one of: oldest, latest")
+
+    owner = _serving_profile(profile)
 
     def _read(store):
         sid = _resolve_session_id(store, session_id)
         if not sid:
             return None
-        sid = store.lineage.resolve_resume_target(sid)
+        segments = _local_display_segments(store, sid, owner) if include_compacted and follow_binding else ()
+        if not segments:
+            sid = store.lineage.resolve_resume_target(sid)
         # Always page (an omitted limit used to load whole transcripts). Explicit
         # pagination anchors at the start; the default view is the latest page.
         default_page = limit is None
@@ -826,7 +876,7 @@ async def get_session_messages(
         # (#51058).
         rows = store.messages.read_transcript(sid, TranscriptRead(
             view=TranscriptView.DISPLAY if include_compacted else TranscriptView.ACTIVE, limit=_limit,
-            offset=offset, latest=latest_page, include_lineage=True))
+            offset=offset, latest=latest_page, include_lineage=True, display_segments=segments))
         return sid, _limit, [row.as_wire_row() for row in rows]
 
     result = await asyncio.to_thread(_with_db, profile, _read, read_only=True)
@@ -848,7 +898,7 @@ async def get_session_messages(
             "returned": len(projected_messages)}}
 
 
-def _timeline_session_id(store, session_id: str, owner: str) -> str:
+def _timeline_session_id(store, session_id: str, owner: str, *, follow_binding: bool):
     # Durable jump addresses are exact ids, never title/prefix guesses. A NULL
     # legacy owner belongs to this profile's store, just like /messages pages.
     def owned(sid):
@@ -857,16 +907,18 @@ def _timeline_session_id(store, session_id: str, owner: str) -> str:
 
     if not owned(session_id):
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
-    sid = store.lineage.resolve_resume_target(session_id)
+    segments = _local_display_segments(store, session_id, owner) if follow_binding else ()
+    sid = session_id if segments else store.lineage.resolve_resume_target(session_id)
     if not owned(sid):
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
-    return sid
+    return sid, segments
 
 
 @manage_router.get("/api/sessions/{session_id}/timeline")
 async def get_session_timeline(
     session_id: str, profile: Optional[str] = None,
     limit: int = Query(500, ge=1, le=500), after_row_id: int = Query(0, ge=0),
+    follow_binding: bool = Query(True),
 ):
     """Prompt metadata only, including compacted display history (never rewind rows).
 
@@ -876,8 +928,9 @@ async def get_session_timeline(
     owner = _serving_profile(profile)
 
     def _read(store):
-        sid = _timeline_session_id(store, session_id, owner)
-        timeline = store.messages.read_session_timeline(sid, limit=limit, after_row_id=after_row_id)
+        sid, segments = _timeline_session_id(store, session_id, owner, follow_binding=follow_binding)
+        timeline = store.messages.read_session_timeline(sid, limit=limit, after_row_id=after_row_id,
+                                                        display_segments=segments)
         return {"session_id": sid, "profile": owner,
                 "entries": [{"row_id": e.row_id, "preview": e.preview, "timestamp": e.timestamp}
                             for e in timeline.entries],
@@ -892,13 +945,14 @@ async def get_session_timeline(
 async def get_session_messages_around(
     session_id: str, row_id: int = Query(..., ge=1), profile: Optional[str] = None,
     limit: int = Query(120, ge=1, le=120),
+    follow_binding: bool = Query(True),
 ):
     """Bounded display page starting at a timeline prompt; no intervening payloads."""
     owner = _serving_profile(profile)
 
     def _read(store):
-        sid = _timeline_session_id(store, session_id, owner)
-        page = store.messages.read_prompt_page(sid, row_id, limit=limit)
+        sid, segments = _timeline_session_id(store, session_id, owner, follow_binding=follow_binding)
+        page = store.messages.read_prompt_page(sid, row_id, limit=limit, display_segments=segments)
         if page is None:
             raise HTTPException(status_code=404, detail="Prompt not found")
         return {"session_id": sid, "profile": owner,

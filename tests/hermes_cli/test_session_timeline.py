@@ -6,7 +6,9 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from persistence.conversation.lineage import CompressionChild
 from persistence.conversation.messages import NewMessage
+from persistence.core.identity import SessionId
 from persistence_assembly import open_persistence, open_persistence_reader, profile_scope
 from tests.fixtures.storage_holder import raw_holder
 from tests.fixtures.storage_read import transcript_rows
@@ -39,6 +41,125 @@ def timeline_store(tmp_path, monkeypatch):
         seed_session(db, "timeline-root", "desktop")
         with TestClient(app) as client:
             yield db, client, home
+
+
+@pytest.mark.parametrize("source", ["gui", "local"])
+def test_desktop_history_includes_both_sides_of_a_local_reset(timeline_store, source):
+    from tests.persistence_sqlite.authority.test_binding_local import SID, _child_entry, make_binding
+
+    db, client, _ = timeline_store
+    epoch = db.runtime.begin_epoch(instance_id="timeline-test")
+    db.bindings.reserve(epoch=epoch, binding=make_binding(source=source), owner=None)
+    before, = seed_messages(db, SID, {"role": "user", "content": "before reset", "timestamp": 10})
+    child = "reset-transcript"
+    db.bindings.reset_target(epoch=epoch, parent_session_id=SID, entry=_child_entry(child))
+    after, = seed_messages(db, child, {"role": "user", "content": "after reset", "timestamp": 20})
+
+    for session_id in (SID, child):
+        path = f"/api/sessions/{session_id}"
+        params = {"include_compacted": True, "order": "latest", "limit": 1}
+        latest = client.get(f"{path}/messages", params=params)
+        assert latest.status_code == 200
+        assert [row["id"] for row in latest.json()["messages"]] == [after]
+        older = client.get(f"{path}/messages", params={**params, "offset": 1})
+        assert [row["id"] for row in older.json()["messages"]] == [before]
+        timeline = client.get(f"{path}/timeline")
+        assert [row["row_id"] for row in timeline.json()["entries"]] == [before, after]
+        jump = client.get(f"{path}/messages/around", params={"row_id": before})
+        assert [row["id"] for row in jump.json()["messages"]] == [before, after]
+
+    active = client.get(f"/api/sessions/{SID}/messages")
+    assert [row["id"] for row in active.json()["messages"]] == [before]
+
+    path = f"/api/sessions/{SID}"
+    opt_out = {"follow_binding": False}
+    page = client.get(f"{path}/messages", params={**opt_out, "include_compacted": True})
+    assert [row["id"] for row in page.json()["messages"]] == [before]
+    timeline = client.get(f"{path}/timeline", params=opt_out)
+    assert [row["row_id"] for row in timeline.json()["entries"]] == [before]
+    jump = client.get(f"{path}/messages/around", params={**opt_out, "row_id": before})
+    assert [row["id"] for row in jump.json()["messages"]] == [before]
+    assert client.get(f"{path}/messages/around", params={**opt_out, "row_id": after}).status_code == 404
+
+
+@pytest.mark.parametrize("field,drift", [("chat_id", "other-chat"), ("source", "telegram")])
+def test_desktop_history_refuses_a_drifted_child(timeline_store, field, drift):
+    from tests.persistence_sqlite.authority.test_binding_local import SID, _child_entry, make_binding
+
+    db, client, _ = timeline_store
+    epoch = db.runtime.begin_epoch(instance_id="timeline-test")
+    db.bindings.reserve(epoch=epoch, binding=make_binding(source="gui"), owner=None)
+    child = "reset-transcript"
+    db.bindings.reset_target(epoch=epoch, parent_session_id=SID, entry=_child_entry(child))
+    row_id, = seed_messages(db, child, {"role": "user", "content": "child prompt"})
+    _write_sql(db, f"UPDATE sessions SET {field} = ? WHERE id = ?", (drift, child))
+    for session_id in (SID, child):
+        path = f"/api/sessions/{session_id}"
+        assert client.get(f"{path}/messages", params={"include_compacted": True}).status_code == 503
+        assert client.get(f"{path}/timeline").status_code == 503
+        assert client.get(f"{path}/messages/around", params={"row_id": row_id}).status_code == 503
+
+
+@pytest.mark.parametrize("reset_first", [False, True], ids=["compression-reset", "reset-compression"])
+@pytest.mark.parametrize("legacy", [False, True], ids=["indexed", "legacy"])
+def test_desktop_history_dedupes_and_rewinds_only_within_compression_chain(timeline_store, reset_first, legacy):
+    from agent.context_compressor import SUMMARY_PREFIX
+    from tests.persistence_sqlite.authority.test_binding_local import SID, _child_entry, make_binding
+
+    db, client, _ = timeline_store
+    epoch = db.runtime.begin_epoch(instance_id="timeline-test")
+    db.bindings.reserve(epoch=epoch, binding=make_binding(source="local"), owner=None)
+    reset, rotated = SessionId("reset-transcript"), SessionId("compressed-transcript")
+    parent = SID
+    prompt = {"role": "user", "content": "repeat across reset", "timestamp": 20}
+    if reset_first:
+        separate, = seed_messages(db, SID, prompt)
+        db.bindings.reset_target(epoch=epoch, parent_session_id=SID, entry=_child_entry(reset))
+        parent = reset
+
+    first, original, _ = seed_messages(
+        db, parent, {"role": "user", "content": "old prompt", "timestamp": 10}, prompt,
+        {"role": "assistant", "content": "protected reply", "timestamp": 21},
+    )
+    retained = transcript_rows(db, parent)[1:]
+    db.lineage.publish_compression_child(parent, CompressionChild(session_id=rotated, source="local"), [
+        NewMessage.from_live({"role": "user", "content": SUMMARY_PREFIX + "summary",
+                              "_compressed_summary": True}),
+        *[NewMessage.from_live(row) for row in retained],
+    ], require_compression_lease=False)
+    summary, carried, reply = [row["id"] for row in transcript_rows(db, rotated)]
+    if reset_first:
+        db.messages.rewind_user_turn(rotated, 0)
+    else:
+        db.bindings.reset_target(epoch=epoch, parent_session_id=rotated, entry=_child_entry(reset))
+        separate, = seed_messages(db, reset, prompt)
+    if legacy:
+        _write_sql(db, "UPDATE messages SET display_identity = NULL, display_order = NULL")
+
+    expected = [separate, first, summary] if reset_first else [first, carried, reply, summary, separate]
+    prompts = [separate, first] if reset_first else [first, carried, separate]
+    _assert_mixed_history(client, SID, expected, prompts, original)
+
+
+def _assert_mixed_history(client, session_id, expected, prompts, original):
+    path = f"/api/sessions/{session_id}"
+    params = {"include_compacted": True, "order": "latest"}
+    response = client.get(f"{path}/messages", params=params)
+    assert response.status_code == 200
+    assert [row["id"] for row in response.json()["messages"]] == expected
+    latest = client.get(f"{path}/messages", params={**params, "limit": 2}).json()
+    assert [row["id"] for row in latest["messages"]] == expected[-2:]
+    timeline = client.get(f"{path}/timeline").json()
+    assert [row["row_id"] for row in timeline["entries"]] == prompts
+    assert timeline["pagination"]["total"] == len(prompts)
+    cursor = 0
+    for prompt_id in prompts:
+        page = client.get(f"{path}/timeline", params={"limit": 1, "after_row_id": cursor}).json()
+        assert [row["row_id"] for row in page["entries"]] == [prompt_id]
+        cursor = page["pagination"]["next_cursor"]
+        jump = client.get(f"{path}/messages/around", params={"row_id": prompt_id})
+        assert [row["id"] for row in jump.json()["messages"]] == expected[expected.index(prompt_id):]
+    assert client.get(f"{path}/messages/around", params={"row_id": original}).status_code == 404
 
 
 def test_timeline_pages_project_human_prompts_without_tool_payloads(timeline_store):

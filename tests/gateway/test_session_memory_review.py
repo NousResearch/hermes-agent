@@ -95,9 +95,9 @@ def test_local_session_reviews_staged_memory_writes(tmp_path):
     home.mkdir(mode=0o700)
     user.mkdir()
     work.mkdir()
-    _stage(home, 'keepme01', 'MEMORY_REVIEW_APPROVED')
-    _stage(home, 'dropme02', 'MEMORY_REVIEW_REJECTED')
-    _stage(home, 'dropme03', 'MEMORY_REVIEW_REJECTED_ALL')
+    _stage(home, 'a11ce001', 'MEMORY_REVIEW_APPROVED')
+    _stage(home, 'd20b0e02', 'MEMORY_REVIEW_REJECTED')
+    _stage(home, 'd20b0e03', 'MEMORY_REVIEW_REJECTED_ALL')
     peer = ThreadingHTTPServer(('127.0.0.1', 0), Model)
     peer.requests = []
     peer.blocked, peer.release = threading.Event(), threading.Event()
@@ -112,7 +112,7 @@ def test_local_session_reviews_staged_memory_writes(tmp_path):
     env.update(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home), PYTHONPATH=str(root),
                OPENAI_API_KEY='loopback-only', OPENAI_BASE_URL=url, PYTHONUNBUFFERED='1')
     out, config = {}, {}
-    commands = ('memory approve keepme01', 'memory reject dropme02', 'memory approval on',
+    commands = ('memory approve a11ce001', 'memory reject d20b0e02', 'memory approval on',
                 'memory mode off', 'memory apply nope', 'memory deny nope', 'memory drop all')
 
     async def probe(desc):
@@ -134,9 +134,9 @@ def test_local_session_reviews_staged_memory_writes(tmp_path):
         peer.server_close()
         thread.join(timeout=5)
     assert all(reply != 'unsupported_command' for reply in out.values()), out
-    assert 'Approved 1 memory write' in out['memory approve keepme01'], out
+    assert 'Approved 1 memory write' in out['memory approve a11ce001'], out
     assert any('MEMORY_REVIEW_APPROVED' in path.read_text() for path in home.rglob('MEMORY.md')), out
-    assert "Rejected pending memory write 'dropme02'" in out['memory reject dropme02'], out
+    assert "Rejected pending memory write 'd20b0e02'" in out['memory reject d20b0e02'], out
     assert 'write_approval: true' in config['memory approval on'], config
     assert 'write_approval: false' in config['memory mode off'], config
     assert "No pending memory write with id 'nope'" in out['memory deny nope'], out

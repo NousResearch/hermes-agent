@@ -368,6 +368,11 @@ staged before this pinning existed has no verifiable target and is refused too:
 reject it and recreate the change. `/memory approve` lists the full text of
 every entry it overwrote or removed.
 
+If Hermes is killed partway through an approval, the write may be partly
+applied, so Hermes won't apply it again. `/memory pending` lists it under
+**Needs review**. Check `MEMORY.md` and `USER.md`, then clear it with
+`/memory reject <id>`; nothing is rolled back, and `reject all` skips it.
+
 ## Background review notifications (`display.memory_notifications`)
 
 After a turn, the background self-improvement review may quietly save a memory

@@ -701,6 +701,19 @@ The review surface works in the interactive CLI and on messaging platforms
 in the pending JSON file). Memory writes have the same gate under
 `memory.write_approval` — see [Controlling memory writes](./memory.md#controlling-memory-writes-write_approval).
 
+A staged write remembers every file it touches. If one changes before you
+approve, `/skills approve` refuses the write and leaves it pending. A plugin
+that offers a review page shows you a preview first, so it can still approve a
+write that deletes nothing; the approval applies to the files you saw.
+Deleting a skill or a file always needs the version that was staged.
+
+If Hermes is killed partway through an approval, the write may be partly
+applied, so Hermes won't apply it again. `/skills pending` lists it under
+**Needs review**. Check the skill's files, then clear it with
+`/skills reject <id>`; nothing is rolled back, and `reject all` skips it.
+Stop older CLI and gateway processes before upgrading a profile with pending
+writes: they don't take the decision lock.
+
 To stop the agent from changing one *specific* skill at all, lock it:
 `hermes curator lock <skill>` (or the lock switch in Desktop). A locked skill stays
 readable and auto-loadable, but `skill_manage`, `write_file`, `patch` and `terminal`

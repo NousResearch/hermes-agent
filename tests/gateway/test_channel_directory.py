@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -394,4 +395,156 @@ class TestChannelAliases:
         names = [e["name"] for e in on_disk["platforms"]["whatsapp"]
                  if e["id"] == "120363@g.us"]
         assert names == ["general"]
+
+
+class TestMultiplexServedProfileRefresh:
+    """#141023: a multiplexed gateway must rebuild each served profile's OWN
+    channel_directory.json — from that profile's adapters, inside that profile's runtime
+    scope — so name-based targets resolve in that profile and not only in the launch home."""
+
+    @staticmethod
+    def _runner(multiplex, homes, profile_adapters):
+        return SimpleNamespace(
+            config=SimpleNamespace(multiplex_profiles=multiplex, _runtime_profile_homes=homes),
+            _profile_adapters=profile_adapters,
+        )
+
+    @staticmethod
+    def _record_builds(monkeypatch):
+        """Replace the builder with a recorder of (home in scope, adapters handed to it)."""
+        from hermes_constants import get_hermes_home
+
+        calls = []
+
+        async def _build(adapters):
+            calls.append((Path(get_hermes_home()).name, adapters))
+            return {"updated_at": "2026-01-01T00:00:00", "platforms": {}}
+
+        monkeypatch.setattr("gateway.channel_directory.build_channel_directory", _build)
+        # Keep the real runtime scope but skip profile secret hydration (off-loop .env work).
+        monkeypatch.setattr("gateway.run._load_profile_secret_scope", lambda _home: {})
+        return calls
+
+    def test_single_profile_gateway_is_untouched(self, tmp_path, monkeypatch):
+        """No served secondaries, no scoped build: the launch build stays the profile's own."""
+        from gateway.run import _refresh_served_profile_channel_directories
+
+        calls = self._record_builds(monkeypatch)
+        runner = self._runner(False, [("default", tmp_path)], {"seo": {Platform.TELEGRAM: object()}})
+
+        assert asyncio.run(_refresh_served_profile_channel_directories(runner)) == 0
+        assert calls == []
+
+    def test_each_served_profile_is_built_in_its_own_scope(self, tmp_path, monkeypatch):
+        """One build per served profile, under that profile's home, with that profile's adapters —
+        and never a second build of the launch home."""
+        from gateway.run import _refresh_served_profile_channel_directories
+
+        for name in ("launch", "seo", "mubeen"):
+            (tmp_path / name).mkdir()
+        seo_adapter, mubeen_adapter = object(), object()
+        calls = self._record_builds(monkeypatch)
+        runner = self._runner(
+            True,
+            [("default", tmp_path / "launch"), ("seo", tmp_path / "seo"), ("mubeen", tmp_path / "mubeen")],
+            {"seo": {Platform.TELEGRAM: seo_adapter}, "mubeen": {Platform.TELEGRAM: mubeen_adapter}},
+        )
+
+        rebuilt = asyncio.run(_refresh_served_profile_channel_directories(runner))
+
+        assert rebuilt == 2
+        assert [home for home, _adapters in calls] == ["seo", "mubeen"]
+        assert [adapters for _home, adapters in calls] == [
+            {Platform.TELEGRAM: seo_adapter}, {Platform.TELEGRAM: mubeen_adapter}]
+
+    def test_profile_without_its_own_adapters_fails_closed(self, tmp_path, monkeypatch):
+        """A served profile whose adapter map is still the empty startup placeholder gets an EMPTY
+        map, never the launch profile's. ``authz_mixin._adapters_for_profile`` gives a named profile
+        ``{}`` precisely so it cannot deliver through the default bot; a directory advertising the
+        launch profile's channels would resolve name-based targets (``slack:#ops``, cron
+        ``deliver: slack:<name>``) to channels that profile cannot reach."""
+        from gateway.run import _refresh_served_profile_channel_directories
+
+        (tmp_path / "launch").mkdir()
+        (tmp_path / "seo").mkdir()
+        calls = self._record_builds(monkeypatch)
+        launch_adapters = {Platform.TELEGRAM: object()}
+        runner = self._runner(True, [("default", tmp_path / "launch"), ("seo", tmp_path / "seo")],
+                              {"seo": {}})
+
+        assert asyncio.run(_refresh_served_profile_channel_directories(runner)) == 1
+        assert calls == [("seo", {})]
+        assert launch_adapters not in [adapters for _home, adapters in calls]
+
+    def test_real_build_writes_into_the_profile_home(self, tmp_path, monkeypatch):
+        """End to end through the real builder: the scope is what puts the file in the profile's
+        home (``_directory_path()`` -> ``get_hermes_home()``), which the pre-fix code never did."""
+        from gateway.run import _refresh_served_profile_channel_directories
+
+        profile_home = tmp_path / "seo"
+        profile_home.mkdir()
+        monkeypatch.setattr("gateway.run._load_profile_secret_scope", lambda _home: {})
+
+        class _Adapter:
+            async def list_channels(self):
+                return [{"id": "C0NEW", "name": "just-joined", "type": "channel"}]
+
+        runner = self._runner(True, [("seo", profile_home)], {"seo": {Platform.SLACK: _Adapter()}})
+
+        assert asyncio.run(_refresh_served_profile_channel_directories(runner)) == 1
+
+        written = json.loads((profile_home / "channel_directory.json").read_text())
+        assert [entry["name"] for entry in written["platforms"]["slack"]] == ["just-joined"]
+        assert written["updated_at"]
+
+    @pytest.mark.asyncio
+    async def test_startup_call_site_rebuilds_each_served_profile(self, tmp_path, monkeypatch):
+        """The startup pass must actually REACH the per-profile rebuild.
+
+        The helper takes the runner alone. A second argument at this call site raises before the
+        body runs, and the surrounding ``_log_suppressed`` swallows the ``TypeError``: startup
+        then logs a misleading warning and no served profile is rebuilt until the 5-minute
+        housekeeping tick. Every other test here calls the helper directly, so the call site
+        itself was uncovered.
+        """
+        from gateway.run import GatewayRunner
+
+        for name in ("launch", "seo", "mubeen"):
+            (tmp_path / name).mkdir()
+        seo_adapter, mubeen_adapter = object(), object()
+        calls = self._record_builds(monkeypatch)
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = SimpleNamespace(
+            multiplex_profiles=True,
+            _runtime_profile_homes=[
+                ("default", tmp_path / "launch"), ("seo", tmp_path / "seo"),
+                ("mubeen", tmp_path / "mubeen")],
+        )
+        runner._profile_adapters = {
+            "seo": {Platform.TELEGRAM: seo_adapter},
+            "mubeen": {Platform.TELEGRAM: mubeen_adapter},
+        }
+        runner.adapters = {}
+        runner._heartbeat_watch = {}
+        runner._background_tasks = set()
+        runner._ensure_hosted_room_worker = AsyncMock()
+        runner._hosted_room_worker_watcher = AsyncMock()
+        runner._spawn_supervised = lambda *args: None
+        runner._start_loop_heartbeat_task = lambda: None
+        runner.hooks = SimpleNamespace(loaded_hooks=[], emit=AsyncMock())
+        runner._send_update_notification = AsyncMock(return_value=True)
+        runner.session_store = SimpleNamespace(list_sessions=list)
+        runner._run_in_executor_with_context = asyncio.to_thread
+
+        await runner._start_post_connect_services(0)
+        task = getattr(runner, "_heartbeat_poll_task", None)
+        try:
+            # The launch build happens first (unscoped), then one build per served profile, each
+            # in ITS OWN home — the startup path used to raise here and rebuild neither.
+            assert [home for home, _adapters in calls if home in ("seo", "mubeen")] == ["seo", "mubeen"]
+        finally:
+            if task is not None:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
 

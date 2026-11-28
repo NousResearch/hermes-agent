@@ -59,8 +59,8 @@ def _cmd_tail(args: argparse.Namespace) -> int:
 
 def _cmd_dispatch(args: argparse.Namespace) -> int:
     # Honour kanban.default_assignee, kanban.max_in_progress,
-    # kanban.max_in_progress_per_profile and kanban.max_spawn with the same
-    # semantics as the gateway dispatch path.
+    # kanban.max_in_progress_per_profile, kanban.max_spawn and
+    # kanban.coder_profiles with the same semantics as the gateway dispatch path.
     try:
         from hermes_cli.config import load_config
         _cfg = load_config()
@@ -78,9 +78,11 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         max_spawn = (
             cli_max if cli_max is not None else kbd._positive_int(_kanban_cfg.get("max_spawn"), None)
         )
+        coder_profiles = kbd.normalize_coder_profiles(_kanban_cfg.get("coder_profiles"))
     except Exception:
         default_assignee = max_in_progress_per_profile = max_in_progress = None
         max_spawn = getattr(args, "max", None)
+        coder_profiles = kbd.DEFAULT_CODER_PROFILES
     with kbc.connect_closing() as conn:
         res = kbd.dispatch_once(
             conn,
@@ -90,7 +92,10 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             failure_limit=getattr(args, "failure_limit", kbd.DEFAULT_FAILURE_LIMIT),
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            coder_profiles=coder_profiles,
+            force_pin=bool(getattr(args, "force_pin", False)),
         )
+    exit_code = 1 if res.pin_refused else 0
     if getattr(args, "json", False):
         _print_json({
             **{k: getattr(res, k)
@@ -113,8 +118,9 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             "rate_limited": res.rate_limited,
             "skipped_locked": res.skipped_locked,
             "memory_pressure": res.memory_pressure,
+            "pin_refused": res.pin_refused,
         }, ascii=True)
-        return 0
+        return exit_code
     print(f"Reclaimed:    {res.reclaimed}")
     if res.reaped_terminal_workers:
         print(f"Reaped workers of finished tasks: {', '.join(res.reaped_terminal_workers)}")
@@ -154,7 +160,13 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         print("Skipped: another dispatcher holds this board's lock (no writes this tick)")
     if res.memory_pressure:
         print(f"Memory pressure {res.memory_pressure}: new workers restricted this tick")
-    return 0
+    if res.pin_refused:
+        print(f"Pin refused:  {len(res.pin_refused)}")
+        for refusal in res.pin_refused:
+            provider = f" ({refusal['provider']})" if refusal.get("provider") else ""
+            print(f"  - {refusal['task_id']}  ->  {refusal['assignee']}  pins {refusal['model']}{provider}")
+            print(f"    Clear the pin: {refusal['command']}")
+    return exit_code
 
 
 _DAEMON_DEPRECATED = (

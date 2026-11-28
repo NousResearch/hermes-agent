@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- kanban pin guard: request_changes() clears the review pin in its existing handoff txn; a package split of this module is a separate refactor, not a rider on this fail-closed bug fix
 """SQLite-backed Kanban board shared across profiles (the cross-profile coordination primitive).
 
 Lives under the shared Hermes root: ``default`` board DB at ``<root>/kanban.db`` (pre-boards
@@ -3417,7 +3418,8 @@ def request_changes(
 
     with write_txn(conn):
         task_row = conn.execute(
-            "SELECT status, assignee, current_run_id FROM tasks WHERE id = ?", (task_id,),
+            "SELECT status, assignee, current_run_id, model_override, provider_override "
+            "FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
         if task_row is None:
             return False, "task not found"
@@ -3439,6 +3441,8 @@ def request_changes(
         if implementer is None:
             return False, "review handoff has no valid implementer provenance"
         reviewer = _canonical_assignee(_nonblank_str(task_row["assignee"]))
+        pinned_model = _nonblank_str(task_row["model_override"])
+        pinned_provider = _nonblank_str(task_row["provider_override"])
 
         new_status = _landing_status_after_parents(conn, task_id)
         # consecutive_failures deliberately PRESERVED: a review transition is
@@ -3448,6 +3452,8 @@ def request_changes(
             UPDATE tasks
                SET status = ?,
                    assignee = COALESCE(?, assignee),
+                   model_override = NULL,
+                   provider_override = NULL,
                    claim_lock = NULL,
                    claim_expires = NULL,
                    worker_pid = NULL, worker_started_at = NULL
@@ -3472,6 +3478,22 @@ def request_changes(
             },
             run_id=run_id,
         )
+        # The pin belongs to the review hop, not the card: leaving it on would
+        # run the implementer's next hop on the review model. Same txn so a
+        # reviewer send-back can never persist a half-cleared handoff.
+        if pinned_model is not None:
+            _append_event(
+                conn,
+                task_id,
+                "model_override_cleared",
+                {
+                    "model": pinned_model,
+                    "provider": pinned_provider,
+                    "reviewer": reviewer,
+                    "reason": "changes_requested",
+                },
+                run_id=run_id,
+            )
     return True, implementer
 
 

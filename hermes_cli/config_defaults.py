@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- kanban pin guard: the coder_profiles default key sits beside default_assignee; a package split of this data module is a separate refactor, not a rider on this bug fix
 """Default configuration data for Hermes Agent: DEFAULT_CONFIG and OPTIONAL_ENV_VARS.
 
 Pure-data leaf module — must not import from hermes_cli.config. Comments are the user-facing
@@ -1856,6 +1857,13 @@ DEFAULT_CONFIG = {
         # Assignee when the orchestrator can't match one to an installed profile; "" = default
         # profile. A task never ends up with assignee=None.
         "default_assignee": "",
+        # Profiles whose hops implement rather than review. A card pins a model for one hop
+        # (e.g. a reviewer on a stronger model), and the pin used to survive the hand-off back
+        # to the implementer. The dispatcher now refuses to spawn a pinned card assigned to one
+        # of these profiles and blocks it for the operator instead (clear with
+        # `hermes kanban set-model <id> none`, or dispatch once with --force-pin). Empty
+        # (the default) leaves the guard off.
+        "coder_profiles": [],
         # Global cap: positive int = the HOST never has more than N tasks 'running' across all
         # boards and both dispatch lanes. None = ~MemTotal / 512 MiB clamped to [2, 8]; where
         # MemTotal is unreadable (macOS/Windows) None means no cap.

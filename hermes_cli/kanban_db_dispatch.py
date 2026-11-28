@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- kanban pin guard: the pinned-coder refusal is a minimal fail-closed block on the existing dispatch path; a package split of this module is a separate refactor, not a rider on this bug fix
 """Dispatcher: crash/stale/orphan detection, failure accounting and the respawn circuit breaker, memory-aware concurrency caps, the one-shot ``dispatch_once`` pass, worker spawning (``_default_spawn``), worker-log rotation and the long-lived ``run_daemon`` loop.
 
 Split out of ``hermes_cli.kanban_db``; origin-resident helpers are reached
@@ -37,6 +38,34 @@ if TYPE_CHECKING:
 # After this many consecutive non-success attempts on a task/profile the
 # dispatcher parks the task in ``blocked`` with a reason — prevents retry storms.
 DEFAULT_FAILURE_LIMIT = 2
+
+# Profiles whose hops are implementations, not reviews. A card's
+# ``model_override`` belongs to the card, so a reviewer pin left on it would
+# run the next coder hop on the review model (costing that hop its own model
+# and budget). ``kanban.coder_profiles`` lists them; a pinned card assigned to
+# one of them is refused (blocked ``needs_input``) unless the dispatcher is
+# called with ``force_pin=True``. Empty by default: the guard is opt-in.
+DEFAULT_CODER_PROFILES: tuple[str, ...] = ()
+
+
+def normalize_coder_profiles(value: Any) -> tuple[str, ...]:
+    """``kanban.coder_profiles`` as a tuple of profile names.
+
+    ``None``/invalid/blank keeps the default. A list or comma-separated
+    string names the profiles the pin guard protects.
+    """
+    if value is None:
+        return DEFAULT_CODER_PROFILES
+    if isinstance(value, str):
+        if not any(part.strip() for part in value.split(",")):
+            return DEFAULT_CODER_PROFILES
+        names: Iterable[Any] = value.split(",")
+    elif isinstance(value, (list, tuple, set, frozenset)):
+        names = value
+    else:
+        return DEFAULT_CODER_PROFILES
+    return tuple(str(name).strip() for name in names if str(name).strip())
+
 
 # Keep a little wall-clock budget for the worker to observe a terminal timeout
 # and make a terminal board call (kanban_block/kanban_complete/kanban_request_review)
@@ -151,6 +180,11 @@ class DispatchResult:
     """Memory pressure that restricted this tick: ``"critical"`` (no new
     workers), ``"elevated"`` (at most one), ``None`` (no restriction).
     Reclaim/promotion bookkeeping still ran; deferred tasks stay queued."""
+    pin_refused: list[dict[str, Any]] = field(default_factory=list)
+    """Cards left un-spawned because they carry a ``model_override`` and their
+    assignee is in ``kanban.coder_profiles`` (``force_pin`` not set). Each entry
+    is ``{"task_id", "assignee", "model", "provider", "command"}``; the CLI
+    prints it and exits non-zero, the gateway tick only records the block."""
 
 
 def describe_suppression(results: Iterable[Optional[DispatchResult]]) -> str:
@@ -1992,6 +2026,8 @@ def dispatch_once(
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
     reconcile_orphans: bool = True,
+    coder_profiles: Iterable[str] = DEFAULT_CODER_PROFILES,
+    force_pin: bool = False,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
 
@@ -2015,6 +2051,8 @@ def dispatch_once(
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
             reconcile_orphans=reconcile_orphans,
+            coder_profiles=coder_profiles,
+            force_pin=force_pin,
         )
 
     try:
@@ -2050,6 +2088,75 @@ def _call_spawn_fn(spawn_fn, task: Task, workspace: str, board: Optional[str]) -
         return spawn_fn(task, workspace)
 
 
+def _pinned_coder_hop_refused(
+    conn: sqlite3.Connection,
+    row: sqlite3.Row,
+    assignee: str,
+    result: DispatchResult,
+    *,
+    board: Optional[str],
+    dry_run: bool,
+    coder_profiles: Iterable[str],
+    force_pin: bool,
+) -> bool:
+    """True when this ready/review row is a pin the dispatcher must not spend.
+
+    A card's ``model_override`` belongs to the card, not the hop, so a reviewer
+    pin left on a coder card (send-back, or a timed-out hop re-queued to
+    ``ready``) would run the implementation on the review model. Fail closed:
+    the card is blocked ``needs_input`` with a ``pin_refused`` event and the
+    exact command that clears the pin, and nothing is claimed or spawned.
+
+    ``force_pin`` lets the hop through after recording ``pin_forced`` (before
+    the claim, so the audit trail reads cause -> effect). ``dry_run`` reports
+    the refusal on ``result`` without writing anything.
+    """
+    task_id = row["id"]
+    pinned_model = (row["model_override"] or "").strip()
+    if not pinned_model or assignee not in normalize_coder_profiles(coder_profiles):
+        return False
+    pinned_provider = (row["provider_override"] or "").strip() or None
+    command = (
+        f"hermes kanban --board {board or _kb.get_current_board()} "
+        f"set-model {task_id} none"
+    )
+    if force_pin:
+        if not dry_run:
+            with _kb.write_txn(conn):
+                _kb._append_event(
+                    conn, task_id, "pin_forced",
+                    {"assignee": assignee, "model": pinned_model, "provider": pinned_provider},
+                )
+        return False
+    labelled = f"{pinned_model} ({pinned_provider})" if pinned_provider else pinned_model
+    reason = (
+        f"{assignee} is a coder profile and card {task_id} pins {labelled}: "
+        f"refusing to run the hop on the review model. "
+        f"Clear the pin with: {command}"
+    )
+    result.pin_refused.append({
+        "task_id": task_id,
+        "assignee": assignee,
+        "model": pinned_model,
+        "provider": pinned_provider,
+        "command": command,
+    })
+    if not dry_run and _kb.block_task(conn, task_id, kind="needs_input", reason=reason):
+        # Only after the block committed: the card leaves ``ready`` and cannot
+        # be refused again next tick, so one event per refusal.
+        with _kb.write_txn(conn):
+            _kb._append_event(
+                conn, task_id, "pin_refused",
+                {
+                    "assignee": assignee,
+                    "model": pinned_model,
+                    "provider": pinned_provider,
+                    "command": command,
+                },
+            )
+    return True
+
+
 def _dispatch_lane_task(
     conn: sqlite3.Connection,
     row: sqlite3.Row,
@@ -2064,6 +2171,8 @@ def _dispatch_lane_task(
     spawn_fn,
     per_profile_cap: Optional[int],
     per_profile_running: dict[str, int],
+    coder_profiles: Iterable[str] = DEFAULT_CODER_PROFILES,
+    force_pin: bool = False,
 ) -> bool:
     """Guard, claim, resolve the workspace and spawn one ready/review row.
     Returns True when a spawn slot was consumed (real or ``dry_run``); every
@@ -2111,6 +2220,16 @@ def _dispatch_lane_task(
         if not dry_run:
             with _kb.write_txn(conn):
                 _kb._append_event(conn, task_id, "respawn_guarded", {"reason": guard_reason})
+        return False
+
+    # A card's ``model_override`` belongs to the card, not the hop. A reviewer
+    # pin left on a coder card (send-back, or a timed-out hop re-queued to
+    # ``ready``) would run the implementation on the review model, so refuse the
+    # hop instead of spending it.
+    if _pinned_coder_hop_refused(
+        conn, row, assignee, result,
+        board=board, dry_run=dry_run, coder_profiles=coder_profiles, force_pin=force_pin,
+    ):
         return False
 
     def _count_spawn(name: str) -> None:
@@ -2265,9 +2384,15 @@ def _tick_spawn_budget(
 
 
 def _lane_rows(conn: sqlite3.Connection, status: str) -> list[sqlite3.Row]:
-    """Unclaimed rows of one lane in dispatch order."""
+    """Unclaimed rows of one lane in dispatch order.
+
+    ``model_override``/``provider_override`` ride along so the pin guard in
+    :func:`_dispatch_lane_task` can refuse a pinned coder card without a second
+    read (the card may change between the SELECT and the claim anyway; the
+    claim's own CAS is what keeps a refusal honest).
+    """
     return conn.execute(
-        "SELECT id, assignee FROM tasks "
+        "SELECT id, assignee, model_override, provider_override FROM tasks "
         f"WHERE status = '{status}' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
@@ -2337,6 +2462,8 @@ def _dispatch_once_locked(
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
     reconcile_orphans: bool = True,
+    coder_profiles: Iterable[str] = DEFAULT_CODER_PROFILES,
+    force_pin: bool = False,
 ) -> DispatchResult:
     """One dispatcher tick: reclaim stale/crashed running tasks, promote
     todo -> ready, then atomically claim each spawnable ready/review row and
@@ -2392,6 +2519,7 @@ def _dispatch_once_locked(
         dry_run=dry_run, ttl_seconds=ttl_seconds, board=board,
         failure_limit=failure_limit, spawn_fn=spawn_fn,
         per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
+        coder_profiles=coder_profiles, force_pin=force_pin,
     )
     default_assignee = _resolve_default_assignee(default_assignee)
     spawned = 0

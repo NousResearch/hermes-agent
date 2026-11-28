@@ -14,6 +14,7 @@ export type {
   PluginFiles,
   PluginFilesResult,
   PluginFolder,
+  PluginFolderDialogOptions,
   PluginNativeNotificationInput,
   PluginNotificationAction,
   PluginOs,

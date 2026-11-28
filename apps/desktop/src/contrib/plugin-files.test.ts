@@ -39,6 +39,33 @@ describe('ctx.files', () => {
     expect(door.op).toHaveBeenCalledWith('plexus', { op: 'readText', folder: 'f1', path: 'notes/a.md' })
   })
 
+  it('passes a custom title and starting folder to the app-owned picker', async () => {
+    door.request.mockResolvedValueOnce({ ok: true, folder: { grantedAt: 'x', id: 'f1', name: 'Vault', path: '/v' } })
+
+    const files = createPluginContext('plexus').files
+
+    await expect(
+      files.requestFolder({ title: 'Choose a media folder', defaultPath: '/projects/film/output' })
+    ).resolves.toMatchObject({ ok: true, folder: { id: 'f1', path: '/v' } })
+    expect(door.request).toHaveBeenCalledWith('plexus', {
+      buttonLabel: 'Allow access',
+      title: 'Choose a media folder',
+      defaultPath: '/projects/film/output'
+    })
+  })
+
+  it('falls back to the plugin-specific picker title when a custom title is blank', async () => {
+    door.request.mockResolvedValueOnce({ ok: true, folder: null })
+
+    await createPluginContext('plexus').files.requestFolder({ title: '   ' })
+
+    expect(door.request).toHaveBeenCalledWith('plexus', {
+      buttonLabel: 'Allow access',
+      title: 'Choose a folder for plexus',
+      defaultPath: undefined
+    })
+  })
+
   it('tells the user when the app refuses the folder they picked', async () => {
     door.request.mockResolvedValueOnce({ ok: false, error: 'protected', message: 'no' })
 

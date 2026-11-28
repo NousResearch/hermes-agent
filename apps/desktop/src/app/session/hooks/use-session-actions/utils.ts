@@ -94,7 +94,12 @@ export {
   chatPartsEquivalent,
   chatReactionsEquivalent
 } from './message-equivalence'
-export { goneSessionVerdict, isSessionGoneError, resolveResumedBusy } from './resume-verdicts'
+export {
+  goneSessionVerdict,
+  isNoRuntimeToStopError,
+  isSessionGoneError,
+  resolveResumedBusy
+} from './resume-verdicts'
 
 function withAppendedText(message: ChatMessage, suffix: string): ChatMessage {
   let appended = false

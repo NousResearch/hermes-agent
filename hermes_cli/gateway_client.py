@@ -17,6 +17,12 @@ GATEWAY_WS_TICKET_PREFIX = "hermes-gateway-ticket."
 # Per-request answer budget. Owner verbs are admissions/reads that answer promptly; the one that
 # legitimately runs long passes its own budget (``rpc(..., _timeout=...)``).
 DEFAULT_RPC_TIMEOUT = 30
+
+# ``session.create`` builds the agent before it answers: plugin discovery plus the model-metadata
+# resolution, whose probe waterfall is two bounded 15 s deadlines on a dead route. 30 s turns that
+# into "Gateway did not answer session.create" while the owner is still working, so the create
+# verbs get a budget that covers the build instead of masking it.
+SESSION_CREATE_TIMEOUT = 90
 # A typed ``--api-key`` on a resume that the owner does not bind (``rebind_launch_key``): every CLI says this.
 RESUME_KEY_MISMATCH = ("--api-key on resume must be the key this session was launched with "
                        "(a session launched without --api-key keeps its profile credentials). "

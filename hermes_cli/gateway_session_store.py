@@ -22,7 +22,7 @@ import re
 import sys
 import uuid
 
-from hermes_cli.gateway_client import GatewayClientError
+from hermes_cli.gateway_client import SESSION_CREATE_TIMEOUT, GatewayClientError
 from hermes_cli.gateway_connection import RESUME_REFUSALS, GatewayConnection
 
 logger = logging.getLogger(__name__)
@@ -198,7 +198,8 @@ class GatewaySessionStore:
             params = self._create_params(launch, title, record_cwd)
             if prepared is not None:
                 prepared["params"] = params
-        snapshot = self._call("session.create", abandon, **params)
+        snapshot = self._call("session.create", abandon,
+                              timeout=SESSION_CREATE_TIMEOUT, **params)
         warning = (snapshot.get("info") or {}).get("config_warning")
         if warning:
             print(f"Warning: {warning}", file=sys.stderr)
@@ -723,7 +724,8 @@ def create_titled_session(title):
     try:
         store = session_store()
         params.update(store.client_env())
-        snapshot = store.call("session.create", request_id=uuid.uuid4().hex, title=title, **params)
+        snapshot = store.call("session.create", request_id=uuid.uuid4().hex,
+                              timeout=SESSION_CREATE_TIMEOUT, title=title, **params)
     except GatewayClientError as exc:
         logger.warning("Failed to create titled session %r on the gateway: %s", title, exc)
         return None

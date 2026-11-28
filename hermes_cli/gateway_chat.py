@@ -10,7 +10,7 @@ from pathlib import Path
 import sys
 import uuid
 
-from hermes_cli.gateway_client import RESUME_KEY_MISMATCH, GatewayClientError, connect_gateway
+from hermes_cli.gateway_client import RESUME_KEY_MISMATCH, SESSION_CREATE_TIMEOUT, GatewayClientError, connect_gateway
 from hermes_cli.gateway_connection import RESUME_REFUSALS
 
 logger = logging.getLogger(__name__)
@@ -243,7 +243,8 @@ async def run_gateway_chat(args, emitter=None):
             missing = sorted(set(policy) - set(parameters))
             if missing:
                 raise GatewayClientError("Gateway does not support creation options: " + ", ".join(missing))
-            snapshot = await client.rpc("session.create", request_id=uuid.uuid4().hex, source=source, **policy)
+            snapshot = await client.rpc("session.create", request_id=uuid.uuid4().hex,
+                                        _timeout=SESSION_CREATE_TIMEOUT, source=source, **policy)
             if (warning := (snapshot.get("info") or {}).get("config_warning")) and not isinstance(oneshot_prompt, str):
                 print(f"Warning: {warning}", file=sys.stderr)
         if not isinstance(oneshot_prompt, str):  # main's -z writes nothing to stderr on success

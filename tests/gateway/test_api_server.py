@@ -973,6 +973,20 @@ class TestSkillsEndpoint:
                 for entry in data["data"]:
                     assert set(entry.keys()) >= {"name", "description", "category"}
 
+    @pytest.mark.asyncio
+    async def test_skills_route_calls_the_real_find_all_skills(self, adapter):
+        """No mock here on purpose: the route must stay call-compatible with the real
+        ``tools.skills_tool.find_all_skills`` signature. A kwarg the function does not
+        accept makes the whole route answer 500 even though the mocked test above passes.
+        """
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/skills")
+            assert resp.status == 200, await resp.text()
+            data = await resp.json()
+            assert data["object"] == "list"
+            assert isinstance(data["data"], list)
+
 
 class TestToolsetsEndpoint:
     @pytest.mark.asyncio

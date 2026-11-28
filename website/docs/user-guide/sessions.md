@@ -301,6 +301,39 @@ What happens:
 
 **Limitation worth knowing:** for non-thread-capable platforms with multi-user group home channels, the synthetic turn keys as a DM-style session. This works for self-DM home channels (the typical setup) but isn't ideal for genuinely shared group chats. Threading covers Telegram / Discord / Slack / Matrix — by far the common case — so most setups never hit this.
 
+### Continue a Chat on Another Client (same home)
+
+Clients that share one `HERMES_HOME` — Desktop on two computers, the web/Android
+dashboard, and a CLI or TUI session — open the **same stored session** and share
+one live lease in that home's session registry. Opening a chat a second client
+already holds does not fork it: the newer client takes the lease over when, and
+only when, the registry proves the current holder is not working in it.
+
+"What is working" is read from the chat's durable turn marker, which every running
+turn writes at its start and refreshes on real progress (tool steps, streamed
+deltas). A holder's turn is treated as **still running** and the handoff is
+refused while that progress stays current. A turn that emits no progress for
+`sessions.takeover_stale_turn_s` seconds is treated as **hung** and may be
+preempted by the other client. A marker this build cannot read or judge counts as
+still-running, so a handoff only ever happens on proven idleness.
+
+```yaml
+sessions:
+  takeover_stale_turn_s: 900   # seconds without turn progress before a holder's turn counts as hung
+```
+
+`takeover_stale_turn_s` defaults to `900` (15 minutes); `0` or an unreadable
+value keeps that default. Raise it on slow machines or with long single model
+calls, where a genuinely working turn can go quiet for a while. Only interactive
+clients of the same owner participate — a gateway/bot lease is never claimed by
+a window.
+
+Because a takeover cannot interrupt the old client's process, the superseded turn
+may keep running; its later turn end, `Stop`, or progress heartbeat no longer
+touches the new owner's marker, so the new owner's turn stays fenced. If the
+owner's process dies mid-turn, its marker survives and the next resume can offer
+to continue the interrupted turn.
+
 ## Session Naming
 
 Give sessions human-readable titles so you can find and resume them easily.

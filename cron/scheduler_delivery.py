@@ -25,10 +25,10 @@ logger = logging.getLogger("cron.scheduler")
 
 
 # Validates user-supplied delivery platform names, preventing env-var enumeration via crafted names.
-# Plugin platforms are known through ``PlatformEntry.cron_deliver_env_var``; these rows have none:
-# ``webhook`` is core-only and ``wecom_callback`` (a ``wecom`` plugin sibling) delivers only to its
-# config.yaml ``home_channel``.
-_KNOWN_DELIVERY_PLATFORMS = frozenset({"webhook", "wecom_callback"})
+# Plugin platforms are known through ``PlatformEntry.cron_deliver_env_var``, or as registered plugin
+# platforms that deliver only to their config.yaml ``home_channel`` (WeCom callback); ``webhook`` is
+# core-only and has neither.
+_KNOWN_DELIVERY_PLATFORMS = frozenset({"webhook"})
 
 # Gateway platforms whose adapter declares ``supports_async_delivery = False`` (request/response
 # only, ``send()`` is a stub) — a cron report can never reach them, so they are never a
@@ -410,22 +410,37 @@ def _cron_job_origin_log_suffix(job: dict) -> str:
     return " " + " ".join(fields) if fields else ""
 
 
-def _plugin_cron_env_var(platform_name: str) -> str:
-    """Cron home-channel env var registered by a plugin ``PlatformEntry.cron_deliver_env_var``."""
+def _registry_entry(platform_name: str):
+    """The ``PlatformEntry`` registered for *platform_name* (plugins discovered first), else ``None``."""
     with contextlib.suppress(Exception):
         from hermes_cli.plugins import discover_plugins
         discover_plugins()  # idempotent
         from gateway.platform_registry import platform_registry
-        entry = platform_registry.get(platform_name.lower())
-        if entry and entry.cron_deliver_env_var:
-            return entry.cron_deliver_env_var
-    return ""
+        return platform_registry.get(platform_name.lower())
+    return None
+
+
+def _plugin_cron_env_var(platform_name: str) -> str:
+    """Cron home-channel env var registered by a plugin ``PlatformEntry.cron_deliver_env_var``."""
+    return getattr(_registry_entry(platform_name), "cron_deliver_env_var", None) or ""
 
 
 def _is_known_delivery_platform(platform_name: str) -> bool:
-    """Valid cron delivery platform: built-in, or plugin with a ``cron_deliver_env_var``."""
-    name = platform_name.lower()
-    return name in _KNOWN_DELIVERY_PLATFORMS or bool(_plugin_cron_env_var(name))
+    """Valid cron delivery platform: built-in, a plugin with a ``cron_deliver_env_var``, or a
+    registered plugin platform (its home target then comes from config.yaml only)."""
+    entry = _registry_entry(platform_name)
+    return (platform_name.lower() in _KNOWN_DELIVERY_PLATFORMS or bool(getattr(entry, "cron_deliver_env_var", None))
+            or getattr(entry, "source", None) == "plugin")
+
+
+def moved_platform_hint(platform_name: str) -> str:
+    """``". <label> moved out of core into the '<plugin>' plugin: install it with `<command>`"`` for a
+    platform that left core whose plugin is not loaded, else ``""``: a route saved while core shipped it
+    names the install instead of failing as an unknown target."""
+    from gateway.platform_registry import platform_registry
+    from hermes_cli.left_core_migration import platform_install_hint
+    name = platform_name.strip().lower()
+    return "" if platform_registry.get(name) else platform_install_hint(name)
 
 
 def _resolve_home_env_var(platform_name: str) -> str:
@@ -706,7 +721,11 @@ def _resolve_single_delivery_target(
         chat_id, thread_id, resolution_error = resolve_send_target(
             platform_key, rest, pass_unresolved_references=True)
         if resolution_error:
+            # Recorded in the run result, not only logged: another target reaching its chat must not
+            # hide this one (a saved route to a platform that left core carries its install command).
             logger.warning("Invalid cron delivery target '%s': %s", deliver_value, resolution_error)
+            if skipped is not None:
+                skipped.append(f"delivery target '{deliver_value}' skipped: {resolution_error}")
             return None
         # Chat-only target on the origin chat adopts the origin lane where it is a durable place
         # (Telegram topic, Slack thread); Matrix/Mattermost threads are per-message ids -> top-level.
@@ -739,7 +758,11 @@ def _resolve_single_delivery_target(
             "thread_id": origin.get("thread_id"),
         }
     if not _is_known_delivery_platform(platform_name):
-        _note_unloaded_homes([n for n in _unloaded_home_platforms() if n == platform_name.lower()], skipped)
+        if saved := [n for n in _unloaded_home_platforms() if n == platform_name.lower()]:
+            _note_unloaded_homes(saved, skipped)
+        elif (hint := moved_platform_hint(platform_name)) and skipped is not None:
+            # A bare route to a moved platform (home in its *_HOME_CHANNEL env) is reported, never dropped.
+            skipped.append(f"delivery target '{deliver_value}' skipped: no loaded plugin provides it{hint}")
         return None
     chat_id = _get_home_target_chat_id(platform_name)
     return _home_target(platform_name, chat_id, home_provenance) if chat_id else None
@@ -1686,7 +1709,8 @@ def _prepare_target_delivery(
     try:
         platform = Platform(platform_name.lower())
     except (ValueError, KeyError):
-        _note_target_error(job, f"unknown platform '{platform_name}'", delivery_errors)
+        from gateway.outbound.targets import unknown_platform_error
+        _note_target_error(job, unknown_platform_error(platform_name), delivery_errors)
         return None
 
     resolved, resolve_err = _resolve_target_transport(

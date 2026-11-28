@@ -228,126 +228,6 @@ wheels = [
 ]
 
 [[package]]
-name = "alibabacloud-credentials"
-version = "1.0.12"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "aiofiles" },
-    { name = "alibabacloud-credentials-api" },
-    { name = "alibabacloud-tea" },
-    { name = "apscheduler" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/25/19/bc359efb0c12f400a89783f8dc87a7261a955d73acc7b766a736e5597851/alibabacloud_credentials-1.0.12.tar.gz", hash = "sha256:87da41ea3ffb146b44d999c62c160c2b96b0c30275ae35205bcdfe79ba0c4119", size = 43203, upload-time = "2026-08-18T04:34:16.32Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/89/40/8efa0f2efb400876f9355bde104fe98b621648182d4f076150f26c64e770/alibabacloud_credentials-1.0.12-py3-none-any.whl", hash = "sha256:c09afcf579663374df056c20482fc1397240d20b4ccb143d23c287f3f8a91109", size = 52000, upload-time = "2026-08-18T04:34:15.209Z" },
-]
-
-[[package]]
-name = "alibabacloud-credentials-api"
-version = "1.0.1"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/89/7e/6145e2d132752f0de72701df556304c59dda311405a252a598ad6fd9b4de/alibabacloud_credentials_api-1.0.1.tar.gz", hash = "sha256:8ea0668a6558f6956b8d20b2e561d19a80ea29c22cf56a3004d434b24a981b36", size = 2314, upload-time = "2026-06-25T06:50:33.198Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/0b/49/ff401af96d77d40ab918096d831bd3360f3eec60f10e65125e5789c4e617/alibabacloud_credentials_api-1.0.1-py3-none-any.whl", hash = "sha256:5f27889113214fc53493b3e918eb26d73dfab2022e22bdaac262849b8e58cbc0", size = 2230, upload-time = "2026-06-25T06:49:09.991Z" },
-]
-
-[[package]]
-name = "alibabacloud-dingtalk"
-version = "2.2.65"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "alibabacloud-endpoint-util" },
-    { name = "alibabacloud-gateway-dingtalk" },
-    { name = "alibabacloud-gateway-spi" },
-    { name = "alibabacloud-openapi-util" },
-    { name = "alibabacloud-tea-openapi" },
-    { name = "alibabacloud-tea-util" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/46/0f/40312cb59239b5383e98fa70082db8b9b18bbecf1151610254e23332440f/alibabacloud_dingtalk-2.2.65.tar.gz", hash = "sha256:28e3ff2836c632db66f8cc7d4085b9434e186e8cae23ad56817057c55ad824cf", size = 2164431, upload-time = "2026-10-15T09:44:45.431Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/58/f5/692fa0f0718808e0831fa3d26632a9bc54524b89961c2fde0ce64e1432c7/alibabacloud_dingtalk-2.2.65-py3-none-any.whl", hash = "sha256:05834d82a53782fabf556049ac4b3f67259e1e87dfb3e9f0d231e33fdf70ddad", size = 2289799, upload-time = "2026-10-15T09:44:43.539Z" },
-]
-
-[[package]]
-name = "alibabacloud-endpoint-util"
-version = "0.0.4"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/92/7d/8cc92a95c920e344835b005af6ea45a0db98763ad6ad19299d26892e6c8d/alibabacloud_endpoint_util-0.0.4.tar.gz", hash = "sha256:a593eb8ddd8168d5dc2216cd33111b144f9189fcd6e9ca20e48f358a739bbf90", size = 2813, upload-time = "2025-06-12T07:20:52.572Z" }
-
-[[package]]
-name = "alibabacloud-gateway-dingtalk"
-version = "1.0.2"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "alibabacloud-gateway-spi" },
-    { name = "alibabacloud-tea-util" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/d2/40/751d8bdf133d7fcf053f10c98e8e506810e7bee06458a02eaaa14d30ac26/alibabacloud_gateway_dingtalk-1.0.2.tar.gz", hash = "sha256:acea8b0b1d11e0394913f0b0899ddd19c0bfceab716060449b57fcc250ceb300", size = 2938, upload-time = "2023-04-25T09:48:42.249Z" }
-
-[[package]]
-name = "alibabacloud-gateway-spi"
-version = "0.0.4"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "alibabacloud-credentials" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/cd/67/7cd36a36bf0ec53efd3fe31eaf398713f375b7b1cdcd32c51b6c0fdc09e2/alibabacloud_gateway_spi-0.0.4.tar.gz", hash = "sha256:73d6e20d65b54eed26d89c19640d3a7572e18c45ecada627f806f5dbe8ed2130", size = 4253, upload-time = "2026-06-25T06:34:08.238Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/45/85/81170c45e9d1240736f9776a1c690b958c975509381221b5f8d960b5376d/alibabacloud_gateway_spi-0.0.4-py3-none-any.whl", hash = "sha256:0d5256e95d8719da8ec9611b7ffbb12c2d26fdf7ce52c8f64e4e06350731e893", size = 4290, upload-time = "2026-06-25T06:34:07.22Z" },
-]
-
-[[package]]
-name = "alibabacloud-openapi-util"
-version = "0.2.4"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "alibabacloud-tea-util" },
-    { name = "cryptography" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/f6/51/be5802851a4ed20ac2c6db50ac8354a6e431e93db6e714ca39b50983626f/alibabacloud_openapi_util-0.2.4.tar.gz", hash = "sha256:87022b9dcb7593a601f7a40ca698227ac3ccb776b58cb7b06b8dc7f510995c34", size = 7981, upload-time = "2026-01-15T08:05:03.947Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/08/46/9b217343648b366eb93447f5d93116e09a61956005794aed5ef95a2e9e2e/alibabacloud_openapi_util-0.2.4-py3-none-any.whl", hash = "sha256:a2474f230b5965ae9a8c286e0dc86132a887928d02d20b8182656cf6b1b6c5bd", size = 7661, upload-time = "2026-01-15T08:05:01.374Z" },
-]
-
-[[package]]
-name = "alibabacloud-tea"
-version = "0.4.3"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "aiohttp" },
-    { name = "requests" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/9a/7d/b22cb9a0d4f396ee0f3f9d7f26b76b9ed93d4101add7867a2c87ed2534f5/alibabacloud-tea-0.4.3.tar.gz", hash = "sha256:ec8053d0aa8d43ebe1deb632d5c5404339b39ec9a18a0707d57765838418504a", size = 8785, upload-time = "2025-03-24T07:34:42.958Z" }
-
-[[package]]
-name = "alibabacloud-tea-openapi"
-version = "0.4.6"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "alibabacloud-credentials" },
-    { name = "alibabacloud-gateway-spi" },
-    { name = "alibabacloud-tea-util" },
-    { name = "cryptography" },
-    { name = "darabonba-core" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/ab/34/1918a2d780676494365c7f945bfab397ecddb988054d78025bd26f438977/alibabacloud_tea_openapi-0.4.6.tar.gz", hash = "sha256:dafc32401712f5b21c12dc3d05ba887a91ad156d9b49a7662279f9fd90526fb2", size = 26742, upload-time = "2026-08-17T08:34:11.55Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/35/00/2f534f5884e5f299d9cb3a1e8be2def8071bc6a6e2a192ba4ff2a8cd5e02/alibabacloud_tea_openapi-0.4.6-py3-none-any.whl", hash = "sha256:c9e1727b9fb2936f487d050fc3590c99f9f2065256dc3a927e5b61f414674ed6", size = 33448, upload-time = "2026-08-17T08:34:10.472Z" },
-]
-
-[[package]]
-name = "alibabacloud-tea-util"
-version = "0.3.15"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "alibabacloud-tea" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/01/22/d3ce00317d9ba963bcc48234210bd718c42425267ecb05881cbb189b1c76/alibabacloud_tea_util-0.3.15.tar.gz", hash = "sha256:79f78e596f6be03fb9565e34ac45420f3730e52888376cc9713bd07432a4c6cc", size = 7548, upload-time = "2026-07-17T10:15:04.213Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/6b/29/6d05604c74f3b1326c317727c532e9054f56dca5299ff5b645f73425680d/alibabacloud_tea_util-0.3.15-py3-none-any.whl", hash = "sha256:afb3dd8ad5cd2f93804258fbbac4360c050462100499269795ea055c1644e193", size = 6709, upload-time = "2026-07-17T10:15:03.317Z" },
-]
-
-[[package]]
 name = "annotated-doc"
 version = "0.0.5"
 source = { registry = "https://pypi.org/simple" }
@@ -395,18 +275,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/a9/d2/f4d173e22df740bc37b1db102b386ba719b66e95b0f0d751f556b387e6d2/anyio-4.15.1.tar.gz", hash = "sha256:9f28306018cbd6d329e64a36d58256edff76dd996fe423bc957326e578b82a94", size = 276966, upload-time = "2026-09-05T10:42:39.44Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/12/b8/4bd346e22b28902df4d651910f5242c28d84e4a5c2435ca5c3f797ed7e2e/anyio-4.15.1-py3-none-any.whl", hash = "sha256:6152fdbbf9a77fdec97731721bebf7c4c44f7c29b424b0065826173efc7ed101", size = 132079, upload-time = "2026-09-05T10:42:37.923Z" },
-]
-
-[[package]]
-name = "apscheduler"
-version = "3.11.3"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "tzlocal" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/8c/6b/eeff360196bb20b312c9e762a820fd1b2c6d809466c755ef57863478e454/apscheduler-3.11.3.tar.gz", hash = "sha256:cd2fcc9330039a81a5893472ad49facf23a6d5604cbe1d918c835c6de7834d5a", size = 110312, upload-time = "2026-06-28T19:39:22.493Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/42/c9/8638db32514dbb9157b3d82680c6faea89283523edf9ed2415ea3884f2ae/apscheduler-3.11.3-py3-none-any.whl", hash = "sha256:bbeb2ec02d23d3c06a6c07ed7f0f3939ada6680eb121fae809a69bb42c537a30", size = 66024, upload-time = "2026-06-28T19:39:20.982Z" },
 ]
 
 [[package]]
@@ -1313,21 +1181,6 @@ wheels = [
 ]
 
 [[package]]
-name = "darabonba-core"
-version = "1.0.9"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "aiohttp" },
-    { name = "alibabacloud-tea" },
-    { name = "requests" },
-    { name = "websocket-client" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/49/72/a1ae02a243be50e48aeedcaa089c153227300ed419880b99ac68bc4a259f/darabonba_core-1.0.9.tar.gz", hash = "sha256:1026c965b4c2b48f89995eadad7ab780a03959812c8f8de4670eb44c48e5b179", size = 28077, upload-time = "2026-08-31T08:23:42.304Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/7a/da/756ee6c61192057c0140d67614e4db3b038c30c0ee8f7b3f3200d2c49bff/darabonba_core-1.0.9-py3-none-any.whl", hash = "sha256:dafe9bc93639ddd9954322df72382b27f51078dbb41c045274a70e59dce57d80", size = 31336, upload-time = "2026-08-31T08:23:41.283Z" },
-]
-
-[[package]]
 name = "davey"
 version = "0.1.7"
 source = { registry = "https://pypi.org/simple" }
@@ -1617,19 +1470,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/49/85/12f0a49a7c4ffb70572b6c2ef13c90c88fd190debda93b23f026b25f9634/deprecated-1.3.1.tar.gz", hash = "sha256:b1b50e0ff0c1fddaa5708a2c6b0a6588bb09b892825ab2b214ac9ea9d92a5223", size = 2932523, upload-time = "2025-10-30T08:19:02.757Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/84/d0/205d54408c08b13550c733c4b85429e7ead111c7f0014309637425520a9a/deprecated-1.3.1-py2.py3-none-any.whl", hash = "sha256:597bfef186b6f60181535a29fbe44865ce137a5079f295b479886c82729d5f3f", size = 11298, upload-time = "2025-10-30T08:19:00.758Z" },
-]
-
-[[package]]
-name = "dingtalk-stream"
-version = "0.24.3"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "aiohttp" },
-    { name = "requests" },
-    { name = "websockets" },
-]
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/4c/44/102dede3f371277598df6aa9725b82e3add068c729333c7a5dbc12764579/dingtalk_stream-0.24.3-py3-none-any.whl", hash = "sha256:2160403656985962878bf60cdf5adf41619f21067348e06f07a7c7eebf5943ad", size = 27813, upload-time = "2025-10-24T09:36:57.497Z" },
 ]
 
 [[package]]
@@ -2391,11 +2231,6 @@ daytona = [
 ddgs = [
     { name = "ddgs" },
 ]
-dingtalk = [
-    { name = "alibabacloud-dingtalk" },
-    { name = "dingtalk-stream" },
-    { name = "qrcode" },
-]
 discord = [
     { name = "discord-py", extra = ["voice"] },
 ]
@@ -2584,9 +2419,6 @@ web = [
     { name = "starlette" },
     { name = "uvicorn" },
 ]
-wecom = [
-    { name = "defusedxml" },
-]
 youtube = [
     { name = "youtube-transcript-api" },
 ]
@@ -2618,7 +2450,6 @@ requires-dist = [
     { name = "aiohttp", marker = "extra == 'teams'", specifier = "==3.14.5" },
     { name = "aiohttp-socks", marker = "sys_platform == 'linux' and extra == 'matrix'", specifier = "==0.12.0" },
     { name = "aiosqlite", marker = "sys_platform == 'linux' and extra == 'matrix'", specifier = "==0.22.1" },
-    { name = "alibabacloud-dingtalk", marker = "extra == 'dingtalk'", specifier = "==2.2.65" },
     { name = "anthropic", marker = "extra == 'anthropic'", specifier = "==0.125.0" },
     { name = "asyncpg", marker = "sys_platform == 'linux' and extra == 'matrix'", specifier = "==0.32.0" },
     { name = "av", marker = "(platform_machine != 'x86_64' and sys_platform == 'darwin' and extra == 'stt-whisper') or (platform_machine != 'ARM64' and sys_platform == 'win32' and extra == 'stt-whisper') or (sys_platform != 'android' and sys_platform != 'darwin' and sys_platform != 'win32' and extra == 'stt-whisper')", specifier = "==18.1.0" },
@@ -2633,8 +2464,6 @@ requires-dist = [
     { name = "cryptography", marker = "python_full_version >= '3.14'", specifier = "==50.0.2" },
     { name = "daytona", marker = "extra == 'daytona'", specifier = "==0.225.0" },
     { name = "ddgs", marker = "extra == 'ddgs'", specifier = "==9.16.0" },
-    { name = "defusedxml", marker = "extra == 'wecom'", specifier = "==0.7.1" },
-    { name = "dingtalk-stream", marker = "extra == 'dingtalk'", specifier = "==0.24.3" },
     { name = "discord-py", extras = ["voice"], marker = "extra == 'discord'", specifier = "==2.7.1" },
     { name = "discord-py", extras = ["voice"], marker = "extra == 'messaging'", specifier = "==2.7.1" },
     { name = "edge-tts", marker = "extra == 'edge-tts'", specifier = "==7.3.1" },
@@ -2733,7 +2562,6 @@ requires-dist = [
     { name = "python-telegram-bot", extras = ["webhooks"], marker = "extra == 'termux'", specifier = "==22.8" },
     { name = "pywin32", marker = "python_full_version >= '3.14' and sys_platform == 'win32'", specifier = ">=306,<312" },
     { name = "pywinpty", marker = "python_full_version >= '3.14' and sys_platform == 'win32'", specifier = ">=3.0.5,<4" },
-    { name = "qrcode", marker = "extra == 'dingtalk'", specifier = "==7.4.2" },
     { name = "qrcode", marker = "extra == 'feishu'", specifier = "==7.4.2" },
     { name = "qrcode", marker = "extra == 'messaging'", specifier = "==7.4.2" },
     { name = "reportlab", marker = "extra == 'documents'", specifier = "==5.1.0" },
@@ -2777,7 +2605,7 @@ requires-dist = [
     { name = "winrt-windows-services-store", marker = "python_full_version >= '3.14' and sys_platform == 'win32'", specifier = ">=3.2.1,<4" },
     { name = "youtube-transcript-api", marker = "extra == 'youtube'", specifier = "==1.2.4" },
 ]
-provides-extras = ["uvloop", "anthropic", "exa", "firecrawl", "parallel-web", "ddgs", "fal", "edge-tts", "neutts", "kittentts", "piper", "modal", "daytona", "vercel", "google-meet", "messaging", "cron", "slack", "matrix", "wecom", "keychain", "tts-premium", "voice", "wake", "telegram", "discord", "stt-whisper", "audio-io", "silk", "wake-openwakeword", "wake-sherpa", "wake-porcupine", "google-chat", "doc-extract", "documents", "documents-pdf", "trace-upload", "vision", "pty", "mcp", "nemo-relay", "sms", "teams", "computer-use", "acp", "mistral", "otlp", "bedrock", "vertex", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "youtube", "web", "all"]
+provides-extras = ["uvloop", "anthropic", "exa", "firecrawl", "parallel-web", "ddgs", "fal", "edge-tts", "neutts", "kittentts", "piper", "modal", "daytona", "vercel", "google-meet", "messaging", "cron", "slack", "matrix", "keychain", "tts-premium", "voice", "wake", "telegram", "discord", "stt-whisper", "audio-io", "silk", "wake-openwakeword", "wake-sherpa", "wake-porcupine", "google-chat", "doc-extract", "documents", "documents-pdf", "trace-upload", "vision", "pty", "mcp", "nemo-relay", "sms", "teams", "computer-use", "acp", "mistral", "otlp", "bedrock", "vertex", "azure-identity", "termux", "termux-all", "feishu", "google", "youtube", "web", "all"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -7035,18 +6863,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/5e/a7/c202b344c5ca7daf398f3b8a477eeb205cf3b6f32e7ec3a6bac0629ca975/tzdata-2025.3.tar.gz", hash = "sha256:de39c2ca5dc7b0344f2eba86f49d614019d29f060fc4ebc8a417896a620b56a7", size = 196772, upload-time = "2025-12-13T17:45:35.667Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c7/b0/003792df09decd6849a5e39c28b513c06e84436a54440380862b5aeff25d/tzdata-2025.3-py2.py3-none-any.whl", hash = "sha256:06a47e5700f3081aab02b2e513160914ff0694bce9947d6b76ebd6bf57cfc5d1", size = 348521, upload-time = "2025-12-13T17:45:33.889Z" },
-]
-
-[[package]]
-name = "tzlocal"
-version = "5.4.4"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "tzdata", marker = "sys_platform == 'win32'" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/81/5b/879b2f932adfa7a053c360d50bc896c977fa6426109185f7c12ebdd0cb9d/tzlocal-5.4.4.tar.gz", hash = "sha256:8dbb8660838688a7b6ba4fed31d18dedf842afb4d47ca050d6d891c2c15f3be4", size = 31170, upload-time = "2026-06-29T08:03:40.026Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/9e/a4/017a7a6cbe387d961a688ec31364ae60a5c4e22c96ae9921b79a947c855d/tzlocal-5.4.4-py3-none-any.whl", hash = "sha256:aae09f0126a8a86fa736be266eb4a471380d26a0de3bc14844e7821fee3e2a15", size = 18115, upload-time = "2026-06-29T08:03:38.666Z" },
 ]
 
 [[package]]

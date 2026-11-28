@@ -996,5 +996,5 @@ async def disconnect(self):
 |---------|---------|------------|-------------------|
 | `plugins/platforms/bluebubbles/adapter.py` | REST + webhook | Medium | Simple REST API integration |
 | `plugins/platforms/weixin/adapter.py` | Long-poll + CDN | High | Media handling, encryption |
-| `plugins/platforms/wecom/callback_adapter.py` | Callback/webhook | Medium | HTTP server, AES crypto, multi-app |
+| `wecom/callback_adapter.py` in [hermes-labs-plugins](https://github.com/NousResearch/hermes-labs-plugins/tree/main/wecom) | Callback/webhook | Medium | HTTP server, AES crypto, multi-app |
 | `plugins/platforms/irc/adapter.py` | Long-poll + IRC protocol | High | Full-featured plugin adapter with scoped token lock |

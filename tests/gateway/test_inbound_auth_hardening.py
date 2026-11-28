@@ -9,33 +9,15 @@ import json
 import os
 import time
 from unittest.mock import patch
-from xml.etree import ElementTree as ET
 
 import pytest
 
 from gateway.config import PlatformConfig
 
 SECRET = "s3cret"
-_AES_KEY = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"
 # A byte that is not UTF-8 reaches handlers as a lone surrogate (aiohttp surrogate-escapes header
 # bytes; JSON decodes "\udcff" escapes to the same), so it is the hostile input that matters.
 _HOSTILE = "tök\udcff"
-
-
-def _wecom_crypt():
-    from plugins.platforms.wecom.wecom_crypto import WXBizMsgCrypt
-    return WXBizMsgCrypt(SECRET, _AES_KEY, "ww1234567890")
-
-
-def _wecom_accepts(timestamp: str, presented_signature=None) -> bool:
-    from plugins.platforms.wecom.wecom_crypto import SignatureError
-    crypt = _wecom_crypt()
-    root = ET.fromstring(crypt.encrypt("<xml/>", nonce="n", timestamp=timestamp))
-    try:
-        crypt.decrypt(presented_signature or root.findtext("MsgSignature"), timestamp, "n", root.findtext("Encrypt"))
-    except SignatureError:
-        return False
-    return True
 
 
 def _feishu_accepts(timestamp: str) -> bool:
@@ -50,7 +32,7 @@ def _feishu_accepts(timestamp: str) -> bool:
     return adapter._is_webhook_signature_valid(headers, body)
 
 
-@pytest.mark.parametrize("accepts", [_wecom_accepts, _feishu_accepts], ids=["wecom", "feishu"])
+@pytest.mark.parametrize("accepts", [_feishu_accepts], ids=["feishu"])
 def test_validly_signed_request_outside_replay_window_is_refused(accepts):
     now = int(time.time())
     assert accepts(str(now))
@@ -80,10 +62,6 @@ def _google_meet(presented: str) -> bool:
     return protocol.validate_request(msg, SECRET)[0]
 
 
-def _wecom_signature(presented: str) -> bool:
-    return _wecom_accepts(str(int(time.time())), None if presented == SECRET else presented)
-
-
 def _a2a(presented: str) -> bool:
     from plugins.platforms.a2a.security import A2ASecurityContext
     ctx = A2ASecurityContext(bearer_token=SECRET, peer_tokens=(), trusted_peers=frozenset(),
@@ -91,8 +69,8 @@ def _a2a(presented: str) -> bool:
     return ctx.authenticate(f"Bearer {presented}", "10.0.0.1") is not None
 
 
-@pytest.mark.parametrize("accepts", [_bluebubbles, _google_meet, _wecom_signature, _a2a],
-                         ids=["bluebubbles", "google_meet", "wecom", "a2a"])
+@pytest.mark.parametrize("accepts", [_bluebubbles, _google_meet, _a2a],
+                         ids=["bluebubbles", "google_meet", "a2a"])
 def test_presented_secret_is_compared_timing_safe_and_fails_closed(accepts, monkeypatch):
     calls = []
     real = hmac.compare_digest

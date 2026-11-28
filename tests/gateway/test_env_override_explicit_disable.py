@@ -3,7 +3,7 @@ in config.yaml must survive ``_apply_env_overrides`` when that platform's
 credentials are present in the environment.
 
 Before the fix, twelve credential-presence branches (weixin, whatsapp_cloud,
-email, sms, dingtalk, feishu, wecom, wecom_callback, bluebubbles,
+email, sms, feishu, bluebubbles,
 qqbot) force-set ``enabled = True`` unconditionally, while Telegram /
 Discord / Slack routed through ``_enable_from_env`` and honored the
 ``_enabled_explicit`` marker.  These tests drive the real ``load_gateway_config``
@@ -36,13 +36,7 @@ CRED_ENV = {
         "EMAIL_SMTP_HOST": "smtp.example.com",
     },
     "sms": {"TWILIO_ACCOUNT_SID": "ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"},
-    "dingtalk": {"DINGTALK_CLIENT_ID": "ding-id", "DINGTALK_CLIENT_SECRET": "ding-secret"},
     "feishu": {"FEISHU_APP_ID": "cli_feishu", "FEISHU_APP_SECRET": "feishu-secret"},
-    "wecom": {"WECOM_BOT_ID": "wecom-bot", "WECOM_SECRET": "wecom-secret"},
-    "wecom_callback": {
-        "WECOM_CALLBACK_CORP_ID": "corp-id",
-        "WECOM_CALLBACK_CORP_SECRET": "corp-secret",
-    },
     "bluebubbles": {
         "BLUEBUBBLES_SERVER_URL": "http://127.0.0.1:1234",
         "BLUEBUBBLES_PASSWORD": "bb-password",
@@ -54,7 +48,7 @@ CRED_ENV = {
 
 _PLATFORM_ENV_PREFIXES = (
     "TELEGRAM_", "DISCORD_", "SLACK_", "WEIXIN_", "WHATSAPP_", "HASS_", "EMAIL_",
-    "TWILIO_", "DINGTALK_", "FEISHU_", "WECOM_", "BLUEBUBBLES_", "QQ_", "QQBOT_",
+    "TWILIO_", "FEISHU_", "BLUEBUBBLES_", "QQ_", "QQBOT_",
     "GATEWAY_RELAY", "SIGNAL_", "MATTERMOST_", "MATRIX_",
 )
 

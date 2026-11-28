@@ -660,13 +660,15 @@ def _via_adapter_route(p, pc, cid, chunk, media, tid, fd):
 # Native-media chunked routes for built-in platforms; media rides on the final chunk, non-final
 # chunks get the sentinel. platform -> (media required, sentinel, sender(platform, pconfig,
 # chat_id, chunk, media, thread_id, force_document)). Matrix: ALL sends use the native adapter
-# (E2EE text). WeCom: media needs the running gateway. Slack text: live adapter (multi-workspace, ignored_channels gates) else the
-# plugin's standalone sender. Names resolve at call time so tests can monkeypatch the senders.
+# (E2EE text). Slack text: live adapter (multi-workspace, ignored_channels gates) else the plugin's
+# standalone sender. A plugin whose media needs the running gateway declares
+# ``StandaloneSendPolicy.media_via_adapter`` (WeCom). Names resolve at call time so tests can
+# monkeypatch the senders.
 _CHUNKED_ROUTES = {
     "matrix": (False, [], lambda p, pc, cid, chunk, media, tid, fd: _send_matrix_via_adapter(
         pc, cid, chunk, media_files=media, thread_id=tid)),
-    "slack": (False, [], _via_adapter_route),
-    "wecom": (True, None, _via_adapter_route)}
+    "slack": (False, [], _via_adapter_route)}
+_MEDIA_VIA_ADAPTER_ROUTE = (True, None, _via_adapter_route)
 
 _MEDIA_PLATFORMS_NOTE = "telegram, discord, matrix, weixin, signal, feishu, whatsapp, slack and qqbot"
 
@@ -695,7 +697,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         return await _send_plugin_standalone(platform_name, pconfig, chat_id, message, chunks, media_files,
                                              thread_id=thread_id, max_len=max_len, force_document=force_document,
                                              mentions=mentions)
-    route = _CHUNKED_ROUTES.get(platform_name)
+    route = _CHUNKED_ROUTES.get(platform_name) or (
+        _MEDIA_VIA_ADAPTER_ROUTE if policy is not None and policy.media_via_adapter else None)
     if route is not None and (media_files or not route[0]):
         _, empty_media, sender = route
         return await _send_chunks(chunks, lambda chunk, is_last: sender(

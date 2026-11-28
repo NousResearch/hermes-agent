@@ -25,7 +25,7 @@ class TestSendViaAdapterCrossLoopDispatch:
         from gateway.outbound.send import _send_via_adapter
 
         send_loop_id = {}
-        platform = Platform("wecom")
+        platform = Platform.WHATSAPP
 
         class FakeAdapter:
             async def send(self, *, chat_id, content, metadata=None):
@@ -75,7 +75,7 @@ class TestSendViaAdapterCrossLoopDispatch:
         from gateway.outbound.send import _send_via_adapter
 
         current_loop = asyncio.get_running_loop()
-        platform = Platform("wecom")
+        platform = Platform.WHATSAPP
         called_directly = {}
 
         class FakeAdapter:
@@ -109,7 +109,7 @@ class TestSendViaAdapterCrossLoopDispatch:
 
         stopped_loop = asyncio.new_event_loop()
         stopped_loop.close()
-        platform = Platform("wecom")
+        platform = Platform.WHATSAPP
 
         class FakeAdapter:
             async def send(self, *, chat_id, content, metadata=None):
@@ -141,7 +141,7 @@ class TestSendViaAdapterCrossLoopDispatch:
 
         send_completed = asyncio.Event()
         send_result_holder = {}
-        platform = Platform("wecom")
+        platform = Platform.WHATSAPP
 
         class FakeAdapter:
             async def send(self, *, chat_id, content, metadata=None):

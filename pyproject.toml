@@ -293,12 +293,6 @@ matrix = [
   "aiohttp==3.14.5; sys_platform == 'linux'",
 ] # aiohttp 3.14.5: prior CVEs + GHSA-9xw5-w5jj-pvcg/GHSA-2g87-pp6c-29x5/GHSA-5wr8-gcqf-gqf3 family (mautrix/aiohttp-socks only cap aiohttp<4 / >=3.10, so pin the patched floor directly)
 
-# WeCom callback-mode adapter — parses untrusted XML POST bodies from
-# WeCom-controlled callback endpoints, so we use defusedxml (drop-in
-# replacement for stdlib xml.etree.ElementTree) to block billion-laughs
-# and XXE. aiohttp/httpx are already in [messaging]; defusedxml lands
-# here to keep the dependency local to wecom_callback's threat model.
-wecom = ["defusedxml==0.7.1"]
 # Opt-in OS-keychain storage for the local credential vault key (vault.key_storage: keychain).
 # Lazy-installed by `hermes vault key migrate --to keychain`, so NOT in [all].
 keychain = ["keyring==25.7.0"]
@@ -480,18 +474,13 @@ termux = [
 termux-all = [
   # Best-effort "install all" profile for Termux. Same policy as [all]:
   # only includes extras that are not prepared on demand by PM.
-  # Backends like telegram/slack/dingtalk/feishu lazy-install at
+  # Backends like telegram/slack/feishu lazy-install at
   # first use, so they're no longer eager-installed here.
   "hermes-agent[termux]",
   "hermes-agent[google]",
   "hermes-agent[sms]",
   "hermes-agent[web]",
   "hermes-agent[pty]",
-]
-dingtalk = [
-  "dingtalk-stream==0.24.3",
-  "alibabacloud-dingtalk==2.2.65",
-  "qrcode==7.4.2",
 ]
 feishu = ["lark-oapi==1.7.5", "qrcode==7.4.2"]
 google = [
@@ -542,7 +531,7 @@ all = [
   #   anthropic, exa, firecrawl, parallel-web, fal, edge-tts,
   #   modal, daytona, vercel, messaging (telegram/discord/slack),
   #   matrix, slack, honcho, voice (faster-whisper),
-  #   dingtalk, feishu, bedrock, tts-premium (elevenlabs)
+  #   dingtalk (now a plugin), feishu, bedrock, tts-premium (elevenlabs)
   #
   # Why: the matrix extra in particular pulls `mautrix[encryption]`
   # which depends on `python-olm`. python-olm has Linux-only wheels and

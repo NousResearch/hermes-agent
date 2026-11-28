@@ -764,7 +764,9 @@ class TestSecondaryProfileConfigHandling:
         runner = GatewayRunner.__new__(GatewayRunner)
         runner.config = GatewayConfig(multiplex_profiles=True)
         runner._profile_adapters = {}
-        runner.adapters = {}
+        # The default's listener the docstring's /p/<profile>/ hangs off (none: see
+        # test_multiplex_secondary_needs_listener.py).
+        runner.adapters = {Platform.API_SERVER: object()}
 
         reviewer_cfg = GatewayConfig(multiplex_profiles=True)
         reviewer_cfg.platforms = {

@@ -51,14 +51,12 @@ def test_bounded_put_refreshes_and_caps():
 def test_dedup_sites_keep_their_own_window(monkeypatch):
     from plugins.platforms.qqbot import constants as qq
     from plugins.platforms.photon import adapter as photon
-    from plugins.platforms.wecom import callback_adapter as wecom_cb
 
     import plugins.platforms.line.adapter as line
 
     windows = {
         "qqbot": (qq.DEDUP_MAX_SIZE, qq.DEDUP_WINDOW_SECONDS),
         "photon": (photon._DEDUP_MAX_SIZE, photon._DEDUP_WINDOW_SECONDS),
-        "wecom_callback": (2000, wecom_cb.MESSAGE_DEDUP_TTL_SECONDS),
         "line": (1000, float("inf")),
     }
     # The helper honours ttl exactly: a stale id is admitted again, a fresh one is not.

@@ -18,7 +18,6 @@ import hermes_cli.setup_platforms as setup_platforms_mod
 # (plugin module, primary env var the shared gate keys on)
 _WIZARDS = [
     ("plugins.platforms.buzz.adapter", "BUZZ_RELAY_URL"),
-    ("plugins.platforms.dingtalk.adapter", "DINGTALK_CLIENT_ID"),
     ("plugins.platforms.discord.onboarding", "DISCORD_BOT_TOKEN"),
     ("plugins.platforms.feishu.adapter", "FEISHU_APP_ID"),
     ("plugins.platforms.google_chat.adapter", "GOOGLE_CHAT_SUBSCRIPTION_NAME"),
@@ -30,7 +29,6 @@ _WIZARDS = [
     ("plugins.platforms.simplex.adapter", "SIMPLEX_WS_URL"),
     ("plugins.platforms.slack.adapter", "SLACK_BOT_TOKEN"),
     ("plugins.platforms.teams.adapter", "TEAMS_CLIENT_ID"),
-    ("plugins.platforms.wecom.adapter", "WECOM_BOT_ID"),
 ]
 
 

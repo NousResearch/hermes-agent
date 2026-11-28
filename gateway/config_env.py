@@ -211,7 +211,7 @@ def _enable_plugin_platform(config: GatewayConfig, entry) -> None:
         # registered ``ensure_deps_fn`` still gets enabled here — the registry's ``create_adapter()`` runs
         # the active installer at gateway start, when the user actually wants the platform up. Historically
         # the ACTIVE installer was wired as ``check_fn`` and this sweep pip-installed
-        # Discord/Telegram/Slack/Feishu/Dingtalk SDKs on every ``load_gateway_config()`` call — including
+        # Discord/Telegram/Slack/Feishu/DingTalk SDKs on every ``load_gateway_config()`` call — including
         # the desktop/dashboard readiness probe (``GET /api/status``) — blocking startup until every install
         # finished and boot-looping the desktop app at 94%. The check_fn/ensure_deps_fn split (#79812) makes
         # that impossible by construction.
@@ -256,12 +256,12 @@ def _bundled_env_fallbacks(config: GatewayConfig, entries: list, *, only: Option
     ``gateway.platform_env.bundled_env_rows``. They only run the env steps, never the enable pass."""
     from types import SimpleNamespace
     from gateway.platform_activation import activation_predicate
-    from gateway.platform_env import _BUNDLED_ENV_SIBLINGS, bundled_env_rows
+    from gateway.platform_env import bundled_env_rows
     have = {getattr(e, "name", "") for e in entries}
     if only is not None:  # bundled_env_rows() answers for one name without scanning every manifest
         names = {only.value} - have
     else:
-        names = (set(Platform._scan_bundled_plugin_platforms()[0]) | set(_BUNDLED_ENV_SIBLINGS)) - have
+        names = set(Platform._scan_bundled_plugin_platforms()[0]) - have
     if not names:
         return []
     wanted = activation_predicate(yaml_cfg={}, platform_names=config.platforms)

@@ -74,10 +74,10 @@ TRACEBACK = "Traceback (most recent call last)"
 # against pyproject.toml, so it cannot be used to hide a missing core dependency.
 _OPTIONAL_IMPORTS = {
     "acp": "agent-client-protocol", "aiohttp": "aiohttp", "aiohttp_socks": "aiohttp-socks",
-    "aiosqlite": "aiosqlite", "alibabacloud_dingtalk": "alibabacloud-dingtalk", "anthropic": "anthropic",
+    "aiosqlite": "aiosqlite", "anthropic": "anthropic",
     "asyncpg": "asyncpg", "azure": "azure-identity", "boto3": "boto3", "botocore": "boto3",
-    "brotlicffi": "brotlicffi", "daytona": "daytona", "defusedxml": "defusedxml",
-    "dingtalk_stream": "dingtalk-stream", "discord": "discord.py", "edge_tts": "edge-tts",
+    "brotlicffi": "brotlicffi", "daytona": "daytona",
+    "discord": "discord.py", "edge_tts": "edge-tts",
     "elevenlabs": "elevenlabs", "exa_py": "exa-py", "fal_client": "fal-client",
     "faster_whisper": "faster-whisper", "firecrawl": "firecrawl-py", "google": "google-auth",
     "google_auth_oauthlib": "google-auth-oauthlib", "googleapiclient": "google-api-python-client",

@@ -106,8 +106,15 @@ def saved_toolset_resolver(config: dict) -> Callable[[str], bool]:
         portable = get_portable_mcp_server_names_nowait()
         return frozenset(get_plugin_toolset_keys_nowait() | portable | {f"mcp-{name}" for name in portable})
 
+    def registered_platform_bundle(name: str) -> bool:
+        # A plugin may register a platform under a name other than its manifest dir
+        # (``wecom_callback`` from ``wecom/``): its ``hermes-<platform>`` bundle resolves too.
+        from toolsets import _plugin_platform_bundle
+        return name.startswith("hermes-") and bool(_plugin_platform_bundle(name))
+
     return lambda name: (validate_toolset(name) or name in known
-                         or name in platform_bundles() or name in plugin_names())
+                         or name in platform_bundles() or name in plugin_names()
+                         or registered_platform_bundle(name))
 
 
 def validate_platform_toolsets(

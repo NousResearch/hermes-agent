@@ -1,7 +1,7 @@
 """Tests for the allowed_{channels,chats,rooms} whitelist extension
 added alongside PR #7401 (Slack).
 
-Covers: Telegram, Matrix, Mattermost, DingTalk.
+Covers: Telegram, Matrix, Mattermost.
 
 For each platform:
 - Empty = no restriction (fully backward compatible).
@@ -114,38 +114,6 @@ class TestTelegramAllowedChats:
 
         import os as _os
         assert _os.environ["TELEGRAM_ALLOWED_CHATS"] == "-100,-200"
-
-
-# ---------------------------------------------------------------------------
-# DingTalk
-# ---------------------------------------------------------------------------
-
-def _make_dingtalk_adapter(*, allowed_chats=None, require_mention=None):
-    # Import lazily — DingTalk SDK may not be installed.
-    pytest.importorskip("plugins.platforms.dingtalk.adapter", reason="DingTalk adapter not importable")
-    from plugins.platforms.dingtalk.adapter import DingTalkAdapter
-
-    extra = {}
-    if allowed_chats is not None:
-        extra["allowed_chats"] = allowed_chats
-    if require_mention is not None:
-        extra["require_mention"] = require_mention
-
-    adapter = object.__new__(DingTalkAdapter)
-    adapter.platform = Platform.DINGTALK
-    adapter.config = PlatformConfig(enabled=True, extra=extra)
-    return adapter
-
-
-class TestDingTalkAllowedChats:
-    def test_empty_is_no_restriction(self, monkeypatch):
-        monkeypatch.delenv("DINGTALK_ALLOWED_CHATS", raising=False)
-        adapter = _make_dingtalk_adapter()
-        assert adapter._dingtalk_allowed_chats() == set()
-
-    def test_list_form(self):
-        adapter = _make_dingtalk_adapter(allowed_chats=["cidABC", "cidDEF"])
-        assert adapter._dingtalk_allowed_chats() == {"cidABC", "cidDEF"}
 
 
 # ---------------------------------------------------------------------------

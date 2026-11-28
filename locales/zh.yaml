@@ -1493,21 +1493,9 @@ platform:
       expired: "该请求已过期——请重新发送你的消息。"
     standalone:
       attachments_not_deliverable: "[已生成 {count} 个附件；无法从定时任务中发送]"
-  wecom:
-    media:
-      kind_image: "图片"
-      kind_video: "视频"
-      kind_voice: "语音"
-      file_too_large: "文件大小 {size_mb}MB 超过了企业微信允许的最大限制 20MB，无法发送。请尝试压缩文件或减小文件大小。"
-      voice_format_downgraded: "语音格式 {content_type} 不支持，企微仅支持 AMR 格式，已转为文件格式发送"
-      size_downgraded: "{label}大小 {size_mb}MB 超过 {cap} 限制，已转为文件格式发送"
   email:
     image_line: "图片：{url}"
     standalone_subject: "Hermes Agent"
-  dingtalk:
-    emotion:
-      thinking: "🤔思考中"
-      done: "🥳完成"
   irc:
     quit_message: "Hermes Agent 正在关闭"
     standalone_quit: "已送达"

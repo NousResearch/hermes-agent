@@ -2526,7 +2526,6 @@ def register(ctx):
 | `slack` | `slack_bolt.AsyncApp` | `app.event()` / `app.action()` / `app.command()` |
 | `matrix` | Matrix client | event callbacks |
 | `teams` | Teams `App` | `on_message` / `on_card_action` decorators |
-| `dingtalk` | `DingTalkStreamClient` | `register_callback_handler` for other stream topics |
 | `feishu` | lark_oapi client | API calls; event routing |
 | `line`, `api_server`, `msgraph_webhook` | aiohttp `web.Application` | `router.add_get/post` — custom routes (wired before the router freezes) |
 | everything else (whatsapp, signal, irc, email, sms, ntfy, wecom, weixin, bluebubbles, yuanbao, ...) | `None` | connect-time hook; work through the `adapter` handle |

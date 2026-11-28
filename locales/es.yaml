@@ -1493,21 +1493,9 @@ platform:
       expired: "Esa solicitud ha expirado; envía tu mensaje de nuevo."
     standalone:
       attachments_not_deliverable: "[{count} adjunto(s) generado(s); no se pueden entregar desde cron]"
-  wecom:
-    media:
-      kind_image: "Imagen"
-      kind_video: "Video"
-      kind_voice: "Mensaje de voz"
-      file_too_large: "El archivo pesa {size_mb}MB y supera el límite de 20MB de WeCom, así que no se puede enviar. Prueba comprimirlo o reducir su tamaño."
-      voice_format_downgraded: "El formato de voz {content_type} no es compatible (WeCom solo acepta AMR); se envió como archivo."
-      size_downgraded: "{label} pesa {size_mb}MB y supera el límite de {cap}; se envió como archivo."
   email:
     image_line: "Imagen: {url}"
     standalone_subject: "Hermes Agent"
-  dingtalk:
-    emotion:
-      thinking: "🤔Pensando"
-      done: "🥳Listo"
   irc:
     quit_message: "Hermes Agent se está apagando"
     standalone_quit: "entregado"

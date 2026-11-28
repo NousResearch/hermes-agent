@@ -945,8 +945,6 @@ DEFAULT_CONFIG = {
             "telegram": {"streaming": True},
             "discord": {"streaming": False},
             "slack": {"streaming": False},
-            # WeCom native streaming (msgtype "stream" via aibot_respond_msg).
-            "wecom": {"streaming": True},
         },
         # Gateway runtime footer on the FINAL message, e.g. `model · 68% · ~/projects/hermes`.
         # Per-platform: display.platforms.<platform>.runtime_footer.
@@ -2662,7 +2660,7 @@ DEFAULT_CONFIG = {
         # Extra ports detection probes for an external llama-server (besides 8080).
         "detect_ports": [],
     },
-    "_config_version": 54,  # Config schema version - bump this when adding new required fields
+    "_config_version": 55,  # Config schema version - bump this when adding new required fields
 }
 
 

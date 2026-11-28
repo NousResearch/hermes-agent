@@ -1493,21 +1493,9 @@ platform:
       expired: "該請求已逾期 — 請重新傳送你的訊息。"
     standalone:
       attachments_not_deliverable: "[已產生 {count} 個附件；無法從排程任務傳送]"
-  wecom:
-    media:
-      kind_image: "圖片"
-      kind_video: "影片"
-      kind_voice: "語音訊息"
-      file_too_large: "檔案大小 {size_mb}MB 超過 WeCom 的 20MB 上限，無法傳送。請嘗試壓縮檔案或縮小其大小。"
-      voice_format_downgraded: "不支援語音格式 {content_type}（WeCom 只接受 AMR）；已改以檔案傳送。"
-      size_downgraded: "{label}大小 {size_mb}MB 超過 {cap} 上限；已改以檔案傳送。"
   email:
     image_line: "圖片：{url}"
     standalone_subject: "Hermes Agent"
-  dingtalk:
-    emotion:
-      thinking: "🤔思考中"
-      done: "🥳完成"
   irc:
     quit_message: "Hermes Agent 正在關閉"
     standalone_quit: "已傳送"

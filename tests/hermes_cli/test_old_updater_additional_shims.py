@@ -62,22 +62,6 @@ def test_retired_ensure_reports_unavailable_without_installing(prompt, no_extern
         ensure("memory.honcho", prompt=prompt)
 
 
-def test_live_dingtalk_dependencies_use_pm_not_retired_installer(monkeypatch):
-    from plugins.platforms.dingtalk import adapter
-    from pm import extras
-
-    requested = []
-
-    def unavailable(extra):
-        requested.append(extra)
-        raise ImportError("dependency unavailable")
-
-    monkeypatch.setattr(adapter, "DINGTALK_STREAM_AVAILABLE", False)
-    monkeypatch.setattr(extras, "ensure_import", unavailable)
-    assert adapter.ensure_dingtalk_deps() is False
-    assert requested == ["dingtalk"]
-
-
 @pytest.mark.parametrize("handled", [False, True], ids=["unacknowledged", "child-completed"])
 def test_historical_payload_survives_bridge_and_cleanup_requires_ack(handled, fresh_child, monkeypatch):
     from hermes_cli import update_receipt

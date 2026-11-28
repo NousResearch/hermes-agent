@@ -74,6 +74,10 @@ async def bind_listener(
     except BaseException:
         await runner.cleanup()
         raise
+    # The port actually bound, for readers that must not load the adapter (the dashboard topology).
+    write = getattr(adapter, "_write_runtime_status_safe", None)
+    if callable(write):
+        write("listener", listener_base=listener_base_url(host, port))
     return runner
 
 

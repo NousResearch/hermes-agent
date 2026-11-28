@@ -76,16 +76,7 @@ def _qqbot(monkeypatch, proxy):
     return qq.QQAdapter(PlatformConfig(enabled=True, extra={"app_id": "1", "client_secret": "s"}))
 
 
-def _wecom(monkeypatch, proxy):
-    from plugins.platforms.wecom import adapter as wc
-
-    for name in ENV_PROXY_VARS:
-        monkeypatch.setenv(name, proxy)
-    return wc.WeComAdapter(PlatformConfig(
-        enabled=True, extra={"bot_id": "b", "secret": "s", "websocket_url": "wss://127.0.0.1:1/"}))
-
-
-ADAPTERS = {Platform.DISCORD: _discord, Platform.QQBOT: _qqbot, Platform.WECOM: _wecom}
+ADAPTERS = {Platform.DISCORD: _discord, Platform.QQBOT: _qqbot}
 
 
 @pytest.mark.parametrize("shape", SHAPES)

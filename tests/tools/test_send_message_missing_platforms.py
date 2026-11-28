@@ -1,26 +1,16 @@
-"""Tests for _send_mattermost, _send_matrix, _send_dingtalk."""
+"""Tests for _send_mattermost, _send_matrix."""
 
 import asyncio
 import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-# ``_send_dingtalk`` and ``_send_matrix`` moved into their bundled plugins
+# ``_send_matrix`` moved into its bundled plugin
 # (``plugins/platforms/<x>/adapter.py::_standalone_send``) in #41112. Keep
 # thin pre-migration-shaped shims so existing test bodies work unchanged.
-from plugins.platforms.dingtalk.adapter import (
-    _standalone_send as _dingtalk_standalone_send,
-)
 from plugins.platforms.matrix.adapter import (
     _standalone_send as _matrix_standalone_send,
 )
-
-
-async def _send_dingtalk(extra, chat_id, message):
-    """Pre-migration ``(extra, chat_id, message)`` shim around the dingtalk
-    plugin's ``_standalone_send(pconfig, chat_id, message)``."""
-    pconfig = SimpleNamespace(token=None, extra=extra or {})
-    return await _dingtalk_standalone_send(pconfig, chat_id, message)
 
 
 async def _send_matrix(token, extra, chat_id, message):
@@ -173,76 +163,3 @@ class TestSendMatrix:
 
         assert len(txn_ids) == 2
         assert txn_ids[0] != txn_ids[1]
-
-
-# ---------------------------------------------------------------------------
-# _send_dingtalk
-# ---------------------------------------------------------------------------
-
-
-class TestSendDingtalk:
-    def _make_httpx_resp(self, status_code=200, json_data=None):
-        resp = MagicMock()
-        resp.status_code = status_code
-        resp.json = MagicMock(return_value=json_data or {"errcode": 0, "errmsg": "ok"})
-        resp.raise_for_status = MagicMock()
-        return resp
-
-    def _make_httpx_client(self, resp):
-        client = AsyncMock()
-        client.post = AsyncMock(return_value=resp)
-        client_ctx = MagicMock()
-        client_ctx.__aenter__ = AsyncMock(return_value=client)
-        client_ctx.__aexit__ = AsyncMock(return_value=False)
-        return client_ctx, client
-
-    def test_success(self):
-        resp = self._make_httpx_resp(json_data={"errcode": 0, "errmsg": "ok"})
-        client_ctx, client = self._make_httpx_client(resp)
-
-        with patch("httpx.AsyncClient", return_value=client_ctx):
-            extra = {"webhook_url": "https://oapi.dingtalk.com/robot/send?access_token=abc"}
-            result = asyncio.run(_send_dingtalk(extra, "ignored", "hello dingtalk"))
-
-        assert result == {"success": True, "platform": "dingtalk", "chat_id": "ignored"}
-        client.post.assert_awaited_once()
-        call_kwargs = client.post.await_args
-        assert call_kwargs[0][0] == "https://oapi.dingtalk.com/robot/send?access_token=abc"
-        assert call_kwargs[1]["json"] == {"msgtype": "text", "text": {"content": "hello dingtalk"}}
-
-
-    def test_http_error_redacts_access_token_in_exception_text(self):
-        token = "supersecret-access-token-123456789"
-        resp = self._make_httpx_resp(status_code=401)
-        resp.raise_for_status = MagicMock(
-            side_effect=Exception(
-                f"POST https://oapi.dingtalk.com/robot/send?access_token={token} returned 401"
-            )
-        )
-        client_ctx, _ = self._make_httpx_client(resp)
-
-        with patch("httpx.AsyncClient", return_value=client_ctx):
-            result = asyncio.run(
-                _send_dingtalk(
-                    {"webhook_url": f"https://oapi.dingtalk.com/robot/send?access_token={token}"},
-                    "ch",
-                    "hi",
-                )
-            )
-
-        assert "error" in result
-        assert token not in result["error"]
-        assert "access_token=***" in result["error"]
-
-
-    def test_env_var_fallback(self):
-        resp = self._make_httpx_resp(json_data={"errcode": 0, "errmsg": "ok"})
-        client_ctx, client = self._make_httpx_client(resp)
-
-        with patch("httpx.AsyncClient", return_value=client_ctx), \
-             patch.dict(os.environ, {"DINGTALK_WEBHOOK_URL": "https://oapi.dingtalk.com/robot/send?access_token=env"}, clear=False):
-            result = asyncio.run(_send_dingtalk({}, "ch", "hi"))
-
-        assert result["success"] is True
-        call_kwargs = client.post.await_args
-        assert "access_token=env" in call_kwargs[0][0]

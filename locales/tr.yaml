@@ -1493,21 +1493,9 @@ platform:
       expired: "Bu isteğin süresi doldu — mesajınızı yeniden gönderin."
     standalone:
       attachments_not_deliverable: "[{count} ek oluşturuldu; cron'dan teslim edilemiyor]"
-  wecom:
-    media:
-      kind_image: "Görüntü"
-      kind_video: "Video"
-      kind_voice: "Sesli mesaj"
-      file_too_large: "Dosya boyutu ({size_mb}MB) WeCom'un 20MB sınırını aşıyor ve gönderilemiyor. Dosyayı sıkıştırmayı veya boyutunu küçültmeyi deneyin."
-      voice_format_downgraded: "{content_type} ses biçimi desteklenmiyor (WeCom yalnızca AMR kabul eder); bunun yerine dosya olarak gönderildi."
-      size_downgraded: "{label} boyutu ({size_mb}MB) {cap} sınırını aşıyor; bunun yerine dosya olarak gönderildi."
   email:
     image_line: "Görüntü: {url}"
     standalone_subject: "Hermes Agent"
-  dingtalk:
-    emotion:
-      thinking: "🤔Düşünüyor"
-      done: "🥳Tamamlandı"
   irc:
     quit_message: "Hermes Agent kapatılıyor"
     standalone_quit: "teslim edildi"

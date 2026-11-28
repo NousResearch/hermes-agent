@@ -1493,21 +1493,9 @@ platform:
       expired: "Tá an t-iarratas sin imithe in éag — seol do theachtaireacht arís."
     standalone:
       attachments_not_deliverable: "[{count} ceangaltán ginte; ní féidir iad a sheachadadh ó cron]"
-  wecom:
-    media:
-      kind_image: "Íomhá"
-      kind_video: "Físeán"
-      kind_voice: "Teachtaireacht ghutha"
-      file_too_large: "Sáraíonn méid an chomhaid {size_mb}MB teorainn 20MB WeCom agus ní féidir é a sheoladh. Bain triail as an gcomhad a dhlúthú nó a mhéid a laghdú."
-      voice_format_downgraded: "Ní thacaítear leis an bhformáid ghutha {content_type} (ní ghlacann WeCom ach le AMR); seoladh mar chomhad ina ionad."
-      size_downgraded: "Sáraíonn méid {label} {size_mb}MB an teorainn {cap}; seoladh mar chomhad ina ionad."
   email:
     image_line: "Íomhá: {url}"
     standalone_subject: "Hermes Agent"
-  dingtalk:
-    emotion:
-      thinking: "🤔Ag smaoineamh"
-      done: "🥳Déanta"
   irc:
     quit_message: "Hermes Agent ag múchadh"
     standalone_quit: "seachadta"

@@ -115,3 +115,26 @@ def test_every_gateway_adapter_platform_is_named_and_accepted_by_contract_and_sc
             assert contract.counter_dimensions_are_valid(metric, dims)
             jsonschema.validate({"name": metric, "type": "counter", "dimensions": dims, "value": 1},
                                 {"$defs": schema["$defs"], "$ref": f"#/$defs/{definition}"})
+
+
+@pytest.mark.parametrize("platform", ["dingtalk", "wecom", "yuanbao"])
+def test_a_platform_that_left_core_is_named_by_its_catalog_entry(tmp_path, monkeypatch, platform):
+    """A moved platform's catalog entry is published before core drops it: the migrated plugin is then named by
+    that entry, and a row an older release saved naming the platform still packages unchanged."""
+    from hermes_cli.observability.shared_metrics import SharedMetricsStore
+
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    undo = _install_platform_plugin(home, monkeypatch, dir_name=platform, platform=platform, catalog_name=platform)
+    monkeypatch.setattr(catalog, "catalog_platform_names", lambda: frozenset({platform}))
+    catalog._catalog_platform_owner.cache_clear()
+    saved = {"error_class": "none", "event": "connect_ok", "platform": platform}
+    try:
+        assert contract.adapter_platform(platform) == platform
+        packaged = SharedMetricsStore._package_metric({
+            "metric_name": "hermes.platform.health", "dimensions_json": json.dumps(saved), "value": 3,
+            "packaged_value": 0})
+        assert packaged["dimensions"] == saved and packaged["value"] == 3
+    finally:
+        undo()
+        catalog._catalog_platform_owner.cache_clear()

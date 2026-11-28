@@ -56,7 +56,7 @@ def test_unconfigured_profile_imports_no_platform_adapter(tmp_path):
     assert {"discord", "telegram", "google_chat", "slack"} <= set(result["registered"])
 
 
-@pytest.mark.parametrize("case", ["env", "dotenv", "manifest_env", "yaml_sibling"])
+@pytest.mark.parametrize("case", ["env", "dotenv", "manifest_env"])
 def test_configured_platform_still_enabled_and_only_it_is_imported(tmp_path, case):
     kwargs, want, module = {
         "env": ({"env": {"TELEGRAM_BOT_TOKEN": "123456:fake-token-abcdef"}}, "telegram", "telegram"),
@@ -64,9 +64,6 @@ def test_configured_platform_still_enabled_and_only_it_is_imported(tmp_path, cas
         # sms is enabled by TWILIO_* (its manifest requires_env), not an SMS_ prefix.
         "manifest_env": ({"env": {"TWILIO_ACCOUNT_SID": "ACfake", "TWILIO_AUTH_TOKEN": "x",
                                   "TWILIO_PHONE_NUMBER": "+15550000000"}}, "sms", "sms"),
-        # wecom_callback is registered by the wecom plugin.
-        "yaml_sibling": ({"config_yaml": "platforms:\n  wecom_callback:\n    enabled: true\n    extra:\n"
-                                         "      corp_id: c\n      corp_secret: s\n"}, "wecom_callback", "wecom"),
     }[case]
     result = _load(tmp_path, **kwargs)
     assert want in result["enabled"]

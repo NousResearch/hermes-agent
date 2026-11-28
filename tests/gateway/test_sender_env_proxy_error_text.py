@@ -73,12 +73,6 @@ def _ntfy(monkeypatch):
     return ntfy._standalone_send(SimpleNamespace(extra={"server": "https://ntfy.example.com", "topic": "t"}), "t", "hi")
 
 
-def _dingtalk(monkeypatch):
-    from plugins.platforms.dingtalk import adapter as dt
-
-    return dt._standalone_send(SimpleNamespace(extra={"webhook_url": "https://oapi.dingtalk.com/robot/send"}), "c", "hi")
-
-
 def _simplex(monkeypatch):
     pytest.importorskip("websockets")
     from plugins.platforms.simplex import adapter as sx
@@ -104,7 +98,7 @@ async def _no_sleep(*_args, **_kwargs):
 
 
 SENDERS = {"feishu": _feishu, "google_chat": _google_chat, "teams": _teams, "weixin": _weixin, "line": _line,
-           "ntfy": _ntfy, "dingtalk": _dingtalk, "simplex": _simplex, "signal": _signal, "qqbot": _qqbot}
+           "ntfy": _ntfy, "simplex": _simplex, "signal": _signal, "qqbot": _qqbot}
 CASES = [pytest.param(sender, shape.format(pw=pw), pw, id=f"{sender}|{pw}|{shape.split(':')[0]}")
          for sender in SENDERS for pw in PASSWORDS for shape in SHAPES]
 
@@ -133,7 +127,7 @@ def test_env_proxy_send_failure_never_carries_the_proxy_secret(monkeypatch, capl
 _SECRET = "http://bob:qzxqzxqzx@127.0.0.1:1"
 _CLEAN = "http://127.0.0.1:2"
 # Each sender's own API hosts: NO_PROXY naming them means the request went direct.
-_TARGET_HOSTS = ("127.0.0.1,localhost,.feishu.cn,.weixin.qq.com,.line.me,ntfy.example.com,.dingtalk.com,.qq.com,"
+_TARGET_HOSTS = ("127.0.0.1,localhost,.feishu.cn,.weixin.qq.com,.line.me,ntfy.example.com,.qq.com,"
                  ".googleapis.com,.botframework.com,.trafficmanager.net,.microsoftonline.com")
 # Variables that disagree: the library may read the secret one whichever Hermes would have picked.
 # A NO_PROXY naming the targets: httpx still parses every proxy variable when the client is built.

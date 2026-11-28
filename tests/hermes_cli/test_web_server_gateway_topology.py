@@ -45,6 +45,21 @@ class TestProfilePlatformPorts:
         }
         assert _profile_platform_ports(tmp_path, runtime) == {"msgraph_webhook": 8646}
 
+    def test_a_plugin_platforms_published_bound_port_is_read_without_loading_plugins(self, tmp_path, monkeypatch):
+        # A parked or cold profile's plugin platform (WeCom callback): the gateway stamped the port it
+        # actually bound; the dashboard reports it and never touches that profile's plugin registry.
+        def no_registry(*_a, **_k):
+            raise AssertionError("the dashboard must not load or materialize a profile's plugins")
+
+        monkeypatch.setattr("hermes_cli.plugins.discover_plugins", no_registry)
+        monkeypatch.setattr("gateway.platform_registry.platform_registry.get", no_registry)
+        runtime = {"platforms": {
+            "wecom_callback": {"state": "connected", "listener_base": "http://127.0.0.1:9876"},
+            "telegram": {"state": "connected"},
+            "webhook": {"state": "connected", "listener_base": "http://127.0.0.1:7777"},
+        }}
+        assert _profile_platform_ports(tmp_path, runtime) == {"wecom_callback": 9876, "webhook": 7777}
+
 
 # ---------------------------------------------------------------------------
 # _collect_profile_gateway_topology

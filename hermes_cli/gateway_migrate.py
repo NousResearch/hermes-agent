@@ -536,10 +536,21 @@ def _check_duplicate_credentials(plan: MigrationPlan, configs: dict[str, object]
         [(p.name, configs[p.name]) for p in plan.profiles if p.name in configs]))
 
 
-def platform_serves_profile_prefix(platform_value: str) -> bool:
+def platform_serves_profile_prefix(platform_value: str, home: Optional[Path] = None) -> bool:
     """True when the adapter for ``platform_value`` declares ``serves_profile_prefix`` (it answers
     ``/p/<profile>/...`` on the default listener). Read from the adapter CLASS — builtin table or the
-    plugin registry entry — never from a hand-kept list, so new ingress adapters count automatically."""
+    plugin registry entry — never from a hand-kept list, so new ingress adapters count automatically.
+    *home*: read in that profile's plugin scope (a plugin only a secondary installed); its plugins are
+    discovered there unless it is parked, whose plugins must not run in this process."""
+    if home is None:
+        return _serves_profile_prefix(platform_value, discover=True)
+    from agent.runtime_scope import bind_profile_scope
+    from hermes_cli.profiles import profile_is_parked
+    with bind_profile_scope(home, hydrate_secrets=False):
+        return _serves_profile_prefix(platform_value, discover=not profile_is_parked(home))
+
+
+def _serves_profile_prefix(platform_value: str, *, discover: bool) -> bool:
     from gateway.platforms.base import BasePlatformAdapter
 
     def _declares(cls) -> bool:
@@ -554,10 +565,11 @@ def platform_serves_profile_prefix(platform_value: str) -> bool:
             adapter_cls, _ok = _builtin_adapter_import(spec[0], spec[1], spec[2])
             return _declares(adapter_cls)
     with contextlib.suppress(Exception):
-        # Plugin-shipped adapters (sms, line, teams, feishu, wecom, ...) only exist in the registry
+        # Plugin-shipped adapters (sms, line, teams, feishu, ...) only exist in the registry
         # after discovery; a bare CLI process has not run it yet.
-        from hermes_cli.plugins import discover_plugins
-        discover_plugins()  # idempotent
+        if discover:
+            from hermes_cli.plugins import discover_plugins
+            discover_plugins()  # idempotent
         from gateway.platform_registry import platform_registry
         entry = platform_registry.get(platform_value)
         if entry is not None:
@@ -589,16 +601,32 @@ def _listener_url(default_cfg, platform_value: str, profile: str) -> str:
 def _check_secondary_port_binders(plan: MigrationPlan, configs: dict[str, object]) -> None:
     """BLOCKER when a secondary enables a port-binding platform with no ``/p/<profile>/`` ingress
     (the multiplexer skips the whole profile); NOTICE (URL changes) when the ingress exists."""
-    from gateway.config import platform_binds_port
+    from gateway.config import SHARED_LISTENER_MIRROR_PLATFORMS, Platform, platform_binds_port
+    from hermes_cli.profiles import profile_is_parked
     default_cfg = configs.get("default")
+    default_platforms = getattr(default_cfg, "platforms", None) or {}
+    default_listener = any(getattr(default_platforms.get(p), "enabled", False)
+                           for p in (Platform.API_SERVER, Platform.WEBHOOK))
     for profile in plan.secondaries:
         cfg = configs.get(profile.name)
         if cfg is None:
             continue
         for platform, platform_config in cfg.platforms.items():
-            if not platform_config.enabled or not platform_binds_port(platform.value, platform_config.extra):
+            if not platform_config.enabled or not platform_binds_port(
+                    platform.value, platform_config.extra, home=profile.home,
+                    discover=not profile_is_parked(profile.home)):
                 continue
-            if platform_serves_profile_prefix(platform.value):
+            if platform.value not in SHARED_LISTENER_MIRROR_PLATFORMS and not default_listener:
+                # Its /p/<profile>/ app hangs off the default's api_server/webhook; with neither the
+                # multiplexer serves it nowhere (the runner refuses to start it). A secondary whose
+                # own gateway serves it today must keep that gateway; one with none loses nothing.
+                (plan.blockers if profile.has_gateway else plan.notices).append(
+                    f"Profile '{profile.name}' enables {platform.value}, which binds its own port; under "
+                    f"multiplex it is served at /p/{profile.name}/ on the default profile's api_server or "
+                    f"webhook listener, and the default profile enables neither. Enable api_server (or "
+                    f"webhook) on the default profile first."
+                )
+            elif platform_serves_profile_prefix(platform.value, profile.home):
                 plan.notices.append(
                     f"Profile '{profile.name}': {platform.value} moves onto the default listener at "
                     f"{_listener_url(default_cfg, platform.value, profile.name)} (its key/secret is "

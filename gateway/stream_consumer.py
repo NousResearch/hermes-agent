@@ -144,7 +144,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # ``_run_agent_mark_streamed_delivery`` must not fire for it (#105341). Default True: every
         # other construction site (incl. the proxy path) creates consumers only when streaming is on.
         self.stream_deltas_enabled = True
-        # Only platforms needing an explicit finalize call (DingTalk AI Cards) force a
+        # Only platforms needing an explicit finalize call (e.g. AI Cards) force a
         # redundant final edit; ``is True`` keeps MagicMock adapters out.
         self._adapter_requires_finalize = getattr(adapter, "REQUIRES_EDIT_FINALIZE", False) is True
         # Telegram bounds edit retries at 5s; a fallback must not wait longer.
@@ -989,7 +989,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # unlike an EDIT, which REQUIRES_EDIT_FINALIZE adapters still need a pass for.
         tick.draft_final_fresh_send = (tick.got_done and self._use_draft_streaming
                                        and self._message_id is None)
-        # Segment break finalizes so platforms needing explicit closure (DingTalk AI
+        # Segment break finalizes so platforms needing explicit closure (e.g. AI
         # Cards) don't leave the segment stuck loading; it closes a preamble, not the
         # answer.
         tick.update_visible = await self._send_or_edit(

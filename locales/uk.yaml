@@ -1493,21 +1493,9 @@ platform:
       expired: "Термін дії цього запиту минув — надішліть повідомлення ще раз."
     standalone:
       attachments_not_deliverable: "[Згенеровано вкладень: {count}; не можна доставити з cron]"
-  wecom:
-    media:
-      kind_image: "Зображення"
-      kind_video: "Відео"
-      kind_voice: "Голосове повідомлення"
-      file_too_large: "Розмір файлу {size_mb} МБ перевищує ліміт WeCom у 20 МБ, тому надіслати його не можна. Спробуйте стиснути файл або зменшити його розмір."
-      voice_format_downgraded: "Формат голосу {content_type} не підтримується (WeCom приймає лише AMR); надіслано як файл."
-      size_downgraded: "{label}: розмір {size_mb} МБ перевищує ліміт {cap}; надіслано як файл."
   email:
     image_line: "Зображення: {url}"
     standalone_subject: "Hermes Agent"
-  dingtalk:
-    emotion:
-      thinking: "🤔Думаю"
-      done: "🥳Готово"
   irc:
     quit_message: "Hermes Agent завершує роботу"
     standalone_quit: "доставлено"

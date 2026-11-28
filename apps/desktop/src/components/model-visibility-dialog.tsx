@@ -206,6 +206,10 @@ export function ModelVisibilityDialog({
                     models.map(family => {
                       const { name, tag } = modelDisplayParts(family.id)
                       const key = modelVisibilityKey(provider.slug, family.id)
+                      // Same lead-in as the catalog menu: show the provider route
+                      // the id carries (`cx/`, `atr/atmo/`, `oc/`) so the model can
+                      // be identified here too, not only in the picker (#130349).
+                      const idPath = family.id.includes('/') ? family.id.slice(0, family.id.lastIndexOf('/') + 1) : ''
 
                       return (
                         <label
@@ -213,6 +217,7 @@ export function ModelVisibilityDialog({
                           key={key}
                         >
                           <span className="min-w-0 flex-1 truncate">
+                            {idPath ? <span className="text-(--ui-text-tertiary)">{idPath}</span> : null}
                             <HighlightMatches foldSeparators query={search} text={name} />
                             {tag ? <span className="text-(--ui-text-tertiary)"> {tag}</span> : null}
                           </span>

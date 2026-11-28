@@ -119,6 +119,84 @@ class TestAuxAzureFoundryApiKey:
         assert resolved is None
 
 
+class TestAuxAzureFoundryExplicitApiModeWins:
+    """An explicit caller ``api_mode`` must beat what the top-level ``model`` block infers.
+
+    The top-level ``model`` block describes the PRIMARY route. ``_try_azure_foundry``
+    is also reached from the fallback path, where the entry being tried may declare a
+    different wire than the primary -- a fallback entry with
+    ``api_mode: codex_responses`` against a primary configured for chat completions.
+
+    ``_resolve_azure_foundry_runtime`` re-derives the wire from ``model_cfg`` via
+    ``_azure_inferred_api_mode``, so the caller's mode must be overlaid onto that cfg
+    rather than discarded. Regression for the fallback case: without the overlay, a
+    Responses-only deployment (gpt-6-luna) resolves back to chat completions and every
+    tool-using turn 400s with "Function tools with reasoning_effort are not supported
+    for gpt-6-luna in /v1/chat/completions".
+
+    The existing ``test_explicit_responses_alias_kwarg_wraps_in_codex_adapter`` covers
+    the agreeing case (kwarg present, model block silent). These cover DISAGREEMENT.
+    """
+
+    def test_explicit_responses_beats_chat_completions_block(
+        self, monkeypatch, patch_load_config,
+    ):
+        from agent import auxiliary_client as _aux
+
+        monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "k")
+        patch_load_config({
+            "provider": "azure-foundry",
+            "base_url": "https://r.services.ai.azure.com/openai/v1",
+            "api_mode": "chat_completions",
+            "default": "gpt-4o",
+        })
+        client, model = _aux.resolve_provider_client(
+            "azure-foundry", "gpt-6-luna", api_mode="codex_responses")
+        assert model == "gpt-6-luna"
+        assert isinstance(client, _aux.CodexAuxiliaryClient)
+
+    def test_explicit_chat_completions_beats_responses_block(
+        self, monkeypatch, patch_load_config,
+    ):
+        from agent import auxiliary_client as _aux
+        from openai import OpenAI as _OpenAI
+
+        monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "k")
+        patch_load_config({
+            "provider": "azure-foundry",
+            "base_url": "https://r.openai.azure.com/openai/v1",
+            "api_mode": "codex_responses",
+            "default": "gpt-5.4",
+        })
+        client, model = _aux.resolve_provider_client(
+            "azure-foundry", "gpt-4o", api_mode="chat_completions")
+        assert model == "gpt-4o"
+        assert isinstance(client, _OpenAI)
+        assert not isinstance(client, _aux.CodexAuxiliaryClient)
+
+    def test_gpt6_luna_infers_responses_without_a_kwarg(
+        self, monkeypatch, patch_load_config,
+    ):
+        """No kwarg, chat-completions primary: the MODEL must still pick Responses.
+
+        Pins the two defects together -- ``gpt-6`` in the Responses prefixes AND the
+        caller's mode reaching the resolver -- because with a chat-completions
+        top-level block the model's own family is the only remaining signal.
+        """
+        from agent import auxiliary_client as _aux
+
+        monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "k")
+        patch_load_config({
+            "provider": "azure-foundry",
+            "base_url": "https://r.services.ai.azure.com/openai/v1",
+            "api_mode": "chat_completions",
+            "default": "gpt-4o",
+        })
+        client, model = _aux.resolve_provider_client("azure-foundry", "gpt-6-luna")
+        assert model == "gpt-6-luna"
+        assert isinstance(client, _aux.CodexAuxiliaryClient)
+
+
 
 # ---------------------------------------------------------------------------
 # auth_mode: entra_id — callable api_key survives end-to-end

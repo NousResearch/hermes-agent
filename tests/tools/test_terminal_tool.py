@@ -122,3 +122,60 @@ def test_sudo_rewrite_preserves_env_operands_and_prose(monkeypatch):
 def test_count_real_sudo_invocations_ignores_mentions(monkeypatch):
     assert terminal_tool_sudo._count_real_sudo_invocations("grep sudo README.md") == 0
     assert terminal_tool_sudo._count_real_sudo_invocations("sudo a; sudo b") == 2
+
+
+def test_sudo_inside_a_heredoc_body_is_data(monkeypatch):
+    """A heredoc body is written verbatim and never parsed as shell code.
+
+    Counting a ``sudo`` line in there made the terminal tool demand a password for a script
+    that only runs later on another machine (#158788).
+    """
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+
+    def _fail_prompt(*_args, **_kwargs):
+        raise AssertionError("a heredoc body must not trigger the sudo prompt")
+
+    monkeypatch.setattr(terminal_tool_sudo, "_prompt_for_sudo_password", _fail_prompt)
+
+    commands = (
+        "cat > x.sh <<'EOF'\nsudo -n tc qdisc del dev eth0 ingress\nEOF\nssh h 'bash x.sh'",
+        "cat > x.sh <<EOF\nsudo apt install -y foo\nEOF",
+        "cat > x.sh <<-EOF\n\t\tsudo whoami\n\tEOF\necho done",
+        'cat <<"END"\nsudo rm -rf /\nEND',
+        "cat <<\\EOF\nsudo x\nEOF",
+        "cat <<A <<B\naaa\nA\nsudo in b\nB",
+        "cat <<EOF\nsudo x",  # unterminated: the rest of the command is the body
+    )
+    for command in commands:
+        assert terminal_tool_sudo._count_real_sudo_invocations(command) == 0, command
+        assert terminal_tool_sudo._transform_sudo_command(command) == (command, None), command
+
+
+def test_sudo_after_a_heredoc_body_is_still_counted(monkeypatch):
+    monkeypatch.setenv("SUDO_PASSWORD", "testpass")
+    command = "cat > x.sh <<'EOF'\nsudo inner\nEOF\nsudo apt install -y foo"
+    assert terminal_tool_sudo._count_real_sudo_invocations(command) == 1
+    assert terminal_tool_sudo._transform_sudo_command(command) == (
+        "cat > x.sh <<'EOF'\nsudo inner\nEOF\nsudo -S -p '' apt install -y foo",
+        "testpass\n",
+    )
+
+
+def test_heredoc_lookalikes_are_not_bodies(monkeypatch):
+    monkeypatch.setenv("SUDO_PASSWORD", "testpass")
+    for command in (
+        "echo $((1<<3)); sudo ls",       # arithmetic shift, not a heredoc
+        'echo \'<<EOF\'\nsudo ls',        # quoted, so no heredoc opens
+        "echo x # <<EOF\nsudo ls",       # comment, so no heredoc opens
+        'cat <<< "sudo x"; sudo ls',     # here-string, no body
+    ):
+        assert terminal_tool_sudo._count_real_sudo_invocations(command) == 1, command
+
+
+def test_sudo_rewrite_keeps_heredoc_bytes_and_tiles_the_command():
+    command = "cat > x.sh <<'EOF'\nsudo -n tc qdisc del dev eth0 ingress\n{ & } $(x) 'q'\nEOF\ncat x.sh"
+    assert terminal_tool_sudo._rewrite_real_sudo_invocations(command) == (command, 0)
+    tiled = "".join(command[start:end] for _kind, start, end, _at_start
+                    in terminal_tool_sudo._scan_shell(command))
+    assert tiled == command

@@ -274,11 +274,112 @@ def _read_shell_token(command: str, start: int) -> tuple[str, int]:
     return command[start:end], end
 
 
+_HEREDOC_DELIMITER_STOP = " \t;|&()<>"
+
+
+def _read_heredoc_delimiter(command: str, start: int, end: int) -> tuple[str, int]:
+    """Read a heredoc delimiter word (``EOF``, ``'EOF'``, ``"EOF"``, ``\\EOF``) at *start*."""
+    out: list[str] = []
+    i = start
+    while i < end:
+        ch = command[i]
+        if ch in _HEREDOC_DELIMITER_STOP:
+            break
+        if ch in "'\"":
+            close = command.find(ch, i + 1)
+            if close == -1 or close > end:
+                return "".join(out) + command[i + 1 : end], end
+            out.append(command[i + 1 : close])
+            i = close + 1
+            continue
+        if ch == "\\":
+            if i + 1 < end:
+                out.append(command[i + 1])
+            i += 2
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out), i
+
+
+def _heredoc_specs(command: str, start: int, end: int) -> list[tuple[str, bool]]:
+    """Delimiters of the heredocs opened on ``command[start:end]``, in order.
+
+    Only ``<<``/``<<-`` outside quotes, comments and ``$((...))`` arithmetic count; ``<<<``
+    is a here-string and takes no body.
+    """
+    specs: list[tuple[str, bool]] = []
+    i = start
+    arith = 0
+    while i < end:
+        ch = command[i]
+        if arith:
+            arith += (ch == "(") - (ch == ")")
+            i += 1
+            continue
+        if ch in "'\"":
+            i = _read_shell_token(command, i)[1]
+            continue
+        if ch == "\\":
+            i += 2
+            continue
+        if ch == "#":
+            break
+        if ch == "$" and command.startswith("$((", i):
+            arith = 1
+            i += 3
+            continue
+        if ch == "<" and command.startswith("<<", i) and not command.startswith("<<<", i):
+            j = i + 2
+            strip_tabs = j < end and command[j] == "-"
+            j += strip_tabs
+            while j < end and command[j] in " \t":
+                j += 1
+            delimiter, j = _read_heredoc_delimiter(command, j, end)
+            if delimiter:
+                specs.append((delimiter, strip_tabs))
+            i = max(j, i + 2)
+            continue
+        i += 1
+    return specs
+
+
+def _heredoc_bodies(command: str) -> list[tuple[int, int]]:
+    """Spans of every heredoc body in *command*, terminator line included.
+
+    A heredoc body is shell *data*: bash reads it verbatim and never parses it as code, so
+    anything in there (a ``sudo`` line, an ``&``, a brace) must not be rewritten or counted.
+    """
+    spans: list[tuple[int, int]] = []
+    i, n = 0, len(command)
+    while i < n:
+        newline = command.find("\n", i)
+        line_end = n if newline == -1 else newline
+        specs = _heredoc_specs(command, i, line_end)
+        if not specs:
+            i = line_end + 1
+            continue
+        pos = line_end + 1
+        for delimiter, strip_tabs in specs:
+            body_start = pos
+            while pos < n:
+                newline = command.find("\n", pos)
+                line = command[pos : n if newline == -1 else newline]
+                pos = n if newline == -1 else newline + 1
+                candidate = (line.lstrip("\t") if strip_tabs else line).rstrip("\r")
+                if candidate == delimiter:
+                    break
+            spans.append((body_start, pos))
+        i = pos
+    return spans
+
+
 def _scan_shell(command: str, background: bool = False) -> Iterator[tuple[str, int, int, bool]]:
     """Quote-aware shell scanner shared by the sudo and compound-background rewriters.
 
     Yields ``(kind, start, end, at_command_start)`` events that tile *command* exactly:
     ``ws`` (one whitespace char), ``comment`` (``#`` up to, not including, the newline),
+    ``heredoc`` (a whole ``<<`` body, terminator line included: data, never shell code),
     ``op`` (``&& || ;; ; | & ( )``), ``word`` (one ``_read_shell_token`` token). Comments open at word boundaries.
     Background mode (compound-background semantics) additionally emits ``escape`` for a bare ``\\x``, ops ``&>``, ``{ `` and a closing
     ``}``, and tracks ``(...)``/``{ ... }`` depth: inside a group nothing is an operator, so
@@ -287,8 +388,15 @@ def _scan_shell(command: str, background: bool = False) -> Iterator[tuple[str, i
     i, n = 0, len(command)
     at_start = True
     parens = braces = 0
+    bodies = _heredoc_bodies(command) if "<<" in command else []
     two_char_ops = ("&&", "||", "&>") if background else ("&&", "||", ";;")
     while i < n:
+        if bodies and i == bodies[0][0]:
+            start, end = bodies.pop(0)
+            at_start = True  # a body always ends after its terminator's newline
+            yield "heredoc", start, end, False
+            i = end
+            continue
         ch = command[i]
         grouped = parens or braces
         was_start = at_start

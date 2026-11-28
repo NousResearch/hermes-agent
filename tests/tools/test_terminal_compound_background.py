@@ -203,3 +203,30 @@ class TestRewriteIsValidBash:
         )
         assert result.returncode == 0
         assert "SECOND_RAN" in result.stdout
+
+
+class TestHeredocBody:
+    """A heredoc body is data: an ``&`` or a brace in there is not shell structure."""
+
+    def test_background_inside_a_body_is_left_alone(self):
+        command = "cat > x.sh <<'EOF'\nbin x && y &\n{ a; }\nEOF\necho done"
+        assert rewrite(command) == command
+
+    def test_command_after_a_body_still_rewrites(self):
+        assert rewrite("cat > x.sh <<EOF\nbin x && y &\nEOF\nls && sleep 1 &") == (
+            "cat > x.sh <<EOF\nbin x && y &\nEOF\nls && { sleep 1 & }"
+        )
+
+    def test_tab_stripped_terminator(self):
+        command = "cat <<-EOF\n\ta && b &\n\tEOF\nc && d &"
+        assert rewrite(command) == "cat <<-EOF\n\ta && b &\n\tEOF\nc && { d & }"
+
+    def test_rewritten_heredoc_command_is_valid_bash_for_bash_n(self):
+        for command in (
+            "cat > x.sh <<'EOF'\nbin x && y &\nEOF\nls && sleep 1 &",
+            "cat <<-EOF\n\ta && b &\n\tEOF\nc && d &",
+        ):
+            rewritten = rewrite(command)
+            result = subprocess.run(["bash", "-n", "-c", rewritten],
+                                    capture_output=True, text=True, check=False)
+            assert result.returncode == 0, f"invalid bash: {rewritten!r}\n{result.stderr}"

@@ -416,6 +416,8 @@ export interface Translations extends NoticeTranslations {
     download: string
     downloadSaved: string
     downloadFailed: string
+    downloadZip: string
+    downloadVerified: string
     rename: string
     delete: string
     renameTitle: string

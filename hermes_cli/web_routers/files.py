@@ -23,7 +23,7 @@ import tempfile
 import urllib.parse
 from datetime import datetime
 from pathlib import Path, PurePath, PurePosixPath
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Literal, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
@@ -33,6 +33,7 @@ from agent.file_safety import (
     get_write_denied_error, is_write_approval_required, resolved_home_credential_stores,
 )
 from hermes_cli import web_server_file_tickets as file_tickets
+from hermes_cli.web_routers import files_zip
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_platform.resolver.git import resolve_usable_git
 from hermes_cli.home_data_layout import CREDENTIAL_STORE_DIRS, HOME_ENV_FILES, SECRET_CACHE_STORES
@@ -45,7 +46,8 @@ from hermes_cli.web_server_remote_media import remote_media_response
 from hermes_cli.web_upload_limit import CHAT_IMAGE_MAX_BYTES
 from hermes_cli.web_server_surface import route_on
 from hermes_cli.web_server_files import (
-    SANDBOX_NOT_FOUND, _agent_fs_path, _agent_path_scope, _file_url_path, _fs_path, _hosted_fs_read_guard,
+    SANDBOX_NOT_FOUND, _agent_fs_path, _agent_path_scope, _file_url_path, _fs_path, _hosted_fs_path_allowed,
+    _hosted_fs_read_guard,
     _is_unmapped_container_path, _managed_file_entry, _managed_response_meta, _resolve_managed_path,
     _session_workspace,
 )
@@ -944,7 +946,7 @@ async def issue_file_ticket(payload: FileTicketRequest, request: Request):
         session = await _fs_owned_session(payload.session_id, payload.profile)
         if payload.route == "download":
             authority = await _fs_download_authority(
-                request, payload.path, payload.profile, payload.session_id, owner, session,
+                request, payload.path, payload.profile, payload.session_id, owner, session, payload.format,
             )
         else:
             # An SSH profile's clip is captured on its SSH machine; a host-staged file on this host.
@@ -956,7 +958,8 @@ async def issue_file_ticket(payload: FileTicketRequest, request: Request):
                 authority = await asyncio.to_thread(capture)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="File ticket profile is unavailable") from exc
-    query = {"path": payload.path, "profile": payload.profile, "session_id": payload.session_id}
+    query = {"path": payload.path, "profile": payload.profile, "session_id": payload.session_id,
+             "format": payload.format}
     ticket = file_tickets.mint(
         payload.route, {key: value for key, value in query.items() if value is not None}, authority=authority,
         session_token=file_tickets.session_token_of(request),
@@ -1507,20 +1510,26 @@ def _remote_download_response(request: Optional[Request], backend, target: str, 
 
 async def _fs_download_authority(
     request: Request, path: str, profile: Optional[str], session_id: Optional[str], owner: Path,
-    session: Optional[dict] = None,
+    session: Optional[dict] = None, format: Optional[str] = None,
 ) -> file_tickets.FileAuthority:
-    """The file ``/api/fs/download`` serves for this query, captured for a download ticket: on the
-    profile's SSH workspace when it has one, else on this host under the same read rules."""
+    """The file (or ``format=zip`` folder) ``/api/fs/download`` serves for this query, captured for
+    a download ticket: on the profile's SSH workspace when it has one, else on this host under the
+    same read rules."""
     from hermes_constants import named_profile_home
 
-    remote = await _remote_file_authority(path, profile, owner, _remote_download_target)
+    if format == "zip" and await asyncio.to_thread(_remote_fs_backend, path, profile) is not None:
+        raise HTTPException(status_code=501, detail="Folder zips are not available for SSH workspaces")
+    remote = None if format == "zip" else await _remote_file_authority(path, profile, owner, _remote_download_target)
     if remote is not None:
         return remote
     local = await _fs_download_path(path, profile, session_id, session=session)
 
     def capture():
-        _hosted_fs_read_guard(local, request)
-        target, _st = _fs_regular_file(local, _fs_profile_home(profile))
+        if format == "zip":
+            target = _fs_zip_folder(local, request)
+        else:
+            _hosted_fs_read_guard(local, request)
+            target, _st = _fs_regular_file(local, _fs_profile_home(profile))
         homes = [owner]
         target_home = named_profile_home(target)
         if target_home is not None and target_home not in homes:
@@ -1533,9 +1542,17 @@ async def _fs_download_authority(
 
 
 async def _ticketed_fs_download(
-    request: Request, authority: file_tickets.FileAuthority, profile: Optional[str],
+    request: Request, authority: file_tickets.FileAuthority, profile: Optional[str], format: Optional[str] = None,
 ) -> Response:
-    """Serve the file a download ticket captured while its profile homes are still live."""
+    """Serve the file (or, for ``format=zip``, the folder) a download ticket captured while its
+    profile homes are still live."""
+    if format == "zip":
+        try:
+            await asyncio.to_thread(authority.check_live)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="File ticket profile or resource is unavailable") from exc
+        folder = await asyncio.to_thread(_fs_zip_folder, Path(authority.target), request)
+        return await _fs_zip_response(request, folder)
     if authority.workspace is not None:
         target, size = await _ticketed_remote_target(authority, _remote_download_target)
         return _remote_download_response(request, authority.workspace, target, size)
@@ -1560,18 +1577,25 @@ async def _ticketed_fs_download(
 @router.head("/api/fs/download")
 async def fs_download(
     path: str, request: Request = None, profile: Optional[str] = None, session_id: Optional[str] = None,
+    format: Optional[Literal["zip"]] = None,
 ):
     """A workspace file as an attachment: from the profile's SSH workspace when it has one, else
-    from this host. A browser download link authenticates with a path-bound ``?ticket=``."""
+    from this host. A browser download link authenticates with a path-bound ``?ticket=``.
+    ``format=zip`` names a folder instead and serves it packed (``files_zip``)."""
     session = await _fs_owned_session(session_id, profile)
     authority = getattr(getattr(request, "state", None), "file_ticket_authority", None)
     if authority is not None:
-        return await _ticketed_fs_download(request, authority, profile)
+        return await _ticketed_fs_download(request, authority, profile, format)
     backend = await asyncio.to_thread(_remote_fs_backend, path, profile)
     if backend is not None:
+        if format == "zip":
+            raise HTTPException(status_code=501, detail="Folder zips are not available for SSH workspaces")
         target, size = await asyncio.to_thread(_remote_download_target, backend, path)
         return _remote_download_response(request, backend, target, size)
     target = await _fs_download_path(path, profile, session_id, session=session)
+    if format == "zip":
+        folder = await asyncio.to_thread(_fs_zip_folder, target, request)
+        return await _fs_zip_response(request, folder)
     await asyncio.to_thread(_hosted_fs_read_guard, target, request)
     target, _st = await asyncio.to_thread(_fs_regular_file, target, _fs_profile_home(profile))
     await asyncio.to_thread(_refuse_live_database, target)
@@ -1580,6 +1604,41 @@ async def fs_download(
         media_type=_fs_mime_type(target),
         filename=target.name,
         content_disposition_type="attachment",
+    )
+
+
+def _fs_zip_folder(path: Path, request: Optional[Request]) -> Path:
+    """*path* as a folder ``format=zip`` may pack: download's read guard, then a directory check."""
+    _hosted_fs_read_guard(path, request)
+    if _is_local_sensitive_path(path):
+        raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
+    try:
+        if not path.is_dir():
+            raise HTTPException(status_code=400, detail="Path is not a directory")
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail=str(exc) or "Invalid path") from exc
+    return path
+
+
+async def _fs_zip_response(request: Optional[Request], folder: Path) -> Response:
+    """*folder* packed under download's read rules; a HEAD checks it without packing anything."""
+    if request is not None and request.method == "HEAD":
+        return Response(media_type="application/zip", headers={"Cache-Control": "no-store"})
+    locked_root = await asyncio.to_thread(_hosted_fs_read_guard, folder, request)
+    stores = await asyncio.to_thread(resolved_home_credential_stores)
+
+    def admit(entry: Path) -> bool:
+        # The walk never follows a link, so an entry's realpath is its spelling under the folder.
+        real = None if os.name == "nt" else str(entry)
+        if _is_local_sensitive_path(entry, stores, real):
+            return False
+        return locked_root is None or _hosted_fs_path_allowed(locked_root, entry)
+
+    packed = await asyncio.to_thread(
+        files_zip.pack_directory, folder, hidden=frozenset(_FS_READDIR_HIDDEN), admit=admit,
+    )
+    return StreamingResponse(
+        packed.chunks(), media_type="application/zip", headers=files_zip.zip_headers(packed, folder.name),
     )
 
 

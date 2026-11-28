@@ -11,6 +11,7 @@ import { useI18n } from '@/i18n'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { cn } from '@/lib/utils'
 import { refreshRepoStatus, registerRepoStatusCwd } from '@/store/coding-status'
+import { downloadFolderZip } from '@/store/file-actions'
 import { $panesFlipped } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { openPreview } from '@/store/preview'
@@ -200,6 +201,18 @@ function FilesystemTab({
             variant="ghost"
           >
             <Codicon name={showIgnored ? 'eye' : 'eye-closed'} size="0.8125rem" />
+          </Button>
+        </Tip>
+        <Tip label={r.downloadWorkspaceZip}>
+          <Button
+            aria-label={r.downloadWorkspaceZip}
+            className={HEADER_ACTION_LABEL_REVEAL}
+            disabled={!cwd}
+            onClick={() => void downloadFolderZip(cwd)}
+            size="icon-xs"
+            variant="ghost"
+          >
+            <Codicon name="file-zip" size="0.8125rem" />
           </Button>
         </Tip>
         <Tip label={r.refreshTree}>

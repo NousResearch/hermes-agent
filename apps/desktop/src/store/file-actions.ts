@@ -98,6 +98,15 @@ export function downloadRemoteFile(path: string): Promise<void> {
   return downloadGatewayFileWithFeedback(path)
 }
 
+/** A folder (or the whole workspace) saved through the gateway as one zip, on a local backend
+ *  too: the gateway packs it under the same read rules as a file download and names its SHA-256,
+ *  which the save checks and the toast shows. */
+export function downloadFolderZip(path: string): Promise<void> {
+  const name = path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || 'workspace'
+
+  return downloadGatewayFileWithFeedback(path, { format: 'zip', suggestedName: `${name}.zip` })
+}
+
 /** Strip a `relativeTo` prefix to produce a repo/cwd-relative path. */
 export function toRelativePath(path: string, relativeTo: string): string {
   const base = relativeTo.replace(/[\\/]+$/, '')

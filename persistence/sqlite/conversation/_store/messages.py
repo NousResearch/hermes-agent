@@ -28,8 +28,9 @@ from persistence.sqlite.conversation._store.messages_sql import (
     DISPLAY_VISIBLE_SQL, _ACTIVE_IDS_SQL, _ARCHIVE_ACTIVE_SQL, _BUMP_GENERATION_SQL, _DELETE_COMPRESSION_LOCK_SQL,
     _DISPLAY_ACTIVE_CLAUSE, _DISPLAY_INDEX_MISSING_SQL, _DISPLAY_META_ROW_SQL, _INSERT_MESSAGE_SQL, _INVALID,
     _LIVE_IDENTITY_SQL, _MESSAGE_SCHEMA_KEYS, _MESSAGE_WRITE_COLUMNS, _RESET_COUNTERS_SQL, _SET_CODEX_REASONING_SQL,
-    _SET_COUNTERS_SQL, _SET_DISPLAY_META_SQL, _SHADOWED_CHECKPOINT_ROWS_SQL, _TURN_LEASE_ROW_SQL, _coerce_timestamp,
-    _parse_tool_calls, _scrub_surrogates, _stale_holder, _tool_calls_count, _tool_calls_len, logger,
+    _SET_COUNTERS_SQL, _SET_DISPLAY_META_SQL, _SHADOWED_CHECKPOINT_ROWS_SQL, _TIMESTAMP_EPS, _TURN_LEASE_ROW_SQL,
+    _coerce_timestamp, _max_active_timestamp, _parse_tool_calls, _scrub_surrogates, _stale_holder,
+    _stamp_compaction_summary_timestamps, _tool_calls_count, _tool_calls_len, logger,
 )
 from persistence.sqlite.conversation._store.rules import (
     CANONICAL_ROW, DATA_USE, DB_ROW_SNAPSHOT, TOOL_CALL_UID, _is_checkpoint_item, _newest_checkpoint_carrier,
@@ -612,7 +613,7 @@ def _insert_message_rows(holder: StoreHolder, conn, session_id: str, messages: l
             msg["_row_id"] = cur.lastrowid
         inserted += 1
         tool_calls_total += _tool_calls_count(tool_calls)
-        now_ts = max(now_ts, message_timestamp) + 1e-6
+        now_ts = max(now_ts, message_timestamp) + _TIMESTAMP_EPS
     if prune_checkpoints:
         _prune_shadowed_checkpoints(holder, conn, session_id, messages)
     # Every inserter (flush, compaction clone, replace, rotation handoff, import) gets the new rows' own
@@ -813,6 +814,7 @@ def _archive_named_rows(
     # A weak claim (a rewritten carry naming the row) is archived as compacted history, never rewound out of display.
     rewind_ids += [row_id for row_id in unseen if row_id not in weak_claims]
     rewind_ids = list(dict.fromkeys(rewind_ids))
+    last_summarised_ts = _max_active_timestamp(conn, session_id, rewind_ids)
     if rewind_ids:
         placeholders = _placeholders(rewind_ids)
         conn.execute(
@@ -824,6 +826,7 @@ def _archive_named_rows(
     # durable row's timestamp so display dedupe still collapses generations. Donors are active-only;
     # the rewound/archived originals above never donate, so this is a no-op for a clean compaction.
     _carry_parent_timestamps(holder, conn, session_id, compacted_messages)
+    _stamp_compaction_summary_timestamps(compacted_messages, last_summarised_ts)
     inserted, tool_calls_total = _insert_message_rows(holder, conn, session_id, compacted_messages)
     if clone_ids:
         _ids, unseen_tool_calls = _tail_rows_after_watermark(holder,
@@ -955,6 +958,7 @@ def _archive_and_compact_on_conn(
     # A weak claim (a rewritten carry naming the row) is archived as compacted history, never rewound out of display.
     rewind_ids += [row_id for row_id in tail_ids if row_id not in weak_claims]
     rewind_ids = list(dict.fromkeys(rewind_ids))
+    last_summarised_ts = _max_active_timestamp(conn, session_id, rewind_ids)
     if rewind_ids:
         placeholders = _placeholders(rewind_ids)
         conn.execute("UPDATE messages SET active = 0, compacted = 0 "
@@ -966,6 +970,7 @@ def _archive_and_compact_on_conn(
     # durable row's timestamp so display dedupe still collapses generations. Donors are active-only;
     # the rewound/archived originals above never donate, so this is a no-op for a clean compaction.
     _carry_parent_timestamps(holder, conn, session_id, compacted_messages)
+    _stamp_compaction_summary_timestamps(compacted_messages, last_summarised_ts)
     inserted, tool_calls_total = _insert_message_rows(holder, conn, session_id, compacted_messages)
     if clone_ids:
         _clone_message_rows(holder, conn, clone_ids)

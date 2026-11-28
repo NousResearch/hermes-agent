@@ -295,6 +295,11 @@ _GIT_CONFIG_OVERRIDES = {
     "core.askPass": "",
     "core.fsmonitor": "false",
     "core.untrackedCache": "false",
+    # Git for Windows ships core.fscache=true in its *system* gitconfig, which the isolation in
+    # noninteractive_git_env() blanks. Without the stat cache ``git status`` over a large worktree
+    # is ~10x slower and fans out across every core. Read-only cache, no behaviour change; the
+    # key is ignored by non-Windows git.
+    "core.fscache": "true",
     "core.hooksPath": os.devnull,
     "core.pager": "cat",
     "core.editor": "true",

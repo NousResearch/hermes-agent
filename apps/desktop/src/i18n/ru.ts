@@ -2581,8 +2581,12 @@ export const ruOverrides = {
       thisMonth: 'Ранее в этом месяце'
     },
     statusDivider: {
+      attention: 'Требует внимания',
       working: 'Работает',
-      done: 'Готово'
+      idle: 'Бездействие сегодня',
+      idleRecent: 'Бездействие 1–2 дня',
+      idleDays: 'Бездействие 3–6 дней',
+      idleWeek: 'Бездействие 7+ дней'
     },
     markAllRead: 'Отметить все как прочитанные'
   },

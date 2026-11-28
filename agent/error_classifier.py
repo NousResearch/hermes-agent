@@ -158,6 +158,14 @@ _XAI_SPENDING_LIMIT_ERROR_CODE = "personal-team-blocked:spending-limit"
 # _BILLING_ERROR_CODES, so any other status or upstream keeps main's rules.
 _NOUS_USAGE_WINDOW_402_CODE = "usage_window_and_credits_exhausted"
 
+# The same window's *check* failing, not the allowance being spent: the gateway
+# answers 503 ``usage_window_unavailable`` ("Hermes usage checks are temporarily
+# unavailable"). Generic overload handling backed off on the same model and never
+# switched, so a window-long outage failed every turn that hit it. Classified as a
+# limit-hit (``usage_window`` context, which the credentials pool and the limit card
+# already read) that is retryable and may fall back — see ``_classify_503``.
+_NOUS_USAGE_WINDOW_503_CODE = "usage_window_unavailable"
+
 # Structured codes meaning the account cannot serve paid traffic.
 _BILLING_ERROR_CODES = frozenset({
     "insufficient_quota", "billing_not_active", "payment_required", "insufficient_credits",
@@ -1467,6 +1475,30 @@ def _classify_image_tool_422(c: _Ctx) -> Verdict:
     return _first_match(c.msg, _IMAGE_TOOL_RULES) or _V_FORMAT_ERROR
 
 
+def _classify_503(c: _Ctx) -> Verdict:
+    """503: the Nous usage-window *check* being down is a limit-hit, not provider overload.
+
+    ``{"status": 503, "code": "usage_window_unavailable"}`` is the gateway saying it cannot
+    verify the account's allowance right now, not that the model is out of capacity. Read as
+    ``overloaded`` it only ever backed off on the same model and never switched, so an outage
+    that outlived the retry budget failed the turn (85 such turns on 2026-11-16). The verdict
+    keeps the limit-hit tag the pool and the limit card read (``usage_window``) but opts into
+    the rate-limit family: retryable, and free to fall back once the backoff budget is spent.
+    ``usage_window_outage`` tells the eager-fallback guard this is an outage, not a spent
+    allowance, so "never switch models on a plan limit" still holds for the 402.
+
+    The code is Nous's, so it is honoured only on a Nous route (``_is_nous_route``), exactly as
+    ``_classify_402`` does: any other upstream sending 503 with that code keeps main's rules.
+    """
+    if _is_nous_route(c) and (
+            c.code == _NOUS_USAGE_WINDOW_503_CODE or _NOUS_USAGE_WINDOW_503_CODE in c.msg):
+        context: dict[str, Any] = {"usage_window": True, "usage_window_outage": True}
+        if display := _usage_window_display_message(c.body):
+            context["display_message"] = display
+        return _v(_R.rate_limit, should_fallback=True, error_context=context)
+    return _first_match(c.msg, _OVERFLOW_AS_5XX_RULES) or _V_OVERLOADED
+
+
 # 401 not retryable on its own: rotation/refresh run before the retryability
 # check, then the client-error abort path (fallback first) is correct. 408 is
 # retry-safe (RFC 9110 §15.5.9; proxies emit it when generation outruns the
@@ -1477,7 +1509,7 @@ _STATUS_HANDLERS: dict[int, Callable[[_Ctx], Verdict]] = {
     403: _status_403, 404: _status_404, 408: lambda c: _V_TIMEOUT, 413: lambda c: _V_PAYLOAD_TOO_LARGE,
     422: lambda c: _classify_image_tool_422(c),
     429: _status_429, 500: _status_5xx, 502: _status_5xx,
-    503: lambda c: _first_match(c.msg, _OVERFLOW_AS_5XX_RULES) or _V_OVERLOADED,
+    503: _classify_503,
     529: lambda c: _first_match(c.msg, _OVERFLOW_AS_5XX_RULES) or _V_OVERLOADED,
 }
 

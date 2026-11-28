@@ -22,6 +22,7 @@ from hermes_dir_acl import make_user_dir, unusable_dir_remedy
 from gateway.platforms.base_log_safety import _log_safe_path, describe_proxy_error, env_proxy_for_redaction, safe_proxy_url_for_log, safe_url_for_log
 from gateway.platforms.base_image_sniff import _looks_like_image
 from gateway.platforms.base_media_flags import pad_inline_flags
+from gateway.platforms import base_media_credentials
 from gateway.platforms.base_kanban_media import _kanban_attachment_roots, _kanban_board_db_paths
 from gateway.runtime_footer import footer_onto_photo_caption, send_footer_unless_captioned
 from gateway.platforms.session_model import _SessionModelSettingsMixin
@@ -774,6 +775,7 @@ _MEDIA_DELIVERY_DENIED_PREFIXES = (
 _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS = (
     ".ssh", ".aws", ".gnupg", ".kube", ".docker", ".config", ".azure", ".gcloud",
     "Library/Keychains")
+_MEDIA_DELIVERY_DENIED_HOME_FILES = (".netrc", ".pgpass", ".npmrc", ".pypirc", ".git-credentials")
 
 def _sqlite_files(name: str) -> tuple[str, ...]:
     """A SQLite store plus its WAL/SHM/rollback-journal sidecars."""
@@ -844,13 +846,8 @@ def _media_delivery_recency_seconds() -> float:
 
 def _media_delivery_denied_paths() -> list[Path]:
     """Return absolute denylist paths under which delivery is never allowed."""
-    # Native ``~``, an operator ``$HOME``, AND the account home a re-homed child keeps only in HERMES_REAL_HOME.
-    real_home = _or_default(get_real_home, "", exc=(OSError, RuntimeError, ValueError))
-    homes = dict.fromkeys(Path(h) for h in (os.path.expanduser("~"), os.environ.get("HOME"), real_home) if h)
-    # ...plus every ``{home}/home`` that ``terminal.home_mode: profile`` gives tool subprocesses as HOME.
-    homes.update(dict.fromkeys(r / "home" for r in _credential_home_roots()))
     return [*map(Path, _MEDIA_DELIVERY_DENIED_PREFIXES),
-            *(home / sub for home in homes for sub in _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS),
+            *(home / sub for home in base_media_credentials.home_roots() for sub in _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS),
             *(r / rel for r in _credential_home_roots() for rel in _ROOT_CREDENTIAL_PATHS),
             *_kanban_board_db_paths()]
 
@@ -1051,7 +1048,7 @@ def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[s
     # agent/file_safety.get_read_block_error; mirror that here (the denylist's stated invariant)
     # before the allowlist, so they are never deliverable in any mode or location. Judged on the
     # resolved name, so a symlink to a .env is caught; the predicate case-folds.
-    if is_project_env_basename(resolved.name):
+    if is_project_env_basename(resolved.name) or base_media_credentials.matches_credential_file(resolved, session_key):
         return None
     # Cache / operator allowlist is trusted unconditionally, regardless of mode.
     for root in _media_delivery_allowed_roots():
@@ -1078,7 +1075,7 @@ def _validated_delivery_path(raw_path, session_key: str, label: str,
     report the drop instead of booking a delivery that never happened (#115908)."""
     raw = str(raw_path)
     safe_path = validate_media_delivery_path(raw, session_key=session_key)
-    if not safe_path:
+    if not safe_path and not base_media_credentials.blocks_remote_fallback(raw, session_key):
         from gateway.media_fetch import fetch_remote_media
         safe_path = fetch_remote_media(raw)
     if not safe_path:

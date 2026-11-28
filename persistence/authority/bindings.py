@@ -21,7 +21,10 @@ from ..core.identity import JsonValue, SessionId
 from .admissions import AdmissionGate
 from .vocabulary import CRON_REQUEST_PREFIX, OwnerRule
 
+PROFILE_CONFIG_REF_PREFIX = "profile-config-v1:"
+
 __all__ = [
+    "PROFILE_CONFIG_REF_PREFIX",
     "ApiBinding",
     "BindingMarks",
     "LegacyAdoptionScan",

@@ -11,6 +11,7 @@ import time
 
 import pytest
 
+from persistence.authority.bindings import PROFILE_CONFIG_REF_PREFIX
 from persistence.sqlite.conversation._store.local import API_BINDING_PREFIX, POLICY_PREFIX
 from persistence.sqlite.conversation._store.sessions import create_session
 from persistence.sqlite.gateway._delivery_ledger import _ensure_obligations_table
@@ -40,6 +41,24 @@ def db(store):
 def _rekey(store, old_name, new_name):
     """The rekey's per-facet counts as a dict (one key per facet the store has)."""
     return store.profile_identity.rekey_profile(old_name, new_name).as_dict()
+
+
+def test_repair_previously_rekeyed_receipts_only_in_the_moved_scope(store, db):
+    home = store.scope.profile_dir
+    new = store.scope.name
+    old_home = str(home.with_name("oldname"))
+    key = POLICY_PREFIX + "local-a"
+    payload = _session_receipt(new, "local-a", "local")
+    ref = {"home": old_home, "profile": old_home, "session": "local-a", "entries": [], "bound": []}
+    for owner in ("another-home", old_home):
+        source = dict(ref, home=owner)
+        payload["policy"] = {"config_secret_ref": PROFILE_CONFIG_REF_PREFIX + json.dumps(source)}
+        db.set_meta(key, json.dumps(payload))
+        assert _rekey(store, "oldname", new)["local_policy_receipts"] == int(owner == old_home)
+        saved = json.loads(db.get_meta(key))
+        expected = dict(ref, home=str(home), profile=str(home)) if owner == old_home else source
+        assert json.loads(saved["policy"]["config_secret_ref"][len(PROFILE_CONFIG_REF_PREFIX):]) == expected
+    assert _rekey(store, "oldname", new)["local_policy_receipts"] == 0
 
 
 def _create_legacy_v2_topic_tables(db):

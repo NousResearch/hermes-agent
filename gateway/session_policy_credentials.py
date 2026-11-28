@@ -6,10 +6,10 @@ import logging
 from dataclasses import asdict
 
 from agent.credential_persistence import fingerprint_secret_value
+from persistence.authority.bindings import PROFILE_CONFIG_REF_PREFIX as PREFIX
 from persistence.core.errors import AuthorityRefusal
 
 logger = logging.getLogger(__name__)
-PREFIX = 'profile-config-v1:'
 _ABSENT = object()
 
 

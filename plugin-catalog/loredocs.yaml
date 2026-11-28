@@ -1,10 +1,10 @@
 name: loredocs
 title: LoreDocs
 repo: https://github.com/labyrinth-analytics/loredocs
-sha: d097d23562e3e80a11c88795f481da89a6d2d68c
+sha: 85aaa6a34e9f0c2257212603e8557be9e42f14af
 subdir: integrations/hermes
-version: "0.1.35"
-description: "LoreDocs knowledge vaults over MCP: store, version, tag and search project documents, and inject them into agent context. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only: Hermes runs `uvx loredocs==0.1.35` as a local stdio MCP server. Disclosure — runs the loredocs package (BUSL-1.1, with lancedb, fastembed and onnxruntime) via `uvx loredocs==0.1.35` as a local stdio MCP server; stores documents under ~/.loredocs (or LOREDOCS_ROOT), shared with other LoreDocs clients; its add-document tool can read any local file path the agent passes into a vault; no telemetry; a paid Pro license enables semantic search, which downloads a Hugging Face embedding model once."
+version: "0.1.36"
+description: "LoreDocs knowledge vaults over MCP: store, version, tag and search project documents, and inject them into agent context. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only: Hermes runs `uvx loredocs==0.1.36` as a local stdio MCP server. Disclosure — runs the loredocs package (BUSL-1.1, with lancedb, fastembed and onnxruntime) via `uvx loredocs==0.1.36` as a local stdio MCP server; stores documents under ~/.loredocs (or LOREDOCS_ROOT), shared with other LoreDocs clients; its add-document tool can read any local file path the agent passes into a vault; no telemetry, but at server start it fetches a small signed license-revocation list from labyrinthanalyticsconsulting.com in the background (at most once a day, sends no identifiers, fails open, disabled with LORE_REVOCATION_REFRESH=0); a paid Pro license enables semantic search, which downloads a Hugging Face embedding model once."
 maintainer: labyrinth-analytics
 tier: community
 category: tools

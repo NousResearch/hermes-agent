@@ -6,7 +6,11 @@ builds a standards-guided prompt that the live agent runs as a normal turn, so
 these are the load-bearing behavior contracts.
 """
 
-from agent.learn_prompt import build_learn_prompt
+from agent.learn_prompt import (
+    LEARN_UNAVAILABLE_MESSAGE,
+    build_learn_prompt,
+    skill_manage_available,
+)
 
 
 class TestBuildLearnPrompt:
@@ -23,3 +27,16 @@ class TestLearnRegistryWiring:
         cmd = resolve_command("learn")
         assert cmd is not None and cmd.name == "learn"
         assert not cmd.cli_only
+
+
+class TestLearnSkillManageGating:
+    """#74249: /learn must refuse to run when skill_manage is unavailable."""
+
+    def test_skill_manage_available_requires_tool_name(self):
+        assert skill_manage_available({"skills_list", "skill_view", "skill_manage"})
+        assert not skill_manage_available({"skills_list", "skill_view"})
+        assert not skill_manage_available(set())
+        assert not skill_manage_available(None)
+
+    def test_unavailable_message_names_skill_manage(self):
+        assert "skill_manage" in LEARN_UNAVAILABLE_MESSAGE

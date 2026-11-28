@@ -284,6 +284,16 @@ class TestMemoryStoreReplace:
                                         content="", new_text="Deploys: Fly.io.", store=store))
         assert result["success"] is True and "Deploys: Fly.io." in store.memory_entries
 
+    def test_no_match_names_the_other_store(self, store):
+        """old_text matching only the sibling store names the target to retry (#159920)."""
+        store.add("user", "Docker images: delete after use, disk is tight.")
+        err = store.replace("memory", "Docker images: delete after use", "x")
+        assert err["success"] is False
+        assert "target='user'" in err["error"] and "retry with target='user'" in err["error"]
+        assert err["closest_entries"] == ["Docker images: delete after use, disk is tight."]
+        assert store.replace("user", "Docker images: delete after use",
+                             "Docker images: purge after use.")["success"] is True
+
 
 class TestMemoryStoreRemove:
     def test_remove_entry(self, store):

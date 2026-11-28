@@ -117,7 +117,7 @@ def test_every_gateway_adapter_platform_is_named_and_accepted_by_contract_and_sc
                                 {"$defs": schema["$defs"], "$ref": f"#/$defs/{definition}"})
 
 
-@pytest.mark.parametrize("platform", ["dingtalk", "yuanbao"])
+@pytest.mark.parametrize("platform", ["dingtalk", "wecom", "yuanbao"])
 def test_a_platform_that_left_core_is_named_by_its_catalog_entry(tmp_path, monkeypatch, platform):
     """A moved platform's catalog entry is published before core drops it: the migrated plugin is then named by
     that entry, and a row an older release saved naming the platform still packages unchanged."""

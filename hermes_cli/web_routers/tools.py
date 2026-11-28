@@ -20,7 +20,7 @@ from hermes_cli.web_models import (
     ToolsetProviderSelect, ToolsetToggle)
 from hermes_cli.config_backend import CONFIG_MUTATION_LOCK
 from hermes_cli.web_routers._common import (
-    _profile_cli_args, _profile_scope, _spawn_hermes_action,
+    _config_profile_scope, _profile_cli_args, _profile_scope, _spawn_hermes_action,
     config_write_scope, log as _log, scoped_to_thread, spawn_profile_action)
 
 router = APIRouter()
@@ -176,12 +176,12 @@ def _toolset_model_catalog(ts_key: str, plugin_name: str, config: dict):
     return _plugin_video_gen_catalog(plugin_name)
 
 
-def _category_providers(ts_key: str, config: dict) -> list:
+def _category_providers(ts_key: str, config: dict, *, features=None) -> list:
     """Visible provider rows for a toolset's category (fresh entitlement read)."""
     from hermes_cli.tools_config import TOOL_CATEGORIES, _visible_providers
 
     cat = TOOL_CATEGORIES.get(ts_key)
-    return _visible_providers(cat, config, force_fresh=True) if cat else []
+    return _visible_providers(cat, config, force_fresh=True, features=features) if cat else []
 
 
 def _find_toolset_provider_row(
@@ -347,7 +347,7 @@ async def get_toolset_config(name: str, profile: Optional[str] = None):
     from hermes_cli.nous_subscription import get_nous_subscription_features
 
     def _read():
-        with _profile_scope(profile):
+        with _config_profile_scope(profile):
             _require_known_toolset(name)
             config = load_config()
             cat = TOOL_CATEGORIES.get(name)
@@ -356,7 +356,7 @@ async def get_toolset_config(name: str, profile: Optional[str] = None):
             if cat:
                 # Entitlement state fetched once for the whole matrix.
                 features = get_nous_subscription_features(config, force_fresh=True)
-                for prov in _visible_providers(cat, config, force_fresh=True):
+                for prov in _visible_providers(cat, config, features=features):
                     env_vars = [
                         {
                             "key": e["key"], "prompt": e.get("prompt", e["key"]),
@@ -506,9 +506,10 @@ async def select_toolset_provider(
     entitlement (``needs_nous_auth`` + ``feature``): the GUI has no inline
     login, so an unentitled selection would write config and never activate.
     """
-    from hermes_cli.tools_config import apply_provider_selection, web_provider_capabilities
+    from hermes_cli.tools_config import TOOL_CATEGORIES, apply_provider_selection, web_provider_capabilities
     from hermes_cli.nous_subscription import (
         MANAGED_FEATURE_COVERAGE_CATEGORY, get_nous_subscription_features)
+    from hermes_constants import hermes_home_key
 
     if body.capability is not None:
         if name != "web":
@@ -517,20 +518,37 @@ async def select_toolset_provider(
             raise _bad_request(
                 f"Unknown capability: {body.capability!r} (expected 'search' or 'extract')")
 
-    def _provider_row(config):
+    def _provider_row(config, *, features):
         return next(
-            (p for p in _category_providers(name, config) if p.get("name") == body.provider), None)
+            (p for p in _category_providers(name, config, features=features) if p.get("name") == body.provider), None)
+
+    target_profile = body.profile or profile
+
+    def _validate():
+        with _config_profile_scope(target_profile):
+            _require_known_toolset(name)
+            home_key = hermes_home_key()
+            snapshot = load_config()
+            features = get_nous_subscription_features(snapshot, force_fresh=True) if name in TOOL_CATEGORIES else None
+            return home_key, snapshot, features
+
+    home_key, snapshot, features = await asyncio.to_thread(_validate)
 
     def _run():
-        with _profile_scope(body.profile or profile):
+        with _profile_scope(target_profile):
             _require_known_toolset(name)
             with CONFIG_MUTATION_LOCK:
                 config = load_config()
+                # The fresh entitlement belongs to the validated config. Do not
+                # write that snapshot back over a concurrent dashboard save.
+                if (hermes_home_key() != home_key or config != snapshot
+                        or (name in TOOL_CATEGORIES) != (features is not None)):
+                    raise HTTPException(status_code=409, detail="Configuration changed; retry the provider selection.")
                 if body.capability is not None:
                     # Per-capability path writes web.<capability>_backend only —
                     # web.backend is untouched so the other capability keeps
                     # resolving through the shared fallback chain.
-                    prov = _provider_row(config)
+                    prov = _provider_row(config, features=features)
                     if prov is None:
                         raise _bad_request(
                             f"Unknown provider {body.provider!r} for toolset {name!r}")
@@ -547,7 +565,7 @@ async def select_toolset_provider(
                         NOUS_MANAGED_PROVIDER if prov.get("managed_nous_feature") else backend)
                 else:
                     try:
-                        apply_provider_selection(name, body.provider, config)
+                        apply_provider_selection(name, body.provider, config, features=features)
                     except KeyError as exc:
                         raise _bad_request(str(exc).strip('"'))
                 save_config(config)
@@ -555,14 +573,22 @@ async def select_toolset_provider(
                 if body.capability is not None:
                     response["capability"] = body.capability
 
-            # Entitlement check for managed Nous rows (mirrors the CLI's
-            # ensure_nous_portal_access gate).  Hits the Portal, so it runs AFTER
-            # releasing the mutation lock — still in the worker thread + scope.
-            row = _provider_row(config)
+        return config, response
+
+    config, response = await asyncio.to_thread(_run)
+
+    def _add_entitlement():
+        # The post-save Portal check must hold neither write lock.
+        with _config_profile_scope(target_profile):
+            if features is None:
+                return
+            if hermes_home_key() != home_key:
+                return
+            refreshed_features = get_nous_subscription_features(config, force_fresh=True)
+            row = _provider_row(config, features=refreshed_features)
             managed_feature = (row or {}).get("managed_nous_feature")
             if managed_feature:
-                features = get_nous_subscription_features(config, force_fresh=True)
-                acct = features.account_info
+                acct = refreshed_features.account_info
                 category = MANAGED_FEATURE_COVERAGE_CATEGORY.get(managed_feature)
                 entitled = bool(
                     acct
@@ -574,9 +600,8 @@ async def select_toolset_provider(
                 if not entitled:
                     response["needs_nous_auth"] = True
                     response["feature"] = managed_feature
-        return response
-
-    return await asyncio.to_thread(_run)
+    await asyncio.to_thread(_add_entitlement)
+    return response
 
 
 @router.put("/api/tools/toolsets/{name}/env")

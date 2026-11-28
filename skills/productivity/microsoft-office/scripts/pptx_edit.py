@@ -110,6 +110,17 @@ def replace_in_text_frame(text_frame, old, new):
     return count
 
 
+def contains_chart(shapes):
+    """Return whether any shape, including grouped children, is a chart."""
+    for shape in shapes:
+        if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+            if contains_chart(shape.shapes):
+                return True
+        elif shape.has_chart:
+            return True
+    return False
+
+
 def iter_text_frames(slide):
     for shape in slide.shapes:
         if shape.has_text_frame:
@@ -246,7 +257,7 @@ def duplicate_slide(prs, index):
     graph reliably is not supported — better to refuse than corrupt.
     """
     source = prs.slides[int(index)]
-    if any(sh.has_chart for sh in source.shapes):
+    if contains_chart(source.shapes):
         raise SystemExit(
             f"slide {index} contains a chart; duplication of chart slides "
             "is not supported (chart XML embeds a workbook part that "
@@ -257,6 +268,13 @@ def duplicate_slide(prs, index):
     # drop the placeholders add_slide seeded from the layout
     for shape in list(dest.shapes):
         shape._element.getparent().remove(shape._element)
+
+    source_bg = source._element.cSld.find(qn("p:bg"))
+    if source_bg is not None:
+        dest_bg = dest._element.cSld.find(qn("p:bg"))
+        if dest_bg is not None:
+            dest._element.cSld.remove(dest_bg)
+        dest._element.cSld.insert(0, copy.deepcopy(source_bg))
 
     for shape in source.shapes:
         dest.shapes._spTree.append(copy.deepcopy(shape._element))
@@ -273,7 +291,7 @@ def duplicate_slide(prs, index):
             new_rid = dest.part.relate_to(rel.target_part, rel.reltype)
         rid_map[rel.rId] = new_rid
 
-    for el in dest.shapes._spTree.iter():
+    for el in dest._element.iter():
         for attr, val in el.attrib.items():
             if attr.startswith(R_EMBED) and val in rid_map:
                 el.set(attr, rid_map[val])

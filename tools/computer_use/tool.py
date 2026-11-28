@@ -23,7 +23,13 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 from hermes_dir_acl import make_user_dir
 
 from agent.image_eviction_policy import image_dimensions_from_bytes
-from tools.computer_use.backend import ActionResult, CaptureResult, ComputerUseBackend, UIElement
+from tools.computer_use.backend import (
+    ActionResult,
+    CaptureResult,
+    ComputerUseBackend,
+    UIElement,
+    resolve_image_mime,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -546,10 +552,10 @@ _MAX_ELEMENT_LABEL_CHARS = 120
 _MAX_SPILL_FILES = _MAX_CAPTURE_FILES = 20
 
 def _capture_image_format(cap: CaptureResult) -> tuple[str, str]:
-    # (MIME, file extension): cua-driver's explicit MIME type, else sniff the base64 prefix (JPEG starts with /9j/,
-    # PNG with iVBOR). The extension matches the on-disk bytes for MIME sniffing.
-    mime = cap.image_mime_type or ("image/jpeg" if (cap.png_b64 or "").startswith("/9j/") else "image/png")
-    return mime, (".jpg" if mime.lower() == "image/jpeg" else ".png")
+    # (MIME, file extension): resolve bytes-first via resolve_image_mime so sniffable bytes win over a
+    # mislabel (#157848), while preserving declared types the bytes cannot confirm.
+    mime = resolve_image_mime(cap.png_b64 or "", cap.image_mime_type)
+    return mime, (".jpg" if mime == "image/jpeg" else ".png")
 
 def _bounds_unknown(bounds) -> bool:
     # No real geometry: KDE/Qt apps report [0, 0, 0, 0] for elements clickable by index; serializing that as a

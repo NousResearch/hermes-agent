@@ -10,7 +10,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.image_eviction_policy import image_dimensions_from_bytes
-from tools.computer_use.backend import ActionResult, UIElement
+from tools.computer_use.backend import ActionResult, UIElement, resolve_image_mime
 
 # Linux/X11 surfaces GNOME Shell / desktop backdrop windows ahead of real app windows with no useful z-order; they
 # are targetable but capture as empty, so default capture skips them.
@@ -191,15 +191,19 @@ def _extract_tool_result(mcp_result: Any) -> dict[str, Any]:
 def _image_from_tool_result(out: dict[str, Any]) -> tuple[Optional[str], Optional[str]]:
     """Pull ``(b64, mime_type)`` out of a flattened tool result. cua-driver delivers screenshots as an MCP ``image``
     part (``out["images"]``) or as ``screenshot_png_b64`` in structuredContent (newer builds, CLI transport);
-    checking both keeps capture() robust to the driver moving it."""
+    checking both keeps capture() robust to the driver moving it. The returned MIME is resolved bytes-first via
+    ``resolve_image_mime`` so a mislabeled payload (e.g. JPEG bytes tagged ``image/png`` by an older CLI surface)
+    never reaches the model as a contradicting data URL (#157848)."""
     images = out.get("images") or []
     if images and images[0]:
         mimes = out.get("image_mime_types") or []
-        return images[0], (mimes[0] if mimes and mimes[0] else None)
+        mime = mimes[0] if mimes and mimes[0] else None
+        return images[0], resolve_image_mime(images[0], mime)
     structured = out.get("structuredContent") or {}
     b64 = structured.get("screenshot_png_b64") or structured.get("png_b64")
     if b64:
-        return b64, (structured.get("screenshot_mime_type") or structured.get("mime_type") or None)
+        mime = structured.get("screenshot_mime_type") or structured.get("mime_type") or None
+        return b64, resolve_image_mime(b64, mime)
     return None, None
 
 def _int_or_none(value: Any) -> Optional[int]:

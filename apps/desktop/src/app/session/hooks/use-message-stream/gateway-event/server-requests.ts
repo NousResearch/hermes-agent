@@ -33,7 +33,9 @@ import {
 } from '@/store/prompts'
 import { rememberServerRequest } from '@/store/server-requests'
 import { $selectedStoredSessionId, $sessions, lineageAliases, sessionMatchesStoredId } from '@/store/session'
+import { $focusedSessionIsTile } from '@/store/session-focus'
 import {
+  $focusedRuntimeId,
   $sessionStates,
   $sessionTiles,
   previewScopeForRuntime,
@@ -90,6 +92,10 @@ const previewOwnerFor = (sessionId: string): PreviewOwner | undefined =>
     : undefined
 
 const num = (v: unknown): number | undefined => (typeof v === 'number' ? v : undefined)
+
+// A focused chat tile does not replace the route-driven primary runtime.
+const focusedSessionId = (primaryId: null | string): null | string =>
+  $focusedSessionIsTile.get() ? $focusedRuntimeId.get() : primaryId
 
 /** Answer a string-valued request with a JSON-encoded result ('' = nothing / unavailable). */
 const answerValue = (request: ScopedServerRequest, result: unknown) =>
@@ -173,7 +179,11 @@ export function windowHostsSession(
 ): boolean {
   return (
     requestNamesActiveSession({ activeSessionId, sessionId, storedIdForRuntimeId }) ||
-    $sessionTiles.get().some(tile => tile.runtimeId === sessionId)
+    $sessionTiles
+      .get()
+      .some(tile =>
+        requestNamesActiveSession({ activeSessionId: tile.runtimeId ?? null, sessionId, storedIdForRuntimeId })
+      )
   )
 }
 
@@ -195,7 +205,7 @@ export function windowHostsSession(
  * No shown conversation — nothing claimed, as before.
  *
  * Scoped to window.read only. preview.act and tour refuse unless
- * isActiveSession (raw id equality), so a tolerated claim there would turn
+ * the requesting conversation holds focus, so a tolerated claim there would turn
  * another window's silence into a false refusal that wins the multi-window
  * race — and a tour refusal latches session["tour_bridge"] = "answered",
  * converting every later tour action in the session into a full 45s wait.
@@ -582,10 +592,14 @@ const previewAct: Handler = ({ deps, isActiveSession, request, sessionId }) => {
   }
 
   if (!isActiveSession) {
-    answerValue(request, {
-      error: 'The in-app browser only takes actions in the session the user is looking at.',
-      success: false
-    })
+    if (sessionId) {
+      declineNotShown(request)
+    } else {
+      answerValue(request, {
+        error: 'The in-app browser only takes actions in the session the user is looking at.',
+        success: false
+      })
+    }
 
     return
   }
@@ -687,16 +701,21 @@ const tour: Handler = ({ deps, isActiveSession, request, sessionId }) => {
   // (WINDOW_OWNED_REQUESTS).
   const p = request.params
 
-  if (!$toursEnabled.get()) {
-    // Refused in words, not silently dropped: a no-op would leave the agent
-    // narrating a spotlight the user can't see.
-    answerValue(request, { error: 'The user has turned guided tours off.', success: false })
+  if (!isActiveSession) {
+    // A bystander must not settle the request before the focused owner answers.
+    if (sessionId) {
+      declineNotShown(request)
+    } else {
+      answerValue(request, { error: NOT_ACTIVE_TOUR_ERROR, success: false })
+    }
 
     return
   }
 
-  if (!isActiveSession) {
-    answerValue(request, { error: NOT_ACTIVE_TOUR_ERROR, success: false })
+  if (!$toursEnabled.get()) {
+    // Refused in words, not silently dropped: a no-op would leave the agent
+    // narrating a spotlight the user can't see.
+    answerValue(request, { error: 'The user has turned guided tours off.', success: false })
 
     return
   }
@@ -707,7 +726,7 @@ const tour: Handler = ({ deps, isActiveSession, request, sessionId }) => {
   // may switch chats meanwhile: ask again, against the live active id.
   const stillActive = () =>
     requestNamesActiveSession({
-      activeSessionId: deps.activeSessionIdRef.current,
+      activeSessionId: focusedSessionId(deps.activeSessionIdRef.current),
       sessionId,
       storedIdForRuntimeId: runtimeId =>
         deps.sessionStateByRuntimeIdRef.current.get(runtimeId)?.storedSessionId ?? undefined
@@ -754,14 +773,22 @@ const appearanceValues = ({ params }: ScopedServerRequest): AppearanceValues => 
   }
 }
 
-const themeApply: Handler = ({ isActiveSession, request }) => {
-  // Active session only, like the tour: a background turn never repaints the app the user is looking at.
-  answerValue(
-    request,
-    isActiveSession
-      ? applyAppearance(appearanceValues(request))
-      : { error: 'set_theme only changes the app while the user is looking at this chat.', success: false }
-  )
+const themeApply: Handler = ({ isActiveSession, request, sessionId }) => {
+  // Background windows must leave the foreground owner's response eligible to win.
+  if (!isActiveSession) {
+    if (sessionId) {
+      declineNotShown(request)
+    } else {
+      answerValue(request, {
+        error: 'set_theme only changes the app while the user is looking at this chat.',
+        success: false
+      })
+    }
+
+    return
+  }
+
+  answerValue(request, applyAppearance(appearanceValues(request)))
 }
 
 const themePick: Handler = ctx => {
@@ -895,7 +922,16 @@ export function handleServerRequest(
             storedIdForRuntimeId
           }) === 'run'
         ) {
-          handler({ deps, request, sessionId, isActiveSession: true })
+          handler({
+            deps,
+            request,
+            sessionId,
+            isActiveSession: requestNamesActiveSession({
+              activeSessionId: focusedSessionId(deps.activeSessionIdRef.current),
+              sessionId,
+              storedIdForRuntimeId
+            })
+          })
         } else {
           declineNotShown(request)
         }
@@ -909,7 +945,11 @@ export function handleServerRequest(
     deps,
     request,
     sessionId,
-    isActiveSession: requestNamesActiveSession({ activeSessionId, sessionId, storedIdForRuntimeId })
+    isActiveSession: requestNamesActiveSession({
+      activeSessionId: focusedSessionId(activeSessionId),
+      sessionId,
+      storedIdForRuntimeId
+    })
   })
 
   return true

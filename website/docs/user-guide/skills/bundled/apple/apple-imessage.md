@@ -38,6 +38,7 @@ Use `imsg` to read and send iMessage/SMS via macOS Messages.app.
 - Install: `brew install steipete/tap/imsg`
 - Grant Full Disk Access for terminal (System Settings → Privacy → Full Disk Access)
 - Grant Automation permission for Messages.app when prompted
+- Running through the gateway as a launchd service? The permissions belong to the gateway's Python interpreter, not to Terminal — see [Pitfalls](#pitfalls)
 
 ## When to Use
 
@@ -84,6 +85,19 @@ imsg send --to "+14155551212" --text "Hi" --service imessage
 imsg send --to "+14155551212" --text "Hi" --service sms
 ```
 
+### Verify a Send
+
+`imsg send` only reports that Messages.app accepted the message. To confirm it was
+recorded in the conversation, read the newest entry of that chat back:
+
+```bash
+imsg history --chat-id 1 --limit 1 --json
+# expect "is_from_me": true and the text you just sent
+```
+
+This proves the message is in `chat.db`, not that the recipient's device received it —
+`imsg` exposes no delivery receipt. Report it to the user in those terms.
+
 ### Watch for New Messages
 
 ```bash
@@ -103,16 +117,42 @@ imsg watch --chat-id 1 --attachments
 3. **Verify file paths** exist before attaching
 4. **Don't spam** — rate-limit yourself
 
+## Pitfalls
+
+### Permissions under the launchd gateway
+
+When the gateway runs as a launchd service (`hermes gateway install` on macOS), the
+agent's terminal is a child of the gateway's Python process, not of Terminal.app.
+macOS attributes privacy permissions to that interpreter, so granting Full Disk
+Access to Terminal does not help. Symptoms:
+
+- `imsg chats` fails with `authorization denied (code: 23)`
+- `imsg send` hangs for several minutes, then fails with
+  `applescript send failed (not_started): AppleScript error -1712`
+
+Fix: add the gateway's interpreter (for a git install
+`~/.hermes/hermes-agent/venv/bin/python`) under System Settings → Privacy & Security
+to **Full Disk Access** and to **Automation** (allow Messages), then restart the
+gateway with `hermes gateway restart` — permissions are read at process start.
+
+### `imsg chats --json` prints one object per line
+
+The output is newline-delimited JSON, not an array, and the field is `display_name`.
+Filter it with `select(...)` directly; `.[]` fails with `Cannot index number with string`.
+
 ## Example Workflow
 
 User: "Text mom that I'll be late"
 
 ```bash
 # 1. Find mom's chat
-imsg chats --limit 20 --json | jq '.[] | select(.displayName | contains("Mom"))'
+imsg chats --limit 20 --json | jq -c 'select((.display_name // "") | contains("Mom"))'
 
 # 2. Confirm with user: "Found Mom at +1555123456. Send 'I'll be late' via iMessage?"
 
 # 3. Send after confirmation
 imsg send --to "+1555123456" --text "I'll be late"
+
+# 4. Verify it landed in the conversation (see "Verify a Send")
+imsg history --chat-id <id from step 1> --limit 1 --json
 ```

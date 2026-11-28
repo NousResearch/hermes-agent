@@ -213,9 +213,11 @@ async def test_two_party_thread_command_needs_no_mention(command):
     a = _bot(BOT_A, root_author=HUMAN, members=ONE_AGENT)
     event = await _send(a, command)
     assert event is not None and event.text == "/status" and event.message_type == MessageType.COMMAND
-    # A thread this agent does not take part in is not a two-party thread with it.
+    # Even a thread this agent has not posted in yet: one possible recipient, so no mention needed.
     a._threads._threads.clear()
-    assert await _send(a, command) is None
+    event = await _send(a, command)
+    assert event is not None and event.text == "/status" and event.message_type == MessageType.COMMAND
+    assert await _send(a, f"{command} @someoneelse") is None  # addressed to someone else: still dropped
 
 
 @pytest.mark.asyncio
@@ -284,3 +286,85 @@ async def test_command_only_from_a_user_the_agent_receives_from_and_who_is_in_th
     left = _bot(BOT_A, members=[BOT_A, BOB])
     assert await _send(left, f"!status {BOT_A}", thread=thread, mentions=[BOT_A], sender=HUMAN) is None
     assert await _send(left, "!status", thread=thread, sender=BOB) is not None
+
+
+# --- Agent identity comes from MATRIX_AGENT_USERS / local profiles, never from the allowlist ----
+
+# The live shape: vera's allowlist names the human AND another agent (taxis's bot account).
+ALLOW_WITH_AGENT = f"{HUMAN},{BOT_B}"
+ROOM_WITH_TWO_AGENTS = [BOT_A, BOT_B, HUMAN]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["/status", "!status"])
+async def test_allowlisted_agent_still_counts_as_an_agent(command):
+    a = _bot(BOT_A, members=ROOM_WITH_TWO_AGENTS, allowed_users=ALLOW_WITH_AGENT, agent_users=BOT_B)
+    assert a._is_sole_agent({m.lower() for m in ROOM_WITH_TWO_AGENTS}) is False
+    assert await _send(a, command, thread=None) is None  # two agents: a bare command needs a mention
+    assert await _send(a, command) is None  # ... in a thread too
+    assert await _send(a, f"{command} {BOT_A}", thread=None, mentions=[BOT_A]) is not None
+    # Without the second agent in the room the same config is a sole-agent room again.
+    alone = _bot(BOT_A, members=[BOT_A, HUMAN], allowed_users=ALLOW_WITH_AGENT, agent_users=BOT_B)
+    assert await _send(alone, command, thread=None) is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["/status", "!status"])
+async def test_command_written_by_an_allowlisted_agent_is_ignored(command):
+    """Hermes bots send m.text, so the msgtype cannot tell; the sender identity does."""
+    a = _bot(BOT_A, members=ROOM_WITH_TWO_AGENTS, allowed_users=ALLOW_WITH_AGENT, agent_users=BOT_B)
+    for thread in (None, ROOT):
+        assert await _send(a, command, thread=thread, sender=BOT_B) is None
+        assert await _send(a, f"{command} {BOT_A}", thread=thread, mentions=[BOT_A], sender=BOT_B) is None
+    assert await _send(a, f"{command} {BOT_A}", thread=None, mentions=[BOT_A], sender=HUMAN) is not None
+
+
+@pytest.mark.asyncio
+async def test_agents_discovered_from_local_profile_env_files(tmp_path, monkeypatch):
+    import hermes_constants
+
+    (tmp_path / "profiles" / "taxis").mkdir(parents=True)
+    (tmp_path / "profiles" / "taxis" / ".env").write_text(f'FOO=1\nMATRIX_USER_ID="{BOT_B}"\nMATRIX_ACCESS_TOKEN=secret\n')
+    (tmp_path / "profiles" / "broken").mkdir()
+    (tmp_path / "profiles" / "broken" / ".env").write_bytes(b"\xff\xfe MATRIX_USER_ID=\n")
+    monkeypatch.setattr(hermes_constants, "get_default_hermes_root", lambda *a, **k: tmp_path)
+    a = _bot(BOT_A, members=ROOM_WITH_TWO_AGENTS, allowed_users=ALLOW_WITH_AGENT)  # no explicit agent_users
+    assert a._local_agent_ids() == {BOT_B}
+    assert a._is_known_agent(BOT_B.upper()) and not a._is_known_agent(HUMAN)
+    assert await _send(a, "!status", thread=None) is None
+    assert await _send(a, f"!status {BOT_A}", thread=None, mentions=[BOT_A], sender=BOT_B) is None
+    assert await _send(a, f"!status {BOT_A}", thread=None, mentions=[BOT_A]) is not None
+
+
+@pytest.mark.asyncio
+async def test_agent_users_env_var(monkeypatch):
+    monkeypatch.setenv("MATRIX_AGENT_USERS", f"{BOT_B}, {BOT_C}")
+    from plugins.platforms.matrix.adapter import MatrixAdapter
+
+    adapter = MatrixAdapter(PlatformConfig(enabled=True, token="t", extra={"homeserver": "https://m.example.org", "user_id": BOT_A}))
+    assert adapter._agent_user_ids == {BOT_B, BOT_C}
+
+
+# --- Member lookup: joined only, API fallback, empty means unknown ----------------------------
+
+@pytest.mark.asyncio
+async def test_joined_members_ask_only_for_joined_state():
+    from mautrix.types import Membership
+
+    a = _bot(BOT_A, members=[BOT_A, HUMAN])
+    assert await a._joined_member_ids(ROOM) == {BOT_A, HUMAN}
+    a._client.state_store.get_members.assert_awaited_once_with(ROOM, memberships=(Membership.JOIN,))
+
+
+@pytest.mark.asyncio
+async def test_joined_members_fall_back_to_api_and_empty_is_unknown():
+    a = _bot(BOT_A, members=[])  # MemoryStateStore answers [] for a room it never saw
+    assert await a._joined_member_ids(ROOM) is None
+    assert await _send(a, "!status", thread=None) is None  # unknown membership: mention still required
+    a._client.get_joined_members = AsyncMock(return_value={BOT_A: object(), HUMAN: object()})  # {user_id: Member}
+    assert await a._joined_member_ids(ROOM) == {BOT_A, HUMAN}
+    assert (await _send(a, "!status", thread=None)).text == "/status"
+    a._client.get_joined_members = AsyncMock(return_value={})
+    assert await a._joined_member_ids(ROOM) is None
+    a._client.get_joined_members = AsyncMock(side_effect=RuntimeError("boom"))
+    assert await a._joined_member_ids(ROOM) is None

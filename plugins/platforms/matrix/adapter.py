@@ -765,6 +765,10 @@ class MatrixAdapter(BasePlatformAdapter):
         # seeded by the bridge) → empty. Under multiplex os.environ is the DEFAULT profile's allowlist,
         # which must not decide who approves tool calls on a secondary bot.
         self._allowed_user_ids: set[str] = _extra_csv_set(config, "allowed_users", "MATRIX_ALLOWED_USERS")
+        # Agents (other Hermes bots) are identified here, never by the allowlist: a live allowlist may
+        # list a bot so that it can talk to us, which must not make it a "human".
+        self._agent_user_ids: set[str] = {u.lower() for u in _extra_csv_set(config, "agent_users", "MATRIX_AGENT_USERS")}
+        self._local_agent_cache: tuple[float, set[str]] = (0.0, set())
         self._allowed_room_ids: set[str] = set(self._allowed_rooms)
         self._ignored_user_patterns: list[re.Pattern[str]] = []
         for pattern in _csv_set(_extra_or_secret(config.extra, "ignore_user_patterns", "MATRIX_IGNORE_USER_PATTERNS", "")):
@@ -2101,43 +2105,76 @@ class MatrixAdapter(BasePlatformAdapter):
         return cached
 
     async def _joined_member_ids(self, room_id: str) -> Optional[set[str]]:
-        """Lowercased MXIDs of the joined members, or None when unknown (callers fail closed)."""
+        """Lowercased MXIDs of the *joined* members (invited/left excluded), or None when unknown or
+        empty (callers fail closed)."""
         def ids(members) -> set[str]:
             return {str(getattr(m, "user_id", m)).lower() for m in members}
         state_store = getattr(self._client, "state_store", None) if self._client else None
         if state_store is not None:
             with suppress(Exception):
-                members = await state_store.get_members(room_id)
-                if members is not None:
+                from mautrix.types import Membership
+                members = await state_store.get_members(room_id, memberships=(Membership.JOIN,))
+                if members:  # [] is a store that never saw the room, not an empty room
                     return ids(members)
         client = self._client
-        if client is not None and hasattr(client, "joined_members"):
+        if client is not None and hasattr(client, "get_joined_members"):
             with suppress(Exception):
-                resp = await client.joined_members(room_id)
-                if getattr(resp, "members", None) is not None:
-                    return ids(resp.members)
+                joined = await client.get_joined_members(RoomID(room_id))  # {user_id: Member}
+                if joined:
+                    return ids(joined)
         return None
+
+    def _local_agent_ids(self) -> set[str]:
+        """MATRIX_USER_ID of every Hermes profile on this host (the other agents we may share a
+        room with), read from each profile's ``.env`` and cached for a minute."""
+        cached_at, cached = self._local_agent_cache
+        if cached_at and time.monotonic() - cached_at < 60:
+            return cached
+        found: set[str] = set()
+        with suppress(Exception):
+            from hermes_constants import get_default_hermes_root
+            root = get_default_hermes_root()
+            for env_file in (root / ".env", *sorted((root / "profiles").glob("*/.env"))):
+                with suppress(OSError, UnicodeDecodeError):
+                    for line in env_file.read_text(encoding="utf-8").splitlines():
+                        key, sep, value = line.strip().partition("=")
+                        if sep and key.strip().removeprefix("export ").strip() == "MATRIX_USER_ID":
+                            value = value.strip().strip("\"'").lower()
+                            if value.startswith("@"):
+                                found.add(value)
+        self._local_agent_cache = (time.monotonic(), found)
+        return found
+
+    def _is_known_agent(self, user_id: str) -> bool:
+        """Another Hermes agent: listed in ``MATRIX_AGENT_USERS`` or the MATRIX_USER_ID of a local
+        profile. Never derived from the allowlist, which lists humans and sometimes bots too."""
+        user_id = (user_id or "").strip().lower()
+        return bool(user_id) and (user_id in self._agent_user_ids or user_id in self._local_agent_ids())
 
     def _is_sole_agent(self, members: Optional[set[str]]) -> bool:
         """True when this bot is the only agent that could receive a command in the room.
 
-        Agents are the joined members other than this bot that are not known humans (listed in
-        ``allowed_users``) nor bridge/system identities. Unknown membership, or no allowlist to
-        tell humans from agents, counts as "several agents" so the mention is still required."""
-        if members is None or not self._allowed_user_ids:
+        Humans are the allowlisted users that are not known agents; every other joined member besides
+        this bot (known agents included) and bridge/system identities counts as an agent. Unknown
+        membership, or no allowlist to tell humans from agents, counts as "several agents" so the
+        mention is still required."""
+        if not members or not self._allowed_user_ids:
             return False
-        humans = {u.lower() for u in self._allowed_user_ids}
+        humans = {u.lower() for u in self._allowed_user_ids if not self._is_known_agent(u)}
         own = (self._user_id or "").lower()
         return not any(
             m != own and m not in humans and not self._is_system_or_bridge_sender(m) for m in members)
 
     def _command_sender_ok(self, sender: str, content: dict, members: Optional[set[str]], room_id: str) -> bool:
-        """Only a human we can receive from may issue a command: not a bot's own output (``m.notice``,
-        quoted/echoed text is already ignored because only the reply text counts), someone the
-        gateway would not accept messages from, or someone who is not in this room."""
+        """Only a human we can receive from may issue a command: not another agent (Hermes bots send
+        ``m.text``, so the msgtype cannot tell), not ``m.notice`` output, someone the gateway would
+        not accept messages from, or someone who is not in this room. Quoted/echoed text is already
+        ignored because only the reply text counts."""
         if str(content.get("msgtype", "")) == "m.notice":
             return False
         if not sender or self._is_system_or_bridge_sender(sender) or self._is_self_sender(sender):
+            return False
+        if self._is_known_agent(sender):
             return False
         if members is not None and sender.lower() not in members:
             return False
@@ -2151,7 +2188,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
         Sender: only a human in the room whom this agent accepts messages from (bot output and
         ``m.notice`` never issue commands).
-        Sole agent (user + this one agent, in a room or in a thread this bot takes part in): no
+        Sole agent (the humans + this one agent, in a room or in any of its threads): no
         mention needed. Several agents: thread -> only the thread starter, or the bot addressed by
         @mention / profile name as the first argument (a command that @mentions someone else is
         dropped even by the starter); room -> free rooms and ``require_mention=false`` keep their
@@ -2177,7 +2214,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 if owner:
                     if not sole and await self._first_arg_names_other_member(room_id, token):
                         return None
-                elif not (sole and thread_id in self._threads):
+                elif not sole:  # one possible recipient needs no mention, even in a thread it has not joined yet
                     return None
         elif not (addressed or sole or is_free_room or not self._require_mention):
             return None
@@ -3300,7 +3337,8 @@ _YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge
     ("require_mention", "MATRIX_REQUIRE_MENTION", "lower"), ("process_notices", "MATRIX_PROCESS_NOTICES", "lower"),
     ("session_scope", "MATRIX_SESSION_SCOPE", "lower"), ("auto_thread", "MATRIX_AUTO_THREAD", "lower"),
     ("dm_mention_threads", "MATRIX_DM_MENTION_THREADS", "lower"),
-    ("allowed_users", "MATRIX_ALLOWED_USERS", "csv"), ("free_response_rooms", "MATRIX_FREE_RESPONSE_ROOMS", "csv"),
+    ("allowed_users", "MATRIX_ALLOWED_USERS", "csv"), ("agent_users", "MATRIX_AGENT_USERS", "csv"),
+    ("free_response_rooms", "MATRIX_FREE_RESPONSE_ROOMS", "csv"),
     ("allowed_rooms", "MATRIX_ALLOWED_ROOMS", "csv"), ("ignore_user_patterns", "MATRIX_IGNORE_USER_PATTERNS", "csv"),
     ("max_message_length", "MATRIX_MAX_MESSAGE_LENGTH", "str"),
 )

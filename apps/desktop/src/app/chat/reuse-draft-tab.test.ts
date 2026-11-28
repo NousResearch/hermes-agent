@@ -12,7 +12,7 @@ import type { SessionInfo } from '@/types/hermes'
 
 import { $workspaceIsPage } from '../routes'
 
-import { frontUntouchedDraftTab } from './reuse-draft-tab'
+import { frontUntouchedDraftTab, reuseFocusedDraftTile } from './reuse-draft-tab'
 
 beforeAll(() => {
   const disposeWorkspace = registry.register({
@@ -38,7 +38,7 @@ beforeAll(() => {
   return disposeWorkspace
 })
 
-const TILE_IDS = ['draft-a', 'used-b', 'bot-c']
+const TILE_IDS = ['draft-a', 'used-b', 'bot-c', 'chat-b']
 
 function idleState(messages = 0): ClientSessionState {
   return { busy: false, messages: Array.from({ length: messages }, (_, i) => ({ id: `m${i}` })) } as ClientSessionState
@@ -141,5 +141,51 @@ describe('the tab-strip "+" reuses an untouched New session draft (#145594)', ()
     states.openSessionTile('draft-a', 'center', 'workspace', undefined, { workspaceMode: 'sessions' })
 
     expect(frontUntouchedDraftTab()).toBe(false)
+  })
+})
+
+// The other half of the draft-tab contract: the empty tab in FRONT takes a chat
+// the person picks from the sessions list (browser new-tab behaviour), instead
+// of the click replacing the chat main holds off screen.
+describe('a session opened while a New session tab is in front fills that tab', () => {
+  beforeEach(() => {
+    reset()
+    tree.declareDefaultTree(model.group(['workspace'], { active: 'workspace', id: 'main' }))
+  })
+
+  afterEach(reset)
+
+  it('hands the chat to the tab in front and leaves main on the chat it shows', () => {
+    session.setSessions([{ id: 'chat-a' } as SessionInfo])
+    session.$selectedStoredSessionId.set('chat-a')
+    openTile('draft-a', 'rt-a')
+
+    expect(reuseFocusedDraftTile('chat-b')).toBe(true)
+
+    expect(states.$sessionTiles.get().map(tile => tile.storedSessionId)).toEqual(['chat-b'])
+    expect(activePane()).toBe('session-tile:chat-b')
+    expect(session.$selectedStoredSessionId.get()).toBe('chat-a')
+  })
+
+  it('leaves main alone when the tab in front already holds a chat', () => {
+    session.$selectedStoredSessionId.set('chat-a')
+    openTile('draft-a', 'rt-a')
+    openTile('used-b', 'rt-b', 2)
+
+    expect(reuseFocusedDraftTile('chat-b')).toBe(false)
+    expect(states.$sessionTiles.get().map(tile => tile.storedSessionId)).toEqual(['draft-a', 'used-b'])
+  })
+
+  it('never spends a draft someone has already typed into', () => {
+    openTile('draft-a', 'rt-a')
+    stashSessionDraft('draft-a', 'half-typed question', [])
+
+    expect(reuseFocusedDraftTile('chat-b')).toBe(false)
+  })
+
+  it('never spends a Bot tab', () => {
+    openTile('bot-c', 'rt-c', 0, 'bots')
+
+    expect(reuseFocusedDraftTile('chat-b')).toBe(false)
   })
 })

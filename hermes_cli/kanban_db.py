@@ -1641,6 +1641,55 @@ def child_ids(conn: sqlite3.Connection, task_id: str) -> list[str]:
     return _linked_ids(conn, "child_id", "parent_id", task_id)
 
 
+def decomposed_children(conn: sqlite3.Connection, task_id: str) -> list[dict]:
+    """The cards a ``decompose`` fan-out created for ``task_id``, with their
+    current title and status, in the order the graph recorded them.
+
+    ``child_ids`` cannot answer this. Decompose wires the dependency edges the
+    OTHER way on purpose — every child is a parent of the root, which is what
+    keeps the root in ``todo`` until the whole graph finishes — so ``child_ids``
+    reports what waits on a card, never what the card was split into. The
+    lineage is written once, with the fan-out, into the ``decomposed`` event;
+    this reads it back so a card can show its own subtasks.
+
+    Rows that have since been purged are skipped; the order survives.
+    """
+    row = conn.execute(
+        "SELECT payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'decomposed' ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if row is None or not row["payload"]:
+        return []
+    try:
+        payload = json.loads(row["payload"])
+    except (TypeError, ValueError):
+        return []
+    ids = [str(i) for i in (payload.get("child_ids") or []) if isinstance(i, str)]
+    if not ids:
+        return []
+    placeholders = ",".join("?" for _ in ids)
+    found = {
+        r["id"]: r
+        for r in conn.execute(
+            f"SELECT id, title, status, result FROM tasks WHERE id IN ({placeholders})", tuple(ids)
+        )
+    }
+    out = []
+    for cid in ids:
+        if cid not in found:
+            continue
+        row = found[cid]
+        handoff = latest_summary(conn, cid) or row["result"] or ""
+        out.append({
+            "id": cid,
+            "title": row["title"],
+            "status": row["status"],
+            "summary": _first_line(handoff, 400) or "",
+        })
+    return out
+
+
 def task_graph_contexts(conn: sqlite3.Connection, task_ids: Iterable[str]) -> dict[str, dict]:
     """Bulk-load compact direct graph state for graph-aware diagnostics."""
     ordered_ids = list(dict.fromkeys(str(task_id) for task_id in task_ids if task_id))
@@ -2737,6 +2786,7 @@ def complete_task(
     # Success wipes the breaker counter (history stays on the event log).
     _clear_failure_counter(conn, task_id)
     recompute_ready(conn)  # separate txn so children see ``done``
+    _record_decompose_rollup(conn, task_id)
     _cleanup_workspace(conn, task_id)
     _done_task = get_task(conn, task_id)
     if fire_lifecycle_hook:
@@ -2745,6 +2795,52 @@ def complete_task(
 
 
 _REVIEW_APPROVED_NOTE = "Review approved without additional evidence."
+
+
+_ROLLUP_MARKER = "<!-- kanban:decompose-rollup -->"
+
+
+def _record_decompose_rollup(conn: sqlite3.Connection, completed_task_id: str) -> None:
+    """When a card completes, leave ONE roll-up comment on every decomposed root
+    whose graph just finished.
+
+    A root's worker prompt already carries its children's handoffs, but the CARD
+    carried nothing: a reader looking at the parent saw "parents: t_a, t_b, …"
+    and a root that was still running, with no record of what the subtasks
+    actually did — and closing the root threw that away. The dependency edges
+    cannot express it (they run child -> root, which is what holds the root in
+    ``todo`` until the graph finishes), so the summary is written where every
+    card surface already looks: a comment.
+
+    Deduped by marker: two children completing concurrently, or a re-completion
+    after a reopen, must not stack identical roll-ups.
+    """
+    # The graph points child -> root, so the roots waiting on this card are its
+    # CHILDREN in the link table. ``decomposed_children`` then keeps only the
+    # ones that really are decompose roots.
+    for root in child_ids(conn, completed_task_id):
+        if not _parents_satisfied(conn, root):
+            continue
+        subtasks = decomposed_children(conn, root)
+        if not subtasks:
+            continue
+        already = conn.execute(
+            "SELECT 1 FROM task_comments WHERE task_id = ? AND body LIKE ? LIMIT 1",
+            (root, f"%{_ROLLUP_MARKER}%"),
+        ).fetchone()
+        if already:
+            continue
+        done_n = sum(1 for s in subtasks if s["status"] in ("done", "archived"))
+        lines = [f"Graph complete — {done_n}/{len(subtasks)} subtasks are done.", ""]
+        for s in subtasks:
+            handoff = s["summary"] or "no written handoff"
+            lines.append(f"- {s['id']} {s['status']} — {s['title']}: {handoff}")
+        lines += ["", "This card's own result is still to come.", "", _ROLLUP_MARKER]
+        add_comment(conn, root, "decomposer", "\n".join(lines))
+        _append_event(
+            conn, root, "decompose_rollup",
+            {"trigger": completed_task_id, "subtasks": len(subtasks), "done": done_n},
+        )
 
 
 def _gate_created_cards(

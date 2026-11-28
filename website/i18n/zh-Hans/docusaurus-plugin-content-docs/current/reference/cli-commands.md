@@ -446,7 +446,7 @@ hermes kanban boards rm atm10-server --delete
 
 所有操作也可作为 gateway 中的斜杠命令使用（`/kanban …`），参数界面相同——包括 `boards` 子命令和 `--board` 标志。
 
-完整设计——与 Cline Kanban / Paperclip / NanoClaw / Gemini Enterprise 的对比、八种协作模式、四个用户故事、并发正确性证明——请参阅 [Kanban 用户指南](../user-guide/features/kanban.md)。
+完整设计——与 Cline Kanban / Paperclip / NanoClaw / Gemini Enterprise 的对比、协作模式目录（五种组合模式与内置生命周期行为）、四个用户故事、并发正确性证明——请参阅 [Kanban 用户指南](../user-guide/features/kanban.md)。
 
 ## `hermes webhook`
 

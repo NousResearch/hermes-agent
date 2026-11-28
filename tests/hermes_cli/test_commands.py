@@ -3,7 +3,7 @@
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 
-from hermes_cli.commands import COMMAND_REGISTRY, COMMANDS_BY_CATEGORY, CommandDef, GATEWAY_KNOWN_COMMANDS, command_desktop_meta, gateway_help_lines, infer_argument_mode, resolve_command
+from hermes_cli.commands import COMMAND_REGISTRY, COMMANDS_BY_CATEGORY, CommandDef, GATEWAY_KNOWN_COMMANDS, command_desktop_meta, gateway_command_catalog, gateway_help_lines, infer_argument_mode, resolve_command
 from hermes_cli.commands_completion import SlashCommandAutoSuggest, SlashCommandCompleter
 from hermes_cli.commands_platforms import (_CMD_NAME_LIMIT, _SLACK_RESERVED_COMMANDS, _SLACK_VIA_HERMES_ONLY, _clamp_command_names, _sanitize_telegram_name, discord_skill_commands_by_category, slack_app_manifest, slack_native_slashes, slack_subcommand_map, telegram_bot_commands, telegram_menu_commands)
 
@@ -137,6 +137,41 @@ class TestGatewayHelpLines:
                 assert not re.search(pattern, joined), \
                     f"cli_only command /{cmd.name} should not be in gateway help"
 
+
+
+class TestGatewayCommandCatalog:
+
+    def test_matches_help_and_is_plain_data(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.commands._iter_plugin_command_entries", list)
+        catalog = gateway_command_catalog()
+        assert [f"/{c['name']}" for c in catalog] == [line.split("`")[1].split(" ")[0] for line in gateway_help_lines()]
+        for entry in catalog:
+            assert set(entry) == {"name", "description", "args_hint", "aliases", "category", "source"}
+            assert entry["source"] == "builtin" and isinstance(entry["aliases"], list)
+        by_name = {c["name"]: c for c in catalog}
+        assert by_name["help"]["args_hint"] == next(c.args_hint for c in COMMAND_REGISTRY if c.name == "help")
+        cli_only = {c.name for c in COMMAND_REGISTRY if c.cli_only and not c.gateway_config_gate}
+        assert not cli_only & set(by_name)
+
+    def test_plugin_commands_follow_and_allowed_filters_both(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.commands._iter_plugin_command_entries",
+                            lambda: [("menu", "Open the menu", "[page]"), ("other", "Other", "")])
+        catalog = gateway_command_catalog()
+        assert catalog[-2:] == [
+            {"name": "menu", "description": "Open the menu", "args_hint": "[page]", "aliases": [],
+             "category": "Plugins", "source": "plugin"},
+            {"name": "other", "description": "Other", "args_hint": "", "aliases": [],
+             "category": "Plugins", "source": "plugin"}]
+        assert [c["name"] for c in gateway_command_catalog(allowed=["help", "menu"])] == ["help", "menu"]
+        assert gateway_command_catalog(allowed=[]) == []
+
+    def test_config_gate_admits_cli_only_command(self, monkeypatch):
+        gated = next(c for c in COMMAND_REGISTRY if c.cli_only and c.gateway_config_gate)
+        monkeypatch.setattr("hermes_cli.commands._iter_plugin_command_entries", list)
+        monkeypatch.setattr("hermes_cli.commands._resolve_config_gates", set)
+        assert gated.name not in {c["name"] for c in gateway_command_catalog()}
+        monkeypatch.setattr("hermes_cli.commands._resolve_config_gates", lambda: {gated.name})
+        assert gated.name in {c["name"] for c in gateway_command_catalog()}
 
 
 class TestTelegramBotCommands:

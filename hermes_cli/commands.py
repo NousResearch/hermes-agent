@@ -530,6 +530,13 @@ def _is_gateway_available(cmd: CommandDef, config_overrides: set[str] | None = N
     return cmd.name in overrides
 
 
+def _shown_aliases(cmd: CommandDef) -> list[str]:
+    """Aliases worth showing: internal ones like ``reload_mcp`` (the underscore variant of the
+    name) are left out."""
+    return [a for a in cmd.aliases
+            if not (a.replace("-", "_") == cmd.name.replace("-", "_") and a != cmd.name)]
+
+
 def gateway_help_lines(allowed: Optional[Iterable[str]] = None) -> list[str]:
     """Generate gateway help text lines from the registry.
 
@@ -546,9 +553,7 @@ def gateway_help_lines(allowed: Optional[Iterable[str]] = None) -> list[str]:
         if allowed_set is not None and cmd.name not in allowed_set:
             continue
         args = f" {cmd.args_hint}" if cmd.args_hint else ""
-        # Skip internal aliases like reload_mcp (underscore variant of the name).
-        alias_parts = [f"`/{a}`" for a in cmd.aliases
-                       if not (a.replace("-", "_") == cmd.name.replace("-", "_") and a != cmd.name)]
+        alias_parts = [f"`/{a}`" for a in _shown_aliases(cmd)]
         alias_note = t("slash.shared.alias_note", aliases=", ".join(alias_parts)) if alias_parts else ""
         lines.append(f"`/{cmd.name}{args}` -- {cmd.describe()}{alias_note}")
     return lines
@@ -565,6 +570,33 @@ def _iter_plugin_command_entries() -> list[tuple[str, str, str]]:
     return [(name, str(meta.get("description") or t("slash.shared.plugin_default_desc", name=name)),
              str(meta.get("args_hint") or "").strip())
             for name, meta in commands.items() if isinstance(name, str) and isinstance(meta, dict)]
+
+
+def gateway_command_catalog(allowed: Optional[Iterable[str]] = None) -> list[dict]:
+    """The slash commands the gateway dispatches, as plain data, for platform plugins that draw
+    their own command menu (a native picker, buttons, a grid).
+
+    One dict per command: ``name`` (canonical, no slash), ``description`` (in the active
+    language), ``args_hint`` (verbatim: ``"[filter]"``, ``"<prompt>"`` or ``""``), ``aliases``
+    (a list, internal underscore variants left out), ``category`` (the registry's English
+    category; ``"Plugins"`` for plugin commands) and
+    ``source`` (``"builtin"`` or ``"plugin"``). Built-ins come first in registry order, filtered
+    as /help filters them (a ``cli_only`` command appears only when its config gate is on), then
+    the commands plugins registered with ``ctx.register_command``. ``allowed`` (canonical names)
+    restricts both, as in :func:`gateway_help_lines`. Skill commands are not included. Read-only;
+    each call builds a new list.
+    """
+    overrides = _resolve_config_gates()
+    allowed_set = None if allowed is None else set(allowed)
+    catalog = [{"name": cmd.name, "description": cmd.describe(), "args_hint": cmd.args_hint,
+                "aliases": _shown_aliases(cmd), "category": cmd.category, "source": "builtin"}
+               for cmd in COMMAND_REGISTRY
+               if _is_gateway_available(cmd, overrides) and (allowed_set is None or cmd.name in allowed_set)]
+    catalog += [{"name": name, "description": desc, "args_hint": hint, "aliases": [],
+                 "category": "Plugins", "source": "plugin"}
+                for name, desc, hint in _iter_plugin_command_entries()
+                if allowed_set is None or name in allowed_set]
+    return catalog
 
 
 def __getattr__(name):  # PEP 562 — COMMANDS / COMMANDS_BY_CATEGORY are built per call so labels follow the active language

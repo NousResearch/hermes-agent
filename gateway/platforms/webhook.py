@@ -582,11 +582,12 @@ class WebhookAdapter(BasePlatformAdapter):
                 return _UNPARSEABLE
 
     async def _handle_deliver_only(self, prompt: str, payload: Any, route_config: dict, route_name: str,
-                                   event_type: str, delivery_id: str, profile: Optional[str] = None) -> web.Response:
+                                   event_type: str, delivery_id: str, profile: Optional[str] = None,
+                                   origin_payload: Any = None) -> web.Response:
         """deliver_only: the rendered prompt IS the message — skip the agent, reuse the same
         auth/rate-limit/idempotency/template pipeline."""
         delivery = {"deliver": route_config.get("deliver", "log"), "payload": payload, "profile": profile,
-                    "deliver_extra": self._render_delivery_extra(route_config.get("deliver_extra", {}), payload),
+                    "deliver_extra": self._route_delivery_extra(route_config, payload, origin_payload),
                     "route": route_name,
                     "mirror": route_config.get("mirror_to_session") is True}
         logger.info("[webhook] direct-deliver event=%s route=%s target=%s msg_len=%d delivery=%s", event_type,
@@ -703,6 +704,10 @@ class WebhookAdapter(BasePlatformAdapter):
         if mcp_control is not None:
             return mcp_control
         delivery_id = mcp_event_delivery_id(route_config, payload) or delivery_id
+        # Keep authenticated ingress identity separate from a route script's transformed view.
+        # Prompts and explicit deliver_extra templates intentionally see the transformed payload,
+        # but an implicit github_comment target means "the event's own PR/issue".
+        origin_payload = payload
         event_type = (headers.get("X-GitHub-Event", "") or headers.get("X-GitLab-Event", "")
                       or payload.get("event_type", "") or payload.get("type", "") or "unknown")
         allowed_events = route_config.get("events", [])
@@ -747,22 +752,25 @@ class WebhookAdapter(BasePlatformAdapter):
             return self._handle_cron_trigger(prompt, route_config, route_name, event_type, delivery_id, profile)
         if route_config.get("deliver_only"):
             return await self._handle_deliver_only(prompt, payload, route_config, route_name, event_type, delivery_id,
-                                                   profile)
+                                                   profile, origin_payload)
         if isinstance(coalesce, dict) and self._coalescer.enqueue(
                 route_name=route_name, coalesce=coalesce, payload=payload, event_type=event_type, prompt=prompt,
-                delivery_id=delivery_id, now=now, route_config=route_config, profile=profile):
+                delivery_id=delivery_id, now=now, route_config=route_config, profile=profile,
+                origin_payload=origin_payload):
             return web.json_response({"status": "coalesced", "route": route_name, "event": event_type,
                                       "delivery_id": delivery_id}, status=202)
         return await self._dispatch_agent_run(request, route_config, route_name, profile, payload, prompt, event_type,
-                                        delivery_id, now)
+                                        delivery_id, now, origin_payload)
 
     async def _dispatch_agent_run(self, request, route_config: dict, route_name: str, profile, payload: Any, prompt: str,
-                            event_type: str, delivery_id: str, now: float) -> web.Response:
+                            event_type: str, delivery_id: str, now: float,
+                            origin_payload: Any = None) -> web.Response:
         """Acknowledge only after the authority commits the immutable delivery."""
         logger.info("[webhook] %s event=%s route=%s prompt_len=%d delivery=%s", request.method, event_type, route_name,
                     len(prompt), delivery_id)
         outcome = await self._admit_agent_run(payload, prompt, delivery_id, now, route_config=route_config,
-                                              route_name=route_name, profile=profile, event_type=event_type)
+                                              route_name=route_name, profile=profile, event_type=event_type,
+                                              origin_payload=origin_payload)
         if outcome is None:
             return _json_error("Admission unavailable; retry this delivery", 503)
         if outcome == "duplicate":
@@ -771,14 +779,16 @@ class WebhookAdapter(BasePlatformAdapter):
                                   "delivery_id": delivery_id}, status=202)
 
     def _spawn_agent_run(self, payload: Any, prompt: str, delivery_id: str, now: float, *, route_config: dict,
-                         route_name: str, profile, event_type: str, superseded=()) -> asyncio.Task:
+                         route_name: str, profile, event_type: str, superseded=(),
+                         origin_payload: Any = None) -> asyncio.Task:
         """Coalesced-path dispatch (settled timer / disconnect flush): admit the merged event as a task
         so ``WebhookCoalescer.flush`` can await the hand-off. The HTTP ack for these deliveries was
         already ``coalesced``: an admission failure is logged and gives back the batch's delivery ids
         (*superseded* too), so a resend of any of them is processed, not answered as a duplicate."""
         async def _admit_or_log():
             outcome = await self._admit_agent_run(payload, prompt, delivery_id, now, route_config=route_config,
-                                                  route_name=route_name, profile=profile, event_type=event_type)
+                                                  route_name=route_name, profile=profile, event_type=event_type,
+                                                  origin_payload=origin_payload)
             if outcome is None:
                 logger.error("[webhook] Coalesced delivery %s on route %s was not admitted", delivery_id, route_name)
                 for released in (*superseded, delivery_id):
@@ -804,7 +814,7 @@ class WebhookAdapter(BasePlatformAdapter):
         return source
 
     async def _admit_agent_run(self, payload: Any, prompt: str, delivery_id: str, now: float, *, route_config: dict,
-                               route_name: str, profile, event_type: str) -> Optional[str]:
+                               route_name: str, profile, event_type: str, origin_payload: Any = None) -> Optional[str]:
         """Record delivery info and admit the run through the durable producer (shared by the immediate
         and coalesced paths). ``"accepted"`` / ``"duplicate"``, or None when admission failed."""
         # (profile, route, delivery_id) in the session key → concurrent webhooks get independent runs.
@@ -814,7 +824,7 @@ class WebhookAdapter(BasePlatformAdapter):
         # THIS profile's adapter, home channel and secrets — not the first profile that has the platform.
         self._delivery_info[session_chat_id] = {
             "deliver": route_config.get("deliver", "log"), "profile": profile,
-            "deliver_extra": self._render_delivery_extra(route_config.get("deliver_extra", {}), payload),
+            "deliver_extra": self._route_delivery_extra(route_config, payload, origin_payload),
             "route": route_name,
             "mirror": route_config.get("mirror_to_session") is True}
         self._delivery_info_created[session_chat_id] = now
@@ -966,6 +976,22 @@ class WebhookAdapter(BasePlatformAdapter):
         return {key: self._render_prompt(value, payload, "", "") if isinstance(value, str) else value
                 for key, value in extra.items()}
 
+    def _route_delivery_extra(self, route_config: dict, payload: Any, origin_payload: Any = None) -> dict:
+        """Render explicit extras from the route payload; default GitHub target from authenticated ingress.
+
+        Route scripts may replace ``payload`` before prompt/template rendering. That transformed view must
+        not erase or retarget the implicit "event's own PR/issue" destination; scripts that intentionally
+        route elsewhere can still do so with explicit ``deliver_extra`` templates.
+        """
+        extra = self._render_delivery_extra(route_config.get("deliver_extra", {}), payload)
+        origin = origin_payload if isinstance(origin_payload, dict) else payload
+        if route_config.get("deliver") == "github_comment" and isinstance(origin, dict):
+            repository = origin.get("repository")
+            subject = origin.get("pull_request") or origin.get("issue") or origin
+            extra.setdefault("repo", repository.get("full_name", "") if isinstance(repository, dict) else "")
+            extra.setdefault("pr_number", subject.get("number", "") if isinstance(subject, dict) else "")
+        return extra
+
     # --- Response delivery ---
 
     async def _direct_deliver(self, content: str, delivery: dict) -> SendResult:
@@ -1003,13 +1029,14 @@ class WebhookAdapter(BasePlatformAdapter):
             # (Pattern A, #91912 class). asyncio.to_thread keeps the loop serving while the subprocess runs;
             # the worker thread is bounded by the subprocess timeout below.
             result = await asyncio.to_thread(
-                subprocess.run, ["gh", "pr", "comment", str(pr_int), "--repo", repo, "--body", content],
+                # `gh issue comment` resolves PR and issue numbers alike; `gh pr comment` fails on an issue.
+                subprocess.run, ["gh", "issue", "comment", str(pr_int), "--repo", repo, "--body", content],
                 capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30,
                 env=self._github_env(delivery.get("profile")))
             if result.returncode == 0:
                 logger.info("[webhook] Posted comment on %s#%s", repo, pr_number)
                 return SendResult(success=True)
-            logger.error("[webhook] gh pr comment failed: %s", result.stderr)
+            logger.error("[webhook] gh issue comment failed: %s", result.stderr)
             return SendResult(success=False, error=result.stderr)
         except FileNotFoundError:
             logger.error("[webhook] 'gh' CLI not found — install GitHub CLI for github_comment delivery")

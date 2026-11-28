@@ -480,6 +480,8 @@ The bot automatically pauses its audio listener while playing TTS replies, preve
 
 Only users allowed by `DISCORD_ALLOWED_USERS` or `DISCORD_ALLOWED_ROLES` can interact via voice; a role is checked for the speaker each time they talk. Other users' audio is silently ignored.
 
+Speech from another bot account follows the same bot policy as its typed messages. An utterance cannot carry an @mention, so a bot speaker is heard only where a typed bot message needs none: `DISCORD_ALLOW_BOTS=all` with `discord.bots_require_inline_mention: false`. The gateway's bot loop guard then counts its turns.
+
 ```bash
 # ~/.hermes/.env
 DISCORD_ALLOWED_USERS=284102345871466496

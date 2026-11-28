@@ -6227,8 +6227,8 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         # must carry the same names as a message here or the next message flips them. A command
         # that interrupts, unblocks or pauses work starts no turn of its own, and a slow
         # users.info must not hold /stop or /pause back while the worker keeps running.
-        from hermes_cli.commands import resolve_command
-        cmd = resolve_command(event.get_command() or "")
+        from hermes_cli.commands import resolve_gateway_command
+        cmd = resolve_gateway_command(event.get_command() or "")
         controls_running_turn = cmd is not None and (
             cmd.busy_policy == "interrupt_then_dispatch" or cmd.name in ("approve", "deny", "pause"))
         lane = ahead = handed_off = None

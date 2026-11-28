@@ -184,6 +184,17 @@ def _t_discord(key: str, limit: int, **kwargs: Any) -> str:
     return _truncate_discord_component_text(t(key, **kwargs), limit)
 
 
+def _native_slash_command_specs() -> tuple:
+    """``_NATIVE_SLASH_COMMAND_SPECS`` plus each messaging-only alias (``CommandDef.gateway_aliases``,
+    ``/clear`` for ``/new``) as a copy of its canonical's row, so the registry decides which exist (#40123).
+    Regular aliases stay typed-only: the 100-command cap is not spent on duplicate names."""
+    from hermes_cli.commands import COMMAND_REGISTRY
+    by_name = {spec[0]: spec for spec in _NATIVE_SLASH_COMMAND_SPECS}
+    return _NATIVE_SLASH_COMMAND_SPECS + tuple(
+        (alias, *by_name[cmd.name][1:]) for cmd in COMMAND_REGISTRY if cmd.name in by_name
+        for alias in cmd.gateway_aliases if alias not in by_name)
+
+
 def _native_slash_commands() -> tuple:
     """``_NATIVE_SLASH_COMMAND_SPECS`` with descriptions, parameter descriptions and Choice names
     resolved for the active language: ``(name, description, args, template, followup_key)``.
@@ -195,7 +206,7 @@ def _native_slash_commands() -> tuple:
         return _text(label) if "." in label else label
 
     out = []
-    for name, description_key, args, template, followup_key in _NATIVE_SLASH_COMMAND_SPECS:
+    for name, description_key, args, template, followup_key in _native_slash_command_specs():
         localized_args = tuple(
             (arg_name, arg_type, default, _text(desc_key),
              tuple((_choice_label(lbl), val) for lbl, val in choices) if choices else None)

@@ -114,6 +114,35 @@ class TestDerivedDicts:
 
 class TestGatewayKnownCommands:
 
+    def test_clear_is_gateway_alias_of_new(self):
+        """`/clear` in a gateway context resolves to the /new session reset;
+        CLI resolution keeps the terminal-clear meaning (#40123)."""
+        from hermes_cli.commands import resolve_gateway_command
+        assert resolve_command("clear").name == "clear"
+        assert resolve_gateway_command("clear").name == "new"
+        assert resolve_gateway_command("/clear").name == "new"
+        assert resolve_gateway_command("clear").busy_policy == "interrupt_then_dispatch"
+
+    def test_gateway_known_commands_include_clear(self):
+        from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS
+        assert "clear" in GATEWAY_KNOWN_COMMANDS
+
+    def test_cli_clear_survives_cli_only_exclusion(self):
+        """`clear` stays cli_only in CLI dispatch terms — only gateway
+        resolution re-maps it, so existing exclusion invariants hold by
+        skipping names a gateway lookup resolves to another command."""
+        from hermes_cli.commands import resolve_gateway_command
+        lines = gateway_help_lines()
+        joined = "\n".join(lines)
+        import re as _re
+        for cmd in COMMAND_REGISTRY:
+            if cmd.cli_only and not cmd.gateway_config_gate:
+                if resolve_gateway_command(cmd.name) is not None:
+                    continue
+                pattern = rf'`/{_re.escape(cmd.name)}(?![-_\w])'
+                assert not _re.search(pattern, joined), \
+                    f"cli_only command /{cmd.name} should not be in gateway help"
+
     def test_includes_config_gated_cli_only(self):
         """Commands with gateway_config_gate are always in GATEWAY_KNOWN_COMMANDS."""
         for cmd in COMMAND_REGISTRY:
@@ -128,10 +157,15 @@ class TestGatewayHelpLines:
 
     def test_excludes_cli_only_commands_without_config_gate(self):
         import re
+        from hermes_cli.commands import resolve_gateway_command
         lines = gateway_help_lines()
         joined = "\n".join(lines)
         for cmd in COMMAND_REGISTRY:
             if cmd.cli_only and not cmd.gateway_config_gate:
+                # /clear re-maps to /new on messaging surfaces (#40123): its
+                # gateway alias note on the /new line is intentional.
+                if resolve_gateway_command(cmd.name) is not None:
+                    continue
                 # Word-boundary match so `/reload` doesn't match `/reload-mcp`
                 pattern = rf'`/{re.escape(cmd.name)}(?![-_\w])'
                 assert not re.search(pattern, joined), \
@@ -217,9 +251,13 @@ class TestSlackSubcommandMap:
 
 
     def test_excludes_cli_only_without_config_gate(self):
+        from hermes_cli.commands import resolve_gateway_command
         mapping = slack_subcommand_map()
         for cmd in COMMAND_REGISTRY:
             if cmd.cli_only and not cmd.gateway_config_gate:
+                # /clear re-maps to /new on messaging surfaces (#40123).
+                if resolve_gateway_command(cmd.name) is not None:
+                    continue
                 assert cmd.name not in mapping
 
 
@@ -263,10 +301,48 @@ class TestSlackNativeSlashes:
         # Commands deliberately routed through /hermes <command> on Slack only
         # (Slack's 50-slash cap) are expected to be absent from native slashes.
         via_hermes_norm = {_norm(n) for n in _SLACK_VIA_HERMES_ONLY}
-        missing = (tg_norm - slack_norm) - reserved_norm - via_hermes_norm
+        # Messaging-only aliases (/clear) never take a canonical's slot; at the cap they are
+        # reached as /hermes <alias> (test_gateway_aliases_never_displace_a_native_canonical).
+        alias_norm = {_norm(a) for cmd in COMMAND_REGISTRY for a in cmd.gateway_aliases}
+        missing = (tg_norm - slack_norm) - reserved_norm - via_hermes_norm - alias_norm
         assert not missing, (
             f"commands on Telegram but missing from Slack native slashes: {sorted(missing)}"
         )
+
+    def test_gateway_aliases_never_displace_a_native_canonical(self, monkeypatch):
+        """Review of #123942: emitting /clear right after /new pushed the last canonical
+        (/usage) out of the 50-slash list. A messaging-only alias may only take a spare slot."""
+        from dataclasses import replace
+
+        import hermes_cli.commands_platforms as platforms
+
+        alias_names = {a for cmd in COMMAND_REGISTRY for a in cmd.gateway_aliases}
+        assert alias_names  # /clear
+        with_aliases = [n for n, _, _ in slack_native_slashes() if n not in alias_names]
+        # Native or not, `/hermes clear` reaches the session reset.
+        assert slack_subcommand_map()["clear"] == "/clear"
+        registry = [replace(cmd, gateway_aliases=()) for cmd in platforms._gateway_available_commands()]
+        monkeypatch.setattr(platforms, "_gateway_available_commands", lambda: registry)
+        assert with_aliases == [n for n, _, _ in slack_native_slashes()]
+        assert "usage" in with_aliases
+
+    def test_gateway_aliases_never_displace_a_telegram_menu_builtin(self):
+        """The Telegram menu is capped too (60 by default): aliases follow every built-in."""
+        names = [n for n, _ in telegram_bot_commands(include_plugins=False)]
+        alias_names = {a for cmd in COMMAND_REGISTRY for a in cmd.gateway_aliases}
+        aliases = [n for n in names if n in alias_names]
+        assert "clear" in aliases and names[len(names) - len(aliases):] == aliases
+
+    def test_clear_takes_a_spare_native_slot_without_a_name_hint(self, monkeypatch):
+        import hermes_cli.commands_platforms as platforms
+
+        monkeypatch.setattr(platforms, "_SLACK_MAX_SLASH_COMMANDS", 200)
+        hints = {n: hint for n, _, hint in slack_native_slashes()}
+        assert hints["new"] == "[name]"
+        assert hints["clear"] == ""
+        entry = next(e for e in slack_app_manifest()["features"]["slash_commands"]
+                     if e["command"] == "/clear")
+        assert "usage_hint" not in entry
 
 
 class TestSlackAppManifest:

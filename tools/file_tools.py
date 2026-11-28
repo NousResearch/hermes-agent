@@ -38,7 +38,8 @@ from tools.file_tools_write_guards import (
     _check_cross_profile_path, _check_protected_instruction_write, _check_sensitive_path,
     _is_internal_file_tool_content, _stale_overwrite_blocker, _stale_write_refusal)
 from tools.file_tools_read_tracking import (
-    _bump_consecutive, _cap_read_tracker_data, _carry_full_write_baselines, _check_file_staleness,
+    _baseline_key, _bump_consecutive, _cap_read_tracker_data, _carry_full_write_baselines,
+    _check_file_staleness,
     _check_not_found_cache, _dedup_lookup, _known_full_content_sha256,
     _file_metadata, _file_version, _on_host,
     _mark_full_write_baseline, _mark_verification_stale, _note_read_coverage, _note_read_served, _patch_failure_lock,
@@ -499,6 +500,10 @@ def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task
     if wrapped:  # the archive file itself is byte-exact; only this view splits its long lines
         result_dict["long_lines_wrapped_at"] = wrap_width
     if result_dict["truncated"]:
+        # The machine-readable continuation. The hint below is prose: a model, or a
+        # programmatic pager, that has to regex English to find the next page cannot
+        # page a file in, and coverage would fall back to offset+limit-1.
+        result_dict["next_offset"] = end_line + 1
         result_dict["hint"] = (
             f"Use offset={end_line + 1} to continue reading "
             f"(showing {offset}-{min(end_line, total_lines)} of {total_lines} lines)")
@@ -587,11 +592,12 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
         except OSError:
             pass
         baselines = task_data["full_write_baselines"]
+        baseline_key = _baseline_key(resolved_str)
         if stable and version is not None and count < 4:
             dedup[dedup_key] = version_before
             # A narrower view does not undo knowledge of these same bytes. Do
             # not revive a baseline after a partial read of a different version.
-            complete = baselines.get(resolved_str) == version
+            complete = baselines.get(baseline_key) == version
             if not complete:
                 complete = not partial
                 if partial and end_line is not None:
@@ -599,10 +605,10 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
                         task_data, resolved_str, version, offset, end_line, total_lines, redacted)
                 complete = complete and not redacted
             if complete:
-                baselines[resolved_str] = version
+                baselines[baseline_key] = version
                 task_data.setdefault("blind_patches", {}).pop(resolved_str, None)
         if not complete:
-            baselines.pop(resolved_str, None)
+            baselines.pop(baseline_key, None)
         if not stable or count >= 4:
             task_data["dedup"].pop(dedup_key, None)
             task_data["dedup_generation_reads"].discard(dedup_key)
@@ -782,8 +788,11 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                 "to keep context usage efficient."))
 
         total_lines = result_dict.get("total_lines")
-        if result_dict.get("truncated_by") == "bytes":
-            end_line = int(result_dict.get("next_offset", offset)) - 1
+        if isinstance(result_dict.get("next_offset"), int):
+            # Where the page really stopped. offset+limit-1 claims lines the read never
+            # served when the page was cut short, and a later page could then "complete"
+            # the file and authorize an overwrite of content nobody has seen.
+            end_line = result_dict["next_offset"] - 1
         else:
             end_line = offset + limit - 1
             if isinstance(total_lines, int) and total_lines > 0:

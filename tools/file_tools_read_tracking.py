@@ -24,6 +24,7 @@ import hashlib
 import logging
 import os
 import stat
+import sys
 import threading
 import time
 
@@ -138,6 +139,20 @@ def _resolved_or_none(filepath: str, task_id: str) -> str | None:
         return str(_resolve_path_for_task(filepath, task_id))
     except (OSError, ValueError):
         return None
+
+
+def _baseline_key(resolved: str) -> str:
+    """Dict key for whole-file baselines and read coverage: the path as THIS filesystem
+    compares it. Windows and a default macOS volume are case-insensitive, so
+    ``.../Foo.md`` and ``.../foo.md`` name one file. Keying on the raw string lets a
+    completed read fail to authorize an overwrite when the path is respelled with
+    different case, and the refusal then advises re-reading a file already read in full."""
+    text = str(resolved)
+    if sys.platform == "win32":
+        return os.path.normcase(text)
+    if sys.platform == "darwin":
+        return text.casefold()
+    return text
 
 
 def _pop_not_found(op: str, resolved_str: str, task_id: str) -> None:
@@ -373,15 +388,15 @@ def _mark_full_write_baseline(resolved: str, task_id: str, expected_sha256: str 
         return
     with _read_tracker_lock:
         task_data = _task_data(task_id)
-        task_data["full_write_baselines"][str(resolved)] = version
-        task_data["blind_patches"].pop(str(resolved), None)
+        task_data["full_write_baselines"][_baseline_key(resolved)] = version
+        task_data["blind_patches"].pop(_baseline_key(resolved), None)
         _cap_read_tracker_data(task_data)
 
 
 def _has_full_write_baseline(resolved: str, task_id: str) -> bool:
     with _read_tracker_lock:
         task_data = _read_tracker.get(task_id) or {}
-        baseline = task_data.get("full_write_baselines", {}).get(str(resolved))
+        baseline = task_data.get("full_write_baselines", {}).get(_baseline_key(resolved))
     return baseline is not None and _file_version(resolved) == baseline
 
 
@@ -394,7 +409,7 @@ def _known_full_content_sha256(resolved_paths, task_id: str) -> dict:
     for resolved in {str(r) for r in resolved_paths if r}:
         baseline = baselines.get(resolved)
         if baseline is not None and _file_version(resolved) == baseline:
-            known[resolved] = baseline[-1].hex()
+            known[_baseline_key(resolved)] = baseline[-1].hex()
     return known
 
 
@@ -414,13 +429,13 @@ def _carry_full_write_baselines(task_id: str, known: dict, writes, path_to_resol
         resolved = lookup.get(path)
         if resolved is None:
             continue  # a backend-side path (sandbox, translated mount): no host baseline
-        vouched = read_sha == "" or (read_sha is not None and read_sha == known.get(resolved))
-        known[resolved] = written_sha if vouched else None
+        vouched = read_sha == "" or (read_sha is not None and read_sha == known.get(_baseline_key(resolved)))
+        known[_baseline_key(resolved)] = written_sha if vouched else None
         written[resolved] = written_sha
     for resolved, written_sha in written.items():
         if written_sha is None:
             continue
-        if known[resolved] is not None:
+        if known[_baseline_key(resolved)] is not None:
             _mark_full_write_baseline(resolved, task_id, written_sha)
             continue
         with _read_tracker_lock:
@@ -433,7 +448,8 @@ def _is_own_blind_patch(resolved: str, task_id: str) -> bool:
     """True when the bytes on disk are exactly what this task's own patch wrote without a
     full-content baseline (a blind patch, or one after a partial view)."""
     with _read_tracker_lock:
-        written_sha = ((_read_tracker.get(task_id) or {}).get("blind_patches") or {}).get(str(resolved))
+        written_sha = ((_read_tracker.get(task_id) or {}).get("blind_patches") or {}).get(
+            _baseline_key(resolved))
     if written_sha is None:
         return False
     version = _file_version(resolved)
@@ -452,6 +468,7 @@ def _note_read_coverage(task_data: dict, resolved: str, version: tuple, start: i
     way, so paging through it must count as a whole-file read. A new version restarts the
     coverage (the earlier pages describe a file that no longer exists). Lock must be held."""
     coverage = task_data.setdefault("read_coverage", {})
+    resolved = _baseline_key(resolved)
     entry = coverage.get(resolved)
     if entry is None or entry["version"] != version or len(entry["ranges"]) > _READ_COVERAGE_RANGES_CAP:
         entry = coverage[resolved] = {"version": version, "ranges": [], "redacted": False}

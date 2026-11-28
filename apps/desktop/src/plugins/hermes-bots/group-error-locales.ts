@@ -8,6 +8,7 @@ export interface GroupChatErrorMessages {
   attachmentTooLarge: (name: string) => string
   attachmentFallback: string
   pastedImage: string
+  storageFull: string
 }
 
 export const GROUP_CHAT_ERRORS = {
@@ -18,7 +19,8 @@ export const GROUP_CHAT_ERRORS = {
     sendNeedsUpdate: "Sending to this group chat needs an updated Desktop; restart Hermes Desktop",
     attachmentTooLarge: name => `${name}: too large (max 15MB).`,
     attachmentFallback: "attachment",
-    pastedImage: "pasted image"
+    pastedImage: "pasted image",
+    storageFull: "Group chat history could not be saved: this device's storage is full."
   },
   'ja': {
     sendRouteRequired: "このグループチャットへの送信には接続、プロファイル、グループチャットIDが必要です",
@@ -27,7 +29,8 @@ export const GROUP_CHAT_ERRORS = {
     sendNeedsUpdate: "グループチャットへの送信にはDesktopの更新が必要です。Hermes Desktopを再起動してください",
     attachmentTooLarge: name => `${name}：サイズが大きすぎます（最大15MB）。`,
     attachmentFallback: "添付ファイル",
-    pastedImage: "貼り付けた画像"
+    pastedImage: "貼り付けた画像",
+    storageFull: "グループチャットの履歴を保存できませんでした：このデバイスのストレージがいっぱいです。"
   },
   'zh': {
     sendRouteRequired: "向此群聊发送消息需要其连接、配置档和群聊标识",
@@ -36,7 +39,8 @@ export const GROUP_CHAT_ERRORS = {
     sendNeedsUpdate: "群聊发送需要新版 Desktop，请重启 Hermes Desktop",
     attachmentTooLarge: name => `${name}：文件过大（最大 15MB）。`,
     attachmentFallback: "附件",
-    pastedImage: "粘贴的图片"
+    pastedImage: "粘贴的图片",
+    storageFull: "无法保存群聊记录：此设备的存储空间已满。"
   },
   'zh-hant': {
     sendRouteRequired: "向此群組聊天傳送訊息需要其連線、設定檔和群組聊天識別碼",
@@ -45,7 +49,8 @@ export const GROUP_CHAT_ERRORS = {
     sendNeedsUpdate: "群組聊天傳送需要新版 Desktop，請重新啟動 Hermes Desktop",
     attachmentTooLarge: name => `${name}：檔案過大（最大 15MB）。`,
     attachmentFallback: "附件",
-    pastedImage: "貼上的圖片"
+    pastedImage: "貼上的圖片",
+    storageFull: "無法儲存群組聊天記錄：此裝置的儲存空間已滿。"
   },
   'fr': {
     sendRouteRequired: "L’envoi dans cette discussion de groupe nécessite sa connexion, son profil et son identifiant",
@@ -54,7 +59,8 @@ export const GROUP_CHAT_ERRORS = {
     sendNeedsUpdate: "L’envoi dans un groupe nécessite Desktop à jour ; redémarrez Hermes Desktop",
     attachmentTooLarge: name => `${name} : fichier trop volumineux (15 Mo maximum).`,
     attachmentFallback: "pièce jointe",
-    pastedImage: "image collée"
+    pastedImage: "image collée",
+    storageFull: "L’historique de la discussion de groupe n’a pas pu être enregistré : le stockage de cet appareil est plein."
   },
   'de': {
     sendRouteRequired: "Zum Senden an diesen Gruppenchat werden Verbindung, Profil und Gruppenchat-ID benötigt",
@@ -63,7 +69,8 @@ export const GROUP_CHAT_ERRORS = {
     sendNeedsUpdate: "Für das Senden an Gruppen wird ein aktuelles Desktop benötigt; starte Hermes Desktop neu",
     attachmentTooLarge: name => `${name}: zu groß (max. 15 MB).`,
     attachmentFallback: "Anhang",
-    pastedImage: "eingefügtes Bild"
+    pastedImage: "eingefügtes Bild",
+    storageFull: "Der Gruppenchat-Verlauf konnte nicht gespeichert werden: Der Speicher dieses Geräts ist voll."
   },
   'es': {
     sendRouteRequired: "Para enviar a este chat de grupo se necesitan su conexión, perfil e identificador",
@@ -72,7 +79,8 @@ export const GROUP_CHAT_ERRORS = {
     sendNeedsUpdate: "El envío al grupo necesita una versión actualizada de Desktop; reinicia Hermes Desktop",
     attachmentTooLarge: name => `${name}: demasiado grande (máximo 15 MB).`,
     attachmentFallback: "adjunto",
-    pastedImage: "imagen pegada"
+    pastedImage: "imagen pegada",
+    storageFull: "No se pudo guardar el historial del chat de grupo: el almacenamiento de este dispositivo está lleno."
   },
   'ru': {
     sendRouteRequired: "Для отправки нужны подключение, профиль и идентификатор группового чата",
@@ -81,7 +89,8 @@ export const GROUP_CHAT_ERRORS = {
     sendNeedsUpdate: "Для отправки в группу нужна обновлённая версия Desktop; перезапустите Hermes Desktop",
     attachmentTooLarge: name => `${name}: слишком большой файл (максимум 15 МБ).`,
     attachmentFallback: "вложение",
-    pastedImage: "вставленное изображение"
+    pastedImage: "вставленное изображение",
+    storageFull: "Не удалось сохранить историю группового чата: хранилище этого устройства заполнено."
   },
   'ar': {
     sendRouteRequired: "يتطلب الإرسال الاتصال والملف الشخصي ومعرّف محادثة المجموعة",
@@ -90,6 +99,7 @@ export const GROUP_CHAT_ERRORS = {
     sendNeedsUpdate: "يتطلب الإرسال للمجموعة إصدارًا محدّثًا من Desktop؛ أعد تشغيل Hermes Desktop",
     attachmentTooLarge: name => `${name}: حجمه كبير جدًا (الحد الأقصى 15 ميغابايت).`,
     attachmentFallback: "مرفق",
-    pastedImage: "صورة ملصقة"
+    pastedImage: "صورة ملصقة",
+    storageFull: "تعذّر حفظ سجل الدردشة الجماعية: مساحة تخزين هذا الجهاز ممتلئة."
   },
 } satisfies Record<keyof typeof CANONICAL_GROUP_LOCALES, GroupChatErrorMessages>

@@ -108,6 +108,83 @@ describe('log window', () => {
   })
 })
 
+// The room map is the only durable copy of a group chat, and it shares a
+// ~5M-char origin quota with every other plugin key. Attachment payloads used
+// to ride the log unbounded — one 15 MB PDF is ~20M data-URL characters, four
+// times the whole quota — so a single paste made every later room write fail
+// silently. The durable copy now carries only what a reload renders, within a
+// per-room budget.
+describe('attachment payloads in the durable room record', () => {
+  const payload = (mime: string, chars: number) => `data:${mime};base64,${'A'.repeat(chars)}`
+
+  it('stores a pdf or file attachment as a name-only chip, never its payload', async () => {
+    const { chat, gateway } = await loadRoom()
+
+    chat.appendGroupChatEntry('Core', { kind: 'user', name: 'You' }, 'see attached', 't1', [
+      { data: payload('application/pdf', 20_000_000), kind: 'pdf', name: 'report.pdf' },
+      { data: payload('text/plain', 1_000), kind: 'file', name: 'notes.txt' }
+    ])
+    chat.updateGroupChat('Core', room => room, { sync: false })
+
+    const stored = (gateway.storage.get('group-chats') as Record<string, GroupChat>).Core
+    const images = stored.log.at(-1)?.images || []
+
+    expect(images.map(image => image.name)).toEqual(['report.pdf', 'notes.txt'])
+    expect(images.map(image => image.kind)).toEqual(['pdf', 'file'])
+    expect(images.every(image => image.data === '')).toBe(true)
+    expect(JSON.stringify(stored).length).toBeLessThan(chat.GROUP_CHAT_LOG_RETAIN_CHARS)
+  })
+
+  it('keeps image payloads newest-first within the room attachment budget', async () => {
+    const { chat, gateway } = await loadRoom()
+    const olderData = payload('image/png', 20_000)
+    const newerData = payload('image/png', 20_000)
+
+    chat.appendGroupChatEntry('Core', { kind: 'user', name: 'You' }, 'older', 't1', [
+      { data: olderData, kind: 'image', name: 'older.png' }
+    ])
+    chat.appendGroupChatEntry('Core', { kind: 'user', name: 'You' }, 'newer', 't1', [
+      { data: newerData, kind: 'image', name: 'newer.png' }
+    ])
+    chat.updateGroupChat('Core', room => room, { sync: false })
+
+    const stored = (gateway.storage.get('group-chats') as Record<string, GroupChat>).Core
+    const [older, newer] = stored.log.slice(-2)
+
+    const persisted = stored.log
+      .flatMap(entry => entry.images || [])
+      .reduce((sum, image) => sum + image.data.length, 0)
+
+    // Two 20k payloads do not both fit the room's attachment budget: the newest
+    // keeps its preview, the older falls back to its name-only chip.
+    expect(newer.images?.[0].data).toBe(newerData)
+    expect(older.images?.[0].data).toBe('')
+    expect(older.images?.[0].name).toBe('older.png')
+    expect(persisted).toBe(newerData.length)
+  })
+
+  it('reports a failed room-map write once instead of swallowing it', async () => {
+    const { chat, gateway } = await loadRoom()
+    const shared = await import('./shared')
+    const notify = gateway.host.notify as ReturnType<typeof vi.fn>
+
+    shared.setPluginCtx({
+      storage: {
+        get: async () => null,
+        set: async () => {
+          throw new Error('QuotaExceededError')
+        }
+      }
+    } as never)
+
+    await chat.persistGroupChatRooms({})
+    await chat.persistGroupChatRooms({})
+
+    expect(notify).toHaveBeenCalledTimes(1)
+    expect(notify).toHaveBeenCalledWith({ kind: 'error', message: expect.stringContaining('storage is full') })
+  })
+})
+
 describe('room naming', () => {
   it('same-name dedup reserves suffix length at the 64-char cap', async () => {
     const { chat } = await loadRoom()

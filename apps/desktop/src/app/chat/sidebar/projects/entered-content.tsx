@@ -79,6 +79,7 @@ export function EnteredProjectContent({
           onNewSession={owned.onNewSession}
           onNewSessionSplit={owned.onNewSessionSplit}
           owner={projectOwnerRoute(project)}
+          projectRepos={project.repos}
           removedSessionIds={removedSessionIds}
           renderRows={renderRows}
           repo={repo}
@@ -119,6 +120,7 @@ function RepoFlatSection({
   discoveredWorktrees,
   liveSessions,
   owner,
+  projectRepos,
   removedSessionIds
 }: {
   repo: SidebarWorkspaceTree
@@ -130,6 +132,8 @@ function RepoFlatSection({
   liveSessions?: SessionInfo[]
   /** Another gateway's project: its worktrees are removed and switched on that gateway. */
   owner?: AgentProfileRoute
+  /** Every repo node of the project, so a session inside a nested folder stays in that folder's section. */
+  projectRepos?: readonly SidebarWorkspaceTree[]
   removedSessionIds?: ReadonlySet<string>
 }) {
   const { t } = useI18n()
@@ -151,10 +155,15 @@ function RepoFlatSection({
       return mergedGroups
     }
 
-    const { groups } = overlayRepoLanes({ ...repo, groups: mergedGroups }, liveSessions ?? [], removedSessionIds)
+    const { groups } = overlayRepoLanes(
+      { ...repo, groups: mergedGroups },
+      liveSessions ?? [],
+      removedSessionIds,
+      projectRepos?.map(r => r.path)
+    )
 
     return mergeRepoWorktreeGroups({ id: repo.id, path: repo.path, groups }, discoveredWorktrees)
-  }, [repo, mergedGroups, discoveredWorktrees, liveSessions, removedSessionIds])
+  }, [repo, mergedGroups, discoveredWorktrees, liveSessions, removedSessionIds, projectRepos])
 
   const discoveredWorktreePaths = useMemo(
     () =>

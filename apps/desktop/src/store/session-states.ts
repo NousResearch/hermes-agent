@@ -1758,6 +1758,22 @@ setSessionOwnerResolver(knownOwnerForSession)
  *  showed one agent's previews in every agent's chat. `bot-row.tsx` documents
  *  the same trap for the roster highlight and resolves it the same way. */
 function railScopeForActiveSession(): string {
+  // A focused tile is the chat on screen even though the primary's runtime is
+  // another chat (or none): key the rail on the tile's own owner, or its tabs
+  // land in whatever bucket the primary resolves to (the launch profile when
+  // the primary is empty) and vanish the next time the tile is focused from a
+  // view that resolves correctly.
+  const focused = $focusedStoredSessionId.get()
+
+  if (focused && focused !== $selectedStoredSessionId.get()) {
+    const owner = knownOwnerForSession(focused)
+    const profile = typeof owner === 'string' ? owner : owner?.profile
+
+    if (profile) {
+      return normalizeProfileKey(profile)
+    }
+  }
+
   return previewScopeForRuntime($activeSessionId.get() ?? undefined)
 }
 
@@ -1777,6 +1793,7 @@ function syncPreviewScope() {
 }
 
 $activeSessionId.subscribe(syncPreviewScope)
+$focusedStoredSessionId.listen(syncPreviewScope)
 syncPreviewScope()
 
 /** The mode of the backend that serves `owner`: the route's own `mode`, else

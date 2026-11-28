@@ -104,6 +104,14 @@ def _spawn(process_registry, *, env, env_type, command, cwd, effective_task_id, 
     return process_registry.spawn_via_env(env=env, allow_cwd_fallback=allow_cwd_fallback, **common)
 
 
+# The user reads the turn's last line as the job's status; the completion (or a "stopped
+# before it finished" notice) arrives as its own turn, so this promise is backed.
+_NOTIFY_PROMISE_NOTE = (
+    "You will get a new turn when this exits. If your turn ends before then, close with one plain "
+    "status line: \"Still running: <what>. I'll report back when it finishes.\" Never say it is done "
+    "until that completion arrives.")
+
+
 def _apply_async_support(proc_session, result_data, notify_on_complete, watch_patterns):
     """Finite sessions (stateless HTTP, one-shot Kanban workers) can't route a
     completion back after the turn ends: drop the flags and tell the agent to
@@ -117,6 +125,8 @@ def _apply_async_support(proc_session, result_data, notify_on_complete, watch_pa
     # that scope (the gateway watcher and every drain pass over it), so its notice could never land.
     if async_delivery_supported() and hosted_scope() is None:
         _stamp_gateway_routing(proc_session, get_session_env)
+        if notify_on_complete:
+            result_data["notify_note"] = _NOTIFY_PROMISE_NOTE
         return notify_on_complete, watch_patterns
     result_data["notify_on_complete"] = False
     result_data["notify_unsupported"] = _ASYNC_UNSUPPORTED_NOTE

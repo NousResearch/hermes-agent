@@ -51,8 +51,19 @@ The stable states are `PENDING`, `STARTING`, `RUNNING`, `SUCCEEDED`, `FAILED`,
 `cancel(handle, reason=...)` is cooperative: it asks the child agent to
 interrupt at its next safe boundary and returns `CANCEL_REQUESTED`; it never
 claims completion until `wait` or `result` observes a terminal state. Terminal
-results are immutable, idempotent, bounded to 32k characters, omit transcripts
-and hidden reasoning, and include a stable result hash.
+results are immutable and idempotent, omit transcripts and hidden reasoning,
+and include a stable result hash. Summary budgeting belongs to native delegation
+(`delegation.max_summary_chars` and parent context headroom); the lifecycle adds
+no second summary cap. `error_message` remains bounded to 32k characters.
+
+Results expose `summary_truncated` (default `False`) and `summary_full_path`
+(default `None`) from native finalization. A full-summary path is present only
+when native delegation reports one; the lifecycle does not read it automatically
+or claim a spill succeeded when it failed. `usage_metadata` carries `api_calls`
+and, when available, `model`, `tokens` (integer `input`/`output` counters),
+`cost_usd`, `cost_status`, and a JSON-safe `route`. Private keys are omitted.
+`tool_execution_summary` carries `duration_seconds` and, when available,
+`exit_reason`.
 
 This API is lifecycle-managed asynchronous execution. Child construction and
 completion use the same host-owned path as `delegate_task`, including parent

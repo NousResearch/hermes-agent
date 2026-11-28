@@ -552,16 +552,42 @@ def detect_self_repo_git_mutation(
     return (True, _block_message(operation, root)) if operation is not None else (False, None)
 
 
+def _is_partial_clone(root: Path) -> bool:
+    """Whether *root* borrows objects from a promisor remote (e.g. ``--filter=blob:none``).
+
+    A ``--shared`` clone of such a repo inherits its promisor packs but not the promised
+    blobs, so fetching from GitHub there dies with "pack has N unresolved deltas" /
+    "invalid index-pack output". Advice that reads fine and then fails.
+    """
+    git_dir = root / ".git"
+    config = (git_dir / "config") if git_dir.is_dir() else git_dir
+    try:
+        if not config.is_file():
+            return False
+        text = config.read_text(encoding="utf-8", errors="replace").lower()
+    except OSError:
+        return False
+    return "promisor = true" in text or "partialclone" in text
+
+
 def _block_message(operation: str, root: Path) -> str:
     from hermes_constants import get_scratch_dir
 
     scratch = get_scratch_dir()
-    return (
+    head = (
         f"Blocked: `{operation}` would rewrite Hermes's live source checkout "
-        f"({root}) and can mix module versions in this running process. "
-        f"Use a separate worktree or a shared clone on real disk, e.g. "
-        f"`git clone --shared {root} {scratch}/<task>` — avoid /tmp for "  # no-tmp: ok — guidance telling the model to AVOID /tmp
+        f"({root}) and can mix module versions in this running process. ")
+    tail = (
         "clones that install node/python deps: /tmp is usually RAM-backed tmpfs and a few "  # no-tmp: ok — guidance telling the model to AVOID /tmp
         "dependency installs can fill it and ENOSPC other work. Delete the clone when the branch "
         "is pushed. To change this checkout, stop Hermes, run the command externally, then restart "
         "Hermes.")
+    if _is_partial_clone(root):
+        return head + (
+            "This checkout is a partial clone, so a shared clone of it cannot fetch: it "
+            "borrows promisor packs whose blobs are absent, and `git fetch` there fails with "
+            "\"pack has unresolved deltas\". Clone the upstream URL instead, e.g. "
+            f"`git clone --depth 1 <upstream-url> {scratch}/<task>` on real disk — avoid /tmp for ") + tail  # no-tmp: ok — guidance telling the model to AVOID /tmp
+    return head + (
+        "Use a separate worktree or a shared clone on real disk, e.g. "
+        f"`git clone --shared {root} {scratch}/<task>` — avoid /tmp for ") + tail  # no-tmp: ok — guidance telling the model to AVOID /tmp

@@ -608,7 +608,10 @@ def _stale_overwrite_blocker(filepath: str, resolved: str | None, task_id: str) 
             "in full before a whole-file overwrite, or continue with targeted patches.")
     return (
         f"{resolved} exists but this task has not seen its full current content "
-        "(never read, patched without a prior full read, or only a redacted/partial view). Read the "
+        "(never read, patched without a prior full read, or only a redacted/partial view). "
+        "A write made outside these tools — a terminal command, execute_code, a formatter "
+        "or a build step — does not count as a read, so a file you created or wrote earlier "
+        "can land here once one of those has touched it. Read the "
         "file — every page of it, if it needs offset/limit — or use patch for a "
         "targeted edit; a stale conversation copy must not overwrite the current "
         "disk content.")

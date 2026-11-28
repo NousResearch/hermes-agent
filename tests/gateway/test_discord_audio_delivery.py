@@ -1,11 +1,16 @@
 """Discord audio delivery: plain audio is an attachment, voice messages are real Ogg/Opus."""
+import base64
 import json
+import math
+import shutil
+import wave
 from types import SimpleNamespace
 
 import pytest
 
 from gateway.config import PlatformConfig
 from plugins.platforms.discord.adapter import DiscordAdapter
+from plugins.platforms.discord.adapter_waveform import FLAT_WAVEFORM
 
 
 def _ogg_opus(seconds: float, pre_skip: int = 312, last_packet: bytes = b"\xfc" * 8) -> bytes:
@@ -90,6 +95,68 @@ async def test_voice_message_carries_ogg_opus_bytes_and_their_real_duration(tmp_
     assert (await adapter.send_voice("222", str(mp3), **flag)).success
     assert len(channel.voice_posts) == 1
     assert channel.attachments == ["spoken.mp3"]
+
+
+@pytest.mark.asyncio
+async def test_voice_message_payload_carries_the_measured_waveform(tmp_path, monkeypatch):
+    """The preview bars are the audio's own envelope: what the measurement returns is what
+    Discord receives, so real speech draws a waveform instead of a uniform block."""
+    adapter, channel = _adapter()
+    opus = tmp_path / "reply.ogg"
+    opus.write_bytes(_ogg_opus(3.0))
+    measured = bytes(range(256))
+    monkeypatch.setattr(
+        "plugins.platforms.discord.adapter_media.voice_waveform", lambda path: measured)
+
+    assert (await adapter.send_voice("222", str(opus))).success
+    [post] = channel.voice_posts
+    assert base64.b64decode(post["payload"]["attachments"][0]["waveform"]) == measured
+
+
+@pytest.mark.asyncio
+async def test_voice_message_keeps_the_flat_waveform_when_loudness_is_unmeasurable(tmp_path, monkeypatch):
+    """No ffmpeg or an undecodable file must not cost the voice message: the envelope falls
+    back to the legacy flat array and delivery still succeeds."""
+    adapter, channel = _adapter()
+    opus = tmp_path / "reply.ogg"
+    opus.write_bytes(_ogg_opus(3.0))
+    monkeypatch.setattr(
+        "plugins.platforms.discord.adapter_media.voice_waveform", lambda path: None)
+
+    assert (await adapter.send_voice("222", str(opus))).success
+    [post] = channel.voice_posts
+    assert base64.b64decode(post["payload"]["attachments"][0]["waveform"]) == FLAT_WAVEFORM
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="decoding the envelope needs ffmpeg")
+async def test_voice_message_waveform_is_not_a_uniform_block_for_real_audio(tmp_path):
+    """The user-visible defect: real speech rendered as one solid bar. Measured from an actual
+    WAV, the payload's 256 datapoints must vary — a uniform array is the bug itself."""
+    adapter, channel = _adapter()
+    wav = tmp_path / "spoken.wav"
+    with wave.open(str(wav), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(16000)
+        frames = bytearray()
+        for _ in range(4):  # pauses, then a swell that grows across each burst, like speech
+            frames += b"\x00\x00" * 2400
+            for index in range(9600):
+                amplitude = 1200 + 10800 * index / 9600
+                frames += int(
+                    amplitude * math.sin(2 * math.pi * 440 * index / 16000)
+                ).to_bytes(2, "little", signed=True)
+        handle.writeframes(bytes(frames))
+
+    assert (await adapter.send_voice("222", str(wav))).success
+    [post] = channel.voice_posts
+    bars = base64.b64decode(post["payload"]["attachments"][0]["waveform"])
+
+    assert len(bars) == 256
+    assert len(set(bars)) > 16, f"waveform is a flat block of {len(set(bars))} values"
+    assert 0 in bars, "the pauses between bursts must render empty"
+    assert max(bars) > 100
 
 
 @pytest.mark.asyncio

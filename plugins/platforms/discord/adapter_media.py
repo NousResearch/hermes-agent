@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from agent.i18n import t
 from gateway.platforms.base import SendResult
+from plugins.platforms.discord.adapter_waveform import FLAT_WAVEFORM, voice_waveform
 
 logger = logging.getLogger("plugins.platforms.discord.adapter")
 
@@ -384,7 +385,10 @@ class DiscordMediaMixin:
             voice = await self._ogg_opus_voice_payload(audio_path)
             if voice is not None:
                 try:
-                    return await self._post_voice_message(channel, *voice, reply_to=reply_to, reference=reference)
+                    waveform = await asyncio.to_thread(voice_waveform, audio_path)
+                    return await self._post_voice_message(
+                        channel, *voice, waveform=waveform or FLAT_WAVEFORM,
+                        reply_to=reply_to, reference=reference)
                 except Exception as voice_err:
                     logger.debug("Voice message flag failed, falling back to file: %s", voice_err)
             else:
@@ -427,16 +431,23 @@ class DiscordMediaMixin:
         return (data, duration) if duration is not None else None
 
     async def _post_voice_message(
-        self, channel: Any, data: bytes, duration_secs: float, *, reply_to: Optional[str], reference: Any,
+        self, channel: Any, data: bytes, duration_secs: float, *, waveform: bytes,
+        reply_to: Optional[str], reference: Any,
     ) -> SendResult:
-        """POST a native voice message (flags=8192) with Ogg/Opus ``data`` via the raw API."""
+        """POST a native voice message (flags=8192) with Ogg/Opus ``data`` via the raw API.
+
+        ``waveform`` is the 256-sample loudness envelope the client draws beside the play
+        button (``adapter_waveform`` builds it). A uniform array is what Discord renders as
+        a featureless bar, so callers pass ``FLAT_WAVEFORM`` only when the audio could not
+        be measured.
+        """
         from plugins.platforms.discord.adapter import discord
 
         payload_data: dict[str, Any] = {
             "flags": 8192,
             "attachments": [{
                 "id": "0", "filename": "voice-message.ogg", "duration_secs": round(duration_secs, 2),
-                "waveform": base64.b64encode(bytes([128] * 256)).decode(),
+                "waveform": base64.b64encode(waveform).decode(),
             }],
         }
         if reference is not None:

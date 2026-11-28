@@ -8,6 +8,7 @@ The one shim: after a *clean* upstream EOF, a ``text/event-stream`` response tha
 from __future__ import annotations
 
 import asyncio
+import hmac
 import ipaddress
 import logging
 import signal
@@ -87,6 +88,16 @@ def _parse_authority(authority: str) -> Optional[tuple[str, int]]:
 def _is_wildcard(bound: str) -> bool:
     try:
         return bound == "" or ipaddress.ip_address(bound).is_unspecified
+    except ValueError:
+        return False
+
+
+def _is_loopback_host(host: str) -> bool:
+    canonical = _canonical_host(host.strip("[]"))
+    if canonical == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(canonical).is_loopback
     except ValueError:
         return False
 
@@ -191,7 +202,11 @@ async def _stream_back(request: web.Request, session, upstream_resp) -> web.Stre
     return resp
 
 
-def create_app(adapter: UpstreamAdapter, bound_host: str = DEFAULT_HOST) -> web.Application:
+def create_app(
+    adapter: UpstreamAdapter,
+    bound_host: str = DEFAULT_HOST,
+    inbound_bearer: Optional[str] = None,
+) -> web.Application:
     """Build the aiohttp application bound to a specific upstream adapter.
 
     Every adapter method is synchronous and blocking (the Nous adapter takes the 15s cross-process
@@ -204,6 +219,9 @@ def create_app(adapter: UpstreamAdapter, bound_host: str = DEFAULT_HOST) -> web.
     bound = _canonical_host(bound_host.strip("[]"))
     wildcard = _is_wildcard(bound)
     allowed_hosts = _LOOPBACK_HOSTS | {bound}
+    expected_bearer = str(inbound_bearer or "").strip()
+    if adapter.requires_downstream_auth and not expected_bearer:
+        raise ValueError(f"{adapter.display_name} requires a downstream bearer")
 
     @web.middleware
     async def local_only(request: web.Request, handler):
@@ -222,7 +240,27 @@ def create_app(adapter: UpstreamAdapter, bound_host: str = DEFAULT_HOST) -> web.
             )
         return await handler(request)
 
-    app = web.Application(client_max_size=MAX_REQUEST_BYTES, middlewares=[local_only])
+    @web.middleware
+    async def downstream_auth(request: web.Request, handler):
+        if expected_bearer:
+            scheme, separator, candidate = request.headers.get("Authorization", "").partition(" ")
+            authorized = (
+                bool(separator)
+                and scheme.lower() == "bearer"
+                and hmac.compare_digest(candidate.strip(), expected_bearer)
+            )
+            if not authorized:
+                return _json_error(
+                    401,
+                    "A valid local proxy bearer is required.",
+                    code="proxy_auth_required",
+                )
+        return await handler(request)
+
+    app = web.Application(
+        client_max_size=MAX_REQUEST_BYTES,
+        middlewares=[local_only, downstream_auth],
+    )
     # AppKey: forward-compat with aiohttp versions that strip bare-string keys.
     app[web.AppKey("adapter", UpstreamAdapter)] = adapter
 
@@ -237,14 +275,21 @@ def create_app(adapter: UpstreamAdapter, bound_host: str = DEFAULT_HOST) -> web.
             return _json_error(
                 404, f"Path /v1{rel_path} is not forwarded by this proxy. Allowed: {allowed}", code="path_not_allowed"
             )
+        # Body read into memory once (chat/embeddings payloads are small); switch to streaming
+        # if large multipart uploads ever need forwarding.
+        body = await request.read()
+        local_response = await asyncio.to_thread(adapter.handle_local_request, rel_path, body)
+        if local_response is not None:
+            return web.Response(
+                status=local_response.status,
+                body=local_response.body,
+                content_type=local_response.content_type,
+            )
         try:
             cred = await asyncio.to_thread(adapter.get_credential)
         except Exception as exc:
             logger.warning("proxy: credential resolution failed: %s", exc)
             return _json_error(401, str(exc), code="upstream_auth_failed")
-        # Body read into memory once (chat/embeddings payloads are small); switch to streaming
-        # if large multipart uploads ever need forwarding.
-        body = await request.read()
         session, upstream_resp = await _open_upstream(request, rel_path, body, cred)
         if upstream_resp is None:
             return session
@@ -276,10 +321,13 @@ async def run_server(
     host: str = DEFAULT_HOST,
     port: int = DEFAULT_PORT,
     shutdown_event: Optional[asyncio.Event] = None,
+    inbound_bearer: Optional[str] = None,
 ) -> None:
     """Run the proxy in the current event loop until shutdown_event is set."""
     _require_aiohttp()
-    app = create_app(adapter, bound_host=host)
+    if adapter.loopback_only and not _is_loopback_host(host):
+        raise ValueError(f"{adapter.display_name} is restricted to a loopback bind")
+    app = create_app(adapter, bound_host=host, inbound_bearer=inbound_bearer)
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     site = web.TCPSite(runner, host=host, port=port)

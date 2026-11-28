@@ -200,6 +200,10 @@ os.environ["HERMES_TEST_ISOLATION"] = os.environ.get("HERMES_HOME", "") or "1"
 # ran a real `uv pip install boto3` into the shared venv while other files raced
 # on whether botocore was importable yet.
 os.environ["HERMES_DISABLE_LAZY_INSTALLS"] = "1"
+# ...and it reaches children whose env is rebuilt without it (see the module docstring).
+from tests._fixtures.child_lazy_install_fence import install as _install_child_lazy_install_fence
+
+_install_child_lazy_install_fence()
 
 #: HERMES_HOME as it stood when conftest was imported - i.e. before any test
 #: module could import code that configures logging. Recorded so the guard in

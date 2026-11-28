@@ -73,7 +73,7 @@ def test_boots_during_a_failing_pass_never_repeat_it(tmp_path):
     signals.mkdir()
     (home / "config.yaml").write_text("_config_version: 1\n", encoding="utf-8")
     env = {k: v for k, v in os.environ.items() if not k.startswith(("HERMES_", "PYTHONPATH"))}
-    env.update(HOME=str(tmp_path), HERMES_HOME=str(home),
+    env.update(HOME=str(tmp_path), HERMES_HOME=str(home), HERMES_DISABLE_LAZY_INSTALLS="0",  # the real boot step
                PYTHONPATH=str(Path(default_plugins.__file__).parents[1]))
 
     def boot() -> dict:

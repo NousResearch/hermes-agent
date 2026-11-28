@@ -73,7 +73,9 @@ def _launch(tmp_path: Path, root: Path, sync_mode: str, launch: int, argv: list[
     script = tmp_path / "launch.py"
     script.write_text(_LAUNCH, encoding="utf-8")
     env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "HERMES_HOME": str(tmp_path / "home"),
-           "LAUNCH_COMMAND": json.dumps(argv), "GENERATION_CAP": str(GENERATION_CAP)}
+           "LAUNCH_COMMAND": json.dumps(argv), "GENERATION_CAP": str(GENERATION_CAP),
+           # The launch repair under test is skipped while lazy installs are off.
+           "HERMES_DISABLE_LAZY_INSTALLS": "0"}
     result = subprocess.run(
         [sys.executable, str(script), str(REPO), str(root), str(tmp_path), sync_mode, str(launch)],
         env=env, capture_output=True, text=True, timeout=120, check=False,

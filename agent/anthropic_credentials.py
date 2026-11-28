@@ -553,15 +553,30 @@ def _write_claude_code_credentials(
     except (OSError, ValueError) as e:
         logger.error("Failed to write refreshed credentials to %s: %s", cred_path, e)
         raise CredentialPersistError(cred_path, e) from e
-    oauth_data: dict[str, Any] = {"accessToken": access_token, "refreshToken": refresh_token, "expiresAt": expires_at_ms}
+    oauth_data = _rotated_claude_oauth_entry(existing.get("claudeAiOauth"), access_token, refresh_token, expires_at_ms)
     if scopes is not None:
         oauth_data["scopes"] = scopes
-    elif "claudeAiOauth" in existing and "scopes" in existing["claudeAiOauth"]:
-        oauth_data["scopes"] = existing["claudeAiOauth"]["scopes"]
     existing["claudeAiOauth"] = oauth_data
     _commit_private_json(cred_path, existing, "credentials")
     _mirror_claude_code_credentials_to_keychain(
         access_token, refresh_token, expires_at_ms, spent_refresh_token=spent_refresh_token)
+
+
+# Metadata describing the refresh token a rotation just spent; carrying it over would misdate the new one.
+_SPENT_REFRESH_TOKEN_KEYS = ("refreshTokenExpiresAt",)
+
+
+def _rotated_claude_oauth_entry(
+    existing_oauth: Any, access_token: str, refresh_token: str, expires_at_ms: int
+) -> dict[str, Any]:
+    """Rotate the token triple over an existing ``claudeAiOauth`` entry, keeping the metadata Claude Code stores
+    beside it (``subscriptionType`` / ``rateLimitTier`` / ``scopes`` / account ids). Replacing the entry wholesale
+    drops ``subscriptionType`` and Claude Code then bills as an API key until the next ``/login`` (#83338)."""
+    oauth = dict(existing_oauth) if isinstance(existing_oauth, dict) else {}
+    for key in _SPENT_REFRESH_TOKEN_KEYS:
+        oauth.pop(key, None)
+    oauth.update({"accessToken": access_token, "refreshToken": refresh_token, "expiresAt": expires_at_ms})
+    return oauth
 
 
 def _merge_keychain_credential_payload(
@@ -573,9 +588,8 @@ def _merge_keychain_credential_payload(
     Pure and host-agnostic so the merge semantics are unit-testable without a Keychain.
     """
     merged = dict(existing_payload)
-    oauth = dict(existing_payload.get("claudeAiOauth") or {})
-    oauth.update({"accessToken": access_token, "refreshToken": refresh_token, "expiresAt": expires_at_ms})
-    merged["claudeAiOauth"] = oauth
+    merged["claudeAiOauth"] = _rotated_claude_oauth_entry(
+        existing_payload.get("claudeAiOauth"), access_token, refresh_token, expires_at_ms)
     return merged
 
 

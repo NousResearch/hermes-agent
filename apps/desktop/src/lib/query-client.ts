@@ -14,28 +14,43 @@ export const queryClient = new QueryClient({
 })
 
 // A cache-only `model.options` read can answer for Nous before the backend has re-warmed its catalog /
-// entitlement caches (`pricing_pending` / `free_tier_pending`): no Large / Free tags and, while the
-// entitlement is unknown, every model locked. The model menu re-reads every 2s until a warm row lands,
-// so a warm reply followed by a pending one made the tags blink off and on. Keep what the last warm row
-// said until a warm one replaces it. Window plans only: only their rows carry `usage_levels`.
+// entitlement caches (`pricing_pending` / `free_tier_pending`): no Large / Free tags or per-token prices
+// and, while the entitlement is unknown, every model locked. The model pickers re-read every 2s until a
+// warm row lands, so a warm reply followed by a pending one made prices or tags blink off and on. Keep
+// what the last warm row said (window-plan `usage_levels` OR PAYG/credit `pricing`) until a warm one
+// replaces it.
 const WARM_NOUS_FIELDS = ['usage_levels', 'pricing', 'unavailable_models', 'free_tier', 'warning'] as const
 
+const hasEntries = (record: Record<string, unknown> | null | undefined) =>
+  Boolean(record && Object.keys(record).length > 0)
+
 const isPendingNous = (row: ModelOptionProvider) =>
-  row.slug === 'nous' && Boolean(row.pricing_pending || row.free_tier_pending)
+  row.slug === 'nous' && !row.free_tier_row && Boolean(row.pricing_pending || row.free_tier_pending)
+
+const hasWarmNousData = (row: ModelOptionProvider) =>
+  row.slug === 'nous' &&
+  !row.free_tier_row &&
+  !isPendingNous(row) &&
+  (hasEntries(row.usage_levels) || hasEntries(row.pricing))
 
 // A merged result keeps its pending flags, so its own row no longer reads as warm: remember which warm row
-// it was built from, or a second pending reply in a row would drop the tags again.
+// it was built from, or a second pending reply in a row would drop the tags/prices again.
 const warmSource = new WeakMap<object, ModelOptionProvider>()
 
 export function keepWarmNousRow(oldData: unknown, newData: unknown): unknown {
-  const prev = oldData as ModelOptionsResult | undefined
-  const next = newData as ModelOptionsResult | undefined
+  const prev = oldData && typeof oldData === 'object' ? (oldData as ModelOptionsResult) : undefined
+  const next = newData && typeof newData === 'object' ? (newData as ModelOptionsResult) : undefined
 
-  const warm =
-    (prev && warmSource.get(prev)) ??
-    prev?.providers?.find(row => row.slug === 'nous' && row.usage_levels && !isPendingNous(row))
+  const warm = (prev && warmSource.get(prev)) ?? prev?.providers?.find(hasWarmNousData)
+  const pendingNous = next?.providers?.find(isPendingNous)
 
-  if (!warm || !next?.providers?.some(isPendingNous)) {
+  if (!warm || !next?.providers || !pendingNous) {
+    return replaceEqualDeep(oldData, newData)
+  }
+
+  // Mid-upgrade boundary: never overlay a prior PAYG/credit `pricing` row onto an incoming
+  // usage-window plan row (whose own warm reply strips per-token prices).
+  if (pendingNous.plan_usage?.kind === 'usage_window' && !hasEntries(warm.usage_levels)) {
     return replaceEqualDeep(oldData, newData)
   }
 

@@ -384,6 +384,97 @@ def test_cached_snapshot_survives_a_token_refresh_but_not_an_account_or_org_swit
     assert cached_nous_portal_account_info(any_age=True) is None
 
 
+def test_account_info_cache_is_profile_scoped_under_multiplex(tmp_path, monkeypatch):
+    """Profile B fetching its account must not evict Profile A's cached snapshot."""
+    from hermes_cli.nous_account import cached_nous_portal_account_info
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    tok_a = _jwt({"sub": "user_a", "org_id": "org_a", "exp": int(time.time()) + 900, "jti": "ja"})
+    tok_b = _jwt({"sub": "user_b", "org_id": "org_b", "exp": int(time.time()) + 900, "jti": "jb"})
+    payload_a = _account_payload(
+        allowed=True,
+        subscription={"plan": "Hermes Plus", "tier": 110, "monthly_charge": 20},
+        subscription_credits=0,
+        purchased_credits=4,
+    )
+    payload_b = _account_payload(
+        allowed=True, subscription=None, subscription_credits=0, purchased_credits=10
+    )
+
+    home_a = tmp_path / "profile-a"
+    home_b = tmp_path / "profile-b"
+    home_a.mkdir()
+    home_b.mkdir()
+    state_by_home = {str(home_a): _state(tok_a), str(home_b): _state(tok_b)}
+    payload_by_token = {tok_a: payload_a, tok_b: payload_b}
+
+    def current_state(_provider):
+        from hermes_constants import get_hermes_home
+
+        return state_by_home[str(get_hermes_home())]
+
+    monkeypatch.setattr("hermes_cli.auth.get_provider_auth_state", current_state)
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_nous_access_token",
+        lambda: current_state("nous")["access_token"],
+    )
+    monkeypatch.setattr(
+        "hermes_cli.nous_account._fetch_nous_account_info",
+        lambda token, *_a, **_kw: payload_by_token[token],
+    )
+
+    tok = set_hermes_home_override(str(home_a))
+    try:
+        info_a = get_nous_portal_account_info(force_fresh=True)
+    finally:
+        reset_hermes_home_override(tok)
+
+    tok = set_hermes_home_override(str(home_b))
+    try:
+        info_b = get_nous_portal_account_info(force_fresh=True)
+        assert cached_nous_portal_account_info() is info_b
+    finally:
+        reset_hermes_home_override(tok)
+
+    tok = set_hermes_home_override(str(home_a))
+    try:
+        assert cached_nous_portal_account_info() is info_a
+        assert cached_nous_portal_account_info(any_age=True) is info_a
+    finally:
+        reset_hermes_home_override(tok)
+
+
+def test_oauth_pool_account_fetch_populates_profile_cache(monkeypatch):
+    """Pool-only Nous OAuth credentials populate and read cached_nous_portal_account_info."""
+    from types import SimpleNamespace
+    from hermes_cli.nous_account import cached_nous_portal_account_info
+
+    tok = _jwt({"sub": "pool_user", "org_id": "pool_org", "exp": int(time.time()) + 900, "jti": "jp"})
+    entry = SimpleNamespace(
+        access_token=tok,
+        auth_type="oauth",
+        refresh_token="rt-pool",
+        portal_base_url="https://portal.example.test",
+        client_id="hermes-cli",
+        agent_key=None,
+        label="pool-1",
+    )
+    payload = _account_payload(
+        allowed=True,
+        subscription={"plan": "Hermes Plus", "tier": 110, "monthly_charge": 20},
+        subscription_credits=0,
+        purchased_credits=0,
+    )
+    monkeypatch.setattr("hermes_cli.auth.get_provider_auth_state", lambda _p: {})
+    monkeypatch.setattr("hermes_cli.nous_account._select_nous_pool_entry", lambda: entry)
+    monkeypatch.setattr("hermes_cli.nous_account._fetch_nous_account_info", lambda *a, **kw: payload)
+
+    info = get_nous_portal_account_info(force_fresh=True)
+    assert info.source == "account_api"
+    assert cached_nous_portal_account_info() is info
+    assert cached_nous_portal_account_info(any_age=True) is info
+
+
 # ── org slug/name parsing + top-up URL builder ──────────────────────────────
 
 

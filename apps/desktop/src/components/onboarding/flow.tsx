@@ -10,6 +10,8 @@ import { Loader } from '@/components/ui/loader'
 import { getGlobalModelOptions, profileScopeKey } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { ExternalLink, Loader2 } from '@/lib/icons'
+import { keepWarmNousRow } from '@/lib/query-client'
+import { nousPricingPoll, useNousPendingPollAnchor } from '@/lib/use-model-options-query'
 import { cn } from '@/lib/utils'
 import {
   cancelOnboardingFlow,
@@ -258,9 +260,18 @@ function ConfirmingModelPanel({
 
   // Pull pricing + tier for the just-picked default so the confirm card
   // shows the same $/Mtok + Free/Pro info the picker and CLI do.
+  const optionsKey = ['onboarding-model-options', profileScopeKey(ctx.scope ?? ctx.profile), flow.providerSlug] as const
+  const pollBaseline = useNousPendingPollAnchor(optionsKey, true)
+
   const options = useQuery({
-    queryKey: ['onboarding-model-options', profileScopeKey(ctx.scope ?? ctx.profile), flow.providerSlug],
-    queryFn: () => getGlobalModelOptions({ includeUnconfigured: true, explicitOnly: false }, ctx.scope ?? ctx.profile)
+    queryFn: () => getGlobalModelOptions({ explicitOnly: false, includeUnconfigured: true }, ctx.scope ?? ctx.profile),
+    queryKey: optionsKey,
+    refetchInterval: query =>
+      nousPricingPoll(
+        query.state.data,
+        Math.max(0, query.state.dataUpdateCount + query.state.errorUpdateCount - pollBaseline)
+      ),
+    structuralSharing: keepWarmNousRow
   })
 
   const providerRow = options.data?.providers?.find(

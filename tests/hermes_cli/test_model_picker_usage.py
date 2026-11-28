@@ -421,6 +421,119 @@ def test_warm_picker_never_forces_a_fetch_for_a_non_window_account(monkeypatch):
         assert calls == [False]
 
 
+def test_warm_picker_fetches_window_plan_on_cold_start_from_jwt_claim(monkeypatch):
+    """Cold start: JWT carries usage_window=True -> warm=True fetches /api/oauth/account once."""
+    from hermes_cli import nous_account as na
+    from hermes_cli.model_picker_usage import nous_picker_usage
+
+    jwt_snap = SimpleNamespace(
+        logged_in=True, source="jwt", subscription=None, usage_window=None,
+        raw_claims={"usage_window": True, "jti": "jwt-plus-1"},
+    )
+    account_snap = SimpleNamespace(
+        logged_in=True, source="account_api", subscription=SimpleNamespace(plan="Hermes Plus"),
+        usage_window=SimpleNamespace(**usage_window(day_used_bp=100, week_used_bp=200)),
+    )
+    calls: list[bool] = []
+    cached_box: dict[str, object] = {}
+
+    def fake_cached(*, any_age=False):
+        return cached_box.get("info")
+
+    def fake_get(*, force_fresh=False, **_):
+        calls.append(force_fresh)
+        if force_fresh:
+            cached_box["info"] = account_snap
+            return account_snap
+        return jwt_snap
+
+    monkeypatch.setattr(na, "cached_nous_portal_account_info", fake_cached)
+    monkeypatch.setattr(na, "get_nous_portal_account_info", fake_get)
+
+    usage = nous_picker_usage(warm=True)
+    assert calls == [False, True]
+    assert usage is not None and usage.plan == "Hermes Plus"
+
+
+def test_warm_picker_fetches_window_plan_on_cold_start_from_catalog_marks(monkeypatch):
+    """Cold start with an older JWT lacking usage_window claim: profile's cached catalog marks prove window plan."""
+    from hermes_cli import model_picker_usage as mpu
+    from hermes_cli import nous_account as na
+
+    jwt_snap = SimpleNamespace(
+        logged_in=True, source="jwt", subscription=None, usage_window=None,
+        raw_claims={"jti": "jwt-old-1"},
+    )
+    account_snap = SimpleNamespace(
+        logged_in=True, source="account_api", subscription=SimpleNamespace(plan="Hermes Plus"),
+        usage_window=SimpleNamespace(**usage_window(day_used_bp=250, week_used_bp=500)),
+    )
+    calls: list[bool] = []
+    cached_box: dict[str, object] = {}
+
+    monkeypatch.setattr(na, "cached_nous_portal_account_info", lambda *, any_age=False: cached_box.get("info"))
+    monkeypatch.setattr(
+        na, "get_nous_portal_account_info",
+        lambda *, force_fresh=False, **_: (
+            calls.append(force_fresh)
+            or (cached_box.__setitem__("info", account_snap) or account_snap if force_fresh else jwt_snap)
+        ),
+    )
+    monkeypatch.setattr(mpu, "_nous_catalog", lambda *, fetch=False: {"example/model-b": {"usage_level": "top_tier"}})
+
+    usage = mpu.nous_picker_usage(warm=True)
+    assert calls == [False, True]
+    assert usage is not None and usage.plan == "Hermes Plus"
+
+
+def test_warm_picker_does_not_refetch_after_downgrade_on_same_stale_jwt(monkeypatch):
+    """Once account_api settled usage_window=None for a JWT, the same unexpired JWT must not refetch every 60s."""
+    from hermes_cli import nous_account as na
+    from hermes_cli.model_picker_usage import nous_picker_usage
+
+    jwt_snap = SimpleNamespace(
+        logged_in=True, source="jwt", subscription=None, usage_window=None,
+        raw_claims={"usage_window": True, "jti": "jwt-downgraded-1"},
+    )
+    settled_credit = SimpleNamespace(
+        logged_in=True, source="account_api", subscription=None, usage_window=None,
+    )
+    calls: list[bool] = []
+
+    monkeypatch.setattr(na, "cached_nous_portal_account_info", lambda *, any_age=False: settled_credit if any_age else None)
+    monkeypatch.setattr(
+        na, "cached_nous_account_matches_jwt", lambda info: info is jwt_snap, raising=False
+    )
+    monkeypatch.setattr(
+        na, "get_nous_portal_account_info",
+        lambda *, force_fresh=False, **_: calls.append(force_fresh) or (settled_credit if force_fresh else jwt_snap),
+    )
+
+    assert nous_picker_usage(warm=True) is None
+    assert calls == [False]
+
+
+def test_warm_picker_guest_never_forces_window_fetch(monkeypatch):
+    """Anonymous guest identity must never trigger /api/oauth/account even if a catalog row has window marks."""
+    from hermes_cli import model_picker_usage as mpu
+    from hermes_cli import nous_account as na
+
+    guest = SimpleNamespace(
+        logged_in=True, source="jwt", is_anonymous_tier=True, account_tier="anonymous",
+        subscription=None, usage_window=None, raw_claims={"usage_window": True},
+    )
+    calls: list[bool] = []
+    monkeypatch.setattr(na, "cached_nous_portal_account_info", lambda *, any_age=False: None)
+    monkeypatch.setattr(
+        na, "get_nous_portal_account_info",
+        lambda *, force_fresh=False, **_: calls.append(force_fresh) or guest,
+    )
+    monkeypatch.setattr(mpu, "_nous_catalog", lambda *, fetch=False: {"example/model-b": {"usage_level": "top_tier"}})
+
+    assert mpu.nous_picker_usage(warm=True) is None
+    assert calls == [False]
+
+
 # ── where the "used up" note reaches outside the pickers above ───────────────────
 
 def test_the_in_chat_cli_picker_says_the_limit_once_on_nous_only(monkeypatch):

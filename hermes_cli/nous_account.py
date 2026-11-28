@@ -21,11 +21,13 @@ NousAccountInfoSource = Literal["jwt", "account_api", "inference_key", "none", "
 TOOL_COVERAGE_CATEGORIES = ("firecrawl", "fal", "fal-video", "openai-audio", "browser-use", "modal")
 
 _ACCOUNT_INFO_CACHE_TTL = 60
-_account_info_cache: tuple[str, float, NousPortalAccountInfo] | None = None
+# Per-profile short-lived account snapshot cache keyed by ``hermes_home_key()``:
+#   profile_key -> (cache_key, identity, token_fp, cached_at, info)
+# Keeping identity per slot lets a token refresh survive while a login/org switch invalidates;
+# keeping token_fp lets callers recognize when an authoritative account_api read already settled
+# the current JWT (e.g. after a downgrade whose unexpired JWT still carries ``usage_window: true``).
+_account_info_cache: dict[str, tuple[str, str, Optional[str], float, NousPortalAccountInfo]] = {}
 _ACCOUNT_INFO_CACHE_LOCK = threading.Lock()
-# Who ``_account_info_cache`` belongs to (portal + JWT user/org), for ``cached_nous_portal_account_info``:
-# that read must survive a token refresh, which changes the cache key above.
-_account_info_identity: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -345,11 +347,65 @@ def _no_paid_access_message(
     )
 
 
+def _profile_cache_key() -> str:
+    from hermes_constants import hermes_home_key
+
+    return hermes_home_key()
+
+
+def _jwt_token_fingerprint(access_token: Optional[str], raw_claims: Optional[dict[str, Any]] = None) -> Optional[str]:
+    """Stable identifier for one specific JWT mint (``jti`` when present, else token digest)."""
+    claims = raw_claims
+    if claims is None and _nonblank(access_token):
+        try:
+            from hermes_cli.auth_constants import _decode_jwt_claims
+
+            claims = _decode_jwt_claims(access_token or "")
+        except Exception:
+            logging.getLogger(__name__).debug("JWT claim decode failed for fingerprint", exc_info=True)
+            claims = None
+    if isinstance(claims, dict):
+        jti = claims.get("jti")
+        if _nonblank(jti):
+            return f"jti:{str(jti).strip()}"
+    if _nonblank(access_token):
+        return f"sha:{hashlib.sha256((access_token or '').encode('utf-8')).hexdigest()}"
+    return None
+
+
+def _store_cached_account_info(
+    cache_key: str, identity: str, access_token: str, info: NousPortalAccountInfo
+) -> None:
+    global _account_info_cache
+    token_fp = _jwt_token_fingerprint(access_token)
+    profile_key = _profile_cache_key()
+    with _ACCOUNT_INFO_CACHE_LOCK:
+        if not isinstance(_account_info_cache, dict):
+            _account_info_cache = {}
+        _account_info_cache[profile_key] = (cache_key, identity, token_fp, time.monotonic(), info)
+
+
+def _peek_cached_account_info() -> Optional[NousPortalAccountInfo]:
+    """Read the active profile's raw cached snapshot without touching auth state (fast-path peek)."""
+    profile_key = _profile_cache_key()
+    with _ACCOUNT_INFO_CACHE_LOCK:
+        cache = _account_info_cache
+        if isinstance(cache, dict):
+            entry = cache.get(profile_key)
+            return entry[4] if entry is not None else None
+        if isinstance(cache, tuple) and len(cache) >= 3:
+            return cache[-1]
+        return None
+
+
 def reset_nous_portal_account_info_cache() -> None:
     """Clear the short-lived account-info cache used by tests."""
-    global _account_info_cache, _account_info_identity
-    _account_info_cache = None
-    _account_info_identity = None
+    global _account_info_cache
+    with _ACCOUNT_INFO_CACHE_LOCK:
+        if isinstance(_account_info_cache, dict):
+            _account_info_cache.clear()
+        else:
+            _account_info_cache = {}
 
 
 def get_nous_portal_account_info(*, force_fresh: bool = False, min_jwt_ttl_seconds: int = 60) -> NousPortalAccountInfo:
@@ -407,21 +463,46 @@ def cached_nous_portal_account_info(*, any_age: bool = False) -> Optional[NousPo
     ``any_age`` returns the last snapshot even past the TTL, for callers that read only the plan's shape
     (window or not, featured models), which rarely changes."""
     try:
+        profile_key = _profile_cache_key()
         with _ACCOUNT_INFO_CACHE_LOCK:
-            cached, identity = _account_info_cache, _account_info_identity
-        if cached is None:
+            entry = _account_info_cache.get(profile_key) if isinstance(_account_info_cache, dict) else None
+        if entry is None:
             return None
-        _, cached_at, info = cached
+        _, identity, _, cached_at, info = entry
         # Expiry first: it is free, while the identity check reads the auth store.
         if not any_age and (time.monotonic() - cached_at) >= _ACCOUNT_INFO_CACHE_TTL:
             return None
         # Another login, org or portal never reads this snapshot; a refreshed token for the same one does.
-        if identity is None or identity != _current_account_identity():
+        if not identity or identity != _current_account_identity():
             return None
         return info
     except Exception:
         logging.getLogger(__name__).debug("Cached Nous account info unreadable", exc_info=True)
         return None
+
+
+def cached_nous_account_matches_jwt(info: Any) -> bool:
+    """True when this profile's cached ``account_api`` snapshot (any age) was fetched with the same JWT mint."""
+    try:
+        profile_key = _profile_cache_key()
+        with _ACCOUNT_INFO_CACHE_LOCK:
+            entry = _account_info_cache.get(profile_key) if isinstance(_account_info_cache, dict) else None
+        if entry is None:
+            return False
+        _, identity, token_fp, _, cached_info = entry
+        if not token_fp or getattr(cached_info, "source", None) != "account_api":
+            return False
+        if not identity or identity != _current_account_identity():
+            return False
+        raw_claims = getattr(info, "raw_claims", None)
+        jwt_fp = _jwt_token_fingerprint(None, raw_claims if isinstance(raw_claims, dict) else None)
+        if jwt_fp is None:
+            access_token, _ = _current_account_token_and_portal()
+            jwt_fp = _jwt_token_fingerprint(access_token)
+        return jwt_fp is not None and jwt_fp == token_fp
+    except Exception:
+        logging.getLogger(__name__).debug("Cached Nous JWT match check failed", exc_info=True)
+        return False
 
 
 def _account_identity(access_token: str, portal_base_url: Optional[str]) -> str:
@@ -437,16 +518,34 @@ def _account_identity(access_token: str, portal_base_url: Optional[str]) -> str:
     return f"{portal_base_url or ''}:{identity}"
 
 
-def _current_account_identity() -> Optional[str]:
-    """``_account_identity`` for the persisted Nous login, without a refresh or network call. None
-    when logged out."""
+def _current_account_token_and_portal() -> tuple[Optional[str], Optional[str]]:
+    """Persisted Nous access token + portal URL (direct auth state or active OAuth pool), without I/O refresh."""
+    from hermes_cli.anon_auth import guest_without_free_tier, held_connectors_token
     from hermes_cli.auth import get_provider_auth_state
 
     state = get_provider_auth_state("nous") or {}
-    access_token = state.get("access_token")
+    access_token = "" if guest_without_free_tier(state) else (held_connectors_token(state) or "")
+    portal_base_url = _portal_base_url(state)
+    if _nonblank(access_token):
+        return access_token, portal_base_url
+    try:
+        entry = _select_nous_pool_entry()
+    except Exception:
+        logging.getLogger(__name__).debug("Nous OAuth pool identity lookup failed", exc_info=True)
+        return None, None
+    if entry is not None and _pool_entry_is_portal_oauth(entry):
+        entry_portal = getattr(entry, "portal_base_url", None) or portal_base_url
+        return entry.access_token, entry_portal
+    return None, None
+
+
+def _current_account_identity() -> Optional[str]:
+    """``_account_identity`` for the persisted Nous login (or active OAuth pool entry), without a refresh
+    or network call. None when logged out."""
+    access_token, portal_base_url = _current_account_token_and_portal()
     if not _nonblank(access_token):
         return None
-    return _account_identity(access_token, _portal_base_url(state))
+    return _account_identity(access_token, portal_base_url)
 
 
 def nous_policy_notice(*, removed: bool) -> str:
@@ -465,8 +564,6 @@ def nous_policy_notice(*, removed: bool) -> str:
 
 
 def _fresh_account_info(state: dict[str, Any], force_fresh: bool, portal_base_url: Optional[str]) -> NousPortalAccountInfo:
-    global _account_info_cache, _account_info_identity
-
     try:
         from hermes_cli.auth import get_provider_auth_state, resolve_nous_access_token
 
@@ -475,19 +572,19 @@ def _fresh_account_info(state: dict[str, Any], force_fresh: bool, portal_base_ur
         portal_base_url = _portal_base_url(refreshed_state) or portal_base_url
         digest = hashlib.sha256(access_token.encode("utf-8")).hexdigest()
         cache_key = f"{portal_base_url or ''}:{digest}"
+        profile_key = _profile_cache_key()
 
         with _ACCOUNT_INFO_CACHE_LOCK:
-            if not force_fresh and _account_info_cache is not None:
-                cached_key, cached_at, cached_info = _account_info_cache
+            entry = _account_info_cache.get(profile_key) if isinstance(_account_info_cache, dict) else None
+            if not force_fresh and entry is not None:
+                cached_key, _, _, cached_at, cached_info = entry
                 if cached_key == cache_key and (time.monotonic() - cached_at) < _ACCOUNT_INFO_CACHE_TTL:
                     return cached_info
 
         info = _info_from_fetched_account(access_token, refreshed_state, portal_base_url)
         if info.source != "error":
             identity = _account_identity(access_token, portal_base_url)
-            with _ACCOUNT_INFO_CACHE_LOCK:
-                _account_info_cache = (cache_key, time.monotonic(), info)
-                _account_info_identity = identity
+            _store_cached_account_info(cache_key, identity, access_token, info)
         return info
     except Exception as exc:
         return _error_info(error=exc, logged_in=bool(state.get("access_token")),
@@ -547,8 +644,21 @@ def _info_from_oauth_pool(
         jwt_info = _info_from_valid_jwt(access_token, state, entry_portal_url, min_jwt_ttl_seconds)
         if jwt_info is not None:
             return jwt_info
+    digest = hashlib.sha256(access_token.encode("utf-8")).hexdigest()
+    cache_key = f"{entry_portal_url or ''}:{digest}"
+    profile_key = _profile_cache_key()
+    with _ACCOUNT_INFO_CACHE_LOCK:
+        cached_entry = _account_info_cache.get(profile_key) if isinstance(_account_info_cache, dict) else None
+        if not force_fresh and cached_entry is not None:
+            cached_key, _, _, cached_at, cached_info = cached_entry
+            if cached_key == cache_key and (time.monotonic() - cached_at) < _ACCOUNT_INFO_CACHE_TTL:
+                return cached_info
     try:
-        return _info_from_fetched_account(access_token, state, entry_portal_url)
+        info = _info_from_fetched_account(access_token, state, entry_portal_url)
+        if info.source != "error":
+            identity = _account_identity(access_token, entry_portal_url)
+            _store_cached_account_info(cache_key, identity, access_token, info)
+        return info
     except Exception as exc:
         return _error_info(error=exc, logged_in=True, portal_base_url=entry_portal_url,
                            account_tier=_coerce_str(state.get("account_tier")))

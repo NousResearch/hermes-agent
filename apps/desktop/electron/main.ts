@@ -3586,10 +3586,11 @@ function createNativePackagedStrategy(
  * entrypoints dispatch only through this strategy — there is no other
  * production path to the checkout arms.
  */
-function resolveCheckoutUpdateStrategy(): CheckoutStrategy {
+function resolveCheckoutUpdateStrategy(uiLocale?: unknown): CheckoutStrategy {
   return createCheckoutStrategy({
     hermesHome: HERMES_HOME,
     isWindows: IS_WINDOWS,
+    uiLocale: typeof uiLocale === 'string' ? uiLocale : undefined,
     isMac: IS_MAC,
     defaultUpdateBranch: DEFAULT_UPDATE_BRANCH,
     updateHandoffDwellMs: UPDATE_HANDOFF_DWELL_MS,
@@ -4332,7 +4333,7 @@ async function releaseBackendLock(updateRoot: string, tag: string): Promise<{ un
 //
 // Detection (checkUpdates / commit changelog / "N behind") stays in the UI;
 // only this apply action changed.
-async function applyUpdates(): Promise<UpdaterApplyResultWire> {
+async function applyUpdates(uiLocale?: unknown): Promise<UpdaterApplyResultWire> {
   return updateOperation.apply(async (): Promise<UpdaterApplyResultWire> => {
     updateInFlight = true
     let handedOff: boolean = false
@@ -4353,7 +4354,7 @@ async function applyUpdates(): Promise<UpdaterApplyResultWire> {
       }
 
       const packaged: UpdaterStrategy | null = await resolvePackagedUpdateStrategy()
-      const strategy: UpdaterStrategy = packaged ?? resolveCheckoutUpdateStrategy()
+      const strategy: UpdaterStrategy = packaged ?? resolveCheckoutUpdateStrategy(uiLocale)
       const result: UpdaterApplyResultWire = await desktopMetrics.trackUpdateApply(packaged, strategy)
       handedOff = result.handedOff === true
 
@@ -14635,7 +14636,7 @@ ipcMain.handle('hermes:connections:update-all', async (_event, payload) => {
         if (connection.kind === 'local') {
           // The app-managed runtime updates through the same pipeline as the
           // Settings → Updates button (marker + venv gate + relaunch flow).
-          const result: any = await applyUpdates()
+          const result: any = await applyUpdates(payload?.locale)
 
           return { ...base, ok: result?.ok !== false, detail: result?.message || 'update started' }
         }
@@ -16658,7 +16659,7 @@ ipcMain.handle(
 )
 
 ipcMain.handle('hermes:updates:apply', async (_event, payload) =>
-  applyUpdates().catch(error => ({
+  applyUpdates(payload?.locale).catch(error => ({
     ok: false,
     error: 'apply-failed',
     message: error?.message || String(error)

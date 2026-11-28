@@ -311,7 +311,8 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     updateManaged: id => ipcRenderer.invoke('hermes:connections:update-managed', id),
     // Fan out `hermes update` to every eligible registered connection.
     // Optional excludeIds skips rows the caller updates through another path.
-    updateAll: options => ipcRenderer.invoke('hermes:connections:update-all', options),
+    updateAll: options =>
+      ipcRenderer.invoke('hermes:connections:update-all', { ...options, locale: document.documentElement.lang }),
     // Registry lifecycle push (main → renderer): a connection was removed or
     // materially edited, so secondaries scoped to it must be disposed (and,
     // for edits, re-dialed at the new target).
@@ -732,7 +733,8 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   },
   updates: {
     check: opts => ipcRenderer.invoke('hermes:updates:check', opts),
-    apply: opts => ipcRenderer.invoke('hermes:updates:apply', opts),
+    // Desktop's i18n provider sets document.lang from the active Hermes language.
+    apply: opts => ipcRenderer.invoke('hermes:updates:apply', { ...opts, locale: document.documentElement.lang }),
     setChannel: name => ipcRenderer.invoke('hermes:updates:channel:set', name),
     onProgress: callback => {
       const listener = (_event, payload) => callback(payload)

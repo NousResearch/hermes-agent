@@ -1,0 +1,38 @@
+{
+  "ru": {
+    "labels": {
+      "updating": "Обновление Hermes",
+      "waiting": "Hermes откроется после обновления.",
+      "complete": "Обновление завершено",
+      "opening": "Запускаем Hermes…\nЭто окно можно закрыть.",
+      "reopen": "Откройте Hermes, чтобы завершить обновление.",
+      "failed": "Не удалось обновить Hermes",
+      "report": "Чтобы отправить отчёт, выполните «hermes debug share» в терминале.",
+      "close": "Закрыть",
+      "unavailable": "Статус обновления недоступен",
+      "disconnected": "Связь с обновлятором прервалась.\nПроверьте результат в Hermes. Это окно можно закрыть.",
+      "seconds": "Прошло {0} с",
+      "minutes": "Прошло {0} мин {1} с"
+    },
+    "stages": {
+      "Waiting for Hermes to close": "Ждём закрытия Hermes",
+      "Updating code and dependencies": "Обновляем код и зависимости",
+      "Retrying update": "Повторяем обновление",
+      "Rebuilding Desktop": "Повторяем сборку Hermes Desktop",
+      "Opening Hermes": "Запускаем Hermes",
+      "Downloading updates": "Загружаем обновления",
+      "Updating dependencies": "Обновляем зависимости",
+      "Updating Python dependencies": "Обновляем зависимости Python",
+      "Updating Python dependencies (PM)": "Обновляем зависимости Python",
+      "Updating Node dependencies": "Обновляем зависимости Node.js",
+      "Building the apps": "Собираем приложения",
+      "Building the TUI": "Собираем интерфейс терминала",
+      "Building the web UI": "Собираем веб-интерфейс",
+      "Building the Webapp": "Собираем веб-приложение",
+      "Building the desktop app": "Собираем Hermes Desktop из исходников на этом компьютере",
+      "Packaging the desktop app": "Упаковываем собранное приложение",
+      "Restarting Hermes services": "Перезапускаем службы Hermes",
+      "Update complete. Reopen Hermes to finish (it could not restart itself).": "Обновление завершено. Откройте Hermes вручную."
+    }
+  }
+}

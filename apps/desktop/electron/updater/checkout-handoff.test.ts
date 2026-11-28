@@ -525,10 +525,17 @@ it.skipIf(IS_WINDOWS)('a legacy script gets no bridge and no --handoff-run', asy
   }
 })
 
-// Windows protocol 2: the run id rides the wrapped PowerShell argv.
-it('the Windows protocol-2 hand-off passes -HandoffRun with the bridged run id', async (): Promise<void> => {
+// The bridged run id remains compatible with scripts predating -UiLocale.
+it.each([
+  { protocol: 2, locale: 'ru-RU', expectedLocale: undefined },
+  { protocol: 3, locale: 'ru-RU', expectedLocale: 'ru-RU' },
+  { protocol: 3, locale: 'en', expectedLocale: 'en' },
+  { protocol: 3, locale: 'ru&echo', expectedLocale: undefined }
+])('hands off to Windows protocol $protocol with locale $locale', async ({
+  protocol, locale, expectedLocale
+}): Promise<void> => {
   const { root, deps } = handoffFixture(false)
-  fs.writeFileSync(path.join(root, 'scripts', 'desktop-update', 'windows.ps1'), '# hermes-handoff-protocol: 2\r\n')
+  fs.writeFileSync(path.join(root, 'scripts', 'desktop-update', 'windows.ps1'), `# hermes-handoff-protocol: ${protocol}\r\n`)
   const resolveHandoff: typeof updaterProcess.resolveUpdateScriptHandoff = updaterProcess.resolveUpdateScriptHandoff
   vi.spyOn(updaterProcess, 'resolveUpdateScriptHandoff').mockImplementation(
     (updateRoot: string): updaterProcess.UpdateScriptHandoff | null => resolveHandoff(updateRoot, { isWindows: true })
@@ -550,13 +557,16 @@ it('the Windows protocol-2 hand-off passes -HandoffRun with the bridged run id',
   vi.stubEnv('HERMES_UPDATE_CORRELATION_ID', 'desk-1-previous-run')
 
   try {
-    await createCheckoutStrategy({ ...deps, isWindows: true, markerHelper: helper, handoffClaimTimeoutMs: 200 }).apply()
+    await createCheckoutStrategy({
+      ...deps, isWindows: true, uiLocale: locale, markerHelper: helper, handoffClaimTimeoutMs: 200
+    }).apply()
     const runId = argAfter(runs[0]!, '-HandoffRun')
     expect(runId).toMatch(/^desk-\d+-[0-9a-z]+-[0-9a-f]{4}$/)
     expect(parseUpdateMarker(bridge ?? '')?.run).toBe(runId)
     // The update runs under THIS run's id, the one its close-holder consent is bound to.
     expect(envs[0]!.HERMES_UPDATE_CORRELATION_ID).toBe(runId)
     expect(argAfter(runs[0]!, '-DesktopPid')).toBe(String(process.pid))
+    expect(argAfter(runs[0]!, '-UiLocale')).toBe(expectedLocale)
     // Nothing adopted it: the bridge is withdrawn through the helper, with the run.
     expect(helper).toHaveBeenCalledWith(
       'withdraw',

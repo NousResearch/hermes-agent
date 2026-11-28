@@ -414,6 +414,7 @@ hints.paste: "テキストを貼り付け。/paste でクリップボードの�
 hints.pasteExpand: "貼り付けテキストのチップを展開 / 折りたたみ（入力欄に無ければ送信済みの貼り付け）"
 hints.redraw: "再描画"
 hints.rewindPicker: "入力欄が空でアイドル時: Esc を2回押すと以前のプロンプトを選んで編集 (/rewind)"
+hints.sendQueued: "次のキュー済みメッセージを今すぐ送信"
 hints.sessionSwitcher: "ライブセッション切り替えを開く（編集中のキュー済みメッセージは削除されます）"
 hints.shell: "シェルコマンドを実行（例: !ls, !git status）"
 hints.undoRedo: "入力の取り消し / やり直し"

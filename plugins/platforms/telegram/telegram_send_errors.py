@@ -76,8 +76,10 @@ def rich_failure_result(error: Exception, safe_error: str, **fields):
     when the request never left or was a flood refusal: the standalone sender reads that proof as
     "nothing sent", so cron may queue a replay."""
     result = maybe_delivered_result(error, safe_error, **fields)
-    if send_error_kind(error) in (UNSENT, FLOOD):
-        result.raw_response = {**(result.raw_response or {}), "never_sent": True}
+    kind = send_error_kind(error)
+    if kind in (UNSENT, FLOOD):
+        result.raw_response = {**(result.raw_response or {}), "never_sent": True,
+                               **({"never_left": True} if kind == UNSENT else {})}
     return result
 
 

@@ -1023,6 +1023,54 @@ kanban:
   default_workdir: ~/work/active-project
 ```
 
+### Per-task worker-run budgets
+
+`max_worker_runs` is an optional **absolute cap on run IDs for one task**, not
+the consecutive-failure threshold `max_retries`. Omitted/`null` means unlimited
+(backward-compatible); `0` forbids claims. No global retry defaults change.
+
+Each claim reserves one slot atomically with its new `task_runs` ID under
+SQLite's `BEGIN IMMEDIATE` write lock, **before** spawning. Every ID counts,
+including rate-limit/quota, auth, neutral/stale, failed-launch and review runs.
+Existing historical IDs count too (including synthetic handoff records). A
+failed launch or dispatcher crash does not refund a slot: this conservative
+reservation prevents concurrent/restarting dispatchers from overspending.
+Goal-loop turns within the same run do not spend additional slots.
+
+An exhausted task can finish its current run, but any return to a runnable lane
+is parked in `blocked` with a `run_budget_exhausted` event and a
+`run-budget-exhausted: used/cap` reason. Reassignment, unblock, promotion,
+cooldowns and failure-counter resets cannot replenish the budget. The owner
+must explicitly raise or clear the cap **and unblock separately**; editing the
+cap never wakes scheduled/blocked tasks or interrupts an active worker. Workers
+cannot edit existing run budgets. History is never cleared or deleted.
+
+Run-budget exhaustion does not suppress failure accounting: a crash, timeout,
+workspace error or launch error still records its normal failure count and
+error even when both limits exhaust together. If the task is already blocked,
+the budget adds its own exhaustion diagnostic without replacing the existing
+blocker/reason. That budget hold also survives a failure-counter reset; raising
+or clearing the cap still requires a separate explicit unblock, which restores
+the original ready/review lane.
+
+```bash
+hermes kanban create "One attempt" --assignee researcher --max-worker-runs 1
+hermes kanban show TASK_ID --json  # task.max_worker_runs and task.worker_runs_used
+hermes kanban edit TASK_ID --max-worker-runs 4  # four TOTAL IDs, not four more
+hermes kanban unblock TASK_ID                  # explicit owner admission
+hermes kanban edit TASK_ID --clear-max-worker-runs  # reset cap to unlimited
+```
+
+For exactly one more run on a card with three historical IDs, set an absolute
+cap of `4`, not `1`. Verify usage with `show` before admitting the card.
+
+The creation tool accepts `max_worker_runs`. The dashboard create dialog and
+task drawer expose the same setting and usage. The task API accepts it on
+`POST /tasks`; `PATCH /tasks/{id}` accepts `max_worker_runs` or
+`clear_max_worker_runs: true` (mutually exclusive). A PATCH that omits these
+fields leaves the cap unchanged. In PATCH, as with other override knobs,
+`null` alone is not a clear request; use the explicit clear flag.
+
 ### Scheduled task starts (`scheduled_at`)
 
 Set `scheduled_at` on a task to delay dispatch until a specific time. The dispatcher skips ready tasks whose `scheduled_at` is in the future and picks them up on the first tick after that timestamp.

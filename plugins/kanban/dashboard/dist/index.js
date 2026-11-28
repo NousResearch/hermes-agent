@@ -3308,6 +3308,7 @@
     // = backend default.
     const [goalMode, setGoalMode] = useState(false);
     const [goalMaxTurns, setGoalMaxTurns] = useState("");
+    const [maxWorkerRuns, setMaxWorkerRuns] = useState("");
 
     const submit = function () {
       const trimmed = title.trim();
@@ -3319,6 +3320,11 @@
         triage: props.columnName === "triage",
       };
       if (parent) body.parents = [parent];
+      if (maxWorkerRuns.trim() !== "") {
+        const cap = Number(maxWorkerRuns);
+        if (!Number.isSafeInteger(cap) || cap < 0) return;
+        body.max_worker_runs = cap;
+      }
       // Parse comma-separated skills into a clean list. Blank = no
       // extras (omit key so backend leaves it null). The dispatcher
       // always auto-loads kanban-worker; these are extras on top.
@@ -3345,6 +3351,7 @@
       setTitle(""); setAssignee(""); setPriority(0); setParent(""); setSkills("");
       setWorkspaceKind(defaultWorkspaceKind); setWorkspacePath(defaultWorkspacePath);
       setGoalMode(false); setGoalMaxTurns("");
+      setMaxWorkerRuns("");
     };
 
     const showPathInput = workspaceKind !== "scratch";
@@ -3371,6 +3378,11 @@
           tx(t, "newTaskTitle", "New task — {column}",
             { column: getColumnLabel(t, props.columnName) || props.columnName })),
         h("div", { className: "flex flex-col gap-3" },
+          h("div", { className: "flex flex-col gap-1" },
+            fieldLabel("Worker run-ID cap", "absolute total; blank = unlimited"),
+            h(Input, { type: "number", min: 0, step: 1, value: maxWorkerRuns,
+              onChange: function (e) { setMaxWorkerRuns(e.target.value); } }),
+          ),
           h("div", { className: "flex flex-col gap-1" },
             fieldLabel(tx(t, "taskTitleLabel", "Title")),
             h("textarea", {
@@ -4023,6 +4035,7 @@
         h(AssigneeEditor, { task: t, onPatch: props.onPatch }),
         h(PriorityEditor, { task: t, onPatch: props.onPatch }),
         h(ModelEditor, { task: t, onPatch: props.onPatch }),
+        h(RunBudgetEditor, { task: t, onPatch: props.onPatch }),
         t.tenant ? h(MetaRow, { label: tx(i18n, "tenant", "Tenant"), value: t.tenant }) : null,
         h(MetaRow, {
           label: tx(i18n, "workspace", "Workspace"),
@@ -4395,6 +4408,38 @@
         autoCorrect: "off",
         spellCheck: false,
       }),
+    );
+  }
+
+  function RunBudgetEditor(props) {
+    const [value, setValue] = useState("");
+    const [editing, setEditing] = useState(false);
+    const [busy, setBusy] = useState(false);
+    const cap = props.task.max_worker_runs;
+    const save = function () {
+      const n = Number(value);
+      if (value.trim() !== "" && (!Number.isSafeInteger(n) || n < 0)) return;
+      setBusy(true);
+      const patch = value.trim() === "" ? { clear_max_worker_runs: true } : { max_worker_runs: n };
+      props.onPatch(patch).then(function () { setEditing(false); })
+        .catch(function () {}).finally(function () { setBusy(false); });
+    };
+    return h("div", { className: "hermes-kanban-meta-row" },
+      h("span", { className: "hermes-kanban-meta-label" }, "Worker runs"),
+      editing ? h(Input, {
+        type: "number", min: 0, step: 1, value, disabled: busy, autoFocus: true,
+        placeholder: "unlimited", className: "h-7 text-xs w-28",
+        title: "Absolute run-ID cap, not retries. Blank resets to unlimited. Unblock separately.",
+        onChange: function (e) { setValue(e.target.value); },
+        onKeyDown: function (e) {
+          if (e.key === "Enter") { e.preventDefault(); save(); }
+          if (e.key === "Escape") setEditing(false);
+        },
+      }) : h("button", {
+        className: "hermes-kanban-meta-value hermes-kanban-editable",
+        title: "Edit absolute cap (includes rate-limit exits). Does not unblock parked tasks.",
+        onClick: function () { setValue(cap == null ? "" : String(cap)); setEditing(true); },
+      }, `${props.task.worker_runs_used || 0}/${cap == null ? "unlimited" : cap} run IDs used`),
     );
   }
 

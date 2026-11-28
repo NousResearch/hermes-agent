@@ -629,6 +629,8 @@ class Task:
     reasoning_effort: Optional[str] = None   # VALID_REASONING_EFFORTS | "none"; NULL = profile's
     # Breaker trip count; None -> ``kanban.failure_limit`` -> DEFAULT_FAILURE_LIMIT.
     max_retries: Optional[int] = None
+    max_worker_runs: Optional[int] = None  # absolute run-ledger cap; NULL = unlimited
+    worker_runs_used: int = 0
     # ``/goal``-style loop: a judge re-checks each turn IN THE SAME SESSION until
     # done / budget exhausted (-> kanban_block); ``goal_max_turns`` None -> goals default.
     goal_mode: bool = False
@@ -656,6 +658,7 @@ class Task:
             skills=skills_value,
             goal_mode=bool(g("goal_mode")),
             block_recurrences=int(g("block_recurrences") or 0),
+            worker_runs_used=int(g("worker_runs_used") or 0),
         )
 
 
@@ -669,7 +672,7 @@ _TASK_EPOCH_COLUMNS = ("created_at", "started_at", "completed_at", "claim_expire
 _TASK_OPTIONAL_COLUMNS = (
     "branch_name", "project_id", "tenant", "result", "idempotency_key", "worker_pid",
     "max_runtime_seconds", "current_run_id", "workflow_template_id",
-    "current_step_key", "max_retries", "session_id", "completion_contract",
+    "current_step_key", "max_retries", "max_worker_runs", "session_id", "completion_contract",
 )
 # Text columns where "" is stored/read as "not set".
 _TASK_EMPTY_IS_NULL_COLUMNS = (
@@ -845,6 +848,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- case) falls through to the dispatcher-level ``kanban.failure_limit``
     -- config and then ``DEFAULT_FAILURE_LIMIT``.
     max_retries          INTEGER,
+    max_worker_runs      INTEGER CHECK (max_worker_runs >= 0),
     -- When 1, the dispatched worker runs in a Ralph-style goal loop: an
     -- auxiliary judge re-evaluates the worker's response against the
     -- card title/body after each turn and feeds a continuation prompt
@@ -1161,7 +1165,7 @@ def create_task(
     branch_name: Optional[str] = None, tenant: Optional[str] = None, priority: int = 0,
     parents: Iterable[str] = (), triage: bool = False, idempotency_key: Optional[str] = None,
     max_runtime_seconds: Optional[int] = None, skills: Optional[Iterable[str]] = None,
-    max_retries: Optional[int] = None, model_override: Optional[str] = None,
+    max_retries: Optional[int] = None, max_worker_runs: Optional[int] = None, model_override: Optional[str] = None,
     provider_override: Optional[str] = None, reasoning_effort: Optional[str] = None,
     goal_mode: bool = False, goal_max_turns: Optional[int] = None, initial_status: str = "running",
     session_id: Optional[str] = None, board: Optional[str] = None, project_id: Optional[str] = None,
@@ -1188,6 +1192,8 @@ def create_task(
     from hermes_cli.kanban_pr_acceptance import validate_contract
 
     completion_contract = validate_contract(completion_contract)
+    from hermes_cli.kanban_run_budget import validate_max_worker_runs
+    max_worker_runs = validate_max_worker_runs(max_worker_runs)
     model_override, provider_override = _validate_model_override(model_override, provider_override)
     reasoning_effort = normalize_reasoning_effort(reasoning_effort)
     assignee = _canonical_assignee(assignee)
@@ -1265,10 +1271,10 @@ def create_task(
                         created_by, created_at, workspace_kind, workspace_path,
                         branch_name, project_id, tenant, idempotency_key,
                         max_runtime_seconds,
-                        skills, max_retries, model_override, provider_override,
+                        skills, max_retries, max_worker_runs, model_override, provider_override,
                         reasoning_effort,
                         goal_mode, goal_max_turns, session_id, completion_contract
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id, title.strip(), body, assignee, task_status, priority,
@@ -1276,7 +1282,7 @@ def create_task(
                         branch_name, project_id, tenant, idempotency_key,
                         _opt_int(max_runtime_seconds),
                         json.dumps(skills_list) if skills_list is not None else None,
-                        _opt_int(max_retries), model_override, provider_override, reasoning_effort,
+                        _opt_int(max_retries), max_worker_runs, model_override, provider_override, reasoning_effort,
                         1 if goal_mode else 0, _opt_int(goal_max_turns), session_id, completion_contract,
                     ),
                 )
@@ -1300,6 +1306,7 @@ def create_task(
                         "goal_mode": bool(goal_mode) or None,
                         "model_override": model_override,
                         "provider_override": provider_override,
+                        "max_worker_runs": max_worker_runs,
                     },
                 )
                 if task_status == "blocked":
@@ -1400,7 +1407,10 @@ def _inherit_notify_subs(
 
 
 def get_task(conn: sqlite3.Connection, task_id: str) -> Optional[Task]:
-    row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    row = conn.execute(
+        "SELECT tasks.*, (SELECT COUNT(*) FROM task_runs WHERE task_id = tasks.id) "
+        "AS worker_runs_used FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
     return Task.from_row(row) if row else None
 
 
@@ -1427,7 +1437,8 @@ def list_tasks(
 ) -> list[Task]:
     if status is not None and status not in VALID_STATUSES:
         raise ValueError(f"status must be one of {sorted(VALID_STATUSES)}")
-    query = "SELECT * FROM tasks WHERE 1=1"
+    query = ("SELECT tasks.*, (SELECT COUNT(*) FROM task_runs WHERE task_id = tasks.id) "
+             "AS worker_runs_used FROM tasks WHERE 1=1")
     params: list[Any] = []
     for col, val in (
         ("assignee", _canonical_assignee(assignee)), ("status", status), ("tenant", tenant),
@@ -1852,6 +1863,8 @@ def _append_event(
         "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
         "VALUES (?, ?, ?, ?, ?)", (task_id, run_id, kind, _json_or_null(payload), int(time.time())),
     )
+    from hermes_cli.kanban_run_budget import enforce_run_budget
+    enforce_run_budget(conn, task_id)
 
 
 def _end_run(
@@ -1985,7 +1998,8 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     ``ready`` in the same tick and the card respawns forever. A plain
     (unified-budget) ``gave_up`` carries no marker and is judged by the counter,
     so raising ``failure_limit`` or ``assign_task`` to a fresh profile still
-    releases it; a task with no such event at all (direct DB edit) auto-recovers.
+    releases it unless a separate run-budget hold awaits explicit unblock;
+    a task with no such event at all (direct DB edit) auto-recovers.
     """
     row = conn.execute(
         "SELECT kind FROM task_events "
@@ -2000,7 +2014,9 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
         "  (SELECT MAX(id) FROM task_events WHERE task_id = ? AND kind = 'unblocked'), 0) "
         "ORDER BY id DESC LIMIT 1", (task_id, task_id),
     ).fetchone()
-    return bool(trip) and bool(_json_dict(trip["payload"]).get("sticky"))
+    from hermes_cli.kanban_run_budget import pending_budget_exhaustion
+    return ((bool(trip) and bool(_json_dict(trip["payload"]).get("sticky")))
+            or pending_budget_exhaustion(conn, task_id) is not None)
 
 
 def _latest_event(
@@ -2127,6 +2143,10 @@ def _claim_and_open_run(
 ) -> Optional[int]:
     """CAS ``source_status -> running`` (and still ``expect_assignee``'s, when given), open a
     run row, emit ``claimed``; None when the CAS lost. Caller holds the txn."""
+    # Every claim path allocates its run here, so the run-ledger budget is enforced in one place.
+    from hermes_cli.kanban_run_budget import enforce_run_budget
+    if enforce_run_budget(conn, task_id):
+        return None
     cur = conn.execute(
         f"""
         UPDATE tasks
@@ -3050,8 +3070,16 @@ def edit_task(
     body: Optional[str] = None, priority: Optional[int] = None,
     result: Optional[str] = None, summary: Optional[str] = None,
     metadata: Optional[dict] = None, board: Optional[str] = None,
+    max_worker_runs: Any = _UNSET, clear_max_worker_runs: bool = False,
 ) -> bool:
     """Edit task fields, optionally backfilling a completed task's result."""
+    from hermes_cli.kanban_run_budget import assert_budget_edit_allowed, validate_max_worker_runs
+    budget_edit = max_worker_runs is not _UNSET or clear_max_worker_runs
+    if budget_edit:
+        assert_budget_edit_allowed()
+        if clear_max_worker_runs and max_worker_runs is not _UNSET:
+            raise ValueError("pass max_worker_runs or clear_max_worker_runs, not both")
+        max_worker_runs = validate_max_worker_runs(None if clear_max_worker_runs else max_worker_runs)
     changed_fields = [
         field for field, value in (("title", title), ("body", body), ("priority", priority))
         if value is not None
@@ -3062,6 +3090,10 @@ def edit_task(
             return False
         assignments = []
         params = []
+        if budget_edit:
+            assignments.append("max_worker_runs = ?")
+            params.append(max_worker_runs)
+            changed_fields.append("max_worker_runs")
         for field, value in (("title", title), ("body", body), ("priority", priority)):
             if value is not None:
                 assignments.append(f"{field} = ?")
@@ -3076,6 +3108,8 @@ def edit_task(
             f"UPDATE tasks SET {', '.join(assignments)} WHERE id = ?",
             (*params, task_id),
         )
+        if budget_edit:
+            _append_event(conn, task_id, "run_budget_updated", {"max_worker_runs": max_worker_runs})
         if priority is not None:
             _append_event(conn, task_id, "reprioritized", {"priority": priority})
         if result is None:
@@ -3559,6 +3593,9 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     when that is where it left off), closing any leaked run first."""
     now = int(time.time())
     with write_txn(conn):
+        from hermes_cli.kanban_run_budget import budget_state, exhausted
+        if exhausted(budget_state(conn, task_id)):
+            return False
         resume_status = (
             _resume_status_from_events(conn, task_id)
             if _task_status(conn, task_id) == "blocked"

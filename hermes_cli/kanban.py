@@ -369,7 +369,8 @@ def _cmd_create(args: argparse.Namespace) -> int:
             parents=tuple(args.parent or ()), triage=bool(getattr(args, "triage", False)),
             idempotency_key=getattr(args, "idempotency_key", None),
             max_runtime_seconds=max_runtime, skills=getattr(args, "skills", None) or None,
-            max_retries=max_retries, model_override=getattr(args, "model_override", None),
+            max_retries=max_retries, max_worker_runs=getattr(args, "max_worker_runs", None),
+            model_override=getattr(args, "model_override", None),
             provider_override=getattr(args, "provider_override", None),
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
@@ -506,6 +507,8 @@ def _cmd_show(args: argparse.Namespace) -> int:
     print(f"Task {task.id}: {task.title}")
     field("status", task.status)
     field("assignee", task.assignee or "-")
+    cap = task.max_worker_runs if task.max_worker_runs is not None else "unlimited"
+    field("worker-runs", f"{task.worker_runs_used}/{cap} run IDs used (absolute cap)")
     if task.tenant:
         field("tenant", task.tenant)
     field("workspace", f"{task.workspace_kind}" + (f" @ {task.workspace_path}" if task.workspace_path else ""))
@@ -951,18 +954,25 @@ def _cmd_edit(args: argparse.Namespace) -> int:
     title = getattr(args, "title", None)
     body = getattr(args, "body", None)
     priority = getattr(args, "priority", None)
+    max_worker_runs = getattr(args, "max_worker_runs", None)
+    clear_max_worker_runs = getattr(args, "clear_max_worker_runs", False)
     if result is None and (summary is not None or raw_metadata is not None):
         return _err("kanban edit: --summary and --metadata require --result", 2)
-    if all(value is None for value in (title, body, priority, result)):
-        return _err("kanban edit: provide --title, --body, --priority, or --result", 2)
+    if all(value is None for value in (title, body, priority, result, max_worker_runs)) and not clear_max_worker_runs:
+        return _err("kanban edit: provide --title, --body, --priority, --result, or a worker-run cap option", 2)
     metadata, rc = _parse_metadata_flag(raw_metadata)
     if rc:
         return rc
-    with kbc.connect_closing() as conn:
-        ok = kb.edit_task(
-            conn, args.task_id, title=title, body=body, priority=priority,
-            result=result, summary=summary, metadata=metadata,
-        )
+    budget_args = {"max_worker_runs": max_worker_runs} if max_worker_runs is not None else {}
+    try:
+        with kbc.connect_closing() as conn:
+            ok = kb.edit_task(
+                conn, args.task_id, title=title, body=body, priority=priority,
+                result=result, summary=summary, metadata=metadata,
+                clear_max_worker_runs=clear_max_worker_runs, **budget_args,
+            )
+    except ValueError as exc:
+        return _err(f"kanban edit: {exc}", 2)
     return _ok_or_err(
         ok,
         f"cannot edit {args.task_id} (unknown id, or --result used on a task that is not done)",

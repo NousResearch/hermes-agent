@@ -421,6 +421,7 @@ class CreateTaskBody(BaseModel):
     triage: bool = False
     idempotency_key: Optional[str] = None
     max_runtime_seconds: Optional[int] = None
+    max_worker_runs: Optional[int] = Field(default=None, ge=0, strict=True)
     skills: Optional[list[str]] = None
     goal_mode: bool = False
     goal_max_turns: Optional[int] = None
@@ -529,6 +530,8 @@ def remove_attachment(attachment_id: int, board: Optional[str] = Query(None)):
 # --- PATCH /tasks/:id  and  POST /tasks/bulk ---------------------------------
 
 class UpdateTaskBody(BaseModel):
+    max_worker_runs: Optional[int] = Field(default=None, ge=0, strict=True)
+    clear_max_worker_runs: bool = False
     status: Optional[str] = None
     assignee: Optional[str] = None
     priority: Optional[int] = None
@@ -691,6 +694,13 @@ def _patch_title_body(conn, task_id: str, payload: UpdateTaskBody, board: Option
 def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Query(None)):
     with _board_conn(board) as (board, conn):
         _require_task(conn, task_id)
+        if payload.max_worker_runs is not None or payload.clear_max_worker_runs:
+            budget_args = ({"max_worker_runs": payload.max_worker_runs}
+                           if payload.max_worker_runs is not None else {})
+            with _map_errors(400, ValueError):
+                _require_ok(kanban_db.edit_task(
+                    conn, task_id, clear_max_worker_runs=payload.clear_max_worker_runs,
+                    board=board, **budget_args))
         # For a combined assignee+review patch, request_review must capture the
         # current implementer before the task is routed to the reviewer.
         review_assignee_deferred = payload.status == "review" and payload.assignee is not None
@@ -774,9 +784,8 @@ def _set_status_direct(conn: sqlite3.Connection, task_id: str, new_status: str) 
                 conn, task_id, outcome="reclaimed", status="reclaimed",
                 summary=f"status changed to {effective_status} (dashboard/direct)")
             terminations.append((prev["worker_pid"], prev["claim_lock"], prev["worker_started_at"]))
-        conn.execute(
-            "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) VALUES (?, ?, 'status', ?, ?)",
-            (task_id, run_id, json.dumps({"status": effective_status, "requested_status": new_status}), int(time.time())))
+        kanban_db._append_event(
+            conn, task_id, "status", {"status": effective_status, "requested_status": new_status}, run_id=run_id)
         if reopening_satisfied_parent:
             # Domain-layer invalidation composes via a savepoint inside our txn and hands
             # back worker terminations to perform post-commit.

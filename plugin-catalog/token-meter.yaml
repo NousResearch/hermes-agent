@@ -1,0 +1,21 @@
+name: token-meter
+repo: https://github.com/nj186/hermes-token-meter
+sha: 6d82660de102e41dcc4a054833090b6dafbbb758
+subdir: ""
+description: "Live token and cost readout in the Hermes Desktop status bar: turns/steps, output speed, cumulative total, input/output split, cache hit rate and a context-occupancy ring, plus a 13-line tooltip with model, latency, reasoning tokens, subagent count and compression count. Disclosure — reads host.state.focusedUsage and host.request('session.history') from the focused session, and writes two diagnostic JSON files into its own plugin data directory; no network calls, no subprocess, no shell, no credential access, no telemetry."
+maintainer: nj186
+tier: community
+category: desktop
+requires_hermes: ">=0.20.0"
+docs_url: https://github.com/nj186/hermes-token-meter#readme
+version: "1.0.0"
+readme: true
+title: "Token Meter"
+platforms: []
+onboarding: false
+known_issues: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

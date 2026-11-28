@@ -33,6 +33,7 @@ from agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
 from agent.errors import EmptyStreamError
 from agent.chat_completion_local import _streams_llamacpp, stale_giveup
 from agent.chat_completion_headers import _chat_completion_capturing_headers
+from agent.chat_completion_helpers_relay import _relay_stream_identity, _relay_stream_metadata
 from agent.chat_completion_stream_monitor import StreamingWaitMonitor, StreamLifetimeExceeded
 from agent.transports.chat_completions import is_router_timeout_shim, router_timeout_shim_may_follow
 from agent.fast_mode import effective_request_overrides
@@ -2391,20 +2392,6 @@ def _is_sse_connection_error(exc: BaseException) -> bool:
     return any(phrase in err_lower for phrase in _SSE_CONN_PHRASES)
 
 
-def _relay_stream_identity(agent, name_default: str) -> dict:
-    """``session_id``/``name``/``model_name`` kwargs for ``relay_llm.stream``."""
-    return {"session_id": str(getattr(agent, "session_id", "") or ""),
-        "name": str(getattr(agent, "provider", "") or name_default),
-        "model_name": str(getattr(agent, "model", "") or "")}
-
-
-def _relay_stream_metadata(agent, api_mode: str) -> dict:
-    call_role = ("delegated" if getattr(agent, "is_subagent", False)
-                 else "fallback" if int(getattr(agent, "_fallback_index", 0) or 0) > 0 else "primary")
-    return {"api_mode": api_mode, "api_request_id": getattr(agent, "_current_api_request_id", None),
-        "call_role": call_role}
-
-
 def _stream_final_text(response) -> str:
     with contextlib.suppress(Exception):
         choices = getattr(response, "choices", None)
@@ -2548,7 +2535,7 @@ class _BedrockStream:
                 on_stream_created=_stream_created, on_chunk=intercepted_events.append,
                 chunk_adapter=lambda chunk: chunk, accept_chunk=_accept_event,
                 completed_response_predicate=lambda response: bool(getattr(response, "choices", None)),
-                metadata=_relay_stream_metadata(agent, "custom"), defer_logical_completion=True)
+                metadata=_relay_stream_metadata(agent, "custom"), defer_logical_completion=True, cancelled=lambda: bool(agent._interrupt_requested))
             wants_reasoning = agent.reasoning_callback or agent.stream_delta_callback or plugin_reasoning_observer
             try:
                 streamed_response = stream_converse_with_callbacks({"stream": stream},
@@ -3008,7 +2995,7 @@ class _StreamingCall(StreamingWaitMonitor):
             on_stream_created=self._chat_stream_created, on_chunk=relay_response.observe,
             accept_chunk=lambda chunk: self._accept_chat_chunk(stream_attempt_id, chunk),
             completed_response_predicate=lambda value: hasattr(value, "choices"),
-            metadata=_relay_stream_metadata(self.agent, "chat_completions"), defer_logical_completion=True))
+            metadata=_relay_stream_metadata(self.agent, "chat_completions"), defer_logical_completion=True, cancelled=lambda: bool(self.agent._interrupt_requested)))
         if self.agent.provider == "moa":
             # Hermes interrupts the managed stream; Relay alone closes the provider stream.
             self.clients.set_stream_handle(stream)
@@ -3352,7 +3339,7 @@ class _StreamingCall(StreamingWaitMonitor):
             **_relay_stream_identity(self.agent, "anthropic"), finalizer=accumulator.finalize,
             on_stream_created=_anthropic_stream_created, on_chunk=accumulator.observe,
             accept_chunk=lambda _event: self._writer_still_current("Anthropic streaming"),
-            metadata=_relay_stream_metadata(self.agent, "anthropic_messages"), defer_logical_completion=True))
+            metadata=_relay_stream_metadata(self.agent, "anthropic_messages"), defer_logical_completion=True, cancelled=lambda: bool(self.agent._interrupt_requested)))
         try:
             for event in stream:
                 saw_stream_event = True
@@ -3662,6 +3649,8 @@ class _StreamingCall(StreamingWaitMonitor):
         try:
             while _stream_attempt < _max_stream_retries + self._compat_retries:
                 _stream_attempt += 1
+                if _stream_attempt:
+                    self._readmit_retry()
                 stream_attempt_id = self._start_stream_attempt()
                 # Else /stop closes the socket and the retry opens a fresh one (a full read timeout each).
                 if self.agent._interrupt_requested:
@@ -3917,13 +3906,16 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     streaming codex runner; cron turns and delegated children run inline."""
     if agent._interrupt_requested:
         raise InterruptedError("Agent interrupted before streaming API call")
-    if agent.api_mode == "codex_responses":
-        return _stream_codex_passthrough(agent, api_kwargs, on_first_delta)
-    if agent.api_mode == "bedrock_converse":
-        return _BedrockStream(agent, api_kwargs, on_first_delta).run()
-    # Cross-turn stale-stream circuit breaker (see ``_stale_streak()``).
-    _check_stale_giveup(agent)
-    return _StreamingCall(agent, api_kwargs, on_first_delta).run()
+    from agent.llm_concurrency import prepaid_provider_slot
+    # Admitted before the stale monitor starts (queueing is not a stalled stream); the first Relay stream claims it.
+    with prepaid_provider_slot(agent.provider, cancelled=lambda: bool(agent._interrupt_requested)):
+        if agent.api_mode == "codex_responses":
+            return _stream_codex_passthrough(agent, api_kwargs, on_first_delta)
+        if agent.api_mode == "bedrock_converse":
+            return _BedrockStream(agent, api_kwargs, on_first_delta).run()
+        # Cross-turn stale-stream circuit breaker (see ``_stale_streak()``).
+        _check_stale_giveup(agent)
+        return _StreamingCall(agent, api_kwargs, on_first_delta).run()
 
 
 __all__ = [

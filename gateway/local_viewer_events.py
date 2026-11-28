@@ -21,7 +21,8 @@ logger = logging.getLogger(__name__)
 
 # Attributes ``wire`` may overwrite on the cached agent for one local-viewer turn.
 _TURN_ATTRS = ("tool_gen_callback", "_print_fn", "thinking_callback", "reaction_callback", "reasoning_callback",
-               *local_desktop_ui.CALLBACK_ATTRS)
+               *local_desktop_ui.CALLBACK_ATTRS,
+               "_canonical_session_owner")
 # Private key in ``wire``'s return value: the desktop window bridge registration ``restore`` releases.
 _DESKTOP_UI_TOKEN = "__desktop_ui_token__"
 # MoA facade progress (agent/moa_loop._RELAY_EVENTS) -> the payload tui_gateway/tool_progress emits.
@@ -44,6 +45,7 @@ def wire(turn, agent) -> dict:
     agent.thinking_callback = lambda text: publish("thinking.delta", {"text": str(text or "")})
     agent.reaction_callback = lambda kind: publish("reaction", {"kind": str(kind or "")})
     owner = getattr(turn, "_approval_owner", None)
+    agent._canonical_session_owner = owner[0].sessions.get(owner[1]) if owner is not None else None
     if owner is not None:
         from gateway.session_usage import seed_compression_count
         seed_compression_count(owner[0].sessions.get(owner[1]), agent)

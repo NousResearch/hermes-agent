@@ -206,6 +206,32 @@ def _refuse_create_args(args, clone_from: Optional[str], cloned: bool) -> None:
         # A clone copies the source's .env/config (and --clone-all its auth.json) by request.
         _die("Error: --no-credentials cannot be combined with --clone / --clone-from / --clone-all "
              "(a clone copies the source's keys); create without cloning instead.", err=True)
+    handle = getattr(args, "discord_mention", None)
+    if handle is not None:
+        from hermes_constants import PROFILE_ID_RE
+        if handle and not PROFILE_ID_RE.match(handle.strip().lstrip("$").lower()):
+            _die(f"Error: --discord-mention handle {handle!r} must be letters, digits, '-' or '_' "
+                 "(up to 64, starting with a letter or digit)")
+        if os.environ.get("HERMES_TUI_GATEWAY_URL", "").strip():
+            # The profile would be made on the gateway's machine; its config.yaml is not here to write.
+            _die("Error: --discord-mention cannot be combined with HERMES_TUI_GATEWAY_URL; create the profile, "
+                 "then set discord.mentionable in its config.yaml on the gateway's machine")
+
+
+def _apply_discord_mention(name: str, made, handle: Optional[str]) -> None:
+    """``--discord-mention[=HANDLE]``: opt the new profile in to Discord ``$<profile>`` mentions in
+    its own config.yaml. A running multiplexed gateway picks the change up in its hot-serve rescan
+    of that profile, like any hand edit."""
+    if handle is None:
+        return
+    from hermes_cli.profile_provision import write_profile_discord_mention
+    handle = handle.strip().lstrip("$").lower()
+    try:
+        write_profile_discord_mention(Path(made.path), handle)
+    except (OSError, ValueError) as e:  # the profile exists: report and carry on, as for any post-create step
+        print(f"⚠ --discord-mention: could not write discord.mentionable ({e})")
+        return
+    print(f"Discord: mentionable as ${handle or name} (needs gateway.multiplex_profiles on the gateway).")
 
 
 def _profile_create(args):
@@ -236,6 +262,7 @@ def _profile_create(args):
     except (*CREATE_REFUSALS, GatewayCreateError) as e:
         _die(f"Error: {e}")
     print(f"\nProfile '{name}' created at {made.path}")
+    _apply_discord_mention(name, made, getattr(args, "discord_mention", None))
     source_label = made.source_label
     if cloned:
         if clone_all:

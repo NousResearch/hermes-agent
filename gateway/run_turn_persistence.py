@@ -29,6 +29,7 @@ from gateway.session import (
     build_session_context,
 )
 from gateway.session_detached import detached_route_of
+from gateway.session_identity import identity_of
 from gateway.session_transcript import TranscriptReadError
 from gateway.turn_context import TurnContext
 from gateway.warning_notifications import diagnostic_wake_muted
@@ -54,6 +55,17 @@ def _acp_launch(runner, source) -> bool:
         return getattr(local_policy(runner, source), "source", None) == "acp"
     except AuthorityRefusal:  # a local route with no restored policy is not an editor launch
         return False
+
+
+def _profile_mention_label(source) -> str:
+    """``— <profile>`` when an adapter re-homed this message to a profile its text named
+    (``SessionSource.profile_mention``, Discord ``$<profile>``), so a shared channel can tell the
+    replies apart; ``""`` otherwise."""
+    if not getattr(source, "profile_mention", False):
+        return ""
+    identity = identity_of(source)
+    profile = identity.runtime_profile if identity is not None else (getattr(source, "profile", None) or "")
+    return f"— {profile}" if profile else ""
 
 
 class GatewayTurnPersistenceMixin:
@@ -275,15 +287,16 @@ class GatewayTurnPersistenceMixin:
     def _hmwa_runtime_footer_line(self, agent_result, source, _turn_seconds):
         """Runtime-metadata footer for the FINAL message of the turn; off by default
         (display.runtime_footer.enabled=false). Never on a finite (`-z`, `chat -q`) turn: its reply is
-        the printed answer itself."""
+        the printed answer itself. A profile-mention reply leads it with the profile's name."""
         from gateway.run import _load_gateway_config, _platform_config_key, _terminal_scope_cwd
         from gateway.session_finite import finite_turn_required
         # A bot peer gets the model's words only: a streamed reply sends the footer as its own message.
         if finite_turn_required() is True or not automatic_notices_allowed(source):
             return ""
+        label = _profile_mention_label(source)
         try:
             from gateway.runtime_footer import build_footer_line as _bfl
-            return _bfl(
+            footer = _bfl(
                 user_config=_load_gateway_config(),
                 platform_key=_platform_config_key(source.platform), model=agent_result.get("model"),
                 context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
@@ -294,7 +307,8 @@ class GatewayTurnPersistenceMixin:
             )
         except Exception as _footer_err:
             logger.debug("runtime_footer build failed: %s", _footer_err)
-            return ""
+            footer = ""
+        return " · ".join(part for part in (label, footer) if part)
 
     async def _hmwa_post_turn_hooks(self, hook_ctx, agent_result, response):
         """agent:end hook, process-watcher scheduling, and watch-notification drain."""

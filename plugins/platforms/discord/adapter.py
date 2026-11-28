@@ -1180,10 +1180,11 @@ from plugins.platforms.discord.adapter_thread_titles import DiscordThreadTitlesM
 from plugins.platforms.discord.adapter_voice_info import DiscordVoiceInfoMixin
 from plugins.platforms.discord.adapter_reactions import DiscordReactionsMixin
 from plugins.platforms.discord.adapter_vault_code import DiscordVaultCodeMixin, build_vault_code_view
+from plugins.platforms.discord.adapter_profile_mentions import DiscordProfileMentionsMixin, addresses_profile, dispatch_event as dispatch_profile_mentions
 
 
 class DiscordAdapter(DiscordLiveGatesMixin, DiscordCommandSyncMixin, DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceInfoMixin,
-                     DiscordSlashAuthMixin, DiscordReactionsMixin, DiscordVaultCodeMixin, BasePlatformAdapter):
+                     DiscordSlashAuthMixin, DiscordReactionsMixin, DiscordVaultCodeMixin, DiscordProfileMentionsMixin, BasePlatformAdapter):
     """Discord bot adapter: guild/DM messages, threads, slash commands, button approvals, reactions."""
 
     MAX_MESSAGE_LENGTH = 2000
@@ -2542,7 +2543,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordCommandSyncMixin, DiscordAuth
                 and "*" not in free_channels
                 and not (channel_keys & free_channels)
                 and not self._in_bot_thread(message)
-                and not self._self_is_explicitly_mentioned(message)
+                and not self._self_is_explicitly_mentioned(message) and not addresses_profile(self, message.content or "")
             ):
                 return False
         admitted, role_authorized = self._discord_message_admission(message, claim=False)
@@ -5925,7 +5926,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordCommandSyncMixin, DiscordAuth
                 or is_voice_linked_channel
             )
             in_bot_thread = self._in_bot_thread(message)
-            if require_mention and not is_free_channel and not in_bot_thread:
+            if require_mention and not is_free_channel and not in_bot_thread and not addresses_profile(self, raw_content):
                 if (
                     not self._self_is_explicitly_mentioned(message)
                     and not mention_prefix
@@ -6077,10 +6078,9 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordCommandSyncMixin, DiscordAuth
         if thread_id:
             await self._threads.mark_async(thread_id)
         # Only live plain text is batched: recovery candidates are complete; coalescing would replay IDs.
-        if (not recovered and msg_type == MessageType.TEXT and self._text_batch_delay_seconds > 0):
-            self._enqueue_text_event(event)
-        else:
-            await self.handle_message(event)
+        # A ``$<profile>`` in the TYPED text (never inlined attachment text) goes to that profile instead.
+        await dispatch_profile_mentions(self, event, normalized_content,
+                                        batch=not recovered and msg_type == MessageType.TEXT and self._text_batch_delay_seconds > 0)
         return True
 
     def _text_batch_delay_for(self, pending: Optional[MessageEvent]) -> float:

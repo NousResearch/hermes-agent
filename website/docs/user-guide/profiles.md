@@ -69,6 +69,7 @@ If a cloned profile has no model selection of its own, creation inherits the cur
 
 - `--isolated-auth` copies the logins (`auth.json`) once instead of sharing them. A profile created from a named profile always gets a copy of that profile's logins; its subscription (single-use OAuth) logins can't be copied, so for those providers the new profile reads the default profile's and `profile create` says so.
 - `--no-credentials` copies no keys, logins or model; run `mybot setup` afterwards.
+- `--discord-mention[=HANDLE]` lets a multiplexed gateway's shared Discord bot hand `$mybot` (or `$HANDLE`) messages to this profile. It writes `discord.mentionable: true` (and `discord.mention_handle`) into the new profile's own `config.yaml`. See [Addressing a profile by name](messaging/discord.md#profile-mentions). It is refused with `HERMES_TUI_GATEWAY_URL` set, because that profile's `config.yaml` is on the gateway's machine.
 
 When a gateway is running for the current profile, `profile create` asks it to make the profile, so the CLI, the dashboard and the Desktop app all create through the same running process. With `HERMES_TUI_GATEWAY_URL` set, the profile is made on that gateway's machine; if it can't be reached the command fails and nothing is created locally. With no gateway running, the profile is made in the terminal's own process, as before.
 

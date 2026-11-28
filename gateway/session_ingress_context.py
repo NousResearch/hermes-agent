@@ -129,6 +129,20 @@ def _runtime_profile(runner, source, profile, owner_name, homes, relay):
     return owner_name
 
 
+def _mention_profile(adapter, source, homes, relay):
+    """The served profile an in-message ``$<profile>`` address re-homed *source* to, else None.
+
+    Only the receiving bot can make that claim: ``profile_mention`` is an in-process marker its
+    adapter sets on the copy it dispatches (never serialized, so no wire field, relay frame or
+    stored row mints it; ``restore_provenance`` re-arms it only from provenance this binding
+    recorded). The bot re-confirms on every check that the target is still served and opted in
+    (``profile_mention_targets``), as a ``profile_routes`` match is re-matched against the config."""
+    if relay or getattr(source, 'profile_mention', False) is not True or source.profile not in homes:
+        return None
+    targets = getattr(adapter, 'profile_mention_targets', None)
+    return source.profile if callable(targets) and source.profile in targets() else None
+
+
 def _binding(runner, source, profile):
     registries = [(None, runner.adapters), *getattr(runner, '_profile_adapters', {}).items()]
     from gateway.config import Platform
@@ -145,6 +159,7 @@ def _binding(runner, source, profile):
     multiplex = getattr(runner.config, 'multiplex_profiles', False)
     if not multiplex and source.profile:
         raise AuthorityRefusal('profile_mismatch')
+    mentioned = None
     if multiplex:
         # Only the reservation-backed server registry proves a served home. Directory
         # discovery and _resolve_profile_home_for_source's primary fallback do not.
@@ -167,7 +182,8 @@ def _binding(runner, source, profile):
         owner_name = profile or primary
         if homes.get(owner_name) != home:
             raise AuthorityRefusal('profile_mismatch')
-        runtime_profile = _runtime_profile(runner, source, profile, owner_name, homes, relay)
+        mentioned = _mention_profile(adapter, source, homes, relay)
+        runtime_profile = mentioned or _runtime_profile(runner, source, profile, owner_name, homes, relay)
         if (source.profile or primary) != runtime_profile or runtime_profile not in homes:
             raise AuthorityRefusal('profile_mismatch')
         runtime_home = homes[runtime_profile]
@@ -195,6 +211,7 @@ def _binding(runner, source, profile):
                   'platform': source.platform.value, 'connector': connector}
     if multiplex:
         provenance['transport_profile'] = profile
+        provenance.update({'profile_mention': True} if mentioned else {})
     if relay:
         provenance['relay'] = _relay_seal(transport, source, provenance)
     return adapter, home, runtime_home, provenance
@@ -223,10 +240,13 @@ def restore_provenance(runner, source, provenance):
         raise AuthorityRefusal('invalid_params')
     candidate = copy(source)
     candidate.delivered_via_upstream_relay = 'relay' in provenance
+    # A ``$<profile>`` re-home this binding recorded; ``_binding`` re-checks the bot still allows it.
+    candidate.profile_mention = provenance.get('profile_mention') is True
     adapter, home, runtime_home, expected = _binding(runner, candidate, provenance.get('transport_profile'))
     if provenance != expected:
         raise AuthorityRefusal('profile_mismatch')
     source.delivered_via_upstream_relay = candidate.delivered_via_upstream_relay
+    source.profile_mention = candidate.profile_mention  # a restored turn keeps its profile label
     source._transport_adapter_ref = weakref.ref(adapter)
     # Re-pin the identity ingress resolved: the drained turn's route records the receiving bot from it
     # (``SessionEntry.transport_profile``), so after a restart its session still answers through that bot.

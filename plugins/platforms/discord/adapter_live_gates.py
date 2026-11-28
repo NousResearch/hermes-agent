@@ -17,6 +17,7 @@ from gateway.platforms._shared import bridge_owns_env, mark_live_gate_baseline, 
 _LIVE_GATE_EXTRA_KEYS = (
     "allow_from", "allowed_users", "allowed_roles", "allowed_channels", "ignored_channels",
     "no_thread_channels", "free_response_channels", "allow_all_users", "allow_bots",
+    "mentionable", "mention_handle",  # this profile's own $<profile> opt-in (adapter_profile_mentions.py)
 )
 
 

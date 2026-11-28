@@ -372,6 +372,8 @@ discord:
   thread_require_mention: false   # If true, require @mention in threads too (multi-bot threads)
   bots_require_inline_mention: true  # Bot authors must type a literal @mention (default: true)
   free_response_channels: ""      # Comma-separated channel IDs (or YAML list)
+  mentionable: false              # Opt THIS profile in to `$<profile>` messages (multiplex only)
+  mention_handle: ""              # Its `$<handle>` (default: the profile name)
   auto_thread: true               # Auto-create threads on @mention
   free_response_auto_thread: false # If true, free_response_channels also auto-thread (default: inline)
   reactions: true                 # Add emoji reactions during processing
@@ -995,6 +997,60 @@ Semantics:
 This is the preferred pattern when the moderation team churns — new moderators get access the moment the role is granted, with no `.env` edit or gateway restart.
 
 **Editing the lists in `config.yaml` takes effect on the next message.** `discord.allowed_roles`, `discord.allow_from` and the channel lists are re-read when `config.yaml` changes, with no gateway restart: a role or user you remove is refused from their next message, slash command or button click. This holds for every profile a multiplexed gateway (`gateway.multiplex_profiles`) serves, including the host profile it was started with. A value set in `.env` or an external secret source still wins over `config.yaml`; one only inherited from the gateway's process environment does not. Adding the *first* role or username to a bot connected without the Server Members intent still needs a restart, because the intent is chosen at connect. A username added later is matched only after the next reconnect resolves it to an ID.
+
+### Addressing a profile by name (`$<profile>`) {#profile-mentions}
+
+When one gateway serves several profiles (`gateway.multiplex_profiles: true`), a single Discord bot can hand a message to a specific profile by name, without a bot application per profile. No profile is reachable this way by default. Each profile opts itself in, in its **own** `config.yaml`, not in the config of the profile that owns the bot:
+
+```yaml
+# ~/.hermes/profiles/agent-one/config.yaml
+discord:
+  mentionable: true      # reachable as $agent-one
+  mention_handle: a1     # optional: reachable as $a1 instead
+```
+
+Or opt a new profile in when you create it:
+
+```bash
+hermes profile create agent-one --discord-mention        # $agent-one
+hermes profile create agent-two --discord-mention=a2     # $a2
+```
+
+The bot answers to the handles of the profiles this gateway serves whose own config sets `mentionable: true`. Only a real YAML boolean counts: `"true"` in quotes or `1` leaves the profile unreachable. If two profiles claim the same handle, neither gets it, and a WARNING names both.
+
+Editing `mentionable` or `mention_handle` normally needs no restart, whether you turn a profile on or off:
+
+- **The profile that owns the bot** re-reads its own flag on the bot's next message.
+- **Every other served profile** is re-read when the gateway re-scans a `config.yaml` that changed (within about 30 seconds). A profile created or deleted while the gateway runs is picked up the same way.
+
+:::warning One exception: the launch profile, when another profile owns the bot
+The *launch profile* is the profile the gateway process was started from (usually `default`, the host of a multiplexing gateway). Its own flag is read only when the gateway starts, if the Discord bot belongs to a **different** profile (that profile's own bot token). The re-scan never reloads the launch profile, and the bot's own refresh only covers the bot's profile. In that setup:
+
+- **Turning the launch profile's flag off does not take effect until you restart the gateway.** Until then, `$<launch-profile>` stays reachable to everyone the bot accepts messages from. To revoke it right away, restart the gateway process (`hermes gateway restart`, run as the launch profile). Restarting only the bot's profile (`hermes -p <name> gateway restart`) is not enough.
+- Turning it on, or changing its `mention_handle`, also waits for a restart.
+
+When the launch profile owns the bot (the usual single-bot setup), its flag follows edits live in both directions, like every other profile.
+:::
+
+| Message | What happens |
+|---|---|
+| `$agent-one what's the status?` | `agent-one` runs one normal turn in its own session (its own memory and config) and answers. |
+| `hey $agent-one, any update?` | Same: the handle can appear anywhere in the message. |
+| `$agent-one $agent-two compare your dependency staleness` | Each profile gets the same prompt as its own independent turn and replies separately. There is no turn-taking between them. |
+| `anyone know if CI is green?` | No handle: the message follows the normal `require_mention` / free-response rules. |
+| `$not-a-real-profile ping` | No served profile opted in to that handle: nothing is dispatched, an INFO line is logged, and the message follows the normal rules. |
+| `$agent-one` (nothing else) | Treated exactly like a bare `@mention` with no text. With `history_backfill` on (the default) in a `require_mention` channel, `agent-one` gets one "catch me up" turn: an empty prompt plus the channel messages sent since the bot's last reply. With no such messages (or with backfill off), nothing runs. |
+| `/reset $agent-one` (any slash command) | Never re-routed: the command runs exactly as it would without the handle, in the channel's normal session, with its arguments untouched. In a `require_mention` channel the handle does not count as addressing the bot. |
+| `$agent-one /new` (a handle in front of a slash command) | Never re-routed either, so a handle cannot run a command in another profile's session. The message is plain text in the channel's normal session (it does not start with `/`, so it is not a command there), and in a `require_mention` channel the handle does not count as addressing the bot. A `/` later in the prompt is ordinary text: `$agent-one please explain what /new does` is dispatched as usual. |
+| `/some-skill $agent-one do X` (a skill's slash command) | Same as any slash command: not re-routed. The handle is checked before the gateway turns a skill command into the skill's prompt, so the skill runs in the channel's normal session and `$agent-one` stays in its prompt as plain text. To give a skill's task to a profile, ask it in words instead (`$agent-one use some-skill to do X`). |
+| `please summarize` + an attached `notes.md` that contains `$agent-two` | Not dispatched: only the text you type in the message box is checked for handles, never an attached file's inlined text. The message follows the normal rules, with the file's text unchanged. With `$agent-one summarize this` typed instead, only `agent-one` gets it, and its prompt keeps the file's text exactly as uploaded, `$agent-two` included. |
+
+- The handles are removed from the prompt the profile sees. Each reply ends with a `— <profile>` line naming the profile that wrote it. A configured runtime footer follows on the same line.
+- A handle counts as addressing the bot, so it works in channels where `require_mention` is on. `allowed_channels`, `ignored_channels` and the user/role allowlists still apply: the bot that received the message decides who may use it. Opting a profile in therefore makes it reachable by everyone that bot already accepts messages from.
+- A profile this gateway does not serve is never reachable, even if its config opts in (for example, a profile that still runs its own gateway). The message is never run under another profile.
+- When the gateway runs several Discord bots (profiles with their own bot token) and more than one of them is in the channel, the message still runs once per named profile, and always through the same bot for a given profile's conversation in that channel: the bot that carried its first turn dispatches and answers every later one, whichever bot sees a message first. The other bots do not dispatch it again.
+- Handles use `$`, not `@`, on purpose: `@name` would ping real users or roles.
+- Each turn is an ordinary turn in that profile's session for the channel, also in a channel that `profile_routes` sends to another profile. A later message without a handle goes back to the channel's normal profile. A turn started this way is not remembered across restarts as belonging to that profile, so a background notification that arrives after a restart may not be delivered back to the channel.
 
 ### Mention Control
 

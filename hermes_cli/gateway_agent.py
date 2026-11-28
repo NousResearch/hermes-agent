@@ -1111,10 +1111,13 @@ class GatewayAgent:
         choices = list(payload.get("choices") or [])
         choice = "deny"
         if callback is not None:
+            # A consent question that is not a shell command (MCP elicitation, card fill) names
+            # itself; the panel otherwise reads "Dangerous Command".
+            title = {"title": payload["title"]} if payload.get("title") else {}
             try:
                 choice = callback(payload.get("command") or "", payload.get("description") or "",
                                   allow_permanent="always" in choices, allow_session="session" in choices,
-                                  smart_denied=False)
+                                  smart_denied=False, **title)
             except TypeError:
                 choice = callback(payload.get("command") or "", payload.get("description") or "")
         if choice not in choices:

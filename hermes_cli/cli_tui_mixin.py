@@ -162,7 +162,7 @@ class CLITuiMixin:
         choices = state["choices"]
         selected = state.get("selected", 0)
         show_full = state.get("show_full", False)
-        title = t("cli.tui.approval_title")
+        title = state.get("title") or t("cli.tui.approval_title")
 
         preview_lines = wrap(description, 60)
         preview_lines.extend(wrap(command, 60))
@@ -172,6 +172,9 @@ class CLITuiMixin:
             preview_lines.extend(wrap(f"{prefix}{label}", 60, subsequent_indent="  "))
         box_width = _panel_box_width(title, preview_lines)
         inner_text_width = max(8, box_width - 2)
+        # A caller-supplied title (MCP consent, card fills) can outgrow a narrow panel: keep it on one row.
+        from hermes_cli.cli_render import _clip_cells
+        title = _clip_cells(title, inner_text_width)
 
         # Pre-wrap the mandatory content — command + choices must always render.
         cmd_wrapped = wrap(command, inner_text_width)

@@ -105,6 +105,9 @@ class CanonicalPendingPrompt(Result):
     choices: list[str]
     command: str | None = None
     description: str | None = None
+    # A consent question that is not a shell command (MCP elicitation, card fill) carries its own
+    # card title; absent means the dangerous-command title.
+    title: str | None = None
     edit: dict[str, JsonValue] | None = None
     question: str | None = None
     multi_select: bool | None = None

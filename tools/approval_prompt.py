@@ -336,7 +336,7 @@ def request_elicitation_consent(message: str, description: str, *,
             return "decline"
         try:
             decision = _gw._await_gateway_decision(
-                session_key, notify_cb, {"command": message, "description": description,
+                session_key, notify_cb, {"command": message, "description": description, "title": title,
                                          "pattern_key": "mcp_elicitation",
                                          "pattern_keys": ["mcp_elicitation"],
                                          "allow_session": scoped, "allow_permanent": scoped}, surface=surface)

@@ -46,14 +46,19 @@ def test_lazy_session_info_uses_the_policy_route_provider(tmp_path):
     assert _session_provider(None, None, auto_policy) == ''
 
 
-def test_local_viewer_title_republishes_session_info(monkeypatch):
+@pytest.mark.asyncio
+async def test_local_viewer_title_republishes_session_info(monkeypatch):
+    import asyncio
+
     from gateway.run_turn_runner import TurnRunner
+    from tests.waiting import async_wait_until
     published = []
     live = SimpleNamespace(event_stream=SimpleNamespace(
         publish=lambda sid, payload, event_type: published.append((event_type, payload))))
     authority = SimpleNamespace(sessions={'s': live})
     turn = object.__new__(TurnRunner)
-    turn._ctx = SimpleNamespace(source=SimpleNamespace(platform=Platform.LOCAL), session_key='k')
+    turn._ctx = SimpleNamespace(source=SimpleNamespace(platform=Platform.LOCAL), session_key='k',
+                                _loop_for_step=asyncio.get_running_loop())
     turn._approval_owner = (authority, 's', 1)
     turn._runner = SimpleNamespace(_recover_discord_auto_thread_source=lambda source, key: source,
                                    _is_telegram_topic_lane=lambda s: False,
@@ -64,6 +69,7 @@ def test_local_viewer_title_republishes_session_info(monkeypatch):
     agent = SimpleNamespace(session_id='s')
     turn._attach_session_title_callback(agent, turn._ctx)
     agent._on_session_title('Auto', 'llm')
+    await async_wait_until(lambda: published, what='the title republish')
     assert published == [('session.info', {'title': 'Auto'})]
 
 
@@ -164,10 +170,13 @@ async def test_idle_policy_mutation_publishes_stamped_session_info_with_provider
 
 @pytest.mark.asyncio
 async def test_sibling_idle_publishers_stamp_generation_and_revision(tmp_path, monkeypatch):
+    import asyncio
+
     from gateway.run_turn_runner import TurnRunner
     from gateway.session_contract import SessionRef
     from gateway.session_policy_refresh import _publish as publish_refreshed_policy
     from tests.gateway.test_session_create_tier_cwd import _owner
+    from tests.waiting import async_wait_until
 
     monkeypatch.chdir(tmp_path)
     store, runner, authority, owner = _owner(
@@ -191,18 +200,18 @@ async def test_sibling_idle_publishers_stamp_generation_and_revision(tmp_path, m
         assert refresh_events[-1]['revision'] == handle.revision
 
         turn = object.__new__(TurnRunner)
-        turn._ctx = SimpleNamespace(source=SimpleNamespace(platform=Platform.LOCAL), session_key='k')
+        turn._ctx = SimpleNamespace(source=SimpleNamespace(platform=Platform.LOCAL), session_key='k',
+                                    _loop_for_step=asyncio.get_running_loop())
         turn._approval_owner = (authority, ref.session_id, handle.execution_generation)
         turn._runner = runner
         agent = SimpleNamespace(session_id=ref.session_id)
         turn._attach_session_title_callback(agent, turn._ctx)
         authority.persistence.sessions.set_title(ref.session_id, 'Renamed')
         agent._on_session_title('Renamed', 'llm')
-        title_events = [
+        title_events = await async_wait_until(lambda: [
             e['payload'] for e in stream.since(stream.watermark()[0], 0)['events']
             if e.get('type') == 'session.info' and e.get('payload', {}).get('title') == 'Renamed'
-        ]
-        assert title_events
+        ], what='the title republish')
         assert title_events[-1]['execution_generation'] == handle.execution_generation
         assert title_events[-1]['revision'] == handle.revision
     finally:
@@ -267,3 +276,83 @@ async def test_messaging_chat_pick_publishes_stamped_session_info_with_provider(
     finally:
         await viewer.close()
         runner.session_store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_title_republish_racing_a_model_pick_never_repaints_the_old_model(tmp_path, monkeypatch):
+    """The auto-title thread's snapshot must not straddle a model pick. Desktop's idle fence takes any
+    session.info naming the current generation, so a snapshot read before the pick and stamped after it
+    lands last and puts the old model back on every viewer."""
+    import asyncio
+    import threading
+    from dataclasses import asdict, replace
+    import json
+
+    from gateway import session_local, session_mutations
+    from gateway.run_turn_runner import TurnRunner
+    from gateway.session_contract import SessionRef
+    from gateway.session_policy import restore_policy
+    from tests.gateway.test_session_create_tier_cwd import _owner
+    from tests.waiting import async_wait_until
+
+    monkeypatch.chdir(tmp_path)
+    store, runner, authority, owner = _owner(
+        tmp_path / 'owner', monkeypatch, {'model': {'default': 'base-model', 'provider': 'openrouter'}},
+    )
+
+    async def prepare(auth, live, payload, prepared):
+        old = restore_policy(prepared['snapshot']['receipt']['policy'])
+        config = old.config()
+        config['model'] = {'default': 'switched-model', 'provider': 'claude-code'}
+        return {**prepared, 'policy': asdict(replace(old, model='switched-model', config_json=json.dumps(config)))}
+
+    monkeypatch.setattr('gateway.session_mutation_model.prepare_model', prepare)
+    loop_thread = threading.current_thread()
+    built, release, calls = threading.Event(), threading.Event(), []
+    real_info = session_local.local_session_info
+
+    def snapshot(authority, ref):
+        calls.append(None)
+        info = {**real_info(authority, ref), 'probe_call': len(calls)}
+        built.set()
+        if threading.current_thread() is not loop_thread:  # the pick commits and publishes meanwhile
+            release.wait(10)
+        return info
+
+    try:
+        created = await owner.dispatch({'id': 'c1', 'method': 'session.create', 'params': {
+            'request_id': 'c1', 'source': 'gui', 'cwd': str(tmp_path), 'toolsets': [],
+        }})
+        ref = SessionRef(authority.profile_id, created['result']['session_id'])
+        handle = authority._handle(ref)
+        monkeypatch.setattr(session_local, 'local_session_info', snapshot)
+        turn = object.__new__(TurnRunner)
+        turn._ctx = SimpleNamespace(source=SimpleNamespace(platform=Platform.LOCAL), session_key='k',
+                                    _loop_for_step=asyncio.get_running_loop())
+        turn._approval_owner = (authority, ref.session_id, handle.execution_generation)
+        turn._runner = runner
+        agent = SimpleNamespace(session_id=ref.session_id)
+        turn._attach_session_title_callback(agent, turn._ctx)
+        authority.persistence.sessions.set_title(ref.session_id, 'Renamed')
+        titler = threading.Thread(target=agent._on_session_title, args=('Renamed', 'llm'), daemon=True)
+        titler.start()
+        assert await asyncio.to_thread(built.wait, 10)
+        await session_mutations.mutate_session(authority, owner.actor, ref, {
+            'session_id': ref.session_id, 'request_id': 'pick-claude', 'operation': 'model',
+            'payload': {'model': 'switched-model', 'provider': 'claude-code'},
+            'expected_revision': handle.revision, 'expected_generation': handle.execution_generation,
+        })
+        release.set()
+        await asyncio.to_thread(titler.join, 10)
+        stream = authority.sessions[ref.session_id].event_stream
+
+        def probed():
+            return [e['payload'] for e in stream.since(stream.watermark()[0], 0)['events']
+                    if e.get('type') == 'session.info' and 'probe_call' in e.get('payload', {})]
+
+        await async_wait_until(lambda: any(p['probe_call'] == 1 for p in probed()), what='the title republish')
+        assert probed()[-1]['model'] == 'switched-model'
+    finally:
+        release.set()
+        await owner.close()
+        store.close_all_db_handles()

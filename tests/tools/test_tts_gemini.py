@@ -172,6 +172,19 @@ class TestGenerateGeminiTts:
         )
         assert voice == "Puck"
 
+    def test_voice_design_custom_voice(self, tmp_path, monkeypatch, mock_gemini_response):
+        from tools.tts_tool import _generate_gemini_tts
+
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        config = {"gemini": {"voice": "voice_custom_example"}}
+
+        with patch("requests.post", return_value=mock_gemini_response) as mock_post:
+            _generate_gemini_tts("Hi", str(tmp_path / "test.wav"), config)
+
+        payload = mock_post.call_args[1]["json"]
+        voice = payload["generationConfig"]["speechConfig"]["voiceConfig"]["voice"]
+        assert voice == "voice_custom_example"
+
 
     def test_audio_tag_rewrite_failure_falls_back_to_original_text(
         self, tmp_path, monkeypatch, mock_gemini_response, caplog

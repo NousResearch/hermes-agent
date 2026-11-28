@@ -79,7 +79,7 @@ tts:
     voice_id: "c69964a6-ab8b-4f8a-9465-ec0925096ec8"  # Paul - Neutral (default)
   gemini:
     model: "gemini-2.5-flash-preview-tts"  # or gemini-3.1-flash-tts-preview
-    voice: "Kore"               # 30 prebuilt voices: Zephyr, Puck, Kore, Enceladus, Gacrux, etc.
+    voice: "Kore"               # 30 prebuilt voices (Zephyr, Puck, Kore, ...) or custom Voice Design ID (voice_...)
     audio_tags: false           # Enable hidden Gemini 3.1 TTS audio-tag insertion
     persona_prompt_file: ""      # Optional Markdown/text file with Gemini voice direction
   xai:

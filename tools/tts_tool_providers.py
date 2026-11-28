@@ -585,11 +585,15 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: dict[str, Any]
             f"({len(prompt_text)} > {max_len} chars). Reduce the persona/audio-tag "
             "prompt or lower tts.gemini.max_text_length so long-form text is "
             "split with enough prompt headroom.")
+    if voice.startswith("voice_") or voice.startswith("voicekey_"):
+        voice_config: dict[str, Any] = {"voice": voice}
+    else:
+        voice_config = {"prebuiltVoiceConfig": {"voiceName": voice}}
     payload: dict[str, Any] = {
         "contents": [{"parts": [{"text": prompt_text}]}],
         "generationConfig": {
             "responseModalities": ["AUDIO"],
-            "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": voice}}},
+            "speechConfig": {"voiceConfig": voice_config},
         },
     }
     # HTTP errors include request URLs, so credentials must stay in headers.

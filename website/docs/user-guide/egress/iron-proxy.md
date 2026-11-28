@@ -99,7 +99,8 @@ proxy:
   # Extra allowed upstream hosts beyond the bundled defaults.
   # Wildcards (`*.foo.com`) are supported. The defaults cover OpenRouter,
   # OpenAI, Anthropic, Google, xAI, Mistral, Groq, Together, DeepSeek,
-  # and Nous Research.
+  # and Nous Research. `*.api.openai.com` covers OpenAI's
+  # data-residency hosts (`us.api.openai.com`, `eu.api.openai.com`).
   extra_allowed_hosts: []
 ```
 
@@ -107,8 +108,8 @@ proxy:
 
 ```
 openrouter.ai           *.openrouter.ai
-api.openai.com          api.anthropic.com
-generativelanguage.googleapis.com
+api.openai.com          *.api.openai.com
+api.anthropic.com       generativelanguage.googleapis.com
 api.x.ai                api.mistral.ai
 api.groq.com            api.together.xyz
 api.deepseek.com        inference.nousresearch.com

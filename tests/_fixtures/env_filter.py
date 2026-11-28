@@ -146,6 +146,11 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     # HOME (test_subprocess_home_isolation red locally, green on CI).
     "HERMES_REAL_HOME",
     "TERMINAL_HOME_MODE",
+    # The Nix wrapper exports this at the sealed tree, and tests run from a
+    # Hermes session inherit it; pm's drift check resolves the install stamp
+    # through it, so it must not outrank a monkeypatched repo/install root
+    # (test_environment_build's node-drift assertion red on a Nix dev host).
+    "HERMES_INSTALL_ROOT",
     "HERMES_INTERACTIVE",
     "HERMES_QUIET",
     "HERMES_TOOL_PROGRESS",

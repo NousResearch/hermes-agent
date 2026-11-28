@@ -60,7 +60,8 @@ def _provider_filter_of(source_filter: str) -> str:
 
 def _tap_cache_key(repo: str, path: str, bucket: Optional[str] = None) -> str:
     """Disk-cache key for one tap's skill listing (tests seed that cache through it too)."""
-    return f"{repo}_{path}_{bucket or ''}".replace("/", "_").replace(" ", "_")
+    from tools.skills_hub import tap_index_cache_key
+    return tap_index_cache_key(repo, path, bucket)
 
 
 def _is_rate_limit_response(resp: httpx.Response) -> bool:

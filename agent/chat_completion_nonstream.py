@@ -1,7 +1,31 @@
 """Request-local worker lifecycle, watchdog polling, and wait status."""
 
+from typing import NamedTuple, Optional
+
 from agent import chat_completion_helpers as h
 from agent import chat_completion_wait_notice as wn
+
+
+class _CodexSnapshot(NamedTuple):
+    """Codex watchdog state read under one lock, so every check in a poll sees the same instant."""
+    last_event_ts: Optional[float]
+    last_progress_ts: Optional[float]
+    retry_started_ts: Optional[float]
+    attempt_started_ts: float  # the reconnect marker, else ``call_start``
+    progress_anchor_ts: Optional[float]  # latest model progress of the request; None = clock not anchored
+
+
+def _stale_verdict(*, now: float, elapsed: float, anchor: Optional[float], stale_timeout: float,
+                   ceiling: float) -> Optional[str]:
+    """Which stale kill is due: ``"stale"`` (wall clock, before any progress), ``"no_progress"``
+    (``stale_timeout`` since the latest model progress), ``"ceiling"`` (still progressing at the
+    absolute ceiling), or None. No progress is checked before the ceiling, so a stream that went
+    quiet is reported as quiet."""
+    if anchor is None:
+        return "stale" if elapsed > stale_timeout else None
+    if now - anchor > stale_timeout:
+        return "no_progress"
+    return "ceiling" if elapsed > ceiling else None
 
 
 class _NonStreamRequest:
@@ -10,6 +34,10 @@ class _NonStreamRequest:
     State shared between the worker (``_call``) and the poll loop lives on the
     instance; ``_abort_request`` may run from the poll (stranger) thread.
     """
+
+    # Off unless ``__init__`` resolves a finite ceiling (``_resolve_progress_ceiling``). A class
+    # default because the wait-notice tests build requests with ``__new__`` and no ``__init__``.
+    progress_ceiling: float = float("inf")
 
     def __init__(self, agent, api_kwargs: dict):
         self.agent = agent
@@ -33,12 +61,14 @@ class _NonStreamRequest:
                 lock=h.threading.Lock(),
                 last_event_ts=None,
                 last_progress_ts=None,
+                request_progress_ts=None,
                 retry_started_ts=None,
                 phase_aware=self.wd.idle_requires_progress,
             )
             if self.codex_token is not None
             else None
         )
+        self.progress_ceiling = self._resolve_progress_ceiling()
         self.call_start = h.time.time()
         self.wait_notice_started_ts = None
         self.wait_notice = wn.WaitNoticeState()
@@ -118,27 +148,53 @@ class _NonStreamRequest:
     def _model(self) -> str:
         return self.api_kwargs.get("model", "unknown")
 
-    def _codex_watchdog_snapshot(self):
-        """``(last_event_ts, last_progress_ts, retry_started_ts, attempt_started_ts)`` under one lock.
-
-        ``attempt_started_ts`` is the physical attempt's origin (the reconnect marker, else
-        ``call_start``); the notice and the kill loop must anchor to the same value."""
+    def _codex_watchdog_snapshot(self) -> _CodexSnapshot:
+        """The Codex watchdog state under one lock; the notice and the kill loop read the same
+        values. ``progress_anchor_ts`` is None unless the stale clock follows progress."""
         state = self.codex_watchdog_state
         if state is None:  # non-codex request: no watchdog reads these
-            return (None, None, None, self.call_start)
+            return _CodexSnapshot(None, None, None, self.call_start, None)
+        anchored = h.math.isfinite(self.progress_ceiling)
         with state.lock:
             retry_started_ts = state.retry_started_ts
-            return (state.last_event_ts, state.last_progress_ts, retry_started_ts,
-                    retry_started_ts if retry_started_ts is not None else self.call_start)
+            return _CodexSnapshot(state.last_event_ts, state.last_progress_ts, retry_started_ts,
+                retry_started_ts if retry_started_ts is not None else self.call_start,
+                state.request_progress_ts if anchored else None)
+
+    def _resolve_progress_ceiling(self) -> float:
+        """Absolute bound (seconds after ``call_start``) for a request whose stale clock follows
+        model progress; ``inf`` keeps today's wall-clock stale timeout.
+
+        A Codex Responses request is streamed underneath, so an implicit stale timeout means "no
+        model progress for that long", bounded by the values that already clamp it: the hosted
+        Codex hard ceiling (``_bound_openai_codex_stale_timeout``) and the run budget. Off for
+        non-Codex requests, for an explicit stale timeout (the operator's deadline, #115024),
+        and when neither bound applies (a local endpoint without a run budget, or the hard
+        ceiling disabled), so no request becomes unbounded. Also off when the ceiling does not
+        exceed the stale timeout (a floored stale timeout under a tight run budget): following
+        progress could then only shorten the deadline. Lives here rather than in
+        ``_resolve_nonstream_watchdogs`` because that module is past its size cap."""
+        agent, wd = self.agent, self.wd
+        if not wd.codex or not h.math.isfinite(wd.stale_timeout) or agent._stale_timeout_is_explicit():
+            return h.math.inf
+        base_url = getattr(agent, "base_url", None)
+        local = bool(base_url) and h.is_local_endpoint(base_url)
+        # The same hard-ceiling clamp the resolver applies to the stale timeout (no floor at 0 tokens).
+        hard = h.math.inf if local else h._bound_openai_codex_stale_timeout(h.math.inf, 0)
+        ceiling = h.cap_to_run_budget(agent, hard)
+        return ceiling if ceiling > wd.stale_timeout else h.math.inf
 
     def _pre_progress(self, last_event_ts, last_progress_ts) -> bool:
         """Stream open on this attempt, but no substantive model progress yet."""
         return self.wd.progress_timeout > 0 and last_event_ts is not None and last_progress_ts is None
 
-    def _emit_wait_notice(self, elapsed: float, *, heartbeat: bool = True) -> None:
+    def _emit_wait_notice(self, elapsed: float, *, heartbeat: bool = True,
+                          snap: Optional[_CodexSnapshot] = None) -> None:
         wd = self.wd
         try:
-            last_event_ts, last_progress_ts, retry_started_ts, attempt_started_ts = self._codex_watchdog_snapshot()
+            snap = snap if snap is not None else self._codex_watchdog_snapshot()
+            last_event_ts, last_progress_ts = snap.last_event_ts, snap.last_progress_ts
+            retry_started_ts, attempt_started_ts = snap.retry_started_ts, snap.attempt_started_ts
             pre_progress = self._pre_progress(last_event_ts, last_progress_ts)
             activity_ts = attempt_started_ts if pre_progress else (
                 retry_started_ts if retry_started_ts is not None else last_event_ts)
@@ -171,7 +227,8 @@ class _NonStreamRequest:
                 retry_started_ts=retry_started_ts,
                 call_start=self.call_start, idle_enabled=wd.idle_enabled, idle_timeout=wd.idle_timeout,
                 idle_requires_progress=wd.idle_requires_progress, progress_timeout=wd.progress_timeout,
-                elapsed=elapsed)
+                elapsed=elapsed, progress_anchor_ts=snap.progress_anchor_ts,
+                progress_ceiling=self.progress_ceiling)
             # One neutral notice per silence; repeating it every heartbeat made
             # healthy long calls read as provider trouble (#92550).
             if not self.wait_notice.should_emit(phase, watchdog):
@@ -253,11 +310,31 @@ class _NonStreamRequest:
             f"Non-streaming API call timed out after {int(elapsed)}s with no response (threshold: {int(wd.stale_timeout)}s)"
             + (f". {silent_hint}" if silent_hint else ""))
 
+    def _progress_stale_kill(self, verdict: str, silence: float, elapsed: float) -> None:
+        """Stale kill once the model made progress: no further progress for ``stale_timeout``, or
+        still progressing at the absolute ceiling. Counted toward the circuit breaker like the
+        wall-clock stale kill both replace."""
+        agent, wd = self.agent, self.wd
+        if verdict == "ceiling":
+            reason = "codex_progress_ceiling_kill"
+            what = (f"reached the {int(self.progress_ceiling)}s absolute ceiling (hard ceiling or run budget) "
+                    f"{int(elapsed)}s into the request; last model progress {int(silence)}s ago")
+        else:
+            reason = "stale_call_kill"
+            what = (f"made no model progress for {int(silence)}s (threshold: {int(wd.stale_timeout)}s, "
+                    f"{int(elapsed)}s into the request)")
+        h.logger.warning("Codex stream %s. model=%s context=~%s tokens. Killing connection.",
+            what, self._model(), f"{wd.est_tokens:,}")
+        agent._buffer_diagnostic_status(f"⚠️ Codex stream {what} (model: {self._model()}). Aborting call.")
+        self._abort_request(reason)
+        h._bump_stale_streak(agent)
+        agent._touch_activity(f"codex stream killed: {what}")
+        self._await_worker_after_kill(f"Codex stream {what}")
+
     def _interrupt(self, elapsed: float) -> None:
         agent = self.agent
-        last_event_ts, _, _, _ = self._codex_watchdog_snapshot()
         h._record_interrupted_provider_wait(agent, elapsed,
-            response_started=self.wd.codex and last_event_ts is not None
+            response_started=self.wd.codex and self._codex_watchdog_snapshot().last_event_ts is not None
         )
         # Mark cancelled BEFORE force-closing so the worker treats the transport
         # error as a cancel (#6600). Never close the shared client (releasing a
@@ -277,6 +354,7 @@ class _NonStreamRequest:
             with self.codex_watchdog_state.lock:
                 self.codex_watchdog_state.last_event_ts = None
                 self.codex_watchdog_state.last_progress_ts = None
+                self.codex_watchdog_state.request_progress_ts = None
                 self.codex_watchdog_state.retry_started_ts = None
         agent._touch_activity("waiting for non-streaming API response")
 
@@ -290,8 +368,10 @@ class _NonStreamRequest:
             # Resumed events clear our notice on the next poll, not 30s later.
             now = h.time.time()
             elapsed = now - self.call_start
-            self._emit_wait_notice(elapsed, heartbeat=poll_count % 100 == 0)
-            last_event_ts, last_progress_ts, retry_started_ts, attempt_started_ts = self._codex_watchdog_snapshot()
+            snap = self._codex_watchdog_snapshot()  # one read per poll: the notice and every check agree
+            self._emit_wait_notice(elapsed, heartbeat=poll_count % 100 == 0, snap=snap)
+            last_event_ts, last_progress_ts = snap.last_event_ts, snap.last_progress_ts
+            retry_started_ts, attempt_started_ts = snap.retry_started_ts, snap.attempt_started_ts
             attempt_elapsed = now - attempt_started_ts
             if (wd.ttfb_enabled and last_event_ts is None and attempt_elapsed > wd.ttfb_timeout):
                 self._ttfb_kill(attempt_elapsed)
@@ -306,8 +386,14 @@ class _NonStreamRequest:
                     and idle_elapsed > wd.idle_timeout):
                 self._idle_kill(idle_elapsed)
                 break
-            if elapsed > wd.stale_timeout:
+            anchor = snap.progress_anchor_ts
+            verdict = _stale_verdict(now=now, elapsed=elapsed, anchor=anchor,
+                stale_timeout=wd.stale_timeout, ceiling=self.progress_ceiling)
+            if verdict == "stale":
                 self._stale_kill(elapsed)
+                break
+            if verdict is not None and anchor is not None:
+                self._progress_stale_kill(verdict, now - anchor, elapsed)
                 break
             if agent._interrupt_requested:
                 self._interrupt(elapsed)

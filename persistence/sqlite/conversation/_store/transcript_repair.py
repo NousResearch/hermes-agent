@@ -12,6 +12,7 @@ from persistence.sqlite.conversation._store.sql_common import _id_chunks, _place
 from persistence.sqlite.conversation._store.identity import _fill_missing_tool_call_uids, _restore_row_identity
 from persistence.sqlite.conversation._store.messages import _loaded_view_content
 from persistence.sqlite.conversation._store.messages_sql import _MESSAGE_WRITE_COLUMNS
+from persistence.sqlite.conversation._store.reasoning import row_as_written
 from persistence.sqlite.conversation._store.rules import CANONICAL_ROW, DB_ROW_SNAPSHOT, RESTORED_FROM_STORE
 
 
@@ -54,8 +55,9 @@ def transcript_row_snapshot(row: Mapping[str, Any]) -> str:
     dicts, so a full copy would double transcript memory and anything that prices dict bytes.
     """
     digest = hashlib.blake2b(digest_size=16)
+    written = row_as_written(row)
     for column in _OWNED_COLUMNS:
-        value = row[column]
+        value = written[column]
         if value is None:
             digest.update(b"N")
             continue
@@ -150,7 +152,7 @@ def _same_as_stored(
     stripped on load), because that is what the dict was rebuilt from; the dict's own content is never
     normalized, so text that differs after the lens is an edit and inserts.
     """
-    for row in rows:
+    for row in map(row_as_written, rows):
         serialized = dict(serialize_message_fn(msg, float(row["timestamp"])))
         for column, key in _RESTORE_MAY_OMIT:
             if not msg.get(key):
@@ -235,7 +237,8 @@ def resolve_and_repair_transcript_batch(
                     # Replays never decode token_count (the agent flush row sets it to None): None means
                     # "unknown", not NULL.
                     serialized = {**serialized, "token_count": target_row["token_count"]}
-                if any(target_row[column] != serialized[column] for column in _OWNED_COLUMNS):
+                written = row_as_written(target_row)
+                if any(written[column] != serialized[column] for column in _OWNED_COLUMNS):
                     _rewrite_row(conn, session_id, target_row, serialized)
                     wrote = True
                 hand_back = True
@@ -372,18 +375,20 @@ def _active_message_row(conn: sqlite3.Connection, session_id: str, row_id: int, 
     # messages. Legacy rows without an indexed identity cannot be resolved safely, so retain the addressed row.
     if row["display_identity"] is None:
         return row
-    payload_predicates = " AND ".join(f"{column} IS ?" for column in _REPAIR_COLUMNS)
-    clones = conn.execute(
+    exact = tuple(column for column in _REPAIR_COLUMNS if column != "reasoning")
+    payload_predicates = " AND ".join(f"{column} IS ?" for column in exact)
+    reasoning = row_as_written(row)["reasoning"]
+    clones = [clone for clone in conn.execute(
         "SELECT * FROM messages WHERE session_id = ? AND active = 1 AND role = ? "
         "AND display_identity IS ? AND timestamp IS ? AND id != ? AND "
-        f"{payload_predicates} ORDER BY id DESC LIMIT 2",
+        f"{payload_predicates} ORDER BY id DESC",
         (
             session_id,
             role,
             row["display_identity"],
             row["timestamp"],
             row["id"],
-            *(row[column] for column in _REPAIR_COLUMNS),
+            *(row[column] for column in exact),
         ),
-    ).fetchall()
+    ).fetchall() if row_as_written(clone)["reasoning"] == reasoning]
     return clones[0] if len(clones) == 1 else row

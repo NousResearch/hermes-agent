@@ -40,6 +40,7 @@ from .transcript_store import (
     _row_snapshot,
     _stamp_tool_call_uids,
     _stored_content,
+    _stored_reasoning_pair,
     _StoredRow,
     _Transcript,
     compression_ancestors,
@@ -105,7 +106,7 @@ def _repair_target(transcript: _Transcript, message: NewMessage) -> Optional[_St
         return None
     if original.visibility is RowVisibility.ACTIVE:
         return original
-    clones = [r for r in transcript.rows if r.visibility is RowVisibility.ACTIVE and r.id != original.id and r.message == original.message]
+    clones = [r for r in transcript.rows if r.visibility is RowVisibility.ACTIVE and r.id != original.id and _stored_reasoning_pair(r.message) == _stored_reasoning_pair(original.message)]
     return clones[0] if len(clones) == 1 else original
 
 
@@ -117,6 +118,7 @@ _REPLAY_FIELDS = (*_OWNED_FIELDS, "tool_call_uids", "absorbed_message_uids", "ap
 
 def _same_as_stored(message: NewMessage, stored: NewMessage) -> bool:
     """``message`` stored now would replay exactly as ``stored`` (``resolve_and_repair_transcript_batch``'s ``_same_as_stored``): the stored content seen as a load returns it, and the stored values standing in for what a restore may leave off."""
+    stored = _stored_reasoning_pair(stored)
     candidate = _payload(message, keep_reasoning=message.role == "assistant")
     standing_in = {name: getattr(stored, name) for name in _RESTORE_MAY_OMIT if not getattr(message, name)}
     if candidate.content == _stored_content(policy.loaded_view(stored.role, stored.content)):

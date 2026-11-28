@@ -24,7 +24,7 @@ from gateway.message_timestamps import strip_leading_message_timestamps
 from . import _turn_policy as policy
 from .._lease_fence import verify_lease, verify_turn_lease
 from .messages_base import MessageBase
-from .transcript_store import _payload, _row_snapshot, _StoredRow, _Transcript, clone_rows, insert_rows, mint_row_id, row_stamp
+from .transcript_store import _payload, _restored_reasoning_pair, _row_snapshot, _StoredRow, _Transcript, clone_rows, insert_rows, mint_row_id, row_stamp
 
 
 def row_identity(role: str, content: Any, tool_call_id: Optional[str], tool_calls: Sequence[Any]) -> tuple[Any, ...]:
@@ -234,8 +234,8 @@ def _images_replaced(stored: Any, held: Any) -> bool:
 
 def _replays_as(row: _StoredRow, held: NewMessage, same_content: bool) -> bool:
     """Whether ``held`` replays the sidecars the next request reads from ``row`` (``SessionCoverageMixin._replays_as``): a sidecar the copy carries equals the row's, and a copy without the row's ``api_content`` stands for it only when its own content is those bytes or the compressor rewrote the content."""
-    stored = row.message
-    written = _payload(held, keep_reasoning=held.role == "assistant")
+    stored = _restored_reasoning_pair(row.message)
+    written = _restored_reasoning_pair(_payload(held, keep_reasoning=held.role == "assistant"))
     if any(getattr(written, name) is not None and getattr(written, name) != getattr(stored, name) for name in _REPLAY_SIDECARS):
         return False
     row_api = None if stored.api_content == stored.content else stored.api_content

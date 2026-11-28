@@ -12,6 +12,7 @@ from persistence.sqlite.conversation._store.messages import (
 )
 from persistence.sqlite.conversation._store.messages_sql import _parse_tool_calls
 from persistence.sqlite.conversation._store.rules import DB_ROW_SNAPSHOT, coerce_epoch
+from persistence.sqlite.conversation._store.reasoning import restored_reasoning
 
 
 def _text_of(content: Any) -> str:
@@ -165,9 +166,15 @@ def _replays_as(holder: StoreHolder, row, held: dict[str, Any], same_content: bo
 
     serialized = _serialized_message_row(holder, row["session_id"], held, float(row["timestamp"] or 0))
     content = _decode_content(row["content"])
+    # Folding an equal pair to NULL must not hide a different reasoning sidecar on the durable row.
+    held_reasoning = restored_reasoning(held.get("role"), serialized["reasoning"], serialized["reasoning_content"])
+    row_reasoning = restored_reasoning(row["role"], row["reasoning"], row["reasoning_content"])
+    if held_reasoning is not None and held_reasoning != row_reasoning:
+        return False
     row_api, held_api = (None if api == text else api for api, text in (
         (row["api_content"], content), (serialized["api_content"], held.get("content"))))
-    if any(serialized[column] is not None and serialized[column] != row[column] for column in REPLAY_SIDECARS):
+    if any(serialized[column] is not None and serialized[column] != row[column]
+           for column in REPLAY_SIDECARS if column != "reasoning"):
         return False
     if held_api is not None or row_api is None:
         return held_api == row_api

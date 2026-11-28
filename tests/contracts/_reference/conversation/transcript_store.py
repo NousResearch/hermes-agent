@@ -73,7 +73,7 @@ class _StoredRow:
         return float(self.message.timestamp or 0.0)
 
     def as_record(self) -> MessageRecord:
-        m = copy.deepcopy(self.message)
+        m = _restored_reasoning_pair(copy.deepcopy(self.message))
         return MessageRecord(
             id=MessageId(self.id), role=m.role, content=m.content, timestamp=self.epoch,
             tool_calls=m.tool_calls, tool_name=m.tool_name, tool_call_id=m.tool_call_id,
@@ -90,7 +90,7 @@ class _StoredRow:
         )
 
     def as_transcript_row(self, session_id: str) -> TranscriptRow:
-        m = copy.deepcopy(self.message)
+        m = _restored_reasoning_pair(copy.deepcopy(self.message))
         return TranscriptRow(
             id=MessageId(self.id), session_id=SessionId(session_id), role=m.role, content=m.content,
             timestamp=self.epoch, visibility=self.visibility,
@@ -182,9 +182,25 @@ def _stored_content(content: Any) -> Any:
     return content
 
 
+def _stored_reasoning_pair(message: NewMessage) -> NewMessage:
+    """Independent stored-pair model: only identical non-blank assistant text folds to NULL."""
+    content = message.reasoning_content
+    if message.role == "assistant" and isinstance(content, str) and content.strip() and message.reasoning == content:
+        return replace(message, reasoning=None)
+    return message
+
+
+def _restored_reasoning_pair(message: NewMessage) -> NewMessage:
+    """NULL with non-blank assistant reasoning_content replays as both fields, blank pads do not."""
+    content = message.reasoning_content
+    if message.reasoning is None and message.role == "assistant" and isinstance(content, str) and content.strip():
+        return replace(message, reasoning=content)
+    return message
+
+
 def _payload(message: NewMessage, *, keep_reasoning: bool = True) -> NewMessage:
     """The stored form of a written row, a copy that shares no value with the caller's: content normalized, ``data_use`` folded into ``display_metadata``, empty sidecars absent, reasoning dropped unless kept, and the caller's resolution bookkeeping (target id, snapshot, restored mark) never stored."""
-    message = copy.deepcopy(message)
+    message = _stored_reasoning_pair(copy.deepcopy(message))
     metadata = dict(message.display_metadata) if isinstance(message.display_metadata, dict) and message.display_metadata else None
     if message.data_use:
         metadata = {**(metadata or {}), "data_use": list(message.data_use)}
@@ -238,6 +254,7 @@ def _hashable(value: Any) -> Any:
 
 def _row_snapshot(message: NewMessage) -> str:
     """The reference's opaque ownership version: a digest of the owned payload only."""
+    message = _stored_reasoning_pair(message)
     owned = [[name, getattr(message, name)] for name in _OWNED_FIELDS]
     encoded = json.dumps(owned, sort_keys=True, default=repr, ensure_ascii=False).encode("utf-8", "surrogatepass")
     return hashlib.blake2b(encoded, digest_size=16).hexdigest()
@@ -259,7 +276,7 @@ def _identity_keys(message: NewMessage) -> dict[str, JsonValue]:
 
 def _decoded_row(message: NewMessage) -> dict[str, JsonValue]:
     """A stored row decoded for a live dict (``SessionMessagesMixin._decoded_repair_row``: present keys only, reasoning on assistant rows)."""
-    message = copy.deepcopy(message)
+    message = _restored_reasoning_pair(copy.deepcopy(message))
     row: dict[str, JsonValue] = {"role": message.role, "content": message.content}
     for key in ("tool_call_id", "tool_name", "effect_disposition", "token_count", "finish_reason"):
         if getattr(message, key) is not None:
@@ -459,7 +476,7 @@ def dedupe_display(pairs: Sequence[tuple[str, _StoredRow]], *, drop_removed: boo
 
 def _replay_dict(row: _StoredRow, *, include_row_ids: bool, include_summary_markers: bool, stamp_snapshot: bool) -> dict[str, Any]:
     """One stored row as the replay dict (``SessionMessagesMixin._rows_to_conversation``): born durable, present keys only, reasoning on assistant rows."""
-    m = copy.deepcopy(row.message)
+    m = _restored_reasoning_pair(copy.deepcopy(row.message))
     msg: dict[str, Any] = {"role": m.role, "content": policy.loaded_view(m.role, m.content), DB_PERSISTED_MARKER_KEY: True}
     if stamp_snapshot:
         msg["_db_row_snapshot"] = _row_snapshot(m)

@@ -39,6 +39,20 @@ def refusal(name):
     return f"/{name} is not available on the shared gateway yet. Parity table: {PARITY_DOC}"
 
 
+def _refusal_copy(exc, name):
+    """The owner's own hint for a refused command, else the parity text.
+
+    ``data.detail`` is where the gateway names the check that fired (``session_commands``): a
+    command that is not available on this session says where it does run — a session a messaging
+    platform owns names that platform — so the panel never shows the bare reason code (#153927).
+    """
+    detail = str((getattr(exc, "data", None) or {}).get("detail") or "").strip()
+    if detail:
+        return detail
+    from hermes_cli.commands import resolve_command
+    return refusal(name) if resolve_command(name) else f"Unknown command: /{name} (use /help)"
+
+
 def _user_turns(snapshot):
     """Human-authored live user rows (``row_id`` = durable ``messages.id``), oldest first: no display-only
     kind other than a typed /steer, never a compaction handoff carrier, never a row a compression
@@ -190,8 +204,7 @@ async def forward(view, name, rest):
     except GatewayRPCError as exc:
         if str(exc) != "unsupported_command":
             raise
-        from hermes_cli.commands import resolve_command
-        print(refusal(name) if resolve_command(name) else f"Unknown command: /{name} (use /help)")
+        print(_refusal_copy(exc, name))
         return
     if reply.get("type") in ("skill", "send"):
         # A prompt directive is the client's durable submit (same contract as Ink and Desktop):

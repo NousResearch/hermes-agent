@@ -390,3 +390,91 @@ class TestBuildStatusPhrase:
             assert build_status_phrase("terminal", {"command": "ls"}) is None
         finally:
             set_friendly_tool_labels(True)
+
+
+class TestToolLabelOverrides:
+    """display.tool_labels: explicit operator labels compose with curated friendly labels."""
+
+    @pytest.fixture(autouse=True)
+    def _reset(self):
+        from agent.display import set_friendly_tool_labels, set_tool_label_overrides
+        set_friendly_tool_labels(True)
+        set_tool_label_overrides({})
+        yield
+        set_friendly_tool_labels(True)
+        set_tool_label_overrides({})
+
+    def test_empty_map_keeps_curated_label(self):
+        from agent.display import build_tool_label, get_tool_verb, set_tool_label_overrides
+        args = {"query": "weather in NYC"}
+        before = build_tool_label("web_search", args)
+        set_tool_label_overrides({})
+        assert build_tool_label("web_search", args) == before
+        assert before.startswith(get_tool_verb("web_search"))
+
+    def test_override_beats_curated_label(self):
+        from agent.display import build_tool_label, get_tool_verb, set_tool_label_overrides
+        set_tool_label_overrides({"web_search": "Looking things up"})
+        label = build_tool_label("web_search", {"query": "weather in NYC"})
+        assert label == "Looking things up: weather in NYC"
+        assert get_tool_verb("web_search") not in label
+
+    def test_unmapped_tool_is_unaffected(self):
+        from agent.display import build_tool_label, set_tool_label_overrides
+        args = {"query": "weather in NYC"}
+        expected = build_tool_label("web_search", args)
+        set_tool_label_overrides({"read_file": "Fetching content"})
+        assert build_tool_label("web_search", args) == expected
+
+    def test_mcp_tool_without_curated_label_gets_mapping(self):
+        from agent.display import build_tool_label, set_tool_label_overrides
+        args = {"query": "q3 revenue"}
+        assert "Searching information" not in (build_tool_label("mcp_gbrain_query", args) or "")
+        set_tool_label_overrides({"mcp_gbrain_query": "Searching information"})
+        assert build_tool_label("mcp_gbrain_query", args) == "Searching information: q3 revenue"
+
+    def test_override_applies_with_friendly_labels_off(self):
+        from agent.display import build_tool_label, set_friendly_tool_labels, set_tool_label_overrides
+        set_friendly_tool_labels(False)
+        set_tool_label_overrides({"web_search": "Looking things up"})
+        assert build_tool_label("web_search", {"query": "x"}) == "Looking things up: x"
+
+    def test_malformed_map_is_ignored(self):
+        from agent.display import get_tool_label_override, set_tool_label_overrides
+        set_tool_label_overrides(["web_search"])
+        assert get_tool_label_override("web_search") is None
+        set_tool_label_overrides({"web_search": "   ", "read_file": None})
+        assert get_tool_label_override("web_search") is None
+        assert get_tool_label_override("read_file") is None
+
+    def test_status_phrase_uses_override(self):
+        from agent.display import build_status_phrase, set_friendly_tool_labels, set_tool_label_overrides
+        set_tool_label_overrides({"mcp_gbrain_query": "Searching information"})
+        assert build_status_phrase("mcp_gbrain_query", {"query": "q3"}) == "is searching information: q3…"
+        assert build_status_phrase("mcp_gbrain_query", None) == "is searching information…"
+        set_friendly_tool_labels(False)
+        assert build_status_phrase("mcp_gbrain_query", None) == "is searching information…"
+
+
+class TestTrimPathPreviews:
+    """display.trim_path_previews is applied where the preview is produced, so false is reversible."""
+
+    @pytest.fixture(autouse=True)
+    def _reset(self):
+        from agent.display import set_trim_path_previews
+        set_trim_path_previews(True)
+        yield
+        set_trim_path_previews(True)
+
+    def test_default_trims_to_basename(self):
+        from agent.display import build_tool_preview
+        preview = build_tool_preview("read_file", {"path": "/srv/app/docs/STATUS.md"}, max_len=0)
+        assert preview.startswith("STATUS.md")
+        assert "/srv/app" not in preview
+
+    def test_false_shows_full_path(self):
+        from agent.display import build_tool_preview, prepare_tool_preview, set_trim_path_previews
+        set_trim_path_previews(False)
+        args = {"path": "/srv/app/docs/STATUS.md"}
+        assert build_tool_preview("read_file", args, max_len=0).startswith("/srv/app/docs/STATUS.md")
+        assert prepare_tool_preview("read_file", args, fallback="", max_len=0).text.startswith("/srv/app/docs/STATUS.md")

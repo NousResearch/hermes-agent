@@ -271,3 +271,36 @@ class TestCleanupProgress:
                 }
             }
             assert resolve_display_setting(config, "telegram", "cleanup_progress") is True, val
+
+
+class TestToolLabelAndPathTrimSettings:
+    """display.tool_labels / display.trim_path_previews resolve through resolve_display_setting."""
+
+    def test_defaults_preserve_existing_output(self):
+        from gateway.display_config import resolve_display_setting
+        assert resolve_display_setting({}, "telegram", "tool_labels") == {}
+        assert resolve_display_setting({}, "telegram", "trim_path_previews") is True
+
+    def test_platform_map_replaces_global_map(self):
+        from gateway.display_config import resolve_display_setting
+        cfg = {"display": {
+            "tool_labels": {"web_search": "Searching", "read_file": "Reading"},
+            "platforms": {"whatsapp": {"tool_labels": {"web_search": "Looking up"}}},
+        }}
+        assert resolve_display_setting(cfg, "whatsapp", "tool_labels") == {"web_search": "Looking up"}
+        assert resolve_display_setting(cfg, "telegram", "tool_labels") == {
+            "web_search": "Searching", "read_file": "Reading"}
+
+    def test_malformed_map_inherits_lower_precedence(self):
+        from gateway.display_config import resolve_display_setting
+        cfg = {"display": {
+            "tool_labels": {"web_search": "Searching"},
+            "platforms": {"slack": {"tool_labels": "oops"}},
+        }}
+        assert resolve_display_setting(cfg, "slack", "tool_labels") == {"web_search": "Searching"}
+
+    def test_trim_path_previews_per_platform_and_yaml_strings(self):
+        from gateway.display_config import resolve_display_setting
+        cfg = {"display": {"trim_path_previews": True, "platforms": {"slack": {"trim_path_previews": "false"}}}}
+        assert resolve_display_setting(cfg, "slack", "trim_path_previews") is False
+        assert resolve_display_setting(cfg, "telegram", "trim_path_previews") is True

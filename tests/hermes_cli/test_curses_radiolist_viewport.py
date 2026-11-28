@@ -13,6 +13,7 @@ class Screen:
         self.heights = iter(heights)
         self.height = 24
         self.frames = []
+        self.cursor = None
 
     def clear(self):
         self.rows = {}
@@ -25,15 +26,19 @@ class Screen:
         assert 0 <= y < self.height, f"off-screen write at row {y}"
         self.rows[y] = self.rows.get(y, "") + text[:n]
 
+    def move(self, y, x):
+        assert 0 <= y < self.height, f"cursor parked off-screen at row {y}"
+        self.cursor = (y, x)
+
     def refresh(self):
-        self.frames.append(dict(self.rows))
+        self.frames.append((dict(self.rows), self.cursor))
 
     def getch(self):
         return next(self.keys)
 
 
 @pytest.fixture
-def run_menu(monkeypatch):
+def run_menu_screen(monkeypatch):
     def run(keys, heights, *, description=None, selected=0):
         screen = Screen(keys, heights)
         curses = SimpleNamespace(
@@ -51,8 +56,29 @@ def run_menu(monkeypatch):
             "Select default model:", [f"model-{i:02}" for i in range(20)],
             selected=selected, description=description, searchable=True,
         )
-        return result, screen.frames
+        return result, screen
     return run
+
+
+@pytest.fixture
+def run_menu(run_menu_screen):
+    """Frames only, the shape most tests want; ``run_menu_screen`` also exposes the cursor."""
+    def run(keys, heights, *, description=None, selected=0):
+        result, screen = run_menu_screen(keys, heights, description=description, selected=selected)
+        return result, [rows for rows, _cursor in screen.frames]
+    return run
+
+
+def test_terminal_cursor_is_parked_on_the_current_row(run_menu_screen):
+    """Braille displays follow the cursor, not colour, so it must sit on the current row."""
+    _, screen = run_menu_screen([258, 10], [24], selected=0)  # 258 = KEY_DOWN, then Enter
+    frames = [rows for rows, _cursor in screen.frames]
+    cursors = [cursor for _rows, cursor in screen.frames]
+    assert cursors and all(cursor is not None for cursor in cursors), "cursor was never parked"
+    assert cursors[0] != cursors[-1], "the cursor did not move with the selection"
+    for (row, col), rows in zip(cursors, frames):
+        assert col == 0
+        assert "\u2192" in rows.get(row, ""), (row, rows)
 
 
 LONG_DESCRIPTION = "\n".join(f"Unavailable model {i}" for i in range(40))

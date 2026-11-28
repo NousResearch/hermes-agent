@@ -186,5 +186,6 @@ def _inspect(identifier: str, catalog_name: Optional[str]) -> dict[str, Any]:
         return _failure(str(exc), warnings, insecure)
     if not found["agent"] and not found["desktop"]:
         return _failure("No agent or desktop plugin artifacts found in this repository.", warnings, insecure)
-    return {"ok": True, **found, "desktop_name": _desktop_folder_name(git_url, subdir) if found["desktop"] else None,
+    desktop_name = (found["agent_name"] or _desktop_folder_name(git_url, subdir)) if found["desktop"] else None
+    return {"ok": True, **found, "desktop_name": desktop_name,
             "sha": sha, "warnings": warnings, "insecure": insecure}

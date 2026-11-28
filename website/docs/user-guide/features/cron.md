@@ -633,6 +633,35 @@ reminder cooldown) → `resolved` (the job ran OK afterwards; re-opens on a
 repeat) or `closed` (acknowledged; terminal for that signature). Stored error
 text is secret-redacted and truncated before it is written.
 
+### Gateway restarts and updates: a grace window before the alert
+
+A job that comes due while the gateway is restarting or updating fails without
+ever reaching its work, with an error such as `Gateway draining: update_paused`,
+`Gateway connection failed; no local fallback` or `Cron admission missing`.
+Every frequent job hits that window, so without a hold one restart would post
+one failure notice per job, each for a job that runs fine a few minutes later.
+
+The notice for such a failure is held while the job's current run of
+consecutive failures is younger than the grace window. A job that recovers
+inside it never pings; a job still failing that way after it alerts as usual,
+so a gateway that does not come back is still reported.
+
+```yaml
+cron:
+  restart_failure_grace_minutes: 30   # 0 = alert on the first such failure
+```
+
+Only the notice is held: `hermes cron runs`, the failure streak and
+`hermes cron incidents` record the failure like any other. A worker that dies
+before taking its run (`Restart-safe cron worker dispatch failed`) is held only
+while some job has been refused by the gateway inside the window, because a
+worker can also die with no restart involved.
+
+What is held is decided by where the job failed, not by what the error says:
+only a job the gateway never admitted qualifies. A run that had started alerts
+at once, even if it ends with one of the same gateway errors or was interrupted
+by the shutdown: its work may be half done, and the notice is how you find out.
+
 ### Fleet health check: `hermes cron doctor`
 
 `hermes cron doctor` is a read-only health check over every active job. It prints grouped, per-job issues and exits `1` while any finding stands, including historical late or catch-up dispatches (`0` when no findings remain).

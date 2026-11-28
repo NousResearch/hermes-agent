@@ -75,7 +75,8 @@ def _tick_failing(job, tmp_path, deliveries, error="boom unrelated", *, settle=F
          patch("cron.delivery_queue.enqueue", side_effect=fake_deliver), \
          patch("run_agent.AIAgent") as mock_agent_cls:
         mock_agent = MagicMock()
-        mock_agent.run_conversation.side_effect = RuntimeError(error)
+        mock_agent.run_conversation.side_effect = (
+            error if isinstance(error, BaseException) else RuntimeError(error))
         mock_agent_cls.return_value = mock_agent
         sched.run_one_job(dict(job))
         assert mock_agent.run_conversation.called
@@ -430,3 +431,166 @@ def test_alerted_gate_honours_cooldown_opt_out_and_legacy_rows(monkeypatch, tmp_
     assert inc.ack_incident(inc_id) is True
     monkeypatch.setattr(sched, "_failure_repeat_alert_hours", lambda: 0)
     assert sched._upsert_incident_for_failure(job, "repeat boom") == (True, inc_id)
+
+
+# ── Gateway restart noise ──────────────────────────────────────────────────
+
+_DRAINING = "GatewayUnavailableError: Gateway draining: update_paused"
+
+
+def _refused(**overrides):
+    """A job stamped the way the refusing code stamps it: the gateway never admitted this fire."""
+    from cron.restart_noise import GATEWAY_UNAVAILABLE, NOT_ADMITTED
+
+    return _job(**{NOT_ADMITTED: GATEWAY_UNAVAILABLE, **overrides})
+
+
+def test_fire_refused_before_admission_is_held(monkeypatch, tmp_path):
+    """The firer cannot dial the gateway, so no submit is sent and nothing runs: the refusing
+    code stamps the job, the incident is recorded and the notice is held."""
+    from cron import scheduler_authority
+    from cron.restart_noise import GATEWAY_UNAVAILABLE, NOT_ADMITTED
+    from hermes_cli import gateway_client
+
+    inc = _point_db(monkeypatch, tmp_path)
+
+    def unavailable():
+        raise gateway_client.GatewayUnavailableError(
+            "Gateway draining: update_paused", "draining", "update_paused")
+
+    monkeypatch.setattr(gateway_client, "connect_gateway", unavailable)
+    with cron_jobs.use_cron_store(tmp_path / "cron"):
+        job = cron_jobs.create_job(prompt="report", schedule="every 1h", deliver="local")
+        success, _output, _answer, error = scheduler_authority.run_canonical_job(
+            job, execution_id="exec-refused")
+
+        assert success is False and error == _DRAINING
+        assert job[NOT_ADMITTED] == GATEWAY_UNAVAILABLE
+        assert sched._upsert_incident_for_failure(job, error)[0] is True
+        assert [row["state"] for row in inc.list_incidents()] == ["detected"]
+
+
+def test_same_gateway_error_after_the_agent_started_alerts_at_once(
+    monkeypatch, tmp_path, cron_owner
+):
+    """The error text is not evidence of the stage. A run whose agent was already working when a
+    gateway call failed may be half done, so it alerts even though it reads like a refusal."""
+    from hermes_cli.gateway_client import GatewayUnavailableError
+
+    _point_db(monkeypatch, tmp_path)
+    deliveries = []
+    with cron_jobs.use_cron_store(tmp_path):
+        _tick_failing(
+            _job(), tmp_path, deliveries,
+            error=GatewayUnavailableError("Gateway draining: update_paused", "draining", "update_paused"))
+
+    assert len(deliveries) == 1 and "Gateway draining" in deliveries[0]
+
+
+def test_unknown_stage_alerts_whatever_the_text_says(monkeypatch, tmp_path):
+    """No stamp means nobody vouched that the fire was never admitted: deliver."""
+    _point_db(monkeypatch, tmp_path)
+    for text in (
+        _DRAINING,
+        "GatewayClientError: Gateway connection failed; no local fallback",
+        "Cron admission missing: the owner never admitted this fire",
+        "Restart-safe cron worker dispatch failed: exited before ownership acknowledgement",
+    ):
+        assert sched._upsert_incident_for_failure(_job(id=text[:12]), text)[0] is False, text
+
+
+def test_grace_window_ends_and_a_green_run_reopens_it(monkeypatch, tmp_path):
+    """A job still refused once the window has passed alerts (the gateway is not coming back);
+    after a successful run the next refusal opens a new window. ``0`` disables the hold."""
+    from cron import restart_noise
+
+    inc = _point_db(monkeypatch, tmp_path)
+    assert sched._upsert_incident_for_failure(_refused(failure_streak=0), _DRAINING)[0] is True
+    assert sched._upsert_incident_for_failure(_refused(failure_streak=1), _DRAINING)[0] is True
+
+    with inc._transaction() as conn:
+        conn.execute("UPDATE cron_restart_failures SET started_at = started_at - 31 * 60")
+    assert sched._upsert_incident_for_failure(_refused(failure_streak=2), _DRAINING)[0] is False
+
+    assert sched._upsert_incident_for_failure(_refused(failure_streak=0), _DRAINING)[0] is True
+
+    monkeypatch.setattr(restart_noise, "grace_seconds", lambda: 0.0)
+    assert sched._upsert_incident_for_failure(_refused(failure_streak=0), _DRAINING)[0] is False
+
+
+def test_worker_death_is_held_only_beside_a_gateway_refusal(monkeypatch, tmp_path):
+    """A worker that dies before adopting its execution also happens with no restart involved, so
+    on its own it alerts; it is held only while some job was refused by the gateway."""
+    from cron import executions
+    from cron.restart_noise import NOT_ADMITTED, WORKER_EXIT
+
+    _point_db(monkeypatch, tmp_path)
+    monkeypatch.setattr(executions, "EXECUTIONS_FILE", tmp_path / "cron" / "executions.db")
+
+    def worker_died(_job):
+        raise RuntimeError("cron external worker exited before ownership acknowledgement (exit 1)")
+
+    monkeypatch.setattr(sched, "_launch_external_cron_worker", worker_died)
+    monkeypatch.setattr(sched, "mark_job_run", lambda *_a, **_k: True)
+    delivered = []
+    monkeypatch.setattr(
+        sched, "_deliver_result", lambda job, content, **_kw: delivered.append(content) or None)
+
+    def fire():
+        job = {"id": "worker-job", "deliver": "telegram:123",
+               "execution_id": executions.create_execution("worker-job", source="builtin")["id"]}
+        assert sched.run_one_job(job, adapters=None) is True
+        return job
+
+    assert fire()[NOT_ADMITTED] == WORKER_EXIT
+    assert len(delivered) == 1, "a lone worker death alerts"
+
+    assert sched._upsert_incident_for_failure(_refused(id="sibling"), _DRAINING)[0] is True
+    sched._resolve_incidents_for_recovered_job({"id": "worker-job"})  # past the alert-once gate
+    fire()
+    assert len(delivered) == 1, "held while the gateway is refusing other jobs"
+
+
+def test_fire_the_owner_never_admitted_is_held_on_recovery(monkeypatch, tmp_path):
+    """A firer that died between journalling and submitting leaves a receipt the next owner has
+    no admission for. Recovery books the failed run and stamps it, so its notice is held too."""
+    import json
+    from contextlib import asynccontextmanager
+
+    from cron import executions, restart_noise, scheduler_authority
+    from hermes_cli import gateway_client
+
+    _point_db(monkeypatch, tmp_path)
+
+    class Peer:
+        async def rpc(self, method, **params):
+            assert method == "cron.recover"
+            return {"status": "missing", "result": None}
+
+    @asynccontextmanager
+    async def connected():
+        yield Peer()
+
+    monkeypatch.setattr(gateway_client, "connect_gateway", connected)
+    seen = []
+    held = restart_noise.withhold_notice
+    monkeypatch.setattr(
+        restart_noise, "withhold_notice", lambda job: seen.append(held(job)) or seen[-1])
+
+    with cron_jobs.use_cron_store(tmp_path / "cron"):
+        job = cron_jobs.create_job(prompt="report", schedule="every 1h", deliver="local")
+        execution = executions.create_execution(job["id"], source="test")
+        with executions._transaction() as conn:
+            conn.execute("UPDATE executions SET process_id=?,pid=? WHERE id=?",
+                         ("old-owner", 999999, execution["id"]))
+        journal = scheduler_authority.journal_path(job["id"], execution["id"])
+        journal.parent.mkdir(parents=True, exist_ok=True)
+        journal.write_text(json.dumps({
+            "params": {"job_id": job["id"], "request_id": execution["id"], "extra_prompt": None},
+            "receipt": None}))
+
+        scheduler_authority.reconcile_pending()
+
+        assert seen == [True]
+        assert executions.get_execution(execution["id"])["status"] == "failed"
+        assert "admission missing" in cron_jobs.get_job(job["id"])["last_error"]

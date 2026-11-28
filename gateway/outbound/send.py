@@ -43,7 +43,7 @@ def send_message_tool(args, **kw):
     if action != "send":
         return tool_error(f"Unknown action '{action}': send_message only sends. "
                           "List targets with `hermes send --list`.")
-    return _handle_send(args)
+    return _handle_send(args, mirror_role=kw.get("mirror_role", "assistant"))
 
 
 def _resolve_tool_target(target: str, *, pass_unresolved_references: bool = False):
@@ -146,7 +146,7 @@ def _authorize_relay_target(platform_name: str, chat_id, thread_id=None, *,
         )
 
 
-def _handle_send(args):
+def _handle_send(args, *, mirror_role="assistant"):
     target, message = args.get("target", ""), args.get("message", "")
     if not target or not message:
         return tool_error("Both 'target' and 'message' are required")
@@ -225,7 +225,8 @@ def _handle_send(args):
         if isinstance(result, dict) and result.get("success"):
             if used_home_channel:
                 result["note"] = f"Sent to {platform_name} home channel (chat_id: {chat_id})"
-            if mirror_text and _mirror_sent_message(platform_name, chat_id, mirror_text, thread_id):
+            if mirror_text and _mirror_sent_message(platform_name, chat_id, mirror_text, thread_id,
+                                                    mirror_role):
                 result["mirrored"] = True
             if media_dropped:
                 # The text went out but an attachment the caller asked for did not: a script reading
@@ -367,15 +368,28 @@ def _slack_dm_chat_id(pconfig, chat_id):
     return _run_async(_resolve_slack_user_target(pconfig.token, dm_target))
 
 
-def _mirror_sent_message(platform_name, chat_id, mirror_text, thread_id):
-    """Best-effort mirror of the sent message into the target's gateway session."""
+def _mirror_sent_message(platform_name, chat_id, mirror_text, thread_id, role="assistant"):
+    """Best-effort mirror of the sent message into the target's gateway session.
+
+    Interactive sends are the agent's own assistant speech. Standalone ``hermes send``
+    deliveries pass ``role="user"`` and retain a text label because SQLite drops the
+    mirror metadata; otherwise history repair fuses the delivery into an adjacent
+    assistant turn (SGH-51).
+    """
     try:
         from gateway.mirror import mirror_to_session
         from gateway.session_context import get_session_env
+        source_label = get_session_env("HERMES_SESSION_PLATFORM", "cli")
+        mirror_kwargs = {
+            "source_label": source_label,
+            "user_id": get_session_env("HERMES_SESSION_USER_ID", "") or None,
+        }
+        if role == "user":
+            label = source_label or "cli"
+            mirror_text = f"[Standalone send: {label}]\n{mirror_text}\n[Standalone send end: {label}]"
+            mirror_kwargs["role"] = role
         return bool(mirror_to_session(
-            platform_name, chat_id, mirror_text, thread_id=thread_id,
-            source_label=get_session_env("HERMES_SESSION_PLATFORM", "cli"),
-            user_id=get_session_env("HERMES_SESSION_USER_ID", "") or None))
+            platform_name, chat_id, mirror_text, thread_id=thread_id, **mirror_kwargs))
     except Exception:
         return False
 

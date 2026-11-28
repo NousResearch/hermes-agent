@@ -183,4 +183,9 @@ describe('mergeVisibleReorder', () => {
     // must not forget the ranking that group already had.
     expect(mergeVisibleReorder(['a', 'b', 'c', 'd'], ['b', 'a'])).toEqual(['b', 'a', 'c', 'd'])
   })
+
+  it('folds missing ids into base order when reordering', () => {
+    expect(mergeVisibleReorder([], ['b', 'a'])).toEqual(['b', 'a'])
+    expect(mergeVisibleReorder(['other', 'a'], ['b', 'a'])).toEqual(['other', 'b', 'a'])
+  })
 })

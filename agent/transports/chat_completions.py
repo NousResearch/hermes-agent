@@ -677,6 +677,13 @@ class ChatCompletionsTransport(ProviderTransport):
                 if finish_reason in (None, "stop"):
                     finish_reason = "content_filter"
 
+        if not tool_calls and isinstance(content, str):
+            recovered_calls, content = _extract_leaked_deepseek_tool_calls(content, self._last_wire_aliases)
+            if recovered_calls:
+                tool_calls = recovered_calls
+                if finish_reason == "stop":
+                    finish_reason = "tool_calls"
+
         return NormalizedResponse(
             content=content, tool_calls=tool_calls, finish_reason=finish_reason,
             # A profile-declared text carrier doubles as the readable reasoning (first declared wins).
@@ -726,6 +733,62 @@ class ChatCompletionsTransport(ProviderTransport):
         written = getattr(details, "cache_write_tokens", 0) or 0 if details else 0
         cached = cached or getattr(usage, "prompt_cache_hit_tokens", 0) or 0  # DeepSeek native
         return {"cached_tokens": cached, "creation_tokens": written} if cached or written else None
+
+
+_DEEPSEEK_TOOL_SEP_MARKERS = ("<\uff5ctool\u2581sep\uff5c>", "<|tool_sep|>")
+_DEEPSEEK_LEAKED_CALL_RE = re.compile(
+    r"(?:<\uff5ctool\u2581calls\u2581begin\uff5c>|<\|tool_calls_begin\|>)?\s*"
+    r"(?:<\uff5ctool\u2581call\u2581begin\uff5c>|<\|tool_call_begin\|>)?\s*"
+    r"function(?:<\uff5ctool\u2581sep\uff5c>|<\|tool_sep\|>)"
+    r"(?P<name>[A-Za-z_][A-Za-z0-9_.-]*)\s*(?:```(?:json)?\s*|json\s*)?",
+)
+_DEEPSEEK_CALL_TRAILER_RE = re.compile(
+    r"\s*(?:```\s*)?"
+    r"(?:<\uff5ctool\u2581call\u2581end\uff5c>|<\|tool_call_end\|>)?\s*"
+    r"(?:<\uff5ctool\u2581calls\u2581end\uff5c>|<\|tool_calls_end\|>)?",
+)
+
+
+def _extract_leaked_deepseek_tool_calls(
+    content: str, alias_map: dict[str, str] | None = None,
+) -> tuple[list[ToolCall] | None, str]:
+    """Recover DeepSeek chat-template tool calls leaked into ``content`` when ``tool_calls`` is empty."""
+    if not any(marker in content for marker in _DEEPSEEK_TOOL_SEP_MARKERS):
+        return None, content
+    decoder = json.JSONDecoder()
+    recovered: list[ToolCall] = []
+    spans: list[tuple[int, int]] = []
+    pos = 0
+    while match := _DEEPSEEK_LEAKED_CALL_RE.search(content, pos):
+        json_start = match.end()
+        if json_start >= len(content) or content[json_start] != "{":
+            pos = match.end()
+            continue
+        try:
+            parsed, json_end = decoder.raw_decode(content, json_start)
+        except json.JSONDecodeError:
+            pos = match.end()
+            continue
+        if not isinstance(parsed, dict):
+            pos = json_end
+            continue
+        trailer = _DEEPSEEK_CALL_TRAILER_RE.match(content, json_end)
+        span_end = trailer.end() if trailer else json_end
+        name = match.group("name")
+        if alias_map is not None:
+            name = alias_map.get(name, name)
+        recovered.append(ToolCall(id=None, name=name, arguments=json.dumps(parsed, ensure_ascii=False)))
+        spans.append((match.start(), span_end))
+        pos = span_end
+    if not recovered:
+        return None, content
+    parts: list[str] = []
+    cursor = 0
+    for start, end in spans:
+        parts.append(content[cursor:start])
+        cursor = end
+    parts.append(content[cursor:])
+    return recovered, "".join(parts).strip()
 
 
 from agent.transports import register_transport

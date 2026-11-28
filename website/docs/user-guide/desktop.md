@@ -352,6 +352,7 @@ A real terminal lives in the right sidebar, next to the file browser:
 - **Ctrl+`** shows the terminal (opening one if none exist); **Ctrl+Shift+`** spawns an additional one. Multiple terminals stack in a tab rail — **Ctrl+Shift+↓/↑** walk between them, **Ctrl+Shift+W** closes the active one.
 - **Shells persist while hidden.** Closing or hiding the panel doesn't kill your shell — every open terminal stays mounted with its scrollback and running processes intact until you explicitly close it.
 - **Add to chat** — select terminal output and send it into the composer as context for your next message.
+- **Open files from output** — **⌘-click** (macOS) or **Ctrl-click** a file path the shell printed (`src/app.ts:12:3`, `./README.md`, `~/notes.md`, a `git status` line, a traceback) to open it in the preview pane; a folder opens in your file manager. Only paths that exist on this machine are underlined, resolved against the shell's current directory, so version numbers and prose stay plain text. Paths printed by an SSH gateway's shell are not linked, since they name files on that host.
 
 **Per-gateway terminals.** Each terminal tab runs on the gateway it was opened on, and keeps running there
 when you pick another gateway in Sessions. **New terminal** (**+** on the terminal rail) opens on the

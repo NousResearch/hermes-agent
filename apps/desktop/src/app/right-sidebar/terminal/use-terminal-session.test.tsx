@@ -46,6 +46,9 @@ vi.mock('@xterm/xterm', () => ({
     registerMarker() {
       return { line: 0, dispose() {} }
     }
+    registerLinkProvider() {
+      return { dispose() {} }
+    }
     onKey() {
       return { dispose() {} }
     }

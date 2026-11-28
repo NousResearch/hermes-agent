@@ -690,6 +690,9 @@ def test_default_spawn_does_not_auto_load_any_skill(kanban_home, monkeypatch):
         def __init__(self):
             self.pid = 99999
 
+        def poll(self):
+            return None  # still running: the Windows reaper branch polls every live worker
+
     def fake_popen(cmd, **kwargs):
         captured["cmd"] = cmd
         captured["env"] = kwargs.get("env", {})

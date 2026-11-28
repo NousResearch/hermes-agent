@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { setSessionArchived } from '@/hermes'
 import { en } from '@/i18n/en'
+import { notifySessionsChanged } from '@/store/live-sync'
 import { $messagingSessions, $sessions, setMessagingSessions, setSessions } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
@@ -71,6 +72,48 @@ describe('SessionsSettings unarchive', () => {
     expect($messagingSessions.get().map(session => session.id)).toEqual(['matrix-1'])
     expect($messagingSessions.get()[0]?.archived).toBe(false)
     expect($sessions.get()).toEqual([])
+  })
+})
+
+describe('Archive & retention refresh', () => {
+  it.each([
+    ['returning to the window', () => window.dispatchEvent(new Event('focus'))],
+    ['a gateway session change', notifySessionsChanged]
+  ] as const)('updates the count and rows after an external prune on %s', async (_label, refresh) => {
+    render(<SessionsSettings subpage="archived" />)
+    await screen.findByText('archived room')
+    expect(screen.getByText('1')).toBeTruthy()
+
+    listEveryArchivedSession.mockResolvedValue([])
+    vi.useFakeTimers()
+
+    try {
+      await act(async () => {
+        refresh()
+        await vi.runOnlyPendingTimersAsync()
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+
+    await screen.findByText(en.settings.sessions.emptyArchivedTitle)
+    expect(screen.queryByText('archived room')).toBeNull()
+    expect(screen.queryByText('1')).toBeNull()
+  })
+
+  it('keeps a restored session out of an older archive read', async () => {
+    render(<SessionsSettings subpage="archived" />)
+    const restore = await screen.findByRole('button', { name: en.settings.sessions.unarchive })
+    const inFlight = Promise.withResolvers<SessionInfo[]>()
+    listEveryArchivedSession.mockReturnValueOnce(inFlight.promise).mockResolvedValue([])
+
+    fireEvent.focus(window)
+    await waitFor(() => expect(listEveryArchivedSession).toHaveBeenCalledTimes(2))
+    await act(async () => fireEvent.click(restore))
+    await screen.findByText(en.settings.sessions.emptyArchivedTitle)
+    await act(async () => inFlight.resolve([archivedMatrixSession]))
+
+    expect(screen.queryByText('archived room')).toBeNull()
   })
 })
 

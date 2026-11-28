@@ -15,6 +15,8 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
+from tools.bot_failure_reasons import RUNTIME_OFFLINE
+
 log = logging.getLogger(__name__)
 
 # How long a failed delivery stays listed after its last receipt write. Long enough to come back
@@ -23,7 +25,7 @@ FAILED_VISIBLE_SECONDS = 24 * 3600
 PREVIEW_CHARS = 140
 
 _PENDING_RECEIPTS = frozenset({"queued", "claimed", "canonical"})
-_FAILED_RECEIPTS = frozenset({"failed", "cancelled", "ambiguous"})
+_FAILED_RECEIPTS = frozenset({"failed", "ambiguous"})
 # ``session_admissions.status`` of the admission the receipt follows → strip state.
 _ADMISSION_STATES = {"queued": "queued", "started": "working", "terminal": "claimed"}
 
@@ -59,8 +61,6 @@ def _failure_reason(record: dict, admission_status: str | None) -> str:
     wrote one). Unknown outcomes say so: the user must not resend those."""
     if record.get("status") == "ambiguous" or admission_status == "unknown":
         return "unknown_outcome"
-    if record.get("status") == "cancelled":
-        return str(record.get("reason") or "cancelled")
     return str(record.get("reason") or "unknown")
 
 
@@ -135,7 +135,11 @@ def _receipts(home: Path) -> list[tuple[Path, dict, float]]:
             record = _read_receipt(path)
             if record is None:
                 continue
-            if str(record.get("status") or "") not in _PENDING_RECEIPTS | _FAILED_RECEIPTS:
+            status = str(record.get("status") or "")
+            if status == "cancelled" and not record.get("admission_id") and record.get("reason") == RUNTIME_OFFLINE:
+                # The legacy waiter cancelled an ownerless queue entry because delivery failed.
+                record = {**record, "status": "failed"}
+            elif status not in _PENDING_RECEIPTS | _FAILED_RECEIPTS:
                 record = {"status": record.get("status")}
         fresh[path.name] = (identity, record)
         out.append((path, record, st.st_mtime))
@@ -151,8 +155,8 @@ def list_sender_deliveries(
     """Every unsettled local delivery ``sender`` made, newest first.
 
     ``root`` is the install root (``bot_mode_probe._hermes_root``); ``profiles`` overrides the
-    roster (``bot_mode_probe._roster``) for callers that already hold it. Settled replies drop
-    off; failed ones stay for ``FAILED_VISIBLE_SECONDS``."""
+    roster (``bot_mode_probe._roster``) for callers that already hold it. Completed and withdrawn
+    deliveries drop off. Failed and ambiguous receipts stay for ``FAILED_VISIBLE_SECONDS``."""
     from tools.bot_mode_probe import _handle, _roster
 
     now = time.time() if now is None else now

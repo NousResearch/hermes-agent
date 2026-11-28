@@ -9,13 +9,20 @@ import os
 import threading
 import time
 from pathlib import Path
-
-import pytest
 from types import SimpleNamespace
 
+import pytest
+
+from gateway.config import GatewayConfig
+from gateway.session import SessionStore
+from gateway.session_authority import initialize_session_authority
+from gateway.session_controls import AuthorityConnection
 from gateway.session_pending_controls import PendingControls
 from gateway.session_teammate_waits import bot_delivery_list
+from tools import bot_live_delivery
 from tools.bot_delivery_status import FAILED_VISIBLE_SECONDS, list_sender_deliveries
+from tools.bot_failure_reasons import RUNTIME_OFFLINE
+from tools.bot_mode_dm import message_agent_tool
 
 
 def _profile(root: Path, name: str) -> Path:
@@ -38,6 +45,90 @@ def _receipt(home: Path, key: str, *, sender: str, status: str, age: float = 0.0
         stamp = time.time() - age
         os.utime(path, (stamp, stamp))
     return path
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("warm_cache", [False, True], ids=["cold", "warm"])
+async def test_a_sender_cancel_drops_off_the_gateway_list(tmp_path, monkeypatch, warm_cache):
+    root = _profile(tmp_path / "hermes", "default").resolve()
+    scribe = _profile(root, "scribe")
+    (scribe / "profile.yaml").write_text("ui_meta: {hermes-bots: {}}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    store = SessionStore(root / "sessions", GatewayConfig())
+    runner = SimpleNamespace(session_store=store, adapters={}, _draining=False)
+    runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
+    cancelled, failed, ambiguous, expired, offline = (digit * 32 for digit in "12345")
+    loop = asyncio.get_running_loop()
+
+    async def rpc(connection, method, params):
+        frame = await connection.dispatch({"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+        assert "result" in frame, frame
+        return frame["result"]
+
+    def connection(authority):
+        return AuthorityConnection(authority, object(), {
+            "user_id": "uid:1000", "provider": "local", "profile_id": authority.profile_id,
+            "instance_id": authority.instance_id,
+            "capabilities": ["session:create", "session:read", "session:submit", "session:control"],
+        })
+
+    try:
+        owner = await initialize_session_authority(runner, profile_id=str(root), instance_id="target")
+        # Hold only execution so the real admission stays queued until the cancel RPC commits.
+        monkeypatch.setattr(owner, "_schedule_admitted", lambda *_: None)
+        target = connection(owner)
+        sender = connection(SimpleNamespace(profile_id=str(scribe), instance_id="sender", events={}, runner=runner))
+        delivery = await rpc(target, "bot_relay.deliver", {
+            "id": cancelled, "profile": "default", "message": "please review the draft",
+            "author": {"id": "bot:scribe", "name": "scribe", "is_bot": True},
+        })
+        assert delivery["status"] == "queued"
+        _receipt(root, failed, sender="scribe", status="failed", reason="rate_limit", error="429")
+        _receipt(root, ambiguous, sender="scribe", status="ambiguous")
+        _receipt(root, expired, sender="scribe", status="failed", age=FAILED_VISIBLE_SECONDS + 60)
+        _receipt(root, offline, sender="scribe", status="queued", admission_id=None)
+        offline_error = "Live Bot Chat owner is no longer available"
+        legacy = await asyncio.to_thread(bot_live_delivery.cancel_queued_delivery, root, offline,
+                                         error=offline_error, reason=RUNTIME_OFFLINE)
+        assert legacy["status"] == "cancelled"
+        if warm_cache:
+            before = await rpc(sender, "bot_delivery.list", {})
+            assert {row["delivery_id"]: row["state"] for row in before["deliveries"]}[cancelled] == "queued"
+
+        def route_cancel(home, method, params):
+            # Bridge just the transport; the sender tool builds the production request and
+            # the real dispatcher validates it and invokes the target owner's cancel handler.
+            assert (Path(home), method, params) == (root, "bot_relay.cancel", {
+                "id": cancelled, "author_id": "bot:scribe", "profile": "default",
+            })
+            result = asyncio.run_coroutine_threadsafe(rpc(target, method, params), loop).result(timeout=10)
+            assert result == {"delivery_id": cancelled, "status": "cancelled", "receipt_status": "cancelled"}
+            return result
+
+        monkeypatch.setattr(bot_live_delivery, "_authority_rpc", route_cancel)
+        agent = SimpleNamespace(_session_title_hint="Bot Chat",
+                                persistence=SimpleNamespace(scope=SimpleNamespace(profile_dir=scribe)))
+        result = json.loads(await asyncio.to_thread(message_agent_tool, "hermes", cancel=cancelled, agent=agent))
+        assert (result.get("status"), result.get("delivery_id")) == ("cancelled", cancelled), result
+        row = owner.persistence.admissions.get(admission_id=delivery["admission_id"])
+        assert (row.status, row.outcome) == ("terminal", "cancelled")
+        receipt = await asyncio.to_thread(bot_live_delivery.read_delivery_result, root, cancelled)
+        assert receipt["status"] == "cancelled"
+        await asyncio.gather(*owner._bot_receipt_tasks)
+
+        for _ in range(2):
+            response = await rpc(sender, "bot_delivery.list", {})
+            assert response["sender"] == "scribe"
+            rows = {row["delivery_id"]: (row["state"], row.get("reason"), row.get("error"))
+                    for row in response["deliveries"]}
+            assert rows == {
+                failed: ("failed", "rate_limit", "429"),
+                ambiguous: ("failed", "unknown_outcome", None),
+                offline: ("failed", RUNTIME_OFFLINE, offline_error),
+            }
+    finally:
+        store.close_all_db_handles()
 
 
 def test_lists_only_this_senders_unsettled_deliveries_and_never_writes(tmp_path):

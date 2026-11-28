@@ -922,7 +922,15 @@ export const arSettings = {
         curator: {
           label: 'المنسّق',
           hint: 'مراجعة استخدام المهارات'
-        }
+        },
+        memory_query_rewrite: { label: 'إعادة صياغة استعلامات الذاكرة', hint: 'استعلامات البحث في الذاكرة' },
+        tts_audio_tags: { label: 'وسوم صوت TTS', hint: 'إدراج الوسوم لـ Gemini TTS' },
+        group_router: { label: 'موجّه المجموعات', hint: 'من يرد في المجموعات ذات التوجيه التلقائي' },
+        goal_judge: { label: 'مُقيّم الأهداف', hint: 'صياغة عقود /goal والحكم على اكتمالها' },
+        background_review: { label: 'المراجعة في الخلفية', hint: 'تحديث الذاكرة والمهارات بعد كل دور' },
+        monitor: { label: 'المراقبة', hint: 'تقييم الرسائل المهمة' },
+        moa_reference: { label: 'مرجع MoA', hint: 'النماذج المرجعية لمزيج الوكلاء' },
+        moa_aggregator: { label: 'مُجمِّع MoA', hint: 'خطوة التجميع في مزيج الوكلاء' }
       },
       subagents: {
         inherit: 'الوراثة من الوكيل الرئيسي',

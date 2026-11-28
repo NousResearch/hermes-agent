@@ -1165,7 +1165,15 @@ export const zhHantSettings = {
         triage_specifier: { label: '分類指定', hint: '看板任務規格補全' },
         kanban_decomposer: { label: '看板分解', hint: '任務拆解' },
         profile_describer: { label: '設定檔描述', hint: '自動生成設定檔描述' },
-        curator: { label: '策展器', hint: '技能使用審查' }
+        curator: { label: '策展器', hint: '技能使用審查' },
+        memory_query_rewrite: { label: '記憶查詢改寫', hint: '記憶檢索查詢' },
+        tts_audio_tags: { label: 'TTS 音訊標籤', hint: 'Gemini TTS 標籤插入' },
+        group_router: { label: '群組路由', hint: '決定自動路由群組中由誰回覆' },
+        goal_judge: { label: '目標評判', hint: '/goal 契約起草與完成判定' },
+        background_review: { label: '背景複盤', hint: '每回合結束後更新記憶與技能' },
+        monitor: { label: '監控', hint: '重要郵件評分' },
+        moa_reference: { label: 'MoA 參考', hint: '混合代理參考模型' },
+        moa_aggregator: { label: 'MoA 聚合', hint: '混合代理聚合步驟' }
       },
       subagents: {
         inherit: '繼承主代理設定',

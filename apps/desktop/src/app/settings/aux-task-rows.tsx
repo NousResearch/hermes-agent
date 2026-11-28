@@ -36,10 +36,12 @@ const AUX_TASKS: readonly AuxTaskMeta[] = [
   { key: 'curator' }
 ]
 
-// Rows to render: the built-ins above, then every task the backend reported that is not a
-// built-in — i.e. plugin-registered auxiliary tasks (PluginContext.register_auxiliary_task),
-// which arrive with the plugin's own label/hint and inherited base. Older backends never send
-// extra rows, so this is a no-op against them. Built-ins stay first so the layout is stable.
+// Rows to render: the built-ins above, then every task the backend reported that is not listed
+// here — plugin-registered auxiliary tasks (PluginContext.register_auxiliary_task), which arrive
+// with the plugin's own label/hint and inherited base, and core slots this list does not render
+// first (they carry no server copy; i18n `m.tasks` labels them). Keeping those out of the list
+// above means an older backend that does not serve a slot never shows a row it would reject.
+// Built-ins stay first so the layout is stable.
 export function auxTaskRows(tasks: readonly AuxiliaryTaskAssignment[] | undefined): AuxTaskMeta[] {
   const builtin = new Set(AUX_TASKS.map(meta => meta.key))
 

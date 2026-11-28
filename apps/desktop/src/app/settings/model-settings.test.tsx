@@ -394,6 +394,21 @@ describe('ModelSettings', () => {
     expect(vision && grill && vision.compareDocumentPosition(grill) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
+  it('labels a core slot the backend serves beyond the built-in list from i18n, not its raw key (#156628)', async () => {
+    getAuxiliaryModels.mockResolvedValueOnce({
+      main: { provider: 'nous', model: 'hermes-4' },
+      tasks: [
+        { task: 'vision', provider: 'auto', model: '', base_url: '' },
+        { task: 'goal_judge', provider: 'auto', model: '', base_url: '' }
+      ]
+    })
+    await renderModelSettings()
+
+    expect(await screen.findByText('Goal judge')).toBeTruthy()
+    expect(screen.getByText('/goal contract drafting and judging')).toBeTruthy()
+    expect(screen.queryByText('goal_judge')).toBeNull()
+  })
+
   it('shows an unpinned inheriting plugin task as following its base, and offers Follow once pinned', async () => {
     getAuxiliaryModels.mockResolvedValueOnce({
       main: { provider: 'nous', model: 'hermes-4' },

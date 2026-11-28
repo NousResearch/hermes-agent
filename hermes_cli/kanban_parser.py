@@ -266,6 +266,8 @@ _SPECS = [
         _RECLAIM_REASON,
     ], help="Reassign a task to a different profile, optionally reclaiming first"),
     _cmd("diagnostics", [
+        _arg("task_id", nargs="?", metavar="TASK_ID",
+             help="Only show diagnostics for one task id (same as --task)"),
         _arg("--severity", choices=["warning", "error", "critical"],
              help="Only show diagnostics at or above this severity"),
         _arg("--task", help="Only show diagnostics for one task id"),

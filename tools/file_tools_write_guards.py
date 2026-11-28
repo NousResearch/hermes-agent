@@ -413,6 +413,11 @@ def _check_approval_required_write(paths: list[str], task_id: str = "default") -
                     "without a user present to approve it. To allow flagged "
                     "actions in single-query mode, set approvals.single_query_mode: "
                     "approve in config.yaml."),
+            unattended_deny_message=blocked.format(
+                why="requires approval but this session runs on an unattended "
+                    "platform with no user present to approve it. To allow flagged "
+                    "actions on unattended platforms, set approvals.unattended_mode: "
+                    "approve in config.yaml."),
             autoapprove_log_prefix=pattern_key,
             fail_closed_when_no_human=True,
             no_human_block_message=blocked.format(why=_NO_HUMAN))

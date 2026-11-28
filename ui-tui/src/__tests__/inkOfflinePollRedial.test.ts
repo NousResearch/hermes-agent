@@ -21,7 +21,14 @@ it('an offline session stops the refresh poll and reports the lost connection on
 
   const gw = Object.assign(new EventEmitter(), {
     attached: true, isCanonical: true, drain: () => {}, getLogTail: () => '', kill: () => {}, recordLog: () => {},
-    request: vi.fn((_method: string) => new Promise(() => {}))
+    request: vi.fn(async (method: string) =>
+      ({
+        'process.list': { processes: [] },
+        'session.control.read': { control: {} },
+        'session.list': { sessions: [] },
+        'subagent.list': { delegations: [], subagents: [] }
+      }[method] ?? {})
+    )
   })
 
   let app!: ReturnType<typeof useMainApp>

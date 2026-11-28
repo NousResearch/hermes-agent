@@ -1,0 +1,24 @@
+manifest_version: 1
+
+name: ocean
+description: Query detected email threats, phishing reports, and security metrics from Ocean.
+source: https://docs.ocean.security/api-reference/mcp/overview
+
+transport:
+  type: http
+  url: https://api.ocean.security/mcp
+
+auth:
+  type: oauth
+
+suggest:
+  keywords:
+    - ocean mcp
+  hosts:
+    - ocean.security
+
+post_install: |
+  Sign in with your Ocean account when Hermes opens the browser. To sign in
+  from the CLI, run `hermes mcp login ocean`. OAuth is read-only and follows
+  your Ocean role. If no tools appear after sign-in, contact Ocean support to
+  check that MCP is enabled for your tenant during the beta.

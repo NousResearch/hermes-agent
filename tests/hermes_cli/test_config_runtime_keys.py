@@ -60,6 +60,7 @@ def test_config_get_browser_selection_keys_print_value_without_notice(hermes_hom
     ("browser.cloud_provider", "browserbase"),   # core: tools.tool_backend_helpers.read_selection
     ("web.use_gateway", "true"),                 # core: legacy managed-gateway flag, every category
     ("dashboard.kanban.default_tenant", "t1"),   # core: bundled kanban dashboard preferences
+    ("agent.personalities.demo", "x"),           # core: available_personalities() open dict
 ])
 def test_config_set_runtime_read_key_is_silent(key, value, hermes_home, capsys):
     assert not _set_notice(key, value, capsys)

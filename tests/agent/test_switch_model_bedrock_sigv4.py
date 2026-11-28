@@ -15,6 +15,11 @@ from run_agent import AIAgent
 MANTLE = "https://bedrock-mantle.us-east-1.api.aws/openai/v1"
 RUNTIME_EU = "https://bedrock-runtime.eu-west-1.amazonaws.com"
 
+# The Claude-on-runtime cases build a real AnthropicBedrock client, so they need the optional
+# `anthropic` extra. The hermetic suite forbids the mid-run lazy install that would fetch it, so
+# those cases skip (naming the extra) rather than fail with the adapter's ImportError.
+_ANTHROPIC_EXTRA = "requires the optional `anthropic` extra (uv sync --extra anthropic)"
+
 
 def _agent() -> AIAgent:
     agent = AIAgent.__new__(AIAgent)
@@ -54,6 +59,8 @@ def test_switch_to_bedrock_mantle_installs_sigv4_http_client(_ctx, aws_env):
 )
 @patch("agent.model_metadata.get_model_context_length", return_value=200_000)
 def test_switch_to_bedrock_runtime_wires_binds_region_and_sdk(_ctx, aws_env, model, api_mode, anthropic_client_type):
+    if anthropic_client_type == "AnthropicBedrock":
+        pytest.importorskip("anthropic", reason=_ANTHROPIC_EXTRA)
     agent = _agent()
 
     agent.switch_model(model, "bedrock", api_key="aws-sdk", base_url=RUNTIME_EU, api_mode=api_mode)
@@ -67,6 +74,8 @@ def test_switch_to_bedrock_runtime_wires_binds_region_and_sdk(_ctx, aws_env, mod
 @pytest.mark.parametrize("api_mode", ["anthropic_messages", "bedrock_converse"])
 def test_fallback_to_bedrock_binds_runtime_not_generic_client(aws_env, api_mode):
     from agent.client_lifecycle import _swap_fallback_clients
+    if api_mode == "anthropic_messages":
+        pytest.importorskip("anthropic", reason=_ANTHROPIC_EXTRA)
     agent = _agent()
     fb_client = MagicMock(base_url=RUNTIME_EU, api_key="aws-sdk")
     agent.model, agent.provider, agent.base_url, agent.api_mode = "us.amazon.nova-pro-v1:0", "bedrock", RUNTIME_EU, api_mode

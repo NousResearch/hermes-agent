@@ -118,6 +118,7 @@ hermes skills uninstall <skill-name>
 | Skill | Description |
 |-------|-------------|
 | [**agentmail**](../user-guide/skills/optional/email/email-agentmail.md) | Use when an agent needs AgentMail CLI email inboxes. |
+| [**moemail**](../user-guide/skills/optional/email/email-moemail.md) | Use when an agent needs a disposable inbox to test sign-up, password-reset or OTP email flows. |
 
 ## finance
 

@@ -308,8 +308,35 @@ _ALLOC_LOCK = Path(os.environ.get("XDG_RUNTIME_DIR") or Path.home() / ".cache") 
 
 @contextlib.contextmanager
 def _flocked(path: Path):
-    import fcntl  # windows-footgun: ok — Linux-only runtime (is_supported_host gates start)
-    with open(path, "a+", encoding="utf-8") as fh:  # windows-footgun: ok — Linux-only runtime
+    """Exclusive lock shared by profile processes on POSIX and Windows hosts."""
+    if os.name == "nt":
+        import errno
+        import msvcrt
+
+        with open(path, "a+b") as fh:
+            # msvcrt locks a byte range; ensure byte zero exists before locking it.
+            fh.seek(0, os.SEEK_END)
+            if fh.tell() == 0:
+                fh.write(b"\0")
+                fh.flush()
+            while True:
+                fh.seek(0)
+                try:
+                    msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError as exc:
+                    if exc.errno not in (errno.EACCES, errno.EDEADLOCK):
+                        raise
+                    time.sleep(0.05)
+            try:
+                yield fh
+            finally:
+                fh.seek(0)
+                msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+        return
+
+    import fcntl
+    with open(path, "a+", encoding="utf-8") as fh:
         fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
         try:
             yield fh
@@ -651,9 +678,18 @@ def _sandbox_status(profile: Optional[str], where) -> DesktopStatus:
     """Status of a sandbox-placed screen. Package presence is only known once the sandbox exists; before
     that the pane shows "installed" with the image hint carried in ``install_command`` so Start can explain."""
     from tools.bot_desktop import sandbox_host
-    env = _owned_sandbox_env() or _sandbox_env(create=False)
-    missing = sandbox_host.missing_binaries(env) if env is not None else []
-    published = sandbox_host.published_env(env, profile or _profile_name()) if env is not None else {}
+    screen_profile = profile or _profile_name()
+    marker = sandbox_host._read_marker()
+    if (marker.get("backend") == "DockerEnvironment" and marker.get("container")
+            and sandbox_host.marker_sandbox_alive(marker)):
+        # A standalone status process has no active terminal env. Recreating one from current config can select
+        # a different container from the one recorded when this screen started.
+        missing = sandbox_host.docker_marker_missing_binaries(marker)
+        published = sandbox_host.published_env_from_marker(marker)
+    else:
+        env = _owned_sandbox_env() or _sandbox_env(create=False)
+        missing = sandbox_host.missing_binaries(env) if env is not None else []
+        published = sandbox_host.published_env(env, screen_profile) if env is not None else {}
     running = bool(published.get("DISPLAY"))
     # No install_command: the pane's Install button runs apt on the HOST, which is the wrong machine here.
     # A sandbox missing the stack is a blocker (shown in place of Start) naming the image that has it.

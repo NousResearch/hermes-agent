@@ -29,6 +29,7 @@ import {
   SegmentedControl,
   Textarea,
   Tip,
+  useDictation,
   useI18n,
   useMutation,
   useQuery,
@@ -362,6 +363,17 @@ function CommentComposer({
 }) {
   const k = useKanban()
   const [body, setBody] = useState('')
+  const inputRef = useRef<HTMLTextAreaElement>(null)
+
+  // Dictation appends to whatever is already typed, so a note can mix both.
+  const dictation = useDictation({
+    focusInput: () => inputRef.current?.focus(),
+    onTranscript: text => setBody(current => (current.trim() ? `${current.trimEnd()} ${text}` : text))
+  })
+
+  const recording = dictation.status === 'recording'
+  const transcribing = dictation.status === 'transcribing'
+  const dictateLabel = recording ? k.stopDictation : transcribing ? k.transcribingDictation : k.dictate
 
   const submit = () => {
     const trimmed = body.trim()
@@ -391,7 +403,7 @@ function CommentComposer({
     <div className="flex flex-col gap-1.5">
       <div className="relative">
         <Textarea
-          className="field-sizing-content max-h-40 resize-none pr-9 text-[0.8125rem]"
+          className="field-sizing-content max-h-40 resize-none pr-15 text-[0.8125rem]"
           onChange={event => setBody(event.target.value)}
           onKeyDown={event => {
             if (isSubmitEnter(event) && !event.shiftKey) {
@@ -400,8 +412,30 @@ function CommentComposer({
             }
           }}
           placeholder={running ? k.messageWorker : k.addComment}
+          ref={inputRef}
           value={body}
         />
+        <Tip label={dictateLabel}>
+          <Button
+            aria-label={dictateLabel}
+            aria-pressed={recording}
+            className={cn(
+              'absolute top-1 right-7 text-muted-foreground/80 hover:text-foreground',
+              recording && 'text-foreground'
+            )}
+            disabled={pending || transcribing}
+            onClick={dictation.toggle}
+            size="icon-xs"
+            type="button"
+            variant="ghost"
+          >
+            <Codicon
+              name={recording ? 'debug-stop' : transcribing ? 'loading' : 'mic'}
+              size="0.85rem"
+              spinning={transcribing}
+            />
+          </Button>
+        </Tip>
         <Tip label={sendLabel}>
           <Button
             aria-label={sendLabel}

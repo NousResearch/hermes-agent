@@ -115,8 +115,13 @@ class TestThirdPartyCardRows:
         model_metadata.DEFAULT_CONTEXT_LENGTHS value for the same bare id when that table knows the model."""
         from agent.bedrock_adapter import BEDROCK_CONTEXT_LENGTHS
         from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS, _longest_key_match
+        # Llama 4 is the one deliberate exception: model_metadata has only the generic "llama" family
+        # row (131,072) for it, while Converse itself states 1,048,576 / 3,500,000 (measured, #106492).
+        measured_above_family = {"meta.llama4-maverick", "meta.llama4-scout"}
         above = []
         for key, hosted in BEDROCK_CONTEXT_LENGTHS.items():
+            if key in measured_above_family:
+                continue
             hit = _longest_key_match(DEFAULT_CONTEXT_LENGTHS, key.split(".", 1)[1])
             if hit and hosted > hit[1]:
                 above.append((key, hosted, hit))

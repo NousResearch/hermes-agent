@@ -76,6 +76,20 @@ class TestFalEditPayload:
         assert payload.get("resolution") == "2K"
 
 
+    def test_edit_prompt_param_renames_the_text_key_fibo_2(self):
+        """Bria FIBO 2.0's edit endpoint names its text `instruction`; the
+        catalog opts in via edit_prompt_param so the edit text is never sent
+        as an undeclared `prompt` (the endpoint would ignore it), while
+        text-to-image on the same entry keeps `prompt`."""
+        from tools.image_generation_tool import _build_fal_edit_payload, _build_fal_payload
+
+        mid = "bria/fibo-2/generate"
+        edit = _build_fal_edit_payload(mid, "make it winter", ["https://x/a.png"], "landscape", seed=3)
+        assert edit == {"instruction": "make it winter", "image_urls": ["https://x/a.png"], "seed": 3}
+        t2i = _build_fal_payload(mid, "a red fox", "portrait")
+        assert t2i == {"prompt": "a red fox", "aspect_ratio": "9:16"}
+
+
 class TestMandatoryKeysSurviveWhitelist:
     """A model whose whitelist forgets the mandatory keys must not produce a
     request with the prompt / source images silently stripped."""

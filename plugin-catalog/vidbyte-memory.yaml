@@ -1,0 +1,17 @@
+name: vidbyte-memory
+repo: https://github.com/cerredz/vidbyte-memory
+sha: 2fe35cf12fc0205fbc1997afbae1264eb724cee4
+subdir: integrations/hermes
+description: "Turn-end gate for vidbyte-memory, a repo template that turns each correction you give a coding agent into a slim fact, a test and a footprint commit: before Hermes finishes a turn that edited files, it runs the project's own scripts/guard.py and keeps the agent working while tests fail, feedback is pending or changes are uncommitted or unpushed. Disclosure — in a project that has memory/MAP.md and scripts/guard.py, runs that project's scripts/guard.py on the host with the project's Python (its .venv, else python on PATH), outside any sandboxed terminal backend and without Hermes' terminal approval; the guard runs the project's pytest suite (whatever test code the repo holds), git status and git rev-list, and writes .claude/.guard_state.json in the project; no network calls, no credentials, no telemetry; does nothing in any other directory."
+tier: community
+category: memory
+maintainer: cerredz
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_verify
+  provides_middleware: []
+  requires_env: []
+requires_hermes: ">=0.21.6"
+version: "0.2.0"
+docs_url: https://github.com/cerredz/vidbyte-memory/blob/main/docs/hosts/hermes.md

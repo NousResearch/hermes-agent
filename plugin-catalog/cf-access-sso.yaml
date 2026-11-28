@@ -1,0 +1,15 @@
+name: cf-access-sso
+repo: https://github.com/dkiiv/hermes-cf-access-sso
+sha: 0eff0d85f690f4893187e20ce4f74c60c953eec2
+description: "Cloudflare Access login for the web dashboard. Verifies the Cf-Access-Jwt-Assertion header that Access forwards (RS256 against the team's certs, pinned iss and aud, exp, email allowlist) and uses it as the dashboard session, so a browser Access already admitted gets no second password prompt. Additive: the password provider stays registered for requests that did not come through Access. Defaults to observe mode; enforce needs team_domain, audience and allowed_emails. Disclosure: fetches the team's public keys from https://<team>.cloudflareaccess.com/cdn-cgi/access/certs (cached 5 minutes); appends JSON event lines to <HERMES_HOME>/logs/cf-access-sso.log; dashboard/api.py imports hermes_cli.web_server to add an ASGI middleware in front of the auth gate (no public dashboard-middleware seam yet, see #93180); the optional capture_raw_header debug setting writes live assertions to that log; no credentials stored."
+maintainer: dkiiv
+tier: community
+category: general
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/dkiiv/hermes-cf-access-sso#readme
+version: "1.0.1"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

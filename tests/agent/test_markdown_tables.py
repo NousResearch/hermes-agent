@@ -204,3 +204,18 @@ def test_multiple_tables_in_one_text():
         assert all(o == offsets[0] for o in offsets), (
             "block did not align:\n" + "\n".join(block)
         )
+
+
+def test_divider_alignment_is_kept_and_applied():
+    src = "| Item | Qty | Note |\n|:---|---:|:---:|\n| apple | 5 | ok |\n| banana | 120 | fine |"
+    assert realign_markdown_tables(src).split("\n") == [
+        "| Item   | Qty | Note |",
+        "|:-------|----:|:----:|",
+        "| apple  |   5 |  ok  |",
+        "| banana | 120 | fine |",
+    ]
+
+
+def test_plain_divider_stays_left_padded():
+    out = realign_markdown_tables("| a | b |\n|---|---|\n| 1 | 2 |")
+    assert out.split("\n") == ["| a   | b   |", "|-----|-----|", "| 1   | 2   |"]

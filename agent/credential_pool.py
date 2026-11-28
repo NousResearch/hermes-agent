@@ -5,7 +5,7 @@ from __future__ import annotations
 from agent.credential_pool_admin import CredentialPoolAdminMixin
 from agent.credential_pool_model_cooldowns import CredentialPoolModelCooldownMixin, model_cooldown_until
 from agent.credential_pool_errors import _normalize_error_context, redact_error_text
-from agent.credential_pool_selection import CredentialPoolSelectionMixin
+from agent.credential_pool_selection import CredentialPoolSelectionMixin, refresh_scope
 from agent.credential_pool_timestamps import _parse_absolute_timestamp
 
 import logging
@@ -2256,7 +2256,7 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
         one instead of blocking.
         """
         chosen_id, pending_refresh = self._acquire_lease_under_lock(credential_id)
-        if pending_refresh:
+        if pending_refresh := refresh_scope(pending_refresh, chosen_id):
             self._refresh_pending_entries(pending_refresh)
             # Mirror select(): a pool whose entries all needed a deferred
             # refresh must retry once they are back in rotation, or the caller

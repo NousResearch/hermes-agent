@@ -1,8 +1,8 @@
 name: openmail
 repo: https://github.com/openmailsh/hermes-plugin
-sha: 12f42aee87ff4664b63bccead43205eab242cc12
-version: "0.3.2"
-description: "Gives a Hermes agent its own email address. Inbound mail wakes the agent over a websocket, and replies stay in-thread. Agents can read and send mail, create, review and edit HTML drafts, send approved drafts, delete unsent drafts, and provision inboxes. Disclosure — sends a fixed `X-OpenMail-Client: hermes` header and an `openmail-hermes/<version>` User-Agent with every request to the OpenMail API (api.openmail.sh, or your OPENMAIL_BASE_URL) so OpenMail can attribute usage to this plugin; the agent can send and delete drafts and send mail without a Hermes approval prompt."
+sha: b095bffb079ac359ea6550282c2726c1a9bb2c48
+version: "0.4.2"
+description: "Gives a Hermes agent an email address. New profiles can receive arrival-only home-channel alerts. Channel mode sends automatic in-thread replies. The agent can search inbox messages, manage drafts, send or schedule mail, manage queued sends, organise folders, move or restore messages, and provision inboxes. Requests to api.openmail.sh or the configured OPENMAIL_BASE_URL include the X-OpenMail-Client: hermes header and the plugin version in the User-Agent. With the configured key, tools can send mail, change or cancel scheduled delivery, delete drafts or custom folder trees, and move mail into or out of Trash without a separate Hermes approval prompt."
 maintainer: openmailsh
 tier: community
 category: platform
@@ -23,6 +23,16 @@ capabilities:
   - openmail_list_threads
   - openmail_read_thread
   - openmail_list_messages
+  - openmail_create_folder
+  - openmail_rename_folder
+  - openmail_delete_folder
+  - openmail_move_message
+  - openmail_restore_message
+  - openmail_list_scheduled_sends
+  - openmail_reschedule_scheduled_send
+  - openmail_cancel_scheduled_send
+  - openmail_list_folders
+  - openmail_list_folder_messages
   - openmail_attachment_text
   - openmail_list_inboxes
   - openmail_create_inbox

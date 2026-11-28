@@ -44,6 +44,9 @@ For Hermes profile lanes, the dispatcher's `_default_spawn` runs `hermes -p <ass
 | `HERMES_PROFILE` | the worker's own profile name (for `kanban_comment` author attribution) |
 | `HERMES_TENANT` | tenant namespace, if the task has one |
 
+These are the worker process's own environment. Descendant shells get only the fenced subset
+described below — in particular, they do not inherit `HERMES_KANBAN_TASK`.
+
 For non-Hermes lanes (registered via a plugin), the plugin supplies its own `spawn_fn` callable that gets `task`, `workspace`, and `board` and returns an optional pid for crash detection.
 
 ### Descendant process scope
@@ -53,7 +56,11 @@ Hermes subprocess helpers carry a non-owner fence into shells, execution kernels
 cron deliveries, hooks, language servers, and ordinary stdio MCP servers. Later
 children remain fenced even when a script removes the inherited task ID: CLI and
 tool mutations are rejected, rather than treating that script as an orchestrator.
-Board/database routing and workspace paths are retained. Descendants can read an
+Board/database routing and workspace paths are retained. Worker identity is not:
+`HERMES_KANBAN_TASK` (with `HERMES_KANBAN_RUN_ID` / `HERMES_KANBAN_CLAIM_LOCK`) is absent from
+descendant shells, so a shell command reading `$HERMES_KANBAN_TASK` expands to the empty string.
+Workers resolve their task id through the `kanban_*` tools, never from a shell variable.
+Descendants can read an
 existing board without running schema migrations; its owner must initialize it.
 The fence is scoped to the lineage's board root (the marker's value is that root, plus the
 dispatcher-pinned `HERMES_KANBAN_DB`): a descendant that works against a different Kanban

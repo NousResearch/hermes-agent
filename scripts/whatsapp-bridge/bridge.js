@@ -337,7 +337,7 @@ function logPollUpdateDiagnostic({ sourcePath, pollId, pollCreation, pollUpdates
   } catch {}
 }
 
-function enqueuePollUpdateEvent({ key, update, selectedOptions, aggregation }) {
+async function enqueuePollUpdateEvent({ key, update, selectedOptions, aggregation }) {
   const chatId = normalizeWhatsAppId(key?.remoteJid || update?.pollUpdates?.[0]?.pollUpdateMessageKey?.remoteJid || '');
   const senderId = normalizeWhatsAppId(
     key?.participant
@@ -391,6 +391,7 @@ function enqueuePollUpdateEvent({ key, update, selectedOptions, aggregation }) {
     botIds: [],
     timestamp: Math.floor(Date.now() / 1000),
   };
+  if (event.isGroup) event.chatName = await getGroupSubject(sock, chatId) || event.chatName;
   messageQueue.push(event);
   if (messageQueue.length > MAX_QUEUE_SIZE) {
     messageQueue.shift();
@@ -416,6 +417,61 @@ function enqueueDeliveryStatus(args) {
 
 let sock = null;
 let connectionState = 'disconnected';
+const groupSubjectCache = new Map();
+
+async function getGroupSubject(socket, chatId) {
+  const cached = groupSubjectCache.get(chatId);
+  if (cached?.subject) return cached.subject;
+  const entry = {};
+  groupSubjectCache.set(chatId, entry);
+  if (groupSubjectCache.size > 256) groupSubjectCache.delete(groupSubjectCache.keys().next().value);
+  let timer;
+  try {
+    // Metadata is optional context: a stalled lookup must not stop inbound delivery.
+    const metadata = await Promise.race([
+      socket.groupMetadata(chatId),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('group metadata timed out')), 5000); }),
+    ]);
+    const subject = metadata?.subject;
+    if (typeof subject === 'string' && subject.trim()) {
+      // A rename or socket replacement may have invalidated this lookup while it was in flight.
+      if (groupSubjectCache.get(chatId) === entry) entry.subject = subject;
+      return subject;
+    }
+  } catch {
+    // A transient metadata failure must not discard the message or cache the fallback forever.
+  } finally {
+    clearTimeout(timer);
+    if (!entry.subject && groupSubjectCache.get(chatId) === entry) groupSubjectCache.delete(chatId);
+  }
+  return null;
+}
+// Preserve the linked session when the gateway stops us: close the socket, never log out.
+let shuttingDown = false;
+let httpServer = null;
+
+function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`🛑 ${signal} received — closing WhatsApp socket and HTTP server`);
+  try {
+    httpServer?.close();
+  } catch (err) {
+    console.error(`http server close failed: ${err?.message || err}`);
+  }
+  try {
+    // end(undefined) closes the websocket WITHOUT logging the session out, so the
+    // stored creds stay valid on the next start.
+    sock?.end?.(undefined);
+  } catch (err) {
+    console.error(`socket end failed: ${err?.message || err}`);
+  }
+  // Let pending I/O drain, but bound the stop even if a socket or reconnect timer stays open.
+  setTimeout(() => process.exit(0), 2000).unref();
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
 
 function emitPairEvent(event) {
   if (!PAIR_JSON) return;
@@ -438,8 +494,10 @@ async function confirmPasskeyCode(code, signal) {
 }
 
 async function startSocket() {
+  if (shuttingDown) return;
   const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
   const version = await getWAVersion();
+  if (shuttingDown) return;
 
   sock = makeWASocket({
     ...(version ? { version } : {}),
@@ -459,6 +517,13 @@ async function startSocket() {
   });
 
   sock.ev.on('creds.update', () => { saveCreds(); lidToPhone = buildLidMap(); });
+
+  groupSubjectCache.clear();
+  sock.ev.on('groups.update', (updates) => {
+    for (const update of updates || []) {
+      if (update?.id) groupSubjectCache.delete(update.id);
+    }
+  });
 
   attachPasskeyFlow(sock, { logger, signAssertion: passkeySigner, confirmCode: confirmPasskeyCode });
   sock.ev.on('connection.update', (update) => {
@@ -497,6 +562,9 @@ async function startSocket() {
     }
 
     if (connection === 'close') {
+      if (shuttingDown) {
+        return; // deliberate shutdown, not a dropped connection
+      }
       const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
       connectionState = 'disconnected';
 
@@ -592,7 +660,7 @@ async function startSocket() {
         selectedOptions,
         aggregation,
       });
-      enqueuePollUpdateEvent({ key, update: { ...update, pollUpdates }, selectedOptions, aggregation });
+      await enqueuePollUpdateEvent({ key, update: { ...update, pollUpdates }, selectedOptions, aggregation });
     }
   });
 
@@ -795,7 +863,7 @@ async function startSocket() {
           selectedOptions,
           aggregation,
         });
-        enqueuePollUpdateEvent({
+        await enqueuePollUpdateEvent({
           key: { ...pollKey, remoteJid: pollKey.remoteJid || chatId, participant: pollKey.participant || senderId },
           update: { pollUpdates },
           selectedOptions,
@@ -856,6 +924,7 @@ async function startSocket() {
         mediaType: event.mediaType,
         mediaUrls: event.mediaUrls,
       });
+      if (event.isGroup) event.chatName = await getGroupSubject(sock, chatId) || event.chatName;
       messageQueue.push(event);
       emitDebugEvent({
         stage: 'queued',
@@ -1276,6 +1345,7 @@ if (PAIR_ONLY) {
     console.log();
     scheduleReconnect(0);
   });
+  httpServer = server;
   // Without this handler an EADDRINUSE (an old bridge that has not released the port yet) crashes
   // with a bare stack trace; the adapter's reconnect loop retried blind. Fail loudly and fast.
   server.on('error', (err) => {

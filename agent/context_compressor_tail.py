@@ -3,6 +3,7 @@ the Skill Safety Rule the compaction handoff carries whenever its transcript hol
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -10,6 +11,15 @@ from typing import Any
 # (the tool-group alignment floor otherwise keeps ~32K of tool output alive).
 _LEAN_TAIL_KEEP_TOOL_ROUNDS = 6
 _LEAN_TAIL_DEMOTE_MIN_CHARS = 1_500
+
+# …and the argument half of the same stale rounds. A tool round is two rows: what the model sent
+# (``tool_calls[].function.arguments`` — the whole body of a ``write_file``, both sides of a ``patch``, an inline
+# shell script) and what it got back. Only the result half demoted, so the arguments rode the tail verbatim — the
+# larger half, and pure duplication once the write is on disk. Same threshold and same round protection as the
+# results, so the two halves of a round demote together and the call/result pairing survives by id.
+_ARGS_STUB_KEY = "_demoted"
+_ARGS_STUB_MARK = "arguments demoted at compaction"
+_ARGS_POINTER_SEP = " — full arguments: "
 
 
 # Matches what ``_lean_recovery_stub`` emits, so later passes treat a demoted row as already summarised: with a session
@@ -54,6 +64,85 @@ def _lean_recovery_stub(tool_name: str, content_len: int, session_id: str) -> st
         f"[{tool_name or 'tool'} output demoted at compaction — {content_len:,} "
         f"chars preserved in session history.{hint}]"
     )
+
+
+def _arguments_stub(tool_name: str, args_len: int, session_id: str) -> str:
+    """One-line replacement for the arguments of a demoted tail tool call, valid JSON with the call's shape kept.
+
+    The stub rides where the arguments rode, so anything reading the row back (``_json_dict`` callers, the
+    OpenAI-shaped replay) must still parse it: only the values inside the object are replaced.
+    """
+    # Search defaults to user/assistant rows, so the call's own row needs the assistant filter to be found.
+    hint = (f" Recover with session_search(query=..., session_id='{session_id}', role_filter='assistant', detail='full')"
+            if session_id else "")
+    return json.dumps(
+        {_ARGS_STUB_KEY: f"{tool_name or 'tool'} {_ARGS_STUB_MARK} — {args_len:,} chars.{hint}"},
+        ensure_ascii=False,
+    )
+
+
+def is_arguments_stub(arguments: Any) -> bool:
+    """True for a demotion stub standing in for a stale call's arguments (short JSON, our one key inside)."""
+    if not isinstance(arguments, str) or len(arguments) > 400 or _ARGS_STUB_MARK not in arguments:
+        return False
+    from agent.context_compressor import _json_dict
+    return _ARGS_STUB_KEY in _json_dict(arguments)
+
+
+def with_arguments_pointer(arguments: str, display_path: str) -> str:
+    """Point a demoted argument stub at the archive of its original (the result side's ``_with_pointer``).
+
+    Returns *arguments* unchanged when it is not one of our stubs or already names a file, so a second pass
+    (or a resumed transcript) cannot stack two pointers onto the same stub.
+    """
+    from agent.context_compressor import _json_dict
+    parsed = _json_dict(arguments)
+    if _ARGS_STUB_KEY not in parsed or _ARGS_POINTER_SEP in str(parsed[_ARGS_STUB_KEY]):
+        return arguments
+    parsed[_ARGS_STUB_KEY] = f"{parsed[_ARGS_STUB_KEY]} {_ARGS_POINTER_SEP}{display_path}"
+    return json.dumps(parsed, ensure_ascii=False)
+
+
+def _demote_stale_tail_arguments(
+    rows: list[dict[str, Any]], stale_calls: set[str], session_id: str,
+) -> int:
+    """Replace the arguments of stale call rows in *rows* with a stub; returns how many rows it changed.
+
+    Only the calls of a stale round (a call whose own result row sits outside the protected newest rounds) are
+    touched, so a kept round's arguments - and a call whose result row is not in the tail at all - survive whole.
+    Long enough to pay for itself (``_LEAN_TAIL_DEMOTE_MIN_CHARS``), and never a ``skill_view`` call: its handle is
+    the reload pointer the marker protocol depends on (#32106). The ``id`` and ``name`` are kept verbatim so the call
+    still pairs with its result row (the API rejects a result whose call is gone).
+
+    A stub is committed only where the original was archived (the caller's ``archive_compaction_drops`` names the file
+    and puts rows back when the write fails) — the same contract as the result half, so a demoted call never loses the
+    text it replaced. Where the archive folder is unavailable (plugin or hosted backend) the plain stub stands:
+    reclaiming still beats keeping the arguments, exactly as the result half decides.
+    """
+    from agent.context_compressor import _tc_get
+
+    demoted = 0
+    for i, row in enumerate(rows):
+        calls = row.get("tool_calls") if isinstance(row, dict) else None
+        if not calls:
+            continue
+        kept_calls, changed = [], False
+        for tc in calls:
+            fn = _tc_get(tc, "function", {})
+            raw = _tc_get(fn, "arguments")
+            if (str(_tc_get(tc, "id") or "") not in stale_calls or not isinstance(raw, str)
+                    or len(raw) < _LEAN_TAIL_DEMOTE_MIN_CHARS
+                    or is_arguments_stub(raw) or _tc_get(fn, "name") == "skill_view"):
+                kept_calls.append(tc)
+                continue
+            stub_fn = dict(fn) if isinstance(fn, dict) else {}
+            stub_fn["arguments"] = _arguments_stub(_tc_get(fn, "name"), len(raw), session_id)
+            kept_calls.append({**(dict(tc) if isinstance(tc, dict) else {}), "function": stub_fn})
+            changed = True
+        if changed:
+            rows[i] = {**row, "tool_calls": kept_calls}
+            demoted += 1
+    return demoted
 
 
 def skill_view_names_by_call_id(messages: list[dict[str, Any]]) -> dict[str, str]:
@@ -109,7 +198,14 @@ def demote_stale_tail_tools(
             stub += " " + _skill_pruned_marker(skill)
         result[i] = _rewritten(msg, stub)
         demoted += 1
-    if demoted:  # the demoted originals are saved and named like the window's prune stubs
+    # The stale rounds' arguments go with their results: same rounds, same protection, so the tail keeps the two
+    # halves of a round together (and a kept round keeps both). Counted as rows, like the results above.
+    stale_calls = {
+        str(messages[i].get("tool_call_id") or "") for i in range(tail_start, len(messages))
+        if messages[i].get("role") == "tool" and i not in protected
+    }
+    demoted += _demote_stale_tail_arguments(result, stale_calls, session_id)
+    if demoted:  # the demoted originals (results and call arguments) are saved and named like the window's stubs
         from tools.tool_result_storage import archive_compaction_drops
 
         result, _, kept = archive_compaction_drops(messages, result, session_id)

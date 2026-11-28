@@ -120,6 +120,23 @@ def test_live_index_lock_is_reported_without_false_divergence(
     assert "git reset --hard" not in out
 
 
+@pytest.mark.parametrize("failure", ["write", "readback"])
+def test_failed_rescue_ref_never_resets(diverged_checkout, monkeypatch, failure):
+    checkout, local_sha = diverged_checkout
+    monkeypatch.setattr(update_cmd._m(), "PROJECT_ROOT", checkout)
+    real = update_cmd._git_run
+    def run(cmd, args, *rest, **kwargs):
+        if (failure == "write" and args[0] == "update-ref") or (
+                failure == "readback" and args[0] == "show-ref"):
+            return subprocess.CompletedProcess(cmd + args, 1, "", "permission denied")
+        return real(cmd, args, *rest, **kwargs)
+    monkeypatch.setattr(update_cmd, "_git_run", run)
+    with pytest.raises(SystemExit):
+        update_cmd._reconcile_diverged_checkout(GIT, "main", local_sha)
+    assert _git(checkout, "rev-parse", "HEAD").stdout.strip() == local_sha
+    assert (checkout / "local-fix.txt").read_text() == "local\n"
+
+
 def test_operational_ff_failure_preserves_git_error_without_reset(
         fast_forward_checkout, monkeypatch, capsys):
     checkout, before = fast_forward_checkout

@@ -1730,6 +1730,7 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
             spinner=_start_quiet_tool_spinner(agent, function_name, function_args, gate=False),
             error_result=lambda e: json.dumps({"error": f"Context engine tool '{function_name}' failed: {e}"}),
             error_log="context_engine.handle_tool_call raised for %s: %s",
+            handles_keyboard_interrupt=True,
         )
     if is_memory_provider_tool(agent, function_name):
         # Memory-provider tools (hindsight_retain, honcho_search, ...) are not in the registry.
@@ -1804,8 +1805,8 @@ def _run_sequential_call(
     tool_start_time: float,
 ) -> tuple[_ManagedToolResult, float]:
     """Run one sequential call with its spinner/error policy; returns ``(managed, duration)``.
-    KeyboardInterrupt (registry tools only) emits results for THIS and every remaining call
-    before re-raising so the tool-call turn keeps matching results (alternation)."""
+    KeyboardInterrupt from registry or context-engine tools emits results for THIS and
+    every remaining call before re-raising so the turn keeps matching results."""
     _spinner_result = None
     try:
         managed = _run_sequential_tool_execution_middleware(

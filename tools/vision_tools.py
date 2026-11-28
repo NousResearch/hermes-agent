@@ -598,8 +598,14 @@ def _build_native_vision_tool_result(
 ) -> dict[str, Any]:
     """Multimodal tool-result envelope. The text part is intentionally minimal (the model already
     has the question); ``text_summary`` is the fallback for providers without multimodal tool results."""
+    # The "natively now" claim must survive its own persistence: a session rebuilt from the store
+    # (gateway restart, resume) keeps only this text with ``[screenshot]`` where the pixels were,
+    # and a later-turn model that trusts the stale claim retracts answers it correctly read from
+    # the image (#142288) — so the claim carries its own later-turn correction instead.
     text_part = (
         "Image loaded into your context — you can see it natively now. "
+        "If a later turn shows this image as a [screenshot] placeholder instead, the pixels are "
+        "not attached there — call vision_analyze again to re-view it. "
         "Use your built-in vision to answer the user.")
     if isinstance(question, str) and question.strip():
         text_part += f"\n\nQuestion: {question.strip()}"
@@ -612,7 +618,8 @@ def _build_native_vision_tool_result(
             {"type": "image_url", "image_url": {"url": image_data_url}}],
         "text_summary": (
             f"Image attached natively for the main model ({image_size_bytes / 1024:.1f} KB). "
-            "Answer using built-in vision."),
+            "Answer using built-in vision. If this line reaches you in a later turn without the "
+            "image attached, call vision_analyze again to re-view it."),
         "meta": {"image_url": image_url[:200], "size_bytes": image_size_bytes, "native_vision": True}}
 
 

@@ -218,6 +218,8 @@ yuanbao_in_use = platform_in_use(
 # took ANY of them), or account_id + token in the block's extra (the enable pass's is_connected probe saw
 # only extra and env); an ``enabled`` key in config.yaml vetoed the env/probe enables, gateway.json's did not.
 # Token at connect: the block's token, extra, env, else the QR login's weixin/accounts/<account_id>.json.
+# Send-only: with the platform off or absent, core's send_message (cron delivery included) still sent with
+# WEIXIN_TOKEN + WEIXIN_ACCOUNT_ID from env; the plugin serves that home the same way, adapter still off.
 _WEIXIN_PLUGIN_KEYS = ("platforms/weixin", "weixin-platform")
 
 
@@ -241,6 +243,8 @@ def weixin_in_use(home: Path, *, process_env: bool = False) -> bool:
 
     def env(name: str) -> str:
         return _home_env(home, name, process_env=process_env)
+    if env("WEIXIN_TOKEN") and env("WEIXIN_ACCOUNT_ID"):
+        return True
     root = _read_config(home).get("weixin")
     explicit = bool(extra.get("_enabled_explicit")) or (isinstance(root, dict) and "enabled" in root)
     account = str(extra.get("account_id") or "").strip() or env("WEIXIN_ACCOUNT_ID")
@@ -818,11 +822,28 @@ def _install_sentence(feature: LeftCoreFeature) -> str:
             f"`{_install_command(feature.plugin, Path(get_hermes_home()))}`")
 
 
+def _platform_feature(platform: str) -> Optional[LeftCoreFeature]:
+    return next((f for f in LEFT_CORE if f.platform and f.platform == platform), None)
+
+
+def _install_in_flight() -> bool:
+    """Another live process holds the installer lock now (the detached default-plugin child an upgrade starts)."""
+    from hermes_cli.default_plugins import _pass_in_flight
+    from pm.environments import dependency_home_root
+    return _pass_in_flight(Path(dependency_home_root()))
+
+
 def platform_install_hint(platform: str) -> str:
     """For an unknown platform name that left core: the sentence that names its install command for
-    the active home, else ``""``. Appended to "unknown platform" errors (``send_message``)."""
-    feature = next((f for f in LEFT_CORE if f.platform and f.platform == platform), None)
-    return f". {_install_sentence(feature)}" if feature else ""
+    the active home (or, while another process is installing plugins, that it is being installed and to
+    retry), else ``""``. Appended to "unknown platform" errors (``send_message``)."""
+    feature = _platform_feature(platform)
+    if feature is None:
+        return ""
+    if _install_in_flight():
+        return (f". {feature.label} moved out of core into the '{feature.plugin}' plugin, which is being installed by "
+                "another Hermes process right now: retry in a minute, once that install finishes")
+    return f". {_install_sentence(feature)}"
 
 
 def terminal_backend_install_hint(backend: str) -> str:
@@ -1660,6 +1681,32 @@ def _attempt(home: Path, *, deliver: Callable[[str], None], gateway_start: bool,
     except Exception as exc:  # never take agent/gateway start down
         logger.warning("left-core plugin migration failed: %s", exc, exc_info=True)
         return []
+
+
+def recover_for_platform(name: Optional[str]) -> None:
+    """``hermes send --to <name>``, a platform a left-core plugin ships, in a home that uses it: make the plugin
+    ready in this invocation before the target resolves. On an upgraded home the first send can start while
+    the background installer (the detached default-plugin child) is still placing that plugin: wait for its
+    lock (bounded, :func:`startup_lock_wait`), then run :func:`recover_at_startup`, which installs it here only
+    if nothing did. Starts no adapter (the send resolves its config as before) and never installs over the
+    user's ``plugins.disabled`` or a removal (:func:`_pending`). Outcomes print to stderr."""
+    from hermes_cli.default_plugins import installer_lock
+    from hermes_constants import get_hermes_home
+    feature = _platform_feature(str(name or "").strip().lower())
+    home = Path(get_hermes_home())
+    if feature is None or _installs_held.get() or not feature_in_use(feature, home, process_env=True):
+        return
+    def say(message: str) -> None:
+        print(message, file=sys.stderr)
+    if _install_in_flight():
+        try:
+            with installer_lock(startup_lock_wait(gateway_start=False)):
+                pass
+        except TimeoutError:
+            say(f"  ⚠ {feature.label}: another Hermes process is still installing the '{feature.plugin}' plugin; "
+                "retry in a minute, once that install finishes.")
+            return
+    recover_at_startup(say=say)
 
 
 def recover_for_command(name: Optional[str]) -> None:

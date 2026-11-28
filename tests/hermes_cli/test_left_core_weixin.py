@@ -76,10 +76,13 @@ _SHIPPED_PLATFORM_TOOLSETS = (
     ("WEIXIN_TOKEN=tok1\n", "platforms:\n  weixin:\n    extra: {account_id: acc1}\n", "", True),
     ("WEIXIN_ACCOUNT_ID=acc1\n", "platforms:\n  weixin:\n    token: tok1\n", "", True),
     ("", "platforms:\n  weixin:\n    enabled: true\n", "", False),
-    # An explicit config.yaml disable vetoed env credentials, legacy and top-level blocks included.
-    (_CREDS, "platforms:\n  weixin:\n    enabled: false\n", "", False),
-    (_CREDS, "gateway:\n  weixin:\n    enabled: false\n", "", False),
-    (_CREDS, "weixin:\n  enabled: false\n", "", False),
+    # Send-only: an explicit config.yaml disable kept the adapter off, but core's send_message (and cron
+    # delivery through it) still sent with env credentials, legacy and top-level blocks included.
+    (_CREDS, "platforms:\n  weixin:\n    enabled: false\n", "", True),
+    (_CREDS, "gateway:\n  weixin:\n    enabled: false\n", "", True),
+    (_CREDS, "weixin:\n  enabled: false\n", "", True),
+    ("WEIXIN_TOKEN=tok1\n", "platforms:\n  weixin:\n    enabled: false\n    extra: {account_id: acc1}\n", "", False),
+    ("", "platforms:\n  weixin:\n    enabled: false\n    token: tok1\n    extra: {account_id: acc1}\n", "", False),
     (_CREDS, "platforms:\n  weixin:\n    enabled: false\nweixin:\n  enabled: true\n", "", True),
     # A saved home channel names Platform("weixin"), which exists only once the plugin loads.
     (_CREDS, "platforms:\n  weixin:\n    enabled: true\n    home_channel: {platform: weixin, chat_id: x}\n", "", True),
@@ -178,3 +181,81 @@ def test_a_core_era_disable_keeps_weixin_off_through_both_installers(tmp_path, p
     assert "weixin" not in (plugins.get("enabled") or []), plugins
     assert any(f"plugins.disabled lists '{name}', so it is installed but off" in line
                and "plugins enable weixin`" in line for line in said), said
+
+
+# Holds the installer lock in another process, like the detached default-plugin child an upgrade starts, and
+# places the weixin plugin (tree + enable) only after *release* appears, then lets go of the lock.
+_INSTALLER_CHILD = """
+import sys, time
+from pathlib import Path
+from hermes_cli.default_plugins import installer_lock
+home, signals, hold = Path(sys.argv[1]), Path(sys.argv[2]), float(sys.argv[3])
+with installer_lock(5):
+    (signals / "holding").touch()
+    time.sleep(hold)
+    (home / "plugins" / "weixin").mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text("platforms:\\n  weixin:\\n    enabled: false\\n"
+                                      "plugins:\\n  enabled: [weixin]\\n_default_plugins_installed: [weixin]\\n")
+"""
+
+
+def _send_only_home_with_installer_in_flight(tmp_path, hold: float):
+    import os
+    import sys
+    from hermes_constants import get_hermes_home
+    from tests.waiting import wait_until
+    home = Path(get_hermes_home())
+    (home / ".env").write_text(_CREDS, encoding="utf-8")
+    (home / "config.yaml").write_text("platforms:\n  weixin:\n    enabled: false\n", encoding="utf-8")
+    signals = tmp_path / "signals"
+    signals.mkdir()
+    child = subprocess.Popen([sys.executable, "-c", _INSTALLER_CHILD, str(home), str(signals), str(hold)],
+                             env={**os.environ, "HERMES_HOME": str(home)}, cwd=str(Path(lcm.__file__).parents[1]))
+    wait_until(lambda: (signals / "holding").exists(), timeout=60, what="installer child holding the lock")
+    return home, child
+
+
+def _run_send(monkeypatch, home):
+    """``hermes send --to weixin:wxid_x hi`` through cmd_send; the delivery is a stand-in recording whether the
+    plugin was in the home when it ran."""
+    import argparse
+    from gateway.outbound import send as send_mod
+    from hermes_cli import send_cmd
+    seen: list[bool] = []
+    monkeypatch.setattr(send_cmd, "_load_hermes_env", lambda: None)  # the predicate reads the home's .env itself
+    monkeypatch.setattr(send_mod, "send_message_tool",
+                        lambda args: (seen.append(lcm.plugin_present("weixin", home)), '{"success": true}')[1])
+    monkeypatch.setattr(lcm, "_install_into", lambda home, consent=None: pytest.fail("installed a second copy"))
+    with pytest.raises(SystemExit):
+        send_cmd.cmd_send(argparse.Namespace(to="weixin:wxid_x", message="hi", file=None, subject=None,
+                                             mentions=None, list_targets=False, json=True, quiet=True))
+    return seen
+
+
+def test_the_first_send_waits_for_the_install_already_in_flight(tmp_path, monkeypatch):
+    """An upgraded send-only home's first command is ``hermes send`` while the background default-plugin child
+    is still installing weixin: the send waits for that install (the installer lock) and delivers through the
+    plugin it placed, instead of failing on an unregistered platform. It never installs a second copy."""
+    home, child = _send_only_home_with_installer_in_flight(tmp_path, hold=1.5)
+    try:
+        seen = _run_send(monkeypatch, home)
+    finally:
+        child.wait(timeout=60)
+    assert seen == [True]
+
+
+def test_a_send_that_outwaits_its_budget_names_the_install_in_progress(tmp_path, monkeypatch, capsys):
+    """Past the bounded wait the send fails, and says why: the plugin is still being installed, retry; never
+    only the generic unknown-platform error with an install command that would race the running install."""
+    from gateway.outbound.targets import unknown_platform_error
+    monkeypatch.setattr(lcm, "_STARTUP_LOCK_WAIT", 1.0)
+    home, child = _send_only_home_with_installer_in_flight(tmp_path, hold=30)
+    try:
+        _run_send(monkeypatch, home)
+        error = unknown_platform_error("weixin")
+    finally:
+        child.kill()
+        child.wait(timeout=60)
+    assert "still installing" in capsys.readouterr().err
+    assert "being installed by another Hermes process" in error and "retry" in error, error
+

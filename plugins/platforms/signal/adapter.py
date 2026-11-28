@@ -392,10 +392,11 @@ class SignalAdapter(BasePlatformAdapter):
             text = text.replace("  ", " ").strip()  # collapse only the doubled space; newlines preserved
         return True, text
 
-    async def _collect_attachments(self, attachments_data: list) -> tuple[list[str], list[str]]:
-        """Fetch + cache inbound attachments; returns (media_urls, media_types)."""
+    async def _collect_attachments(self, attachments_data: list) -> tuple[list[str], list[str], MessageType]:
+        """Fetch attachments and classify the message using only successfully cached files."""
         media_urls: list[str] = []
         media_types: list[str] = []
+        has_audio_upload = False
         for att in attachments_data:
             att_id, att_size = att.get("id"), att.get("size", 0)
             if not att_id:
@@ -406,11 +407,23 @@ class SignalAdapter(BasePlatformAdapter):
             try:
                 cached_path, ext = await self._fetch_attachment(att_id)
                 if cached_path:
+                    mime = att.get("contentType") or _ext_to_mime(ext)
+                    if mime == "application/octet-stream" and "isVoiceNote" in att and _is_audio_ext(ext):
+                        mime = _ext_to_mime(ext)
                     media_urls.append(cached_path)
-                    media_types.append(att.get("contentType") or _ext_to_mime(ext))
+                    media_types.append(mime)
+                    # Older daemons omit isVoiceNote. Keep their existing voice behavior.
+                    if mime.startswith("audio/") and att.get("isVoiceNote") is False:
+                        has_audio_upload = True
             except Exception:
                 logger.exception("Signal: failed to fetch attachment %s", att_id)
-        return media_urls, media_types
+        if has_audio_upload:
+            # The gateway has one type per message. Keep mixed audio available as files.
+            return media_urls, media_types, MessageType.AUDIO
+        msg_type = next(
+            (mt for prefix, mt in _MEDIA_TYPE_BY_MIME_PREFIX if any(m.startswith(prefix) for m in media_types)),
+            MessageType.DOCUMENT if media_types else MessageType.TEXT)
+        return media_urls, media_types, msg_type
 
     async def _handle_envelope(self, envelope: dict) -> None:
         """Process an incoming signal-cli envelope."""
@@ -462,7 +475,7 @@ class SignalAdapter(BasePlatformAdapter):
             user_name=sender_name or sender, user_id_alt=sender_uuid if sender_uuid else None,
             chat_id_alt=group_id if is_group else None)
         attachments_data = data_message.get("attachments", [])
-        media_urls, media_types = [], []
+        media_urls, media_types, msg_type = [], [], MessageType.TEXT
         # The fetch copies a sender-chosen file into Hermes' cache (AAC is remuxed through ffmpeg): only the
         # gateway's explicit True permits it (dm_allow_from misses pairing and global allowlists). signal-cli
         # has already stored it unless its daemon runs with --ignore-attachments. The text still dispatches so
@@ -470,7 +483,7 @@ class SignalAdapter(BasePlatformAdapter):
         if attachments_data and not getattr(self, "ignore_attachments", False):
             # source.is_bot (bot_users) so a peer bot gets the gateway's bot verdict (loop-guard cooldown).
             if self._is_sender_authorized(sender, source.chat_type, chat_id, is_bot=source.is_bot) is True:
-                media_urls, media_types = await self._collect_attachments(attachments_data)
+                media_urls, media_types, msg_type = await self._collect_attachments(attachments_data)
             else:
                 logger.debug("Signal: skipping attachments for unauthorized sender %s", redact_phone(sender))
         # Skip contentless envelopes (profile key updates, empty messages) that still carry a
@@ -479,11 +492,6 @@ class SignalAdapter(BasePlatformAdapter):
             logger.debug("Signal: skipping contentless envelope from %s (%d attachments)", redact_phone(sender),
                          len(media_urls) if media_urls else 0)
             return
-        # First matching MIME prefix wins; everything else (application/*, text/*, unknown) is a DOCUMENT
-        # so run.py's document-context injection surfaces the cached path.
-        msg_type = MessageType.TEXT if not media_types else next(
-            (mt for prefix, mt in _MEDIA_TYPE_BY_MIME_PREFIX if any(m.startswith(prefix) for m in media_types)),
-            MessageType.DOCUMENT)
         ts_ms = envelope_data.get("timestamp", 0)  # milliseconds since epoch
         timestamp = datetime.now(tz=UTC)
         if ts_ms:

@@ -544,7 +544,7 @@ class TestSignalInboundMessageTypeClassification:
     """
 
     async def _dispatch_single_attachment(self, monkeypatch, content_type: str,
-                                          att_id: str, fetch_path: str, fetch_ext: str):
+                                          att_id: str, fetch_path: str, fetch_ext: str, **metadata):
         """Helper: run _handle_envelope with one attachment and return the dispatched event."""
         envelope = _make_dm_envelope(
             sender="+15559876543",
@@ -557,6 +557,7 @@ class TestSignalInboundMessageTypeClassification:
                 "height": None,
                 "caption": None,
                 "uploadTimestamp": 1700000000000,
+                **metadata,
             }],
         )
         adapter = _make_signal_adapter(monkeypatch)
@@ -571,6 +572,42 @@ class TestSignalInboundMessageTypeClassification:
         await adapter._handle_envelope(envelope)
         assert dispatched, "_handle_envelope did not dispatch any event"
         return dispatched[0]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("mime", "metadata", "voice"), [
+        ("audio/ogg", {"isVoiceNote": False}, False),
+        ("audio/ogg", {"isVoiceNote": True}, True),
+        ("audio/ogg", {}, True),  # Older signal-cli versions omit the field.
+        ("application/octet-stream", {"isVoiceNote": True}, True),
+    ], ids=["uploaded-audio", "recorded-note", "legacy-audio", "sniffed-recording"])
+    async def test_signal_audio_routing(self, monkeypatch, mime, metadata, voice):
+        from gateway.platforms.event import MessageType
+        from gateway.run import GatewayRunner
+
+        path = "/tmp/clip.ogg"
+        event = await self._dispatch_single_attachment(
+            monkeypatch, mime, "clip", path, ".ogg", **metadata)
+
+        assert event.message_type == (MessageType.VOICE if voice else MessageType.AUDIO)
+        _, stt_paths, file_paths, _ = GatewayRunner._classify_inbound_media(event, False)
+        assert (stt_paths, file_paths) == (([path], []) if voice else ([], [path]))
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("uploaded_path", [None, "/tmp/upload.ogg"])
+    async def test_only_cached_audio_affects_message_type(self, monkeypatch, uploaded_path):
+        from gateway.platforms.event import MessageType
+
+        envelope = _make_dm_envelope("+15559876543", [
+            {"id": "upload", "contentType": "audio/ogg", "isVoiceNote": False},
+            {"id": "note", "contentType": "audio/ogg", "isVoiceNote": True},
+        ])
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._fetch_attachment = AsyncMock(side_effect=[(uploaded_path, ".ogg"), ("/tmp/note.ogg", ".ogg")])
+        adapter.handle_message = AsyncMock()
+        await adapter._handle_envelope(envelope)
+        event = adapter.handle_message.await_args.args[0]
+        assert event.message_type == (MessageType.AUDIO if uploaded_path else MessageType.VOICE)
+        assert event.media_urls == ([uploaded_path, "/tmp/note.ogg"] if uploaded_path else ["/tmp/note.ogg"])
 
     @pytest.mark.asyncio
     async def test_pdf_attachment_sets_document_type(self, monkeypatch):

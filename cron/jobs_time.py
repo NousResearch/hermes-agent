@@ -160,6 +160,15 @@ def prune_inherited_knobs(record: dict[str, Any]) -> None:
         record.pop(GRACE_KEY, None)
 
 
+def drop_cron_only_knobs(record: dict[str, Any], updates: dict[str, Any]) -> None:
+    """A schedule change that leaves cron drops the job's ``grace_minutes``: the knob is cron-only and
+    an update cannot store one a create would reject. Kept, it still made catch-up skip missed runs
+    while ``hermes cron doctor`` reported it as having no effect. A grace value sent in the same
+    update is left for ``validate_schedule_knobs``, which refuses it."""
+    if GRACE_KEY not in updates and (record.get("schedule") or {}).get("kind") != "cron":
+        record.pop(GRACE_KEY, None)
+
+
 def oneshot_instant(value: Any, zone: Optional[ZoneInfo] = None) -> Optional[datetime]:
     """Parse a one-shot ``run_at`` into an aware instant, or None when unparseable.
 

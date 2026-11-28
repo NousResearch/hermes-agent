@@ -253,7 +253,7 @@ hermes cron edit market-open --grace-minutes 0    # never catch up: skip a misse
 hermes cron edit market-open --grace-minutes 180  # run up to 3h late
 ```
 
-`0` means never catch up; `--grace-minutes ""` restores the computed window. It only applies to cron expressions — `once` and `interval` schedules have no missed wall clock to catch up on.
+`0` means never catch up; `--grace-minutes ""` restores the computed window. It only applies to cron expressions — `once` and `interval` schedules have no missed wall clock to catch up on. Editing a job to one of those schedules clears its `--grace-minutes`.
 
 ## Editing jobs
 

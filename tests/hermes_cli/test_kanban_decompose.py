@@ -95,17 +95,24 @@ def test_decompose_with_fanout_creates_children(kanban_home):
 
     assert outcome.ok, outcome.reason
     assert outcome.fanout is True
-    assert outcome.child_ids and len(outcome.child_ids) == 2
+    assert outcome.child_ids and len(outcome.child_ids) == 3
+    # A11: a fan-out tree also gets the review child — 2 implementation cards
+    # plus 1 review card, appended last.
 
     with kbc.connect() as conn:
         root = kb.get_task(conn, tid)
         c0 = kb.get_task(conn, outcome.child_ids[0])
         c1 = kb.get_task(conn, outcome.child_ids[1])
+        review = kb.get_task(conn, outcome.child_ids[2])
+        review_parents = kb.parent_ids(conn, outcome.child_ids[2])
     assert root.status == "todo"
     assert c0.status == "ready"
     assert c1.status == "todo"
     assert c0.assignee == "researcher"
     assert c1.assignee == "engineer"
+    # The review card waits on both implementation cards.
+    assert review.status == "todo"
+    assert sorted(review_parents) == sorted(outcome.child_ids[:2])
 
 
 def test_decompose_fanout_children_inherit_root_assignee_when_unrouted(kanban_home):

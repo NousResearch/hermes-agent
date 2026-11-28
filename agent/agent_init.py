@@ -23,7 +23,10 @@ from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import parse_qs, urlparse, urlunparse
 
 from agent.context_compressor import ContextCompressor
-from agent.agent_init_fallback import _fallback_entries, _init_fallback_chain, recompute_init_fallback_api_mode
+from agent.agent_init_fallback import (
+    NATIVE_WIRE_MODES, _activate_init_fallback, _init_fallback_chain, _resolvable_fallback_entries,
+    bind_native_wire_fallback, construct_init_fallback_client,
+)
 from agent.agent_init_params import _CALLBACK_PARAMS, _GATEWAY_IDENTITY_PARAMS, _PASSTHROUGH_PARAMS
 from agent.agent_runtime_helpers import _ra
 from agent.iteration_budget import IterationBudget, normalize_budget_warning_ratio
@@ -769,40 +772,8 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
     # #17929.
     _explicit = (agent.provider or "").strip().lower()
     _refused_entries = []
-    for _fb in _fallback_entries(fallback_model):
-        _fb_provider = str(_fb["provider"])
-        try:
-            from hermes_cli.fallback_config import resolve_entry_api_key
-            _fb_explicit_key = resolve_entry_api_key(_fb)
-            _fb_client, _fb_model = resolve_provider_client(
-                _fb["provider"], model=_fb["model"], raw_codex=True,
-                explicit_base_url=_fb.get("base_url"), explicit_api_key=_fb_explicit_key,
-            )
-        except Exception as _fb_exc:
-            logger.debug("Init-time fallback entry %s failed: %s", _fb_provider, _fb_exc)
-            # A bare exception (``KeyError()``) stringifies empty; name its type instead.
-            _refused_entries.append((_fb_provider, str(_fb_exc) or type(_fb_exc).__name__))
-            continue
-        if _fb_client is None:
-            # The router returns None when no credentials are usable for the entry — a skip
-            # that leaves no trace otherwise, hiding key-less fallback entries from the log.
-            logger.debug(
-                "Init-time fallback entry %s resolved no usable credentials", _fb_provider
-            )
-            _refused_entries.append((_fb_provider, "no usable credentials"))
-            continue
-        agent._fallback_activated = True
-        if _fb_provider.strip().lower() == "moa":
-            # The chokepoint handed back the preset's aggregator client, which only proves the
-            # preset resolves and its aggregator has credentials. A MoA entry means the preset
-            # itself (same as ``provider: moa`` in config), so bind the facade, not the aggregator.
-            from agent.moa_loop import bind_moa_runtime
-            bind_moa_runtime(agent, _fb["model"])
-            return None
-        agent.provider = agent.requested_provider = _fb["provider"]
-        agent.model = _fb_model or _fb["model"]
-        recompute_init_fallback_api_mode(agent, _fb_client)
-        return _client_kwargs_from_routed(_fb_client, _provider_timeout)
+    for _index, _fb, _fb_client, _fb_model in _resolvable_fallback_entries(fallback_model, _refused_entries):
+        return _activate_init_fallback(agent, _index, _fb, _fb_client, _fb_model, _provider_timeout)
     # A burned credential pool (#119533) is otherwise indistinguishable from missing config,
     # so name it even when no fallback entries are configured.
     _pool_exhausted = False
@@ -896,6 +867,38 @@ def _init_openai_client(agent, api_key, base_url, fallback_model, _provider_time
             if not agent.quiet_mode:
                 print(f"🤖 AI Agent initialized with MoA preset: {agent.model}")
             return
+    # The routed walk may have bound a fallback on the Anthropic or Bedrock wire: it has no OpenAI client.
+    native_fallback = getattr(agent, "_fallback_activated", False) and agent.api_mode in NATIVE_WIRE_MODES
+    if not native_fallback:
+        _prepare_openai_client_kwargs(agent, client_kwargs, _provider_timeout)
+    try:
+        try:
+            if native_fallback:
+                bind_native_wire_fallback(agent, client_kwargs, _provider_timeout)
+                return
+            agent.client = agent._create_openai_client(client_kwargs, reason="agent_init", shared=True)
+        # health: allow BLE001 -- any construction failure is re-raised once the fallback chain is exhausted
+        except Exception as build_exc:
+            # A route that resolved credentials but cannot build its client (a provider plugin's
+            # ``create_client`` raising, #157305) is as unusable as one with no credentials:
+            # walk the rest of the fallback chain before failing the agent.
+            fallback_kwargs = construct_init_fallback_client(agent, fallback_model, _provider_timeout, build_exc)
+            if fallback_kwargs is None:  # the fallback bound itself (MoA facade, Anthropic or Bedrock wire)
+                return
+            client_kwargs, base_url = fallback_kwargs, fallback_kwargs.get("base_url")
+        if not agent.quiet_mode:
+            print(f"🤖 AI Agent initialized with model: {agent.model}")
+            if base_url:
+                print(f"🔗 Using custom base URL: {base_url}")
+            from gateway.warning_notifications import warning_notifications_enabled
+            _print_key_banner(client_kwargs.get("api_key", "none"), "API key",
+                              warn_missing=warning_notifications_enabled(agent.platform))
+    except Exception as e:
+        raise RuntimeError(f"Failed to initialize OpenAI client: {e}") from e
+
+
+def _prepare_openai_client_kwargs(agent, client_kwargs: dict[str, Any], _provider_timeout) -> None:
+    """Route api_mode, Bedrock and header/TLS policy into *client_kwargs*; store them on the agent."""
     from hermes_cli.providers import is_actual_route
     if is_actual_route(agent.provider, client_kwargs.get("base_url", "")):
         agent.api_mode = "chat_completions"
@@ -912,17 +915,6 @@ def _init_openai_client(agent, api_key, base_url, fallback_model, _provider_time
     _apply_openai_header_policy(agent, client_kwargs)
     agent.api_key = client_kwargs.get("api_key", "")
     agent.base_url = client_kwargs.get("base_url", agent.base_url)
-    try:
-        agent.client = agent._create_openai_client(client_kwargs, reason="agent_init", shared=True)
-        if not agent.quiet_mode:
-            print(f"🤖 AI Agent initialized with model: {agent.model}")
-            if base_url:
-                print(f"🔗 Using custom base URL: {base_url}")
-            from gateway.warning_notifications import warning_notifications_enabled
-            _print_key_banner(client_kwargs.get("api_key", "none"), "API key",
-                              warn_missing=warning_notifications_enabled(agent.platform))
-    except Exception as e:
-        raise RuntimeError(f"Failed to initialize OpenAI client: {e}")
 
 
 def _build_client(agent, api_key, base_url, fallback_model):

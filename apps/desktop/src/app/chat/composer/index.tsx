@@ -296,7 +296,7 @@ export function ChatBar({
   )
 
   const { availableThemes, themeName } = useTheme()
-  const at = useAtCompletions({ gateway: gateway ?? null, sessionId: sessionId ?? null, cwd: cwd ?? null })
+  const at = useAtCompletions({ gateway: gateway ?? null, sessionId: sessionId ?? null, cwd: cwd ?? null, profile })
 
   const slash = useSlashCompletions({
     activeSkin: themeName,

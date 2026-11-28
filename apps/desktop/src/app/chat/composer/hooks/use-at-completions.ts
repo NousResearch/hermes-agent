@@ -11,11 +11,14 @@ import type { ComposerAtCompletionSource } from '../contrib'
 import { COMPOSER_AREAS } from '../contrib'
 
 import { completionOwner, completionOwnerKey, requestCompletion } from './completion-route'
+import { sessionMentionEntries } from './session-mention-entries'
 import type { CompletionEntry, CompletionPayload } from './use-live-completion-adapter'
 import { useLiveCompletionAdapter } from './use-live-completion-adapter'
 
-const KIND_RE = /^@(file|folder|url|image|tool|git):(.*)$/
-const REF_STARTERS = new Set(['file', 'folder', 'url', 'image', 'tool', 'git'])
+const KIND_RE = /^@(file|folder|url|image|tool|git|session):(.*)$/
+const REF_STARTERS = new Set(['file', 'folder', 'url', 'image', 'tool', 'git', 'session'])
+// Answered client-side from the session list + search, never by the gateway's path listing.
+const SESSION_QUERY_RE = /^session:(.*)$/
 // These bare tokens are context actions, not profile handles.
 const SIMPLE_CONTEXT_REFS = new Set(['@diff', '@staged'])
 
@@ -25,7 +28,8 @@ const STARTER_META: Record<string, string> = {
   url: 'Attach a URL reference',
   image: 'Attach an image reference',
   tool: 'Attach a tool reference',
-  git: 'Attach git context'
+  git: 'Attach git context',
+  session: 'Reference another chat'
 }
 
 function starterEntries(query: string): CompletionEntry[] {
@@ -108,7 +112,11 @@ function classify(entry: CompletionEntry): {
       // invariant is held by deriving both ends from refChipLabel. Without
       // this the list said `desktop/`, the editor said `apps/desktop/`, and
       // the chip said `desktop` — three names for one folder.
-      display: rest ? refChipLabel(kind, rest) : textValue(entry.display, `@${kind}:`),
+      display: rest
+        ? kind === 'session'
+          ? textValue(entry.display) || refChipLabel(kind, rest)
+          : refChipLabel(kind, rest)
+        : textValue(entry.display, `@${kind}:`),
       meta: textValue(entry.meta)
     }
   }
@@ -128,8 +136,10 @@ export function useAtCompletions(options: {
   gateway: HermesGateway | null
   sessionId: string | null
   cwd: string | null
+  /** The composer's owning profile (ChatBar's `profile`): whose chats `@session:` lists. */
+  profile?: string | null
 }): { adapter: Unstable_TriggerAdapter; loading: boolean } {
-  const { gateway, sessionId, cwd } = options
+  const { gateway, sessionId, cwd, profile } = options
   const enabled = Boolean(gateway)
 
   const contributed = useContributions(COMPOSER_AREAS.atCompletions)
@@ -205,6 +215,12 @@ export function useAtCompletions(options: {
 
   const fetcher = useCallback(
     async (query: string): Promise<CompletionPayload> => {
+      const sessionQuery = SESSION_QUERY_RE.exec(query)
+
+      if (sessionQuery) {
+        return { items: await sessionMentionEntries(sessionQuery?.[1] ?? '', profile), query }
+      }
+
       const starters = starterEntries(query)
       const { entries: extras, claimedHandles } = contributedEntries(query)
 
@@ -234,14 +250,16 @@ export function useAtCompletions(options: {
         )
 
         const items = result.items ?? []
-        const base = items.length > 0 ? items : starters
+        // `@session:` is answered client-side, so the gateway's starter list never carries it:
+        // keep it beside a non-empty gateway answer instead of dropping it with the fallback.
+        const base = items.length > 0 ? [...items, ...starters.filter(s => s.text === '@session:')] : starters
 
         return { items: mergeCompletionEntries(extras, base, claimedHandles), query }
       } catch {
         return { items: mergeCompletionEntries(extras, starters, claimedHandles), query }
       }
     },
-    [cacheKey, contributedEntries, gateway, sessionId, cwd]
+    [cacheKey, contributedEntries, gateway, sessionId, cwd, profile]
   )
 
   const toItem = useCallback((entry: CompletionEntry, index: number): Unstable_TriggerItem => {

@@ -49,6 +49,17 @@ describe('detectArtifact', () => {
     expect(detection?.title).toBe('Org Chart')
   })
 
+  it('titles an untitled svg from its first text so charts do not merge', () => {
+    const chart = (heading: string) =>
+      `<svg viewBox="0 0 100 100"><text class="th">${heading}</text>${'<rect x="1" y="2" width="3" height="4"/>'.repeat(80)}</svg>`
+
+    const first = detectArtifact('svg', chart('Delhi to Calgary'))
+    const second = detectArtifact('svg', chart('Baku trip'))
+
+    expect(first?.title).toBe('Delhi to Calgary')
+    expect(artifactSlug(first!)).not.toBe(artifactSlug(second!))
+  })
+
   it('keeps short code inline', () => {
     expect(detectArtifact('python', 'print("hi")')).toBeNull()
   })

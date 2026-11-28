@@ -275,6 +275,130 @@ async def test_telegram_video_size_gate_rejects_oversized_media_before_download(
     assert "exceeds" in handled[0].text
 
 
+def test_telegram_media_size_allowed_rejects_unverifiable_size():
+    """Missing or non-positive file_size cannot be validated against _max_doc_bytes;
+    it must be rejected before download rather than treated as unbounded."""
+    adapter = object.__new__(TelegramAdapter)
+    adapter._max_doc_bytes = 1024
+
+    for bad_size in [None, 0, -1]:
+        allowed, note = adapter._telegram_media_size_allowed(
+            SimpleNamespace(file_size=bad_size),
+            "voice message",
+        )
+        assert allowed is False
+        assert "could not be verified" in note
+        assert "voice message" in note
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("media_field,label", [
+    ("voice", "voice message"),
+    ("audio", "audio file"),
+    ("video", "video file"),
+    ("video_note", "video note"),
+])
+@pytest.mark.parametrize("unverifiable_size", [None, 0, -1])
+async def test_telegram_av_size_gate_rejects_unverifiable_size_before_download(
+    media_field, label, unverifiable_size, caplog
+):
+    caplog.set_level("INFO")
+    adapter = object.__new__(TelegramAdapter)
+    adapter._max_doc_bytes = 1024
+    adapter._should_process_message = lambda _message: True
+    adapter._build_message_event = lambda _message, _type, update_id=None: SimpleNamespace(
+        text="caption",
+        media_urls=[],
+        media_types=[],
+    )
+    adapter._apply_telegram_group_observe_attribution = lambda event: event
+
+    handled = []
+
+    async def handle_message(event):
+        handled.append(event)
+
+    adapter.handle_message = handle_message
+
+    downloads = []
+
+    class UnverifiableMedia:
+        file_size = unverifiable_size
+
+        async def get_file(self):  # pragma: no cover - failure path assertion
+            downloads.append(True)
+            pytest.fail("unverifiable media must not be downloaded")
+
+    media_fields = dict(
+        caption=None,
+        sticker=None,
+        photo=None,
+        voice=None,
+        audio=None,
+        video=None,
+        video_note=None,
+        document=None,
+        media_group_id=None,
+    )
+    media_fields[media_field] = UnverifiableMedia()
+    msg = SimpleNamespace(**media_fields)
+    update = SimpleNamespace(message=msg, update_id=1)
+
+    await TelegramAdapter._handle_media_message(adapter, update, SimpleNamespace())
+
+    assert len(handled) == 1
+    assert downloads == []
+    assert handled[0].media_urls == []
+    assert handled[0].media_types == []
+    assert label in handled[0].text
+    assert "could not be verified" in handled[0].text
+    assert "unverifiable or over-limit size" in caplog.text
+
+
+def test_telegram_media_size_allowed_accepts_only_positive_sizes_within_limit():
+    adapter = object.__new__(TelegramAdapter)
+    adapter._max_doc_bytes = 1024
+
+    for size in (1, 1024):
+        assert adapter._telegram_media_size_allowed(SimpleNamespace(file_size=size), "audio file") == (True, None)
+
+    allowed, note = adapter._telegram_media_size_allowed(SimpleNamespace(file_size=1025), "audio file")
+    assert allowed is False
+    assert "exceeds" in note
+
+
+@pytest.mark.asyncio
+async def test_telegram_document_size_gate_rejects_negative_size_before_download(caplog):
+    caplog.set_level("INFO")
+    adapter = object.__new__(TelegramAdapter)
+    adapter._max_doc_bytes = 1024
+    downloads = []
+
+    class NegativeSizeDocument:
+        file_name = "notes.txt"
+        mime_type = "text/plain"
+        file_size = -1
+
+        async def get_file(self):
+            downloads.append(True)
+            pytest.fail("documents with invalid sizes must not be downloaded")
+
+    async def surface_failure(*_args):
+        return None
+
+    adapter._surface_media_cache_failure = surface_failure
+    event = MessageEvent(text="caption")
+    handled = await adapter._cache_inbound_document(
+        SimpleNamespace(document=NegativeSizeDocument()),
+        event,
+    )
+
+    assert handled is False
+    assert downloads == []
+    assert "could not be verified" in event.text
+    assert "unverifiable or over-limit size" in caplog.text
+
+
 def _voice_event(source, urls, text=""):
     return MessageEvent(
         text=text,

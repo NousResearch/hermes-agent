@@ -470,6 +470,8 @@ export const af: Translations = {
     customKeyNamePlaceholder: "bv. MY_SERVICE_API_KEY",
     add: "Voeg by",
     invalidKeyName: "Gebruik slegs letters, syfers en onderstrepe (moet met 'n letter of onderstreep begin).",
+    channelManagedKey: "{key} is 'n boodskapplatform-geloofsbrief en word op die Channels-bladsy gestel.",
+    openChannels: "Maak Channels oop",
   },
 
   oauth: {

@@ -469,6 +469,8 @@ export const ja: Translations = {
     customKeyNamePlaceholder: "例: MY_SERVICE_API_KEY",
     add: "追加",
     invalidKeyName: "英字・数字・アンダースコアのみ使用できます（英字またはアンダースコアで始める必要があります）。",
+    channelManagedKey: "{key} はメッセージングプラットフォームの認証情報で、Channels ページで設定します。",
+    openChannels: "Channels を開く",
   },
 
   oauth: {

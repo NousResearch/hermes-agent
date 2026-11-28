@@ -470,6 +470,8 @@ export const de: Translations = {
     customKeyNamePlaceholder: "z. B. MY_SERVICE_API_KEY",
     add: "Hinzufügen",
     invalidKeyName: "Nur Buchstaben, Zahlen und Unterstriche verwenden (muss mit einem Buchstaben oder Unterstrich beginnen).",
+    channelManagedKey: "{key} ist ein Zugangsschlüssel einer Messaging-Plattform und wird auf der Channels-Seite gesetzt.",
+    openChannels: "Channels öffnen",
   },
 
   oauth: {

@@ -57,6 +57,17 @@ def _nested_plugin_mapping(segments: tuple[str, ...], value: Any) -> dict[str, A
     return nested
 
 
+def _replace_nested_value(root: dict[str, Any], path: tuple[str, ...], value: Any) -> None:
+    """Set ``path`` in ``root`` to exactly ``value``; a missing or non-mapping parent becomes ``{}``."""
+    current = root
+    for segment in path[:-1]:
+        child = current.get(segment)
+        if not isinstance(child, dict):
+            child = current[segment] = {}
+        current = child
+    current[path[-1]] = value
+
+
 def _plugin_settings_entry(config: object, plugin_id: str) -> Mapping[str, Any] | None:
     """``plugins.entries.<plugin_id>`` as a mapping, else ``None``."""
     entry = _nested_plugin_value(config, ("plugins", "entries", plugin_id), None)
@@ -80,14 +91,17 @@ def save_plugin_setting(plugin_id: str, segments: tuple[str, ...], value: Any) -
     dotted_path = ".".join(full_path)
     if managed_scope.is_key_managed(dotted_path):
         raise PermissionError(f"Plugin setting {dotted_path!r} is administrator-managed")
-    partial = _nested_plugin_mapping(full_path[:4], _nested_plugin_mapping(segments, value))
-    # The lock covers merge-read plus atomic save so sibling plugin writes (threads or
-    # processes) cannot race between the two steps.
+    # The lock covers read plus atomic save so sibling plugin writes (threads or processes)
+    # cannot race between the two steps.
     with _locked_plugin_state(config_mod.get_config_path()), config_mod._CONFIG_LOCK:
         # Fail closed on malformed YAML: save_config degrades parse failures to {} — safe
         # for reads, destructive for read-modify-write.
-        config_mod.read_user_config_raw()
-        config_mod.save_config(partial, preserve_keys={full_path}, merge_existing=True)
+        raw = config_mod.read_user_config_raw()
+        # Replace the value inside the whole file instead of saving a partial document:
+        # merge_existing deep-merges dict over dict, so a dict setting could never drop a key
+        # or be cleared with {} or None.
+        _replace_nested_value(raw, full_path, value)
+        config_mod.save_config(raw, preserve_keys={full_path})
 
 
 def _plugin_data_namespace(plugin_id: str, data_namespace: str) -> str:

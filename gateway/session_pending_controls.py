@@ -30,6 +30,8 @@ class PendingControls:
                       'command': _redact_approval_command(data.get('command', '')),
                       'description': _redact_approval_command(data.get('description', '')),
                       'choices': choices}
+            if data.get('title'):  # a consent question that is not a shell command names itself
+                prompt['title'] = _redact_approval_command(data['title'])
             if 'edit' in data:
                 prompt['edit'] = deepcopy(data['edit'])
                 prompt['choices'] = ['once', 'deny']

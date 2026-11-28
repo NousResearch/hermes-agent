@@ -1073,12 +1073,14 @@ class CLIModalMixin:
     def _approval_callback(self, command: str, description: str,
                            *, allow_permanent: bool = True,
                            allow_session: bool = True,
-                           smart_denied: bool = False) -> str:
+                           smart_denied: bool = False, title: str | None = None) -> str:
         """Dangerous-command approval through the prompt_toolkit UI (agent thread).
 
         Choices: once / session / always / deny (see ``_approval_choices``), plus 'view' for long
         commands. ``_approval_lock`` serializes concurrent requests (parallel delegation subtasks)
-        so the shared ``_approval_state`` / ``_approval_deadline`` aren't clobbered.
+        so the shared ``_approval_state`` / ``_approval_deadline`` aren't clobbered. *title* replaces
+        the "Dangerous Command" header for consent questions that are not shell commands (MCP
+        elicitation, skill loads, card fills).
         """
         from cli import CLI_CONFIG, _DIM, _RST, _cprint
 
@@ -1094,6 +1096,7 @@ class CLIModalMixin:
                     allow_session=allow_session,
                     smart_denied=smart_denied),
                 "selected": 0,
+                "title": title,
                 "response_queue": response_queue}
             self._approval_deadline = _time.monotonic() + timeout
             self._ring_bell(prompt=True, context=t("cli.approval.bell_context"), detail=command)

@@ -171,6 +171,10 @@ def run_live_checks(issues: list[str]) -> list[ProbeResult]:
             def _probe(n=name, e=servers[name]) -> ProbeResult:
                 if not isinstance(e, dict):
                     return ProbeResult(f"MCP: {n}", "skip", "(malformed config entry)")
+                # A server switched off in config is never loaded, so a probe can only invent an
+                # issue for something the user turned off on purpose.
+                if e.get("enabled") is False:
+                    return ProbeResult(f"MCP: {n}", "skip", "(disabled in config)")
                 return ProbeResult(f"MCP: {n}", "pass", f"({len(_probe_mcp_server(n, e, timeout))} tool(s))")
             results.append(_run_one(f"MCP: {name}", _probe, issues))
     else:

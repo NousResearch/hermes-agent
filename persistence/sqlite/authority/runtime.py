@@ -122,6 +122,10 @@ class SQLiteSessionRuntimeRepository:
         with refused():
             _runtime_picks.forget_deferred_pick(self._store.holder(), session_id, stored)
 
+    def finish_deferred_global_model_publication(self, epoch: int, *, session_id: str, generation: int) -> None:
+        with refused():
+            _runtime_picks.finish_deferred_global_model_publication(self._store.holder(), epoch, session_id, generation)
+
     def mark_deferred_pick_asked(self, session_id: str, *, stored: str, confirm: str) -> None:
         with refused():
             _runtime_picks.mark_deferred_pick_asked(self._store.holder(), session_id, stored, confirm)
@@ -173,6 +177,10 @@ class SQLiteSessionRuntimeRepository:
             stored = _runtime_picks.deferred_pick(self._store.holder(), session_id)
         return None if stored is None else StoredDeferredPick(pick=json.loads(stored), stored=stored)
 
+    def deferred_global_model_result(self, session_id: str, *, request: PinnedIdentity | None = None) -> dict[str, Any] | None:
+        with refused():
+            return _runtime_picks.deferred_global_model_result(self._store.holder(), session_id, request)
+
     def prepare_chat_pick(self, epoch: int, *, key: str, digest: str, session_id: str, params: ChatPickParams) -> dict[str, Any] | SessionRuntimeState:
         with refused():
             prepared = _runtime_picks.prepare_chat_pick(self._store.holder(), epoch=epoch, key=key, digest=digest,
@@ -181,6 +189,10 @@ class SQLiteSessionRuntimeRepository:
             return prepared["receipt"]
         row = prepared["row"]
         return SessionRuntimeState(revision=row["runtime_revision"], generation=row["runtime_generation"])
+
+    def is_latest_global_model_selection(self, *, session_id: str, generation: int) -> bool:
+        with refused():
+            return _runtime_picks.is_latest_global_model_selection(self._store.holder(), session_id, generation)
 
     def policy_picks(self, session_id: str) -> set[str]:
         with refused():

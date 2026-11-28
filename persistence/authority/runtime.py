@@ -131,14 +131,15 @@ class _Command:
 
 @dataclass(frozen=True, slots=True)
 class ModelPick(_Command):
-    """``model``: a model (and provider, guard token, reasoning level picked with it)."""
+    """``model``: a model (and provider, guard token, reasoning level); ``scope='global'`` also commits the owning profile's default selection."""
 
     model: str
     provider: str | None = None
     confirm: str | None = None
     reasoning: str | None = None
+    scope: Literal["global"] | None = None
     operation: ClassVar[str] = "model"
-    _keys: ClassVar[tuple[str, ...]] = ("model", "provider", "confirm", "reasoning")
+    _keys: ClassVar[tuple[str, ...]] = ("model", "provider", "confirm", "reasoning", "scope")
 
 
 @dataclass(frozen=True, slots=True)
@@ -290,8 +291,8 @@ def _editor_fingerprint(value: Any) -> str | None:
 
 
 def _parse_model(operation: str, payload: dict[str, Any]) -> MutationCommand | None:
-    if "model" in payload and not set(payload) - {"model", "provider", "confirm", "reasoning"} and all(isinstance(v, str) and v.strip() for v in payload.values()):
-        if "reasoning" not in payload or _reasoning_level(payload["reasoning"]):
+    if "model" in payload and not set(payload) - {"model", "provider", "confirm", "reasoning", "scope"} and all(isinstance(v, str) and v.strip() for v in payload.values()):
+        if payload.get("scope", "global") == "global" and ("reasoning" not in payload or _reasoning_level(payload["reasoning"])):
             return ModelPick(**payload)
     return None
 
@@ -553,6 +554,10 @@ class SessionRuntimeRepository(Protocol):
         """Delete the deferred slot while it still holds exactly ``stored``; no epoch fence."""
         ...
 
+    def finish_deferred_global_model_publication(self, epoch: int, *, session_id: str, generation: int) -> None:
+        """Under the current epoch, remove only the unfinished publication at this execution generation. Receipts remain unchanged. Called after publication succeeds or the latest-global fence makes it obsolete; a failed publication stays recoverable across reopen."""
+        ...
+
     def mark_deferred_pick_asked(self, session_id: str, *, stored: str, confirm: str) -> None:
         """Store the slot with ``awaiting_confirm = confirm`` while it still holds exactly ``stored``; no epoch fence."""
         ...
@@ -599,8 +604,16 @@ class SessionRuntimeRepository(Protocol):
         """The session's deferred slot."""
         ...
 
+    def deferred_global_model_result(self, session_id: str, *, request: PinnedIdentity | None = None) -> dict[str, Any] | None:
+        """The application receipt whose deferred global model publication is unfinished, optionally restricted to its original request identity. Applying the current slot's global model pick records that relationship in the same transaction as the application receipt and global-selection fence, independently of the slot it consumes. Superseding an uncommitted slot creates no relationship; later local picks cannot erase an unfinished publication. A newer deferred global application on this session may replace it, since the older selection no longer owns the profile fence. Reading never changes either immutable receipt or its digest."""
+        ...
+
     def prepare_chat_pick(self, epoch: int, *, key: str, digest: str, session_id: str, params: ChatPickParams) -> dict[str, Any] | SessionRuntimeState:
         """The stored receipt of an exact retry, else the fenced mount's counters: epoch, receipt (``admission_conflict``), session (``not_found``), revision (``revision_conflict``), generation (``stale_generation``)."""
+        ...
+
+    def is_latest_global_model_selection(self, *, session_id: str, generation: int) -> bool:
+        """Whether the profile's latest committed global model selection belongs to this session and execution generation. A global ``ModelPick`` writes this fence and the receipt's secret-free ``global_selection`` (``default``, ``provider``, ``base_url``, ``api_mode``) in the same transaction; local picks and exact replays never move it. It survives reopen so an exact retry may repair profile publication, even after a later local pick, but cannot overwrite another session's newer global pick."""
         ...
 
     def policy_picks(self, session_id: str) -> set[str]:

@@ -22,6 +22,7 @@ function modelPayload(arg: string) {
   const parts = arg.trim().split(/\s+/)
   const model = parts.shift()!
   const payload: Record<string, string> = { model }
+  const sessionScoped = parts.includes('--session') || parts.includes(TUI_SESSION_MODEL_FLAG)
 
   if (model.startsWith('--')) {
     throw new Error(t('canonical.controls.modelUsage'))
@@ -29,6 +30,15 @@ function modelPayload(arg: string) {
 
   while (parts.length) {
     const flag = parts.shift()!
+
+    if (flag === '--global') {
+      // Match the shared parser: an explicit session flag takes precedence.
+      if (!sessionScoped) {
+        payload.scope = 'global'
+      }
+
+      continue
+    }
 
     if (flag === '--session' || flag === TUI_SESSION_MODEL_FLAG) {
       continue

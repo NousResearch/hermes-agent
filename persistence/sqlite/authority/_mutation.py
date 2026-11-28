@@ -17,6 +17,7 @@ from session_rules.turns import typed_prompt_content
 
 from .._schema import TITLE_SOURCE_USER
 from ._runtime import _epoch, _json, _text, replay_mutation_receipt
+from ._runtime_picks import deferred_global_request, record_deferred_global_publication
 
 
 def authorize_write(conn, history, session_id, owner=None):
@@ -86,6 +87,7 @@ def mutate_runtime_session(holder, *, epoch: int, principal_id: str, session_id:
                 from ._runtime_guards import require_idle
                 require_idle(holder, conn, list({session_id, snapshot['target']}))
             return {'snapshot': snapshot}, None, False
+        deferred = deferred_global_request(conn, session_id, principal_id, request_id, operation, payload)
         affected, projection = apply_action(holder, conn, session_id, operation, payload, prepared=prepared,
                                             media_root=media_root, owner=owner)
         gone = None
@@ -101,6 +103,7 @@ def mutate_runtime_session(holder, *, epoch: int, principal_id: str, session_id:
                   'operation': operation, **projection}
         conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)',
                      (key, _json({'digest': digest, 'result': result})))
+        record_deferred_global_publication(conn, session_id, deferred, key, result['execution_generation'])
         return result, gone, False
     return holder._execute_write(write)
 

@@ -48,16 +48,23 @@ def _tool_name(tool: Any) -> Any:
     return tool.get("function", {}).get("name") if isinstance(tool, dict) else None
 
 
-def memory_provider_tools_exposed(agent: Any) -> bool:
+def memory_provider_tools_exposed(agent: Any, *, memory_tool_present: Optional[bool] = None) -> bool:
     """Whether external memory-provider tools are exposed on ``agent``.
 
     Same gate as ``inject_memory_provider_tools`` so a provider's ``system_prompt_block()``
     never advertises tools absent from the tool surface.
     """
-    tools = getattr(agent, "tools", None)
-    present = isinstance(tools, (list, tuple)) and any(_tool_name(t) == "memory" for t in tools)
+    if memory_tool_present is None:
+        tools = getattr(agent, "tools", None)
+        memory_tool_present = isinstance(tools, (list, tuple)) and any(_tool_name(t) == "memory" for t in tools)
     enabled, disabled = getattr(agent, "enabled_toolsets", None), getattr(agent, "disabled_toolsets", None)
-    return memory_provider_tools_enabled(enabled, disabled, memory_tool_present=present)
+    if (getattr(getattr(agent, "_memory_manager", None), "read_only", False) is True
+            and getattr(agent, "memory_read_grant", False) is True
+            # Bypass only the effective denial set captured at child construction.
+            and getattr(agent, "_memory_read_spawn_denials", None) == frozenset(disabled or ())):
+        # Only delegation's built-in memory block is bypassed; other gates still apply.
+        disabled = [name for name in (disabled or ()) if name != "memory"]
+    return memory_provider_tools_enabled(enabled, disabled, memory_tool_present=memory_tool_present)
 
 
 def inject_memory_provider_tools(agent: Any) -> int:

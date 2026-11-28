@@ -201,3 +201,28 @@ def test_initialize_falls_back_to_default_base_url(tmp_path, monkeypatch):
 
     assert captured["base_url"] == retaindb_module._DEFAULT_BASE_URL
     assert captured["project"] == "default"
+
+
+def test_read_only_initialize_leaves_pending_writes_and_soul_untouched(tmp_path, monkeypatch):
+    import json
+
+    db = tmp_path / "retaindb_queue.db"
+    queue = retaindb._WriteQueue(MagicMock(), db)
+    queue.shutdown()
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "INSERT INTO pending (user_id, session_id, messages_json) VALUES (?, ?, ?)",
+            ("alice", "old", json.dumps([{"role": "user", "content": "pending fact"}])),
+        )
+    (tmp_path / "SOUL.md").write_text("Identity to seed", encoding="utf-8")
+    client = MagicMock()
+    monkeypatch.setattr(retaindb, "_Client", lambda *args: client)
+    provider = RetainDBMemoryProvider()
+    try:
+        provider.initialize("child", hermes_home=str(tmp_path), read_only=True, user_id="alice")
+    finally:
+        provider.shutdown()
+    client.ingest_session.assert_not_called()
+    client.seed_agent_identity.assert_not_called()
+    with sqlite3.connect(db) as conn:
+        assert conn.execute("SELECT user_id, session_id FROM pending").fetchall() == [("alice", "old")]

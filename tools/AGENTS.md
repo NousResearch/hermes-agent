@@ -161,7 +161,7 @@ no `delegate_task`, `clarify`, `memory`, `send_message`, `cronjob`; keeps `execu
 `orchestrator` (keeps `delegate_task`; gated by `delegation.orchestrator_enabled`, bounded by
 `delegation.max_spawn_depth`, default 1). Config knobs under `delegation:`:
 `max_concurrent_children, independent_completions, gateway_mode, max_spawn_depth, child_timeout_seconds, orchestrator_enabled,
-subagent_auto_approve, inherit_mcp_toolsets, max_iterations, backend, backends`. **Routes:** `delegation.backend` picks a
+subagent_auto_approve, inherit_mcp_toolsets, memory_read, memory_read_tools, max_iterations, backend, backends`. **Routes:** `delegation.backend` picks a
 delegation provider (`agent/delegation_provider.py`, `ctx.register_delegation_provider`; its settings live in
 `delegation.backends.<name>`) that answers each task's route (`tools/delegate_tool_routes.py`: model/provider fields
 resolved like the `delegation` section, `service_tier` checked like `/fast` in `delegate_tool_tuning.py`, or `profile` →

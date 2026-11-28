@@ -17,6 +17,7 @@ import weakref
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from agent.memory_read_policy import child_memory_identity, retain_child_memory_toolset
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -33,7 +34,7 @@ from tools.delegate_tool_config import (
     _DEFAULT_MAX_CONCURRENT_CHILDREN, _get_max_concurrent_children,
     _get_max_spawn_depth, _get_oneshot_max_children, _get_orchestrator_enabled,
     _inherit_parent_capabilities, _merge_request_overrides, _resolve_child_credential_pool,
-    _resolve_child_runtime,
+    _resolve_child_memory_read_tools, _resolve_child_runtime,
     _subagent_auto_approve, _subagent_auto_deny,
 )
 from tools.delegate_tool_dispatch import _Batch, _announce_batch, _capture_origin, _run_batch
@@ -265,6 +266,10 @@ def _build_child_agent(
     # as auxiliary.review.
     delegation_cfg = delegate_tool_config._load_config()
     child_toolsets, child_disabled_toolsets = _resolve_child_toolsets(parent_agent, toolsets, effective_role)
+    # Authorization belongs to the caller, even when the child runs as another profile.
+    child_memory_read_tools = _resolve_child_memory_read_tools(parent_agent)
+    if child_memory_read_tools:
+        child_toolsets = retain_child_memory_toolset(parent_agent, toolsets, child_toolsets)
     child_prompt = _build_child_system_prompt(
         workspace_path=_resolve_workspace_hint(parent_agent), role=effective_role,
         max_spawn_depth=max_spawn, child_depth=child_depth,
@@ -321,8 +326,12 @@ def _build_child_agent(
                     enabled_toolsets=child_toolsets, disabled_toolsets=child_disabled_toolsets, quiet_mode=True,
                     ephemeral_system_prompt=child_prompt, log_prefix=f"[subagent-{task_index}]", platform="subagent",
                     side_agent=True,
-                    skip_context_files=True, skip_memory=not child_checkpoint_required,
-                    memory_agent_context="subagent", clarify_callback=None,
+                    skip_context_files=True,
+                    skip_memory=not (child_checkpoint_required or child_memory_read_tools),
+                    memory_agent_context="subagent", memory_read_tools=child_memory_read_tools,
+                    memory_read_grant=bool(child_memory_read_tools),
+                    **(child_memory_identity(parent_agent) if child_memory_read_tools else {}),
+                    clarify_callback=None,
                     thinking_callback=(
                         (lambda text: _safe_progress(child_progress_cb, "_thinking", text) if text else None)
                         if child_progress_cb else None

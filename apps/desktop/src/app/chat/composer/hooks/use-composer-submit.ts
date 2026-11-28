@@ -4,7 +4,7 @@ import { type RefObject, useLayoutEffect, useRef } from 'react'
 import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { translateNow, useI18n } from '@/i18n'
 import { isSlashCommandText } from '@/lib/chat-runtime'
-import { isSideTaskSlashCommand } from '@/lib/desktop-slash-commands'
+import { isNoPayloadSlashCommand, isSideTaskSlashCommand } from '@/lib/desktop-slash-commands'
 import { triggerHaptic } from '@/lib/haptics'
 import { isTouchInteraction } from '@/lib/touch-interaction'
 import { type BackendTransitionKind, changesBackend } from '@/store/backend-transition'
@@ -406,10 +406,10 @@ export function useComposerSubmit({
     // /send directives).  Queuing them would make every slash command wait
     // for the current turn to finish, which is how the TUI never behaves.
     if (isSlashCommandText(text)) {
-      if (attachments.length) {
-        // Slash commands cannot ride alongside attachments — warn the user
-        // instead of silently queuing the payload (which would then reach the
-        // idle path and be submitted as plain text with no command execution).
+      if (attachments.length && isNoPayloadSlashCommand(text)) {
+        // Known client-side no-payload surface — an attachment can never ride
+        // it, and nothing has executed yet, so warn-and-refuse preserves the
+        // draft through dispatchSubmit's restore path (#131233).
         notify({
           kind: 'warning',
           title: copy.slashCommandIgnoredTitle,
@@ -419,10 +419,21 @@ export function useComposerSubmit({
         return false
       }
 
-      const retry = takeDraftRetry?.(text, [])
-      triggerHaptic('submit')
-      clearDraft()
-      dispatchSubmit(text, undefined, undefined, retry && { submission_id: retry.id })
+      if (attachments.length) {
+        // Mirror the idle path: snapshot + clear the scope so a send consumes
+        // the clone while an unconsumed dispatch re-homes it (#131233).
+        const submittedAttachments = cloneAttachments(attachments)
+        const retry = takeDraftRetry?.(text, submittedAttachments)
+        triggerHaptic('submit')
+        clearDraft()
+        scope.attachments.clear({ retainPreviewUrls: true })
+        dispatchSubmit(text, submittedAttachments, undefined, retry && { submission_id: retry.id })
+      } else {
+        const retry = takeDraftRetry?.(text, [])
+        triggerHaptic('submit')
+        clearDraft()
+        dispatchSubmit(text, undefined, undefined, retry && { submission_id: retry.id })
+      }
 
       return true
     }

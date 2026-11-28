@@ -2,6 +2,7 @@ import { skillInvocationText } from '@hermes/shared'
 import { mergeUsage, parseCommandDispatch, parseSlashCommand, randomUuid } from '@hermes/shared'
 import { type MutableRefObject, useCallback, useRef } from 'react'
 
+import { cloneAttachments } from '@/app/chat/composer/composer-utils'
 import { mergeOlderTranscriptPage } from '@/app/chat/transcript-backfill'
 import { prepareDefaultNewSession } from '@/app/session/new-session-route'
 import { invalidateContextBreakdown } from '@/app/shell/hooks/use-context-breakdown'
@@ -26,7 +27,7 @@ import { applyReasoningSlashResult, reasoningSlashParams } from '@/lib/reasoning
 import { setSessionYolo } from '@/lib/yolo-session'
 import { openCommandPalettePage } from '@/store/command-palette'
 import { markCompressDeferred } from '@/store/compaction'
-import { $composerAttachments, setComposerDraft } from '@/store/composer'
+import { $composerAttachments, mainComposerScope, setComposerDraft } from '@/store/composer'
 import { applyGoalStatusText } from '@/store/goals'
 import { dismissNotification, notify, notifyError } from '@/store/notifications'
 import { setPetScale } from '@/store/pet-gallery'
@@ -138,6 +139,7 @@ const renderWakeStatus = (status: WakeStatusResponse): string => {
 /** Everything a slash handler needs about the invocation it's serving. */
 interface SlashActionCtx {
   arg: string
+  attachments?: SubmitTextOptions['attachments']
   command: string
   name: string
   recordInput: boolean
@@ -216,7 +218,23 @@ export function useSlashCommand(deps: SlashCommandDeps) {
   const compressInFlightRef = useRef(new Set<string>())
 
   return useCallback(
-    async (rawCommand: string, options?: SubmitTextOptions & { recordInput?: boolean; typed?: boolean }) => {
+    async (
+      rawCommand: string,
+      options?: SubmitTextOptions & {
+        fromQueue?: boolean
+        recordInput?: boolean
+        typed?: boolean
+      }
+    ) => {
+      // Attachment bookkeeping for one dispatch (#131233): consumed flips when
+      // a send/skill dispatch accepted the attachments (or queued them for a
+      // later drain); prefill stages them with the draft instead; sendRejected
+      // defers to the caller's existing restore path (queue keeps the entry,
+      // composer reloads the draft). Shared with nested runSlash/handleDispatch
+      // through this closure — including alias re-entry.
+      let attachmentsConsumed = !(options?.attachments?.length)
+      let sendRejected = false
+      let prefilled = false
       const initialRuntimeId = options?.sessionId ?? activeSessionIdRef.current
       const initialSelectedId = selectedStoredSessionIdRef.current
       const initialRoutedId = getRoutedStoredSessionId()
@@ -423,7 +441,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           }
 
           if (dispatch.type === 'alias') {
-            await runSlash(`/${dispatch.target}${arg ? ` ${arg}` : ''}`, sessionId, false)
+            await runSlash(`/${dispatch.target}${arg ? ` ${arg}` : ''}`, sessionId, false, ctx.attachments)
 
             return
           }
@@ -458,6 +476,11 @@ export function useSlashCommand(deps: SlashCommandDeps) {
               setComposerDraft(message)
             }
 
+            // Nothing is submitted — the attachments stay staged and ride the
+            // next non-slash send together with the prefilled draft. Suppresses
+            // the post-dispatch warning below (#131233).
+            prefilled = true
+
             return
           }
 
@@ -487,6 +510,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           const queued = options?.fromQueue
             ? 'idle'
             : queueKickoffIfSessionBusy({
+                attachments: ctx.attachments ?? [],
                 displayText,
                 foregroundBusy: busyRef.current,
                 id: submissionId,
@@ -496,6 +520,12 @@ export function useSlashCommand(deps: SlashCommandDeps) {
               })
 
           if (queued !== 'idle') {
+            if (queued === 'queued') {
+              // The kickoff entry carries the attachments and submits them on
+              // its own drain — consumed-later, not lost (#131233).
+              attachmentsConsumed = true
+            }
+
             renderSlashOutput(BUSY_KICKOFF_TEXT[queued])
 
             return
@@ -511,12 +541,21 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           // queue drain, a session created by this very call) had the same leak.
           submitted = await submitPromptText(message, {
             ...retryOptions,
+            ...(ctx.attachments ? { attachments: ctx.attachments } : {}),
             sessionId,
             storedSessionId,
             displayText,
             submission_id: submissionId,
             destination
           })
+
+          if (submitted === false) {
+            // Rejected send: the caller's restore path reloads the draft and
+            // attachments (queue drains keep the entry for retry).
+            sendRejected = true
+          } else if (ctx.attachments?.length) {
+            attachmentsConsumed = true
+          }
         }
 
         try {
@@ -1458,7 +1497,12 @@ export function useSlashCommand(deps: SlashCommandDeps) {
 
       // The whole dispatcher: resolve the command's desktop surface, then act on
       // its kind. No per-command ladder — behavior lives in the registry.
-      async function runSlash(commandText: string, sessionHint?: string, recordInput = true): Promise<void> {
+      async function runSlash(
+        commandText: string,
+        sessionHint?: string,
+        recordInput = true,
+        attachments?: SubmitTextOptions['attachments']
+      ): Promise<void> {
         const command = commandText.trim()
         const { name, arg } = parseSlashCommand(command)
 
@@ -1493,7 +1537,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           }).catch(() => undefined)
         }
 
-        const ctx: SlashActionCtx = { arg, command, name, recordInput, sessionHint }
+        const ctx: SlashActionCtx = { arg, attachments, command, name, recordInput, sessionHint }
         const surface = resolveDesktopCommand(`/${name}`)?.surface
 
         switch (surface?.kind) {
@@ -1519,9 +1563,40 @@ export function useSlashCommand(deps: SlashCommandDeps) {
         }
       }
 
-      await runSlash(rawCommand, options?.sessionId ?? undefined, options?.recordInput ?? true)
+      await runSlash(rawCommand, options?.sessionId ?? undefined, options?.recordInput ?? true, options?.attachments)
 
-      return submitted
+      // Post-dispatch attachment check (#131233): anything the dispatch did not
+      // consume goes back to the composer — the idle submit path cleared the
+      // scope before dispatch ran, and a drain's attachments otherwise lived
+      // only on the queue entry just removed. Prefill is excluded from the
+      // warning: it deliberately leaves the attachments staged alongside the
+      // prefilled draft, and the next non-slash send carries both together.
+      // A rejected send is also excluded — the caller's restore path owns it.
+      const submittedAttachments = options?.attachments
+
+      if (submittedAttachments?.length && !attachmentsConsumed && !sendRejected) {
+        // Merge, never overwrite: the dispatch window is long enough for the
+        // user to stage a new attachment (or another background drain to land),
+        // and a blind set() would silently drop whatever arrived meanwhile —
+        // the exact #81798 loss class this tail exists to prevent. Keep what is
+        // already staged; append ours by id (composer origins cleared their copy
+        // before dispatch, so the submitted rows are absent unless concurrently
+        // re-added — in which case the staged row wins).
+        const staged = mainComposerScope.$attachments.get()
+        const stagedIds = new Set(staged.map(attachment => attachment.id))
+        const rehomed = [...staged, ...cloneAttachments(submittedAttachments).filter(a => !stagedIds.has(a.id))]
+        mainComposerScope.$attachments.set(rehomed)
+
+        if (!prefilled) {
+          notify({
+            kind: 'warning',
+            title: copy.slashCommandIgnoredTitle,
+            message: copy.slashCommandIgnoredBody
+          })
+        }
+      }
+
+      return submitted && !sendRejected
     },
     [
       activeSessionIdRef,

@@ -7,6 +7,7 @@ import { previewMarkdownHref } from '@/lib/preview-targets'
 import { stripPreviewTargets } from '@/lib/preview-targets'
 import { linkifySessionRefs } from '@/lib/session-refs'
 import { DIRECTIVE_WITH_BODY_RE } from '@/lib/transcript-directives'
+import { URL_PROSE_BOUNDARY } from '@/lib/url-boundary'
 
 // Same tag set as agent/think_scrubber.py THINK_TAG_NAMES, plus desktop-only
 // `scratchpad`/`analysis`.
@@ -67,6 +68,7 @@ const HUGGING_DISPLAY_MATH_OPEN_RE =
   /^([ \t]*(?:>[ \t]*)*(?:(?:[-+*]|\d+[.)])[ \t]+)?[ \t]*)\$\$[ \t]*(\S[^\n]*?)[ \t]*\r?$/
 
 const HUGGING_DISPLAY_MATH_CLOSE_RE = /^([ \t]*(?:>[ \t]*)*[ \t]*)(\S[^\n]*?)\$\$[ \t]*\r?$/
+
 // Bare-URL autolink matcher. The character classes EXCLUDE `*` so a URL that
 // abuts markdown emphasis with no separating space (e.g. `**label: https://x**`,
 // a very common LLM pattern) doesn't swallow the trailing `**` into the href.
@@ -74,7 +76,13 @@ const HUGGING_DISPLAY_MATH_CLOSE_RE = /^([ \t]*(?:>[ \t]*)*[ \t]*)(\S[^\n]*?)\$\
 // likewise strips trailing emphasis/punctuation — so dropping it here is safe
 // and keeps the emphasis run intact. Other trailing punctuation is still peeled
 // off by the final `[^\s<>"'`*.,;:!?]` class.
-const RAW_URL_RE = /https?:\/\/[^\s<>"'`*]+[^\s<>"'`*.,;:!?]/g
+// CJK and typographic punctuation (URL_PROSE_BOUNDARY) ends a bare URL even
+// without a space; CJK letters and fullwidth alphanumerics stay in the link.
+const RAW_URL_RE = new RegExp(
+  `https?:\\/\\/[^\\s<>"'\`*${URL_PROSE_BOUNDARY}]+[^\\s<>"'\`*.,;:!?${URL_PROSE_BOUNDARY}]`,
+  'g'
+)
+
 const URL_TRAILING_PUNCTUATION = '.,;:!?'
 // Markdown that already owns the URLs inside it, which the bare-URL autolinker
 // steps over whole (#49822): inline links and images `[label](dest "title")`,
@@ -108,7 +116,7 @@ const LOCAL_PREVIEW_ONLY_RE = /^https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|
 const URL_ONLY_LINE_RE = /^\s*https?:\/\/\S+\s*$/i
 // Autolink-shaped spans (bare or angle-bracketed http(s) URLs) that must be
 // skipped by lone-tilde escaping: `~` is legal in URL paths and must survive.
-const URL_LIKE_SPLIT_RE = /(<https?:\/\/[^>\s]+>|https?:\/\/[^\s<>"'`*]+[^\s<>"'`*.,;:!?])/g
+const URL_LIKE_SPLIT_RE = new RegExp(`(<https?:\\/\\/[^>\\s]+>|${RAW_URL_RE.source})`, 'g')
 // A `~` that is neither part of `~~~` fence, part of `~~` strikethrough, nor
 // an already-escaped `\~`. Escaping it with `\~` makes `marked` render a
 // literal tilde, so CJK ranges (`1~10`) and approximation prefixes (`~¥0.089`)

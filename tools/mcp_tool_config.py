@@ -3,6 +3,7 @@ interpolation, hidden-whitespace and suspicious-entry filtering, the filtered
 subprocess env, command resolution, the cached-npx binary shortcut and the shared stderr log."""
 
 import codecs
+import glob
 import hashlib
 import json
 import logging
@@ -157,6 +158,48 @@ _SAFE_ENV_KEYS_CASE_INSENSITIVE = frozenset({
 
 # ${VAR_NAME} interpolation; any non-} chars allowed so MY-VAR / my.var work.
 _ENV_VAR_PATTERN = re.compile(r"\$\{([^}]+)\}")
+
+# ${latest:<glob>} — resolve to the newest existing path matching <glob> at render time.
+# Render happens at every config interpolation, including the connect-time re-render, so
+# a version-keyed install directory (e.g. a Claude Code plugin cache that deletes the old
+# version on upgrade) never leaves a stale absolute path behind (#153351).
+_LATEST_REF_PREFIX = "latest:"
+
+# ${latest:...} patterns that matched nothing, warned once per process (config loads repeat
+# per discovery pass; the literal placeholder is kept so the spawn fails loudly instead of
+# silently serving zero tools — #153351 "log the unresolved pattern explicitly").
+_latest_misses_warned: set[str] = set()
+
+
+def _version_sort_key(path: str) -> tuple:
+    """Version key: the digit runs of *path* compared numerically, so version-keyed
+    install directories order with ``sort -V`` semantics (``15.13.0 < 15.15.2 < 15.100.0``,
+    ``v2 < v10``). Paths whose digit runs are identical (or absent — non-versioned names)
+    share a key; those are decided by mtime instead, per the #153351 spec."""
+    return tuple(int(part) for part in re.findall(r"\d+", path))
+
+
+def _resolve_latest_pattern(pattern: str) -> Optional[str]:
+    """Newest existing path matching *pattern*, or None (#153351 semantics): the highest
+    version wins when the candidates' digit runs differ (``sort -V`` order, mtime as the
+    tie-break within one version); otherwise — non-versioned cache names — the newest
+    mtime wins outright."""
+    expanded = os.path.expanduser(pattern.strip())
+    matches: list[tuple[str, float]] = []
+    for m in glob.glob(expanded):
+        try:
+            matches.append((m, os.stat(m).st_mtime))
+        except OSError:
+            # Deleted between glob and stat — exactly the race this resolver runs in
+            # (plugin upgrade mid-render). Skip it; a sibling match still resolves.
+            continue
+    if not matches:
+        return None
+    # Digit runs decide first, so an installer touching an OLD directory cannot outrank a
+    # genuinely higher version; mtime only ranks within one version and decides outright
+    # when the candidate names carry no distinguishing digits at all.
+    return max(matches, key=lambda m: (_version_sort_key(m[0]), m[1]))[0]
+
 
 
 def _workspace_folder() -> str:
@@ -569,10 +612,13 @@ def _packaged_npx_entry(command: str, args: list) -> Optional[tuple]:
 
 
 def _interpolate_env_vars(value):
-    """Recursively resolve ``${VAR}`` / Cursor ``${env:VAR}`` placeholders and context vars. Env
-    refs resolve from the active profile's secret scope when multiplexing (the routed profile's
-    value, not another profile's in ``os.environ``). Unset (or empty) vars keep the literal placeholder;
-    a templated string comes back as a ``_RenderedStr`` recording how it resolved."""
+    """Recursively resolve ``${VAR}`` / Cursor ``${env:VAR}`` placeholders and context vars, plus
+    ``${latest:<glob>}`` — the newest existing path matching the glob, resolved at render time
+    (per connection, since connect re-renders) so version-keyed install dirs never go stale
+    (#153351). Env refs resolve from the active profile's secret scope when multiplexing (the
+    routed profile's value, not another profile's in ``os.environ``). Unset (or empty) vars keep
+    the literal placeholder; a templated string comes back as a ``_RenderedStr`` recording how it
+    resolved."""
     from agent.secret_scope import get_secret as _get_secret
     if isinstance(value, str):
         if isinstance(value, _RenderedStr) and not value.missed:
@@ -581,9 +627,30 @@ def _interpolate_env_vars(value):
         missed = []
 
         def _replace(m):
-            resolver = _CONTEXT_VAR_RESOLVERS.get(m.group(1).strip())
+            ref = m.group(1).strip()
+            resolver = _CONTEXT_VAR_RESOLVERS.get(ref)
             if resolver is not None:
                 return resolver()
+            if ref.startswith(_LATEST_REF_PREFIX):
+                pattern = ref[len(_LATEST_REF_PREFIX):]
+                resolved = _resolve_latest_pattern(pattern)
+                if resolved:
+                    return resolved
+                # Keep the literal placeholder (spawn fails loudly) but name the pattern
+                # once, so a stale entry is diagnosable instead of silently vanishing
+                # from the toolset (#153351). Unresolved refs are retried on every
+                # connect-time re-render, so an install that lands later recovers.
+                if pattern not in _latest_misses_warned:
+                    _latest_misses_warned.add(pattern)
+                    logger.warning(
+                        "MCP server config: ${latest:%s} matched no existing path — keeping the "
+                        "literal placeholder; this server will fail to spawn until the pattern "
+                        "matches. SECURITY NOTE: when it does match, ${latest:...} spawns whatever "
+                        "version the plugin/cache ecosystem last installed, unsigned — the same "
+                        "auto-update-to-newest pattern as #152774 finding 1, one hop downstream.",
+                        pattern)
+                missed.append(m.group(0))
+                return m.group(0)
             resolved = _get_secret(_env_ref_name(m.group(1)), None)
             if not resolved:
                 missed.append(m.group(0))

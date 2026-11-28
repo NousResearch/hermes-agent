@@ -48,7 +48,10 @@ def _expand_tilde(path: str, task_id: str = "default") -> str:
     except Exception:
         home = None
     if home and (path == "~" or path.startswith("~/")):
-        return home if path == "~" else os.path.join(home, path[2:])
+        if path == "~":
+            return home
+        # "~//scratch"[2:] is absolute; join() would drop the profile home (#53432).
+        return os.path.join(home, path[2:].lstrip("/"))
     return os.path.expanduser(path)
 
 

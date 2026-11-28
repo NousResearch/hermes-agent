@@ -358,7 +358,9 @@ def _apply_model_switch(
             "base_url": result.base_url, "api_key": result.api_key, "api_mode": result.api_mode}
     if persist_global:
         from hermes_cli.model_switch import persist_model_selection
-        persist_model_selection(result)
+        refusal = persist_model_selection(result)
+        if refusal:
+            result.warning_message = f"{result.warning_message} | {refusal}" if result.warning_message else refusal
     if reasoning_effort:
         _apply_switch_reasoning(sid, session, agent, reasoning_effort, persist_global=persist_global, one_turn=one_turn)
     if count_switch:

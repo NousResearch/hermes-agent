@@ -387,8 +387,12 @@ def _commit_model_switch(
                                       one_turn=one_turn)
     if persist_global:
         from hermes_cli.model_switch import persist_model_selection
-        persist_model_selection(result)
-        _cprint(f"    {t('cli.model.saved_global' if picker else 'cli.model.saved')}")
+        refusal = persist_model_selection(result)
+        if refusal:
+            result.warning_message = f"{result.warning_message} | {refusal}" if result.warning_message else refusal
+            _cprint(f"    ⚠ {refusal}")
+        else:
+            _cprint(f"    {t('cli.model.saved_global' if picker else 'cli.model.saved')}")
     elif one_turn:
         _cprint(f"    {t('cli.model.next_turn_only')}")
     else:

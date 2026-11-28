@@ -950,7 +950,22 @@ def _denormalize_config_from_web(config: dict[str, Any]) -> dict[str, Any]:
             prev_provider = str(disk_model.get("provider") or "").strip()
             if model_val != prev_default and prev_provider:
                 new_provider, resolved_model = _infer_provider_on_model_change(model_val, prev_provider)
-                if new_provider and new_provider.strip().lower() != prev_provider.lower():
+                from hermes_cli.models import normalize_provider
+                if new_provider and normalize_provider(new_provider) != normalize_provider(prev_provider):
+                    from hermes_cli.model_switch import (
+                        inferred_provider_persist_refusal, raw_input_names_detected_provider)
+                    named = raw_input_names_detected_provider(
+                        str(model_val), new_provider,
+                        user_providers=disk_cfg.get("providers"),
+                        custom_providers=disk_cfg.get("custom_providers"))
+                    if not named:
+                        refusal = inferred_provider_persist_refusal(
+                            new_provider,
+                            "Pick the provider together with the model on the Models page "
+                            "(or in the chat model picker), or set model.provider explicitly "
+                            "first, then save.")
+                        if refusal:
+                            raise HTTPException(status_code=400, detail=refusal)
                     from hermes_cli.model_assignment import apply_main_model_assignment, normalize_main_model_assignment
                     norm_provider, norm_model = normalize_main_model_assignment(new_provider, resolved_model)
                     result = _validated_main_model_selection(disk_cfg, norm_provider, norm_model)

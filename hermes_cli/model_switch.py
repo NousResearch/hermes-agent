@@ -452,6 +452,7 @@ class ModelSwitchResult:
     new_model: str = ""
     target_provider: str = ""
     provider_changed: bool = False
+    provider_inferred: bool = False  # target_provider came from the model NAME, not from the user
     api_key: str = ""
     base_url: str = ""
     api_mode: str = ""
@@ -1229,6 +1230,11 @@ class _Switch:
     new_model: str = ""
     target_provider: str = ""
     resolved_alias: str = ""
+    # Inference provenance from routing step e — detection fired and the raw input never
+    # named the provider (same-provider detections included; the persist gate separately
+    # compares the target against the DISK provider). Never set by a user-named route.
+    # See :func:`inferred_provider_persist_refusal`.
+    provider_inferred: bool = False
     alias_endpoint_applied: bool = False
     provider_label: str = ""
     api_key: str = ""
@@ -1358,6 +1364,44 @@ def _names_known_provider(name: str, st: _Switch) -> bool:
         return False
 
 
+def raw_input_names_detected_provider(
+    raw_input: str, detected_provider: str,
+    user_providers: dict | None = None, custom_providers: list | None = None) -> bool:
+    """Whether the RAW model input itself names ``detected_provider`` — the difference
+    between "the user chose this provider" and "the model name chose it" for the persist
+    gates (#115079 review): ``/model alibaba`` exits ``detect_provider_for_model``
+    through its NAMING branch (``_PROVIDER_ALIASES`` / vendor-prefix rungs), so the
+    provider DIFF alone must not be read as an inference. Shared by the CLI step-e
+    provenance and the dashboard's flat-Model-field gate — the same documented
+    ``provider/model`` input form reaches both surfaces, and gating it on the web side
+    answered an explicitly-named provider with the factually false "never selected by
+    you" 400. ``user_providers`` / ``custom_providers`` feed the configured-provider
+    rung and may be ``None`` (the built-in rungs still work)."""
+    detected = str(detected_provider or "").strip().lower()
+    detected_norm = normalize_provider(detected)
+    first_token = str(raw_input or "").strip().lower().split("/", 1)[0].split(":", 1)[0].strip()
+    if not detected or not first_token:
+        return False
+    if normalize_provider(first_token) == detected_norm:
+        return True
+    from hermes_cli.models import _PROVIDER_ALIASES as _CATALOG_PROVIDER_ALIASES
+    catalog_hop = _CATALOG_PROVIDER_ALIASES.get(first_token, first_token)
+    if normalize_provider(catalog_hop) == detected_norm:
+        return True
+    try:
+        pdef = resolve_provider_full(
+            first_token, user_providers, custom_providers, allow_network=False)
+    except Exception:
+        return False
+    return pdef is not None and normalize_provider(str(pdef.id).strip().lower()) == detected_norm
+
+
+def _raw_input_names_detected_provider(raw_input: str, detected_provider: str, st: _Switch) -> bool:
+    """``_Switch``-bound view of :func:`raw_input_names_detected_provider`."""
+    return raw_input_names_detected_provider(
+        raw_input, detected_provider, st.user_providers, st.custom_providers)
+
+
 def _route_configured_provider(st: _Switch) -> Optional[ModelSwitchResult] | bool:
     """Step d.5: a model declared in user/custom provider config routes there BEFORE
     detect_provider_for_model() guesses from static catalogs and before a soft-accepting current
@@ -1452,6 +1496,8 @@ def _route_from_model_input(st: _Switch) -> Optional[ModelSwitchResult]:
         detected = detect_provider_for_model(st.new_model, current_provider)
         if detected:
             st.target_provider, st.new_model = detected
+            st.provider_inferred = not _raw_input_names_detected_provider(
+                st.raw_input, detected[0], st)
     return None
 
 
@@ -1794,7 +1840,8 @@ def _build_switch_result(st: _Switch) -> ModelSwitchResult:
         request_overrides = None
     return ModelSwitchResult(
         success=True, new_model=st.new_model, target_provider=st.target_provider,
-        provider_changed=st.provider_changed, api_key=st.api_key, base_url=st.base_url, api_mode=st.api_mode,
+        provider_changed=st.provider_changed, provider_inferred=st.provider_inferred,
+        api_key=st.api_key, base_url=st.base_url, api_mode=st.api_mode,
         request_overrides=dict(request_overrides or {}), warning_message=" | ".join(warnings) if warnings else "",
         usage_notice=usage_notice, provider_label=st.provider_label, resolved_via_alias=st.resolved_alias, capabilities=capabilities,
         runtime_capabilities={
@@ -1920,9 +1967,87 @@ def remote_model_selection_guard(before: Any, after: Any) -> None:
 _MISSING = object()
 
 
-def persist_model_selection(result: ModelSwitchResult, config_path: Any = None) -> None:
+def inferred_provider_persist_refusal(
+    target_provider: str, confirm_hint: str, config_path: Any = None,
+    disk_read: Optional[tuple[str, Any]] = None) -> Optional[str]:
+    """Authorization gate for persisting ``model.provider=<target>`` into config.yaml when the
+    provider was INFERRED from a bare model name rather than named by the user (#115079).
+
+    Authorized: (i) auth-store ``active_provider`` (canonical match), or (ii) fresh install
+    (raw config file absent or has neither ``model.default`` nor ``model.provider``).
+    Everything else refuses (fail closed on unreadable existing config); session switch stays active."""
+    try:
+        from hermes_cli.auth import get_active_provider
+        active = (get_active_provider() or "").strip().lower()
+    except Exception:
+        active = ""
+    if active and normalize_provider(active) == normalize_provider(str(target_provider or "").strip()):
+        return None
+    from pathlib import Path
+    from hermes_cli.config import get_config_path
+    path = Path(config_path) if config_path else get_config_path()
+    if disk_read is None:
+        disk_read = _gate_read_raw_model_block(path)
+    status, model_cfg = disk_read
+    if status == "absent":
+        return None
+    if status == "error":
+        return _inferred_provider_refusal_message(target_provider, confirm_hint)
+    if isinstance(model_cfg, dict):
+        if not (model_cfg.get("default") or model_cfg.get("provider")):
+            return None
+    elif not model_cfg:
+        return None
+    return _inferred_provider_refusal_message(target_provider, confirm_hint)
+
+
+def _gate_read_raw_model_block(path) -> tuple[str, Any]:
+    try:
+        return "ok", _raw_config_model_block_for_gate(path)
+    except FileNotFoundError:
+        return "absent", None
+    except Exception as exc:
+        return "error", exc
+
+
+def _persist_moves_provider(disk_read: tuple[str, Any], target_provider: str) -> bool:
+    status, block = disk_read
+    if status != "ok" or not isinstance(block, dict):
+        return True
+    disk_provider = str(block.get("provider") or "").strip()
+    if not disk_provider:
+        return True
+    return normalize_provider(disk_provider) != normalize_provider(str(target_provider or "").strip())
+
+
+def _raw_config_model_block_for_gate(path):
+    from hermes_cli.config import fast_safe_load
+    with open(path, encoding="utf-8") as f:
+        data = fast_safe_load(f)
+    if data is not None and not isinstance(data, dict):
+        raise TypeError(f"top-level YAML must be a mapping, got {type(data).__name__}")
+    return (data or {}).get("model")
+
+
+def _inferred_provider_refusal_message(target_provider: str, confirm_hint: str) -> str:
+    confirm_hint = str(confirm_hint or "").strip()
+    return (
+        f"Provider '{target_provider}' was inferred from the model name, never selected by you, "
+        f"so it was NOT saved to config.yaml — the switch applies to this session only. "
+        f"{confirm_hint}")
+
+
+_INFERRED_PERSIST_CONFIRM_HINT = (
+    "To save this route, name the provider: /model <model> --provider <slug> --global, "
+    "or pick provider and model together in `hermes model`.")
+
+
+def persist_model_selection(result: ModelSwitchResult, config_path: Any = None) -> Optional[str]:
     """Write a successful :func:`switch_model` result to ``config_path`` (default:
     ``HERMES_HOME/config.yaml`` — the context override or ``HERMES_HOME`` at call time).
+
+    Returns ``None`` once persisted (or with nothing to do), else a user-facing refusal
+    message: an INFERRED provider route (#115079) is not authorized to persist.
 
     Build the complete selection from one raw snapshot, preserving sibling settings and secret
     references, then publish once. Per-key publication can leave a mixed route after a failed
@@ -1938,6 +2063,13 @@ def persist_model_selection(result: ModelSwitchResult, config_path: Any = None) 
     from hermes_cli.config import _CONFIG_LOCK, atomic_config_replace, get_config_path, read_user_config_raw
     from hermes_cli.config_backend import supports_file_tooling, write_config_keys
     path = Path(config_path) if config_path else get_config_path()
+    disk_read = _gate_read_raw_model_block(path) if getattr(result, "provider_inferred", False) else None
+    if disk_read is not None and _persist_moves_provider(disk_read, result.target_provider):
+        refusal = inferred_provider_persist_refusal(
+            result.target_provider, _INFERRED_PERSIST_CONFIRM_HINT,
+            config_path=path, disk_read=disk_read)
+        if refusal:
+            return refusal
     planned_from = read_user_config_raw(path).get("model")
     updates = model_selection_config_updates(result, planned_from)
     if not supports_file_tooling():

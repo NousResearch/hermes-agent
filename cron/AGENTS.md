@@ -90,6 +90,12 @@ Hardening invariants — each guards a real failure; don't weaken without answer
   fail-closed instead of that profile's live adapters. The gate compares the liveness PID against
   `os.getpid()` — this process holds the launch `gateway.pid` AND publishes every served profile
   in `served_profiles`, so a bare liveness answer would stand cron down host-wide.
+- **A secondary profile borrows the routed primary per platform.** The tick and the restart-safe
+  drain both build the map through `scheduler_preflight.cron_delivery_adapters`: a platform the
+  profile owns a bot on (live or dropped, `_profile_bot_platforms`) is served by its own adapter
+  alone, every other platform rides the primary only for targets a route maps here — the same
+  boundary as `_is_shared_bot_satellite(profile, platform)`. Deciding from "owns any bot" left a
+  profile with e.g. its own Home Assistant adapter unable to post cron output to its routed chat.
 - **The restart-safe external worker boots itself.** `_launch_external_cron_worker` pins the
   checkout — and, on a PM install, the committed generation's `site-packages` — on the child's
   `PYTHONPATH` and marks it `_HERMES_CRON_WORKER_BOOT`; the child's package entry

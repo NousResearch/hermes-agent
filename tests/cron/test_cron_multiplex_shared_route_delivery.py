@@ -281,3 +281,135 @@ def test_satellite_cron_job_reaches_its_telegram_dm_through_the_primary_bot(tmp_
             assert primary.sent == ([chat] if delivered else [])
     finally:
         reset_hermes_home_override(token)
+
+
+def _tick_adapters(sat_home, primary, own, owned):
+    """Run one multiplex tick for profile ``sat`` and return the adapter map it was handed."""
+    import threading
+
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    captured = {}
+    stop = threading.Event()
+
+    def _tick_and_stop(*_args, **kwargs):
+        captured["adapters"] = kwargs["adapters"]
+        stop.set()
+
+    provider = InProcessCronScheduler()
+    with patch("cron.scheduler.tick", side_effect=_tick_and_stop):
+        thread = threading.Thread(
+            target=provider.start,
+            args=(stop,),
+            kwargs={
+                "interval": 0,
+                "profile_homes": [("sat", sat_home)],
+                "adapters": {Platform.DISCORD: primary},
+                "profile_adapters": {"sat": own},
+                "profile_bot_platforms": {"sat": owned},
+                "default_profile": "default",
+            },
+            daemon=True,
+        )
+        thread.start()
+        thread.join(timeout=10)
+        stop.set()
+        thread.join(timeout=10)
+    assert not thread.is_alive()
+    return captured["adapters"]
+
+
+def _sat_root(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    sat_home = root / "profiles" / "sat"
+    (sat_home / "cron").mkdir(parents=True)
+    (root / "config.yaml").write_text(yaml.safe_dump({
+        "gateway": {"multiplex_profiles": True, "profile_routes": [
+            {"platform": "discord", "guild_id": "G1", "chat_id": "C1", "profile": "sat"}]},
+    }), encoding="utf-8")
+    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
+    return sat_home
+
+
+def test_multiplex_tick_lends_routed_platform_to_profile_with_own_bot_on_another_platform(
+    tmp_path, monkeypatch,
+):
+    """A profile with a bot of its own on one platform (here Slack) and a primary route on another
+    (Discord) must still ride the routed primary on Discord. Before, any own credential made the tick
+    hand it only its own map, so its cron output to the routed channel failed with
+    ``platform 'discord' not configured/enabled`` (the #139825 sibling for a real bot, not LOCAL)."""
+    from cron.scheduler_preflight import SharedRouteAdapters
+
+    sat_home = _sat_root(tmp_path, monkeypatch)
+    primary, own_slack = _primary_adapter(), object()
+    adapters = _tick_adapters(sat_home, primary, {Platform.SLACK: own_slack}, {Platform.SLACK})
+
+    assert isinstance(adapters, SharedRouteAdapters)
+    assert adapters.get(Platform.DISCORD, {"chat_id": "C1"}) is primary
+    assert adapters.get(Platform.DISCORD, {"chat_id": "unmapped"}) is None
+    # Its own platform stays its own bot, with or without a target.
+    assert adapters.get(Platform.SLACK, {"chat_id": "S1"}) is own_slack
+    assert adapters.get(Platform.SLACK) is own_slack
+
+
+def test_profile_owning_a_dropped_bot_on_the_routed_platform_never_borrows_the_primary(
+    tmp_path, monkeypatch,
+):
+    """Its own Discord bot is down (owned, not in the live map): the routed Discord target must NOT
+    go out through the primary bot meanwhile (wrong identity) — a miss, as before."""
+    sat_home = _sat_root(tmp_path, monkeypatch)
+    primary, own_slack = _primary_adapter(), object()
+    adapters = _tick_adapters(
+        sat_home, primary, {Platform.SLACK: own_slack}, {Platform.SLACK, Platform.DISCORD})
+
+    assert adapters.get(Platform.DISCORD, {"chat_id": "C1"}) is None
+    assert adapters.get(Platform.SLACK, {"chat_id": "S1"}) is own_slack
+
+
+def test_profile_with_own_bot_and_no_route_here_keeps_its_own_map(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    sat_home = root / "profiles" / "sat"
+    (sat_home / "cron").mkdir(parents=True)
+    (root / "config.yaml").write_text(yaml.safe_dump({"gateway": {"multiplex_profiles": True}}), encoding="utf-8")
+    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
+    own = {Platform.SLACK: object()}
+
+    assert _tick_adapters(sat_home, _primary_adapter(), own, {Platform.SLACK}) is own
+
+
+def test_routed_target_of_profile_with_own_bot_delivers_through_primary(tmp_path, monkeypatch):
+    sat_home = _sat_root(tmp_path, monkeypatch)
+    primary, own_slack = _primary_adapter(), _primary_adapter()
+    token = set_hermes_home_override(str(sat_home))
+    try:
+        routes = _primary_profile_routes_for_current_home()
+        view = SharedRouteAdapters({Platform.DISCORD: primary}, routes,
+                                   own_adapters={Platform.SLACK: own_slack}, owned={Platform.SLACK})
+        error, standalone = _run({"id": "j1", "name": "brief", "deliver": "discord:C1"}, view)
+    finally:
+        reset_hermes_home_override(token)
+    assert error is None, error
+    assert primary.sent == ["C1"] and own_slack.sent == [] and standalone == []
+
+
+def test_own_platform_target_resolves_through_own_adapter_and_config():
+    from cron.scheduler_delivery import _resolve_target_transport
+
+    primary, own_slack = object(), object()
+    config = MagicMock()
+    config.platforms = {Platform.SLACK: PlatformConfig(enabled=True)}
+    view = SharedRouteAdapters({Platform.DISCORD: primary, Platform.SLACK: primary}, [],
+                               dispatch_routes=[], own_adapters={Platform.SLACK: own_slack},
+                               owned={Platform.SLACK})
+    resolved, error = _resolve_target_transport(
+        {"id": "j1"}, Platform.SLACK, "slack", {"chat_id": "S1"}, view, config)
+    assert error is None, error
+    _transport, _pconfig, runtime_adapter, target_adapters = resolved
+    assert runtime_adapter is own_slack and target_adapters == {Platform.SLACK: own_slack}
+
+    # Owned but dropped: fails closed, never the primary's Slack bot.
+    dropped = SharedRouteAdapters({Platform.SLACK: primary}, [], dispatch_routes=[],
+                                  own_adapters={}, owned={Platform.SLACK})
+    resolved, error = _resolve_target_transport(
+        {"id": "j1"}, Platform.SLACK, "slack", {"chat_id": "S1"}, dropped, config)
+    assert resolved is None or resolved[2] is not primary

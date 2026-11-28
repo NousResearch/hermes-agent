@@ -524,6 +524,30 @@ class TestChatCompletionsKimi:
         assert "type" not in kw["tools"][0]["function"]["parameters"]["properties"]["q"]
 
 
+class TestChatCompletionsOpenAI:
+    """OpenAI models read JSON-Schema nullability, not the sanitizer's ``nullable`` hint."""
+
+    def test_outgoing_kanban_create_offers_null_for_every_optional_field(self, transport):
+        """OpenAI models fill every optional field unless the schema offers null; kanban_create
+        received ``max_runtime_seconds: 0`` and the dispatcher killed the card (#38366). Assert
+        the wire-level schema, after the global sanitizer, still offers null."""
+        from tools.kanban_tools_schemas import KANBAN_CREATE_SCHEMA
+        from tools.schema_sanitizer import sanitize_tool_schemas
+
+        tools = sanitize_tool_schemas([{"type": "function", "function": KANBAN_CREATE_SCHEMA}])
+        kw = transport.build_kwargs(
+            model="openai/gpt-6-luna",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=tools,
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        params = kw["tools"][0]["function"]["parameters"]
+        optional = set(params["properties"]) - set(params["required"])
+        assert optional
+        for name in optional:
+            assert "null" in params["properties"][name]["type"], name
+
+
 class TestChatCompletionsLmStudioReasoning:
     """LM Studio publishes per-model reasoning ``allowed_options``. When the
     user requests an effort the model can't honor (e.g. ``high`` on a

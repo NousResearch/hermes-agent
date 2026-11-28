@@ -1154,21 +1154,23 @@ def _session_db():
         handles.close()
 
 
-def _latest_session_id(use_tui: bool) -> Optional[str]:
+def _latest_session_id(use_tui: bool, skip: frozenset = frozenset()) -> Optional[str]:
     """MRU session for the active interface; a TUI launch falls back to the CLI MRU."""
-    last_id = _resolve_last_session(source="tui" if use_tui else "cli")
+    last_id = _resolve_last_session(source="tui" if use_tui else "cli", skip=skip)
     if not last_id and use_tui:
-        last_id = _resolve_last_session(source="cli")
+        last_id = _resolve_last_session(source="cli", skip=skip)
     return last_id
 
 
-def _resolve_last_session(source: str = "cli") -> Optional[str]:
+def _resolve_last_session(source: str = "cli", skip: frozenset = frozenset()) -> Optional[str]:
     """Look up the most recently-used session ID for a source.
 
     Scoped to the current workspace first (git repo root, else cwd) so
     ``hermes -c`` from repo A continues repo A's last session rather than the
     global MRU. Falls back to the unscoped MRU when no session matches the
     current workspace, preserving the old behaviour for fresh directories.
+    ``skip`` ids (open in another live process) are passed over, never the workspace scope:
+    ``len(skip) + 1`` rows always reach the first free one when there is one.
     """
     # A finite `hermes -z`/`chat -q` run is CLI history too: `hermes -z … --resume latest` chains on it.
     if source == "cli":
@@ -1176,13 +1178,10 @@ def _resolve_last_session(source: str = "cli") -> Optional[str]:
         source = sorted(CLI_FAMILY_SOURCES)
     with _session_db() as db:
         ws_key = _resolve_workspace_key()
-        if ws_key:
-            sessions = db.search_sessions(source=source, limit=1, workspace_key=ws_key, skip_launch_stubs=True)
-            if sessions:
-                return sessions[0]["id"]
-        # Fallback: global MRU for this source.
-        sessions = db.search_sessions(source=source, limit=1, skip_launch_stubs=True)
-        return sessions[0]["id"] if sessions else None
+        for scope in ({"workspace_key": ws_key}, {}) if ws_key else ({},):
+            rows = db.search_sessions(source=source, limit=len(skip) + 1, skip_launch_stubs=True, **scope)
+            if rows:  # only a workspace with no sessions at all falls back to the global MRU
+                return next((r["id"] for r in rows if r["id"] not in skip), None)
     return None
 
 
@@ -1294,21 +1293,19 @@ def _resolve_continue_arg(args, *, use_tui: bool) -> None:
                 _crumb_id = resolve_breadcrumb_session()
             except Exception:
                 _crumb_id = None
-            if _crumb_id:
-                args.resume = _crumb_id
-            else:
-                # No valid breadcrumb — continue the most recent session
-                last_id = _latest_session_id(use_tui)
-                if last_id:
-                    args.resume = last_id
-                else:
-                    kind = "TUI" if use_tui else "CLI"
-                    print(
-                        f"No previous {kind} session to continue. Start a new one with "
-                        "`hermes`, or list sessions with `hermes sessions list`.",
-                        file=sys.stderr,
-                    )
-                    sys.exit(1)
+            # This terminal's crumb, else the newest chat; either only when no other process holds it.
+            from hermes_cli.main_resume_args import latest_free_session_id
+            last_id, all_busy = latest_free_session_id(use_tui, crumb=_crumb_id)
+            if last_id:
+                args.resume = last_id
+            elif not all_busy:
+                kind = "TUI" if use_tui else "CLI"
+                print(
+                    f"No previous {kind} session to continue. Start a new one with "
+                    "`hermes`, or list sessions with `hermes sessions list`.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
 
 
 def _resolve_chat_session_args(args, use_tui: bool) -> None:
@@ -1327,8 +1324,9 @@ def _resolve_chat_session_args(args, use_tui: bool) -> None:
     # session literally titled "latest" (still reachable by ID or `-c latest`).
     _resume_raw = getattr(args, "resume", None)
     if isinstance(_resume_raw, str) and _resume_raw.strip().lower() == "latest":
-        _last_id = _latest_session_id(use_tui)
-        if _last_id:
+        from hermes_cli.main_resume_args import latest_free_session_id
+        _last_id, _all_busy = latest_free_session_id(use_tui)
+        if _last_id or _all_busy:
             args.resume = _last_id
         else:
             kind = "TUI" if use_tui else "CLI"

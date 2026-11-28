@@ -103,3 +103,32 @@ def test_resolve_last_session_cli_continues_a_oneshot(monkeypatch, tmp_path):
     monkeypatch.setattr("hermes_cli.main.get_hermes_home", lambda: tmp_path)
     assert _resolve_last_session("cli") == "oneshot_run"
     assert _resolve_last_session("tui") == "tui_chat"
+
+
+def test_bare_continue_skips_sessions_open_in_another_process(monkeypatch, tmp_path):
+    """Bare `-c` / `--resume latest` resume the newest chat NO live process holds, and start a new
+    chat (never the refusal dead end) when every candidate is open elsewhere."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+
+    from hermes_cli.active_sessions import try_acquire_active_session
+    from hermes_cli.main_resume_args import latest_free_session_id as _latest_free_session_id
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_holder import raw_holder
+    from tests.fixtures.storage_seed import seed_session
+
+    with open_persistence(profile_scope(home=tmp_path)) as store:
+        seed_session(store, "older", "cli")
+        seed_session(store, "newer", "cli")
+        raw_holder(store)._execute_write(lambda conn: conn.executemany(
+            "UPDATE sessions SET started_at=?, message_count=1 WHERE id=?", ((100.0, "older"), (200.0, "newer")),
+        ))
+    monkeypatch.setattr("hermes_cli.main._resolve_workspace_key", lambda: None)
+    monkeypatch.setattr("hermes_cli.main.get_hermes_home", lambda: tmp_path)
+
+    assert _latest_free_session_id(False) == ("newer", False)
+    leases = [try_acquire_active_session(session_id="newer", surface="cli", config={}, registry_home=tmp_path)[0]]
+    assert _latest_free_session_id(False) == ("older", False)
+    leases.append(try_acquire_active_session(session_id="older", surface="cli", config={}, registry_home=tmp_path)[0])
+    assert all(leases)
+    assert _latest_free_session_id(False) == (None, True)

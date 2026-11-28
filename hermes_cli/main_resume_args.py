@@ -64,3 +64,20 @@ def recreate_resumed_tui_worktree(args) -> None:
     tree = restore(args.resume)
     if tree:
         print(f"↪ recreated the session's worktree: {tree}")
+
+
+def latest_free_session_id(use_tui: bool, crumb: str | None = None) -> tuple[str | None, bool]:
+    """Bare ``-c`` / ``--resume latest``: ``(this terminal's *crumb* or else the MRU session, whichever
+    no other live Hermes process holds; every candidate is open elsewhere)``. The second case starts a
+    new chat instead of dead-ending on the "open in another terminal" refusal."""
+    from hermes_cli.active_sessions import live_owned_session_ids
+    from hermes_cli.main import _latest_session_id
+    owned = live_owned_session_ids()
+    if crumb and crumb not in owned:
+        return crumb, False
+    last_id = _latest_session_id(use_tui, skip=owned)
+    all_busy = not last_id and bool(owned) and bool(_latest_session_id(use_tui))
+    if all_busy:
+        print("Your latest chat is open in another Hermes window/terminal; starting a new chat here.",
+              file=sys.stderr)
+    return last_id, all_busy

@@ -18,6 +18,45 @@ export interface QueueIfBusyInput {
   displayText?: string
 }
 
+export interface SubmitBusyGateInput {
+  /** Runtime session the submission was resolved against. */
+  sessionId: string
+  /** The payload came from the composer queue's own drain, not a fresh send. */
+  fromQueue?: boolean
+  /**
+   * Skip the busy gate: the caller has already decided this payload must be
+   * admitted as the next turn (a `/goal` kickoff, a skill dispatch). Without it
+   * the gate silently refuses the send and the caller believes it went out.
+   */
+  bypassBusyGate?: boolean
+}
+
+/**
+ * Whether the busy gate refuses this submission.
+ *
+ * The gate reads the TARGET session's busy state, not the foreground flag: an
+ * explicit target (a tile, a queue drain) is frequently not the session on
+ * screen, so the foreground flag would gate one session's send on another
+ * session's turn.
+ *
+ * `serverQueue` short-circuits it — when the server owns the composer queue the
+ * payload is admitted there instead of being refused.
+ *
+ * `options` is read structurally, so any wider submit-options type satisfies it.
+ */
+export function refusedByBusyGate(
+  options: Pick<SubmitBusyGateInput, 'bypassBusyGate' | 'fromQueue'> | undefined,
+  serverQueue: boolean,
+  guardSessionId: string | null | undefined,
+  foregroundBusy = false
+): boolean {
+  if (serverQueue || options?.fromQueue || options?.bypassBusyGate) {
+    return false
+  }
+
+  return isTargetSessionBusy($sessionStates.get(), guardSessionId ?? null, foregroundBusy)
+}
+
 /**
  * When the target session is mid-turn, park a backend-produced kickoff on the
  * composer queue instead of dropping it. The backend has ALREADY executed the

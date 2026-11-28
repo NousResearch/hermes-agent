@@ -62,6 +62,7 @@ import { ComposerControls } from './controls'
 import { ComposerDirectiveActions } from './directive-actions'
 import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from './drop-affordance'
 import { markActiveComposer, onComposerAttachImagesRequest } from './focus'
+import { usePastedTextAttach } from './hooks/use-pasted-text-attach'
 import { HelpHint } from './help-hint'
 import { useAtCompletions } from './hooks/use-at-completions'
 import { useCardWaitingSubmit } from './hooks/use-card-waiting-submit'
@@ -366,6 +367,7 @@ export function ChatBar({
       }
     })
   }, [onAttachImageBlob, scope.target])
+  usePastedTextAttach({ onAttachPastedText, onAttached: () => triggerHaptic('selection'), target: scope.target })
 
   // Prior history belongs to the draft that just left — undoing into another
   // conversation's text is worse than having none.

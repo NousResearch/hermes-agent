@@ -582,7 +582,11 @@ def test_busy_submit_claims_attached_image_for_queued_turn(monkeypatch):
 
     assert response["result"]["status"] == "queued"
     assert redirected == []
-    assert not interrupted.wait(0.1)
+    # Policy: messages are never queued. A media payload cannot ride a steer or a
+    # redirect, so under `interrupt` the live turn is ended too and the admitted
+    # payload runs as soon as the turn settles — instead of waiting for the
+    # whole turn to finish.
+    assert interrupted.wait(0.1)
     assert session["attached_images"] == []
     assert _visible(session["queued_prompt"]) == {
         "text": "is this B?",

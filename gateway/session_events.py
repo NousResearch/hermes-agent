@@ -10,6 +10,26 @@ from tui_gateway import event_replay
 from tui_gateway.transport import FanoutTransport
 
 
+def _copy_payload(payload, session_id, event_type):
+    """``deepcopy`` a payload, but never at the cost of the frame carrying it.
+
+    The copy isolates subscribers from a publisher that mutates its payload afterwards. A payload
+    the copy protocol cannot rebuild used to raise here instead — a ``str`` subclass whose
+    ``__new__`` needs a second argument is rebuilt by ``copyreg.__newobj__`` as
+    ``cls.__new__(cls, value)`` — and with no guard around it ``message.complete`` was never
+    published: the turn settled server-side while the viewer kept rendering its last tool call as
+    still running. Sharing the original object is worse than a copy and far better than a
+    completion no viewer ever receives, so the frame goes out either way.
+    """
+    try:
+        return deepcopy(payload)
+    except Exception:
+        logging.getLogger(__name__).warning(
+            'Session event payload for %s (%s) was not copyable; publishing the original object',
+            session_id, event_type, exc_info=True)
+        return payload
+
+
 class SessionEvents:
     def __init__(self):
         self.lock = threading.RLock()
@@ -78,7 +98,7 @@ class SessionEvents:
             self.watermark()
             frame = {'jsonrpc': '2.0', 'method': 'event', 'params': {
                 **(self.execution if execution is None else execution), 'type': event_type, 'session_id': self._key,
-                'payload': deepcopy(payload), 'replay_epoch': self.epoch}}
+                'payload': _copy_payload(payload, session_id, event_type), 'replay_epoch': self.epoch}}
             event_replay._stamp_event(frame)
             if frame['params']['seq'] <= self.sequence:
                 # Another publisher may evict us after watermark's lookup.

@@ -464,6 +464,8 @@ _PROMPT_INJECTION_GUARDRAIL_PATTERNS = ("prompt injection patterns detected",)
 _AUTH_PATTERNS = (
     "invalid api key", "invalid_api_key", "gateway_auth_failed", "authentication", "unauthorized",
     "error code: 401", "forbidden", "invalid token", "token expired", "token revoked", "access denied",
+    # Anthropic-compatible HTTP-200 SSE errors can carry only this auth diagnostic.
+    "access token has been revoked",
     # Codex backend rejecting an OAuth access token without a usable
     # ``chatgpt_account_id`` claim; arrives as a bare ``detail`` string.
     "failed to extract accountid from token",

@@ -170,23 +170,19 @@ function wordRangeAt(selected: Range): Range | null {
  *  the main input or the message-edit composer, both marked by the rich
  *  input slot. Any other editable (settings fields, API keys, dialogs)
  *  resolves to null and contributes nothing. */
-export function captureComposerMenuTarget(editable: HTMLElement | null): ComposerMenuTarget | null {
+export function captureComposerMenuTarget(
+  editable: HTMLElement | null,
+  selected: Range | null
+): ComposerMenuTarget | null {
   if (!editable || editable.dataset.slot !== RICH_INPUT_SLOT) {
     return null
   }
 
-  const selection = window.getSelection()
-  const selected = selection?.rangeCount ? selection.getRangeAt(0) : null
-
-  const inside = Boolean(
-    selected && editable.contains(selected.startContainer) && editable.contains(selected.endContainer)
-  )
-
-  const wordRange = inside && selected ? wordRangeAt(selected) : null
+  const wordRange = selected ? wordRangeAt(selected) : null
 
   return {
     context: Object.freeze({
-      selection: inside && selected ? selected.toString().slice(0, SELECTION_MAX) : '',
+      selection: selected?.toString().slice(0, SELECTION_MAX) ?? '',
       word: wordRange ? wordRange.toString() : null
     }),
     editor: editable,

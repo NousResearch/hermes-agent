@@ -220,8 +220,8 @@ function composerItemSections(sections: ComposerMenuRow[][], afterClose: (run: (
   )
 }
 
-function hasCuttableSelection(formField: HTMLInputElement | HTMLTextAreaElement | null, selectionText: string) {
-  return formField ? (formField.selectionStart ?? 0) !== (formField.selectionEnd ?? 0) : selectionText.length > 0
+function hasCuttableSelection(formField: HTMLInputElement | HTMLTextAreaElement | null, range: Range | null) {
+  return formField ? (formField.selectionStart ?? 0) !== (formField.selectionEnd ?? 0) : range?.collapsed === false
 }
 
 function copyDomImage(imageUrl: string) {
@@ -314,13 +314,31 @@ function domSections(
 
     closeContextMenu()
     requestAnimationFrame(() => {
-      editable?.focus()
+      if (!editable?.isConnected) {
+        return
+      }
+
+      editable.focus()
       action()
     })
   }
 
   const editableCommand = (command: 'copy' | 'cut' | 'paste') => {
-    withEditableFocus(() => void window.hermesDesktop?.contextMenuEdit?.(command))
+    withEditableFocus(() => {
+      const range = target.editableRange
+
+      if (range) {
+        if (!target.editable?.contains(range.commonAncestorContainer)) {
+          return
+        }
+
+        const selection = target.editable.ownerDocument.getSelection()
+        selection?.removeAllRanges()
+        selection?.addRange(range)
+      }
+
+      void window.hermesDesktop?.contextMenuEdit?.(command)
+    })
   }
 
   // Select all runs entirely in the renderer, scoped to the editable itself.
@@ -439,7 +457,7 @@ function domSections(
 
     const hasFieldText = fieldText.length > 0
 
-    const canCutCopy = hasCuttableSelection(formField, target.selectionText)
+    const canCutCopy = hasCuttableSelection(formField, target.editableRange)
 
     const editVerbs = [
       <Item

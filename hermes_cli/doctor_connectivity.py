@@ -226,6 +226,19 @@ def _model_cfg() -> dict:
     return model_cfg if isinstance(model_cfg, dict) else {}
 
 
+def bedrock_is_configured_provider() -> bool:
+    """True when Bedrock (or an alias) is ``model.provider`` or an entry of the fallback chain. The doctor then
+    keeps boto3's EC2 metadata lookup: on an instance-role host that is where the Bedrock credential comes from
+    (#153434), and the Bedrock probe runs whether Bedrock is the primary or only a fallback."""
+    from hermes_cli.config import load_config_readonly
+    from hermes_cli.fallback_config import get_fallback_chain
+    from hermes_cli.providers import normalize_provider
+    config = load_config_readonly() or {}
+    model_cfg = config.get("model") if isinstance(config.get("model"), dict) else {}
+    providers = [str(model_cfg.get("provider") or "").strip(), *(e["provider"] for e in get_fallback_chain(config))]
+    return any(normalize_provider(p) == "bedrock" for p in providers if p)
+
+
 def _apikey_request(key: str, base_env, default_url) -> tuple:
     """(effective base, models URL, headers) for a generic Bearer-auth probe, with the per-vendor rewrites."""
     base = os.getenv(base_env, "") if base_env else ""

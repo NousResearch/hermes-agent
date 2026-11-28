@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChatBarState } from '@/app/chat/composer/types'
 import { I18nProvider } from '@/i18n'
+import { $touchPointer } from '@/lib/touch-interaction'
 import { $hudMode } from '@/store/hud'
 import { applyWakeStartResult, applyWakeStatus, resetWakeWordState } from '@/store/wake-word'
 
@@ -138,6 +139,33 @@ describe('narrow tiles', () => {
     renderControls({ busy: true, busyAction: 'stop', foldVoice: true, hasComposerPayload: false, minimal: true })
 
     expect(screen.getByLabelText('Stop')).toBeTruthy()
+  })
+})
+
+// A touch screen has no hover to fan the toggles out, and a tap on the fan's
+// hub is also the dictation toggle, so reaching spoken replies or the wake
+// word started recording (#154819). Touch gets the folded menu: its trigger
+// only opens the menu, and dictation is a row in it.
+describe('touch screens', () => {
+  afterEach(() => $touchPointer.set(false))
+
+  it('reaches the voice toggles without starting dictation', async () => {
+    $touchPointer.set(true)
+    const onDictate = vi.fn()
+    renderControls({ onDictate, state: { ...state, voice: { active: false, enabled: true } } })
+
+    expect(screen.queryByLabelText('Voice dictation')).toBeNull()
+
+    const trigger = screen.getByRole('button', { name: 'Voice' })
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+
+    expect(await screen.findByRole('menuitemcheckbox', { name: /read replies aloud/i })).toBeTruthy()
+    expect(onDictate).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Voice dictation' }))
+    expect(onDictate).toHaveBeenCalledTimes(1)
   })
 })
 

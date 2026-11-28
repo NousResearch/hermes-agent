@@ -1,0 +1,44 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+#
+# Schema version 1.
+manifest_version: 1
+
+name: tempguru
+description: "W-2 event staffing data across 300+ US/CA markets: plan staffing, live rates, compliance, and quote-form handoff."
+source: https://github.com/Tempguru-co/tempguru-mcp
+
+# TempGuru ships a public remote MCP server over Streamable HTTP with no
+# authentication and no API key. Nothing to install locally.
+#
+# The `?source=hermes` query tag is TempGuru's required source-attribution
+# for Hermes clients (see the event-staffing optional skills), so it is
+# baked into the catalog URL rather than left for the user to add.
+transport:
+  type: http
+  url: https://mcp.tempguru.co/mcp?source=hermes
+
+# No credentials, no OAuth. Public read-mostly data.
+auth:
+  type: none
+
+# Tool selection at install time:
+# 12 tools total. Ten are read-only (including the non-PII prepare_quote_form
+# handoff and get_quote_request_status); plan_staffing may save a 30-day
+# non-PII snapshot and save_staffing_plan is an explicit non-contact save.
+# None accept contact details or create a CRM lead, so there is no sensitive
+# surface to prune. Leave `default_enabled` unset so the checklist starts
+# with everything pre-checked.
+
+post_install: |
+  The TempGuru MCP server is public and needs no credentials; tools are live
+  on the next Hermes session.
+
+  For the workflow that uses these tools (gather requirements, plan, hand off
+  a buyer-operated quote form), install the companion skills:
+    hermes skills install official/productivity/event-staffing-ordering
+    hermes skills install official/productivity/event-staffing-compliance
+    # ...and the other six event-staffing skills in that directory.
+
+  You can re-run the tool checklist any time with:
+    hermes mcp configure tempguru

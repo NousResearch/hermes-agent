@@ -151,7 +151,7 @@ def bound_session_key() -> str:
 
 def source_route_metadata(source: Any, metadata: dict | None) -> dict | None:
     """Keep inbound route anchors for durable deliveries after the source is gone."""
-    anchors = {key: str(value) for key in ("scope_id", "parent_chat_id")
+    anchors = {key: str(value) for key in ("chat_type", "scope_id", "parent_chat_id")
                if (value := getattr(source, key, None))}
     return {**(metadata or {}), **anchors} if anchors else metadata
 

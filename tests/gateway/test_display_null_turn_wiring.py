@@ -13,11 +13,13 @@ import types
 import pytest
 
 from gateway.run_turn_runner import TurnRunner
+from gateway.display_config import resolve_source_display_setting
 
 
 def _wire(user_config, **runner_attrs):
     """Run `_wire_turn_agent_callbacks` over minimal fakes; return the agent."""
     agent = types.SimpleNamespace()
+    source = types.SimpleNamespace(platform="telegram", chat_type="group")
     ctx = types.SimpleNamespace(
         progress_callback=None,
         native_tool_start_callback=None,
@@ -33,7 +35,11 @@ def _wire(user_config, **runner_attrs):
         _status_adapter=None,
         session_key="",
         user_config=user_config,
-        source=types.SimpleNamespace(platform="telegram"),
+        platform_key="telegram",
+        resolve_display_setting=lambda config, platform_key, setting, fallback=None: (
+            resolve_source_display_setting(config, platform_key, source, setting, fallback)
+        ),
+        source=source,
         mute_notification_reply=False,
         _thinking_enabled=False,
         agent_holder=[None],
@@ -76,3 +82,15 @@ def test_owner_surface_is_recorded_apart_from_the_daybreak_switch():
     agent = _wire({}, _load_daybreak=lambda source: False, _daybreak_surface=lambda source: True)
     assert (agent.daybreak, agent.daybreak_surface) == (False, True)
     assert _wire({}).daybreak_surface is False
+
+
+def test_memory_notifications_chat_type_override_applies():
+    agent = _wire({
+        "display": {
+            "memory_notifications": "verbose",
+            "platforms": {
+                "telegram": {"chat_types": {"group": {"memory_notifications": "off"}}},
+            },
+        },
+    })
+    assert agent.memory_notifications == "off"

@@ -32,6 +32,23 @@ def _adapter(**desc_kw) -> RelayAdapter:
     return RelayAdapter(PlatformConfig(), make_desc(**desc_kw))
 
 
+def test_warning_policy_forwards_destination_metadata(monkeypatch):
+    from gateway.platforms.base import BasePlatformAdapter
+
+    seen = {}
+
+    def resolve(_self, logical_platform=None, *, chat_id=None, metadata=None):
+        seen.update(platform=logical_platform, chat_id=chat_id, metadata=metadata)
+        return False
+
+    monkeypatch.setattr(BasePlatformAdapter, "warning_notifications_enabled", resolve)
+    adapter = _adapter(platform="slack")
+    metadata = {"chat_type": "group", "_relay_logical_platform": "slack"}
+
+    assert adapter.warning_notifications_enabled(chat_id="C1", metadata=metadata) is False
+    assert seen == {"platform": "slack", "chat_id": "C1", "metadata": metadata}
+
+
 
 
 def test_advertises_descriptor_max_length():

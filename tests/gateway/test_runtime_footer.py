@@ -3,6 +3,7 @@ appended to final gateway replies."""
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 
 import pytest
 
@@ -91,6 +92,41 @@ def test_resolve_platform_override_wins():
     assert resolve_footer_config(user, "telegram")["enabled"] is True
     # Slack overrides to off
     assert resolve_footer_config(user, "slack")["enabled"] is False
+
+
+def test_resolve_platform_chat_type_override_wins():
+    source = SimpleNamespace(chat_type="group")
+    user = {
+        "display": {
+            "runtime_footer": {"enabled": True, "fields": ["model"]},
+            "chat_types": {"group": {"runtime_footer": {"fields": ["context_pct"]}}},
+            "platforms": {
+                "telegram": {
+                    "runtime_footer": {"enabled": True, "fields": ["cwd"]},
+                    "chat_types": {"group": {"runtime_footer": {"enabled": False}}},
+                },
+            },
+        },
+    }
+
+    resolved = resolve_footer_config(user, "telegram", source)
+    assert resolved == {"enabled": False, "fields": ["context_pct"]}
+
+
+def test_chat_type_null_enabled_inherits_broader_footer_state():
+    source = SimpleNamespace(chat_type="group")
+    user = {
+        "display": {
+            "runtime_footer": {"enabled": True},
+            "platforms": {
+                "telegram": {
+                    "chat_types": {"group": {"runtime_footer": {"enabled": None}}},
+                },
+            },
+        },
+    }
+
+    assert resolve_footer_config(user, "telegram", source)["enabled"] is True
 
 
 def test_resolve_platform_can_add_fields_only():

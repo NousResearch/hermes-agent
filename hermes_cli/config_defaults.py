@@ -937,10 +937,10 @@ DEFAULT_CONFIG = {
         # where deletion is supported (Telegram; others ignore). Agent responses are never touched.
         # 0 = disabled.
         "ephemeral_system_ttl": 0,
-        # Per-platform display/streaming overrides; unset keys fall through to the global. Telegram
-        # has smooth native draft streaming (on); Discord/Slack only edit-based streaming, which
-        # flickers (off). Gap-fillers only: explicit user values win, and the global
-        # streaming.enabled master switch still gates everything.
+        # Per-platform display/streaming overrides; nested chat_types entries are most-specific.
+        # Unset keys fall through to display.chat_types.<chat_type>, then platform, then global.
+        # Telegram has smooth native draft streaming (on); Discord/Slack edit-based streaming (off).
+        # Gap-fillers only: explicit values win, and streaming.enabled still gates everything.
         "platforms": {
             "telegram": {"streaming": True},
             "discord": {"streaming": False},

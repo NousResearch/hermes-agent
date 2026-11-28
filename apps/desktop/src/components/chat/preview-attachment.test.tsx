@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import type * as PreviewStore from '@/store/preview'
+import { $activeSessionId, $connection } from '@/store/session'
 
 // #101683 regression coverage: the delivered-file card must branch on the
 // target's LOCAL filesystem state — an existing directory opens natively with
@@ -11,10 +12,11 @@ import type * as PreviewStore from '@/store/preview'
 // re-downloading, a remote-backend file keeps the gateway-backed actions, and a
 // missing path reports instead of fabricating a preview tab.
 
-const { isDesktopFsRemoteMode, notifyError, openPreview } = vi.hoisted(() => ({
+const { isDesktopFsRemoteMode, notifyError, openPreview, sessionFileOwnerScope } = vi.hoisted(() => ({
   isDesktopFsRemoteMode: vi.fn(() => false),
   notifyError: vi.fn(),
-  openPreview: vi.fn()
+  openPreview: vi.fn(),
+  sessionFileOwnerScope: vi.fn()
 }))
 
 vi.mock('@/lib/desktop-fs', () => ({
@@ -22,6 +24,11 @@ vi.mock('@/lib/desktop-fs', () => ({
   readDesktopDir: vi.fn(),
   readDesktopFileDataUrl: vi.fn(),
   readDesktopFileText: vi.fn()
+}))
+
+vi.mock('@/api/client', async importOriginal => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  sessionFileOwnerScope
 }))
 
 vi.mock('@/store/notifications', () => ({ notifyError }))
@@ -152,5 +159,92 @@ describe('PreviewAttachment local target classification (#101683)', () => {
 
     expect(notifyError).toHaveBeenCalled()
     expect(openPreview).not.toHaveBeenCalled()
+  })
+})
+
+describe('PreviewAttachment download owner scope', () => {
+  const previousConnection = $connection.get()
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    isDesktopFsRemoteMode.mockReturnValue(true)
+  })
+
+  afterEach(() => {
+    cleanup()
+    window.hermesDesktop = previousDesktop
+    $activeSessionId.set(null)
+    $connection.set(previousConnection)
+  })
+
+  function mountSaveStub() {
+    const saveGatewayFile = vi.fn(async () => ({ saved: true }))
+
+    window.hermesDesktop = { saveGatewayFile } as never
+
+    return saveGatewayFile
+  }
+
+  async function clickDownload() {
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Download' }))
+    })
+  }
+
+  it('rides the owner profile and connection when the session belongs to another profile', async () => {
+    const saveGatewayFile = mountSaveStub()
+
+    sessionFileOwnerScope.mockReturnValue({ connectionId: 'gateway-1', profile: 'agent-profile' })
+    $activeSessionId.set('20261125_142659_000000')
+
+    render(<PreviewAttachment target="/srv/report.md" />)
+
+    await clickDownload()
+
+    expect(sessionFileOwnerScope).toHaveBeenCalledWith('20261125_142659_000000')
+    expect(saveGatewayFile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/srv/report.md',
+        connectionId: 'gateway-1',
+        profile: 'agent-profile',
+        sessionId: '20261125_142659_000000'
+      })
+    )
+  })
+
+  it('keeps a profile-only session owner on the window connection', async () => {
+    const saveGatewayFile = mountSaveStub()
+
+    $connection.set({ connectionId: 'window-gateway', mode: 'remote', profile: 'foreground-profile' } as never)
+    sessionFileOwnerScope.mockReturnValue({ profile: 'agent-profile' })
+    $activeSessionId.set('20261125_142659_000000')
+
+    render(<PreviewAttachment target="/srv/report.md" />)
+
+    await clickDownload()
+
+    expect(saveGatewayFile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        connectionId: 'window-gateway',
+        path: '/srv/report.md',
+        profile: 'agent-profile',
+        sessionId: '20261125_142659_000000'
+      })
+    )
+  })
+
+  it('names no session when the session owner profile is unknown', async () => {
+    const saveGatewayFile = mountSaveStub()
+
+    sessionFileOwnerScope.mockReturnValue(null)
+    $activeSessionId.set('20261125_142659_000000')
+
+    render(<PreviewAttachment target="/srv/report.md" />)
+
+    await clickDownload()
+
+    expect(sessionFileOwnerScope).toHaveBeenCalledWith('20261125_142659_000000')
+    expect(saveGatewayFile).toHaveBeenCalledWith(expect.not.objectContaining({ sessionId: expect.any(String) }))
+    expect(saveGatewayFile).toHaveBeenCalledWith(expect.objectContaining({ path: '/srv/report.md' }))
   })
 })

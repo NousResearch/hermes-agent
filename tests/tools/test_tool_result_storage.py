@@ -455,6 +455,53 @@ class TestSpillover:
         assert env.execute.call_count == 1
         assert "test -r" in env.execute.call_args[0][0]
 
+    def test_home_relative_probe_lets_the_remote_shell_expand_home(self):
+        """ssh/daytona report ``~/.hermes/...``; a single-quoted ``~`` is never
+        expanded, so the probe failed and every spill fell back to /tmp."""
+        env = MagicMock()
+        env.execute.return_value = {"output": "", "returncode": 0}
+        with patch("tools.credential_files.to_agent_visible_cache_path",
+                   return_value="~/.hermes/cache/spillover/tc home.txt"):
+            result = maybe_persist_tool_result(
+                content="z" * 60_000,
+                tool_name="terminal",
+                tool_use_id="tc_ssh_1",
+                env=env,
+                threshold=30_000,
+            )
+        assert "~/.hermes/cache/spillover/tc home.txt" in result
+        assert env.execute.call_args[0][0] == """test -r "$HOME"/'.hermes/cache/spillover/tc home.txt'"""
+        assert env.execute.call_count == 1
+
+    @pytest.mark.platforms("posix")
+    def test_home_relative_probe_handles_spaces_in_remote_home(self, tmp_path):
+        """The SSH readability check must pass with spaces in HOME and filename."""
+        from tools.tool_result_storage import _sandbox_visible_spillover_path
+
+        remote_home = tmp_path / "ssh home"
+        visible = "~/.hermes/cache/spillover/tc home.txt"
+        remote_file = remote_home / ".hermes/cache/spillover/tc home.txt"
+        remote_file.parent.mkdir(parents=True)
+        remote_file.write_text("synced", encoding="utf-8")
+        commands = []
+
+        class RemoteShell:
+            def execute(self, command, timeout=None):
+                commands.append(command)
+                result = subprocess.run(
+                    ["bash", "-c", command],
+                    env={**os.environ, "HOME": str(remote_home)},
+                    capture_output=True,
+                    check=False,
+                    timeout=timeout,
+                )
+                return {"returncode": result.returncode, "output": result.stdout.decode()}
+
+        with patch("tools.credential_files.to_agent_visible_cache_path",
+                   return_value=visible):
+            assert _sandbox_visible_spillover_path("gateway-spill", RemoteShell()) == visible
+        assert len(commands) == 1
+
     def test_remote_env_probe_failure_falls_back_to_sandbox_write(self):
         """Persistent containers without the spillover mount still get a
         readable in-sandbox copy."""

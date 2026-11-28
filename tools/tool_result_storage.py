@@ -249,7 +249,13 @@ def _sandbox_visible_spillover_path(host_path: str, env) -> str | None:
     except Exception as exc:
         logger.debug("Spillover sync failed: %s", exc)
     try:
-        if env.execute(f"test -r {shlex.quote(visible)}", timeout=15).get("returncode", 1) == 0:
+        # Expand the remote home without splitting it when HOME contains spaces.
+        if visible.startswith("~/"):
+            probe_path = f'"$HOME"/{shlex.quote(visible[2:])}'
+        else:
+            probe_path = shlex.quote(visible)
+        probe = f"test -r {probe_path}"
+        if env.execute(probe, timeout=15).get("returncode", 1) == 0:
             return visible
     except Exception as exc:
         logger.debug("Spillover readability probe failed: %s", exc)

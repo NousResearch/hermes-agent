@@ -158,9 +158,10 @@ def _keyless_backend() -> Optional[str]:
 def _managed_web_search() -> bool:
     """True when web_search is on the managed Nous route: the stored ``nous`` selection (a
     ``web.search_backend: nous`` pin, else the shared one), or a never-configured install whose
-    autodetect lands on the gateway — the entitled Firecrawl gateway, or free Perplexity fast search
-    for any Nous identity when nothing else is configured (search-only: the extract ladder is
-    untouched). A stored vendor selection never is."""
+    autodetect lands on the entitled Firecrawl gateway with no direct search-only key (SearXNG,
+    Brave; see ``_direct_search_only_backend``), or on nothing while free Perplexity fast search
+    is open to any Nous identity (search-only: the extract ladder is untouched). A stored vendor
+    selection never is."""
     search_pin = _configured_backend("search_backend")
     if search_pin:
         return search_pin == NOUS_MANAGED_PROVIDER
@@ -169,9 +170,19 @@ def _managed_web_search() -> bool:
         return selected == NOUS_MANAGED_PROVIDER
     backend = _autodetect_backend()
     if backend == "firecrawl":
-        return not (_has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL")) and _is_tool_gateway_ready()
+        return (not (_has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL")) and _is_tool_gateway_ready()
+                and _direct_search_only_backend() is None)
     from tools.managed_tool_gateway import peek_nous_access_token, resolve_free_search_gateway
     return backend is None and resolve_free_search_gateway(token_reader=peek_nous_access_token) is not None
+
+
+def _direct_search_only_backend() -> Optional[str]:
+    """Search-only direct credential (searxng, brave-free) that web_search prefers over an autodetected
+    managed gateway on a never-configured install; extract keeps the gateway (these can't extract)."""
+    if (_configured_backend() or read_selection("web") is not None or _autodetect_backend() != "firecrawl"
+            or _has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL")):
+        return None
+    return "searxng" if _has_env("SEARXNG_URL") else "brave-free" if _has_env("BRAVE_SEARCH_API_KEY") else None
 
 
 def _get_search_backend() -> str:
@@ -181,7 +192,7 @@ def _get_search_backend() -> str:
     pin = _configured_backend("search_backend")
     if pin and pin != NOUS_MANAGED_PROVIDER:
         return pin
-    return "perplexity" if _managed_web_search() else _get_backend()
+    return "perplexity" if _managed_web_search() else _direct_search_only_backend() or _get_backend()
 
 
 def _get_extract_backend() -> str:

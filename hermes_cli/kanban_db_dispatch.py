@@ -1640,19 +1640,40 @@ def check_respawn_guard(
         return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
-    #    Exception: a handoff AFTER the newest PR comment (operator reassign,
+    #    Exception: a handoff after the newest PR comment (operator reassign,
     #    reviewer changes_requested, review reopen) names the profile that must
     #    now work on THAT PR — a closer or the implementer finishing it, not a
     #    duplicate implementation (#111910). A crash/reclaim is not a handoff,
     #    so the worker that opened the PR is still not re-spawned against it.
+    #    `changes_requested`/`review_reopened` use >= (at-or-after), not strict:
+    #    a reviewer's call both posts the comment naming the PR and fires its
+    #    own handoff event in the same action, so the two land at the same
+    #    second (1s SQLite granularity) on every real review round, not just as
+    #    a rare race. Strict-after made that routine tie fail closed forever —
+    #    respawn_guarded(active_pr) repeating every dispatch tick with no path
+    #    out short of a human manually reassigning the card to a DIFFERENT
+    #    profile (found 2026-11-20, sojourn board, cards F2-1-FU/F2-3). Safe to
+    #    loosen just these two kinds: `_is_handoff_event` already treats them as
+    #    unconditional handoff signals regardless of timing (returns True for
+    #    any kind other than `assigned`), so >= adds no new false-positive here.
+    #    `assigned` STAYS strict (>): unlike the other two, a same-second
+    #    `assigned` can legitimately predate (by wall-clock tie, not causally) a
+    #    newer, unrelated PR comment — e.g. a closer's own follow-up push right
+    #    after being handed the card — and that newer PR still needs its own
+    #    review before anyone respawns against it.
     pr_times = [t for t, c in _rows_since(conn, "task_comments", task_id, now - _RESPAWN_GUARD_PR_WINDOW,
                                           cols=", body", unreadable=now)  # duplicate-PR risk: fail closed
                 if _RESPAWN_GUARD_PR_URL_RE.search(_kb._lossy_text(c["body"]) or "")]
     if pr_times:
-        # Strictly after: a same-second tie stays guarded (fail closed).
-        if any(_is_handoff_event(e["kind"], e["payload"]) for _, e in _rows_since(
-                conn, "task_events", task_id, max(pr_times),
-                "AND kind IN ('assigned', 'changes_requested', 'review_reopened')", cols=", kind, payload", strict=True)):
+        max_pr = max(pr_times)
+        lifted = any(_is_handoff_event(e["kind"], e["payload"]) for _, e in _rows_since(
+                conn, "task_events", task_id, max_pr,
+                "AND kind IN ('changes_requested', 'review_reopened')", cols=", kind, payload"))
+        if not lifted:
+            lifted = any(_is_handoff_event(e["kind"], e["payload"]) for _, e in _rows_since(
+                    conn, "task_events", task_id, max_pr,
+                    "AND kind = 'assigned'", cols=", kind, payload", strict=True))
+        if lifted:
             return None
         return "active_pr"
 

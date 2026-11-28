@@ -54,3 +54,23 @@ describe('installed-skill usage and updates', () => {
     expect(filterCatalog(rows, { ...EMPTY_FACETS, updatesOnly: true }, '', () => true, 'skills').map(row => row.name)).toEqual(['hot'])
   })
 })
+
+describe('catalog search', () => {
+  const row = (name: string, search: string) => ({ ...entry(name, 'community'), search }) as CatalogEntry
+
+  it('matches a space-separated query against a hyphenated name', () => {
+    const rows = [row('hermes-make-plain', 'hermes-make-plain one-click composer polish')]
+
+    expect(filterCatalog(rows, EMPTY_FACETS, 'make plain', () => false, 'plugins').map(r => r.name)).toEqual(['hermes-make-plain'])
+    expect(filterCatalog(rows, EMPTY_FACETS, 'hermes make plain', () => false, 'plugins').map(r => r.name)).toEqual([
+      'hermes-make-plain'
+    ])
+  })
+
+  it('still narrows on words that appear only in the description', () => {
+    const rows = [row('alpha', 'alpha rewrites a draft')]
+
+    expect(filterCatalog(rows, EMPTY_FACETS, 'rewrites', () => false, 'plugins')).toHaveLength(1)
+    expect(filterCatalog(rows, EMPTY_FACETS, 'missing', () => false, 'plugins')).toHaveLength(0)
+  })
+})

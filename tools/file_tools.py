@@ -1042,6 +1042,17 @@ def patch_tool(mode: str = "replace", path: str | None = None, old_string: str |
         with ExitStack() as _locks:
             for _r in sorted({_r for _r in (*_path_to_resolved.values(), *_path_to_entry.values()) if _r}):
                 _locks.enter_context(file_state.lock_path(_r))
+            # A sibling task wrote a target after this task's last read: the patch was
+            # built from content that is no longer on disk (it may re-apply the sibling's
+            # own change), so refuse BEFORE editing, as write_file does. Other staleness
+            # still only warns below.
+            for _p, _r in _path_to_resolved.items():
+                sibling = file_state.sibling_wrote_after_read(task_id, _r) if _r else None
+                if sibling:
+                    return tool_error(
+                        f"Refusing to patch {_p}: {sibling} The file was NOT modified. "
+                        "Reload it with read_file, check whether the change is still "
+                        "needed, then patch again.", stale_write_blocked=True, path=_p)
             stale_warnings = _edit_warnings(_paths_to_check, _path_to_resolved, task_id)
             file_ops = _get_file_ops(task_id)
             # Whole-file knowledge held BEFORE the patch reads, under the same locks. Like

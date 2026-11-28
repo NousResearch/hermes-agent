@@ -27,6 +27,7 @@ from unittest.mock import patch
 from tools import file_state
 from tools.file_tools import (
     clear_file_ops_cache,
+    patch_tool,
     read_file_tool,
     write_file_tool,
 )
@@ -262,6 +263,46 @@ class FileToolsIntegrationTests(unittest.TestCase):
         self.assertIn("sibling", err.lower())
         with open(p) as f:
             self.assertEqual(f.read(), "B wrote\n")
+
+    def test_patch_refused_after_sibling_write_since_read(self):
+        seed = '{\n  "WMT": [2027, 3]\n}\n'
+        p = self._write_seed("state.json", seed)
+        add = dict(mode="replace", path=p, old_string='  "WMT": [2027, 3]\n',
+                   new_string='  "WMT": [2027, 3],\n  "GAP": [2026, 3]\n')
+        self.assertNotIn("error", json.loads(read_file_tool(path=p, task_id="cron")))
+        self.assertNotIn("error", json.loads(read_file_tool(path=p, task_id="chat")))
+        self.assertNotIn("error", json.loads(patch_tool(task_id="chat", **add)))
+        with open(p) as f:
+            after_sibling = f.read()
+
+        # The cron task's patch was built from its older read: refused, file untouched.
+        r = json.loads(patch_tool(task_id="cron", mode="replace", path=p,
+                                  old_string='  "GAP": [2026, 3]\n',
+                                  new_string='  "GAP": [2026, 3],\n  "GAP": [2026, 3]\n'))
+        self.assertTrue(r.get("stale_write_blocked"), r)
+        self.assertIn("sibling subagent 'chat'", r["error"])
+        with open(p) as f:
+            self.assertEqual(f.read(), after_sibling)
+        self.assertEqual(after_sibling.count('"GAP"'), 1)
+
+        # After a re-read the same task may patch again.
+        self.assertNotIn("error", json.loads(read_file_tool(path=p, task_id="cron")))
+        r = json.loads(patch_tool(task_id="cron", mode="replace", path=p,
+                                  old_string='"GAP": [2026, 3]', new_string='"GAP": [2026, 4]'))
+        self.assertNotIn("error", r)
+        with open(p) as f:
+            self.assertIn('"GAP": [2026, 4]', f.read())
+
+    def test_patch_without_sibling_write_still_applies(self):
+        p = self._write_seed("solo.txt", "alpha\n")
+        self.assertNotIn("error", json.loads(read_file_tool(path=p, task_id="agentA")))
+        self.assertNotIn("error", json.loads(read_file_tool(path=p, task_id="agentB")))
+        r = json.loads(patch_tool(mode="replace", path=p, old_string="alpha",
+                                  new_string="beta", task_id="agentA"))
+        self.assertNotIn("error", r)
+        self.assertNotIn("_warning", r)
+        with open(p) as f:
+            self.assertEqual(f.read(), "beta\n")
 
 
 

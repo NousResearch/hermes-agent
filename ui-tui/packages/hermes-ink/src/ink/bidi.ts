@@ -1,18 +1,27 @@
 /**
  * Bidirectional text reordering for terminal rendering.
  *
- * Terminals on Windows do not implement the Unicode Bidi Algorithm,
- * so RTL text (Hebrew, Arabic, etc.) appears reversed. This module
- * applies the bidi algorithm to reorder ClusteredChar arrays from
- * logical order to visual order before Ink's LTR cell placement loop.
+ * Most terminal emulators do NOT implement the Unicode Bidi Algorithm, so
+ * RTL text (Hebrew, Arabic, etc.) is emitted in logical order and appears
+ * reversed. This module applies the bidi algorithm to reorder ClusteredChar
+ * arrays from logical order to visual order before Ink's LTR cell placement
+ * loop.
  *
- * On macOS terminals (Terminal.app, iTerm2) bidi works natively.
- * Windows Terminal (including WSL) does not implement bidi
- * (https://github.com/microsoft/terminal/issues/538).
+ * Whether reordering is needed is decided per terminal, not per platform.
+ * A handful of terminals lay out RTL runs themselves — macOS Terminal.app,
+ * VTE-based terminals (GNOME Terminal, Tilix, Xfce Terminal…) from 0.58,
+ * Konsole from 22.12, and mlterm — and on those software reordering would
+ * double-apply and re-reverse the text. Everywhere else, including Windows
+ * Terminal and conhost (https://github.com/microsoft/terminal/issues/538),
+ * WSL, VS Code's xterm.js, Kitty, Alacritty, Ghostty, plain xterm, and the
+ * two that have bidi but don't use it here (WezTerm ships it off, iTerm2
+ * hides it behind an advanced setting and skips the alternate screen),
+ * codepoints reach the screen in logical order with no bidi, so RTL runs
+ * must be reordered here.
  *
- * Detection: Windows Terminal sets WT_SESSION; native Windows cmd/conhost
- * also lacks bidi. We enable bidi reordering when running on Windows or
- * inside Windows Terminal (covers WSL).
+ * Detection is overridable: HERMES_TUI_BIDI=1 forces software reordering on
+ * (a terminal we misclassify, or a bidi-capable terminal the user wants
+ * handled in-app); HERMES_TUI_BIDI=0 forces it off.
  */
 import bidiFactory from 'bidi-js'
 
@@ -26,15 +35,97 @@ type ClusteredChar = {
 let bidiInstance: ReturnType<typeof bidiFactory> | undefined
 let needsSoftwareBidi: boolean | undefined
 
+// Same override vocabulary as the rest of the TUI's env switches.
+const ENV_ON_RE = /^(?:1|true|yes|on)$/i
+const ENV_OFF_RE = /^(?:0|false|no|off)$/i
+
+/** VTE and Konsole both export their version packed as MAJOR*10000 +
+ *  MINOR*100 + PATCH (e.g. 7603 = 0.76.3, 240800 = 24.8.0). Anything
+ *  unparseable counts as unknown, and unknown means we reorder. */
+function packedVersion(raw: string | undefined): number | undefined {
+  const version = parseInt((raw ?? '').trim(), 10)
+
+  return Number.isFinite(version) && version > 0 ? version : undefined
+}
+
+/** VTE gained bidi in 0.58 (GNOME 3.34). */
+const VTE_BIDI_MIN = 5800
+
+/** Konsole reorders through ICU from 22.12. Earlier builds ran the bidi
+ *  algorithm per run of identical attributes, so a coloured line came out
+ *  wrong (invent.kde.org MR 722, KDE bug 403729). */
+const KONSOLE_BIDI_MIN = 221200
+
+/**
+ * Terminals that implement bidi layout themselves. On these we must leave
+ * logical order untouched — reordering here would be applied twice.
+ */
+function terminalHasNativeBidi(env: NodeJS.ProcessEnv): boolean {
+  const termProgram = (env.TERM_PROGRAM ?? '').trim()
+
+  // macOS CoreText-backed Terminal.app runs the full bidi algorithm.
+  // iTerm2 deliberately isn't here: its bidi is opt-in (Settings > Advanced >
+  // Support right-to-left-text) and doesn't cover the alternate screen, which
+  // is exactly where fullscreen mode lives. Same reasoning as WezTerm below.
+  if (termProgram === 'Apple_Terminal') {
+    return true
+  }
+
+  // VTE-based terminals (GNOME Terminal, Tilix, Xfce Terminal, Guake…). The
+  // version gate matters twice: bidi arrived in 0.58, and fribidi is an
+  // optional build dependency, so a terminal can report a version and still
+  // lay RTL out in logical order. shouldUseAnsiDim reads the same variable.
+  const vteVersion = packedVersion(env.VTE_VERSION)
+
+  if (vteVersion !== undefined) {
+    return vteVersion >= VTE_BIDI_MIN
+  }
+
+  // Konsole lays out RTL runs through ICU from 22.12.
+  const konsoleVersion = packedVersion(env.KONSOLE_VERSION)
+
+  if (konsoleVersion !== undefined) {
+    return konsoleVersion >= KONSOLE_BIDI_MIN
+  }
+
+  // mlterm handles bidi when built/configured with it.
+  if (env.MLTERM || (env.TERM ?? '').trim() === 'mlterm') {
+    return true
+  }
+
+  return false
+}
+
+/**
+ * Whether Ink should reorder RTL runs itself before emitting to the terminal.
+ * Almost every terminal lacks native bidi, so the default is on; HERMES_TUI_BIDI
+ * overrides it in either direction.
+ */
+export function shouldReorderBidi(env: NodeJS.ProcessEnv = process.env): boolean {
+  const override = (env.HERMES_TUI_BIDI ?? '').trim()
+
+  if (ENV_ON_RE.test(override)) {
+    return true
+  }
+
+  if (ENV_OFF_RE.test(override)) {
+    return false
+  }
+
+  return !terminalHasNativeBidi(env)
+}
+
 function needsBidi(): boolean {
   if (needsSoftwareBidi === undefined) {
-    needsSoftwareBidi =
-      process.platform === 'win32' ||
-      typeof process.env['WT_SESSION'] === 'string' || // WSL in Windows Terminal
-      process.env['TERM_PROGRAM'] === 'vscode' // VS Code integrated terminal (xterm.js)
+    needsSoftwareBidi = shouldReorderBidi()
   }
 
   return needsSoftwareBidi
+}
+
+/** Test-only: drop the cached decision so the next call re-detects. */
+export function resetBidiDetectionForTest(): void {
+  needsSoftwareBidi = undefined
 }
 
 function getBidi() {
@@ -68,21 +159,34 @@ export function reorderBidi(characters: ClusteredChar[]): ClusteredChar[] {
   const bidi = getBidi()
   const { levels } = bidi.getEmbeddingLevels(plainText, 'auto')
 
-  // Map bidi levels back to ClusteredChar indices.
-  // Each ClusteredChar may be multiple code units in the joined string.
+  // Rule L4 — mirroring. Characters with the Bidi_Mirrored property that
+  // resolve to an odd (RTL) level must be replaced by their mirror glyph: a
+  // "(" laid out inside an RTL run reads as ")" and vice versa. A terminal
+  // that runs the UBA does this itself; because we reorder in software we
+  // must do it too, or a bracket pair displays glyph-swapped — e.g.
+  // "שלום (עולם)" comes out ")םלוע( םולש" instead of "(םלוע) םולש".
+  const mirrors = bidi.getMirroredCharactersMap(plainText, levels)
+
+  // Map bidi levels back to ClusteredChar indices, applying the mirror at the
+  // same time. Each ClusteredChar may be several code units in the joined
+  // string, so the logical offset (UTF-16) is what indexes `levels`/`mirrors`.
   const charLevels: number[] = []
+  const visual: ClusteredChar[] = []
   let offset = 0
 
   for (let i = 0; i < characters.length; i++) {
+    const cluster = characters[i]!
     charLevels.push(levels[offset]!)
-    offset += characters[i]!.value.length
+    const mirror = mirrors.get(offset)
+    visual.push(mirror === undefined ? cluster : { ...cluster, value: mirror })
+    offset += cluster.value.length
   }
 
   // Get reorder segments from bidi-js, but we need to work at the
   // ClusteredChar level, not the string level. We'll implement the
   // standard bidi reordering: find the max level, then for each level
   // from max down to 1, reverse all contiguous runs >= that level.
-  const reordered = [...characters]
+  const reordered = visual
   const maxLevel = Math.max(...charLevels)
 
   for (let level = maxLevel; level >= 1; level--) {

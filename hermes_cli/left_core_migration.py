@@ -67,44 +67,11 @@ def _read_config(home: Path) -> dict:
 
 
 def _merged_platform_block(home: Path, name: str) -> Optional[dict]:
-    """Platform *name*'s block as the gateway loader merges it for *home*: legacy ``gateway.json`` base
-    layer, then config.yaml's ``gateway.platforms`` / ``platforms`` / ``gateway.<name>`` blocks and a top-level
-    ``<name>:`` block in the loader's order (managed overlay and ``${VAR}`` applied). ``None`` when no layer names it."""
+    """Platform *name*'s block as the gateway loader builds it for *home* (``config_loader.platform_blocks``,
+    the one normalized view: key case and aliases, every layer, the malformed-layer fallback); ``None`` when no
+    layer names it. Its ``gateway.<name>`` shorthand counts before the platform's plugin registers."""
     from gateway import config_loader
-    also = frozenset({name})
-
-    def merged() -> Optional[dict]:
-        from hermes_cli import managed_scope
-        gw_data = config_loader.load_legacy_gateway_json(home)
-        gw_data = gw_data if isinstance(gw_data, dict) else {}
-        yaml_cfg = config_loader.read_yaml_layers(home)
-        managed = managed_scope.apply_managed_overlay({})
-        yaml_cfg = yaml_cfg if isinstance(yaml_cfg, dict) else {}
-        platforms = config_loader.merge_platform_sections(yaml_cfg, yaml_cfg.get("gateway"), gw_data, also=also)
-        authored = config_loader.snapshot_authored_extra(config_loader.merge_platform_sections(
-            yaml_cfg, yaml_cfg.get("gateway"), {}, also=also))
-        # Reconcile cross-shape pins before the root bridge, even before this platform is registered.
-        managed["platforms"] = config_loader.merge_platform_sections(
-            managed, managed.get("gateway"), {}, also=also)
-        config_loader._apply_managed_extra(authored, managed, platforms)
-        block = platforms.get(name)
-        root = yaml_cfg.get(name)
-        if isinstance(root, dict):  # a top-level ``<name>:`` block, bridged as bridge_platform_shared_keys does: its
-            from gateway.config import PlatformConfig  # adapter keys beat gateway.json's extra, not config.yaml's nested one
-            block = dict(block) if isinstance(block, dict) else {}
-            block["extra"] = {**(block.get("extra") or {}), **PlatformConfig.from_dict({**root, "home_channel": None}).extra,
-                              **authored.get(name, {})}  # a home_channel names a plugin's Platform
-            if "enabled" in root:  # and its enabled wins
-                block["enabled"] = root["enabled"]
-        return block
-
-    def gateway_json_only() -> Optional[dict]:  # a fresh read: the failed merge may have half-filled its copy
-        gw_data = config_loader.load_legacy_gateway_json(home)
-        return config_loader.merge_platform_sections(
-            {}, None, gw_data if isinstance(gw_data, dict) else {}, also=also).get(name)
-
-    block = config_loader.with_yaml_fallback(home, merged, gateway_json_only)
-    return block if isinstance(block, dict) else None
+    return config_loader.platform_blocks(home, also=frozenset({name})).get(name)
 
 
 def platform_configured_on(home: Path, name: str) -> bool:
@@ -242,9 +209,11 @@ def spotify_in_use(home: Path, *, process_env: bool = False) -> bool:
     return _toolset_listed(_read_config(home), frozenset({"spotify"}))
 
 
-def _plugins_listed(home: Path, names: tuple[str, ...]) -> tuple[bool, bool]:
-    """Whether a name in *names* is in *home*'s ``plugins.enabled`` / ``plugins.disabled``, read with the
-    managed overlay applied like the loader's config, so an administrator's pinned list counts."""
+def _plugins_listed(home: Path, identity) -> tuple[bool, bool]:
+    """Whether *home*'s ``plugins.enabled`` / ``plugins.disabled`` name the plugin with *identity*
+    (``plugin_identity.plugin_listed``, the loader's rule), read with the managed overlay applied like the
+    loader's config, so an administrator's pinned list counts."""
+    from hermes_cli.plugin_identity import plugin_listed
     from gateway import config_loader
     try:
         plugins = config_loader.read_yaml_layers(home).get("plugins")
@@ -253,17 +222,21 @@ def _plugins_listed(home: Path, names: tuple[str, ...]) -> tuple[bool, bool]:
         return False, False
     plugins = plugins if isinstance(plugins, dict) else {}
 
-    def listed(key: str) -> bool:
-        entries = plugins.get(key)
-        return isinstance(entries, list) and any(str(n) in names for n in entries)
-    return listed("enabled"), listed("disabled")
+    identity = frozenset(identity)
+    return plugin_listed(identity, plugins.get("enabled")), plugin_listed(identity, plugins.get("disabled"))
 
 
 def _plugin_lists(home: Path, plugin: str, *, also: tuple[str, ...] = ()) -> tuple[bool, bool]:
-    """Whether *plugin*'s key or name (or a name in *also*) is in *home*'s ``plugins.enabled`` /
-    ``plugins.disabled`` (:func:`_plugins_listed`)."""
-    feature = next(f for f in LEFT_CORE if f.plugin == plugin)
-    return _plugins_listed(home, (feature.plugin_key, *feature.plugin_names, feature.plugin, *also))
+    """Whether catalog *plugin* (by its catalog name or a core-era key, ``plugin_identity``) or a name in
+    *also* is in *home*'s ``plugins.enabled`` / ``plugins.disabled`` (:func:`_plugins_listed`)."""
+    from hermes_cli.plugin_identity import plugin_identity
+    return _plugins_listed(home, plugin_identity(plugin) | set(also))
+
+
+def _tree_lists(home: Path, plugin: str) -> tuple[bool, bool]:
+    """:func:`_plugins_listed` for the tree *home* has for *plugin*, by the names the loader gives that tree."""
+    from hermes_cli.plugin_identity import tree_identity
+    return _plugins_listed(home, tree_identity(home / "plugins", home / "plugins" / plugin, default=plugin))
 
 
 def _bundled_plugin_selected(home: Path, plugin: str) -> bool:
@@ -1039,7 +1012,7 @@ def _installed_for_good(home: Path, plugin: str) -> bool:
     nobody enabled or disabled since (that one is owed, and the next attempt enables it in place)."""
     if not plugin_present(plugin, home):
         return False
-    return not _placed(home, plugin).exists() or any(_plugins_listed(home, (plugin,)))
+    return not _placed(home, plugin).exists() or any(_tree_lists(home, plugin))
 
 
 def _core_carried(feature: LeftCoreFeature, selection: list) -> bool:

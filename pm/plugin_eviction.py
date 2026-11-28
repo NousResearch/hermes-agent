@@ -94,11 +94,26 @@ def _list(plugins, key: str) -> list:
     return plugins[key]
 
 
-def _disable(plugins, name: str, plugin_dir: Path, reason: str, tried: str | None = None) -> None:
-    """Park *name* in plugins.disabled, drop it from plugins.enabled and record what to undo."""
+def _tree_names(plugins_dir: Path, plugin_dir: Path, name: str) -> tuple[set[str], set[str]]:
+    """``(identity, own)``: every entry that names *plugin_dir* (``hermes_cli.plugin_identity``, the loader's
+    rule) and those that name no other tree discovery loads from *plugins_dir*, so dropping *own* from
+    plugins.enabled turns off this tree alone. A tree outside the home (bundled) keeps its spellings."""
+    from hermes_cli.plugin_identity import installed_trees
     from pm.plugins_state import plugin_spellings
 
-    spellings = plugin_spellings(plugin_dir, name)
+    trees = installed_trees(plugins_dir)
+    identity = trees.get(plugin_dir)
+    if identity is None:
+        spellings = plugin_spellings(plugin_dir, name)
+        return spellings, spellings
+    others = {entry for tree, names in trees.items() if tree != plugin_dir for entry in names}
+    return set(identity), set(identity) - others
+
+
+def _disable(plugins, plugins_dir: Path, name: str, plugin_dir: Path, reason: str, tried: str | None = None) -> None:
+    """Park *name* (the tree's registry key) in plugins.disabled, drop the entries that enable this tree alone
+    from plugins.enabled and record what to undo."""
+    identity, own = _tree_names(plugins_dir, plugin_dir, name)
     disabled, enabled = _list(plugins, "disabled"), plugins.get("enabled")
     if not isinstance(plugins.get(RECORD), dict):
         plugins[RECORD] = {}
@@ -106,26 +121,25 @@ def _disable(plugins, name: str, plugin_dir: Path, reason: str, tried: str | Non
     if name in disabled and isinstance(earlier, dict):
         was_enabled = bool(earlier.get("enabled"))  # a retry that still fails keeps the first record
     else:
-        was_enabled = isinstance(enabled, list) and bool(spellings & set(enabled))
+        was_enabled = isinstance(enabled, list) and bool(identity & set(enabled))
     if name not in disabled:
         disabled.append(name)
     if isinstance(enabled, list):
-        _discard(enabled, spellings)
+        _discard(enabled, own)
     plugins[RECORD][name] = {"enabled": was_enabled, "reason": " ".join(reason.split())[:300]}
     if tried:
         plugins[RECORD][name]["tried"] = tried
 
 
-def _rejoin(plugins, name: str, plugin_dir: Path) -> None:
+def _rejoin(plugins, plugins_dir: Path, name: str, plugin_dir: Path) -> None:
     """Undo an earlier update's _disable now that the plugin fits again."""
-    from pm.plugins_state import plugin_spellings
-
     record = plugins.get(RECORD) if isinstance(plugins.get(RECORD), dict) else {}
     earlier = record.get(name)
     if not isinstance(earlier, dict):
         return  # the user settled it since this update read the config: their choice stands
-    _discard(_list(plugins, "disabled"), plugin_spellings(plugin_dir, name))
-    if earlier.get("enabled") and name not in _list(plugins, "enabled"):
+    identity, own = _tree_names(plugins_dir, plugin_dir, name)
+    _discard(_list(plugins, "disabled"), own | {name})
+    if earlier.get("enabled") and not identity & set(_list(plugins, "enabled")):
         plugins["enabled"].append(name)
 
 
@@ -197,10 +211,15 @@ class PluginEviction:
         # The snapshot the update decided from: a user edit since then refuses publication.
         self.configs = selection_snapshot() if configs is None else configs
         self.tried = tried = tried or {}
+        from hermes_cli.plugin_identity import registry_key
+
         by_home: dict[Path, list[tuple[str, Path, str | None]]] = {}
         for plugins_dir, name, plugin_dir in entries:
             if plugin_dir.resolve() in reasons:
-                by_home.setdefault(plugins_dir.parent, []).append((name, plugin_dir, reasons[plugin_dir.resolve()]))
+                # By the tree's own registry key: the entry that enabled it may name a working copy too.
+                key = registry_key(plugins_dir, plugin_dir) or name
+                if all(change[1] != plugin_dir for change in by_home.get(plugins_dir.parent, ())):
+                    by_home.setdefault(plugins_dir.parent, []).append((key, plugin_dir, reasons[plugin_dir.resolve()]))
         for plugins_dir, name, plugin_dir in rejoined:
             by_home.setdefault(plugins_dir.parent, []).append((name, plugin_dir, None))
         self.changes = by_home
@@ -220,9 +239,9 @@ class PluginEviction:
             plugins = config["plugins"] = {}
         for name, plugin_dir, reason in self.changes[home]:
             if reason is None:
-                _rejoin(plugins, name, plugin_dir)
+                _rejoin(plugins, home / "plugins", name, plugin_dir)
             else:
-                _disable(plugins, name, plugin_dir, reason, self.tried.get(plugin_dir.resolve()))
+                _disable(plugins, home / "plugins", name, plugin_dir, reason, self.tried.get(plugin_dir.resolve()))
         _prune_record(plugins)
         output = io.StringIO()
         yaml.dump(config, output)

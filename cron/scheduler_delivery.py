@@ -538,19 +538,16 @@ _CORE_HOME_PLATFORMS = _KNOWN_DELIVERY_PLATFORMS | _NON_PUSH_ORIGIN_PLATFORMS | 
 
 def _unloaded_home_platforms() -> list[str]:
     """Platforms with a home chat saved in config.yaml (what ``/sethome`` writes) that no loaded plugin
-    registers in this profile (not installed, not enabled, failed to load). Read raw, because
-    ``load_gateway_config`` drops a block whose platform nothing registers, so ``origin``/``all`` would
-    otherwise skip that home without a word."""
+    registers in this profile (not installed, not enabled, failed to load), read from the gateway's normalized
+    view (``config_loader.platform_blocks``): ``load_gateway_config`` drops a block whose platform nothing
+    registers, so ``origin``/``all`` would otherwise skip that home without a word."""
+    from gateway import config_loader
     from gateway.platform_registry import platform_registry
-    try:
-        blocks = (_sched.load_config() or {}).get("platforms") or {}
-    except Exception:
-        logger.debug("cron: config.yaml unreadable for saved home channels", exc_info=True)
-        return []
-    saved = sorted(
-        str(name).lower() for name, block in blocks.items()
-        if isinstance(block, dict) and isinstance(block.get("home_channel"), dict)
-        and block["home_channel"].get("chat_id"))
+    from hermes_cli.left_core_migration import LEFT_CORE
+    from hermes_constants import get_hermes_home
+    moved = frozenset(f.platform for f in LEFT_CORE if f.platform)
+    saved = sorted(name for name, block in config_loader.platform_blocks(get_hermes_home(), also=moved).items()
+                   if isinstance(block.get("home_channel"), dict) and block["home_channel"].get("chat_id"))
     list(_iter_home_target_platforms())  # discovers plugins so the registry lookups below are final
     return [n for n in saved if n not in _CORE_HOME_PLATFORMS and platform_registry.get(n) is None]
 

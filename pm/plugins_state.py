@@ -92,21 +92,36 @@ def read_home_selection(home: Path) -> Optional[dict[str, Any]]:
     return config
 
 
-def _enabled_from_config(config: dict[str, Any]) -> list[str]:
-    """plugins.enabled from an already-parsed config, ORDER-PRESERVING."""
+def _enabled_from_config(config: dict[str, Any], plugins_dir: Optional[Path] = None,
+                         installing: Path | None = None) -> list[tuple[str, Optional[Path]]]:
+    """``(entry, tree)`` for every plugin *config*'s ``plugins.enabled`` turns on in *plugins_dir*, in config
+    order. Each entry is resolved to the installed trees discovery loads for it, and each tree is kept unless
+    ``plugins.disabled`` names it: both by the loader's own rule (``hermes_cli.plugin_identity``), so a fork,
+    a nested copy or a core-era key gets the verdict the loader gives it. ``tree`` is ``None`` for an entry no
+    installed tree answers to (a bundled plugin, a staged install, a manifest-less tree): the caller resolves
+    it by path (``pm.workspace.selected_plugin_dir``), judged by the identity its name gives."""
+    from hermes_cli.plugin_identity import installed_trees, plugin_identity, plugin_listed
     plugins_cfg = config.get("plugins")
     if not isinstance(plugins_cfg, dict):
         return []
     enabled = plugins_cfg.get("enabled")
-    if not isinstance(enabled, list):
-        return []
+    if not isinstance(enabled, list) or not any(isinstance(n, str) and n.strip() for n in enabled):
+        return []  # nothing selected: no folder needs reading
     disabled = plugins_cfg.get("disabled", [])
-    disabled = set(disabled) if isinstance(disabled, list) else set()
-    out: list[str] = []
-    for name in enabled:
-        if (isinstance(name, str) and name and name not in out
-                and name not in disabled and name.rsplit("/", 1)[-1] not in disabled):
-            out.append(name)
+    trees = installed_trees(plugins_dir) if plugins_dir is not None else {}
+    if installing is not None and plugins_dir is not None and installing.parent.resolve() == plugins_dir.resolve() \
+            and not any(tree.resolve() == installing.resolve() for tree in trees):
+        trees[plugins_dir / installing.name] = plugin_identity(installing.name)  # unpublished: keyed by its dir
+    out: list[tuple[str, Optional[Path]]] = []
+    for name in dict.fromkeys(n for n in enabled if isinstance(n, str) and n.strip()):
+        hits = [(tree, identity) for tree, identity in trees.items() if name in identity]
+        if not hits:
+            from hermes_cli.left_core_migration import legacy_plugin_alias
+            if not plugin_listed(plugin_identity(legacy_plugin_alias(name) or name, name), disabled):
+                out.append((name, None))
+            continue
+        out.extend((name, tree) for tree, identity in hits
+                   if not plugin_listed(identity, disabled) and tree not in {t for _n, t in out})
     return out
 
 
@@ -149,7 +164,15 @@ def dependency_homes() -> list[Path]:
 def enabled_plugins_ordered(*, proposed_home=None, enabled=None, disabled=None,
                             installing: Path | None = None,
                             skip_invalid_secondary: bool = False) -> dict[Path, list[str]]:
-    """plugins_dir → ordered enabled list, per home. Keyed by the
+    """plugins_dir → ordered enabled list, per home: the entries of :func:`enabled_selection`."""
+    selection = enabled_selection(proposed_home=proposed_home, enabled=enabled, disabled=disabled,
+                                  installing=installing, skip_invalid_secondary=skip_invalid_secondary)
+    return {plugins_dir: list(dict.fromkeys(name for name, _tree in pairs)) for plugins_dir, pairs in selection.items()}
+
+
+def enabled_selection(*, proposed_home=None, enabled=None, disabled=None, installing: Path | None = None,
+                      skip_invalid_secondary: bool = False) -> dict[Path, list[tuple[str, Optional[Path]]]]:
+    """plugins_dir → ordered ``(entry, tree)`` selection (:func:`_enabled_from_config`), per home. Keyed by the
     PLUGINS DIR (where the member dirs live), not the home itself.
 
     The ACTIVE MEMORY PROVIDER joins its home's list: providers install
@@ -157,7 +180,7 @@ def enabled_plugins_ordered(*, proposed_home=None, enabled=None, disabled=None,
     plugins.enabled — without this, a provider's dep plugin never joins
     the union. Admission refuses a conflicting candidate without changing
     the active environment or disabling an existing provider."""
-    out: dict[Path, list[str]] = {}
+    out: dict[Path, list[tuple[str, Optional[Path]]]] = {}
     homes = dependency_homes()
     for home in homes:
         # ONE parse per home feeds both queries (enabled + provider).
@@ -171,12 +194,12 @@ def enabled_plugins_ordered(*, proposed_home=None, enabled=None, disabled=None,
         config = config or {}
         if proposed_home is not None and home.resolve() == Path(proposed_home).resolve():
             config = {**config, "plugins": {"enabled": list(enabled or ()), "disabled": list(disabled or ())}}
-        names = _enabled_from_config(config)
+        selected = _enabled_from_config(config, home / "plugins", installing)
         provider = _provider_from_config(home, config, installing=installing)
-        if provider and provider not in names:
-            names.append(provider)
-        if names:
-            out[home / "plugins"] = names
+        if provider and provider not in {name for name, _tree in selected}:
+            selected.append((provider, None))
+        if selected:
+            out[home / "plugins"] = selected
     return out
 
 

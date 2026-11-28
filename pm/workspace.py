@@ -345,32 +345,48 @@ def enabled_plugin_entries(*, proposed_home=None, enabled=None, disabled=None,
 
     The key is what the home's config names, so a caller can edit that home's selection.
     """
-    from pm.plugins_state import enabled_plugins_ordered
+    from pm.plugins_state import enabled_selection
 
-    selection = enabled_plugins_ordered(
+    selection = enabled_selection(
         proposed_home=proposed_home, enabled=enabled, disabled=disabled, installing=installing,
         skip_invalid_secondary=skip_invalid_secondary,
     )
     entries = []
-    for plugins_dir, names in selection.items():
-        for name in names:
-            plugin_dir = selected_plugin_dir(plugins_dir, name, installing=installing)
+    for plugins_dir, pairs in selection.items():
+        for name, tree in pairs:
+            plugin_dir = tree if tree is not None else selected_plugin_dir(plugins_dir, name, installing=installing)
             if plugin_dir is not None:
                 entries.append((plugins_dir, name, plugin_dir))
     return entries
 
 
+def _same_dir(path: Path, tree: Path) -> bool:
+    """*path* is the directory *tree* (``os.path.samefile``: a case-insensitive filesystem's other spelling too)."""
+    try:
+        return path == tree or os.path.samefile(path, tree)
+    except OSError:
+        return False
+
+
 def selected_plugin_dir(plugins_dir: Path, name: str, *, installing: Path | None = None) -> Path | None:
-    """The tree a home's selection key names: its own plugins dir first, then core's, else None."""
+    """The tree a home's selection key names: the first installed tree in *plugins_dir* the key names
+    (``hermes_cli.plugin_identity``, the loader's rule), else by path a tree discovery does not read as a
+    plugin in its own plugins dir (a manifest-less or staged one), then core's, else None."""
+    from hermes_cli.plugin_identity import installed_trees
     from pm.plugins_state import _is_directory
 
     relative = Path(name)
     if relative.is_absolute() or ".." in relative.parts:
         raise InstallError("venv", f"invalid plugin key: {name}")
+    trees = installed_trees(plugins_dir)
+    named = next((tree for tree, identity in trees.items() if name in identity), None)
+    if named is not None:
+        return named
     plugin_dir = plugins_dir / relative
     if installing is not None and plugin_dir.resolve() == installing.resolve():
         return plugin_dir
-    if not _is_directory(plugin_dir):
+    if any(_same_dir(plugin_dir, tree) for tree in trees) or not _is_directory(plugin_dir):
+        # a plugin there answers to other names (on a case-insensitive filesystem, a spelling of its dir too)
         plugin_dir = paths.repo_root() / "plugins" / relative
     return plugin_dir if _is_directory(plugin_dir) else None
 

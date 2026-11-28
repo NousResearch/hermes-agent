@@ -1,0 +1,25 @@
+name: agentearth
+title: AgentEarth
+repo: https://github.com/agentearth-ai/agentearth-integrations
+subdir: hermes/plugin
+sha: "5c334e372bcf78d670ccc7ca643a5f71ec2d70cf"
+version: "1.0.0"
+description: >-
+  The all-in-one toolkit with 2700+ tools. AI image & video generation, e-commerce product selection analytics, social media content & sentiment, and financial data (including stocks) — one registration unlocks everything, at prices significantly discounted from official channels. Currently covered:
+  Content Generation: Create AI-generated images, generate images from text or reference images, produce product visuals and posters, remove backgrounds, and render text in images. Capabilities also include image-to-video and text-to-video generation, digital avatar presenter videos, voiceovers, background music, and sound effects. The platform brings together GPT Image, Whisper, Gemini, Nano Banana, Veo, image models Midjourney and Grok, FLUX, Ideogram, ElevenLabs, and Lyria, alongside video model Muse, ByteDance’s Dreamina (Jimeng), Seedream, and Seedance, Kling, Qwen, Wan, Tencent Hunyuan, MiniMax, Hailuo AI, Zhipu GLM, MagiHuman, and other models and tools for image production, video creation, and audio processing.
+  E-commerce: Access data related to Amazon, TikTok Shop, Shopee, Temu, Douyin, Taobao, Tmall, JD.com, 1688, Xiaohongshu (RED), Xianyu (Goofish), and other platforms. Use Kalodata and Chanmama to look up products, stores, creators, and livestream selling performance. Tencent HuXuan helps find WeChat Official Accounts and Channels creators for partnerships. Use these insights for cross-border and domestic sourcing, supplier discovery, market research, and competitor analysis.
+  Information Retrieval: Run keyword-based web searches, look up news, conduct industry research and in-depth investigations, and access SEO data, semantic search results, web content extraction, and scraping proxy services. Integrated providers include Perplexity, Tavily, Exa, Firecrawl, and Linkup. The platform also supports searches for research papers, academic literature, citation relationships, and patent information, as well as GitHub repositories, code, and developer documentation. Look up public content from X (Twitter), YouTube, TikTok, Instagram, Facebook, Reddit, LinkedIn, Threads, Telegram (public channels), Lemon8, and Quora. Chinese platforms include Douyin, Xiaohongshu (REDNote), Kuaishou, Bilibili, Weibo, Zhihu, Baidu Tieba, WeChat Official Accounts and Channels, Toutiao, Pipixia, Xigua Video, and Youku. Available posts, videos, profiles, and comments vary by platform.
+  Finance: Access market quotes, stock prices, candlestick charts, trading volumes, corporate financial data, financial reports, and fundamentals for U.S. stocks and Chinese A-shares. Coverage also includes mutual funds, ETFs, foreign exchange, exchange rates, Bitcoin, and other cryptocurrencies, supporting equity and company research, investment analysis, and market monitoring. Integrated financial data providers include CoinGecko and Tushare.
+  Other Services: Access mapping and weather services such as Amap and QWeather, with support for place searches, geocoding, and global and local weather queries to assist with travel planning. Additional capabilities include optical character recognition (OCR), document parsing, content extraction from PDF, Word, Excel, and PowerPoint files, verification of company registration and basic company information through Qichacha and Tianyancha, and searches for film, television, jobs, legal information, and business tenders (AgentEarth).
+maintainer: AgentEarth
+tier: community
+category: tools
+requires_hermes: ">=0.23.1"
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - "After installation, configure MCP OAuth in the active Hermes profile and sign in through the browser. See the plugin README for the command."

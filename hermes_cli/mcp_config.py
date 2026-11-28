@@ -960,7 +960,8 @@ def _reauth_oauth_server(name: str, server_config: dict, *, flow: str | None = N
 
         if selected_flow == "device":
             from tools.mcp_oauth_device import login_device
-            asyncio.run(login_device(name, url, oauth_cfg))
+            headers = _resolve_mcp_server_config(server_config).get("headers") or {}
+            asyncio.run(login_device(name, url, oauth_cfg, headers=headers))
         probe_config = {**server_config, "oauth": {**oauth_cfg, "flow": selected_flow}}
         with force_interactive_oauth():
             tools = _probe_single_server(

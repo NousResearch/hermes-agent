@@ -530,14 +530,16 @@ class MCPServerTransportMixin:
                      "(%r) — reconnecting immediately instead of backing off", self.name, eg)
         return "reconnect"
 
-    def _build_oauth_auth(self, url: str, config: dict):
+    def _build_oauth_auth(self, url: str, config: dict, headers: Optional[dict] = None):
         """OAuth 2.1 PKCE via the central MCPOAuthManager (one provider reused across reconnects and
-        CLI paths). Setup failures re-raise (after a warning) so only this server is reported failed."""
+        CLI paths). ``headers`` are this connect's resolved headers: an auth proxy in front of the server
+        needs them on the OAuth requests too. Setup failures re-raise (after a warning) so only this
+        server is reported failed."""
         if self._auth_type != "oauth":
             return None
         try:
             from tools.mcp_oauth_manager import get_manager
-            return get_manager().get_or_build_provider(self.name, url, config.get("oauth"))
+            return get_manager().get_or_build_provider(self.name, url, config.get("oauth"), headers)
         except Exception as exc:
             logger.warning("MCP OAuth setup failed for '%s': %s", self.name, exc)
             raise
@@ -635,7 +637,7 @@ class MCPServerTransportMixin:
             headers["mcp-protocol-version"] = _core.LATEST_HANDSHAKE_VERSION
         connect_timeout = config.get("connect_timeout", _core._DEFAULT_CONNECT_TIMEOUT)
         common = (url, headers, connect_timeout, config.get("ssl_verify", True), _resolve_client_cert(self.name, config),
-                  self._build_oauth_auth(url, config), bool(config.get("strict_redirect_headers")))
+                  self._build_oauth_auth(url, config, headers), bool(config.get("strict_redirect_headers")))
         if config.get("transport") == "sse":
             return await self._serve_transport(self._sse_transport(*common), "SSE", float(connect_timeout))
         if self._sse_fallback:

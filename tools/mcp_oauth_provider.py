@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Mapping
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
@@ -50,6 +52,31 @@ def stamp_default_user_agent(request):
     return request
 
 
+# The SDK owns these on an OAuth request, or they belong to the MCP session; a configured value never replaces them.
+_UNFORWARDED_HEADERS = frozenset({"authorization", "content-type", "content-length", "host",
+                                  "mcp-session-id", "mcp-protocol-version"})
+
+
+def stamp_configured_headers(request, headers: Mapping[str, str], server_url: str):
+    """Add a server's configured ``headers`` to an OAuth request bound for the MCP server's own origin.
+
+    An auth proxy in front of the MCP host (Cloudflare Access service tokens, an API-gateway key) turns
+    away every request without its headers, and the SDK-built discovery, registration and token requests
+    never carry the client's default headers (see ``stamp_default_user_agent``), so login died on the
+    proxy's 302 (#155708). Same origin only: the headers already go there on every MCP request, while an
+    authorization server elsewhere must never receive them. A header the request already has wins."""
+    if not headers:
+        return request
+    url = request.url
+    origin = type(url)(server_url)  # same URL type as the request, so default ports compare equal
+    if (url.scheme, url.host, url.port) != (origin.scheme, origin.host, origin.port):
+        return request
+    for name, value in headers.items():
+        if name.lower() not in _UNFORWARDED_HEADERS and name not in request.headers:
+            request.headers[name] = value
+    return request
+
+
 def _asm_discovery_failure(response) -> str | None:
     """``"<status> from <url>"`` when *response* is a failed authorization-server metadata fetch."""
     req = getattr(response, "request", None)
@@ -85,6 +112,8 @@ class HermesProviderMixin:
     - Any 2xx token/refresh response is accepted; token bodies never leak into errors/logs."""
 
     _hermes_logger: logging.Logger = logger
+    # The server's configured ``headers`` as of its latest connect (class default: tests build via __new__).
+    _hermes_forward_headers: Mapping[str, str] = MappingProxyType({})
 
     def __init__(self, *args: Any, token_user_agent: str | None = None, oauth_flow: str = "browser", **kwargs: Any):
         super().__init__(*args, **kwargs)
@@ -92,6 +121,17 @@ class HermesProviderMixin:
         # oauth.user_agent — stamped onto token-endpoint requests only; some authorization servers/WAFs
         # reject httpx's default (#75576).
         self._hermes_token_user_agent = token_user_agent
+
+    def set_forward_headers(self, headers: Mapping[str, str]) -> None:
+        """Record the server's resolved ``headers`` for its OAuth requests (see ``stamp_configured_headers``).
+        Set on every connect, so a rotated proxy credential reaches the cached provider too."""
+        self._hermes_forward_headers = dict(headers)
+
+    def _hermes_stamp_outgoing(self, request):
+        """Prepare an SDK-built OAuth request: configured headers (own origin only), then the default
+        User-Agent, so a configured User-Agent outranks the default."""
+        stamp_configured_headers(request, self._hermes_forward_headers, self.context.server_url)
+        return stamp_default_user_agent(request)
 
     async def _perform_authorization(self):
         info = self.context.client_info
@@ -269,7 +309,7 @@ class HermesProviderMixin:
                             raise _with_discovery_context(exc, discovery_failures) from exc
                         raise
                     if out is not request:
-                        stamp_default_user_agent(out)
+                        self._hermes_stamp_outgoing(out)
                     # Full bidirectional delegation: the SDK drives this flow with
                     # asend(response), so `async for` would swallow the response and
                     # feed the inner generator None. Async generators have no

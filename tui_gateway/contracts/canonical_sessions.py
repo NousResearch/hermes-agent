@@ -322,6 +322,9 @@ class CanonicalCorrectionResult(RootModel):
 class CanonicalApprovalParams(CanonicalControlParams):
     prompt_id: str
     choice: str
+    # Free-text reason a deny carries (the CLI panel's "Deny with reason"): relayed to the
+    # agent in the BLOCKED message, mirroring /deny <reason>. Absent on plain answers.
+    reason: str | None = None
 
 
 class CanonicalEventsParams(CanonicalSessionParams):

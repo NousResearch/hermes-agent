@@ -1100,29 +1100,38 @@ class CLIModalMixin:
             self._paint_now()
 
             result = self._poll_modal_queue(response_queue, "_approval_deadline")
+            reason_entry = bool((self._approval_state or {}).get("reason_entry"))
             self._approval_state = None
             self._approval_deadline = 0
+            if reason_entry:
+                self._restore_modal_input_snapshot()
             self._paint_now()
             if result is _TIMED_OUT:
                 _cprint(f"\n{_DIM}  {t('cli.approval.timeout_denying')}{_RST}")
                 self._persist_prompt_summary(
                     "⚠", t("cli.approval.label"), command, t("cli.approval.timed_out_no_response"))
                 return "timeout"
+            outcome = _approval_outcome_label(result)
+            reason = getattr(result, "reason", None)
+            if reason:
+                outcome = f"{outcome} — {reason}"
             self._persist_prompt_summary(
-                "⚠", t("cli.approval.label"), command, _approval_outcome_label(result))
+                "⚠", t("cli.approval.label"), command, outcome)
             return result
 
     def _approval_choices(self, command: str, *, allow_permanent: bool = True,
                           allow_session: bool = True,
                           smart_denied: bool = False) -> list[str]:
         """Smart-DENY overrides and re-ask-every-time gates (allow_session=False) show only
-        once/deny; ``allow_permanent=False`` for another reason hides only 'always'."""
+        once/deny; ``allow_permanent=False`` for another reason hides only 'always'.
+        'deny_reason' (deny with a reason) is always offered next to 'deny' — the
+        free text is relayed to the agent with the denial."""
         if smart_denied or not allow_session:
-            choices = ["once", "deny"]
+            choices = ["once", "deny", "deny_reason"]
         elif allow_permanent:
-            choices = ["once", "session", "always", "deny"]
+            choices = ["once", "session", "always", "deny", "deny_reason"]
         else:
-            choices = ["once", "session", "deny"]
+            choices = ["once", "session", "deny", "deny_reason"]
         if len(command) > 70:
             choices.append("view")
         return choices
@@ -1146,8 +1155,43 @@ class CLIModalMixin:
                 state["selected"] = max(0, len(state["choices"]) - 1)
             self._invalidate()
             return
+        if chosen == "deny_reason":
+            self._begin_approval_reason_entry(state)
+            return
         state["response_queue"].put(chosen)
         self._approval_state = None
+        self._invalidate()
+
+    def _begin_approval_reason_entry(self, state) -> None:
+        """Switch the approval panel into reason-entry mode: the composer collects
+        the free text (any in-progress draft is snapshotted away), Enter denies with
+        it, Esc returns to the choice list, an empty submit is a plain deny."""
+        state["reason_entry"] = True
+        state["selected"] = 0
+        self._capture_modal_input_snapshot()
+        self._invalidate()
+
+    def _cancel_approval_reason_entry(self) -> None:
+        """Esc: leave reason-entry mode, restore the composer draft, return to choices."""
+        state = self._approval_state
+        if state:
+            state.pop("reason_entry", None)
+            state["selected"] = 0
+        self._restore_modal_input_snapshot()
+        self._invalidate()
+
+    def _submit_approval_reason(self, text: str) -> None:
+        """Enter in reason-entry mode: deny with the typed reason (empty = plain deny).
+        The queue value is a ``Denied`` str subclass — equal to "deny" for every
+        consumer, carrying ``.reason`` for the approval gate to relay verbatim."""
+        state = self._approval_state
+        if not state:
+            return
+        reason = (text or "").strip()
+        from tools.approval_prompt import Denied
+        state["response_queue"].put(Denied(reason) if reason else "deny")
+        self._approval_state = None
+        self._restore_modal_input_snapshot()
         self._invalidate()
 
     def _vault_unlock_callback(self, backend_name: str, display_name: str) -> str:
@@ -1267,7 +1311,10 @@ class CLIModalMixin:
 
         if self._approval_state:
             _put(self._approval_state, "deny")
+            was_reason = bool(self._approval_state.get("reason_entry"))
             self._approval_state = None
+            if was_reason:
+                self._restore_modal_input_snapshot()
         if self._connection_state:
             self._connection_interrupt()
         if self._clarify_state:

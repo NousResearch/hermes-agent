@@ -299,6 +299,7 @@ def _request_protected_instruction_approval(reasons: list[str], task_id: str = "
     session_key = get_current_session_key()
     notify_cb = _approval._gateway_notify_cb(session_key)
 
+    deny_reason: str | None = None  # free-text reason attached to a deny, relayed verbatim below
     if notify_cb is not None:
         approval_data = {
             "command": display,
@@ -313,6 +314,8 @@ def _request_protected_instruction_approval(reasons: list[str], task_id: str = "
         if decision.get("cancelled"):
             return blocked.format(why=f"approval was withdrawn before the user answered ({decision['cancelled']}).")
         choice, timed = decision.get("choice"), not decision.get("resolved")
+        # The gateway wait relays a /deny-style free-text reason alongside the choice.
+        deny_reason = decision.get("reason")
     else:
         # CLI surface: per-thread approval callback (prompt_toolkit panel).
         try:
@@ -341,10 +344,18 @@ def _request_protected_instruction_approval(reasons: list[str], task_id: str = "
             return blocked.format(why="approval prompt could not be delivered or was not answered "
                                       f"({getattr(choice, 'cause', 'no answer')}).")
         timed = choice == "timeout"
+        # The panel's deny-with-reason returns a Denied choice (== "deny", .reason set).
+        deny_reason = getattr(choice, "reason", None)
     # Any tapped scope is a one-operation grant; nothing is persisted.
     if not timed and choice in {"once", "session", "always"}:
         return None
-    return timed_out if timed else denied
+    if timed:
+        return timed_out
+    # Relay a free-text reason attached to the deny — the same addendum shape
+    # tools/approval.py uses — so the agent can adapt, not just hear "denied".
+    if deny_reason:
+        return denied + f' Reason given by the user: "{deny_reason}".'
+    return denied
 
 
 def _check_protected_instruction_write(paths: list[str], task_id: str = "default") -> str | None:

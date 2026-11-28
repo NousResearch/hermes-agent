@@ -459,7 +459,7 @@ def _refusals():
     no_consent = ["BLOCKED, not run", "did NOT consent"]
     return [
         pytest.param("terminal", {"command": "rm -rf build"},
-                     _error_json(gate.cli_denied.format(description="", breaker=""), status="blocked"),
+                     _error_json(gate.cli_denied.format(description="", breaker="", reason_addendum=""), status="blocked"),
                      no_consent, id="cli_denied"),
         pytest.param("terminal", {"command": "rm -rf build"},
                      _error_json(gate.transport_denied.format(breaker=""), status="blocked"),

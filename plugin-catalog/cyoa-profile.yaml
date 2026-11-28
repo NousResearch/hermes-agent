@@ -1,0 +1,22 @@
+name: cyoa-profile
+title: CYOA Profile
+repo: https://github.com/benohanlon/profile-md-template
+sha: 0f7f376f1489fd5e41a83d93d6867b2ff66ff074
+subdir: hermes
+version: "1.0.0"
+description: >-
+  Build a Choose Your Own Adventure profile.md to share alongside your CV or in a
+  follow-up. Give people a prompt they can paste into their own AI to ask their
+  own questions and explore your work. Portable Agent Plugins v1 package with
+  one Markdown skill and no executable plugin code.
+maintainer: Ben O’Hanlon
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/benohanlon/profile-md-template/tree/0f7f376f1489fd5e41a83d93d6867b2ff66ff074/hermes
+image: https://raw.githubusercontent.com/benohanlon/profile-md-template/0f7f376f1489fd5e41a83d93d6867b2ff66ff074/hermes/marketplace-cover.jpg
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

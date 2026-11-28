@@ -1,6 +1,7 @@
 """Background-process completions paint a compact title while the model keeps the raw wall."""
 import queue
 import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -128,3 +129,31 @@ def test_process_completion_display_keeps_payload_separate_across_surfaces(monke
     assert text == payload
     assert kwargs["display_kind"] == PROCESS_COMPLETE_DISPLAY_KIND
     assert kwargs["display_metadata"] == {"display_text": expected}
+
+
+def test_completion_notice_started_ago():
+    """The completion notice carries the process's age so a lane can tell a result that
+    surfaced long after spawn from a fresh one (sys-64zyx9)."""
+    evt = {**_event("proc_age", 0), "started_at": time.time() - 205}
+    assert (text := format_process_notification(evt)) and " Started 3m25s ago." in text
+
+
+def test_completion_notice_superseded(monkeypatch):
+    """A completion notice for a command the session already re-ran says SUPERSEDED by the
+    newer proc id; the newer twin's own notice carries no supersession."""
+    from tools.process_registry import ProcessRegistry, ProcessSession
+    reg = ProcessRegistry()
+    monkeypatch.setattr(reg, "_write_checkpoint", lambda **kw: None)
+    older = ProcessSession(id="proc_old", command="bash repeat.sh", session_key="display-session",
+                           started_at=1000.0, notify_on_complete=True)
+    newer = ProcessSession(id="proc_new", command="bash repeat.sh", session_key="display-session",
+                           started_at=2000.0, notify_on_complete=True)
+    reg._running["proc_new"] = newer
+    reg._publish_finished(older, True)
+    evt = reg.completion_queue.get_nowait()
+    assert evt["superseded_by"] == "proc_new"
+    assert (text := format_process_notification(evt)) and "SUPERSEDED by proc_new." in text
+    reg._running.pop("proc_new")
+    reg._finished["proc_old"] = older
+    reg._publish_finished(newer, True)
+    assert "superseded_by" not in reg.completion_queue.get_nowait()

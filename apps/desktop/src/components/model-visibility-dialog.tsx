@@ -204,7 +204,9 @@ export function ModelVisibilityDialog({
                   </div>
                   {!collapsed &&
                     models.map(family => {
-                      const { name, tag } = modelDisplayParts(family.id)
+                      // User-defined gateways keep their `vendor/` head — the
+                      // config-key group heading carries no upstream name.
+                      const { name, tag } = modelDisplayParts(family.id, provider.is_user_defined === true)
                       const key = modelVisibilityKey(provider.slug, family.id)
 
                       return (

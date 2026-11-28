@@ -60,6 +60,36 @@ export function modelBaseId(model: string): string {
   return slash >= 0 ? trimmed.slice(slash + 1) : trimmed
 }
 
+/** Keep the `vendor/` head of an id on rows of a user-defined provider. A
+ *  curated catalog names the vendor in its own metadata; a gateway the user
+ *  wrote into config.yaml (magpie-style proxies) has an opaque key for a group
+ *  heading, so the id head is the ONLY upstream signal — dropping it collapses
+ *  `doubao-work/glm-5.4` and `auto/glm-5.4` into one "GLM 5.4". A head that
+ *  merely repeats the base (`gemini/gemini-3.6-flash`) still drops: it names
+ *  the same model, not a sibling upstream. */
+function vendorHead(model: string, keepVendorHead: boolean): string {
+  if (!keepVendorHead) {
+    return ''
+  }
+
+  const trimmed = model.trim()
+  const slash = trimmed.lastIndexOf('/')
+  const head = slash > 0 ? trimmed.slice(0, slash) : ''
+
+  if (!head) {
+    return ''
+  }
+
+  const base = trimmed.slice(slash + 1)
+  const headLast = head.slice(head.lastIndexOf('/') + 1).toLowerCase()
+
+  return base.toLowerCase().startsWith(headLast) ? '' : head
+}
+
+function prettifyHead(head: string): string {
+  return applyVendorCasing(titleCase(head.replace(/[/-]/g, ' ')))
+}
+
 // Trailing model-id variants that should render as a grayed tag beside the
 // name (e.g. "Opus 4.8" + "Fast") rather than collapsing two distinct ids to
 // the same display name. `-flash` splits look-alike pairs the same way
@@ -178,7 +208,7 @@ function splitTrailingTags(base: string): { base: string; variant: string; quant
 
 /** Split a model id into a clean display name plus an optional grayed variant
  *  tag, so distinct ids (e.g. `…-4.8` vs `…-4.8-fast`) don't collapse. */
-export function modelDisplayParts(model: string): { name: string; tag: string } {
+export function modelDisplayParts(model: string, keepVendorHead = false): { name: string; tag: string } {
   let { base, variant, quant } = splitTrailingTags(modelBaseId(model))
 
   const tags = [variant, quant].filter(Boolean)
@@ -196,14 +226,22 @@ export function modelDisplayParts(model: string): { name: string; tag: string } 
   // Drop a trailing date-pin (`…-20251101`) — snapshot noise, not a name.
   base = base.replace(/-\d{8}$/, '')
 
-  return { name: prettifyBase(base) || model.trim() || 'No model', tag: tags.join(' ') }
+  // A user-defined gateway keeps its `vendor/` head (see vendorHead): the group
+  // heading is a config key, so the head is what tells sibling upstreams apart.
+  const head = vendorHead(model, keepVendorHead)
+  const prettyBase = prettifyBase(base) || model.trim() || 'No model'
+
+  return {
+    name: head ? `${prettifyHead(head)} · ${prettyBase}` : prettyBase,
+    tag: tags.join(' ')
+  }
 }
 
 /** Friendly one-line model name for menus and the status bar. The variant
  *  tag is part of the name: `…-4.8` vs `…-4.8-thinking` must never collapse
  *  to the same label on any surface (#88597). */
-export function displayModelName(model: string): string {
-  const { name, tag } = modelDisplayParts(model)
+export function displayModelName(model: string, keepVendorHead = false): string {
+  const { name, tag } = modelDisplayParts(model, keepVendorHead)
 
   return tag ? `${name} ${tag}` : name
 }

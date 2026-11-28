@@ -493,10 +493,10 @@ def _recover_format_errors(
         )
         return True
 
-    # 400 ``invalid_encrypted_content`` on a stale ``codex_reasoning_items`` blob (the 401
-    # ``token_expired`` twin is taken ahead of the credential pool in the caller).
+    # Format rejections can also name stale message IDs after reasoning has already been removed.
+    # The 401 token_expired twin remains reasoning-only before credential recovery in the caller.
     if classified.reason == FailoverReason.invalid_encrypted_content and _recover_stale_codex_reasoning(
-        agent, _retry, messages, api_messages
+        agent, _retry, messages, api_messages, allow_message_only=True
     ):
         return True
 

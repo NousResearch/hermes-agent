@@ -9,6 +9,8 @@ import json
 import logging
 import os
 import queue
+import re
+import shlex
 import sys
 import threading
 from collections import OrderedDict
@@ -871,6 +873,317 @@ def _run_backend_probe(env_type: str, terminal_tool) -> str:
     return (result.get("output") or "").strip()
 
 
+def _exec_on_backend(env_type: str, command: str, timeout: int) -> tuple[int, str]:
+    """Run one command in a throwaway backend environment — same build path as the probe (isolated ssh
+    ControlMaster; ``probe_only`` skips remote dir setup / file sync). Raises when the environment
+    cannot be built; returns ``(returncode, output)``. Single source for every prompt-build backend exec."""
+    from tools import terminal_tool  # heavy; only reached on remote backends
+    from tools.terminal_tool_backends import _container_config_from_config, _create_environment, _ssh_config_from_config
+    from tools.terminal_tool_lifecycle import _cleanup_env
+
+    config = terminal_tool._get_env_config()
+    env = _create_environment(
+        env_type=env_type, image=config.get(_BACKEND_IMAGE_KEYS[env_type], "") if env_type in _BACKEND_IMAGE_KEYS else "",
+        cwd=config.get("cwd", ""), timeout=config.get("timeout", 180),
+        ssh_config=_ssh_config_from_config(config) if env_type == "ssh" else None,
+        container_config=(_container_config_from_config(config)
+                          if terminal_tool._is_container_backend(env_type) else None),
+        task_id="prompt-backend-context", host_cwd=config.get("host_cwd"),
+        # Honored by ssh: an isolated ControlMaster, no ~/.hermes upload just to read a file.
+        probe_only=True,
+    )
+    try:
+        result = env.execute(command, timeout=timeout)
+    finally:
+        try:
+            _cleanup_env(env, force_remove=True)
+        except Exception:
+            logger.debug("Backend context probe cleanup failed", exc_info=True)
+    return int(result.get("returncode") or 0), (result.get("output") or "")
+
+
+_REMOTE_CONTEXT_MAX_FILE_BYTES = 60000  # hard ceiling on the shell-side per-file read
+_REMOTE_CONTEXT_MIN_FILE_BYTES = 1024   # ...and floor, so a nonsense config cannot make discovery a no-op
+
+
+def _remote_context_file_cap(context_length: Optional[int]) -> int:
+    """Per-file byte ceiling for the discovery payload: the per-file *prompt* budget, clamped.
+
+    The shell read a flat 60 KiB per candidate whatever the model window was, i.e. several times more over
+    the wire than the local loader would ever put in the prompt (Python truncates to
+    ``context_file_max_chars`` on its side anyway). Sending the budget is the same prompt with fewer bytes;
+    both bounds stay because ``context_file_max_chars`` is user-configurable.
+    """
+    try:
+        budget = int(_get_context_file_max_chars(context_length))
+    except Exception:
+        return _REMOTE_CONTEXT_MAX_FILE_BYTES
+    return max(_REMOTE_CONTEXT_MIN_FILE_BYTES, min(budget, _REMOTE_CONTEXT_MAX_FILE_BYTES))
+
+
+def _remote_backend_active() -> str:
+    """The session's terminal backend when it is remote and host-side probes are allowed, else "".
+
+    A remote backend means the project's files live on the backend, not on this host: every host-side
+    ``Path.is_dir()`` check drops the declared session workspace (``/Users/…`` does not exist here), so
+    project context discovery finds nothing and the model runs the repo without its AGENTS.md (#45893).
+    """
+    from tools.hosted_tool_policy import host_feature_enabled
+    backend = (_tenv_read("TERMINAL_ENV") or "local").strip().lower()
+    if backend in {"", "local"} or not host_feature_enabled("backend_probe"):
+        return ""
+    if backend in _REMOTE_TERMINAL_BACKENDS or _plugin_backend_is_remote(backend):
+        return backend
+    return ""
+
+
+def _remote_context_discovery_script(cwd: str, nonce: str, cap: Optional[int] = None) -> str:
+    """POSIX-sh (bash arrays) script mirroring local discovery: emit every candidate file with
+    ``MARK|kind|label|target@@`` / ``MARK|END@@`` delimiters. A per-build *nonce* keeps hostile file content
+    from forging markers (payload markers are unpredictable); the cwd reaches the shell only through
+    ``shlex.quote``. Emission order carries precedence: agents chain root->cwd (name priority inside each
+    dir), hermes walk cwd->root (nearest first), claude/cursorrules at cwd. ``git`` missing degrades to the
+    single-directory chain, exactly like the local finder without a root.
+
+    Two path fields, both escaped: the *label* is relative to the session cwd exactly as the local loaders
+    render it (``AGENTS.md`` here, ``../AGENTS.md`` one up) and *target* is the canonical path Python vettes
+    against the read deny-list. A path may itself contain the field separator, a backslash or a newline, so
+    ``hxesc`` escapes both fields and the parser decodes them while splitting — an unescaped separator would
+    let a crafted file name split its own header and the tail be read as another file's content.
+    """
+    marker = f"@@HCTX{nonce}"
+    q = shlex.quote(cwd)
+    cap = _remote_context_file_cap(None) if cap is None else max(_REMOTE_CONTEXT_MIN_FILE_BYTES, int(cap))
+    return "\n".join([
+        # ``cd -P`` so $PWD is the physical path: git's --show-toplevel resolves symlinks too, and only a
+        # physical PWD keeps the chain and the ``../``-label arithmetic anchored to one spelling.
+        f"cd -P -- {q} 2>/dev/null || exit 0",
+        # Containment (mirrors the local ``_read_context_file`` policy, PR #156648 review): a candidate
+        # enters the prompt only if its FULLY RESOLVED path stays inside the project root. ``canon``
+        # resolves every symlink hop through ``cd -P`` so a relative link cannot smuggle a physical
+        # escape via ``..`` segments; an unresolvable/unreadable parent fails closed. A violation is
+        # silently skipped (the frame is never emitted) — the same skip, not warn, posture as the scan.
+        "canon() { d=$(cd -- \"$(dirname -- \"$1\")\" 2>/dev/null && pwd -P) || return 1; b=$(basename -- \"$1\");"
+        " while [ -L \"$d/$b\" ]; do l=$(readlink -- \"$d/$b\") || return 1;"
+        " case \"$l\" in /*) d2=$(cd -- \"$(dirname -- \"$l\")\" 2>/dev/null && pwd -P) || return 1;"
+        " d=\"$d2\"; b=$(basename -- \"$l\");;"
+        " *) d2=$(cd -- \"$(dirname -- \"$d/$l\")\" 2>/dev/null && pwd -P) || return 1;"
+        " d=\"$d2\"; b=$(basename -- \"$l\");; esac; done; printf '%s/%s' \"$d\" \"$b\"; }",
+        "nl=$'\\n'",
+        # Frame hygiene for the two path fields (``\\`` first, so the escape itself cannot be re-read).
+        "hxesc() { s=$1; s=${s//\\\\/\\\\\\\\}; s=${s//|/\\\\p}; s=${s//\"$nl\"/\\\\n}; printf '%s' \"$s\"; }",
+        # emit() vets and then reads the CANONICAL target, never the link path, so a symlink swapped between
+        # the containment check and the read still lands on the vetted file (the same trick as
+        # ``_read_context_file``'s ``path = target``). Regular file only, and head's stderr is dropped: the
+        # backend exec merges stderr into stdout, so a directory or an unreadable candidate named AGENTS.md
+        # used to arrive as that file's *content* — and, being a "found" file, suppress the legitimate
+        # CLAUDE.md one type down.
+        f"emit() {{ t=$(canon \"$3\") || return 0; case \"$t\" in \"$root\"|\"$root\"/*) ;; *) return 0;; esac;"
+        f" [ -f \"$t\" ] || return 0; printf '{marker}|%s|%s|%s@@\\n'"
+        f" \"$1\" \"$(hxesc \"$2\")\" \"$(hxesc \"$t\")\"; head -c {cap} \"$t\" 2>/dev/null;"
+        f" printf '\\n{marker}|END@@\\n'; }}",
+        "root=$(git rev-parse --show-toplevel 2>/dev/null) || root=''",
+        "[ -n \"$root\" ] || root=$(pwd)",
+        # ``_containment_root`` mirror: a root at or above the backend's $HOME narrows to the cwd, so a
+        # session opened at ~ cannot serve dotfiles (~/.ssh/…) through a project-root prefix match. The
+        # comparison is physical: an $HOME with a symlinked component (a logical /tmp-style spelling) used to
+        # miss the match and leave a home-directory git root un-narrowed — the very case this guard exists for.
+        "[ -n \"${HOME:-}\" ] && { h=$(canon \"$HOME\" 2>/dev/null) || h=\"$HOME\";"
+        " case \"$h\" in \"$root\"|\"$root\"/*) root=$(pwd);; esac; }",
+        "chain=(); d=$(pwd)",
+        "while :; do chain+=(\"$d\"); [ \"$d\" = \"$root\" ] && break; nd=$(dirname \"$d\"); [ \"$nd\" = \"$d\" ] && break; d=$nd; done",
+        # ``rel i name`` builds the label the local loaders render: index 0 is the cwd (bare name), each step
+        # toward the root adds one ``../``. Labels must be shell-side — relpath() in Python resolves a
+        # relative label against THIS process's cwd and would leak a Hermes-host path into a remote prompt.
+        "rel() { r=''; j=0; while [ \"$j\" -lt \"$1\" ]; do r=\"../$r\"; j=$((j+1)); done; printf '%s%s' \"$r\" \"$2\"; }",
+        # Same-file dedup (PR #156648 review): on a case-insensitive filesystem (macOS backends) a
+        # case-variant pair resolves to ONE file and would ride the payload twice; -ef (dev+inode)
+        # drops the second name without stat/external tools, stays correct on case-sensitive FS,
+        # and also collapses hardlinked twins.
+        "for ((i=${#chain[@]}-1; i>=0; i--)); do dir=${chain[i]}; prev=''; "
+        "for n in AGENTS.override.md AGENTS.md agents.md; do f=\"$dir/$n\"; [ -f \"$f\" ] || continue; { [ -z \"$prev\" ] || ! [ \"$f\" -ef \"$prev\" ]; } && emit agents_md \"$(rel \"$i\" \"$n\")\" \"$f\"; prev=\"$f\"; done; done",
+        # Existence, not size, selects: the local finder takes the NEAREST .hermes.md/HERMES.md that exists
+        # and loads nothing when that file is empty, so an empty nearest file has to shadow the whole type
+        # here too — ``-s`` let an upstream one through and the prompt differed per machine.
+        "for ((i=0; i<${#chain[@]}; i++)); do dir=${chain[i]}; for n in .hermes.md HERMES.md; do f=\"$dir/$n\"; [ -f \"$f\" ] && emit hermes_md \"$(rel \"$i\" \"$n\")\" \"$f\"; done; done",
+        "prev=''; for n in CLAUDE.md claude.md; do f=\"$PWD/$n\"; [ -f \"$f\" ] || continue; { [ -z \"$prev\" ] || ! [ \"$f\" -ef \"$prev\" ]; } && emit claude_md \"$n\" \"$f\"; prev=\"$f\"; done",
+        # Symlinks are vetted, not refused: emit() canonicalises, contains and (Python-side) deny-lists the
+        # target, which is exactly what the local loader does with an in-project link — the blanket ``-L``
+        # guards here dropped files the host-side path happily loaded. The ``.cursor`` directory guards
+        # stay, because those gate where the *.mdc glob walks.
+        "[ -f \"$PWD/.cursorrules\" ] && emit cursorrules .cursorrules \"$PWD/.cursorrules\"",
+        "if [ -d \"$PWD/.cursor/rules\" ] && ! [ -L \"$PWD/.cursor\" ] && ! [ -L \"$PWD/.cursor/rules\" ]; then "
+        "for f in \"$PWD\"/.cursor/rules/*.mdc; do "
+        "[ -f \"$f\" ] && emit cursorrules \"${f#\"$PWD\"/}\" \"$f\"; done; fi",
+        "exit 0",
+    ])
+
+
+def _split_remote_header_fields(value: str) -> list[str]:
+    """Split an escaped ``label|target`` header on unescaped ``|``, decoding ``\\p`` → ``|``, ``\\n`` →
+    newline and ``\\\\`` → ``\\`` in the same pass.
+
+    One pass, not ``split("|")`` + unescape, because the escape has to be honoured *while* looking for the
+    separator: a file name containing ``|`` must stay inside its own field. ``hxesc`` in the discovery script
+    is the producing side.
+    """
+    fields: list[str] = []
+    cur: list[str] = []
+    i = 0
+    while i < len(value):
+        ch = value[i]
+        if ch == "\\" and i + 1 < len(value):
+            decoded = {"p": "|", "n": "\n", "\\": "\\"}.get(value[i + 1])
+            if decoded is not None:
+                cur.append(decoded)
+                i += 2
+                continue
+        if ch == "|":
+            fields.append("".join(cur))
+            cur = []
+            i += 1
+            continue
+        cur.append(ch)
+        i += 1
+    fields.append("".join(cur))
+    return fields
+
+
+def _parse_remote_context_payload(output: str, nonce: str) -> list[tuple[str, str, str, str]]:
+    """``(kind, label, target, content)`` quads from a discovery payload, in emission order; unknown kinds,
+    malformed frames and labels that decode to a multi-line heading are dropped. A forged END inside file
+    content can only clip that file, not escape it."""
+    marker = f"@@HCTX{nonce}"
+    begin_re = re.compile(rf"^{re.escape(marker)}\|([a-z_]+)\|(.*)@@$")
+    end_line = f"{marker}|END@@"
+    files: list[tuple[str, str, str, str]] = []
+    kind: Optional[str] = None
+    label = target = ""
+    buf: list[str] = []
+    for line in output.splitlines():
+        if kind is not None:
+            if line == end_line:
+                files.append((kind, label, target, "\n".join(buf).strip()))
+                kind = None
+            else:
+                buf.append(line)
+            continue
+        m = begin_re.match(line)
+        if not m or m.group(1) not in _CONTEXT_FILE_CANDIDATES:
+            continue
+        fields = _split_remote_header_fields(m.group(2))
+        if len(fields) != 2 or "\n" in fields[0]:
+            continue  # malformed header, or a name that cannot render as a one-line section heading
+        kind, label, target, buf = m.group(1), fields[0], fields[1], []
+    return files
+
+
+def _remote_target_refused(target: str) -> bool:
+    """True when the local read deny-list would refuse to read a backend context file.
+
+    The shell cannot mirror this check (it is Python, partly host-anchored, pattern-based), and containment
+    alone is not enough: an in-project ``AGENTS.md -> .env`` stays inside the project root, so it clears the
+    shell-side gate while the host-side loader refuses that target outright — the payload would otherwise
+    carry a project's secrets into the system prompt, where no threat pattern fires on an API key. Fails
+    closed when the deny-list itself cannot be consulted, like ``_resolved_hint_target``.
+    """
+    try:
+        from agent.file_safety import get_read_block_error
+        return get_read_block_error(target) is not None
+    except Exception:
+        logger.debug("Remote context read deny-list unavailable; refusing %s", target, exc_info=True)
+        return True
+
+
+def _remote_project_context_prompt(backend: str, declared_cwd: str, context_length: Optional[int]) -> str:
+    """Backend-side mirror of the one-type-wins project discovery (see ``build_context_files_prompt``).
+
+    Deliberate deltas from the local loaders: containment is mirrored shell-side (a candidate's fully
+    resolved path must stay inside the project root, HOME-level roots narrow to the cwd — see
+    ``_remote_context_discovery_script``) and the local read deny-list is applied here against the canonical
+    target the shell reports (``_remote_target_refused``); the threat scan in ``_context_section`` stays the
+    second hard gate, so hostile backend files are blocked, not merely uncontained. ``read_file`` paths in
+    truncation markers point at the
+    backend (the agent's file tools read through the same backend). Any failure yields "": the caller then
+    ships NO project context rather than falling back to this host's launch dir, which names nothing in
+    the session.
+    """
+    import posixpath
+    try:
+        import uuid
+        nonce = uuid.uuid4().hex[:12]
+        rc, out = _exec_on_backend(
+            backend,
+            _remote_context_discovery_script(declared_cwd, nonce, _remote_context_file_cap(context_length)),
+            timeout=8)
+    except Exception:
+        logger.debug("Remote project-context discovery failed", exc_info=True)
+        return ""
+    if rc != 0 or not out:
+        if rc != 0:
+            # Silent until now, and therefore undiagnosable: "the ssh host is unreachable" and "the declared
+            # workspace does not exist on the backend" both looked like a repo with no context files.
+            logger.info("remote project-context discovery on %s failed (rc=%s, %d byte(s) of output); this "
+                        "session ships without project context", backend, rc, len(out or ""))
+        else:
+            # The common benign case: the backend answered and the project simply has no context files.
+            logger.debug("remote project-context discovery on %s found no candidate files", backend)
+        return ""
+    parsed = _parse_remote_context_payload(out, nonce)
+    files = [f for f in parsed if not _remote_target_refused(f[2])]
+    if len(files) != len(parsed):
+        # Rare and security-relevant: a candidate whose resolved target the host-side loader would refuse too.
+        logger.info("remote project-context discovery on %s refused %d of %d candidate file(s) on the read "
+                    "deny-list", backend, len(parsed) - len(files), len(parsed))
+    if not files:
+        return ""
+
+    def _section(label: str, content: str, warn_name: str) -> str:
+        # The label is rendered exactly as the shell built it (``AGENTS.md`` at the cwd, ``../AGENTS.md`` one
+        # up). No relpath(): a relative label would be resolved against THIS process's cwd, so a remote
+        # session's prompt carried the Hermes host's own directory — and a ``~``- or symlink-prefixed declared
+        # cwd turned every heading into ``../../<host cwd>/…`` nonsense.
+        read_path = Path(posixpath.normpath(posixpath.join(declared_cwd, label)))
+        return _context_section(content, label, warn_name, read_path, context_length)
+
+    for kind, label, _target, content in files:
+        if kind != "hermes_md":
+            continue
+        # The nearest EXISTING hermes file decides the type, empty or not: the local finder selects by
+        # existence (_find_hermes_md) and then loads nothing, so an empty nearest file declines the whole
+        # type and the AGENTS chain gets its turn.
+        if content:
+            return _section(label, _strip_yaml_frontmatter(content), ".hermes.md")
+        break
+    sections: list[str] = []
+    seen_content: set[str] = set()
+    emitted_dirs: set[str] = set()
+    for kind, label, _target, content in files:
+        if kind != "agents_md" or not content:
+            continue
+        directory = posixpath.dirname(label)
+        if directory in emitted_dirs or content in seen_content:
+            continue  # first name wins per directory; identical copies further down dedup
+        seen_content.add(content)
+        emitted_dirs.add(directory)
+        sections.append(_section(label, content, label))
+    if len(sections) == 1:
+        return sections[0]
+    if sections:
+        return _truncate_content(
+            "\n\n".join(sections), "AGENTS.md (directory chain)", context_length=context_length,
+            read_path=f"{declared_cwd.rstrip('/')}/AGENTS.md")
+    for kind, label, _target, content in files:
+        if kind == "claude_md" and content:
+            return _section(label, content, "CLAUDE.md")
+    merged = "".join(f"## {label}\n\n{_scan_context_content(content, label)}\n\n"
+                     for kind, label, _target, content in files if kind == "cursorrules" and content)
+    if not merged:
+        return ""
+    return _truncate_content(merged, ".cursorrules", context_length=context_length,
+                             read_path=f"{declared_cwd.rstrip('/')}/.cursorrules")
+
+
 def _format_backend_probe(output: str) -> str:
     """Render the probe's key=value lines as an indented summary ("" if nothing usable)."""
     parsed = {k.strip(): v.strip() for k, _, v in (line.partition("=") for line in output.splitlines() if "=" in line)}
@@ -977,16 +1290,64 @@ def _bot_screen_hint() -> str:
         return ""
 
 
+def _declared_session_workspace() -> str:
+    """The session's backend-side workspace path as declared by the runtime ("" when unset).
+
+    This is the ONE cwd a remote-backend hint may name. The #117262 privacy contract suppresses
+    probe-OBSERVED sandbox user/$HOME/cwd — identity metadata nothing consumes, probed out of the
+    box. The session workspace is the opposite: a runtime-declared value the gateway froze into the
+    session policy at session open (never probed, never a Hermes-host path — a host path is exactly
+    what the remote hint must keep out). Without it the model has no anchor for "which project am I
+    in": it guesses the repo from prompt text and memory priors, and a wrong guess silently sends
+    file/shell work into the wrong repository (#45893-class failure). Read through
+    ``scoped_session_cwd`` so no host-side path validation drops remote/container paths.
+    """
+    try:
+        from agent.runtime_cwd import scoped_session_cwd
+        cwd = (scoped_session_cwd() or "").strip()
+    except Exception:
+        return ""
+    return cwd if cwd and cwd not in {".", "~", "auto", "cwd"} else ""
+
+
+def _declared_workspace_names_host_dir(declared: str) -> bool:
+    """True when the declared session workspace is a directory that exists on THIS host.
+
+    The conservative half of the remote-context branch: it decides which side owns the project's files. A
+    path the host can stat is a host path — docker bind-mounts the session folder and desktop/ACP sessions
+    pin the host launch dir — so the host-side loader is the one reading the right files, while sending that
+    same spelling to the backend risks reading an unrelated tree that merely shares the name (the #45893
+    wrong-repo failure, mirrored). Only literal paths are tested: a ``~`` value is expanded by the BACKEND's
+    shell, so the host's home is not what it names.
+    """
+    if declared.startswith("~"):
+        return False
+    try:
+        return Path(declared).is_dir()
+    except OSError:
+        return False
+
+
 def _remote_backend_hint(backend: str) -> str:
-    """Backend-only block for remote/sandbox backends (host info deliberately suppressed)."""
+    """Backend-only block for remote/sandbox backends (host info deliberately suppressed;
+    the session's declared workspace is the one exception — see _declared_session_workspace)."""
     lead = (f"Terminal backend: {backend}. Your `terminal`, `read_file`, `write_file`, `patch`, and "
             f"`search_files` tools all operate inside ")
     probe = _probe_remote_backend(backend)
+    workspace = _declared_session_workspace()
+    workspace_line = (
+        f"\n  Session workspace: {workspace} — the directory this session was opened in on the backend. "
+        f"Treat it as the project root: start file and shell work there unless the request names another path."
+    ) if workspace else ""
+    # With the workspace named, only user/$HOME remain unlisted; without it the working directory
+    # stays unknown too and the model keeps the pwd-probe instruction.
+    unknown = "current user and $HOME" if workspace else "current user, $HOME, and working directory"
     if probe:
         return lead + (
             f"this {backend} environment — NOT on the machine where Hermes itself is running. The host OS, "
-            f"home, and cwd of the Hermes process are irrelevant; only the following backend state matters:\n{probe}\n"
-            f"  The sandbox's current user, $HOME, and working directory are not listed here; if you need them, "
+            f"home, and cwd of the Hermes process are irrelevant; only the following backend state matters:\n{probe}"
+            f"{workspace_line}\n"
+            f"  The sandbox's {unknown} are not listed here; if you need them, "
             f"probe directly with a terminal call like `whoami && pwd`."
         )
     description = (
@@ -996,8 +1357,9 @@ def _remote_backend_hint(backend: str) -> str:
     )
     return lead + (
         f"{description} — NOT on the machine where Hermes itself runs. The backend probe didn't respond at "
-        f"prompt-build time, so the sandbox's OS, current user, $HOME, and working directory are unknown from here. "
+        f"prompt-build time, so the sandbox's OS, {unknown} are unknown from here. "
         f"If you need them, probe directly with a terminal call like `uname -a && whoami && pwd`."
+        f"{workspace_line}"
     )
 
 
@@ -1782,18 +2144,36 @@ def build_context_files_prompt(
 
     if safe_worker_enabled() or not host_feature_enabled("context_files"):
         return ""  # hosted: the project's files are in the agent's sandbox, this host's are not its
-    cwd_path = _context_cwd_path(cwd)
-    if cwd_path is None:
-        sections = []
-    elif _project_context_suppressed(cwd, cwd_path, allow_install_tree_fallback):
-        logger.warning(
-            "skipping project-context discovery: working-directory resolution fell back to the Hermes "
-            "install tree (%s) — set terminal.cwd to your project directory", cwd_path,
-        )
-        sections = []
+    # Remote backend: the project lives on the backend, so discovery must run there too — every host-side
+    # path check drops the declared session workspace (it does not exist on this host), which left remote
+    # sessions running their repo with no AGENTS.md (#45893). Read through the same backend the agent's
+    # file tools use; a failed discovery ships NO project context rather than this host's launch dir,
+    # which names nothing in the session.
+    backend = _remote_backend_active()
+    declared = _declared_session_workspace()
+    if backend and declared and _declared_workspace_names_host_dir(declared):
+        # The declared workspace exists here, so it names a directory on THIS host rather than a backend-only
+        # path (docker bind-mounts the session folder; desktop/ACP sessions pin the host launch dir). The
+        # host-side loader below reads the right files for those topologies; sending the same spelling to the
+        # backend could read an unrelated tree that merely shares the path.
+        logger.info("keeping host-side project-context discovery: declared workspace %s exists on this host "
+                    "(terminal backend %s)", declared, backend)
+        declared = ""
+    if backend and declared:
+        sections = [_remote_project_context_prompt(backend, declared, context_length)]
     else:
-        sections = [_load_hermes_md(cwd_path, context_length) or _load_agents_md(cwd_path, context_length)
-                    or _load_claude_md(cwd_path, context_length) or _load_cursorrules(cwd_path, context_length)]
+        cwd_path = _context_cwd_path(cwd)
+        if cwd_path is None:
+            sections = []
+        elif _project_context_suppressed(cwd, cwd_path, allow_install_tree_fallback):
+            logger.warning(
+                "skipping project-context discovery: working-directory resolution fell back to the Hermes "
+                "install tree (%s) — set terminal.cwd to your project directory", cwd_path,
+            )
+            sections = []
+        else:
+            sections = [_load_hermes_md(cwd_path, context_length) or _load_agents_md(cwd_path, context_length)
+                        or _load_claude_md(cwd_path, context_length) or _load_cursorrules(cwd_path, context_length)]
     if not skip_soul:
         sections.append(load_soul_md(context_length, home_override=home_override))
     sections = [s for s in sections if s]

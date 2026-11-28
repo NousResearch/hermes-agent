@@ -7,8 +7,12 @@ import pytest
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("surface", ["desktop", "chat"])
-async def test_explicit_reload_retries_only_the_requesting_profiles_enabled_servers(monkeypatch, surface):
+# ``watcher``: the TUI config watcher names ``rev`` and re-polls a refusal on its own timer, so
+# clearing the backoff for it would retry a down server every few seconds instead of 30-600 s.
+@pytest.mark.parametrize("surface, expected", [
+    ("desktop", ["recovered"]), ("chat", ["recovered"]), ("watcher", [])])
+async def test_explicit_reload_retries_only_the_requesting_profiles_enabled_servers(
+        monkeypatch, surface, expected):
     from gateway import session_ancillary
     from tests.gateway.test_mcp_reload_refreshes_cached_agents import (
         _make_event,
@@ -48,7 +52,7 @@ async def test_explicit_reload_retries_only_the_requesting_profiles_enabled_serv
     monkeypatch.setattr(discovery, "discover_mcp_tools", discover)
     runner = _make_runner_with_cached_agents(num_agents=0)
     runner._mcp_reload_refresh_cached_agents = lambda *args: None
-    if surface == "desktop":
+    if surface in ("desktop", "watcher"):
         async def no_session(*args):
             return None
 
@@ -60,7 +64,8 @@ async def test_explicit_reload_retries_only_the_requesting_profiles_enabled_serv
         )
         from gateway.session_authority import AuthorityRefusal
         with pytest.raises(AuthorityRefusal, match="mcp_servers_unavailable"):
-            await session_ancillary.reload_mcp(connection, None, {"confirm": True})
+            params = {"confirm": True, **({"rev": "1"} if surface == "watcher" else {})}
+            await session_ancillary.reload_mcp(connection, None, params)
     else:
         async def execute(fn):
             return await asyncio.to_thread(fn)
@@ -70,10 +75,10 @@ async def test_explicit_reload_retries_only_the_requesting_profiles_enabled_serv
         monkeypatch.setattr("tools.mcp_tool_agent.reprobe_tool_availability", lambda: None)
         await runner._execute_mcp_reload(_make_event())
 
-    assert attempts == ["recovered"]
+    assert attempts == expected
     assert discovery._connect_cooldown_active("recovered")
     assert discovery._connect_cooldown_active("disabled")
     assert core._server_connect_failures[other_key] == 5
     assert core._server_connect_retry_after[other_key] == float("inf")
     assert discovery.reconcile_mcp_servers_with_config()["added"] == []
-    assert attempts == ["recovered"], "automatic reconcile must keep honoring the new backoff"
+    assert attempts == expected, "automatic reconcile must keep honoring the new backoff"

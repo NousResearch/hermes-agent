@@ -22,13 +22,16 @@ import {
   $reviewRevertTarget,
   $reviewScope,
   $reviewSelectedPath,
+  $reviewSmartOrderStale,
   $reviewTreeMode,
+  applyFreshSmartOrder,
   cancelRevert,
   clearReviewSelection,
   closeReview,
   confirmRevert,
   refreshReview,
   requestRevert,
+  type ReviewTreeMode,
   stageReviewFile,
   toggleReviewTreeMode,
   unstageReviewFile
@@ -45,6 +48,51 @@ import { ReviewShipBar } from './ship-bar'
 // the rest of the app's icon-action rows.
 const ACTION_BTN = 'size-5'
 
+// The layout button advertises the NEXT mode in the cycle (tree → list → smart).
+const NEXT_MODE: Record<ReviewTreeMode, ReviewTreeMode> = { tree: 'list', list: 'smart', smart: 'tree' }
+
+const NEXT_MODE_ICON: Record<ReviewTreeMode, string> = { tree: 'list-flat', list: 'sparkle', smart: 'list-tree' }
+
+function nextModeLabel(mode: ReviewTreeMode, c: { viewAsList: string; viewAsSmart: string; viewAsTree: string }): string {
+  const next = NEXT_MODE[mode]
+
+  return next === 'list' ? c.viewAsList : next === 'smart' ? c.viewAsSmart : c.viewAsTree
+}
+
+// Layout button: cycles tree → list → smart. When the diff changed while the
+// user reads in smart order, the rows stay put and a blue dot offers the fresh
+// order instead (Amp's "first things first"); clicking applies it.
+function ReviewLayoutButton({ disabled }: { disabled: boolean }) {
+  const { t } = useI18n()
+  const c = t.statusStack.coding
+  const treeMode = useStore($reviewTreeMode)
+  const stale = useStore($reviewSmartOrderStale)
+  const label = stale ? c.applySmartOrder : nextModeLabel(treeMode, c)
+
+  return (
+    <Tip label={label}>
+      <Button
+        aria-label={label}
+        className={cn(ACTION_BTN, 'relative')}
+        data-slot="review-layout-button"
+        disabled={disabled}
+        onClick={stale ? applyFreshSmartOrder : toggleReviewTreeMode}
+        size="icon-xs"
+        variant="ghost"
+      >
+        <Codicon name={stale ? 'sparkle' : NEXT_MODE_ICON[treeMode]} size="0.8125rem" />
+        {stale && (
+          <span
+            aria-hidden
+            className="pointer-events-none absolute right-0 top-0 size-1.5 rounded-full bg-blue-500"
+            data-slot="review-smart-order-dot"
+          />
+        )}
+      </Button>
+    </Tip>
+  )
+}
+
 export function ReviewPane() {
   const { t } = useI18n()
   const c = t.statusStack.coding
@@ -56,7 +104,6 @@ export function ReviewPane() {
   const diff = useStore($reviewDiff)
   const diffLoading = useStore($reviewDiffLoading)
   const revertTarget = useStore($reviewRevertTarget)
-  const treeMode = useStore($reviewTreeMode)
   const scope = useStore($reviewScope)
   // Stage / unstage / revert and the ship bar act on the working tree, so they
   // only apply to the uncommitted scope; branch / last-turn are read-only.
@@ -90,18 +137,7 @@ export function ReviewPane() {
                 says "review", so the zone header hides it (styles.css). */}
             <SidebarPanelLabel data-pane-self-label="">{c.review}</SidebarPanelLabel>
           </div>
-          <Tip label={treeMode === 'tree' ? c.viewAsList : c.viewAsTree}>
-            <Button
-              aria-label={treeMode === 'tree' ? c.viewAsList : c.viewAsTree}
-              className={ACTION_BTN}
-              disabled={!hasFiles}
-              onClick={toggleReviewTreeMode}
-              size="icon-xs"
-              variant="ghost"
-            >
-              <Codicon name={treeMode === 'tree' ? 'list-flat' : 'list-tree'} size="0.8125rem" />
-            </Button>
-          </Tip>
+          <ReviewLayoutButton disabled={!hasFiles} />
           <Tip label={c.stageAll}>
             <Button
               aria-label={c.stageAll}

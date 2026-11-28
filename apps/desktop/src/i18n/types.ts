@@ -3199,6 +3199,8 @@ export interface Translations extends NoticeTranslations {
       stageAll: string
       viewAsTree: string
       viewAsList: string
+      viewAsSmart: string
+      applySmartOrder: string
       revert: string
       revertAll: string
       revertConfirm: string

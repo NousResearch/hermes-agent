@@ -13,6 +13,118 @@ export interface ReviewTreeNode {
   dir?: string
   file?: HermesReviewFile
   children?: ReviewTreeNode[]
+  /** Supporting file (test/fixture/lockfile/generated) — rendered dimmed. */
+  muted?: boolean
+}
+
+// ── Importance classification (smart order) ──────────────────────────────────
+//
+// Deterministic proxy for Amp's "intelligently ordered diffs": the files that
+// best explain a change are the source files; tests, fixtures, lockfiles and
+// generated artifacts SUPPORT it. No model call — classification must be free,
+// instant, and identical on every refresh.
+
+const SUPPORTING_DIR_SEGMENTS = new Set([
+  '__fixtures__',
+  '__mocks__',
+  '__snapshots__',
+  '__tests__',
+  'fixtures',
+  'snapshots',
+  'spec',
+  'test',
+  'testdata',
+  'tests'
+])
+
+const SUPPORTING_FILENAMES = new Set([
+  'cargo.lock',
+  'composer.lock',
+  'gemfile.lock',
+  'go.sum',
+  'package-lock.json',
+  'pnpm-lock.yaml',
+  'poetry.lock',
+  'uv.lock',
+  'yarn.lock'
+])
+
+// Filename shapes: foo.test.ts / foo.spec.tsx / test_foo.py / foo_test.go /
+// generated + minified + sourcemap artifacts / snapshot files.
+const SUPPORTING_FILE_RE = /(\.(test|spec)\.[^.]+$)|(^test_.+\.py$)|(_test\.(py|go|rb|ts|js)$)|(\.snap$)|(\.min\.(js|css)$)|(\.map$)|(\.generated\.[^.]+$)|(_pb2(_grpc)?\.py$)/
+
+/** True when a changed file is supporting material (test, fixture, lockfile,
+ *  generated) rather than a change-explaining source file. */
+export function isSupportingReviewPath(path: string): boolean {
+  const segments = path.split('/').filter(Boolean)
+  const name = (segments.pop() ?? path).toLowerCase()
+
+  if (SUPPORTING_FILENAMES.has(name) || SUPPORTING_FILE_RE.test(name)) {
+    return true
+  }
+
+  return segments.some(segment => SUPPORTING_DIR_SEGMENTS.has(segment.toLowerCase()))
+}
+
+// Smart order: change-explaining files first ordered by churn (the file with
+// the most movement usually explains the change), supporting files after. Ties
+// break by path so the order is identical on every refresh.
+export function smartReviewOrder(files: HermesReviewFile[]): string[] {
+  const churn = (f: HermesReviewFile) => f.added + f.removed
+
+  return [...files]
+    .sort((a, b) => {
+      const aMuted = isSupportingReviewPath(a.path)
+      const bMuted = isSupportingReviewPath(b.path)
+
+      if (aMuted !== bMuted) {
+        return aMuted ? 1 : -1
+      }
+
+      return churn(b) - churn(a) || a.path.localeCompare(b.path)
+    })
+    .map(file => file.path)
+}
+
+// Keep the order the user is reading while the diff changes under them (Amp's
+// "first things first, faster"): paths still in the diff keep their place,
+// removed paths drop out, and new paths are appended in their fresh smart
+// order. The fresh order is only adopted when the user asks for it.
+export function reconcileReviewOrder(shown: readonly string[], fresh: readonly string[]): string[] {
+  const present = new Set(fresh)
+  const kept = shown.filter(path => present.has(path))
+  const keptSet = new Set(kept)
+
+  return [...kept, ...fresh.filter(path => !keptSet.has(path))]
+}
+
+export function sameReviewOrder(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((path, index) => path === b[index])
+}
+
+// Smart flat list, supporting files dimmed. `shown` is the order on screen; it
+// is reconciled against the current files so a refresh never reshuffles rows.
+export function buildReviewSmartList(files: HermesReviewFile[], shown?: readonly string[] | null): ReviewTreeNode[] {
+  const fresh = smartReviewOrder(files)
+  const order = shown ? reconcileReviewOrder(shown, fresh) : fresh
+  const byPath = new Map(files.map(file => [file.path, file]))
+
+  return order.map(path => {
+    const file = byPath.get(path)!
+    const segments = path.split('/').filter(Boolean)
+    const name = segments.pop() ?? path
+
+    return {
+      id: path,
+      name,
+      dir: segments.join('/'),
+      isDir: false,
+      added: file.added,
+      removed: file.removed,
+      muted: isSupportingReviewPath(path),
+      file
+    }
+  })
 }
 
 // Flat changed-file list (VS Code's default SCM "List" view): one row per file,

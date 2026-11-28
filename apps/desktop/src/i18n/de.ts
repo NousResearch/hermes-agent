@@ -4152,6 +4152,8 @@ export const deOverrides = {
       stageAll: 'Alles stagen',
       viewAsTree: 'Als Baum ansehen',
       viewAsList: 'Als Liste ansehen',
+      viewAsSmart: 'Nach Wichtigkeit ansehen',
+      applySmartOrder: 'Aktualisierte Reihenfolge anwenden',
       revert: 'Zurücksetzen',
       revertAll: 'Alles zurücksetzen',
       revertConfirm:

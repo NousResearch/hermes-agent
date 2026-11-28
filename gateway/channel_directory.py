@@ -98,18 +98,42 @@ def _channel_target_name(platform_name: str, channel: dict[str, Any]) -> str:
     return f"{name} ({channel['type']})" if channel.get("type") else name
 
 
+def _decode_session_value(value: Any) -> Any:
+    """Convert legacy SQLite BLOB values into JSON-safe text recursively."""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    if isinstance(value, dict):
+        return {
+            str(_decode_session_value(key)): _decode_session_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_decode_session_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_decode_session_value(item) for item in value)
+    return value
+
+
 def _session_entry_id(origin: dict[str, Any]) -> Optional[str]:
-    chat_id = origin.get("chat_id")
+    chat_id = _decode_session_value(origin.get("chat_id"))
     if not chat_id:
         return None
-    return f"{chat_id}:{thread_id}" if (thread_id := origin.get("thread_id")) else str(chat_id)
+    thread_id = _decode_session_value(origin.get("thread_id"))
+    return f"{chat_id}:{thread_id}" if thread_id else str(chat_id)
 
 
 def _session_entry_name(origin: dict[str, Any]) -> str:
-    base_name = origin.get("chat_name") or origin.get("user_name") or str(origin.get("chat_id"))
-    if not (thread_id := origin.get("thread_id")):
-        return base_name
-    return f"{base_name} / {origin.get('chat_topic') or f'topic {thread_id}'}"
+    chat_id = _decode_session_value(origin.get("chat_id"))
+    base_name = (
+        _decode_session_value(origin.get("chat_name"))
+        or _decode_session_value(origin.get("user_name"))
+        or str(chat_id)
+    )
+    thread_id = _decode_session_value(origin.get("thread_id"))
+    if not thread_id:
+        return str(base_name)
+    topic = _decode_session_value(origin.get("chat_topic"))
+    return f"{base_name} / {topic or f'topic {thread_id}'}"
 
 
 def _report_slack_failure(team_id: str, error_code: Optional[str], detail: str) -> None:
@@ -370,6 +394,10 @@ def _entries_from_origins(platform_name: str, source: str, origins_fn) -> list[d
     try:
         seen_ids = set()
         for origin, chat_type in origins_fn():
+            origin = _decode_session_value(origin)
+            if not isinstance(origin, dict):
+                continue
+            chat_type = _decode_session_value(chat_type)
             entry_id = _session_entry_id(origin)
             if not entry_id or entry_id in seen_ids:
                 continue
@@ -391,10 +419,14 @@ def _build_from_sessions_db(platform_name: str) -> list[dict[str, str]]:
             entries = store.sessions.list_gateway_sessions(platform=platform_name, active_only=False)
         for entry in entries:
             session = entry.session
-            origin = session.origin
-            if not origin:
-                origin = {"chat_id": session.chat_id, "thread_id": session.thread_id, "chat_name": session.display_name}
-            yield origin, session.chat_type or "dm"
+            origin = _decode_session_value(session.origin)
+            if not isinstance(origin, dict) or not origin:
+                origin = {
+                    "chat_id": _decode_session_value(session.chat_id),
+                    "thread_id": _decode_session_value(session.thread_id),
+                    "chat_name": _decode_session_value(session.display_name),
+                }
+            yield origin, _decode_session_value(session.chat_type) or "dm"
     return _entries_from_origins(platform_name, "state.db session read failed", _origins)
 
 

@@ -106,6 +106,73 @@ class TestSignalConnectCleanup:
 
 
 class TestSignalHelpers:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("chat_id,target", [("group:group-id", {"groupId": "group-id"}),
+                                               ("recipient-aci", {"recipient": ["recipient-aci"]})])
+    async def test_only_generated_voice_expires_after_restart(self, monkeypatch, tmp_path, chat_id, target):
+        import time
+
+        adapter = _make_signal_adapter(monkeypatch, voice_reply_expiry_minutes=1)
+        adapter._stop_typing_indicator = AsyncMock()
+        sent = int(time.time() * 1000) - 120_000
+        returns = [{"timestamp": sent + offset} for offset in range(3)]
+        adapter._rpc = AsyncMock(side_effect=returns)
+        recording = tmp_path / "recording.ogg"
+        recording.write_bytes(b"synthetic")
+        assert (await adapter.play_tts(chat_id, str(recording))).success
+        assert (await adapter.send(chat_id, "The written reply")).success
+        assert (await adapter.send_voice(chat_id, str(recording))).success
+
+        other = _make_signal_adapter(monkeypatch, account="+15559876543")
+        other._rpc = AsyncMock()
+        await other._voice_expiry.process_due(other._remove_voice_reply)
+        other._rpc.assert_not_awaited()
+        restarted = _make_signal_adapter(monkeypatch)  # Already scheduled receipts survive disabling.
+        restarted._rpc = AsyncMock(return_value={"results": [{"type": "SUCCESS"}]})
+        await restarted._voice_expiry.process_due(restarted._remove_voice_reply)
+        await restarted._voice_expiry.process_due(restarted._remove_voice_reply)
+        restarted._rpc.assert_awaited_once_with(
+            "remoteDelete", {"account": adapter.account, "targetTimestamp": sent, **target})
+
+    @pytest.mark.asyncio
+    async def test_voice_expiry_requires_opt_in_and_identifiable_send(self, monkeypatch, tmp_path):
+        import time
+
+        sent = int(time.time() * 1000)
+        recording = tmp_path / "recording.ogg"
+        recording.write_bytes(b"synthetic")
+        disabled = _make_signal_adapter(monkeypatch)
+        disabled._rpc = AsyncMock(return_value={"timestamp": sent})
+        assert (await disabled.play_tts("recipient-aci", str(recording))).success
+        enabled = _make_signal_adapter(monkeypatch, voice_reply_expiry_minutes=60)
+        enabled._stop_typing_indicator = AsyncMock()
+        enabled._rpc = AsyncMock(side_effect=[{}, {"results": [{"type": "UNREGISTERED_FAILURE"}]}])
+        assert (await enabled.play_tts("recipient-aci", str(recording))).success
+        assert not (await enabled.play_tts("recipient-aci", str(recording))).success
+        assert not enabled._voice_expiry.path.exists()
+
+    @pytest.mark.asyncio
+    async def test_expiry_retries_only_inside_sender_window(self, monkeypatch, tmp_path):
+        from plugins.platforms.signal import voice_reply_expiry
+
+        now = 1_800_000_000
+        monkeypatch.setattr(voice_reply_expiry.time, "time", lambda: now)
+        queue = voice_reply_expiry.VoiceReplyExpiry(tmp_path / "expiry.db", "+15551234567")
+        queue.remember("one", now * 1000, 1)
+        queue.remember("older", now * 1000 - voice_reply_expiry.DAY_MS, 1)
+        remove = AsyncMock(side_effect=[False, True])
+        await queue.process_due(remove)
+        remove.assert_not_awaited()
+        now += 60
+        await queue.process_due(remove)
+        await queue.process_due(remove)
+        assert remove.await_count == 1
+        now += 60
+        await queue.process_due(remove)
+        await queue.process_due(remove)
+        assert remove.await_count == 2
+        assert all(call.args == ("one", (now - 120) * 1000) for call in remove.await_args_list)
+
 
     def test_redact_phone_short(self):
         from gateway.platforms.helpers import redact_phone

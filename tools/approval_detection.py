@@ -679,6 +679,11 @@ DANGEROUS_PATTERNS = [
     (rf'>>?\s*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via redirection"),
     (rf'\btee\b.*["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_WRITE_TARGET_BOUNDARY}', "overwrite project env/config via tee"),
     (rf'>>?\s*["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_WRITE_TARGET_BOUNDARY}', "overwrite project env/config via redirection"),
+    # An output-file option is the same write as `>`: `curl -o ~/.ssh/authorized_keys URL`, `wget -qO ~/.bashrc
+    # URL` and `sort -o ~/.bashrc x` replace the file exactly like `curl URL > ~/.bashrc`, which the rule above
+    # gates. Same targets as that rule; the flag may be glued into a short cluster (`-sSLo`) or to its value.
+    (rf'\b(?:curl|wget|sort)\b[^;|&\n]*?(?<!\S)(?:-[a-z]*o|--output(?:-document)?)(?:=|\s*)["\']?{_SENSITIVE_WRITE_TARGET}',
+     "overwrite system file via output-file option"),
     (r'\bxargs\s+.*\brm\b', "xargs with rm"),
     # -execdir has the same semantics as -exec (runs in each match's directory).
     (r'\bfind\b.*-exec(?:dir)?\s+(/\S*/)?rm\b', "find -exec/-execdir rm"),

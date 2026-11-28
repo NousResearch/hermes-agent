@@ -5085,6 +5085,7 @@
     "simplifiedAgents.showAllChats",
     "simplifiedAgents.showChats",
     "simplifiedAgents.showFewerChats",
+    "simplifiedAgents.showMoreChats",
     "simplifiedAgents.showPanel",
     "simplifiedAgents.title",
     "skillDeepLink.destinationChanged",

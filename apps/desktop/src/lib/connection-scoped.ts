@@ -17,8 +17,9 @@ import { readKey, writeKey } from './storage'
 // but its storage key follows the active connection. The local connection
 // keeps the BARE key — byte-identical behavior for single-backend users, the
 // same contract as `backendScopeKey` in @hermes/shared — while a remote
-// connection gets `<key>.remote.<encoded baseUrl>.<encoded profile>` by
-// default (the shape `workspaceCwdKey` already established). Gateway-wide
+// connection gets `<key>.remote.<encoded connectionId>.<encoded profile>` by
+// default, falling back to the baseUrl when the descriptor names no registry
+// id (the shape `workspaceCwdKey` already established). Gateway-wide
 // mirrors (pins) pass `{ includeProfile: false }` so a profile switch cannot
 // fragment the cache and re-assert a stale copy.
 //
@@ -32,13 +33,15 @@ import { readKey, writeKey } from './storage'
 /** Minimal slice of HermesConnection this module keys on. */
 export interface ConnectionScopeDescriptor {
   baseUrl?: string
+  /** Registry id of the connection ("mini", "192-168-31-91"). */
+  connectionId?: null | string
   mode?: 'local' | 'remote'
   profile?: null | string
 }
 
 export interface ConnectionScopeOptions {
   /**
-   * When false, a remote suffix is `.remote.<baseUrl>` only. Use this for
+   * When false, a remote suffix is `.remote.<connectionId>` only. Use this for
    * gateway-wide mirrors (pins) so a profile switch cannot reload a stale
    * per-profile copy. Defaults to true — session order and other
    * profile-local lists stay isolated.
@@ -56,7 +59,16 @@ export function connectionScopeSuffix(
     return ''
   }
 
-  const base = encodeURIComponent(connection.baseUrl || 'remote')
+  // Key on the REGISTRY ID, not the baseUrl: an SSH or URL connection's
+  // baseUrl is the loopback tunnel endpoint it was dialed through
+  // (`http://127.0.0.1:<random>`), a fresh port on every launch. Keyed on it,
+  // every restart orphaned that connection's pins and orders into a namespace
+  // nothing reads again — the user's pins survived only because the server
+  // re-adopts them from `sessions.pinned` (post-#77318 comment above). The
+  // registry id is stable for the life of the entry; a descriptor without one
+  // (a legacy primary remote before the route is preserved) keeps today's
+  // baseUrl shape.
+  const base = encodeURIComponent(connection.connectionId?.trim() || connection.baseUrl || 'remote')
 
   if (!includeProfile) {
     return `.remote.${base}`

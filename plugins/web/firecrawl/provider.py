@@ -278,7 +278,7 @@ def _error_entry(url: str, error: str, *, title: str = "", raw: bool = False, bl
     return {"url": url, "title": title, "content": "", **({"raw_content": ""} if raw else {}), "error": error, **policy}
 
 
-_SCRAPE_TIMEOUT_MSG = "Scrape timed out after 60s — page may be too large or unresponsive. Try browser_exec instead."
+_SCRAPE_TIMEOUT_MSG = "Scrape timed out after 180s — page may be too large or unresponsive. Try browser_exec instead."
 _UNSAFE_REDIRECT_MSG = "Blocked: URL targets a private or internal network address"
 
 
@@ -289,7 +289,7 @@ def _final_url(metadata: dict[str, Any], requested: str) -> str:
 
 
 async def _scrape_one(url: str, formats: list[str], format: Optional[str]) -> dict[str, Any]:
-    """Scrape one URL (60s timeout) and re-check SSRF + website policy against the
+    """Scrape one URL (180s timeout) and re-check SSRF + website policy against the
     post-redirect URL. Never raises for scrape errors; returns an error entry instead."""
     if blocked := check_website_access(url):
         logger.info("Blocked web_extract for %s by rule %s", blocked["host"], blocked["rule"])
@@ -299,16 +299,16 @@ async def _scrape_one(url: str, formats: list[str], format: Optional[str]) -> di
         try:
             # Pass timeout (ms) to Firecrawl so the server-side deadline
             # matches our asyncio deadline. Without this the API uses its
-            # 30 s default, causing SCRAPE_TIMEOUT before our 60 s
-            # client-side wait expires. See #43272.
+            # 30 s default, causing SCRAPE_TIMEOUT before our 180 s
+            # client-side wait expires. Bumped from 60s to 180s 2026-10-15.
             scrape_result = await asyncio.wait_for(
                 asyncio.to_thread(
                     _get_firecrawl_client("extract").scrape,
                     url=url,
                     formats=formats,
-                    timeout=60_000,
+                    timeout=180_000,
                 ),
-                timeout=60,
+                timeout=180,
             )
         except TimeoutError:
             logger.warning("Firecrawl scrape timed out for %s", url)

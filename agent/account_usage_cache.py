@@ -146,13 +146,14 @@ def snapshot_is_stale(snapshot: Optional[AccountUsageSnapshot]) -> bool:
     return age < 0 or age > SNAPSHOT_STALE_AFTER_S
 
 
-def _claim_refresh(key: tuple[str, str, str, str], now: float) -> bool:
-    """Take the refresh right for *key* unless one is inflight or tried too recently.
+def _claim_refresh(key: tuple[str, str, str, str], now: float, interval: float = REFRESH_AFTER_S) -> bool:
+    """Take the refresh right for *key* unless one is inflight or tried within *interval* seconds.
 
     A failed or empty fetch still counts as a try, so a dead credential (or a provider with no
-    usage API) isn't re-asked on every picker open."""
+    usage API) isn't re-asked on every picker open. *interval* lets a caller that shows the number
+    where the user watches it (the Desktop status bar) ask more often than a picker needs."""
     with _lock:
-        if key in _inflight or now - _last_try.get(key, float("-inf")) < REFRESH_AFTER_S:
+        if key in _inflight or now - _last_try.get(key, float("-inf")) < interval:
             return False
         _inflight.add(key)
         _last_try[key] = now
@@ -164,14 +165,17 @@ def _release_refresh(key: tuple[str, str, str, str]) -> None:
         _inflight.discard(key)
 
 
-def refresh_account_usage_async(providers: Iterable[str]) -> list[threading.Thread]:
+def refresh_account_usage_async(
+    providers: Iterable[str], *, interval: float = REFRESH_AFTER_S
+) -> list[threading.Thread]:
     """Background-refresh the provider-wide (legacy) slot for each provider not tried within
-    ``REFRESH_AFTER_S``. Returns the started threads (daemon; callers never join them)."""
+    *interval* seconds (``REFRESH_AFTER_S`` unless the caller has its own cadence).
+    Returns the started threads (daemon; callers never join them)."""
     started: list[threading.Thread] = []
     now = time.monotonic()
     for provider in dict.fromkeys(providers):
         key = _key(provider)
-        if not _claim_refresh(key, now):
+        if not _claim_refresh(key, now, interval):
             continue
         thread = threading.Thread(
             target=copy_context().run, args=(_refresh_legacy, provider, key),

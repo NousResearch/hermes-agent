@@ -1,0 +1,26 @@
+manifest_version: 1
+
+name: socialbu
+description: Schedule social posts and review account performance.
+source: https://socialbu.com/mcp-server
+
+transport:
+  type: http
+  url: https://socialbu.com/mcp
+
+auth:
+  type: oauth
+
+suggest:
+  keywords:
+    - socialbu
+  hosts:
+    - socialbu.com
+
+post_install: |
+  Sign in to SocialBu in the browser when Hermes prompts for authorization.
+  A SocialBu account is required. SocialBu offers a 7-day free trial;
+  continued use requires a paid plan: https://socialbu.com/pricing
+
+  Review the available tools with:
+    hermes mcp configure socialbu

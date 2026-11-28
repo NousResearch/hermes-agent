@@ -1,0 +1,30 @@
+# Discussion candidate only. This is the companion, not a standalone primary-chat provider.
+name: external-agents-agy
+repo: https://github.com/NomieC/hermes-external-agents
+sha: c9f7f6cb893d65102519375dced3748a163e0e7d
+subdir: plugins/external-agents-agy
+description: External-process AGY client for the paired External Agents delegation backend.
+maintainer: NomieC
+tier: community
+category: models
+title: "External Agents: AGY companion"
+version: "0.2.0"
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/NomieC/hermes-external-agents/blob/c9f7f6cb893d65102519375dced3748a163e0e7d/README.md
+platforms: [macos]
+readme: true
+onboarding: false
+screenshots: []
+known_issues:
+  - Companion to external-agents at the same commit; direct primary-chat use is unsupported.
+  - Requires separately installed official AGY CLI and vendor-managed supported login. No vendor binary or token store reader is included.
+  - Requires in-process loading; the custom client cannot run under isolated plugin-host policy.
+  - AGY can use network services and access files under its own permissions; workspace is not a filesystem sandbox.
+  - Headless vendor approval dialogs cannot be forwarded to Hermes. No permission-bypass flags or blanket grants are installed.
+  - Prompts appear in process arguments and task answers are cached locally. Vendor usage and cost are unknown.
+  - On the tested Hermes host, directory providers remain discoverable when disabled; see upstream issue 137671. Disable the delegation backend as well and use a fresh conversation/process.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

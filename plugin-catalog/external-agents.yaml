@@ -1,0 +1,30 @@
+# Discussion candidate only. Paired admission and external-process policy need maintainer review.
+name: external-agents
+repo: https://github.com/NomieC/hermes-external-agents
+sha: c9f7f6cb893d65102519375dced3748a163e0e7d
+subdir: plugins/external-agents
+description: Route ordinary Hermes delegation to AGY through a native child wrapper.
+maintainer: NomieC
+tier: community
+category: automation
+title: External Agents for Hermes
+version: "0.2.0"
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/NomieC/hermes-external-agents/blob/c9f7f6cb893d65102519375dced3748a163e0e7d/README.md
+platforms: [macos]
+readme: true
+onboarding: false
+screenshots: []
+known_issues:
+  - Requires external-agents-agy installed separately at the same commit; companion installation is not automatic.
+  - Early opt-in preview; only macOS arm64 is live-tested. Windows is unsupported.
+  - Requires trusted in-process loading and an explicit local terminal policy.
+  - AGY owns its tools, authentication and permissions; Hermes tool filters do not confine them.
+  - No vendor approval bridge, live steering, resume parity or proven OS containment.
+  - Prompts appear in process arguments; cached task answers are stored locally with owner-only POSIX permissions, not encryption.
+  - On the tested Hermes host, disabling only the provider does not revoke routing; see upstream issue 137671. A fresh backend-disabled configuration refuses delegation.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

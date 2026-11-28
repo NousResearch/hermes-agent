@@ -30,7 +30,7 @@ def _clean_approvals():
 def _configure_independent_approvers(approvers=None):
     write_approvers([HUMAN] if approvers is None else approvers)
     path = get_hermes_home() / "config.yaml"
-    config = yaml.safe_load(path.read_text(encoding="utf-8"))
+    config = yaml.safe_load(path.read_text(encoding="utf-8-sig"))
     config["approvals"]["approvers_only"] = True
     path.write_text(yaml.safe_dump(config), encoding="utf-8")
 
@@ -94,5 +94,3 @@ def test_independent_mode_with_wildcard_fails_closed_for_approval():
     pending_from(PEER, "Peer bot", "sess-wild", platform="matrix")
     ids, refused = answerable_request_ids("sess-wild", PEER, choice="once")
     assert ids == [] and refused is not None
-
-

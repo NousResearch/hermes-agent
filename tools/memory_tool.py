@@ -146,7 +146,7 @@ def _validate_single_op(store, action, target, content, old_text) -> Optional[st
     the Codex backend rejects): return the inventory plus a retry instruction."""
     if action == "add" and not content:
         FAILURE_CLASS.set("missing_content")
-        return tool_error("Content is required for 'add' action.", success=False)
+        return tool_error("Content is required for 'add' action — provide the entry text to add.", success=False)
     if action in ("remove", "patch") and not old_text:
         FAILURE_CLASS.set("missing_old_text")
         return json.dumps({
@@ -365,7 +365,7 @@ def apply_memory_pending(payload: dict[str, Any], store: MemoryStore) -> dict[st
     if action == "batch":
         return store.apply_batch(target, payload.get("operations") or [])
     if action not in _STORE_ACTIONS:
-        return {"success": False, "error": f"Unknown staged action '{action}'."}
+        return {"success": False, "error": f"Unknown staged action '{action}'. Use add, patch, or remove."}
     return _STORE_ACTIONS[action][0](store, target, payload.get("content") or "", payload.get("old_text") or "",
                                      payload.get("matched_entry"))
 

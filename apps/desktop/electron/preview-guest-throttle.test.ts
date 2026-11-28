@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import {
   applyPreviewGuestAttachPrefs,
+  applyPreviewGuestUserAgent,
   beginPreviewGuestActivity,
   endPreviewGuestActivity,
   executePreviewGuestScript,
@@ -14,6 +15,63 @@ import {
   previewPartitionForProfile
 } from './preview-guest-throttle'
 import { createStreamThrottle } from './stream-throttle'
+
+describe('applyPreviewGuestUserAgent', () => {
+  it('reports the actual Chromium engine instead of custom application product tokens', () => {
+    const session = {
+      getUserAgent: vi.fn(() => 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Hermes/0.0.0 Chrome/152.0.7977.167 Electron/44.9.3 Safari/537.36'),
+      setUserAgent: vi.fn()
+    }
+
+    applyPreviewGuestUserAgent(session, 'persist:hermes-preview')
+
+    expect(session.setUserAgent).toHaveBeenCalledExactlyOnceWith(
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.7977.167 Safari/537.36'
+    )
+  })
+
+  it.each([
+    ['Hermes', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Hermes/0.0.0 Chrome/152.0.7977.167 Safari/537.36'],
+    ['Electron', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.7977.167 Electron/44.9.3 Safari/537.36']
+  ])('normalizes when only the %s product token remains', (_token, userAgent) => {
+    const session = {
+      getUserAgent: vi.fn(() => userAgent),
+      setUserAgent: vi.fn()
+    }
+
+    applyPreviewGuestUserAgent(session, 'persist:hermes-preview')
+
+    expect(session.setUserAgent).toHaveBeenCalledExactlyOnceWith(
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.7977.167 Safari/537.36'
+    )
+  })
+
+  it('leaves sessions outside the preview partition untouched', () => {
+    const session = {
+      getUserAgent: vi.fn(),
+      setUserAgent: vi.fn()
+    }
+
+    applyPreviewGuestUserAgent(session, 'persist:other')
+
+    expect(session.getUserAgent).not.toHaveBeenCalled()
+    expect(session.setUserAgent).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['an already-normalized descriptor', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.7977.167 Safari/537.36'],
+    ['a descriptor without the expected Chromium engine', 'Mozilla/5.0 (compatible; Electron/44.9.3)']
+  ])('leaves %s unchanged', (_description, userAgent) => {
+    const session = {
+      getUserAgent: vi.fn(() => userAgent),
+      setUserAgent: vi.fn()
+    }
+
+    applyPreviewGuestUserAgent(session, 'persist:hermes-preview')
+
+    expect(session.setUserAgent).not.toHaveBeenCalled()
+  })
+})
 
 // Mirror of src/store/profile.ts normalizeProfileKey, to pin equivalence (the helper must derive the
 // same key the renderer does, or the webview and the jar diverge).
@@ -73,12 +131,32 @@ describe('applyPreviewGuestAttachPrefs', () => {
 
     expect(prefs).toEqual({ preload: '/preload.js', backgroundThrottling: true })
   })
+
+  it('normalizes the native Chromium identity while admitting a per-profile preview jar', () => {
+    const session = {
+      getUserAgent: vi.fn(() => 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Hermes/0.0.0 Chrome/152.0.7977.167 Electron/44.9.3 Safari/537.36'),
+      setUserAgent: vi.fn()
+    }
+
+    applyPreviewGuestAttachPrefs({}, previewPartitionForProfile('work'), '/preload.js', () => session as unknown as Session)
+
+    expect(session.setUserAgent).toHaveBeenCalledExactlyOnceWith(
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.7977.167 Safari/537.36'
+    )
+  })
 })
+
+function previewSessionFixture(): Session {
+  return {
+    getUserAgent: () => 'Chrome/152.0.0.0 Safari/537.36',
+    setUserAgent: () => {}
+  } as unknown as Session
+}
 
 function contents(
   type: 'window' | 'webview',
   owner?: WebContents,
-  session = {} as Session,
+  session = previewSessionFixture(),
   { registerPreview = true }: { registerPreview?: boolean } = {}
 ) {
   const emitter = new EventEmitter()
@@ -191,7 +269,7 @@ describe('preview script activity', () => {
   // fail with "does not belong to this window". Pre-fix the gate compared against the default jar only.
   it('admits a named-profile guest riding a sibling preview partition', () => {
     const { owner, hold } = ownerFixture()
-    const siblingSession = {} as Session
+    const siblingSession = previewSessionFixture()
     // The sibling jar is admitted by the attach gate exactly as a real named-profile webview would be.
     applyPreviewGuestAttachPrefs({}, previewPartitionForProfile('work'), '/preload.js', () => siblingSession)
     expect(isPreviewGuestSession(siblingSession)).toBe(true)

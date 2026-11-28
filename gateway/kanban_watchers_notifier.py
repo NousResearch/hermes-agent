@@ -44,10 +44,10 @@ def _pin_first():
 # "status" covers dashboard drag-drop and `_set_status_direct()`.
 # ``review_requested`` wakes the origin like a block but is not one;
 # the task is not archived so later review cycles keep notifying.
-TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked", "block_loop_detected", "review_requested", "changes_requested")
+TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked", "block_loop_detected", "review_requested", "changes_requested", "scheduled")
 # Kinds that hand a decision back to the origin, which must take a turn.
 # status/archived/unblocked are bookkeeping.
-_WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked", "review_requested", "changes_requested", "block_loop_detected")
+_WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked", "review_requested", "changes_requested", "block_loop_detected", "scheduled")
 
 
 def diagnostic_event(ev) -> bool:
@@ -433,6 +433,15 @@ def _fmt_review_requested(ev, n) -> tuple:
     return t("gateway.kanban.ping.review_requested", head=n.head, title=n.title, handoff=handoff), wake_handoff, None
 
 
+def _fmt_scheduled(ev, n) -> tuple:
+    # schedule_task stores the run handoff as `reason`, not `summary`.
+    # This announces the park; it does not release the card or arm a timer.
+    reason = _payload(ev, "reason")
+    wake_handoff = _first_line(str(reason), 200) if reason else None
+    handoff = f"\n{str(reason)[:200]}" if reason else ""
+    return t("gateway.kanban.ping.scheduled", head=n.head, title=n.title, handoff=handoff), wake_handoff, None
+
+
 def _fmt_changes_requested(ev, n) -> tuple:
     payload = ev.payload or {}
     reason = _safe_review_reason(payload.get("reason"))
@@ -499,6 +508,7 @@ _EVENT_FORMATTERS: dict[str, Callable[[Any, _KanbanNotification], tuple]] = {
     "timed_out": _fmt_timed_out,
     "status": lambda ev, n: (t("gateway.kanban.ping.status", head=n.head, status=_payload(ev, "status") or ""), None, None),
     "review_requested": _fmt_review_requested,
+    "scheduled": _fmt_scheduled,
     "changes_requested": _fmt_changes_requested,
     "block_loop_detected": _fmt_block_loop_detected,
 }

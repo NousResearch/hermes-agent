@@ -1309,6 +1309,8 @@ A "wake" forges a synthetic inbound message to the destination gateway agent so 
 
 **Which events wake.** The ones that return a task outcome or require orchestration attention: `completed`, `blocked`, `gave_up`, `crashed`, `timed_out`, `review_requested` (a worker finished the implementation and handed off via `kanban_request_review`) and `block_loop_detected` (the task was routed to `triage` after repeated blocks). `status`, `archived` and `unblocked` are delivered but never wake — they are bookkeeping transitions, not attention signals. When a `completed` or `review_requested` event carries a summary, that handoff rides the wake turn, so the woken agent sees what the worker actually did.
 
+`scheduled` also notifies the subscribed origin when a worker parks a task via `kanban_schedule`: its `reason` is the handoff text in the passive message and wake turn. `notify+wake` and `wake` may wake the origin agent; `notify` remains passive. This is an immediate handoff notification, **not** a timer or automatic resumption of the scheduled task. The card stays scheduled until explicitly released.
+
 `--chat-type` (`dm` | `group` | `channel` | `thread`) records the originating chat's type so a woken turn resolves the operator's **real** session: `build_session_key` keys groups, channels, and threads differently from DMs, so an inaccurate `chat_type` would route the wake into a separate, context-less session. The `/kanban` auto-subscribe and slash-command paths capture this automatically — you only set it by hand when subscribing a chat from a script or cron. Omit it to leave an existing subscription unchanged (new subscriptions default to `dm`).
 
 ### Multi-profile setups: delivery is profile-owned

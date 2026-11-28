@@ -262,3 +262,49 @@ async def test_a_replaced_turn_and_a_receiptless_edit_are_distinguishable():
 
     assert await edit_preview_to_final(_NoReceipt(), "c", "1", "a", still_current=lambda: False) is TURN_REPLACED
     assert await edit_preview_to_final(_NoReceipt(), "c", "1", "a") is not TURN_REPLACED
+
+
+@pytest.mark.asyncio
+async def test_a_finishing_edit_that_may_show_the_whole_reply_is_not_sent_again():
+    """A split edit whose timed-out part may be in the chat stays with the ledger's marked redelivery."""
+    final = "The complete answer."
+
+    class _UncertainEdit(_FloodedChat):
+        async def edit_message(self, chat_id, message_id, content, *, finalize=False, **_kw):
+            return SendResult(success=False, error="Timed out", raw_response={
+                "partial_overflow": True, "delivery_uncertain": True, "delivered_prefix": content})
+
+    consumer = SimpleNamespace(adapter=_UncertainEdit(flood_secs=0.0), message_id="1", metadata=None)
+    response = {"final_response": final, "response_transformed": True}
+    turn_ctx = SimpleNamespace(stream_consumer_holder=[consumer], source=SimpleNamespace(chat_id="chat-1"),
+                               session_key="agent:main:telegram:group:chat-1")
+    await _Harness()._run_agent_mark_streamed_delivery(response, turn_ctx)
+
+    assert response.get("already_sent") is True and response.get("delivery_uncertain") is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shown_is_final", [True, False], ids=["held_stream_showed_it", "stream_showed_pre_transform"])
+async def test_a_transformed_final_the_stream_already_showed_is_not_edited_in_again(shown_is_final):
+    """A transform plugin holds the stream, so the consumer delivers the TRANSFORMED reply itself, split
+    over several messages when long. Editing its last chunk with the whole reply posted the reply twice;
+    a split stream that showed only the pre-transform text still gets the in-place edit."""
+    final, pre = "answer\n\nplugin footer", "answer"
+    edits: list[str] = []
+
+    class _Chat(_FloodedChat):
+        async def edit_message(self, chat_id, message_id, content, *, finalize=False, **_kw):
+            edits.append(content)
+            return SendResult(success=True, message_id=message_id)
+
+    shown = final if shown_is_final else pre
+    consumer = SimpleNamespace(adapter=_Chat(flood_secs=0.0), message_id="3", metadata=None,
+                               final_response_sent=True, final_content_delivered=True, _turn_split_delivery=True,
+                               delivered_final_matches=lambda text: text.strip() == shown)
+    response = {"final_response": final, "response_transformed": True}
+    turn_ctx = SimpleNamespace(stream_consumer_holder=[consumer], source=SimpleNamespace(chat_id="chat-1"),
+                               session_key="agent:main:telegram:group:chat-1")
+    await _Harness()._run_agent_mark_streamed_delivery(response, turn_ctx)
+
+    assert response.get("already_sent") is True
+    assert edits == ([] if shown_is_final else [final])

@@ -1855,7 +1855,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         Never when the agent failed (unseen error), on "(empty)", or on a finite (`-z`, `chat -q`) turn:
         its viewer prints only the completion text, never the deltas (#139666). Both flags reflect call
         success, not content: a mismatch with the recorded turn-final payload never suppresses."""
-        from gateway.run_turn_final_reconcile import edit_streamed_message, owns_reconcilable_preview
+        from gateway.run_turn_final_reconcile import edit_streamed_message, owns_reconcilable_preview, stream_showed_final
         from gateway.session_finite import finite_turn_required
         _sc, source, session_key = turn_ctx.stream_consumer_holder[0], turn_ctx.source, turn_ctx.session_key
         if not isinstance(response, dict) or response.get("failed") or finite_turn_required() is True:
@@ -1889,7 +1889,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         if _is_empty_sentinel:
             return
         _sk = session_key or "?"
-        if not _transformed and (_streamed or _content_delivered):
+        if (_streamed or _content_delivered) and (not _transformed or stream_showed_final(_sc, _final)):
             logger.info("Suppressing normal final send for session %s: final delivery already confirmed (streamed=%s previewed=%s content_delivered=%s).", _sk, _streamed, _previewed, _content_delivered)
             # A stream send counted as shown on a timeout may be lost: the ledger resends it marked.
             response["already_sent"], response["delivery_uncertain"] = True, getattr(_sc, "delivery_uncertain", False) is True

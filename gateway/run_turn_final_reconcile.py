@@ -53,6 +53,17 @@ def _edit_carries_whole(adapter: Any, chat_id: str, content: str) -> bool:
     return isinstance(limit, int) and all(len_fn(text) <= limit for text in sent)
 
 
+def stream_showed_final(consumer: Any, final: str) -> bool:
+    """The consumer split ``final`` itself over several messages (a transform plugin holds the stream,
+    so the consumer delivers the TRANSFORMED reply) and its recorded delivery is exactly ``final``.
+    Its ``message_id`` is only the last chunk, so editing that with the whole reply posts it twice
+    (the stale-finalize branch skips split deliveries for the same reason, #78541)."""
+    if not getattr(consumer, "_turn_split_delivery", False):
+        return False
+    matcher = getattr(consumer, "delivered_final_matches", None)
+    return callable(matcher) and matcher(final) is True
+
+
 def owns_reconcilable_preview(consumer: Any, chat_id: str = "", content: Optional[str] = None) -> bool:
     """The consumer still holds ONE real preview of this answer, with nothing that may already
     show the answer elsewhere (a timed-out send that may have landed, a split whose id is only the
@@ -125,6 +136,13 @@ async def edit_preview_to_final(adapter: Any, chat_id: str, message_id: str, con
     return result
 
 
+def may_show_whole(result: Any, content: str) -> bool:
+    """A split edit that sent all of *content*, one part of it unconfirmed: sending the reply again
+    would repeat the parts on screen, so the delivery ledger's marked redelivery owns it."""
+    raw = getattr(result, "raw_response", None)
+    return isinstance(raw, dict) and bool(raw.get("delivery_uncertain")) and raw.get("delivered_prefix") == content
+
+
 async def edit_streamed_message(consumer: Any, source: Any, response: dict, content: str, *, sk: str,
                                 ok: tuple, fail_result: str, fail_exc: str) -> None:
     """Edit the consumer's message in place with ``content``; on success mark
@@ -140,6 +158,9 @@ async def edit_streamed_message(consumer: Any, source: Any, response: dict, cont
         return
     if result is TURN_REPLACED:
         return  # its stale-run discard owns what happens next
+    if may_show_whole(result, content):
+        response["already_sent"] = response["delivery_uncertain"] = True
+        return
     if not getattr(result, "success", True):
         logger.warning(fail_result, sk, getattr(result, "error", None))
         return

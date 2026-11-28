@@ -1,0 +1,26 @@
+name: everos
+repo: https://github.com/EverMind-AI/Plugins
+sha: 9b4358f83bd245a9f3560f3aa45cd7dd5cbb3d5d
+subdir: hermes
+version: "1.0.1"
+description: >-
+  EverOS memory provider with automatic per-turn recall and capture, Markdown-backed
+  storage, hybrid retrieval, and separate user and agent memory tracks. Maintained
+  by EverMind. Disclosure - conversation turns (including tool calls and results),
+  built-in memory edits, and delegation summaries are sent to the configured
+  EverOS endpoint (http://127.0.0.1:8000 by default); EverOS uses the LLM and
+  embedding providers configured by the user for memory processing. The plugin
+  can start an installed EverOS server with the configured startup command when
+  the endpoint is unavailable, runs background threads for capture and startup,
+  and stops only a server process it started. Provider settings are stored in
+  the active Hermes profile's everos.json; EverOS manages its own local memory
+  store and model credentials separately.
+maintainer: EverMind-AI
+tier: community
+category: memory
+docs_url: https://github.com/EverMind-AI/Plugins/tree/9b4358f83bd245a9f3560f3aa45cd7dd5cbb3d5d/hermes#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

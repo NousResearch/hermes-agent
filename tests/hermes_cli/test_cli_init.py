@@ -104,12 +104,20 @@ class TestFallbackChainInit:
         ]
 
 
+class TestComposerPlaceholders:
+    @pytest.mark.parametrize("value", [False, "false"])
+    def test_composer_placeholders_can_be_disabled_for_automation_panes(self, value):
+        cli = _make_cli(config_overrides={"display": {"composer_placeholders": value}})
+
+        assert cli._composer_placeholder == ""
+        assert cli._tui_placeholder_text() == ""
+
+
 class TestBusyInputMode:
 
     def test_busy_input_mode_queue_is_honored(self):
         cli = _make_cli(config_overrides={"display": {"busy_input_mode": "queue"}})
         assert cli.busy_input_mode == "queue"
-
 
     def test_queue_command_works_while_busy(self):
         """When agent is running, /queue should still put the prompt in _pending_input."""

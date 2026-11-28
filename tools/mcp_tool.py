@@ -243,6 +243,9 @@ def _ensure_mcp_sdk() -> bool:
                          zip(_OPTIONAL_TYPE_FAMILIES,
                              (_MCP_SAMPLING_TYPES, _MCP_ELICITATION_TYPES, _MCP_NOTIFICATION_TYPES))]
         values, _exc, _definitive = _load_sdk_names("mcp.types", ("METHOD_NOT_FOUND",))
+        # A lone surrogate in one server reply must not drop it and stall its request to the timeout.
+        from tools.mcp_tool_wire_repair import install as _install_lenient_json
+        _install_lenient_json()
 
         # Publish: flags first, then symbols, ClientSession last (it gates the mock fast path).
         _MCP_NEW_HTTP, _MCP_LEGACY_HTTP = new_http, legacy_http

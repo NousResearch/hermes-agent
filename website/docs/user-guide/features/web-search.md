@@ -282,6 +282,24 @@ With this config, Hermes uses SearXNG for all search queries and Firecrawl for U
 
 ---
 
+#### SearXNG behind an authenticating gateway
+
+If your instance sits behind a gateway that accepts a provider's token — for example the gateway in front of a self-hosted model you signed in to with `hermes auth add <provider>` — name that provider:
+
+```yaml
+# ~/.hermes/config.yaml
+web:
+  search_backend: "searxng"
+  searxng:
+    auth_provider: "my-llm"   # sent as "Authorization: Bearer <that provider's credential>"
+```
+
+Hermes sends the provider's current credential with each request to your instance; an OAuth token the credential pool sees expiring is renewed first. Because a credential is sent, `SEARXNG_URL` must be `https://` (plain `http://` only to `127.0.0.1` or `::1`), and should point only at an instance meant to receive it.
+
+A search that fails is still retried on the keyless free tiers by default. Set `web.keyless_rescue: false` if queries must not leave your instance.
+
+---
+
 ### Tavily
 
 AI-optimised search and extract. Select Tavily in `hermes tools` (or set `web.backend: tavily`) to use it **keyless** with no account (rate-limited). Set an API key when you want higher limits.

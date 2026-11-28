@@ -670,6 +670,11 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
     ]
   )
 
+  // Outcome contract: the bound session id on success, null when the resume
+  // was refused or failed (no session bound), undefined when a newer flight
+  // superseded this one or the setup-required panel already handled it.
+  // Startup callers (gateway.ready) use null to tell a refused explicit
+  // --resume apart from a superseded one.
   const resumeById = useCallback(
     (id: string) => {
       const flight = ++attachmentFlight.current
@@ -723,7 +728,9 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
               if (!r) {
                 sys(`error: ${t('session.common.invalidResponse', 'session.resume')}`)
 
-                return patchUiState({ status: 'ready' })
+                patchUiState({ status: 'ready' })
+
+                return null
               }
 
               const storedSid = r.session_key || r.info?.stored_session_id || r.stored_session_id || r.resumed || id
@@ -773,6 +780,8 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
               }
 
               adoptAttachment(r, previousSid, previousSubscription, true)
+
+              return r.session_id
             })
             .catch(async (e: Error) => {
               if (flight !== attachmentFlight.current) {
@@ -794,6 +803,8 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
               }
 
               patchUiState({ status: 'ready' })
+
+              return null
             })
             .finally(() => gw.settleAttach?.(hold))
         })

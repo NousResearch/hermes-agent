@@ -19,7 +19,15 @@ export const gatewayMsgEn = {
     startup: {
       querySkipped: 'startup query skipped: no active session',
       imageAttachFailed: (message: string) => `startup image attach failed: ${message}`,
-      commandCatalogUnavailable: (message: string) => `command catalog unavailable: ${message}`
+      commandCatalogUnavailable: (message: string) => `command catalog unavailable: ${message}`,
+      // Explicit --resume was refused (#143907): the failure must stay visible
+      // (panel, not a one-line flash) and must not silently continue into a
+      // fresh chat. Title/body/actions for the panel handleReady shows.
+      resumeFailedTitle: (id: string) => `could not resume session ${id}`,
+      resumeFailedBody:
+        'The requested session was refused, and no new session was started. Start one explicitly with /new, or relaunch without --resume and pick a session.',
+      resumeFailedActionsTitle: 'Next steps',
+      resumeFailedNewRow: 'start a fresh session'
     },
     clarify: {
       // Reason shown as "(…)" after an abandoned clarify prompt.

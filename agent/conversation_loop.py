@@ -1807,7 +1807,21 @@ def run_conversation(
     from agent.turn_finalizer import fence_result_reply, settle_held_final
     from agent.prompt_cache_lifecycle import end_turn_prompt_cache_warming
     from agent.voice_turn_route import end_voice_turn_route
+    from hermes_cli.lifecycle import admission_refusal
     from tools.vision_tools_history_budget import native_turn_images
+
+    if (refusal := admission_refusal(
+            "pre_turn_admission",
+            session_id=agent.session_id or "",
+            platform=getattr(agent, "platform", "") or "",
+            model=getattr(agent, "model", "") or "",
+            provider=getattr(agent, "provider", "") or "",
+            user_message=user_message,
+            conversation_history=list(conversation_history or ()),
+            task_id=task_id or "",
+    )) is not None:
+        return {"failed": True, "completed": False, "error": refusal,
+                "messages": list(conversation_history or ())}
 
     # Steer / redirect / interrupt set this mid-turn; the result reports whether the turn ran untouched.
     agent._turn_user_intervened = False

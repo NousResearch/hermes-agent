@@ -135,3 +135,80 @@ class TestContinuationRepetitionGuard:
 
         assert result["partial"] is True
         assert loop_agent.client.chat.completions.create.call_count == 4
+
+
+    @pytest.mark.parametrize("recovers", [True, False], ids=["new-ending", "restarts-again"])
+    @pytest.mark.parametrize("made_progress", [False, True], ids=["early", "late"])
+    def test_restarted_continuation_gets_one_corrective_retry(self, loop_agent, recovers, made_progress):
+        opening = (
+            "The inspection began at the north entrance before the first train arrived. "
+            "We checked the platform lights, recorded the readings from the ticket hall, "
+            "and walked the entire length of the footbridge to finish the morning survey."
+        )
+        progress = " The crew recorded a higher reading on the eastern span."
+        accepted = opening + progress if made_progress else opening
+        rejected = accepted.upper()
+        ending = "The final reading confirmed that the repairs held."
+        create = loop_agent.client.chat.completions.create
+        create.side_effect = [
+            _response(opening),
+            *([_response(progress)] if made_progress else []),
+            _response(rejected),
+            _response(ending, finish_reason="stop", response_id="completed-response")
+            if recovers else _response(rejected),
+        ]
+
+        result = _run(loop_agent, "write the inspection report")
+
+        assert create.call_count == (4 if made_progress else 3)
+        retry_messages = create.call_args_list[-1].kwargs["messages"]
+        corrections = [
+            message for message in retry_messages
+            if message["role"] == "user"
+            and "continuation restarted" in message["content"].lower()
+        ]
+        assert len(corrections) == 1
+        assert all(rejected not in str(message["content"]) for message in retry_messages)
+        answer = result["final_response"]
+        assert answer.count(opening) == 1
+        if made_progress:
+            assert answer.count(progress.strip()) == 1
+        assert rejected not in answer
+        if recovers:
+            assert result["completed"] is True
+            assert answer.endswith(ending)
+        else:
+            assert result["completed"] is False
+            assert result["partial"] is True
+            assert answer.strip() == accepted
+
+    @pytest.mark.parametrize("replay_truncated", [False, True], ids=["stop", "length"])
+    def test_replayed_opening_preserves_new_ending(self, loop_agent, replay_truncated):
+        opening = (
+            "At sunrise we surveyed the western platform and inspected the signal box. "
+            "The crew then crossed the footbridge, measured the rails, and recorded "
+            "the results in the station log before returning to the depot."
+        )
+        ending = " The inspection found a loose rail."
+        closing = " Repairs are scheduled."
+        responses = [_response(opening, response_id="first")]
+        responses.append(_response(
+            opening + ending,
+            finish_reason="length" if replay_truncated else "stop",
+            response_id="second",
+        ))
+        if replay_truncated:
+            responses.append(_response(closing, finish_reason="stop", response_id="last"))
+        create = loop_agent.client.chat.completions.create
+        create.side_effect = responses
+        result = _run(loop_agent, "write the inspection report")
+
+        assert result["completed"] is True
+        assert create.call_count == len(responses)
+        expected = opening + ending + (closing if replay_truncated else "")
+        assert result["final_response"] == expected
+        if replay_truncated:
+            retry = create.call_args.kwargs["messages"]
+            assert ending.strip() in [
+                row["content"].strip() for row in retry if row["role"] == "assistant"
+            ]

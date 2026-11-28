@@ -8,9 +8,13 @@ function run(env: NodeJS.ProcessEnv, defaultApp = true) {
   const calls: unknown[][] = []
   const log: string[] = []
   registerDeepLinkProtocol({
-    app: { setAsDefaultProtocolClient: (...args: unknown[]) => { calls.push(args);
+    app: {
+      setAsDefaultProtocolClient: (...args: unknown[]) => {
+        calls.push(args)
 
- return true } },
+        return true
+      }
+    },
     protocol: 'hermes',
     env,
     defaultApp,
@@ -34,20 +38,39 @@ test('the E2E/dev guard leaves the OS hermes:// handler untouched; normal launch
 
 function launch(url: string, ready = true) {
   let activated = 0
-  const handled = handleLaunchDeepLink(url, ['hermes-dev', 'hermes'], { ready, activate: () => { activated += 1 } })
+  const handled = handleLaunchDeepLink(url, ['hermes-dev', 'hermes'], {
+    ready,
+    activate: () => {
+      activated += 1
+    }
+  })
 
   return { handled, activated }
 }
 
 test('hermes://launch only focuses the app, whatever it carries, malformed tails included', () => {
-  for (const url of ['hermes://launch', 'hermes://launch/', 'hermes://launch/chat/new?prompt=rm%20-rf', 'hermes://launch/%', 'hermes-dev://launch?x=1']) {
+  for (const url of [
+    'hermes://launch',
+    'hermes://launch/',
+    'hermes://launch/chat/new?prompt=rm%20-rf',
+    'hermes://launch/%',
+    'hermes-dev://launch?x=1'
+  ]) {
     assert.deepEqual(launch(url), { handled: true, activated: 1 }, url)
   }
 
   // A window still booting reveals itself; the link is consumed without an early show.
   assert.deepEqual(launch('hermes://launch', false), { handled: true, activated: 0 })
 
-  for (const url of ['hermes://', 'hermes://open/launch', 'hermes://plugin/install?repo=launch', 'hermes://launcher', 'hermes://close-preview', 'other://launch', 'not a url']) {
+  for (const url of [
+    'hermes://',
+    'hermes://open/launch',
+    'hermes://plugin/install?repo=launch',
+    'hermes://launcher',
+    'hermes://close-preview',
+    'other://launch',
+    'not a url'
+  ]) {
     assert.deepEqual(launch(url), { handled: false, activated: 0 }, url)
   }
 })

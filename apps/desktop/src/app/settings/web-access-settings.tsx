@@ -105,7 +105,7 @@ class RestartFailed extends Error {
  *  until the old gateway exits it still answers with what it served before. A restart (`restartPid`)
  *  that exits first leaves the old gateway serving, so the wait ends there with its reason. */
 async function waitForRestart(restartPid?: number): Promise<WebAccessStatus> {
-  for (const deadline = Date.now() + RESTART_TIMEOUT_MS; Date.now() < deadline; ) {
+  for (const deadline = Date.now() + RESTART_TIMEOUT_MS; Date.now() < deadline;) {
     await new Promise(resolve => setTimeout(resolve, RESTART_POLL_MS))
     // The backend answering this may be the gateway being restarted.
     const status = await getWebAccessStatus().catch(() => null)
@@ -139,7 +139,12 @@ export function WebAccessSettings(): ReactElement | null {
   // backend nor shows anything.
   const available = useWebAccessAvailable()
 
-  const { data: status, dataUpdatedAt, error, refetch } = useQuery({
+  const {
+    data: status,
+    dataUpdatedAt,
+    error,
+    refetch
+  } = useQuery({
     enabled: available,
     queryFn: getWebAccessStatus,
     queryKey: key,
@@ -320,7 +325,11 @@ function WebAccessForm({ queryKey, readAt, status, w }: FormProps): ReactElement
     <SettingsContent>
       <SectionHeading icon={Network} page title={w.title} />
       <p className="mb-4 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">{w.intro}</p>
-      <SettingsSection aside={<Pill tone={phase === 'serving' ? 'success' : 'muted'}>{pillLabel(phase, busy, w)}</Pill>} icon={Globe} title={w.title}>
+      <SettingsSection
+        aside={<Pill tone={phase === 'serving' ? 'success' : 'muted'}>{pillLabel(phase, busy, w)}</Pill>}
+        icon={Globe}
+        title={w.title}
+      >
         {/* A web app served on this computer only has no network address to choose until it stops. */}
         {status.mode !== 'local' && (
           <WhereRow
@@ -347,7 +356,15 @@ function WebAccessForm({ queryKey, readAt, status, w }: FormProps): ReactElement
             </Button>
           }
           description={stage ? <StartProgress elapsed={elapsed} stage={stage} w={w} /> : describe(phase, status, w)}
-          title={phase === 'serving' ? <ExternalLink href={url} native showExternalIcon>{url}</ExternalLink> : url || w.title}
+          title={
+            phase === 'serving' ? (
+              <ExternalLink href={url} native showExternalIcon>
+                {url}
+              </ExternalLink>
+            ) : (
+              url || w.title
+            )
+          }
         />
       </SettingsSection>
     </SettingsContent>

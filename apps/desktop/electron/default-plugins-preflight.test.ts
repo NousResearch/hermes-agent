@@ -597,14 +597,7 @@ test('installed launcher backend uses --run-module and quotes Windows .cmd comma
 
   expect(inv.command).toBe(`"${cmdPath}"`)
   expect(inv.shell).toBe(true)
-  expect(inv.args).toEqual([
-    '--run-module',
-    'hermes_cli.default_plugins',
-    'ensure',
-    '--json',
-    '--timeout',
-    '120'
-  ])
+  expect(inv.args).toEqual(['--run-module', 'hermes_cli.default_plugins', 'ensure', '--json', '--timeout', '120'])
   expect(inv.env.HERMES_HOME).toBe('C:\\Users\\John Doe\\.hermes')
   expect(inv.env.HERMES_RUNTIME_DIR).toBe('C:\\tools')
 })
@@ -641,7 +634,13 @@ console.log(JSON.stringify(out))
     HERMES_HOME: '/wrong-inherited-home'
   }
 
-  const backend = { kind: 'command', command: dumpBin, args: ['gateway', 'ensure', '--json'], env: backendEnv, shell: false }
+  const backend = {
+    kind: 'command',
+    command: dumpBin,
+    args: ['gateway', 'ensure', '--json'],
+    env: backendEnv,
+    shell: false
+  }
 
   const preflight = await runDefaultPluginsPreflight(backend, { cwd: tmpDir, home, parentEnv })
   const gateway = await runGatewayEnsure(backend, tmpDir, home, parentEnv)

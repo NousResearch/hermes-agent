@@ -30,7 +30,13 @@ export function SharedMetricsConsentStrip() {
   const activeProfile = useStore($activeGatewayProfile)
   const profile = normalizeProfileKey(scope.profile ?? activeProfile)
 
-  return <SharedMetricsConsentStripForOwner connectionId={scope.connectionId} key={JSON.stringify([scope.connectionId, profile])} profile={profile} />
+  return (
+    <SharedMetricsConsentStripForOwner
+      connectionId={scope.connectionId}
+      key={JSON.stringify([scope.connectionId, profile])}
+      profile={profile}
+    />
+  )
 }
 
 interface SharedMetricsConsentStripOwnerProps {
@@ -45,11 +51,12 @@ function SharedMetricsConsentStripForOwner({ connectionId, profile }: SharedMetr
   const [saving, setSaving] = useState(false)
 
   const scopedRequest = useMemo(
-    () => sharedMetricsProfileRequester(
-      <T,>(method: string, params: Record<string, unknown> = {}) =>
-        requestGatewayForAgent<T>(connectionId, profile, method, params),
-      profile
-    ),
+    () =>
+      sharedMetricsProfileRequester(
+        <T,>(method: string, params: Record<string, unknown> = {}) =>
+          requestGatewayForAgent<T>(connectionId, profile, method, params),
+        profile
+      ),
     [connectionId, profile]
   )
 

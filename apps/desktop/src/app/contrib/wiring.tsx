@@ -1296,10 +1296,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       )}
       {!isAuxiliaryWindow() && <OnboardingEnd />}
       {!isAuxiliaryWindow() && (
-        <SharedMetricsConsentDialog
-          enabled={gatewayState === 'open'}
-          profile={activeGatewayProfile}
-        />
+        <SharedMetricsConsentDialog enabled={gatewayState === 'open'} profile={activeGatewayProfile} />
       )}
       {/* One host for every free-tier sign-in entry point (Settings › Billing,
           the statusbar chip, the first-launch intro). It owns the flow; the
@@ -1410,7 +1407,8 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       <NotificationStack />
 
       {/* Backs confirm() from @/store/confirm — renders only while one is open. */}
-      <ConfirmHost /><PreviewSigninsBoot />
+      <ConfirmHost />
+      <PreviewSigninsBoot />
 
       {/* Send Diagnostics consent/upload dialog — driven by $sendDiagnostics
           (error card action); renders nothing until requested. */}

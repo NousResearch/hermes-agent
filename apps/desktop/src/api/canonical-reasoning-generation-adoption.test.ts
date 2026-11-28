@@ -13,14 +13,18 @@ import { HermesGateway } from './client'
 test('the client adopts the generation its own mutation receipt reports', () => {
   const protocol = new CanonicalDesktopProtocol()
 
-  protocol.result('session.resume', { session_id: 's' }, {
-    session_id: 's',
-    revision: 0,
-    execution_generation: 0,
-    running: false,
-    messages: [],
-    prompts: []
-  })
+  protocol.result(
+    'session.resume',
+    { session_id: 's' },
+    {
+      session_id: 's',
+      revision: 0,
+      execution_generation: 0,
+      running: false,
+      messages: [],
+      prompts: []
+    }
+  )
 
   const first = protocol.prepare('config.set', { key: 'reasoning', session_id: 's', value: 'high' })
 
@@ -115,9 +119,7 @@ test('a lost session.updated broadcast leaves the next option edit acceptable to
       }
 
       socket.send(
-        JSON.stringify(
-          error ? { jsonrpc: '2.0', id: frame.id, error } : { jsonrpc: '2.0', id: frame.id, result }
-        )
+        JSON.stringify(error ? { jsonrpc: '2.0', id: frame.id, error } : { jsonrpc: '2.0', id: frame.id, result })
       )
     })
   })

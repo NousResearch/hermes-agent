@@ -68,9 +68,10 @@ export async function runPluginUpdate(
     if (outcome.kind === 'scan' && outcome.verdict === 'caution' && !options.force) {
       const ok = await confirm({
         confirmLabel: p.updateScanConfirm,
-        description: [p.updateScanBody(name, outcome.findings.length), ...scanFindingLines(outcome.findings, p.updateScanMore)].join(
-          '\n'
-        ),
+        description: [
+          p.updateScanBody(name, outcome.findings.length),
+          ...scanFindingLines(outcome.findings, p.updateScanMore)
+        ].join('\n'),
         destructive: true,
         title: p.updateScanTitle(name)
       })

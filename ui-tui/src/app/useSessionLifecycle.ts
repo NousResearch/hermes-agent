@@ -196,7 +196,9 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
   const closeSession = useCallback(
     async (targetSid?: null | string, deferMessages = false) => {
       const closed =
-        targetSid && !gw.isCanonical ? await rpc<SessionCloseResponse>('session.close', { session_id: targetSid }) : null
+        targetSid && !gw.isCanonical
+          ? await rpc<SessionCloseResponse>('session.close', { session_id: targetSid })
+          : null
 
       if (!deferMessages) {
         closed?.messages?.forEach(message => sys(message))
@@ -274,7 +276,9 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
   const closeForExit = useCallback(async () => {
     const open = [...canonicalSubscriptions.current.entries()]
 
-    await Promise.all(open.map(([sessionId, subscriptionId]) => detachCanonical(sessionId, subscriptionId, 'tui_shutdown')))
+    await Promise.all(
+      open.map(([sessionId, subscriptionId]) => detachCanonical(sessionId, subscriptionId, 'tui_shutdown'))
+    )
   }, [detachCanonical])
 
   // The Ink session switcher's `^d` close of a live row. On the legacy transport it is main's
@@ -374,7 +378,11 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         previousSubscription &&
         (previousSid !== result.session_id || previousSubscription !== result.subscription_id)
       ) {
-        detachCanonical(previousSid, previousSubscription, closePrevious && previousSid !== result.session_id ? 'tui_close' : undefined)
+        detachCanonical(
+          previousSid,
+          previousSubscription,
+          closePrevious && previousSid !== result.session_id ? 'tui_close' : undefined
+        )
       }
     },
     [detachCanonical, gw.isCanonical]
@@ -432,8 +440,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       try {
         const setup = await rpc<SetupStatusResponse>('setup.status', {})
 
-        const ready =
-          setup?.provider_configured !== false || (gw.isCanonical && (await launchRouteServes(rpc)))
+        const ready = setup?.provider_configured !== false || (gw.isCanonical && (await launchRouteServes(rpc)))
 
         if (flight !== attachmentFlight.current) {
           return null

@@ -280,7 +280,7 @@ describe('useBackgroundQueueDrain', () => {
   // continuation to complete even when the user switched to another chat.
   // The queue is keyed by the chat's lineage root; the pause was marked under the id its runtime showed
   // (a compression tip).
-  it('holds a compressed chat\'s background queue while its reply is paused under its tip id', async () => {
+  it("holds a compressed chat's background queue while its reply is paused under its tip id", async () => {
     const runtimeMap = { current: new Map([['lineage-root', 'rt-session-a']]) }
     const submitText = vi.fn(async () => true)
 

@@ -56,8 +56,8 @@ function requester(result: Record<string, unknown> = { ok: true }) {
 
 // The aggregate record, excluding the independent frame journals and revocation token.
 const stored = () => {
-  const key = Array.from({ length: window.localStorage.length }, (_, i) => window.localStorage.key(i) ?? '').find(k =>
-    k.startsWith(`${DESKTOP_METRICS_STATE_KEY}:`) && !k.slice(DESKTOP_METRICS_STATE_KEY.length + 1).includes(':')
+  const key = Array.from({ length: window.localStorage.length }, (_, i) => window.localStorage.key(i) ?? '').find(
+    k => k.startsWith(`${DESKTOP_METRICS_STATE_KEY}:`) && !k.slice(DESKTOP_METRICS_STATE_KEY.length + 1).includes(':')
   )
 
   return key ? window.localStorage.getItem(key) : null
@@ -491,19 +491,25 @@ describe('long frames', () => {
 
       const frames = calls.filter(([method]) => method === 'shared_metrics.desktop_long_frames')
 
-      expect(frames.map(([, params]) => params)).toEqual([{
-        day: '2026-09-27', visible_ms: 0, frames: [{ bucket: '100ms_to_250ms', count: 1 }]
-      }])
+      expect(frames.map(([, params]) => params)).toEqual([
+        {
+          day: '2026-09-27',
+          visible_ms: 0,
+          frames: [{ bucket: '100ms_to_250ms', count: 1 }]
+        }
+      ])
       expect(JSON.parse(stored()!).pending).toHaveLength(1)
       acceptDaily = true
       tickDesktopMetrics()
       await flush()
       tickDesktopMetrics()
       await flush()
-      expect(calls.filter(([method]) => method === 'shared_metrics.desktop_daily').map(([, params]) => params)).toEqual([
-        expect.objectContaining({ actions: [{ action: 'composer.send', count: 1, via: 'click' }] }),
-        expect.objectContaining({ actions: [{ action: 'composer.send', count: 1, via: 'click' }] })
-      ])
+      expect(calls.filter(([method]) => method === 'shared_metrics.desktop_daily').map(([, params]) => params)).toEqual(
+        [
+          expect.objectContaining({ actions: [{ action: 'composer.send', count: 1, via: 'click' }] }),
+          expect.objectContaining({ actions: [{ action: 'composer.send', count: 1, via: 'click' }] })
+        ]
+      )
       expect(calls.filter(([method]) => method === 'shared_metrics.desktop_long_frames')).toEqual(frames)
       expect(JSON.parse(stored()!).pending).toEqual([])
     }
@@ -520,7 +526,7 @@ describe('long frames', () => {
       if (method === 'shared_metrics.desktop_daily') {
         started.resolve()
 
-        return await response.promise as never
+        return (await response.promise) as never
       }
 
       return { recorded: true } as never

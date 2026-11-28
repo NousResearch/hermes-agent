@@ -37,7 +37,14 @@ describe('"No, and tell Hermes what to do instead" (#25693)', () => {
     const enqueue = vi.fn()
     const sys = vi.fn()
 
-    await steerOrQueue({ destination: owner(), enqueue, generation: 3, rpc: rpc as any, sys, text: 'use INSERT OR REPLACE' })
+    await steerOrQueue({
+      destination: owner(),
+      enqueue,
+      generation: 3,
+      rpc: rpc as any,
+      sys,
+      text: 'use INSERT OR REPLACE'
+    })
 
     expect(rpc).toHaveBeenCalledWith('session.steer', {
       execution_generation: 3,
@@ -48,7 +55,10 @@ describe('"No, and tell Hermes what to do instead" (#25693)', () => {
   })
 
   it('keeps the words as the next prompt when the steer is refused or fails', async () => {
-    for (const rpc of [vi.fn(async () => ({ status: 'rejected' })), vi.fn(async () => Promise.reject(new Error('gone')))]) {
+    for (const rpc of [
+      vi.fn(async () => ({ status: 'rejected' })),
+      vi.fn(async () => Promise.reject(new Error('gone')))
+    ]) {
       const enqueue = vi.fn()
 
       await steerOrQueue({ destination: owner(), enqueue, rpc: rpc as any, sys: vi.fn(), text: 'do X instead' })

@@ -295,11 +295,16 @@ def _is_unusable_container_cwd(cwd: str, *, mounted_host: str | None = None) -> 
     even when it matches none of those prefixes. That equality check runs
     first so ``/mnt/...`` and ``/srv/...`` are not wrapped as ``cd`` targets.
     """
+    # POSIX semantics: *cwd* names a path INSIDE a Linux container. ``os.path``
+    # is the host's module, and on Windows (ntpath) Python 3.13+ treats paths
+    # without a drive letter as non-absolute — so ``os.path.isabs("/workspace")``
+    # is False there and every valid container cwd got discarded. Host
+    # Windows-drive paths are already rejected by ``_is_host_cwd`` above.
     if not cwd:
         return False
     if _is_mounted_host_cwd(cwd, mounted_host):
         return True
-    return _is_host_cwd(cwd) or not os.path.isabs(cwd)
+    return _is_host_cwd(cwd) or not posixpath.isabs(cwd)
 
 
 def _tenv(name: str, default: str = "") -> str:

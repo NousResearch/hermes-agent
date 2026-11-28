@@ -210,8 +210,23 @@ def request_brokered_suspend(
     import urllib.error
     import urllib.request
 
-    # urllib sets Content-Length itself for a bytes body.
-    request = urllib.request.Request(url, data=b"", method="POST")
+    from hermes_cli.version_info import hermes_user_agent
+
+    # urllib sets Content-Length itself for a bytes body. Send an explicit User-Agent:
+    # the default ``Python-urllib/x.y`` is a banned signature for Cloudflare Browser
+    # Integrity Check, which answers 403 (error 1010) before the broker sees the POST and
+    # silently keeps the machine awake (#157817).
+    # Provenance is optional: a corrupt install stamp can make hermes_user_agent()
+    # raise UnicodeDecodeError, but that must never veto the suspend. Fall back to
+    # a static, non-`Python-urllib` UA so Cloudflare BIC still sees an explicit
+    # signature and the POST goes out (fail-awake).
+    try:
+        ua = hermes_user_agent()
+    except Exception:
+        ua = "hermes-agent scale-to-zero"
+    request = urllib.request.Request(
+        url, data=b"", method="POST", headers={"User-Agent": ua}
+    )
     open_url = opener or urllib.request.urlopen
     try:
         with open_url(request, timeout=timeout) as response:

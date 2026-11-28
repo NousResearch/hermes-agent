@@ -492,6 +492,24 @@ class TestSelfPacedBackoff:
         mgr.complete_tick("queue depth is 2 — draining")
         assert mgr.state.current_delay == floor
 
+    def test_configured_ceiling_stays_under_one_hour_prompt_cache(self, hermes_home):
+        """A ceiling of 1h+ would land every idle tick after the 1h prompt cache expired."""
+        from hermes_cli.loops import LoopManager
+
+        (hermes_home / "config.yaml").write_text(
+            "loops:\n  self_paced_ceiling_seconds: 3600\n  max_ticks: 0\n"
+        )
+        mgr = LoopManager(session_id="sp-ttl")
+        mgr.set("watch the deploy")
+        delays = []
+        for _ in range(9):
+            mgr.state.next_due_at = time.time() - 1
+            mgr.fire_tick()
+            mgr.complete_tick("still deploying")
+            delays.append(mgr.state.current_delay)
+        assert max(delays) < 3600
+        assert delays[-1] == delays[-2] >= 50 * 60  # still backs off near the hour, just under it
+
     def test_timestamp_only_changes_do_not_reset(self, hermes_home):
         from hermes_cli.loops import LoopManager
 

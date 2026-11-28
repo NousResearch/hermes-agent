@@ -1,0 +1,21 @@
+name: hermes-context-bar
+title: Context Bar
+version: "1.0.0"
+repo: https://github.com/tone-leh/hermes-context-bar
+sha: d4d04155c7016e912626b7fe72e50ee191b56993
+maintainer: tone-leh
+tier: community
+category: desktop
+requires_hermes: ">=0.21"
+docs_url: https://github.com/tone-leh/hermes-context-bar#readme
+readme: true
+image: https://raw.githubusercontent.com/tone-leh/hermes-context-bar/d4d04155c7016e912626b7fe72e50ee191b56993/assets/hero-mono.png
+screenshots:
+  - https://raw.githubusercontent.com/tone-leh/hermes-context-bar/d4d04155c7016e912626b7fe72e50ee191b56993/assets/skin-mono.png
+  - https://raw.githubusercontent.com/tone-leh/hermes-context-bar/d4d04155c7016e912626b7fe72e50ee191b56993/assets/skin-prism-policy.png
+description: "Always-on context runway, live token generation speed (tok/s), Claude Code /context-style category breakdown, DIY status bar, multi-bot and multi-currency spend tracking, and read-only auto-compaction/memory policy overview with Settings shortcut for Hermes Desktop (EN / 中文). Desktop-only (desktop/plugin.js); stays strictly inside the plugin SDK surface (no raw desktop bridge calls, no agent tools/hooks/middleware/env vars, no external network requests, no credential reads)."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

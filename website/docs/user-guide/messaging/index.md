@@ -554,6 +554,23 @@ The first time you message a busy agent on any platform, Hermes appends a one-li
 
 If you find the busy acknowledgment noisy, set `display.busy_ack_enabled: false`. Input handling is unchanged; only the confirmation message is hidden.
 
+#### Reaction acks and continuing below a steer
+
+Two opt-in display keys, both off by default and settable globally under `display:` or per platform under `display.platforms.<platform>:`, make a steered thread read top to bottom:
+
+```yaml
+display:
+  busy_input_mode: steer
+  platforms:
+    slack:
+      busy_ack_reaction: true    # react ⏩ to a steered message instead of posting "Steered into current run"
+      busy_continue_below: true  # after a steer, the turn's next tool lines start a new bubble below it
+```
+
+- **`busy_ack_reaction`** replaces the busy-ack bubble with a reaction on your message: ⏩ steered, ↪️ redirected, ⏳ queued, ⚡ interrupting. Every steered message gets its own reaction (the bubble is sent at most once per 30 seconds). It needs an adapter that can react (Slack, Buzz) and the platform's reactions left on (Slack: `SLACK_REACTIONS`); otherwise, or when the platform refuses the reaction, the text bubble is sent as before.
+- **`busy_continue_below`** closes the turn's tool-progress bubble when a steer or redirect lands, so later tool lines appear under your message instead of editing a bubble above it. Streamed text already starts a new message after each tool call, which is when a steer reaches the agent.
+- **`busy_steer_ack_enabled: false`** still silences steer acks entirely, reaction included. It is read from `config.yaml` only (globally or per platform); the old `HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED` environment override is no longer read.
+
 ## Clarify Questions (Multi-Select)
 
 When the agent uses the `clarify` tool to ask you a question, the gateway renders the choices as a numbered prompt (or native buttons on platforms that support them). Clarify supports **multi-select** questions too — the agent can let you pick several options at once:

@@ -2052,10 +2052,6 @@ def _bridge_config_to_env(_cfg: dict) -> None:
     _bridge_section_to_env(_cfg.get("sessions", {}), _SESSIONS_ENV_BRIDGE)
     _display_cfg = _cfg.get("display", {})
     _bridge_section_to_env(_display_cfg, _DISPLAY_ENV_BRIDGE)
-    # Documented service-manager override: env wins when set (other display bridges stay config-first).
-    if (isinstance(_display_cfg, dict) and "busy_steer_ack_enabled" in _display_cfg
-            and "HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED" not in os.environ):
-        os.environ["HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED"] = str(_display_cfg["busy_steer_ack_enabled"])
     _tz_cfg = _cfg.get("timezone", "")
     if _tz_cfg and isinstance(_tz_cfg, str):
         os.environ["HERMES_TIMEZONE"] = _tz_cfg.strip()

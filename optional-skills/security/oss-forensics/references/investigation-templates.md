@@ -101,7 +101,7 @@ The package contains <BEHAVIOR> [EV-YYYY].
 **Pattern**: After a malicious commit is detected (or before wider notice), the attacker
 force-pushes to remove the malicious commit from branch history.
 
-**Detection is key** — this template focuses on proving the erasure happened.
+**Detection is key**: this template focuses on proving the erasure happened.
 
 **Key Evidence to Collect**:
 - [ ] GH Archive PushEvent with `distinct_size=0` (force push indicator) [EV-XXXX]

@@ -1,3 +1,3 @@
 ---
-description: Optional media skills — GIF search and audio visualization.
+description: Optional media skills, such as GIF search and audio visualization.
 ---

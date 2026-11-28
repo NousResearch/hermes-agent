@@ -203,7 +203,7 @@ f(x_{t+1}) \leq f(x_t) - \frac{\eta}{2}\|\nabla f(x_t)\|^2 + \frac{\eta^2 L}{2}\
 4. Detailed Coverage (bulk of paper)
    - For each category: representative methods, key ideas, strengths/weaknesses
    - Comparison tables within and across categories
-   - Don't just describe — analyze and compare
+   - Don't just describe: analyze and compare
 
 5. Experimental Comparison (if applicable)
    - Standardized benchmark comparison
@@ -235,11 +235,11 @@ The taxonomy is the core intellectual contribution of a survey. It should:
 
 ### Writing Standards
 
-- **Cite every relevant paper** — authors will check if their work is included
-- **Be fair** — don't dismiss methods you don't prefer
-- **Synthesize, don't just list** — identify patterns, trade-offs, open questions
-- **Include a comparison table** — even if qualitative (features/properties checklist)
-- **Update before submission** — check arXiv for papers published since you started writing
+- **Cite every relevant paper**: authors will check if their work is included
+- **Be fair**: don't dismiss methods you don't prefer
+- **Synthesize, don't just list**: identify patterns, trade-offs, open questions
+- **Include a comparison table**: even if qualitative (features/properties checklist)
+- **Update before submission**: check arXiv for papers published since you started writing
 
 ### Venues for Surveys
 
@@ -394,12 +394,12 @@ Datasheet Questions:
    - Present your thesis with supporting evidence
    - Evidence can be: empirical data, theoretical analysis, logical argument,
      case studies, historical precedent
-   - Be rigorous — this isn't an opinion piece
+   - Be rigorous: this isn't an opinion piece
 
 4. Counterarguments
    - Engage seriously with the strongest objections
    - Explain why they don't undermine your thesis
-   - Concede where appropriate — it strengthens credibility
+   - Concede where appropriate: it strengthens credibility
 
 5. Implications
    - What should the field do differently?
@@ -413,11 +413,11 @@ Datasheet Questions:
 
 ### Writing Standards
 
-- **Lead with the strongest version of your argument** — don't hedge in the first paragraph
-- **Engage with counterarguments honestly** — the best position papers address the strongest objections, not the weakest
-- **Provide evidence** — a position paper without evidence is an editorial
-- **Be concrete** — "the field should do X" is better than "more work is needed"
-- **Don't straw-man existing work** — characterize opposing positions fairly
+- **Lead with the strongest version of your argument**: don't hedge in the first paragraph
+- **Engage with counterarguments honestly**: the best position papers address the strongest objections, not the weakest
+- **Provide evidence**: a position paper without evidence is an editorial
+- **Be concrete**: "the field should do X" is better than "more work is needed"
+- **Don't straw-man existing work**: characterize opposing positions fairly
 
 ### Venues for Position Papers
 

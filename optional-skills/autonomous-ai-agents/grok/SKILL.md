@@ -11,7 +11,7 @@ metadata:
     related_skills: [codex, claude-code, hermes-agent]
 ---
 
-# Grok Build CLI — Hermes Orchestration Guide
+# Grok Build CLI: Hermes Orchestration Guide
 
 Delegate coding tasks to [Grok Build](https://docs.x.ai/build/overview) (xAI's
 autonomous coding agent CLI, the `grok` command) via the Hermes terminal. Grok
@@ -20,7 +20,7 @@ workflows. It runs three ways: an interactive TUI, **headless** (`-p`), and as
 an **ACP agent** over JSON-RPC.
 
 This is the third sibling to `codex` and `claude-code`. The orchestration
-pattern is nearly identical — **prefer headless `-p` for one-shots**, use a PTY
+pattern is nearly identical: **prefer headless `-p` for one-shots**, use a PTY
 for interactive sessions.
 
 ## When to use
@@ -37,16 +37,16 @@ for interactive sessions.
   - The official installer `curl -fsSL https://x.ai/cli/install.sh | bash` also
     works, but the `x.ai` host is Cloudflare-walled in some environments. The
     npm path avoids that dependency entirely.
-- **Auth — SuperGrok / X Premium+ subscription (primary path):**
+- **Auth (SuperGrok / X Premium+ subscription, primary path):**
   - Run `grok login` once → opens a browser for OAuth → token cached in
     `~/.grok/auth.json`. This uses your **SuperGrok or X Premium+** subscription
     (no per-token API billing).
   - Check sign-in state by looking for `~/.grok/auth.json`, or run a cheap
     headless smoke test: `grok --no-auto-update -p "Say ok."`
   - In the TUI, `/logout` signs out and `/login` (or relaunching) signs back in.
-- **No git repo required** — unlike Codex, Grok runs fine outside a git
+- **No git repo required**: unlike Codex, Grok runs fine outside a git
   directory (good for scratch/throwaway tasks).
-- **Claude Code / AGENTS.md compatible with zero config** — Grok auto-reads
+- **Claude Code / AGENTS.md compatible with zero config**: Grok auto-reads
   `CLAUDE.md`, `.claude/` (skills, agents, MCPs, hooks, rules), and the
   `AGENTS.md` family. Existing project context just works.
 
@@ -58,10 +58,10 @@ for interactive sessions.
 
 ## Two Orchestration Modes
 
-### Mode 1: Headless (`-p`) — Non-Interactive (PREFERRED)
+### Mode 1: Headless (`-p`), Non-Interactive (PREFERRED)
 
 Runs a one-shot task, prints the result, and exits. No PTY, no interactive
-dialogs to navigate. This is the cleanest integration path — the analog of
+dialogs to navigate. This is the cleanest integration path: the analog of
 `claude -p` and `codex exec`.
 
 ```
@@ -76,7 +76,7 @@ Always pass `--no-auto-update` in automation to skip background update checks.
 - Structured output parsing with `--output-format json`
 - Any task that doesn't need multi-turn conversation
 
-### Mode 2: Interactive PTY — Multi-Turn TUI Sessions
+### Mode 2: Interactive PTY, Multi-Turn TUI Sessions
 
 The TUI is a fullscreen, mouse-interactive app. Drive it with `pty=true`. For
 robust monitoring/input use tmux (same pattern as the `claude-code` skill).
@@ -108,7 +108,7 @@ For pure automation, headless `-p` is still cleaner than the TUI.
 |------|--------|
 | `-p, --single <PROMPT>` | Send one prompt, run headless, exit |
 | `-m, --model <MODEL>` | Choose a model |
-| `-s, --session-id <UUID>` | Assign a **NEW** valid UUID to a fresh conversation (must not already exist). Does **not** resume — use `--resume`/`--continue` for that. Only valid with `--resume`/`--continue` when paired with `--fork-session` |
+| `-s, --session-id <UUID>` | Assign a **NEW** valid UUID to a fresh conversation (must not already exist). Does **not** resume. Use `--resume`/`--continue` for that. Only valid with `--resume`/`--continue` when paired with `--fork-session` |
 | `-r, --resume [<UUID>]` | Resume an existing session by its UUID (or the most recent if omitted) |
 | `-c, --continue` | Continue the most recent session in the current directory |
 | `--fork-session` | When resuming, create a new session ID instead of reusing the original |
@@ -121,9 +121,9 @@ For pure automation, headless `-p` is still cleaner than the TUI.
 
 ### Output Formats
 
-- `plain` — human-readable text (default)
-- `json` — one JSON object at the end of the run (parse the result cleanly)
-- `streaming-json` — newline-delimited JSON events as they arrive
+- `plain`: human-readable text (default)
+- `json`: one JSON object at the end of the run (parse the result cleanly)
+- `streaming-json`: newline-delimited JSON events as they arrive
 
 ```
 # Structured result for parsing
@@ -275,9 +275,9 @@ Put global preferences in `~/.grok/config.toml` (not project-scoped
    `x_search` runs on its own xAI OAuth; the standalone `grok` CLI has a
    separate token in `~/.grok/auth.json`. A working `x_search` does NOT mean
    `grok` is logged in.
-3. **Always pass `--no-auto-update` in automation** — otherwise Grok phones home
+3. **Always pass `--no-auto-update` in automation**: otherwise Grok phones home
    for update checks (and `x.ai`/`storage.googleapis.com` may be unreachable).
-4. **Prefer npm install over the curl installer** — `npm install -g
+4. **Prefer npm install over the curl installer**: `npm install -g
    @xai-official/grok` avoids the Cloudflare-walled `x.ai` host.
 5. **`--always-approve` is the autonomous-build switch.** Without it, headless
    runs may stall waiting on tool-approval prompts. Omit it deliberately for
@@ -286,13 +286,13 @@ Put global preferences in `~/.grok/config.toml` (not project-scoped
    monitoring), just like Claude Code.
 7. **Use `--no-alt-screen`** if you run the TUI inline and the fullscreen
    alt-screen takeover garbles captured output.
-8. **No git repo needed**, but for PR/commit workflows you still want one — use
+8. **No git repo needed**, but for PR/commit workflows you still want one: use
    `mktemp -d && git init` for scratch commit tasks.
 9. **Clean up tmux sessions** with `tmux kill-session -t <name>` when done.
 
 ## Rules for Hermes Agents
 
-1. **Prefer headless `-p`** for single tasks — cleanest integration, structured
+1. **Prefer headless `-p`** for single tasks: cleanest integration, structured
    output via `--output-format json`.
 2. **Always set `workdir`** (or `--cwd`) so Grok targets the right project.
 3. **Pass `--no-auto-update`** in every automated invocation.
@@ -302,7 +302,7 @@ Put global preferences in `~/.grok/config.toml` (not project-scoped
    monitor via the `process` tool.
 6. **Use tmux for multi-turn interactive work** and monitor with
    `tmux capture-pane -t <session> -p -S -50`.
-7. **Verify auth before relying on it** — check `~/.grok/auth.json` or run a
+7. **Verify auth before relying on it**: check `~/.grok/auth.json` or run a
    cheap `grok -p "Say ok."` smoke test; don't assume Hermes' xAI auth carries
    over.
-8. **Report results to the user** — summarize what Grok changed and what's left.
+8. **Report results to the user**: summarize what Grok changed and what's left.

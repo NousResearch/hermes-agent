@@ -45,7 +45,7 @@ directly, run those commands in your own shell, outside Hermes:
 
 ```bash
 export OP_SERVICE_ACCOUNT_TOKEN="your-token-here"
-op whoami  # verify — should show Type: SERVICE_ACCOUNT
+op whoami  # verify: should show Type: SERVICE_ACCOUNT
 ```
 
 ### Desktop App Integration (interactive)

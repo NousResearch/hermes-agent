@@ -28,7 +28,7 @@ Do NOT use for simple questions with one obvious answer, debugging sessions, or 
 
 1. **Problem** (one sentence)
    - State the core decision or desired outcome in a single concise sentence.
-   - Focus on the *what*, not the *how* — no implementation details, tool names, or specific technologies.
+   - Focus on the *what*, not the *how*: no implementation details, tool names, or specific technologies.
    - Keep it tight. If you need "and", you're describing two problems.
 
 2. **Options** (exactly three)
@@ -38,11 +38,11 @@ Do NOT use for simple questions with one obvious answer, debugging sessions, or 
 
 3. **Recommendation** (one option)
    - State which option you recommend and why, based on the user's context and priorities.
-   - Be direct — this is your professional judgment, not a hedge.
+   - Be direct: this is your professional judgment, not a hedge.
 
 4. **Definition of Done**
    - List the specific success criteria for the recommended option.
-   - These are concrete, verifiable outcomes — not vague aspirations.
+   - These are concrete, verifiable outcomes: not vague aspirations.
    - If the user picks a different option, revise this section to match.
 
 5. **Implementation Plan**

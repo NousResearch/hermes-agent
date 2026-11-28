@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -73,6 +74,26 @@ def _last_run(conn, tid):
         "WHERE task_id = ? ORDER BY id DESC LIMIT 1",
         (tid,),
     ).fetchone()
+
+
+def _seed_executed_run(conn, tid):
+    """Give ``tid`` a completed run two hours old.
+
+    The ``active_pr`` guard only fires once a worker actually RAN on the card
+    (#62418): a never-run card's PR URL is contract, not evidence. Tests that
+    want the guard armed must first record an executed run. Two hours back so
+    the one-hour ``recent_success`` window never masks the ``active_pr``
+    assertion.
+    """
+    old = int(time.time()) - 7200
+    run_id = kb._synthesize_ended_run(
+        conn, tid, outcome="completed", summary="opened the PR",
+        metadata={"_ended_at": old},
+    )
+    with kb.write_txn(conn):
+        conn.execute(
+            "UPDATE task_runs SET ended_at = ? WHERE id = ?", (old, run_id),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -453,8 +474,12 @@ def test_active_pr_guard_skipped_for_review_lane_but_defers_ready_lane(
             conn, review_id, summary="PR ready",
             expected_run_id=claimed.current_run_id,
         )
-        # Ready-lane task with the same fresh PR comment.
+        # Ready-lane task with the same fresh PR comment. The guard only
+        # fires when a worker actually RAN on this card (#62418): give the
+        # task an executed run (outside the recent_success window) so the
+        # worker-authored PR comment legitimately triggers active_pr.
         ready_id = kb.create_task(conn, title="already PRed", assignee="worker")
+        _seed_executed_run(conn, ready_id)
         kb.add_comment(conn, ready_id, author="worker", body=pr_comment)
 
         assert kbd.check_respawn_guard(conn, ready_id) == "active_pr"
@@ -515,8 +540,10 @@ def test_active_pr_guard_lifts_for_profile_handed_the_card_after_the_pr(
 
     with kbc.connect() as conn:
         dev_id = kb.create_task(conn, title="dev own pr", assignee="dev")
+        _seed_executed_run(conn, dev_id)
         kb.add_comment(conn, dev_id, author="dev", body=pr_comment)
         closer_id = kb.create_task(conn, title="closer recovery", assignee="dev")
+        _seed_executed_run(conn, closer_id)
         kb.add_comment(conn, closer_id, author="dev", body=pr_comment)
         _backdate_comments(conn, closer_id)
         assert kb.assign_task(conn, closer_id, "closer") is True
@@ -553,6 +580,7 @@ def test_active_pr_guard_holds_through_same_profile_reassign_and_unassign(
     pr_comment = "Opened https://github.com/example/repo/pull/44 for review."
     with kbc.connect() as conn:
         tid = kb.create_task(conn, title="same assign", assignee="dev")
+        _seed_executed_run(conn, tid)
         kb.add_comment(conn, tid, author="dev", body=pr_comment)
         _backdate_comments(conn, tid)
         assert kb.assign_task(conn, tid, "dev") is True
@@ -583,6 +611,7 @@ def test_active_pr_guard_lifts_for_implementer_after_changes_requested(
     with kbc.connect() as conn:
         tid = kb.create_task(conn, title="changes requested", assignee="dev")
         claimed = kb.claim_task(conn, tid)
+        _seed_executed_run(conn, tid)
         kb.add_comment(conn, tid, author="dev", body=pr_comment)
         _backdate_comments(conn, tid)
         assert kb.request_review(

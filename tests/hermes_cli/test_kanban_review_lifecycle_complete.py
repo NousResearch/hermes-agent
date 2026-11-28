@@ -455,6 +455,15 @@ def test_respawn_guards_compare_mixed_int_and_iso_times_by_value(conn) -> None:
         comment(guarded, now - 60)
         conn.execute("INSERT INTO task_events (task_id, kind, payload, created_at) VALUES "
                      "(?, 'assigned', '{\"assignee\": \"ops\", \"from\": \"dev\"}', ?)", (guarded, iso(7200)))
+    # Both cards must have EXECUTED to be guardable at all: ``active_pr`` only
+    # applies to a card a worker actually ran on (#62418 shape A), so a zero-run
+    # card spawns regardless of its comments. Arm them with a run that ended two
+    # hours ago — outside the one-hour ``recent_success`` window — so the run
+    # cannot mask what the mixed-stamp assertions below test.
+    for task_id in (old_pr, guarded):
+        run_id = kb._synthesize_ended_run(conn, task_id, outcome="completed", summary="opened the PR")
+        with kb.write_txn(conn):
+            conn.execute("UPDATE task_runs SET ended_at = ? WHERE id = ?", (now - 7200, run_id))
     assert kbd.check_respawn_guard(conn, old_pr) is None
     assert kbd.check_respawn_guard(conn, guarded) == "active_pr"
 

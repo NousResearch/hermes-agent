@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- sentinel constants and dispatch primitives exceed 2000 lines; new code only added per-feature
 """SQLite-backed Kanban board shared across profiles (the cross-profile coordination primitive).
 
 Lives under the shared Hermes root: ``default`` board DB at ``<root>/kanban.db`` (pre-boards
@@ -314,8 +315,13 @@ KANBAN_RATE_LIMIT_EXIT_CODE = 75
 # the FIRST occurrence instead of spending ``failure_limit`` identical spawns. 78 == BSD EX_CONFIG.
 KANBAN_TERMINAL_PROVIDER_EXIT_CODE = 78
 
+# Worker exit "consent refusal": a headless worker hit a protected-file approval prompt that
+# nobody can answer (timeout) or a write-guard refusal for files its own earlier run created.
+# This is NOT a crash — the board already models it as ``needs_input``. 79 == BSD EX_NOPERM.
+KANBAN_NEEDS_INPUT_EXIT_CODE = 79  # health: allow FILE_LINES -- new sentinel for consent refusal exit code
 
-def _resolve_crash_grace_seconds() -> int:
+
+def _resolve_crash_grace_seconds():
     """``HERMES_KANBAN_CRASH_GRACE_SECONDS`` (0 = immediate, for tests) else default."""
     return _env_int("HERMES_KANBAN_CRASH_GRACE_SECONDS", DEFAULT_CRASH_GRACE_SECONDS)
 

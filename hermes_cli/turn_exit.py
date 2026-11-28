@@ -11,6 +11,17 @@ TRANSIENT_PROVIDER_REASONS = frozenset({
 TERMINAL_PROVIDER_REASONS = frozenset({
     "auth", "auth_permanent", "model_not_found", "ssl_cert_verification", "upstream_blocked",
 })
+# Consent-refusal signatures that appear in the final response when a headless worker
+# hits a protected-file approval timeout or a write-guard refusal. The turn result is
+# ``failed=True`` but this is NOT a crash — the board already models it as
+# ``needs_input``. Only classify when the turn actually failed (``result.get("failed")``)
+# to avoid false positives from a successful run merely quoting the text.
+CONSENT_REFUSAL_SIGNATURES = frozenset({
+    "Silence is not consent.",
+    "approval prompt timed out without a user response",
+    "BLOCKED: write to protected agent-instruction file(s)",
+    "exists but was not read this session",
+})
 
 
 def turn_exit_code(
@@ -32,6 +43,14 @@ def turn_exit_code(
     if not (result.get("failed") or result.get("partial") or result.get("completed") is False):
         return 0
     if kanban_worker:
+        # Consent refusal: a headless worker cannot answer an approval prompt.
+        # The turn result is ``failed=True`` but this is a deterministic human-resolvable
+        # condition, not a crash. Classify by the final response text to avoid spending
+        # the task's retry budget and to book the correct ``needs_input`` block kind.
+        final_response = str(result.get("final_response") or "")
+        if result.get("failed") and any(sig in final_response for sig in CONSENT_REFUSAL_SIGNATURES):
+            from hermes_cli.kanban_db import KANBAN_NEEDS_INPUT_EXIT_CODE
+            return KANBAN_NEEDS_INPUT_EXIT_CODE
         reason = result.get("failure_reason")
         if reason in transient_reasons:
             from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE

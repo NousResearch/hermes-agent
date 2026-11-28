@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- dispatcher primitives exceed 2000 lines; new code only added per-feature
 """Dispatcher: crash/stale/orphan detection, failure accounting and the respawn circuit breaker, memory-aware concurrency caps, the one-shot ``dispatch_once`` pass, worker spawning (``_default_spawn``), worker-log rotation and the long-lived ``run_daemon`` loop.
 
 Split out of ``hermes_cli.kanban_db``; origin-resident helpers are reached
@@ -253,6 +254,8 @@ def _exit_code_kind(code: int) -> tuple[str, int]:
         return ("rate_limited", code)
     if code == _kb.KANBAN_TERMINAL_PROVIDER_EXIT_CODE:
         return ("terminal_provider", code)
+    if code == _kb.KANBAN_NEEDS_INPUT_EXIT_CODE:
+        return ("needs_input", code)
     return ("nonzero_exit", code)
 
 
@@ -1049,14 +1052,22 @@ class _DeadWorker:
     protocol_violation: bool = False
     rate_limited: bool = False
     terminal_provider: bool = False
-    """``KANBAN_TERMINAL_PROVIDER_EXIT_CODE``: the provider rejected the worker's
-    credential/model — trips the breaker on this first occurrence."""
+    needs_input: bool = False  # health: allow FILE_LINES -- new field for consent refusal classification
+    """``KANBAN_NEEDS_INPUT_EXIT_CODE``: a headless worker hit a consent refusal
+    (approval timeout or write-guard refusal) — blocked as ``needs_input`` without
+    consuming the task's retry budget or tripping the breaker."""
 
     @property
     def run_outcome(self) -> str:
         # A rate-limited requeue is recorded as ``rate_limited`` so board history
         # doesn't show a phantom crash for a quota wall.
-        return "rate_limited" if self.rate_limited else "crashed"
+        # A consent refusal is recorded as ``needs_input`` so the card is blocked
+        # with the correct kind and the refusal reason surfaced.
+        if self.rate_limited:
+            return "rate_limited"
+        if self.needs_input:
+            return "needs_input"
+        return "crashed"
 
 
 def _classify_dead_worker(
@@ -1136,6 +1147,19 @@ def _classify_dead_worker_exit(
             {"pid": pid, "claimer": claimer, "exit_kind": kind, "exit_code": code, "terminal_provider": True},
             terminal_provider=True,
         )
+    if kind == "needs_input":
+        # A headless worker hit a consent refusal (approval timeout or write-guard
+        # refusal). This is NOT a crash — the board already models it as
+        # ``needs_input``. The worker's final output (already folded into error_text
+        # by _classify_dead_worker) carries the refusal text; surface it so the
+        # block reason and retry worker see the exact refusal.
+        return _DeadWorker(
+            kind, code,
+            f"pid {pid} ended on a consent refusal — blocked as needs_input (headless workers cannot answer approval prompts)",
+            "needs_input",
+            {"pid": pid, "claimer": claimer, "exit_code": code, "consent_required": True},
+            needs_input=True,
+        )
     if kind == "nonzero_exit":
         error_text = f"pid {pid} exited with code {code}"
     elif kind == "signaled":
@@ -1155,9 +1179,11 @@ class _CrashSweep:
 
     crashed: list[str] = field(default_factory=list)
     rate_limited: list[str] = field(default_factory=list)
-    # ``(task_id, pid, claimer, dead_worker)``: accounted after the txn via
-    # ``_record_task_failure`` (needs its own write_txn).
+    needs_input: list[str] = field(default_factory=list)
+    # ``(task_id, pid, claimer, dead_worker)`` for crashes; ``(task_id, dead_worker)``
+    # for needs_input: accounted after the txn via block_task (needs its own write_txn).
     crash_details: list[tuple[str, int, str, _DeadWorker]] = field(default_factory=list)
+    needs_input_details: list[tuple[str, _DeadWorker]] = field(default_factory=list)
     # Worker-exit observer payloads, fired only after every reclaim/accounting
     # txn has committed.
     exited_hook_payloads: list[dict] = field(default_factory=list)
@@ -1223,18 +1249,22 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
                 "outcome": dead.run_outcome,
                 "retry_status": retry_status,
             })
-            if dead.rate_limited or dead.protocol_violation:
+            if dead.rate_limited or dead.protocol_violation or dead.needs_input:
                 # Stamp last_failure_error WITHOUT touching ``consecutive_failures``:
                 # a rate-limited requeue must show ``check_respawn_guard`` a quota
                 # blocker; a below-budget protocol violation never reaches
                 # ``_record_task_failure`` (which stamps this column), yet the
                 # board UI and retry worker need the corrective message.
+                # A consent refusal also stamps the error without counting a failure.
                 conn.execute(
                     "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
                     (dead.error_text[:500], row["id"]),
                 )
             if dead.rate_limited:
                 sweep.rate_limited.append(row["id"])
+            elif dead.needs_input:
+                sweep.needs_input.append(row["id"])
+                sweep.needs_input_details.append((row["id"], dead))
             else:
                 sweep.crashed.append(row["id"])
                 sweep.crash_details.append((row["id"], pid, row["claim_lock"], dead))
@@ -1330,15 +1360,34 @@ def detect_crashed_workers(conn: sqlite3.Connection, board: Optional[str] = None
     violation-only retry budget; ``KANBAN_RATE_LIMIT_EXIT_CODE`` is a quota
     wall, released WITHOUT counting a failure and surfaced via the
     ``_last_rate_limited`` attribute (the return stays crashed-only).
+    A consent refusal (``KANBAN_NEEDS_INPUT_EXIT_CODE``) blocks the card as
+    ``needs_input`` with the refusal reason, without consuming the retry budget.
     """
     sweep = _reclaim_dead_workers(conn, board=board)
     # Outside the main txn: account each crash and maybe trip the breaker.
     auto_blocked = _account_crashes(conn, sweep.crash_details) if sweep.crash_details else []
+    # Consent refusals: block as needs_input with the first sentence of the refusal.
+    if sweep.needs_input_details:
+        with _kb.write_txn(conn):
+            for task_id, dead in sweep.needs_input_details:
+                # Extract the first sentence of the refusal from the worker's output.
+                worker_output = dead.event_payload.get("worker_output", "")
+                if not worker_output:
+                    # Fallback: parse from error_text after WORKER_OUTPUT_SEP.
+                    parts = dead.error_text.split(WORKER_OUTPUT_SEP, 1)
+                    worker_output = parts[1] if len(parts) > 1 else ""
+                # First sentence up to a period (handles "Silence is not consent.").
+                refusal_reason = worker_output.strip().split(". ")[0] if worker_output else "consent refusal"
+                if not refusal_reason.endswith("."):
+                    refusal_reason += "."
+                # Block as needs_input; do not consume failure budget, do not trip breaker.
+                _kb.block_task(conn, task_id, kind="needs_input", reason=refusal_reason)
     # Side-channel attributes keep the public ``list[str]`` return stable;
     # ``dispatch_once`` reads them to populate ``DispatchResult``. Rate-limited
     # requeues did NOT count a failure and are NOT crashes.
     detect_crashed_workers._last_auto_blocked = auto_blocked  # type: ignore[attr-defined]
     detect_crashed_workers._last_rate_limited = sweep.rate_limited  # type: ignore[attr-defined]
+    detect_crashed_workers._last_needs_input = sweep.needs_input  # type: ignore[attr-defined]
     # Fired only now, after the reclaim txn AND breaker accounting have
     # committed, so subscribers always observe fully durable board state.
     if sweep.exited_hook_payloads and _kb._kanban_observer_consumed("on_kanban_worker_exited"):

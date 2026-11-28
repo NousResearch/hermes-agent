@@ -75,7 +75,15 @@ vi.mock('@/app/gateway/hooks/use-gateway-request', () => ({
 }))
 
 const uninstallDiskPlugin = vi.fn(async (_id: string) => ({ ok: true }))
+
 const setEnvVar = vi.fn(async (..._args: unknown[]) => ({}))
+
+const openExternalLink = vi.fn((_href: string) => {})
+
+vi.mock('@/lib/external-link', async importOriginal => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  openExternalLink: (href: string) => openExternalLink(href)
+}))
 
 vi.mock('@/api/config', () => ({ setEnvVar: (...args: unknown[]) => setEnvVar(...args) }))
 
@@ -330,6 +338,89 @@ describe('PluginsTab', () => {
     renderPlugins({ profile: 'workbot', scopeLabel: 'workbot' })
 
     expect((screen.getByRole('button', { name: 'Install here' }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('copies a catalog install link for a plugin that came from the catalog', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    $agentPlugins.set([
+      {
+        description: 'A test plugin',
+        key: 'demo-plugin',
+        name: 'demo-plugin',
+        source: 'catalog',
+        status: 'enabled',
+        version: '1',
+        catalog_name: 'demo-plugin'
+      }
+    ])
+
+    renderPlugins({ profile: 'workbot' })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Copy an install link for demo-plugin' }))
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('hermes://plugin/install?catalog=demo-plugin'))
+  })
+
+  it('copies a git install link for a package with a git remote and no catalog entry', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    $pluginRecords.set({
+      media: {
+        id: 'media',
+        name: 'Media Studio',
+        kind: 'disk',
+        status: 'loaded',
+        packageName: 'hermes-media-studio',
+        packageOrigin: { repo: 'https://github.com/NousResearch/hermes-media-studio.git', sha: 'abc' }
+      }
+    })
+    $agentPlugins.set([
+      {
+        description: '',
+        key: 'hermes-media-studio',
+        name: 'hermes-media-studio',
+        source: 'git',
+        status: 'disabled',
+        version: '1'
+      }
+    ])
+
+    renderPlugins({ profile: 'workbot', scopeLabel: 'workbot' })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Copy an install link for Media Studio' }))
+    await waitFor(() =>
+      expect(writeText).toHaveBeenCalledWith(
+        'hermes://plugin/install?repo=https%3A%2F%2Fgithub.com%2FNousResearch%2Fhermes-media-studio.git'
+      )
+    )
+  })
+
+  it('points a hand-copied local plugin at the catalog publish flow instead of a link', () => {
+    $agentPlugins.set([
+      {
+        description: 'My own plugin',
+        key: 'local-plugin',
+        name: 'local-plugin',
+        source: 'user',
+        status: 'enabled',
+        version: '1'
+      }
+    ])
+
+    renderPlugins({ profile: 'workbot' })
+
+    expect(screen.queryByRole('button', { name: /Copy an install link/ })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Publish local-plugin to the Hermes plugin catalog' }))
+    expect(openExternalLink).toHaveBeenCalledWith('https://github.com/NousResearch/hermes-agent/compare')
+  })
+
+  it('offers no share affordance for a bundled desktop plugin', () => {
+    $pluginRecords.set({ core: { id: 'core', name: 'Core Pane', kind: 'bundled', status: 'loaded' } })
+
+    renderPlugins({ profile: 'workbot' })
+
+    expect(screen.queryByRole('button', { name: /Copy an install link/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Publish .* to the Hermes plugin catalog/ })).toBeNull()
   })
 
   it('loads the plugin list scoped to the selected profile', () => {

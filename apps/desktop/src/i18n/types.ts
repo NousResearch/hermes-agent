@@ -1986,6 +1986,9 @@ export interface Translations extends NoticeTranslations {
         deepLinkCatalogUnknown: (name: string) => string
         deepLinkCatalogUnavailable: string
         settingsToggle: (name: string) => string
+        shareTip: (name: string) => string
+        publish: (name: string) => string
+        publishTip: (name: string) => string
         settingsForm: {
           save: string
           saved: (name: string) => string

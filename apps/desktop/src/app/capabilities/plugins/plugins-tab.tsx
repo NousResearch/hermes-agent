@@ -51,6 +51,7 @@ import { TOOLSETS_QUERY_KEY } from '../toolsets/toolsets-data'
 import { PluginFolderAccess } from './plugin-folder-access'
 import { mergePluginPackages, type PackageKind, type PluginPackage } from './plugin-packages'
 import { PluginPageAccess } from './plugin-page-access'
+import { PluginShare } from './plugin-share'
 import { runPluginUpdate } from './plugin-update'
 import { PluginUpdateAllActions } from './plugin-update-all'
 
@@ -439,6 +440,11 @@ function PackageRow({
                 </Button>
               </Tip>
             )}
+          </span>
+          {/* Fixed slot for the share hand-off (an install link, or the
+            publish flow for a hand-copied folder); bundled plugins have none. */}
+          <span className="flex size-7 shrink-0 items-center justify-center">
+            <PluginShare agent={agent} desktop={desktop} pluginName={pkg.name} />
           </span>
         </div>
 

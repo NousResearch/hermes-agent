@@ -118,6 +118,25 @@ class TestResolveProviderClientNamedCustom:
         assert model == "my-model"
         assert "beans.local" in str(client.base_url)
 
+    def test_legacy_entry_key_cmd_reaches_the_wire(self, tmp_path):
+        """A legacy ``custom_providers:`` entry authenticated only by ``key_cmd`` must send the
+        minted bearer, not the ``no-key-required`` placeholder (which the endpoint rejects with 401)."""
+        import sys
+        from openai._models import FinalRequestOptions
+        _write_config(tmp_path, {
+            "model": {"default": "test-model"},
+            "custom_providers": [
+                {"name": "beans", "base_url": "http://beans.local/v1",
+                 "key_cmd": f'"{sys.executable}" -c "print(\'vk-legacy-1234\')"'},
+            ],
+        })
+        from agent.auxiliary_client import resolve_provider_client
+        client, _model = resolve_provider_client("beans", "my-model")
+        assert client is not None
+        client._refresh_api_key()
+        headers = client._build_headers(FinalRequestOptions(method="post", url="/chat/completions"))
+        assert headers["authorization"] == "Bearer vk-legacy-1234"
+
 
         # no-key-required should be used
 

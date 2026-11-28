@@ -291,3 +291,60 @@ class TestCorruptCacheRowDegradation:
             out = mod.cached_provider_model_ids("openrouter")
         assert out == ["live-model"]
         live.assert_called_once()
+
+
+class TestApiKeyEnvFingerprintIgnoresHomeAuthJson:
+    """Env-keyed API providers (Cursor, OpenRouter, …) must not digest home-wide
+    auth.json: an unrelated OAuth refresh would miss the disk cache and the GUI
+    non-blocking picker would show curated seed models only.
+
+    Uses OpenRouter (built-in api_key identity) so the assertion does not depend on
+    a Cursor plugin being installed into a throwaway HERMES_HOME.
+    """
+
+    def test_openrouter_fingerprint_stable_across_auth_json_rewrite(self, tmp_path, monkeypatch):
+        import hermes_cli.models as mod
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("OPENROUTER_API_KEY", "test-openrouter-key")
+        assert mod._api_key_env_catalog_identity("openrouter") is True
+        auth = tmp_path / "auth.json"
+        auth.write_text(json.dumps({"version": 1, "providers": {}, "credential_pool": {}}), encoding="utf-8")
+        os.utime(auth, ns=(1_000_000_000, 1_000_000_000))
+
+        before = mod._credential_fingerprint("openrouter")
+        auth.write_text(json.dumps({
+            "version": 1,
+            "providers": {},
+            "credential_pool": {"openai-codex": [{"id": "x", "access_token": "rotated"}]},
+        }), encoding="utf-8")
+        os.utime(auth, ns=(2_000_000_000, 2_000_000_000))
+        after = mod._credential_fingerprint("openrouter")
+        assert before == after
+
+        monkeypatch.setenv("OPENROUTER_API_KEY", "other-openrouter-key")
+        assert mod._credential_fingerprint("openrouter") != before
+
+    def test_openrouter_non_blocking_keeps_catalog_when_auth_json_rewrites(
+        self, tmp_path, monkeypatch,
+    ):
+        import hermes_cli.models as mod
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("OPENROUTER_API_KEY", "test-openrouter-key")
+        auth = tmp_path / "auth.json"
+        auth.write_text("{}", encoding="utf-8")
+        os.utime(auth, ns=(1_000_000_000, 1_000_000_000))
+
+        catalog = ["openrouter/auto", "anthropic/claude-sonnet-4.5"]
+        fp = mod._credential_fingerprint("openrouter")
+        mod._store_cache_entry("openrouter", mod._cache_entry(fp, catalog))
+
+        auth.write_text(json.dumps({"credential_pool": {"x": []}}), encoding="utf-8")
+        os.utime(auth, ns=(9_000_000_000, 9_000_000_000))
+        with patch.object(mod, "_spawn_swr_refresh") as spawn:
+            out = mod.cached_provider_model_ids("openrouter", non_blocking=True)
+        assert out == catalog
+        spawn.assert_not_called()

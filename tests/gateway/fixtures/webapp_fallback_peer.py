@@ -44,9 +44,10 @@ INDEX = "<!doctype html><html><body>WEBAPP_BUNDLE</body></html>"
 
 
 def free_port() -> int:
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        return probe.getsockname()[1]
+    """A port the child gateway binds later: picked below the ephemeral range (see ``listen_port``)."""
+    from tests.gateway.fixtures.local_recovery_probe import listen_port
+
+    return listen_port()
 
 
 def run(tmp_path, spec) -> dict:

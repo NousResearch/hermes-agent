@@ -10,19 +10,12 @@ in again.
 """
 import json
 from pathlib import Path
-import socket
 import subprocess
 import sys
 
 import pytest
 
-from tests.gateway.fixtures.local_recovery_probe import child_env
-
-
-def _free_port() -> int:
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        return probe.getsockname()[1]
+from tests.gateway.fixtures.local_recovery_probe import child_env, listen_port as _free_port
 
 
 @pytest.fixture(scope="module")

@@ -5,14 +5,13 @@ from http.server import ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
-import socket
 import sqlite3
 import threading
 import time
 
 import aiohttp
 
-from tests.gateway.fixtures.local_recovery_probe import daemon, Model
+from tests.gateway.fixtures.local_recovery_probe import daemon, Model, listen_port
 
 
 def test_hosted_grant_inference_survives_owner_restart(tmp_path):
@@ -22,8 +21,7 @@ def test_hosted_grant_inference_survives_owner_restart(tmp_path):
     peer = ThreadingHTTPServer(('127.0.0.1', 0), Model)
     peer.requests = []
     threading.Thread(target=peer.serve_forever, daemon=True).start()
-    with socket.socket() as sock:
-        sock.bind(('127.0.0.1', 0)); port = sock.getsockname()[1]
+    port = listen_port()
     base = f'http://127.0.0.1:{peer.server_port}/v1'
     cfg = {'model': {'provider': 'custom', 'default': 'local-wire-stub', 'base_url': base},
            'gateway': {'platforms': {'api_server': {'enabled': True, 'port': port, 'host': '127.0.0.1'}}, 'multiplex_profiles': False},

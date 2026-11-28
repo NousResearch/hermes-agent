@@ -217,3 +217,56 @@ def test_oversized_body_flagged_above_budget_and_not_below():
     found = [f for f in lint_content(over) if f.rule == "oversized-body"]
     assert found and found[0].severity == WARNING
     assert "oversized-body" not in _rules(lint_content(under))
+
+
+
+# A fenced example that pins version-specific config keys (the shape of #72734).
+PINNED_FACTS = """
+## Config
+
+```toml
+backend.type = "imap"
+backend.host = "imap.example.com"
+message.send.backend.type = "smtp"
+```
+"""
+
+# The same guidance expressed as a verification step instead of pinned facts.
+VERIFICATION_STEPS = """
+## Config
+
+```bash
+himalaya --version
+himalaya account configure --help
+```
+"""
+
+
+def test_stale_prone_content_is_flagged_when_unmarked():
+    findings = lint_content(CLEAN + PINNED_FACTS)
+    assert "stale-prone-content" in _rules(findings)
+    found = [f for f in findings if f.rule == "stale-prone-content"]
+    assert found[0].severity == WARNING
+
+
+def test_declaring_both_freshness_markers_clears_the_finding():
+    marked = CLEAN.replace(
+        "version: 1.0.0\n",
+        "version: 1.0.0\nvolatile: true\nverified_at: '2026-11-13'\n",
+    )
+    assert "stale-prone-content" not in _rules(lint_content(marked + PINNED_FACTS))
+
+
+def test_verification_steps_instead_of_pinned_facts_stay_quiet():
+    assert "stale-prone-content" not in _rules(lint_content(CLEAN + VERIFICATION_STEPS))
+
+
+def test_a_single_version_mention_does_not_flag():
+    one = CLEAN + """
+## Install
+
+```bash
+himalaya v1.2.0 setup --help
+```
+"""
+    assert "stale-prone-content" not in _rules(lint_content(one))

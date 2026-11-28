@@ -9,6 +9,8 @@ metadata:
   hermes:
     tags: [Email, IMAP, SMTP, CLI, Communication]
     homepage: https://github.com/pimalaya/himalaya
+volatile: true
+verified_at: '2026-11-13'
 prerequisites:
   commands: [himalaya]
 ---
@@ -54,50 +56,19 @@ Run the interactive wizard to set up an account:
 himalaya account configure
 ```
 
-Or create `~/.config/himalaya/config.toml` manually:
+The config schema is version-specific: Himalaya v1 and v2 use different table
+layouts. Confirm the schema for the installed binary before writing
+`config.toml`:
 
-```toml
-[accounts.personal]
-email = "you@example.com"
-display-name = "Your Name"
-default = true
+1. Run `himalaya --version` and `himalaya account configure --help`.
+2. Read the upstream configuration reference for that exact version.
+3. Prefer the interactive wizard (`himalaya account configure`), which emits a
+   schema-valid config for the installed version.
 
-backend.type = "imap"
-backend.host = "imap.example.com"
-backend.port = 993
-backend.encryption.type = "tls"
-backend.login = "you@example.com"
-backend.auth.type = "password"
-backend.auth.cmd = "pass show email/imap"  # or use keyring
-
-message.send.backend.type = "smtp"
-message.send.backend.host = "smtp.example.com"
-message.send.backend.port = 587
-message.send.backend.encryption.type = "start-tls"
-message.send.backend.login = "you@example.com"
-message.send.backend.auth.type = "password"
-message.send.backend.auth.cmd = "pass show email/smtp"
-
-# Folder aliases (himalaya v1.2.0+ syntax). Required whenever the
-# server's folder names don't match himalaya's canonical names
-# (inbox/sent/drafts/trash). Gmail is the common case — see
-# `references/configuration.md` for the `[Gmail]/Sent Mail` mapping.
-folder.aliases.inbox = "INBOX"
-folder.aliases.sent = "Sent"
-folder.aliases.drafts = "Drafts"
-folder.aliases.trash = "Trash"
-```
-
-> **Heads up on the alias syntax.** Pre-v1.2.0 docs used a
-> `[accounts.NAME.folder.alias]` sub-section (singular `alias`).
-> v1.2.0 silently ignores that form — TOML parses fine, but the
-> alias resolver never reads it, so every lookup falls through to
-> the canonical name. On Gmail this means save-to-Sent fails *after*
-> SMTP delivery succeeds, and `himalaya message send` exits non-zero.
-> Any caller (agent, script, user) that retries on that exit code
-> will re-run the entire send — including SMTP — producing duplicate
-> emails to recipients. Always use `folder.aliases.X` (plural, dotted
-> keys, directly under `[accounts.NAME]`).
+`references/configuration.md` carries worked examples. Treat its key names as
+illustrative and re-confirm them against the installed version. Folder-alias
+syntax also changed between releases, so check the current docs before relying
+on any particular key spelling.
 
 ## Hermes Integration Notes
 

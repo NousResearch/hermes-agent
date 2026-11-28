@@ -387,6 +387,15 @@ def _create_kwargs(chat_id: str, body: dict[str, Any]) -> dict[str, Any]:
     return kwargs
 
 
+def _oauth_identity(msg: dict[str, Any]) -> Optional[str]:
+    """The key of a sender's personal OAuth token: the Chat-authenticated sender resource name (``users/<id>``, always
+    present and stable), else the sender email. ONE function for authorization (/setup-files) and for the outbound
+    attachment lookup, so the two can never disagree. Lower-cased to match the sanitized token-file name."""
+    sender = (msg or {}).get("sender") or {}
+    key = (sender.get("name") or sender.get("email") or "").strip().lower()
+    return key or None
+
+
 class GoogleChatAdapter(BasePlatformAdapter):
     """Google Chat bot adapter: Pub/Sub pull (or HTTP callbacks) + Chat REST API. Env vars
     are documented in gateway/config.py (GOOGLE_CHAT_PROJECT_ID, GOOGLE_CHAT_SUBSCRIPTION_NAME,
@@ -422,6 +431,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
         self._user_chat_api_by_email: dict[str, Any] = {}
         # chat_id → most-recent inbound sender email (drives per-user token lookup).
         self._last_sender_by_chat: dict[str, str] = {}
+        self._last_sender_email_by_chat: dict[str, str] = {}   # same Chat-authenticated sender, by email: finds tokens stored under the email by earlier versions
         self._dedup = MessageDeduplicator()
         self._shutting_down = False
         self._typing_messages: dict[str, str] = {}
@@ -920,12 +930,13 @@ class GoogleChatAdapter(BasePlatformAdapter):
             text = (event.text or "").strip()
             # The intercept skips the runner's allowlist, so it serves only a sender that check
             # accepts; anyone else goes to handle_message and gets the runner's deny/pairing path.
-            # The sender email (user_id_alt) is the per-user OAuth token key.
+            # The per-user OAuth token key is the Chat-authenticated sender identity (``_oauth_identity``): the SAME
+            # key `_send_file` looks up, so what /setup-files stores is what an attachment later finds.
             if text.startswith("/setup-files") and event.source is not None and self._is_sender_authorized(
                 event.source.user_id, event.source.chat_type, event.source.chat_id,
             ) is True and await self._handle_setup_files_command(
                 chat_id=event.source.chat_id, thread_id=event.source.thread_id, raw_text=text,
-                sender_email=event.source.user_id_alt or None,
+                sender_email=_oauth_identity(event.raw_message),
             ):
                 return
             await self.handle_message(event)
@@ -947,10 +958,16 @@ class GoogleChatAdapter(BasePlatformAdapter):
         sender = msg.get("sender") or {}
         sender_name = sender.get("name") or ""
         sender_email = sender.get("email") or ""
-        # Cache the asker's email per space so _send_file picks the right per-user
-        # OAuth token (lower-cased to match the sanitized token-file lookup).
-        if sender_email and space_name:
-            self._last_sender_by_chat[space_name] = sender_email.strip().lower()
+        # Cache the asker's OAuth identity per space so _send_file picks the right per-user token. It is the same
+        # identity /setup-files stored the token under (``_oauth_identity``), never a different spelling of the user.
+        identity = _oauth_identity(msg)
+        if identity and space_name:
+            self._last_sender_by_chat[space_name] = identity
+            if sender_email:
+                self._last_sender_email_by_chat[space_name] = sender_email.strip().lower()
+            else:
+                self._last_sender_email_by_chat.pop(space_name, None)              # never keep the previous sender's email
+            self._persist_last_sender(space_name)
         chat_type = "dm" if space_type in {"DIRECT_MESSAGE", "DM"} else "group"
         text = (msg.get("argumentText") or msg.get("text") or "").strip()
         # Slash command: emit MessageType.COMMAND with normalized text.
@@ -1486,14 +1503,51 @@ class GoogleChatAdapter(BasePlatformAdapter):
         self._user_chat_api_by_email[email] = api
         return api
 
-    async def _acquire_user_chat_api(self, sender_email: Optional[str]) -> tuple[Optional[Any], Optional[str]]:
+    def _last_sender_path(self) -> Any:
+        from hermes_constants import get_hermes_home as _get_hermes_home
+        return _get_hermes_home() / "google_chat_last_senders.json"
+
+    def _persist_last_sender(self, space: str) -> None:
+        """Remember the last Chat-authenticated sender per space across restarts, so an attachment the bot sends on its own
+        (a notification, a scheduled job) after a restart still finds the right per-user token. Holds only the same identity
+        keys that are already the token file names, never a credential. Best effort: a write failure only means the next
+        message repopulates it."""
+        try:
+            path = self._last_sender_path()
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                data = {}
+            entry = {"identity": self._last_sender_by_chat.get(space), "email": self._last_sender_email_by_chat.get(space)}
+            if data.get(space) == entry:
+                return
+            data[space] = entry
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(data), encoding="utf-8")
+            os.replace(tmp, path)
+        except Exception:
+            logger.debug("[GoogleChat] could not persist last sender", exc_info=True)
+
+    def _recall_last_sender(self, space: str) -> None:
+        if space in self._last_sender_by_chat:
+            return
+        try:
+            entry = json.loads(self._last_sender_path().read_text(encoding="utf-8")).get(space) or {}
+        except (OSError, ValueError, AttributeError):
+            return
+        if isinstance(entry.get("identity"), str) and entry["identity"]:
+            self._last_sender_by_chat[space] = entry["identity"]
+            if isinstance(entry.get("email"), str) and entry["email"]:
+                self._last_sender_email_by_chat[space] = entry["email"]
+
+    async def _acquire_user_chat_api(self, sender_email: Optional[str], alias: Optional[str] = None) -> tuple[Optional[Any], Optional[str]]:
         """User-authed Chat client for an outbound attachment: per-user token for
         ``sender_email`` → legacy single-user fallback → ``(None, None)`` (caller posts the
         setup notice). The identity label (email / ``"__legacy__"``) selects the slot to evict."""
-        if sender_email:
-            api = await self._load_per_user_chat_api(sender_email)
+        for key in dict.fromkeys(k for k in (sender_email, alias) if k):        # the identity, then the same sender's email (a token an earlier version stored under it)
+            api = await self._load_per_user_chat_api(key)
             if api is not None:
-                return api, sender_email
+                return api, key
         if self._user_chat_api is not None:
             refreshed = await self._refresh_or_none(self._user_credentials, None, "[GoogleChat] legacy creds refresh raised")
             if refreshed is None:
@@ -1526,7 +1580,8 @@ class GoogleChatAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=f"file not found: {path}")
         filename = override_filename or os.path.basename(path) or "upload.bin"
         mime = mime_hint or "application/octet-stream"
-        chat_api, identity = await self._acquire_user_chat_api(self._last_sender_by_chat.get(chat_id))
+        self._recall_last_sender(chat_id)
+        chat_api, identity = await self._acquire_user_chat_api(self._last_sender_by_chat.get(chat_id), self._last_sender_email_by_chat.get(chat_id))
         if chat_api is None:
             return await self._post_attachment_fallback(chat_id, path, filename, caption, thread_id)
         try:

@@ -615,26 +615,62 @@ def _apply_claude_code_identity(system, anthropic_tools, anthropic_messages, to_
     return system
 
 
-def _thinking_kwargs(reasoning_config: dict[str, Any], model: str, effective_max_tokens: int) -> dict[str, Any]:
+def _declared_thinking_capabilities(
+    model: str, base_url: str | None, custom_providers: Optional[list[dict[str, Any]]], *, is_oauth: bool,
+) -> tuple[Optional[bool], Optional[bool]]:
+    """Resolve an opaque Messages route's enable wire, never a known family's contract."""
+    if (
+        is_oauth or _is_claude_model(model) or _model_name_is_kimi_family(model)
+        or not _is_third_party_anthropic_endpoint(base_url) or _is_nous_portal_endpoint(base_url)
+    ):
+        return None, None
+    # Use the compatibility surface at request time; callers can supply their owning agent's
+    # snapshot. Standalone/auxiliary calls resolve their bound profile once, not once per flag.
+    from hermes_cli.config import (
+        get_compatible_custom_providers, get_custom_provider_model_capability, load_config_readonly,
+    )
+    if custom_providers is None:
+        try:
+            custom_providers = get_compatible_custom_providers(load_config_readonly())
+        except (OSError, ValueError):
+            return None, None
+    adaptive = get_custom_provider_model_capability(
+        model, base_url or "", "supports_adaptive_thinking", custom_providers=custom_providers,
+    )
+    xhigh = get_custom_provider_model_capability(
+        model, base_url or "", "supports_xhigh_effort", custom_providers=custom_providers,
+    ) if adaptive is True else None
+    return adaptive, xhigh
+
+
+def _thinking_kwargs(
+    reasoning_config: dict[str, Any], model: str, effective_max_tokens: int,
+    *, base_url: str | None = None, routing_model: str | None = None,
+    custom_providers: Optional[list[dict[str, Any]]] = None, is_oauth: bool = False,
+) -> dict[str, Any]:
     """Map ``reasoning_config`` to Anthropic thinking kwargs. Adaptive models (Claude 4.6+,
-    Kimi/Moonshot) get ``thinking.type=adaptive`` + ``output_config.effort``; older models and
-    manual-only compat endpoints (MiniMax) get budget_tokens. Haiku through 4.5 gets none. On
-    4.7+ ``thinking.display`` defaults to "omitted", hiding the reasoning Hermes shows in its CLI,
-    so "summarized" is requested to keep the activity feed populated."""
+    Kimi/Moonshot) and routes explicitly declaring ``supports_adaptive_thinking`` get
+    ``thinking.type=adaptive`` + ``output_config.effort``. Undeclared routes retain the
+    model-family policy, including manual-only endpoints and pre-thinking Haiku. Recognized
+    Claude/Kimi families, native Anthropic, OAuth and Portal never take an override."""
     if reasoning_config.get("enabled") is False:
-        # Adaptive models think by DEFAULT, so omitting the parameter is not a disable — the user
-        # silently keeps paying. Mandatory-thinking models 400 on the disable, so they keep the
-        # omission: a silently-ignored disable beats a dead turn.
+        # The override declares the enable wire only; disable semantics are a separate capability.
         if _model_matches(model, _BETWEEN_TOOLS_OFF_CLAUDE_SUBSTRINGS):
             return {"thinking": {"type": "between_tools"}}
         return {"thinking": {"type": "disabled"}} if _accepts_thinking_disable(model) else {}
-    if _is_pre_thinking_haiku(model):
+    adaptive_override, xhigh_override = _declared_thinking_capabilities(
+        routing_model or model, base_url, custom_providers, is_oauth=is_oauth,
+    )
+    if adaptive_override is None and _is_pre_thinking_haiku(model):
         return {}
     effort = str(reasoning_config.get("effort", "medium")).lower()
-    if _supports_adaptive_thinking(model):
+    adaptive = _supports_adaptive_thinking(model) if adaptive_override is None else adaptive_override
+    if adaptive:
         adaptive_effort = ADAPTIVE_EFFORT_MAP.get(effort, "medium")
-        if adaptive_effort == "xhigh" and not _supports_xhigh_effort(model):
-            adaptive_effort = "max"
+        if adaptive_effort == "xhigh":
+            supports_xhigh = _supports_xhigh_effort(model) if xhigh_override is None else xhigh_override
+            if not supports_xhigh:
+                adaptive_effort = "max"
         return {"thinking": {"type": "adaptive", "display": "summarized"}, "output_config": {"effort": adaptive_effort}}
     budget = THINKING_BUDGET.get(effort, 8000)
     return {
@@ -653,6 +689,7 @@ def build_anthropic_kwargs(
     reasoning_config: Optional[dict[str, Any]], tool_choice: Optional[str] = None,
     is_oauth: bool = False, preserve_dots: bool = False, context_length: Optional[int] = None,
     base_url: str | None = None, fast_mode: bool = False, drop_context_1m_beta: bool = False,
+    custom_providers: Optional[list[dict[str, Any]]] = None,
 ) -> dict[str, Any]:
     """Build kwargs for anthropic.messages.create(). ``max_tokens`` is the OUTPUT cap for one
     response; ``context_length`` is the TOTAL window (input + output). ``max_tokens=None`` uses the
@@ -666,6 +703,7 @@ def build_anthropic_kwargs(
     messages = tool_history_for_request(messages, tools, tool_choice)
     system, anthropic_messages = convert_messages_to_anthropic(messages, base_url=base_url, model=model)
     anthropic_tools = convert_tools_to_anthropic(tools) if tools else []
+    routing_model = model  # Config matches the exact id before wire normalization.
     # Nous Portal routes on its own catalog ids (``anthropic/claude-opus-4.8``); normalizing would
     # make the model unresolvable there (prefix AND dots kept).
     if not _is_nous_portal_endpoint(base_url):
@@ -702,7 +740,10 @@ def build_anthropic_kwargs(
     # reasoning blocks stay populated — matching 4.6 behavior and preserving the activity-feed UX during
     # long tool runs.
     if reasoning_config and isinstance(reasoning_config, dict):
-        kwargs.update(_thinking_kwargs(reasoning_config, model, effective_max_tokens))
+        kwargs.update(_thinking_kwargs(
+            reasoning_config, model, effective_max_tokens, base_url=base_url, routing_model=routing_model,
+            custom_providers=custom_providers, is_oauth=is_oauth,
+        ))
     # Safety net so upstream 4.6 -> 4.7 migrations don't need coordinated edits everywhere callers
     # (auxiliary_client, ...) set sampling params.
     if _forbids_sampling_params(model):

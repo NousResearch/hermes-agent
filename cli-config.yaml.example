@@ -225,6 +225,26 @@ model:
 #     # endpoint.
 
 
+# Opaque IDs on an Anthropic Messages gateway: declare the INBOUND wire,
+# not a pretend Claude family. Enable only if the endpoint accepts adaptive
+# thinking + output_config.effort. The literal model id stays unchanged.
+# /reasoning max then sends explicit effort=max, not a guessed token budget.
+# Missing/malformed booleans keep the existing model-family policy; false
+# selects manual thinking for eligible IDs. Known Claude/Kimi families, native
+# Anthropic, OAuth and Nous Portal ignore both declarations. Main requests use
+# the agent's profile-local snapshot; standalone/auxiliary requests read their
+# bound profile once. Legacy entries precede providers:; first boolean wins
+# for an exact route/id, so avoid conflicting declarations during migration.
+# This does not change the manual budget table.
+# providers:
+#   messages-relay:
+#     api: https://relay.example/anthropic
+#     transport: anthropic_messages
+#     models:
+#       opaque-model:
+#         supports_adaptive_thinking: true
+#         supports_xhigh_effort: true   # Only if xhigh is accepted; otherwise omit.
+
 # Command-minted credentials (optional): key_cmd
 # ------------------------------------------------------------------
 # Enterprise gateways often issue SHORT-LIVED bearers (SSO/OIDC brokers, cloud

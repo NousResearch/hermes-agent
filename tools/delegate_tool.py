@@ -997,11 +997,30 @@ def _strip_model_hidden_task_fields(tasks: Any) -> Any:
     return [{k: v for k, v in t.items() if k not in _MODEL_HIDDEN_TASK_FIELDS} if isinstance(t, dict) else t for t in tasks]
 
 
+_MISPLACED_TASK_PARAMETERS = frozenset({"profile"})
+
+def misplaced_task_parameter_error(args: Any) -> Optional[str]:
+    """A top-level `profile` is refused, never run: it is a PER-TASK parameter (declared inside `tasks[]`
+    by the active delegation backend), so accepting it at the top level silently delegated on the default
+    route. Fails closed — the caller must move it into each applicable task."""
+    if not isinstance(args, dict):
+        return None
+    misplaced = sorted(_MISPLACED_TASK_PARAMETERS & args.keys())
+    if not misplaced:
+        return None
+    listed = ", ".join(f"'{name}'" for name in misplaced)
+    return tool_error(
+        f"delegate_task: {listed} is a PER-TASK parameter, not a top-level one, so NO delegation was "
+        f"started. Move it into each tasks[] object that should use it, e.g. "
+        f'{{"tasks": [{{"goal": "...", "profile": "vega"}}]}}.'
+    )
+
+
 registry.register(
     name="delegate_task",
     toolset="delegation",
     schema=DELEGATE_TASK_SCHEMA,
-    handler=lambda args, **kw: delegate_task(
+    handler=lambda args, **kw: misplaced_task_parameter_error(args) or delegate_task(
         goal=args.get("goal"), context=args.get("context"), tasks=_strip_model_hidden_task_fields(args.get("tasks")),
         max_iterations=args.get("max_iterations"), role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")), output_schema=args.get("output_schema"),

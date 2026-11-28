@@ -71,6 +71,40 @@ def test_truncated_arguments_replaced_with_empty_object(caplog):
     )
 
 
+def test_repair_diagnostics_log_bounded_argument_payload(caplog):
+    from agent.message_sanitization import _repair_tool_call_arguments
+
+    raw = '{"secret":"private-payload'
+    with caplog.at_level(logging.WARNING, logger="agent.message_sanitization"):
+        assert _repair_tool_call_arguments(raw, "write_file") == "{}"
+
+    assert "write_file" in caplog.text
+    assert "private-payload" in caplog.text
+
+
+def test_repaired_argument_diagnostic_logs_bounded_raw_and_repaired_payload(caplog):
+    from agent.message_sanitization import _repair_tool_call_arguments
+
+    raw = '{"secret":"private-payload",}'
+    with caplog.at_level(logging.WARNING, logger="agent.message_sanitization"):
+        repaired = _repair_tool_call_arguments(raw, "write_file")
+
+    assert repaired == '{"secret":"private-payload"}'
+    assert "write_file" in caplog.text
+    assert "private-payload" in caplog.text
+
+
+def test_envelope_repair_can_omit_payload_log(caplog):
+    from agent.message_sanitization import _repair_tool_call_arguments
+
+    raw = '{"secret":"private-payload",}'
+    with caplog.at_level(logging.WARNING, logger="agent.message_sanitization"):
+        repaired = _repair_tool_call_arguments(raw, "tool_call calls envelope", log_payload=False)
+
+    assert repaired == '{"secret":"private-payload"}'
+    assert "private-payload" not in caplog.text
+
+
 def test_marker_appended_to_existing_tool_message():
     marker = AIAgent._TOOL_CALL_ARGUMENTS_CORRUPTION_MARKER
     messages = [

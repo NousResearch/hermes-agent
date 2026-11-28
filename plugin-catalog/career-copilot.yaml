@@ -1,0 +1,31 @@
+name: career-copilot
+title: Career Copilot
+repo: https://github.com/ricardo588/career-copilot
+sha: 292a30d4290797a2db050aaed291b3d6d3ad9ab8
+version: "0.16.0"
+description: >-
+  Privacy-first, profile-driven job-search copilot delivered as one portable
+  Agent Plugins v1 skill. Disclosure: it registers no tools, hooks, middleware,
+  MCP server, services, cron jobs, telemetry, configuration schema, environment
+  variables or dependencies; install and enablement do not authenticate, make
+  network calls, apply, message, contact, publish, or mutate a real job pipeline.
+  Candidate workspaces are selected by the user, remain outside the repository,
+  and contain the private profile, CV, stories, contacts and tracker; the bundled
+  local scripts act only when the user or host agent invokes them. `draft_only`
+  remains the default. Optional Google Sheets, Gmail and Obsidian integrations
+  require separate user configuration and explicit authorization. Optional public
+  vacancy acquisition is explicitly invoked against a candidate-confirmed
+  Greenhouse or Lever source; no publisher-operated endpoint receives candidate
+  data, and model/tool use follows the host's configured services and approvals.
+maintainer: ricardo588
+tier: community
+category: general
+requires_hermes: ">=0.22.2"
+docs_url: https://github.com/ricardo588/career-copilot/blob/292a30d4290797a2db050aaed291b3d6d3ad9ab8/README.md
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

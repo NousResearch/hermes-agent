@@ -5,6 +5,8 @@ from __future__ import annotations
 from persistence import ProfileScope, SessionId
 from persistence.conversation.sessions import NewSession
 from tests.contracts._scopes import CONTRACT_ROOT, profile_scope
+from tests.contracts.authority.test_bindings_api_contract import api_binding
+from tests.contracts.authority.test_bindings_contract import begin
 
 #: The store at the default root.
 ROOT_STORE = ProfileScope(profile_dir=CONTRACT_ROOT, name="default")
@@ -27,3 +29,16 @@ def test_a_row_created_without_an_owner_is_stamped_with_the_store_owner(backend)
         store.sessions.create(NewSession(session_id=SessionId("so-1"), source="cli"))
         # CONTRACT: the store owner is the owner a row created without ``profile_name`` carries.
         assert store.sessions.get(SessionId("so-1")).profile_name == store.sessions.store_owner(), scope
+
+
+def test_rows_the_api_server_bot_rooms_and_api_bindings_create_carry_the_store_owner(backend):
+    for scope in (ROOT_STORE, profile_scope("coder"), OUTSIDE):
+        store = backend.open(scope)
+        owner = store.sessions.store_owner()
+        store.sessions.create_exclusive(SessionId("so-exclusive"), source="api_server")
+        store.hosted_rooms.ensure_room_member_session(session_id="so-room", title="Group: so")
+        store.bindings.bind_api(epoch=begin(store), binding=api_binding("so-api"))
+        store.bindings.bind_api(epoch=begin(store), binding=api_binding("so-api-room", storage_source="bot_room", title="Group: so api"))
+        # CONTRACT: a row these writers create carries the store owner, as a row ``create`` makes without ``profile_name`` does.
+        for session_id in ("so-exclusive", "so-room", "so-api", "so-api-room"):
+            assert store.sessions.get(SessionId(session_id)).profile_name == owner, (scope, session_id)

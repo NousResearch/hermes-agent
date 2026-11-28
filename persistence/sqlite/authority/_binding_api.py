@@ -31,7 +31,10 @@ def bind_api(holder, *, epoch, session_id, route, storage_source, title, declare
     routing origin and entry as dicts, *receipt* the binding receipt before the write stamps an adopted key,
     *now* the epoch seconds a new row starts at and *gate* the admission gate (decided, or a callable answered inside the write)."""
     from ..conversation._store.local import API_BINDING_PREFIX as _BINDING_PREFIX, API_DECLARED_PREFIX as _DECLARED_PREFIX
+    from ..conversation._store.sessions import _own_profile_name
     receipt = dict(receipt)
+    # Same ownership stamp as _insert_session_row: an unowned (NULL) row reads as a legacy session.
+    own_profile = _own_profile_name(holder)
 
     def write(conn):
         _epoch(conn, epoch)
@@ -90,9 +93,9 @@ def bind_api(holder, *, epoch, session_id, route, storage_source, title, declare
         held = json.loads(existing[0])['session_id'] if existing is not None else session_id
         if held != session_id and not _heal_replacement(conn, session_id, held):
             raise AuthorityRefusal('admission_conflict')
-        conn.execute('''INSERT INTO sessions(id,source,title,hidden,started_at) VALUES(?,?,?,?,?)
+        conn.execute('''INSERT INTO sessions(id,source,title,hidden,profile_name,started_at) VALUES(?,?,?,?,?,?)
                         ON CONFLICT(id) DO NOTHING''', (session_id, storage_source, title,
-                                                       int(storage_source == 'bot_room'), now))
+                                                       int(storage_source == 'bot_room'), own_profile, now))
         conn.execute('UPDATE sessions SET session_key=?,chat_id=?,user_id=?,chat_type=?,origin_json=? WHERE id=?',
                      (route, session_id, source['user_id'], 'dm', _json(source), session_id))
         conn.execute("INSERT INTO gateway_routing(scope,session_key,entry_json,updated_at) VALUES('',?,?,?) "

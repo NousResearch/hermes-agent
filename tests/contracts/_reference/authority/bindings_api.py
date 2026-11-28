@@ -106,7 +106,7 @@ class ApiBindingVerbs:
         if row is None:
             row = sessions[sid] = blank_session_row(sid, lineage_kind=SessionLineageKind.NONE, model_config={})
             row.update(source=storage_source, title=binding.title, hidden=storage_source == "bot_room",
-                       started_at=datetime.fromtimestamp(binding.started_at, UTC))
+                       profile_name=self._backend.owner_profile, started_at=datetime.fromtimestamp(binding.started_at, UTC))
         row.update(session_key=route, chat_id=sid, user_id=binding.origin["user_id"], chat_type="dm", origin=copy.deepcopy(dict(binding.origin)))
         store_route(staged.scope, route, dict(binding.entry))
         api["receipts"][sid] = json.loads(canonical_json(receipt))

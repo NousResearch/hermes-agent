@@ -31,6 +31,7 @@ from session_rules.hosted_rooms import (
 from session_rules.legacy_local import same_owner
 
 from .._backend import SQLiteStore, register_repository, translated
+from ..conversation._store.sessions import _own_profile_name
 from ._hosted_rooms_common import _epoch, fenced_update as _fenced_update, table_exists
 from ._hosted_rooms_legacy_import import _copy_rows
 from ._hosted_rooms_schema import ROOMS_STEP, _RETIRE_FROM_ROOMS
@@ -565,6 +566,9 @@ class SQLiteHostedRoomRepository:
 
     # Creates the hidden ``bot_room`` session of a room member, or accepts the one there with the same title.
     def ensure_room_member_session(self, *, session_id: str, title: str) -> str:
+        # Same ownership stamp as _insert_session_row: an unowned (NULL) row reads as a legacy session.
+        owner = _own_profile_name(self._store.holder())
+
         def atomic(conn: sqlite3.Connection) -> str:
             row = conn.execute("SELECT id, title, source FROM sessions WHERE id=?", (session_id,)).fetchone()
             if row is not None:
@@ -577,8 +581,8 @@ class SQLiteHostedRoomRepository:
             if conflict:
                 raise HostedRoomRefusal(_ROOM_TITLE_CONFLICT)
             conn.execute(
-                "INSERT INTO sessions(id, source, title, hidden, started_at) VALUES(?, 'bot_room', ?, 1, ?)",
-                (session_id, clean_title, time.time()))
+                "INSERT INTO sessions(id, source, title, hidden, profile_name, started_at) VALUES(?, 'bot_room', ?, 1, ?, ?)",
+                (session_id, clean_title, owner, time.time()))
             return session_id
         with translated():
             return self._store.holder()._execute_write(atomic)

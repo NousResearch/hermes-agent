@@ -369,10 +369,10 @@ def _print_nous_401_diagnostics(agent: Any, api_error: Exception) -> None:
 def _print_anthropic_401_diagnostics(agent: Any, key: Any) -> None:
     """Anthropic 401 that survived a credential refresh: show auth method + fixes."""
     from agent.anthropic_credentials import _is_oauth_token
-    from agent.azure_identity_adapter import is_token_provider
+    from agent.credential_source import ENTRA_ID, credential_label, credential_source
     from hermes_constants import display_hermes_home
     _plines(agent, "🔐 Anthropic 401 — authentication failed.")
-    if is_token_provider(key):
+    if credential_source(key) == ENTRA_ID:
         # Azure Foundry Entra ID: JWT minted per-request by an httpx hook; 401 = Azure
         # rejected it (RBAC, az login, IMDS).
         _plines(
@@ -382,12 +382,19 @@ def _print_anthropic_401_diagnostics(agent: Any, key: Any) -> None:
             "   `az login` if your developer session expired.",
         )
     else:
-        auth_method = "Bearer (OAuth/setup-token)" if _is_oauth_token(key) else "x-api-key (API key)"
-        _plines(
-            agent,
-            f"   Auth method: {auth_method}",
-            f"   Token prefix: {key[:12]}..." if isinstance(key, str) and len(key) > 12 else "   Token: (empty or short)",
-        )
+        # A callable key that is not Entra ID (a provider's key_cmd, Vertex OAuth, MiniMax
+        # OAuth) names its own credential source; a string key keeps the token description.
+        label = credential_label(key)
+        if label is not None:
+            # Callable key minted at request time: name its source, never mask it.
+            _plines(agent, f"   Auth method: {label}")
+        else:
+            auth_method = "Bearer (OAuth/setup-token)" if _is_oauth_token(key) else "x-api-key (API key)"
+            _plines(
+                agent,
+                f"   Auth method: {auth_method}",
+                f"   Token prefix: {key[:12]}..." if isinstance(key, str) and len(key) > 12 else "   Token: (empty or short)",
+            )
     _dhh = display_hermes_home()
     _plines(
         agent,

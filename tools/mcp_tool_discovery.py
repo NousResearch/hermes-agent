@@ -834,7 +834,9 @@ def is_mcp_tool_parallel_safe(tool_name: str) -> bool:
 
 def get_mcp_status(configured: Optional[dict[str, dict]] = None, *, include_runtime: bool = True) -> list[dict]:
     """Per-server status dicts for banner/TUI: name, transport, tools, connected, disabled,
-    status (connected / disabled / connecting / failed / lazy / configured) and error for failed.
+    status (connected / disabled / connecting / failed / lazy / configured), error for failed, and
+    reason for failed (one of ``_errors.MCP_CONNECT_FAILURE_REASONS``: the token a reader branches on
+    instead of re-grepping ``error``).
     Reads cached runtime state only; never connects.
 
     ``lazy`` is a registered-but-not-spawned server (``lazy: true``, tools from the schema
@@ -892,6 +894,11 @@ def get_mcp_status(configured: Optional[dict[str, dict]] = None, *, include_runt
             entry["tools"] = lazy_tools[name]
         # Parked on a rejected OAuth credential: the one failure only the user can fix (sign in again).
         entry["needs_auth"] = bool(server is not None and not live and server._auth_park is not None)
+        if status == "failed":
+            # Every failed entry gets the token, a parked one included: it records no connect error,
+            # only the revival reason it parked on.
+            entry["reason"] = ("AUTH" if entry["needs_auth"] else _errors._connect_failure_reason(
+                connect_errors.get(name) or getattr(server, "_park_reason", None)))
         result.append(entry)
     return result
 

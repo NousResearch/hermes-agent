@@ -81,3 +81,18 @@ def test_baked_banner_uses_live_identity(monkeypatch):
 
     monkeypatch.setattr(version_info, "get_code_identity", lambda: {"short_sha": "a1b2c3d4"})
     assert banner._baked_banner_state() == {"upstream": "a1b2c3d4", "local": "a1b2c3d4", "ahead": 0}
+
+
+def test_mcp_failed_line_picks_the_next_command_from_the_failure_reason():
+    """`hermes mcp login` for any credential rejection (a 403, a revoked token), not only a literal
+    401; every other failure points at `hermes mcp test`; an id that merely contains "401" is
+    neither."""
+    line = banner._mcp_failed_line("docs", "http", "HTTP 403 from POST https://mcp.internal.example/mcp")
+    assert "— could not connect:" in line
+    assert "run `hermes mcp login docs`" in line
+    line = banner._mcp_failed_line(
+        "docs", "http", "ConnectError: All connection attempts failed; [Errno 111] Connection refused")
+    assert "run `hermes mcp test docs`" in line
+    assert "mcp login" not in line
+    line = banner._mcp_failed_line("docs", "http", "upstream request abc-401-def failed")
+    assert "run `hermes mcp test docs`" in line

@@ -9,7 +9,7 @@ import importlib
 import logging
 import os
 import re
-from typing import Any, List, Optional
+from typing import Any, Callable, List, Optional
 from urllib.parse import urlparse
 from tools.mcp_tool_common import _exc_str, _sanitize_error, _core
 from tools.mcp_tool_node_abi import NodeAbiMismatchError
@@ -189,6 +189,77 @@ def _classify_mcp_failure(exc: BaseException) -> str:
                  # 401/403 HTTPStatusError that _is_auth_error's type-gate missed (auth types not importable here)
                  or getattr(getattr(root, "response", None), "status_code", None) in (401, 403))
     return "permanent" if permanent else "transient"
+
+
+# One stable token per recorded connect failure (``get_mcp_status()`` ``reason``). DNS /
+# CONNECTION_REFUSED / TLS / TIMEOUT / HTTP_5XX / OTHER are the structured unreachability reasons an
+# MCP control plane reports; the rest are the failures Hermes itself raises on connect. Listed in
+# the order they are tried.
+MCP_CONNECT_FAILURE_REASONS: tuple = (
+    "MISSING_COMMAND", "INVALID_URL", "AUTH", "HTTP_5XX", "HTTP_4XX", "DNS", "CONNECTION_REFUSED",
+    "TIMEOUT", "TLS", "HANDSHAKE_FAILED", "OTHER")
+
+
+def _has_any(*markers: str) -> Callable[[str], bool]:
+    """Substring test for :data:`_CONNECT_FAILURE_RULES`."""
+    return lambda text: any(marker in text for marker in markers)
+
+
+# ``(reason, test)``, first match wins: a credential rejection is AUTH rather than HTTP_4XX, a 504 is
+# the server's gateway timing out rather than this client's TIMEOUT, and a handshake that timed out
+# is still TIMEOUT. Markers are the stable parts of the stored text (errno/WinError codes, exception
+# type names, HTTP reason phrases) and the wording of errors Hermes raises itself, never an OS
+# sentence that a locale could translate.
+_CONNECT_FAILURE_RULES: tuple = (
+    # _format_connect_error's wording for FileNotFoundError; Node's spawn error; cmd.exe's.
+    ("MISSING_COMMAND", _has_any("missing executable", "no such file or directory", "command not found",
+                                 "enoent", "not recognized as an internal or external command")),
+    ("INVALID_URL", _has_any("invalid mcp url")),
+    # 401/403 as status codes, not any "401" inside an id; OAuth SDK/our exception type names, and
+    # the `hermes mcp login` next step our own errors spell out.
+    ("AUTH", re.compile(
+        r"(?<![\w-])40[13](?![\w-])|unauthori[sz]ed|\bforbidden\b|invalid[ _]token|expired token|"
+        r"token (?:is )?(?:expired|revoked)|\boauth(?:token|flow|registration|noninteractive)?error\b|"
+        r"re-?authori[sz]|re-?authenticat|mcp login").search),
+    ("HTTP_5XX", re.compile(
+        r"(?:http|status|code|error)\s*[:=]?\s*['\"]?\b5\d\d\b|\bhttp/\d(?:\.\d)?\s+5\d\d\b|internal server error|"
+        r"bad gateway|service unavailable|gateway timeout|server error '").search),
+    # The keyword must be adjacent to the code (a separator and an optional quote may sit between),
+    # so a byte count ("ReadError: read 512 bytes") is not a status. Reached only past AUTH, so
+    # 401/403 never land here. httpx: ``Client error '405 Method Not Allowed'``.
+    ("HTTP_4XX", re.compile(
+        r"(?:http|status|code|error)\s*[:=]?\s*['\"]?\b4\d\d\b|\bhttp/\d(?:\.\d)?\s+4\d\d\b|client error '|"
+        r"bad request|method not allowed|not acceptable|length required|too many requests").search),
+    ("DNS", _has_any("getaddrinfo failed", "name or service not known", "nodename nor servname",
+                     "servname provided", "no address associated with hostname", "name resolution",
+                     "resolve host", "enotfound", "errno -2]", "errno -3]", "errno 11001]", "errno 11002]")),
+    ("CONNECTION_REFUSED", _has_any("connection refused", "actively refused", "econnrefused",
+                                    "errno 111]", "errno 146]", "winerror 10061")),
+    ("TIMEOUT", _has_any("timeout", "timed out", "etimedout", "errno 110]", "errno 116]",
+                         "winerror 10060")),
+    ("TLS", _has_any("ssl", "tls", "certificate", "x509", "cert_verify_failed")),
+    # The peer accepted the connection but ``initialize`` never completed: a stdio child that died
+    # (the SDK only says "Connection closed" or names a message-less anyio leaf), a web page served
+    # where an MCP endpoint was expected, a protocol/version mismatch.
+    ("HANDSHAKE_FAILED", _has_any("connection closed", "closedresourceerror", "brokenresourceerror",
+                                  "endofstream", "broken pipe", "end of file", "eoferror", "exited with",
+                                  "exit code", "process exited", "not an mcp", "non-mcp", "content-type",
+                                  "protocol version", "method not found", "unknown method", "handshake",
+                                  "invalid json", "expecting value")),
+)
+
+
+def _connect_failure_reason(error: Any) -> str:
+    """One of :data:`MCP_CONNECT_FAILURE_REASONS`: why an MCP server could not be reached or
+    handshook, read from the connect error ``_note_connect_failure`` recorded (the
+    ``_format_connect_error`` text, or the exception it was formatted from).
+
+    That text is all a status reader has (``_server_connect_errors`` keeps the message, not the
+    exception), so callers get one stable token to branch on instead of each re-grepping the prose
+    with its own regex. ``OTHER`` when nothing matches: the token is a filter, the message stays the
+    detail."""
+    text = " ".join(str(error or "").lower().split())
+    return next((reason for reason, matches in _CONNECT_FAILURE_RULES if matches(text)), "OTHER")
 
 
 def _validate_remote_mcp_url(server_name: str, url: Any) -> str:

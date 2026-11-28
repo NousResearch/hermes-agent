@@ -112,7 +112,12 @@ def platform_configured_on(home: Path, name: str) -> bool:
     (:func:`_merged_platform_block`), so the last explicit ``enabled`` wins. A stored token with no
     ``enabled`` anywhere counts too. Env credentials are the caller's to check. Read-only; works before
     the platform's plugin loads."""
-    block = _merged_platform_block(home, name)
+    return _block_on(_merged_platform_block(home, name))
+
+
+def _block_on(block: Optional[dict]) -> bool:
+    """A merged block (:func:`_merged_platform_block`) turns its platform on: ``enabled``, or a stored token
+    with no ``enabled`` anywhere."""
     if block is None:
         return False
     platform = _platform_config(block)
@@ -191,7 +196,7 @@ def platform_in_use(platform: str, *, plugin_keys: tuple[str, ...] = (),
         block = _merged_platform_block(home, platform)
         if block is not None and "enabled" in block and not _platform_config(block).enabled:
             return tools_selected(home)
-        if platform_configured_on(home, platform):
+        if _block_on(block):
             return True
         extra = _platform_config(block).extra if block is not None else {}
 

@@ -92,4 +92,13 @@ export const GROUP_CHAT_ERRORS = {
     attachmentFallback: "مرفق",
     pastedImage: "صورة ملصقة"
   },
+  'it': {
+    sendRouteRequired: "L’invio a questa chat di gruppo richiede la sua connessione, il suo profilo e l’identificatore della chat",
+    savedMessagesUnreadable: "Impossibile leggere i messaggi salvati della chat di gruppo",
+    savedMessageUnreadable: "Impossibile leggere un messaggio salvato della chat di gruppo",
+    sendNeedsUpdate: "L’invio al gruppo richiede una versione aggiornata di Desktop; riavvia Hermes Desktop",
+    attachmentTooLarge: name => `${name}: troppo grande (massimo 15 MB).`,
+    attachmentFallback: "allegato",
+    pastedImage: "immagine incollata"
+  }
 } satisfies Record<keyof typeof CANONICAL_GROUP_LOCALES, GroupChatErrorMessages>

@@ -375,5 +375,49 @@ export const GROUP_CHAT_LOCALES = {
     unpinGroup: 'Dejar de fijar',
     groupPinned: group => `Grupo «${group}» fijado arriba`,
     groupUnpinned: group => `Grupo «${group}» ya no está fijado`
+  },
+  it: {
+    ...GROUP_CHAT_CHROME['it'],
+    ...GROUP_CHAT_ERRORS['it'],
+    mentionBot: 'Bot di questa chat di gruppo',
+    mentionEveryone: 'Tutti i membri della chat di gruppo',
+    mentionUser: 'Tu — la chat di gruppo attende una persona',
+    createDesc: max =>
+      `Scegli da 2 a ${max} bot. Le appartenenze locali si sincronizzano tramite il profilo di ogni bot; per i bot su altri computer, l’appartenenza viene salvata solo in questa chat di gruppo.`,
+    manageMembersDesc: (max, group) =>
+      `Scegli da 2 a ${max} bot per «${group}». La chat di gruppo, il suo storico e le sessioni dei suoi membri restano come sono.`,
+    deleteDesc: group =>
+      `Questo rimuove «${group}» dai gruppi dei suoi bot e cancella lo storico condiviso della chat di gruppo. I bot e le loro chat individuali vengono conservati.`,
+    memberSizeError: max => `Una chat di gruppo richiede da 2 a ${max} bot`,
+    manageMembers: 'Gestisci membri',
+    saveMembers: 'Salva membri',
+    deleted: group => `Gruppo «${group}» eliminato`,
+    globalCount: count => `${count} chat di gruppo global${count === 1 ? 'e' : 'i'}`,
+    noBots: 'Nessun bot in questa chat di gruppo',
+    noBotsMatch: query => `Nessun bot corrisponde a «${query}»`,
+    createBotFirst: 'Ancora nessun bot: creane uno prima.',
+    startInComposer: () => 'Le nuove chat di gruppo iniziano nel campo di scrittura del gruppo.',
+    memberAdded: (bot, group) => `${bot} aggiunto a «${group}»`,
+    memberRemoved: (bot, group) => `${bot} rimosso da «${group}»`,
+    newGroup: 'Nuovo gruppo…',
+    namePlaceholder: 'Nome del gruppo (es. Ricerca)',
+    created: (group, count) => `«${group}» creato con ${count} bot`,
+    memberGroups: groups => `in ${groups}`,
+    createAction: 'Crea gruppo',
+    browserCommentsAdded: (count, group) =>
+      `${count} comment${count === 1 ? 'o' : 'i'} del browser aggiunt${count === 1 ? 'o' : 'i'} a ${group}. Controlla la bozza del nuovo thread prima di inviarla.`,
+    memberCount: count => `${count} bot`,
+    allHeldStatus: count => (count === 1 ? 'Il bot è in pausa' : `Tutti i ${count} bot sono in pausa`),
+    availableCount: (available, total) => `${available} di ${total} disponib${available === 1 ? 'ile' : 'ili'}`,
+    disbandDescPrefix: 'Questo rimuove il raggruppamento ',
+    disbandDescSuffix: count =>
+      count === 1
+        ? ` dal suo bot e cancella lo storico condiviso della chat di gruppo. Il bot stesso e le sue sessioni per gruppo vengono conservati.`
+        : ` dai suoi ${count} bot e cancella lo storico condiviso della chat di gruppo. I bot stessi e le loro sessioni per gruppo vengono conservati.`,
+    pinGroup: 'Fissa in alto',
+    unpinGroup: 'Annulla il fissaggio',
+    groupPinned: group => `Gruppo «${group}» fissato in alto`,
+    groupUnpinned: group => `Gruppo «${group}» non più fissato`
   }
+
 } satisfies Record<keyof typeof CANONICAL_GROUP_LOCALES, GroupChatMessages>

@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, Callable, Optional
 
 import httpx
 
+from agent.account_usage_nous import _fetch_nous_account_usage_read_only
 from agent.anthropic_credentials import _is_oauth_token, resolve_anthropic_token
 from hermes_cli.auth import AuthError, _read_codex_tokens, resolve_codex_runtime_credentials
 from hermes_cli.auth_codex import _codex_pool_route_base_url
@@ -574,6 +575,7 @@ _USAGE_FETCHERS: dict[str, Callable[[Optional[str], Optional[str]], Optional[Acc
 # rotating/refreshing a credential (see ``fetch_account_usage(read_only=True)``).
 _READ_ONLY_USAGE_FETCHERS: dict[str, Callable[[Optional[str], Optional[str]], Optional[AccountUsageSnapshot]]] = {
     "openai-codex": _fetch_codex_account_usage_read_only,
+    "nous": _fetch_nous_account_usage_read_only,
 }
 
 

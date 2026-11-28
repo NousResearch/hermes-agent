@@ -194,30 +194,31 @@ def test_cli_board_flag_trumps_worker_env_pin_end_to_end(monkeypatch, tmp_path):
 def test_dispatched_worker_board_arg_stays_pinned(monkeypatch, tmp_path):
     """A dispatched worker (HERMES_KANBAN_TASK, the dispatcher's own injection)
     cannot resolve its way to another board: each env pin wins over board= for
-    its own resolver."""
+    its own resolver — and since #142435 the dropped intent fails noisy
+    (ValueError) instead of silently returning the pinned path."""
     pinned = tmp_path / "worker-pinned.db"
     pinned_workspaces = tmp_path / "worker-pinned-workspaces"
     monkeypatch.setenv("HERMES_KANBAN_DB", str(pinned))
     monkeypatch.setenv("HERMES_KANBAN_WORKSPACES_ROOT", str(pinned_workspaces))
     monkeypatch.setenv("HERMES_KANBAN_TASK", "t_3f1c63a5")
-    assert kb.kanban_db_path(board="other-board") == pinned
-    assert kb.workspaces_root(board="other-board") == pinned_workspaces
+    with pytest.raises(ValueError, match="other-board"):
+        kb.kanban_db_path(board="other-board")
+    with pytest.raises(ValueError, match="other-board"):
+        kb.workspaces_root(board="other-board")
 
 
 def test_delegated_child_board_arg_stays_pinned(monkeypatch, tmp_path):
     """A delegated child / spawned descendant (HERMES_DELEGATED_CHILD_CONTEXT
-    marker) passing an explicit board= resolves through the pin, so
-    kanban_path_is_fenced still catches the resolved path."""
-    from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER, kanban_path_is_fenced
+    marker) passing an explicit board= is rejected noisy (ValueError) — since
+    #142435 the resolver must never hand back a path outside
+    kanban_path_is_fenced's pinned root while masquerading as success."""
+    from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER
 
     pinned = tmp_path / "worker-pinned.db"
     monkeypatch.setenv("HERMES_KANBAN_DB", str(pinned))
     monkeypatch.setenv(DELEGATED_CHILD_ENV_MARKER, str(tmp_path))  # fenced root
-    path = kb.kanban_db_path(board="other-board")
-    assert path == pinned
-    assert kanban_path_is_fenced(path), (
-        "the explicit board escaped the dispatcher's pin-based fence"
-    )
+    with pytest.raises(ValueError, match="other-board"):
+        kb.kanban_db_path(board="other-board")
 
 
 def test_pin_first_board_resolution_maps_every_slug_to_the_pin(monkeypatch, tmp_path):
@@ -268,3 +269,150 @@ def test_notifier_seam_connect_lands_on_pinned_db(monkeypatch, tmp_path):
             assert any(r[0] == "pinned task" for r in rows), (
                 f"per-slug connect lost the pinned DB for board={slug!r}"
             )
+
+
+# ---------------------------------------------------------------------------
+# Fail-noisy on fenced silent drop (#142435): a dispatched worker or delegated
+# child passing board=<other> used to get the pinned path back with no signal,
+# so kanban_create(board=...) reported ok while writing the worker's own board
+# (soul-ride: an 11-card coordinator fan-out all landed on the wrong board).
+# The fence itself stays — the resolver now raises ValueError instead of
+# silently dropping the explicit intent.
+# ---------------------------------------------------------------------------
+
+def test_dispatched_worker_explicit_other_board_fails_noisy(monkeypatch, tmp_path):
+    """A HERMES_KANBAN_TASK-fenced worker passing board=<other> must get an
+    explicit error, not the pinned path masquerading as success."""
+    pinned = tmp_path / "worker-pinned.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(pinned))
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_deadbeef")
+    with pytest.raises(ValueError, match="other-board"):
+        kb.kanban_db_path(board="other-board")
+
+
+def test_delegated_child_explicit_other_board_fails_noisy(monkeypatch, tmp_path):
+    """A delegated child / descendant (HERMES_DELEGATED_CHILD_CONTEXT marker)
+    gets the same explicit error for cross-board intent."""
+    from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER
+
+    pinned = tmp_path / "worker-pinned.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(pinned))
+    monkeypatch.setenv(DELEGATED_CHILD_ENV_MARKER, str(tmp_path))
+    with pytest.raises(ValueError, match="other-board"):
+        kb.kanban_db_path(board="other-board")
+
+
+def test_worker_explicit_own_board_resolves_without_error(monkeypatch, tmp_path):
+    """No false positive: a fenced worker naming its OWN board (the exact
+    path shape the dispatcher pins) keeps resolving to the pin — only
+    cross-board intent is rejected."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.create_board("worker-own-board")
+    pinned = kb.kanban_db_path(board="worker-own-board")
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(pinned))
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_deadbeef")
+    assert kb.kanban_db_path(board="worker-own-board") == pinned
+
+
+def test_machine_flow_enumeration_stays_silent_under_worker_fence(monkeypatch, tmp_path):
+    """pin_first_board_resolution() enumeration slugs are iteration variables,
+    not caller intent — they must still map silently to the pin (no raise),
+    even when the process also carries the worker fence marker."""
+    pinned = tmp_path / "pinned.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(pinned))
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_deadbeef")
+    with kb.pin_first_board_resolution():
+        assert kb.kanban_db_path(board="other-board") == pinned
+
+
+# ---------------------------------------------------------------------------
+# #142435 addendum: the refusal must stay truthful at the CLI edge. The core
+# fix made cross-board intent raise inside _board_path; these pin the
+# surrounding contract a reviewer confirmed on the sibling vehicle:
+#   - boards metadata writes pre-resolve, so the refusal lands with nothing
+#     written ("nothing was read or written" stays true);
+#   - the boards CLI surfaces the refusal as `kanban: …` rc!=0, never a bare
+#     traceback;
+#   - board enumeration stays best-effort under the fence (db_path=None)
+#     instead of crashing `boards list`;
+#   - a stale `current` pointer naming a cross-board slug falls through to
+#     default instead of crashing the tombstone check.
+# ---------------------------------------------------------------------------
+
+def test_worker_boards_metadata_refusal_writes_nothing(monkeypatch, tmp_path):
+    """In a fenced worker, `boards rename <other> …` must refuse BEFORE
+    touching board.json — a write-then-raise order would strand the rename
+    while the error text claims nothing was written."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.create_board("other-board")
+    foreign_json = kb.board_metadata_path("other-board")
+    before = foreign_json.read_text(encoding="utf-8")
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "worker-pinned.db"))
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_deadbeef")
+    with pytest.raises(ValueError, match="other-board"):
+        kb.write_board_metadata("other-board", name="Hijacked")
+    assert foreign_json.read_text(encoding="utf-8") == before
+
+
+def test_worker_boards_cli_reports_error_not_traceback(monkeypatch, tmp_path):
+    """`hermes kanban boards rename <other> …` inside a fenced worker returns
+    rc!=0 with a `kanban: …` message on stderr — the boards dispatcher sits
+    outside kanban_command's handler try, so without the wrap the ValueError
+    escapes as a bare traceback."""
+    from tests.hermes_cli.test_kanban_boards import _cli
+
+    env = {
+        "HERMES_HOME": str(tmp_path),
+        "HERMES_KANBAN_DB": str(tmp_path / "worker-pinned.db"),
+        "HERMES_KANBAN_TASK": "t_deadbeef",
+    }
+    # The foreign board must exist before the fence applies: creating another
+    # board from inside the fenced worker is itself refused cross-board intent.
+    assert _cli(["boards", "create", "other-board"], env_extra={"HERMES_HOME": str(tmp_path)}).returncode == 0
+    r = _cli(["boards", "rename", "other-board", "Hijacked"], env_extra=env)
+    assert r.returncode != 0
+    assert "kanban:" in r.stderr
+    assert "Traceback" not in r.stderr
+    assert "Hijacked" not in (tmp_path / "kanban" / "boards" / "other-board" / "board.json").read_text(encoding="utf-8")
+
+
+def test_worker_board_enumeration_best_effort_db_path_none(monkeypatch, tmp_path):
+    """`boards list` inside a fenced worker must not crash on the fence:
+    cross-board metadata stays best-effort with db_path=None (the pinned
+    board's own row still resolves its real path)."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.create_board("other-board")
+    own = tmp_path / "home" / "kanban.db"
+    own.write_bytes(b"")  # the pin itself points at the worker's own board DB
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(own))
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_deadbeef")
+    boards = {b["slug"]: b for b in kb.list_boards()}
+    assert "other-board" in boards
+    assert boards["other-board"]["db_path"] is None
+    assert boards[kb.DEFAULT_BOARD]["db_path"] == str(own)
+
+
+def test_worker_stale_current_pointer_falls_through_to_default(monkeypatch, tmp_path):
+    """A fenced execution whose on-disk `current` pointer names a cross-board
+    slug must fall through to default: the fence refusal marks the pointer
+    stale, and get_current_board() must never adopt a foreign identity."""
+    from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.create_board("other-board")
+    kb.set_current_board("other-board")
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "child-pinned.db"))
+    monkeypatch.setenv(DELEGATED_CHILD_ENV_MARKER, str(tmp_path))  # fenced root
+    assert kb.get_current_board() == kb.DEFAULT_BOARD

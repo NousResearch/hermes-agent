@@ -30,6 +30,43 @@ def escape_like(text: str) -> str:
     return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
+def key_prefix_range(prefix: str) -> tuple[str, str]:
+    """Exact literal prefix bounds for the BINARY key index, which LIKE cannot seek.
+
+    Empty prefixes and a trailing U+10FFFF have no successor bound; skip surrogates
+    because SQLite text parameters must encode as UTF-8.
+    """
+    if not prefix:
+        raise ValueError("key prefix must be non-empty")
+    successor = ord(prefix[-1]) + 1
+    if successor > 0x10FFFF:
+        raise ValueError("key prefix has no successor")
+    if successor == 0xD800:
+        successor = 0xE000
+    return prefix, prefix[:-1] + chr(successor)
+
+
+def key_prefix_ranges_casefold(prefix: str, limit: int = 16) -> list[tuple[str, str]]:
+    """Bound a leading segment's ASCII-case variants, a superset of LIKE matches.
+
+    Inspect at most 64 characters and stop before exceeding ``limit``; no boundable
+    segment means plain LIKE (``[]``). Shorter bounds remain a superset of matches.
+    """
+    variants = [""]
+    bounded = []
+    for char in prefix[:64]:
+        # LIKE stops at NUL and folds U+FFFE/U+FFFF to U+FFFD in its UTF-8 reader.
+        if char == "\0" or "\ufffd" <= char <= "\uffff":
+            break
+        choices = (char.lower(), char.upper()) if char.isascii() and char.isalpha() else (char,)
+        if len(variants) * len(choices) > limit:
+            break
+        variants = [variant + choice for variant in variants for choice in choices]
+        if char != "\U0010ffff":
+            bounded = variants
+    return [key_prefix_range(variant) for variant in bounded]
+
+
 def _shape_preview(raw: Any) -> str:
     """Turn a ``_preview_raw`` column into the short preview callers show."""
     text = str(raw or "").strip()

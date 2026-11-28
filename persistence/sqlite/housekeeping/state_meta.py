@@ -35,7 +35,7 @@ class SQLiteStateMetaRepository:
             raise ValueError("state_meta prefix must be non-empty")
         with translated():
             rows = self._store.holder().list_meta_prefix(prefix)
-        # The store's LIKE folds ASCII case and reads in table order.
+        # The store's LIKE folds ASCII case and returns stored (rowid) order.
         return tuple(StateMetaEntry(key, value) for key, value in rows)
 
 

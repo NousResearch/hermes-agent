@@ -252,6 +252,7 @@ Import the area constants from the SDK; each area has its own `data` payload.
 | Kanban card badges | `KANBAN_CARD_AREAS.badges` | `data: KanbanCardBadgeContribution` — short text labels per card, painted by the board |
 | Appearance settings | `APPEARANCE_AREAS.extra` | `render` — controls appended to Settings → Appearance |
 | Tool media | `TOOL_MEDIA_RENDERER_AREA` (`'transcript.toolMedia'`) | `data: { tools, render }` — draw the `MEDIA:` files your package's own tools produced ([Tool media renderers](#tool-media-renderers)) |
+| File preview | `FILE_PREVIEW_RENDERER_AREA` (`'preview.file'`) | `data: { extensions?, mimeTypes?, render }` — draw a file the preview rail opens ([File preview renderers](#file-preview-renderers)) |
 | Plugin settings page | `SETTINGS_PLUGINS_AREA` (`'settings.plugins'`) | Use `ctx.registerSettingsPage({ id, title, render, icon?, order?, children? })` — your own entry (with sub-pages) under Settings → Plugins |
 
 ### Panes
@@ -1272,6 +1273,79 @@ Before this area existed, a plugin had to make the model emit its own
 non-Desktop users with a raw directive line. With a renderer, the tool returns
 the ordinary `MEDIA:` tag every surface understands and Desktop alone upgrades
 it.
+
+### File preview renderers — draw a file the preview rail opens {#file-preview-renderers}
+
+A plugin can draw a file type the built-in viewer refuses as binary, or draw
+a known type its own way. Claim files by extension, and optionally by MIME
+type. Your component then replaces the built-in viewer for a matching file
+tab:
+
+```javascript
+import * as sdk from '@hermes/plugin-sdk'
+import { useEffect, useState } from 'react'
+import { jsx } from 'react/jsx-runtime'
+
+export default {
+  id: 'sheet-viewer',
+  register(ctx) {
+    // Older Desktops don't export the area.
+    if (typeof sdk.FILE_PREVIEW_RENDERER_AREA !== 'string') return
+
+    ctx.register({
+      id: 'xlsx',
+      area: sdk.FILE_PREVIEW_RENDERER_AREA,
+      data: { extensions: ['xlsx', 'xlsm'], render: props => jsx(SheetPreview, props) }
+    })
+  }
+}
+
+function SheetPreview({ file, fallback }) {
+  const [result, setResult] = useState(null)
+  useEffect(() => {
+    let live = true
+    file.read().then(next => live && setResult(next))
+    return () => { live = false }
+  }, [file])
+
+  if (result && !result.ok) return fallback // the built-in viewer
+  return jsx('div', { children: result ? `${file.name}: ${result.bytes.length} bytes` : 'Loading…' })
+}
+```
+
+`data` takes:
+
+| Field | What it is |
+|-------|------------|
+| `extensions` | File-name extensions, case-insensitive, with or without the dot. Only the last dot segment of the file name counts. In a native path, a trailing `#fragment` or `?query` is ignored unless the literal extension is claimed. |
+| `mimeTypes` | Exact MIME types, case-insensitive, compared to the type the host reports for the tab. That type is often unknown (`application/octet-stream`, which never matches), so claim extensions first. |
+| `render` | Called with `{ file, fallback }`. Return `fallback`, `null` or `undefined` to show the built-in viewer. |
+
+`file` is `{ path, name, extension, mimeType, sessionId, read(), saveCopy(data, name?) }`:
+
+| Member | What it does |
+|--------|--------------|
+| `path` | The path on the **backend's** machine, as the tab names it. Never open it yourself: use `read()`. |
+| `read()` | Reads the whole file through the backend and profile that own the tab, subject to host size limits. Never rejects: resolves `{ ok: true, bytes, mimeType }` (`bytes` is a `Uint8Array`) or `{ ok: false, error, message }`. `error` is `missing`, `too-large`, `scope-changed`, `unavailable` or `io-error`. |
+| `saveCopy(data, name?)` | Hands a `Blob` or `Uint8Array` to the OS save dialog, under `name` reduced to a basename (default: the file's own name). It never writes to `path`, and it cannot report whether the user saved or cancelled. |
+
+What the host guarantees:
+
+- **A claim wins for any file tab it matches,** before the built-in viewer's
+  binary or size refusal. Matching reads no content. Lowest `order` wins,
+  then contribution id. URL tabs, artifacts and HTML files in rendered mode
+  never reach this area. Unclaimed files are unchanged and cost no extra
+  read.
+- **`file` is bound to one file, chat and connection.** Another file, chat,
+  connection or profile gives your component a new `file` object (depend on
+  it in `useEffect`). A read on the old object, including one in flight,
+  resolves `{ ok: false, error: 'scope-changed' }`.
+- **External changes do not remount your component,** so editor state
+  survives them. Call `read()` again to load the current file.
+- **Fail-safe:** a renderer that throws, or a disabled or removed plugin,
+  shows the built-in viewer.
+
+There is no in-place save; use `saveCopy`.
 
 ### Mount-scoped chrome (`Contribute`)
 

@@ -1,4 +1,4 @@
-import { hermesApi, sessionFileOwnerScope } from '@/api/client'
+import { getApiRequestConnection, hermesApi, sessionFileOwnerScope } from '@/api/client'
 import type {
   HermesConnection,
   HermesReadDirResult,
@@ -42,6 +42,12 @@ function connectionCacheKey(connection: HermesConnection | null) {
 
 export function desktopFsCacheKey(connection: HermesConnection | null = $connection.get()) {
   return connectionCacheKey(connection)
+}
+
+export function fileEditScopeKey() {
+  // The REST wrapper has its own routing authority. Include it while the
+  // resolved connection descriptor is catching up with an activation.
+  return JSON.stringify([desktopFsCacheKey(), getApiRequestConnection()])
 }
 
 export function isDesktopFsRemoteMode() {

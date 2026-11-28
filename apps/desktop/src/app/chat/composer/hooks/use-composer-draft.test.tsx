@@ -1,4 +1,4 @@
-import { act, cleanup, render, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react'
 import { useLayoutEffect } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -508,6 +508,39 @@ describe('useComposerDraft — draft survives full unmount (Settings navigation,
     mainComposerScope.clear()
     clearSessionDraft('session-nav')
   })
+
+  it.each(['21:00~', '21:01~', '12.01~', '2001~ 2005', '2024-01~', '[200~300]', '00~06시'])(
+    'restores numeric draft %s after navigating away',
+    text => {
+      function DraftEditor() {
+        const { editorRef, syncDraftFromEditor } = useComposerDraft({
+          activeQueueSessionKey: 'session-nav',
+          focusKey: null,
+          inputDisabled: false,
+          queueEditRef: { current: null },
+          sessionId: 'session-nav'
+        })
+
+        return (
+          <div
+            contentEditable
+            onInput={event => void syncDraftFromEditor(true, event.currentTarget)}
+            ref={editorRef}
+            role="textbox"
+          />
+        )
+      }
+
+      const mounted = render(<DraftEditor />)
+      const editor = mounted.getByRole('textbox')
+      editor.textContent = text
+      fireEvent.input(editor)
+      mounted.unmount()
+
+      const restored = render(<DraftEditor />)
+      expect(restored.getByRole('textbox').textContent).toBe(text)
+    }
+  )
 
   it('stashes the unsent draft on unmount and restores it on remount', () => {
     // The user typed but has not sent; the draft was stashed by the normal

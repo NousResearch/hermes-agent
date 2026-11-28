@@ -5,10 +5,13 @@
  * Mirrors hermes_cli/input_sanitize.py (CLI/TUI gateway defensive path).
  */
 
-const BRACKETED_PASTE_BOUNDARY_START = /(^|[\s\n>:\])])\[200~/g
-const BRACKETED_PASTE_BOUNDARY_END = /\[201~(?=$|[\s\n<[():;.,!?])/g
-const BRACKETED_PASTE_DEGRADED_START = /(^|[\s\n>:\])])00~/g
-const BRACKETED_PASTE_DEGRADED_END = /01~(?=$|[\s\n<[():;.,!?])/g
+// Numeric ranges and degraded paste markers share the same spelling (#143444).
+// Keep ambiguous number-adjacent forms; canonical escape wrappers are still removed.
+const BRACKETED_PASTE_BOUNDARY_START = /(^|[\s\n>:\])])\[200~(?![ \t]*[0-9])/g
+const BRACKETED_PASTE_BOUNDARY_END = /\[201~(?=$|[\s\n<[():;.,!?])(?![ \t]*[0-9])/g
+// A label may end in a colon; a digit, whitespace or line start may introduce minutes.
+const BRACKETED_PASTE_DEGRADED_START = /(^|[\s>\])]|(?<=[^\s0-9]):)00~(?![ \t]*[0-9])/g
+const BRACKETED_PASTE_DEGRADED_END = /(?<![0-9])(?<![0-9][-./:,])01~(?=$|[\s\n<[():;.,!?])(?![ \t]*[0-9])/g
 
 const DESKTOP_PASTE_ARTIFACT = '~[[e'
 

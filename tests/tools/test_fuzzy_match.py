@@ -799,3 +799,68 @@ class TestBackslashDoublingDrift:
         result, count, _strategy, err = self.replace(content, old, new)
         assert count == 1 and err is None
         assert result == "print('hello there')\nrest = 1\n"
+
+
+class TestAnchorEdits:
+    """Content-hash anchors: name a region instead of retyping context."""
+
+    def setup_method(self):
+        from tools import fuzzy_match
+        self.mod = fuzzy_match
+
+    def _dup(self):
+        return "value = 1\nmiddle = True\nvalue = 1\n"
+
+    def test_ambiguous_error_names_anchor(self):
+        _, count, _, err = self.mod.fuzzy_find_and_replace(self._dup(), "value = 1", "value = 2")
+        assert count == 0
+        assert err is not None and "anchor=" in err
+
+    def test_anchor_selects_one_region(self):
+        from tools.fuzzy_match import line_anchor_hash
+        content = self._dup()
+        anchor = f"L3:{line_anchor_hash('value = 1')}"
+        new, count, _, err = self.mod.fuzzy_find_and_replace(
+            content, "value = 1", "value = 2", anchor=anchor)
+        assert err is None, err
+        assert count == 1
+        assert new == "value = 1\nmiddle = True\nvalue = 2\n"
+
+    def test_anchor_without_hash_selects_by_line(self):
+        content = self._dup()
+        new, _count, _, err = self.mod.fuzzy_find_and_replace(
+            content, "value = 1", "value = 9", anchor="L1")
+        assert err is None, err
+        assert new == "value = 9\nmiddle = True\nvalue = 1\n"
+
+    def test_stale_hash_is_refused(self):
+        from tools.fuzzy_match import line_anchor_hash
+        content = self._dup()
+        anchor = f"L3:{line_anchor_hash('something else')}"
+        _, count, _, err = self.mod.fuzzy_find_and_replace(
+            content, "value = 1", "value = 2", anchor=anchor)
+        assert count == 0
+        assert err is not None and "Stale anchor" in err
+
+    def test_invalid_anchor_is_rejected(self):
+        _, count, _, err = self.mod.fuzzy_find_and_replace(
+            self._dup(), "value = 1", "value = 2", anchor="banana")
+        assert count == 0
+        assert err is not None and "Invalid anchor" in err
+
+    def test_anchor_outside_regions_is_rejected(self):
+        content = self._dup()
+        _, count, _, err = self.mod.fuzzy_find_and_replace(
+            content, "value = 1", "value = 2", anchor="L2")
+        assert count == 0
+        assert err is not None and "inside none" in err
+
+    def test_closest_lines_sections_carry_anchors(self):
+        content = "def foo():\n    pass\ndef bar():\n    return 1\n"
+        result = self.mod.find_closest_lines("def baz():", content)
+        assert "# anchor L" in result
+
+    def test_anchor_hash_is_stable(self):
+        from tools.fuzzy_match import line_anchor_hash
+        assert line_anchor_hash("  x = 1  ") == line_anchor_hash("x = 1")
+        assert len(line_anchor_hash("x")) == 12

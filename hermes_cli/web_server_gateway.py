@@ -194,8 +194,13 @@ def _collect_profile_gateway_topology() -> dict[str, Any]:
         served = [str(p) for p in ((runtime or {}).get("served_profiles") or [])]
         if name == "default" and len(served) > 1:
             multiplex = True
-        if (runtime or {}).get("multiplex_standalone_reason"):
-            standalone_reason = str(runtime["multiplex_standalone_reason"])
+        # Banner is the HOST boot-guard refusal only. Named `gateway.standalone: true`
+        # siblings record STANDALONE_PROFILE_REASON on their own state; last-wins
+        # aggregation painted a false "run migrate --multiplex" on a live multiplexer.
+        if name == "default":
+            reason = (runtime or {}).get("multiplex_standalone_reason")
+            if reason:
+                standalone_reason = str(reason)
         plats = (runtime or {}).get("platforms")
         owned: dict = {}
         if isinstance(plats, dict) and plats:
@@ -214,9 +219,10 @@ def _collect_profile_gateway_topology() -> dict[str, Any]:
     else:
         mode = {0: "none", 1: "single"}.get(len(gateways), "multiple")
     # A guard refusal on a multi-profile host is what the dashboard banner shows; a single-profile
-    # install has nothing unserved and gets no banner.
-    from hermes_cli.gateway_multiplex_mode import SINGLE_PROFILE_REASON
-    if standalone_reason == SINGLE_PROFILE_REASON or len(homes) < 2:
+    # install has nothing unserved and gets no banner. The standalone shim is expected on
+    # per-profile fleet members — never a migrate prompt for the host dashboard.
+    from hermes_cli.gateway_multiplex_mode import SINGLE_PROFILE_REASON, STANDALONE_PROFILE_REASON
+    if standalone_reason in (SINGLE_PROFILE_REASON, STANDALONE_PROFILE_REASON) or len(homes) < 2:
         standalone_reason = None
     return {
         "profiles": [name for name, _home in homes],

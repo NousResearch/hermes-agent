@@ -620,3 +620,39 @@ def split_image_notes(text: str) -> tuple[str, list[str]]:
 
 
 __all__ = ["build_native_content_parts", "decide_image_input_mode", "extract_image_refs", "split_image_notes"]
+
+
+def vision_model_reports_text_only(provider: Optional[str], model: Optional[str]) -> bool:
+    """True only when the capability catalog definitively reports ``supports_vision=False``.
+
+    Unknown models (verdict ``None``) and lookup failures pass — only a definitive text-only
+    verdict blocks, mirroring ``_main_model_supports_vision``.
+    """
+    if not model:
+        return False
+    from hermes_cli.config import load_config_readonly
+
+    try:
+        supports = _lookup_supports_vision(str(provider or ""), str(model), load_config_readonly())
+    except Exception:  # capability lookup is advisory: a failure must not invent a verdict
+        logger.debug("Vision capability lookup failed for %s/%s", provider, model, exc_info=True)
+        return False
+    return supports is False
+
+
+def vision_incapable_candidate_note(
+    task: Optional[str], provider: str, model: str, label: str,
+) -> Optional[str]:
+    """``tried`` note when a fallback candidate is a KNOWN text-only model and the task is vision.
+
+    A text-only candidate on the vision route is not a fallback at all: the provider answers image
+    input with a hard 400 ("This API supports text input only"), so a walk skips it the way
+    ``_context_too_small`` skips too-small compression candidates. Only a definitive
+    ``supports_vision=False`` blocks; unknown models still get their attempt.
+    """
+    if task != "vision" or not model:
+        return None
+    if not vision_model_reports_text_only(provider, model):
+        return None
+    logger.info("%s skipped for vision: %s is text-only (image input hard-400s)", label, model)
+    return f"{label} (text-only model: {model})"

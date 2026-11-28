@@ -383,7 +383,7 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
           const busy = Boolean(payload!.running)
           const state = payTurnEndReport(prior, busy)
 
-          if (state.busy === busy && (busy || !state.awaitingResponse)) {
+          if (state.busy === busy && (busy || !state.awaitingResponse) && !state.turnStartedAt) {
             return state
           }
 
@@ -404,6 +404,22 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
                 ? payload!.turn_started_at * 1000
                 : null
 
+            const nextTurnStartedAt = state.turnStartedAt ?? gatewayTurnStartedAt ?? Date.now()
+
+            // A running turn repeats this branch on every ~1/s heartbeat.
+            // Once the clock is set every field below is already what the
+            // next tick will recompute, so return the same reference and
+            // let updateSessionState's `next === previous` short-circuit
+            // skip the store write — otherwise each tick churns
+            // $sessionStates and its computed atoms.
+            if (
+              state.busy === busy &&
+              state.turnLive &&
+              state.turnStartedAt === nextTurnStartedAt
+            ) {
+              return state
+            }
+
             return {
               ...state,
               busy,
@@ -411,7 +427,7 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
               // message.start (e.g. resuming an already-running session
               // that never replays its start event).
               turnLive: true,
-              turnStartedAt: state.turnStartedAt ?? gatewayTurnStartedAt ?? Date.now()
+              turnStartedAt: nextTurnStartedAt
             }
           }
 

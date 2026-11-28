@@ -32,11 +32,29 @@ const ASSISTANT_UI_LOOKUP_ERROR = /(useClientLookup|tapClient(Lookup|Resource)).
 // itself inside whatever boundary hosts the portal, so every boundary — not
 // just the root — gets the same capped recovery.
 const PORTAL_UNMOUNT_ERROR = /^Tried to unmount a fiber (?:that is already|that was not) unmounted/u
+// The same teardown race, one layer lower: when the host SUBTREE is swapped
+// instead of the fiber graph, React's commit phase calls
+// `parentInstance.removeChild(child)` and the DOM throws NotFoundError because
+// that node's parent already changed (a portal host removed or re-parented
+// mid-commit). Same class, same self-healing re-render — but it throws from
+// inside whatever boundary hosts the portal, which on the browser-hosted
+// Webapp is often the root, so the whole UI blanks into the retry screen.
+// Chrome LOCALIZES DOMException messages (`无法对"Node"执行"removeChild"操作…`
+// on a zh-UI browser), so this keys on the stable `name`/`code` pair and never
+// on the English text. A genuine NotFoundError that is not a commit race costs
+// at most the same capped retries, then the fallback shows as it does today.
+const DOM_NOT_FOUND_ERR = 8
 const MAX_AUTO_RECOVERIES = 3
 const AUTO_RECOVERY_WINDOW_MS = 5_000
 
 const isTransientAssistantUiLookupError = (error: Error): boolean => ASSISTANT_UI_LOOKUP_ERROR.test(error.message)
 const isTransientPortalUnmountError = (error: Error): boolean => PORTAL_UNMOUNT_ERROR.test(error.message)
+
+const isTransientDomRemovalRace = (error: Error): boolean => {
+  const domError = error as DOMException
+
+  return domError?.name === 'NotFoundError' && domError.code === DOM_NOT_FOUND_ERR
+}
 
 export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
   state: ErrorBoundaryState = { error: null }
@@ -80,10 +98,11 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
     this.props.onError?.(error, info)
 
     const assistantUiLookupRace = this.props.label === 'root' && isTransientAssistantUiLookupError(error)
-    const portalTeardownRace = isTransientPortalUnmountError(error)
+    const domRemovalRace = isTransientDomRemovalRace(error)
+    const portalTeardownRace = isTransientPortalUnmountError(error) || domRemovalRace
 
     if ((assistantUiLookupRace || portalTeardownRace) && this.takeAutoRecoveryAttempt()) {
-      const race = portalTeardownRace ? 'portal teardown' : 'assistant-ui lookup'
+      const race = portalTeardownRace ? (domRemovalRace ? 'DOM removal' : 'portal teardown') : 'assistant-ui lookup'
       console.warn(`${tag} auto-recovering from ${race} render race`, error.message)
       this.autoRecoveryPending = true
       this.scheduleAutoRecovery()

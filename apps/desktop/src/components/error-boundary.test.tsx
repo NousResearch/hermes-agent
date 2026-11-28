@@ -318,3 +318,91 @@ describe('ErrorBoundary portal teardown recovery', () => {
     expect(portalRecoveryWarningCount(warnSpy.mock.calls)).toBe(1)
   })
 })
+
+// The browser-hosted Webapp shows the sibling throw site of the same teardown
+// race: React's commit phase calls `removeChild` on a portal/host node whose
+// parent a subtree swap already changed, and the DOM answers NotFoundError.
+// Chrome localizes DOMException text, so the browser's own zh-UI wording is the
+// message a Chinese user actually sees and must still self-heal.
+const REMOVE_CHILD_ERROR_ZH = new DOMException(
+  '无法对"Node"执行"removeChild"操作：要删除的节点不是此节点的子节点。',
+  'NotFoundError'
+)
+
+const REMOVE_CHILD_ERROR_EN = new DOMException(
+  "Failed to execute 'removeChild' on 'Node': The node to be removed is not a child of this node.",
+  'NotFoundError'
+)
+
+const domRemovalRecoveryWarningCount = (calls: unknown[][]) =>
+  calls.filter(call => call.some(value => String(value).includes('auto-recovering from DOM removal'))).length
+
+describe('ErrorBoundary DOM removal race recovery', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(0)
+    vi.spyOn(console, 'error').mockImplementation(() => undefined)
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  it.each([
+    ['the localized zh-UI message Chrome reports', REMOVE_CHILD_ERROR_ZH],
+    ['the English message', REMOVE_CHILD_ERROR_EN]
+  ])('auto-recovers the root boundary from %s', (_label, error) => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const box: { error: Error | null } = { error }
+    const Bomb = makeBomb(box)
+
+    render(
+      <RootErrorBoundary>
+        <Bomb />
+      </RootErrorBoundary>
+    )
+
+    box.error = null
+    act(() => vi.runOnlyPendingTimers())
+
+    expect(screen.getByText('recovered')).toBeTruthy()
+    expect(domRemovalRecoveryWarningCount(warnSpy.mock.calls)).toBe(1)
+  })
+
+  it('stops retrying a persistent DOM removal race after the recovery budget is exhausted', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const Bomb = makeBomb({ error: REMOVE_CHILD_ERROR_ZH })
+
+    render(
+      <ErrorBoundary fallback={() => <div>scoped fallback</div>} label="contrib:chat">
+        <Bomb />
+      </ErrorBoundary>
+    )
+
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      act(() => vi.runOnlyPendingTimers())
+    }
+
+    expect(screen.getByText('scoped fallback')).toBeTruthy()
+    expect(domRemovalRecoveryWarningCount(warnSpy.mock.calls)).toBe(3)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('does not auto-recover an unrelated Error that only borrows the name', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const plain = Object.assign(new Error('session not found'), { name: 'NotFoundError' })
+    const Bomb = makeBomb({ error: plain })
+
+    render(
+      <RootErrorBoundary>
+        <Bomb />
+      </RootErrorBoundary>
+    )
+
+    act(() => vi.runAllTimers())
+
+    expect(domRemovalRecoveryWarningCount(warnSpy.mock.calls)).toBe(0)
+  })
+})

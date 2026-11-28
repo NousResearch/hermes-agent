@@ -25,6 +25,8 @@ import json
 from datetime import timedelta
 from unittest.mock import patch
 
+import pytest
+
 import hermes_time
 from tools.cronjob_tools import _origin_from_env
 
@@ -104,6 +106,39 @@ _TOP_LEVEL_SLACK = {
 
 def _run_at_in(minutes: int) -> str:
     return (hermes_time.now() + timedelta(minutes=minutes)).isoformat()
+
+
+@pytest.mark.parametrize("deliver", ["origin", "slack:C0AGENERAL"])
+@pytest.mark.parametrize(
+    "message_id, schedule, expected_thread",
+    [
+        ("1755043010.654321", "every 10m", "1755043010.123456"),
+        ("1755043010.123456", "in 1m", "1755043010.123456"),
+        ("1755043010.123456", "every 10m", None),
+        ("", "every 10m", None),
+    ],
+    ids=["thread-reply", "near-reminder", "recurring-top-level", "unknown-origin"],
+)
+def test_slack_home_delivery_uses_persisted_origin_thread(
+    tmp_path, monkeypatch, make_cron_provider, deliver, message_id, schedule, expected_thread
+):
+    from cron import jobs
+    from cron.scheduler_delivery import _resolve_single_delivery_target
+    from tools import cronjob_tools
+
+    monkeypatch.setenv("SLACK_HOME_CHANNEL", "C0AGENERAL")
+    provider = make_cron_provider()
+    monkeypatch.setattr("cron.scheduler_provider.resolve_cron_scheduler", lambda: provider)
+    env = {**_TOP_LEVEL_SLACK, "HERMES_SESSION_MESSAGE_ID": message_id}
+    with jobs.use_cron_store(tmp_path), _session_env(env):
+        result = json.loads(cronjob_tools.registry.dispatch("cronjob_manage", {
+            "action": "create", "schedule": schedule, "prompt": "remind me"}))
+        assert result["success"], result
+        stored = jobs.get_job(result["job_id"])
+
+    target = _resolve_single_delivery_target(stored, deliver)
+    assert target["chat_id"] == "C0AGENERAL"
+    assert target["thread_id"] == expected_thread
 
 
 class TestNearHorizonSlackThreadKept:

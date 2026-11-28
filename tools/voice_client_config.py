@@ -91,6 +91,25 @@ _STT_KEYED: dict[str, tuple[str, str, str]] = {
     "mistral": ("MISTRAL_API_KEY", "DEFAULT_MISTRAL_STT_MODEL", "https://api.mistral.ai/v1"),
 }
 
+# The ``response_format`` values an OpenAI-compatible transcription endpoint accepts.
+STT_RESPONSE_FORMATS = frozenset({"text", "json", "verbose_json"})
+
+
+def _stt_response_format(section: dict[str, Any], model: Any) -> str:
+    """``stt.<provider>.response_format`` when it names a real format, else the model-derived one.
+
+    An unknown value is dropped with a debug line, never raised: a typo'd config must not turn
+    every client-direct transcription into the 400 the relay path would not make.
+    """
+    from tools.transcription_common import stt_response_format
+
+    override = str(section.get("response_format") or "").strip()
+    if override:
+        if override in STT_RESPONSE_FORMATS:
+            return override
+        logger.debug("Ignoring unsupported stt response_format %r; deriving it from the model", override)
+    return stt_response_format(model)
+
 
 def _resolve_stt_client_config() -> dict[str, Any]:
     from tools import transcription_common as tc
@@ -116,8 +135,15 @@ def _resolve_stt_client_config() -> dict[str, Any]:
     timeout_s = tc._config_number(_section(stt_config, "openai"), "timeout", 60.0)
 
     def direct(wire: str, base_url: Any, api_key: str, model: Any) -> dict[str, Any]:
-        return _direct(wire, provider, base_url, api_key, model, language=language, timeout_s=timeout_s,
-                       hallucination_filter=stt_hallucination_filter())
+        """The resolved payload for one wire. The openai-multipart wire also ships
+        ``response_format``: the client honours it, and falls back to ``text`` when an
+        older backend omits the key (OpenRouter-style gateways answer that request with
+        HTTP 400, so the derived value is never ``text`` for a non-whisper-1 model)."""
+        extra: dict[str, Any] = {"language": language, "timeout_s": timeout_s,
+                                 "hallucination_filter": stt_hallucination_filter()}
+        if wire == STT_WIRE_OPENAI:
+            extra["response_format"] = _stt_response_format(section, model)
+        return _direct(wire, provider, base_url, api_key, model, **extra)
 
     def env_base_url(env_var: str, default: str) -> str:
         from hermes_cli.config import get_env_value

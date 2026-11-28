@@ -288,3 +288,98 @@ class TestAtomicRoundtripYamlSave:
         atomic_roundtrip_yaml_save(config_path, {"model": {"default": "updated-model"}})
 
         assert chown_calls == [(config_path, 345, 678)]
+
+
+class TestSequenceEntriesKeepTheirOwnFormatting:
+    """An entry that survives a list edit keeps its own quoting and comment (#147594)."""
+
+    ORIGINAL = (
+        "skills:\n"
+        "  external_dirs:\n"
+        '    - "skills/design"  # design\n'
+        '    - "skills/pilot"  # pilot\n'
+        "    - 'skills/third'  # third\n"
+    )
+    DESIGN, PILOT, THIRD = "skills/design", "skills/pilot", "skills/third"
+
+    @pytest.fixture
+    def config_path(self, tmp_path):
+        path = tmp_path / "config.yaml"
+        path.write_text(self.ORIGINAL, encoding="utf-8")
+        return path
+
+    def _save_dirs(self, config_path, dirs):
+        from utils import atomic_roundtrip_yaml_save
+
+        atomic_roundtrip_yaml_save(config_path, {"skills": {"external_dirs": dirs}})
+        written = config_path.read_text(encoding="utf-8-sig")
+        assert yaml.safe_load(written)["skills"]["external_dirs"] == dirs
+        return [" ".join(line.split()) for line in written.splitlines()[2:]]
+
+    def test_removing_an_entry_leaves_the_others_untouched(self, config_path):
+        assert self._save_dirs(config_path, [self.PILOT, self.THIRD]) == [
+            '- "skills/pilot" # pilot',
+            "- 'skills/third' # third",
+        ]
+
+    def test_removing_a_middle_entry_leaves_the_others_untouched(self, config_path):
+        assert self._save_dirs(config_path, [self.DESIGN, self.THIRD]) == [
+            '- "skills/design" # design',
+            "- 'skills/third' # third",
+        ]
+
+    def test_reinserting_an_entry_leaves_the_survivors_untouched(self, config_path):
+        self._save_dirs(config_path, [self.PILOT, self.THIRD])
+
+        assert self._save_dirs(config_path, [self.DESIGN, self.PILOT, self.THIRD]) == [
+            "- skills/design",
+            '- "skills/pilot" # pilot',
+            "- 'skills/third' # third",
+        ]
+
+    def test_editing_an_entry_in_place_keeps_its_siblings(self, config_path):
+        lines = self._save_dirs(config_path, [self.DESIGN, "skills/renamed", self.THIRD])
+
+        assert lines[0] == '- "skills/design" # design'
+        assert lines[2] == "- 'skills/third' # third"
+
+    def test_editing_a_mapping_entry_keeps_the_comments_inside_it(self, config_path):
+        from utils import atomic_roundtrip_yaml_save
+
+        config_path.write_text(
+            "servers:\n"
+            "  - name: first  # keep me\n"
+            "    port: 1\n"
+            "  - name: second\n"
+            "    port: 2\n",
+            encoding="utf-8",
+        )
+        servers = [{"name": "first", "port": 10}, {"name": "second", "port": 2}]
+
+        atomic_roundtrip_yaml_save(config_path, {"servers": servers})
+
+        written = config_path.read_text(encoding="utf-8-sig")
+        assert "# keep me" in written
+        assert yaml.safe_load(written)["servers"] == servers
+
+    @pytest.mark.parametrize(
+        ("before", "after"),
+        [
+            (["a", "b", "c"], ["c", "b", "a"]),
+            (["a", "b", "b", "c"], ["b", "x", "b"]),
+            (["a", "b"], []),
+            ([1, True, "1"], [True, 1, "1"]),
+            ([0, 1, 1.0], [1.0]),
+            ([0, 1, 1.0], [1]),
+            (["a"], ["x", "a", "y", "z"]),
+        ],
+    )
+    def test_any_reshuffle_writes_exactly_the_requested_list(self, config_path, before, after):
+        from utils import atomic_roundtrip_yaml_save
+
+        atomic_roundtrip_yaml_save(config_path, {"items": before})
+        atomic_roundtrip_yaml_save(config_path, {"items": after})
+
+        loaded = yaml.safe_load(config_path.read_text(encoding="utf-8-sig"))["items"]
+        assert loaded == after
+        assert [type(value) for value in loaded] == [type(value) for value in after]

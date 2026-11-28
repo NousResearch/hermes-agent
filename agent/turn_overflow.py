@@ -262,7 +262,7 @@ def _recover_payload_too_large(st: _Recovery, _retry: TurnRetryState) -> Overflo
         _retry.restart_with_compressed_messages = True
         return st.done("break")
 
-    if agent._try_strip_image_parts_from_tool_messages(st.api_messages, remember_model=False):
+    if agent._try_strip_image_parts_from_tool_messages(st.api_messages, remember_model=False, remember_bytes=True, retained_messages=st.messages):
         agent._buffer_diagnostic_status(
             "📐 Compression could not reduce the request further — "
             "removed retained vision payloads and retrying..."

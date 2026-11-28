@@ -58,7 +58,7 @@ _CHAIN_CAP = 1000
 
 # ``_chat_adopted`` (``gateway.session_lifecycle.CHAT_ADOPTED_MARKER``): a delegate row the user resumed a
 # chat onto stays that chat's conversation past a rotation, or the route guard rejects the new tip.
-_CONVERSATION_MODEL_CONFIG_KEYS = ("onboarding_run", "prompt_refresh_epoch", "_chat_adopted")
+_CONVERSATION_MODEL_CONFIG_KEYS = ("onboarding_run", "prompt_refresh_epoch", "_chat_adopted", "_vision_payload_evictions_v1")
 
 
 def _walk_compression_chain(session_id: str, step) -> list[str]:
@@ -297,8 +297,11 @@ def _publish_child_session_row(holder: StoreHolder, conn, parent, *, parent_sess
     from persistence.sqlite.conversation._store.sessions import _own_profile_name, _parse_model_config
     # Pin/archive and the conversation keys are compression-lineage state; canonical branch/reset
     # verbs also publish through here, and their child is its own conversation.
-    continuation = not any(k in (model_config or {}) for k in ("_branched_from", "_reset_from"))
-    carried = {key: value for key, value in _parse_model_config(parent["model_config"]).items()
+    prior_config = _parse_model_config(parent["model_config"])
+    requested_config = model_config or {}
+    continuation = not any(marker in requested_config and requested_config[marker] != prior_config.get(marker)
+                           for marker in ("_branched_from", "_reset_from"))
+    carried = {key: value for key, value in prior_config.items()
                if continuation and key in _CONVERSATION_MODEL_CONFIG_KEYS}
     model_config = {**carried, **(model_config or {})}
     system_prompt_hash = holder._store_system_prompt(conn, system_prompt)

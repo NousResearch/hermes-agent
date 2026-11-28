@@ -45,7 +45,7 @@ ROW_ANNOTATION_KEYS = ("_row_id", "timestamp", "_db_row_snapshot", "_canonical_r
 
 #: The ``model_config`` keys a worker may patch (``patch_session_sidecars`` and a compaction's ``model_config_patch``).
 SIDECAR_KEYS = frozenset({"_usage_anchor", "_proactive_prune_rearm_tokens", "_proactive_prune_cold_credit",
-                          "_anthropic_rejected_thinking"})
+                          "_anthropic_rejected_thinking", "_vision_payload_evictions_v1"})
 
 #: The ``model_config`` keys the worker's constructor upsert accepts.
 WORKER_CONSTRUCTOR_CONFIG_KEYS = frozenset({"max_iterations", "max_tokens", "reasoning_config", "yolo_mode"})

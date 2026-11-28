@@ -64,10 +64,17 @@ class RecallStatus:
 # provider-side classifiers. Anchored and followed only by whitespace/punctuation, so
 # "k8s"/"yolo"/"note" do NOT match while "hi!"/"thanks :)"/"done???" do.
 TRIVIAL_PROMPT_RE = re.compile(
-    r'^(yes|no|ok|okay|sure|thanks|thank you|y|n|yep|nope|yeah|nah|'
+    r'^[\u00a1\u00bf]?(yes|no|ok|okay|sure|thanks|thank you|y|n|yep|nope|yeah|nah|'
     r'hi|hey|hello|yo|sup|'
-    r'continue|go ahead|do it|proceed|got it|cool|nice|great|done|next|lgtm|k)'
-    r'[\s!?.:;,"' + "'" + r'~\u2018\u2019\u201c\u201d\u2014\u2013\u2026()\[\]{}<>*&^%$#@!+=`\u00a0]*$',
+    r'continue|go ahead|do it|proceed|got it|cool|nice|great|done|next|lgtm|k|'
+    # Same one-word acknowledgements in other languages (explicit list: a length heuristic
+    # would also skip real one-word questions).
+    r'ок|да|нет|спасибо|ага|понял|давай|'
+    r'sí|si|vale|gracias|obrigado|obrigada|'
+    r'ja|nein|danke|oui|non|merci|d[\'\u2019]accord|'
+    r'好的|谢谢|是|はい|ありがとう|'
+    r'ครับ|ค่ะ|โอเค|ขอบคุณ)'
+    r'[\s!?.:;,"' + "'" + r'~\u2018\u2019\u201c\u201d\u2014\u2013\u2026\u3002\uff01\uff1f\uff0c\uff5e\u3001()\[\]{}<>*&^%$#@!+=`\u00a0]*$',
     re.IGNORECASE,
 )
 

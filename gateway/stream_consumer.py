@@ -60,6 +60,25 @@ _APPROVAL_BOUNDARY = object()
 _REOPEN_SEED = object()
 _FUTURE_TYPES = (asyncio.Future, concurrent.futures.Future)
 
+
+class InterimDeliveryReceipt:
+    """Thread-safe receipt for an interim message queued for adapter delivery."""
+    def __init__(self) -> None:
+        self.state="queued"; self._callbacks=[]; self._lock=threading.Lock()
+    def add_done_callback(self, callback) -> None:
+        with self._lock:
+            if self.state in {"delivered","failed","ambiguous"}: state=self.state
+            else: self._callbacks.append(callback); return
+        callback(state)
+    def resolve(self, state: str) -> None:
+        if state not in {"delivered","failed","ambiguous"}: raise ValueError(f"invalid interim delivery state: {state}")
+        with self._lock:
+            if self.state != "queued": return
+            self.state=state; callbacks=list(self._callbacks); self._callbacks.clear()
+        for callback in callbacks:
+            try: callback(state)
+            except Exception: logger.debug("interim delivery receipt callback error",exc_info=True)
+
 # Boundary finalize text when nothing has accumulated yet (overridable per boundary).
 _DEFAULT_BOUNDARY_PLACEHOLDER = "⏸ 等待审批中..."
 
@@ -93,6 +112,7 @@ class _Tick:
     got_reopen_seed: bool = False
     approval_boundary: Optional[tuple] = None  # (future, cancelled_flag)
     commentary_text: Optional[str] = None
+    commentary_receipt: Optional[InterimDeliveryReceipt] = None
     # Set by _push_update for _finalize_turn / _end_segment.
     update_visible: bool = False
     draft_final_fresh_send: bool = False
@@ -427,10 +447,10 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         self._queue.put((_APPROVAL_BOUNDARY, boundary_future, cancelled_flag))
         return boundary_future, cancelled_flag
 
-    def on_commentary(self, text: str) -> None:
+    def on_commentary(self, text: str) -> Optional[InterimDeliveryReceipt]:
         """Queue a completed interim assistant commentary message."""
-        if text:
-            self._queue.put((_COMMENTARY, text))
+        if not text: return None
+        receipt=InterimDeliveryReceipt(); self._queue.put((_COMMENTARY,text,receipt)); return receipt
 
     def flush_pending_sync(self, timeout: float = 5.0) -> bool:
         """Block the agent worker thread until everything queued so far is delivered:
@@ -656,7 +676,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                     return
 
                 if tick.commentary_text is not None:
-                    await self._deliver_commentary(tick.commentary_text)
+                    await self._deliver_commentary(tick.commentary_text, tick.commentary_receipt)
                 if tick.got_segment_break:
                     await self._end_segment(tick)
 
@@ -739,6 +759,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                 return tick
             elif kind is _COMMENTARY:
                 tick.commentary_text = item[1]
+                tick.commentary_receipt = item[2] if len(item) > 2 else None
                 return tick
             elif kind is _FLUSH:
                 # Barrier: finalize like a tool boundary, signal at the end of the tick.
@@ -1067,7 +1088,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         stream_draft = self._stream_is_message() and self._use_draft_streaming
         return stream_draft or self._use_native_streaming
 
-    async def _deliver_commentary(self, commentary_text: str) -> None:
+    async def _deliver_commentary(self, commentary_text: str, receipt: Optional[InterimDeliveryReceipt] = None) -> None:
         """Post commentary as its own message.  Cumulative transports keep the stream going —
         resetting _accumulated would break the append-only invariant / lose text."""
         cumulative = self._cumulative_transport()

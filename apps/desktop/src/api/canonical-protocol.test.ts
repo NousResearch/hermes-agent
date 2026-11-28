@@ -1,6 +1,6 @@
 import { expect, test, vi } from 'vitest'
 
-import { CanonicalDesktopProtocol, slashMutation } from './canonical-protocol'
+import { CanonicalDesktopProtocol, slashMutation, StalePromptError } from './canonical-protocol'
 
 test('sibling routes survive every rebuilt control and compression follow-up', async () => {
   const protocol = new CanonicalDesktopProtocol()
@@ -122,6 +122,24 @@ test('canonical receipts preserve admission identity and replay restores fenced 
   expect(protocol.prepare('session.interrupt', { session_id: 's' })).toEqual({ session_id: 's', execution_generation: 3 })
   protocol.event({ type: 'message.start', session_id: 's', payload: { execution_generation: 4 } })
   expect(() => protocol.prepare('approval.respond', { session_id: 's', request_id: 'p', choice: 'once' })).toThrow('stale')
+})
+
+test('a settle or an attach snapshot that no longer lists it retires a cached prompt, whatever generation followed', () => {
+  const protocol = new CanonicalDesktopProtocol()
+  protocol.result('session.resume', { session_id: 's' }, { session_id: 's', stored_session_id: 's', execution_generation: 3, prompts: [
+    { kind: 'approval', prompt_id: 'p', execution_generation: 3, command: 'test' },
+    { kind: 'clarify', prompt_id: 'q', execution_generation: 3, question: 'Which target?' }
+  ] })
+  protocol.event({ type: 'message.start', session_id: 's', payload: { execution_generation: 4 } })
+  // The ended turn's settle arrives behind the next turn's start.
+  protocol.event({ type: 'approval.settled', session_id: 's', payload: { prompt_id: 'p', execution_generation: 3 } })
+  expect(protocol.retireUnlistedPrompts('s', undefined, [{ prompt_id: 'q' }])).toEqual([])
+  expect(protocol.promptOwners()).toEqual([{ session_id: 's', profile: 'default' }])
+  // Another profile's snapshot of an equal stored ID says nothing about this one.
+  expect(protocol.retireUnlistedPrompts('s', 'beta', [])).toEqual([])
+  expect(protocol.retireUnlistedPrompts('s', undefined, [])).toMatchObject([{ kind: 'clarify', prompt_id: 'q' }])
+  expect(protocol.promptOwners()).toEqual([])
+  expect(() => protocol.prepare('clarify.respond', { session_id: 's', request_id: 'q', answer: 'a' })).toThrow(StalePromptError)
 })
 
 test('pending resume and live updates share the existing queue projection', () => {

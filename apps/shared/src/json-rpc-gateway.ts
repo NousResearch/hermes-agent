@@ -855,7 +855,8 @@ export class JsonRpcGatewayClient {
     this.setState('closed')
   }
 
-  private dispatchEvent(event: GatewayEvent): void {
+  /** Also a subclass's way to publish a client-local frame (a prompt settle it learned from a snapshot). */
+  protected dispatchEvent(event: GatewayEvent): void {
     // Tag the frame with the process epoch this socket adopted so a consumer
     // holding several sockets to one backend can recognise the same event
     // arriving on each of them; the epoch is per process, not per socket.

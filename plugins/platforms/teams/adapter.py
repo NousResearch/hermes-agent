@@ -369,6 +369,13 @@ class TeamsAdapter(BasePlatformAdapter):
         self._host: Optional[str] = str(_raw_host) if _raw_host else None
         self._app: Optional[App] = None
         self._runner: Optional[web.AppRunner] = None
+        # Socket mode (Teams public preview, SDK >= 2.2.1): activities arrive over outbound WebSockets,
+        # so no public HTTPS endpoint is needed. Off by default; the bot registration must allow it.
+        self._socket_mode: bool = str(_extra_or_secret(config.extra, "socket_mode", "TEAMS_SOCKET_MODE", False)
+                                      ).strip().lower() in {"true", "1", "yes", "on"}
+        _geos = str(_extra_or_secret(config.extra, "socket_geos", "TEAMS_SOCKET_GEOS", "") or "")
+        self._socket_geos: tuple = tuple(g.strip() for g in _geos.split(",") if g.strip())
+        self._socket_task: Optional[asyncio.Task] = None
         self._dedup = MessageDeduplicator(max_size=1000)
         # chat_id → ConversationReference so proactive cards use the right conversation type.
         self._conv_refs: dict[str, Any] = {}
@@ -403,6 +410,8 @@ class TeamsAdapter(BasePlatformAdapter):
             if failed:
                 self._set_fatal_error(code, message, retryable=False)
                 return False
+        if self._socket_mode:
+            return await self._connect_socket_mode()
         try:
             # aiohttp app first — the bridge adapter wires SDK routes into it.
             # Set up aiohttp app first — the bridge adapter wires SDK routes into it. client_max_size: Bot
@@ -444,8 +453,80 @@ class TeamsAdapter(BasePlatformAdapter):
             logger.error("[teams] Failed to connect: %s", e, exc_info=True)
             return False
 
+    def _wire_handlers(self, app: Any) -> None:
+        @app.on_message
+        async def _handle_message(ctx: ActivityContext[MessageActivity]):
+            await self._on_message(ctx)
+
+        @app.on_card_action
+        async def _handle_card_action(
+            ctx: ActivityContext[AdaptiveCardInvokeActivity],
+        ) -> InvokeResponse[AdaptiveCardActionMessageResponse]:
+            return await self._on_card_action(ctx)
+
+        self._wire_plugin_handlers(app)
+
+    async def _connect_socket_mode(self) -> bool:
+        """Socket mode: no listener; the SDK dials out to the Agent Communication Service per geo and
+        supervises the sockets itself. Replies and proactive sends stay on HTTPS, as in webhook mode."""
+        try:
+            from microsoft_teams.apps.socket_mode import SocketModeOptions, SocketModeStatus
+        except ImportError:
+            self._set_fatal_error(
+                "MISSING_SDK", "TEAMS_SOCKET_MODE needs microsoft-teams-apps>=2.2.1 (socket mode); "
+                "the installed SDK has none", retryable=False)
+            return False
+        try:
+            opts = SocketModeOptions(geos=self._socket_geos) if self._socket_geos else SocketModeOptions()
+            self._app = App(
+                client_id=self._client_id, client_secret=self._client_secret, tenant_id=self._tenant_id,
+                socket_mode=opts, client=ClientOptions(headers={"User-Agent": "Hermes"}))
+            self._wire_handlers(self._app)
+            await self._app.initialize()
+            adapter = self._app.socket_mode
+            self._socket_task = asyncio.create_task(adapter.start(), name="teams-socket-mode")
+            # start() only returns on stop or failure; wait until every geo is READY (SocketReady seen).
+            for _ in range(60):
+                await asyncio.sleep(0.5)
+                if self._socket_task.done():
+                    exc = self._socket_task.exception()
+                    raise exc or RuntimeError("socket mode stopped during startup")
+                if all(st == SocketModeStatus.READY for _, st in adapter.geo_statuses):
+                    break
+            else:
+                raise TimeoutError(f"socket mode not ready after 30 s: {adapter.geo_statuses}")
+            self._socket_task.add_done_callback(self._on_socket_task_done)
+            self._running = True
+            self._mark_connected()
+            logger.info("[teams] Socket mode connected (geos: %s)", ", ".join(adapter.geo_list))
+            return True
+        except Exception as e:
+            if self._socket_task and not self._socket_task.done():
+                self._socket_task.cancel()
+            self._socket_task = None
+            hint = " (403: is socket mode enabled in the bot registration?)" if "403" in str(e) else ""
+            self._set_fatal_error("CONNECT_FAILED", f"Teams socket mode failed: {e}{hint}", retryable=True)
+            logger.error("[teams] Socket mode failed to connect: %s%s", e, hint)
+            return False
+
+    def _on_socket_task_done(self, task: asyncio.Task) -> None:
+        if not self._running or task.cancelled():
+            return
+        exc = task.exception()
+        self._set_fatal_error("SOCKET_CLOSED", f"Teams socket mode stopped: {exc or 'closed'}", retryable=True)
+        logger.error("[teams] Socket mode stopped unexpectedly: %s", exc)
+        asyncio.ensure_future(self._notify_fatal_error())
+
     async def disconnect(self) -> None:
         self._running = False
+        if self._socket_task is not None:
+            task, self._socket_task = self._socket_task, None
+            with suppress(Exception):
+                if self._app is not None and self._app.socket_mode is not None:
+                    await self._app.socket_mode.stop()
+            task.cancel()
+            with suppress(BaseException):
+                await task
         if self._runner:
             await self._runner.cleanup()
         self._runner = self._app = None

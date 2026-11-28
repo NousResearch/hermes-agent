@@ -10,7 +10,7 @@ Python dependency commands on this page use a
 [PM-prepared source checkout](../../reference/package-management.md#developer-workflow).
 After a dependency change, reactivate the checkout and restart Hermes.
 
-Connect Hermes Agent to Microsoft Teams as a bot. Unlike Slack's Socket Mode, Teams delivers messages by calling a **public HTTPS webhook**, so your instance needs a publicly reachable endpoint — either a dev tunnel (local dev) or a real domain (production).
+Connect Hermes Agent to Microsoft Teams as a bot. By default Teams delivers messages by calling a **public HTTPS webhook**, so your instance needs a publicly reachable endpoint — either a dev tunnel (local dev) or a real domain (production). A host without a public endpoint can use [socket mode](#socket-mode-no-public-endpoint) instead (preview).
 
 Need meeting summaries from Microsoft Graph events rather than normal bot conversations? Use the dedicated setup page: [Teams Meetings](./teams-meetings.md).
 
@@ -174,6 +174,8 @@ Open the printed link in your browser — it opens directly in the Teams client.
 | `TEAMS_HOME_CHANNEL` | Conversation ID for cron/proactive message delivery |
 | `TEAMS_HOME_CHANNEL_NAME` | Display name for the home channel |
 | `TEAMS_PORT` | Webhook port (default: `3978`) |
+| `TEAMS_SOCKET_MODE` | `true` = receive over outbound WebSockets instead of the webhook ([socket mode](#socket-mode-no-public-endpoint), preview; default `false`) |
+| `TEAMS_SOCKET_GEOS` | Comma-separated socket-mode regions (default: `amer,emea,apac`) |
 | `TEAMS_REQUIRE_MENTION` | Set `true` to answer only @mentions / replies to the bot in channels and group chats (default: `false`; for apps with RSC message-read consent) |
 
 ### config.yaml
@@ -239,6 +241,16 @@ platforms:
 If the `teams_pipeline` plugin is **not** enabled, these settings are inert — they only wire up when the pipeline runtime binds to the Graph webhook ingress.
 
 ---
+
+## Socket Mode (no public endpoint)
+
+Teams' socket mode (public preview, new bots only) delivers activities over **outbound** WebSockets that Hermes opens to Microsoft's Agent Communication Service, so the host needs no public URL, tunnel or inbound port. Replies and proactive messages still go out over HTTPS as before. It needs `microsoft-teams-apps` 2.2.1 or newer (the `teams` extra pins it).
+
+1. Switch the bot to socket mode with the Teams CLI (3.1.0 or newer): `teams app update <appId> --messaging-mode socket`. A 403 "only available for new bots" means the registration predates socket mode; use the HTTPS endpoint.
+2. Set `TEAMS_SOCKET_MODE=true` (or `socket_mode: true` under `platforms.teams.extra`) and restart the gateway. The log shows `Socket mode connected (geos: amer, emea, apac)`; no webhook listener starts, so `TEAMS_PORT`/`TEAMS_HOST` are ignored.
+3. Optional: `TEAMS_SOCKET_GEOS=emea` limits the regions. The SDK must hold a socket in every region your conversations live in, or their activities are not delivered, so keep the default unless you know your tenant's region.
+
+Limits from Microsoft: preview status, no fallback while no socket is connected (Hermes reports the platform as failed and the gateway reconnects it), at most 4 sockets per bot per region, and replies must arrive within 25 s (Hermes acknowledges at once and answers asynchronously). Outbound egress must allow WebSocket upgrades to `*.service.signalr.net` and `*.botapi.skype.com`. See [Microsoft's connectivity guide](https://learn.microsoft.com/en-us/microsoftteams/platform/agents-in-teams/agent-connectivity).
 
 ## Production Deployment
 

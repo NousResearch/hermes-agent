@@ -1424,3 +1424,59 @@ def test_poll_reply_is_persisted_as_a_delivery_row_when_the_runner_exits(tmp_pat
     assert message.display_kind == "process_complete"
     assert "PAYLOAD_SENTINEL_42" in message.content
     assert procs[0].id in message.content
+
+
+def test_live_dm_wait_reports_a_blocked_teammate_when_an_admitted_wait_is_cancelled(tmp_path, monkeypatch, capsys):
+    """#160403: a receipt cancelled from outside the wait (sender withdraw or a Stop on the target)
+    reports the target's current live state, so a parked teammate reads as blocked, not as a hang."""
+    from tools import bot_live_delivery as live
+
+    authority = _canonical_target(monkeypatch, tmp_path)
+    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0.01)
+    monkeypatch.setattr(live, "_POLL_SECONDS", 0.01)
+    dm_file = tmp_path / "message.txt"
+    dm_file.write_text("ping", encoding="utf-8")
+    author = {"id": "bot:default", "name": "hermes", "is_bot": True}
+    plain = authority.__call__
+
+    def door(home, params):
+        # The gateway checks message, principal and author on a replay (gateway/session_bot.py:794).
+        assert params.get("author", {}).get("id") == author["id"]
+        return {**plain(home, params), "target_state": "waiting_approval"}
+
+    monkeypatch.setattr(live, "authority_delivery", door)
+    # The same pin a real DM writes, author included, so the replay can pass the identity check.
+    record = bot_mode_dm._admit_live_dm(tmp_path, str(dm_file), author=author)
+    authority.settle(record["delivery_id"], status="cancelled", reply="")
+
+    exit_code = bot_mode_dm._wait_live_dm(str(tmp_path), record["delivery_id"], dm_file=dm_file)
+
+    notice = json.loads(capsys.readouterr().out)
+    assert exit_code == 1
+    assert notice["status"] == "cancelled"
+    assert notice["target_state"] == "waiting_approval"
+    assert "Right now it is waiting for its own user to approve a command" in notice["outcome"]
+
+
+def test_live_dm_wait_does_not_ask_for_a_state_when_it_cancels_an_ownerless_receipt(tmp_path, monkeypatch, capsys):
+    """#160403: a receipt the wait itself cancels has no live owner, so skip the replay entirely."""
+    from tools import bot_live_delivery as live
+
+    state_reads = []
+    monkeypatch.setattr(bot_mode_dm, "_live_target_state",
+                        lambda dm_file: state_reads.append(dm_file) or "waiting_approval")
+    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0.01)
+    monkeypatch.setattr(live, "_POLL_SECONDS", 0.01)
+    delivery_id = "e" * 32
+    with live._locked(tmp_path) as root:
+        live._write(root / f"{delivery_id}.json", {"status": "queued", "delivery_id": delivery_id, "reply": ""})
+    monkeypatch.setattr(live, "find_canonical_live_owner", lambda home: None)
+
+    exit_code = bot_mode_dm._wait_live_dm(str(tmp_path), delivery_id)
+
+    notice = json.loads(capsys.readouterr().out)
+    assert state_reads == []
+    assert exit_code == 1
+    assert notice["status"] == "cancelled"
+    assert "target_state" not in notice
+    assert notice["outcome"] == "Your teammate never answered: the request was cancelled."

@@ -631,7 +631,7 @@ def _wait_live_dm(home: str, delivery_id: str, *, dm_file: str | os.PathLike | N
     from tools.bot_live_delivery import await_delivery, cancel_queued_delivery, owner_holds_delivery
 
     deadline = time.monotonic() + _LIVE_WAIT_MAX_SECONDS
-    missed, unreachable = 0, False
+    missed, unreachable, cancelled_ownerless = 0, False, False
     while True:
         record = await_delivery(home, delivery_id, max(0.0, min(_LIVE_WAIT_SECONDS, deadline - time.monotonic())))
         if record is None or record["status"] not in ("queued", "claimed") or time.monotonic() >= deadline:
@@ -652,6 +652,7 @@ def _wait_live_dm(home: str, delivery_id: str, *, dm_file: str | os.PathLike | N
                 home, delivery_id, error="Live Bot Chat owner is no longer available",
                 reason=RUNTIME_OFFLINE)
             if record is None or record["status"] != "claimed":
+                cancelled_ownerless = True
                 break
             missed = 0
             continue
@@ -665,9 +666,12 @@ def _wait_live_dm(home: str, delivery_id: str, *, dm_file: str | os.PathLike | N
     payload.update(status=status, delivery_id=delivery_id)
     if status in ("queued", "claimed", "ambiguous"):
         payload["detail"] = "Delivery remains pending or its outcome is unknown. Do not resend; receipt is retained."
+    if status in ("queued", "claimed", "ambiguous") or (status == "cancelled" and not cancelled_ownerless):
         state = _live_target_state(dm_file) or ("unreachable" if unreachable else None)
         if state:
             # A bound that lapses on a teammate parked on its own user is that, never a silent timeout.
+            # A receipt cancelled from outside reports the target's current live state, so a blocked
+            # teammate reads as blocked, not as a hang. An ownerless cancel has nobody to ask.
             payload["target_state"] = state
     elif status == "settled" and dm_file is not None:
         # The intent carries the message plaintext so a retry can replay the SAME delivery id;
@@ -683,9 +687,9 @@ def _wait_live_dm(home: str, delivery_id: str, *, dm_file: str | os.PathLike | N
 
 
 def _live_target_state(dm_file: str | os.PathLike | None) -> Optional[str]:
-    """The target Bot Chat's live state for a wait ending pending, from a same-id replay of the
-    pinned intent (the owner answers it with the existing receipt). None when nothing answers:
-    the state is a hint, and its absence must never change the delivery outcome."""
+    """The target Bot Chat's live state for a wait ending pending or cancelled, from a same-id
+    replay of the pinned intent (the owner answers it with the existing receipt). None when
+    nothing answers: the state is a hint, and its absence must never change the delivery outcome."""
     if dm_file is None or not os.path.exists(_live_intent_file(dm_file)):
         return None
     try:

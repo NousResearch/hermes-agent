@@ -8,6 +8,7 @@ import ipaddress
 import json
 import logging
 import os
+import re
 import socket
 import ssl
 import sys
@@ -229,6 +230,66 @@ def _classic_key_exchange_context() -> ssl.SSLContext:
         getattr(ctx, "_ctx", ctx).set_ecdh_curve("X25519")
         _CLASSIC_CONTEXTS[id(base)] = ctx
     return ctx
+
+
+# Loopback HTTP/mixed ports used by mihomo/Clash, Clash Verge and v2ray. A TCP accept alone is
+# not proof of a proxy: a local service on the same port must answer CONNECT with 2xx first.
+_LOCAL_PROXY_PORTS = (7890, 7897, 10809)
+_LOCAL_PROXY_TIMEOUT_S = 0.25
+
+
+_LOCAL_PROXY_STATUS_LINE_CAP = 256
+
+
+def _connect_status_is_2xx(sock: socket.socket) -> bool:
+    """Read one CONNECT status line (through CRLF, capped and time-bounded) and validate it."""
+    line = bytearray()
+    deadline = time.monotonic() + _LOCAL_PROXY_TIMEOUT_S
+    while b"\r\n" not in line:
+        if len(line) > _LOCAL_PROXY_STATUS_LINE_CAP:
+            return False
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        sock.settimeout(remaining)
+        chunk = sock.recv(64)
+        if not chunk:
+            return False
+        line.extend(chunk)
+    status = bytes(line).split(b"\r\n", 1)[0].split()
+    if len(status) < 2:
+        return False
+    version, code = status[:2]
+    return (re.fullmatch(rb"HTTP/\d\.\d", version) is not None
+            and re.fullmatch(rb"\d{3}", code) is not None
+            and 200 <= int(code) <= 299)
+
+
+def _local_proxy_answers_connect(port: int) -> bool:
+    """True when a loopback port answers a Bot API CONNECT like an HTTP proxy."""
+    request = (f"CONNECT {_TELEGRAM_API_HOST}:443 HTTP/1.1\r\n"
+               f"Host: {_TELEGRAM_API_HOST}:443\r\n\r\n").encode("ascii")
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=_LOCAL_PROXY_TIMEOUT_S) as sock:
+            sock.settimeout(_LOCAL_PROXY_TIMEOUT_S)
+            sock.sendall(request)
+            return _connect_status_is_2xx(sock)
+    except OSError:
+        return False
+
+
+def detect_local_proxy_url(*, ports: Iterable[int] = _LOCAL_PROXY_PORTS,
+                           probe=_local_proxy_answers_connect) -> str | None:
+    """First loopback HTTP proxy that accepts a Bot API CONNECT, or None.
+
+    The Telegram adapter calls this only for the default public Bot API, and only after
+    configured, environment and NO_PROXY resolution found no route. Ports are tried in
+    order; the first valid 2xx answer wins.
+    """
+    for port in ports:
+        if probe(port):
+            return f"http://127.0.0.1:{port}"
+    return None
 
 
 def _resolve_proxy_url(target_hosts=None) -> str | None:
@@ -571,3 +632,20 @@ def bot_api_urls(extra: Optional[dict]) -> dict:
         return {}
     return {"base_url": norm(base_url, "/bot"),
             "base_file_url": norm((extra or {}).get("base_file_url") or base_url, "/file/bot")}
+
+
+def uses_default_bot_api(extra: Optional[dict]) -> bool:
+    """True when every effective Bot API URL targets the public ``api.telegram.org``.
+
+    Local proxy discovery probes a CONNECT to that host. Applying its result to a custom Bot API
+    server would send that server's traffic through an unrelated proxy, so discovery is only
+    allowed while the configured endpoints are the default public ones.
+    """
+    from urllib.parse import urlsplit
+
+    def is_public(url: str) -> bool:
+        text = str(url).strip()
+        parts = urlsplit(text if "//" in text else f"//{text}")
+        return parts.hostname == _TELEGRAM_API_HOST
+
+    return all(is_public(url) for url in bot_api_urls(extra).values())

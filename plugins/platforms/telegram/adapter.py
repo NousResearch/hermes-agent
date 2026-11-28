@@ -145,7 +145,7 @@ from agent.i18n import get_language, t
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter, ExecApprovalPrompt, SendResult, unauthorized_action_notice,
-    cache_image_from_bytes_async, cache_audio_from_bytes_async, cache_video_from_bytes_async, resolve_proxy_url, safe_proxy_url_for_log, describe_proxy_error, SUPPORTED_VIDEO_TYPES,
+    cache_image_from_bytes_async, cache_audio_from_bytes_async, cache_video_from_bytes_async, resolve_proxy_url, safe_proxy_url_for_log, describe_proxy_error, should_bypass_proxy, SUPPORTED_VIDEO_TYPES,
     SUPPORTED_DOCUMENT_TYPES, SUPPORTED_IMAGE_DOCUMENT_TYPES, _TEXT_INJECT_EXTENSIONS, utf16_len, env_proxy_for_redaction,
 )
 
@@ -206,8 +206,8 @@ from plugins.platforms.telegram.telegram_topic_transfer import TopicTransferFn, 
 from gateway.approval_actor import picker_refusal, update_prompt_refusal
 from plugins.platforms.telegram.callback_answer import TOAST_LIMIT as _TOAST_LIMIT, answer_callback, answer_or_note, refuse_tap
 from plugins.platforms.telegram.telegram_network import (
-    SEED_FALLBACK_IPS, TelegramFallbackTransport, bot_api_urls, build_ptb_requests, discover_fallback_ips,
-    parse_fallback_ip_env, proxy_target_hosts, telegram_verify)
+    SEED_FALLBACK_IPS, TelegramFallbackTransport, bot_api_urls, build_ptb_requests, detect_local_proxy_url,
+    discover_fallback_ips, parse_fallback_ip_env, proxy_target_hosts, telegram_verify, uses_default_bot_api)
 from plugins.platforms.telegram.telegram_outbound import is_visually_empty, resolve_notifications_mode
 from plugins.platforms.telegram.telegram_send_path_recovery import TelegramSendPathRecoveryMixin, mark_send_path_recovered
 from plugins.platforms.telegram.telegram_flood_cooldown import TelegramFloodCooldownMixin, land_persisted_state
@@ -2764,9 +2764,26 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
                 fallback_ips = list(SEED_FALLBACK_IPS)
             else:
                 logger.info("[%s] Auto-discovered Telegram fallback IPs: %s", self.name, ", ".join(fallback_ips))
+        targets = proxy_target_hosts(self.config.extra.get("base_url"), fallback_ips)
         proxy_url = self._ptb_proxy_url = resolve_proxy_url(
-            "TELEGRAM_PROXY", target_hosts=proxy_target_hosts(self.config.extra.get("base_url"), fallback_ips),
+            "TELEGRAM_PROXY", target_hosts=targets,
             configured=self.config.extra.get("proxy_url"))
+        if not proxy_url and uses_default_bot_api(self.config.extra) and not should_bypass_proxy(targets):
+            # Socket probing is blocking: keep it off the event loop and bound the whole walk.
+            discovery_timeout = self._env_float_clamped(
+                "HERMES_TELEGRAM_LOCAL_PROXY_DISCOVERY_TIMEOUT", 1.0, min_value=0.0)
+            try:
+                discovered = await _await_with_thread_deadline(
+                    asyncio.to_thread(detect_local_proxy_url), timeout=discovery_timeout,
+                    label="local proxy discovery", dump_on_blocked_loop=False)
+            except Exception as exc:
+                logger.debug("[%s] Local proxy discovery failed: %s", self.name,
+                             _redact_telegram_error_text(exc), exc_info=True)
+            else:
+                if discovered:
+                    proxy_url = self._ptb_proxy_url = discovered
+                    logger.info("[%s] Local proxy detected; passing explicitly to HTTPXRequest: %s",
+                                self.name, safe_proxy_url_for_log(discovered))
 
         if fallback_ips and not proxy_url:
             logger.info("[%s] Telegram fallback IPs active: %s", self.name, ", ".join(fallback_ips))

@@ -34,6 +34,17 @@ def _bad_alias(key: str, value: Optional[str]) -> Optional[str]:
     return f"'{key}' {value!r} is not a valid account name: use {_ALIAS_FORMAT}."
 
 
+def _mcp_target_fields_error(present: list[str]) -> str:
+    keys = " and ".join(f"'{k}'" for k in present)
+    return (
+        f"an MCP target (\"mcp\": true) must not carry {keys}, not even as an empty string or null: "
+        "'alias' and 'to' name hosted connector accounts. OMIT both keys and send exactly "
+        "{\"name\": \"<catalog-name>\", \"mcp\": true}. 'install' accepts catalog server names only, "
+        "never a URL; a custom server URL is not installed through manage_connections, the user adds "
+        "it with `hermes mcp add <name> --url <endpoint>`."
+    )
+
+
 def normalize_targets(raw: Any) -> tuple[list[HostedTarget], list[str], Optional[str]]:
     if raw is None:
         return [], [], None
@@ -56,7 +67,7 @@ def normalize_targets(raw: Any) -> tuple[list[HostedTarget], list[str], Optional
             name = str(item.get("name") or "").strip().lower()
             is_mcp = bool(item.get("mcp", False))
             if is_mcp and ("alias" in item or "to" in item):
-                return [], [], "'alias' and 'to' name hosted connector accounts; an MCP target takes neither."
+                return [], [], _mcp_target_fields_error(sorted({"alias", "to"} & set(item)))
             alias = str(item["alias"]).strip() if item.get("alias") is not None else None
             to = str(item["to"]).strip() if item.get("to") is not None else None
         else:

@@ -96,6 +96,30 @@ def is_local_interactive_session() -> bool:
     return policy is not None and policy.source in _LOCAL_INTERACTIVE_SOURCES
 
 
+# The legacy tui_gateway turn path (a non-canonical Desktop or dashboard client's own ``prompt.submit``) never runs
+# through ``gateway.session_ingress.execute_admission``, so neither ``viewer_turn`` nor a frozen launch policy is
+# bound there. tui_gateway's turn runner sets this marker for every turn it runs: a probe reporting whether a client
+# that can answer approvals is attached now for a turn that client typed, otherwise None.
+_tui_viewer_turn: contextvars.ContextVar = _ctx("tui_viewer_turn", None)
+
+
+def bind_tui_viewer_turn(approver_attached) -> contextvars.Token:
+    """Set the marker for the current turn: a zero-argument probe, or None for a turn the client did not type."""
+    return _tui_viewer_turn.set(approver_attached)
+
+
+def reset_tui_viewer_turn(token: contextvars.Token) -> None:
+    _tui_viewer_turn.reset(token)
+
+
+def is_tui_viewer_turn_with_approver() -> bool:
+    """True inside a legacy tui_gateway turn its own client typed, while a client that can answer approvals is
+    attached. Queued drains, /goal continuations, injected or notification turns, wake-ups, heartbeats, hosted-room
+    tasks, hidden sends and compute-host turns carry None."""
+    approver_attached = _tui_viewer_turn.get()
+    return approver_attached is not None and bool(approver_attached())
+
+
 def is_viewer_turn_with_approver() -> bool:
     """True while the executing turn is one its session's viewer submitted through ``session.submit`` (as the
     gateway's FIFO drain recorded for this admission) and a viewer that can answer approvals is attached now:

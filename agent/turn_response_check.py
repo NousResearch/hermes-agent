@@ -154,6 +154,10 @@ def check_api_response(
     # previous response's.
     from agent.turn_usage import note_response_reasoning_tokens
     note_response_reasoning_tokens(agent, response)
+    # The call that carried the one-shot overrides has its answer. They are cleared here, not while the request is
+    # built: a retry of a failed attempt (429, 5xx, stream drop, pool rotation) is the same call and needs them (#99897).
+    agent._ephemeral_reasoning_off = False
+    agent._ephemeral_max_output_tokens = None
     finish_reason = _derive_finish_reason(agent, response, messages)
     from hermes_cli.observability.shared_metrics_harness import record_reply_finish
     record_reply_finish(agent, response, finish_reason)

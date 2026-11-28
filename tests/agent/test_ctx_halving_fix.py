@@ -177,14 +177,14 @@ class TestEphemeralMaxOutputTokens:
         kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
         assert kwargs["max_tokens"] == 5_000
 
-    def test_ephemeral_override_is_consumed_after_one_call(self):
-        """After one call the ephemeral override is cleared to None."""
+    def test_ephemeral_override_persists_through_build_api_kwargs(self):
+        """The override survives the build, so a retry of the same call sends it again; it is cleared once a
+        response to that call is accepted (check_api_response)."""
         agent = self._make_agent()
         agent._ephemeral_max_output_tokens = 5_000
 
         agent._build_api_kwargs([{"role": "user", "content": "hi"}])
-        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
-        assert kwargs["max_tokens"] != 5_000
+        assert agent._ephemeral_max_output_tokens == 5_000
 
 # ---------------------------------------------------------------------------
 # Integration: error handler does NOT halve context_length for output-cap errors

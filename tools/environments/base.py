@@ -284,6 +284,7 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
     # SDK -- Modal/managed Modal stream it, Daytona/Vercel stage a file) or
     # "heredoc" (embedded in the command; no built-in backend, plugins only).
     _stdin_mode: str = "pipe"  # "pipe" | "payload" | "heredoc"
+    supports_secret_env: bool = False
 
     # True only when commands execute on the SAME host as the Hermes process
     # (LocalEnvironment); controller-host facts then describe the execution target.
@@ -521,14 +522,14 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
         chain = [self._task_snapshot_path(t) for t in _shell_state_chain.get()]
         return [*chain, self._snapshot_path] if chain else [self._snapshot_path]
 
-    def _wrap_command(self, command: str, cwd: str, *, cwd_fallback: bool = False) -> str:
+    def _wrap_command(self, command: str, cwd: str, transient_env_keys=(), *, cwd_fallback: bool = False) -> str:
         """Full bash script: source snapshot, cd, run, re-dump env, emit CWD markers.
         ``cwd_fallback`` lets the ``cd`` walk up from a missing *cwd* (see ``execute``)."""
         own, *seed_paths = self._shell_state_paths()
         seeds = [self._quote_shell_path(p) for p in seed_paths]
         return _wrap_command_script(
             command,
-            passthrough_names=self._snapshot_excluded_passthrough_names(),
+            passthrough_names=set(self._snapshot_excluded_passthrough_names()) | set(transient_env_keys),
             snapshot_ready=self._snapshot_ready,
             persist_env=self._persist_env,
             pipe_marker=self._pipe_marker,
@@ -743,6 +744,8 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
         *,
         timeout: int | None = None,
         stdin_data: str | None = None,
+        transient_env: dict[str, str] | None = None,
+        secure_output_deadline: float | None = None,
         rewrite_compound_background: bool = True,
         bounded_capture: bool = False,
         yield_handler: Callable[[ProcessHandle, str], dict] | None = None,
@@ -786,7 +789,10 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
             exec_command = self._embed_stdin_heredoc(exec_command, effective_stdin)
             effective_stdin = None
 
-        wrapped = self._wrap_command(exec_command, effective_cwd, cwd_fallback=allow_cwd_fallback)
+        if transient_env and not self.supports_secret_env:
+            raise ValueError("Backend has no out-of-band env channel")
+        wrapped = (self._wrap_command(exec_command, effective_cwd, transient_env, cwd_fallback=allow_cwd_fallback)
+                   if transient_env else self._wrap_command(exec_command, effective_cwd, cwd_fallback=allow_cwd_fallback))
 
         # Login shell if the snapshot failed (so the user's profile still
         # loads), unless login itself is broken — then non-login is the only path.
@@ -806,12 +812,17 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
                 return {"output": "[host is exiting: command not started]", "returncode": 130}
             spawned = None
             try:
-                spawned = self._run_bash(wrapped, login=login, timeout=effective_timeout, stdin_data=effective_stdin)
+                secret_kwargs = {"secret_env": transient_env} if transient_env else {}
+                spawned = self._run_bash(wrapped, login=login, timeout=effective_timeout,
+                                         stdin_data=effective_stdin, **secret_kwargs)
             finally:
                 fenced = _leave_foreground_spawn(self, spawned)
             proc_holder.append(spawned)
             if fenced:  # the hard-exit kill may have stopped waiting for us before we registered
                 self._force_kill_process(spawned)
+            if secure_output_deadline is not None and spawned is not None:
+                from agent.secure_input_output import attach_output_deadline
+                attach_output_deadline(spawned, secure_output_deadline)
             # The fallback line leads the stream; pulled out before capture so truncation can't cut it.
             output = _new_output_collector(
                 spawned, bounded_capture, control_marker=self._cwd_fallback_marker if allow_cwd_fallback else "")

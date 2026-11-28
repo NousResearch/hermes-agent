@@ -239,6 +239,8 @@ def finalize_foreground_result(
     returncode = result.get("returncode", 0)
     output, sudo_auth_failed, sudo_cache_cleared = _sudo_annotations(command, output, env_type)
     output = _apply_output_transform_hook(command, output, returncode, effective_task_id, env_type)
+    from agent.secure_input_broker import redact_known_secrets
+    output = redact_known_secrets(output)
     output = _truncate_head_tail(output)
     # Strip ANSI so the model never copies escapes into file writes, then
     # redact secrets; redact_terminal_output is command-aware (env-dump

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Callable
 
+from hermes_cli.memory_cmd import memory_command as memory_review_command
 from hermes_cli.subcommands._shared import add_yes_flag
 
 
@@ -31,4 +32,21 @@ def build_memory_parser(subparsers, *, cmd_memory: Callable) -> None:
     _reset_parser.add_argument(
         "--target", choices=["all", "memory", "user"], default="all",
         help="Which store to reset: 'all' (default), 'memory', or 'user'")
+
+    _list_parser = memory_sub.add_parser(
+        "list", help="List entries in MEMORY.md and USER.md")
+    _list_parser.set_defaults(func=memory_review_command)
+
+    _show_parser = memory_sub.add_parser(
+        "show", help="Show all entries in one memory store")
+    _show_parser.add_argument("target", choices=["memory", "user"])
+    _show_parser.set_defaults(func=memory_review_command)
+
+    _delete_parser = memory_sub.add_parser(
+        "delete", help="Delete an entry matching a substring")
+    _delete_parser.add_argument("target", choices=["memory", "user"])
+    _delete_parser.add_argument("substring")
+    add_yes_flag(_delete_parser)
+    _delete_parser.set_defaults(func=memory_review_command)
+
     memory_parser.set_defaults(func=cmd_memory)

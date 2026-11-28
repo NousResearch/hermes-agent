@@ -14,6 +14,8 @@ import type { Theme } from '../theme.js'
 import { ModelPicker } from './modelPicker.js'
 import { windowOffset } from './overlayControls.js'
 import { clampOverlayWidth, listRowStyle } from './overlayPrimitives.js'
+import { SessionFilterLine, useFilteredSessions, useSessionFilter, useSessionFilterKeys } from './sessionFilter.js'
+import { emptySessionsLabel, filterHistorySessions, filterLiveSessions } from './sessionFilterModel.js'
 import { TextInput } from './textInput.js'
 
 const VISIBLE = 12
@@ -141,6 +143,8 @@ export const orchestratorGlobalHotkeyHintSegments = (): OrchestratorHintSegment[
   return [
     { role: 'hotkey', text: '↑↓' },
     { role: 'text', text: h.move },
+    { role: 'hotkey', text: '/' },
+    { role: 'text', text: h.filter },
     { role: 'hotkey', text: 'Ctrl+N' },
     { role: 'text', text: h.new },
     { role: 'hotkey', text: 'Ctrl+R' },
@@ -310,8 +314,9 @@ export function ActiveSessionSwitcher({
   onSelect,
   t
 }: ActiveSessionSwitcherProps) {
-  const [items, setItems] = useState<SessionActiveItem[]>([])
-  const [history, setHistory] = useState<SessionListRow[]>([])
+  // Every live / resumable session; `items` / `history` below are the rows shown (after the `/` filter).
+  const [liveRows, setItems] = useState<SessionActiveItem[]>([])
+  const [historyRows, setHistory] = useState<SessionListRow[]>([])
   const [err, setErr] = useState('')
   // A close/delete failure: kept apart from `err`, which every quiet poll rewrites.
   const [actionErr, setActionErr] = useState('')
@@ -326,6 +331,8 @@ export function ActiveSessionSwitcher({
   // the 1.5s live-status poll re-indexing rows can't redirect the delete to a
   // different session. Any other key cancels the prompt.
   const [confirmDelete, setConfirmDelete] = useState<null | string>(null)
+  const filter = useSessionFilter()
+  const { history, items, onMove, onQuery } = useFilteredSessions(filter, liveRows, historyRows, sel, setSel)
   const T = useT()
   const S = T.pickers.session
   const C = T.pickers.common
@@ -423,9 +430,12 @@ export function ActiveSessionSwitcher({
         }
 
         const hist = resumableHistory(rawHistoryRef.current, next)
+        // The selection indexes the rows as shown, i.e. after the `/` filter.
+        const shownLive = filterLiveSessions(next, filter.queryRef.current)
+        const shownHist = filterHistorySessions(hist, filter.queryRef.current)
         const initializeSelection = !initialSelectionAppliedRef.current
         initialSelectionAppliedRef.current = true
-        const maxSel = next.length + hist.length // == total - 1 (new row is index 0)
+        const maxSel = shownLive.length + shownHist.length // == total - 1 (new row is index 0)
 
         setItems(next)
         setHistory(hist)
@@ -435,7 +445,9 @@ export function ActiveSessionSwitcher({
           if (initializeSelection) {
             // Land on the current live session (shifted +1 past the pinned new
             // row); with no live sessions, start on the new row itself.
-            return next.length ? Math.min(currentSessionSelectionIndex(next, currentSessionId) + 1, maxSel) : 0
+            return shownLive.length
+              ? Math.min(currentSessionSelectionIndex(shownLive, currentSessionId) + 1, maxSel)
+              : 0
           }
 
           if (s <= 0) {
@@ -448,15 +460,15 @@ export function ActiveSessionSwitcher({
 
           if (s - 1 < prevItems.length) {
             const id = prevItems[s - 1]?.id
-            const i = id ? next.findIndex(x => x.id === id) : -1
+            const i = id ? shownLive.findIndex(x => x.id === id) : -1
 
             return i >= 0 ? i + 1 : clamp()
           }
 
           const id = prevHist[s - 1 - prevItems.length]?.id
-          const i = id ? hist.findIndex(x => x.id === id) : -1
+          const i = id ? shownHist.findIndex(x => x.id === id) : -1
 
-          return i >= 0 ? 1 + next.length + i : clamp()
+          return i >= 0 ? 1 + shownLive.length + i : clamp()
         })
         setErr(histError)
         setLoading(false)
@@ -469,7 +481,7 @@ export function ActiveSessionSwitcher({
         return []
       }
     },
-    [currentSessionId, gw]
+    [currentSessionId, filter.queryRef, gw]
   )
 
   useEffect(() => {
@@ -587,6 +599,17 @@ export function ActiveSessionSwitcher({
   const selectedKind = rowKind(sel)
   const newSelected = selectedKind === 'new'
   const draftHasText = Boolean(draft.trim())
+
+  // Registered before the switcher's own handler so a key the filter claims stops there.
+  useSessionFilterKeys(filter, {
+    deleteArmed: confirmDelete !== null,
+    deletePending,
+    hasMatches: listLen > 0,
+    newSelected,
+    onMove,
+    onQuery,
+    pickingModel
+  })
 
   useInput((ch, key) => {
     if (pickingModel || deletePending()) {
@@ -717,6 +740,7 @@ export function ActiveSessionSwitcher({
         {S.title}
       </Text>
       <Text color={t.color.muted}>{sessionsCountLabel(items.length, history.length)}</Text>
+      <SessionFilterLine filter={filter} t={t} />
 
       {(actionErr || err) && <Text color={t.color.label}>{C.error(actionErr || err)}</Text>}
 
@@ -757,7 +781,7 @@ export function ActiveSessionSwitcher({
       </Box>
 
       {offset > 0 && <Text color={t.color.muted}>{C.moreAbove(offset)}</Text>}
-      {!listLen && <Text color={t.color.muted}>{S.noOtherSessions}</Text>}
+      {!listLen && <Text color={t.color.muted}>{emptySessionsLabel(filter.query)}</Text>}
 
       {visibleRows.map(i => {
         const selected = sel === i
@@ -893,6 +917,7 @@ export function ActiveSessionSwitcher({
             <TextInput
               color={t.color.text}
               columns={promptColumns}
+              focus={!filter.active}
               onChange={setDraft}
               onSubmit={submitDraft}
               value={draft}

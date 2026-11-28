@@ -142,6 +142,13 @@ export const pickersEn = {
         messageCount: (count: number) => `${count} msgs`
       },
       noOtherSessions: 'no other sessions — Enter on +new to start one',
+      // {0} = the filter text the user typed.
+      noMatches: (query: string) => `no sessions match "${query}"`,
+      // Shown after `filter: <query>` on the `/` filter line.
+      filterLine: {
+        typing: '  ·  Enter open · ↑↓ move · Esc clear',
+        applied: '  ·  / edit · Esc clear'
+      },
       promptLabel: 'prompt › ',
       // {0} = the draft model label (short model id or `currentOrDefault`).
       draftModel: (label: string) => `model: ${label}`,
@@ -163,7 +170,8 @@ export const pickersEn = {
         close: ' close',
         move: ' move · ',
         new: ' new · ',
-        refresh: ' refresh · '
+        refresh: ' refresh · ',
+        filter: ' filter · '
       }
     },
     pet: {

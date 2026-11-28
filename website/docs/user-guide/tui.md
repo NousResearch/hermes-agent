@@ -156,6 +156,7 @@ Open it with any of these:
 Inside the switcher:
 
 - `↑` / `↓` move the selection; mouse clicks select rows too.
+- `/` filters the list (live and saved sessions) by fuzzy match on title, first prompt, session id, model or source; rows are ranked best-first within each group. While typing, `Enter` opens the top match, `↑` / `↓` move among matches, `Backspace` edits, `Ctrl+U` clears, and `Esc` drops the filter. After `Enter` the filter stays applied: `/` edits it again and `Esc` clears it before a second `Esc` closes the switcher.
 - `Enter` switches to the selected live session.
 - `Ctrl+D` closes the selected live session.
 - `Ctrl+N` starts a blank live session.

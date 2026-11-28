@@ -91,6 +91,44 @@ def test_route_beside_a_delivered_one_still_names_the_install(feature, route):
     assert error and f"hermes plugins install {feature.plugin}" in error
 
 
+@pytest.mark.parametrize("malformed", [
+    "  {p}:\n    extra: null\n    home_channel: {{chat_id: home-1}}\n",
+    "  {p}:\n    home_channel: {{chat_id: home-1}}\n  discord:\n    extra: [1]\n",
+], ids=["own-extra-null", "other-extra-list"])
+@pytest.mark.parametrize("feature", _MOVED, ids=[f.platform for f in _MOVED])
+def test_a_config_the_gateway_cannot_merge_still_delivers_the_other_destinations(feature, malformed):
+    """A platform block the gateway loader cannot merge (greptile #159640/#159651: ``extra: null``) makes the
+    gateway ignore config.yaml and fall back to gateway.json; the moved platform's home read does the same, so
+    a gateway-ticked run still reaches its other destinations and names the install for the unreachable one."""
+    import asyncio
+    from concurrent.futures import Future
+    from unittest.mock import MagicMock
+
+    from hermes_constants import get_hermes_home
+    (get_hermes_home() / "config.yaml").write_text("platforms:\n" + malformed.format(p=feature.platform),
+                                                   encoding="utf-8")
+    sent = []
+
+    async def send(chat_id, content, metadata=None):
+        sent.append(chat_id)
+        return {"success": True, "message_id": "m1"}
+
+    def run_now(coro, _loop):
+        future = Future()
+        future.set_result(asyncio.run(coro))
+        return future
+
+    telegram, loop = MagicMock(), MagicMock()
+    telegram.send = send
+    loop.is_running.return_value = True
+    with patch("gateway.config.load_gateway_config", return_value=_config("telegram")), \
+         patch("asyncio.run_coroutine_threadsafe", side_effect=run_now):
+        error = _deliver_result({"id": "j1", "name": "Report", "deliver": f"telegram:chat-0,{feature.platform}"},
+                                "the report", adapters={Platform.TELEGRAM: telegram}, loop=loop)
+    assert sent == ["chat-0"]
+    assert error and f"hermes plugins install {feature.plugin}" in error
+
+
 @pytest.mark.parametrize("feature", _MOVED, ids=[f.platform for f in _MOVED])
 def test_origin_on_a_moved_platform_names_the_install(feature):
     error = _deliver_result(

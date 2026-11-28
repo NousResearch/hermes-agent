@@ -484,36 +484,53 @@ def _reaction_row_query(holder: StoreHolder, session_id: str, message_row_id: in
 
 
 def take_unseen_reactions(holder: StoreHolder, session_id: str, *, author: str = "user") -> list[dict[str, Any]]:
-    """Return *author*'s not-yet-surfaced reactions and mark them seen. Reactions are announced on the
-    NEXT user turn (never by rewriting the reacted message: cache-safe); ``seen`` makes it exactly once.
-    Include compaction-archived history that remains visible, but exclude rewound/superseded rows."""
+    """Claim *author*'s unseen reactions on visible history for the next turn without editing message text."""
     if not session_id:
         return []
-    lineage = _resume_lineage_ids(holder, session_id)
+    lineage = tuple(_resume_lineage_ids(holder, session_id))
+    visible = f"session_id IN ({_placeholders(lineage)}){_DISPLAY_ACTIVE_CLAUSE}"
+    reaction_sql = f"FROM messages WHERE {visible} AND " + _sql_json_extract(
+        "display_metadata", "$." + REACTIONS_METADATA_KEY) + " IS NOT NULL ORDER BY id"
+
+    def unseen(meta):
+        return [r for r in _reaction_list(holder, meta) if r.get("author") == author and not r.get("seen")]
+
+    # Scan outside the writer. A pinned transcript can miss new reactions; without a fresh pooled
+    # reader, use the existing bounded claim instead of assuming there is nothing to deliver.
+    row_ids = None
+    if holder._pinned_read_conn() is None:
+        with holder._read_ctx(pooled_only=True) as reader:
+            if reader is not None:
+                rows = reader.execute(f"SELECT id, display_metadata {reaction_sql}", lineage).fetchall()
+                row_ids = [row["id"] for row in rows if unseen(_decode_display_metadata(row["display_metadata"]))]
+    if row_ids == []:
+        return []
+
+    def relevant_rows(conn):
+        columns = "id, role, content, display_metadata"
+        if row_ids is None:
+            yield from conn.execute(f"SELECT {columns} {reaction_sql}", lineage).fetchall()
+            return
+        # The read only provides ids. Revalidate visibility and eligibility in the transaction.
+        for row_id in row_ids:
+            row = conn.execute(f"SELECT {columns} FROM messages WHERE id = ? AND {visible}",
+                               (row_id, *lineage)).fetchone()
+            if row is not None:
+                yield row
+
     def _do(conn):
         pending = []
-        # Only reaction-bearing rows cross into Python: display_metadata also carries delivery /
-        # attachment markers on most rows, and the lineage scan grows with the session's age.
-        for row in conn.execute("SELECT id, role, content, display_metadata FROM messages "
-                f"WHERE session_id IN ({_placeholders(lineage)}){_DISPLAY_ACTIVE_CLAUSE} "
-                f"AND {_sql_json_extract('display_metadata', '$.' + REACTIONS_METADATA_KEY)} IS NOT NULL "
-                "ORDER BY id", tuple(lineage)).fetchall():
+        for row in relevant_rows(conn):
             meta = _decode_display_metadata(row["display_metadata"])
-            reactions = meta.get(REACTIONS_METADATA_KEY) if meta else None
-            if not isinstance(reactions, list):
+            reactions = unseen(meta)
+            if not reactions:
                 continue
-            changed = False
+            content = _decode_content(row["content"])
             for reaction in reactions:
-                if not isinstance(reaction, dict) or reaction.get("author") != author or reaction.get("seen"):
-                    continue
                 reaction["seen"] = True
-                changed = True
-                content = _decode_content(row["content"])
-                pending.append({
-                    "row_id": row["id"], "role": row["role"], "emoji": reaction.get("emoji") or "",
-                    "text": content if isinstance(content, str) else ""})
-            if changed:
-                conn.execute(_SET_DISPLAY_META_SQL, (_encode_display_metadata(meta), row["id"]))
+                pending.append({"row_id": row["id"], "role": row["role"], "emoji": reaction.get("emoji") or "",
+                                "text": content if isinstance(content, str) else ""})
+            conn.execute(_SET_DISPLAY_META_SQL, (_encode_display_metadata(meta), row["id"]))
         return pending
     return holder._execute_write(_do)
 

@@ -1,0 +1,83 @@
+{
+  "skill": "audience-research",
+  "version": "1.0.0",
+  "description": "Scenario tests for audience-research. A run passes only when every item in 'expect' is satisfied. Written before the skill body (test-first).",
+  "evals": [
+    {
+      "name": "happy-path-deep-profile",
+      "input": "Help me research my audience.",
+      "expect": [
+        "reads brand-profile first",
+        "gathers evidence from real sources (provided or public) rather than inventing",
+        "defines 1-3 sharp segments, not 'everyone'",
+        "captures jobs-to-be-done (functional/emotional/social), pains, desires, objections",
+        "builds a language bank of the audience's actual words",
+        "writes an audience.md following the template"
+      ]
+    },
+    {
+      "name": "not-demographic-theater",
+      "input": "Build me a persona for my audience.",
+      "expect": [
+        "does NOT produce a demographic character sheet (age/income/'likes coffee') as the substance",
+        "leads with jobs-to-be-done and real language",
+        "includes a demographic only if it actually changes the content"
+      ]
+    },
+    {
+      "name": "voice-of-customer-real-language",
+      "input": "What words should my content use to connect with my audience?",
+      "expect": [
+        "mines real sources (reviews, comments, forums, support, search) for verbatim phrases",
+        "captures the audience's actual problem/desire/objection language, not paraphrased marketing-speak",
+        "does NOT fabricate phrases; flags any assumed language as to-validate"
+      ]
+    },
+    {
+      "name": "buyer-vs-follower",
+      "input": "Research the audience for our B2B analytics tool.",
+      "expect": [
+        "separates the buyer (decides/pays) from the follower/champion on social",
+        "notes which content targets which role",
+        "does not assume they are the same person"
+      ]
+    },
+    {
+      "name": "evidence-based-or-flagged",
+      "input": "I don't have any reviews or data yet — just figure out my audience.",
+      "expect": [
+        "researches whatever public sources are available",
+        "where evidence is missing, builds a structured hypothesis and clearly labels it as to-be-validated",
+        "does NOT present guesses as confirmed findings"
+      ]
+    },
+    {
+      "name": "sharp-segments-not-everyone",
+      "input": "My audience is basically everyone.",
+      "expect": [
+        "pushes for the 1-3 segments that matter most right now",
+        "names a primary segment to build for first",
+        "produces usable segments rather than 'everyone'"
+      ]
+    },
+    {
+      "name": "multiple-distinct-audiences",
+      "input": "We're a nonprofit — we serve kids but we're funded by donors.",
+      "expect": [
+        "creates separate segments for beneficiaries and donors",
+        "captures their different jobs-to-be-done and language",
+        "notes which content serves which audience"
+      ]
+    },
+    {
+      "name": "existing-audience-loaded",
+      "input": "Plan my content for next month.",
+      "context": "A current audience.md already exists.",
+      "expect": [
+        "loads the existing audience profile rather than re-researching",
+        "summarizes it and proceeds (hands off to planning)",
+        "only re-runs research if the user asks to revisit"
+      ]
+    }
+  ]
+}

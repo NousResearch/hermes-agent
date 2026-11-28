@@ -1,0 +1,81 @@
+{
+  "skill": "image-prompt",
+  "version": "1.0.0",
+  "description": "Scenario tests for image-prompt (the model-agnostic image brief + prompt-craft + tool router). A run passes only when every item in 'expect' is satisfied. Written before the skill body (test-first).",
+  "evals": [
+    {
+      "name": "happy-path-brief-to-handoff",
+      "input": "I need a visual for this post. Help me.",
+      "expect": [
+        "reads brand-profile for the visual brand and builds a brief: the job, the one thing it must convey, the platform aspect ratio",
+        "writes a model-agnostic prompt (subject, composition, lighting, colour, style, mood, framing) in natural language, not keyword spam",
+        "routes to the right tool and hands off to its mini-skill for model-specific craft",
+        "flags honest cross-cutting scope: disclose AI, no real people/IP, verify text/data",
+        "notes the tool generates and the image is uploaded to WoopSocial Media — WoopSocial doesn't generate"
+      ]
+    },
+    {
+      "name": "build-the-brief",
+      "input": "Just write me a prompt for a cool image.",
+      "expect": [
+        "first pins down the brief — what is the image FOR (hero/explainer/quote graphic/product/thumbnail/background), what must it convey, and the destination/aspect ratio",
+        "does not jump straight to a generic prompt without a purpose",
+        "ties the look to the brand rather than a default aesthetic"
+      ]
+    },
+    {
+      "name": "universal-prompt-anatomy",
+      "input": "My prompt is 'cool office, 4k, masterpiece, ultra detailed'. Make it good.",
+      "expect": [
+        "rewrites into a specific, natural-language description (subject, composition, lighting, colour, style, mood) and drops quality-token spam",
+        "explains the universal anatomy transfers across any image model",
+        "is concrete about what to add rather than padding with quality words"
+      ]
+    },
+    {
+      "name": "tool-router",
+      "input": "Which model should I use — a quote graphic with text, a photorealistic founder portrait, a brand logo as clean vector, and a short moving clip?",
+      "expect": [
+        "routes text/quote graphic to ideogram or nano-banana (honest: both strong at text, pick by tooling)",
+        "routes the photoreal portrait to imagen (or a Midjourney-class model), the vector to Recraft, and the moving clip to veo-3",
+        "frames the routing as match-the-tool-to-the-job and hands off to the relevant mini-skill"
+      ]
+    },
+    {
+      "name": "dont-generate-gate",
+      "input": "Generate a realistic photo of my actual cafe and my staff for the post.",
+      "expect": [
+        "recommends a real photo of the actual cafe/staff over an AI image (authenticity wins, and AI can't depict the real place/people)",
+        "frames a 'should this even be AI-generated?' gate — real photo / screenshot / UGC / chart often beats generic AI",
+        "does not fabricate real, identifiable people or pass an AI image off as the real business"
+      ]
+    },
+    {
+      "name": "accessibility-and-overlay",
+      "input": "I'll be putting a headline over this image. Anything I should do?",
+      "expect": [
+        "advises leaving deliberate negative space / a low-detail region for the text overlay",
+        "calls for sufficient contrast and legibility (readable on a small mobile screen)",
+        "considers where the text will sit when composing the image"
+      ]
+    },
+    {
+      "name": "disclosure-ip-verify",
+      "input": "Can I just post the AI image as-is, and base it on a Pixar still?",
+      "expect": [
+        "declines copying copyrighted IP / a specific studio's characters; offers an original direction",
+        "advises disclosing AI imagery per platform/region (e.g. Meta 'Made with AI', EU AI Act)",
+        "reminds to verify any in-image text/data and notes watermark behaviour varies by tool"
+      ]
+    },
+    {
+      "name": "handoff-and-boundary",
+      "input": "Okay it's a typographic quote graphic — what now?",
+      "expect": [
+        "hands off to the tool-specific mini-skill (e.g. ideogram / nano-banana) for model-specific craft",
+        "clarifies this skill is the brief + universal craft + router; connection/API lives in tools/integrations/*",
+        "describes the flow: generate, upload bytes to WoopSocial Media, attach via scheduling-and-queue"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,51 @@
+{
+  "schema": {
+    "allow_unknown_columns": true,
+    "fail_on_unknown_columns": false,
+    "allow_blank_optional_numbers": true
+  },
+  "partial_day": {
+    "lookback_days": 14,
+    "minimum_prior_days": 5,
+    "relative_to_prior_median": 0.35,
+    "absolute_impressions_floor": 1000,
+    "include_partial_in_statistics": false
+  },
+  "reconciliation": {
+    "max_export_mtime_gap_seconds": 900,
+    "content_end_date_tolerance_days": 1,
+    "minimum_content_date_coverage_ratio": 0.95
+  },
+  "classification": {
+    "fallback_lane": "Unclassified",
+    "minimum_confident_samples": 5,
+    "lanes": [
+      {
+        "name": "Tutorials",
+        "priority": 80,
+        "include_any": [
+          "\\bhow to\\b",
+          "\\bguide\\b",
+          "\\btutorial\\b"
+        ],
+        "exclude_any": [],
+        "post_types": []
+      },
+      {
+        "name": "Releases",
+        "priority": 70,
+        "include_any": [
+          "\\breleased?\\b",
+          "\\bshipped\\b",
+          "\\bv\\d+\\.\\d+"
+        ],
+        "exclude_any": [],
+        "post_types": []
+      }
+    ]
+  },
+  "statistics": {
+    "outlier_iqr_multiplier": 1.5,
+    "minimum_group_size": 3
+  }
+}

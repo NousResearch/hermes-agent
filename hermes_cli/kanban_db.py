@@ -1714,65 +1714,10 @@ def list_comments_after(
 
 
 # --- Attachments ---
-
-class AttachmentTooLarge(ValueError):
-    """Attachment over the size cap. A ``ValueError`` so generic 400 handlers
-    still catch it while the tool/CLI can give a 413-style message."""
-
-
-def _safe_attachment_name(raw: str) -> str:
-    """Client filename -> safe basename: strip directories (both separators),
-    control chars and leading dots (no dotfiles, no traversal); ValueError when
-    nothing usable remains. Only ever joined under the per-task attachments dir."""
-    name = (raw or "").replace("\\", "/").split("/")[-1].strip()
-    name = "".join(ch for ch in name if ch.isprintable() and ch not in "\x00").strip()
-    name = name.lstrip(".").strip()
-    if not name:
-        raise ValueError("invalid attachment filename")
-    return name[:200]
-
-
-def _collision_free_path(dest_dir: Path, safe_name: str) -> Path:
-    """``foo.pdf`` -> ``foo.pdf``, ``foo (1).pdf``, ... first one that doesn't exist."""
-    stem, dot, ext = safe_name.partition(".")
-    candidate = safe_name
-    n = 1
-    while (dest_dir / candidate).exists():
-        candidate = f"{stem} ({n}){dot}{ext}"
-        n += 1
-    return dest_dir / candidate
-
-
-def store_attachment_bytes(
-    conn: sqlite3.Connection, task_id: str, filename: str, data: bytes, *,
-    content_type: Optional[str] = None, uploaded_by: Optional[str] = None,
-    board: Optional[str] = None, max_bytes: Optional[int] = None,
-) -> int:
-    """Single attachment write path (dashboard, tools, CLI): size cap, safe
-    basename, collision-free blob under :func:`task_attachments_dir`, then the
-    metadata row. Raises :class:`AttachmentTooLarge` / ``ValueError``; a blob
-    whose row insert fails is removed before re-raising. Returns the new id."""
-    if max_bytes is None:
-        max_bytes = KANBAN_ATTACHMENT_MAX_BYTES
-    if len(data) > max_bytes:
-        raise AttachmentTooLarge(f"attachment exceeds {max_bytes // (1024 * 1024)} MB limit")
-    safe_name = _safe_attachment_name(filename)
-    dest_dir = task_attachments_dir(task_id, board=board)
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    dest_path = _collision_free_path(dest_dir, safe_name)
-    dest_path.write_bytes(data)
-    try:
-        return add_attachment(
-            conn, task_id, filename=dest_path.name, stored_path=str(dest_path.resolve()),
-            content_type=content_type, size=len(data), uploaded_by=uploaded_by,
-        )
-    except Exception:
-        # Don't leave an orphan blob if the metadata insert fails (most
-        # commonly: the task id doesn't exist).
-        with contextlib.suppress(OSError):
-            dest_path.unlink(missing_ok=True)
-        raise
-
+# The blob write path (AttachmentTooLarge, name sanitiser, collision resolver,
+# store_attachment_bytes) and the pre-store policy gate live in
+# ``hermes_cli.kanban_db_attachments`` — every ingress surface (tools, CLI,
+# dashboard, completion/review staging below) shares that one seam.
 
 def add_attachment(
     conn: sqlite3.Connection, task_id: str, *, filename: str, stored_path: str,
@@ -2929,6 +2874,7 @@ def _persist_scratch_completion_artifacts(
     is_managed, board = _managed_scratch_path_info(workspace)
     if not is_managed:
         return
+    from hermes_cli.kanban_db_attachments import run_attachment_policy
 
     try:
         workspace_root = workspace.resolve()
@@ -2975,6 +2921,15 @@ def _persist_scratch_completion_artifacts(
             attachment_dir.mkdir(parents=True, exist_ok=True)
             dest = _unique_attachment_path(attachment_dir, resolved_src.name, used_destinations)
             _copy_capped(resolved_src, dest, artifact)
+            blocked = run_attachment_policy(
+                dest, task_id=task_id, filename=dest.name, size=dest.stat().st_size,
+                content_type=None, source="completion_artifact",
+                uploaded_by="kanban_complete", board=board,
+            )
+            if blocked is not None:
+                raise ArtifactPreservationError(
+                    f"declared scratch artifact refused by attachment policy: {artifact} ({blocked})"
+                )
         except Exception as exc:
             if dest is not None:
                 with contextlib.suppress(OSError):

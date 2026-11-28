@@ -73,7 +73,9 @@ def _seed_board(slug: str = "alpha") -> dict[str, str]:
         )
         kb.add_comment(conn, ids["scratch"], "brooklyn", "a comment")
         kb.link_tasks(conn, ids["scratch"], ids["worktree"])
-        kb.store_attachment_bytes(
+        from hermes_cli import kanban_db_attachments
+
+        kanban_db_attachments.store_attachment_bytes(
             conn, ids["scratch"], "notes.txt", b"hello attachment", board=slug
         )
     return ids

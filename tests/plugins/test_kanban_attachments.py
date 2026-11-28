@@ -263,10 +263,12 @@ def test_download_unknown_attachment_404(client):
 
 
 def test_store_attachment_bytes_roundtrip(kanban_home):
+    from hermes_cli import kanban_db_attachments
+
     conn = kbc.connect()
     try:
         task_id = _make_task(conn)
-        att_id = kb.store_attachment_bytes(
+        att_id = kanban_db_attachments.store_attachment_bytes(
             conn, task_id, "doc.txt", b"some bytes",
             content_type="text/plain", uploaded_by="tester",
         )

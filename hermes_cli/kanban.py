@@ -763,9 +763,10 @@ def _cmd_comment(args: argparse.Namespace) -> int:
 
 
 def _cmd_attach(args: argparse.Namespace) -> int:
-    """Attach a local file via the shared ``store_attachment_bytes`` path (same 25 MB cap and name
-    sanitisation as the dashboard upload and agent tool)."""
+    """Attach a local file via the shared store lane (same 25 MB cap, name sanitisation
+    and ``pre_attachment_store`` policy gate as the dashboard upload and agent tool)."""
     import mimetypes
+    from hermes_cli import kanban_db_attachments
     _worker_run_id_for(args.task_id)
 
     src = Path(args.path).expanduser()
@@ -777,9 +778,12 @@ def _cmd_attach(args: argparse.Namespace) -> int:
     uploaded_by = args.author or _profile_author()
     try:
         with kbc.connect_closing() as conn:
-            att_id = kb.store_attachment_bytes(conn, args.task_id, name, data, content_type=content_type,
-                                               uploaded_by=uploaded_by)
-    except kb.AttachmentTooLarge as exc:
+            att_id = kanban_db_attachments.store_attachment_bytes(
+                conn, args.task_id, name, data, content_type=content_type,
+                uploaded_by=uploaded_by, source="cli")
+    except kanban_db_attachments.AttachmentPolicyBlocked as exc:
+        return _err(f"kanban: attachment refused by policy: {exc}")
+    except kanban_db_attachments.AttachmentTooLarge as exc:
         return _err(f"kanban: {exc}")
     print(f"Attached {name} to {args.task_id} (attachment {att_id}, {len(data)} bytes)")
     return 0

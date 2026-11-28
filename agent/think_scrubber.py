@@ -6,6 +6,17 @@ holds partial tags at delta boundaries until resolved; ``flush()`` releases held
 was not a tag; ``reset()`` at the top of each turn. An open tag only starts a block at a block
 boundary (stream start / after a newline / whitespace-only line so far), so prose that *mentions*
 ``<think>`` is not suppressed; closed pairs are always suppressed (intentional).
+
+The scrubber also strips the text-channel tool-call tag family (#137775): models whose relay
+returned no native ``tool_calls`` serialize them as ``<tool_call>`` markup, which must not reach
+stream consumers either. Open tags may carry attributes and an optional namespace prefix.
+
+DeepSeek's *native* DSML serialization (``<｜DSML｜invoke>``, fullwidth pipes U+FF5C, sometimes
+ASCII ``|``) reaches the same stream when the host re-serializes calls into the text channel
+(#119261, #54283). The whole-string stripper covers it (``agent_runtime_helpers``) but the
+per-delta path needs its own state: a DSML opener is never prose (the ``｜DSML｜`` token is
+model-internal), so unlike ``<think>`` it starts a block at *any* position, and a DSML opener
+cut before its ``>`` (Bedrock's ``<｜DSML｜function_calls`` as the last bytes) still counts.
 """
 
 from __future__ import annotations
@@ -13,7 +24,16 @@ from __future__ import annotations
 import re
 from typing import Tuple
 
-__all__ = ["THINK_CLOSE_TAGS", "THINK_OPEN_TAGS", "THINK_TAG_NAMES", "StreamingThinkScrubber"]
+__all__ = [
+    "DSML_BLOCK_RE",
+    "DSML_CLOSE_TAG_RE",
+    "DSML_OPEN_TAG_RE",
+    "THINK_CLOSE_TAGS",
+    "THINK_OPEN_TAGS",
+    "THINK_TAG_NAMES",
+    "TOOL_CALL_TAG_NAMES",
+    "StreamingThinkScrubber",
+]
 
 # The one list of model reasoning tag names. Every surface that hides reasoning (this scrubber,
 # the CLI stream filter, the gateway stream filter, the final-response regex stripper) binds to
@@ -28,6 +48,80 @@ THINK_TAG_NAMES: tuple[str, ...] = (
 THINK_OPEN_TAGS: tuple[str, ...] = tuple(f"<{name.lower()}>" for name in THINK_TAG_NAMES)
 THINK_CLOSE_TAGS: tuple[str, ...] = tuple(f"</{name.lower()}>" for name in THINK_TAG_NAMES)
 
+# The text-channel tool-call tag family — models that serialize tool calls as XML because the
+# provider/relay returned no native ``tool_calls`` channel. Kept beside THINK_TAG_NAMES so the
+# streaming scrubber and the whole-string stripper (``agent_runtime_helpers``) bind to one list;
+# a tag added here is covered everywhere. Open tags may carry attributes (``<tool_call id=…>``)
+# and an optional XML namespace prefix (``<ns:function_calls>``); closers are bare. Claude-style
+# payloads nest ``<invoke>``/``<parameter>`` inside the block; only their orphan closers ever
+# appear outside one, so they need no open handling (#137775).
+TOOL_CALL_TAG_NAMES: tuple[str, ...] = (
+    "tool_call",
+    "tool_calls",
+    "tool_result",
+    "function_call",
+    "function_calls",
+)
+_NS_PREFIX = r"(?:[\w.-]+:)?"
+TOOL_CALL_OPEN_TAG_RE = re.compile(
+    rf"<{_NS_PREFIX}(?:{'|'.join(TOOL_CALL_TAG_NAMES)}|invoke|parameter)\b[^>]*>", re.IGNORECASE
+)
+TOOL_CALL_CLOSE_TAG_RE = re.compile(
+    rf"</{_NS_PREFIX}(?:{'|'.join(TOOL_CALL_TAG_NAMES)})>", re.IGNORECASE
+)
+TOOL_CALL_BLOCK_RE = re.compile(
+    rf"<{_NS_PREFIX}(?:{'|'.join(TOOL_CALL_TAG_NAMES)})\b[^>]*>"
+    rf".*?</{_NS_PREFIX}(?:{'|'.join(TOOL_CALL_TAG_NAMES)})>",
+    re.DOTALL | re.IGNORECASE,
+)
+# An open tag whose ``>`` has not arrived yet: either the name has fully arrived and attributes
+# may still be streaming in, or the name itself (with its optional namespace) is still streaming.
+# A delta tail matching either must be held back exactly like the literal partial-tag suffixes;
+# ``flush()``/the next delta release it when it turns out to be prose.
+_TOOL_CALL_OPEN_PARTIAL_RE = re.compile(
+    rf"<{_NS_PREFIX}(?:{'|'.join(TOOL_CALL_TAG_NAMES)})\b[^>]*$"
+    r"|<[^\s>]*$",
+    re.IGNORECASE,
+)
+
+# DeepSeek native DSML serialization (#119261, #54283). ``｜`` is U+FF5C; some hosts emit ASCII
+# ``|`` instead. The ``｜DSML｜`` token never occurs in legitimate prose, so these tags need no
+# block-boundary gate — a DSML opener anywhere starts a discarded block.
+_DSML_PIPE = r"[|\uFF5C]"
+_DSML_KINDS = r"(?:tool_calls|function_calls|invoke|parameter)"
+# Opener: attributes allowed, and the ``>`` may be absent (Bedrock cuts the text channel right
+# after ``<｜DSML｜function_calls``).
+DSML_OPEN_TAG_RE = re.compile(
+    rf"<{_DSML_PIPE}DSML{_DSML_PIPE}{_DSML_KINDS}\b[^>]*>?", re.IGNORECASE
+)
+DSML_CLOSE_TAG_RE = re.compile(
+    rf"</{_DSML_PIPE}DSML{_DSML_PIPE}{_DSML_KINDS}>", re.IGNORECASE
+)
+# A closed DSML block: opener plus everything up to its own matching closer. Non-greedy on the
+# inner text and anchored to the same kind, mirroring ``_DSML_BLOCK_PATTERN``.
+DSML_BLOCK_RE = re.compile(
+    rf"(<{_DSML_PIPE}DSML{_DSML_PIPE}(tool_calls|function_calls|invoke|parameter)\b[^>]*>)"
+    rf"(?:(?!</?{_DSML_PIPE}DSML{_DSML_PIPE}\2>).)*"
+    rf"(</{_DSML_PIPE}DSML{_DSML_PIPE}\2>)",
+    re.DOTALL | re.IGNORECASE,
+)
+# A delta tail that may be the start of a DSML opener: keeps ``<｜DSML｜invo`` held back so a
+# tag split across deltas is not emitted as prose. Built from the literal prefix set rather than
+# a hand-nested regex — every proper prefix of ``<｜DSML｜`` plus ``<｜DSML｜`` + a partial kind.
+_DSML_OPENER_PREFIXES: tuple[str, ...] = tuple(
+    "<" + "\uFF5CDSML\uFF5C"[:i] for i in range(7)
+) + tuple(
+    "<" + "\uFF5CDSML\uFF5C" + kind[:i]
+    for kind in ("tool_calls", "function_calls", "invoke", "parameter")
+    for i in range(1, len(kind) + 1)
+)
+_DSML_PARTIAL_RE = re.compile(
+    "(?:"
+    + "|".join(re.escape(p) for p in sorted(set(_DSML_OPENER_PREFIXES), key=len, reverse=True))
+    + ")$",
+    re.IGNORECASE,
+)
+
 
 class StreamingThinkScrubber:
     """Stateful scrubber for streaming reasoning/thinking blocks.
@@ -41,10 +135,33 @@ class StreamingThinkScrubber:
     _OPEN_TAGS: tuple[str, ...] = THINK_OPEN_TAGS
     _CLOSE_TAGS: tuple[str, ...] = THINK_CLOSE_TAGS
     _ALL_TAGS: tuple[str, ...] = _OPEN_TAGS + _CLOSE_TAGS
-    _MAX_TAG_LEN: int = max(len(tag) for tag in _ALL_TAGS)
+    # Closers whose *strict prefixes* are held back at a delta tail. Tool-call closers are
+    # literal (namespace-prefixed ones are rare enough to leave to the whole-string strip);
+    # tool-call open tags are regex-matched (they carry attributes), so their partial form is
+    # detected by ``_TOOL_CALL_OPEN_PARTIAL_RE`` in ``_hold_partial`` instead — the bare
+    # ``<tool_call>`` literals below still cover the name-while-streaming prefix case.
+    _TC_HOLD_CLOSE_TAGS: tuple[str, ...] = tuple(
+        f"</{name}>" for name in TOOL_CALL_TAG_NAMES
+    ) + (
+        "</invoke>",
+        "</parameter>",
+    )
+    _HOLD_TAGS: tuple[str, ...] = (
+        _ALL_TAGS
+        + _TC_HOLD_CLOSE_TAGS
+        + tuple(f"<{name}>" for name in TOOL_CALL_TAG_NAMES)
+    )
+    _HOLD_CLOSE_TAGS: tuple[str, ...] = _CLOSE_TAGS + _TC_HOLD_CLOSE_TAGS
+    _MAX_TAG_LEN: int = max(len(tag) for tag in _HOLD_TAGS)
     # Orphan close tag plus trailing whitespace (matches _strip_think_blocks case 3).
+    # Tool-call closers (namespaced or not) and stray invoke/parameter closers from a
+    # degenerate tail are noise the same way (#137775).
     _ORPHAN_CLOSE_RE = re.compile(
-        "(?:" + "|".join(re.escape(t) for t in _CLOSE_TAGS) + r")[ \t\n\r]*", re.IGNORECASE
+        "(?:" + "|".join(re.escape(t) for t in _CLOSE_TAGS)
+        + f"|</{_NS_PREFIX}(?:{'|'.join(TOOL_CALL_TAG_NAMES)}|invoke|parameter)>"
+        + rf"|</{_DSML_PIPE}DSML{_DSML_PIPE}{_DSML_KINDS}>"
+        + r")[ \t\n\r]*",
+        re.IGNORECASE,
     )
 
     def __init__(self) -> None:
@@ -77,10 +194,10 @@ class StreamingThinkScrubber:
 
         while buf:
             if self._in_block:
-                close_idx, close_len = self._find_first_tag(buf, self._CLOSE_TAGS)
+                close_idx, close_len = self._find_close_tag(buf)
                 if close_idx == -1:
                     # No close yet: hold back a possible partial close-tag prefix; the rest is reasoning.
-                    hidden.append(self._hold_partial(buf, self._CLOSE_TAGS))
+                    hidden.append(self._hold_partial(buf, self._HOLD_CLOSE_TAGS))
                     break
                 hidden.append(buf[:close_idx])
                 buf = buf[close_idx + close_len:]
@@ -90,6 +207,7 @@ class StreamingThinkScrubber:
             # Priority 1: closed <tag>X</tag> pair anywhere (even inline pairs are almost
             # certainly leaked reasoning). Priority 2: unterminated open tag at a block
             # boundary (gated so prose mentioning '<think>' isn't over-stripped). Earliest wins.
+            # Both scans cover the tool-call family too (#137775).
             pair = self._find_earliest_closed_pair(buf)
             open_idx, open_len = self._find_open_at_boundary(buf, out)
             if pair is not None and (open_idx == -1 or pair[0] <= open_idx):
@@ -106,15 +224,23 @@ class StreamingThinkScrubber:
 
             # No resolvable tag: hold back any partial-tag prefix at the tail
             # so a tag split across deltas isn't missed, then emit the rest.
-            self._emit(out, self._hold_partial(buf, self._ALL_TAGS))
+            self._emit(out, self._hold_partial(buf, self._HOLD_TAGS, open_partial=True))
             break
 
         self.last_hidden = "".join(hidden)
         return "".join(out)
 
-    def _hold_partial(self, buf: str, tags: tuple[str, ...]) -> str:
+    def _hold_partial(self, buf: str, tags: tuple[str, ...], *, open_partial: bool = False) -> str:
         """Move a trailing partial-tag prefix of *buf* into ``_buf``; return the remainder."""
         held = self._max_partial_suffix(buf, tags)
+        if held < len(buf):
+            m = _DSML_PARTIAL_RE.search(buf)
+            if m is not None:
+                held = max(held, len(buf) - m.start())
+        if open_partial and held < len(buf):
+            m = _TOOL_CALL_OPEN_PARTIAL_RE.search(buf)
+            if m is not None:
+                held = max(held, len(buf) - m.start())
         self._buf = buf[-held:] if held else ""
         return buf[:-held] if held else buf
 
@@ -138,6 +264,15 @@ class StreamingThinkScrubber:
         hits = [(idx, len(tag)) for tag in tags if (idx := buf_lower.find(tag)) != -1]
         return min(hits) if hits else (-1, 0)
 
+    def _find_close_tag(self, buf: str) -> tuple[int, int]:
+        """Earliest reasoning close tag, tool-call close tag (namespaced ok) or DSML closer."""
+        idx, length = self._find_first_tag(buf, self._CLOSE_TAGS)
+        for pattern in (TOOL_CALL_CLOSE_TAG_RE, DSML_CLOSE_TAG_RE):
+            m = pattern.search(buf)
+            if m is not None and (idx == -1 or m.start() < idx):
+                idx, length = m.start(), m.end() - m.start()
+        return idx, length
+
     def _find_earliest_closed_pair(self, buf: str):
         """(start_idx, end_idx) of the earliest ``<tag>...</tag>`` pair (non-greedy, case-insensitive), else None."""
         buf_lower = buf.lower()
@@ -147,10 +282,18 @@ class StreamingThinkScrubber:
             close_idx = buf_lower.find(close_tag, open_idx + len(open_tag)) if open_idx != -1 else -1
             if close_idx != -1:
                 pairs.append((open_idx, close_idx + len(close_tag)))
+        for pattern in (TOOL_CALL_BLOCK_RE, DSML_BLOCK_RE):
+            m = pattern.search(buf)
+            if m is not None:
+                pairs.append((m.start(), m.end()))
         return min(pairs) if pairs else None
 
     def _find_open_at_boundary(self, buf: str, already_emitted: list[str]) -> tuple[int, int]:
-        """Return the earliest block-boundary open-tag (idx, len), or (-1, 0)."""
+        """Return the earliest open-tag (idx, len), or (-1, 0).
+
+        ``<think>``-family and tool-call openers must sit at a block boundary so prose mentioning
+        them survives. A DSML opener needs no such gate: ``｜DSML｜`` is model-internal, never prose.
+        """
         buf_lower = buf.lower()
         hits = []
         for tag in self._OPEN_TAGS:
@@ -159,6 +302,14 @@ class StreamingThinkScrubber:
                 idx = buf_lower.find(tag, idx + 1)
             if idx != -1:
                 hits.append((idx, len(tag)))
+        m = TOOL_CALL_OPEN_TAG_RE.search(buf)
+        while m is not None and not self._is_block_boundary(buf, m.start(), already_emitted):
+            m = TOOL_CALL_OPEN_TAG_RE.search(buf, m.end())
+        if m is not None:
+            hits.append((m.start(), m.end() - m.start()))
+        m = DSML_OPEN_TAG_RE.search(buf)
+        if m is not None:
+            hits.append((m.start(), m.end() - m.start()))
         return min(hits) if hits else (-1, 0)
 
     def _is_block_boundary(self, buf: str, idx: int, already_emitted: list[str]) -> bool:

@@ -43,3 +43,19 @@ def test_model_bound_context_is_shortened_with_a_note(tmp_path):
     assert context.startswith("z" * 100)
     assert len(context) < shell_hooks._MAX_HOOK_TEXT_CHARS + 200
     assert f"{size:,} characters" in context
+
+
+def test_a_quiet_background_helper_does_not_leave_reader_threads_behind(tmp_path):
+    import threading
+    helper = tmp_path / "helper.py"
+    helper.write_text("import time\ntime.sleep(8)\n", encoding="utf-8")
+    command = _script(tmp_path, f"import subprocess\nsubprocess.Popen([sys.executable, {str(helper)!r}])\n"
+                                "print(json.dumps({'context': 'ok'}))\n")
+    spec = ShellHookSpec(event="pre_llm_call", command=command, timeout=30)
+    started = time.monotonic()
+    assert _evaluate_result(spec, _spawn(spec, "{}"))["context"] == "ok"
+    assert time.monotonic() - started < 10
+    deadline = time.monotonic() + 3
+    while any(t.name.startswith("hook-std") for t in threading.enumerate()) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert not [t.name for t in threading.enumerate() if t.name.startswith("hook-std")]

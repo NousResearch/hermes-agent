@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import re
+import select
 import subprocess
 import sys
 import threading
@@ -566,13 +567,26 @@ def _communicate_until_exit(proc: subprocess.Popen, stdin_json: str, timeout: in
     its reader threads end with it."""
     chunks: dict[str, list[bytes]] = {"stdout": [], "stderr": []}
     overflowed: list[str] = []
+    stop = threading.Event()
     stdin = proc.stdin
     assert stdin is not None  # Popen(stdin=PIPE)
+
+    def _readable(fd: int) -> bool:
+        """POSIX: wait briefly for data so a reader can notice ``stop`` while a quiet background helper
+        still holds the pipe. Windows pipes cannot be selected, so a read there blocks until EOF."""
+        if IS_WINDOWS:
+            return True
+        return bool(select.select([fd], [], [], 0.1)[0])
 
     def _drain(name: str) -> None:
         stream, size = getattr(proc, name), 0
         with suppress(OSError, ValueError):
-            while chunk := os.read(stream.fileno(), 65536):
+            fd = stream.fileno()
+            while not stop.is_set():
+                if not _readable(fd):
+                    continue
+                if not (chunk := os.read(fd, 65536)):
+                    return
                 size += len(chunk)
                 if size > _MAX_HOOK_STREAM_BYTES:
                     overflowed.append(name)
@@ -585,17 +599,25 @@ def _communicate_until_exit(proc: subprocess.Popen, stdin_json: str, timeout: in
             stdin.write(stdin_json.encode("utf-8"))
             stdin.close()
 
-    threads = [threading.Thread(target=_drain, args=(name,), daemon=True, name=f"hook-{name}") for name in chunks]
-    threads.append(threading.Thread(target=_feed, daemon=True, name="hook-stdin"))
+    readers = [threading.Thread(target=_drain, args=(name,), daemon=True, name=f"hook-{name}") for name in chunks]
+    threads = [*readers, threading.Thread(target=_feed, daemon=True, name="hook-stdin")]
     for thread in threads:
         thread.start()
     proc.wait(timeout=timeout)
-    if overflowed:
-        raise _HookOutputOverflow(f"printed more than {_MAX_HOOK_STREAM_BYTES // (1 << 20)} MiB on "
-                                  f"{overflowed[0]} and was stopped; a hook answers with one JSON object")
     deadline = time.monotonic() + _PIPE_DRAIN_GRACE_SECONDS  # one grace budget shared by all three threads
     for thread in threads:
         thread.join(timeout=max(0.0, deadline - time.monotonic()))
+    # A helper the hook left running may keep the pipes open: release the readers, then the pipes, so
+    # repeated hook runs do not pile up blocked threads and open descriptors for the helper's lifetime.
+    stop.set()
+    for name, reader in zip(chunks, readers):
+        reader.join(timeout=0.5)
+        if not reader.is_alive():
+            with suppress(OSError, ValueError):
+                getattr(proc, name).close()
+    if overflowed:  # checked after the drain: output that crossed the cap during the grace still counts
+        raise _HookOutputOverflow(f"printed more than {_MAX_HOOK_STREAM_BYTES // (1 << 20)} MiB on "
+                                  f"{overflowed[0]} and was stopped; a hook answers with one JSON object")
     stdout, stderr = (b"".join(chunks[name]).decode("utf-8", errors="replace") for name in ("stdout", "stderr"))
     return stdout, stderr
 

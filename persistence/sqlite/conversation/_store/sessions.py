@@ -812,7 +812,7 @@ def get_session(holder: StoreHolder, session_id: str) -> Optional[dict[str, Any]
 def get_session_list_row(holder: StoreHolder, session_id: str) -> Optional[dict[str, Any]]:
     """Picker columns only: the live listing skips ``get_session``'s prompt/tool JOIN and flush."""
     row = holder._read_one(
-        "SELECT id, source, title, started_at, ended_at, message_count, model, hidden, archived "
+        "SELECT id, source, created_source, title, started_at, ended_at, message_count, model, hidden, archived "
         "FROM sessions WHERE id = ?",
         (session_id,),
     )

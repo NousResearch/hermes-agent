@@ -582,10 +582,12 @@ class SessionListEntry:
 
 @dataclass(frozen=True, slots=True)
 class SessionListRow:
-    """The picker columns of one row."""
+    """The picker columns of one row (``created_source`` is the creating surface, ``None`` when the
+    row records none — the same split the listings filter a generic ``local`` source on)."""
 
     session_id: SessionId
     source: str
+    created_source: Optional[str]
     title: Optional[str]
     started_at: float
     ended_at: Optional[float]

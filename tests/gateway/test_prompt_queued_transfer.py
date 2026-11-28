@@ -520,15 +520,20 @@ def test_a_hosted_room_queued_row_is_offered_no_controls_and_both_verbs_refuse_i
 
 
 def test_only_interactive_local_sessions_are_offered_queued_controls(tmp_path, monkeypatch):
-    """cron, kanban, a2a and bot_room rows settle without a ``steered``/replaced result: never offered."""
+    """cron, kanban, a2a and bot_room rows settle without a ``steered``/replaced result: never offered.
+    ``local`` is not a surface — a peer refresh, a routing write and an accounting insert all leave it
+    behind — so a local row is offered only when ``created_source`` names an interactive surface."""
     db, authority = _authority(tmp_path, monkeypatch)
     row = {'status': 'queued', 'target_session_id': 's', 'payload': {'text': 'hello'}}
+    cases = (('gui', None, True), ('desktop', 'desktop', True), ('tui', None, True), ('cli', None, True),
+             ('acp', 'acp', True), ('local', 'desktop', True), ('local', 'gui', True),
+             ('local', None, False), ('local', 'cron', False), ('cron', 'cron', False),
+             ('kanban', 'kanban', False), ('a2a', 'a2a', False), ('bot_room', 'bot_room', False))
     with db:
         assert session_queued_controls.queued_controls(authority, row) == [], 'no launch policy: not interactive'
         # ``desktop``: a Desktop chat migrated from main keeps main's source label.
-        for source, offered in (('gui', True), ('desktop', True), ('tui', True), ('cli', True), ('acp', True),
-                                ('cron', False), ('kanban', False), ('a2a', False), ('bot_room', False)):
+        for source, created_source, offered in cases:
             authority.launch_sources = {}
-            interactive(authority.persistence, source=source)
+            interactive(authority.persistence, source=source, created_source=created_source)
             controls = session_queued_controls.queued_controls(authority, row)
-            assert controls == (['steer', 'replace'] if offered else []), (source, controls)
+            assert controls == (['steer', 'replace'] if offered else []), (source, created_source, controls)

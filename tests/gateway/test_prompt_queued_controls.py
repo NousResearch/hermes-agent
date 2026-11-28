@@ -9,7 +9,7 @@ import pytest
 
 from gateway.session_authority import LiveSession, SessionAuthority
 from tests.fixtures.storage_holder import raw_holder
-from tests.gateway.test_session_authority_cancel_settlement import REF, _authority, _submit
+from tests.gateway.test_session_authority_cancel_settlement import ACTOR, REF, Submission, _authority, _submit
 
 
 class Agent:
@@ -43,10 +43,12 @@ class Turn:
         monkeypatch.setattr(session_finite, 'execute_finite_admission', execute)
 
 
-def interactive(store, sid='s', source='gui'):
+def interactive(store, sid='s', source='gui', created_source=None):
     """The session was launched from an interactive local surface (Desktop by default): a local
-    session's row records its frozen launch policy's source."""
-    raw_holder(store)._execute_write(lambda conn: conn.execute('UPDATE sessions SET source=? WHERE id=?', (source, sid)))
+    session's row records its frozen launch policy's source. A row frozen as the generic ``local``
+    label keeps the surface that created it in ``created_source``."""
+    raw_holder(store)._execute_write(lambda conn: conn.execute(
+        'UPDATE sessions SET source=?, created_source=? WHERE id=?', (source, created_source, sid)))
 
 
 def _connection(authority):
@@ -246,3 +248,76 @@ async def test_pending_rows_name_the_controls_the_owner_serves(tmp_path, monkeyp
                                                      for r in authority._pending_rows(REF))}
     assert pending['follower'].get('controls') == ['steer', 'replace']
     assert not pending['head'].get('controls'), 'a started row has no queued-row controls'
+
+
+def _pending_controls(authority):
+    """{input_id: the verbs the owner lists} for the session's pending rows."""
+    return {row['input_id']: row.get('controls') or []
+            for row in (asdict(authority._pending_receipt(r)) for r in authority._pending_rows(REF))}
+
+
+@pytest.mark.asyncio
+async def test_a_desktop_row_relabelled_local_still_lists_its_verbs(tmp_path, monkeypatch):
+    """A peer refresh writes the generic ``local`` over an interactive receipt's own source while keeping
+    the surface it created, so one Desktop chat is stored as ``desktop``, ``gui`` or ``local`` depending
+    on when the row was written. Reading only the stored label dropped Steer and Edit from exactly those
+    rows while the panel still showed them."""
+    db, authority = _authority(tmp_path, monkeypatch)
+    interactive(authority.persistence, source='local', created_source='desktop')
+    monkeypatch.setattr(authority, '_schedule', lambda ref: None)
+    with db:
+        await _submit(authority, 'head')
+        await _submit(authority, 'follower')
+        authority.persistence.admissions.claim(epoch=authority.epoch, session_id='s')
+        controls = _pending_controls(authority)
+    assert controls['follower'] == ['steer', 'replace']
+
+
+@pytest.mark.asyncio
+async def test_a_local_row_recording_no_interactive_surface_lists_no_verbs(tmp_path, monkeypatch):
+    """``local`` is also what a routing write and an accounting insert leave behind, so a local row is
+    judged by the surface it records — not read as a creating surface of its own. A row recording none
+    (or a producer's) stays a whole turn."""
+    db, authority = _authority(tmp_path, monkeypatch)
+    monkeypatch.setattr(authority, '_schedule', lambda ref: None)
+    with db:
+        for created_source in (None, 'cron'):
+            interactive(authority.persistence, source='local', created_source=created_source)
+            request_id = f'queued-{created_source}'
+            await _submit(authority, request_id)
+            assert _pending_controls(authority)[request_id] == []
+
+
+@pytest.mark.asyncio
+async def test_a_cron_row_lists_no_verbs(tmp_path, monkeypatch):
+    """Producers that read a saved result per outcome (cron, kanban, a2a, a hosted room) keep their own
+    labels: a transfer would strand them, so the queued-row verbs stay off."""
+    db, authority = _authority(tmp_path, monkeypatch)
+    interactive(authority.persistence, source='cron', created_source='cron')
+    monkeypatch.setattr(authority, '_schedule', lambda ref: None)
+    with db:
+        await _submit(authority, 'queued')
+        assert _pending_controls(authority)['queued'] == []
+
+
+@pytest.mark.asyncio
+async def test_a_clarify_batch_block_rides_along_with_a_transfer(tmp_path, monkeypatch):
+    """Desktop submits every turn with ``cli_turn_v1={"clarify_batch": True}`` — its viewer answers the
+    clarify tool's whole batch. That is a property of the viewer, not of the turn, so the row is still
+    text-only; the same block carrying a per-turn route or API text is a whole turn and keeps no verbs."""
+    db, authority = _authority(tmp_path, monkeypatch)
+    interactive(authority.persistence, source='local', created_source='desktop')
+    monkeypatch.setattr(authority, '_schedule', lambda ref: None)
+    with db:
+        await _submit(authority, 'head')
+        for request_id, wire in (('batched', {'clarify_batch': True}),
+                                 ('pinned', {'model_override': {'model': 'm', 'provider': 'p'}}),
+                                 ('voiced', {'api_text': '[voice] hi'})):
+            await authority.submit(ACTOR, Submission(request_id=request_id, ref=REF, intent='queue',
+                                                     payload={'text': request_id, **wire}))
+        authority.persistence.admissions.claim(epoch=authority.epoch, session_id='s')
+        payloads = {r.request_id: r.payload for r in authority.persistence.admissions.list(session_id='s')}
+        controls = _pending_controls(authority)
+    assert payloads['batched']['cli_turn_v1'] == {'clarify_batch': True}, 'the wire field never reached the row'
+    assert controls['batched'] == ['steer', 'replace']
+    assert controls['pinned'] == [] and controls['voiced'] == []

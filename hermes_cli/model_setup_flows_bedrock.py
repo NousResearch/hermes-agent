@@ -76,7 +76,7 @@ def _model_flow_bedrock_api_key(config, region, current_model=""):
     model_list = _PROVIDER_MODELS.get("bedrock", [])
     print(f"  Showing {len(model_list)} curated models")
     selected = _pick_model_or_prompt(
-        model_list, "  Model ID: ", current_model=current_model, confirm_provider="custom",
+        model_list, "  Model ID: ", current_model=current_model, filter_provider="custom:bedrock-mantle", confirm_provider="custom",
         confirm_base_url=mantle_base_url, confirm_api_key=existing_key)
 
     def _finish(cfg, _model):
@@ -199,7 +199,7 @@ def _model_flow_bedrock(config, current_model=""):
 
     # 4. Model selection
     runtime_url = f"https://bedrock-runtime.{region}.amazonaws.com"
-    selected = _pick_model_or_prompt(model_list, "  Model ID: ", current_model=current_model, confirm_provider="bedrock", confirm_base_url=runtime_url)
+    selected = _pick_model_or_prompt(model_list, "  Model ID: ", current_model=current_model, filter_provider="bedrock", confirm_provider="bedrock", confirm_base_url=runtime_url)
     # api_mode is dropped: bedrock_converse is auto-detected.
     _finish_model(selected, "bedrock", f"  Default model set to: {selected} (via AWS Bedrock, {region})", no_change="  No change.",
                   base_url=runtime_url, drop_api_mode=True,

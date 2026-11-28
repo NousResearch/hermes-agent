@@ -62,6 +62,83 @@ class TestParseResponse:
         assert shell_hooks._parse_response("pre_tool_call", "") is None
         assert shell_hooks._parse_response("pre_tool_call", "   ") is None
 
+    @pytest.mark.parametrize("event, reply, expected", [
+        # Nested reply shape (hookSpecificOutput).
+        ("pre_tool_call", {"hookSpecificOutput": {"permissionDecision": "deny", "permissionDecisionReason": "Blocked by policy"}},
+         {"action": "block", "message": "Blocked by policy"}),
+        # "ask" routes to the human: the Hermes approval-gate escalation, never auto-allow.
+        ("pre_tool_call", {"hookSpecificOutput": {"permissionDecision": "ask", "permissionDecisionReason": "needs a human"}},
+         {"action": "approve", "message": "needs a human"}),
+        ("pre_tool_call", {"hookSpecificOutput": {"permissionDecision": "allow", "updatedInput": {"command": "npm ci"}}},
+         {"action": "modify", "args": {"command": "npm ci"}}),
+        ("pre_tool_call", {"hookSpecificOutput": {"permissionDecision": "allow"}}, None),
+        ("pre_llm_call", {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": "Today is Friday"}},
+         {"context": "Today is Friday"}),
+        ("pre_verify", {"hookSpecificOutput": {"decision": "block", "reason": "Tasks incomplete, continue working"}},
+         {"action": "continue", "message": "Tasks incomplete, continue working"}),
+        # Flat permission shape (permission / agent_message / updated_input / continue / followup_message).
+        ("pre_tool_call", {"permission": "deny", "user_message": "Shown to you", "agent_message": "No pushes to main"},
+         {"action": "block", "message": "No pushes to main"}),
+        ("pre_tool_call", {"permission": "ask", "user_message": "Confirm the migration"},
+         {"action": "approve", "message": "Confirm the migration"}),
+        ("pre_tool_call", {"permission": "allow", "updated_input": {"command": "npm ci"}},
+         {"action": "modify", "args": {"command": "npm ci"}}),
+        ("pre_tool_call", {"permission": "allow"}, None),
+        ("pre_llm_call", {"continue": False, "user_message": "Prompt contains a customer ID"},
+         {"action": "block", "message": "Prompt contains a customer ID"}),
+        ("pre_llm_call", {"continue": True, "additional_context": "Branch: main"}, {"context": "Branch: main"}),
+        ("pre_verify", {"followup_message": "Run the formatter, then finish."},
+         {"action": "continue", "message": "Run the formatter, then finish."}),
+        # A Hermes key in the same reply keeps precedence over the lowered one.
+        ("pre_tool_call", {"permission": "allow", "action": "block", "message": "Hermes wins"},
+         {"action": "block", "message": "Hermes wins"}),
+        # Every veto in a mixed reply is read on its own; the most severe wins and context is kept.
+        ("pre_llm_call", {"continue": False, "user_message": "Do not send this",
+                          "hookSpecificOutput": {"additionalContext": "Branch: main"}},
+         {"action": "block", "message": "Do not send this"}),
+        ("pre_tool_call", {"permission": "allow", "updated_input": {"command": "ls"},
+                           "hookSpecificOutput": {"permissionDecision": "deny", "permissionDecisionReason": "nested veto"}},
+         {"action": "block", "message": "nested veto"}),
+        # A Hermes approval request outranks a foreign rewrite in the same reply.
+        ("pre_tool_call", {"action": "approve", "message": "Confirm this", "permission": "allow",
+                           "updated_input": {"command": "npm ci"}},
+         {"action": "approve", "message": "Confirm this"}),
+        ("pre_tool_call", {"decision": "approve", "hookSpecificOutput": {"permissionDecision": "deny",
+                                                                         "permissionDecisionReason": "still denied"}},
+         {"action": "block", "message": "still denied"}),
+    ])
+    def test_other_agent_reply_shapes_lower_onto_the_flat_dialect(self, event, reply, expected):
+        """Hook scripts written for other agents answer in a nested or a flat permission shape;
+        both used to parse to None here, so a ``deny`` let the tool run."""
+        assert shell_hooks._parse_response(event, json.dumps(reply)) == expected
+
+
+    def test_mixed_replies_keep_the_most_severe_directive(self):
+        """Every combination of Hermes, nested and flat permission parts: the result is the most severe
+        directive present (block > approve > modify), so no shape can hide another's veto or approval ask."""
+        import itertools
+        hermes = [{}, {"action": "approve", "message": "ask-h", "rule_key": "terminal:migration"},
+                  {"action": "modify", "args": {"x": 1}},
+                  {"action": "block", "message": "veto-h"}, {"decision": "approve"}]
+        nested = [{}, {"permissionDecision": "allow", "updatedInput": {"x": 2}},
+                  {"permissionDecision": "ask", "permissionDecisionReason": "ask-n"},
+                  {"permissionDecision": "deny", "permissionDecisionReason": "veto-n"}]
+        flat = [{}, {"permission": "allow", "updated_input": {"x": 3}}, {"permission": "ask", "agent_message": "ask-f"},
+                {"permission": "deny", "agent_message": "veto-f"}]
+        for h, n, f in itertools.product(hermes, nested, flat):
+            reply = {**h, **f, **({"hookSpecificOutput": n} if n else {})}
+            verbs = {h.get("action"), {"deny": "block", "ask": "approve"}.get(n.get("permissionDecision")),
+                     {"deny": "block", "ask": "approve"}.get(f.get("permission"))}
+            got = shell_hooks._parse_response("pre_tool_call", json.dumps(reply)) or {}
+            want = next((v for v in ("block", "approve") if v in verbs), None)
+            want = want or ("modify" if any((h.get("action") == "modify", "updatedInput" in n,
+                                              "updated_input" in f)) else None)
+            if want is None:
+                assert got == {}, reply
+                continue
+            assert got.get("action") == want, reply
+            if h.get("action") == want:  # a tie keeps the Hermes directive's own fields
+                assert got == shell_hooks._parse_response("pre_tool_call", json.dumps(h)), reply
 
 # ── _serialize_payload ────────────────────────────────────────────────────
 

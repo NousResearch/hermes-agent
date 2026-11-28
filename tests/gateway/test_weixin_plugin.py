@@ -296,8 +296,10 @@ class TestWeixinChunkDelivery:
     @pytest.mark.parametrize("stored_token", [None, "ctx-token"])
     @patch("plugins.platforms.weixin.adapter._send_message", new_callable=AsyncMock)
     def test_prepare_failed_without_recovery_is_not_a_rate_limit(self, send_message_mock, stored_token):
-        """No token to drop (fresh pairing, #80125) or a tokenless re-send that still fails: the error names the
-        real cause and the rate-limit breaker stays closed, instead of "rate limited; cooldown active" for 30s."""
+        """No token to drop (fresh pairing, #80125) or a tokenless re-send that still fails: the
+        refusal names the real cause and the rate-limit breaker stays closed, instead of
+        "rate limited; cooldown active" for 30s. The undelivered text is held for the peer's
+        next inbound (#135921) rather than discarded, so the send reports accepted+queued."""
         from gateway.platforms.base import classify_send_error
 
         adapter = self._connected_adapter(context_token=stored_token)
@@ -306,11 +308,15 @@ class TestWeixinChunkDelivery:
 
         result = asyncio.run(adapter.send("wxid_test123", "hello"))
 
-        assert result.success is False
-        assert "prepare failed" in (result.error or "") and "cooldown" not in (result.error or "")
-        # The platform-neutral classifier must not route it back into the rate-limited redelivery lane either.
-        assert classify_send_error(None, result.error or "") != "rate_limited"
+        assert result.success is True
+        assert result.raw_response["queued"] is True
+        # The refusal the hold captured names the real cause; it must never look like a cooldown.
         assert adapter._rate_limit_cooldown_remaining() == 0.0
+        # The platform-neutral classifier must not route a stale-session refusal back into the
+        # rate-limited redelivery lane either (its retries are timer-based and would duplicate
+        # text the hold queue already owns).
+        assert classify_send_error(weixin._session_not_ready_error(-2, None, "prepare failed")) != "rate_limited"
+        assert [chunks for _, chunks, _ in adapter._held_outbound["wxid_test123"]] == [["hello"]]
         assert [call.kwargs["context_token"] for call in send_message_mock.await_args_list] == (
             [None] if stored_token is None else ["ctx-token", None])
 

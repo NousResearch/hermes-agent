@@ -230,6 +230,45 @@ class TestTerminalToolConfig:
         finally:
             env.cleanup()
 
+    def test_ssh_sync_files_respects_config(self, tmp_path, monkeypatch):
+        """terminal.ssh_sync_files in config.yaml controls SSH file sync (no env var)."""
+        from tools.terminal_tool import _get_env_config
+
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        # Env var alone must not disable ssh_sync_files (config.yaml key only).
+        monkeypatch.setenv("TERMINAL_SSH_SYNC_FILES", "false")
+        assert _get_env_config()["ssh_sync_files"] is True
+
+        (home / "config.yaml").write_text("terminal:\n  ssh_sync_files: false\n", encoding="utf-8")
+        assert _get_env_config()["ssh_sync_files"] is False
+
+    @pytest.mark.parametrize("setting, expected", [(None, True), (False, False)])
+    def test_ssh_sync_files_reaches_the_environment(self, tmp_path, monkeypatch, setting, expected):
+        """terminal.ssh_sync_files from config.yaml reaches SSHEnvironment."""
+        from tools.terminal_tool import _get_env_config
+        from tools.terminal_tool_lifecycle import _create_configured_env
+
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        if setting is not None:
+            val = "true" if setting else "false"
+            (home / "config.yaml").write_text(f"terminal:\n  ssh_sync_files: {val}\n", encoding="utf-8")
+        monkeypatch.setenv("TERMINAL_SSH_HOST", "example.com")
+        monkeypatch.setenv("TERMINAL_SSH_USER", "alice")
+        monkeypatch.setattr(ssh_env.shutil, "which", lambda _name: "/usr/bin/ssh")
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "_establish_connection", lambda self: None)
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "_detect_remote_home", lambda self: "/home/alice")
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "_ensure_remote_dirs", lambda self: None)
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "init_session", lambda self: None)
+        monkeypatch.setattr(ssh_env, "FileSyncManager", lambda **kw: type("M", (), {"sync": lambda self, **k: None})())
+        config = _get_env_config()
+        env = _create_configured_env(config, "ssh", image="", cwd="~", timeout=30,
+                                     task_id="ssh-sync-files-config", host_cwd=None)
+        assert (env._sync_manager is not None) is expected
+
 
 class TestSSHPreflight:
     def test_ensure_ssh_available_raises_clear_error_when_missing(self, monkeypatch):

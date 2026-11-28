@@ -36,6 +36,7 @@ from hermes_cli.config import get_hermes_home
 from tools.process_registry_notifications import (
     format_process_notification, heartbeat_output_tail, is_child_process_notification, should_surface_notification)
 from tools.process_registry_checkpoint import ProcessCheckpointMixin
+from tools.process_registry_adoption import ProcessAdoptionMixin
 from tools.process_registry_env_scope import ProcessEnvScopeMixin
 from tools.process_registry_output_log import ProcessOutputLogMixin, open_output_log, record_exit_command, worker_output_log
 from tools.process_registry_ownership import ProcessOwnershipMixin
@@ -672,7 +673,7 @@ _WSL_CHAIN_NOTE = (
 )
 
 
-class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOutputLogMixin, ProcessOwnershipMixin, ProcessEnvScopeMixin):
+class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOutputLogMixin, ProcessOwnershipMixin, ProcessEnvScopeMixin, ProcessAdoptionMixin):
     """In-memory registry of running and finished background processes.
     Thread-safe: accessed from executor threads (terminal_tool, process handlers),
     the gateway asyncio loop (watchers, reset checks) and the cleanup thread."""
@@ -1239,32 +1240,6 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             self._track_started(session, self._log_reader_loop if log else self._reader_loop, f"proc-reader-{session.id}")
         except Exception:
             self._reap_untracked(session, proc)
-            raise
-        return session
-
-    def adopt_local(
-        self, proc: subprocess.Popen, *, command: str, cwd: Optional[str], task_id: str = "",
-        session_key: str = "", owner_task_id: str = "", output_so_far: str = "",
-        notify_on_complete: bool = True) -> ProcessSession:
-        """Take over a still-running foreground Popen as a tracked background session
-        (yield-to-background: the user sent a message while the command was running).
-        The caller has stopped its own drain thread; the registry's reader continues from
-        the pipe's current position and ``output_so_far`` seeds the buffer so nothing
-        already captured is lost."""
-        session = self._new_session(command, task_id, owner_task_id, session_key, cwd)
-        session.process = proc
-        session.pid = proc.pid
-        session.host_start_time = self._safe_host_start_time(session.pid)
-        session.notify_on_complete = notify_on_complete
-        handed_pgid = getattr(proc, "_hermes_owned_pgid", None)
-        self._take_handoff_group(session, proc)
-        if output_so_far:
-            session.append_output(output_so_far)
-        try:
-            self._track_started(session, self._reader_loop, f"proc-reader-{session.id}")
-        except Exception:
-            # The caller resumes its foreground wait: give it back its group, still covered.
-            self._return_handoff_group(session, proc, handed_pgid)
             raise
         return session
 
@@ -2234,9 +2209,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                 if session.pid:
                     os.kill(session.pid, signal.SIGTERM)
         elif session.process:
-            # Tree kill: on Windows Popen.terminate() only kills the shell wrapper and
-            # leaves Git Bash descendants behind.
-            self._terminate_host_pid(session.process.pid, session.host_start_time)
+            self._terminate_session_process(session)
         elif session.env_ref and session.pid:
             session.env_ref.execute(f"kill {session.pid} 2>/dev/null", cwd="/", timeout=5)
         elif session.detached and session.pid_scope == "host" and session.pid:

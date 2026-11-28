@@ -120,7 +120,7 @@ def kill_live_foreground_processes(*, now: bool = False) -> int:
     KILLs, so a SIGTERM-ignoring command outlives a hard exit that lands inside that window. It also
     raises the exit fence and waits for spawns already past it to register, so no command started
     around the snapshot survives, and it never blocks past ``_HARD_KILL_BUDGET_S``: SDK cancels
-    (Modal, Daytona, Vercel) run on daemon threads under that one deadline."""
+    (Docker, Modal, Daytona, Vercel) run on daemon threads under that one deadline."""
     global _exit_fenced
     if not now:
         with _live_foreground_cond:
@@ -140,7 +140,7 @@ def kill_live_foreground_processes(*, now: bool = False) -> int:
         live = list(_live_foreground.values())
     remote = []
     for env, proc in live:
-        if isinstance(proc, subprocess.Popen):  # killpg/kill: never blocks
+        if isinstance(proc, subprocess.Popen) and getattr(env, "is_local", False):  # killpg/kill: never blocks
             _quiet_kill(env._force_kill_process, proc)
         else:
             remote.append(threading.Thread(target=_quiet_kill, args=(env._force_kill_process, proc), daemon=True))
@@ -607,12 +607,8 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
             _fast_until = time.monotonic() + 0.05
             while proc.poll() is None:
                 trace.iterations += 1
-                if is_interrupted() or is_thread_interrupted(watch_interrupt_tid):
-                    trace.interrupted()
-                    _kill_and_join()
-                    return {**self._finalize_wait_result(output, output.render(suffix="\n[Command interrupted]"), 130),
-                            "hermes_interrupted": True}
-                if yield_handler is not None and consume_yield(watch_interrupt_tid):
+                interrupted = is_interrupted() or is_thread_interrupted(watch_interrupt_tid)
+                if not interrupted and yield_handler is not None and consume_yield(watch_interrupt_tid):
                     drain_stop.set()
                     drain_thread.join(timeout=1)
                     try:
@@ -625,6 +621,11 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
                         return handed
                     drain_stop.clear()
                     drain_thread = _start_drain_thread(proc, output, drain_stop)
+                if interrupted or is_interrupted() or is_thread_interrupted(watch_interrupt_tid):
+                    trace.interrupted()
+                    _kill_and_join()
+                    return {**self._finalize_wait_result(output, output.render(suffix="\n[Command interrupted]"), 130),
+                            "hermes_interrupted": True}
                 if time.monotonic() > deadline:
                     trace.timed_out()
                     _kill_and_join()

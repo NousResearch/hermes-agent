@@ -18,6 +18,7 @@ import os
 import time
 from agent.i18n import DEFAULT_LANGUAGE, t
 from agent.session_activity import format_iteration_progress
+from gateway.busy_media import prepare_redirect_text
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
@@ -767,13 +768,12 @@ class GatewayBusySessionMixin:
             else:
                 effective_mode = "queue"
         elif (
-            effective_mode == "interrupt" and plain_text and agent_live
+            effective_mode == "interrupt" and event.message_type != MessageType.COMMAND and agent_live
             and getattr(running_agent, "_supports_active_turn_redirect", False) is True
             and hasattr(running_agent, "redirect")
         ):
-            redirected = self._redirect_active_turn(
-                running_agent, (event.text or "").strip(), session_key, event
-            )
+            redirect_text = await prepare_redirect_text(self, event)
+            redirected = self._redirect_active_turn(running_agent, redirect_text, session_key, event)
         return self._BusySteerOutcome(
             effective_mode=effective_mode, demoted_for_subagents=demoted_for_subagents,
             demoted_for_compression=demoted_for_compression, steered=steered, redirected=redirected,
@@ -836,6 +836,7 @@ class GatewayBusySessionMixin:
             running.clear_turn_origin()  # a person's input joined it: no longer only a Hermes wake's
         if running is not None and running is not event:
             running.absorb_turn_input(event)
+            running.extend_media(event)
         if turn.event is not None and turn.event is not event:
             turn.event.absorb_reply_expected(event)
             if turn.ctx is not None:

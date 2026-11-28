@@ -20,6 +20,12 @@ class ProcessTerminationMixin:
     """The subclass supplies ``_host_pid_is_ours``, ``_is_host_pid_alive``,
     ``_detached_host_fate`` and ``_daemon_term_grace_seconds``. See ProcessRegistry."""
 
+    def _terminate_session_process(self, session):
+        if session.env_ref:
+            session.env_ref._kill_process(session.process)
+        else:
+            self._terminate_host_pid(session.process.pid, session.host_start_time)
+
     @staticmethod
     def _proc_alive(proc) -> bool:
         """True if a psutil.Process is running and not a zombie (already dead, just unreaped)."""

@@ -8,7 +8,10 @@ monkeypatch points authoritative.
 import json
 import logging
 import sys
+import threading
 from typing import Any, List, Optional
+
+from tools import interrupt
 
 logger = logging.getLogger("tools.terminal_tool")
 
@@ -263,22 +266,28 @@ _YIELDED_NOTE = (
 
 def yield_to_background_handler(
     *, command: str, env_type: str, cwd: Optional[str], effective_task_id: str,
-    task_id: Optional[str], session_key: str,
+    task_id: Optional[str], session_key: str, env=None,
 ):
     """Build the ``yield_handler`` a foreground ``env.execute`` calls when the tool thread is
-    asked to yield (a user message arrived mid-command). Local backend only: the live Popen
-    is adopted by the process registry as a notify-on-complete background session and the
-    partial output is returned to the model right away. Other backends return None (no
-    adoptable host process) and the foreground wait continues."""
-    if env_type != "local":
+    asked to yield. Local and Docker retain the original process and output stream; Docker
+    manages the namespace process group rather than signalling only the exec client.
+    Other backends still wait in the foreground."""
+    if env_type not in {"local", "docker"}:
         return None
+    caller_tid = threading.get_ident()
 
-    def _handler(proc, output_so_far: str) -> dict:
+    def _handler(proc, output_so_far: str) -> dict | None:
         from tools.process_registry import process_registry
-        session = process_registry.adopt_local(
-            proc, command=command, cwd=cwd, task_id=effective_task_id,
-            owner_task_id=task_id or effective_task_id, session_key=session_key,
-            output_so_far=output_so_far)
+        kwargs = dict(command=command, cwd=cwd, task_id=effective_task_id,
+                      owner_task_id=task_id or effective_task_id, session_key=session_key,
+                      output_so_far=output_so_far)
+        if env_type == "docker":
+            session = process_registry.adopt_sandbox(env._foreground_commands[id(proc)], proc, **kwargs)
+        else:
+            session = process_registry.adopt_local(proc, **kwargs)
+        if interrupt.is_thread_interrupted(caller_tid):
+            process_registry.kill_process(session.id, source="foreground_interrupt", consume_output=True)
+            return None
         _stamp_routing_if_gateway(process_registry, session, session_key)
         logger.info("foreground command yielded to background as %s (pid %s)", session.id, session.pid)
         return {

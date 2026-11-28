@@ -28,6 +28,7 @@ from tools.terminal_tool_config import (
     _host_path_key, _is_windows_drive_path, cwd_follows_host_mount, home_profile_name,
 )
 from tools.environments.base_output import _popen_bash
+from tools.environments.docker_foreground import DockerForeground
 from tools.environments.docker_egress import (
     _EGRESS_LABEL_KEY, _critical_egress_env_names, _egress_enforce_on_docker, _egress_proxy_args_for_docker,
     _egress_reuse_fingerprint, check_docker_env_collisions, check_extra_args_collisions,
@@ -675,6 +676,7 @@ class DockerEnvironment(BaseEnvironment):
         if cwd == "~":
             cwd = "/root"
         super().__init__(cwd=cwd, timeout=timeout)
+        self._foreground_commands: dict[int, DockerForeground] = {}
         self._persistent = persistent_filesystem
         self._persist_across_processes = persist_across_processes
         # Set by terminal_tool._create_environment for session-scoped containers
@@ -1096,6 +1098,40 @@ class DockerEnvironment(BaseEnvironment):
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,
                   stdin_data: str | None = None) -> subprocess.Popen:
+        record = DockerForeground(self)
+        # The owned child, not the wrapper, is the login shell: profile functions and aliases
+        # must load where the command (or snapshot bootstrap) runs.
+        proc = self._run_bash_untracked(record.wrap(cmd_string, login=login), login=login,
+                                        shell_login=False, timeout=timeout, stdin_data=stdin_data)
+        self._foreground_commands[id(proc)] = record
+        return proc
+
+    def _wait_for_process(self, proc, *args, **kwargs):
+        record = self._foreground_commands.get(id(proc))
+        try:
+            return super()._wait_for_process(proc, *args, **kwargs)
+        finally:
+            if record is not None and not record.adopted:
+                self._foreground_commands.pop(id(proc), None)
+
+    def _kill_process(self, proc):
+        record = self._foreground_commands.get(id(proc))
+        if record is not None:
+            record.kill()
+        super()._kill_process(proc)
+
+    def _force_kill_process(self, proc):
+        try:
+            record = self._foreground_commands.get(id(proc))
+            if record is not None:
+                record.kill(force=True)
+        finally:
+            super()._kill_process(proc)
+
+    def _run_bash_untracked(self, cmd_string: str, *, login: bool = False,
+                            shell_login: bool | None = None,
+                            timeout: int = 120,
+                            stdin_data: str | None = None) -> subprocess.Popen:
         """Spawn bash inside the container. Init seeds the snapshot; profile-scoped passthrough
         values are re-injected on every command because one container can be shared by
         multiple routed profiles in a gateway process."""
@@ -1120,7 +1156,8 @@ class DockerEnvironment(BaseEnvironment):
         elif self._profile_scoped_passthrough:
             runtime_args, unset_names, env_values = self._build_runtime_env_args_with_unsets()
             cmd.extend(runtime_args)
-        cmd += [self._container_id, *bash_argv(prepend_unset(cmd_string, unset_names), login)]
+        cmd += [self._container_id, *bash_argv(prepend_unset(cmd_string, unset_names),
+                                                login if shell_login is None else shell_login)]
 
         client_env = self._docker_client_env(env_values)
         return _popen_bash(cmd, stdin_data, env=client_env) if client_env is not None else _popen_bash(cmd, stdin_data)

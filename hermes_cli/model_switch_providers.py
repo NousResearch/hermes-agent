@@ -14,6 +14,7 @@ import threading as _threading
 from dataclasses import dataclass, field
 from typing import Any, List, Optional
 from agent.command_token_source import build_command_token_provider, materialize_probe_api_key
+from hermes_cli.model_catalog import get_catalog, merge_remote_models
 from hermes_cli.providers import custom_provider_aliases, custom_provider_slug, get_label
 from utils import base_url_host_matches, same_base_url_origin
 
@@ -1186,13 +1187,38 @@ def _lap_custom_provider_rows(b: _PickerBuild, custom_providers: list) -> None:
         section4_slugs.add(slug.lower())
 
 
+def configured_model_ids(provider: str) -> list[str]:
+    """The ids ``providers.<provider>.models`` pins in this profile's config."""
+    from hermes_cli.config import load_config
+    from hermes_cli.model_switch import _declared_model_ids
+
+    configured = (load_config().get("providers") or {}).get(provider)
+    return _declared_model_ids(configured.get("models")) if isinstance(configured, dict) else []
+
+
+def _offline_rows_are_plugin_owned(provider: str) -> bool:
+    """Whether ``provider`` serves its plugin's ``fallback_models`` while it has no live result
+    (``models.merge_profile_catalog``). The manifest never extends that list, so the cold read must
+    not offer a row the completed offline lookup then withdraws."""
+    from hermes_cli.models import _PROVIDER_CATALOG_FETCHERS
+    from providers import get_provider_profile
+
+    profile = None if provider in _PROVIDER_CATALOG_FETCHERS else get_provider_profile(provider)
+    return bool(profile is not None and profile.fallback_models)
+
+
 def _build_curated_lists(current_provider: str, current_base_url: str, current_model: str,
                         non_blocking: bool = False) -> dict[str, list[str]]:
     """Curated model lists keyed by hermes provider id, plus the dynamic ones (nous manifest,
     Ollama Cloud, LM Studio live probe). ``non_blocking`` (GUI read path) takes cached Ollama Cloud
     ids and warms them in the background rather than waiting on an 8s probe (#114215)."""
     from hermes_cli.models import OPENROUTER_MODELS, _PROVIDER_MODELS, get_curated_nous_model_ids
-    curated: dict[str, list[str]] = dict(_PROVIDER_MODELS)
+    # Remote manifest so new Portal models surface without a release; in-repo snapshot fallback. Read
+    # first: this is the call that refreshes the manifest every other row extends itself from.
+    get_catalog()
+    nous_models = get_curated_nous_model_ids()
+    curated: dict[str, list[str]] = {
+        p: rows if _offline_rows_are_plugin_owned(p) else merge_remote_models(p, rows) for p, rows in _PROVIDER_MODELS.items()}
     curated["openrouter"] = [mid for mid, _ in OPENROUTER_MODELS]
     # Plugin profiles without a built-in row: this home's static_models, else fallback_models, are the
     # curated floor, so the non-blocking GUI read (cold catalog cache) never lists an empty provider row.
@@ -1200,8 +1226,7 @@ def _build_curated_lists(current_provider: str, current_base_url: str, current_m
     for _pp in list_providers():
         if not curated.get(_pp.name) and (rows := list(_pp.static_models or _pp.fallback_models)):
             curated[_pp.name] = rows
-    # Remote manifest so new Portal models surface without a release; in-repo snapshot fallback.
-    curated["nous"] = get_curated_nous_model_ids()
+    curated["nous"] = nous_models
     if "ollama-cloud" not in curated:
         from hermes_cli.models import fetch_ollama_cloud_models
         # Read path: cache only; the row's own SWR refresh (cached_provider_model_ids) warms it.

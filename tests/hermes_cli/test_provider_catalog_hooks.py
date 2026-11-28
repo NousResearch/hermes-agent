@@ -7,7 +7,7 @@ from __future__ import annotations
 import pytest
 
 import providers
-from hermes_cli import models
+from hermes_cli import model_catalog, models
 from hermes_cli import models_catalog_static as static
 from providers.base import ProviderProfile
 
@@ -62,6 +62,16 @@ def test_static_models_act_as_the_providers_static_catalog_row(only_acme):
     assert models.get_default_model_for_provider("acme-cat") == "acme-small"
     assert "acme-cat" in models.static_catalog_providers()
     assert "acme-cat" not in static._PROVIDER_MODELS  # resolved per lookup, never copied into the shared table
+
+
+def test_the_remote_manifest_does_not_extend_a_plugins_static_row(only_acme, tmp_path, monkeypatch):
+    profile = only_acme(_acme(static_models=("acme-owned",)))
+    path = tmp_path / "catalog.json"
+    path.write_text('{"version": 1, "providers": {"acme-cat": {"models": [{"id": "foreign"}]}}}', encoding="utf-8")
+    monkeypatch.setattr(model_catalog, "_cache_path", lambda: path)
+
+    assert models.provider_model_ids(profile.name) == ["acme-owned"]
+    assert models.merge_profile_catalog(profile.name, profile, ["acme-live"]) == ["acme-owned", "acme-live"]
 
 
 def test_probe_models_hook_answers_its_endpoint_and_declines_others(only_acme, monkeypatch):

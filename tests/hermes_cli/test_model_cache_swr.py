@@ -242,8 +242,7 @@ class TestCatalogSWR:
         import hermes_cli.model_catalog as mc
 
         manifest = {"version": 1, "providers": {"nous": {"models": [{"id": "hermes-4"}]}}}
-        monkeypatch.setattr(mc, "_catalog_cache", None)
-        monkeypatch.setattr(mc, "_catalog_cache_source_mtime", 0.0)
+        monkeypatch.setattr(mc, "_catalog_slot", None)
         with patch.object(mc, "_load_catalog_config", return_value={
                  "enabled": True, "ttl_hours": 1.0, "url": "https://example/cat.json",
                  "providers": {}}), \
@@ -259,8 +258,7 @@ class TestCatalogSWR:
         import hermes_cli.model_catalog as mc
 
         manifest = {"version": 1, "providers": {}}
-        monkeypatch.setattr(mc, "_catalog_cache", None)
-        monkeypatch.setattr(mc, "_catalog_cache_source_mtime", 0.0)
+        monkeypatch.setattr(mc, "_catalog_slot", None)
         with patch.object(mc, "_load_catalog_config", return_value={
                  "enabled": True, "ttl_hours": 1.0, "url": "https://example/cat.json",
                  "providers": {}}), \

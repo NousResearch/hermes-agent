@@ -137,7 +137,8 @@ def get_model_info(profile: Optional[str] = None):
         caps = {}
         try:
             from agent.models_dev import get_model_capabilities
-            mc = get_model_capabilities(provider=provider, model=model_name)
+            with _config_profile_scope(profile):
+                mc = get_model_capabilities(provider=provider, model=model_name)
             if mc is not None:
                 caps = {name: getattr(mc, name) for name in _CAPABILITY_FIELDS}
         except Exception:
@@ -196,6 +197,23 @@ def _nous_recommended_default() -> dict:
     return recommended_nous_default_model()
 
 
+def _in_shipped_order(models: list[str], moved: set[str], shipped: list[str]) -> list[str]:
+    """``models`` with each id in ``moved`` (lowercase) moved only later past the ids that stay:
+    before the next id the shipped row lists after it, else just after the last one it lists
+    before it, else where it is. Every other id keeps its place."""
+    order = [mid for mid in models if mid.lower() not in moved]
+    rank = {mid.lower(): i for i, mid in enumerate(shipped)}
+    for mid in sorted((m for m in models if m.lower() in moved), key=lambda m: rank[m.lower()]):
+        kept = [m for m in models[:models.index(mid)] if m.lower() not in moved]
+        start = order.index(kept[-1]) + 1 if kept else 0  # an id only ever moves later
+        own = rank[mid.lower()]
+        at = next((i for i in range(start, len(order)) if rank.get(order[i].lower(), -1) > own), None)
+        if at is None:  # nothing shipped after it: follow the last id shipped before it, else stay
+            at = next((i + 1 for i in reversed(range(start, len(order))) if 0 <= rank.get(order[i].lower(), -1) < own), start)
+        order.insert(at, mid)
+    return order
+
+
 @router.get("/api/model/recommended-default")
 def get_recommended_default_model(provider: str = "", profile: Optional[str] = None):
     """Recommended default model for a freshly-authenticated provider, mirroring
@@ -221,17 +239,40 @@ def get_recommended_default_model(provider: str = "", profile: Optional[str] = N
 
     try:
         from hermes_cli.inventory import build_models_payload, load_picker_context
-        from hermes_cli.models import pick_silent_default_model
+        from hermes_cli.model_catalog import manifest_additions, shipped_rows_only
+        from hermes_cli.models import pick_silent_default_model, provider_model_ids, static_catalog
+        from hermes_cli.model_switch_providers import configured_model_ids
+        from hermes_cli.models_detect import cached_provenance
 
         # build_models_payload -> list_authenticated_providers -> _save_discovered_models_to_config:
-        # this GET lazily PERSISTS discovered custom-provider models, so it needs the scope too.
+        # this GET lazily PERSISTS discovered custom-provider models, so it needs the scope too. So
+        # does the choice: the manifest it consults is the profile's.
         with _config_profile_scope(profile):
             payload = build_models_payload(load_picker_context())
-        for row in payload.get("providers", []):
-            if str(row.get("slug", "")).lower() == slug:
-                models = [str(m) for m in (row.get("models") or [])]
-                return {"provider": slug, "model": pick_silent_default_model(models, provider=slug), "free_tier": None}
-        return {"provider": slug, "model": "", "free_tier": None}
+            row = next((r for r in payload.get("providers", []) if str(r.get("slug", "")).lower() == slug), None)
+            if row is None:
+                return {"provider": slug, "model": "", "free_tier": None}
+            models = [str(m) for m in (row.get("models") or [])]
+            if (record := cached_provenance(slug)) is not None:
+                # A row that is in the picker only because of the manifest is offered, never
+                # recommended. Pins from ``providers.<slug>.models`` and the provider's own rows stay.
+                pinned = {mid.lower() for mid in configured_model_ids(slug)}
+                published = record["needs_manifest"] - pinned
+                if published:
+                    models = [mid for mid in models if mid.lower() not in published] or list(static_catalog(slug)) or models
+                if moved := record["now_shipped"] - pinned:
+                    # Written by an older release: an id it took from the manifest is in front, where
+                    # the manifest put it. Recommend from the order this release ships it in.
+                    models = _in_shipped_order(models, moved, static_catalog(slug))
+            elif added := manifest_additions(slug, static_catalog(slug)):
+                # A row the manifest added is offered, never recommended. Choose from the list, in
+                # its order, that the picker would have had without the manifest's rows.
+                offered = set(models)
+                with shipped_rows_only():
+                    own = [mid for mid in provider_model_ids(slug) if mid in offered]
+                published = {mid.lower() for mid in added}
+                models = own or [mid for mid in models if mid.lower() not in published] or models
+            return {"provider": slug, "model": pick_silent_default_model(models, provider=slug), "free_tier": None}
     except HTTPException:
         raise  # an unknown ?profile= is the scope's 404, not an empty recommendation
     except Exception:

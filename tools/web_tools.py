@@ -225,6 +225,9 @@ _BUILTIN_AVAILABILITY = {
     "brave-free": lambda: _has_env("BRAVE_SEARCH_API_KEY"),
     "ddgs": lambda: _ddgs_package_importable(),
     "xai": _xai_available,
+    # Keyed-only, alongside tavily/parallel/… so holding a DeepSeek key never auto-routes paid
+    # search: the backend is reachable only by explicit web.search_backend / extract_backend.
+    "deepseek": lambda: _has_env("DEEPSEEK_API_KEY"),
 }
 _LEGACY_WEB_BACKENDS = frozenset(_BUILTIN_AVAILABILITY)
 

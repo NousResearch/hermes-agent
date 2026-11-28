@@ -889,6 +889,26 @@ def test_register_declares_weixin_platform_entry():
     assert captured["max_message_length"] == 0 and captured["allow_update_command"] is True
 
 
+def test_platform_hint_discourages_wide_pipe_tables():
+    """#16951: the WeChat personal client clips the right side of wide pipe tables, so the registered hint must
+    steer 3+ column data to an image (MEDIA:) or a key: value list while keeping the existing media guidance."""
+    captured = {}
+
+    class _Ctx:
+        def register_platform(self, **kwargs):
+            captured.update(kwargs)
+
+    weixin.register(_Ctx())
+    hint = captured["platform_hint"]
+    assert hint is weixin._PLATFORM_HINT
+    assert "WeChat" in hint and "MEDIA:/absolute/path/to/file" in hint
+    lower = hint.lower()
+    assert "pipe tables" in lower and "do not use pipe tables for 3+ columns" in lower
+    assert "image" in lower and "media:/absolute/path/to/table.png" in lower
+    assert "key: value" in lower
+    assert "two-column pipe tables render fine" in lower
+
+
 def test_is_connected_requires_account_and_token(monkeypatch):
     for name in ("WEIXIN_ACCOUNT_ID", "WEIXIN_TOKEN"):
         monkeypatch.delenv(name, raising=False)

@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { atom } from 'nanostores'
 import type { ComponentProps } from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
@@ -52,6 +52,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
     host: { ...gateway.host, requestProfile: request } }
 })
 
+import { CANONICAL_GROUP_CAPABILITIES } from './canonical-group-contract-test-utils'
 import { CanonicalGroupWorkspace } from './canonical-group-workspace'
 
 const members = [{ member_id: 'ops', profile: 'ops', handle: 'ops', display_name: 'Ops' }]
@@ -306,4 +307,29 @@ it('preserves fractional start and progress times through elapsed, stall and rec
   view.rerender(<ul><MemberStatusChip {...props} status={{ kind: 'working', startedAt: 1000.1, lastSignAt: 1120.9 }} /></ul>)
   expect(view.container.querySelector('li')?.getAttribute('data-member-status')).toBe('working')
   expect(view.container.textContent).toContain('2m00s')
+})
+
+it('does not re-render the transcript while the composer is typed into', async () => {
+  request.mockImplementation(async (_route, method) => {
+    if (method === 'groups.capabilities') {return CANONICAL_GROUP_CAPABILITIES}
+
+    if (method === 'groups.state') {return { room: { name: 'Room', members, latest_seq: 1 }, change_events: true,
+      driver_status: { working: false } }}
+
+    if (method === 'groups.log') {return { events: [{ seq: 1, event_id: 'u1', kind: 'message.user',
+      actor: { kind: 'user', id: 'u' }, payload: { text: '@ops go', thread_id: 't' } }] }}
+
+    return {}
+  })
+  render(<CanonicalGroupWorkspace binding={binding} />)
+  const box = await screen.findByRole('textbox') as HTMLTextAreaElement
+  await waitFor(() => expect(box.disabled).toBe(false))
+  const renders = historyRenders.count
+
+  fireEvent.change(box, { target: { value: 'h' } })
+  fireEvent.change(box, { target: { value: 'he' } })
+  fireEvent.change(box, { target: { value: 'hel' } })
+
+  // The draft lives in the workspace, so each keystroke re-renders it; the memoized transcript must not follow.
+  expect(historyRenders.count - renders).toBe(0)
 })

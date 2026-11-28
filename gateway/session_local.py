@@ -610,6 +610,8 @@ def local_session_info(authority, ref):
         if warning := ' '.join(filter(None, notices)):
             info['config_warning'] = warning
     info.update(_classic_cli_fields(authority, ref, live, agent, policy))
+    if not info.get('provider'):  # unknown (an auto route before its agent builds): '' clears a viewer's
+        info.pop('provider', None)
     return info
 
 

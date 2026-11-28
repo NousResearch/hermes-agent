@@ -7397,7 +7397,7 @@ async function saveGatewayFile(payload: GatewayFileSavePayload = {}): Promise<Ga
         return requestWithOauthFallback(connection.baseUrl, {
           ensureNativeAccessToken,
           requestWithBearer: (bearer: string): Promise<GatewayFileSaveResult> =>
-            downloadViaTokenToFile(url, null, context, deps, { bearer }),
+            downloadViaTokenToFile(url, null, context, deps, { bearer, remoteHeaders: headersForRemoteRequest(url) }),
           requestWithCookie: (): Promise<GatewayFileSaveResult> =>
             downloadViaOauthSessionToFile<Session>(url, context, {
               ...deps,
@@ -7425,7 +7425,7 @@ async function saveGatewayFile(payload: GatewayFileSavePayload = {}): Promise<Ga
         )
       }
 
-      return downloadViaTokenToFile(url, connection.token ?? null, context, deps)
+      return downloadViaTokenToFile(url, connection.token ?? null, context, deps, { remoteHeaders: headersForRemoteRequest(url) })
     },
     readDataUrl: (requestPath: string): Promise<string> => readGatewayFileDataUrl(connection, requestPath)
   })

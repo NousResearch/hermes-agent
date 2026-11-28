@@ -226,6 +226,9 @@ def _session_cwd(session: dict | None) -> str:
 
 # Sources whose launch directory is an artifact of how the app was started, not a workspace the user picked.
 _LAUNCH_CWD_NOT_A_WORKSPACE = {"desktop"}
+# Same rule for the row's stored cwd only (a gui client inherits the profile's terminal.cwd).
+_PERSIST_CWD_NOT_A_WORKSPACE = _LAUNCH_CWD_NOT_A_WORKSPACE | {"gui"}
+
 
 
 def _context_cwd_is_launch_artifact(session: dict | None) -> bool:
@@ -266,7 +269,7 @@ def _persisted_session_cwd(session: dict) -> str | None:
     """The cwd to stamp on the session's DB row, or None to leave it unset (launch-dir rule: ``_ensure_session_db_row``)."""
     if session.get("explicit_cwd"):
         return _session_cwd(session)
-    if _session_source(session) in _LAUNCH_CWD_NOT_A_WORKSPACE or _is_remote_launch_cwd(session):
+    if _session_source(session) in _PERSIST_CWD_NOT_A_WORKSPACE or _is_remote_launch_cwd(session):
         return None
     return str(session.get("cwd") or "") or None  # the session's OWN dir, never _session_cwd's gateway-wide fallback
 

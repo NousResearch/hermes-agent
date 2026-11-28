@@ -1,21 +1,23 @@
 name: claudexor
 title: Claudexor
 repo: https://github.com/razzant/claudexor
-sha: "6bc0ed57c0012bd6a636ab46865389df3269be9d"
+sha: "a05671c150dc3b63035bb725081364f269ad3b27"
 subdir: plugins/hermes
-description: "Ask another coding agent from Hermes or delegate work on a project you select through your local Claudexor CLI. Integration by Ouroboros. Disclosure — Runs your separately installed, unpinned Claudexor CLI as an MCP server; it can start a local daemon and third-party coding agents (Claude Code, Codex, Cursor, OpenCode) that send prompts and selected project files to their providers, spend subscription quota or money, and, once you approve a call, write to your project."
+description: >-
+  Ask another coding agent from Hermes or explicitly delegate work on a project you select. With the Claudexor Skill enabled, an explicit code-review request can prompt the Hermes model to ask for a read-only second opinion. Integration by Ouroboros. Disclosure — Runs your separately installed, unpinned Claudexor CLI as an MCP server. It can start a local daemon and third-party coding agents (Claude Code, Codex, Cursor, OpenCode) that send prompts and selected project files to their providers, consume subscription quota or incur charges, and write to your project after you approve the call under the bundled untrusted policy.
 maintainer: ouroboros-agent
 tier: community
 category: tools
 requires_hermes: ">=0.23.1"
-docs_url: https://github.com/razzant/claudexor/tree/6bc0ed57c0012bd6a636ab46865389df3269be9d/plugins/hermes
-version: "6.3.0"
+docs_url: https://github.com/razzant/claudexor/tree/a05671c150dc3b63035bb725081364f269ad3b27/plugins/hermes
+version: "6.5.0"
 readme: true
 platforms: [linux, macos]
 known_issues:
-  - Install Claudexor CLI 6.3.0 or later separately on the Hermes machine. Both node and claudexor must be on the Hermes process's PATH.
-  - The pin covers the Hermes plug-in, not the separately installed CLI or vendor harnesses.
-  - The CLI can start a local daemon and coding agents. Prompts and selected files can reach configured providers and consume quota or incur charges.
+  - Install Claudexor CLI 6.3.0 or later separately on the Hermes machine; node (24.15 or later) and claudexor must be on its PATH. For automatic reviews, use matching Claudexor CLI and daemon versions, both 6.4.0 or later.
+  - The pin covers the Hermes plug-in. It does not pin the installed CLI, daemon or vendor harnesses.
+  - Keep Tool Search at its default. Automatic invocation depends on the Hermes model and did not happen on every test request. You can still ask Hermes to use Claudexor explicitly.
+  - Automatic reviews consume subscription quota. If the vendor account has paid add-on credits enabled, they can also incur vendor charges even with a zero Claudexor paid budget.
 capabilities:
   provides_tools: []
   provides_hooks: []

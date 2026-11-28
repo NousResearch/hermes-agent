@@ -2051,7 +2051,7 @@ Shell hooks are registered by calling `agent.shell_hooks.register_from_config(cf
 ```yaml
 hooks:
   <event_name>:                  # Must be in VALID_HOOKS
-    - matcher: "<regex>"         # Optional; used for pre/post_tool_call only
+    - matcher: "<regex>"         # Optional; used for pre/post_tool_call and transform_tool_result only
       command: "<shell command>" # Required; runs via shlex.split, shell=False
       timeout: <seconds>         # Optional; default 60, capped at 300
       fail_closed: <bool>        # Optional; default false. pre_tool_call only.
@@ -2119,6 +2119,10 @@ The same field is included by the shared outbound-webhook payload builder.
 // Keep the agent going at the verify gate (pre_verify); both shapes accepted:
 {"action": "continue", "message": "Run the formatter, then finish."}
 {"decision": "block",  "reason":  "Run the formatter, then finish."}
+
+// Replace the text for transform_tool_result / transform_terminal_output / transform_llm_output:
+"Rewritten text"                  // a JSON string literal, e.g. printf %s "$new" | jq -Rs .
+{"text": "Rewritten text"}        // or {"content": "..."}; empty or anything else keeps the original
 
 // Silent no-op — any empty / non-matching output is fine:
 ```

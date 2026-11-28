@@ -89,10 +89,15 @@ class TestCreateAndLinkIntoSensitivePaths:
         "ln /tmp/e ~/.ssh/authorized_keys && echo ok",
         "ln -s /tmp/e ~/.bashrc;",
         "touch -r ~/.bashrc ~/.zshrc",
+        "touch -r  ~/.bashrc ~/.zshrc",
+        "touch -r  ~/.bashrc -- ~/.zshrc",
+        "touch -r -- ~/.bashrc",
         "touch -d now ~/.bashrc",
         # After `--`, `-r` / `--reference` are file names, so the rc file is the operand created.
         "touch -- -r ~/.bashrc",
+        "touch -- -r  ~/.bashrc",
         "touch -- --reference ~/.bashrc",
+        "touch -- --reference  ~/.bashrc",
         'touch "$HOME/.bashrc"',
         "touch ~/.hermes/.env",
         # A redirect glued to or following the target does not end the create/link.
@@ -124,7 +129,14 @@ class TestCreateAndLinkIntoSensitivePaths:
         "ln -sf /etc/nginx/sites-available/x /etc/nginx/sites-enabled/x",
         # -r / --reference only read the rc file's timestamps; a sibling name is not the rc file.
         "touch -r ~/.bashrc newfile",
+        "touch -r  ~/.bashrc newfile",
+        "touch -r\t~/.bashrc newfile",
+        "touch -cr  ~/.bashrc newfile",
+        "touch -r~/.bashrc newfile",
+        'touch -r  "~/.bashrc" newfile',
         "touch --reference ~/.bashrc newfile",
+        "touch --reference  ~/.bashrc newfile",
+        "touch --reference=~/.bashrc newfile",
         "ln -sfn ~/.bashrc ~/.bashrc.bak",
         "ln -s a ~/.bashrc.d/x",
         "touch ~/.profile.d/x",
@@ -134,10 +146,10 @@ class TestCreateAndLinkIntoSensitivePaths:
         assert detect_dangerous_command(command) == (False, None, None), command
 
     def test_trailing_redirect_scan_is_linear(self):
-        # A `(\s*[<>]\S+)*` redirect tail backtracks polynomially on `>a>a>…` (n=24: seconds).
+        # A `(\s*[<>]\S+)*` redirect tail backtracks exponentially on `>a>a>…` (n=28: tens of seconds).
         start = time.monotonic()
-        detect_dangerous_command("ln -s x ~/.bashrc >" + "a>" * 24 + "a q")
-        assert time.monotonic() - start < 1.0
+        detect_dangerous_command("ln -s x ~/.bashrc >" + "a>" * 28 + "a q")
+        assert time.monotonic() - start < 2.0
 
 
 class TestQuotedHomePrefixHardline:

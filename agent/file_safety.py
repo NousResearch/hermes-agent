@@ -28,6 +28,77 @@ from hermes_platform.host.facts import os_family
 GOOGLE_WORKSPACE_CREDENTIAL_FILES = ("google_token.json", "google_client_secret.json", "google_oauth_pending.json")
 
 
+# Shell startup files are execution-bearing user configuration. Keep this
+# inventory shared with the terminal approval detector so file writes and
+# shell commands cannot silently drift into different allowlists.
+SHELL_RC_RELATIVE_PATHS: tuple[str, ...] = (
+    ".bashrc",
+    ".bash_aliases",
+    ".profile",
+    ".bash_profile",
+    ".bash_login",
+    ".zshenv",
+    ".zshrc",
+    ".zprofile",
+    ".zlogin",
+    ".zlogout",
+    ".config/fish/config.fish",
+)
+SHELL_RC_ZSH_FILENAMES: tuple[str, ...] = (
+    ".zshenv",
+    ".zshrc",
+    ".zprofile",
+    ".zlogin",
+    ".zlogout",
+)
+
+
+def _resolve_configured_path(value: str, home: str) -> str:
+    """Resolve a path-valued shell environment variable against ``home``."""
+    from agent.secret_scope import serves_routed_profile
+    expanded = value if serves_routed_profile() else os.path.expandvars(value)
+    if expanded == "~" or expanded.startswith("~/"):
+        expanded = home + expanded[1:]
+    if not os.path.isabs(expanded):
+        expanded = os.path.join(home, expanded)
+    return os.path.realpath(expanded)
+
+
+def build_shell_rc_approval_paths(home: str) -> set[str]:
+    """Return default and environment-relocated shell startup file paths."""
+    paths = {
+        os.path.realpath(os.path.join(home, relative))
+        for relative in SHELL_RC_RELATIVE_PATHS
+    }
+
+    from agent.secret_scope import current_secret_scope, serves_routed_profile
+    environment = (current_secret_scope() or {}) if serves_routed_profile() else os.environ
+    zdotdir = environment.get("ZDOTDIR")
+    if zdotdir:
+        zsh_dir = _resolve_configured_path(zdotdir, home)
+        paths.update(
+            os.path.join(zsh_dir, filename)
+            for filename in SHELL_RC_ZSH_FILENAMES
+        )
+
+    xdg_config_home = environment.get("XDG_CONFIG_HOME")
+    if xdg_config_home:
+        paths.add(
+            os.path.join(
+                _resolve_configured_path(xdg_config_home, home),
+                "fish",
+                "config.fish",
+            )
+        )
+
+    for variable in ("BASH_ENV", "ENV"):
+        configured = environment.get(variable)
+        if configured:
+            paths.add(_resolve_configured_path(configured, home))
+
+    return {os.path.realpath(path) for path in paths}
+
+
 def _constants_path(getter_name: str) -> Path:
     """Call ``hermes_constants.<getter_name>()`` (local import avoids cycles); ``~/.hermes`` on any failure."""
     try:
@@ -269,7 +340,7 @@ def build_write_denied_paths(home: str) -> set[str]:
     """Return exact sensitive paths that must never be written."""
     # ``~/.ssh/config`` is deliberately NOT hard-denied: no key bytes, and editing
     # it is routine. It can carry ProxyCommand / Match exec, so it goes through the
-    # approval gate instead (_approval_paths_by_key).
+    # approval gate instead (write_approval_key).
     home_files = (
         (".ssh", "authorized_keys"), (".ssh", "id_rsa"), (".ssh", "id_ed25519"),
         *((name,) for name in HOME_CREDENTIAL_FILES),
@@ -345,19 +416,12 @@ def get_safe_write_roots() -> set[str]:
 # Login shell startup files: approval-gated for the file tools and, via
 # tools.approval_detection._SHELL_RC_FILES, for terminal writes. One inventory so the two
 # gates cannot drift apart (#85321).
-SHELL_RC_FILES: tuple[str, ...] = (".bashrc", ".zshrc", ".profile", ".bash_profile", ".zprofile")
+SHELL_RC_FILES = SHELL_RC_RELATIVE_PATHS
 
 
-def _approval_paths_by_key(home: str) -> dict[str, str]:
-    """Paths that need human APPROVAL to write but are not hard-denied credentials -> the approval key.
-
-    ``~/.ssh/config`` holds no key bytes but can carry ``ProxyCommand`` / ``Match exec``; shell rc
-    files run at login. Interactive file tools prompt; callers without a human channel fail closed.
-    Each class has its own key so an approve-always answer for ``~/.ssh/config`` never authorizes
-    ``~/.bashrc`` (or vice versa)."""
-    paths = {os.path.realpath(os.path.join(home, ".ssh", "config")): "ssh_config_write"}
-    paths.update({os.path.realpath(os.path.join(home, name)): "shell_rc_write" for name in SHELL_RC_FILES})
-    return paths
+def _ssh_config_keys(homes: set[str]) -> set[str]:
+    """Resolved SSH client configs across the guarded homes."""
+    return {deny_key(os.path.realpath(os.path.join(home, ".ssh", "config"))) for home in homes}
 
 
 def _classify_write_denial(path: str, *, entry: bool = False) -> Optional[str]:
@@ -398,8 +462,7 @@ def _classify_resolved_write_denial(homes: set[str], resolved: str) -> Optional[
     # ``~/.bashrc`` -> ``~/.ssh/authorized_keys`` turn the credential deny into a shell_rc_write
     # prompt. The protected-subpath and HERMES_WRITE_SAFE_ROOT checks below still apply.
     key = deny_key(resolved)
-    ssh_configs = {deny_key(os.path.realpath(os.path.join(home, ".ssh", "config"))) for home in homes}
-    if key not in ssh_configs and any(
+    if key not in _ssh_config_keys(homes) and any(
         key in map(deny_key, build_write_denied_paths(home))
         or any(key.startswith(deny_key(prefix)) for prefix in build_write_denied_prefixes(home))
         for home in homes
@@ -456,7 +519,17 @@ def write_approval_key(path: str) -> Optional[str]:
     """Approval key gating a write to ``path`` (``ssh_config_write`` / ``shell_rc_write``), or None."""
     homes, resolved = _homes_and_resolved(local_drive_spelling(path))
     key = deny_key(resolved)
-    return next((k for home in homes for p, k in _approval_paths_by_key(home).items() if deny_key(p) == key), None)
+    # A relocated startup path can coincide with another guard home's SSH config.
+    if key in _ssh_config_keys(homes):
+        return "ssh_config_write"
+    if any(deny_key(candidate) == key for home in homes for candidate in build_shell_rc_approval_paths(home)):
+        return "shell_rc_write"
+    return None
+
+
+def is_shell_rc_path(path: str) -> bool:
+    """Return True when the write gate classifies ``path`` as a shell startup file."""
+    return write_approval_key(path) == "shell_rc_write"
 
 
 # Secret-bearing project-local env file basenames, blocked anywhere on disk.

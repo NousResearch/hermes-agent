@@ -11,9 +11,9 @@ import os
 import re
 import shlex
 import tempfile
+from typing import Any
 import unicodedata
 
-from agent.file_safety import SHELL_RC_FILES
 from tools import approval_parser_budget as _parser_budget
 from tools.approval_parser_budget import _scan_backtick_end, _scan_dollar_paren_end, _scan_shell
 from tools.approval_ansi_c import _is_shell_comment_start, expand_ansi_c_quotes
@@ -35,32 +35,21 @@ from tools.approval_applescript import OSASCRIPT_OPAQUE_DESCRIPTION, OSASCRIPT_R
 from tools.approval_quoted_newlines import _mask_quoted_newlines
 from tools.approval_variation_selectors import _EMOJI_RANGE, _HIDDEN_VARIATION_SELECTOR_RE
 from tools.approval_wmic import WmicShadowDeleteMatcher
+from tools.approval_shell_rc import (
+    _HERMES_CONFIG_PATH, _HERMES_ENV_PATH,
+    _CREDENTIAL_FILES, _SECRET_CREDENTIAL_FILES, _SHELL_RC_FILES, _SSH_SENSITIVE_PATH,
+    _WRITE_TARGET_BOUNDARY, _rewrite_resolved_shell_rc_paths,
+)
 
 
 # Sensitive write targets, matched via ~ / $HOME / $HERMES_HOME spellings. The resolved absolute
 # home is folded into these forms at detection time by _normalize_command_for_detection(), so no
 # import-time path snapshot (stale once HERMES_HOME is set after import) lives in the patterns.
-_SSH_SENSITIVE_PATH = r'(?:~|\$home|\$\{home\})/\.ssh(?:/|$)'
-# A Hermes home: the default root or a named profile under it (profiles/<name>/ has its own config.yaml/.env).
-_HERMES_HOME_DIR = (
-    r'(?:~\/\.hermes/|(?:\$home|\$\{home\})/\.hermes/|(?:\$hermes_home|\$\{hermes_home\})/)'
-    r'(?:profiles/[^/\s"\'`]+/)?'
-)
-_HERMES_ENV_PATH = (
-    _HERMES_HOME_DIR + r'(?:\.op)?\.env\b'
-)
-# ~/.hermes/config.yaml IS the security policy (approvals.mode, yolo, allowlist) and the config cache is mtime-keyed,
-# so a write takes effect mid-session. Terminal-side coverage (sed -i, tee, >, cp) pairs the file_tools deny.
-_HERMES_CONFIG_PATH = (
-    _HERMES_HOME_DIR + r'config\.yaml\b'
-)
 _PROJECT_ENV_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*\.env(?:\.[^/\s"\'`]+)?)'
 _PROJECT_CONFIG_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*config\.yaml)'
-_SHELL_RC_FILES = rf"(?:~|\$home|\$\{{home\}})/(?:{'|'.join(re.escape(f) for f in SHELL_RC_FILES)})\b"
-_CREDENTIAL_FILES = r'(?:~|\$home|\$\{home\})/\.' r'(?:netrc|pgpass|npmrc|pypirc)\b'
 _HOME_PREFIX = r'(?:~|\$home|\$\{home\})/'
 _SECRET_FILE = (
-    rf'(?:{_SSH_SENSITIVE_PATH}|{_HERMES_ENV_PATH}|{_CREDENTIAL_FILES}|{_PROJECT_ENV_PATH}(?![\w-])'
+    rf'(?:{_SSH_SENSITIVE_PATH}|{_HERMES_ENV_PATH}|{_SECRET_CREDENTIAL_FILES}|{_PROJECT_ENV_PATH}(?![\w-])'
     rf'|{_HOME_PREFIX}\.(?:aws/credentials|git-credentials|config/gh/hosts\.yml|docker/config\.json|kube/config)\b'
     r'|/etc/(?:shadow|passwd)\b|\bid_(?:rsa|ed25519|ecdsa|dsa)\b)'
 )
@@ -95,14 +84,11 @@ _HOME_SENSITIVE_CREATE_TARGET = (
     rf'(?:{_SSH_SENSITIVE_PATH}|(?:{_HOME_PREFIX}\.ssh|{_SHELL_RC_FILES}|{_CREDENTIAL_FILES}|{_HERMES_ENV_PATH}|{_HERMES_CONFIG_PATH})'
     r'(?=["\'\s;&|)`<>]|$))'
 )
+_SENSITIVE_CREATE_DESCRIPTION = "create a file in a sensitive credential/SSH/shell-rc path"
 _PROJECT_SENSITIVE_WRITE_TARGET = rf'(?:{_PROJECT_ENV_PATH}|{_PROJECT_CONFIG_PATH})'
 # cp/mv/install: the sensitive path is a write target only as the LAST argument (destination), so
 # `cp config.yaml backup.yaml` (config.yaml as SOURCE) stays out.
 _COMMAND_TAIL = r'(?:\s*(?:&&|\|\||;).*)?$'
-# `>`/`>>`/tee: the path is ALWAYS a write target regardless of what follows, so only require a
-# shell word boundary (_COMMAND_TAIL let `echo x > .env extra` / `echo x > .env # note` slip past).
-# `#` is deliberately NOT a boundary: a glued `#` is part of the filename (`.env#backup`).
-_WRITE_TARGET_BOUNDARY = r'(?=[\s;&|<>"\']|$)'
 
 # ---- Hardline (unconditional) blocklist ---------------------------------------------------
 # Commands that NEVER run via the agent, regardless of --yolo, approvals.mode=off, or cron approve
@@ -757,8 +743,9 @@ DANGEROUS_PATTERNS = [
     # (`mkdir -p ~/.ssh && touch ~/.ssh/x`, `ln -sf evil ~/.bashrc`), pairing the write_file deny (#85321).
     # Command-position anchored so `ls -ln ~/.ssh` / `grep touch ~/.bashrc` stay out; any touch/mkdir operand
     # counts, but for ln only the destination (last operand) does, so linking OUT of these paths stays safe.
-    # `touch -r REF` / `--reference REF` only reads REF (its timestamps), so that operand is not a create target.
-    (rf'{_CMDPOS}(?:touch|mkdir)\s(?:[^\n;&|]*\s)?(?:(?<!\s-r\s)(?<!\s--reference\s)|(?<=\s--\s-r\s)|(?<=\s--\s--reference\s))["\']?{_HOME_SENSITIVE_CREATE_TARGET}', "create a file in a sensitive credential/SSH/shell-rc path"),
+    # `touch -r REF` / `--reference REF` only reads REF (its timestamps); `_has_sensitive_create_target`
+    # parses shell words and `--` so spacing/bundling never turns a reference read into a create prompt.
+    (rf'{_CMDPOS}(?:touch|mkdir)\s(?:[^\n;&|]*\s)?["\']?{_HOME_SENSITIVE_CREATE_TARGET}', _SENSITIVE_CREATE_DESCRIPTION),
     (rf'{_CMDPOS}ln\s[^\n;&|]*\s["\']?{_HOME_SENSITIVE_CREATE_TARGET}[^\s"\'<>;&|)`]*+["\']?(?:\s*+\d*+[<>]++&?\s*+[^\s<>;&|)`]*+)*+\s*+(?:[\n;&|)`]|$)', "link a file into a sensitive credential/SSH/shell-rc path"),
     # Hermes home / session-store floor (#109367): delete, wipe, move, or overwrite of the home or a
     # protected store. cp/install/rsync only as the destination, so `cp ~/.hermes/state.db /tmp/bak` stays clean.
@@ -862,14 +849,27 @@ DANGEROUS_PATTERNS = [
 ]
 
 
+_SENSITIVE_CREATE_PREFILTER_PATTERN = rf'{_CMDPOS}(?:touch|mkdir)\s(?:[^\n;&|]*\s)?["\']?{_HOME_SENSITIVE_CREATE_TARGET}'
+_SENSITIVE_CREATE_PREFILTER_RE = re.compile(_SENSITIVE_CREATE_PREFILTER_PATTERN, _RE_FLAGS)
+
+
+class _SensitiveCreateTargetMatcher:
+    """``touch``/``mkdir`` create-target matcher using shell-word parsing so ``-r``/``--reference``
+    only reads its reference operand regardless of spacing, option bundling, or quoting."""
+
+    def search(self, text: str) -> bool:
+        return _SENSITIVE_CREATE_PREFILTER_RE.search(text) is not None and _has_sensitive_create_target(text)
+
+
 _PIPE_REMOTE_TO_SHELL_DESCRIPTION = "pipe remote content to shell"
 _CUSTOM_MATCHERS = {
     _PIPE_REMOTE_TO_SHELL_DESCRIPTION: _PipeRemoteToShellMatcher,
     _WMIC_SHADOW_DELETE_DESCRIPTION: WmicShadowDeleteMatcher,
     _DEV_TCP_REDIRECT_DESCRIPTION: _DevSocketRedirectMatcher,
     _DOWNLOAD_THEN_RUN_DESCRIPTION: lambda: DownloadThenRunMatcher(_SHELL_NAMES_RE),
+    _SENSITIVE_CREATE_DESCRIPTION: _SensitiveCreateTargetMatcher,
 }
-DANGEROUS_PATTERNS_COMPILED = [
+DANGEROUS_PATTERNS_COMPILED: list[tuple[Any, str]] = [
     (_CUSTOM_MATCHERS[d]() if d in _CUSTOM_MATCHERS else re.compile(p, _RE_FLAGS), d)
     for p, d in DANGEROUS_PATTERNS
 ]
@@ -934,6 +934,8 @@ def _approval_key_aliases(pattern_key: str) -> set[str]:
     return _PATTERN_KEY_ALIASES.get(pattern_key, {pattern_key})
 
 
+
+
 # ---- Detection ----------------------------------------------------------------------------
 def _normalize_command_for_detection(command: str) -> str:
     """Normalize a command before pattern matching so ANSI escapes, null bytes, Unicode fullwidth
@@ -951,6 +953,9 @@ def _normalize_command_for_detection(command: str) -> str:
     # and C:\Users\alice\.bashrc. Resolved at detection time (not import time) so it tracks HOME/HERMES_HOME set
     # later. MUST run before the backslash strip (which would dissolve C:\Users\alice to C:Usersalice). Hermes home
     # first: on Windows it nests under the user home, and folding the user home first would eat the prefix it needs.
+    # Fold exact rc targets first: an environment-selected file can live
+    # below either home prefix and would otherwise lose its absolute spelling.
+    command = _rewrite_resolved_shell_rc_paths(command)
     command = _rewrite_resolved_hermes_home(command)
     command = _rewrite_resolved_user_home(command)
     # Strip backslash-escapes (r\m -> rm) and empty-string literals (r''m -> rm).
@@ -1756,6 +1761,59 @@ def _is_shell_token_spliced_gateway_lifecycle(command: str) -> bool:
     except Exception:
         return False
     return contains_gateway_lifecycle_command(command)
+
+
+_HOME_SENSITIVE_CREATE_TARGET_RE = re.compile(rf"^(?:{_HOME_SENSITIVE_CREATE_TARGET})", _RE_FLAGS)
+
+
+def _touch_option_consumes_reference_arg(option: str) -> bool:
+    """True when a touch option token takes the following shell word as its ``-r``/``--reference`` file."""
+    if option == "--reference":
+        return True
+    if option.startswith("--") or not option.startswith("-") or len(option) < 2:
+        return False
+    for idx, ch in enumerate(option[1:]):
+        if ch in ("r", "d", "t", "A"):
+            return ch == "r" and idx == len(option) - 2
+    return False
+
+
+def _has_sensitive_create_target(command: str) -> bool:
+    """True when a ``touch`` or ``mkdir`` command targets a sensitive home path as a create operand."""
+    for start, end, word in _iter_shell_command_word_spans(command):
+        name = os.path.basename(_deobfuscate_shell_word_for_detection(word)).lower()
+        seg_end = start + len(_shell_command_segment(command, start))
+        pos = end
+        if name in ("busybox", "toybox"):
+            w_start, pos, applet = _read_shell_word(command, pos)
+            if w_start == pos:
+                continue
+            name = os.path.basename(_deobfuscate_shell_word_for_detection(applet)).lower()
+        if name not in ("touch", "mkdir"):
+            continue
+        options, skip_ref = True, False
+        while pos < seg_end:
+            redirect = _SHELL_REDIRECTION_RE.match(command, _skip_shell_whitespace(command, pos))
+            if redirect:
+                _, pos, _ = _read_shell_word(command, redirect.end())
+                continue
+            w_start, pos, raw_arg = _read_shell_word(command, pos)
+            if w_start == pos:
+                break
+            arg = _strip_shell_word_syntax(raw_arg)
+            if skip_ref:
+                skip_ref = False
+                continue
+            if options and arg == "--":
+                options = False
+                continue
+            if options and arg.startswith("-") and arg != "-":
+                if name == "touch" and _touch_option_consumes_reference_arg(arg):
+                    skip_ref = True
+                continue
+            if _HOME_SENSITIVE_CREATE_TARGET_RE.match(arg):
+                return True
+    return False
 
 
 def _upload_flag_owner_ranges(command: str) -> tuple[list[int], list[int]]:

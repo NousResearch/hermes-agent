@@ -55,7 +55,7 @@ async def test_idle_restart_ack_is_delivered_before_teardown_starts(monkeypatch,
 @pytest.mark.asyncio
 async def test_idle_restart_ack_carries_the_ordinary_reply_routing(monkeypatch, tmp_path):
     """The early ack is routed like any command reply: a forum-topic reply goes by topic metadata
-    with no reply anchor, and it is notify-worthy (not sent silently)."""
+    and quotes the triggering message, and it is notify-worthy (not sent silently)."""
     sent = []
 
     async def send(chat_id, content, **kwargs):
@@ -68,7 +68,7 @@ async def test_idle_restart_ack_carries_the_ordinary_reply_routing(monkeypatch, 
 
     await runner._handle_message(event)
 
-    assert sent[0]["reply_to"] is None
+    assert sent[0]["reply_to"] == "m1"
     assert sent[0]["metadata"]["thread_id"] == "42"
     assert sent[0]["metadata"]["notify"] is True
 

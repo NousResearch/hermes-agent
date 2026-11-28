@@ -230,6 +230,16 @@ def _subscribe_input_error(name: str, deliver: str) -> str | None:
     return None
 
 
+def _print_subscription_auth(route):
+    """Explain the stored authentication pin without exposing the route secret."""
+    if route.get("signature") in (None, "bearer"):
+        print("  Send Authorization: Bearer <stored secret> for fixed-token providers.")
+        print("  Use TLS; Bearer tokens have no replay protection.")
+    else:
+        print("  Use the route's stored secret with its pinned signature scheme.")
+        print("  For fixed-token providers, subscribe with --signature bearer instead.")
+
+
 def _cmd_subscribe(args):
     name = args.name.strip().lower().replace(" ", "-")
     if error := _subscribe_input_error(name, args.deliver or "log"):
@@ -338,7 +348,7 @@ def _cmd_subscribe(args):
     if route.get("script"):
         print(f"  Script: {route['script']}")
     print("\n  Configure your service to POST to the URL above.")
-    print("  Use the route's stored secret for HMAC-SHA256 signature validation.")
+    _print_subscription_auth(route)
     print("  The gateway must be running to receive events (hermes gateway run).\n")
 
 
@@ -431,6 +441,8 @@ def _cmd_test(args):
 
 def _test_signature_headers(scheme, secret: str, body: bytes) -> dict[str, str]:
     """Sign like the route's pinned provider would; generic and unpinned routes get timestamp-bound V2."""
+    if scheme == "bearer":
+        return {"Authorization": "Bearer " + secret}
     body_mac = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
     if scheme == "github":
         return {"X-Hub-Signature-256": "sha256=" + body_mac, "X-GitHub-Event": "test"}

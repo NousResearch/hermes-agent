@@ -1,7 +1,7 @@
 """``hermes webhook subscribe`` pins new routes to ``signature: generic`` and ``webhook test`` signs so the
 real adapter accepts it under that pin (#84265)."""
 import json
-from argparse import Namespace
+from argparse import ArgumentParser, Namespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -10,6 +10,36 @@ from multidict import CIMultiDict
 from gateway.config import PlatformConfig
 from gateway.platforms.webhook import WebhookAdapter
 from hermes_cli.webhook import _load_subscriptions, _mutate_subscriptions, webhook_command
+from hermes_cli.subcommands.webhook import build_webhook_parser
+
+
+@pytest.mark.parametrize("action", ["subscribe", "add"])
+def test_cli_parser_bearer_create_and_update_preserve_pin(action, capsys):
+    parser = ArgumentParser()
+    build_webhook_parser(parser.add_subparsers(), cmd_webhook=webhook_command)
+    secret = "synthetic-secret-not-for-display"
+    args = parser.parse_args(["webhook", action, "hook", "--signature", "bearer",
+                              "--secret", secret, "--script", "filter_payload.py"])
+    args.func(args)
+    output = capsys.readouterr().out
+    route = _load_subscriptions()["hook"]
+    assert route["signature"] == "bearer"
+    assert route["secret"] == secret
+    assert route["script"] == "filter_payload.py"
+    assert secret not in output
+    assert "Bearer" in output and "Authorization" in output
+    assert "Script: filter_payload.py" in output
+
+    update = parser.parse_args(["webhook", action, "hook", "--description", "updated",
+                                "--script", "filter_payload.py"])
+    update.func(update)
+    output = capsys.readouterr().out
+    route = _load_subscriptions()["hook"]
+    assert route["signature"] == "bearer"
+    assert route["secret"] == secret
+    assert route["script"] == "filter_payload.py"
+    assert route["description"] == "updated"
+    assert secret not in output
 
 
 @pytest.fixture(autouse=True)
@@ -76,11 +106,23 @@ def test_provider_pin_is_kept_and_test_signs_with_the_provider_scheme(monkeypatc
     assert _adapter_accepts(route, req)
 
 
-@pytest.mark.parametrize("pin", ["generic", "github", "gitlab", "linear"])
+@pytest.mark.parametrize("pin", ["generic", "github", "gitlab", "linear", "bearer"])
 def test_webhook_test_signs_so_the_pinned_route_accepts_it(monkeypatch, pin):
     webhook_command(_args(signature=pin))
     route = _load_subscriptions()["hook"]
     assert _adapter_accepts(route, _send_test(monkeypatch, "hook"))
+
+
+@pytest.mark.parametrize("script", ["", "filter_payload.py"])
+def test_bearer_subscribe_masks_secret_and_keeps_script(capsys, script):
+    webhook_command(_args(signature="bearer", script=script))
+    out = capsys.readouterr().out
+    route = _load_subscriptions()["hook"]
+    assert route["secret"] not in out
+    assert "Bearer" in out and "Authorization" in out and "replay" in out
+    assert route.get("script", "") == script
+    if script:
+        assert f"Script: {script}" in out
 
 
 def test_update_of_pre_pin_route_stays_unpinned(monkeypatch):

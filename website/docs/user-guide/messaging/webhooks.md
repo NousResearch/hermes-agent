@@ -79,8 +79,8 @@ Routes define how different webhook sources are handled. Each route is a named e
 | Property | Required | Description |
 |----------|----------|-------------|
 | `events` | No | List of event types to accept (e.g. `["pull_request"]`). If empty, all events are accepted. Event type is read from `X-GitHub-Event`, `X-GitLab-Event`, or `event_type` in the payload. |
-| `secret` | **Yes** | HMAC secret for signature validation. Falls back to the global `secret` if not set on the route. Set to `"INSECURE_NO_AUTH"` for testing only (skips validation). |
-| `signature` | No | Pin the route to one signature scheme: `generic` (`X-Webhook-Signature-V2` + `X-Webhook-Timestamp`, or Standard Webhooks / Svix headers), `github` (`X-Hub-Signature-256`), `gitlab` (`X-Gitlab-Token`, or a GitLab signing token sent as Standard Webhooks headers) or `linear` (`Linear-Signature`). Every other header family gets the same `404` as an unknown route. Omit it to accept every supported scheme (the behaviour before this key existed). `hermes webhook subscribe` writes `signature: generic` for new routes. Recommended; see [Pin the signature scheme](#pin-the-signature-scheme). |
+| `secret` | **Yes** | Secret for signature validation or Bearer authentication. Falls back to the global `secret` if not set on the route. Set to `"INSECURE_NO_AUTH"` for testing only (skips validation). |
+| `signature` | No | Pin the route to one signature scheme: `generic` (`X-Webhook-Signature-V2` + `X-Webhook-Timestamp`, or Standard Webhooks / Svix headers), `github` (`X-Hub-Signature-256`), `gitlab` (`X-Gitlab-Token`, or a GitLab signing token sent as Standard Webhooks headers), `linear` (`Linear-Signature`) or `bearer` (`Authorization: Bearer <secret>`). Every other header family gets the same `404` as an unknown route. Omit it to accept every supported scheme, including Bearer. `hermes webhook subscribe` writes `signature: generic` for new routes. Recommended; see [Pin the signature scheme](#pin-the-signature-scheme). |
 | `profile` | No | Profile authorized to execute this route when `gateway.multiplex_profiles` is enabled. Omit it for a default-profile-only route; set a profile name (for example `coder`) to bind the route and its secret to `/p/coder/webhooks/<route>`. Dynamic subscriptions set it with `hermes webhook subscribe <name> --route-profile coder`. |
 | `prompt` | No | Template string with dot-notation payload access (e.g. `{pull_request.title}`). If omitted, the full JSON payload is dumped into the prompt. Payload fields are untrusted — see [Authenticated does not mean trusted](#authenticated-does-not-mean-trusted). |
 | `filters` | No | Declarative payload filters evaluated after auth/body/event filtering and before agent or direct delivery work. Non-matches return `{"status":"ignored","reason":"filter"}` with HTTP 200. |
@@ -514,9 +514,9 @@ hermes webhook subscribe github-issues \
 
 This returns the webhook URL and a masked form of the auto-generated HMAC secret; the full secret is stored under the route's name in `~/.hermes/webhook_subscriptions.json` (pass `--secret` to choose your own). Configure your service to POST to that URL.
 
-New subscriptions are pinned to `--signature generic` (timestamp-bound V2 or Standard Webhooks) unless you pass `--signature github`, `gitlab` or `linear` for a provider that signs its own way. Updating an existing subscription keeps its pin. A dashboard re-save of an existing route that omits `signature` keeps its pin too (an explicit pick replaces it), and MCP event subscriptions are pinned to `generic` when first created.
+New subscriptions are pinned to `--signature generic` (timestamp-bound V2 or Standard Webhooks) unless you pass `--signature github`, `gitlab`, `linear` or `bearer` for the provider. Updating an existing subscription keeps its pin. A dashboard re-save of an existing route that omits `signature` keeps its pin too (an explicit pick replaces it), and MCP event subscriptions are pinned to `generic` when first created.
 
-The dashboard's **New subscription** form (web dashboard and desktop app) has the same choice as a **Signature** select, defaulting to `generic`; pick GitHub, GitLab or Linear for routes those services deliver to. Through the API, `POST /api/webhooks` takes an optional `signature` (`generic`, `github`, `gitlab` or `linear`; anything else is a `422`): a new route without it is pinned to `generic`, and a re-POST without it keeps the stored pin.
+The dashboard's **New subscription** form has the same choice as a **Signature** select, defaulting to `generic`. Through the API, `POST /api/webhooks` takes an optional `signature` (`generic`, `github`, `gitlab`, `linear` or `bearer`; anything else is a `422`): a new route without it is pinned to `generic`, and a re-POST without it keeps the stored pin.
 
 ### List subscriptions
 
@@ -537,7 +537,7 @@ hermes webhook test github-issues
 hermes webhook test github-issues --payload '{"issue": {"number": 42, "title": "Test"}}'
 ```
 
-`test` signs the way the route's `signature` pin expects: `X-Hub-Signature-256` for `github`, `X-Gitlab-Token` for `gitlab`, `Linear-Signature` for `linear`, and `X-Webhook-Signature-V2` + `X-Webhook-Timestamp` for `generic` or unpinned routes.
+`test` signs the way the route's `signature` pin expects: `X-Hub-Signature-256` for `github`, `X-Gitlab-Token` for `gitlab`, `Linear-Signature` for `linear`, `Authorization: Bearer <secret>` for `bearer`, and `X-Webhook-Signature-V2` + `X-Webhook-Timestamp` for `generic` or unpinned routes.
 
 ### How dynamic subscriptions work
 
@@ -629,6 +629,12 @@ routes:
 An unknown value is a configuration error: a static route stops the adapter from starting, a dynamic subscription is skipped, and neither falls back to accepting every scheme.
 
 If a sender used body-only V1 (`X-Webhook-Signature`), **rotate that route's secret** when you move it to V2. Old captures stop validating under every header family only once the secret changes. GitHub and Linear signatures have no timestamp of their own, so a pinned `github`/`linear` route still relies on the 1-hour delivery-ID cache against replays of its own provider's requests.
+
+### Bearer authentication
+
+For a provider without HMAC, use `hermes webhook subscribe NAME --signature bearer` or select **Bearer token** in the dashboard. Send `Authorization: Bearer <secret>` using the route secret, or the global secret if the route omits it. The CLI masks the secret; the dashboard displays a copyable header only once on creation. Legacy unpinned routes also accept Bearer; routes pinned to another scheme do not. New routes default to `generic`, not Bearer.
+
+Prefer timestamped HMAC V2 where available. A Bearer credential is reusable and has no replay protection: use TLS, protect the secret and rotate it if exposed. Recognized signature headers, even empty, block fallback to Bearer; nonempty signatures retain their existing precedence, including V2 freshness checks and V1 rejection. Authentication failure returns the same 404 as an unknown route.
 
 ### Secret is required
 

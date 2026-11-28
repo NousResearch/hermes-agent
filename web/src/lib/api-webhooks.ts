@@ -15,7 +15,7 @@ export interface WebhookRoute {
   signature: WebhookSignature | null;
 }
 
-export type WebhookSignature = "generic" | "github" | "gitlab" | "linear";
+export type WebhookSignature = "generic" | "github" | "gitlab" | "linear" | "bearer";
 
 export interface WebhooksResponse {
   enabled: boolean;

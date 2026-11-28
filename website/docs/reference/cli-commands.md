@@ -1001,8 +1001,8 @@ hermes webhook subscribe <name> [options]
 | `--skills` | Comma-separated skill names to load for the agent run. |
 | `--deliver` | Delivery target: `log` (default), `telegram`, `discord`, `slack`, `github_comment`. |
 | `--deliver-chat-id` | Target chat/channel ID for cross-platform delivery. |
-| `--secret` | Custom HMAC secret. Auto-generated if omitted. |
-| `--signature` | Signature scheme the route accepts: `generic` (default for new routes; `X-Webhook-Signature-V2` + `X-Webhook-Timestamp` or Standard Webhooks), `github`, `gitlab` or `linear`. Every other header family is rejected. Kept on update when omitted. See [Pin the signature scheme](../user-guide/messaging/webhooks.md#pin-the-signature-scheme). |
+| `--secret` | Custom webhook secret for signatures or Bearer authentication. Auto-generated if omitted. |
+| `--signature` | Signature scheme the route accepts: `generic` (default for new routes; `X-Webhook-Signature-V2` + `X-Webhook-Timestamp` or Standard Webhooks), `github`, `gitlab`, `linear` or `bearer`. Every other header family is rejected. Kept on update when omitted. See [Pin the signature scheme](../user-guide/messaging/webhooks.md#pin-the-signature-scheme). |
 | `--deliver-only` | Skip the agent — deliver the rendered `--prompt` as the literal message. Zero LLM cost, sub-second delivery. Requires `--deliver` to be a real target (not `log`). |
 | `--mirror-to-session` | Also write each delivered message into the target chat's session, so replying to it in that chat has context. Off by default; only enable it for sources whose content you trust in your conversation. |
 | `--script` | Filter/transform script under `~/.hermes/scripts/`. The webhook payload is passed as JSON on stdin; JSON stdout replaces the payload, and empty stdout, `[SILENT]`, or a nonzero exit code ignores the webhook. See [Script Filters and Transforms](../user-guide/messaging/webhooks.md#script-filters-and-transforms). |

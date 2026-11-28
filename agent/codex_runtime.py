@@ -1101,7 +1101,10 @@ class _CodexResponseAssembler:
         self.saw_terminal = True
         resp_obj = _event_field(event, "response")
         if resp_obj is not None:
-            self.terminal_usage, self.terminal_response_id = _event_field(resp_obj, "usage"), _event_field(resp_obj, "id")
+            # Some Responses-compatible servers put usage on the terminal event, not inside its
+            # ``response`` (the shape kimi-code#4485 restored); the nested copy wins when both exist.
+            self.terminal_usage = _event_field(resp_obj, "usage") or _event_field(event, "usage")
+            self.terminal_response_id = _event_field(resp_obj, "id")
             self.terminal_service_tier = _event_field(resp_obj, "service_tier")
             rstatus = _event_field(resp_obj, "status")
             if isinstance(rstatus, str):

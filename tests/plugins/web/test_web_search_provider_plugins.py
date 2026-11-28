@@ -298,3 +298,37 @@ class TestFirecrawlScrapeTimeout:
         assert len(results) == 1
         assert results[0]["url"] == "https://example.com"
         assert results[0]["content"] == "content"
+
+
+class TestBraveLocale:
+    """``web.brave.{country,search_lang,ui_lang}`` are forwarded to the Brave API."""
+
+    def _capture(self, monkeypatch: pytest.MonkeyPatch, brave_cfg) -> dict:
+        from plugins.web.brave_free import provider as brave_provider
+
+        monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "test-key")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"web": {"brave": brave_cfg}} if brave_cfg is not None else {"web": {}},
+        )
+        seen: dict = {}
+
+        def fake_get(_label, _url, *, params, headers, timeout, logger, reach_target=None):
+            seen.update(params)
+            return {"web": {"results": [{"title": "t", "url": "https://x.ca", "description": "d"}]}}, None
+
+        monkeypatch.setattr(brave_provider, "http_get_json", fake_get)
+        result = brave_provider.BraveFreeWebSearchProvider().search("weather", limit=3)
+        assert result["success"] is True
+        return seen
+
+    def test_locale_keys_forwarded(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        params = self._capture(monkeypatch, {"country": "CA", "search_lang": "en", "ui_lang": "en-CA"})
+        assert params == {"q": "weather", "count": 3, "country": "CA", "search_lang": "en", "ui_lang": "en-CA"}
+
+    def test_unset_blank_and_non_string_values_omitted(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        params = self._capture(monkeypatch, {"country": "  ", "search_lang": 5, "unknown": "x"})
+        assert params == {"q": "weather", "count": 3}
+
+    def test_no_brave_section_keeps_default_params(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        assert self._capture(monkeypatch, None) == {"q": "weather", "count": 3}

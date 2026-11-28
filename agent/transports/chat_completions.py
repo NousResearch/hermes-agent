@@ -77,7 +77,7 @@ def _static_prompt_instructions(messages: list[dict[str, Any]]) -> str:
 def _add_prompt_cache_key(
     api_kwargs: dict[str, Any], *, messages: list[dict[str, Any]],
     tools: list[dict[str, Any]] | None, supports_prompt_cache_key: bool,
-    session_id: str | None = None, cache_scope_id: str | None = None,
+    session_id: str | None = None, cache_scope_id: str | None = None, base_url: Any = None,
 ) -> None:
     """Add a content-addressed ``prompt_cache_key`` only for a capable endpoint.
 
@@ -99,7 +99,7 @@ def _add_prompt_cache_key(
     # key in extra_body (not top-level) and endpoints declaring ``responses_prompt_cache_key=False`` opt out
     # of cache-key routing entirely — for those hosts, skip it here.
     from agent.transports.codex import (
-        _bound_prompt_cache_key_field, _cache_scope_from_session_id, _content_cache_key
+        _bound_prompt_cache_key_field, _cache_scope_from_session_id, _content_cache_key, _openai_key_scope
     )
 
     containers = [c for c in (api_kwargs, api_kwargs.get("extra_body")) if isinstance(c, dict) and "prompt_cache_key" in c]
@@ -110,7 +110,8 @@ def _add_prompt_cache_key(
     if not supports_prompt_cache_key:
         return
     cache_key = _content_cache_key(
-        _static_prompt_instructions(messages), tools, _cache_scope_from_session_id(cache_scope_id or session_id),
+        _static_prompt_instructions(messages), tools,
+        _openai_key_scope(_cache_scope_from_session_id(cache_scope_id or session_id), base_url),
     )
     if cache_key:
         api_kwargs["prompt_cache_key"] = cache_key
@@ -347,6 +348,7 @@ def _finish_kwargs(api_kwargs: dict[str, Any], sanitized: list, params: dict, *,
     _add_prompt_cache_key(
         api_kwargs, messages=sanitized, tools=api_kwargs.get("tools"), supports_prompt_cache_key=supports_prompt_cache_key,
         session_id=params.get("session_id"), cache_scope_id=params.get("cache_scope_id"),
+        base_url=params.get("base_url"),
     )
     return api_kwargs
 

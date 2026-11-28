@@ -48,6 +48,32 @@ def _cache_scope_from_session_id(session_id: Optional[str]) -> str:
     return sid
 
 
+def _openai_key_scope(scope: str, base_url: Any) -> str:
+    """Scope fed to ``_content_cache_key`` for the body ``prompt_cache_key``.
+
+    ``prompt_caching.openai_key_scope: install`` on api.openai.com swaps the per-conversation scope for
+    one per install, so a new session's first request routes to the machine already holding this
+    install's identical system prompt + tools (OpenAI only shares a cached prefix inside one key). Opt-in:
+    the default keeps #78941's per-session scope. Only the key changes; headers and the logical scope
+    other routes read stay per conversation, and slot-keyed hosts (xAI) never see it.
+    """
+    if not _is_openai_api_origin(base_url):
+        return scope
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        section = load_config_readonly().get("prompt_caching")
+        if not (isinstance(section, dict) and section.get("openai_key_scope") == "install"):
+            return scope
+        from hermes_cli.install_identity import get_install_id
+
+        install = get_install_id()
+    except Exception:
+        logger.debug("install prompt-cache scope unavailable", exc_info=True)
+        return scope
+    return f"install_{install}" if install else scope
+
+
 def _bounded_prompt_cache_key(value: Any) -> Optional[str]:
     """Return a provider-safe (<=64 char) cache key without changing session identity."""
     key = "" if value is None else str(value).strip()
@@ -807,7 +833,9 @@ class ResponsesApiTransport(ProviderTransport):
         # Content-addressed (instructions + tools) within a logical scope that survives
         # compression rotation; session_id itself stays untouched for transcript isolation.
         _cache_scope = _cache_scope_from_session_id(params.get("cache_scope_id") or session_id)
-        cache_key = _content_cache_key(instructions, response_tools, _cache_scope) or _cache_scope
+        cache_key = _content_cache_key(
+            instructions, response_tools, _openai_key_scope(_cache_scope, params.get("base_url")),
+        ) or _cache_scope
         # xAI takes prompt_cache_key in extra_body (below); endpoints declaring
         # ``responses_prompt_cache_key=False`` opt out entirely.
         if endpoint.prompt_cache_key and not is_xai_responses and cache_key:

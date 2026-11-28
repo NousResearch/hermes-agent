@@ -88,6 +88,7 @@ def _ack():
 
 
 class WecomCallbackAdapter(BasePlatformAdapter):
+    supports_voice_replies = False
     # Answers /p/<profile>/... on the default listener for a served secondary (shared_ingress).
     serves_profile_prefix: bool = True
     # message/send keeps only the first 2048 BYTES of text.content and drops the rest silently.

@@ -1785,6 +1785,13 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
     supports_code_blocks: bool = False
     # Typing indicator renders TEXT (status line); the gateway then feeds set_status_text().
     supports_status_text: bool = False
+    # Replies can be delivered as voice. False (an agent peer, a text-only bridge) keeps every reply
+    # text whatever ``voice.auto_tts`` or ``/voice`` say: A2A has no native send_voice, so a
+    # synthesized reply failed delivery instead of the text arriving (#90103).
+    supports_voice_replies: bool = True
+    # Voice-first surface (a device with a speaker): replies are spoken by default instead of
+    # following ``voice.auto_tts``; ``/voice off`` in a chat still wins.
+    speaks_replies_by_default: bool = False
 
     def set_status_text(self, chat_id: str, text: Optional[str]) -> None:
         """Set or clear (``None``) the live working-state phrase for a chat. In-memory only: the
@@ -2007,7 +2014,9 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
     fatal_error_retryable = property(lambda self: self._fatal_error_retryable)
 
     def _should_auto_tts_for_chat(self, chat_id: str) -> bool:
-        """Explicit /voice on|tts wins over off, then fall back to voice.auto_tts (#16007)."""
+        """Voice-incapable adapters never speak. Otherwise /voice on|tts wins over off, then voice.auto_tts (#16007)."""
+        if self.supports_voice_replies is False:
+            return False
         return chat_id in self._auto_tts_enabled_chats or (
             chat_id not in self._auto_tts_disabled_chats and bool(self._auto_tts_default))
 

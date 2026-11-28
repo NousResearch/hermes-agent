@@ -1,16 +1,28 @@
 name: openinvest
 repo: https://github.com/longsizhuo/openInvest
-sha: 0b9268bb85f8b97bff0f9d2eea18d7b88faec8fa
+sha: 653cc8426a01d767c1cf7a7045306d246492f38f
 subdir: plugin
-description: "Self-hosted AI investment committee — skills for portfolio review, a decision ledger, and a 4-role LLM committee (macro / quant / risk / CIO) that debates a symbol. Disclosure — the skills run the openinvest backend from PyPI via uvx (pinned in run.sh) and keep portfolio, ledger, committee records and any keys you add in plaintext under ~/openInvest (or $INVEST_HOME); it fetches public market data and RSS news, and on the Direct path / daily report sends your portfolio and wealth context to the LLM you configure (default api.deepseek.com) and, if installed, to the agy or gemini CLI for a second opinion; news ingestion can trigger extra committee runs (LLM spend). The MCP tools are a server you add to config.yaml yourself (the printed snippet runs the plugin's pinned run.sh with `trust: untrusted`, so Hermes asks before ledger writes); buy/sell/deposit/withdraw only edit the local ledger — it never connects to a broker or places orders."
+description: >-
+  Personal portfolio ledger, market data and Agent-run research. Connect to the
+  official OAuth MCP or keep a local ledger. The hosted service stores submitted
+  data. De-identified research recording defaults on after the web notice,
+  can retain precise amounts and currencies, and can be disabled in account settings.
+  The local backend runs through uvx and stores local ledgers and configured keys
+  under INVEST_HOME. Market-data and RSS sources receive queries. Direct analysis
+  sends portfolio context to the configured model provider. The optional local
+  session digest can expose holdings in shared chats. The optional daily report
+  and news sentinel consume model quota and require explicit consent.
+  Hosted tools record activity and do not place orders. The local package includes
+  beta operator notes for a separately configured IBKR live-trading setup.
 maintainer: longsizhuo
 tier: community
 category: tools
 title: openInvest
-docs_url: https://openinvest.involutionhell.com
-version: "0.25.0"
+docs_url: https://openinvest.involutionhell.com/docs/clients
+version: "0.34.5"
 capabilities:
   provides_tools: []
-  provides_hooks: []
+  provides_hooks:
+  - pre_llm_call
   provides_middleware: []
   requires_env: []

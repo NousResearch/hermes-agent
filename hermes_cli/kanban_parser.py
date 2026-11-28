@@ -170,6 +170,11 @@ _SPECS = [
              help="scratch | worktree | worktree:<path> | dir:<path> (default: scratch; "
                   "an explicit 'scratch' also opts out of a project-scoped board's project)"),
         _arg("--branch", help="Branch name for worktree tasks, e.g. wt/t6-wire"),
+        _arg("--branch-template", metavar="TEMPLATE",
+             help="Generate a worktree branch after allocating the task id. Supports "
+                  "{prefix}, {task_id}, and {slug}; combine with --branch-prefix."),
+        _arg("--branch-prefix", metavar="PREFIX",
+             help="Value substituted for {prefix} in --branch-template, e.g. a persona name."),
         _arg("--project",
              help="Link to a project (id or slug). Anchors the task's "
                   "worktree under the project's primary repo with a "

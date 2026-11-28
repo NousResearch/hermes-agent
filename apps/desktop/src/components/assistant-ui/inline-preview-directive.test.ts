@@ -9,6 +9,7 @@ import {
   intentAckMessage,
   intentScript,
   MAX_INTENT_LENGTH,
+  measurementScript,
   themePrelude,
   withInlineChrome
 } from './inline-preview-directive'
@@ -22,7 +23,8 @@ describe('directiveFrameHeight', () => {
   })
 
   it('clamps an explicit height to the sane band', () => {
-    expect(directiveFrameHeight('50')).toBe(120)
+    expect(directiveFrameHeight('10')).toBe(32)
+    expect(directiveFrameHeight('50')).toBe(50)
     expect(directiveFrameHeight('480')).toBe(480)
     expect(directiveFrameHeight('99999')).toBe(1200)
   })
@@ -122,7 +124,8 @@ describe('frameSizeFromMessage', () => {
 
   it('accepts our message with our token, height clamped', () => {
     expect(frameSizeFromMessage(msg(), 'tok')).toEqual({ height: 500 })
-    expect(frameSizeFromMessage(msg({ height: 12 }), 'tok')?.height).toBe(120)
+    expect(frameSizeFromMessage(msg({ height: 12 }), 'tok')?.height).toBe(32)
+    expect(frameSizeFromMessage(msg({ height: 41 }), 'tok')?.height).toBe(41)
     expect(frameSizeFromMessage(msg({ height: 5000 }), 'tok')?.height).toBe(1200)
     expect(frameSizeFromMessage(msg({ height: 500.7 }), 'tok')?.height).toBe(501)
   })
@@ -135,6 +138,107 @@ describe('frameSizeFromMessage', () => {
     expect(frameSizeFromMessage(msg({ height: -5 }), 'tok')).toBeNull()
     expect(frameSizeFromMessage(null, 'tok')).toBeNull()
     expect(frameSizeFromMessage('str', 'tok')).toBeNull()
+  })
+})
+
+describe('measurementScript', () => {
+  // Run the injected script against a fake frame whose root scrollHeight is
+  // the viewport (the frame fills its box), so the test pins what the script
+  // measures: the content, not the frame it was given.
+  function mountFrame({ viewport, content }: { content: number; viewport: number }) {
+    const posted: Array<Record<string, unknown>> = []
+    const listeners: Record<string, Array<() => void>> = {}
+    const observers: Array<() => void> = []
+    const box = { bottom: content }
+    const rect = () => ({ bottom: box.bottom, height: box.bottom, width: 300 })
+    const child = { getBoundingClientRect: rect, nextElementSibling: null }
+
+    const document = {
+      body: { firstElementChild: child, getBoundingClientRect: rect, scrollHeight: viewport },
+      documentElement: { scrollHeight: viewport }
+    }
+
+    class FakeResizeObserver {
+      constructor(fn: () => void) {
+        observers.push(fn)
+      }
+
+      observe() {}
+    }
+
+    const body = measurementScript('tok')
+      .replace(/^<script>/, '')
+      .replace(/<\/script>$/, '')
+
+    new Function(
+      'parent',
+      'document',
+      'addEventListener',
+      'getComputedStyle',
+      'ResizeObserver',
+      'MutationObserver',
+      'scrollY',
+      body
+    )(
+      { postMessage: (data: Record<string, unknown>) => posted.push(data) },
+      document,
+      (type: string, fn: () => void) => (listeners[type] ??= []).push(fn),
+      () => ({ marginBottom: '0px' }),
+      FakeResizeObserver,
+      undefined,
+      0
+    )
+
+    const heights = () => posted.map(message => message.height)
+
+    const resize = (next: number) => {
+      box.bottom = next
+      observers.forEach(fn => fn())
+    }
+
+    const toggle = (next: number) => {
+      box.bottom = next
+      listeners.toggle?.forEach(fn => fn())
+    }
+
+    return { heights, posted, resize, toggle }
+  }
+
+  it('reports the content height, not the viewport-floored scrollHeight', () => {
+    const { heights, posted } = mountFrame({ content: 41, viewport: 280 })
+
+    expect(heights()).toEqual([41])
+    expect(posted[0]).toMatchObject({ token: 'tok', type: 'hermes-inline-preview-size' })
+  })
+
+  it('reports growth past the current frame', () => {
+    expect(mountFrame({ content: 900, viewport: 280 }).heights()).toEqual([900])
+  })
+
+  it('reports a shrink when content collapses inside a frame that already grew', () => {
+    const { heights, resize } = mountFrame({ content: 600, viewport: 600 })
+
+    resize(90)
+
+    expect(heights()).toEqual([600, 90])
+  })
+
+  it('re-measures when a <details> is toggled', () => {
+    const { heights, toggle } = mountFrame({ content: 60, viewport: 60 })
+
+    toggle(400)
+    toggle(60)
+
+    expect(heights()).toEqual([60, 400, 60])
+  })
+
+  it('does not re-post sub-pixel churn', () => {
+    const { heights, resize } = mountFrame({ content: 200, viewport: 280 })
+
+    resize(200.4)
+    resize(201)
+
+    expect(heights()).toEqual([200])
   })
 })
 

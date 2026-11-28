@@ -50,7 +50,10 @@ import { localPreviewTarget } from '@/lib/local-preview'
  * the standard preview-attachment card rather than a broken frame.
  */
 
-const MIN_HEIGHT = 120
+/** Floor for a measured or requested height. Small on purpose: a one-line
+ *  widget (a pill, a status row) should not sit in a frame with a blank band
+ *  under it. */
+const MIN_HEIGHT = 32
 const MAX_HEIGHT = 1200
 const DEFAULT_HEIGHT = 280
 /** The frame fills the column up to this many pixels. Kept under
@@ -267,20 +270,36 @@ export function themePrelude(vars: Record<string, string>, font: string, colorSc
 
 /** The script injected into the srcdoc that reports content height to the
  *  parent. Runs inside the opaque origin, so postMessage is its only door:
- *  it can say "I am N pixels tall" and nothing else. Height is the document
- *  scrollHeight. */
+ *  it can say "I am N pixels tall" and nothing else.
+ *
+ *  Height is the bottom edge of the content (the body box, or a body child
+ *  that sticks out of it, e.g. a float), NOT `scrollHeight`: the frame fills
+ *  its box, so the root's scrollHeight is floored at the current frame height
+ *  and a widget could grow but never shrink. The body, its children, and the
+ *  `toggle` of a `<details>` all trigger a re-measure, so a collapse is
+ *  reported too. A page that sizes itself to the viewport
+ *  (`html,body{height:100%}`) still reports the viewport, as before. */
 export function measurementScript(token: string): string {
   return (
     '<script>(function(){var t=' +
     JSON.stringify(token) +
-    ';var lastH=0;function post(){var d=document.documentElement;var b=document.body;' +
-    'var h=Math.max(d?d.scrollHeight:0,b?b.scrollHeight:0);' +
-    'if(Math.abs(h-lastH)>1){lastH=h;parent.postMessage({type:' +
+    ';var lastH=0;' +
+    'function mb(el){var v=parseFloat(getComputedStyle(el).marginBottom);return isFinite(v)?v:0}' +
+    'function measure(){var b=document.body;if(!b)return 0;' +
+    'var h=b.getBoundingClientRect().bottom+mb(b);' +
+    'for(var c=b.firstElementChild;c;c=c.nextElementSibling){var r=c.getBoundingClientRect();' +
+    'if(r.width||r.height){var e=r.bottom+mb(c);if(e>h)h=e}}' +
+    'return Math.ceil(h+(typeof scrollY==="number"?scrollY:0))}' +
+    'function post(){var h=measure();if(h>0&&Math.abs(h-lastH)>1){lastH=h;parent.postMessage({type:' +
     JSON.stringify(SIZE_MESSAGE_TYPE) +
     ',token:t,height:h},"*")}}' +
-    'if(typeof ResizeObserver==="function"){var ro=new ResizeObserver(post);' +
-    'ro.observe(document.documentElement);if(document.body)ro.observe(document.body)}' +
-    'addEventListener("load",post);post()})()</script>'
+    'var ro=typeof ResizeObserver==="function"?new ResizeObserver(post):null;' +
+    'function watch(){if(!ro)return;ro.observe(document.documentElement);var b=document.body;if(!b)return;' +
+    'ro.observe(b);for(var c=b.firstElementChild;c;c=c.nextElementSibling)ro.observe(c)}' +
+    'watch();' +
+    'if(typeof MutationObserver==="function"&&document.body)' +
+    'new MutationObserver(function(){watch();post()}).observe(document.body,{childList:true});' +
+    'addEventListener("toggle",post,true);addEventListener("load",post);post()})()</script>'
   )
 }
 

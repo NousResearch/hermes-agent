@@ -131,6 +131,34 @@ def test_launch_tui_prefers_launch_cwd_over_inherited_hermes_cwd(monkeypatch, ma
     assert handed_to_tui != stale.resolve()
 
 
+@pytest.mark.parametrize(
+    ("configured", "exported", "expected"),
+    [(None, None, "0"), (True, None, "1"), (False, None, "0"), (True, "0", "0"), (False, "1", "1")],
+)
+def test_launch_tui_maps_ctrl_z_suspend_config(monkeypatch, main_mod, configured, exported, expected):
+    """display.tui_ctrl_z_suspend reaches Ink as HERMES_TUI_CTRL_Z_SUSPEND; an exported value wins."""
+    monkeypatch.setenv("HERMES_PYTHON", sys.executable)
+    if exported is None:
+        monkeypatch.delenv("HERMES_TUI_CTRL_Z_SUSPEND", raising=False)
+    else:
+        monkeypatch.setenv("HERMES_TUI_CTRL_Z_SUSPEND", exported)
+    display = {} if configured is None else {"tui_ctrl_z_suspend": configured}
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda *a, **k: {"display": display})
+
+    captured = {}
+    monkeypatch.setattr(main_tui_launch, "_make_tui_argv",
+        lambda tui_dir, tui_dev: (["node", "dist/entry.js"], Path(".")),
+    )
+    monkeypatch.setattr(main_mod.subprocess, "call",
+        lambda argv, cwd=None, env=None: captured.update({"env": env}) or 1,
+    )
+
+    with pytest.raises(SystemExit):
+        main_mod._launch_tui()
+
+    assert captured["env"]["HERMES_TUI_CTRL_Z_SUSPEND"] == expected
+
+
 def test_launch_tui_worktree_still_outranks_the_launch_cwd(monkeypatch, main_mod, tmp_path):
     """`--worktree` names an explicit destination, so it keeps precedence over the launch cwd."""
     worktree = tmp_path / "worktree"

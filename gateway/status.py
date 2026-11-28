@@ -1512,7 +1512,7 @@ def acquire_scoped_lock(
 def _acquire_scoped_lock_at(
     lock_path: Path, scope: str, identity: str, metadata: Optional[dict[str, Any]]
 ) -> tuple[bool, Optional[dict[str, Any]]]:
-    from gateway.status_scoped_locks import _scoped_lock_record_is_stale
+    from gateway.status_scoped_locks import _publish_json_excl, _scoped_lock_record_is_stale
 
     make_user_dir(lock_path.parent, parents=True, exist_ok=True)
     # An existing lock this token may not read (left by an elevated gateway) must raise here:
@@ -1528,10 +1528,10 @@ def _acquire_scoped_lock_at(
     profile = _profile_label_for_home(_get_process_hermes_home())
     if profile:
         record["profile"] = profile
+    present = lock_path.exists()  # probed BEFORE the read: a lock published since is a rival's, not a leftover
     existing = _read_json_file(lock_path)
-    if existing is None and lock_path.exists():
-        # Empty/invalid JSON: previous process died between O_EXCL create and json.dump().
-        _unlink_quietly(lock_path)
+    if existing is None and present:
+        _unlink_quietly(lock_path)  # empty/invalid JSON: a writer died mid-write
     if existing:
         existing_pid = _pid_from_record(existing)
         # Same live PID as this process: always self-reacquire. ``start_time`` is a PID-reuse guard for
@@ -1553,7 +1553,7 @@ def _acquire_scoped_lock_at(
             os.replace(lock_path, tombstone)
             _unlink_quietly(tombstone)
     try:
-        _write_json_excl(lock_path, record)
+        _publish_json_excl(lock_path, record)
     except FileExistsError:
         return False, _read_json_file(lock_path)
     return True, None

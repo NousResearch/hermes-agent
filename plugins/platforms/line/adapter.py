@@ -44,7 +44,7 @@ from gateway.platforms.base import (
     cache_audio_from_bytes_async, cache_document_from_bytes_async, cache_image_from_bytes_async,
     cache_video_from_bytes_async,
 )
-from gateway.platforms.helpers import MessageDeduplicator, cancel_task
+from gateway.platforms.helpers import MessageDeduplicator, cancel_task, strip_prose_markdown
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.config import Platform
 
@@ -89,10 +89,8 @@ _FALLBACK_PNG_PREVIEW = bytes.fromhex(
     "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
     "890000000d49444154789c63000100000005000100377a7ff20000000049454e"
     "44ae426082")
-# Markdown LINE can't render, applied in order (code blocks first so their content survives).
+# Markdown LINE can't render, applied in order to prose (code is protected by strip_prose_markdown).
 _MD_STRIP_RULES: tuple[tuple[re.Pattern, Any], ...] = (
-    (re.compile(r"```[a-zA-Z0-9_+-]*\n?(.*?)```", re.DOTALL), lambda m: m.group(1).rstrip("\n")),
-    (re.compile(r"`([^`]+)`"), r"\1"),
     (re.compile(r"\[([^\]]+)\]\((https?://[^\s)]+)\)"), lambda m: f"{m.group(1)} ({m.group(2)})"),
     (re.compile(r"\*\*(.+?)\*\*"), r"\1"),
     (re.compile(r"(?<!\*)\*(?!\s)(.+?)(?<!\s)\*(?!\*)"), r"\1"),
@@ -109,9 +107,13 @@ def strip_markdown_preserving_urls(text: str) -> str:
     """
     if not text:
         return text
-    for pattern, repl in _MD_STRIP_RULES:
-        text = pattern.sub(repl, text)
-    return text
+
+    def strip(prose: str) -> str:
+        for pattern, repl in _MD_STRIP_RULES:
+            prose = pattern.sub(repl, prose)
+        return prose
+
+    return strip_prose_markdown(text, strip)
 
 
 def split_for_line(text: str, max_chars: int = LINE_SAFE_BUBBLE_CHARS) -> list[str]:

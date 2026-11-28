@@ -23,11 +23,20 @@
 
 import { atom } from 'nanostores'
 
-import { ambientOwnerConnectionId } from '@/api/client'
+import { ambientOwnerConnectionId, getApiRequestConnection } from '@/api/client'
 import { setSessionPinnedRemote } from '@/hermes'
-import { onConnectionScopeChange } from '@/lib/connection-scoped'
+import { translateNow } from '@/i18n'
+import {
+  type ConnectionScopeDescriptor,
+  connectionScopeSuffix,
+  onConnectionScopeChange,
+  updateConnectionScopedValue
+} from '@/lib/connection-scoped'
+import { sessionPinWriteKey } from '@/lib/session-pin-key'
+import { insertUniqueId } from '@/lib/storage'
 import { $primaryGatewayRoute } from '@/store/gateway-primary-route'
-import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
+import { $pinnedSessionIds, pinSession as pinSessionLocally, unpinSession as unpinSessionLocally } from '@/store/layout'
+import { notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import {
   $connection,
@@ -43,16 +52,45 @@ import {
 import { isSessionRemovalPending } from '@/store/session-removal'
 import type { SessionInfo } from '@/types/hermes'
 
+interface ForeignPinWrite {
+  row: SessionInfo
+  connectionId: string
+  at: number
+  pending: boolean
+  value: boolean
+  index?: number
+  write?: Promise<void>
+  acknowledged?: boolean
+  rollbackValue: boolean
+  connection?: ConnectionScopeDescriptor
+  cachedPins?: { id: string; index: number }[]
+}
+
+// Unlike the ambient mirror, these writes name an owner and must survive a
+// gateway switch until a real page confirms them (or the cooldown expires).
+const foreignPinWrites = new Map<string, ForeignPinWrite>()
+
 // pin ids we've successfully PATCHed pinned=true this session.
-const mirrored = new Set<string>()
+let mirrored = new Set<string>()
 // pin ids awaiting their row so we can resolve the owning profile before PATCH.
-const pending = new Set<string>()
+let pending = new Set<string>()
 // Writes we've issued, id -> the value we wrote and when. A list page already
 // in flight when we PATCH still carries the OLD value, and it can land after
 // our ack — so the ack is not proof the page we're reading is newer than the
 // write. Hold the guard until a page actually CONFIRMS the written value,
 // with a cooldown so a row that never comes back can't fence itself forever.
-const unconfirmed = new Map<string, { at: number; value: boolean }>()
+let unconfirmed = new Map<string, { at: number; value: boolean }>()
+
+const connectionMirrors = new Map<
+  string,
+  {
+    mirrored: Set<string>
+    pending: Set<string>
+    unconfirmed: Map<string, { at: number; value: boolean }>
+  }
+>()
+
+let mirrorScope = ''
 // Marker stamped on rows this module repainted to match a local toggle. They
 // carry OUR intent, not the server's, so they may never confirm (release) a
 // write guard — only a row a real list page delivered can do that. It is an
@@ -91,11 +129,16 @@ const WRITE_GUARD_MS = 10_000
 function publishUnconfirmed(): void {
   const published = $unconfirmedPinWrites.get()
 
-  if (published.size === unconfirmed.size && [...unconfirmed.keys()].every(id => published.has(id))) {
+  const keys = new Set([
+    ...unconfirmed.keys(),
+    ...[...foreignPinWrites].filter(([, intent]) => !intent.value).map(([key]) => key)
+  ])
+
+  if (published.size === keys.size && [...keys].every(id => published.has(id))) {
     return
   }
 
-  $unconfirmedPinWrites.set(new Set(unconfirmed.keys()))
+  $unconfirmedPinWrites.set(keys)
 }
 
 function profileFor(pinId: string): null | string | undefined {
@@ -114,9 +157,9 @@ function profileFor(pinId: string): null | string | undefined {
  * row with no `connection_id` belongs to the primary pool (the row stamp never
  * tags `local` or the primary's own rows): `local` for a local primary, else
  * the primary's registry id; a primary with no registry id keeps counting as
- * the active backend's, as before. A descriptor that names no connection falls
- * back to the ambient owner id (the request scope's tag, or `local` for the
- * local pool).
+ * the active backend's, as before. A local descriptor owns the local pool;
+ * a remote descriptor can inherit an explicit API registry pin, but never
+ * the API's potentially stale local-mode default during a rescope.
  */
 function ownedByPinScope(row: SessionInfo): boolean {
   const primary = $primaryGatewayRoute.get()
@@ -126,11 +169,24 @@ function ownedByPinScope(row: SessionInfo): boolean {
     return true
   }
 
-  return owner === ($connection.get()?.connectionId?.trim() || ambientOwnerConnectionId())
+  const connection = $connection.get()
+
+  // setConnection publishes the descriptor before it updates the API's local
+  // mode. During rescope that old mode must not make a remote primary local.
+  const active = connection
+    ? connection.connectionId?.trim() ||
+      (connection.mode === 'local' ? 'local' : (getApiRequestConnection() ?? undefined))
+    : ambientOwnerConnectionId()
+
+  return owner === active
+}
+
+function allSessionRows(): SessionInfo[] {
+  return [...$sessions.get(), ...$cronSessions.get(), ...$messagingSessions.get()]
 }
 
 function loadedSessionRows(): SessionInfo[] {
-  return [...$sessions.get(), ...$cronSessions.get(), ...$messagingSessions.get()].filter(ownedByPinScope)
+  return allSessionRows().filter(ownedByPinScope)
 }
 
 /**
@@ -190,7 +246,12 @@ function rowsByPinId(rows: readonly SessionInfo[]): Map<string, SessionInfo> {
  * image for a fresh pin). Rows without the flag (backend predating it) are left
  * alone so the pull still has no opinion on them.
  */
-function applyRowPinned(pinId: string, pinned: boolean, profile?: null | string): void {
+function applyRowPinned(
+  pinId: string,
+  pinned: boolean,
+  profile?: null | string,
+  owns: (row: SessionInfo) => boolean = ownedByPinScope
+): void {
   // Session ids are only unique per profile; when the write names its owner,
   // leave a same-id twin in another profile carrying its own server flag.
   const owner = profile == null ? null : normalizeProfileKey(profile)
@@ -203,7 +264,7 @@ function applyRowPinned(pinId: string, pinned: boolean, profile?: null | string)
         typeof row.pinned !== 'boolean' ||
         row.pinned === pinned ||
         !sessionMatchesStoredId(row, pinId) ||
-        !ownedByPinScope(row) ||
+        !owns(row) ||
         (owner != null && normalizeProfileKey(row.profile) !== owner)
       ) {
         return row
@@ -223,9 +284,213 @@ function applyRowPinned(pinId: string, pinned: boolean, profile?: null | string)
   setMessagingSessions(patchRows)
 }
 
+function updateForeignPinCache(intent: ForeignPinWrite, connection = intent.connection): void {
+  if (!connection) {
+    return
+  }
+
+  const { row } = intent
+  intent.connection ??= connection
+  const scope = connectionScopeSuffix(connection, false)
+  const mirror = scope === mirrorScope ? { mirrored, pending, unconfirmed } : connectionMirrors.get(scope)
+
+  for (const id of [row.id, sessionPinId(row)]) {
+    mirror?.mirrored.delete(id)
+    mirror?.pending.delete(id)
+    mirror?.unconfirmed.delete(id)
+  }
+
+  if (intent.value) {
+    mirror?.mirrored.add(sessionPinId(row))
+  }
+
+  updateConnectionScopedValue($pinnedSessionIds, connection, ids => {
+    intent.cachedPins ??= ids.flatMap((id, index) => (sessionMatchesStoredId(row, id) ? [{ id, index }] : []))
+    const next = ids.filter(id => !sessionMatchesStoredId(row, id))
+
+    return intent.value
+      ? insertUniqueId(next, sessionPinId(row), intent.index ?? next.length)
+      : next.length === ids.length
+        ? ids
+        : next
+  })
+}
+
+function restoreForeignPinCache(intent: ForeignPinWrite): void {
+  if (!intent.connection || !intent.cachedPins) {
+    return
+  }
+
+  const scope = connectionScopeSuffix(intent.connection, false)
+  const mirror = scope === mirrorScope ? { mirrored, pending, unconfirmed } : connectionMirrors.get(scope)
+
+  for (const id of [intent.row.id, sessionPinId(intent.row)]) {
+    mirror?.mirrored.delete(id)
+    mirror?.pending.delete(id)
+    mirror?.unconfirmed.delete(id)
+  }
+
+  updateConnectionScopedValue($pinnedSessionIds, intent.connection, ids => {
+    const restored = ids.filter(id => !sessionMatchesStoredId(intent.row, id))
+
+    for (const { id, index } of intent.cachedPins!) {
+      mirror?.mirrored.add(id)
+      restored.splice(index, 0, id)
+    }
+
+    return restored
+  })
+}
+
+/** User actions retain the selected row's owner. A foreign row must never
+ *  mutate the active connection's local pin set to trigger an ambient PATCH. */
+export function pinSession(id: string, session?: SessionInfo, index?: number): void {
+  setSessionPin(id, true, session, index)
+}
+
+export function unpinSession(id: string, session?: SessionInfo): void {
+  setSessionPin(id, false, session)
+}
+
+function setSessionPin(id: string, value: boolean, session?: SessionInfo, index?: number): void {
+  const row = session ?? loadedRowFor(id) ?? allSessionRows().find(candidate => sessionMatchesStoredId(candidate, id))
+  const key = row ? sessionPinWriteKey(row) : ''
+  const previous = foreignPinWrites.get(key)
+
+  if (!row || (ownedByPinScope(row) && !previous)) {
+    if (value) {
+      pinSessionLocally(id, index)
+    } else {
+      unpinSessionLocally(id)
+    }
+
+    return
+  }
+
+  const primary = $primaryGatewayRoute.get()
+  const connectionId = row.connection_id?.trim() || (primary.mode === 'local' ? 'local' : primary.connectionId)
+
+  if (!connectionId || previous?.value === value) {
+    return
+  }
+
+  const intent: ForeignPinWrite = {
+    row,
+    connectionId,
+    at: Date.now(),
+    pending: true,
+    value,
+    index,
+    rollbackValue: previous?.value ?? row.pinned ?? !value
+  }
+
+  foreignPinWrites.set(key, intent)
+  publishUnconfirmed()
+  applyRowPinned(sessionPinId(row), value, row.profile, candidate => sessionPinWriteKey(candidate) === key)
+
+  // Opposite clicks share an owner but have different mutation bodies. Wait
+  // for the previous write to settle so a slow pin cannot land after Unpin.
+  intent.write = writeForeignPin(key, intent, previous).catch(async error => {
+    await settlePreviousPin(intent, previous)
+
+    if (foreignPinWrites.get(key) !== intent) {
+      return
+    }
+
+    foreignPinWrites.delete(key)
+    applyRowPinned(
+      sessionPinId(row),
+      intent.rollbackValue,
+      row.profile,
+      candidate => sessionPinWriteKey(candidate) === key
+    )
+    restoreForeignPinCache(intent)
+    publishUnconfirmed()
+    notifyError(error, translateNow('errors.genericFailure'))
+  })
+}
+
+async function settlePreviousPin(intent: ForeignPinWrite, previous?: ForeignPinWrite): Promise<void> {
+  if (!previous) {
+    return
+  }
+
+  await previous.write
+
+  if (!previous.acknowledged) {
+    intent.rollbackValue = previous.rollbackValue
+    intent.cachedPins = previous.cachedPins ?? intent.cachedPins
+  }
+}
+
+async function writeForeignPin(key: string, intent: ForeignPinWrite, previous?: ForeignPinWrite): Promise<void> {
+  const profile = normalizeProfileKey(intent.row.profile)
+  const scope = { connectionId: intent.connectionId, profile }
+  // Resolve the real descriptor: registry ids alone cannot name a remote
+  // localStorage key, which is based on the gateway URL.
+  intent.connection = await window.hermesDesktop.getConnectionFor?.(scope)
+
+  if (foreignPinWrites.get(key) !== intent) {
+    return
+  }
+
+  if (!intent.connection) {
+    throw new Error('Session owner connection is unavailable')
+  }
+
+  updateForeignPinCache(intent)
+
+  if (previous) {
+    await settlePreviousPin(intent, previous)
+  }
+
+  if (foreignPinWrites.get(key) !== intent) {
+    return
+  }
+
+  await setSessionPinnedRemote(sessionPinId(intent.row), intent.value, scope)
+  intent.acknowledged = true
+
+  if (foreignPinWrites.get(key) === intent) {
+    intent.pending = false
+    intent.at = Date.now()
+    reconcile()
+  }
+}
+
+function reconcileForeignPinWrites(): void {
+  const rows = allSessionRows()
+
+  for (const [key, intent] of foreignPinWrites) {
+    // Explicit local atom edits still supersede a completed foreign action.
+    // The public actions above serialize edits while a write is pending.
+    if (ownedByPinScope(intent.row) && intent.connection) {
+      const pinned = $pinnedSessionIds.get().some(id => sessionMatchesStoredId(intent.row, id))
+
+      if (pinned !== intent.value) {
+        foreignPinWrites.delete(key)
+
+        continue
+      }
+    }
+
+    const confirmed = rows.some(
+      row => sessionPinWriteKey(row) === key && row.pinned === intent.value && !isOptimisticRow(row)
+    )
+
+    if (!intent.pending && (confirmed || Date.now() - intent.at >= WRITE_GUARD_MS)) {
+      foreignPinWrites.delete(key)
+    } else {
+      applyRowPinned(sessionPinId(intent.row), intent.value, intent.row.profile, row => sessionPinWriteKey(row) === key)
+    }
+  }
+}
+
 /** PATCH the flag, guarding reads against pages that predate the write. */
 function writePin(id: string, pinned: boolean, profile?: null | string): Promise<void> {
-  unconfirmed.set(id, { at: Date.now(), value: pinned })
+  const writes = unconfirmed
+  const write = { at: Date.now(), value: pinned }
+  writes.set(id, write)
   applyRowPinned(id, pinned, profile)
 
   return setSessionPinnedRemote(id, pinned, profile).then(
@@ -242,7 +507,10 @@ function writePin(id: string, pinned: boolean, profile?: null | string): Promise
       // retried by the caller (repainting here would fire a reconcile before
       // that retry is booked and drop the pin), a failed unpin keeps the local
       // value until the next real page, and the next page replaces them anyway.
-      unconfirmed.delete(id)
+      if (writes.get(id) === write) {
+        writes.delete(id)
+      }
+
       publishUnconfirmed()
       throw err
     }
@@ -260,8 +528,9 @@ function writePin(id: string, pinned: boolean, profile?: null | string): Promise
  */
 function pullRemotePins(): void {
   const local = new Set($pinnedSessionIds.get())
+  const rows = loadedSessionRows().filter(row => !foreignPinWrites.has(sessionPinWriteKey(row)))
 
-  for (const row of rowsByPinId(loadedSessionRows()).values()) {
+  for (const row of rowsByPinId(rows).values()) {
     // A backend without the flag has no opinion; never act on `undefined`.
     if (typeof row.pinned !== 'boolean') {
       continue
@@ -308,14 +577,29 @@ function pullRemotePins(): void {
       // Mark mirrored first: pinSession fires the pin listener synchronously,
       // and the nested reconcile must not see this as a new pin to PATCH.
       mirrored.add(pinId)
-      pinSession(pinId)
+      persistServerPin(row, true)
     } else if (!row.pinned && heldLocally) {
       // Same discipline on the way down: forget the mirror before the nested
       // reconcile runs, or it re-PATCHes pinned=false the server already has.
       mirrored.delete(pinId)
       mirrored.delete(row.id)
-      unpinSession(local.has(pinId) ? pinId : row.id)
+      persistServerPin(row, false)
     }
+  }
+}
+
+/** Server corrections made during a scope reload must bypass its ordinary
+ *  persistence-echo suppression, or the next visit reads the same stale id. */
+function persistServerPin(row: SessionInfo, pinned: boolean): void {
+  const update = (ids: string[]): string[] =>
+    pinned ? insertUniqueId(ids, sessionPinId(row), ids.length) : ids.filter(id => !sessionMatchesStoredId(row, id))
+
+  const connection = $connection.get()
+
+  if (connection) {
+    updateConnectionScopedValue($pinnedSessionIds, connection, update)
+  } else {
+    $pinnedSessionIds.set(update($pinnedSessionIds.get()))
   }
 }
 
@@ -351,6 +635,8 @@ function reconcileInner(): void {
   if (!window.hermesDesktop) {
     return
   }
+
+  reconcileForeignPinWrites()
 
   // Push before pull. The pin listener fires synchronously on a local toggle,
   // so this reconcile runs before the PATCH for that toggle exists anywhere.
@@ -391,10 +677,12 @@ function reconcileInner(): void {
 
     pending.delete(id)
     mirrored.add(id)
+    const sentMirror = mirrored
+    const sentPending = pending
     void writePin(id, true, row.profile).catch(() => {
       // Let a later reconcile retry the mirror.
-      mirrored.delete(id)
-      pending.add(id)
+      sentMirror.delete(id)
+      sentPending.add(id)
     })
   }
 
@@ -403,10 +691,20 @@ function reconcileInner(): void {
 
 // Sync once, then re-sync on pin-set and session-list changes. Call once per app.
 export function watchSessionPins(): void {
-  // A connection rescope repaints $pinnedSessionIds from the new backend's
-  // storage scope; the mirrored/pending/unconfirmed bookkeeping describes
-  // the PREVIOUS backend and must reset before that reload reconciles.
-  onConnectionScopeChange(resetSessionPinMirror)
+  mirrorScope = connectionScopeSuffix($connection.get(), false)
+  // Returning to a gateway reloads a cache, not a new user pin. Keep its
+  // acknowledged mirror so a confirming false row can retire a stale cached
+  // id instead of the push pass reasserting true before the pull sees it.
+  onConnectionScopeChange(() => {
+    connectionMirrors.set(mirrorScope, { mirrored, pending, unconfirmed })
+    mirrorScope = connectionScopeSuffix($connection.get(), false)
+    const saved = connectionMirrors.get(mirrorScope)
+    mirrored = saved?.mirrored ?? new Set()
+    pending = saved?.pending ?? new Set()
+    unconfirmed = saved?.unconfirmed ?? new Map()
+    applyRescopedForeignPins()
+    publishUnconfirmed()
+  })
   reconcile()
   $pinnedSessionIds.listen(reconcile)
   $sessions.listen(reconcile)
@@ -415,21 +713,28 @@ export function watchSessionPins(): void {
 }
 
 /**
- * Forget what we've mirrored, because the backend we mirrored it TO is gone.
- *
- * `mirrored` / `pending` / `unconfirmed` all mean "relative to the gateway we
- * are talking to". After a soft switch the next backend has its own state.db
- * and has never seen these pins, but `mirrored` would report them as already
- * pushed and suppress the PATCHes — so the user's pins silently fail to reach
- * the new gateway (and its auto-archive sweep is free to hide them). Dropping
- * the bookkeeping makes the next reconcile re-assert the whole set, which is
- * the same path that migrates pre-existing pins at boot.
+ * Forget the mirrors after a backend reset. Ordinary gateway picks retain
+ * each scope's mirror in watchSessionPins; an explicit reset invalidates
+ * them all so the next reconcile can migrate the cache as it does at boot.
  */
 export function resetSessionPinMirror(): void {
-  mirrored.clear()
-  pending.clear()
-  unconfirmed.clear()
+  connectionMirrors.clear()
+  mirrored = new Set()
+  pending = new Set()
+  unconfirmed = new Map()
+  mirrorScope = connectionScopeSuffix($connection.get(), false)
+  applyRescopedForeignPins()
   publishUnconfirmed()
+}
+
+function applyRescopedForeignPins(): void {
+  // Scope listeners run before the pin atom reloads. Apply the pending intent
+  // to the persisted owner cache, even while descriptor lookup is pending.
+  for (const intent of foreignPinWrites.values()) {
+    if (ownedByPinScope(intent.row)) {
+      updateForeignPinCache(intent, $connection.get() ?? undefined)
+    }
+  }
 }
 
 /**

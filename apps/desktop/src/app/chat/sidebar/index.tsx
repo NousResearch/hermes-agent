@@ -61,7 +61,6 @@ import {
   $sidebarWorkspaceOrderIds,
   $sidebarWorkspaceParentOrderIds,
   filterVisibleProjects,
-  pinSession,
   SESSION_SEARCH_FOCUS_EVENT,
   setPinnedSessionOrder,
   setSidebarCronOpen,
@@ -73,8 +72,7 @@ import {
   setSidebarWorkspaceOrderIds,
   setSidebarWorkspaceParentOrderIds,
   SIDEBAR_SESSIONS_PAGE_SIZE,
-  toggleSidebarMessagingOpen,
-  unpinSession
+  toggleSidebarMessagingOpen
 } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import {
@@ -131,7 +129,7 @@ import {
 } from '@/store/session'
 import { $sessionDotStateById, sessionStatusBucket } from '@/store/session-dot-state'
 import { $focusedSessionIsTile, $focusedStoredSessionId } from '@/store/session-focus'
-import { $unconfirmedPinWrites } from '@/store/session-pin-sync'
+import { $unconfirmedPinWrites, pinSession, unpinSession } from '@/store/session-pin-sync'
 import { $removedSessionIds } from '@/store/session-removal'
 import { $workingSessionIds } from '@/store/session-states'
 import { ackAllSessionsRead } from '@/store/session-unread'
@@ -1740,7 +1738,7 @@ export function ChatSidebar({
                 onDeleteSession={onDeleteSession}
                 onResumeSession={onResumeSession}
                 onToggle={() => undefined}
-                onTogglePin={pinSession}
+                onTogglePin={(id, session) => pinSession(id, session)}
                 onToggleUnread={toggleUnread}
                 open
                 pinned={false}
@@ -1954,7 +1952,7 @@ export function ChatSidebar({
                 onReorderSessions={showAllProfiles ? undefined : reorderSessions}
                 onResumeSession={onResumeSession}
                 onToggle={() => setSidebarRecentsOpen(!agentsOpen)}
-                onTogglePin={pinSession}
+                onTogglePin={(id, session) => pinSession(id, session)}
                 onToggleUnread={toggleUnread}
                 open={agentsOpen}
                 pinned={false}
@@ -2024,7 +2022,7 @@ export function ChatSidebar({
                     onDeleteSession={onDeleteSession}
                     onResumeSession={onResumeSession}
                     onToggle={() => toggleSidebarMessagingOpen(group.sourceId)}
-                    onTogglePin={pinSession}
+                    onTogglePin={(id, session) => pinSession(id, session)}
                     onToggleUnread={toggleUnread}
                     open={messagingOpenIds.includes(group.sourceId)}
                     pinned={false}

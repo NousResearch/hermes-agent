@@ -5,10 +5,13 @@ Chrome draws no frame for a hidden tab, and Browser Use cloud never answers a pn
 ``browser_exec`` below runs the real harness CLI it launches in production; only the daemon transport
 is faked.
 """
+import base64
+import io
 import json
 import os
 import sys
 import textwrap
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -171,3 +174,33 @@ def test_autospawn_route_activates_only_when_the_harness_actually_reached_cloud(
     assert result.get("success") is True, result.get("stderr") or result
     activations = [c["targetId"] for c in calls if c["method"] == "Target.activateTarget"]
     assert activations == (["T1", "T2"] if daemon_kind == "cloud" else []), calls
+
+
+def test_each_default_capture_keeps_its_own_frame(monkeypatch, tmp_path):
+    """Two no-path captures must not share a file (#150572).
+
+    browser_exec reports the captured path as that step's ``screenshot_path`` and the model's history
+    keeps it, so a fixed default name let step 2 overwrite the frame step 1's tool result points at.
+    """
+    from tools import browser_use_shot as shot_mod
+
+    frames = iter([(4, 4, "red"), (6, 6, "blue")])
+
+    def cdp(method, _response_timeout=5.0, **params):
+        assert method == "Page.captureScreenshot", method
+        width, height, color = next(frames)
+        buf = io.BytesIO()
+        Image.new("RGB", (width, height), color).save(buf, format="PNG")
+        return {"data": base64.b64encode(buf.getvalue()).decode()}
+
+    monkeypatch.setattr(shot_mod, "_default_shot_path", lambda: str(tmp_path / "shot.png"))
+    capture = shot_mod.make_capture_screenshot(cdp, lambda: {"targetId": "T1"})
+    first, second = capture(), capture()
+
+    assert first != second
+    assert Path(first).parent == tmp_path and Path(first).stem.startswith("shot-")
+    with Image.open(first) as img:  # the earlier step's evidence survives the later capture
+        assert img.size == (4, 4)
+    with Image.open(second) as img:
+        assert img.size == (6, 6)
+

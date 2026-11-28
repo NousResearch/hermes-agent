@@ -141,7 +141,7 @@ export function AutoField({
           onChange={(e) => {
             const raw = e.target.value;
             if (raw === "") {
-              onChange(0);
+              onChange(schema.nullable === true ? null : 0);
               return;
             }
             const n = Number(raw);

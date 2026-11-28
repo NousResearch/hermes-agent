@@ -6,7 +6,14 @@ export type PtyKeyboardShortcut =
   | "copy"
   | "delete-word-backward"
   | "delete-word-forward"
+  | "native-paste"
   | "pass";
+
+// Bare Ctrl (no Shift/Alt/Meta) word-deletion chords, keyed by `ev.key`.
+const BARE_CTRL_SHORTCUTS: ReadonlyMap<string, PtyKeyboardShortcut> = new Map([
+  ["Backspace", "delete-word-backward"],
+  ["Delete", "delete-word-forward"],
+]);
 
 export function resolvePtyKeyboardShortcut(
   ev: Pick<KeyboardEvent, "altKey" | "ctrlKey" | "key" | "metaKey" | "shiftKey">,
@@ -22,27 +29,18 @@ export function resolvePtyKeyboardShortcut(
     return "copy";
   }
 
-  if (
-    ev.ctrlKey &&
-    !ev.shiftKey &&
-    !ev.altKey &&
-    !ev.metaKey &&
-    ev.key === "Backspace"
-  ) {
-    return "delete-word-backward";
+  // macOS Cmd+V must reach the browser's native paste event, which
+  // chat-image-drop.ts reads synchronously (text and images). Intercepting it
+  // for navigator.clipboard.readText() needs an async clipboard permission
+  // that plain-HTTPS tailnet origins deny or lose with the gesture, and the
+  // paste then inserts nothing.
+  if (isMac && ev.metaKey && !ev.ctrlKey && key === "v") {
+    return "native-paste";
   }
 
-  if (
-    ev.ctrlKey &&
-    !ev.shiftKey &&
-    !ev.altKey &&
-    !ev.metaKey &&
-    ev.key === "Delete"
-  ) {
-    return "delete-word-forward";
-  }
+  const bareCtrl = ev.ctrlKey && !ev.shiftKey && !ev.altKey && !ev.metaKey;
 
-  return "pass";
+  return (bareCtrl && BARE_CTRL_SHORTCUTS.get(ev.key)) || "pass";
 }
 
 // Guarded sender for shortcut escape sequences. Applies the same gate as the

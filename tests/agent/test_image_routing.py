@@ -129,6 +129,42 @@ class TestSupportsVisionOverride:
         cfg = {"model": {"supports_vision": False}}
         assert _supports_vision_override(cfg, "custom", "my-llava") is False
 
+    def test_top_level_scoped_to_default_model_and_provider(self):
+        """model.supports_vision must not leak to another model or provider after /model (#161016)."""
+        cfg = {
+            "model": {"default": "vision-model", "provider": "gw-vision", "supports_vision": True},
+            "providers": {
+                "gw-vision": {"api": "https://gw.example/v1", "models": {"vision-model": {}}},
+                "gw-text": {"api": "https://gw.example/v1", "models": {"text-only-model": {"supports_vision": False}}},
+            },
+        }
+        assert _supports_vision_override(cfg, "custom", "vision-model", requested_provider="gw-vision") is True
+        assert _supports_vision_override(cfg, "custom", "text-only-model", requested_provider="gw-text") is False
+        assert _supports_vision_override(cfg, "anthropic", "unconfigured-model") is None
+
+    def test_top_level_scoped_when_same_model_name_on_other_provider(self):
+        cfg = {
+            "model": {"default": "shared-model", "provider": "gw-vision", "supports_vision": True},
+            "providers": {
+                "gw-text": {"api": "https://gw.example/v1", "models": {"shared-model": {"supports_vision": False}}},
+            },
+        }
+        assert _supports_vision_override(cfg, "custom", "shared-model", requested_provider="gw-vision") is True
+        assert _supports_vision_override(cfg, "custom", "shared-model", requested_provider="gw-text") is False
+
+    def test_top_level_scoped_for_dict_default_model(self):
+        cfg = {
+            "model": {
+                "default": {"model": "vision-model", "provider": "gw-vision"},
+                "supports_vision": True,
+            },
+            "providers": {
+                "gw-text": {"api": "https://gw.example/v1", "models": {"text-only": {"supports_vision": False}}},
+            },
+        }
+        assert _supports_vision_override(cfg, "custom", "vision-model", requested_provider="gw-vision") is True
+        assert _supports_vision_override(cfg, "custom", "text-only", requested_provider="gw-text") is False
+
 
 
 

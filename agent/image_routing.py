@@ -138,6 +138,92 @@ def _custom_provider_list(cfg: dict[str, Any]) -> list[dict[str, Any]]:
     return [e for e in raw if isinstance(e, dict)] if isinstance(raw, list) else []
 
 
+def _normalize_vision_provider(name: str) -> str:
+    """Normalize a provider identity for ``model.supports_vision`` scoping."""
+    cleaned = _clean_str(name).lower().replace(" ", "-").removeprefix("custom:")
+    if not cleaned:
+        return ""
+    with suppress(ImportError, AttributeError, ValueError):
+        from hermes_cli.providers import normalize_provider
+        cleaned = normalize_provider(cleaned)
+    return cleaned
+
+
+def _is_named_custom_provider(norm_provider: str) -> bool:
+    """True when *norm_provider* is a user-named custom endpoint rather than a built-in provider."""
+    if not norm_provider or norm_provider in ("auto", "custom", "openrouter"):
+        return False
+    try:
+        from hermes_cli.providers import _is_static_canonical
+        return not _is_static_canonical(norm_provider)
+    except (ImportError, AttributeError):
+        return True
+
+
+def _vision_provider_matches(default_provider: str, provider: str, requested_provider: str) -> bool:
+    """True when the runtime provider matches the configured default ``model.provider``."""
+    norm_default = _normalize_vision_provider(default_provider)
+    if not norm_default or norm_default == "auto":
+        return True
+    active = _clean_str(requested_provider) or _clean_str(provider)
+    norm_active = _normalize_vision_provider(active)
+    if not norm_active:
+        return True
+    if norm_default == norm_active:
+        return True
+    # Runtime rewrites a named custom provider to bare ``"custom"`` when no
+    # requested_provider was forwarded by the caller.
+    return (
+        not _clean_str(requested_provider)
+        and norm_active == "custom"
+        and _is_named_custom_provider(norm_default)
+    )
+
+
+def _vision_model_matches(default_model: str, active_model: str, provider: str) -> bool:
+    """True when *active_model* refers to the configured ``model.default``."""
+    if not default_model:
+        return True
+    if not active_model:
+        return False
+    if default_model == active_model:
+        return True
+    with suppress(ImportError, AttributeError, ValueError):
+        from hermes_cli.model_normalize import normalize_model_for_provider
+        norm_provider = _normalize_vision_provider(provider)
+        if norm_provider:
+            return (
+                normalize_model_for_provider(default_model, norm_provider)
+                == normalize_model_for_provider(active_model, norm_provider)
+            )
+    return False
+
+
+def _top_level_supports_vision_applies(
+    model_cfg: dict[str, Any],
+    provider: str,
+    model: str,
+    requested_provider: str,
+) -> bool:
+    """``model.supports_vision`` describes the configured default model/provider only (#161016)."""
+    raw_default = model_cfg.get("default")
+    if raw_default is None:
+        raw_default = model_cfg.get("model")
+    default_model, dict_provider = "", ""
+    if isinstance(raw_default, dict):
+        with suppress(ImportError, AttributeError, ValueError):
+            from hermes_cli.config import split_model_config_default
+            default_model, dict_provider = split_model_config_default(raw_default)
+    else:
+        default_model = _clean_str(raw_default)
+    default_provider = dict_provider or _clean_str(model_cfg.get("provider"))
+    if not _vision_provider_matches(default_provider, provider, requested_provider):
+        return False
+    return _vision_model_matches(
+        default_model, _clean_str(model), _clean_str(requested_provider) or _clean_str(provider) or default_provider
+    )
+
+
 def _supports_vision_override(
     cfg: Optional[dict[str, Any]],
     provider: str,
@@ -147,7 +233,8 @@ def _supports_vision_override(
 ) -> Optional[bool]:
     """Resolve user-declared vision capability from config.yaml; None when unset.
 
-    First hit wins: ``model.supports_vision`` → ``providers.<p>.models.<model>``
+    First hit wins: ``model.supports_vision`` (only when active runtime matches
+    the configured default model/provider) → ``providers.<p>.models.<model>``
     → legacy ``custom_providers[].models.<model>``. Named custom providers are
     rewritten to ``provider="custom"`` at runtime while config keeps the user's
     name under ``model.provider``, so the requested, runtime and config
@@ -157,7 +244,7 @@ def _supports_vision_override(
         return None
     model_cfg = _dict_or_empty(cfg.get("model"))
     top = _coerce_capability_bool(model_cfg.get("supports_vision"))
-    if top is not None:
+    if top is not None and _top_level_supports_vision_applies(model_cfg, provider, model, requested_provider):
         return top
 
     candidates: list[str] = []

@@ -2,7 +2,7 @@ import { KeyboardSensor, PointerSensor, useSensor, useSensors } from '@dnd-kit/c
 import { sortableKeyboardCoordinates } from '@dnd-kit/sortable'
 import { useStore } from '@nanostores/react'
 import type * as React from 'react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation } from 'react-router'
 
 import { PlatformAvatar } from '@/app/messaging/platform-icon'
@@ -29,6 +29,7 @@ import { useI18n } from '@/i18n'
 import { comboTokens } from '@/lib/keybinds/combo'
 import { sessionMatchesSearch } from '@/lib/session-search'
 import { normalizeSessionSource, sessionSourceLabel } from '@/lib/session-source'
+import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { $activeConnectionId } from '@/store/connections'
@@ -85,7 +86,7 @@ import {
   type AgentProfileRoute,
   ALL_PROFILES,
   messagingTotalsKey,
-  normalizeProfileKey,
+  normalizeProfileKey
 } from '@/store/profile'
 import { $profileRailVisible } from '@/store/profile-rail-prefs'
 import { $projectScope, ALL_PROJECTS, exitProjectScope } from '@/store/project-scope'
@@ -123,6 +124,7 @@ import {
   $sessionProfilesTruncated,
   $sessions,
   $sessionsLoadError,
+  $sessionResumeRequest,
   $sessionsLoading,
   $unreadFinishedSessionIds,
   markAllSessionsRead,
@@ -158,6 +160,7 @@ import { SidebarFilterMenu } from './filter-menu'
 import { buildGatewaySessionGroups, scopeGatewaySessionGroups, useGatewaySessionGroups } from './gateway-group-model'
 import { SidebarLoadMoreRow } from './load-more-row'
 import { orderByIds, reconcileOrderIds, resolveManualSessionOrderIds, sameIds } from './order'
+import { ChatSidebarPresentationContext } from './presentation'
 import { filterSessionsByProfileScope } from './profile-scope'
 import { ProfileRail } from './profile-switcher'
 import { ProjectDialog } from './project-dialog'
@@ -375,7 +378,7 @@ export function mergeSearchResults(
   return [...out.values()]
 }
 
-interface ChatSidebarProps extends React.ComponentProps<typeof Sidebar> {
+export interface ChatSidebarProps extends React.ComponentProps<typeof Sidebar> {
   currentView: AppView
   onNavigate: (item: SidebarNavItem) => void
   onLoadMoreSessions: () => Promise<void> | void
@@ -412,6 +415,7 @@ export function ChatSidebar({
   onManageCronJob,
   onTriggerCronJob
 }: ChatSidebarProps) {
+  const presentation = useContext(ChatSidebarPresentationContext)
   const { t } = useI18n()
   const s = t.sidebar
   const { pathname } = useLocation()
@@ -584,6 +588,9 @@ export function ChatSidebar({
   }, [])
 
   const activeSidebarSessionId = currentView === 'chat' ? selectedSessionId : null
+  const activeSidebarSessionOwner = useStoreSelector($sessionResumeRequest, request =>
+    presentation && request && request.sessionId === activeSidebarSessionId ? request.ownerRoute : undefined
+  )
   const profileRailVisible = useStore($profileRailVisible)
 
   const dndSensors = useSensors(
@@ -754,6 +761,7 @@ export function ChatSidebar({
   )
 
   useEffect(() => {
+    if (sessionsLoading) return
     const next = resolveManualSessionOrderIds(
       unpinnedAgentSessions.map(s => s.id),
       agentOrderIds,
@@ -773,7 +781,7 @@ export function ChatSidebar({
     if (next.length && !sameIds(next, agentOrderIds)) {
       setSidebarSessionOrderIds(next)
     }
-  }, [agentOrderIds, agentOrderManual, unpinnedAgentSessions])
+  }, [agentOrderIds, agentOrderManual, unpinnedAgentSessions, sessionsLoading])
 
   // Recents render in recency order. The hand-picked order is layered on per date group inside the
   // section (orderRowsWithinGroups) rather than baked into the list here, so a drag ranks a row
@@ -1366,8 +1374,10 @@ export function ChatSidebar({
 
   // Recents and every messaging platform resolve owner groups the same way
   // ([connectionId, profile]), so a platform's groups line up with recents.
-  const ownerGrouped = profileScope === ALL_PROFILES && grouping === 'profile'
-  const profileGroups = useGatewaySessionGroups(agentSessions, ownerGrouped, filtersNarrow)
+  const combinedProfiles = presentation?.groupAcrossProfiles ?? false
+  const ownerGrouped = profileScope === ALL_PROFILES && (presentation?.groupAcrossProfiles ?? grouping === 'profile')
+  const groups = useGatewaySessionGroups(agentSessions, ownerGrouped, filtersNarrow)
+  const profileGroups = presentation?.projectProfileGroups ? presentation.projectProfileGroups(groups) : groups
   const connectionsRegistry = useStore($connectionsRegistry)
   const profileColors = useStore($profileColors)
 
@@ -1507,7 +1517,7 @@ export function ChatSidebar({
   const showSessionSkeletons = sessionsLoading && scopedSessions.length === 0
 
   const showSessionSections = hasSessionArea({
-    cronJobs: showsAdvancedChrome ? cronJobs.length : 0,
+    cronJobs: presentation || showsAdvancedChrome ? cronJobs.length : 0,
     loading: showSessionSkeletons || Boolean(sessionsLoadError) || filtersActive,
     messaging: messagingGroups.length,
     profileGroups: profileGroups?.length ?? 0,
@@ -1550,6 +1560,95 @@ export function ChatSidebar({
         return session ? sessionPinId(session) : id
       })
     )
+
+  if (presentation) {
+    return presentation.render({
+      labels: s,
+      navItems,
+      pathname,
+      currentView,
+      panesFlipped,
+      showSessionSections,
+      searchQuery,
+      setSearchQuery,
+      searchInputRef,
+      trimmedQuery,
+      searchPending,
+      searchResults,
+      activeSidebarSessionId,
+      activeSidebarSessionOwner,
+      showAllProfiles,
+      cardRows,
+      dndSensors,
+      pinnedSessions,
+      pinsOpen,
+      agentsOpen,
+      cronOpen,
+      inProject,
+      enteredProjectId,
+      projectLoadFailed,
+      projectLoading,
+      retryProject,
+      showSessionSkeletons,
+      sessionsLoadError,
+      filtersActive,
+      filtersNarrow,
+      sessionsLoading,
+      recentsLoadMorePending,
+      hasMoreSessions,
+      rankedGlobally,
+      grouping,
+      combinedProfiles,
+      displayAgentGroups,
+      worktreeGroupingActive,
+      reposScanning,
+      projectsSkeletonVisible,
+      enteredProject,
+      activeProjectId,
+      enteredProjectOverlaySessions,
+      agentOrderManual,
+      agentOrderIds,
+      sortOrderIds,
+      projectOverview,
+      overviewHidden,
+      overviewPreviews,
+      scopedRepoWorktrees,
+      enteredProjectContent,
+      projectTreeLoading,
+      removedSessionIds,
+      displayAgentSessions,
+      agentSessions,
+      recentsVirtualizes,
+      sessionsMode,
+      sessionsLabel,
+      messagingGroups,
+      ownerGrouped,
+      connectionsRegistry,
+      profileColors,
+      messagingLoadMorePending,
+      messagingOpenIds,
+      cronJobs,
+      profileRailVisible,
+      unreadCount,
+      toggleUnread,
+      reorderPinned,
+      reorderSessions,
+      reorderProjects,
+      onLoadMoreRecents,
+      onEnterProject,
+      loadMoreForMessaging,
+      onNavigate,
+      onResumeSession,
+      onDeleteSession,
+      onArchiveSession,
+      onBranchSession,
+      onNewSessionInWorkspace,
+      onNewSessionSplit,
+      onRetrySessions,
+      onManageCronJob,
+      onTriggerCronJob
+    })
+  }
 
   return (
     <Sidebar
@@ -2066,7 +2165,7 @@ export function ChatSidebar({
   )
 }
 
-interface MessagingSection {
+export interface MessagingSection {
   sourceId: string
   label: string
   sessions: SessionInfo[]

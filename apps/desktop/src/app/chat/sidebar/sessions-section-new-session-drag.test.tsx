@@ -681,3 +681,84 @@ describe('explicit worktree dismissal', () => {
     await waitFor(() => expect(screen.getByTitle(/feature/)).toBeTruthy())
   })
 })
+
+it('shares section disclosure and renderer reorder commands with a host presentation', () => {
+  const onToggle = vi.fn()
+  const onReorderSessions = vi.fn()
+  const sessions = ['first', 'second'].map(id => ({ id }) as SessionInfo)
+
+  render(
+    <SidebarSessionsSection
+      {...baseProps()}
+      manualOrderIds={['first', 'second']}
+      onReorderSessions={onReorderSessions}
+      onToggle={onToggle}
+      preserveOrder
+      presentation={{
+        Section: ({ model, children, footer }) => (
+          <section aria-label={model.sectionId}>
+            <button type="button" onClick={model.toggle}>
+              {model.label}
+            </button>
+            {model.open && children}
+            {footer}
+          </section>
+        ),
+        SessionReorderList: ({ ids, onReorder, children }) => (
+          <>
+            {children}
+            <button type="button" onClick={() => onReorder([...ids].reverse())}>
+              Reorder host rows
+            </button>
+          </>
+        )
+      }}
+      sectionId="host-recents"
+      sessions={sessions}
+      sortable
+    />
+  )
+
+  expect(screen.getByRole('region', { name: 'host-recents' })).toBeTruthy()
+  expect(screen.getByTestId('session-row-first')).toBeTruthy()
+  fireEvent.click(screen.getByRole('button', { name: 'Projects' }))
+  expect(onToggle).toHaveBeenCalledOnce()
+  fireEvent.click(screen.getByRole('button', { name: 'Reorder host rows' }))
+  expect(onReorderSessions).toHaveBeenCalledExactlyOnceWith(['second', 'first'])
+})
+
+it('keeps the owning gateway and profile when a host renders the repository header', () => {
+  const route = { connectionId: 'remote-research', profile: 'research' }
+  const repo = (path: string, label: string) => ({ groups: [], id: path, label, path, sessionCount: 0 })
+  const onNewSession = vi.fn()
+  const onNewSessionSplit = vi.fn()
+
+  render(
+    <EnteredProjectContent
+      project={project({ ...route, repos: [repo('/repo/a', 'Repo A'), repo('/repo/b', 'Repo B')] })}
+      onNewSession={onNewSession}
+      onNewSessionSplit={onNewSessionSplit}
+      presentation={({ model, children, dialogs }) => (
+        <section aria-label={model.label}>
+          {model.actions}
+          {children}
+          {dialogs}
+        </section>
+      )}
+      renderRows={() => null}
+    />
+  )
+
+  const add = screen.getByRole('button', { name: 'New session in Repo B' })
+  fireEvent.click(add)
+  expect(onNewSession).toHaveBeenCalledExactlyOnceWith('/repo/b', route)
+  fireEvent.pointerDown(add, { button: 0 })
+  commitLatestDrag()
+  expect(onNewSessionSplit).toHaveBeenCalledExactlyOnceWith('right', {
+    anchor: 'workspace',
+    before: 'session-tile:next',
+    cwd: '/repo/b',
+    profile: 'research',
+    route
+  })
+})

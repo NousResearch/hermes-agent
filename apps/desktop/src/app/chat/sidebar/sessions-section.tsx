@@ -44,6 +44,7 @@ import {
 } from './projects'
 import { WorkspaceAddButton } from './projects/workspace-header'
 import { ReorderableList, useSortableBindings } from './reorderable-list'
+import type { SidebarSessionsSectionPresentation } from './section-presentation'
 import { SidebarSessionSkeletons } from './section-states'
 import { SidebarSessionRow } from './session-row'
 import { VirtualSessionList } from './virtual-session-list'
@@ -108,7 +109,9 @@ function SidebarSectionHeader({
   )
 }
 
-interface SidebarSessionsSectionProps {
+export interface SidebarSessionsSectionProps {
+  sectionId?: string
+  presentation?: SidebarSessionsSectionPresentation
   label: string
   open: boolean
   onToggle: () => void
@@ -202,6 +205,8 @@ interface SidebarSessionsSectionProps {
 }
 
 export function SidebarSessionsSection({
+  presentation,
+  sectionId,
   label,
   open,
   onToggle,
@@ -249,6 +254,16 @@ export function SidebarSessionsSection({
   card = false
 }: SidebarSessionsSectionProps) {
   const { t } = useI18n()
+  const Section = presentation?.Section
+  const Divider = presentation?.Divider ?? SidebarDateDivider
+  const SessionReorderList = presentation?.SessionReorderList ?? ReorderableList
+  const reorderGroupedSessions = Boolean(presentation?.reorderGroupedSessions)
+  const profileRows = presentation?.profileRows
+  const profileProjects = presentation?.profileProjects
+  const profileGroups = Boolean(groups?.length && groups.every(group => group.mode === 'profile' && group.profile))
+  const groupedProfileRows = profileGroups && !embeddedGroups ? profileRows : undefined
+  const combinedProjects = profileGroups && !embeddedGroups && projectOverview ? profileProjects : undefined
+  const ProfileProjects = combinedProjects?.Render
   const showAllSessions = useStore($sidebarShowAllSessions)
   const dividerLabels = t.sidebar.dateDivider
   const statusDividerLabels = t.sidebar.statusDivider
@@ -371,7 +386,7 @@ export function SidebarSessionsSection({
       const open = dividerToggle.open(row.key)
 
       return (
-        <SidebarDateDivider
+        <Divider
           action={action}
           key={row.key}
           label={label}
@@ -383,14 +398,55 @@ export function SidebarSessionsSection({
         />
       )
     },
-    [dividerLabels, dividerToggle, renderRow]
+    [Divider, dividerLabels, dividerToggle, renderRow]
   )
 
-  // Sessions inside repos/worktrees are date-ordered and static.
+  const renderGroupedRows = useCallback(
+    (rows: SidebarListRow[]) => {
+      const draggable = reorderGroupedSessions && sessionsDraggable
+      const ordered = reorderGroupedSessions ? orderRowsWithinGroups(rows, manualOrderIds ?? []) : rows
+      const visible = hideCollapsedGroupRows(ordered, isListGroupOpen)
+      const content = visible.map(row => renderListRow(row, draggable))
+      if (!draggable) return content
+
+      const allIds = reorderableRowIds(
+        orderRowsWithinGroups(toSessionRows(flattenSessionsWithBranches(sessions)), manualOrderIds ?? [])
+      )
+      return (
+        <SessionReorderList
+          ids={reorderableRowIds(visible)}
+          onReorder={ids => onReorderSessions?.(mergeVisibleReorder(allIds, ids))}
+          sensors={dndSensors}
+        >
+          {content}
+        </SessionReorderList>
+      )
+    },
+    [
+      SessionReorderList,
+      dndSensors,
+      isListGroupOpen,
+      manualOrderIds,
+      onReorderSessions,
+      renderListRow,
+      reorderGroupedSessions,
+      sessions,
+      sessionsDraggable
+    ]
+  )
+
+  // Retain the renderer's normal rows when there is no host grouping policy.
   const renderRows = useCallback(
-    (items: SessionInfo[]) =>
-      flattenSessionsWithBranches(items).map(({ branchStem, session }) => renderRow(session, false, branchStem)),
-    [renderRow]
+    (items: SessionInfo[]) => {
+      if (groupedProfileRows) {
+        return renderGroupedRows(groupedProfileRows(items, grouping, dotStates, statusDividerLabels))
+      }
+      const entries = flattenSessionsWithBranches(items)
+      return reorderGroupedSessions
+        ? renderGroupedRows(toSessionRows(entries))
+        : entries.map(({ branchStem, session }) => renderRow(session, false, branchStem))
+    },
+    [dotStates, groupedProfileRows, grouping, renderGroupedRows, renderRow, reorderGroupedSessions, statusDividerLabels]
   )
 
   // Limit complete groups, not sessions, so a burst and its branches stay
@@ -406,9 +462,9 @@ export function SidebarSessionsSection({
 
       const ordered = manualOrderIds?.length ? orderRowsWithinGroups(rows, manualOrderIds) : rows
 
-      return hideCollapsedGroupRows(ordered, isListGroupOpen).map(row => renderListRow(row, false))
+      return renderGroupedRows(ordered)
     },
-    [isListGroupOpen, manualOrderIds, renderListRow, showAllSessions]
+    [manualOrderIds, renderGroupedRows, showAllSessions]
   )
 
   // Same as `renderRows`, but with date dividers folded in — used for
@@ -420,9 +476,9 @@ export function SidebarSessionsSection({
 
       const rows = grouping === 'date' ? groupEntriesByRecency(entries) : toSessionRows(entries)
 
-      return hideCollapsedGroupRows(rows, isListGroupOpen).map(row => renderListRow(row, false))
+      return renderGroupedRows(rows)
     },
-    [grouping, isListGroupOpen, renderListRow]
+    [grouping, renderGroupedRows]
   )
 
   // Flat recents as list rows: grouped by recency when enabled, plain otherwise.
@@ -462,16 +518,33 @@ export function SidebarSessionsSection({
   )
 
   useEffect(() => {
-    if (grouping !== 'date' && grouping !== 'status') {
+    if (grouping !== 'date' && grouping !== 'status' && !combinedProjects) {
       return
     }
 
-    $sidebarListGroupIds.set(flatRows.flatMap(row => (row.kind === 'divider' ? [listGroupNodeId(row.key)] : [])))
+    const rows =
+      groupedProfileRows && groups
+        ? groups.flatMap(group => groupedProfileRows(group.sessions, grouping, dotStates, statusDividerLabels))
+        : flatRows
+    $sidebarListGroupIds.set(
+      combinedProjects && groups && projectOverview
+        ? combinedProjects.ids(groups, projectOverview)
+        : rows.flatMap(row => (row.kind === 'divider' ? [listGroupNodeId(row.key)] : []))
+    )
 
     return () => {
       $sidebarListGroupIds.set([])
     }
-  }, [flatRows, grouping])
+  }, [
+    combinedProjects,
+    dotStates,
+    flatRows,
+    groupedProfileRows,
+    grouping,
+    groups,
+    projectOverview,
+    statusDividerLabels
+  ])
 
   // Pinned never virtualizes. Virtualization needs a bounded viewport to
   // measure against, and Pinned deliberately has none — however many chats you
@@ -519,7 +592,7 @@ export function SidebarSessionsSection({
     )
   } else if (showEmptyState) {
     inner = emptyState
-  } else if (projectOverview?.length) {
+  } else if (projectOverview?.length && !combinedProjects) {
     // The model is already ordered (Home leads; then the default sort groups
     // explicit-before-auto, with a manual drag-order winning when present).
     // Render in that order and make rows drag-to-reorder when a handler is
@@ -566,13 +639,27 @@ export function SidebarSessionsSection({
         )}
       </>
     )
-  } else if (groups?.length && groups.every(group => group.mode === 'profile' && group.profile)) {
+  } else if (groups?.length && profileGroups) {
     inner = (
       <GatewayProfileGroups
         embedded={embeddedGroups}
         groups={groups}
         onNewSessionSplit={onNewSessionSplit}
-        renderRows={renderRows}
+        renderRows={
+          ProfileProjects && projectOverview
+            ? items => (
+                <ProfileProjects
+                  sessions={items}
+                  projects={projectOverview}
+                  renderRows={renderRows}
+                  activeProjectId={activeProjectId}
+                  onEnterProject={onEnterProject}
+                  onNewSession={onNewSessionInWorkspace}
+                  onNewSessionSplit={onNewSessionSplit}
+                />
+              )
+            : renderRows
+        }
         sensors={dndSensors}
       />
     )
@@ -608,17 +695,17 @@ export function SidebarSessionsSection({
     )
 
     inner = sessionsDraggable ? (
-      <ReorderableList ids={sortableRowIds} onReorder={persistSessionOrder} sensors={dndSensors}>
+      <SessionReorderList ids={sortableRowIds} onReorder={persistSessionOrder} sensors={dndSensors}>
         {virtual}
-      </ReorderableList>
+      </SessionReorderList>
     ) : (
       virtual
     )
   } else if (sessionsDraggable) {
     inner = (
-      <ReorderableList ids={sortableRowIds} onReorder={persistSessionOrder} sensors={dndSensors}>
+      <SessionReorderList ids={sortableRowIds} onReorder={persistSessionOrder} sensors={dndSensors}>
         {visibleRows.map(row => renderListRow(row, true, dividerAction))}
-      </ReorderableList>
+      </SessionReorderList>
     )
   } else {
     inner = visibleRows.map(row => renderListRow(row, false, dividerAction))
@@ -629,6 +716,29 @@ export function SidebarSessionsSection({
   // to the inherited `overflow-x-hidden` computes to `auto` (CSS spec), which
   // kept a phantom 4px scrollbar gutter and cut every row short on the right.
   const resolvedContentClassName = cn(contentClassName, flatVirtualized && 'overflow-visible')
+
+  if (Section) {
+    return (
+      <Section
+        model={{
+          sectionId,
+          label,
+          open: sectionOpen,
+          collapsible,
+          toggle: onToggle,
+          icon: labelIcon,
+          meta: labelMeta,
+          actions: headerAction,
+          className: rootClassName,
+          contentClassName: resolvedContentClassName,
+          pinned
+        }}
+        footer={footer}
+      >
+        {inner}
+      </Section>
+    )
+  }
 
   return (
     <SidebarGroup className={cn(rootClassName, DROP_TARGET_RING)} {...sessionDropTargetProps(pinned)}>

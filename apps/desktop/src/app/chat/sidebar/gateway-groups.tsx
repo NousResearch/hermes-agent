@@ -26,6 +26,7 @@ import { useI18n } from '@/i18n'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
+import { $sidebarSessionOrderIds, $sidebarSessionOrderManual } from '@/store/layout'
 import { newSessionInAgent, newSessionInProfile } from '@/store/profile'
 import { $sessionProfilesUsage } from '@/store/session'
 import { $sidebarSessionRankIds } from '@/store/sidebar-sort'
@@ -44,9 +45,11 @@ import { rankSessions } from './order'
 import { SIDEBAR_GROUP_PAGE } from './projects/model'
 import type { SidebarSessionGroup } from './projects/workspace-groups'
 import { WorkspaceAddButton, WorkspaceShowMoreButton } from './projects/workspace-header'
+import type { ProfileGroupPresentation } from './profile-group-presentation'
 import { ReorderableList, shellOwnsPress, useSortableBindings } from './reorderable-list'
 
-interface GatewayProfileGroupsProps {
+export interface GatewayProfileGroupsProps {
+  presentation?: ProfileGroupPresentation
   groups: SidebarSessionGroup[]
   renderRows: (sessions: SessionInfo[]) => ReactNode
   sensors?: ReturnType<typeof useSensors>
@@ -57,13 +60,18 @@ interface GatewayProfileGroupsProps {
   embedded?: boolean
 }
 
-export function GatewayProfileGroups({
+export function GatewayProfileGroups(props: GatewayProfileGroupsProps) {
+  return <GatewayProfileGroupsCore {...props} />
+}
+
+function GatewayProfileGroupsCore({
   groups,
   renderRows,
   sensors,
   onNewSessionSplit,
   nested = false,
-  embedded = false
+  embedded = false,
+  presentation
 }: GatewayProfileGroupsProps) {
   const { t } = useI18n()
   const registry = useStore($connectionsRegistry)
@@ -77,7 +85,7 @@ export function GatewayProfileGroups({
   for (const group of [...groups.filter(group => group.connectionId), ...groups.filter(group => !group.connectionId)]) {
     const owner = group.connectionId || registry?.primary || null
 
-    if (nested || embedded || !owner) {
+    if (nested || embedded || !owner || presentation?.flatten) {
       sections.push(group)
 
       continue
@@ -101,44 +109,68 @@ export function GatewayProfileGroups({
     }
   }
 
-  const ordered = [...sections].sort((a, b) => {
-    const left = order.indexOf(a.id)
-    const right = order.indexOf(b.id)
+  const ordered = sections
+    .filter(group => embedded || !presentation?.flatten || !presentation.hiddenProfiles.includes(group.profile ?? ''))
+    .sort((a, b) => {
+      const left = order.indexOf(a.id)
+      const right = order.indexOf(b.id)
 
-    return (left < 0 ? Infinity : left) - (right < 0 ? Infinity : right) || 0
-  })
+      return (left < 0 ? Infinity : left) - (right < 0 ? Infinity : right) || 0
+    })
 
   const ids = ordered.map(group => group.id)
 
+  const renderGroup = (
+    group: SidebarSessionGroup,
+    index: number,
+    move: (direction: 1 | -1) => void,
+    children: ReactNode
+  ) => (
+    <GatewayProfileGroup
+      embedded={embedded}
+      first={index === 0}
+      group={group}
+      key={group.id}
+      last={index === ordered.length - 1}
+      onMove={move}
+      onNewSessionSplit={onNewSessionSplit}
+      presentation={presentation}
+      renderRows={renderRows}
+    >
+      {children}
+    </GatewayProfileGroup>
+  )
+  const renderNested = (groups: SidebarSessionGroup[]) => (
+    <GatewayProfileGroupsCore
+      groups={oneGroupPerProfile(groups).map(profile => ({ ...profile, label: profile.profile! }))}
+      nested
+      onNewSessionSplit={onNewSessionSplit}
+      presentation={presentation}
+      renderRows={renderRows}
+      sensors={sensors}
+    />
+  )
+  if (presentation) {
+    return (
+      <presentation.Groups
+        model={{ ids, ordered, gatewayProfiles, sensors }}
+        renderGroup={renderGroup}
+        renderNested={renderNested}
+      />
+    )
+  }
+
   return (
     <ReorderableList ids={ids} onReorder={reorderGatewayGroups} sensors={sensors}>
-      {ordered.map((group, index) => (
-        <GatewayProfileGroup
-          embedded={embedded}
-          first={index === 0}
-          group={group}
-          key={group.id}
-          last={index === ordered.length - 1}
-          onMove={direction => reorderGatewayGroups(arrayMove(ids, index, index + direction))}
-          onNewSessionSplit={onNewSessionSplit}
-          renderRows={renderRows}
-        >
-          {gatewayProfiles.has(group.id) && (
-            <div className="ml-3 border-l border-border/50 pl-1">
-              <GatewayProfileGroups
-                groups={oneGroupPerProfile(gatewayProfiles.get(group.id)!).map(profile => ({
-                  ...profile,
-                  label: profile.profile!
-                }))}
-                nested
-                onNewSessionSplit={onNewSessionSplit}
-                renderRows={renderRows}
-                sensors={sensors}
-              />
-            </div>
-          )}
-        </GatewayProfileGroup>
-      ))}
+      {ordered.map((group, index) => {
+        const profiles = gatewayProfiles.get(group.id)
+        return renderGroup(
+          group,
+          index,
+          direction => reorderGatewayGroups(arrayMove(ids, index, index + direction)),
+          profiles && <div className="ml-3 border-l border-border/50 pl-1">{renderNested(profiles)}</div>
+        )
+      })}
     </ReorderableList>
   )
 }
@@ -170,6 +202,7 @@ function oneGroupPerProfile(groups: SidebarSessionGroup[]): SidebarSessionGroup[
 const recency = (session: SidebarSessionGroup['sessions'][number]) => session.last_active || session.started_at || 0
 
 interface GatewayProfileGroupProps {
+  presentation?: ProfileGroupPresentation
   group: SidebarSessionGroup
   renderRows: (sessions: SessionInfo[]) => ReactNode
   onMove: (direction: 1 | -1) => void
@@ -188,14 +221,18 @@ function GatewayProfileGroup({
   last,
   embedded,
   onNewSessionSplit,
-  children
+  children,
+  presentation
 }: GatewayProfileGroupProps) {
   const { t } = useI18n()
   const s = t.sidebar
   const copy = s.gatewayGroups
   const aliases = useStore($gatewayGroupAliases)
   const collapsed = useStore($gatewayGroupCollapsed)
-  const rankIds = useStore($sidebarSessionRankIds)
+  const rankedIds = useStore($sidebarSessionRankIds)
+  const manualIds = useStore($sidebarSessionOrderIds)
+  const manual = useStore($sidebarSessionOrderManual)
+  const rankIds = presentation && manual ? manualIds : rankedIds
 
   const usage = useStoreSelector($sessionProfilesUsage, all =>
     showsProfileTotals(group.connectionId, embedded) ? all[group.profile!] : undefined
@@ -223,6 +260,43 @@ function GatewayProfileGroup({
     } else {
       newSessionInProfile(profile)
     }
+  }
+
+  if (presentation) {
+    return (
+      <presentation.Group
+        model={{
+          group,
+          label,
+          open,
+          embedded,
+          first,
+          last,
+          alias: aliases[group.id],
+          sortable,
+          usage,
+          renaming,
+          setRenaming,
+          draft,
+          setDraft,
+          onMove,
+          startSession,
+          onNewSessionSplit,
+          route,
+          sessions,
+          renderRows,
+          children,
+          contribution:
+            group.profile && !embedded ? (
+              <ProfileGroupHeaderSlot
+                connectionId={group.connectionId ?? null}
+                profile={group.profile}
+                filter={presentation.filterHeaderContribution}
+              />
+            ) : null
+        }}
+      />
+    )
   }
 
   return (
@@ -396,8 +470,17 @@ function GatewayProfileGroup({
 /** Plugin-contributed chrome at the top of one expanded gateway/profile group
  *  (`sidebar.profileGroup.header`): the Bots plugin mounts its Screen portal
  *  here so the profile's computer is one click away from its sessions. */
-function ProfileGroupHeaderSlot({ connectionId, profile }: { connectionId: null | string; profile: string }) {
-  const items = useContributions(SIDEBAR_PROFILE_GROUP_HEADER_AREA)
+function ProfileGroupHeaderSlot({
+  connectionId,
+  profile,
+  filter
+}: {
+  connectionId: null | string
+  profile: string
+  filter?(id: string): boolean
+}) {
+  const contributions = useContributions(SIDEBAR_PROFILE_GROUP_HEADER_AREA)
+  const items = filter ? contributions.filter(item => filter(item.id)) : contributions
 
   if (!items.length) {
     return null

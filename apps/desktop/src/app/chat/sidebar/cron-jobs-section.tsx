@@ -25,6 +25,7 @@ import { isCronRunRow, openCronRun, reconcileCronRunVerdicts } from '../../cron/
 import { SidebarPanelLabel } from '../../shell/sidebar-label'
 
 import { SidebarRowBody, SidebarRowLabel, SidebarRowLead, SidebarRowShell } from './chrome'
+import type { CronSidebarPresentation } from './cron-presentation'
 import { SidebarLoadMoreRow } from './load-more-row'
 
 const INACTIVE_STATES = new Set(['completed', 'disabled', 'error', 'paused'])
@@ -67,7 +68,8 @@ function formatRunTime(seconds?: null | number): string {
   return Number.isNaN(date.valueOf()) ? '—' : fmtDayTime.format(date)
 }
 
-interface SidebarCronJobsSectionProps {
+export interface SidebarCronJobsSectionProps {
+  presentation?: CronSidebarPresentation
   jobs: CronJob[]
   label: string
   max?: number
@@ -92,7 +94,8 @@ export function SidebarCronJobsSection({
   onOpenRun,
   onTriggerJob,
   onToggle,
-  open
+  open,
+  presentation
 }: SidebarCronJobsSectionProps) {
   const [nowMs, setNowMs] = useState(() => Date.now())
   // Single-open inline peek so the section stays scannable.
@@ -180,6 +183,39 @@ export function SidebarCronJobsSection({
   const shown = sorted.slice(0, cap)
   const hiddenCount = Math.min(sorted.length, max) - shown.length
 
+  const contents = (
+    <>
+      {shown.map(job => (
+        <CronJobSidebarRow
+          busy={triggeringJobIds.has(job.id)}
+          expanded={peekJobId === job.id}
+          job={job}
+          key={job.id}
+          nowMs={nowMs}
+          onManage={() => onManageJob(job.id)}
+          onOpenRun={onOpenRun}
+          onTogglePeek={() => setPeekJobId(prev => (prev === job.id ? null : job.id))}
+          onTrigger={() => triggerJob(job.id)}
+          presentation={presentation}
+        />
+      ))}
+      {hiddenCount > 0 && (
+        <SidebarLoadMoreRow
+          onClick={() => setVisibleCount(count => count + LOAD_MORE_STEP)}
+          step={Math.min(LOAD_MORE_STEP, hiddenCount)}
+        />
+      )}
+    </>
+  )
+
+  if (presentation) {
+    return (
+      <presentation.Section label={label} open={open} toggle={onToggle}>
+        {contents}
+      </presentation.Section>
+    )
+  }
+
   return (
     <SidebarGroup className="shrink-0 p-0 pb-1">
       <div className="group/section flex shrink-0 items-center justify-between pb-1 pt-1.5">
@@ -197,25 +233,7 @@ export function SidebarCronJobsSection({
       </div>
       {open && (
         <SidebarGroupContent className="scrollbar-fade flex max-h-72 flex-col gap-px overflow-x-hidden overflow-y-auto overscroll-contain pb-1.75 compact:max-h-none compact:overflow-visible">
-          {shown.map(job => (
-            <CronJobSidebarRow
-              busy={triggeringJobIds.has(job.id)}
-              expanded={peekJobId === job.id}
-              job={job}
-              key={job.id}
-              nowMs={nowMs}
-              onManage={() => onManageJob(job.id)}
-              onOpenRun={onOpenRun}
-              onTogglePeek={() => setPeekJobId(prev => (prev === job.id ? null : job.id))}
-              onTrigger={() => triggerJob(job.id)}
-            />
-          ))}
-          {hiddenCount > 0 && (
-            <SidebarLoadMoreRow
-              onClick={() => setVisibleCount(count => count + LOAD_MORE_STEP)}
-              step={Math.min(LOAD_MORE_STEP, hiddenCount)}
-            />
-          )}
+          {contents}
         </SidebarGroupContent>
       )}
     </SidebarGroup>
@@ -230,7 +248,8 @@ function CronJobSidebarRow({
   onManage,
   onOpenRun,
   onTogglePeek,
-  onTrigger
+  onTrigger,
+  presentation
 }: {
   busy: boolean
   expanded: boolean
@@ -240,6 +259,7 @@ function CronJobSidebarRow({
   onOpenRun: (sessionId: string, session?: SessionInfo) => void
   onTogglePeek: () => void
   onTrigger: () => void
+  presentation?: CronSidebarPresentation
 }) {
   const { t } = useI18n()
   const c = t.cron
@@ -312,6 +332,34 @@ function CronJobSidebarRow({
       })}
     </>
   )
+
+  if (presentation) {
+    return (
+      <presentation.Row
+        model={{
+          label,
+          meta,
+          stateClass: STATE_DOT[state] ?? 'bg-(--ui-text-quaternary)',
+          running: state === 'running',
+          busy,
+          expanded,
+          toggleLabel: expanded ? c.hideRuns : c.showRuns,
+          triggerLabel: c.triggerNow,
+          manageLabel: c.manage,
+          toggle: onTogglePeek,
+          trigger: onTrigger,
+          manage: onManage,
+          wrap: header => (
+            <ActionsContextMenu ariaLabel={c.actionsTitle} contentClassName="w-44" items={items}>
+              {header}
+            </ActionsContextMenu>
+          )
+        }}
+      >
+        {expanded && <CronJobSidebarRuns jobId={job.id} onOpenRun={onOpenRun} presentation={presentation} />}
+      </presentation.Row>
+    )
+  }
 
   return (
     <div>
@@ -394,9 +442,11 @@ function CronJobSidebarRow({
 
 function CronJobSidebarRuns({
   jobId,
-  onOpenRun
+  onOpenRun,
+  presentation
 }: {
   jobId: string
+  presentation?: CronSidebarPresentation
   onOpenRun: (sessionId: string, session?: SessionInfo) => void
 }) {
   const { t } = useI18n()
@@ -452,6 +502,25 @@ function CronJobSidebarRuns({
     }
     // cronChangeTick: a fired run reloads the peek immediately.
   }, [changeEventsAvailable, cronChangeTick, jobId, visible])
+
+  if (presentation) {
+    return (
+      <presentation.Runs
+        loadingLabel={c.loading}
+        emptyLabel={c.noRuns}
+        rows={
+          runs === null
+            ? null
+            : runs.map(run => ({
+                id: run.id,
+                label: formatRunTime(run.last_active || run.started_at),
+                selected: run.id === selectedSessionId,
+                open: isCronRunRow(run) ? () => openCronRun(run, onOpenRun) : undefined
+              }))
+        }
+      />
+    )
+  }
 
   return (
     <div className="mb-1 ml-[1.375rem] flex flex-col gap-px">

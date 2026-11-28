@@ -21,6 +21,7 @@ import {
 } from '../chrome'
 
 import { projectOwnerRoute } from './gateway-project-rows'
+import type { WorkspaceChromePresentation } from './row-presentation'
 import type { SidebarProjectTree } from './workspace-groups'
 
 // Branch/worktree labels routinely share a long prefix (`bb/coding-context-…`),
@@ -50,12 +51,16 @@ function LaneLabel({ label, title }: { label: string; title?: string }) {
 export function WorkspaceAddButton({
   label,
   onClick,
+  presentation,
   onPointerDown
 }: {
+  presentation?: WorkspaceChromePresentation
   label: string
   onClick: () => void
   onPointerDown?: (event: React.PointerEvent<HTMLButtonElement>) => void
 }) {
+  if (presentation) return <presentation.Add label={label} onClick={onClick} onPointerDown={onPointerDown} />
+
   return (
     <Tip label={label}>
       <button
@@ -82,12 +87,16 @@ export function WorkspaceAddButton({
 export function WorkspaceShowMoreRow({
   disabled,
   label,
+  presentation,
   onClick
 }: {
+  presentation?: WorkspaceChromePresentation
   disabled?: boolean
   label: string
   onClick: () => void
 }) {
+  if (presentation) return <presentation.More label={label} onClick={onClick} disabled={disabled} />
+
   return (
     <SidebarRowShell>
       <SidebarRowBody
@@ -112,14 +121,18 @@ export function WorkspaceShowMoreRow({
 export function WorkspaceShowMoreButton({
   count,
   label,
+  presentation,
   onClick
 }: {
+  presentation?: WorkspaceChromePresentation
   count: number
   label: string
   onClick: () => void
 }) {
   const { t } = useI18n()
   const text = t.sidebar.showMoreIn(count, label)
+
+  if (presentation) return <presentation.More label={text} onClick={onClick} compact />
 
   return (
     <Tip label={text}>
@@ -226,12 +239,18 @@ export function WorkspaceContextMenu({
 // The base branch defaults to the remote default (origin/HEAD); the user can
 // pick any local or remote-tracking branch via a filterable combobox.
 export function StartWorkButton({
+  presentation,
   project
 }: {
+  presentation?: WorkspaceChromePresentation
   project: Pick<SidebarProjectTree, 'connectionId' | 'path' | 'profile'>
 }) {
   const { t } = useI18n()
   const p = t.sidebar.projects
+
+  const onClick = () => void openWorktreeDialog({ owner: projectOwnerRoute(project), repoPath: project.path ?? '' })
+
+  if (presentation) return <presentation.Start label={p.startWork} onClick={onClick} />
 
   return (
     <Tip label={p.startWork}>
@@ -244,7 +263,7 @@ export function StartWorkButton({
         // Publish the intent. The one WorktreeDialog in the sidebar renders it.
         // This button pins its own repo, so it targets this section.
         // Another gateway's project: the worktree is cut on that machine.
-        onClick={() => void openWorktreeDialog({ owner: projectOwnerRoute(project), repoPath: project.path ?? '' })}
+        onClick={onClick}
         type="button"
       >
         <Codicon name="git-branch" size="0.75rem" />
@@ -263,9 +282,11 @@ export function WorkspaceHeader({
   onToggle,
   open,
   title,
+  presentation,
   ref,
   ...rest
 }: {
+  presentation?: WorkspaceChromePresentation
   action?: React.ReactNode
   emphasis?: boolean
   icon: React.ReactNode
@@ -275,6 +296,15 @@ export function WorkspaceHeader({
   /** Hover tooltip — the lane's full on-disk path (worktree / repo root). */
   title?: string
 } & React.ComponentProps<'div'>) {
+  if (presentation)
+    return (
+      <presentation.Header
+        ref={ref}
+        {...rest}
+        model={{ label, title, open, toggle: onToggle, emphasis, icon, actions: action }}
+      />
+    )
+
   return (
     <div
       className={cn(

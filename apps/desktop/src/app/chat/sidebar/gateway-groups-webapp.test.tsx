@@ -1,42 +1,66 @@
 // @vitest-environment jsdom
 import { act, cleanup, render, screen, within } from '@testing-library/react'
+import type { ComponentProps, ContextType } from 'react'
 import { MemoryRouter } from 'react-router'
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 
 import { setApiRequestConnection } from '@/api/client'
 import { SidebarProvider } from '@/components/ui/sidebar'
 import type { HermesConnection } from '@/global'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { setPrimaryGatewayConnection } from '@/store/gateway'
-import { $sidebarRowMeta, setSidebarGrouping } from '@/store/layout'
+import {
+  $sidebarRowMeta,
+  setSidebarGrouping,
+  setSidebarSessionOrderIds,
+  setSidebarSessionOrderManual
+} from '@/store/layout'
 import { $profiles, $showAllProfiles } from '@/store/profile'
-import { $connection, $sessionProfilesUsage, $sessions, setSessionProfilesFailed } from '@/store/session'
+import {
+  $connection,
+  $selectedStoredSessionId,
+  $sessionProfilesUsage,
+  $sessionResumeRequest,
+  $sessions,
+  requestSessionResume,
+  setSessionProfilesFailed,
+  setSessionProfilesTruncated
+} from '@/store/session'
 import { makeSessionInfo } from '@/test/session-info'
 
 import { ChatSidebar } from './index'
+import { ChatSidebarPresentationContext, type ChatSidebarController } from './presentation'
+
+type ChatSidebarPresentation = NonNullable<ContextType<typeof ChatSidebarPresentationContext>>
 
 const noop = () => {}
 
 const noopAsync = async () => {}
 
-const mount = () =>
+const mount = (
+  props: Partial<ComponentProps<typeof ChatSidebar>> = {},
+  presentation: ChatSidebarPresentation | null = null
+) =>
   render(
     <MemoryRouter>
       <SidebarProvider>
-        <ChatSidebar
-          currentView="chat"
-          onArchiveSession={noop}
-          onBranchSession={noop}
-          onDeleteSession={noop}
-          onLoadMoreSessions={noop}
-          onManageCronJob={noop}
-          onNavigate={noop}
-          onNewSessionInWorkspace={noop}
-          onNewSessionSplit={noop}
-          onResumeSession={noop}
-          onRetrySessions={noopAsync}
-          onTriggerCronJob={async () => {}}
-        />
+        <ChatSidebarPresentationContext.Provider value={presentation}>
+          <ChatSidebar
+            currentView="chat"
+            onArchiveSession={noop}
+            onBranchSession={noop}
+            onDeleteSession={noop}
+            onLoadMoreSessions={noop}
+            onManageCronJob={noop}
+            onNavigate={noop}
+            onNewSessionInWorkspace={noop}
+            onNewSessionSplit={noop}
+            onResumeSession={noop}
+            onRetrySessions={noopAsync}
+            onTriggerCronJob={async () => {}}
+            {...props}
+          />
+        </ChatSidebarPresentationContext.Provider>
       </SidebarProvider>
     </MemoryRouter>
   )
@@ -304,4 +328,106 @@ it('skips the empty section of a profile that failed on a registry primary in fr
   )
 
   expect(groups).toEqual([JSON.stringify(['remote-1', 'default'])])
+})
+
+it('lets a browser presentation reuse exact sidebar selections, paging, and manual order', async () => {
+  window.document.documentElement.dataset.hermesDesktopHost = 'browser'
+  const resume = vi.fn(),
+    loadMore = vi.fn(async () => {})
+  const present = vi.fn((controller: ChatSidebarController) => (
+    <>
+      {controller.displayAgentSessions.map(row => (
+        <button key={`${row.profile}:${row.id}`} onClick={() => controller.onResumeSession(row.id, row)}>
+          {row.title}
+        </button>
+      ))}
+      <button onClick={() => void controller.onLoadMoreRecents()}>More</button>
+      <button onClick={() => controller.reorderSessions(['older', 'copy'])}>Reorder</button>
+    </>
+  ))
+  const now = Date.now() / 1000
+  const defaultCopy = makeSessionInfo({
+    id: 'copy',
+    title: 'Default copy',
+    connection_id: 'local',
+    profile: 'default',
+    last_active: now
+  })
+  const researchCopy = makeSessionInfo({
+    id: 'copy',
+    title: 'Research copy',
+    connection_id: 'local',
+    profile: 'research',
+    last_active: now - 1
+  })
+  const older = makeSessionInfo({
+    id: 'older',
+    title: 'Older chat',
+    connection_id: 'local',
+    profile: 'default',
+    last_active: now - 2
+  })
+
+  try {
+    mount(
+      { onResumeSession: resume, onLoadMoreSessions: loadMore },
+      {
+        groupAcrossProfiles: true,
+        projectProfileGroups: groups =>
+          groups && [
+            ...groups,
+            {
+              id: 'empty',
+              label: 'Empty profile',
+              profile: 'empty',
+              mode: 'profile',
+              path: null,
+              sessions: []
+            }
+          ],
+        render: present
+      }
+    )
+    act(() => {
+      $connectionsRegistry.set(null)
+      $profiles.set([
+        { name: 'default', is_default: true },
+        { name: 'research', is_default: false }
+      ] as typeof $profiles.value)
+      $showAllProfiles.set(true)
+      setSidebarGrouping('date')
+      $sessions.set([defaultCopy, researchCopy, older])
+      setSessionProfilesTruncated({ research: true })
+      $selectedStoredSessionId.set('copy')
+      requestSessionResume('copy', { connectionId: 'local', profile: 'research', targetProfile: 'research' })
+    })
+    const sessions = () => present.mock.lastCall![0]
+    expect(sessions().activeSidebarSessionId).toBe('copy')
+    expect(sessions().activeSidebarSessionOwner?.profile).toBe('research')
+    expect(
+      sessions()
+        .displayAgentGroups?.map(group => group.profile)
+        .sort()
+    ).toEqual(['default', 'empty', 'research'])
+    expect(sessions().hasMoreSessions).toBe(true)
+
+    screen.getByRole('button', { name: 'Research copy' }).click()
+    expect(resume).toHaveBeenCalledExactlyOnceWith('copy', researchCopy)
+    await act(async () => {
+      screen.getByRole('button', { name: 'More' }).click()
+    })
+    expect(loadMore).toHaveBeenCalledOnce()
+    act(() => {
+      screen.getByRole('button', { name: 'Reorder' }).click()
+    })
+    expect(sessions().agentOrderManual).toBe(true)
+    expect(sessions().agentOrderIds[0]).toBe('older')
+  } finally {
+    cleanup()
+    $selectedStoredSessionId.set(null)
+    $sessionResumeRequest.set(null)
+    setSessionProfilesTruncated({})
+    setSidebarSessionOrderManual(false)
+    setSidebarSessionOrderIds([])
+  }
 })

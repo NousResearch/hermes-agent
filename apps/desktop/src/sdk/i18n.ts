@@ -1,4 +1,6 @@
 import { type AppLocaleRegistration, type LanguageOption, languageOptions, registerAppLocale } from '@/i18n'
+import { getAppLocale, subscribeAppLocale } from '@/i18n/app-locale'
+import type { Locale } from '@/i18n/types'
 
 /** THE language-pack surface: add a whole UI language (or extend one) at
  *  runtime. A registration is a PARTIAL catalog — nested like `en.ts` or flat
@@ -18,5 +20,14 @@ export const i18nHost = {
 
   /** Every selectable language right now — bundled ∪ plugin-registered ∪
    *  the backend's `i18n.languages` — endonym, direction and source. */
-  languageOptions: (): LanguageOption[] => languageOptions()
+  languageOptions: (): LanguageOption[] => languageOptions(),
+
+  /** The locale the app is rendering in right now. */
+  locale: (): Locale => getAppLocale(),
+
+  /** Follow locale switches — the user picking a language, a profile's saved
+   *  language taking effect, a pack arriving late. Emits the current value
+   *  immediately, then after every change; the same contract as
+   *  `host.settings.subscribe`. Retire it with `ctx.onDispose`. */
+  subscribeLocale: (listener: (locale: Locale) => void): (() => void) => subscribeAppLocale(listener)
 }

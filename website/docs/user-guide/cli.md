@@ -170,6 +170,28 @@ loads portable Agent Skills and stdio MCP entries. See the
 [plugin developer guide](../developer-guide/plugins/index.md#portable-agent-plugins-v1-packages)
 for the exact supported subset and trust boundary.
 
+### Installed repos
+
+`hermes repos` answers one question the four install surfaces cannot answer
+together: *which repos are installed, from where, at what revision, and are they
+on or off?*
+
+```bash
+hermes repos list                  # every repo-backed install, all surfaces
+hermes repos list --surface plugin --enabled
+hermes repos list --json           # machine-readable
+hermes repos show holographic      # one install, with its manage commands
+hermes repos sync                  # rebuild the registry cache from disk
+hermes repos audit                 # cache vs disk drift report
+```
+
+The inventory covers plugins (install sidecar), skills (hub manifest), MCP
+servers (config block plus `mcp-installs/` clones), and any other git checkout
+under the Hermes home. Each row carries its source URL, pinned revision, status
+and provenance class. The commands are read-only; turning something on, off or
+removing it still goes through the surface that owns it — `hermes repos show`
+prints the exact command for each row.
+
 ## Interface Layout
 
 :::info The classic CLI is a gateway client

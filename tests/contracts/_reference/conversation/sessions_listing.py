@@ -712,6 +712,21 @@ class SessionListingMixin:
         table = self._table(scope)
         snapshot = authority_state(self._backend, scope).snapshot
         rows: dict[SessionId, LiveListingRow] = {}
+
+        def continued(sid: str, row: Mapping[str, Any]) -> bool:
+            """A reset or compression child carried this row's conversation on (the store's ``continued``)."""
+            if row["end_reason"] == END_REASON_COMPRESSION:
+                return True
+            for child in table.values():
+                if child.get("parent_session_id") != sid:
+                    continue
+                if (child.get("model_config") or {}).get("_reset_from") is not None:
+                    return True
+                if (row["end_reason"] in _RESET_END_REASONS and child.get("session_key")
+                        and child.get("session_key") == row["session_key"]):
+                    return True
+            return False
+
         for sid in dict.fromkeys(session_ids):
             if sid not in table:
                 continue
@@ -724,6 +739,7 @@ class SessionListingMixin:
                 ended_at=record.ended_at, message_count=record.message_count, model=record.model, hidden=record.hidden,
                 archived=record.archived, runtime_revision=record.runtime_revision, runtime_generation=record.runtime_generation,
                 target_ended_at=target["ended_at"].timestamp() if target is not None and target["ended_at"] is not None else None,
+                continued=continued(sid, table[sid]),
             )
         pending: dict[SessionId, list[PendingAdmissionRef]] = {}
         wanted = set(session_ids)

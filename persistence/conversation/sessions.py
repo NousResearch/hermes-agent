@@ -793,7 +793,12 @@ class ReplaceSessionConfig:
 
 @dataclass(frozen=True, slots=True)
 class LiveListingRow:
-    """The live listing's columns of one row, with the ``ended_at`` of its local receipt's current target."""
+    """The live listing's columns of one row, with the ``ended_at`` of its local receipt's current target.
+
+    ``continued`` says a reset or compression child carried this row's conversation on
+    (``/new``, a nightly rotation, an automatic compression): the row is history even when no
+    receipt names a target, which is how a messaging chat's ``/new`` leaves its parent.
+    """
 
     id: SessionId
     source: str
@@ -807,6 +812,7 @@ class LiveListingRow:
     runtime_revision: int
     runtime_generation: int
     target_ended_at: Optional[float]
+    continued: bool
 
 
 @dataclass(frozen=True, slots=True)

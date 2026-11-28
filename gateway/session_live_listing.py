@@ -96,5 +96,5 @@ async def live_entries(authority, actor) -> list[LiveEntry]:
             handle = SessionHandle(SessionRef(authority.profile_id, sid), authority.instance_id, authority.epoch,
                                    row['runtime_revision'], row['runtime_generation'], state)
             entries.append(LiveEntry(sid, live, handle, row, masked,
-                                     closed_idle_unviewed(live, state, row['target_ended_at'])))
+                                     closed_idle_unviewed(live, state, row['target_ended_at'], row['continued'])))
     return entries

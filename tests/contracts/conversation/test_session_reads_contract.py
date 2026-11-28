@@ -298,6 +298,25 @@ def test_live_listing_facts_rows_and_pending_admissions(backend, scope_a):
     assert [ref.status for ref in refs] == ["started", "queued"]
 
 
+def test_live_listing_facts_name_a_continued_row(backend, scope_a):
+    """CONTRACT: ``continued`` names a row a reset or compression child carried on, so a live feed can drop it."""
+    store_a = backend.open(scope_a)
+    for sid in ("ll-root", "ll-reset", "ll-compressed"):
+        store_a.sessions.create(_new(sid))
+    store_a.sessions.create(_new("ll-tip", parent_session_id=SessionId("ll-reset"),
+                                 model_config={"_reset_from": "ll-reset"}))
+    store_a.sessions.end(SessionId("ll-reset"), "session_reset")
+    _chain(backend, scope_a, "ll-compressed", "ll-compressed-tip")
+    facts = store_a.sessions.live_listing_facts([SessionId(sid) for sid in
+        ("ll-root", "ll-reset", "ll-tip", "ll-compressed", "ll-compressed-tip")])
+    # CONTRACT: the ended parent of a reset or a compression is continued; its continuation and a root are not.
+    assert facts.rows[SessionId("ll-reset")].continued is True
+    assert facts.rows[SessionId("ll-compressed")].continued is True
+    assert facts.rows[SessionId("ll-tip")].continued is False
+    assert facts.rows[SessionId("ll-compressed-tip")].continued is False
+    assert facts.rows[SessionId("ll-root")].continued is False
+
+
 # ── store-wide firsts ─────────────────────────────────────────────────────────
 
 

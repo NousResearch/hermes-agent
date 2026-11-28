@@ -17,13 +17,17 @@ def _local_target(authority, session_id):
         return None  # not a local session (API binding, malformed receipt): nothing to read as closed
 
 
-def closed_idle_unviewed(live, execution_state, target_ended_at):
+def closed_idle_unviewed(live, execution_state, target_ended_at, continued=False):
     """The verdict on facts already read: the live listings read ``target_ended_at`` for a whole batch
-    in one off-loop query (``gateway/session_live_listing``)."""
+    in one off-loop query (``gateway/session_live_listing``).
+
+    ``continued`` says a reset or compression child carried the conversation on: the row is history
+    even when no receipt names a target, which is exactly a messaging chat's ``/new`` (nothing advances
+    the local target without a policy receipt, so ``target_ended_at`` stays ``None``, #143767)."""
     if live is None or live.subscribers or execution_state != 'idle':
         return False
-    if live.detached or is_history_mount(live):
-        return True  # an old messaging conversation or a stored one: history once no one views it
+    if continued or live.detached or is_history_mount(live):
+        return True  # an old messaging conversation, a continued one or a stored one: history once no one views it
     return target_ended_at is not None
 
 

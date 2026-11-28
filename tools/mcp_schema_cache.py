@@ -76,7 +76,10 @@ def write_cache_entry(server_name: str, fingerprint: str, *, tools: list[dict],
                       utility_tools: Optional[list[dict]] = None, ttl_ms: Optional[float] = None,
                       cache_scope: Optional[str] = None) -> None:
     """Persist tool schemas after a successful live connect. ``ttl_ms`` / ``cache_scope`` are
-    the server's ``tools/list`` SEP-2549 hints; ``written_at`` anchors TTL expiry."""
+    the server's ``tools/list`` SEP-2549 hints; ``written_at`` anchors TTL expiry. Any numeric
+    ``ttl_ms`` is recorded (0 included: a wire ``ttlMs: 0`` means "immediately stale"); ``None``
+    means the server sent no hint and the entry never expires. The caller must pass only hints
+    the server actually sent, never SDK-synthesized defaults (``_paginate_full_list``)."""
     entry = {"fingerprint": fingerprint, "tools": tools, "utility_tools": utility_tools or []}
     if isinstance(ttl_ms, (int, float)):
         entry["ttl_ms"] = ttl_ms

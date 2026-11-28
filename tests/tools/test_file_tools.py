@@ -4,6 +4,7 @@ Tests verify tool schemas, handler dispatch, validation logic, and error
 handling without requiring a running terminal environment.
 """
 
+import errno
 import json
 import logging
 from unittest.mock import MagicMock, patch
@@ -922,7 +923,12 @@ class TestSSHConfigWriteGate:
         ws, elsewhere = tmp_path / "ws", tmp_path / "elsewhere"
         for d in (ws, elsewhere, ssh_config.parent):
             d.mkdir()
-        (ws / "sshdir").symlink_to(ssh_config.parent, target_is_directory=True)
+        try:
+            (ws / "sshdir").symlink_to(ssh_config.parent, target_is_directory=True)
+        except OSError as exc:  # Windows needs Developer Mode or admin to create symlinks
+            if getattr(exc, "winerror", None) == 1314 or exc.errno in (errno.EPERM, errno.EACCES):
+                pytest.skip(f"symlink creation is not permitted here: {exc}")
+            raise
         monkeypatch.setenv("TERMINAL_CWD", str(ws))
         monkeypatch.chdir(elsewhere)
         from tools.file_tools_write_guards import _check_approval_required_write

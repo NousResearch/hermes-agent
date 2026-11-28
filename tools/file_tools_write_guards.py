@@ -135,6 +135,12 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
             f"Refusing to write to {filepath}: it climbs above the SSH home and the remote "
             "home could not be detected, so its target cannot be checked. Pass an absolute path.")
     keys = [deny_key(c) for c in candidates]
+    # The typed path itself, not just its resolved forms. On Windows ``/etc/crontab`` resolves to
+    # ``\etc\crontab``, so the prefix test never fires and a POSIX-sensitive destination passes
+    # silently — the same relay-to-a-POSIX-host case the NT-namespace guard above covers. Refusing
+    # a POSIX-absolute system path on a Windows host costs nothing: it is either a mistake or a
+    # path meant for the other side of a bridge.
+    keys.append(deny_key(filepath))
     if any(k.startswith(_SENSITIVE_PATH_PREFIXES) or k in _SENSITIVE_EXACT_PATHS for k in keys):
         return (
             f"Refusing to write to sensitive system path: {filepath}\n"

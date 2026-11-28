@@ -47,7 +47,7 @@ export function TerminalRail() {
 
   return (
     <div
-      className="group/rail relative z-40 flex h-full w-9 shrink-0 flex-col items-center border-l border-(--ui-stroke-quaternary) bg-(--ui-terminal-surface-background)"
+      className="group/rail relative z-40 flex h-full w-9 shrink-0 self-stretch flex-col items-center border-l border-(--ui-stroke-quaternary) bg-(--ui-terminal-surface-background)"
       // The rail sits at the pane's outer edge, under the collapsed sidebars'
       // hover-reveal triggers; mark it so those triggers go pointer-transparent
       // while it's hovered (see the suppression rules in styles.css) and a reach
@@ -56,7 +56,7 @@ export function TerminalRail() {
     >
       <ul
         aria-label={t.rightSidebar.terminalsAria}
-        className="flex min-h-0 flex-1 flex-col items-center gap-0.5 self-stretch overflow-y-auto overflow-x-hidden overscroll-contain py-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        className="flex min-h-0 flex-1 flex-col items-center gap-1.5 self-stretch overflow-y-auto overflow-x-hidden overscroll-contain py-1.5 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
         role="tablist"
       >
         {terminals.map((term, index) => (
@@ -109,7 +109,7 @@ function TerminalRailItem({ active, canCloseOthers, index, term, toggleHint }: T
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>
-        <li className="relative flex w-full justify-center [-webkit-app-region:no-drag]">
+        <li className="relative flex w-full shrink-0 justify-center [-webkit-app-region:no-drag]">
           {active && (
             <span
               aria-hidden="true"

@@ -36,6 +36,7 @@ import {
   oklchToHex,
   readableInk
 } from './color'
+import { isOneDark, themeAccent } from './one-dark'
 import type { DesktopTheme, DesktopThemeColors } from './types'
 
 /** Small uppercase sidebar labels paint in the accent, so it must clear AA. */
@@ -174,8 +175,23 @@ export function retintTheme(theme: DesktopTheme, color: string): DesktopTheme {
   // Recomputing dark from it would round-trip through OKLCH and land a bit or
   // two off (#4f9e5e → #509e5f) — invisible, but it would mean "no change"
   // wasn't actually no change.
-  if (seed.toLowerCase() === theme.colors.primary.toLowerCase()) {
+  if (seed.toLowerCase() === themeAccent(theme).toLowerCase()) {
     return theme
+  }
+
+  if (isOneDark(theme)) {
+    // Its primary/rings/secondary are deliberately neutral, not an accent family.
+    const accent = seedFor(theme.colors, seed)
+    const foreground = readableInk(accent)
+    const colors = {
+      ...theme.colors,
+      midground: accent,
+      midgroundForeground: foreground,
+      accent,
+      accentForeground: foreground
+    }
+
+    return { ...theme, colors, darkColors: colors }
   }
 
   const light = seedFor(theme.colors, seed)
@@ -199,7 +215,7 @@ export function retintTheme(theme: DesktopTheme, color: string): DesktopTheme {
 
 /** The theme's current accent hue in degrees. */
 export function themeHue(theme: DesktopTheme): number {
-  const lch = hexToOklch(theme.colors.primary)
+  const lch = hexToOklch(themeAccent(theme))
 
   return lch ? Math.round(lch.h) : 0
 }

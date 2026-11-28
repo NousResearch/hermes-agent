@@ -1,6 +1,7 @@
 import { setAccentOverride } from './accent-override'
 import { normalizeHex } from './color'
 import { accentBase, accentedTheme, committedTheme } from './context'
+import { themeAccent } from './one-dark'
 import { requestTheme } from './request'
 import { installUserTheme } from './user-themes'
 
@@ -24,4 +25,4 @@ export function persistAccent(accent: null | string): void {
 }
 
 /** The accent the live theme's own palette carries, for previewing a return to it. */
-export const ownAccent = (): string => accentBase(committedTheme()).colors.primary
+export const ownAccent = (): string => themeAccent(accentBase(committedTheme()))

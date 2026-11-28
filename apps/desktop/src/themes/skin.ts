@@ -19,6 +19,7 @@ import { ensureContrast, mix } from '@hermes/shared/color'
 import type { HermesSkin, SkinColors } from '@hermes/shared/skin'
 
 import { luminance, normalizeHex, readableInk } from './color'
+import { oneDarkTheme } from './one-dark'
 import type { DesktopTheme, DesktopThemeColors } from './types'
 
 // The accent labels the sidebar in small uppercase text, so it must clear WCAG AA
@@ -39,6 +40,11 @@ const pick = (colors: SkinColors, keys: string[], backdrop: string): string | nu
 }
 
 const titleCase = (name: string): string => name.charAt(0).toUpperCase() + name.slice(1)
+
+// Catalog presentation for the shipped One Dark Pro skin; upstream still labels
+// it "One-dark / Hermes skin", so only this skin gets the display strings.
+const ONE_DARK_LABEL = 'One Dark Pro'
+const ONE_DARK_DESCRIPTION = 'The classic Atom dark'
 
 /**
  * Convert a resolved skin into a `DesktopTheme`, or null when it carries no
@@ -106,10 +112,10 @@ export function skinToDesktopTheme(skin: HermesSkin): DesktopTheme | null {
     userBubbleBorder: border
   }
 
-  return {
+  const theme: DesktopTheme = {
     name,
-    label: titleCase(name),
-    description: 'Hermes skin',
+    label: name === 'one-dark' ? ONE_DARK_LABEL : titleCase(name),
+    description: name === 'one-dark' ? ONE_DARK_DESCRIPTION : 'Hermes skin',
     // Single palette in both slots: a skin is one-mode, so the light/dark toggle
     // shouldn't invert it. renderedModeFor still paints `.dark` from luminance.
     colors: palette,
@@ -118,4 +124,6 @@ export function skinToDesktopTheme(skin: HermesSkin): DesktopTheme | null {
     // tag — users put CSS in their skin YAML instead of hacking app.asar.
     customCSS: skin.customCSS?.trim() || undefined
   }
+
+  return name === 'one-dark' ? oneDarkTheme(theme) : theme
 }

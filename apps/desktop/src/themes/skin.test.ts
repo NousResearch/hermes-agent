@@ -6,6 +6,49 @@ import { skinToDesktopTheme } from './skin'
 const withColors = (name: string, colors: Record<string, string>) => skinToDesktopTheme({ name, colors })
 
 describe('skinToDesktopTheme', () => {
+  it('maps One Dark Pro explicitly instead of deriving surfaces from terminal chrome', () => {
+    const theme = withColors('one-dark', {
+      status_bar_bg: '#21252b',
+      banner_text: '#abb2bf',
+      banner_dim: '#5c6370',
+      ui_accent: '#c678dd'
+    })!
+
+    expect(theme.colors).toMatchObject({
+      background: '#282c34',
+      foreground: '#abb2bf',
+      card: '#21252b',
+      popover: '#21252b',
+      primary: '#404754',
+      primaryForeground: '#abb2bf',
+      secondary: '#2c313a',
+      accent: '#e06c75',
+      mutedForeground: '#7f848e',
+      border: '#181a1f',
+      ring: '#3e4452'
+    })
+    expect(theme.darkColors).toEqual(theme.colors)
+    expect(theme.name).toBe('one-dark')
+  })
+
+  it('labels the One Dark Pro skin for the theme catalog', () => {
+    const theme = withColors('one-dark', { background: '#282c34' })!
+
+    expect(theme.label).toBe('One Dark Pro')
+    expect(theme.description).toBe('The classic Atom dark')
+    expect(theme.previewSyntax).toEqual(['#61afef', '#98c379', '#5c6370'])
+    expect(theme.previewSidebar).toBe('#21252b')
+    expect(theme.previewAccentUnderline).toBe('#e06c75')
+  })
+
+  it('keeps other skins on the generic catalog presentation', () => {
+    const theme = withColors('solarized', { background: '#002b36' })!
+
+    expect(theme.label).toBe('Solarized')
+    expect(theme.description).toBe('Hermes skin')
+    expect(theme.previewSyntax).toBeUndefined()
+  })
+
   it('returns null without a name or colors', () => {
     expect(skinToDesktopTheme({ name: 'x' })).toBeNull()
     expect(skinToDesktopTheme({ name: '', colors: { background: '#101010' } })).toBeNull()

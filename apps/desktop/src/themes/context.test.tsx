@@ -40,6 +40,49 @@ describe('ThemeProvider ← backend skin sync', () => {
     expect(cssVar('--theme-background-seed')).toBe('#000000')
   })
 
+  it('publishes exact One Dark surfaces, muted text and boot colors, then restores the next theme', () => {
+    let ctx: ReturnType<typeof useTheme>
+    function Probe() {
+      ctx = useTheme()
+
+      return null
+    }
+    render(
+      <ThemeProvider>
+        <Probe />
+      </ThemeProvider>
+    )
+    act(() =>
+      ingestBackendSkin(
+        {
+          name: 'one-dark',
+          colors: { status_bar_bg: '#21252b', ui_accent: '#c678dd', banner_text: '#abb2bf' }
+        },
+        { apply: true }
+      )
+    )
+
+    expect(cssVar('--ui-bg-chrome')).toBe('#282c34')
+    expect(cssVar('--ui-text-tertiary')).toBe('#7f848e')
+    expect(cssVar('--dt-muted-foreground')).toBe('#7f848e')
+    expect(cssVar('--dt-popover')).toBe('#21252b')
+    expect(cssVar('--ui-bg-input')).toBe('#1d1f23')
+    expect(cssVar('--ui-success')).toBe('#98c379')
+    expect(cssVar('--ui-warning')).toBe('#d19a66')
+    expect(window.localStorage.getItem('hermes-boot-background')).toBe('#282c34')
+    expect(JSON.parse(window.localStorage.getItem('hermes-boot-palette')!).background).toBe('#282c34')
+    expect(document.documentElement.dataset.hermesPalette).toBe('one-dark')
+
+    act(() => ctx!.setTheme('everforest'))
+    expect(cssVar('--ui-bg-chrome')).toBe('')
+    expect(cssVar('--ui-text-tertiary')).toBe('')
+    expect(cssVar('--ui-warning')).toBe('')
+    // Removing previous overrides AFTER writing defaults would erase this.
+    expect(cssVar('--ui-success')).toMatch(/^#[0-9a-f]{6}$/i)
+    expect(cssVar('--ui-success')).not.toBe('#98c379')
+    expect(document.documentElement.dataset.hermesPalette).toBeUndefined()
+  })
+
   it('repaints an in-place edit of the ACTIVE skin (same name, new palette)', () => {
     render(
       <ThemeProvider>

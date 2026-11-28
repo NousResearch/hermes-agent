@@ -147,18 +147,38 @@ def install(items: list[dict[str, str]], *, session_id: Optional[str], tool_call
 
 def search(query: str, kind: Optional[str], *, installer: Any = None) -> dict[str, Any]:
     """Runs on the tool call's thread, in this chat's profile scope, so ``installed`` is this
-    chat's profile's."""
+    chat's profile's.
+
+    Results are capped per kind (``SEARCH_LIMIT``) and are **not ranked** — they come back in
+    catalog order. A capped list must never read as "this is everything", so the payload carries
+    ``limit_per_kind``, ``total_matches`` and ``truncated``: when ``truncated[kind]`` is true, more
+    matches exist than are shown and the caller has to narrow the query or use an exact id.
+    ``total_matches[kind]`` is ``None`` when the source cannot count without paging (skills).
+    """
     from hermes_constants import get_hermes_home, profile_name_for_home
 
     rows: list[dict[str, Any]] = []
+    totals: dict[str, Optional[int]] = {}
     if kind in (None, "plugin"):
-        rows += _plugin_rows(query)
+        plugin_rows, plugin_total = _plugin_rows(query)
+        rows += plugin_rows
+        totals["plugin"] = plugin_total
     if kind in (None, "skill") and query.strip():
-        rows += _skill_rows(query)
-    return {"results": rows, "installed_in": profile_name_for_home(get_hermes_home())}
+        skill_rows, skill_total = _skill_rows(query)
+        rows += skill_rows
+        totals["skill"] = skill_total
+    truncated = {name: (total is None or total > SEARCH_LIMIT) for name, total in totals.items()}
+    return {
+        "results": rows,
+        "installed_in": profile_name_for_home(get_hermes_home()),
+        "limit_per_kind": SEARCH_LIMIT,
+        "total_matches": totals,
+        "truncated": truncated,
+    }
 
 
-def _plugin_rows(query: str) -> list[dict[str, Any]]:
+def _plugin_rows(query: str) -> tuple[list[dict[str, Any]], int]:
+    """Matching plugin rows (capped) and how many the catalog matched in total."""
     from hermes_cli.plugin_catalog import filter_entries, load_catalog_live
     from hermes_cli.plugins_cmd import PluginOperationError, _read_install_metadata
     from tools.connectors.catalog import _display
@@ -168,18 +188,28 @@ def _plugin_rows(query: str) -> list[dict[str, Any]]:
                      if isinstance(rec, dict) and isinstance(rec.get("catalog"), dict) and rec["catalog"].get("name")}
     except PluginOperationError:
         installed = set()
-    return [{"id": e.name, "kind": "plugin", "display": _display(e.name), "tier": e.tier,
+    entries = filter_entries(load_catalog_live(), query)
+    rows = [{"id": e.name, "kind": "plugin", "display": _display(e.name), "tier": e.tier,
              "platforms": list(e.platforms), "installed": e.name in installed}
-            for e in filter_entries(load_catalog_live(), query)[:SEARCH_LIMIT]]
+            for e in entries[:SEARCH_LIMIT]]
+    return rows, len(entries)
 
 
-def _skill_rows(query: str) -> list[dict[str, Any]]:
+def _skill_rows(query: str) -> tuple[list[dict[str, Any]], Optional[int]]:
+    """Matching skill rows (capped) and the total, or ``None`` when there are more than we asked for.
+
+    The hub search is asked for one row past the cap: getting ``SEARCH_LIMIT + 1`` back is how we
+    know the answer is truncated without paying for a full count.
+    """
     from tools.skills_hub import HubLockFile, installed_entry
     from tools.skills_hub_github import GitHubAuth
     from tools.skills_hub_search import create_source_router, unified_search
 
     installed = HubLockFile().by_identifier()
-    return [{"id": r.identifier, "kind": "skill", "display": r.name,
+    matches = unified_search(query, create_source_router(GitHubAuth()), limit=SEARCH_LIMIT + 1)
+    total: Optional[int] = len(matches) if len(matches) <= SEARCH_LIMIT else None
+    rows = [{"id": r.identifier, "kind": "skill", "display": r.name,
              "tier": "official" if r.source == "official" else "community", "platforms": [],
              "installed": installed_entry(installed, r.identifier, r.source) is not None}
-            for r in unified_search(query, create_source_router(GitHubAuth()), limit=SEARCH_LIMIT)]
+            for r in matches[:SEARCH_LIMIT]]
+    return rows, total

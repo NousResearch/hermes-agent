@@ -341,4 +341,58 @@ def test_search_rows_mark_an_installed_clawhub_hit_but_not_another_sources_bare_
     monkeypatch.setattr("tools.skills_hub_search.create_source_router", lambda auth: [])
     monkeypatch.setattr("tools.skills_hub_search.unified_search", lambda query, sources, limit: hits)
 
-    assert [row["installed"] for row in _skill_rows("agent git oracle")] == [True, False]
+    rows, total = _skill_rows("agent git oracle")
+    assert [row["installed"] for row in rows] == [True, False]
+    assert total == 2
+
+
+def test_a_capped_search_says_that_more_matches_exist(monkeypatch):
+    """A capped list must never read as "this is everything" (the tool returns it that way)."""
+    from tools.connectors import catalog_tool
+
+    monkeypatch.setattr(catalog_tool, "_plugin_rows",
+                        lambda q: ([{"id": "a", "kind": "plugin"}], catalog_tool.SEARCH_LIMIT + 5))
+    monkeypatch.setattr(catalog_tool, "_skill_rows",
+                        lambda q: ([{"id": "b", "kind": "skill"}], None))
+
+    payload = catalog_tool.search("security", None)
+
+    assert payload["limit_per_kind"] == catalog_tool.SEARCH_LIMIT
+    assert payload["total_matches"] == {"plugin": catalog_tool.SEARCH_LIMIT + 5, "skill": None}
+    assert payload["truncated"] == {"plugin": True, "skill": True}
+
+
+def test_a_search_that_fits_reports_no_truncation(monkeypatch):
+    from tools.connectors import catalog_tool
+
+    monkeypatch.setattr(catalog_tool, "_plugin_rows", lambda q: ([{"id": "a", "kind": "plugin"}], 1))
+    monkeypatch.setattr(catalog_tool, "_skill_rows",
+                        lambda q: ([{"id": "b", "kind": "skill"}], catalog_tool.SEARCH_LIMIT))
+
+    payload = catalog_tool.search("hermes-security", None)
+
+    assert payload["truncated"] == {"plugin": False, "skill": False}
+    assert [row["id"] for row in payload["results"]] == ["a", "b"]
+
+
+def test_skill_rows_ask_for_one_past_the_cap_to_detect_truncation(monkeypatch):
+    from tools.connectors.catalog_tool import SEARCH_LIMIT, _skill_rows
+    from tools.skills_hub_models import SkillMeta
+
+    asked = {}
+
+    def fake_search(query, sources, limit):
+        asked["limit"] = limit
+        return [SkillMeta(name=f"s{i}", description="", source="skills-sh",
+                          identifier=f"id{i}", trust_level="community")
+                for i in range(SEARCH_LIMIT + 1)]
+
+    monkeypatch.setattr("tools.skills_hub_github.GitHubAuth", lambda: None)
+    monkeypatch.setattr("tools.skills_hub_search.create_source_router", lambda auth: [])
+    monkeypatch.setattr("tools.skills_hub_search.unified_search", fake_search)
+
+    rows, total = _skill_rows("anything")
+
+    assert asked["limit"] == SEARCH_LIMIT + 1
+    assert len(rows) == SEARCH_LIMIT
+    assert total is None

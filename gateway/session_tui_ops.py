@@ -90,7 +90,7 @@ async def export_session(connection, ref, params):
     """``session.export``: the ``/save`` transcript rendered for the CLIENT to write (json/md/html,
     optional force-redaction). Nothing is written on the gateway host, so a remote Desktop and a
     local Ink both save to the user's own disk (T10/T11)."""
-    _live_ref(connection, ref, params, {'session_id', 'profile', 'format', 'redact'}, 'session:read')
+    _live_ref(connection, ref, params, {'session_id', 'profile', 'format', 'redact', 'transcript_options'}, 'session:read')
     fmt, redact = params.get('format', 'json'), params.get('redact', False)
     if not isinstance(fmt, str) or not isinstance(redact, bool):
         raise AuthorityRefusal('invalid_params')
@@ -100,6 +100,11 @@ async def export_session(connection, ref, params):
     except ValueError:
         raise AuthorityRefusal('invalid_params') from None
     authority = connection.authority
+    if 'transcript_options' in params:
+        from gateway.session_transcript_export import export_transcript
+        if fmt != 'json':
+            raise AuthorityRefusal('invalid_params')
+        return await export_transcript(authority, ref, params['transcript_options'], redact, _profile_home(authority))
     from gateway.session_ancillary import physical_target
     target = physical_target(authority, ref)
 

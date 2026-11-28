@@ -106,7 +106,7 @@ describe('AppImage strategy', () => {
     expect(events).toEqual(['check'])
   })
 
-  it('does nothing when the feed has no newer release', async () => {
+  it('does nothing when the feed has no newer release, and reports no update so no restart notice shows', async () => {
     const { deps, strategy, events } = fixture()
     const info = { version: '0.99.0', files: [], releaseDate: '', path: '', sha512: '' }
     vi.mocked(deps.updater.checkForUpdates).mockResolvedValue({
@@ -114,7 +114,7 @@ describe('AppImage strategy', () => {
       updateInfo: info,
       versionInfo: info
     })
-    expect(await strategy.apply()).toEqual({ ok: true, mechanism: 'electron-updater' })
+    expect(await strategy.apply()).toEqual({ ok: true, updateAvailable: false, mechanism: 'electron-updater' })
     expect(events).toEqual([])
   })
 

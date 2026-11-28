@@ -105,7 +105,8 @@ export class AppImageStrategy implements UpdaterStrategy {
           const { status, info } = await this.checkRelease()
 
           if (!status.updateAvailable) {
-            return { ok: true, mechanism: this.mechanism }
+            // Without updateAvailable: false the app announces a new version on restart.
+            return { ok: true, updateAvailable: false, mechanism: this.mechanism }
           }
 
           if (!(this.deps.canReplace ?? appImageReplaceable)(this.deps.appImage)) {

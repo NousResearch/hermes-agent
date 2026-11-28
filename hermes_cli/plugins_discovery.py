@@ -36,6 +36,9 @@ _FOREIGN_HARNESS_MANIFEST_DIRS = frozenset({
     ".claude-plugin", ".codex-plugin", ".cursor-plugin", ".devin-plugin", ".kimi-plugin",
 })
 
+# Temp dirs the installer, updater and re-pin preview create inside the plugins root.
+_STAGING_DIR_PREFIXES = (".install-", ".update-", ".repin-preview-")
+
 # Set while a caller reads a profile's config WITHOUT wanting that profile's plugins in this process:
 # the multiplex preflight loads a PARKED profile's gateway config for the duplicate-credential guard,
 # and ``load_gateway_config`` discovers plugins in the scope it runs under. Importing them runs their
@@ -134,8 +137,14 @@ def _get_enabled_plugins() -> Optional[set]:
 def is_skipped_plugin_dir(name: str) -> bool:
     """True for directory names discovery never treats as plugins. Cache/dunder dirs (__pycache__,
     __MACOSX__, …) can raise PermissionError when walked and take down every later tool call
-    (#86996); foreign-harness dirs hold another tool's manifest convention."""
-    return (name.startswith("__") and name.endswith("__")) or name in _FOREIGN_HARNESS_MANIFEST_DIRS
+    (#86996); foreign-harness dirs hold another tool's manifest convention; staging dirs hold an
+    unpublished install/update/remove clone that carries the live plugin's manifest and would collide with it."""
+    return (
+        (name.startswith("__") and name.endswith("__"))
+        or name in _FOREIGN_HARNESS_MANIFEST_DIRS
+        or name.startswith(_STAGING_DIR_PREFIXES)
+        or (name.startswith(".") and ".remove-" in name[1:])
+    )
 
 
 def scan_directory(
@@ -155,7 +164,7 @@ def scan_directory(
         return manifests
     for child in children:
         if is_skipped_plugin_dir(child.name):
-            logger.debug("Skipping %s (dunder or foreign-harness manifest dir)", child)
+            logger.debug("Skipping %s (dunder, foreign-harness or staging dir)", child)
             continue
         # pathlib.Path.is_dir() swallows OSError, but injected Path-likes
         # and test doubles can still raise. Fail closed per child.

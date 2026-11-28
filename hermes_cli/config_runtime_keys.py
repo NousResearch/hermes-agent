@@ -31,6 +31,9 @@ logger = logging.getLogger(__name__)
 CORE_RUNTIME_KEYS: dict[str, str] = {
     "computer_use.backend": "plugins/computer_use/__init__.py configured_backend_name() (unset = cua)",
     "dashboard.kanban": "plugins/kanban/dashboard/plugin_api.py (bundled dashboard tab preferences)",
+    "tts.openai.voice_selection": "tools/tts_tool.py openai_voice_selection_active() (unset = off)",
+    "tts.openai.voices": "tools/tts_tool_openai.py openai_voice_catalog() (static catalog; unset = fetch voices_url)",
+    "tts.openai.voices_url": "tools/tts_tool_openai.py _openai_voices_url() (unset = <base_url>/audio/voices)",
 }
 
 

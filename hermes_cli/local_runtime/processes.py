@@ -9,8 +9,6 @@ import subprocess
 import sys
 import threading
 
-import psutil
-
 
 class _BasicLimits(ctypes.Structure):
     _fields_ = [
@@ -125,6 +123,7 @@ def spawn_server(cmd, *, owned: bool = False, **kwargs) -> tuple[subprocess.Pope
         from hermes_cli.process_identity import spawn_owned
 
         return spawn_owned(cmd, purpose="llama-server", **kwargs), None
+    import psutil
     job = _WindowsJob()
     proc = None
     try:

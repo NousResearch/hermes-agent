@@ -83,6 +83,7 @@ export const GROUP_SURFACE_ES = {
     groupChats: "Chats de grupo",
     emptyTitle: "Aún no hay bots",
     emptyDesc: "Crea tu primer bot.",
+    loadingGatewayBots: "Cargando bots de la pasarela",
     noMatchQuery: query => `Ningún bot ni chat de grupo coincide con «${query}»`,
     noMatchQueryOn: (query, gateway) => `Ningún bot ni chat de grupo coincide con «${query}» en ${gateway}`,
     noMatchFiltersOn: gateway => `Ningún bot ni chat de grupo coincide con estos filtros en ${gateway}`,

@@ -813,9 +813,9 @@ DEFAULT_CONFIG = {
         # calls: ...]` lines; False shows them inline.
         "resume_skip_tool_only": True,
         "busy_input_mode": "interrupt",  # interrupt | queue | steer
-        # steer mode: false hides only the "Steered into current run" bubble; steering itself still
-        # happens.
+        # steer mode: false hides only the "Steered into current run" bubble (steering still happens).
         "busy_steer_ack_enabled": True,
+        "model_alias_prefix": False,  # CLI + gateway: `+<alias> msg` = `/model <alias> --once` then msg
         # Classic CLI multiline beyond Alt+Enter: Ctrl+J newline, trailing backslash+Enter
         # continues, Shift+Enter reported distinctly. False restores the c-j submit fallback for
         # POSIX PTYs whose plain Enter arrives as LF.

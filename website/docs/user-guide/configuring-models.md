@@ -405,6 +405,30 @@ Both paths feed the same loader (`hermes_cli/model_switch.py`). Entries declared
 
 Then `/model fav` or `/model grok` in chat. User aliases shadow built-in short names (`sonnet`, `kimi`, `opus`, etc.). See [Custom model aliases](../reference/slash-commands.md#custom-model-aliases) for the full reference.
 
+### One message on an alias: `+<alias>` {#one-message-on-an-alias}
+
+Opt in with `display.model_alias_prefix: true` and a message that starts with `+<alias>` runs on that alias for that one message, then the session goes back to its model — the same as typing `/model <alias> --once` and then the rest of the message:
+
+```yaml
+# ~/.hermes/config.yaml
+display:
+  model_alias_prefix: true   # default false: a leading "+word" is ordinary text
+model_aliases:
+  fast:
+    model: gpt-5.4-mini
+    provider: openrouter
+```
+
+```
++fast summarize the last error in one line
+```
+
+It works in the classic CLI and on every messaging platform, and `<alias>` can be any key from `model_aliases:` or `model.aliases:` (case-insensitive). Anything else that starts with `+` — `+1`, `+unknownword ...`, or a bare `+fast` with nothing after it — is sent unchanged. If the switch fails or you cancel its cost confirmation, the message is not sent. A `+<alias>` message typed while a turn is running waits for its own turn; it is never steered into the running one. Desktop and the Ink TUI do not read the prefix yet.
+
+:::note Prompt-cache cost
+Like `/model --once`, a `+<alias>` message breaks the provider's prompt-cache prefix twice (switching out and back): the alias turn and the next turn on your normal model each re-read the whole conversation at full input price instead of the cached rate. Cheap for short sessions; in a long session on an expensive cached-prefix model, a quick side question can cost more than it saves.
+:::
+
 ### `hermes model` subcommand
 
 ```bash

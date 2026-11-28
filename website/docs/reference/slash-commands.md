@@ -231,6 +231,9 @@ Then in chat:
 
 User aliases take precedence over built-in short names, so naming an alias `sonnet`, `kimi`, `opus`, etc. will shadow the built-in. Alias names are case-insensitive.
 
+
+**One message on an alias.** With `display.model_alias_prefix: true`, a message starting with `+<alias>` (any configured alias) runs as `/model <alias> --once` followed by the rest of the message, on the CLI and every messaging platform; other `+` text is sent unchanged. Off by default. It carries the same cost as `--once`: the cache key includes the model, so switching out and back makes the next turns re-read the entire conversation at full input price instead of the ~75%-discounted cached rate. See [One message on an alias](../user-guide/configuring-models.md#one-message-on-an-alias).
+
 ### Alias Resolution
 
 Commands support prefix matching: typing `/h` resolves to `/help`, `/mod` resolves to `/model`. When a prefix is ambiguous (matches multiple commands), the first match in registry order wins. Full command names and registered aliases always take priority over prefix matches.

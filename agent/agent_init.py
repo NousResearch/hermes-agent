@@ -239,6 +239,17 @@ def _normalize_run_budget_seconds(value) -> Optional[float]:
 
 
 
+def _parse_defer_hard_limit_ratio(raw: Any) -> float:
+    """``compression.defer_hard_limit_ratio``: finite float clamped to 0.5-0.98 (default 0.85)."""
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return 0.85
+    if value != value:  # NaN
+        return 0.85
+    return min(0.98, max(0.5, value))
+
+
 def _parse_config_int(raw: Any, default: int) -> int:
     """Strict int coercion: rejects bool (YAML ``true`` → 1) and fractional floats."""
     if isinstance(raw, bool):
@@ -1427,6 +1438,8 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
         codex_responses_compact_threshold=compact_threshold,
         idle_compact_after_seconds=idle_compact_after_seconds,
         prepare_ahead=is_truthy_value(cfg.get("prepare_ahead"), default=False),
+        defer_mid_turn=is_truthy_value(cfg.get("defer_mid_turn"), default=False),
+        defer_hard_limit_ratio=_parse_defer_hard_limit_ratio(cfg.get("defer_hard_limit_ratio")),
     )
 
 
@@ -1886,6 +1899,8 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
     )
     agent.max_compression_attempts = cs.max_attempts
     agent.compression_idle_compact_after_seconds = cs.idle_compact_after_seconds
+    agent.compression_defer_mid_turn = cs.defer_mid_turn
+    agent.compression_defer_hard_limit_ratio = cs.defer_hard_limit_ratio
 
 
 def _enforce_minimum_context(agent):

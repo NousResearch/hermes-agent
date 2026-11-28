@@ -819,6 +819,13 @@ compression:
   # summarization on a short idle thread. Example: 1800 = compact after 30 min idle.
   idle_compact_after_seconds: 0
 
+  # Opt-in (default: false). Never compact in the middle of a running turn (between tool calls): the
+  # turn finishes first, then compaction runs at the next turn start, so a long task may overshoot the
+  # threshold. A request at or above defer_hard_limit_ratio * context_length (default 0.85, clamped
+  # 0.5-0.98) still compacts mid-turn as a safety net; provider overflow recovery is never deferred.
+  defer_mid_turn: false
+  defer_hard_limit_ratio: 0.85
+
   # Gateway session-hygiene turn-hold budget (default: 10). Max seconds an
   # arriving user turn is held while a still-streaming hygiene summary
   # finishes. Distinct from hygiene_timeout_seconds (compressor inactivity

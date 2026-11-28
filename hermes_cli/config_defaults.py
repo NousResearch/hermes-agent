@@ -681,6 +681,12 @@ DEFAULT_CONFIG = {
         "idle_compact_after_seconds": 0,
         # Opt-in: write the next summary in the background near the trigger; compaction uses (or waits for) it if it still covers the same messages.
         "prepare_ahead": False,
+        # Opt-in: do not compact in the middle of a running turn (between tool calls). The turn finishes
+        # first and compaction runs at the next turn start, so a turn may overshoot the threshold. A request
+        # at or above defer_hard_limit_ratio * context_length still compacts (safety net); provider
+        # overflow recovery is never deferred.
+        "defer_mid_turn": False,
+        "defer_hard_limit_ratio": 0.85,
     },
     # Anthropic prompt caching (Claude via OpenRouter or native API). cache_ttl: "auto" (default) | "5m" | "1h"
     # (auto = 1h for human-paced sessions — cli/tui/desktop/messaging — and 5m for subagent, cron,

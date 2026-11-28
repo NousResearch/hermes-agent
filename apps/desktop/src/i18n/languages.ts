@@ -68,6 +68,12 @@ export const LOCALE_OPTIONS = [
     name: LOCALE_ENDONYMS.es,
     englishName: 'Spanish',
     configValue: 'es'
+  },
+  {
+    id: 'pt',
+    name: 'Português (Europeu)',
+    englishName: 'Portuguese (European)',
+    configValue: 'pt'
   }
 ] as const satisfies readonly { configValue: string; englishName: string; id: BundledLocale; name: string }[]
 

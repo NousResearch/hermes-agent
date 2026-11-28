@@ -21,6 +21,7 @@ Usage examples::
     hermes logs --since 30m -f     # follow, starting 30 min ago
 """
 
+import os
 import re
 import sys
 import time
@@ -293,19 +294,64 @@ def _read_last_n_lines(path: Path, n: int) -> list:
         return _read_all_lines(path)[-n:]
 
 
+def _same_file(f, path: Path) -> bool:
+    """True when the open handle ``f`` still refers to the file at ``path``.
+
+    Hermes logs rotate via ``RotatingFileHandler`` (default 5MB, 3 backups):
+    the live file is renamed to ``agent.log.1`` and a fresh file is created
+    at the original path.  A follower holding the old fd would silently go
+    quiet forever.  Compare device+inode (falling back to a size-shrink
+    check on platforms where inodes are unreliable, e.g. Windows).
+    """
+    try:
+        fd_stat = os.fstat(f.fileno())
+        path_stat = os.stat(path)
+    except OSError:
+        # Rotation window: the new file may not exist yet. Treat as rotated
+        # so the caller retries the reopen.
+        return False
+    if (fd_stat.st_dev, fd_stat.st_ino) != (path_stat.st_dev, path_stat.st_ino):
+        return False
+    # Same inode but the file shrank under us (truncate-in-place rotation).
+    if path_stat.st_size < f.tell():
+        return False
+    return True
+
+
 def _follow_log(path: Path, **filters) -> None:
-    """Poll a log file for new content and print matching lines."""
+    """Poll a log file for new content and print matching lines.
+
+    Survives log rotation: when the path is replaced (rename+recreate) or truncated,
+    the follower reopens it from the beginning so no post-rotation line is missed.
+    """
     keep = _LineFilter(**filters)
-    with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
-        # Seek to end
+    f = open(path, "r", encoding="utf-8-sig", errors="replace")
+    try:
+        # Seek to end for the initial attach only; reopens after rotation start at offset 0.
         f.seek(0, 2)
+        idle_polls = 0
         while True:
             line = f.readline()
-            if not line:
-                time.sleep(0.3)
-            elif keep(line):
-                print(line, end="")
-                sys.stdout.flush()
+            if line:
+                idle_polls = 0
+                if keep(line):
+                    print(line, end="")
+                    sys.stdout.flush()
+                continue
+            # Only stat when idle: rotation can't outrun an active read of the same file.
+            idle_polls += 1
+            if idle_polls >= 2 and not _same_file(f, path):
+                try:
+                    new_f = open(path, "r", encoding="utf-8-sig", errors="replace")
+                except OSError:
+                    time.sleep(0.3)  # mid-rotation gap: retry on the next poll
+                    continue
+                f.close()
+                f, idle_polls = new_f, 0
+                continue
+            time.sleep(0.3)
+    finally:
+        f.close()
 
 
 def _size_label(size: int) -> str:

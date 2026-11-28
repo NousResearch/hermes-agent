@@ -251,3 +251,62 @@ def test_update_logs_are_read_from_the_root_home_under_a_profile(tmp_path, monke
     list_logs()
     listing = capsys.readouterr().out
     assert "agent.log" in listing and "update.log (root)" in listing
+
+
+class TestFollowLogRotation:
+    def test_follow_survives_rotation(self, tmp_path, monkeypatch):
+        """_follow_log keeps emitting lines written after a rename+recreate
+        rotation (the pre-fix follower held the old fd and went silent)."""
+        import threading
+        import time as _time
+
+        import hermes_cli.logs as logs_mod
+
+        p = tmp_path / "agent.log"
+        p.write_text("before\n")
+
+        captured = []
+        stop = threading.Event()
+
+        real_sleep = _time.sleep
+
+        def fake_print(line, end=""):
+            captured.append(line)
+
+        def fast_sleep(_secs):
+            real_sleep(0.02)
+            if stop.is_set():
+                raise KeyboardInterrupt
+
+        monkeypatch.setattr("builtins.print", fake_print)
+        monkeypatch.setattr(logs_mod.time, "sleep", fast_sleep)
+
+        t = threading.Thread(
+            target=lambda: _swallow_kbi(logs_mod._follow_log, p), daemon=True
+        )
+        t.start()
+        try:
+            real_sleep(0.15)
+            # Rotate: rename live file away, create a fresh one at the path.
+            p.rename(tmp_path / "agent.log.1")
+            with open(p, "w") as f:
+                f.write("after-rotation\n")
+            deadline = _time.time() + 5.0
+            while _time.time() < deadline:
+                if any("after-rotation" in ln for ln in captured):
+                    break
+                real_sleep(0.05)
+        finally:
+            stop.set()
+            t.join(timeout=5.0)
+
+        assert any("after-rotation" in ln for ln in captured), (
+            f"follower missed post-rotation lines; captured={captured!r}"
+        )
+
+
+def _swallow_kbi(fn, *args):
+    try:
+        fn(*args)
+    except KeyboardInterrupt:
+        pass

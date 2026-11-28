@@ -54,6 +54,11 @@ def test_kitty_placeholders_on_kitty_and_ghostty(monkeypatch):
     monkeypatch.setenv("TERM_PROGRAM", "ghostty")
     assert terminal_image.supports_kitty_placeholders() is True
 
+    _clear_graphics_env(monkeypatch)
+    monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.setenv("TERM_PROGRAM", "rex")
+    assert terminal_image.supports_kitty_placeholders() is True
+
 
 @pytest.mark.parametrize("multiplexer", ["TMUX", "STY"])
 def test_auto_stays_on_half_blocks_inside_a_multiplexer(monkeypatch, multiplexer):

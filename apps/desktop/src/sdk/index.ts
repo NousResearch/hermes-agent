@@ -47,7 +47,7 @@ import { registry } from '@/contrib/registry'
 import type { PluginWorkspaceOptions, WorkspaceMode } from '@/contrib/types'
 import { deleteProfile, getLogs, getStatus, hermesApi, type HermesGateway } from '@/hermes'
 import { traceIdentityChange } from '@/lib/identity-trace'
-import { completeMcpDesktopOAuth } from '@/lib/mcp-dashboard-oauth'
+import { completeMcpOAuth as completeMcpOAuthForHost } from '@/lib/mcp-oauth-host'
 import {
   $gateway,
   activeGatewayConnectionId,
@@ -621,7 +621,7 @@ export const host = {
 
   /** Complete client-local MCP sign-in for a pinned bot profile, optionally
    *  installing its catalog entry first. Uses the same OAuth flow as Settings. */
-  completeMcpOAuth: async (options: Parameters<typeof completeMcpDesktopOAuth>[0] & { catalogPreset?: string }) => {
+  completeMcpOAuth: async (options: Parameters<typeof completeMcpOAuthForHost>[0] & { catalogPreset?: string }) => {
     const profile = capabilityScoped(options.profile)
 
     if (options.catalogPreset) {
@@ -637,7 +637,7 @@ export const host = {
       }
     }
 
-    return completeMcpDesktopOAuth({ ...options, profile })
+    return completeMcpOAuthForHost({ ...options, profile })
   },
 
   /** Navigate the app router (hash routes, e.g. '/command-center?section=system'). */

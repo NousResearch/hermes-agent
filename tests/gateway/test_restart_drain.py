@@ -1,7 +1,9 @@
 import asyncio
 import subprocess
 import sys
+import threading
 import time
+import types
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 
@@ -57,6 +59,88 @@ async def test_restart_command_while_busy_requests_drain_without_interrupt(monke
     assert "Draining" in expected and "1" in expected
     running_agent.interrupt.assert_not_called()
     runner.request_restart.assert_called_once_with(detached=True, via_service=False)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("busy_mode, slash_queue", [("queue", False), ("interrupt", True)],
+                         ids=["followup", "slash-queue-in-interrupt-mode"])
+async def test_forced_restart_keeps_queued_followup_for_shutdown_flush(
+    tmp_path, monkeypatch, busy_mode, slash_queue
+):
+    """A turn still live when a restart closes admission (a forced restart, or one finishing in
+    the idle-to-stop tick) must leave its queued follow-up for the shutdown flush to persist for
+    the next process (#82381): the draining runner would only refuse and drop it."""
+    from gateway.restart_when_idle import force_restart
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+    turn_started, release_turn = threading.Event(), threading.Event()
+    agent_calls: list[str] = []
+
+    class BlockingAgent:
+        def __init__(self, **_kwargs):
+            self.tools = []
+
+        def run_conversation(self, message, conversation_history=None, task_id=None):
+            agent_calls.append(message)
+            turn_started.set()
+            assert release_turn.wait(timeout=5), "blocked test turn was not released"
+            return {"final_response": "done", "messages": conversation_history or [], "api_calls": 1}
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = BlockingAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    runner, adapter = make_restart_runner()
+    adapter.gateway_runner = runner
+    runner._busy_input_mode = busy_mode
+    runner._prefill_messages, runner._ephemeral_system_prompt = [], ""
+    runner._reasoning_config, runner._provider_routing, runner._fallback_model = None, {}, None
+    runner._session_db, runner._session_run_generation = None, {}
+    runner.hooks.loaded_hooks = False
+    flushed: list[dict] = []
+    monkeypatch.setattr("gateway.shutdown_flush.flush_pending_to_file",
+                        lambda pending, *, reason="shutdown": flushed.append(dict(pending)) or len(pending))
+
+    source = make_restart_source()
+    session_key = build_session_key(source)
+    first = MessageEvent(text="first turn", message_type=MessageType.TEXT, source=source, message_id="first")
+
+    async def dispatch(event):
+        if event is first:
+            result = await runner._run_agent(message=event.text, context_prompt="", history=[], source=source,
+                                             session_id="session-82381", session_key=session_key)
+            return result["final_response"]
+        return await runner._handle_message(event)
+
+    adapter.set_message_handler(dispatch)
+    await adapter.handle_message(first)
+    assert await asyncio.to_thread(turn_started.wait, 5)
+    for _ in range(100):
+        if session_key in runner._running_agents:
+            break
+        await asyncio.sleep(0.01)
+    text = "/queue follow up" if slash_queue else "follow up"
+    await adapter.handle_message(MessageEvent(text=text, message_type=MessageType.TEXT, source=source,
+                                              message_id="followup"))
+    queued = adapter._pending_messages[session_key]
+
+    async def stop(**_kwargs):
+        # The interrupted turn ends while admission is closed, then teardown flushes the adapter.
+        task = adapter._session_tasks.get(session_key)
+        release_turn.set()
+        if task is not None:
+            await asyncio.wait_for(asyncio.shield(task), timeout=5)
+        for _ in range(5):
+            await asyncio.sleep(0)
+        await adapter.cancel_background_tasks()
+
+    runner.stop = AsyncMock(side_effect=stop)
+    assert force_restart(runner, detached=False, via_service=True)
+    await asyncio.wait_for(runner._restart_task, timeout=5)
+
+    assert agent_calls == ["first turn"]
+    assert flushed and flushed[-1].get(session_key) is queued
 
 
 def test_load_busy_text_mode_follows_input_mode_and_honors_legacy(tmp_path, monkeypatch):

@@ -66,9 +66,8 @@ async def test_wake_queued_before_drain_survives_the_pending_discard():
 
 @pytest.mark.asyncio
 async def test_wake_queued_behind_human_follow_ups_still_runs_during_the_drain():
-    """Two human follow-ups ahead of the wake: the drain discards the first and stages the second
-    for the drain gate to reject, which used to strand the receipted wake behind it. The wake runs
-    next; the follow-ups around it stay queued in order, as they do without a wake."""
+    """Two human follow-ups ahead of the wake used to strand the receipted wake behind them. The
+    wake runs next; the follow-ups around it stay queued in order for the shutdown flush."""
     runner, adapter, source, _turns = wake_route()
     key = adapter._event_session_key(MessageEvent(text="", source=source))
     adapter._active_sessions[key] = asyncio.Event()  # a turn is running in this chat
@@ -83,8 +82,8 @@ async def test_wake_queued_behind_human_follow_ups_still_runs_during_the_drain()
         {"final_response": "done"}, adapter, source, key
     )
     assert text == WAKE and event.internal
-    assert adapter._pending_messages[key].text == "second human follow-up"
-    assert [e.text for e in runner._overflow_queue(key)] == ["third human follow-up"]
+    assert adapter._pending_messages[key].text == "first human follow-up"
+    assert [e.text for e in runner._overflow_queue(key)] == ["second human follow-up", "third human follow-up"]
 
 
 @pytest.mark.asyncio

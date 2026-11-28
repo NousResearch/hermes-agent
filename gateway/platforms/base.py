@@ -437,7 +437,7 @@ if (_checkout_root := str(Path(__file__).resolve().parents[2])) not in sys.path:
     sys.path.append(_checkout_root)  # append, never prepend: never shadow same-named installed packages
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import fence_state_after, reply_file_off, try_reply_file, typing_metadata_for_turn, sender_may_see_activity, typing_pause_key, typing_refresh_wanted
-from gateway.platforms.base_post_delivery import run_post_delivery_callback
+from gateway.platforms.base_post_delivery import held_for_gateway_drain, run_post_delivery_callback
 from gateway.platforms.base_delivery_ledger import (
     finalize_final_obligation, ledger_attempted, ledger_bracket, record_final_obligation)
 from gateway.platforms.base_exec_approval import (
@@ -4311,7 +4311,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         drop: re-queue it if another task already owns the session (drain handoff), else spawn the
         drain task and leave it the guard. Nothing pending: release the guard only if we still own
         it."""
-        late_pending = self._pending_messages.pop(session_key, None)
+        late_pending = None if held_for_gateway_drain(self, session_key) else self._pending_messages.pop(session_key, None)
         current_task = asyncio.current_task()
         if late_pending is not None:
             existing_task = self._session_tasks.get(session_key)
@@ -4422,7 +4422,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             # Force-flush an unfired debounce timer so this task hands off to a fresh drain task.
             # Clear the Event BEFORE the stop-typing await so concurrent inbound sees a live guard.
             await self._flush_text_debounce_now(session_key)
-            if session_key in self._pending_messages:
+            if session_key in self._pending_messages and not held_for_gateway_drain(self, session_key):
                 pending_event = self._pending_messages[session_key]
                 delay = self._requeue_backoff_delay(session_key, pending_event, event)
                 if not delay:  # a backed-off event stays queued until the drain task wakes

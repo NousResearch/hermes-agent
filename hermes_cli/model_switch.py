@@ -1938,6 +1938,16 @@ def persist_model_selection(result: ModelSwitchResult, config_path: Any = None) 
     from hermes_cli.config import _CONFIG_LOCK, atomic_config_replace, get_config_path, read_user_config_raw
     from hermes_cli.config_backend import supports_file_tooling, write_config_keys
     path = Path(config_path) if config_path else get_config_path()
+    candidate = result.new_model or ""
+    if (not candidate.strip() or len(candidate) > 128
+            or any(ord(c) > 126 or (ord(c) < 32 and c != "\t") for c in candidate)):
+        # A picker can hand back display text (box-drawing characters, trailing
+        # spaces) that would corrupt ``model.default`` on every later start.
+        # Refuse at the persistence boundary; leave config.yaml untouched (GH #159470).
+        logging.getLogger(__name__).warning(
+            "persist_model_selection: refusing to persist suspicious model id %r "
+            "(len=%d); config.yaml left unchanged", candidate, len(candidate))
+        return
     planned_from = read_user_config_raw(path).get("model")
     updates = model_selection_config_updates(result, planned_from)
     if not supports_file_tooling():

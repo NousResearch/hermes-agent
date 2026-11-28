@@ -80,3 +80,34 @@ def test_opt_out_never_reads_or_refreshes_claude_code_login(tmp_path, monkeypatc
     with redirect_stdout(out):
         auth_list_command(SimpleNamespace(provider=None))
     assert credential_sources.EXTERNAL_LOGINS_NOT_ADOPTED_NOTICE not in out.getvalue()
+
+
+def test_suppressed_claude_code_source_never_resolves_the_borrowed_login(tmp_path, monkeypatch):
+    """``suppressed_sources.anthropic`` holding ``claude_code`` keeps the resolver off the borrowed login (#135415).
+
+    With no env credentials the resolver's last resort is Claude Code's own credential file; a suppressed
+    source must return ``None`` there instead of silently using the Claude subscription login, while the
+    same login keeps resolving once the marker is gone.
+    """
+    hermes_home, claude_dir = tmp_path / "hermes", tmp_path / "claude"
+    hermes_home.mkdir()
+    claude_dir.mkdir()
+    (hermes_home / ".env").write_text("")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(claude_dir))
+    for var in ("ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
+    borrowed_access = "claude-code-borrowed-access-token"
+    borrowed_refresh = "claude-code-borrowed-refresh-token"
+    (claude_dir / ".credentials.json").write_text(json.dumps({"claudeAiOauth": {
+        "accessToken": borrowed_access, "refreshToken": borrowed_refresh,
+        "expiresAt": int(time.time() * 1000) + 3_600_000, "scopes": ["user:inference"]}}))
+    (hermes_home / "auth.json").write_text(json.dumps(
+        {"providers": {}, "suppressed_sources": {"anthropic": ["claude_code"]}}))
+
+    assert ac.resolve_anthropic_token() is None
+
+    # Without the marker the same borrowed login resolves again (existing behaviour).
+    (hermes_home / "auth.json").write_text(json.dumps(
+        {"providers": {}, "suppressed_sources": {"anthropic": []}}))
+    assert ac.resolve_anthropic_token() == borrowed_access

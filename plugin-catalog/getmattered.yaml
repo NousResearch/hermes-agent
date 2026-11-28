@@ -1,0 +1,19 @@
+name: getmattered
+title: GetMattered
+repo: https://github.com/getmattered/getmattered-mcp
+sha: 871894b44cde6bd4b442096726bee5ce90898bdf
+subdir: plugins/getmattered
+version: "1.21.7"
+description: "Find matched jobs and apply on the employer's own hiring system, with a resume tailored to each role. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure: hosted connector with no local runtime code, binaries, hooks, environment variables, telemetry or self-updater; every tool call goes over HTTPS to the GetMattered MCP server (Streamable HTTP at https://mcp.getmattered.com/mcp), which needs a GetMattered account signed in through the server's OAuth flow. Apply tools send the user's resume and application answers to the employer's hiring system, either automatically or after the user approves each one in a review queue. The package marks the server untrusted (trust: untrusted), so Hermes asks before any tool not annotated read-only and refuses them in unattended runs. The remote tool inventory is served at runtime and is not covered by the pinned sha."
+maintainer: GetMattered
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://getmattered.com/mcps
+readme: false
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

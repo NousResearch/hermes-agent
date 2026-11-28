@@ -947,56 +947,8 @@ class TestCapabilitiesEndpoint:
 
 
 # ---------------------------------------------------------------------------
-# /v1/skills and /v1/toolsets endpoints
+# /v1/toolsets endpoint (/v1/skills: tests/gateway/platforms/api_server/)
 # ---------------------------------------------------------------------------
-
-
-class TestSkillsEndpoint:
-    @pytest.mark.asyncio
-    async def test_skills_returns_list_envelope(self, adapter):
-        fake_skills = [
-            {"name": "github", "description": "GitHub workflow skill", "category": "github"},
-            {"name": "ascii-art", "description": "ASCII art generation", "category": "creative"},
-        ]
-        with patch(
-            "tools.skills_tool.find_all_skills",
-            return_value=list(fake_skills),
-            autospec=True,
-        ):
-            app = _create_app(adapter)
-            async with TestClient(TestServer(app)) as cli:
-                resp = await cli.get("/v1/skills")
-                assert resp.status == 200
-                data = await resp.json()
-                assert data["object"] == "list"
-                names = sorted(s["name"] for s in data["data"])
-                assert names == ["ascii-art", "github"]
-                for entry in data["data"]:
-                    assert set(entry.keys()) >= {"name", "description", "category"}
-
-    @pytest.mark.asyncio
-    async def test_skills_end_to_end_without_mock(self, adapter, tmp_path, monkeypatch):
-        skill_dir = tmp_path / "skills" / "demo-skill"
-        skill_dir.mkdir(parents=True)
-        (skill_dir / "SKILL.md").write_text(
-            "---\n"
-            "name: demo-skill\n"
-            "description: Demo skill for GET /v1/skills contract test\n"
-            "---\n\n"
-            "# Demo Skill\n",
-            encoding="utf-8",
-        )
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-
-        app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
-            resp = await cli.get("/v1/skills")
-            assert resp.status == 200
-            data = await resp.json()
-            assert data["object"] == "list"
-            by_name = {entry["name"]: entry for entry in data["data"]}
-            assert "demo-skill" in by_name
-            assert by_name["demo-skill"]["description"] == "Demo skill for GET /v1/skills contract test"
 
 
 class TestToolsetsEndpoint:

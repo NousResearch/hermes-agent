@@ -102,3 +102,18 @@ def test_strip_mode_still_strips_boundary_underscore_emphasis():
 
     output = _render_to_text(renderable)
     assert "say hi and bold now" in output
+
+
+def test_late_start_ordered_list_after_a_label_renders_as_a_list():
+    output = _render_to_text(_render_final_assistant_content("**Follow-ups**\n4. First\n5. Second"))
+
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    assert lines[0] == "Follow-ups"
+    assert len(lines) == 3 and lines[1].endswith("First") and lines[2].endswith("Second")
+
+
+def test_fenced_numbered_lines_stay_code():
+    from hermes_cli.cli_render import _separate_late_start_ordered_lists
+
+    text = "```\nlabel\n4. not a list\n```\nIntro\n1. First\n> **Quote**\n> 4. Fourth"
+    assert _separate_late_start_ordered_lists(text) == text

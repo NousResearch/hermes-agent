@@ -81,6 +81,33 @@ def is_trivial_prompt(text: Optional[str]) -> bool:
     return bool(TRIVIAL_PROMPT_RE.match(stripped))
 
 
+# System-injected "user" turns: background-process completions, heartbeats and watch matches,
+# async delegation / subagent completions. Same family as hermes_state_timeline._SYNTHETIC_PROMPT
+# (which hides them from the prompt index), plus the heartbeat form without "IMPORTANT:".
+SYNTHETIC_NOTIFICATION_RE = re.compile(
+    r"^\s*(?:\[(?:IMPORTANT: )?Background process |\[ASYNC (?:DELEGATION )?(?:BATCH )?COMPLETE\b|"
+    r"A background fan-out of \d+ subagent\(s\) you dispatched earlier has finished\.|"
+    r"A background subagent you dispatched earlier has finished\.)",
+    re.IGNORECASE,
+)
+
+
+def is_synthetic_notification_turn(message: Any) -> bool:
+    """True when a turn's "user" message was injected by Hermes, not written by the user.
+
+    External memory must not ingest these: the backend would extract tool chatter as facts about
+    the user. Detects ``TimelineNotification`` (it carries ``display_kind``) and, for copies that
+    lost the type (persisted/replayed rows), the notification text itself. Out-of-band user
+    messages are genuine user input and do not match.
+    """
+    if getattr(message, "display_kind", None):
+        return True
+    if isinstance(message, list):  # multimodal: judge by the first text part
+        message = next((p if isinstance(p, str) else p.get("text", "") for p in message
+                        if isinstance(p, str) or (isinstance(p, dict) and p.get("type") in (None, "text", "input_text"))), "")
+    return isinstance(message, str) and bool(SYNTHETIC_NOTIFICATION_RE.match(message))
+
+
 class MemoryProvider(ABC):
     """Abstract base class for memory providers.
 

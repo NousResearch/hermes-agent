@@ -138,15 +138,16 @@ async def clear_pending_pairing(profile: Optional[str] = None):
 
 
 def _webhook_route_summary(name: str, route: dict[str, Any], base_url: str) -> dict[str, Any]:
+    from gateway.platforms.webhook_filters import route_names
     return {
         "name": name,
         "description": route.get("description", ""),
-        "events": list(route.get("events") or []),
+        "events": route_names(route.get("events")),
         "deliver": route.get("deliver", "log"),
         "deliver_only": bool(route.get("deliver_only")),
         "prompt": route.get("prompt", ""),
         "script": route.get("script", ""),
-        "skills": list(route.get("skills") or []),
+        "skills": route_names(route.get("skills")),
         "created_at": route.get("created_at"),
         "url": f"{base_url}/webhooks/{name}",
         "signature": route.get("signature"),

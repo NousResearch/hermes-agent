@@ -7,6 +7,7 @@ the module attributes.
 from __future__ import annotations
 
 from pathlib import Path
+import json
 import os
 import sys
 from typing import NoReturn, Optional
@@ -28,6 +29,11 @@ def _confirm(prompt: str) -> bool:
 
 def _is_active(p, active: str) -> bool:
     return p.name == active or (active == "default" and p.is_default)
+
+
+def _truncate(s: str, width: int) -> str:
+    # Silent slicing presented incomplete model ids as if they were complete.
+    return s if len(s) <= width else s[:width - 1] + "…"
 
 
 def _env_file_has_key(env_path: Path, key: str) -> bool:
@@ -110,18 +116,39 @@ def _profile_list(args):
     from hermes_cli.profiles_remove import delete_incomplete_message
     profiles = list_profiles()
     active = get_active_profile_name()
-    if not profiles:
+    as_json = getattr(args, "json", False)
+    if not profiles and not as_json:
         print("No profiles found.")
+        return
+    if as_json:
+        for canon, profile_dir in _unfinished_deletes():
+            print(delete_incomplete_message(canon, profile_dir), file=sys.stderr)
+        for line in _shared_credential_warnings(profiles):
+            print(line, file=sys.stderr)
+        rows = [{
+            "name": p.name,
+            "display_name": p.display_name or "",
+            "model": p.model,
+            "provider": p.provider,
+            "gateway_running": bool(p.gateway_running),
+            "alias": (p.alias_name or p.name) if p.alias_path and not p.is_default else None,
+            "distribution": (
+                f"{p.distribution_name}@{p.distribution_version or '?'}" if p.distribution_name else None
+            ),
+            "is_default": bool(p.is_default),
+            "active": _is_active(p, active),
+        } for p in profiles]
+        print(json.dumps(rows, indent=2))
         return
     print(f"\n {'Profile':<16} {'Model':<28} {'Gateway':<12} {'Alias':<12} {'Distribution'}")
     print(f" {'─' * 15}    {'─' * 27}    {'─' * 11}    {'─' * 11}    {'─' * 20}")
     for p in profiles:
         marker = " ◆" if _is_active(p, active) else "  "
         name = format_profile_label(p.name, p.display_name)
-        model = (p.model or "—")[:26]
+        model = _truncate(p.model or "—", 28)
         gw = "running" if p.gateway_running else "stopped"
         alias = (p.alias_name or p.name) if p.alias_path and not p.is_default else "—"
-        dist = f"{p.distribution_name}@{p.distribution_version or '?'}"[:30] if p.distribution_name else "—"
+        dist = _truncate(f"{p.distribution_name}@{p.distribution_version or '?'}", 30) if p.distribution_name else "—"
         print(f"{marker}{name:<15} {model:<28} {gw:<12} {alias:<12} {dist}")
     unfinished = _unfinished_deletes()
     for canon, _ in unfinished:

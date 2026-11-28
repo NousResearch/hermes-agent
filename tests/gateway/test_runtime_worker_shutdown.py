@@ -156,6 +156,7 @@ async def test_persisted_work_count_returns_to_zero_when_the_drain_ends():
                              _persist_active_agents=lambda: persisted.append(uncounted_runtime_work(runner)))
     live = SimpleNamespace(task=None, route='route', event_stream=SimpleNamespace(execution={'execution_generation': 1}))
     authority.runner, authority.sessions, authority._managed_workers = runner, {'s': live}, {}
+    authority._drain_tasks = {}
 
     async def drain(_ref):
         await release.wait()

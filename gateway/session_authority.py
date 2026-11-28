@@ -158,6 +158,7 @@ class SessionAuthority:
         self.persistence = persistence
         self.epoch = epoch
         self.sessions = {}
+        self._drain_tasks = {}  # task -> (session id, live), through settlement and cancellation cleanup
         self.waiters = {}
         self.events = {}
         self.native_waiters = set()
@@ -516,9 +517,13 @@ class SessionAuthority:
             wake_background_wait(self, ref)
         if live.task is None or live.task.done():
             live.task = asyncio.create_task(self._drain(ref))
+            self._drain_tasks[live.task] = (ref.session_id, live)
             live.task.add_done_callback(_log_drain_failure)
             from gateway.session_runtime_workers import persist_work_count
-            live.task.add_done_callback(lambda task: persist_work_count(self, task))
+            def finished(task):
+                self._drain_tasks.pop(task, None)
+                persist_work_count(self, task)
+            live.task.add_done_callback(finished)
 
     def wake_after_worker(self, session_id):
         """A worker execution on ``session_id`` (a logical owner or its compression continuation)

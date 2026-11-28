@@ -3,7 +3,8 @@
 Hooks live in ~/.hermes/hooks/<name>/ with HOOK.yaml (name, description, events) and
 handler.py (``def handle(event_type, context)``, sync or async); errors never block
 the pipeline.  Events: gateway:startup, session:start/end/reset, agent:start,
-agent:step (each tool-loop turn), agent:end, command:* (wildcard).  agent:* context:
+agent:step (each tool-loop turn), agent:end, command:* (wildcard), telegram:callback
+(an inline-keyboard tap whose callback_data no built-in handler owns).  agent:* context:
 platform, user_id, chat_id, thread_id ("" outside a thread), chat_type
 ("dm"|"group"|"forum"|""), session_id, message (500 chars); agent:end adds response,
 model, provider.  Forum follow-ups pass ``message_thread_id=int(thread_id)``.
@@ -105,6 +106,11 @@ class HookRegistry:
             handlers.extend(self._handlers.get(f"{event_type.split(':')[0]}:*", []))
         return handlers
 
+    def has_handlers(self, event_type: str) -> bool:
+        """True when anything listens for *event_type* — lets an emitter skip its own prep work
+        (auth gates, context building) when no hook is registered."""
+        return bool(self._resolve_handlers(event_type))
+
     async def emit(self, event_type: str, context: Optional[dict[str, Any]] = None) -> None:
         """Fire all handlers for an event, discarding return values."""
         await self.emit_collect(event_type, context)
@@ -166,3 +172,33 @@ class ProfileHookRegistries:
 
     async def emit_collect(self, event_type: str, context: Optional[dict[str, Any]] = None) -> list[Any]:
         return await self._active().emit_collect(event_type, context)
+
+    def has_handlers(self, event_type: str) -> bool:
+        return self._active().has_handlers(event_type)
+
+
+_shared: Optional["ProfileHookRegistries"] = None
+_shared_lock = threading.Lock()
+
+
+def shared_hook_registry() -> "ProfileHookRegistries":
+    """Process-wide registry, shared by the runner and by emitters outside it (platform adapters).
+
+    One instance per process, not one per caller: two ``ProfileHookRegistries`` would each discover
+    and import the same ``hooks/`` handler modules, executing user code twice and firing handlers the
+    other emitter never sees. Per-profile isolation is unchanged — it lives inside the instance, which
+    resolves the registry from the active ``HERMES_HOME`` at emit time.
+    """
+    global _shared
+    if _shared is None:
+        with _shared_lock:
+            if _shared is None:
+                _shared = ProfileHookRegistries()
+    return _shared
+
+
+def reset_shared_hook_registry() -> None:
+    """Drop the shared instance (tests, or a caller re-pointing ``hooks/`` at another home)."""
+    global _shared
+    with _shared_lock:
+        _shared = None

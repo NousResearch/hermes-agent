@@ -395,6 +395,10 @@ class _PollingStallError(RuntimeError):
     """
 
 
+# Hook event fired for an inline-keyboard tap before the built-in callback dispatch (#153232).
+CALLBACK_HOOK_EVENT = "telegram:callback"
+
+
 class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramReplacementMixin, TelegramTopicRoutingMixin, TelegramPendingProbeMixin, TelegramMediaFloodMixin, TelegramSendPathRecoveryMixin, TelegramVaultCodeMixin, TelegramFloodCooldownMixin, BasePlatformAdapter):
     """Telegram bot adapter: users/groups, MarkdownV2 replies, forum topics, media."""
 
@@ -4307,6 +4311,10 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         self._accept_update()
         data = query.data or ""
         cb = self._callback_ctx(query)
+        # Third-party buttons first (#153232): a hook claiming the tap stops further dispatch, so an
+        # integration never has to patch this handler to receive its own callback_data.
+        if await self._emit_callback_hook(query, data, cb):
+            return
         # Model picker / generic choice picker (/reasoning, /fast) need a chat id.
         for prefixes, handler, states in (
             (("mp:", "mpg:", "mpv:", "mm:", "mc:", "mb", "mx", "mg:"), self._handle_model_picker_callback, "_model_picker_state"),
@@ -4334,6 +4342,46 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
                 return
         logger.debug("[%s] unhandled callback query (data=%r)", self.name, data[:64])
         await answer_callback(query)  # no handler owns it (stale build, data-less game tap): ack anyway or it spins (#78788)
+
+    async def _emit_callback_hook(self, query, data: str, cb: dict[str, Any]) -> bool:
+        """Fire ``telegram:callback`` for a button tap; True ⇒ the caller stops dispatching.
+
+        Fail-closed authorization: the same sender gate the built-in handlers use runs **before** any
+        hook, so an unadmitted tap never reaches third-party code and is answered with the same denial
+        toast. Zero cost when nothing subscribes — handlers are checked first, so neither the gate nor
+        a toast runs for a listener-less event. A hook claims the tap by returning ``True`` or a dict
+        with ``handled`` set; handlers own their own ``answerCallbackQuery`` (a second answer to the
+        same query is an error), and a claim on a built-in prefix shadows that built-in — documented.
+        """
+        try:
+            registry = self._hook_registry()
+            if not registry.has_handlers(CALLBACK_HOOK_EVENT):
+                return False
+        except Exception:  # a broken hooks dir must never eat button taps
+            logger.warning("[%s] callback hook registry unavailable", self.name, exc_info=True)
+            return False
+        if not await self._callback_authorized(query, cb, _unauthorized()):
+            return True
+        hook_ctx: dict[str, Any] = {
+            "platform": "telegram", "event": CALLBACK_HOOK_EVENT, "data": data,
+            "chat_id": cb["chat_id"], "chat_type": cb["chat_type"], "thread_id": cb["thread_id"],
+            "user_id": str(getattr(query.from_user, "id", "") or ""), "user_name": cb["user_name"],
+            "message_id": getattr(getattr(query, "message", None), "message_id", None),
+            "query": query, "adapter": self, "bot": self._bot}
+        try:
+            results = await registry.emit_collect(CALLBACK_HOOK_EVENT, hook_ctx)
+        except Exception:  # never raise into the update loop; fall through to the built-ins
+            logger.error("[%s] callback hook failed for data=%r", self.name, data[:64], exc_info=True)
+            return False
+        return any(r is True or (isinstance(r, dict) and r.get("handled")) for r in results)
+
+    def _hook_registry(self):
+        """Registry for ``telegram:callback``: an injected one wins (tests/embedders), else the process-wide."""
+        injected = getattr(self, "_callback_hook_registry", None)
+        if injected is not None:
+            return injected
+        from gateway.hooks import shared_hook_registry
+        return shared_hook_registry()
 
     async def _claim_callback_state(self, query, cb: dict[str, Any], state: dict, key, denial: str, resolved: str, *, pop: bool = True):
         """Auth-gate a button tap, then claim its pending entry; None (after answering) when refused or expired."""

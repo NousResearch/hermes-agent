@@ -117,6 +117,7 @@ export type ThreadPageDirection = -1 | 1
 // the focused thread. Route the intent by stable session key so kept-alive and
 // split transcripts cannot page together.
 const pageHandlers = new Map<string | null, Set<(direction: ThreadPageDirection) => void>>()
+const messageJumpHandlers = new Map<string | null, Set<(direction: ThreadPageDirection) => void>>()
 
 export const onThreadPageScrollRequest = (
   handler: (direction: ThreadPageDirection) => void,
@@ -138,6 +139,31 @@ export const onThreadPageScrollRequest = (
 
 export const requestThreadPageScroll = (direction: ThreadPageDirection, sessionKey: string | null = null) => {
   pageHandlers.get(sessionKey)?.forEach(handler => handler(direction))
+}
+
+// Message-boundary jumps come from rebindable keybinds; the timeline rail owns
+// the entries and the active index. Same session-key scoping as page scroll so
+// kept-alive/split transcripts cannot jump together.
+export const onThreadMessageJumpRequest = (
+  handler: (direction: ThreadPageDirection) => void,
+  sessionKey: string | null = null
+) => {
+  const scoped = messageJumpHandlers.get(sessionKey) ?? new Set<(direction: ThreadPageDirection) => void>()
+
+  scoped.add(handler)
+  messageJumpHandlers.set(sessionKey, scoped)
+
+  return () => {
+    scoped.delete(handler)
+
+    if (scoped.size === 0) {
+      messageJumpHandlers.delete(sessionKey)
+    }
+  }
+}
+
+export const requestThreadMessageJump = (direction: ThreadPageDirection, sessionKey: string | null = null) => {
+  messageJumpHandlers.get(sessionKey)?.forEach(handler => handler(direction))
 }
 
 // Inline edit grows a sticky human bubble. Fire on pointerdown so the viewport

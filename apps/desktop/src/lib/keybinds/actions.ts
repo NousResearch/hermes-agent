@@ -185,6 +185,10 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   { id: 'session.togglePin', category: 'session', defaults: [] },
   { id: 'conversation.scrollPageUp', category: 'session', defaults: ['pageup'] },
   { id: 'conversation.scrollPageDown', category: 'session', defaults: ['pagedown'] },
+  // Message-boundary navigation via the thread timeline rail. Ship unbound so
+  // no chord is claimed for every user; the shortcuts panel offers opt-in binds.
+  { id: 'conversation.jumpToPreviousMessage', category: 'session', defaults: [] },
+  { id: 'conversation.jumpToNextMessage', category: 'session', defaults: [] },
   // Archive the active session. Ships unbound (like `session.togglePin`) so an
   // irreversible-feeling, mouse-only action doesn't silently claim a chord for
   // every user — surfaced in the panel for opt-in binding (the issue suggests

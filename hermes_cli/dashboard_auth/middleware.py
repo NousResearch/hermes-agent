@@ -54,13 +54,24 @@ _GATE_PUBLIC_PREFIXES: tuple[str, ...] = (
 # and log an auto-SSO ``login_start`` with no sign-in behind it.
 _GATE_PUBLIC_ICONS: frozenset[str] = frozenset({"/apple-touch-icon.png"})
 
+# The Webapp's install artwork, matched exactly. Chrome fetches the manifest and every icon it
+# names while building the home-screen app, and does so before a session exists, so gating any of
+# them drops the install back to a browser shortcut with an address bar. They carry no data: the
+# manifest is static branding and the icons are the same mark as ``/apple-touch-icon.png``.
+_GATE_PUBLIC_PWA: frozenset[str] = frozenset({
+    "/manifest.webmanifest",
+    "/icon-192.png",
+    "/icon-512.png",
+    "/icon-maskable-512.png",
+})
+
 
 def _path_is_public(path: str) -> bool:
     """:data:`PUBLIC_API_PATHS` (shared with the legacy middleware) and :data:`_GATE_PUBLIC_ICONS`
     matched exactly so ``/api/status`` never exposes ``/api/status/extension``;
     :data:`_GATE_PUBLIC_PREFIXES` prefix-matched."""
-    return path in PUBLIC_API_PATHS or path in _GATE_PUBLIC_ICONS or any(
-        path == p or path.startswith(p) for p in _GATE_PUBLIC_PREFIXES)
+    return (path in PUBLIC_API_PATHS or path in _GATE_PUBLIC_ICONS or path in _GATE_PUBLIC_PWA
+            or any(path == p or path.startswith(p) for p in _GATE_PUBLIC_PREFIXES))
 
 
 def _safe_next_target(request: Request) -> str:

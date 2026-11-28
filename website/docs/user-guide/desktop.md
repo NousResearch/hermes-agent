@@ -164,6 +164,12 @@ whenever a profile has it turned on.
 If that build fails, the gateway reports the Webapp unavailable, and the page says so, until
 `hermes webapp` rebuilds it.
 
+**Install it as an app on a phone.** Once the page loads, use the browser's own install flow
+(Chrome: **⋮ → Install app**, Safari: **Share → Add to Home Screen**) and it opens standalone,
+without the address bar. The build ships a web app manifest and the icons it names for this. They
+are readable before you sign in, because the browser fetches them while building the home-screen
+app, but the page itself stays behind the same sign-in.
+
 ### Reach your other gateways from one Webapp
 
 The Webapp's **Settings → Gateways** has the same **Saved connections** list as the native app,

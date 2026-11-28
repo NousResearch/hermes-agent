@@ -52,7 +52,7 @@ GHOST_SESSION_SOURCE = "tui"
 GHOST_SESSION_MIN_AGE = timedelta(hours=24)
 
 #: Sources whose stale open rows the automatic prune reaps.
-AUTO_PRUNE_STALE_OPEN_SOURCES: tuple[str, ...] = ("cli", "cron", "kanban", "acp", "api_server", "subagent", "tool", "recovered")
+AUTO_PRUNE_STALE_OPEN_SOURCES: tuple[str, ...] = ("cli", "cron", "kanban", "acp", "api_server", "subagent", "tool", "recovered", "oneshot")
 
 #: Keyword names the prune filters accept.
 PRUNE_FILTER_NAMES = frozenset({

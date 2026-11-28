@@ -7,7 +7,7 @@ content made a 403/404 look like a successful (often blank) page.
 import asyncio
 import json
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -151,18 +151,73 @@ def test_vendor_reported_origin_status_does_not_walk_the_keyless_extract_ring():
         return ["keenable", "exa"] if start == "keenable" else ["exa", "keenable"]
 
     url = "https://t.test/x"
-    with patch.object(keyless_mcp, "_ring_order", side_effect=_ring), \
-            patch("requests.get", side_effect=lambda *_a, **_kw: _http(429, keenable["body"])) as keenable_get, \
-            patch("requests.post", return_value=_http(200, exa_crawl_429, "text/event-stream")) as exa_post:
+    def _post(endpoint, *_a, **_kw):
+        if "keenable" in endpoint:
+            keenable_post()
+            return _http(429, keenable["body"])
+        exa_post()
+        return _http(200, exa_crawl_429, "text/event-stream")
+
+    keenable_post, exa_post = MagicMock(), MagicMock()
+    with patch.object(keyless_mcp, "_ring_order", side_effect=_ring), patch("requests.post", side_effect=_post):
         [entry] = keyless_mcp.extract_with_failover("keenable", [url])
         assert entry["error"] == "HTTP 429 from origin: The target server rate-limited this fetch, please retry shortly."
-        assert (keenable_get.call_count, exa_post.call_count) == (1, 0)
+        assert (keenable_post.call_count, exa_post.call_count) == (1, 0)
 
         [entry] = keyless_mcp.extract_with_failover("exa", [url])
         assert entry["error"] == "HTTP 429 from origin"
-        assert (exa_post.call_count, keenable_get.call_count) == (1, 1)
+        assert (exa_post.call_count, keenable_post.call_count) == (1, 1)
 
         keenable["body"] = own_429
-        keenable_get.reset_mock(), exa_post.reset_mock()
+        keenable_post.reset_mock(), exa_post.reset_mock()
         keyless_mcp.extract_with_failover("keenable", [url])
-        assert (keenable_get.call_count, exa_post.call_count) == (1, 1)
+        assert (keenable_post.call_count, exa_post.call_count) == (1, 1)
+
+
+_TARGET_404 = {"status": 404, "error": "Not found", "code": "page_not_found", "type": "target_error",
+               "message": "The page does not exist at this URL. Check that the URL is correct."}
+_OWN_500 = {"status": 500, "error": "Internal server error", "code": "fetch_mode_unavailable",
+            "message": "This fetch mode is unavailable right now."}
+
+
+def _keenable_reply(page):
+    """``POST /v1/fetch`` answers 200 with ``{"results": [page]}``, a failed page included (as served live)."""
+    body = json.dumps({"results": [page]})
+    return SimpleNamespace(status_code=200, headers={"Content-Type": "application/json"},
+                           content=body.encode(), text=body, json=lambda: json.loads(body))
+
+
+def test_keenable_keyless_extract_posts_and_reads_the_page():
+    url = "https://t.test/x"
+    with patch("requests.post", return_value=_keenable_reply({"url": url, "title": "T", "content": "body"})) as post, \
+            patch("requests.get") as get:
+        [entry] = keyless_mcp.keenable_extract_keyless([url])
+    assert entry["content"] == "body" and not entry.get("error")
+    assert post.call_args.args[0].endswith("/v1/fetch/public") and post.call_args.kwargs["json"] == {"urls": [url]}
+    assert not get.called
+
+
+def test_keenable_keyless_page_error_from_the_target_is_the_pages_answer():
+    url = "https://t.test/missing"
+    with patch.object(keyless_mcp, "_ring_order", return_value=["keenable", "exa"]), \
+            patch("requests.post", return_value=_keenable_reply({"url": url, "error": _TARGET_404})) as post:
+        [entry] = keyless_mcp.extract_with_failover("keenable", [url])
+    assert entry["error"] == "HTTP 404 from origin: The page does not exist at this URL. Check that the URL is correct."
+    assert post.call_count == 1
+
+
+def test_keenable_keyed_extract_posts_and_classifies_page_errors(monkeypatch):
+    from plugins.web.keenable import provider as keenable
+
+    monkeypatch.setattr(keenable, "provider_env", lambda _k: "test-key")
+    monkeypatch.setattr(keenable, "use_keyless", lambda *_a: False)
+    pages = {"https://t.test/ok": {"url": "https://t.test/ok", "title": "T", "content": "body"},
+             "https://t.test/missing": {"url": "https://t.test/missing", "error": _TARGET_404},
+             "https://t.test/down": {"url": "https://t.test/down", "error": _OWN_500}}
+    with patch("requests.post", side_effect=lambda *_a, **kw: _keenable_reply(pages[kw["json"]["urls"][0]])) as post:
+        ok, missing, down = keenable.KeenableWebSearchProvider().extract(list(pages))
+    assert post.call_args.args[0] == "https://api.keenable.ai/v1/fetch"
+    assert post.call_args.kwargs["headers"]["Authorization"] == "Bearer test-key"
+    assert ok["content"] == "body" and not ok.get("error")
+    assert missing["error"].startswith("HTTP 404 from origin: The page does not exist")
+    assert down["error"].startswith("Keenable extract failed:") and "fetch_mode_unavailable" in down["error"]

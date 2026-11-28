@@ -15,7 +15,8 @@ import uuid
 from typing import Any, Callable, Dict, List, Optional
 
 from plugins.web._common import (
-    document as _page, exa_crawl_status, is_origin_http_error, keenable_origin_error, origin_http_error, page_error as _page_error, search_fail,
+    document as _page, exa_crawl_status, is_origin_http_error, keenable_fetch_page, keenable_origin_error, keenable_page_failure,
+    origin_http_error, page_error as _page_error, search_fail,
     search_ok, vendor_error_entry, web_hit as _row,
 )
 
@@ -347,12 +348,15 @@ def keenable_search_keyless(query: str, limit: int = 5) -> dict[str, Any]:
 def keenable_extract_keyless(urls: list[str]) -> list[dict[str, Any]]:
     def _fetch(url: str) -> dict[str, Any]:
         try:
-            data = _keenable_request("get", "/v1/fetch/public", params={"url": url})
+            page = keenable_fetch_page(_keenable_request("post", "/v1/fetch/public", json={"urls": [url]}))
+            if failure := keenable_page_failure(page):
+                status, body = failure
+                raise KeylessMCPError(keenable_origin_error(status, body) or f"HTTP {status}: {body[:300]}")
         except KeylessMCPError as exc:
             if is_origin_http_error(str(exc)):  # the target's answer, relayed by Keenable
                 return _page_error(url, str(exc))
             raise
-        return _page(data.get("url") or url, data.get("title") or "", data.get("content") or "", source_url=url)
+        return _page(page.get("url") or url, page.get("title") or "", page.get("content") or "", source_url=url)
 
     return _per_url(urls, _fetch, "keenable")
 

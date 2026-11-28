@@ -65,3 +65,205 @@ def test_local_viewer_title_republishes_session_info(monkeypatch):
     turn._attach_session_title_callback(agent, turn._ctx)
     agent._on_session_title('Auto', 'llm')
     assert published == [('session.info', {'title': 'Auto'})]
+
+
+@pytest.mark.asyncio
+async def test_local_session_info_preserves_named_custom_provider_identity(tmp_path, monkeypatch):
+    from gateway.session_contract import SessionRef
+    from gateway.session_local import local_session_info
+    from gateway.session_local_inventory import snapshot_info
+    from tests.gateway.test_session_create_tier_cwd import _owner
+
+    monkeypatch.chdir(tmp_path)
+    cfg = {
+        'model': {'default': 'lab-model', 'provider': 'custom:lab'},
+        'providers': {'lab': {'base_url': 'http://127.0.0.1:18999/v1', 'api_key': 'sk-lab'}},
+    }
+    store, runner, authority, owner = _owner(tmp_path / 'owner', monkeypatch, cfg)
+    try:
+        created = await owner.dispatch({'id': 'c1', 'method': 'session.create', 'params': {
+            'request_id': 'c1', 'source': 'gui', 'cwd': str(tmp_path), 'toolsets': [],
+        }})
+        sid = created['result']['session_id']
+        ref = SessionRef(authority.profile_id, sid)
+        agent = SimpleNamespace(
+            model='lab-model',
+            provider='custom',
+            requested_provider='custom:lab',
+            base_url='http://127.0.0.1:18999/v1',
+            api_mode='chat_completions',
+            tools=[],
+        )
+        runner._cached_agent_for = lambda route: agent
+        assert local_session_info(authority, ref)['provider'] == 'custom:lab'
+        assert (await snapshot_info(authority, ref))['provider'] == 'custom:lab'
+    finally:
+        await owner.close()
+        store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_idle_policy_mutation_publishes_stamped_session_info_with_provider(tmp_path, monkeypatch):
+    from dataclasses import asdict, replace
+    import json
+
+    from gateway import session_mutations
+    from gateway.session_contract import SessionRef
+    from gateway.session_policy import restore_policy
+    from tests.gateway.test_session_create_tier_cwd import _owner
+
+    monkeypatch.chdir(tmp_path)
+    store, _runner, authority, owner = _owner(
+        tmp_path / 'owner', monkeypatch, {'model': {'default': 'base-model', 'provider': 'openrouter'}},
+    )
+
+    async def prepare(auth, live, payload, prepared):
+        old = restore_policy(prepared['snapshot']['receipt']['policy'])
+        config = old.config()
+        config['model'] = {'default': 'switched-model', 'provider': 'claude-code'}
+        return {
+            **prepared,
+            'policy': asdict(replace(old, model='switched-model', config_json=json.dumps(config))),
+        }
+
+    monkeypatch.setattr('gateway.session_mutation_model.prepare_model', prepare)
+    try:
+        created = await owner.dispatch({'id': 'c1', 'method': 'session.create', 'params': {
+            'request_id': 'c1', 'source': 'gui', 'cwd': str(tmp_path), 'toolsets': [],
+        }})
+        ref = SessionRef(authority.profile_id, created['result']['session_id'])
+        handle = authority._handle(ref)
+        receipt = await session_mutations.mutate_session(
+            authority,
+            owner.actor,
+            ref,
+            {
+                'session_id': ref.session_id,
+                'request_id': 'pick-claude',
+                'operation': 'model',
+                'payload': {'model': 'switched-model', 'provider': 'claude-code'},
+                'expected_revision': handle.revision,
+                'expected_generation': handle.execution_generation,
+            },
+        )
+        stream = authority.sessions[ref.session_id].event_stream
+        events = [
+            e for e in stream.since(stream.watermark()[0], 0)['events']
+            if e.get('type') == 'session.info' and e.get('payload', {}).get('model') == 'switched-model'
+        ]
+        assert events
+        payload = events[-1]['payload']
+        assert payload['provider'] == 'claude-code'
+        assert payload['execution_generation'] == receipt['execution_generation']
+        assert payload['revision'] == receipt['revision']
+        assert 'authority_epoch' not in payload
+    finally:
+        await owner.close()
+        store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_sibling_idle_publishers_stamp_generation_and_revision(tmp_path, monkeypatch):
+    from gateway.run_turn_runner import TurnRunner
+    from gateway.session_contract import SessionRef
+    from gateway.session_policy_refresh import _publish as publish_refreshed_policy
+    from tests.gateway.test_session_create_tier_cwd import _owner
+
+    monkeypatch.chdir(tmp_path)
+    store, runner, authority, owner = _owner(
+        tmp_path / 'owner', monkeypatch, {'model': {'default': 'base-model', 'provider': 'openrouter'}},
+    )
+    try:
+        created = await owner.dispatch({'id': 'c1', 'method': 'session.create', 'params': {
+            'request_id': 'c1', 'source': 'gui', 'cwd': str(tmp_path), 'toolsets': [],
+        }})
+        ref = SessionRef(authority.profile_id, created['result']['session_id'])
+        await publish_refreshed_policy(authority, ref)
+        handle = authority._handle(ref)
+        stream = authority.sessions[ref.session_id].event_stream
+        refresh_events = [
+            e['payload'] for e in stream.since(stream.watermark()[0], 0)['events']
+            if e.get('type') == 'session.info' and e.get('payload', {}).get('model') == 'base-model'
+        ]
+        assert refresh_events
+        assert refresh_events[-1]['provider'] == 'openrouter'
+        assert refresh_events[-1]['execution_generation'] == handle.execution_generation
+        assert refresh_events[-1]['revision'] == handle.revision
+
+        turn = object.__new__(TurnRunner)
+        turn._ctx = SimpleNamespace(source=SimpleNamespace(platform=Platform.LOCAL), session_key='k')
+        turn._approval_owner = (authority, ref.session_id, handle.execution_generation)
+        turn._runner = runner
+        agent = SimpleNamespace(session_id=ref.session_id)
+        turn._attach_session_title_callback(agent, turn._ctx)
+        authority.persistence.sessions.set_title(ref.session_id, 'Renamed')
+        agent._on_session_title('Renamed', 'llm')
+        title_events = [
+            e['payload'] for e in stream.since(stream.watermark()[0], 0)['events']
+            if e.get('type') == 'session.info' and e.get('payload', {}).get('title') == 'Renamed'
+        ]
+        assert title_events
+        assert title_events[-1]['execution_generation'] == handle.execution_generation
+        assert title_events[-1]['revision'] == handle.revision
+    finally:
+        await owner.close()
+        store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_messaging_chat_pick_publishes_stamped_session_info_with_provider(tmp_path, monkeypatch):
+    from gateway import run
+    from gateway.config import GatewayConfig
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionSource
+    from gateway.session_authority import initialize_session_authority
+    from gateway.session_contract import SessionRef
+    from gateway.session_controls import AuthorityConnection
+    from gateway.session_messaging_picks import apply_chat_pick
+
+    msg_home = tmp_path / 'msg'
+    msg_home.mkdir()
+    monkeypatch.setenv('HERMES_HOME', str(msg_home))
+    monkeypatch.setattr(run, '_hermes_home', msg_home)
+    (msg_home / 'config.yaml').write_text(
+        'model:\n'
+        '  default: base-model\n'
+        '  provider: openrouter\n'
+    )
+    runner = GatewayRunner(GatewayConfig())
+    authority = await initialize_session_authority(runner, profile_id=str(msg_home), instance_id='owner')
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id='chat-1', user_id='u-1', chat_type='dm')
+    msg_ref = authority.register(source)
+    live = authority.sessions[msg_ref.session_id]
+    viewer = AuthorityConnection(authority, object(), {
+        'provider': 'local', 'user_id': 'viewer', 'profile_id': str(msg_home), 'instance_id': 'owner',
+        'capabilities': ['session:read', 'session:control'],
+    })
+    try:
+        handle = authority._handle(msg_ref)
+        receipt = await apply_chat_pick(
+            authority,
+            msg_ref,
+            SessionRef(authority.profile_id, msg_ref.session_id),
+            live,
+            {
+                'session_id': msg_ref.session_id,
+                'request_id': 'pick-effort',
+                'operation': 'reasoning',
+                'payload': {'effort': 'medium'},
+                'expected_revision': handle.revision,
+                'expected_generation': handle.execution_generation,
+            },
+            principal_id=viewer.actor.subject,
+        )
+        msg_events = [
+            e['payload'] for e in live.event_stream.since(live.event_stream.watermark()[0], 0)['events']
+            if e.get('type') == 'session.info' and 'model' in e.get('payload', {})
+        ]
+        assert msg_events
+        assert msg_events[-1]['provider'] == 'openrouter'
+        assert msg_events[-1]['execution_generation'] == receipt['execution_generation']
+        assert msg_events[-1]['revision'] == receipt['revision']
+    finally:
+        await viewer.close()
+        runner.session_store.close_all_db_handles()

@@ -1161,10 +1161,9 @@ class GatewayTurnProgressMixin:
 
                 def republish(title, title_source):
                     from gateway.session_contract import SessionRef
-                    from gateway.session_local import local_session_info
+                    from gateway.session_local import publish_local_session_info
                     ref = SessionRef(getattr(authority, "profile_id", ""), canonical_id)
-                    authority.sessions[canonical_id].event_stream.publish(
-                        canonical_id, local_session_info(authority, ref), event_type="session.info")
+                    publish_local_session_info(authority, ref)
                 agent._on_session_title = republish
                 return
             runner = self._runner

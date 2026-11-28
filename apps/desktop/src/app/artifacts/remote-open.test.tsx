@@ -87,6 +87,12 @@ it.each([false, true])(
       'absolute.txt'
     ]) {
       fireEvent.click(await screen.findByRole('button', { name }))
+
+      // In V2 (Library), Markdown files open in the inline preview first; "Open file" launches remotely.
+      if (enabled && name.endsWith('.md')) {
+        fireEvent.click(await screen.findByRole('button', { name: 'Open file' }))
+        fireEvent.click(screen.getByRole('button', { name: 'Files' }))
+      }
     }
 
     await waitFor(() => expect(saveGatewayFile).toHaveBeenCalledTimes(paths.length))

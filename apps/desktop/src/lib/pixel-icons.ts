@@ -282,6 +282,7 @@ export const CODICON_PIXEL: Readonly<Record<string, PixelMapping>> = {
   'git-pull-request-draft': 'git-pull-request',
   github: 'github',
   globe: 'globe', // right rail (906 rail bottom)
+  'go-to-file': 'external-link',
   grabber: 'menu',
   graph: 'chart-line',
   gripper: 'more-vertical',

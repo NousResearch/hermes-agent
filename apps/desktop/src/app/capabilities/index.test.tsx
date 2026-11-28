@@ -184,7 +184,7 @@ describe('CapabilitiesView tabs', { timeout: 60_000 }, () => {
 
   it('leads with Connections in the redesign, and opens there', async () => {
     expect(await tabsAt('/capabilities')).toEqual({
-      order: ['Connections', 'Plugins', 'Skills'],
+      order: ['Connections', 'Plugins', 'Skills', 'Messaging'],
       selected: 'Connections'
     })
   })
@@ -195,7 +195,7 @@ describe('CapabilitiesView tabs', { timeout: 60_000 }, () => {
 
   it('has no Tools tab in the redesign, and an old link to it lands on the first tab', async () => {
     expect(await tabsAt('/capabilities?tab=toolsets')).toEqual({
-      order: ['Connections', 'Plugins', 'Skills'],
+      order: ['Connections', 'Plugins', 'Skills', 'Messaging'],
       selected: 'Connections'
     })
   })

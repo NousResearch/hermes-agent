@@ -676,6 +676,8 @@ describe('Portal sidebar', () => {
     await screen.findByRole('menu')
     expect(screen.getAllByRole('menuitem').map(item => item.textContent?.trim())).toEqual([
       'View and manage agent',
+      'New project',
+      'Export profile…',
       'Hide from chat list'
     ])
   })

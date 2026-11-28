@@ -28,24 +28,24 @@ afterEach(() => {
   $shellChoice.set(null)
 })
 
-it("keeps the statusbar toggle at its registered position in classic and drops it where the shell has no strip", () => {
+it('keeps the profile rail toggle at its registered position in classic and drops it in the redesign', () => {
   $shellChoice.set(false)
   disposers.push(
     registry.registerMany([
       toggle('test.reset', 'Reset layout'),
-      toggle('view.toggleStatusbar', 'Toggle status bar', 'view.toggleStatusbar'),
-      toggle('test.rail', 'Toggle profile rail')
+      toggle('view.toggleProfileRail', 'Toggle profile rail', 'view.toggleProfileRail'),
+      toggle('view.toggleStatusbar', 'Toggle status bar', 'view.toggleStatusbar')
     ])
   )
   render(<Probe />)
 
-  expect(rows).toEqual(['Reset layout', 'Toggle status bar', 'Toggle profile rail'])
+  expect(rows).toEqual(['Reset layout', 'Toggle profile rail', 'Toggle status bar'])
 
   act(() => $shellChoice.set(true))
-  expect(rows).toEqual(['Reset layout', 'Toggle profile rail'])
+  expect(rows).toEqual(['Reset layout', 'Toggle status bar'])
 
   act(() => $shellChoice.set(false))
-  expect(rows).toEqual(['Reset layout', 'Toggle status bar', 'Toggle profile rail'])
+  expect(rows).toEqual(['Reset layout', 'Toggle profile rail', 'Toggle status bar'])
 })
 
 it('keeps rows whose action is outside the keybind catalog', () => {

@@ -17,7 +17,7 @@ import { AgentDirectory, AgentNavigation } from './directory'
 
 let narrow = false
 
-vi.mock('@/hooks/use-media-query', () => ({ useMediaQuery: () => narrow }))
+vi.mock('@/hooks/use-media-query', () => ({ matchesQuery: () => false, useMediaQuery: () => narrow }))
 vi.mock('../chat/sidebar/use-fleet-roster', () => ({ useFleetRoster: () => {} }))
 const roster: { agents: SimplifiedAgent[] } = { agents: [] }
 

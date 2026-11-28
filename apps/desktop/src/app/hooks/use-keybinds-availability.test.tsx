@@ -53,13 +53,17 @@ async function mountKeybinds() {
   }
 }
 
-it('lets an action this window does not offer pass its chord through, and dispatches it after a flip', async () => {
+it('dispatches the statusbar chord to the active shell without mutating the other shell', async () => {
   const pressToggle = await mountKeybinds()
+  const { $portalStatusBarOpen, setPortalStatusBarOpen } = await import('@/store/portal-status-bar')
   const { $statusbarVisible } = await import('@/store/statusbar-prefs')
   const { $shellChoice } = await import('@/store/shell-variant')
 
-  // The redesign has no statusbar strip: the chord is not swallowed as a silent no-op.
-  expect(pressToggle().defaultPrevented).toBe(false)
+  setPortalStatusBarOpen(true)
+
+  // In the redesign, ⌘⇧S toggles the redesign status bar while leaving classic's strip intact.
+  expect(pressToggle().defaultPrevented).toBe(true)
+  expect($portalStatusBarOpen.get()).toBe(false)
   expect($statusbarVisible.get()).toBe(true)
 
   act(() => $shellChoice.set(false))

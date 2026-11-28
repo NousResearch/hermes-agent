@@ -15,7 +15,6 @@ import { useI18n } from '@/i18n'
 import { resolveProfileColor } from '@/lib/profile-color'
 import { refreshFleetRoster } from '@/store/fleet-roster'
 import { $profileColors, $profiles, refreshProfiles } from '@/store/profile'
-import { runImportProfileFlow } from '@/store/profile-share'
 
 import { useFleetRoster } from '../chat/sidebar/use-fleet-roster'
 import { type SimplifiedAgent, useSimplifiedAgents } from '../chat/sidebar/use-simplified-agents'
@@ -171,7 +170,7 @@ export function AgentDirectory({ onClose }: { onClose: () => void }) {
         <PanelHeader
           actions={
             <div className="flex items-center gap-2">
-              <Button onClick={() => void runImportProfileFlow()} variant="outline">
+              <Button onClick={() => void import('@/store/profile-share').then(mod => mod.runImportProfileFlow())} variant="outline">
                 <Codicon name="cloud-download" />
                 {t.profiles.importProfile}
               </Button>
@@ -198,7 +197,7 @@ export function AgentDirectory({ onClose }: { onClose: () => void }) {
       <PanelHeader
         actions={
           <div className="flex items-center gap-2">
-            <Button onClick={() => void runImportProfileFlow()} variant="outline">
+            <Button onClick={() => void import('@/store/profile-share').then(mod => mod.runImportProfileFlow())} variant="outline">
               <Codicon name="cloud-download" />
               {t.profiles.importProfile}
             </Button>

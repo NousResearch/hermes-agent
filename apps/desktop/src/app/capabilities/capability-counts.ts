@@ -39,8 +39,12 @@ export function useConnectorsCount(scope: ProfileScope): CapabilityCount {
     void config.refetch()
   }
 
-  if (!config.data || (!list.data && !list.isError && list.failureCount === 0)) {
-    return { failed: !config.data && config.isError, retry }
+  if ((!list.data && list.isError) || (!config.data && config.isError)) {
+    return { failed: true, retry }
+  }
+
+  if (!config.data || (!list.data && list.failureCount === 0)) {
+    return { failed: false, retry }
   }
   const hosted =
     !list.data || list.data.available === false ? 0 : list.data.connectors.filter(row => row.connected).length

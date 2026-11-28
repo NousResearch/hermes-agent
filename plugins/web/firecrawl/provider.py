@@ -22,6 +22,9 @@ from tools.website_policy import check_website_access
 logger = logging.getLogger(__name__)
 
 _FIRECRAWL_CLOUD_API_URL = "https://api.firecrawl.dev"
+# Per-request HTTP deadline for every client mode. The SDK defaults to ``timeout=None``, so a socket that
+# accepts and then stalls held web_search/web_extract until the 420s tool-dispatch deadline (#136720).
+_REQUEST_TIMEOUT_S = 60.0
 
 # The SDK costs ~200ms of imports on a cold CLI; defer to first use (tests patch ``Firecrawl`` here).
 _FIRECRAWL_CLS_CACHE: Optional[type] = None
@@ -117,7 +120,7 @@ class _KeylessFirecrawlClient:
         self.api_url = api_url.rstrip("/")
 
     def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
-        response = httpx.post(f"{self.api_url}{path}", json=payload, headers={"Content-Type": "application/json"}, timeout=60.0)
+        response = httpx.post(f"{self.api_url}{path}", json=payload, headers={"Content-Type": "application/json"}, timeout=_REQUEST_TIMEOUT_S)
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
@@ -216,7 +219,7 @@ def _get_firecrawl_client(capability: Optional[str] = None) -> Any:
     cached = getattr(wt, "_firecrawl_client", None)
     if cached is not None and getattr(wt, "_firecrawl_client_config", None) == client_config:
         return cached
-    wt._firecrawl_client = _KeylessFirecrawlClient(api_url=kwargs["api_url"]) if client_mode == "keyless" else Firecrawl(**kwargs)
+    wt._firecrawl_client = _KeylessFirecrawlClient(api_url=kwargs["api_url"]) if client_mode == "keyless" else Firecrawl(**kwargs, timeout=_REQUEST_TIMEOUT_S)
     wt._firecrawl_client_config = client_config
     return wt._firecrawl_client
 

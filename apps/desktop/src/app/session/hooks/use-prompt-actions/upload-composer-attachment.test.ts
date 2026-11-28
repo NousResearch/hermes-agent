@@ -144,3 +144,108 @@ describe('uploadComposerAttachment local cross-platform staging', () => {
     expect(uploaded.path).toBe('/root/tmp/photo.jpg')
   })
 })
+
+describe('uploadComposerAttachment pasted-content staging name', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('stages a large paste under its on-disk .txt basename, not the localized display label (#157667)', async () => {
+    const pastePath = '/home/alice/.hermes/composer-pastes/pasted_content_2026-11-19_12-00-00-000_abc123.txt'
+    const readFileDataUrl = vi.fn(async () => 'data:text/plain;base64,aGVsbG8=')
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileDataUrl }
+    })
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'file.attach') {
+        return { attached: true, ref_text: '@file:pasted_content_2026-11-19_12-00-00-000_abc123.txt' } as never
+      }
+
+      return {} as never
+    })
+
+    const uploaded = await uploadComposerAttachment(
+      {
+        id: 'file:paste',
+        kind: 'file',
+        // Localized chip label: "Pasted content (23.7 KB)" in Chinese. The
+        // gateway stages the file under `file.attach`'s `name`, so sending
+        // this label stages an extension-less file the preview cannot resolve.
+        label: '粘贴内容 (23.7 KB)',
+        path: pastePath
+      },
+      { remote: true, requestGateway, sessionId: RUNTIME_SESSION_ID }
+    )
+
+    expect(requestGateway).toHaveBeenCalledWith('file.attach', {
+      data_url: 'data:text/plain;base64,aGVsbG8=',
+      name: 'pasted_content_2026-11-19_12-00-00-000_abc123.txt',
+      path: pastePath,
+      session_id: RUNTIME_SESSION_ID
+    })
+    // The display label is untouched: only the staged name changes.
+    expect(uploaded.label).toBe('粘贴内容 (23.7 KB)')
+  })
+
+  it('stages a Windows paste path under its .txt basename (#157667)', async () => {
+    // The bug was reported from a Windows 11 desktop, where the paste path
+    // uses backslashes. Both the predicate and the basename split handle
+    // them, but pin it so a regression on either side is caught.
+    const pastePath = 'C:\\Users\\alice\\AppData\\Roaming\\Hermes\\composer-pastes\\pasted_content_2026-11-19_12-00-00-000_abc123.txt'
+    const readFileDataUrl = vi.fn(async () => 'data:text/plain;base64,aGVsbG8=')
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileDataUrl }
+    })
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'file.attach') {
+        return { attached: true, ref_text: '@file:pasted_content_2026-11-19_12-00-00-000_abc123.txt' } as never
+      }
+
+      return {} as never
+    })
+
+    await uploadComposerAttachment(
+      { id: 'file:paste-win', kind: 'file', label: 'Pasted content (23.7 KB)', path: pastePath },
+      { remote: true, requestGateway, sessionId: RUNTIME_SESSION_ID }
+    )
+
+    expect(requestGateway).toHaveBeenCalledWith('file.attach', {
+      data_url: 'data:text/plain;base64,aGVsbG8=',
+      name: 'pasted_content_2026-11-19_12-00-00-000_abc123.txt',
+      path: pastePath,
+      session_id: RUNTIME_SESSION_ID
+    })
+  })
+
+  it('keeps staging a regular file under its label', async () => {
+    const readFileDataUrl = vi.fn(async () => 'data:application/pdf;base64,aGVsbG8=')
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileDataUrl }
+    })
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'file.attach') {
+        return { attached: true, ref_text: '@file:Report.pdf' } as never
+      }
+
+      return {} as never
+    })
+
+    await uploadComposerAttachment(
+      { id: 'file:report', kind: 'file', label: 'My Report (final).pdf', path: '/abs/Report.pdf' },
+      { remote: true, requestGateway, sessionId: RUNTIME_SESSION_ID }
+    )
+
+    expect(requestGateway).toHaveBeenCalledWith('file.attach', {
+      data_url: 'data:application/pdf;base64,aGVsbG8=',
+      name: 'My Report (final).pdf',
+      path: '/abs/Report.pdf',
+      session_id: RUNTIME_SESSION_ID
+    })
+  })
+})

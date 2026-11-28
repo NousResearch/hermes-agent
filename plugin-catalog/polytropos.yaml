@@ -1,0 +1,26 @@
+name: polytropos
+repo: https://github.com/Lil-Clanky/polytropos
+sha: a7fd5b7037d30a050a61681b88005f6d9f670dad
+subdir: plugins/polytropos
+title: Polytropos
+version: "0.3.1"
+image: https://raw.githubusercontent.com/Lil-Clanky/polytropos/a7fd5b7037d30a050a61681b88005f6d9f670dad/docs/images/banner.webp
+description: "Sets up Hermes to use free cloud models through FreeLLMAPI and small local models through Ollama. Adds hermes polytropos (doctor, install, setup, adopt, update, rollback, canary, status, uninstall), which installs FreeLLMAPI and a set of programs at pinned versions and runs FreeLLMAPI as a background service (on Windows it uses FreeLLMAPI's own desktop app), plus hooks that hold a turn on a local model while memory is low and keep the machine awake while a turn runs. Use it with polytropos-router. Disclosure: runs FreeLLMAPI as a LaunchAgent or systemd user unit on 127.0.0.1:3001; on Windows it starts no service and talks to the desktop app on 127.0.0.1 at the port the app saved (31415 by default). Install, update and uninstall run git, npm, npx, uv, hermes config, mcp and plugins commands (ponytail through hermes plugins install at its pinned commit) and launchctl or systemctl --user, and download pinned releases from GitHub, npm and PyPI (rtk and the macOS Ollama archive checked against SHA-256, git checkouts against pinned commits). Third-party programs (npm, npx, uv, rtk, graphify, stack-canary, git and node) run with a short allow-list of environment variables, without Hermes's provider keys; rtk also gets the profile's HERMES_HOME and stack-canary only the one key variable of the upstream it tests. Install adds Hermes skills (graphify's included), rtk's Hermes plugin and the context7 MCP entry to the profile, and the optional OpenCode step merges FreeLLMAPI's provider into OpenCode's config. Never runs sudo. While a turn runs it holds caffeinate -i, systemd-inhibit, or on Windows SetThreadExecutionState in an isolated Python child, for two hours at most. The memory guard runs sysctl on macOS, reads /proc on Linux, calls GlobalMemoryStatusEx on Windows and asks the local Ollama API which models are loaded. Fetches stack-canary's public results from raw.githubusercontent.com at most once a day. Changes the profile's config.yaml only through hermes config set, one key at a time, records the old values for uninstall and never records or writes model.api_key; you store FREELLMAPI_API_KEY yourself with hermes config set. The doctor reads file names, not contents, in ~/Downloads, ~/Desktop and the home folder. adopt --from copies an existing FreeLLMAPI checkout's database, .env and .encryption-key into its data folder. Reads FREELLMAPI_API_KEY through agent.secret_scope. No telemetry."
+maintainer: Lil-Clanky
+tier: community
+category: models
+requires_hermes: ">=0.23.2"
+docs_url: https://github.com/Lil-Clanky/polytropos/blob/a7fd5b7037d30a050a61681b88005f6d9f670dad/README.md
+readme: true
+platforms: [macos, linux, windows]
+known_issues:
+  - "Install, update and uninstall have not been tried in a real Hermes home on Linux or Windows yet. The end-to-end tests run Hermes v0.23.2 in a sandbox on macOS; on Windows the unit tests run natively."
+  - "On a machine that rtk has no release build for, such as Windows on arm64, hermes polytropos doctor stops with a traceback, and uninstall stops after it restores the config."
+  - "On Linux and Windows Polytropos does not install Ollama. Install prints Ollama's own install command for you to run."
+  - "Hermes does not accept ponytail's plugin.json yet, so install reports ponytail as not installed. An existing ponytail is left alone."
+  - "On Windows you install FreeLLMAPI's desktop app yourself, from the Microsoft Store or its GitHub releases."
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_llm_call, pre_api_request, post_llm_call, on_session_end]
+  provides_middleware: []
+  requires_env: []

@@ -326,6 +326,17 @@ warns about directories over 1 GB elsewhere under `cache/` that no pruner covers
 
 `desktop.font_family` sets the font for chat and the rest of the Hermes Desktop interface (the terminal pane has its own key above). Give it one installed family name (for example, `OpenDyslexic` or `Atkinson Hyperlegible`) or a CSS font stack; Hermes keeps the active theme's own stack behind it so CJK and emoji glyphs still resolve, and an empty value uses the theme's font. Edit it in **Settings → Appearance → Chat Font**.
 
+When a subscription usage limit (Claude Pro/Max, ChatGPT/Codex windows) stops a turn in Hermes Desktop, the TUI or the dashboard, and the provider reported when the limit resets, Hermes waits for that time and then finishes the turn by itself instead of leaving a Retry button. The status line shows `usage limit reached — resuming automatically in …` while it waits. The reset time always comes from the provider (the error, the credential pool, or the provider's usage API); without one, or for billing, overload or auth failures, or a reset more than 26 hours away, the turn stays failed as before. Sending a new prompt, retrying, cancelling or switching models drops the pending resume.
+
+```yaml
+desktop:
+  quota_resume:
+    enabled: true     # false: never resume automatically after a usage limit
+    max_attempts: 2   # automatic resumes per session, so a wrong reset time cannot loop it
+```
+
+`desktop.quota_resume.enabled` turns the behaviour on or off; `desktop.quota_resume.max_attempts` caps how many automatic resumes one session gets (`0` behaves like `enabled: false`).
+
 `terminal.font_family` controls the embedded terminal in Hermes Desktop. It accepts either one locally installed family name (for example, `MesloLGS NF`) or a CSS font stack. Hermes appends its bundled JetBrains Mono stack as a fallback, and an empty value keeps the default. You can edit the same profile-scoped setting in **Settings → Appearance → Terminal Font**; no Google Fonts download or system-font permission is required.
 
 For cloud sandboxes such as Modal, Daytona, Vercel Sandbox, and Sprites, `container_persistent: true` means Hermes will try to preserve filesystem state across sandbox recreation. It does not promise that the same live sandbox, PID space, or background processes will still be running later.

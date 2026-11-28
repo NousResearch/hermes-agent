@@ -453,6 +453,24 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.rate_limit
         assert result.retryable is True
 
+    @pytest.mark.parametrize(
+        "body",
+        [
+            # OpenAI-compatible host: a per-minute token throttle typed as a quota error.
+            {"error": {"message": "429 tpm exhausted\ntpm exhausted (type=quota_exceeded_error param=8)",
+                       "type": "quota_exceeded_error", "param": 8}},
+            {"error": {"message": "rpm quota exceeded for this key", "type": "quota_exceeded"}},
+        ],
+    )
+    def test_429_tpm_rpm_quota_wording_is_a_rate_limit_not_billing(self, body):
+        # A rolling per-minute window reopens in seconds; classifying it as billing
+        # benched the credential and bounced the user off their model. (port of
+        # can1357/oh-my-pi#13256)
+        e = MockAPIError(f"Error code: 429 - {body}", status_code=429, body=body)
+        result = classify_api_error(e, provider="openai", model="gpt-5.5")
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+
     def test_alibaba_rate_increased_too_quickly(self):
         """Alibaba/DashScope returns a unique throttling message.
 

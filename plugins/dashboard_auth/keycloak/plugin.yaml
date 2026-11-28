@@ -1,0 +1,8 @@
+name: keycloak
+version: 1.0.0
+description: "Dashboard auth provider — Keycloak OpenID Connect (authorization-code + PKCE, S256). A Keycloak-flavoured SelfHostedOIDCProvider: endpoints come from realm discovery ({issuer}/.well-known/openid-configuration), the ID token is verified against the discovered jwks_uri. Public client only (no client secret — register the Keycloak client with 'Client authentication: Off'). Adds kc_idp_hint (skip the realm IdP chooser) and prompt control. Auto-activates when an issuer + client_id are configured, either under dashboard.oauth.keycloak.{issuer,client_id} in config.yaml (canonical surface) or via the HERMES_DASHBOARD_KEYCLOAK_ISSUER + HERMES_DASHBOARD_KEYCLOAK_CLIENT_ID env vars (operator override). scopes/idp_hint/prompt are config.yaml-only."
+author: NousResearch
+kind: backend
+requires_env:
+  - HERMES_DASHBOARD_KEYCLOAK_ISSUER
+  - HERMES_DASHBOARD_KEYCLOAK_CLIENT_ID

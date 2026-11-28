@@ -42,9 +42,416 @@
         // localStorage unavailable — keep UA defaults.
       }
     </script>
+  <!--
+      Boot splash: inline on purpose (CSS + markup, no linked file, no bundle).
+
+      The pre-paint script above already removes the UA-white first frame, but it leaves an EMPTY
+      themed rectangle until the whole module graph has executed — measured at ~4 s on the gateway
+      Webapp, and the worst possible moment to show nothing: the user has just scanned a QR code to
+      sign in, and a blank screen reads as "it failed" (they retry, which makes it slower).
+
+      Inline is what makes this cover that gap: any linked stylesheet or script would itself be a
+      request that renders nothing until it lands. The splash is dismissed by the observer at the
+      end of <body> the moment React mounts real content, and fades out so a slow first paint never
+      uncovers the blank rectangle underneath.
+    -->
+    <style>
+      /*
+       * Colours are driven by CSS variables that the bootstrap script just below fills in from the
+       * SAME localStorage keys the app's own applyTheme() maintains (``hermes-boot-background`` /
+       * ``hermes-boot-color-scheme``). That is what makes the splash indistinguishable from the
+       * first painted frame: the user's real theme, light or dark, instead of a hardcoded brand
+       * colour that only matched the sign-in page. The fallbacks are `light-dark()` so a first-ever
+       * visit still matches the OS preference the app will pick.
+       */
+      #hermes-boot {
+        position: fixed;
+        inset: 0;
+        z-index: 2147483647; /* above anything the app renders before dismissal */
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 1.5rem;
+        margin: 0;
+        padding: 2rem 1.5rem;
+        /* Neutral mid-tones as the fallback for every role: unlike a light-only or dark-only
+           fallback these stay legible whichever backdrop the theme resolves to. The script below
+           overwrites them with contrast-checked values as soon as it can read the theme. */
+        --hb-bg: light-dark(#f7f7f7, #111111);
+        --hb-fg: light-dark(#16181d, #f2f2f2);
+        --hb-muted: light-dark(rgba(0, 0, 0, 0.56), rgba(255, 255, 255, 0.62));
+        --hb-track: rgba(127, 127, 127, 0.28);
+        --hb-accent: #e8930a;
+        background: var(--hb-bg);
+        color: var(--hb-fg);
+        font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+        text-align: center;
+        transition: opacity 220ms ease;
+        /* The splash owns the whole viewport; nothing else may scroll behind it. */
+        overflow: hidden;
+      }
+      /* The window may be transparent (``?win=hud|overlay|quick|wake``): painting an opaque
+         rectangle there does not prevent a flash, it IS the flash. Skip the backdrop, keep the
+         status text. Mirrors TRANSPARENT_WINDOWS in src/lib/transparent-windows.ts. */
+      #hermes-boot.hb-transparent {
+        background: transparent;
+      }
+      #hermes-boot[hidden] {
+        display: none;
+      }
+      #hermes-boot.is-done {
+        opacity: 0;
+        pointer-events: none;
+      }
+
+      /*
+       * One composition: a mark inside a ring that fills as it turns. Previously this was a tick
+       * badge AND a separate spinner stacked vertically — two competing focal points that read as
+       * "done" and "still working" at the same time. A single indeterminate ring with the brand
+       * mark at its centre says only one thing: work in progress.
+       */
+      #hermes-boot .hb-ring {
+        position: relative;
+        width: 3.5rem;
+        height: 3.5rem;
+        flex: none;
+        display: grid;
+        place-items: center;
+      }
+      #hermes-boot .hb-ring::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        border-radius: 50%;
+        /* The track must be visible on BOTH a light and a dark backdrop, so the fallback is a
+           translucent mid-grey rather than one side's colour — a light-only track made the ring
+           read as a bare arc on a white splash. */
+        border: 2.5px solid var(--hb-track, rgba(127, 127, 127, 0.28));
+        border-top-color: var(--hb-accent, #e8930a);
+        animation: hb-spin 900ms linear infinite;
+      }
+      #hermes-boot .hb-ring::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        border-radius: 50%;
+        /* A soft accent halo that breathes, so the ring never looks frozen on a slow load. */
+        box-shadow: 0 0 0 0 var(--hb-glow, transparent);
+        animation: hb-pulse 2.4s ease-out infinite;
+      }
+      #hermes-boot .hb-logo {
+        width: 1.15rem;
+        height: 1.15rem;
+        border-radius: 50%;
+        /* Same accent as the ring, so the composition reads as one object rather than a dot
+           sitting inside an unrelated circle. */
+        background: var(--hb-accent, #e8930a);
+        opacity: 0.92;
+      }
+      @keyframes hb-spin {
+        to { transform: rotate(360deg); }
+      }
+      @keyframes hb-pulse {
+        0%   { box-shadow: 0 0 0 0 var(--hb-glow, transparent); }
+        70%  { box-shadow: 0 0 0 0.75rem transparent; }
+        100% { box-shadow: 0 0 0 0 transparent; }
+      }
+
+      /*
+       * Text block. ``width`` (not max-width) plus ``box-sizing`` keeps it from collapsing under
+       * the flex centring — that collapse is what made the stage caption wrap one character per
+       * line in the previous version.
+       */
+      #hermes-boot .hb-text {
+        display: grid;
+        gap: 0.5rem;
+        width: min(22rem, 100%);
+        box-sizing: border-box;
+      }
+      #hermes-boot .hb-title {
+        font-size: 1.0625rem;
+        font-weight: 600;
+        letter-spacing: 0.01em;
+        margin: 0;
+        line-height: 1.4;
+      }
+      #hermes-boot .hb-sub {
+        font-size: 0.875rem;
+        line-height: 1.6;
+        margin: 0;
+        color: var(--hb-muted);
+      }
+
+      /*
+       * Stage caption. Absolutely-positioned children inside a relative box so crossfading captions
+       * cannot change the block's height and shift the layout mid-load. The box is a fixed-width
+       * centred strip, and every caption is forced onto ONE line (``white-space: nowrap`` plus
+       * ``text-overflow: ellipsis``) — a narrow container must never reflow a caption vertically.
+       */
+      #hermes-boot .hb-stage {
+        position: relative;
+        display: block;
+        width: min(22rem, 100%);
+        height: 1.5rem;
+        box-sizing: border-box;
+        margin-top: 0.25rem;
+        overflow: hidden;
+      }
+      #hermes-boot .hb-stage > span {
+        position: absolute;
+        inset: 0;
+        display: block;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        font-size: 0.8125rem;
+        line-height: 1.5rem;
+        font-variant-numeric: tabular-nums;
+        color: var(--hb-accent);
+        opacity: 0;
+        animation: hb-stage 9s ease-in-out infinite;
+      }
+      #hermes-boot .hb-stage > span:nth-child(2) { animation-delay: 3s; }
+      #hermes-boot .hb-stage > span:nth-child(3) { animation-delay: 6s; }
+      @keyframes hb-stage {
+        0%   { opacity: 0; transform: translateY(0.25rem); }
+        5%   { opacity: 1; transform: translateY(0); }
+        30%  { opacity: 1; transform: translateY(0); }
+        36%  { opacity: 0; transform: translateY(-0.25rem); }
+        100% { opacity: 0; transform: translateY(-0.25rem); }
+      }
+
+      /* An indeterminate progress bar: motion the eye can follow without implying a percentage
+         we do not know. Sits under the captions as a quiet baseline, not a second focal point. */
+      #hermes-boot .hb-bar {
+        position: relative;
+        width: min(11rem, 60%);
+        height: 3px;
+        border-radius: 2px;
+        overflow: hidden;
+        background: var(--hb-track, rgba(127, 127, 127, 0.28));
+      }
+      #hermes-boot .hb-bar::after {
+        content: "";
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: 0;
+        width: 45%;
+        border-radius: inherit;
+        background: var(--hb-accent, #e8930a);
+        /* transform, not ``left``: a compositor-only animation keeps this smooth while the main
+           thread is busy parsing the app bundle — which is exactly when the splash is on screen. */
+        animation: hb-slide 1.5s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+      }
+      @keyframes hb-slide {
+        0%   { transform: translateX(-100%); }
+        100% { transform: translateX(222%); }
+      }
+
+      /* Decorative motion only: drop the spinner/ticker, keep every piece of status text. */
+      @media (prefers-reduced-motion: reduce) {
+        #hermes-boot .hb-ring::before { animation-duration: 2.6s; }
+        #hermes-boot .hb-ring::after,
+        #hermes-boot .hb-bar::after { animation: none; }
+        #hermes-boot .hb-stage > span { animation: none; transform: none; }
+        #hermes-boot .hb-stage > span:first-child { opacity: 1; }
+      }
+    </style>
   </head>
   <body>
     <div id="root" class="scrollbar-dt"></div>
+    <div id="hermes-boot" role="status" aria-live="polite">
+      <div class="hb-ring" aria-hidden="true"><div class="hb-logo"></div></div>
+      <div class="hb-text">
+        <p class="hb-title" data-hb="title">Verifying your identity</p>
+        <p class="hb-sub" data-hb="sub">Authorization complete — opening your workspace</p>
+      </div>
+      <div class="hb-stage" aria-hidden="true">
+        <span data-hb="stage-verifying">Verifying your identity…</span>
+        <span data-hb="stage-loading">Loading your workspace…</span>
+        <span data-hb="stage-almost">Almost there…</span>
+      </div>
+      <div class="hb-bar" aria-hidden="true"></div>
+    </div>
+    <!--
+      Dismissal: removed the moment React has rendered real content, and never before. A
+      MutationObserver rather than a timer because the wait is a bundle download whose length varies
+      with the network — a fixed delay would either uncover a still-blank page or hide one that had
+      already become usable. Watching #root for its first child element is exactly "React mounted".
+      The 20 s ceiling guarantees a bundle that never mounts cannot leave a permanent splash.
+    -->
+    <script>
+      (function () {
+        var splash = document.getElementById('hermes-boot')
+        var root = document.getElementById('root')
+        if (!splash || !root) return
+
+        // The window may be transparent (``?win=hud|overlay|quick|wake``): no opaque backdrop,
+        // else the rectangle itself is the flash (see the CSS note above).
+        var transparent = false
+        try {
+          var win = new URLSearchParams(window.location.search).get('win')
+          transparent = !!win && ['hud', 'overlay', 'quick', 'wake'].indexOf(win) !== -1
+          if (transparent) splash.className += ' hb-transparent'
+        } catch {
+          // No URL parsing — treat it as an opaque window.
+        }
+
+        // Paint the splash with the USER'S theme, read from the same localStorage keys the app's
+        // applyTheme() maintains (that is what the pre-paint script above seeds).
+        //
+        // The foreground is derived from the background's ACTUAL LUMINANCE rather than from the
+        // stored scheme: the two can disagree (a user on scheme=dark with a light theme colour, or
+        // a background written by an older build), and resolving by contrast alone is what keeps
+        // light text off a light backdrop. An earlier version guessed from the colour's spelling
+        // and produced exactly that failure — white text on a white splash.
+        if (!transparent) {
+          try {
+            var bg = localStorage.getItem('hermes-boot-background')
+            var lum = bg ? luminanceOf(bg) : null
+            if (lum !== null) {
+              splash.style.setProperty('--hb-bg', bg)
+              splash.style.backgroundColor = bg
+              var onDark = lum < 0.5
+              splash.style.setProperty('--hb-fg', onDark ? '#f2f2f2' : '#16181d')
+              splash.style.setProperty('--hb-muted', onDark ? 'rgba(255,255,255,0.62)' : 'rgba(0,0,0,0.56)')
+              splash.style.setProperty('--hb-track', onDark ? 'rgba(255,255,255,0.20)' : 'rgba(0,0,0,0.14)')
+              // The brand amber washes out on white, so darken it there; keep it bright on dark.
+              splash.style.setProperty('--hb-accent', onDark ? '#ffac02' : '#c47c00')
+            }
+          } catch {
+            // localStorage unavailable — the CSS `light-dark()` fallbacks stand in.
+          }
+        }
+
+        /**
+         * Localize the splash before the bundle parses.
+         *
+         * The splash renders before any module executes, so it cannot call the app's i18n runtime
+         * (``src/i18n/runtime.ts`` is an ESM module behind the bundle download). It therefore ships
+         * ENGLISH as the markup default — the language of the product and of every other pre-React
+         * surface — and this block swaps in another locale from signals that already exist at this
+         * point:
+         *
+         *   1. ``hermes-boot-locale`` — the same durable, pre-bundle channel the theme uses
+         *      (``hermes-boot-background``). The app writes it whenever ``display.language``
+         *      resolves, so a configured language wins even when the browser's own locale differs
+         *      (a zh deployment opened in an en-locale browser must still read Chinese).
+         *   2. ``navigator.language`` — first paint on a machine that never ran the app.
+         *
+         * Only the languages with copy below are substituted; anything else keeps the English
+         * markup, which is what makes an unknown or pack-only locale (``pl``) degrade safely
+         * instead of showing an empty string.
+         */
+        var HB_COPY = {
+          zh: {
+            title: '正在验证身份',
+            sub: '授权已完成，正在进入工作区',
+            'stage-verifying': '正在验证身份…',
+            'stage-loading': '正在载入工作区…',
+            'stage-almost': '马上就好…'
+          },
+          'zh-hant': {
+            title: '正在驗證身分',
+            sub: '授權已完成，正在進入工作區',
+            'stage-verifying': '正在驗證身分…',
+            'stage-loading': '正在載入工作區…',
+            'stage-almost': '馬上就好…'
+          }
+        }
+
+        /**
+         * The splash locale: the app's saved choice first, then the browser's, else ''.
+         *
+         * Normalized to a key of ``HB_COPY`` (``zh-CN`` and ``zh-Hans`` both mean ``zh``;
+         * ``zh-TW``/``zh-HK``/``zh-Hant`` mean ``zh-hant``) because a BCP-47 tag and a copy table
+         * key never match literally.
+         */
+        function splashLocale() {
+          var saved = null
+          try {
+            saved = localStorage.getItem('hermes-boot-locale')
+          } catch {
+            // localStorage unavailable — fall through to the browser's locale.
+          }
+          var tag = saved || navigator.language || ''
+          var lower = String(tag).toLowerCase()
+          if (lower.indexOf('zh') !== 0) return ''
+          if (/hant|tw|hk|mo/.test(lower)) return 'zh-hant'
+          return 'zh'
+        }
+
+        function localizeSplash() {
+          var locale = splashLocale()
+          var copy = HB_COPY[locale]
+          if (!copy) return  // English markup stands.
+          try {
+            document.documentElement.lang = locale
+          } catch {
+            // setting lang is cosmetic
+          }
+          var nodes = document.querySelectorAll('#hermes-boot [data-hb]')
+          for (var i = 0; i < nodes.length; i++) {
+            var text = copy[nodes[i].getAttribute('data-hb')]
+            if (text) nodes[i].textContent = text
+          }
+        }
+
+        localizeSplash()
+
+        /**
+         * Relative luminance (0 = black, 1 = white) of a CSS colour string, or null when it cannot
+         * be parsed without a layout. Handles #rgb / #rrggbb / rgb() / rgba(); anything else (a
+         * var() or a colour-mix expression) returns null so the caller keeps the CSS fallbacks.
+         */
+        function luminanceOf(value) {
+          var c = String(value).trim()
+          var r, g, b
+          var hex = c.match(/^#([0-9a-f]{3,8})$/i)
+          if (hex) {
+            var h = hex[1]
+            if (h.length === 3 || h.length === 4) {
+              r = parseInt(h[0] + h[0], 16); g = parseInt(h[1] + h[1], 16); b = parseInt(h[2] + h[2], 16)
+            } else if (h.length === 6 || h.length === 8) {
+              r = parseInt(h.slice(0, 2), 16); g = parseInt(h.slice(2, 4), 16); b = parseInt(h.slice(4, 6), 16)
+            } else {
+              return null
+            }
+          } else {
+            var rgb = c.match(/^rgba?\(\s*([0-9.]+)[\s,]+([0-9.]+)[\s,]+([0-9.]+)/i)
+            if (!rgb) return null
+            r = parseFloat(rgb[1]); g = parseFloat(rgb[2]); b = parseFloat(rgb[3])
+          }
+          if (!isFinite(r) || !isFinite(g) || !isFinite(b)) return null
+          // WCAG relative luminance, on sRGB channels normalised to 0..1.
+          var lin = function (v) {
+            v = Math.min(1, Math.max(0, v / 255))
+            return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4)
+          }
+          return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+        }
+
+        var done = false
+        function dismiss() {
+          if (done) return
+          done = true
+          splash.className += ' is-done'
+          window.setTimeout(function () { splash.hidden = true }, 240)
+        }
+        // Only real rendered output counts: an empty #root means the bundle has not mounted yet,
+        // and dismissing there would expose exactly the blank rectangle this replaces.
+        function maybeDismiss() {
+          if (root.childElementCount > 0) dismiss()
+        }
+        if (window.MutationObserver) {
+          new MutationObserver(maybeDismiss).observe(root, { childList: true, subtree: true })
+        }
+        maybeDismiss()
+        window.setTimeout(dismiss, 20000)
+      })()
+    </script>
     <script type="module" src="/src/entry.ts"></script>
   </body>
 </html>

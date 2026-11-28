@@ -1781,6 +1781,15 @@ def _fallback_api_mode_hint(fb: dict, fb_provider: str, fb_base_url_hint: Option
         declared = (_get_named_custom_provider(fb_provider) or {}).get("api_mode")
         if declared:
             return True, declared
+        # A plugin-registered provider (bundled or third-party ``providers.<name>`` plugin)
+        # declares its wire on its ProviderProfile; a fallback entry naming it must inherit that
+        # declaration, or an Anthropic-Messages-only relay is downgraded to chat_completions and
+        # the swap rebuilds the wrong client (#143933). The default ``chat_completions`` value is
+        # not a declaration — those providers keep model/URL re-detection.
+        from providers import get_provider_profile
+        profile_api_mode = getattr(get_provider_profile(fb_provider), "api_mode", None)
+        if profile_api_mode and profile_api_mode != "chat_completions":
+            return True, profile_api_mode
     if fb_provider == "anthropic" or (fb_base_url_hint and _is_anthropic_wire_url(fb_base_url_hint)):
         return False, "anthropic_messages"
     return False, "chat_completions"

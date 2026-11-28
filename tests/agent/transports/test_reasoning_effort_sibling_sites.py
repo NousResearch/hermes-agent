@@ -4,11 +4,9 @@ The chat-completions chokepoint fix (ultra → max for every model) is covered
 by tests/agent/test_reasoning_effort_wire_translation.py. These tests pin the
 sibling sites fixed in the same sweep:
 
-- Kimi/Moonshot top-level ``reasoning_effort``: K3 accepts low/high/max only
-  (docs: default high); K2-era models accept low/medium/high. Previously the
-  transport forwarded only {low,medium,high} and silently dropped everything
-  else to "medium", so K3 400'd on "medium" requests and ultra resolved
-  WEAKER than an explicit high (ladder inversion).
+- Kimi/Moonshot top-level ``reasoning_effort``: K3 accepts low/medium/high/max
+  (default high); K2-era models accept low/medium/high. Native levels pass
+  through; unsupported upper levels must not fall below an explicit high.
 - Tencent TokenHub: accepts low/medium/high; upper-ladder levels previously
   dropped to the "high" default (accidentally right) but "minimal" also
   dropped to high — asked for the least, got the most.
@@ -38,7 +36,7 @@ class TestKimiEffortVocabulary:
         expected = {
             "minimal": "low",
             "low": "low",
-            "medium": "high",
+            "medium": "medium",
             "high": "high",
             "xhigh": "max",
             "max": "max",

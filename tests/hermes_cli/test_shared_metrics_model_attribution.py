@@ -237,6 +237,9 @@ def _gateway_runner(multiplex_home=None):
         async def _model_switch_confirmation(self, *a, **k):
             return "ok"
 
+        def _set_session_reasoning_override(self, *a, **k):  # GatewayRunner's run_config_loaders mixin
+            return None
+
     return Runner()
 
 
@@ -245,7 +248,7 @@ def _gateway_switch(runner, config_path):
 
     ctx = _ModelSwitchContext(session_key="k", source=None, config_path=config_path, persist_global=False)
     ctx.read_config()
-    result = SimpleNamespace(target_provider="anthropic", new_model="claude-opus-4")
+    result = SimpleNamespace(target_provider="anthropic", new_model="claude-opus-4", reasoning_config=None)
     asyncio.run(runner._commit_model_switch_locked(result, ctx, source=None, picker=True))
     _flush()
 

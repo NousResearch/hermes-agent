@@ -131,6 +131,16 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
     scope_id = getattr(source, "scope_id", None) if platform == "slack" else None
     if scope_id:
         metadata["slack_team_id"] = str(scope_id)
+    # Authentic inbound sender + the message being answered, consumed only by Slack's
+    # opt-in ``mention_sender_in_channels``. Stamped only when the caller anchors the send
+    # on a live inbound event (``reply_to_message_id``): notices, cold reviews, and
+    # shutdown sends built from a bare source must not tag a stale origin user.
+    if platform == "slack" and reply_to_message_id:
+        sender = getattr(source, "user_id", None)
+        trigger = reply_to_message_id
+        if sender:
+            metadata["mention_user_id"] = str(sender)
+            metadata["mention_message_id"] = str(trigger)
     if not metadata:
         return None
     if platform == "telegram" and getattr(source, "chat_type", None) == "dm":

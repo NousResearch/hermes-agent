@@ -642,6 +642,14 @@ slack:
   # auto-engagement. Opt-in; default off. Env: SLACK_IGNORE_OTHER_USER_MENTIONS.
   ignore_other_user_mentions: false
 
+  # Tag the person being answered: on a channel or group-DM reply to a
+  # human message, prefix the answer with <@sender> so they get a
+  # notification even when several people share the thread. Only replies
+  # to a live inbound message are tagged — 1:1 DMs, cron/scheduled posts,
+  # notices, and interim progress messages never are. Opt-in; default off.
+  # Env: SLACK_MENTION_SENDER_IN_CHANNELS.
+  mention_sender_in_channels: false
+
   # Require an explicit @mention for THREAD replies, while leaving
   # top-level channel messages governed by require_mention /
   # free_response_channels. Narrower than strict_mention: use it when a

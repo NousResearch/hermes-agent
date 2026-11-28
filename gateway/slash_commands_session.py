@@ -138,10 +138,33 @@ def _branch_message(msg: dict):
                       api_content=extract_api_content_sidecar(msg), **row)
 
 
+# `/resume` widening flags. `--all` = every chat on this platform (unchanged, pre-existing meaning);
+# `--all-sources` = the `/sessions all` list — every source, identical rows AND numbering — and its
+# short forms are accepted because "alls" is what people actually type.
+RESUME_ALL_SOURCES_FLAGS = frozenset({"--all-sources", "--alls", "--all_sources", "--all-src"})
+RESUME_KNOWN_FLAGS = frozenset({"--all", "--cross-room", "--help", "-h"}) | RESUME_ALL_SOURCES_FLAGS
+
+
+def _resume_flags(parts: list[str]) -> tuple[set[str], list[str]]:
+    """``(flags, positional)`` — leading ``-``/``--`` tokens, stopping at the first positional.
+
+    Same convention as ``/sessions`` (``parse_session_listing_args``): flags count only before the
+    first positional word, so a title containing ``--all``/``--final`` is never misparsed as one.
+    """
+    flags: set[str] = set()
+    positional: list[str] = []
+    for part in parts:
+        if not positional and part.startswith("-"):
+            flags.add(part)
+            continue
+        positional.append(part)
+    return flags, positional
+
+
 def _strip_resume_name(parts: list[str]) -> str:
     """Join the non-flag /resume tokens; strip literal ``<...>``/``[...]``/quotes typed from the
     usage hint (mirrors the CLI)."""
-    name = " ".join(p for p in parts if p not in {"--all", "--cross-room"}).strip()
+    name = " ".join(p for p in parts if p not in RESUME_KNOWN_FLAGS).strip()
     if len(name) >= 2 and (name[0], name[-1]) in {("<", ">"), ("[", "]"), ('"', '"'), ("'", "'")}:
         name = name[1:-1].strip()
     return name
@@ -1139,9 +1162,18 @@ class GatewaySessionCommandsMixin:
 
     # -------------------------------------------------------------- /resume, /sessions
 
-    async def _list_titled_sessions(self, source, session_key: str, allow_all: bool) -> list[dict]:
-        """Titled sessions visible to the caller (origin-scoped unless admin ``--all``)."""
+    async def _list_titled_sessions(self, source, session_key: str, allow_all: bool,
+                                    all_sources: bool = False) -> list[dict]:
+        """Titled sessions visible to the caller (origin-scoped unless admin ``--all``).
+
+        ``all_sources`` (``/resume --all-sources``) is the pick list that MATCHES ``/sessions all``:
+        it delegates to the same query instead of re-implementing it, so the two surfaces cannot
+        drift apart in scope, filtering or row order (and a number picked here means the same
+        session there). ``--all`` keeps its older, narrower meaning: this platform, any chat.
+        """
         from persistence.conversation.sessions import SessionOrder, SessionQuery, SessionWindow
+        if all_sources and self._resume_caller_is_admin(source):
+            return await self._list_sessions_all_sources(source)
         widen = allow_all and self._resume_caller_is_admin(source)
         platform = source.platform.value if source.platform else None
         # Rank by lineage activity, not root started_at: a lineage compressed for days is projected
@@ -1153,12 +1185,31 @@ class GatewaySessionCommandsMixin:
                   for e in entries if e.session.title][:10]
         return [s for s in titled if await self._resume_row_visible(source, s, allow_all)]
 
-    async def _resolve_resume_target(self, source, session_key: str, name: str, allow_all: bool):
+    async def _list_sessions_all_sources(self, source) -> list[dict]:
+        """``/sessions all``'s own list, shaped as ``/resume`` pick rows (admin-only caller).
+
+        Deliberately calls ``query_session_listing`` with ``/sessions all``'s exact arguments —
+        cross-origin ``session_key``, every source but ``tool``, named rows only, the current
+        session included and marked — so numbering is identical by construction.
+        """
+        from hermes_cli.session_listing import query_session_listing
+        store = self.persistence
+        current_entry = await self.async_session_store.get_or_create_session(source)
+        platform = source.platform.value if source.platform else None
+        rows = await asyncio.to_thread(
+            query_session_listing, store, persistence=store, source=platform,
+            current_session_id=current_entry.session_id, include_current_session=True,
+            include_all_sources=True, include_unnamed=False, limit=10, exclude_sources=["tool"])
+        return [{"id": r.get("id"), "title": r.get("title") or "—", "preview": r.get("preview") or ""}
+                for r in rows]
+
+    async def _resolve_resume_target(self, source, session_key: str, name: str, allow_all: bool,
+                                     all_sources: bool = False):
         """``(target_id, name)`` for a numbered choice, session id or title; else the error reply."""
         store = self.persistence
         if name.isdigit():
             try:
-                titled = await self._list_titled_sessions(source, session_key, allow_all)
+                titled = await self._list_titled_sessions(source, session_key, allow_all, all_sources)
             except Exception as e:
                 logger.debug("Failed to list titled sessions for numeric resume: %s", e)
                 return t("gateway.resume.list_failed", error=e)
@@ -1181,7 +1232,8 @@ class GatewaySessionCommandsMixin:
         return target_id, name
 
     async def _resume_access_denied_reply(self, source, target_id: str, name: str, allow_all: bool,
-                                          allow_cross_room: bool) -> Optional[str]:
+                                          allow_cross_room: bool,
+                                          all_sources: bool = False) -> Optional[str]:
         """IDOR guard: a session id/title is a routing handle, not authority — bind /resume to the
         caller's own room (Matrix) or platform/user/chat (other adapters)."""
         if source.platform == Platform.MATRIX:
@@ -1192,7 +1244,8 @@ class GatewaySessionCommandsMixin:
                 return t("gateway.resume.matrix_blocked_no_origin", name=name)
             return t("gateway.resume.matrix_blocked_other_room", name=name,
                      room=target_origin.chat_name or target_origin.chat_id)
-        if await self._resume_target_allowed(source, target_id, allow_override=(allow_all or allow_cross_room)):
+        if await self._resume_target_allowed(source, target_id,
+                                             allow_override=(allow_all or allow_cross_room or all_sources)):
             return None
         return t("gateway.resume.blocked_not_owner", name=name)
 
@@ -1206,18 +1259,25 @@ class GatewaySessionCommandsMixin:
             parts = shlex.split(event.get_command_args().strip())
         except ValueError as exc:
             return t("gateway.resume.parse_error", error=exc)
-        allow_all = "--all" in parts
-        allow_cross_room = "--cross-room" in parts
+        flags, _positional = _resume_flags(parts)
+        unknown = sorted(f for f in flags if f not in RESUME_KNOWN_FLAGS)
+        if unknown:
+            return t("gateway.resume.unknown_flag", flag=unknown[0])
+        allow_all = "--all" in flags
+        allow_cross_room = "--cross-room" in flags
+        # `--all-sources` (also typed `--alls`) mirrors `/sessions all`: every source (desktop, CLI,
+        # other platforms), cross-chat, admin-only. Distinct from `--all`, which is platform-scoped.
+        all_sources = bool(flags & RESUME_ALL_SOURCES_FLAGS)
         name = _strip_resume_name(parts)
         if not name:
             try:
-                titled = await self._list_titled_sessions(source, session_key, allow_all)
-                return self._resume_listing_reply(source, titled, allow_all)
+                titled = await self._list_titled_sessions(source, session_key, allow_all, all_sources)
+                return self._resume_listing_reply(source, titled, allow_all, all_sources)
             except Exception as e:
                 logger.debug("Failed to list titled sessions: %s", e)
                 return t("gateway.resume.list_failed", error=e)
 
-        resolved = await self._resolve_resume_target(source, session_key, name, allow_all)
+        resolved = await self._resolve_resume_target(source, session_key, name, allow_all, all_sources)
         if isinstance(resolved, str):
             return resolved
         target_id, name = resolved
@@ -1227,7 +1287,8 @@ class GatewaySessionCommandsMixin:
         authority, local_owner, head = await conversation_head(self, target_id)
         if local_owner is not None:
             target_id = head
-        denied = await self._resume_access_denied_reply(source, target_id, name, allow_all, allow_cross_room)
+        denied = await self._resume_access_denied_reply(source, target_id, name, allow_all,
+                                                        allow_cross_room, all_sources)
         if denied is not None:
             return denied
         current_entry = await self.async_session_store.get_or_create_session(source)
@@ -1287,11 +1348,14 @@ class GatewaySessionCommandsMixin:
             return t("gateway.resume.resumed_one", title=title, count=msg_count) + left_notice
         return t("gateway.resume.resumed_many", title=title, count=msg_count) + left_notice
 
-    def _resume_listing_reply(self, source, titled: list[dict], allow_all: bool) -> str:
-        """Numbered /resume list; a non-admin ``--all`` falls back to same-origin scoping and says so
-        (sibling of the /sessions notice)."""
+    def _resume_listing_reply(self, source, titled: list[dict], allow_all: bool,
+                              all_sources: bool = False) -> str:
+        """Numbered /resume list; a non-admin ``--all``/``--all-sources`` falls back to same-origin
+        scoping and says so (sibling of the /sessions notice)."""
         scope_note = None
-        if allow_all and not self._resume_caller_is_admin(source):
+        if all_sources and not self._resume_caller_is_admin(source):
+            scope_note = t("gateway.resume.all_sources_requires_admin")
+        elif allow_all and not self._resume_caller_is_admin(source):
             scope_note = t("gateway.resume.all_requires_admin")
         if not titled:
             if source.platform == Platform.MATRIX and not allow_all:

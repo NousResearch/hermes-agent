@@ -30,6 +30,8 @@ Test categories:
 
 from unittest.mock import MagicMock
 
+import pytest
+
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig, ensure_closed_code_fences
 
@@ -130,6 +132,19 @@ class TestTruncateMessageCarryLang:
 # ═══════════════════════════════════════════════════════════════════════════
 #  D. truncate_message — THE GAP: last chunk does not auto-close
 # ═══════════════════════════════════════════════════════════════════════════
+
+class TestTruncateMessageFinalChunkBudget:
+    """The last chunk of a reply that ends inside a code block gets a closing fence and the
+    (n/n) indicator; together they must still fit the limit."""
+
+    @pytest.mark.parametrize("limit", [200, 400])
+    def test_chunks_fit_limit_when_reply_ends_inside_fence(self, limit):
+        # 100+ chunks, so the indicator is " (1xx/1xx)" and uses the whole reserve.
+        body = "```python\n" + ("x" * 79 + "\n") * (105 * limit // 80)
+        for extra in range(limit):
+            chunks = BasePlatformAdapter.truncate_message(body + "y" * extra, limit)
+            assert len(chunks) >= 100
+            assert max(len(c) for c in chunks) <= limit, extra
 
 
 

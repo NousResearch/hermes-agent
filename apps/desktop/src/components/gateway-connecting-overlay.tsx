@@ -15,8 +15,8 @@ import { $gatewayState } from '@/store/session'
 import { isMainWindow } from '@/store/windows'
 
 // Decode mechanics live in the shared <DecodeText> primitive
-// (components/ui/decode-text.tsx). "CONN" stays legible via prefix={4}.
-const TEXT = 'CONNECTING'
+// (components/ui/decode-text.tsx); the label comes from the catalogue
+// (`common.connecting`) and prefix={4} keeps its first four letters legible.
 
 // Exit choreography (ms): text fades down + out, hold, then the overlay fades.
 const TEXT_OUT_MS = 360
@@ -80,8 +80,13 @@ function SlowSetupStart({ onExit }: { onExit: () => void }) {
 }
 
 function ConnectingOverlayView({ decoding, onExit, phase }: ConnectingOverlayViewProps) {
+  const { t } = useI18n()
   const leaving = phase !== 'live'
   const overlayHidden = phase === 'overlay-out' || phase === 'gone'
+  // The label is all-caps by design (the mono type is baked into DecodeText):
+  // uppercase the catalogue string so the decode animation scrambles the same
+  // characters it did when this was a literal, whatever the locale.
+  const label = t.common.connecting.toUpperCase()
 
   return (
     <div
@@ -106,7 +111,7 @@ function ConnectingOverlayView({ decoding, onExit, phase }: ConnectingOverlayVie
           cursor
           loop
           prefix={4}
-          text={TEXT}
+          text={label}
         />
       )}
     </div>

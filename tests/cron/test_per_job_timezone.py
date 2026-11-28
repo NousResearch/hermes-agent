@@ -314,3 +314,50 @@ class TestZeroGraceAtTickResolution:
         assert jobs.get_due_jobs() == []
         stored = next(r for r in jobs.load_jobs() if r["id"] == job_id)
         assert datetime.fromisoformat(stored["next_run_at"]) == datetime(2026, 10, 23, 9, 0, tzinfo=NY)
+
+
+class TestOffsetLessOneShotFollowsThePin:
+    """An offset-less one-shot timestamp is the pinned zone's wall clock at every door that
+    parses one; the profile zone used to be baked in first, so the job fired at 09:00 in the
+    profile's zone instead of 09:00 in its own."""
+
+    WALL_CLOCK = "2026-10-24T09:00:00"
+
+    @staticmethod
+    def _create_pinned(schedule):
+        return jobs.create_job(prompt="p", schedule=schedule, model="fixture",
+                               deliver="local", timezone="Asia/Hong_Kong")
+
+    def _via_create(self):
+        return self._create_pinned(self.WALL_CLOCK)
+
+    def _via_update(self):
+        job = self._create_pinned(DAILY_9AM)
+        return jobs.update_job(job["id"], {"schedule": self.WALL_CLOCK})
+
+    def _via_rearm(self):
+        job = self._create_pinned("2026-10-23T09:00:00+08:00")
+        return jobs.rearm_oneshot(job["id"], self.WALL_CLOCK)
+
+    def _via_tool_update(self):
+        import json
+
+        from tools.cronjob_tools import cronjob
+
+        job = self._create_pinned(DAILY_9AM)
+        result = json.loads(cronjob(action="update", job_id=job["id"], schedule=self.WALL_CLOCK))
+        assert result["success"] is True, result
+        return next(r for r in jobs.load_jobs() if r["id"] == job["id"])
+
+    @pytest.mark.parametrize("door", ["create", "update", "rearm", "tool_update"])
+    def test_run_at_is_the_pinned_wall_clock(self, la_profile, cron_store, door):
+        cron_store.set(datetime(2026, 10, 22, 12, 0, tzinfo=NY))
+        job = getattr(self, f"_via_{door}")()
+        expected = datetime(2026, 10, 24, 9, 0, tzinfo=HK)
+        assert datetime.fromisoformat(job["schedule"]["run_at"]) == expected
+        assert datetime.fromisoformat(job["next_run_at"]) == expected
+
+    def test_unpinned_job_keeps_the_profile_wall_clock(self, la_profile, cron_store):
+        cron_store.set(datetime(2026, 10, 22, 12, 0, tzinfo=NY))
+        job = jobs.create_job(prompt="p", schedule=self.WALL_CLOCK, model="fixture", deliver="local")
+        assert datetime.fromisoformat(job["next_run_at"]) == datetime(2026, 10, 24, 9, 0, tzinfo=LA)

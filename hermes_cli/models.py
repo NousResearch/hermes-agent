@@ -1593,7 +1593,29 @@ def probe_profile_catalog(normalized: str, profile, api_key: Optional[str], base
             live = profile.fetch_models(api_key=api_key, base_url=base_url)
         except Exception:
             live = None
+    if not live and static_catalog(normalized):
+        # No live catalogue, but a curated floor exists: return None so ``provider_model_ids``
+        # falls through to ``_static_catalog()``, which serves the floor MERGED with models.dev
+        # for ``_MODELS_DEV_PREFERRED`` providers. Returning the profile's stub here would shadow
+        # both the floor and that registry merge.
+        return None
     return merge_profile_catalog(normalized, profile, live)
+
+
+def _curated_with_profile_catalog(normalized: str, profile) -> list[str]:
+    """The curated floor for *normalized*, unioned with the profile's own curated catalogue.
+
+    A plugin profile may declare a curated catalogue of its own (``fallback_models``) that the
+    built-in floor does not carry — a provider whose live endpoint is unreachable and whose
+    catalogue is maintained by hand. The floor and the profile catalogue are both curated, so
+    both are offered; neither shadows the other. The floor leads, so a provider's newest
+    hand-maintained models stay on top.
+    """
+    floor = list(static_catalog(normalized))
+    own = list(profile.fallback_models or ()) if profile is not None else []
+    if not own:
+        return floor
+    return list(dict.fromkeys(floor + own))
 
 
 def merge_profile_catalog(normalized: str, profile, live: Optional[list[str]]) -> Optional[list[str]]:
@@ -1601,7 +1623,12 @@ def merge_profile_catalog(normalized: str, profile, live: Optional[list[str]]) -
     first-time setup (``model_setup_flows._api_key_provider_model_list``) offers the same rows the
     picker will later show. Empty live → ``fallback_models`` (None when the profile has none)."""
     if not live:
-        rows = CuratedFallbackModels(profile.fallback_models) if profile.fallback_models else None
+        # A probe that yields nothing (no credential, 401, timeout) must NOT collapse the catalogue
+        # to the profile's own stub: the curated floor is the better catalogue, and the live branch
+        # below already prefers it. The floor and the profile's own catalogue are both curated, so
+        # both are offered.
+        curated = _curated_with_profile_catalog(normalized, profile)
+        rows = CuratedFallbackModels(curated) if curated else None
     else:
         curated = list(static_catalog(normalized)) or list(profile.fallback_models or ())
         if not curated:
@@ -1714,7 +1741,9 @@ def _static_catalog(normalized: str, fetcher: Any) -> list[str]:
     # model, flux-*, ahead of its chat models).
     # A provider with a live fetcher that declined is serving a placeholder; one without any live
     # source is serving its authoritative catalog.
-    curated_static = (CuratedFallbackModels if fetcher is not None else list)(static_catalog(normalized))
+    from providers import get_provider_profile
+    curated_static = (CuratedFallbackModels if fetcher is not None else list)(
+        _curated_with_profile_catalog(normalized, get_provider_profile(normalized)))
     if normalized not in _MODELS_DEV_PREFERRED:
         return _chat_catalog_rows(_drop_delisted_opencode_models(normalized, curated_static))
     # models.dev keeps listing retired Zen ids too: filter after the merge, not before.

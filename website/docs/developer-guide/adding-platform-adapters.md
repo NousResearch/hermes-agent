@@ -620,6 +620,36 @@ Why this hook is necessary: the live adapter is only reachable through `_gateway
 
 The function receives the same `pconfig` and `chat_id` that the live adapter would, plus optional `thread_id`, `media_files`, and `force_document` keyword arguments. Optional keywords added later are forwarded only to a sender that declares them (by name or through `**kwargs`), so a sender written to the signature above keeps working: `notify=True` (cron's `cron.delivery.notify`: this delivery should ring even under a quiet notification mode) is one; Telegram's sender takes it. Returning `{"success": True, "message_id": ...}` is treated as a successful delivery; returning `{"error": "..."}` surfaces the message in cron's `delivery_errors`. Exceptions raised inside the function are caught by the dispatcher and reported as `Plugin standalone send failed: <reason>`. Reference implementations live in `plugins/platforms/{irc,teams,google_chat}/adapter.py`.
 
+### Standalone media delivery
+
+If your standalone sender handles attachments, also declare its media capability
+with the public `StandaloneSendPolicy` type:
+
+```python
+from gateway.platforms.send_targets import StandaloneSendPolicy
+
+ctx.register_platform(
+    name="my_platform",
+    ...,
+    standalone_sender_fn=_standalone_send,
+    standalone_send=StandaloneSendPolicy(label="My Platform", media=True),
+)
+```
+
+Registering the callback alone does not enable media routing for a new platform:
+the generic `send_message` path rejects a file-only request before calling it,
+or sends only the text with a warning when the request includes text. With
+`media=True`, requests carrying attachments go through `standalone_sender_fn`,
+including when the gateway is running. Ordinary live-adapter replies still use
+the adapter's send methods.
+
+`media_files` contains `(local_path, is_voice)` pairs. The sender must accept an
+empty `message` for file-only delivery and transfer the supplied files. For long
+text, the dispatcher invokes it per chunk and attaches the files to the final
+chunk; earlier chunks receive `media_files=None` by default, or `[]` when the
+policy sets `empty_list_between_chunks=True`. Set `forward_force_document=True`
+if the sender also needs the caller's `force_document` flag on this media route.
+
 ## Surfacing Env Vars in `hermes config`
 
 `hermes_cli/config.py` scans `plugins/platforms/*/plugin.yaml` at import time and auto-populates `OPTIONAL_ENV_VARS` from `requires_env` and (optional) `optional_env` blocks. Use the rich-dict form to contribute proper descriptions, prompts, password flags, and URLs — the CLI setup UI picks them up for free.

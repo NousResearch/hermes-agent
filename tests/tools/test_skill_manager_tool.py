@@ -1209,6 +1209,63 @@ class TestDeleteSkillRmtreeGuard:
 
 
 # ---------------------------------------------------------------------------
+# skill_manage write containment: symlink-following finder must not make a
+# link to a directory outside the skills roots writable (#symlink-write-containment).
+# ---------------------------------------------------------------------------
+
+
+class TestWriteContainment:
+    """The finder follows directory symlinks, so the write path has to refuse a
+    resolved skill dir that sits outside the active-profile roots and the canonical
+    skills dir. ``delete`` keeps its own guard and is not covered here."""
+
+    @pytest.mark.require_symlinks
+    def test_symlink_outside_roots_refused(self, tmp_path):
+        skills = tmp_path / "skills"
+        skills.mkdir()
+        outside = tmp_path / "outside" / "probe-skill"
+        outside.mkdir(parents=True)
+        (outside / "SKILL.md").write_text(VALID_SKILL_CONTENT)
+        (skills / "probe-skill").symlink_to(outside, target_is_directory=True)
+        with _skill_dir(skills), \
+             patch("hermes_constants.get_default_hermes_root", return_value=tmp_path / "hermes-root"):
+            result = _patch_skill("probe-skill", "Step 1:", "Step 1 HACKED:")
+        assert result["success"] is False, result
+        assert "outside" in result["error"].lower()
+        assert "HACKED" not in (outside / "SKILL.md").read_text()
+
+    @pytest.mark.require_symlinks
+    def test_symlink_under_canonical_allowed(self, tmp_path):
+        """A profile skill dir that is a symlink into the canonical skills dir is the
+        accepted convergence layout and must stay writable."""
+        hermes_root = tmp_path / "hermes-root"
+        canonical = hermes_root / "skills" / "probe-skill"
+        canonical.mkdir(parents=True)
+        (canonical / "SKILL.md").write_text(VALID_SKILL_CONTENT)
+        profile_skills = tmp_path / "profile-skills"
+        profile_skills.mkdir()
+        (profile_skills / "probe-skill").symlink_to(canonical, target_is_directory=True)
+        with _skill_dir(profile_skills), \
+             patch("hermes_constants.get_default_hermes_root", return_value=hermes_root):
+            result = _patch_skill("probe-skill", "Step 1:", "Step 1 PATCHED:")
+        assert result["success"] is True, result
+        assert "PATCHED" in (canonical / "SKILL.md").read_text()
+
+    @pytest.mark.require_symlinks
+    def test_symlink_inside_profile_root_allowed(self, tmp_path):
+        """A symlink whose target still resolves under the profile skills root is not a traversal."""
+        skills = tmp_path / "skills"
+        anchor = skills / "_anchor" / "probe-skill"
+        anchor.mkdir(parents=True)
+        (anchor / "SKILL.md").write_text(VALID_SKILL_CONTENT)
+        (skills / "probe-skill").symlink_to(anchor, target_is_directory=True)
+        with _skill_dir(skills):
+            result = _patch_skill("probe-skill", "Step 1:", "Step 1 PATCHED:")
+        assert result["success"] is True, result
+        assert "PATCHED" in (anchor / "SKILL.md").read_text()
+
+
+# ---------------------------------------------------------------------------
 # Curator consolidation-pass fail-closed delete guard (#29912)
 # ---------------------------------------------------------------------------
 

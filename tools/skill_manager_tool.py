@@ -31,7 +31,7 @@ from agent.skill_utils import (
 from tools.skill_manager_guards import (
     _background_review_delete_guard, _background_review_preflight, _background_review_read_before_write_guard,
     _containing_skills_root, _curator_consolidation_delete_guard, _is_path_redirect, _pinned_guard,
-    _validate_delete_target, _is_background_review, _refusal as _err)
+    _validate_delete_target, _write_containment_guard, _is_background_review, _refusal as _err)
 from tools.skill_manager_batch import (
     _PATCH_EITHER_OR, _PATCH_NEEDS_NEW_STRING, _PATCH_NEEDS_OLD_STRING, _op_shape_error, _skill_manage_batch)
 from tools.skill_manager_scan import (
@@ -220,8 +220,11 @@ def _resolve_skill_dir(name: str, category: str | None = None) -> Path:
 
 
 def _iter_skill_dirs(root: Path):
-    from agent.skill_utils import is_excluded_skill_path
-    for skill_md in root.rglob("SKILL.md"):
+    from agent.skill_utils import is_excluded_skill_path, iter_skill_index_files
+    # Not root.rglob(): Path.rglob does not descend directory symlinks, so a
+    # profile skill dir symlinked to canonical would be invisible here while
+    # the loader (os.walk followlinks=True) serves it. Use the loader's walk.
+    for skill_md in iter_skill_index_files(root, "SKILL.md"):
         if not is_excluded_skill_path(skill_md):
             yield skill_md.parent
 
@@ -393,13 +396,18 @@ def _resolve_supporting_file(skill_dir: Path, file_path: str):
 
 
 def _locate_for_write(name: str, action: str, not_found_suffix: str = ""):
-    """Find the skill; a delete also runs the background-review delete guard -> ``(skill_dir, None)``
-    | ``(None, error_dict)``."""
+    """Find the skill; a delete also runs the background-review delete guard, every other action the
+    write-containment guard -> ``(skill_dir, None)`` | ``(None, error_dict)``."""
     existing = _find_skill(name)
     if not existing:
         return None, _err(_skill_not_found_error(name, not_found_suffix))
     skill_dir = existing["path"]
-    guard = _background_review_delete_guard(name, skill_dir) if action == "delete" else None
+    if action == "delete":
+        guard = _background_review_delete_guard(name, skill_dir)
+    elif refusal := _write_containment_guard(skill_dir):
+        guard = _err(refusal)
+    else:
+        guard = None
     return (None, guard) if guard else (skill_dir, None)
 
 

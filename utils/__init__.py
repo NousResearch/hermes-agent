@@ -54,6 +54,7 @@ from utils.urls import (
     base_url_hostname,
     base_url_origin,
     base_url_path,
+    is_kimi_coding_base_url,
     same_base_url_origin,
 )
 
@@ -80,6 +81,7 @@ __all__ = [
     "file_cache_version",
     "file_signature",
     "fsync_directory",
+    "is_kimi_coding_base_url",
     "is_truthy_value",
     "load_yaml_file_readonly",
     "logger",

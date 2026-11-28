@@ -1,7 +1,9 @@
 from decimal import Decimal
+from importlib import import_module
 from types import SimpleNamespace
 
 import pytest
+import utils
 
 from agent.usage_pricing import (
     _OFFICIAL_DOCS_PRICING,
@@ -969,3 +971,64 @@ def test_anthropic_fast_response_without_a_fast_rate_is_unknown():
     result = estimate_usage_cost("claude-sonnet-4-6", _anthropic_usage("fast"), provider="anthropic")
     assert result.amount_usd is None
     assert result.status == "unknown"
+
+
+@pytest.mark.parametrize("alias", [
+    "kimi", "kimi-coding", "moonshot", "kimi-for-coding",
+    "kimi-coding-cn", "kimi-cn", "moonshot-cn", "custom",
+])
+@pytest.mark.parametrize("base_url,confirmed", [
+    ("https://api.kimi.com/coding", True),
+    ("https://api.kimi.com/coding/v1/", True),
+    ("https://API.KIMI.COM:443/coding/", True),
+    ("https://api.moonshot.ai/v1", False),
+    ("https://api.moonshot.cn/v1", False),
+    ("https://proxy.example/coding", False),
+    ("http://api.kimi.com/coding", False),
+    ("https://api.kimi.com:8443/coding", False),
+    ("https://api.kimi.com.example/coding", False),
+    ("https://api.kimi.com/coding-extra", False),
+    ("https://api.kimi.com/CODING", False),
+    ("https://api.kimi.com/coding?route=legacy", False),
+    ("https://api.kimi.com/coding#legacy", False),
+    ("https://user@api.kimi.com/coding", False),
+    ("https://api.kimi.com:invalid/coding", False),
+    (None, False),
+])
+def test_kimi_billing_follows_the_resolved_product_endpoint(monkeypatch, alias, base_url, confirmed):
+    from providers import get_provider_profile
+    from providers.base import ProviderProfile
+
+    route = resolve_billing_route("kimi-k3", provider=alias, base_url=base_url)
+    included = confirmed and alias != "custom"
+    assert route.billing_mode == ("subscription_included" if included else "unknown")
+    if included:
+        expected_provider = "kimi-coding-cn" if alias in {"kimi-coding-cn", "kimi-cn", "moonshot-cn"} else "kimi-coding"
+        assert route.provider == expected_provider
+        cost = estimate_usage_cost("kimi-k3", CanonicalUsage(input_tokens=1), provider=alias, base_url=base_url)
+        assert cost.amount_usd == Decimal(0)
+        assert cost.status == "included"
+    if alias == "custom":
+        return
+    # A Kimi alias on a proxy must not fall through to another provider's
+    # host-derived pricing route when the strict Coding Plan check rejects it.
+    for proxy_url in ("https://openrouter.ai/api/v1", "https://inference-api.nousresearch.com/v1"):
+        assert resolve_billing_route("kimi-k3", provider=alias, base_url=proxy_url).billing_mode == "unknown"
+    # Discovery, quota and billing must agree on the same product boundary.
+    model_calls = []
+
+    def models(self, **kwargs):
+        model_calls.append(kwargs)
+        return ["k3", "kimi-k2.6"]
+
+    monkeypatch.setattr(ProviderProfile, "fetch_models", models)
+    profile = get_provider_profile(alias)
+    assert profile is not None
+    # The plugin keeps its existing local gate: no new plugin-to-core dependency.
+    # Exercise both real predicates so discovery and the two core consumers agree.
+    plugin = import_module(type(profile).__module__)
+    assert plugin._is_confirmed_kimi_coding_url(base_url) is confirmed
+    assert utils.is_kimi_coding_base_url(base_url) is confirmed
+    assert profile.fetch_models(base_url=base_url) == (["k3", "kimi-k2.6"] if confirmed else ["kimi-k2.6"])
+    if confirmed:
+        assert model_calls[0]["base_url"].endswith("/coding/v1")

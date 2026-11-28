@@ -3533,6 +3533,30 @@ def _cmd_config_show() -> None:
     show_config()
 
 
+def _cmd_config_init_repo() -> None:
+    from hermes_cli.config_versioning import init_repo
+    home = init_repo(get_hermes_home())
+    print(f"Git versioning ready in {home}. Secrets and runtime state are ignored.")
+
+def _cmd_config_snapshot(args) -> None:
+    from hermes_cli.config_versioning import NotARepo, snapshot, status
+    home = get_hermes_home()
+    message = getattr(args, "message", None)
+    try:
+        result = snapshot(home, message)
+    except NotARepo as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    if result == "nothing-to-commit":
+        print("No config changes to commit.")
+    else:
+        print(f"Snapshot committed: {result}")
+    changed = status(home)
+    if changed not in ("clean", "not-a-repo", "no-config-files"):
+        print("Still changed (not committed):")
+        print(changed)
+
+
 _CONFIG_SUBCOMMANDS = {
     None: lambda args: _cmd_config_show(),
     "show": lambda args: _cmd_config_show(),
@@ -3543,7 +3567,9 @@ _CONFIG_SUBCOMMANDS = {
     "path": lambda args: print(get_config_path()),
     "env-path": lambda args: print(get_env_path()),
     "migrate": _cmd_config_migrate,
-    "check": _cmd_config_check}
+    "check": _cmd_config_check,
+    "init-repo": lambda args: _cmd_config_init_repo(),
+    "snapshot": _cmd_config_snapshot}
 
 _CONFIG_USAGE = """Available commands:
   hermes config           Show current configuration
@@ -3554,7 +3580,9 @@ _CONFIG_USAGE = """Available commands:
   hermes config check     Check for missing, outdated, or inactive config
   hermes config migrate   Update config with new options
   hermes config path      Show config file path
-  hermes config env-path  Show .env file path"""
+  hermes config env-path  Show .env file path
+  hermes config init-repo Start git versioning of config files
+  hermes config snapshot  Commit config changes to local git history"""
 
 
 def config_command(args):

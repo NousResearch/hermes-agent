@@ -1951,10 +1951,10 @@ class MatrixAdapter(BasePlatformAdapter):
             if cmd_text is not None:
                 gated_body = await self._command_gate(
                     room_id, thread_id, body, cmd_text, source_content, relates_to,
-                    mention_claimed, is_free_room)
+                    mention_claimed, is_free_room, sender)
                 if gated_body is None:
                     logger.debug(
-                        "Matrix: ignoring command %s in %s — not the thread starter nor addressed", event_id,
+                        "Matrix: ignoring command %s in %s — not from a human we receive from, or not addressed to us", event_id,
                         thread_id or room_id)
                     return None
                 body = gated_body
@@ -2100,16 +2100,66 @@ class MatrixAdapter(BasePlatformAdapter):
             await self._owned_threads.mark_async(thread_id)
         return cached
 
+    async def _joined_member_ids(self, room_id: str) -> Optional[set[str]]:
+        """Lowercased MXIDs of the joined members, or None when unknown (callers fail closed)."""
+        def ids(members) -> set[str]:
+            return {str(getattr(m, "user_id", m)).lower() for m in members}
+        state_store = getattr(self._client, "state_store", None) if self._client else None
+        if state_store is not None:
+            with suppress(Exception):
+                members = await state_store.get_members(room_id)
+                if members is not None:
+                    return ids(members)
+        client = self._client
+        if client is not None and hasattr(client, "joined_members"):
+            with suppress(Exception):
+                resp = await client.joined_members(room_id)
+                if getattr(resp, "members", None) is not None:
+                    return ids(resp.members)
+        return None
+
+    def _is_sole_agent(self, members: Optional[set[str]]) -> bool:
+        """True when this bot is the only agent that could receive a command in the room.
+
+        Agents are the joined members other than this bot that are not known humans (listed in
+        ``allowed_users``) nor bridge/system identities. Unknown membership, or no allowlist to
+        tell humans from agents, counts as "several agents" so the mention is still required."""
+        if members is None or not self._allowed_user_ids:
+            return False
+        humans = {u.lower() for u in self._allowed_user_ids}
+        own = (self._user_id or "").lower()
+        return not any(
+            m != own and m not in humans and not self._is_system_or_bridge_sender(m) for m in members)
+
+    def _command_sender_ok(self, sender: str, content: dict, members: Optional[set[str]], room_id: str) -> bool:
+        """Only a human we can receive from may issue a command: not a bot's own output (``m.notice``,
+        quoted/echoed text is already ignored because only the reply text counts), someone the
+        gateway would not accept messages from, or someone who is not in this room."""
+        if str(content.get("msgtype", "")) == "m.notice":
+            return False
+        if not sender or self._is_system_or_bridge_sender(sender) or self._is_self_sender(sender):
+            return False
+        if members is not None and sender.lower() not in members:
+            return False
+        return self._is_authorized_user(sender, room_id)
+
     async def _command_gate(
         self, room_id: str, thread_id: Optional[str], body: str, cmd_text: str, content: dict,
-        relates_to: dict, mention_claimed: bool, is_free_room: bool) -> Optional[str]:
+        relates_to: dict, mention_claimed: bool, is_free_room: bool, sender: str = "") -> Optional[str]:
         """Decide whether this bot handles a command in a non-DM room. Returns the (possibly
         adjusted) body, or None to drop silently.
 
-        Thread: only the thread starter, or the bot addressed by @mention / profile name as the
-        first argument; a command that @mentions someone else is dropped even by the starter.
-        Room: free rooms and ``require_mention=false`` keep their rule; otherwise the bot must be
-        addressed (a bare ``/cmd`` no longer reaches every bot)."""
+        Sender: only a human in the room whom this agent accepts messages from (bot output and
+        ``m.notice`` never issue commands).
+        Sole agent (user + this one agent, in a room or in a thread this bot takes part in): no
+        mention needed. Several agents: thread -> only the thread starter, or the bot addressed by
+        @mention / profile name as the first argument (a command that @mentions someone else is
+        dropped even by the starter); room -> free rooms and ``require_mention=false`` keep their
+        rule, otherwise the bot must be addressed (a bare ``/cmd`` no longer reaches every bot)."""
+        members = await self._joined_member_ids(room_id)
+        if not self._command_sender_ok(sender, content, members, room_id):
+            return None
+        sole = self._is_sole_agent(members)
         # Text checks use the reply text only: the quote fallback carries ``> <@author>`` pills of
         # whoever was replied to, which is not an address in this message.
         quote, reply = _split_reply_fallback(body) if relates_to.get("m.in_reply_to") else ("", body)
@@ -2122,12 +2172,17 @@ class MatrixAdapter(BasePlatformAdapter):
             if not explicit:  # an explicit @mention needs no starter lookup (no root fetch)
                 owner = await self._is_thread_owner(room_id, thread_id)
             if not addressed:
-                if not owner or self._mentions_other_user(reply, content):
+                if self._mentions_other_user(reply, content):
                     return None
-                if await self._first_arg_names_other_member(room_id, token):
+                if owner:
+                    if not sole and await self._first_arg_names_other_member(room_id, token):
+                        return None
+                elif not (sole and thread_id in self._threads):
                     return None
-        elif not (addressed or is_free_room or not self._require_mention):
+        elif not (addressed or sole or is_free_room or not self._require_mention):
             return None
+        elif sole and not addressed and self._mentions_other_user(reply, content):
+            return None  # sole agent needs no mention, but a command @mentioning someone else is theirs
         if by_name and not explicit and not owner and (thread_id or (self._require_mention and not is_free_room)):
             # The name was the addressing token, not a real argument: drop it from the command.
             reply = re.sub(r"^(\s*(?:@[^\s]+\s+)?[/!]\S+)\s+@?" + re.escape(token) + r"[:,;.]?(?=\s|$)", r"\1",

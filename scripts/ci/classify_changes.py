@@ -786,6 +786,69 @@ def pull_request_changed_files() -> list[str]:
                      ".[] | [.filename, .previous_filename // empty] | @tsv") or []
 
 
+# A push to main *does* have a diff (the event payload's before/after), so a
+# narrow change can be classified instead of turning every lane on. The
+# expensive lanes follow the diff; the cheap guard lanes always run, so a
+# main-push regression that the PR's own CI missed is still caught by the
+# ladder of small checks. Opt-in per repository: without the variable the
+# empty-diff fail-open below is unchanged, so nothing changes until a
+# maintainer turns it on.
+PUSH_DIFF_VARIABLE = "HERMES_CI_PUSH_DIFF"
+
+# Lanes cheap enough (<=7 vCPU-min per run combined) that keeping them on every
+# push buys the main-push safety net for ~2% of a run's compute. The expensive
+# lanes — python, frontend/JS, rust, the docker/nix lanes and the E2E suites —
+# follow the diff instead.
+PUSH_ALWAYS_ON = frozenset({
+    "scan", "deps", "uv_lock", "npm_lock", "bootstrap", "remote_backends",
+    "catalog", "docker_meta", "site",
+})
+
+
+def _zero_sha(sha: str) -> bool:
+    """A push payload uses all-zeros ``before`` for a branch's first commit."""
+    return not sha or set(sha) == {"0"}
+
+
+def push_changed_files() -> list[str] | None:
+    """The push's changed files, or ``None`` when the caller must fail open.
+
+    ``None`` covers every case where the diff cannot be trusted: the opt-in
+    variable is absent, the event is not a push, ``before`` is the zero SHA (a
+    first push, with no base to compare against), the compare API fails (a
+    force-push whose old head is gone, a rate limit), or the file list reached
+    the API's cap. The caller turns that into "every lane runs", exactly as an
+    empty diff did before.
+
+    An *empty but successful* comparison returns ``[]``: the caller reads that
+    as fail-open too, because a push with no file delta proves nothing about
+    what a merge combined.
+    """
+    if os.environ.get("EVENT_NAME") != "push":
+        return None
+    if os.environ.get(PUSH_DIFF_VARIABLE, "").strip().lower() not in {"1", "true", "yes"}:
+        return None
+    payload = _event_payload()
+    before = str(payload.get("before") or "")
+    after = str(payload.get("after") or "")
+    repo = os.environ.get("REPO") or os.environ.get("GITHUB_REPOSITORY") or ""
+    if _zero_sha(before) or _zero_sha(after) or not repo:
+        return None
+    files = _gh_lines(
+        "api", "--paginate", f"repos/{repo}/compare/{before}...{after}",
+        "--jq", ".files[]? | [.filename, .previous_filename // empty] | @tsv",
+    )
+    if files is None:
+        return None
+    if len(files) >= COMPARE_FILE_CAP:
+        print(
+            f"{len(files)} changed files reached the compare API's "
+            f"{COMPARE_FILE_CAP}-file cap; every lane runs", file=sys.stderr,
+        )
+        return None
+    return files
+
+
 def pull_request_labels() -> list[str]:
     """The pull request's labels as they are now, not as the event saw them.
 
@@ -833,8 +896,25 @@ def main() -> int:
                 file=sys.stderr,
             )
             lines = recovered
+    push_files = None
+    if not any(f.strip() for f in lines):
+        push_files = push_changed_files()
+        if push_files:
+            print(
+                f"push diff classified {len(push_files)} path(s); the expensive "
+                "lanes follow the diff and the guard lanes stay on",
+                file=sys.stderr,
+            )
+            lines = push_files
     files = changed_paths(lines)
     lanes = classify(files, run_e2e=RUN_E2E_LABEL in pull_request_labels())
+    if push_files and files:
+        # A push narrowed the plan: keep the cheap guards on regardless of the
+        # diff, and never let this path turn an E2E suite on (the caller gates
+        # those to release/dispatch anyway).
+        for lane in PUSH_ALWAYS_ON:
+            if lane in lanes:
+                lanes[lane] = True
     out = "\n".join(f"{key}={str(value).lower()}" for key, value in lanes.items())
     if dest := os.environ.get("GITHUB_OUTPUT"):
         with open(dest, "a", encoding="utf-8") as fh:

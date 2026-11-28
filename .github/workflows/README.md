@@ -1,6 +1,6 @@
 # GitHub Actions workflows
 
-This directory has 47 workflow files. Most of them are **reusable workflows**
+This directory has 48 workflow files. Most of them are **reusable workflows**
 (`on: workflow_call`). They never start on their own; an entry-point workflow
 calls them. This README covers what starts each workflow, which jobs it skips
 and why, how to run it by hand, and how a regular CI run differs from a
@@ -15,6 +15,7 @@ workflow wins. Fix this file in the same PR.
 - [Standalone PR / main checks](#standalone-pr--main-checks)
 - [PR helpers](#pr-helpers)
 - [Post-merge automation on `main`](#post-merge-automation-on-main)
+- [Push classification (opt-in)](#push-classification-opt-in)
 - [Scheduled monitors](#scheduled-monitors)
 - [Releases](#releases)
 - [Manual-only and iteration-branch workflows](#manual-only-and-iteration-branch-workflows)
@@ -367,6 +368,34 @@ branch protection.
 
 ---
 
+## Push classification (opt-in)
+
+By default a push to `main` runs **every** lane in `ci.yaml`: a push has no
+PR file list, so `classify_changes.py` fails open. That is the safe default and
+it stays the default.
+
+A push *does* carry a `before`..`after` diff, though, so a narrow change can be
+classified like a PR. Set the repository variable `HERMES_CI_PUSH_DIFF=1` to
+enable it:
+
+- the **expensive** lanes (`python`, `frontend`/JS, `rust`, `docker`, `nix`, the
+  E2E suites) follow the diff, so a catalog-only push no longer starts the
+  Python suite;
+- the **cheap guard lanes** in `classify_changes.PUSH_ALWAYS_ON` stay on for
+  every push, so an immediate regression is still caught in minutes;
+- any untrustworthy input — no variable, a zero `before` SHA on a branch's first
+  push, a failed compare API (force-push, rate limit), or the 300-file cap —
+  falls back to running every lane.
+
+Broad coverage is not dropped, it moves: `main-validation.yml` dispatches the
+full pipeline daily, pinned to a named revision. Do not enable the variable
+without that workflow in place, and do not treat an older green validation run
+as evidence about a newer commit.
+
+Release runs are untouched: `inputs.release` still forces every lane.
+
+---
+
 ## Scheduled monitors
 
 | Workflow | Schedule (UTC) | Other triggers | What it does |
@@ -377,6 +406,7 @@ branch protection.
 | `docs-search-monitor.yml` | every 6 h at :17 | `workflow_run` after every **Deploy Site**; dispatch | Upstream only. Live Algolia and headless-browser probe of docs search. A red run is the alert. |
 | `osv-scanner.yml` | Mondays 09:00 | dispatch | OSV scan of `uv.lock`, `pnpm-lock.yaml` and the nested `package-lock.json` files. Results go to the Security tab. Advisory (does not fail on vulnerabilities). Intentionally not per-PR. |
 | `sandbox-image.yml` | Mondays 04:23 | PR (paths), `workflow_run` after Stable Release, dispatch | Upstream only. Rebuilds `nousresearch/hermes-sandbox:desktop` without layer cache so base-image and apt security fixes land between releases. See [standalone](#standalone-pr--main-checks). |
+| `main-validation.yml` | daily 03:23 | dispatch | Dispatches the **full** `ci.yaml` pipeline pinned to that run's `head_sha`, so broad main coverage is taken on a schedule rather than on every push. Required by `HERMES_CI_PUSH_DIFF` (see [push classification](#push-classification-opt-in)). A failure names the commit to repair. |
 
 ---
 
@@ -583,6 +613,7 @@ gh workflow run windows-install-update-e2e.yml --ref <branch> -f strict_acceptan
 | `bootstrap-installer.yml` | Bootstrap installer | R | ci |
 | `canary-e2e.yml` | Canary E2E | dispatch | none |
 | `canary-release.yml` | Canary Release | cron daily 06:41, dispatch | none |
+| `main-validation.yml` | Main validation | cron daily 03:23, dispatch | none |
 | `catalog-tests.yml` | Catalog tests | R | ci |
 | `ci-review-comment.yml` | CI review comment | workflow_run(CI in_progress) | none |
 | `ci.yaml` | CI | PR, main, dispatch, call | stable, canary-e2e |

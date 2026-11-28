@@ -14,7 +14,7 @@ import random
 import sys
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from agent.display import KawaiiSpinner
 from agent.interrupt_control import interrupt_issuer, interrupted_during_api_call_reason
@@ -178,7 +178,9 @@ def prepare_iteration(
     # break the prompt cache — same contract as apply_pending_steer_to_tool_results).
     _pre_api_steer = agent._drain_pending_steer()
     if _pre_api_steer:
-        _inject_steer_after_newest_tool_result(agent, messages, _pre_api_steer)
+        _inject_steer_after_newest_tool_result(
+            agent, messages, _pre_api_steer, current_turn_user_idx=current_turn_user_idx
+        )
 
     # One-shot run-budget wrap-up notice at 80% of agent.run_budget_seconds, appended to the
     # newest tool result; off with no budget.
@@ -281,10 +283,26 @@ def _previous_tool_round(messages: Any) -> list:
     return []
 
 
-def _inject_steer_after_newest_tool_result(agent: Any, messages: Any, steer_text: str) -> None:
-    """Append the steer marker as a standalone user row after the newest tool message; with no
-    tool message, put the text back so the post-tool-execution drain delivers it later."""
-    for _si in range(len(messages) - 1, -1, -1):
+def _inject_steer_after_newest_tool_result(
+    agent: Any, messages: Any, steer_text: str, current_turn_user_idx: Optional[int] = None,
+) -> None:
+    """Append the steer marker as a standalone user row after the newest tool message of THIS
+    turn (a tool row at or after the current turn's user row); with no such tool message, put
+    the text back so the post-tool-execution drain delivers it later. The scan is bounded at
+    the current turn's user row: unbounded, it finds a previous turn's tool result and injects
+    the steer into history BEFORE the current turn's user message (#158385)."""
+    if not isinstance(current_turn_user_idx, int) or current_turn_user_idx < 0:
+        # Unknown turn boundary: fall back to the newest regular user row (a steer delivery
+        # row is a mid-turn injection, never the turn's opening prompt).
+        from agent.prompt_builder import STEER_DISPLAY_KIND
+        current_turn_user_idx = -1
+        for _ui in range(len(messages) - 1, -1, -1):
+            _um = messages[_ui]
+            if (isinstance(_um, dict) and _um.get("role") == "user"
+                    and _um.get("display_kind") != STEER_DISPLAY_KIND):
+                current_turn_user_idx = _ui
+                break
+    for _si in range(len(messages) - 1, current_turn_user_idx, -1):
         _sm = messages[_si]
         if isinstance(_sm, dict) and _sm.get("role") == "tool":
             from agent.prompt_builder import steer_user_row

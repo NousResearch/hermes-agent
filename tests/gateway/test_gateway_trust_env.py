@@ -48,6 +48,9 @@ class TestResolveProxyUrlMultiplexScope:
     def test_scoped_profile_without_own_value_does_not_borrow_default(self, monkeypatch):
         from agent.secret_scope import reset_secret_scope, set_multiplex_active, set_secret_scope
 
+        # The macOS system proxy (scutil) is real config on a developer machine and would
+        # satisfy the trust-env fallback; this test pins the no-configured-proxy case.
+        monkeypatch.setattr(gw_base, "_detect_macos_system_proxy", lambda: None)
         monkeypatch.setenv("DISCORD_PROXY", "http://default-profile-proxy:8080")
         monkeypatch.delenv("NO_PROXY", raising=False)
         monkeypatch.delenv("no_proxy", raising=False)

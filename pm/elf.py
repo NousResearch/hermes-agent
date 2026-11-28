@@ -14,6 +14,16 @@ class ElfError(ValueError):
 
 def _runpath_span(data: bytes | bytearray) -> tuple[int, int]:
     """File offset and length of the DT_RUNPATH string."""
+    try:
+        return _parse_runpath_span(data)
+    except ElfError:
+        raise
+    except (struct.error, ValueError) as exc:
+        # A truncated or damaged file: offsets past the end, a string with no terminator.
+        raise ElfError(f"damaged ELF: {exc}") from exc
+
+
+def _parse_runpath_span(data: bytes | bytearray) -> tuple[int, int]:
     if data[:6] != b"\x7fELF\x02\x01":
         raise ElfError("not a little-endian ELF64")
     table = struct.unpack_from("<Q", data, 0x20)[0]
@@ -42,7 +52,10 @@ def _runpath_span(data: bytes | bytearray) -> tuple[int, int]:
 def runpath(binary: Path) -> str:
     data = binary.read_bytes()
     start, length = _runpath_span(data)
-    return data[start:start + length].decode()
+    try:
+        return data[start:start + length].decode()
+    except UnicodeDecodeError as exc:
+        raise ElfError(f"RUNPATH is not text: {exc}") from exc
 
 
 def set_runpath(binary: Path, value: str) -> None:
@@ -54,6 +67,8 @@ def set_runpath(binary: Path, value: str) -> None:
     data = bytearray(binary.read_bytes())
     start, length = _runpath_span(data)
     encoded = value.encode()
+    if b"\0" in encoded:
+        raise ElfError("RUNPATH cannot hold a NUL")
     if len(encoded) > length:
         raise ElfError(f"RUNPATH of {len(encoded)} bytes does not fit the existing {length}")
     data[start:start + length] = encoded.ljust(length, b"\0")

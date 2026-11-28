@@ -186,3 +186,15 @@ def test_bionic_python_without_a_runpath_is_refused(tmp_path):
     interpreter.write_bytes(b"not an interpreter")
     with pytest.raises(InstallError, match="lib folder"):
         python.stage(None, tmp_path, "1.0", target)
+
+
+def test_a_damaged_bionic_python_is_a_verify_finding_not_a_crash(tmp_path):
+    from pm.registry import get_package
+    from tests.termux_fixtures import elf_with_runpath
+
+    target = "linux-arm64-bionic"
+    python = get_package("python")
+    interpreter = tmp_path / python.prefix_rel / python.main_rel(target)
+    interpreter.parent.mkdir(parents=True)
+    interpreter.write_bytes(elf_with_runpath(TERMUX_RUNPATH)[:40])
+    assert "RUNPATH" in python.verify(tmp_path, target)

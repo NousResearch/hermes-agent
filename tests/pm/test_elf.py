@@ -38,3 +38,31 @@ def test_a_file_that_is_not_an_elf_is_refused(tmp_path):
     binary.write_bytes(b"#!/bin/sh\nexit 0\n")
     with pytest.raises(ElfError):
         runpath(binary)
+
+
+def _damaged():
+    good = elf_with_runpath(OLD)
+    at = good.index(OLD.encode())
+    return {
+        "cut inside the header": good[:40],
+        "program headers past the end": good[:0x20] + (10**6).to_bytes(8, "little") + good[0x28:],
+        "runpath with no terminator": good[:at + len(OLD)],
+        "runpath that is not text": good.replace(OLD.encode()[:4], b"/\xff\xfe/"),
+    }
+
+
+@pytest.mark.parametrize("damage", sorted(_damaged()))
+def test_a_damaged_elf_is_reported_as_one(tmp_path, damage):
+    binary = tmp_path / "python3.14"
+    binary.write_bytes(_damaged()[damage])
+    with pytest.raises(ElfError):
+        runpath(binary)
+
+
+def test_a_runpath_with_a_nul_is_refused(tmp_path):
+    binary = tmp_path / "python3.14"
+    before = elf_with_runpath(OLD)
+    binary.write_bytes(before)
+    with pytest.raises(ElfError):
+        set_runpath(binary, "$ORIGIN/../lib\0/elsewhere")
+    assert binary.read_bytes() == before

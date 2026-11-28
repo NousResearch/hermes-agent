@@ -262,7 +262,8 @@ class Python(_BionicDebArm, BinaryPackage, DebPackage):
     def stage(self, store: Store, staged: Path, version: str, target: str) -> None:
         super().stage(store, staged, version, target)
         binary = self.binary(staged, target)
-        if binary is not None and target.startswith("darwin"):
+        # Host and target both: signing needs codesign, and a bionic tree staged on a Mac is not ours to sign.
+        if binary is not None and sys.platform == "darwin" and target.startswith("darwin"):
             from hermes_cli.macos_signing import sign_managed_python
 
             sign_managed_python(binary)
@@ -293,7 +294,7 @@ class Python(_BionicDebArm, BinaryPackage, DebPackage):
         if not reason and target == "linux-arm64-bionic":
             # An entry staged before the RUNPATH was rewritten fails here and restages once.
             try:
-                found = runpath(entry / self.prefix_rel / self.main_bin_rel)
+                found = runpath(self.binary(entry, target))
             except (OSError, ElfError) as exc:
                 return f"{self.main_bin_rel} has no readable RUNPATH: {exc}"
             return "" if found == self._BIONIC_RUNPATH else f"{self.main_bin_rel} looks for libpython in {found}"

@@ -4,6 +4,7 @@ only (notification, timeout, kill and retry policy live elsewhere). Provenance i
 
 from __future__ import annotations
 
+import math
 import sys
 import time
 from contextlib import suppress
@@ -86,6 +87,39 @@ def format_iteration_progress(api_call_count: Any, max_iterations: Any) -> str:
     if cap >= sys.maxsize:
         return t("display.iteration_progress.unbounded", n=api_call_count)
     return t("display.iteration_progress.bounded", n=api_call_count, max=cap)
+
+
+def should_override_card_suppression(
+    seconds_since_activity: Optional[float], interval_seconds: float,
+) -> bool:
+    """Whether a card surface's heartbeat claim must yield to the text heartbeat.
+
+    A surface that renders the turn itself (a streaming card) may suppress the
+    duplicate text heartbeat, but that suppression is a *freshness* claim, not a
+    permanent one. While the agent is producing events the card is the better
+    surface; once it has been silent for a full notify interval the card has
+    nothing new to show, and a still-suppressed heartbeat leaves the chat with no
+    sign of life at all.
+
+    Contracts:
+    * ``seconds_since_activity is None`` (unknown) does **not** override: an
+      observation gap is not evidence of a stall, the same rule
+      ``gateway/session_stall.py`` applies to unknown idle time.
+    * ``interval_seconds <= 0`` (or non-finite / non-numeric) does not override:
+      a non-positive interval disables the long-running heartbeat altogether, so
+      there is nothing to re-enable.
+    * Activity newer than the interval (``< interval``) keeps the suppression.
+    """
+    if seconds_since_activity is None or isinstance(seconds_since_activity, bool):
+        return False
+    try:
+        interval = float(interval_seconds)
+        idle = float(seconds_since_activity)
+    except (TypeError, ValueError):
+        return False
+    if not (math.isfinite(interval) and math.isfinite(idle)) or interval <= 0:
+        return False
+    return idle >= interval
 
 
 def reset_session_activity_persist_window(agent: Any) -> None:

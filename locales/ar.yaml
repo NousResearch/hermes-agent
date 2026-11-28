@@ -856,6 +856,7 @@ gateway:
     timeout_last_activity: "آخر نشاط: {activity} (قبل {seconds} ثانية، {progress}). ربما كان الوكيل ينتظر استجابة من الـ API."
     timeout_hint: "لزيادة الحد، اضبط agent.gateway_timeout في config.yaml (القيمة بالثواني، 0 = بلا حد) ثم أعد تشغيل البوّابة.\nحاول مرة أخرى، أو استخدم /reset للبدء من جديد."
     working_heartbeat: "⏳ يعمل — {minutes} دقيقة{detail}"
+    working_heartbeat_stale_surface: "⏳ ما زلت أعمل — {minutes} دقيقة{detail} · لم يتم تحديث بطاقة التقدم منذ {idle_minutes} دقيقة"
     thinking_prefix: "💬 {text}"
     tool_head: "{emoji} {tool}"
     tool_verbose: "{emoji} {tool}({keys})\n{args}"

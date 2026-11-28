@@ -856,6 +856,7 @@ gateway:
     timeout_last_activity: "Última actividad: {activity} (hace {seconds} s, {progress}). Es posible que el agente estuviera esperando una respuesta de la API."
     timeout_hint: "Para aumentar el límite, establece agent.gateway_timeout en config.yaml (valor en segundos, 0 = sin límite) y reinicia el gateway.\nInténtalo de nuevo o usa /reset para empezar de cero."
     working_heartbeat: "⏳ Trabajando — {minutes} min{detail}"
+    working_heartbeat_stale_surface: "⏳ Sigo trabajando — {minutes} min{detail} · la tarjeta de progreso no se actualiza desde hace {idle_minutes} min"
     thinking_prefix: "💬 {text}"
     tool_head: "{emoji} {tool}"
     tool_verbose: "{emoji} {tool}({keys})\n{args}"

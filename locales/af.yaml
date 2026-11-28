@@ -856,6 +856,7 @@ gateway:
     timeout_last_activity: "Laaste aktiwiteit: {activity} ({seconds}s gelede, {progress}). Die agent het moontlik op 'n API-antwoord gewag."
     timeout_hint: "Om die limiet te verhoog, stel agent.gateway_timeout in config.yaml (waarde in sekondes, 0 = geen limiet) en herbegin die gateway.\nProbeer weer, of gebruik /reset om van voor te begin."
     working_heartbeat: "⏳ Werk — {minutes} min{detail}"
+    working_heartbeat_stale_surface: "⏳ Werk steeds — {minutes} min{detail} · die vorderingskaart is al {idle_minutes} min nie opgedateer nie"
     thinking_prefix: "💬 {text}"
     tool_head: "{emoji} {tool}"
     tool_verbose: "{emoji} {tool}({keys})\n{args}"

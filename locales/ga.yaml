@@ -856,6 +856,7 @@ gateway:
     timeout_last_activity: "Gníomhaíocht is déanaí: {activity} ({seconds}s ó shin, {progress}). Seans go raibh an gníomhaire ag fanacht le freagra API."
     timeout_hint: "Chun an teorainn a ardú, socraigh agent.gateway_timeout i config.yaml (luach i soicindí, 0 = gan teorainn) agus atosaigh an gateway.\nBain triail eile as, nó úsáid /reset chun tosú as an nua."
     working_heartbeat: "⏳ Ag obair — {minutes} nóim{detail}"
+    working_heartbeat_stale_surface: "⏳ Ag obair fós — {minutes} nóim{detail} · níor nuashonraíodh an cárta dul chun cinn le {idle_minutes} nóim"
     thinking_prefix: "💬 {text}"
     tool_head: "{emoji} {tool}"
     tool_verbose: "{emoji} {tool}({keys})\n{args}"

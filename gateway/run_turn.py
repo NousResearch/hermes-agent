@@ -17,7 +17,7 @@ import queue
 import threading
 import time
 from agent.i18n import t
-from agent.session_activity import format_iteration_progress
+from agent.session_activity import format_iteration_progress, should_override_card_suppression
 from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE
 from contextlib import nullcontext, suppress
 from contextvars import copy_context
@@ -1964,6 +1964,33 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         turn_ctx._status_thread_metadata = _status_thread_metadata
         return _status_thread_metadata
 
+    async def _progress_surface_claims_heartbeat(
+        self, source: Any, session_key: Optional[str], agent: Any,
+        seconds_since_activity: Optional[float], interval_seconds: float,
+    ) -> bool:
+        """True when a progress surface (e.g. a streaming card) claims this turn.
+
+        The surface renders progress itself, so the duplicate text heartbeat is
+        suppressed — but only while it is fresh. The staleness decision belongs to
+        ``should_override_card_suppression`` at the fire site, not to the plugin:
+        a plugin that still wants to speak on its own schedule can, and one that
+        has gone quiet cannot mute the chat. Fail-open: a broken or absent hook
+        never suppresses a heartbeat.
+        """
+        try:
+            from hermes_cli.plugins import ainvoke_hook, has_hook
+            if not has_hook("long_running_heartbeat_claim"):
+                return False
+            results = await ainvoke_hook(
+                "long_running_heartbeat_claim",
+                source=source, session_key=session_key, agent=agent,
+                seconds_since_activity=seconds_since_activity, interval_seconds=interval_seconds,
+            )
+        except Exception as _he:
+            logger.debug("long_running_heartbeat_claim hook failed: %s", _he)
+            return False
+        return any(result is True for result in results)
+
     async def _run_agent_notify_long_running(
         self, disp: GatewayRunner._RunAgentDisplay, turn_ctx: TurnContext, _executor_task_holder: list,
     ) -> None:
@@ -1998,6 +2025,18 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
                 disp.resolve_display_setting(disp.user_config, disp.platform_key, "busy_ack_detail", True)
             )
             _a = self._agent_activity_summary(agent_holder[0])
+            _idle_seconds = _a.get("seconds_since_activity") if _a else None
+            _stale_surface = False
+            if await self._progress_surface_claims_heartbeat(
+                source, session_key, agent_holder[0], _idle_seconds, _NOTIFY_INTERVAL
+            ):
+                # The surface owns this turn's progress, but a claim is a freshness
+                # promise: once the agent itself has been quiet for a full interval the
+                # card has nothing new to show, so the text heartbeat is the only sign
+                # of life. Unknown idle time keeps the claim (not evidence of a stall).
+                if not should_override_card_suppression(_idle_seconds, _NOTIFY_INTERVAL):
+                    continue
+                _stale_surface = True
             with suppress(Exception):
                 if _a:
                     _parts = []
@@ -2008,11 +2047,18 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
                         _parts.append(str(_action))
                     if _parts:
                         _status_detail = " — " + ", ".join(_parts)
-            _heartbeat_text = (
-                disp._generic_status_phrase("status")
-                if _long_running_mode == "generic"
-                else t("gateway.progress.working_heartbeat", minutes=_elapsed_mins, detail=_status_detail)
-            )
+            if _long_running_mode == "generic":
+                _heartbeat_text = disp._generic_status_phrase("status")
+            elif _stale_surface:
+                _heartbeat_text = t(
+                    "gateway.progress.working_heartbeat_stale_surface",
+                    minutes=_elapsed_mins, detail=_status_detail,
+                    idle_minutes=max(1, int((_idle_seconds or 0) // 60)),
+                )
+            else:
+                _heartbeat_text = t(
+                    "gateway.progress.working_heartbeat", minutes=_elapsed_mins, detail=_status_detail
+                )
             try:
                 _notify_res = None
                 if _heartbeat_msg_id:

@@ -856,6 +856,7 @@ gateway:
     timeout_last_activity: "마지막 활동: {activity} ({seconds}초 전, {progress}). 에이전트가 API 응답을 기다리고 있었을 수 있어요."
     timeout_hint: "제한을 늘리려면 config.yaml에서 agent.gateway_timeout을 설정하고 (초 단위, 0 = 제한 없음) 게이트웨이를 재시작하세요.\n다시 시도하거나 /reset으로 새로 시작하세요."
     working_heartbeat: "⏳ 작업 중 — {minutes}분{detail}"
+    working_heartbeat_stale_surface: "⏳ 작업 중 — {minutes}분{detail} · 진행 카드가 {idle_minutes}분째 업데이트되지 않았습니다"
     thinking_prefix: "💬 {text}"
     tool_head: "{emoji} {tool}"
     tool_verbose: "{emoji} {tool}({keys})\n{args}"

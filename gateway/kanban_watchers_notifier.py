@@ -700,6 +700,12 @@ class _KanbanNotification:
         metadata: dict[str, Any] = dict(delivery_metadata) if isinstance(delivery_metadata, dict) else {}
         if sub.get("thread_id") and not metadata.get("thread_id"):
             metadata["thread_id"] = sub["thread_id"]
+        requester = metadata.get("requester_user_id")
+        if (self.platform_str == "discord" and ev.kind == "completed" and isinstance(requester, str)
+                and requester.isascii() and requester.isdecimal() and int(requester) > 0):
+            # Keep other mentions readable, but permit only the original requester to receive a ping.
+            msg = f"<@{requester}>\n" + re.sub(rf"<@!?{re.escape(requester)}>", "", msg).strip()
+            metadata["mention_user_ids"] = [requester]
         _send_res = None
         async def send_ping():
             nonlocal _send_res

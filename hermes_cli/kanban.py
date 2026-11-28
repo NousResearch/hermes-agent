@@ -1178,11 +1178,12 @@ def _cmd_notify_subscribe(args: argparse.Namespace) -> int:
         )
         if value
     }
-    from hermes_cli.kanban_notify_thread import resolve_subscribe_thread
+    from hermes_cli.kanban_notify_thread import discord_requester_metadata, resolve_subscribe_thread
     with kbc.connect_closing() as conn:
         if kb.get_task(conn, args.task_id) is None:
             return _err(f"no such task: {args.task_id}")
         thread_id = resolve_subscribe_thread(conn, args)
+        delivery_metadata.update(discord_requester_metadata(args.platform, args.chat_id, thread_id))
         user_id, user_id_alt = _caller_identity_for_target(
             args.platform, args.chat_id, thread_id, args.user_id, getattr(args, "user_id_alt", None))
         kbn.add_notify_sub(

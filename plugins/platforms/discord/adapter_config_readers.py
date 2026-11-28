@@ -73,3 +73,19 @@ def _resolve_exec_approval_admin_gate(config_extra: Optional[dict]) -> tuple[boo
     except Exception:
         admin_ids = set()
     return (True, admin_ids)
+
+
+def scoped_send_mentions(config_extra: Optional[dict], metadata: Optional[dict]) -> dict:
+    """A caller may narrow user mentions for one send, preserving an operator's mention-off policy."""
+    if not metadata or "mention_user_ids" not in metadata:
+        return {}
+    from plugins.platforms.discord import adapter
+
+    allowed = adapter._build_allowed_mentions(config_extra)
+    ids = metadata["mention_user_ids"]
+    ids = ids if isinstance(ids, list) else []
+    allowed.users = ([adapter.discord.Object(id=int(uid)) for uid in ids
+                      if isinstance(uid, str) and uid.isascii() and uid.isdecimal() and int(uid) > 0]
+                     if allowed.users else False)
+    allowed.roles = allowed.everyone = allowed.replied_user = False
+    return {"allowed_mentions": allowed}

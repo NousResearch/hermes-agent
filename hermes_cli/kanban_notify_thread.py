@@ -64,3 +64,17 @@ def resolve_subscribe_thread(conn, args) -> str | None:
         print("warning: no --thread-id given and none to infer; the completion ping will go to the "
               "chat's DM root, not a topic", file=sys.stderr)
     return None
+
+
+def discord_requester_metadata(platform: str, chat_id: str, thread_id: str | None) -> dict[str, str]:
+    """Capture this turn's actor only for its own Discord destination, never its session route."""
+    from gateway.session_context import get_session_env as env
+
+    if (platform.lower() != "discord" or env("HERMES_SESSION_PLATFORM", "").lower() != "discord"
+            or str(chat_id) != str(env("HERMES_SESSION_CHAT_ID", ""))
+            or str(thread_id or "") != str(env("HERMES_SESSION_THREAD_ID", "") or "")):
+        return {}
+    actor = env("HERMES_SESSION_ACTOR_ID", "")
+    if actor.isascii() and actor.isdecimal() and int(actor) > 0:
+        return {"requester_user_id": actor}
+    return {}

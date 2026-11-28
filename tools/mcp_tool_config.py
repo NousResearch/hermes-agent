@@ -21,6 +21,20 @@ logger = logging.getLogger("tools.mcp_tool")
 
 _mcp_stderr_log_fh: dict[str, Any] = {}  # profile home key -> handle
 _mcp_stderr_log_lock = threading.Lock()
+# logging.max_size_mb rotation does not cover this file and the handle lives until shutdown, so it is
+# size-checked when (re)opened: at most ~cap per process lifetime plus one archived ``.1`` generation.
+_MCP_STDERR_LOG_MAX_BYTES = 5 * 1024 * 1024
+
+
+def _rotate_mcp_stderr_log(log_path: Path) -> None:
+    """Move an oversized log to ``<name>.1`` (replacing the previous one) before it is reopened."""
+    try:
+        if log_path.stat().st_size > _MCP_STDERR_LOG_MAX_BYTES:
+            log_path.replace(log_path.with_name(log_path.name + ".1"))
+    except FileNotFoundError:
+        pass
+    except OSError as exc:  # e.g. Windows: another process holds it open — keep appending
+        logger.debug("Could not rotate MCP stderr log %s: %s", log_path, exc)
 
 
 def _get_mcp_stderr_log() -> Any:
@@ -35,6 +49,7 @@ def _get_mcp_stderr_log() -> Any:
             try:
                 log_dir = get_hermes_home() / "logs"
                 mkdir_under_hermes_home(log_dir)
+                _rotate_mcp_stderr_log(log_dir / "mcp-stderr.log")
                 # Line-buffered so output lands promptly; errors="replace" tolerates garbled binary.
                 fh = open(log_dir / "mcp-stderr.log", "a", encoding="utf-8", errors="replace", buffering=1)
                 fh.fileno()  # confirm a real fd before committing

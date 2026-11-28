@@ -30,6 +30,7 @@
 import { host, type PluginOs, type PluginRestOptions, type PluginTranslate } from '@hermes/plugin-sdk'
 
 import { en } from './i18n'
+import { kanbanHref } from './route'
 
 type Rest = <T>(path: string, opts?: PluginRestOptions) => Promise<T>
 
@@ -142,7 +143,12 @@ function rawErrorFor(kind: string, ev: CompletionEvent): string {
   return kind === 'gave_up' ? trimmed(ev.payload?.error) : ''
 }
 
-function notifyOne(kind: string, spec: { titleKey: string; toast: ToastKind }, ev: CompletionEvent): void {
+function notifyOne(
+  slug: string,
+  kind: string,
+  spec: { titleKey: string; toast: ToastKind },
+  ev: CompletionEvent
+): void {
   const taskId = (ev.task_id ?? '').trim()
   const body = bodyFor(kind, ev)
 
@@ -168,7 +174,8 @@ function notifyOne(kind: string, spec: { titleKey: string; toast: ToastKind }, e
     title,
     message,
     ...(detail ? { detail } : {}),
-    action: { label: t('notify.openKanban'), onClick: () => host.navigate('/kanban') }
+    // Straight to the card: its board, its drawer open.
+    action: { label: t('notify.openKanban'), onClick: () => host.navigate(kanbanHref({ board: slug, task: taskId })) }
   })
 
   // Native OS notification — the desktop shell fires it only while the user
@@ -210,7 +217,7 @@ export async function onKanbanEventsFrame(slug: string, events?: CompletionEvent
 
     if (spec) {
       try {
-        notifyOne(ev.kind!, spec, ev)
+        notifyOne(slug, ev.kind!, spec, ev)
         fired = true
       } catch {
         /* swallowed */

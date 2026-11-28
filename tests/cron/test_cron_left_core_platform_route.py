@@ -139,11 +139,16 @@ _CORPUS = [(shape, origin, routes, loaded, primary_parser, False)
            # ``failure_only``: the shape is the ``failure_deliver`` lane of a job whose regular report goes to
            # ``local``; preflight never names the install, the failed run's delivery does.
            (shape, origin, routes, loaded, False, False, None, True) for shape in _SHAPES
-           for origin in _ORIGINS for routes in _ROUTES for loaded in (False, True)]
+           for origin in _ORIGINS for routes in _ROUTES for loaded in (False, True)] + [
+           # ``home_saved``: a bare destination's home saved only as ``platforms.<p>.home_channel`` in the satellite's
+           # config.yaml (what ``/sethome`` writes), the plugin not loaded there. (``all``/``origin`` falling back to
+           # that home is #160701.)
+           ("{p}", origin, routes, False, False, False, home, False, True)
+           for origin in _ORIGINS for routes in _ROUTES for home in ("chat-1", "chat-2")]
 
 
 def _run_case(root, feature, shape, origin, routes, loaded, primary_parser, own_bot=False, home_chat=None,
-              failure_only=False):
+              failure_only=False, home_saved=False):
     """``(preflight error, delivery error, [(chat, thread)] the primary's bot sent, origin read as absent)`` for
     one corpus case: a credentialless ``fitness`` profile the primary's bot serves through ``profile_routes``."""
     import asyncio
@@ -191,12 +196,14 @@ def _run_case(root, feature, shape, origin, routes, loaded, primary_parser, own_
     primary_adapters = {Platform(feature.platform): primary}
     reset_hermes_home_override(token)
     token = set_hermes_home_override(str(home))
-    home_env = {f"{feature.platform.upper()}_HOME_CHANNEL": home_chat} if home_chat else {}
+    home_env = {f"{feature.platform.upper()}_HOME_CHANNEL": home_chat} if home_chat and not home_saved else {}
+    saved = {"platforms": {feature.platform: {"home_channel": {"chat_id": home_chat}}}} if home_saved else {}
+    (home / "config.yaml").write_text(yaml.safe_dump(saved), encoding="utf-8")
     try:
         with patch.dict("os.environ", home_env), \
              patch("gateway.config.load_gateway_config", return_value=_config("telegram" if own_bot else None)):
             preflight, unresolved = _preflight_check_delivery(job), _origin_unresolved(job, for_failure=failure_only)
-        with patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+        with patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}, **saved}), \
              patch("gateway.config.load_gateway_config", return_value=_config("telegram" if own_bot else None)), \
              patch.dict("os.environ", home_env), \
              patch("asyncio.run_coroutine_threadsafe", side_effect=run_now):
@@ -273,8 +280,9 @@ def test_satellite_home_channel_rides_the_primarys_bot_without_the_plugin(tmp_pa
 _HOME_PLATFORMS = [f for f in LEFT_CORE if f.platform and f"{f.platform.upper()}_HOME_CHANNEL" in f.private_env]
 
 
+@pytest.mark.parametrize("saved_in", ["env", "config.yaml"])
 @pytest.mark.parametrize("feature", _HOME_PLATFORMS, ids=[f.platform for f in _HOME_PLATFORMS])
-def test_worker_without_any_registration_reads_the_satellite_home(tmp_path, monkeypatch, feature):
+def test_worker_without_any_registration_reads_the_satellite_home(tmp_path, monkeypatch, feature, saved_in):
     """A managed cron worker holds no registration for the platform (not this profile's, not the primary's): a bare
     ``deliver: <platform>`` still reads the profile's ``<PLATFORM>_HOME_CHANNEL`` and passes preflight exactly when
     a primary route serves that chat, as an explicit ``<platform>:<chat>`` does; the gateway's bot sends it."""
@@ -295,7 +303,11 @@ def test_worker_without_any_registration_reads_the_satellite_home(tmp_path, monk
     try:
         with patch("gateway.config.load_gateway_config", return_value=_config(None)):
             for chat in ("chat-1", "chat-2"):
-                monkeypatch.setenv(f"{feature.platform.upper()}_HOME_CHANNEL", chat)
+                if saved_in == "env":
+                    monkeypatch.setenv(f"{feature.platform.upper()}_HOME_CHANNEL", chat)
+                else:  # what ``/sethome`` writes; greptile #159651
+                    (home / "config.yaml").write_text(yaml.safe_dump(
+                        {"platforms": {feature.platform: {"home_channel": {"chat_id": chat}}}}), encoding="utf-8")
                 target, error = resolve_cron_destination(job, feature.platform)
                 verdicts[chat] = (target and target["chat_id"], error is None, _preflight_check_delivery(job) is None)
     finally:

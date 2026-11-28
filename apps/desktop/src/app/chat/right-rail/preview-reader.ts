@@ -73,6 +73,12 @@ const IFRAME_UNREADABLE_NOTE =
  *  this crosses the gateway into model context. Page with start/count. */
 export const PREVIEW_READ_MAX_CHARS = 24_000
 
+/** A <webview>'s executeJavaScript can hang instead of rejecting while the guest is not
+ *  dom-ready (still booting / just navigated), and read_preview would then sit on the
+ *  gateway's whole read budget waiting for a page that never answers. Bound the read so
+ *  a not-ready page falls through to the identity answer ("retry in a moment"). */
+const PREVIEW_READ_TIMEOUT_MS = 3_000
+
 const readers = new Map<string, PageReader>()
 
 /** Register a live preview's page reader; returns an idempotent unregister. */
@@ -121,6 +127,19 @@ function withMultiNote(note: string | undefined, multi: boolean): string | undef
   return note ? `${note} ${extra}` : extra
 }
 
+/** Resolve `work`, or reject with a `what timed out` error after `ms` — whichever comes
+ *  first. Both promises keep their handlers attached, so a late rejection from `work` is
+ *  never unhandled, and the timer is cleared on either outcome. */
+function withTimeout<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${what} timed out after ${ms}ms`)), ms)
+  })
+
+  return Promise.race([work, late]).finally(() => clearTimeout(timer))
+}
+
 /** Read the preview the user is looking at, among the tabs `sessionId` (the
  *  requesting session; default the focused one) can see. Null only when that
  *  session has no tab open at all. */
@@ -142,7 +161,7 @@ export async function readActivePreview(
 
   if (reader) {
     try {
-      const page = await reader()
+      const page = await withTimeout(reader(), PREVIEW_READ_TIMEOUT_MS, 'preview read')
 
       // Say it on the page. Reading is by far the cheapest thing the agent
       // does — a few hundredths of a second against a model round trip either

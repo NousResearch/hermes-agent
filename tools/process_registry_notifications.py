@@ -20,8 +20,21 @@ class ProcessNotificationBatch:
     notifications: tuple[tuple[dict, str], ...]
 
     def _live(self, registry) -> list:
-        return [(event, text) for event, text in self.notifications
-                if not registry.is_completion_consumed(event.get("session_id", ""))]
+        live = []
+        for event, text in self.notifications:
+            if registry.is_completion_consumed(event.get("session_id", "")):
+                continue
+            # A watch match or heartbeat queued just before the process was killed or exited
+            # is stale by delivery time ("stale flush"): dropping it saves a billed turn the
+            # agent would spend saying "(Stale flush — ignoring.)". Re-run only when the
+            # process is still tracked as running; test doubles without the probe keep the
+            # old behaviour.
+            if event.get("type") in ("watch_match", "heartbeat"):
+                running = getattr(registry, "is_session_running", None)
+                if callable(running) and not running(event.get("session_id", "")):
+                    continue
+            live.append((event, text))
+        return live
 
     def render(self, registry) -> str | None:
         messages = [text for _event, text in self._live(registry)]

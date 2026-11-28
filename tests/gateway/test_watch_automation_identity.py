@@ -8,11 +8,11 @@ def test_watch_event_identity_survives_retry_but_not_another_hit():
     registry = ProcessRegistry()
     session = ProcessSession(id='proc-watch', command='owned', task_id='task',
         session_key='agent:main:local:dm:owned', parent_session_id='parent')
-    session.watch_patterns = ['READY']
-    registry._check_watch_patterns(session, 'READY\n')
+    session.watch_patterns = ['BUILD READY']
+    registry._check_watch_patterns(session, 'BUILD READY\n')
     first = registry.completion_queue.get_nowait()
     session._watch_cooldown_until = 0
-    registry._check_watch_patterns(session, 'READY\n')
+    registry._check_watch_patterns(session, 'BUILD READY\n')
     second = registry.completion_queue.get_nowait()
     registry._emit_watch_disabled(session, 0, 'test cap')
     disabled = registry.completion_queue.get_nowait()

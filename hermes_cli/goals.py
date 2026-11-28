@@ -16,6 +16,7 @@ import re
 import subprocess
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone, UTC
 from pathlib import Path
@@ -451,6 +452,12 @@ class GoalState:
     contract: GoalContract = field(default_factory=GoalContract)
     # /goal gate add <cmd>: ALL must pass before the judge may declare done.
     gates: list[GoalGate] = field(default_factory=list)
+    resume_token: str | None = None
+
+    @property
+    def continuation_generation(self) -> float | str:
+        """Name this run of the goal without invalidating pre-upgrade wakes before a resume."""
+        return self.resume_token or self.created_at
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False)
@@ -473,6 +480,7 @@ class GoalState:
             waiting_on_session=(str(data["waiting_on_session"]) if data.get("waiting_on_session") else None),
             waiting_reason=data.get("waiting_reason"),
             contract=GoalContract.from_dict(data.get("contract")),
+            resume_token=data.get("resume_token"),
             gates=[
                 GoalGate.from_dict(g) for g in (data.get("gates") or [])
                 if isinstance(g, dict) and str(g.get("command") or "").strip()
@@ -1074,6 +1082,11 @@ _JUDGE_CONFIG_HINT = (
 )
 
 
+class _GoalSuperseded(Exception):
+    """The stored goal changed (paused, cleared or replaced) while ``evaluate_after_turn`` ran its gates
+    or its judge: the turn's result must not be written over that change."""
+
+
 class GoalManager:
     """Per-session goal state + continuation decisions.
 
@@ -1086,6 +1099,7 @@ class GoalManager:
         self.session_id = session_id
         self.default_max_turns = int(default_max_turns or DEFAULT_MAX_TURNS)
         self._state: Optional[GoalState] = load_goal(session_id)
+        self._judged: Optional[dict[str, Any]] = None  # the stored goal evaluate_after_turn last read
 
     def refresh(self) -> None:
         """Re-read state from the DB (another writer, e.g. a tool, moved it)."""
@@ -1135,8 +1149,47 @@ class GoalManager:
     # --- mutation -----------------------------------------------------
 
     def _save(self) -> Optional[GoalState]:
-        save_goal(self.session_id, self._state)
+        if self._judged is None:
+            save_goal(self.session_id, self._state)
+        else:
+            self._save_judged(self._judged)
+            self._judged = asdict(self._state)
         return self._state
+
+    def _save_judged(self, before: dict[str, Any]) -> None:
+        # The model/gates ran without the store lock. User commands win both before and after the
+        # final read; an unreadable goal is not evidence that nothing was stored.
+        db = _get_session_db()
+        if db is None:
+            _warn_dropped_write("GoalManager", "goal", self.session_id)
+            return  # In-memory bootstrap; do not reacquire the store and attempt a blind write.
+        meta, key = db.state_meta, _meta_key(self.session_id)
+        try:
+            raw = meta.get(key)
+            stored = GoalState.from_json(raw) if raw is not None else None
+        except Exception as exc:
+            logger.warning("GoalManager: cannot verify judged state for %s", self.session_id, exc_info=True)
+            self.refresh()
+            raise _GoalSuperseded("the stored goal could not be verified") from exc
+        if stored is not None:
+            changed = {name for name, value in asdict(stored).items() if before[name] != value}
+            # A gate edit during execution invalidates that pass before its intermediate save
+            # can adopt the new list as the baseline. Those gates have not run this turn.
+            if (stored.status != "active" or changed & {"created_at", "resume_token", "gates"}
+                    or (self._state.status == "done" and changed & {"goal", "contract", "subgoals"})):
+                self._state = None if stored.status == "cleared" else stored
+                raise _GoalSuperseded
+            for name in changed:
+                setattr(self._state, name, getattr(stored, name))
+        try:
+            saved = meta.compare_and_set(key, raw, self._state.to_json())
+        except Exception as exc:
+            logger.warning("GoalManager: cannot persist judged state for %s", self.session_id, exc_info=True)
+            self.refresh()
+            raise _GoalSuperseded("the judged goal could not be recorded") from exc
+        if not saved:
+            self.refresh()
+            raise _GoalSuperseded
 
     def _require_goal(self) -> GoalState:
         if self._state is None or not self.has_goal():
@@ -1188,6 +1241,8 @@ class GoalManager:
             return None
         self._state.status = "active"
         self._state.paused_reason = None
+        # A resume schedules fresh work: neither a queued wake nor a judge from before it owns it.
+        self._state.resume_token = uuid.uuid4().hex
         self._state.clear_wait()   # resuming starts fresh
         if reset_budget:
             self._state.turns_used = 0
@@ -1476,7 +1531,23 @@ class GoalManager:
     ) -> dict[str, Any]:
         """Run gates + judge and update state. Return a decision dict (``status``, ``should_continue``,
         ``continuation_prompt``, ``verdict``, ``reason``, ``message``). Both real user prompts and our
-        own continuations increment ``turns_used`` — both consume model budget."""
+        own continuations increment ``turns_used`` — both consume model budget. Pause, clear, replace
+        or resume during the gates or judge supersedes that evaluation, without overwriting the goal."""
+        self._judged = asdict(self._state) if self._state is not None else None
+        try:
+            return self._judge_turn(last_response, background_processes=background_processes,
+                                    active_delegations=active_delegations)
+        except _GoalSuperseded as exc:
+            return _decision(self._state.status if self._state else None, False, None, "superseded",
+                             str(exc) or "the goal changed while this turn was judged", "")
+        finally:
+            self._judged = None
+
+    def _judge_turn(
+        self, last_response: str, *, background_processes: Optional[list[dict[str, Any]]] = None,
+        active_delegations: int = 0,
+    ) -> dict[str, Any]:
+        """``evaluate_after_turn``'s body; every write goes through ``_save``."""
         state = self._state
         if state is None or state.status != "active":
             return _decision(state.status if state else None, False, None, "inactive", "no active goal", "")

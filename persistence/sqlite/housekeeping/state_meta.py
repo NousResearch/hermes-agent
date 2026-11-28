@@ -30,6 +30,19 @@ class SQLiteStateMetaRepository:
         with translated():
             self._store.holder().set_meta(key, value)
 
+    def compare_and_set(self, key: str, expected: str | None, value: str) -> bool:
+        if not key:
+            raise ValueError("state_meta key must be non-empty")
+        with translated():
+            holder = self._store.holder()
+            if expected is None:
+                return holder._write_rowcount(
+                    "INSERT INTO state_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO NOTHING", (key, value),
+                ) == 1
+            return holder._write_rowcount(
+                "UPDATE state_meta SET value = ? WHERE key = ? AND value = ?", (value, key, expected),
+            ) == 1
+
     def list_prefix(self, prefix: str) -> tuple[StateMetaEntry, ...]:
         if not prefix:
             raise ValueError("state_meta prefix must be non-empty")

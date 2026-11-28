@@ -1691,7 +1691,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         # See #60671.
         if pending_event is not None:
             next_source = getattr(pending_event, "source", None) or source
-            if self._is_goal_continuation_event(pending_event) and not self._goal_still_active_for_session(session_id):
+            if self._stale_goal_continuation(pending_event, session_id):
                 logger.info(
                     "Discarding stale goal continuation for session %s — goal is no longer active",
                     session_key or "?",

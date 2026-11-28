@@ -330,9 +330,12 @@ async def execute_admission(authority, ref, row):
     # receipted before any drain and is never re-sent, so a drain starting now runs it rather than
     # answering it with the drain notice and settling it completed unrun (#138123, authority route).
     event._admitted_before_drain = event.internal is True
-    # Only an adapter task awaiting a native waiter drains the adapter's pending slot after this turn;
-    # a relay or restart-recovered row has none, so nothing may be parked there for it (#137565).
-    event._adapter_drains_after = native
+    # Only the adapter task awaiting a native waiter (``_process_message_background``) drains the
+    # adapter's pending slot after this turn. A relay or restart-recovered row has no waiter, and a busy
+    # follow-up's observer (``dispatch_shared_busy``) sends the reply but drains nothing, so nothing may
+    # be parked there for either (#137565, #145865).
+    from gateway.session_producer_lifecycle import observed_by_busy_sender
+    event._adapter_drains_after = native and not observed_by_busy_sender(authority, row['admission_id'])
     if event.internal and 'gateway_session_id' in event.metadata:
         # Main's ownership proof (802fd5782f3): the session the pre-claim check just validated, so the
         # turn's resolver never re-reads (and on a transient failure drops) an admitted completion.

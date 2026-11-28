@@ -159,7 +159,12 @@ class TestGoalMigratesOnRotation:
             store = open_persistence(profile_scope(home=tmp_path))
             try:
                 with patch.object(goals, "_get_session_db", return_value=store):
-                    goals.save_goal(parent, goals.GoalState(goal="finish the migration"))
+                    goal = goals.GoalManager(parent)
+                    original = goal.set("finish the migration")
+                    goal.pause()
+                    resumed = goal.resume()
+                    assert resumed is not None and resumed.created_at == original.created_at
+                    resume_generation = resumed.continuation_generation
 
                     agent._compress_context(_msgs(), "sys", approx_tokens=120_000)
                     child = agent.session_id
@@ -168,6 +173,7 @@ class TestGoalMigratesOnRotation:
                     migrated = goals.load_goal(child)
                     assert migrated is not None
                     assert migrated.goal == "finish the migration"
+                    assert migrated.continuation_generation == resume_generation
             finally:
                 store.close()
             goals._DB_CACHE.clear()

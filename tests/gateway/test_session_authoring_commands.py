@@ -167,8 +167,9 @@ class _JudgeModel(Model):
 
 
 @pytest.mark.platforms("linux")
-def test_local_goal_kickoff_is_judged_and_continued_by_the_gateway(tmp_path):
-    """The client submits /goal's kickoff; the gateway's post-turn judge then admits the continuation
+@pytest.mark.parametrize("resume", [False, True], ids=["kickoff", "resume"])
+def test_local_goal_command_is_judged_and_continued_by_the_gateway(tmp_path, resume):
+    """The client submits /goal's kickoff or resume; the post-turn judge then admits the continuation
     into the session's own FIFO (the local adapter has no FIFO reader) until the judge says done."""
     root = Path(__file__).resolve().parents[2]
     home, user, work = tmp_path / 'state', tmp_path / 'user', tmp_path / 'work'
@@ -193,6 +194,11 @@ def test_local_goal_kickoff_is_judged_and_continued_by_the_gateway(tmp_path):
             sid = (await rpc(ws, 'session.create', request_id='goal', source='tui', toolsets=[],
                              cwd=str(work)))['result']['session_id']
             kickoff = (await rpc(ws, 'slash.exec', session_id=sid, command='goal write the probe'))['result']
+            if resume:
+                paused = (await rpc(ws, 'slash.exec', session_id=sid, command='goal pause'))['result']
+                assert 'Goal paused' in paused['output'], paused
+                kickoff = (await rpc(ws, 'slash.exec', session_id=sid, command='goal resume'))['result']
+                assert 'standing goal' in kickoff['message'], kickoff
             await rpc(ws, 'prompt.submit', session_id=sid, input_id='kick', text=kickoff['message'])
             deadline = time.monotonic() + 60
             while True:
@@ -214,7 +220,8 @@ def test_local_goal_kickoff_is_judged_and_continued_by_the_gateway(tmp_path):
         thread.join(timeout=5)
     assert out['status'].startswith('✓ Goal done (2/20 turns)'), out['status']
     users = [m['content'] for m in out['messages'] if m.get('role') == 'user']
-    assert users[0] == 'write the probe' and 'standing goal' in users[1], users
+    assert 'write the probe' in users[0] and ('standing goal' in users[0]) == resume, users
+    assert 'standing goal' in users[1], users
     with sqlite3.connect(f'file:{home / "state.db"}?mode=ro', uri=True) as db:
         rows = db.execute('SELECT request_id, principal_id FROM session_admissions').fetchall()
     kick = [r for r in rows if r[0] == 'kick']

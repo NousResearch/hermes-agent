@@ -22,6 +22,7 @@ from hermes_dir_acl import make_user_dir, unusable_dir_remedy
 from gateway.platforms.base_log_safety import _log_safe_path, describe_proxy_error, env_proxy_for_redaction, safe_proxy_url_for_log, safe_url_for_log
 from gateway.platforms.base_image_sniff import _looks_like_image
 from gateway.platforms.base_media_flags import pad_inline_flags
+from gateway.platforms.pending_drain.drain import spawn_drain_task
 from gateway.platforms.base_kanban_media import _kanban_attachment_roots, _kanban_board_db_paths
 from gateway.runtime_footer import footer_onto_photo_caption, send_footer_unless_captioned
 from gateway.platforms.session_model import _SessionModelSettingsMixin
@@ -4326,7 +4327,11 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                 logger.debug(
                     "[%s] Late-arrival pending message during cleanup — spawning drain task",
                     self.name)
-                self._spawn_drain_task(late_pending, session_key)
+                metadata = late_pending.metadata or {}
+                if current_task is not None and metadata.get("goal_generation") is not None:
+                    current_task._goal_drain = (session_key, metadata.get("gateway_session_id"),
+                                                metadata["goal_generation"])
+                spawn_drain_task(self, late_pending, session_key)
         elif current_task is not None and self._session_tasks.get(session_key) is current_task:
             self._cleanup_finished_session_task(session_key, interrupt_event)
 
@@ -4426,12 +4431,16 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                 pending_event = self._pending_messages[session_key]
                 delay = self._requeue_backoff_delay(session_key, pending_event, event)
                 if not delay:  # a backed-off event stays queued until the drain task wakes
+                    metadata = pending_event.metadata or {}
+                    if metadata.get("goal_generation") is not None:
+                        asyncio.current_task()._goal_drain = (session_key, metadata.get("gateway_session_id"),
+                                                              metadata["goal_generation"])
                     self._pending_messages.pop(session_key)
                 logger.debug("[%s] Processing queued follow-up message", self.name)
                 self._clear_session_guard(session_key)
                 await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_typing_metadata, event=event)
                 await self._fire_post_delivery_callback(session_key, generation)  # done before the follow-up starts
-                self._spawn_drain_task(pending_event, session_key, delay=delay)
+                spawn_drain_task(self, pending_event, session_key, delay=delay)
                 return  # Drain task owns the session now.
         except asyncio.CancelledError:
             expected = asyncio.current_task() in self._expected_cancelled_tasks
@@ -4457,6 +4466,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             # Flush any timer that missed the in-band drain, then reconcile ownership.
             await self._flush_text_debounce_now(session_key)
             self._finish_session_task(session_key, interrupt_event)
+            asyncio.current_task()._goal_drain = None
 
     _REQUEUE_BACKOFF_INITIAL_SECONDS = 0.25
     # Kept at 1s: nothing wakes the back-off sleep, so a genuine message merged into the slot
@@ -4492,33 +4502,6 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             "[%s] Handler re-queued a pending event for %s again (session busy elsewhere); "
             "backing off %.2fs", self.name, session_key, delay)
         return delay
-
-    def _spawn_drain_task(self, pending_event: MessageEvent, session_key: str,
-                          delay: float = 0.0) -> None:
-        """Hand the session to a fresh task for a queued follow-up — never recurse (chained
-        follow-ups grew the C stack to SIGSEGV). Clearing (not deleting) the Event keeps the guard
-        live for concurrent inbound; ownership moves so stale-lock detection works. With ``delay``
-        the event stays in ``_pending_messages`` and the new owner task pops the slot only after
-        sleeping, so a cancel/discard during the back-off needs no put-back and can't drop a
-        newer message."""
-        self._clear_session_guard(session_key)
-        # Capture the guard this drain owns now: a /stop//new guard swapped in during the
-        # back-off must survive the slot-empty exit (#48300).
-        guard = self._active_sessions.get(session_key)
-        self._track_session_task(
-            session_key,
-            asyncio.create_task(self._drain_after(pending_event, session_key, delay, guard)))
-
-    async def _drain_after(self, pending_event: MessageEvent, session_key: str, delay: float,
-                           guard: Optional[asyncio.Event]) -> None:
-        if delay > 0:
-            await asyncio.sleep(delay)
-            await self._flush_text_debounce_now(session_key)  # as every other task exit does
-            pending_event = self._pending_messages.pop(session_key, None)
-            if pending_event is None:  # consumed elsewhere during the back-off
-                self._cleanup_finished_session_task(session_key, guard)
-                return
-        await self._process_message_background(pending_event, session_key)
 
     def _clear_session_guard(self, session_key: str) -> None:
         """Clear (not delete) the session's interrupt Event so the guard stays live for inbound."""

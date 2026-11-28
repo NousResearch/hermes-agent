@@ -947,3 +947,167 @@ def test_goal_session_db_is_the_registry_shared_handle(hermes_home):
     finally:
         goals._DB_CACHE.clear()
         db.close()
+
+
+class TestJudgedGoalChangedMeanwhile:
+    """``evaluate_after_turn`` saves what it read before the gates and the judge ran (seconds). A
+    write another manager made meanwhile wins; with no stored goal there is nothing to write over."""
+
+    @staticmethod
+    def _judge_then(action):
+        def judge(*_args, **_kwargs):
+            action()
+            return ("continue", "one step remains", False, None, False)
+        return judge
+
+    @pytest.mark.parametrize("change", ["clear", "pause", "new_goal"])
+    def test_pause_clear_or_new_goal_during_the_judge_is_not_written_over(self, hermes_home, change):
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager, load_goal
+
+        judged = GoalManager(session_id="judged-meanwhile")
+        first = judged.set("ship the PR").created_at
+        act = {"clear": lambda: GoalManager("judged-meanwhile").clear(),
+               "pause": lambda: GoalManager("judged-meanwhile").pause(),
+               "new_goal": lambda: GoalManager("judged-meanwhile").set("write the docs")}[change]
+        with patch.object(goals, "judge_goal", self._judge_then(act)):
+            decision = judged.evaluate_after_turn("partial work")
+        assert decision["should_continue"] is False and decision["verdict"] == "superseded"
+        stored = load_goal("judged-meanwhile")
+        assert {"clear": "cleared", "pause": "paused", "new_goal": "active"}[change] == stored.status
+        assert (stored.created_at != first) is (change == "new_goal")
+        assert stored.turns_used == 0
+
+    def test_a_subgoal_added_during_the_judge_is_kept(self, hermes_home):
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager, load_goal
+
+        judged = GoalManager(session_id="judged-subgoal")
+        judged.set("ship the PR")
+        add = lambda: GoalManager("judged-subgoal").add_subgoal("tag the release")
+        with patch.object(goals, "judge_goal", self._judge_then(add)):
+            decision = judged.evaluate_after_turn("partial work")
+        assert decision["should_continue"] is True and "tag the release" in decision["continuation_prompt"]
+        stored = load_goal("judged-subgoal")
+        assert stored.subgoals == ["tag the release"] and stored.turns_used == 1
+
+    def test_without_a_session_db_the_judged_goal_still_continues(self, hermes_home, monkeypatch):
+        """Before the session DB is available the goal lives in memory only (``_warn_dropped_write``):
+        an absent stored goal is not a goal changed by someone else."""
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        monkeypatch.setattr(goals, "_get_session_db", lambda: None)
+        mgr = GoalManager(session_id="no-db-yet")
+        mgr.set("ship the PR")
+        with patch.object(goals, "judge_goal", return_value=("continue", "one step remains", False, None, False)):
+            decision = mgr.evaluate_after_turn("partial work")
+        assert decision["should_continue"] is True and decision["verdict"] == "continue"
+        assert mgr.state.turns_used == 1
+
+
+@pytest.mark.parametrize("boundary", ["failed_read", "control_after_read"])
+def test_pro_review_preserves_a_confirmed_clear(hermes_home, monkeypatch, boundary):
+    from hermes_cli import goals
+
+    sid = "pro-review-judged-clear"
+    judged = goals.GoalManager(sid)
+    judged.set("ship the PR")
+    operator = goals.GoalManager(sid)
+    db = goals._get_session_db()
+    assert db is not None
+    meta = db.state_meta
+    get_original = type(meta).get
+    armed = False
+    observed = []
+
+    def clear_now():
+        operator.clear()
+        raw = get_original(meta, goals._meta_key(sid))
+        observed.append(goals.GoalState.from_json(raw).status)
+
+    def get_with_control(repo, key):
+        nonlocal armed
+        if armed and key == goals._meta_key(sid):
+            armed = False
+            if boundary == "failed_read":
+                raise OSError("one-shot final goal validation read failure")
+            snapshot = get_original(repo, key)
+            clear_now()
+            return snapshot
+        return get_original(repo, key)
+
+    def judge(*_args, **_kwargs):
+        nonlocal armed
+        if boundary == "failed_read":
+            clear_now()
+        armed = True
+        return ("continue", "one step remains", False, None, False)
+
+    monkeypatch.setattr(type(meta), "get", get_with_control)
+    monkeypatch.setattr(goals, "judge_goal", judge)
+    decision = judged.evaluate_after_turn("partial work")
+    assert observed == ["cleared"]
+    stored = goals.load_goal(sid)
+    assert stored is not None and stored.status == "cleared"
+    assert decision["should_continue"] is False
+
+
+@pytest.mark.parametrize("criterion", ["gate", "subgoal"])
+def test_pro_review_rejects_done_based_on_superseded_criteria(hermes_home, monkeypatch, criterion):
+    from hermes_cli import goals
+
+    sid = "pro-review-judged-done"
+    judged = goals.GoalManager(sid)
+    judged.set("ship the PR")
+
+    def judge(*_args, **_kwargs):
+        operator = goals.GoalManager(sid)
+        if criterion == "gate":
+            operator.add_gate("false")
+        else:
+            operator.add_subgoal("tag the release before completing")
+        return ("done", "original criteria met", False, None, False)
+
+    monkeypatch.setattr(goals, "judge_goal", judge)
+    decision = judged.evaluate_after_turn("original criteria completed")
+    stored = goals.load_goal(sid)
+    assert stored is not None
+    assert bool(stored.gates if criterion == "gate" else stored.subgoals)
+    assert stored.status != "done"
+    assert decision["verdict"] != "done"
+
+
+@pytest.mark.parametrize("edit_during_gate", [False, True])
+def test_pro_review_gate_added_during_check_cannot_be_skipped(hermes_home, monkeypatch, edit_during_gate):
+    from hermes_cli import goals
+
+    sid = "pro-review-gates-in-flight"
+    judged = goals.GoalManager(sid)
+    judged.set("ship the PR")
+    judged.add_gate("initial check")
+    ran = []
+
+    def run(gate, *, cwd):
+        ran.append(gate.command)
+        if gate.command == "new required check":
+            return False, 1, "not ready"
+        if edit_during_gate and ran == ["initial check"]:
+            goals.GoalManager(sid).add_gate("new required check")
+        return True, 0, "passing"
+
+    monkeypatch.setattr(goals, "_gate_workspace", lambda: (hermes_home, None))
+    monkeypatch.setattr(goals, "run_gate", run)
+    monkeypatch.setattr(goals, "judge_goal", lambda *_args, **_kwargs: ("done", "initial check passed", False, None, False))
+    decision = judged.evaluate_after_turn("initial work finished")
+    stored = goals.load_goal(sid)
+    assert stored is not None
+    if edit_during_gate:
+        assert [gate.command for gate in stored.gates] == ["initial check", "new required check"]
+        assert stored.status == "active" and decision["verdict"] != "done"
+        retry = goals.GoalManager(sid).evaluate_after_turn("recheck with the new criteria")
+        assert ran == ["initial check", "initial check", "new required check"]
+        assert retry["verdict"] == "gate_failed"
+    else:
+        assert ran == ["initial check"]
+        assert stored.status == decision["verdict"] == "done"

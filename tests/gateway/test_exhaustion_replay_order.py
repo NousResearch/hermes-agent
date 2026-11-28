@@ -131,3 +131,35 @@ async def test_exhausted_request_is_parked_only_where_an_adapter_task_drains_it(
     await authority._drain(admission.ref)
     parked = queued_after_reset[0]
     assert (parked is not None and parked.text == "plan my week") is live_waiter, parked
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("waiter", ["adapter_task", "busy_observer"])
+async def test_exhausted_request_is_parked_only_for_a_waiter_that_drains(native_fifo, monkeypatch, waiter):
+    """The re-run goes back in the adapter's head slot, which only the adapter task awaiting the turn
+    drains. A busy follow-up's observer (``dispatch_shared_busy``) sends the reply but drains nothing:
+    parked there, the re-run would wait for an unrelated message, so it is not parked (#145865)."""
+    native = native_fifo
+    runner, authority, adapter = native.runner, native.authority, native.adapter
+    _event, receipt = await _admit(native, "A")
+    authority.native_waiters.add(receipt.admission_id)
+    if waiter == "busy_observer":
+        from gateway.session_producer_lifecycle import _observed
+        _observed(authority).add(receipt.admission_id)
+    parked = []
+
+    async def turn(event, source, session_key, run_generation):
+        entry = runner.session_store.lookup_by_session_key(session_key)
+        captured = execution_result.get()
+        result = {"failed": True, "compression_exhausted": True, "messages": []}
+        captured["result"] = result
+        await runner._hmwa_compression_exhaustion_reset(result, "copy", entry, session_key, source, event=event)
+        parked.append(adapter._pending_messages.get(session_key))
+        return "reply"
+
+    monkeypatch.setattr(runner, "_handle_message_with_agent", turn)
+    await authority._drain(receipt.ref)
+    if waiter == "adapter_task":
+        assert parked and parked[0] is not None and parked[0].text == "A"
+    else:
+        assert parked == [None], "a re-run was parked in a slot nothing drains"

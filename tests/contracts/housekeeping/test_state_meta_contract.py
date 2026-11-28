@@ -44,6 +44,19 @@ def test_values_are_opaque_strings(backend, scope_a):
     assert store_a.state_meta.get("empty") == ""
 
 
+def test_compare_and_set_requires_the_exact_value_or_absence(backend, scope_a, scope_b):
+    repo = backend.open(scope_a).state_meta
+    other = backend.open(scope_b).state_meta
+    other.set("goal:s1", "foreign")
+    assert repo.compare_and_set("goal:s1", None, "") is True
+    assert repo.compare_and_set("goal:s1", None, "wrong") is False
+    assert repo.get("goal:s1") == ""
+    assert repo.compare_and_set("goal:s1", "", "cleared") is True
+    assert repo.compare_and_set("goal:s1", "active", "done") is False
+    assert repo.get("goal:s1") == "cleared"
+    assert other.get("goal:s1") == "foreign"
+
+
 def test_keys_are_literal_not_patterns(backend, scope_a):
     store_a = backend.open(scope_a)
     store_a.state_meta.set("k_1", "underscore")

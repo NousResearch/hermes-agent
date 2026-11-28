@@ -960,6 +960,32 @@ async def test_close_orphaned_sessions_leaves_a_lease_holding_pty_that_is_viewed
     await reg.close_all()
 
 
+def test_process_ancestors_survives_a_procfs_without_proc_stat(monkeypatch):
+    """Ancestry is unknowable on a PID-only procfs, not fatal.
+
+    A procfs mounted ``hidepid=invisible,subset=pid`` (systemd ``ProtectProc`` +
+    ``ProcSubset``, or a userns sandbox) has no ``/proc/stat``. psutil derives
+    ``boot_time()`` from it, so ``parents()`` raises ``FileNotFoundError`` — an
+    ``OSError``, not a ``psutil.Error``. That escaped ``close_orphaned_sessions``
+    and aborted every dashboard chat spawn with "Chat could not start: ...
+    '/proc/stat'" (#151347). "Unreadable" must mean empty, as documented.
+    """
+    import psutil
+
+    from hermes_cli.pty_session import _process_ancestors
+
+    class SubsetProcfsProcess:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def parents(self):
+            raise FileNotFoundError(2, "No such file or directory", "/proc/stat")
+
+    monkeypatch.setattr(psutil, "Process", SubsetProcfsProcess)
+
+    assert _process_ancestors(4321) == set()
+
+
 def test_hosts_pid_tolerates_a_bridge_without_one():
     from hermes_cli.pty_session import PtySession
 

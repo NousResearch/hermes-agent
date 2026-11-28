@@ -149,6 +149,8 @@ export const ko: Translations = {
     noMatch: "검색과 일치하는 세션이 없습니다",
     startConversation: "대화를 시작하면 여기에 표시됩니다",
     noMessages: "메시지가 없습니다",
+    egressTitle: "나가는 요청",
+    egressEmpty: "이 세션의 샌드박스에서 나간 요청이 아직 없습니다",
     untitledSession: "제목 없는 세션",
     deleteSession: "세션 삭제",
     confirmDeleteTitle: "세션을 삭제하시겠습니까?",

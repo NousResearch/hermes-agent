@@ -149,6 +149,8 @@ export const fr: Translations = {
     noMatch: "Aucune session ne correspond à votre recherche",
     startConversation: "Démarrez une conversation pour la voir ici",
     noMessages: "Aucun message",
+    egressTitle: "Requêtes sortantes",
+    egressEmpty: "Aucune requête sortante depuis le bac à sable de cette session",
     untitledSession: "Session sans titre",
     deleteSession: "Supprimer la session",
     confirmDeleteTitle: "Supprimer la session ?",

@@ -31,7 +31,7 @@ from tools.environments.base_output import _popen_bash
 from tools.environments.docker_egress import (
     _EGRESS_LABEL_KEY, _critical_egress_env_names, _egress_enforce_on_docker, _egress_proxy_args_for_docker,
     _egress_reuse_fingerprint, check_docker_env_collisions, check_extra_args_collisions,
-    check_forward_env_collisions, merge_egress_env,
+    check_forward_env_collisions, merge_egress_env, register_egress_sandbox,
 )
 from tools.environments.docker_ownership import (
     hand_back_sandbox_files, reclaim_sandbox_files, strip_sandbox_privileges)
@@ -773,6 +773,7 @@ class DockerEnvironment(BaseEnvironment):
         else:  # it never stopped, so no teardown stripped what it left
             strip_sandbox_privileges(self._docker_exe, self._container_id)
         reclaim_sandbox_files(self._docker_exe, self._container_id, self._sandbox_mounts)
+        register_egress_sandbox(self._docker_exe, self._container_id, task_id, egress_label)
 
         # Init-time env forwarding args seed the snapshot.
         self._init_env_args = self._build_init_env_args()
@@ -1175,6 +1176,8 @@ class DockerEnvironment(BaseEnvironment):
             logger.error("Recovery: init_session failed in new container: %s", e)
             return False
 
+        register_egress_sandbox(self._docker_exe, self._container_id or "", self._task_id,
+                                self._labels.get(_EGRESS_LABEL_KEY, "off"))
         logger.info("Recovery successful — new container %s", (self._container_id or "")[:12])
         self._mark_recreated()
         return True

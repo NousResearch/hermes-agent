@@ -548,3 +548,43 @@ def test_stats_reports_provenance_total_matching_coverage(sources_mod, ledger: P
     stats = warnings[0]
     # 4 sentences, 3 with provenance (the both-marked sentence counts once).
     assert "4 prose sentence(s), 3 with declared provenance (75%)" in stats
+
+
+_JP_PAGE = (
+    "料金プラン\n"
+    "料金は月額2,000円で、学生は半額になります。\n"
+)
+
+
+def test_quote_accepts_verbatim_cjk_text(sources_mod, ledger: Path) -> None:
+    """Regression for #145102: a Japanese sentence has no spaces, so a verbatim
+    quote must be measured in characters, not whitespace words."""
+    sources_mod.add_sources(ledger, ["https://a.example"])
+    entry = sources_mod.attach_quote(
+        ledger, 1, "料金は月額2,000円で、学生は半額になります。", _JP_PAGE
+    )
+    assert len(entry["quotes"]) == 1
+
+
+def test_quote_still_rejects_tiny_cjk_text(sources_mod, ledger: Path) -> None:
+    sources_mod.add_sources(ledger, ["https://a.example"])
+    with pytest.raises(SystemExit) as exc:
+        sources_mod.attach_quote(ledger, 1, "料金です。", _JP_PAGE)
+    assert "too short" in str(exc.value)
+
+
+def test_min_coverage_counts_cjk_sentences(sources_mod, ledger: Path, tmp_path: Path) -> None:
+    """Regression for #145102: a Japanese draft must yield prose sentences so the
+    coverage gate measures it instead of passing vacuously on 0 sentences."""
+    sources_mod.add_sources(ledger, ["https://a.example"])
+    text = (
+        "# 料金\n\n"
+        "料金は月額2,000円です[1]。学生は半額になります[1]。無料体験は14日間あります。\n\n"
+        "Sources:\n[1] https://a.example\n"
+    )
+    # 2 of 3 sentences cited
+    code, errors, _ = _verify(sources_mod, ledger, tmp_path, text, min_coverage=0.9)
+    assert code == 1
+    assert any("coverage" in e for e in errors)
+    code, errors, _ = _verify(sources_mod, ledger, tmp_path, text, min_coverage=0.5)
+    assert (code, errors) == (0, [])

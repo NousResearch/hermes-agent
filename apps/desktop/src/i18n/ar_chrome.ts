@@ -424,7 +424,11 @@ export const arChrome = {
     },
     approvalMode: {
       perProfile: 'حسب الملف الشخصي',
-      perProfileDescription: 'يُضبط وضع الموافقة لكل ملف شخصي على حدة. افتح بوتًا أو ملفًا شخصيًا لتغيير وضعه.'
+      perProfileDescription: 'يُضبط وضع الموافقة لكل ملف شخصي على حدة. افتح بوتًا أو ملفًا شخصيًا لتغيير وضعه.',
+      sessionYolo: 'YOLO',
+      sessionYoloAriaLabel: mode => `وضع الموافقة: ${mode} · YOLO مفعّل لهذه المحادثة`,
+      sessionYoloRow: 'YOLO لهذه المحادثة',
+      sessionYoloDescription: 'تجاوز طلبات الموافقة في هذه المحادثة فقط'
     },
     statusbar: {
       unknown: 'غير معروف',

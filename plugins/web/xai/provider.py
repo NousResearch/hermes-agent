@@ -193,12 +193,14 @@ class XAIWebSearchProvider(BaseWebSearchProvider):
 
     @staticmethod
     def _collect_output_text(response_data: dict[str, Any]) -> tuple[list[str], list[dict[str, Any]]]:
-        """(text_blocks, annotations) from ``response.output`` message chunks."""
+        """(text_blocks, annotations) from ``response.output`` message chunks. xAI's
+        ``phase: "commentary"`` narration items are skipped unless they are all there is."""
         output = response_data.get("output")
+        messages = [i for i in (output if isinstance(output, list) else []) if isinstance(i, dict) and i.get("type") == "message"]
         chunks = [
             chunk
-            for item in (output if isinstance(output, list) else [])
-            if isinstance(item, dict) and item.get("type") == "message" and isinstance(item.get("content"), list)
+            for item in ([m for m in messages if m.get("phase") != "commentary"] or messages)
+            if isinstance(item.get("content"), list)
             for chunk in item["content"]
             if isinstance(chunk, dict) and chunk.get("type") == "output_text"
         ]

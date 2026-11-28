@@ -6091,7 +6091,7 @@ def test_ws_orphan_activity_gate_unreadable_summary_stays_eligible(monkeypatch):
     assert server._ws_orphan_turn_activity_is_fresh({"agent": agent2}) is False
 
 
-def test_init_session_fires_reset_hook(monkeypatch):
+def test_init_session_does_not_fire_reset_hook(monkeypatch):
     hooks = []
 
     class _FakeWorker:
@@ -6124,7 +6124,7 @@ def test_init_session_fires_reset_hook(monkeypatch):
             history=[],
             cols=80,
         )
-        assert ("on_session_reset", "session-key") in hooks
+        assert hooks == []
     finally:
         server._sessions.pop(sid, None)
 

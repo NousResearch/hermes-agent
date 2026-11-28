@@ -200,6 +200,16 @@ cosmetic edits do not request a cache-breaking live MCP reload. Busy overrides
 remain session-scoped; composer model changes use `session.mutate`, never global
 `config.set`. Discovery can refresh provider metadata, but never starts inference.
 
+## Legacy session boundaries
+
+Agent construction and same-ID resume do not emit `on_session_reset`. Legacy UI `/new`
+first creates the replacement, then calls `session.close` on the predecessor with
+`reset_to_session_id` set to the replacement's live runtime ID. The close owner validates
+the same client/profile, finalizes the predecessor, then emits exactly one reset with both
+actual stored IDs. Plain create/close and keep-current opens have no reset semantics.
+Canonical transports keep their existing authority-owned lifecycle; this optional close
+parameter is a legacy wire extension, not a new canonical control.
+
 ## Dev commands
 
 ```bash

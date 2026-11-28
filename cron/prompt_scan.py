@@ -7,7 +7,7 @@ import re
 # Single source of truth shared with the install-time scanner (skills_guard): a narrower
 # cron-local copy once let obfuscated directives slip past this runtime tripwire.
 from tools.threat_patterns import EMOJI_TAG_SEQUENCE_RE as _EMOJI_TAG_SEQUENCE_RE
-from tools.threat_patterns import FORGET_RULES_RAW_RE, mask_negated_forget
+from tools.threat_patterns import FORGET_RULES_RAW_RE, mask_negated_forget, patterns_for_ids
 from tools.threat_patterns import INVISIBLE_CHARS as _CRON_INVISIBLE_CHARS
 
 # Logger parity with the origin module (these functions used to log there).
@@ -27,15 +27,19 @@ logger = logging.getLogger("tools.cronjob_tools")
 # against the assembled prompt with this tighter pattern set. Both scanners share the invisible-unicode
 # check. No host is exempt from the auth-header rule: a GitHub allowlist kept leaking via shell expansion
 # (#74667); cron prompts call GitHub through `gh api` or a `--script` instead.
-_CRON_THREAT_PATTERNS = [
+_CRON_PROSE_PATTERNS = [
     (r'ignore\s+(?:\w+\s+)*(?:previous|all|above|prior)\s+(?:\w+\s+)*instructions', "prompt_injection"),
     (r'do\s+not\s+tell\s+the\s+user', "deception_hide"),
     (r'system\s+prompt\s+override', "sys_prompt_override"),
     (r'disregard\s+(?:\w+\s+){0,8}(your|all|any)\s+(?:\w+\s+){0,8}(instructions|rules|guidelines)', "disregard_rules"),
+] + patterns_for_ids((
+    "prompt_injection", "deception_hide", "sys_prompt_override", "disregard_rules",
+), translated_only=True)
+_CRON_THREAT_PATTERNS = _CRON_PROSE_PATTERNS + [
     (r'cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass|id_rsa|id_ed25519|id_ecdsa)', "read_secrets"),
     (r'authorized_keys', "ssh_backdoor"), (r'/etc/sudoers|visudo', "sudoers_mod"),
     (r'rm\s+-rf\s+/', "destructive_root_rm"),
-    # User prompt only (after the [:4] slice below): "forget" is ordinary prose in skill bodies, which
+    # User prompt only (excluded from the prose-only set below): "forget" is ordinary prose in skill bodies, which
     # skills_guard already scans with this same rule at install time.
     (FORGET_RULES_RAW_RE, "forget_rules"),
 ]
@@ -43,7 +47,7 @@ _CRON_THREAT_PATTERNS = [
 # Looser set for the assembled prompt: command-shape patterns are dropped because skill
 # markdown (postmortems, runbooks) legitimately *describes* those commands and skill bodies
 # are vetted at install time — only unambiguous injection directives remain.
-_CRON_SKILL_ASSEMBLED_PATTERNS = _CRON_THREAT_PATTERNS[:4]
+_CRON_SKILL_ASSEMBLED_PATTERNS = _CRON_PROSE_PATTERNS
 
 _CRON_SECRET_VAR_RE = r'\$\{?\w*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)\w*\}?'
 # Obvious leak paths only: secret in the destination URL, in a POST/form body, or in an

@@ -2,6 +2,8 @@ import { act, cleanup, fireEvent, render } from '@testing-library/react'
 import { useRef, useState } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { composerPlainText, insertComposerContentsAtCaret, RICH_INPUT_SLOT } from './rich-editor'
+
 // No global setupFiles registers auto-cleanup, so unmount between tests —
 // otherwise a second render() leaks the first editor and getByTestId('editor')
 // matches multiple nodes.
@@ -47,8 +49,6 @@ function Harness({
   // it lags the DOM until React re-renders (the source of the bug).
   const [draft, setDraft] = useState('')
   const attachments: unknown[] = []
-
-  const composerPlainText = (el: HTMLElement) => el.textContent ?? ''
 
   const setText = (next: string) => {
     draftRef.current = next
@@ -98,7 +98,15 @@ function Harness({
       return
     }
 
-    if (event.key === 'Enter' && !event.shiftKey) {
+    if (event.key === 'Enter' && event.altKey && !event.metaKey && !event.ctrlKey) {
+      event.preventDefault()
+      insertComposerContentsAtCaret(event.currentTarget, '\n')
+      setText(composerPlainText(event.currentTarget))
+
+      return
+    }
+
+    if (event.key === 'Enter' && !event.shiftKey && !event.altKey) {
       event.preventDefault()
 
       const editorText = editorRef.current ? composerPlainText(editorRef.current) : draftRef.current
@@ -135,6 +143,7 @@ function Harness({
   return (
     <div
       contentEditable
+      data-slot={RICH_INPUT_SLOT}
       data-testid="editor"
       onInput={event => setText(composerPlainText(event.currentTarget))}
       onKeyDown={handleKeyDown}
@@ -162,6 +171,24 @@ describe('composer Enter submit — live DOM vs stale composer state (#39630)', 
     })
 
     expect(onSubmit).toHaveBeenCalledWith('hello world')
+  })
+
+  it('inserts a newline on Option+Enter without submitting', async () => {
+    const onSubmit = vi.fn()
+
+    const { getByTestId } = render(
+      <Harness onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={onSubmit} />
+    )
+
+    const editor = getByTestId('editor')
+
+    await act(async () => {
+      editor.textContent = 'first line'
+      fireEvent.keyDown(editor, { altKey: true, key: 'Enter' })
+    })
+
+    expect(composerPlainText(editor)).toBe('first line\n')
+    expect(onSubmit).not.toHaveBeenCalled()
   })
 
   it('queues a fast-typed message while busy instead of draining the queue or cancelling', async () => {

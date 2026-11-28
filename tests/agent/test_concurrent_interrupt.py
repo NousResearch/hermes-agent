@@ -2,7 +2,8 @@
 
 import threading
 import time
-from unittest.mock import MagicMock
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -71,6 +72,9 @@ def _make_agent(monkeypatch):
         def _has_stream_consumers(self):
             return False
 
+        def _tool_result_content_for_active_model(self, _name, result):
+            return result
+
     stub = _Stub()
     # Bind the real methods under test
     stub._execute_tool_calls_concurrent = _ra.AIAgent._execute_tool_calls_concurrent.__get__(stub)
@@ -119,6 +123,73 @@ def test_concurrent_preflight_interrupt_skips_all(monkeypatch):
     agent._invoke_tool.assert_not_called()
 
 
+def test_running_concurrent_interrupt_keeps_unknown_effect(monkeypatch):
+    """A dispatched worker abandoned by /stop may already have acted."""
+    from agent.tool_executor import _ManagedToolResult, execute_tool_calls_concurrent
+
+    agent = _make_agent(monkeypatch)
+    agent._flush_messages_to_session_db = MagicMock(return_value=True)
+    agent._record_file_mutation_result = MagicMock()
+    agent._append_guardrail_observation = MagicMock(side_effect=lambda *a, **k: a[2])
+    started = threading.Event()
+
+    def _middleware(*_args, begin_execution=None, **_kwargs):
+        # Mirror the real dispatch site: the callback is what marks the slot as
+        # "may have started acting" (agent/tool_executor.py::_dispatch_authorized_once).
+        begin_execution(lambda: None)
+        started.set()
+        time.sleep(10)
+        return _ManagedToolResult(
+            result='{"ok": true}', args={}, middleware_trace=[], blocked=False, dispatched=True,
+        )
+
+    def _interrupt_running_worker():
+        assert started.wait(2)
+        agent.interrupt()
+
+    messages = []
+    msg = _FakeAssistantMsg([_FakeToolCall("write_file", call_id="tc_running")])
+    timer = threading.Thread(target=_interrupt_running_worker, daemon=True)
+    timer.start()
+    try:
+        with patch("agent.tool_executor._run_agent_tool_execution_middleware", side_effect=_middleware):
+            execute_tool_calls_concurrent(agent, msg, messages, "test_task", finalize=False)
+    finally:
+        timer.join(2)
+
+    assert [(m.get("effect_disposition"), m.get("execution_status")) for m in messages] == [
+        ("unknown", "cancelled")
+    ]
+
+
+def test_concurrent_keyboard_interrupt_preserves_cancelled_status(monkeypatch):
+    """The worker's explicit cancellation marker must survive durable classification."""
+    from agent.tool_executor import _append_batch_results, _ConcurrentBatch, _ToolCallRef
+
+    agent = _make_agent(monkeypatch)
+    ref = _ToolCallRef("write_file", {}, "task", "tc_ki", [])
+    cancelled = ref.emit_cancelled(agent, time.time())
+    parsed = SimpleNamespace(
+        tool_call=SimpleNamespace(function=SimpleNamespace(name="write_file", arguments="{}")),
+        name="write_file", args={}, middleware_trace=[], parse_error=None, scope_block=None,
+        ref=lambda _task_id: ref,
+    )
+    batch = _ConcurrentBatch(agent, [], "task", [parsed], None)
+    batch.results[0] = SimpleNamespace(
+        ref=ref, result=cancelled, duration=0.0, is_error=True, blocked=False,
+        execution_status="cancelled", data_use=frozenset(),
+    )
+    captured = {}
+
+    def _capture(_agent, _messages, _ref, _result, **kwargs):
+        captured.update(kwargs)
+        return _result, _result, None
+
+    with patch("agent.tool_executor._commit_tool_result", side_effect=_capture):
+        assert _append_batch_results(agent, [], "task", batch, MagicMock())
+    assert (captured["effect_disposition"], captured["execution_status"]) == (
+        "unknown", "cancelled",
+    )
 
 
 def test_clear_interrupt_clears_worker_tids(monkeypatch):
@@ -144,3 +215,93 @@ def test_clear_interrupt_clears_worker_tids(monkeypatch):
         "worker tid — stale interrupt can leak into the next turn"
     )
 
+
+
+def test_worker_returning_inside_the_grace_wait_keeps_its_own_outcome(monkeypatch):
+    """A worker that returns inside the 3s grace wait has a REAL result in its slot.
+
+    The slot is still in ``cancelled_indices`` (snapshotted before the wait), so the
+    interrupt branch used to overwrite the classification with ("unknown", "cancelled")
+    while the stored content was the real success — a cancellation that never happened.
+    """
+    from agent.tool_executor import _append_batch_results, _ConcurrentBatch, _ToolCallRef
+
+    agent = _make_agent(monkeypatch)
+    ref = _ToolCallRef("write_file", {}, "task", "tc_late", [])
+    parsed = SimpleNamespace(
+        tool_call=SimpleNamespace(function=SimpleNamespace(name="write_file", arguments="{}")),
+        name="write_file", args={}, middleware_trace=[], parse_error=None, scope_block=None,
+        ref=lambda _task_id: ref,
+    )
+    batch = _ConcurrentBatch(agent, [], "task", [parsed], None)
+    batch.results[0] = SimpleNamespace(
+        ref=ref, result="REAL SUCCESS RESULT", duration=0.1, is_error=False, blocked=False,
+        execution_status="success", data_use=frozenset(),
+    )
+    batch.cancelled_indices = {0}
+    agent._interrupt_requested = True
+    captured = {}
+
+    def _capture(_agent, _messages, _ref, _result, **kwargs):
+        captured.update(kwargs)
+        return _result, _result, None
+
+    with patch("agent.tool_executor._commit_tool_result", side_effect=_capture):
+        assert _append_batch_results(agent, [], "task", batch, MagicMock())
+    assert (captured["effect_disposition"], captured["execution_status"]) == (None, "success")
+
+
+def test_gate_released_without_running_the_callback_is_not_dispatched(monkeypatch):
+    """``begin_in_order`` returns False without running the callback on an abandoned batch.
+
+    Such a worker never started, so the slot must keep ``effect="none"``: marking it
+    dispatched makes the synthesized interrupt result claim the tool may have acted.
+    """
+    from agent.tool_executor import _ConcurrentBatch, _ToolCallRef, _WorkerStartOnce
+
+    agent = _make_agent(monkeypatch)
+    ref = _ToolCallRef("write_file", {}, "task", "tc_parked", [])
+    parsed = SimpleNamespace(
+        tool_call=SimpleNamespace(function=SimpleNamespace(name="write_file", arguments="{}")),
+        name="write_file", args={}, middleware_trace=[], parse_error=None, scope_block=None,
+        ref=lambda _task_id: ref,
+    )
+    batch = _ConcurrentBatch(agent, [], "task", [parsed], None)
+    batch.gate.abandon()
+
+    def _middleware(*_args, begin_execution=None, **_kwargs):
+        begin_execution(lambda: None)
+        return SimpleNamespace(result="{}", args={}, middleware_trace=[], blocked=False, dispatched=True)
+
+    with patch("agent.tool_executor._run_agent_tool_execution_middleware", side_effect=_middleware):
+        outcome = batch._dispatch_worker(0, ref, None, _WorkerStartOnce(batch.gate, 0, "write_file"))
+
+    assert outcome is None
+    assert batch.dispatched_indices == set()
+
+
+def test_keyboard_interrupt_from_the_middleware_lands_as_cancelled(monkeypatch):
+    """End-to-end wiring for the KeyboardInterrupt path the worker synthesizes a result for.
+
+    The unit test above builds the outcome by hand; this one raises from the middleware so
+    the worker's own ``emit_cancelled`` + the durable classification are exercised together.
+    """
+    from agent.tool_executor import execute_tool_calls_concurrent
+
+    agent = _make_agent(monkeypatch)
+    agent._flush_messages_to_session_db = MagicMock(return_value=True)
+    agent._record_file_mutation_result = MagicMock()
+    agent._append_guardrail_observation = MagicMock(side_effect=lambda *a, **k: a[2])
+
+    def _middleware(*_args, begin_execution=None, **_kwargs):
+        begin_execution(lambda: None)
+        raise KeyboardInterrupt
+
+    messages = []
+    msg = _FakeAssistantMsg([_FakeToolCall("write_file", call_id="tc_ki_e2e")])
+    with patch("agent.tool_executor._run_agent_tool_execution_middleware", side_effect=_middleware):
+        execute_tool_calls_concurrent(agent, msg, messages, "test_task", finalize=False)
+
+    assert [(m.get("effect_disposition"), m.get("execution_status")) for m in messages] == [
+        ("unknown", "cancelled")
+    ]

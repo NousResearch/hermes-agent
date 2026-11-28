@@ -14,6 +14,7 @@ import sys
 from typing import Any
 
 from agent.message_metadata import append_message
+from agent.tool_result_classification import tool_may_have_side_effect
 from agent.turn_failure_copy import short_detail, site_copy
 
 logger = logging.getLogger("agent.conversation_loop")
@@ -138,6 +139,14 @@ def handle_outer_loop_error(
                         "name": _ra().AIAgent._get_tool_call_name_static(tc),
                         "tool_call_id": tc["id"],
                         "content": f"Error executing tool: {error_msg}",
+                        # The loop died before these calls could complete; the effect of a
+                        # never-answered effectful call is unobservable, so this is the same
+                        # recovery signal replay_cleanup writes, plus the outcome axis.
+                        "effect_disposition": (
+                            "unknown" if tool_may_have_side_effect(_ra().AIAgent._get_tool_call_name_static(tc))
+                            else "none"
+                        ),
+                        "execution_status": "error",
                     })
         break
 

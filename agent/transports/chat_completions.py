@@ -38,7 +38,8 @@ _XAI_TOOL_SEARCH_ALIAS = "hermes_tool_search"
 # Persistence-only / cross-transport message keys that strict OpenAI-compatible
 # providers reject with HTTP 400 ("Extra inputs are not permitted").
 _STRIP_MSG_KEYS = (
-    "codex_reasoning_items", "codex_message_items", "tool_name", "effect_disposition", "timestamp",
+    "codex_reasoning_items", "codex_message_items", "tool_name", "effect_disposition",
+    "execution_status", "timestamp",
     # ``platform_message_id`` is persisted as-is and comes back from replay as ``message_id``
     # (JSONL transcript compat); both are delivery bookkeeping, never model input.
     "platform_message_id", "message_id", "api_content", "anthropic_content_blocks", "bedrock_content_blocks",

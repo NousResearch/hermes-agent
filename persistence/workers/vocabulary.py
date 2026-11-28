@@ -33,7 +33,7 @@ WORKER_MESSAGE_FIELDS = frozenset({
     "role", "content", "tool_name", "tool_calls", "tool_call_id", "token_count",
     "finish_reason", "reasoning", "reasoning_content", "reasoning_details",
     "codex_reasoning_items", "codex_message_items", "platform_message_id", "message_id",
-    "observed", "effect_disposition", "_compressed_summary", "timestamp", "api_content",
+    "observed", "effect_disposition", "execution_status", "_compressed_summary", "timestamp", "api_content",
     "display_kind", "display_metadata", "_row_id", "_canonical_content", "_db_row_snapshot", "_canonical_row", "data_use",
 }) | _PERSISTENCE_ONLY_FIELDS | {"_absorbed_row_ids"}
 

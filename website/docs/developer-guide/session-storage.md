@@ -249,10 +249,13 @@ later.
 
 ### Messages Table
 
-Abridged — the full schema also includes `effect_disposition`,
-`platform_message_id`, `observed`, `active`, `compacted`, `api_content`,
-`display_kind`, `display_metadata`, `message_uid`, `absorbed_message_uids`,
-`tool_call_uids`, and `tool_call_uid`:
+Abridged — the full schema also includes two ORTHOGONAL tool-result axes:
+`effect_disposition` (could this call have changed the world: `unknown`, `none`,
+NULL for a described effect) and `execution_status` (how the call ended:
+`success`, `error`, `blocked`, `timeout`, `cancelled`; legacy rows may carry
+NULL), plus `platform_message_id`, `observed`, `active`, `compacted`,
+`api_content`, `display_kind`, `display_metadata`, `message_uid`,
+`absorbed_message_uids`, `tool_call_uids`, and `tool_call_uid`:
 
 ```sql
 CREATE TABLE IF NOT EXISTS messages (
@@ -279,6 +282,18 @@ CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id, id);
 ```
 
 Notes:
+- Every tool result carries TWO orthogonal facts, in two columns:
+  - `effect_disposition` — can this call have changed the world? `none` = provably
+    not (never dispatched: blocked, unknown tool name, invalid arguments, skipped on
+    interrupt); `unknown` = an interrupted effectful call may have acted and this
+    cannot be observed (timeouts, crash-recovery rows); `NULL` = the call completed and
+    its effect is simply not described. This is the contract replay recovery
+    (`replay_cleanup`) reads — it is about effect certainty, not about how the call ended.
+  - `execution_status` — how did the call end? `success`, `error`, `blocked`,
+    `timeout`, `cancelled`. Written on every live tool-result path (executor, turn-loop
+    recovery for unknown-tool/invalid-JSON/outer-loop errors, Codex provider projection).
+- The two combine: a timed-out `write_file` is `unknown` + `timeout`; a guardrail-blocked
+  call is `none` + `blocked`; a completed call is `NULL` + `success`/`error`.
 - `tool_calls` is stored as a JSON string (serialized list of tool call objects)
 - `reasoning_details`, `codex_reasoning_items`, and `codex_message_items` are stored as JSON strings
 - `reasoning`, `reasoning_content` and `reasoning_details` are always kept in history. On the chat-completions wire every assistant turn replays its stored reasoning on the carriers the route reads (`agent/message_sanitization.py::route_reasoning_carriers`): `reasoning_content` everywhere by default; plus `reasoning` and `reasoning_details` on OpenRouter-format gateways (OpenRouter, Kilo, Vercel AI Gateway, Nous Portal); `reasoning_details` on Novita, MiniMax `/v1` and TokenHub; `reasoning` on local servers, Ollama and Upstage. Strict schemas (Mistral, Groq, Cerebras, SambaNova) get no reasoning key, and Fireworks gets `reasoning_content` only. Only DeepSeek, Kimi and MiMo pad a reasoning-less tool-call turn with `" "`. When a route rejects a field by name ("Extra inputs are not permitted, field: messages[N].reasoning_details"), Hermes records it for that provider/host/model, strips it and retries once. The record lasts for the session and never touches history.

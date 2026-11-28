@@ -20,6 +20,12 @@ export const zhHantOverrides = {
     missing: "此群組聊天已不存在。"
   },
 
+  keybinds: {
+    actions: {
+      'view.copySelection': '複製選取文字'
+    }
+  },
+
   catalog: {
     add: '新增',
     added: '已新增',

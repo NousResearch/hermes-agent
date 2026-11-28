@@ -2325,6 +2325,12 @@ export const jaOverrides = {
     }
   },
 
+  keybinds: {
+    actions: {
+      'view.copySelection': '選択範囲をコピー'
+    }
+  },
+
   composer: {
     message: 'メッセージ',
     switchingProfile: profile => `${profile} に切り替え中…`,

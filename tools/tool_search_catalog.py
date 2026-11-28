@@ -6,12 +6,45 @@ from __future__ import annotations
 import functools
 import math
 import re
+import sys
 import threading
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
-import snowballstemmer
+try:
+    import snowballstemmer
+except ImportError:  # pragma: no cover - declared dep (py>=3.14); defense in depth
+    snowballstemmer = None
+
+
+# Some deployments (stripped venvs, gateway processes on an interpreter without the
+# declared py>=3.14 dependency) cannot import snowballstemmer. The catalog still works —
+# only morphological merging ('issues' ~ 'create_issue') degrades — so warn ONCE, loudly,
+# when the degraded path is first used, and never break tool assembly over it.
+_STEMMER_DEGRADED_WARNED = False
+_STEMMER_WARN_LOCK = threading.Lock()
+
+
+def _warn_degraded_stemming() -> None:
+    """Emit exactly one visible warning the first time unstemmed matching is used."""
+    global _STEMMER_DEGRADED_WARNED
+    if _STEMMER_DEGRADED_WARNED:
+        return
+    with _STEMMER_WARN_LOCK:
+        if _STEMMER_DEGRADED_WARNED:
+            return
+        _STEMMER_DEGRADED_WARNED = True
+    print("WARNING: snowballstemmer unavailable — tool search quality degraded "
+          "(tokens matched unstemmed: 'issues' will not merge with 'create_issue'); "
+          "tool assembly is unaffected.", file=sys.stderr)
+
+
+# Emit once as soon as a degraded interpreter loads the catalog — assembly itself does not
+# tokenize (only bridge dispatch does), so waiting for first _stem() would hide the cliff
+# from every process that merely assembles tool defs (gateways). _stem's call is a no-op.
+if snowballstemmer is None:
+    _warn_degraded_stemming()
 
 # Reserved bridge names: a user/plugin/MCP tool may not take them (registry override
 # protection rejects such registrations).
@@ -43,7 +76,14 @@ _thread_local = threading.local()
 def _stem(token: str) -> str:
     """Stem one token, memoized across stateless catalog rebuilds. Snowball stemmers carry
     mutable parsing state and bridge dispatch runs on parallel tool-call threads, so the
-    stemmer is one-per-thread, created lazily."""
+    stemmer is one-per-thread, created lazily.
+
+    Without snowballstemmer, return the lowercased token UNSTEMMED: index and query share
+    this function, so BM25 stays consistent — only morphological merging degrades.
+    """
+    if snowballstemmer is None:
+        _warn_degraded_stemming()
+        return token.lower()
     if getattr(_thread_local, "stemmer", None) is None:
         _thread_local.stemmer = snowballstemmer.stemmer("english")
     return _thread_local.stemmer.stemWord(token)

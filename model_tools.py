@@ -7,6 +7,7 @@ hooks/middleware) plus registry pass-throughs.
 """
 
 import os
+import sys
 import json
 import re
 import asyncio
@@ -27,6 +28,11 @@ from tools.arg_coercion import coerce_tool_args
 from tools.todo_tool import TODO_LEGACY_ALIASES, TODO_SCHEMA
 
 logger = logging.getLogger(__name__)
+
+# Set when tool_search assembly fails and we fall back to shipping every raw schema.
+# Loud, once-per-process warning + state flag so callers/tests can assert the degraded mode.
+TOOL_SEARCH_ASSEMBLY_FAILED = False
+_TOOL_SEARCH_ASSEMBLY_WARNED = False
 
 _post_tool_call_hook_suppressed: ContextVar[bool] = ContextVar("post_tool_call_hook_suppressed", default=False)
 
@@ -540,7 +546,7 @@ def _compute_tool_definitions(enabled_toolsets: Optional[list[str]] = None, disa
     from tools.kanban_toolset_context import scoped_kanban_toolset_selection
     with scoped_kanban_toolset_selection(enabled_toolsets):
         filtered_tools = _apply_dynamic_schemas(registry.get_definitions(tools_to_include, quiet=quiet_mode))
-    global _last_resolved_tool_names
+    global _last_resolved_tool_names, TOOL_SEARCH_ASSEMBLY_FAILED, _TOOL_SEARCH_ASSEMBLY_WARNED
     _last_resolved_tool_names = [t["function"]["name"] for t in filtered_tools]
 
     if not quiet_mode:
@@ -570,7 +576,23 @@ def _compute_tool_definitions(enabled_toolsets: Optional[list[str]] = None, disa
                       f"{_TOOL_SEARCH_LISTING_FORMS.get(assembly.listing_form, assembly.listing_form)}.")
             filtered_tools = assembly.tool_defs
     except Exception as e:  # pragma: no cover — never break tool loading
-        logger.warning("Tool search assembly skipped: %s", e)
+        # SILENT fallback is the bug: a gateway ships every raw schema (~3x token cliff per
+        # request) with no visible symptom. Keep never-break, but make it LOUD — once per
+        # process, on BOTH the quiet and non-quiet paths (a quiet gateway is where it matters).
+        TOOL_SEARCH_ASSEMBLY_FAILED = True
+        if not _TOOL_SEARCH_ASSEMBLY_WARNED:
+            _TOOL_SEARCH_ASSEMBLY_WARNED = True
+            try:
+                from tools.tool_search import estimate_tokens_from_schemas
+                extra_tokens = estimate_tokens_from_schemas(filtered_tools)
+            except Exception:
+                try:
+                    extra_tokens = len(json.dumps(filtered_tools)) // 4
+                except Exception:
+                    extra_tokens = 0
+            print(f"WARNING: tool search assembly failed: {e} — sending every raw tool schema "
+                  f"(~{extra_tokens} extra tokens/request); run `hermes doctor` or check your python environment",
+                  file=sys.stderr)
 
     from tools.hosted_tool_policy import hosted_tool_refusal
     # A hosted scope runs only its allowlist (the tool_search bridge included): advertising the

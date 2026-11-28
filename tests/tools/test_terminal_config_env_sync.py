@@ -147,3 +147,27 @@ def test_save_config_set_bridges_every_cli_terminal_key():
         f"{sorted(missing)}.  Add them to TERMINAL_CONFIG_ENV_MAP in "
         f"hermes_cli/config.py (set_config_value bridges through it)."
     )
+
+
+def test_wsl_and_per_backend_cwds_are_bridged_everywhere():
+    """WSL distro and every backend's cwd key cross the three bridges."""
+    expected = {
+        "wsl_distro": "TERMINAL_WSL_DISTRO",
+        "wsl_cwd": "TERMINAL_WSL_CWD",
+        "local_cwd": "TERMINAL_LOCAL_CWD",
+        "docker_cwd": "TERMINAL_DOCKER_CWD",
+        "ssh_cwd": "TERMINAL_SSH_CWD",
+        "singularity_cwd": "TERMINAL_SINGULARITY_CWD",
+        "modal_cwd": "TERMINAL_MODAL_CWD",
+        "daytona_cwd": "TERMINAL_DAYTONA_CWD",
+        "vercel_sandbox_cwd": "TERMINAL_VERCEL_SANDBOX_CWD",
+        "managed_modal_cwd": "TERMINAL_MANAGED_MODAL_CWD",
+    }
+    cli_map = _cli_env_map()
+    gw_map = _gateway_env_map()
+    from hermes_cli.config import TERMINAL_CONFIG_ENV_MAP
+
+    for key, env_var in expected.items():
+        assert cli_map[key] == env_var
+        assert gw_map[key] == env_var
+        assert TERMINAL_CONFIG_ENV_MAP[key] == env_var

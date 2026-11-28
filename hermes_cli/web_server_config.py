@@ -3,6 +3,7 @@
 
 import logging
 import os
+import sys
 from fastapi import HTTPException
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 from agent.process_transport import is_local_server
@@ -84,7 +85,12 @@ _SCHEMA_OVERRIDES: dict[str, dict[str, Any]] = {
     "terminal.backend": _select(
         "Terminal execution backend",
         "local", "docker", "ssh", "modal", "daytona", "vercel_sandbox",
+        *(("wsl",) if sys.platform == "win32" else ()),
     ),
+    "terminal.wsl_distro": {
+        "type": "string",
+        "description": "WSL distribution for the wsl backend (wsl -d). Empty uses the default distro.",
+    },
     # sync with _SUPPORTED_VERCEL_RUNTIMES in terminal_tool.py
     "terminal.vercel_image": {
         "type": "string",

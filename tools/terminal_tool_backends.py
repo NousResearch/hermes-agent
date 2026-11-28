@@ -7,6 +7,7 @@ import importlib.util
 import inspect
 import logging
 import subprocess
+import sys
 from typing import Any, Dict, Optional
 
 from agent.secret_scope import serves_routed_profile
@@ -84,6 +85,11 @@ def _ssh_config_from_config(config: dict[str, Any]) -> dict:
 def _local_config_from_config(config: dict[str, Any]) -> dict:
     """``local_config`` for :func:`_create_environment` (TERMINAL_LOCAL_PERSISTENT, default on)."""
     return {"persistent": config.get("local_persistent", True)}
+
+
+def _wsl_config_from_config(config: dict[str, Any]) -> dict:
+    """``wsl_config`` for :func:`_create_environment` (optional ``wsl -d`` distro)."""
+    return {"distro": str(config.get("wsl_distro") or "")}
 
 
 def _container_config_from_config(config: dict[str, Any]) -> dict:
@@ -206,6 +212,12 @@ _build_daytona_env = functools.partial(_build_sandbox_env, "daytona")
 _build_vercel_env = functools.partial(_build_sandbox_env, "vercel_sandbox")
 
 
+def _build_wsl_env(*, cwd, timeout, wsl_config=None, **_):
+    from tools.environments.wsl import WslEnvironment
+    distro = str((wsl_config or {}).get("distro") or "")
+    return WslEnvironment(cwd=cwd or "", timeout=timeout, distro=distro)
+
+
 def _build_ssh_env(*, cwd, timeout, ssh_config, probe_only=False, **_):
     if not ssh_config or not ssh_config.get("host") or not ssh_config.get("user"):
         raise ValueError("SSH environment requires ssh_host and ssh_user to be configured")
@@ -280,7 +292,7 @@ def _build_plugin_env(*, env_type, image, cwd, timeout, cc, task_id, **_):
 # Built-in backend -> builder. Anything else is looked up in the plugin registry.
 _ENV_BUILDERS = {"local": _build_local_env, "docker": _build_docker_env, "modal": _build_modal_env,
                  "daytona": _build_daytona_env, "vercel_sandbox": _build_vercel_env,
-                 "ssh": _build_ssh_env}
+                 "ssh": _build_ssh_env, "wsl": _build_wsl_env}
 
 
 def _build_hosted_env(*, env_type, image, cwd, timeout, cc, **_):
@@ -299,16 +311,19 @@ def _build_hosted_env(*, env_type, image, cwd, timeout, cc, **_):
 def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
                         ssh_config: dict | None = None, container_config: dict | None = None,
                         local_config: dict | None = None, task_id: str = "default",
-                        host_cwd: Optional[str] = None, probe_only: bool = False):
+                        host_cwd: Optional[str] = None, probe_only: bool = False,
+                        wsl_config: dict | None = None):
     """Create an execution environment (instance with ``execute()``) for *env_type*. ``image`` is ignored
-    for local/ssh/vercel; ``container_config`` carries the container_*/docker_* resource keys; ``host_cwd`` is
+    for local/ssh/vercel/wsl; ``container_config`` carries the container_*/docker_* resource keys; ``host_cwd`` is
     the host dir bound into Docker when cwd mounting is enabled. ``probe_only`` asks ssh for a throwaway
-    connection with no remote setup/sync (the prompt-time probe). Unknown types fall through to plugin backends.
+    connection with no remote setup/sync (the prompt-time probe). ``wsl_config`` carries the optional distro.
+    Unknown types fall through to plugin backends.
     Inside a hosted scope the environment is always the bound agent's sandbox (:func:`_build_hosted_env`)."""
     from tools.environments.sandbox_scope import hosted_scope
     builder = _ENV_BUILDERS.get(env_type)
     kwargs = dict(image=image, cwd=cwd, timeout=timeout, cc=container_config or {}, task_id=task_id,
-                  ssh_config=ssh_config, local_config=local_config, host_cwd=host_cwd, probe_only=probe_only)
+                  ssh_config=ssh_config, local_config=local_config, host_cwd=host_cwd, probe_only=probe_only,
+                  wsl_config=wsl_config)
     if hosted_scope() is not None:
         env = _build_hosted_env(env_type=env_type, **kwargs)
     elif builder is not None:
@@ -363,6 +378,17 @@ def _modal_pre(config: dict[str, Any]) -> Optional[bool]:
     return None
 
 
+def _wsl_pre(_config: dict[str, Any]) -> bool:
+    if sys.platform != "win32":
+        return _reject("the WSL2 backend only runs on Windows")
+    try:
+        from tools.environments.wsl import _find_wsl
+        _find_wsl()
+    except RuntimeError as exc:
+        return _reject(str(exc))
+    return True
+
+
 def _ssh_pre(config: dict[str, Any]) -> bool:
     if config.get("ssh_host") and config.get("ssh_user"):
         return True
@@ -385,6 +411,7 @@ _BACKEND_SPECS: dict[str, dict[str, Any]] = {
               "module": ("modal", "modal is required for direct modal terminal backend. Run hermes setup terminal and select Modal.")},
     "vercel_sandbox": {"pre": _check_vercel},
     "daytona": {"post": _daytona_post},
+    "wsl": {"pre": _wsl_pre},
 }
 
 

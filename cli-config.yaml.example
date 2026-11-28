@@ -480,6 +480,23 @@ terminal:
 #   ssh_key: "~/.ssh/id_rsa"  # Optional - uses ssh-agent if not specified
 
 # -----------------------------------------------------------------------------
+# OPTION 2b: WSL2 (Windows Subsystem for Linux)
+# Commands and file tools run inside your WSL2 distribution using Linux paths.
+# Great for: Windows users who want a native Linux environment without Docker
+# -----------------------------------------------------------------------------
+# terminal:
+#   backend: "wsl"
+#   # Omit cwd to probe WSL $HOME, or set an absolute Linux path:
+#   # cwd: "/home/agents/project"
+#   # The first Linux directory WSL actually uses is remembered as
+#   # terminal.wsl_cwd. Other backends do not rewrite config.yaml just
+#   # because their cwd was resolved; set terminal.<backend>_cwd yourself
+#   # if you want one of those remembered.
+#   timeout: 180
+#   # Optional: specify a WSL distribution (default: system default).
+#   # Letters, digits, ".", "_" and "-"; must not start with "-".
+#   wsl_distro: "Debian"
+
 # OPTION 3: Docker container
 # Commands run in an isolated Docker container
 # Great for: reproducible environments, testing, isolation

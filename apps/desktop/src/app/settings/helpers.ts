@@ -1,4 +1,5 @@
 import { foldPersonalityName } from '@/lib/personalities'
+import { isWindowsPlatform } from '@/lib/platform'
 import { asText, normalize } from '@/lib/text'
 import { localShowReasoning } from '@/store/reasoning-disclosure'
 import type { ConfigFieldSchema, HermesConfig, HermesConfigRecord, ToolsetInfo } from '@/types/hermes'
@@ -223,6 +224,11 @@ export function sectionFieldEntries(
       s.id,
       s.keys.flatMap(k => {
         const value = getNested(config, k)
+        // The distro only means something when the desktop is on Windows. A saved
+        // value still shows so it can be cleared from another machine.
+        if (k === 'terminal.wsl_distro' && !isWindowsPlatform() && !asText(value)) {
+          return []
+        }
         const field = schema[k] ?? (value === undefined ? undefined : inferFieldSchema(value))
 
         return field ? [[k, field] as [string, ConfigFieldSchema]] : []
@@ -439,6 +445,10 @@ export function enumOptionsFor(
     if (model === 'tts-1' || model === 'tts-1-hd') {
       opts = opts.filter(voice => OPENAI_TTS1_VOICES.has(voice))
     }
+  }
+
+  if (!dynamicOptions && opts && key === 'terminal.backend' && !isWindowsPlatform()) {
+    opts = opts.filter(name => name !== 'wsl')
   }
 
   if (!opts) {

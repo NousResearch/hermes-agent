@@ -153,7 +153,7 @@ def cwd_follows_host_mount(cwd: str, mount: str) -> bool:
     return cwd == "/workspace" and mount != "/workspace"
 
 _CONTAINER_BACKENDS = frozenset({"docker", "modal", "daytona", "vercel_sandbox"})
-_BUILTIN_BACKENDS = _CONTAINER_BACKENDS | {"local", "ssh", "managed_modal"}
+_BUILTIN_BACKENDS = _CONTAINER_BACKENDS | {"local", "ssh", "managed_modal", "wsl"}
 
 
 def _plugin_registry_lookup(env_type: str, fn_name: str, default, *args):

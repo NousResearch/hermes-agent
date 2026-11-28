@@ -1171,7 +1171,8 @@
                 "other",
                 "singularity",
                 "ssh",
-                "vercel_sandbox"
+                "vercel_sandbox",
+                "wsl"
               ]
             },
             "behind_bucket": {
@@ -2218,7 +2219,8 @@
                 "remote",
                 "singularity",
                 "ssh",
-                "vercel_sandbox"
+                "vercel_sandbox",
+                "wsl"
               ]
             },
             "error_class": {
@@ -3271,7 +3273,8 @@
                 "other",
                 "singularity",
                 "ssh",
-                "vercel_sandbox"
+                "vercel_sandbox",
+                "wsl"
               ]
             },
             "command_kind": {

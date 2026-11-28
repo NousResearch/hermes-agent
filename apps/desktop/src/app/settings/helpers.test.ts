@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import type { HermesConfigRecord } from '@/types/hermes'
 
@@ -180,6 +180,23 @@ describe('settings helpers', () => {
 
   describe('enumOptionsFor — backend selector dropdowns', () => {
     const config: HermesConfigRecord = {}
+
+    it('offers the WSL backend only on Windows', () => {
+      const offWindows = enumOptionsFor('terminal.backend', 'local', config)
+      expect(offWindows).toContain('local')
+      expect(offWindows).not.toContain('wsl')
+
+      const platform = vi.spyOn(window.navigator, 'platform', 'get').mockReturnValue('Win32')
+
+      try {
+        expect(enumOptionsFor('terminal.backend', 'local', config)).toContain('wsl')
+      } finally {
+        platform.mockRestore()
+      }
+
+      // A saved value stays selectable so it can be changed away from WSL.
+      expect(enumOptionsFor('terminal.backend', 'wsl', config)).toContain('wsl')
+    })
 
     it('narrows OpenAI TTS voice suggestions to what the selected model supports', () => {
       // gpt-4o-mini-tts (and unset/unknown models): full 13-voice set.

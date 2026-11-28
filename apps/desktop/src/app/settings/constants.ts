@@ -243,10 +243,10 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   // per-request in web_server._schema_with_dynamic_provider_options), so
   // config-field consumes schema.options directly — a static list here would
   // shadow that and hide user-installed/pip providers (#49513).
-  // Terminal execution backends — kept in sync with the dispatch ladder in
-  // tools/terminal_tool.py::_create_environment (local/docker/singularity/
-  // modal/daytona/ssh). Remote backends need extra env (image, tokens, host).
-  'terminal.backend': ['local', 'docker', 'singularity', 'modal', 'daytona', 'ssh'],
+  // Terminal execution backends. `wsl` is filtered out off Windows in
+  // enumOptionsFor (the renderer has no process.platform). Remote backends
+  // need extra env (image, tokens, host).
+  'terminal.backend': ['local', 'docker', 'singularity', 'modal', 'daytona', 'wsl', 'ssh'],
   'stt.elevenlabs.model_id': ['scribe_v2', 'scribe_v1'],
   'stt.local.model': ['tiny', 'base', 'small', 'medium', 'large-v3', 'turbo'],
   // Speech-to-text backends — kept in sync with BUILTIN_STT_PROVIDERS in
@@ -448,7 +448,8 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
     dockerImage: 'Docker Image',
     singularityImage: 'Singularity Image',
     modalImage: 'Modal Image',
-    daytonaImage: 'Daytona Image'
+    daytonaImage: 'Daytona Image',
+    wslDistro: 'WSL Distribution'
   },
   fileReadMaxChars: 'File Read Limit',
   toolOutput: {
@@ -635,7 +636,17 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
     dockerImage: 'Container image used when the execution backend is Docker.',
     singularityImage: 'Image used when the execution backend is Singularity.',
     modalImage: 'Image used when the execution backend is Modal.',
-    daytonaImage: 'Image used when the execution backend is Daytona.'
+    daytonaImage: 'Image used when the execution backend is Daytona.',
+    wslDistro: 'WSL distribution name when the execution backend is WSL (e.g. Debian).',
+    wslCwd: 'Working directory inside WSL2 (e.g. /home/agents). Auto-detected on first use.',
+    localCwd: 'Working directory on the Windows host (e.g. C:\\Users\\...).',
+    dockerCwd: 'Working directory inside the Docker container (e.g. /workspace).',
+    singularityCwd: 'Working directory inside the Singularity container (e.g. /root).',
+    modalCwd: 'Working directory on Modal (e.g. /root).',
+    daytonaCwd: 'Working directory in the Daytona workspace (e.g. /root).',
+    vercelSandboxCwd: 'Working directory in the Vercel sandbox (e.g. /vercel/sandbox).',
+    managedModalCwd: 'Working directory in the managed Modal sandbox (e.g. /root).',
+    sshCwd: 'Working directory on the remote SSH host (e.g. ~).'
   },
   codeExecution: {
     mode: 'How strictly code execution is scoped to the current project.'
@@ -851,6 +862,7 @@ export const SECTIONS: DesktopConfigSection[] = [
     keys: [
       'toolsets',
       'terminal.backend',
+      'terminal.wsl_distro',
       'terminal.timeout',
       'terminal.docker_image',
       'terminal.singularity_image',

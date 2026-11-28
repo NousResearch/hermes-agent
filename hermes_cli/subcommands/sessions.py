@@ -26,6 +26,12 @@ def _add_rename_and_discard(sessions_subparsers) -> None:
     sessions_rename.add_argument("title", nargs="+", help="New title for the session")
     from hermes_cli.sessions_discard import add_discard_parser
     add_discard_parser(sessions_subparsers)
+    from hermes_cli.sessions.interrupt import add_interrupt_parser
+    add_interrupt_parser(sessions_subparsers)
+    from hermes_cli.sessions.remote import add_remote_parsers
+    add_remote_parsers(sessions_subparsers)
+    from hermes_cli.sessions.log import add_log_parser
+    add_log_parser(sessions_subparsers)
     from hermes_cli.sessions_adopt import add_adopt_parser
     add_adopt_parser(sessions_subparsers)
 

@@ -1449,6 +1449,21 @@ def _cmd_discard(args):
     return cmd_discard(args)
 
 
+def _cmd_interrupt(args):
+    from hermes_cli.sessions.interrupt import cmd_interrupt
+    return cmd_interrupt(args)
+
+
+def _cmd_remote(args):
+    from hermes_cli.sessions.remote import cmd_remote
+    return cmd_remote(args)
+
+
+def _cmd_log(db, args):
+    from hermes_cli.sessions.log import cmd_log
+    return cmd_log(db, args)
+
+
 def _cmd_adopt(args):
     from hermes_cli.sessions_adopt import cmd_adopt
     return cmd_adopt(args)
@@ -1459,9 +1474,12 @@ _PRE_DB_HANDLERS = {
     "repair-profiles": _cmd_repair_profiles,  # opens every profile's store itself
     "set-journal-mode": _cmd_set_journal_mode,  # offline: must not open the store it converts
     "discard": _cmd_discard,  # a gateway control (prompt.resolve_unknown), never a direct store write
+    "interrupt": _cmd_interrupt,  # a gateway control (session.interrupt), like /stop
+    # gateway clients (prompt.submit / the session event stream); the owner is the only writer
+    "send": _cmd_remote, "wait": _cmd_remote, "watch": _cmd_remote,
     "adopt": _cmd_adopt,  # native resumes on the owner; reads its own store read-only
 }
-_OBSERVATIONAL_DB_ACTIONS = frozenset({"list", "stats", "pinned"})
+_OBSERVATIONAL_DB_ACTIONS = frozenset({"list", "stats", "pinned", "log"})
 _DB_HANDLERS = {
     "list": _cmd_list, "export": _cmd_export, "delete": _cmd_delete, "rename": _cmd_rename, "pinned": _cmd_pinned,
     "prune": partial(_cmd_prune_or_archive, action="prune"), "pin": partial(_cmd_pin, pinning=True),
@@ -1469,12 +1487,16 @@ _DB_HANDLERS = {
     "retitle-skills": _cmd_retitle_skills, "browse": _cmd_browse, "optimize": _cmd_optimize,
     "clean-markers": _cmd_clean_markers, "optimize-storage": _cmd_optimize_storage,
     "repair-routing": _cmd_repair_routing, "repair-prompts": _cmd_repair_prompts, "stats": _cmd_stats,
-    "refresh-prompts": _cmd_refresh_prompts,
+    "refresh-prompts": _cmd_refresh_prompts, "log": _cmd_log,
 }
 
 
-def _print_empty_store(action: str, args) -> None:
+def _print_empty_store(action: str, args):
     """A profile that never created state.db: report empty instead of opening a writer that creates it."""
+    if action == "log":  # a named session that cannot exist is a lookup error, as with a store
+        print(f"Error: No session found matching '{args.session}'. Use 'hermes sessions list' to see available sessions.",
+              file=sys.stderr)
+        return 1
     if action == "stats":
         print("Total sessions: 0\nTotal messages: 0")
     elif action == "pinned":

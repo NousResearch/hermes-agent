@@ -553,6 +553,44 @@ Without `--yes` the command asks for confirmation, and it refuses (exit code 2) 
 The lost input stays in the transcript. Some of its actions may already have run, so check their effects before
 you resend it. Inputs queued behind it run once it is discarded.
 
+### Drive a Session From a Script
+
+A supervisor (a shell loop, a CI job, another agent's terminal) can talk to a session the gateway
+hosts without opening a chat. Every verb below names the session the same way: a full session id,
+a unique id prefix (`local-5e7f6a8e`), a title, or `-` for the session `hermes --resume latest`
+would continue in this directory (this workspace's most recent CLI session, else the most recent one).
+
+```bash
+hermes sessions send - "run the test suite and summarise failures"     # queue a prompt, return at once
+hermes sessions send local-5e7f6a8e "what changed?" --wait            # wait for the reply and print it
+hermes sessions send - "next step" --wait --timeout 300               # give up after 5 minutes (exit 124)
+hermes sessions wait local-5e7f6a8e local-91c2d0aa --timeout 600      # block until both are idle
+hermes sessions wait A B C --any                                      # return when the first is idle
+hermes sessions watch -                                               # stream replies and tool calls until idle
+hermes sessions watch - --follow                                      # keep watching later turns (Ctrl-C to stop)
+hermes sessions log - --types 'assistant,tool*' --limit 20            # the stored transcript
+hermes sessions log - --json                                          # one JSON object per entry
+hermes sessions interrupt -                                           # /stop the running turn (alias: stop)
+hermes sessions interrupt local-5e7f6a8e --json                       # one JSON result line
+```
+
+`send` adds the prompt to the session's queue, exactly as if it were typed into its chat: it runs
+after any turn already running. With `--wait` it is a single-query turn (nobody is there to answer
+a clarify question) and prints the reply with the same exit code as `hermes chat --resume <id> -q`:
+0 completed, 1 failed, 130 interrupted, 3 when the session needs an interactive answer (an approval)
+or is paused behind a turn lost in a crash (see `hermes sessions discard` above).
+
+`wait` and `watch` exit 0 once the sessions have no running or queued turn. `--timeout` on `send
+--wait` and `wait` exits 124, like `timeout(1)`, and never stops the turn: closing any of these
+clients leaves the work running at the gateway. `log` reads the stored transcript (across compression
+continuations) from `state.db`; `--types` takes comma-separated globs over `user`, `assistant`,
+`tool_call`, `tool` and `system`.
+
+Killing a `hermes chat -q` client only detaches it: the turn it submitted keeps running. `interrupt`
+sends the same fenced control as interactive `/stop`. Exit code 0 means the interrupt was delivered,
+3 means the session has no running turn, and 1 is an error (no gateway, unknown session). Background
+delegations the turn started keep running, as with `/stop`.
+
 ### Pin a Session
 
 Pinning sets a durable "keep" flag: pinned sessions are exempt from the

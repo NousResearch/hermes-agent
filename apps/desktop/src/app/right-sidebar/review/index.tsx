@@ -38,6 +38,7 @@ import { SidebarPanelLabel } from '../../shell/sidebar-label'
 import { PaneEmptyState, RightSidebarSectionHeader } from '../index'
 
 import { ReviewFileTree } from './file-tree'
+import { ReviewComments, useReviewCommentLines } from './review-comments'
 import { ReviewScopeRow } from './scope-row'
 import { ReviewShipBar } from './ship-bar'
 
@@ -58,11 +59,12 @@ export function ReviewPane() {
   const revertTarget = useStore($reviewRevertTarget)
   const treeMode = useStore($reviewTreeMode)
   const scope = useStore($reviewScope)
-  // Stage / unstage / revert and the ship bar act on the working tree, so they
-  // only apply to the uncommitted scope; branch / last-turn are read-only.
   const isUncommitted = scope === 'uncommitted'
 
   const selectedFile = files.find(file => file.path === selectedPath)
+
+  const interactiveLines = useReviewCommentLines(selectedPath)
+
   const hasFiles = files.length > 0
   // A repo (or a load that may reveal one) gets the header + scope chrome.
   const showChrome = loading || isRepo
@@ -162,7 +164,7 @@ export function ReviewPane() {
 
       {/* Selected file's diff — reuses the shiki-highlighted FileDiffPanel. */}
       {selectedFile && (
-        <div className="flex max-h-[55%] shrink-0 flex-col border-t border-(--ui-stroke-secondary)">
+        <div className="flex h-[55%] min-h-24 shrink flex-col border-t border-(--ui-stroke-secondary)">
           <div className="flex items-center gap-1 px-2.5 py-1.5" data-suppress-pane-reveal-side="">
             <span
               className="min-w-0 flex-1 truncate font-mono text-[0.66rem] text-(--ui-text-secondary)"
@@ -204,13 +206,21 @@ export function ReviewPane() {
                 <DiffSkeleton />
               ) : null
             ) : diff ? (
-              <FileDiffPanel className="mx-0 mb-0 h-full max-h-none" diff={diff} path={selectedFile.path} virtualized />
+              <FileDiffPanel
+                className="mx-0 mb-0 h-full max-h-none"
+                diff={diff}
+                interactiveLines={interactiveLines}
+                path={selectedFile.path}
+                virtualized
+              />
             ) : (
               <div className="py-6 text-center text-[0.66rem] text-muted-foreground/60">{c.noDiff}</div>
             )}
           </div>
         </div>
       )}
+
+      <ReviewComments />
 
       <ReviewShipBar />
 

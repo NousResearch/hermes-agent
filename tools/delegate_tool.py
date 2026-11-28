@@ -11,6 +11,7 @@ the delegation call and the summary result, never the child's intermediate
 tool calls or reasoning.
 """
 
+import json
 import logging
 import time
 import weakref
@@ -990,11 +991,40 @@ def _model_background_value(args: dict, parent_agent=None) -> bool:
 
 _MODEL_HIDDEN_TASK_FIELDS = {"acp_command", "acp_args"}
 
-def _strip_model_hidden_task_fields(tasks: Any) -> Any:
-    """Drop trusted-config-only task fields from model-supplied tasks (same list object back when nothing changed)."""
-    if not isinstance(tasks, list) or not any(isinstance(t, dict) and _MODEL_HIDDEN_TASK_FIELDS & t.keys() for t in tasks):
+
+def _strip_dict_hidden_fields(task: dict[str, Any]) -> dict[str, Any]:
+    if not (_MODEL_HIDDEN_TASK_FIELDS & task.keys()):
+        return task
+    return {k: v for k, v in task.items() if k not in _MODEL_HIDDEN_TASK_FIELDS}
+
+
+def _strip_list_hidden_fields(tasks: list[Any]) -> list[Any]:
+    if not any(isinstance(t, dict) and _MODEL_HIDDEN_TASK_FIELDS & t.keys() for t in tasks):
         return tasks
-    return [{k: v for k, v in t.items() if k not in _MODEL_HIDDEN_TASK_FIELDS} if isinstance(t, dict) else t for t in tasks]
+    return [_strip_dict_hidden_fields(t) if isinstance(t, dict) else t for t in tasks]
+
+
+def _strip_model_hidden_task_fields(tasks: Any) -> Any:
+    """Drop trusted-config-only task fields from model-supplied tasks (same object back when nothing changed)."""
+    if isinstance(tasks, dict):
+        return _strip_dict_hidden_fields(tasks)
+    if isinstance(tasks, list):
+        return _strip_list_hidden_fields(tasks)
+    if isinstance(tasks, str):
+        raw = tasks.strip()
+        if not raw.startswith(("{", "[")):
+            return tasks
+        try:
+            parsed = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return tasks
+        if isinstance(parsed, dict):
+            stripped = _strip_dict_hidden_fields(parsed)
+            return json.dumps(stripped, ensure_ascii=False) if stripped is not parsed else tasks
+        if isinstance(parsed, list):
+            stripped = _strip_list_hidden_fields(parsed)
+            return json.dumps(stripped, ensure_ascii=False) if stripped is not parsed else tasks
+    return tasks
 
 
 registry.register(

@@ -1555,6 +1555,56 @@ class TestDispatchDelegateTask(unittest.TestCase):
         self.assertNotIn("acp_command", captured["tasks"][0])
         self.assertNotIn("acp_args", captured["tasks"][0])
 
+    def test_model_acp_args_not_forwarded_for_single_dict_and_json_strings(self):
+        """Hidden ACP fields are also stripped when tasks is a single dict or JSON string."""
+        import run_agent
+        from tools.registry import registry
+
+        payloads = [
+            ("dict", {"goal": "nested", "acp_command": "codex", "acp_args": ["--acp"]}),
+            ("json_obj", json.dumps({"goal": "nested", "acp_command": "codex", "acp_args": ["--acp"]})),
+            ("json_arr", json.dumps([{"goal": "nested", "acp_command": "codex", "acp_args": ["--acp"]}])),
+        ]
+        entry = registry.get_entry("delegate_task")
+        parent = _make_mock_parent(depth=0)
+
+        for label, tasks_payload in payloads:
+            for caller_name, invoke in (
+                ("dispatch", lambda p: run_agent.AIAgent._dispatch_delegate_task(parent, p)),
+                ("registry", lambda p: entry.handler(p, parent_agent=parent)),
+            ):
+                captured = {}
+
+                def fake_delegate_task(**kwargs):
+                    captured.update(kwargs)
+                    return "{}"
+
+                with patch("tools.delegate_tool.delegate_task", fake_delegate_task):
+                    invoke({"tasks": tasks_payload, "acp_command": "claude", "acp_args": ["--acp"]})
+
+                self.assertNotIn("acp_command", captured, f"{caller_name}:{label}")
+                self.assertNotIn("acp_args", captured, f"{caller_name}:{label}")
+                raw = captured["tasks"]
+                parsed = json.loads(raw) if isinstance(raw, str) else raw
+                items = [parsed] if isinstance(parsed, dict) else parsed
+                self.assertEqual(items, [{"goal": "nested"}], f"{caller_name}:{label}")
+
+    def test_strip_model_hidden_task_fields_preserves_identity_and_goal_text(self):
+        from tools.delegate_tool import _strip_model_hidden_task_fields
+
+        clean_dict = {"goal": "Inspect acp_command usage"}
+        self.assertIs(_strip_model_hidden_task_fields(clean_dict), clean_dict)
+
+        clean_str = json.dumps(clean_dict)
+        self.assertIs(_strip_model_hidden_task_fields(clean_str), clean_str)
+
+        self.assertEqual(_strip_model_hidden_task_fields("not json"), "not json")
+        self.assertIsNone(_strip_model_hidden_task_fields(None))
+
+        dirty_str = json.dumps({"goal": "Inspect acp_command usage", "acp_command": "codex", "acp_args": ["--acp"]})
+        stripped_str = _strip_model_hidden_task_fields(dirty_str)
+        self.assertEqual(json.loads(stripped_str), {"goal": "Inspect acp_command usage"})
+
 
 
 class TestConcurrencyDefaults(unittest.TestCase):

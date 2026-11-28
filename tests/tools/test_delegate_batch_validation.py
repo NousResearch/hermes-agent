@@ -151,6 +151,38 @@ class TestSingleTaskBatch(unittest.TestCase):
             result = _call([{"goal": GOOD_A}])
         self.assertNotIn("error", result)
 
+    def test_single_task_dict_wrapped_into_one_entry_list(self):
+        with patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_run.return_value = {
+                "task_index": 0, "status": "completed", "summary": "done",
+                "api_calls": 1, "duration_seconds": 1.0, "_child_role": None,
+            }
+            result = _call({"goal": GOOD_A, "context": "ctx"})
+        self.assertNotIn("error", result)
+        self.assertEqual(len(result["results"]), 1)
+
+    def test_single_task_json_object_string_wrapped_into_one_entry_list(self):
+        with patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_run.return_value = {
+                "task_index": 0, "status": "completed", "summary": "done",
+                "api_calls": 1, "duration_seconds": 1.0, "_child_role": None,
+            }
+            result = _call(json.dumps({"goal": GOOD_A, "context": "ctx"}))
+        self.assertNotIn("error", result)
+        self.assertEqual(len(result["results"]), 1)
+
+    def test_single_task_dict_still_validates_goal_and_placeholders(self):
+        missing = _call({})
+        self.assertIn("error", missing)
+        self.assertIn("missing a 'goal'", missing["error"])
+
+        placeholder = _call(json.dumps({"goal": "TODO"}))
+        self.assertIn("error", placeholder)
+        self.assertIn("placeholder", placeholder["error"].lower())
+
+        non_task = _call("42")
+        self.assertIn("error", non_task)
+
 
 class TestValidBatchStillRuns(unittest.TestCase):
     def test_two_distinct_goals_pass_validation(self):
@@ -194,3 +226,39 @@ class TestOwnerRefusalMidBatch(unittest.TestCase):
         self.assertIn("refused another subagent", result["error"])
         mock_run.assert_not_called()
         built.close.assert_called_once_with()
+
+
+class TestInlineExecutorAndCoercionDispatch(unittest.TestCase):
+    def test_inline_delegate_task_coerces_json_object_and_strips_hidden_fields(self):
+        import run_agent
+        from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
+        import tools.delegate_tool as dt
+
+        ctx = InlineToolContext(effective_task_id="task-1", tool_call_id="call-1")
+        for payload in (
+            json.dumps({"goal": GOOD_A, "acp_command": "codex", "acp_args": ["--acp"]}),
+            {"goal": GOOD_A, "acp_command": "codex", "acp_args": ["--acp"]},
+            json.dumps([{"goal": GOOD_A, "acp_command": "codex", "acp_args": ["--acp"]}]),
+        ):
+            parent = _make_mock_parent(depth=1)
+            parent.session_id = "parent-session"
+            parent._dispatch_delegate_task = lambda a, p=parent: run_agent.AIAgent._dispatch_delegate_task(p, a)
+            seen_task_lists = []
+            orig_routes_for = dt._routes_for
+
+            def spy_routes_for(task_list, *args, **kwargs):
+                seen_task_lists.append(task_list)
+                return orig_routes_for(task_list, *args, **kwargs)
+
+            with patch("tools.delegate_tool._get_max_spawn_depth", return_value=2), \
+                    patch("tools.delegate_tool._routes_for", side_effect=spy_routes_for), \
+                    patch("tools.delegate_tool._run_single_child") as mock_run:
+                mock_run.return_value = {
+                    "task_index": 0, "status": "completed", "summary": "done",
+                    "api_calls": 1, "duration_seconds": 1.0, "_child_role": None,
+                }
+                result = json.loads(INLINE_TOOL_EXECUTORS["delegate_task"](parent, {"tasks": payload}, ctx))
+
+            self.assertNotIn("error", result)
+            self.assertEqual(len(result["results"]), 1)
+            self.assertEqual(seen_task_lists, [[{"goal": GOOD_A}]])

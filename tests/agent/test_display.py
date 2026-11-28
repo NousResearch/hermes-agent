@@ -176,6 +176,28 @@ class TestBuildToolPreview:
         )
         assert result is not None and len(result) <= 30
 
+    def test_delegate_task_single_dict_and_json_string_ui_labels(self):
+        import json as _json
+        from agent.display import _delegate_task_goals
+        from agent.tool_executor import _delegate_spinner_label
+
+        for tasks_val in (
+            {"goal": "Audit auth flow"},
+            _json.dumps({"goal": "Audit auth flow"}),
+            [{"goal": "Audit auth flow"}],
+        ):
+            assert _delegate_task_goals(tasks_val, per_goal_len=40) == ["Audit auth flow"]
+            preview = build_tool_preview("delegate_task", {"tasks": tasks_val}, max_len=80)
+            assert preview is not None and "Audit auth flow" in preview
+            cute = get_cute_tool_message("delegate_task", {"tasks": tasks_val}, 0.1)
+            assert "1x: Audit auth flow" in cute
+            assert _delegate_spinner_label({"tasks": tasks_val}) == "🔀 Audit auth flow · (/agents to monitor)"
+
+        batch_str = _json.dumps([{"goal": "First task"}, {"goal": "Second task"}])
+        assert _delegate_spinner_label({"tasks": batch_str}) == "🔀 delegating 2 tasks · (/agents to monitor)"
+        assert _delegate_spinner_label({"tasks": "not json"}) == "🔀 delegating · (/agents to monitor)"
+        assert _delegate_spinner_label({"tasks": [], "goal": "Fallback goal"}) == "🔀 Fallback goal · (/agents to monitor)"
+
     def test_false_like_args_zero(self):
         """Non-dict falsy values should return None, not crash."""
         assert build_tool_preview("terminal", 0) is None

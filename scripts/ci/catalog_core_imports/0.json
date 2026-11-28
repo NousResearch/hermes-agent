@@ -1,4 +1,5 @@
 {"entries": {
   "0bull": {"sha":"240890a71715375bc877b238491e414517e9d902"},
+  "0g-provider": {"sha":"af186b72b44512bd61e6a1ea33d58d7f83c52adc","imports":[["hermes_cli.version_info","hermes_user_agent","__init__.py:12"],["providers","register_provider","__init__.py:13"],["providers.base","LazyHeaders","__init__.py:14"],["providers.base","ProviderProfile","__init__.py:14"]]},
   "0xarchive": {"sha":"65575eddfa9c33ec429626542455eecd423cf6a5"}
 }}

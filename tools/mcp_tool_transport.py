@@ -724,6 +724,11 @@ class MCPServerTransportMixin:
         if not owned and not self._ready.is_set():
             return
         self._registered_tool_names = _registration._register_server_tools(self.name, self, self._config)
+        # A park/revive dropped the tools from every adopting profile's overlay too; the
+        # registration above only republishes the owner's. Give adopters theirs back now,
+        # not at their next /reload-mcp (#park-revive-adopter).
+        if getattr(self, "_was_parked", False):
+            _lifecycle._reregister_parked_adopters(self)
         with _core._lock:  # a retained initial-failure server that just published tools has recovered
             for key in owned:
                 if _core._servers.get(key) is self:

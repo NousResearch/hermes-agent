@@ -122,6 +122,48 @@ def _clear_connect_cooldowns(keys=None) -> None:
             _core._server_connect_failures.pop(key, None)
 
 
+def _reregister_parked_adopters(server) -> None:
+    """Give adopting profiles their tools back after a park/revive cycle.
+
+    ``_park`` deregisters the server's tools from EVERY scope (owner and adopters), but the
+    revival path publishes only into the owner's scope. ``_reregister_orphaned_adopters``
+    covers an owner's scoped ``/reload-mcp`` teardown, not a park — so an adopter stayed
+    tool-less behind a healthy connection until its own reload or a gateway restart.
+    Re-run each adopter's adoption heal under its own home + secret scope, exactly like the
+    orphan path; the route/identity gate still refuses a changed credential. Runs on the MCP
+    loop thread right after revival registration; failures are per-adopter, never the revival.
+    """
+    from tools.mcp_tool_scope import _key_name
+    with _core._lock:
+        keys = [key for key, live in _core._servers.items() if live is server]
+        pending: dict = {}
+        for key in keys:
+            owner = _core._server_scope_keys.get(key)
+            for adopter in _core._server_tool_scopes.get(key, ()):
+                if adopter != owner:
+                    pending.setdefault(adopter, set()).add(_key_name(key))
+    if not pending:
+        return
+    from agent.runtime_scope import bind_profile_scope
+    from tools import mcp_tool_registration as _registration
+    from tools.mcp_tool_config import _load_mcp_config
+    for adopter, names in pending.items():
+        try:
+            with bind_profile_scope(adopter):
+                servers = {n: c for n, c in (_load_mcp_config() or {}).items() if n in names}
+                if servers:
+                    # The adoption heal only — never register_mcp_servers: this runs ON the MCP
+                    # loop, and a config-changed adopter would reach _run_discovery_pass, which
+                    # blocks waiting on this same loop (deadlock). A refused adopter stays
+                    # tool-less until its own discovery, exactly as before this heal existed.
+                    healed = _registration.register_connected_into_current_scope(servers)
+                    if healed:
+                        logger.info("MCP server '%s': re-registered %d adopted tool overlay(s) after revival",
+                                    server.name, healed)
+        except Exception:
+            logger.debug("MCP: post-revival re-registration for profile scope %s failed", adopter, exc_info=True)
+
+
 def _reregister_orphaned_adopters() -> None:
     """Re-run MCP registration for profiles whose ADOPTED shared connection an owner's
     ``/reload-mcp`` just tore down. Their tools vanished with the owner's teardown and nothing

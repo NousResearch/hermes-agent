@@ -17,6 +17,7 @@ and skip the recency gate strict mode exists for.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import posixpath
@@ -76,6 +77,16 @@ def _active_remote_env():
     return get_active_env(get_session_env("HERMES_SESSION_ID") or get_session_env("HERMES_SESSION_KEY") or "default")
 
 
+def _discard_fetch(dest: Optional[Path]) -> None:
+    """Remove a partial or rejected fetched copy and its per-fetch folder. Never raises."""
+    if dest is None:
+        return
+    with contextlib.suppress(OSError):
+        dest.unlink(missing_ok=True)
+    with contextlib.suppress(OSError):
+        dest.parent.rmdir()
+
+
 def fetch_remote_media(path: str) -> Optional[str]:
     """Host path of a validated copy of sandbox file ``path``, or None (never raises). Only fires
     when a remote backend is active; the caller has already failed local validation."""
@@ -90,6 +101,7 @@ def fetch_remote_media(path: str) -> Optional[str]:
     from tools.environments.base import FileFetchError
 
     remote_home = getattr(env, "_remote_home", None)
+    dest: Optional[Path] = None
     candidate = posixpath.normpath(_normalize_media_tag_path(str(path)) or "")
     if candidate == "~" or candidate.startswith("~/"):
         if not remote_home:
@@ -106,18 +118,23 @@ def fetch_remote_media(path: str) -> Optional[str]:
                 or is_project_env_basename(posixpath.basename(resolved))):
             return None
         basename = re.sub(r"[^\w.\-]", "_", posixpath.basename(resolved)) or "file"
-        dest = Path(DOCUMENT_CACHE_DIR) / f"remote_{uuid.uuid4().hex[:12]}_{basename}"
-        dest.parent.mkdir(parents=True, exist_ok=True)
+        # Platform adapters send the local basename as the attachment name, so the uniqueness
+        # lives on a per-fetch folder and the file keeps its own name (cleanup_document_cache sweeps
+        # ``remote_*`` folders).
+        dest = Path(DOCUMENT_CACHE_DIR) / f"remote_{uuid.uuid4().hex[:12]}" / basename
+        dest.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         env.fetch_file(resolved, dest, max_bytes=_FETCH_MAX_BYTES)
     except FileFetchError as exc:
         logger.warning("Remote media fetch of %s skipped: %s", _log_safe_path(candidate), exc)
+        _discard_fetch(dest)
         return None
     except Exception:
         logger.warning("Remote media fetch of %s failed", _log_safe_path(candidate), exc_info=True)
+        _discard_fetch(dest)
         return None
     validated = validate_media_delivery_path(str(dest))
     if not validated:
-        dest.unlink(missing_ok=True)
+        _discard_fetch(dest)
         return None
     logger.info("Fetched remote media %s from the %s sandbox", _log_safe_path(candidate), type(env).__name__)
     return validated

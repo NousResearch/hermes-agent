@@ -337,9 +337,11 @@ def publish_new_file(temporary: str | Path, path: str | Path) -> bool:
 
 
 def unlink_files_older_than(directory: str | Path, pattern: str, max_age_seconds: float, *,
-                            now: float | None = None) -> int:
+                            now: float | None = None, dir_pattern: str = "") -> int:
     """Delete regular files in *directory* matching *pattern* whose mtime is more than
     *max_age_seconds* before *now* (default: the current time); return how many were removed.
+    With *dir_pattern*, matching subdirectories past the same age are removed whole (a symlink is
+    never followed) and each counts as one.
 
     The one age-based cache sweep. Never raises: a missing directory, or an entry that cannot be
     stat'ed or unlinked, is skipped (the next sweep retries it).
@@ -352,6 +354,13 @@ def unlink_files_older_than(directory: str | Path, pattern: str, max_age_seconds
                 if path.is_file() and path.stat().st_mtime < cutoff:
                     path.unlink()
                     removed += 1
+    if dir_pattern:
+        with suppress(OSError):
+            for path in Path(directory).glob(dir_pattern):
+                with suppress(OSError):
+                    if path.is_dir() and not path.is_symlink() and path.stat().st_mtime < cutoff:
+                        shutil.rmtree(path)
+                        removed += 1
     return removed
 
 

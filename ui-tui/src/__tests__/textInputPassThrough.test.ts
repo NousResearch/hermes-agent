@@ -32,6 +32,8 @@ describe('shouldPassThroughToGlobalHandler', () => {
   })
 
   it('keeps the legacy default pass-through when no custom key is provided', () => {
+    expect(shouldPassThroughToGlobalHandler('x', key({ ctrl: true, meta: true }), DEFAULT_VOICE_RECORD_KEY)).toBe(false)
+    expect(shouldPassThroughToGlobalHandler('x', key({ ctrl: true, super: true }), DEFAULT_VOICE_RECORD_KEY)).toBe(false)
     expect(shouldPassThroughToGlobalHandler('b', key({ ctrl: true }), DEFAULT_VOICE_RECORD_KEY)).toBe(true)
     expect(shouldPassThroughToGlobalHandler('b', key({ ctrl: true }))).toBe(true)
   })

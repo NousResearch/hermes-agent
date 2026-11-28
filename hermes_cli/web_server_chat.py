@@ -545,6 +545,15 @@ def _resolve_chat_argv(
         env["HERMES_CWD"] = workspace_cwd
         env["HERMES_TUI_CWD"] = workspace_cwd
     _apply_tui_python_env(env)
+    if not workspace_cwd:
+        # No workspace picked ("Default"): drop the cwd its repair just filled in from THIS
+        # process's launch directory. ``HERMES_CWD`` is what the TUI sends as session.create's
+        # ``cwd`` on the canonical transport, so the dashboard's own directory would beat the
+        # profile's ``terminal.cwd`` and the chat would start there — while the picker's Default
+        # row displays that configured workspace. Without it the gateway resolves the same
+        # default the picker showed (``GET /api/chat/workspaces`` -> ``default_cwd``).
+        env.pop("HERMES_CWD", None)
+        env.pop("HERMES_TUI_CWD", None)
     env.setdefault("NODE_ENV", "production")
     # Mouse tracking would swallow wheel events the browser needs for
     # transcript scrolling; disable it for the dashboard PTY only.

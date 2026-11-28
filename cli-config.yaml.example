@@ -1515,6 +1515,8 @@ platform_toolsets:
 #     guest_mode: false
 #     # allowed_chats: ["-1001234567890"]
 #     extra:
+#       clarify_button_labels: numbers # numbers (default) | text | auto; auto uses text per choice up to 28 display columns, otherwise its number
+#       # Full choices always remain in the numbered message body. Restart the gateway after changes.
 #       drop_pending_on_cold_boot: false # Answer messages sent while the gateway was off (default; Telegram keeps them up to 24 h). Set true to drop that backlog on a cold boot; watcher reconnects always preserve it
 #       tls_classic_key_exchange: false  # Opt in to X25519 for TLS handshake EOFs on PQ-incompatible paths; keeps TLS 1.3 and certificate verification
 #       disable_link_previews: false  # Set true to suppress Telegram URL previews in bot messages

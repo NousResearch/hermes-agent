@@ -274,8 +274,8 @@ KANBAN_REQUEST_CHANGES_SCHEMA = _schema(
     (
         "Reviewer verdict: send the task back to its implementer with required changes. This closes the review "
         "run, reapplies parent dependency gating, and requeues the task without "
-        "using block-loop accounting. Only use from a task claimed from the "
-        "review column; use kanban_block only for a genuine external blocker."
+        "using block-loop accounting. Use from a task claimed from review; an orchestrator may also "
+        "send a card in review back to its implementer. Use kanban_block only for a genuine external blocker."
     ),
     {
         "task_id": _prop("string", _DESC_TASK_ID_DEFAULT),

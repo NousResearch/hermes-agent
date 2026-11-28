@@ -132,15 +132,13 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         super().__init__(config, Platform.RELAY)
         self._transport = transport
         self._apply_descriptor(descriptor)
-        # Per-chat egress routing caches learned from inbound events (send() only
-        # receives a chat_id). The connector's egress guard resolves the owning tenant
-        # from OUTBOUND metadata.scope_id / user_id, so we re-attach what we saw
-        # inbound (_capture_scope).
+        # Per-chat egress routing caches learned from inbound events (send() only receives a
+        # chat_id). The connector's egress guard resolves the owning tenant from OUTBOUND
+        # metadata.scope_id / user_id, so we re-attach what we saw inbound (_capture_scope).
         self._scope_by_chat: dict[str, str] = {}
         self._dm_user_by_chat: dict[str, str] = {}
-        # chat_id -> chat_type: reproduces native Slack's synthetic DM-thread
-        # suppression (a raw reply_to becomes a thread_ts connector-side, so a plain
-        # DM reply would thread under the user).
+        # chat_id -> chat_type: reproduces native Slack's synthetic DM-thread suppression
+        # (a raw reply_to becomes a thread_ts connector-side, so a DM reply would thread).
         self._chat_type_by_chat: dict[str, str] = {}
         # chat_id -> last triggering Slack message ts (typing/status lane's
         # synthetic thread anchor in thread-per-message mode).
@@ -259,10 +257,8 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         return super().warning_notifications_enabled(platform)
 
     def _descriptor_for_chat(self, chat_id: str) -> CapabilityDescriptor:
-        """The descriptor governing a specific chat. Platform caps genuinely differ
-        (Discord 2000 / Telegram 4096 / Slack 39000), so the primary's scalar cap
-        either fragments needlessly or over-sends into a platform 400. Falls back to
-        the scalar when the chat's platform is unknown (never saw inbound)."""
+        """The descriptor governing a specific chat. Platform caps genuinely differ (Discord 2000 /
+        Telegram 4096 / Slack 39000) and so does editing (#154674); unknown chats keep the scalar."""
         per_platform = self._negotiated_descriptor(self._platform_by_chat.get(str(chat_id)))
         return per_platform if per_platform is not None else self.descriptor
 
@@ -271,6 +267,9 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
 
     def message_len_fn_for_chat(self, chat_id: str) -> Callable[[str], int]:
         return _LEN_FNS.get(self._descriptor_for_chat(chat_id).len_unit, len)
+
+    def supports_edit_for_chat(self, chat_id: str) -> bool:
+        return bool(self._descriptor_for_chat(chat_id).supports_edit)
 
     def supports_draft_streaming(
         self,
@@ -886,9 +885,10 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         """Adopt a (re)negotiated descriptor into the live capability surface."""
         self.descriptor = descriptor
         self.MAX_MESSAGE_LENGTH = descriptor.max_message_length
+        # Connectors that cannot edit say so here; per CHAT it is supports_edit_for_chat.
+        self.SUPPORTS_MESSAGE_EDITING = descriptor.supports_edit
         self.supports_code_blocks = descriptor.markdown_dialect not in ("", "plain")
-        # Cron in_channel continuable surface (D6 gate in cron/scheduler.py);
-        # class default is False, so only an explicit descriptor bit turns it on.
+        # Cron in_channel continuable surface (D6 gate in cron/scheduler.py); off unless advertised.
         self.supports_inchannel_continuable = bool(getattr(descriptor, "supports_inchannel_continuable", False))
 
     async def _on_inbound(self, event) -> Optional[asyncio.Task]:

@@ -149,3 +149,48 @@ def test_unverified_fingerprint_capture_never_authorizes_a_signal(board, monkeyp
     monkeypatch.setattr(kb, "_pid_alive", lambda pid: False)
     assert kb.release_stale_claims(conn, signal_fn=sig) == 1
     assert killed == [] and kb.get_task(conn, tid2).status == "ready"
+
+
+@pytest.mark.skipif(not hasattr(os, "killpg") or not hasattr(os, "getpgid"), reason="POSIX process groups required")
+def test_reclaim_terminates_worker_and_grandchild_process_group(board):
+    """A real worker session and its stubborn grandchild are both killed within a bound."""
+    import subprocess
+    import sys
+
+    worker_code = ("import subprocess,sys,time; "
+                   "subprocess.Popen([sys.executable, \"-c\", \"import time; time.sleep(60)\"]); "
+                   "time.sleep(60)")
+    worker = subprocess.Popen([sys.executable, "-c", worker_code], start_new_session=True)
+    try:
+        import psutil
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            children = psutil.Process(worker.pid).children(recursive=True)
+            if children:
+                child_pid = children[0].pid
+                break
+            time.sleep(.02)
+        else:
+            pytest.fail("worker did not spawn grandchild within 3 seconds")
+        fingerprint = kbd._process_fingerprint(worker.pid)
+        result = kbd._terminate_reclaimed_worker(worker.pid, f"{kbd._kb._host_prefix()}test", started_at=fingerprint)
+        worker.wait(timeout=2)
+        assert result["terminated"] is True
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            try:
+                os.kill(child_pid, 0)
+            except ProcessLookupError:
+                break
+            try:
+                if psutil.Process(child_pid).status() == psutil.STATUS_ZOMBIE:
+                    break
+            except psutil.NoSuchProcess:
+                break
+            time.sleep(.02)
+        else:
+            pytest.fail("grandchild survived process-group termination")
+    finally:
+        if worker.poll() is None:
+            os.killpg(worker.pid, signal.SIGKILL)
+            worker.wait(timeout=2)

@@ -1,6 +1,31 @@
 import { describe, expect, it } from 'vitest'
 
-import { isLikelyProseCodeBlock, isLikelyProseFence, isLikelyStructuredText } from './markdown-code'
+import {
+  isLikelyProseCodeBlock,
+  isLikelyProseFence,
+  isLikelyStructuredText,
+  shikiLanguageForFilename
+} from './markdown-code'
+
+describe('shikiLanguageForFilename', () => {
+  it('highlights dotenv files and their variants, but not look-alike names', () => {
+    const cases: Array<[string, string]> = [
+      ['.env', 'dotenv'],
+      ['/repo/.env.local', 'dotenv'],
+      ['C:\\app\\.env.production', 'dotenv'],
+      ['.env-sample', 'dotenv'],
+      ['config/production.env', 'dotenv'],
+      ['.envrc', 'bash'],
+      ['.env.json', 'json'],
+      ['.environment', ''],
+      ['.envoy', ''],
+      ['notes.local', ''],
+      ['src/app.ts', 'typescript']
+    ]
+
+    expect(cases.map(([path]) => [path, shikiLanguageForFilename(path)])).toEqual(cases)
+  })
+})
 
 describe('isLikelyProseCodeBlock', () => {
   it('detects prose that Streamdown mislabels as an unknown language', () => {

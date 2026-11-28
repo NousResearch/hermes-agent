@@ -137,3 +137,29 @@ it.skipIf(process.platform !== 'win32')(
     }
   }
 )
+
+it('passes an empty --git value to source_check when git is null', async (): Promise<void> => {
+  const root: string = fs.mkdtempSync(path.join(os.tmpdir(), 'null-git-probe-'))
+  const home: string = path.join(root, 'profile')
+  const modulePath: string = path.join(root, 'hermes_cli', 'source_check.py')
+  fs.mkdirSync(path.dirname(modulePath))
+  fs.mkdirSync(home)
+  fs.writeFileSync(path.join(root, 'hermes_cli', '__init__.py'), '')
+  fs.writeFileSync(
+    modulePath,
+    'import json, sys\ndef main():\n    idx = sys.argv.index("--git")\n    print(json.dumps({"supported": True, "branch": sys.argv[idx + 1]}))\n'
+  )
+
+  try {
+    const result = await readSourceUpdate({
+      python: process.env.HERMES_PYTHON || 'python3',
+      git: null,
+      updateRoot: root,
+      hermesHome: home
+    })
+
+    expect(result).toMatchObject({ supported: true, branch: '' })
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})

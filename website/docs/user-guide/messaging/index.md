@@ -241,10 +241,13 @@ behavior. This setting is Linux/systemd-only and does not treat an ordinary
 platform network disconnect as an event-loop failure.
 
 Under `Type=notify` the gateway reports ready only after every served profile's
-adapters connect, one profile at a time. Before each secondary profile's
-connect it sends systemd `EXTEND_TIMEOUT_USEC` for that connect's budget plus
-a margin. A large multi-profile boot can therefore run past systemd's default
-90 s start timeout, while a boot that stops making progress is still killed.
+adapters have made their first connect attempt. Secondary profiles are prepared
+one at a time, then connect together in waves that never put two profiles on
+one bot token or listener. Before each preparation step and before each
+connect wave the gateway sends systemd `EXTEND_TIMEOUT_USEC` for the largest
+connect budget involved plus a margin. A large multi-profile boot can therefore
+run past systemd's default 90 s start timeout, while a boot that stops making
+progress is still killed.
 
 ## Chat Commands (Inside Messaging)
 
@@ -360,6 +363,7 @@ Details:
 - Lookup order is exact channel/thread id first, then the **parent** channel/forum id — so Discord threads inherit their parent channel's override automatically.
 - Resolution priority for the model is: session `/model` override → `channel_overrides` → global config. A user running `/model` in a chat still wins over the channel default.
 - The `system_prompt` override replaces the global gateway prompt for that channel (it is ephemeral — injected per turn, not stored in history).
+- `idle_compact_after_seconds` sets [`compression.idle_compact_after_seconds`](../configuration.md#context-compression) for that channel only: a positive value compacts this channel's idle chats after that many seconds (in the background, before the next message), `0` turns idle compaction off there even when the global value is on. Unset keeps the global value. It is a channel policy, so it also applies after `/new`; like the other `channel_overrides` fields, an edit takes effect after a gateway restart.
 
 ## Per-Platform and Per-Room Intentional Silence
 

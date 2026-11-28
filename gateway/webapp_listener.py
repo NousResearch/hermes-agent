@@ -35,6 +35,7 @@ DEFAULT_PORT = 9120
 TOKEN_PATH = Path("webapp") / "session-token"
 # secrets.token_urlsafe(32); the launch page refuses any other shape.
 _TOKEN_FORMAT = re.compile(r"[A-Za-z0-9_-]{43}")
+_DECIMAL_PORT = re.compile(r"0*[1-9][0-9]{0,4}", re.ASCII)
 HOST_CHOICES = "127.0.0.1, ::1, localhost, 0.0.0.0, :: or one IP address of this machine"
 
 
@@ -117,17 +118,22 @@ def webapp_settings(home, *, document: dict | None = None) -> WebappSettings:
     return replace(configured, enabled=True)
 
 
+def configured_port(value: object) -> int | None:
+    """Read a config port, including decimal text produced by environment expansion."""
+    if isinstance(value, str) and _DECIMAL_PORT.fullmatch(value):
+        value = int(value.lstrip("0"))
+    return value if isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= 65535 else None
+
+
 def _configured_address(block: dict) -> tuple[str | None, int | None, str | None]:
     """The block's ``(host, port, public_url)``, each None when invalid (``public_url`` is "" when
     unset): the host canonical and local-only, a wildcard or one specific address
     (:func:`_specific_address`), the port 1-65535, the URL as :func:`_public_url` reads it."""
     host = block.get("host", DEFAULT_HOST)
     host = _canonical_host(_bare_host(host)) if isinstance(host, str) else None
-    port = block.get("port", DEFAULT_PORT)
-    valid_port = isinstance(port, int) and not isinstance(port, bool) and 1 <= port <= 65535
+    port = configured_port(block.get("port", DEFAULT_PORT))
     usable = host is not None and (_local_only(host) or _is_wildcard(host) or _specific_address(host))
-    return (host if usable else None,
-            port if valid_port else None, _public_url(block.get("public_url")))
+    return host if usable else None, port, _public_url(block.get("public_url"))
 
 
 def _bare_host(host: str) -> str:

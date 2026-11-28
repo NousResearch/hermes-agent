@@ -23,6 +23,7 @@ import hashlib
 import json
 import logging
 import os
+import shlex
 import stat
 import sys
 import time
@@ -31,10 +32,14 @@ from typing import Optional
 
 from hermes_cli.gateway_migrate_backends_plan import (
     _LEGACY_ENV_DROPIN, _SECRET_KEY, APPLY_STEPS, EXIT_BLOCKED, EXIT_OK, EXIT_UNSUPPORTED, EXIT_USAGE, BackendPlan,
-    _forceable, build_plan, format_address, format_plan, manual_steps, parse_address, provider_names,
+    _forceable, build_plan, format_address, format_plan, is_system_launchd, manual_steps, parse_address,
+    provider_names,
 )
 from hermes_cli.gateway_migrate_backends_detach import (
     clear_refusal, detach, read_refusal, record_refusal, refusal_status,
+)
+from hermes_cli.gateway_migrate_backends_timeouts import (
+    RESTART_HANDOFF_SECONDS, ROLLBACK_VERIFY_SECONDS, VERIFY_SECONDS,
 )
 
 logger = logging.getLogger(__name__)
@@ -59,12 +64,6 @@ def env_writes(plan: BackendPlan) -> dict[str, str]:
 
 MANIFEST_NAME = "backend_migration.json"
 BACKUP_DIR = "backend_migration"
-#: Upper bound for the new gateway to answer on every address. A good run passes as soon as it answers
-#: (the whole outage was 3.4 to 8.5 s on the Linux and macOS test guests); only a failing run waits the
-#: whole budget, with the old address dark, before it rolls back. It stays at 90 s so a slow first start
-#: (a small ARM board, a cold disk) is not rolled back as a failure.
-VERIFY_SECONDS = 90.0
-ROLLBACK_VERIFY_SECONDS = 60.0
 FINAL_STATES = frozenset({"done", "rolled_back", "restored"})
 RESTORE_STEPS = ("stop_gateway", "restore_files", "restore_gateway_service", "start_old_backend",
                  "verify_old_backend")
@@ -272,7 +271,7 @@ def gateway_serving(host, manifest: dict) -> Optional[str]:
         status = host.gateway_status(dial, port)  # the gateway's /api/status: the plan's probe has no state
         if status is None:
             return f"no HTTP 200 on {format_address(dial, port)}/api/status"
-        if status.get("gateway_state") != "running":
+        if status.get("gateway_state") not in ("running", "degraded"):
             return f"{format_address(dial, port)}/api/status says gateway_state={status.get('gateway_state')!r}"
         statuses.append(status)
     status = statuses[0]
@@ -298,6 +297,27 @@ def _wait_port_free(host, manifest: dict) -> None:
     dial, port = _old_host(manifest), manifest["dial"]["old_port"]
     if not _wait(host, 30, lambda: not host.port_in_use(dial, port)):
         raise StepFailed(f"port {port} is still held after the old backend stopped")
+
+
+def _replaced(host, before_pid: Optional[int]) -> bool:
+    pid = host.gateway_pid()
+    return pid is not None and pid != before_pid
+
+
+def _await_replacement(host, before_pid: Optional[int]) -> None:
+    """Wait for ``start_gateway``'s restart to reach a REPLACEMENT process before the verify clock runs.
+
+    ``gateway_verb("restart")`` only *requests* the restart: a supervised gateway drains in-band and its
+    API keeps answering ``503 gateway_draining`` until it exits, so verification used to spend its whole
+    budget watching the very process it is replacing (376 s once, held open by the caller's own turn).
+    Advisory — verify stays the arbiter, so a hand-off that never lands only costs time.
+    """
+    if _replaced(host, before_pid):
+        return
+    if not _wait(host, RESTART_HANDOFF_SECONDS, lambda: _replaced(host, before_pid)):
+        who = f"gateway PID {before_pid}" if before_pid is not None else "gateway"
+        print(f"⚠ {who} did not hand over within {RESTART_HANDOFF_SECONDS:.0f}s "
+              "— verifying anyway")
 
 
 def _ensure_gateway_service(host, gw_before: dict) -> None:
@@ -366,10 +386,22 @@ def _apply_steps(run: Run, plan: BackendPlan, *, force_interrupt: bool) -> float
                          f"the checks never saw. The old backend has not been stopped; run this command again.")
     if not force_interrupt and (late := _late_activity(host, rec)) is not None:
         raise StepFailed(f"{late} The old backend has not been stopped.")
+    m["old_backend_stopped"] = None
+    m["old_backend_disabled"] = False
     run.step("stop_old_backend")
     stopped_at = host.now()
-    host.old_stop(rec)
+    try:
+        host.old_stop(rec)
+    except Exception:
+        m["old_backend_stopped"] = False
+        run.save()
+        raise
+    m["old_backend_stopped"] = True
+    m["old_backend_disabled"] = "disabling"
+    run.save()
     host.old_disable(rec)
+    m["old_backend_disabled"] = True
+    run.save()
     if (dropin := host.old_unit_dropin_path(rec)) is not None:
         m["old_unit_dropin"] = dropin  # recorded first: rollback and restore remove it
         run.save()
@@ -383,7 +415,11 @@ def _apply_steps(run: Run, plan: BackendPlan, *, force_interrupt: bool) -> float
         _stop_stray_gateway(run)
     run.step("stop_old_backend", "done")
     run.step("start_gateway")
-    host.gateway_verb("restart" if m["gateway"]["active"] else "start")
+    was_active = m["gateway"]["active"]
+    before_pid = (host.gateway_pid() or m["gateway"].get("running_pid")) if was_active else None
+    host.gateway_verb("restart" if was_active else "start")
+    if was_active:
+        _await_replacement(host, before_pid)
     run.step("start_gateway", "done")
     run.step("verify")
     why: list[Optional[str]] = [None]
@@ -855,10 +891,21 @@ def _undo(run: Run, errors: list[str]) -> None:
         errors.append(f"did not start the old backend again: {missing}")
         print(f"  ✗ the old backend was not started again: {missing}")
         return
-    if m.get("old_backend_enabled"):
-        attempt("re-enabled the old backend", lambda: host.old_enable(rec))
+    _restore_old_backend(run, attempt)
+
+
+def _restore_old_backend(run: Run, attempt) -> None:
+    """Re-enable and start the old backend during rollback/restore, recording progress for manual steps."""
+    host, m = run.host, run.data
+    rec = m["old_backend"]
+    if m.get("old_backend_enabled") and m.get("old_backend_disabled") is not False:
+        if attempt("re-enabled the old backend", lambda: host.old_enable(rec)):
+            m["old_backend_disabled"] = False
+            run.save()
     if rec.get("was_active") or rec.get("was_loaded"):  # a loaded launchd job was unloaded by the stop step
-        attempt("started the old backend", lambda: _start_old(host, run))
+        if attempt("started the old backend", lambda: _start_old(host, run)):
+            m["old_backend_stopped"] = False
+            run.save()
 
 
 def _migrated_listener_up(host, m: dict) -> Optional[str]:
@@ -951,6 +998,83 @@ def _old_never_stopped(m: dict) -> bool:
     return m.get("kind") == "apply" and not _entered(m, "stop_old_backend")
 
 
+def _plist_already_restored(unit_path: str) -> bool:
+    """Whether *unit_path* is already back in place with no ``.disabled`` sibling on disk."""
+    return bool(unit_path) and Path(unit_path).exists() and not os.path.lexists(f"{unit_path}.disabled")
+
+
+def _launchd_stop_progress(m: dict, unit_path: str) -> tuple[Optional[bool], bool, bool]:
+    """``(stopped, disabled, renamed)`` for a launchd manual rollback step.
+
+    ``stopped`` is ``True`` when the job was unloaded (bootout), ``False`` when explicitly recorded
+    as not stopped, and ``None`` when unknown (in-progress/interrupted ``old_stop``, or a legacy
+    manifest where ``stop_old_backend`` failed).
+    For manifests written before those fields existed, ambiguous ``stop_old_backend`` progress treats
+    the job as possibly disabled so recovery includes ``launchctl enable``; ``mv`` is omitted when
+    the original plist is already back on disk and ``<unit_path>.disabled`` is absent.
+    """
+    stop_state = next((s.get("state") for s in m.get("steps") or [] if s.get("name") == "stop_old_backend"), None)
+    completed = m.get("kind") == "restore" or m.get("state") == "done" or stop_state == "done"
+    stop_entered = completed or stop_state not in (None, "pending") or _entered(m, "stop_old_backend")
+    if "old_backend_stopped" in m:
+        raw_stopped = m["old_backend_stopped"]
+        stopped: Optional[bool] = None if raw_stopped is None else bool(raw_stopped)
+    else:
+        stopped = True if completed else None
+    has_disabled_file = bool(unit_path and os.path.lexists(f"{unit_path}.disabled"))
+    if "old_backend_disabled" in m:
+        raw_disabled = m["old_backend_disabled"]
+        disabled = bool(raw_disabled)
+        if raw_disabled is True:
+            renamed = bool(unit_path) and not _plist_already_restored(unit_path)
+        elif raw_disabled == "disabling":
+            renamed = has_disabled_file
+        else:
+            renamed = False
+    else:
+        disabled = stop_entered or has_disabled_file
+        renamed = has_disabled_file or (bool(unit_path) and completed and not _plist_already_restored(unit_path))
+    return stopped, disabled, renamed
+
+
+def _launchd_missing_plist_step(prefix: list[str], scope: str, unit: str) -> str:
+    """Manual recovery guidance when ``unit_path`` is unknown and the job may have been booted out."""
+    bootstrap = f"{shlex.join([*prefix, 'launchctl', 'bootstrap', scope])} <plist-path>"
+    target = f" for {unit}" if unit else ""
+    return f"locate the original plist{target} and run: {bootstrap}"
+
+
+def _launchd_manual_rollback_step(m: dict, rec: dict) -> str:
+    """Privilege- and stage-aware manual recovery command for a launchd old backend."""
+    unit_path = (rec.get("unit_path") or "").strip()
+    scope = (rec.get("scope") or "").strip()
+    unit = (rec.get("unit") or "").strip()
+    is_system = is_system_launchd(scope, unit_path)
+    prefix = ["sudo"] if is_system else []
+    if not scope and is_system:
+        scope = "system"
+    stopped, disabled, renamed = _launchd_stop_progress(m, unit_path)
+    parts: list[str] = []
+    if renamed and unit_path:
+        parts.append(shlex.join([*prefix, "mv", f"{unit_path}.disabled", unit_path]))
+    if disabled and scope and unit:
+        parts.append(shlex.join([*prefix, "launchctl", "enable", f"{scope}/{unit}"]))
+    if scope:
+        if unit_path:
+            bootstrap = shlex.join([*prefix, "launchctl", "bootstrap", scope, unit_path])
+            if stopped is True or not unit:
+                parts.append(bootstrap)
+            else:
+                parts.append(f"{shlex.join([*prefix, 'launchctl', 'kickstart', f'{scope}/{unit}'])} || {bootstrap}")
+        elif stopped is False and unit:
+            parts.append(shlex.join([*prefix, "launchctl", "kickstart", f"{scope}/{unit}"]))
+        else:
+            parts.append(_launchd_missing_plist_step(prefix, scope, unit))
+    return "; ".join(parts) or (
+        f"start the old launchd backend again so it serves {m.get('old_address') or 'its address'} again"
+    )
+
+
 def _manual_rollback_steps(m: dict) -> list[str]:
     """The numbered-by-the-caller steps that finish a rollback by hand, from the recorded state. Every
     ``hermes`` command names this run's profile (``hermes -p NAME``), so it acts on this home."""
@@ -975,8 +1099,7 @@ def _manual_rollback_steps(m: dict) -> list[str]:
         steps += [line for line in (enable, f"{systemctl} start {rec['unit']}" if rec.get("was_active") else None)
                   if line]
     elif rec["supervisor"] == "launchd":
-        steps.append(f"mv {rec['unit_path']}.disabled {rec['unit_path']}; launchctl enable {rec['scope']}/{rec['unit']}; "
-                     f"launchctl bootstrap {rec['scope']} {rec['unit_path']}")
+        steps.append(_launchd_manual_rollback_step(m, rec))
     else:  # its command line may carry a credential (env NAME=value, a token argument): never printed
         pid = f" (it was pid {rec['pid']})" if rec.get("pid") else ""
         steps.append(f"start the old backend again the way you started it before{pid}, so it serves "

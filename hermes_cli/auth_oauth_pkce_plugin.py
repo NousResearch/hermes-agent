@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 
 POOL_SOURCE = "manual:loopback_pkce"  # ``manual:`` prefix = never pruned by load_pool() re-seeding
 _LOOPBACK_LITERALS = frozenset({"127.0.0.1", "::1"})
+REDIRECT_HOSTS = frozenset({"127.0.0.1", "localhost"})
 
 
 @dataclass(frozen=True)
@@ -59,6 +60,11 @@ class OAuthPKCEConfig:
     # the token-endpoint JSON or raises ``AuthError``. The broker holds the client secret, so the
     # plugin owns that transport and ``token_url`` is unused.
     token_request: Optional[Callable[[dict[str, str]], Mapping[str, Any]]] = None
+    # Fields added later go last so positional construction of the earlier fields keeps its meaning.
+    scope_separator: str = " "  # RFC 6749 says space; a few IdPs (Linear) require a comma-joined list
+    # Host written into the redirect URI. The listener always binds 127.0.0.1; "localhost" is for IdPs
+    # that refuse IP-address redirect URIs (QuickBooks).
+    redirect_host: str = "127.0.0.1"
 
 
 def _err(provider: str, message: str, code: str):
@@ -95,6 +101,8 @@ def validate_config(provider: str, cfg: OAuthPKCEConfig) -> None:
                    f"{sorted(allowlist)}.", "oauth_token_host_rejected")
     if not 0 <= int(cfg.redirect_port) <= 65535:
         raise _err(provider, "OAuth redirect_port must be within 0..65535.", "oauth_redirect_invalid")
+    if cfg.redirect_host not in REDIRECT_HOSTS:
+        raise _err(provider, f"OAuth redirect_host must be one of {sorted(REDIRECT_HOSTS)}.", "oauth_redirect_invalid")
 
 
 def _post_token(provider: str, cfg: OAuthPKCEConfig, data: dict[str, str], *, code: str) -> dict[str, Any]:
@@ -172,7 +180,7 @@ def login(provider: str, cfg: OAuthPKCEConfig, *, open_browser: bool = True) -> 
     handler_cls, result = _make_loopback_callback_handler(path, display_name=cfg.label or provider)
     server = _bind_loopback_callback_server(
         "127.0.0.1", int(cfg.redirect_port), handler_cls, err=err, bind_failed_code="oauth_callback_bind_failed")
-    redirect_uri = f"http://127.0.0.1:{server.server_address[1]}{path}"
+    redirect_uri = f"http://{cfg.redirect_host}:{server.server_address[1]}{path}"
     verifier = _pkce_code_verifier()
     state = secrets.token_urlsafe(32)
     params = {
@@ -180,7 +188,7 @@ def login(provider: str, cfg: OAuthPKCEConfig, *, open_browser: bool = True) -> 
         "redirect_uri": redirect_uri, "state": state, "code_challenge": _pkce_code_challenge(verifier),
         "code_challenge_method": "S256"}
     if cfg.scopes:
-        params["scope"] = " ".join(cfg.scopes)
+        params["scope"] = cfg.scope_separator.join(cfg.scopes)
     if cfg.audience:
         params["audience"] = cfg.audience
     authorize_url = f"{cfg.authorize_url}{'&' if urlparse(cfg.authorize_url).query else '?'}{urlencode(params)}"
@@ -231,7 +239,7 @@ def pkce_auth_handler(cfg: OAuthPKCEConfig) -> Callable[[str, Any], bool]:
             entry = load_pool(provider).add_entry(PooledCredential(
                 provider=provider, id=uuid.uuid4().hex[:6], label=cfg.label or provider,
                 auth_type=AUTH_TYPE_OAUTH, priority=0, source=POOL_SOURCE, **tokens,
-                extra={"oauth_pkce": {"client_id": cfg.client_id, "scope": " ".join(cfg.scopes)}}))
+                extra={"oauth_pkce": {"client_id": cfg.client_id, "scope": cfg.scope_separator.join(cfg.scopes)}}))
             print(f"Signed in to {cfg.label or provider}; credential {entry.id} added to the pool.")
             return True
         if action == "status":
@@ -281,7 +289,7 @@ def pkce_refresh_credential(cfg: OAuthPKCEConfig) -> Callable[[Any], Mapping[str
                 raise _err(provider, "no refresh_token on the pooled credential.", "oauth_refresh_no_token")
             data = {"grant_type": "refresh_token", "refresh_token": refresh_token}
             if cfg.scopes:
-                data["scope"] = " ".join(cfg.scopes)
+                data["scope"] = cfg.scope_separator.join(cfg.scopes)
             return _post_token(provider, cfg, data, code="oauth_refresh_failed")
 
     return refresh

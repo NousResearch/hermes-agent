@@ -1,0 +1,23 @@
+name: order-cards
+title: Order Cards
+repo: https://github.com/kenhendricks00/hermes-order-cards
+sha: 996fa90beeca9f35c7c8a6e1fb628c03ec2ca885
+description: "Purchase approval cards for checkouts the agent drives: it stops before the final button and shows an inline card (::preview) with the merchant's items, fees and total, Ship to and Pay with pickers, and Cancel / Pay buttons; after the order goes through the card collapses into an 'Order placed' pill. Portable Agent Plugins v1 package (skills/ only, one stdlib Python script). Disclosure — the skill guides the agent through merchant checkout pages in your browser with Hermes's own browser tools and tells it to submit only after you tap Pay on the card or give a clear yes; that approval is an instruction to the model, not a Hermes approval prompt. Card buttons send fixed prompts back as your message via data-hermes-send; card details go only through browser_vault. The bundled script makes no network calls, reads only the order JSON it is given and writes one HTML file; the rendered card loads merchant favicons from www.google.com/s2/favicons and item images from merchant CDNs. No credentials, telemetry or background processes."
+maintainer: kenhendricks00
+tier: community
+category: tools
+version: "1.0.0"
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/kenhendricks00/hermes-order-cards#readme
+image: https://raw.githubusercontent.com/kenhendricks00/hermes-order-cards/996fa90beeca9f35c7c8a6e1fb628c03ec2ca885/docs/banner.png
+screenshots:
+- https://raw.githubusercontent.com/kenhendricks00/hermes-order-cards/996fa90beeca9f35c7c8a6e1fb628c03ec2ca885/docs/pending.png
+- https://raw.githubusercontent.com/kenhendricks00/hermes-order-cards/996fa90beeca9f35c7c8a6e1fb628c03ec2ca885/docs/pending-pickers.png
+- https://raw.githubusercontent.com/kenhendricks00/hermes-order-cards/996fa90beeca9f35c7c8a6e1fb628c03ec2ca885/docs/placed.png
+- https://raw.githubusercontent.com/kenhendricks00/hermes-order-cards/996fa90beeca9f35c7c8a6e1fb628c03ec2ca885/docs/placed-expanded.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

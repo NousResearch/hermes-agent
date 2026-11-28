@@ -6,13 +6,17 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
+from functools import partial
 from pathlib import Path
+from shlex import quote
 
 import pytest
 
 from hermes_platform.resolver.git import (
     GitResolution,
     _CltGitCache,
+    _probe_xcode_select_developer_dir,
     clear_git_usability_cache,
     inspect_git,
     is_git_command,
@@ -26,6 +30,43 @@ def _make_exe(path: Path, body: str = "#!/usr/bin/env bash\nexit 0\n") -> Path:
     path.write_text(body, encoding="utf-8")
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     return path
+
+
+@pytest.mark.platforms("posix")
+def test_xcode_select_timeout_discards_late_developer_dir(tmp_path):
+    stub = _make_exe(tmp_path / "usr_bin" / "git")
+    bash = shutil.which("bash")
+    assert bash is not None, "bash is required to execute fake xcode-select scripts"
+    (stub.parent / "bash").symlink_to(bash)
+    developer = tmp_path / "developer"
+    _make_exe(developer / "usr" / "bin" / "git")
+
+    def _make_select(name: str, delay: float) -> Path:
+        code = f"import time; time.sleep({delay}); print({str(developer)!r})"
+        return _make_exe(
+            tmp_path / name,
+            f"#!/usr/bin/env bash\nexec {quote(sys.executable)} -c {quote(code)}\n",
+        )
+
+    fast_select = _make_select("xcode-select-fast", 0)
+    fast = inspect_git(
+        {"PATH": str(stub.parent)},
+        platform="darwin",
+        apple_stub_path=str(stub),
+        developer_dir_probe=partial(_probe_xcode_select_developer_dir, xcode_select=str(fast_select)),
+        cache=_CltGitCache(),
+    )
+    assert fast.status == "usable"
+
+    slow_select = _make_select("xcode-select-slow", 3)
+    slow = inspect_git(
+        {"PATH": str(stub.parent)},
+        platform="darwin",
+        apple_stub_path=str(stub),
+        developer_dir_probe=partial(_probe_xcode_select_developer_dir, xcode_select=str(slow_select)),
+        cache=_CltGitCache(),
+    )
+    assert slow.status == "clt_stub"
 
 
 @pytest.mark.platforms("posix")
@@ -296,9 +337,85 @@ def test_explicit_env_without_developer_dir_does_not_inherit_ambient_developer_d
     assert res == GitResolution(executable=None, status="clt_stub", raw_path=str(stub))
 
 
-def test_empty_path_reports_missing_not_clt_stub():
+def test_empty_path_reports_missing_not_clt_stub(tmp_path):
     res = inspect_git({"PATH": ""}, platform="darwin", cache=_CltGitCache())
     assert res == GitResolution(executable=None, status="missing", raw_path=None)
+    _make_exe(tmp_path / "git")  # an empty PATH searches nothing, not the cwd
+    res_cwd = inspect_git({"PATH": ""}, cwd=tmp_path, platform="darwin", cache=_CltGitCache())
+    assert res_cwd == GitResolution(executable=None, status="missing", raw_path=None)
+
+
+@pytest.mark.platforms("posix")
+def test_inspect_git_resolves_relative_path_entries_against_cwd(tmp_path, monkeypatch):
+    stub = _make_exe(tmp_path / "usr_bin" / "git")
+    parent = tmp_path / "parent"
+    child = tmp_path / "child"
+    child.mkdir()
+    _make_exe(parent / "bin" / "git")
+    monkeypatch.chdir(parent)
+
+    env = {"PATH": f"bin{os.pathsep}{stub.parent}"}
+    in_child = inspect_git(
+        env,
+        cwd=child,
+        platform="darwin",
+        apple_stub_path=str(stub),
+        developer_dir_probe=lambda _env: "",
+        cache=_CltGitCache(),
+    )
+    assert in_child == GitResolution(executable=None, status="clt_stub", raw_path=str(stub))
+
+    empty_seg_env = {"PATH": f"{os.pathsep}{stub.parent}"}
+    child_local = _make_exe(child / "git")
+    found_in_child = inspect_git(
+        empty_seg_env,
+        cwd=child,
+        platform="darwin",
+        apple_stub_path=str(stub),
+        developer_dir_probe=lambda _env: "",
+        cache=_CltGitCache(),
+    )
+    assert found_in_child.status == "usable"
+    assert found_in_child.executable is not None
+    assert os.path.realpath(found_in_child.executable) == os.path.realpath(child_local)
+
+    monkeypatch.setenv("PATH", f"bin{os.pathsep}{stub.parent}")
+    ambient_in_child = inspect_git(
+        None,
+        cwd=child,
+        platform="darwin",
+        apple_stub_path=str(stub),
+        developer_dir_probe=lambda _env: "",
+        cache=_CltGitCache(),
+    )
+    assert ambient_in_child == GitResolution(executable=None, status="clt_stub", raw_path=str(stub))
+
+
+@pytest.mark.platforms("posix")
+def test_inspect_git_keeps_a_pathsep_in_cwd_inside_one_search_entry(tmp_path, monkeypatch):
+    """A checkout directory may contain ``:``; joining it into PATH entries must not split it."""
+    stub = _make_exe(tmp_path / "usr_bin" / "git")
+    child = tmp_path / f"a{os.pathsep}b"
+    child_git = _make_exe(child / "bin" / "git")
+    path = f"bin{os.pathsep}{stub.parent}"
+
+    def _inspect(env):
+        return inspect_git(
+            env,
+            cwd=child,
+            platform="darwin",
+            apple_stub_path=str(stub),
+            developer_dir_probe=lambda _env: "",
+            cache=_CltGitCache(),
+        )
+
+    explicit = _inspect({"PATH": path})
+    monkeypatch.setenv("PATH", path)
+    ambient = _inspect(None)
+    for res in (explicit, ambient):
+        assert res.status == "usable"
+        assert res.executable is not None
+        assert os.path.realpath(res.executable) == os.path.realpath(child_git)
 
 
 def test_spawn_guard_refuses_only_the_clt_stub_not_a_git_it_cannot_find(tmp_path):

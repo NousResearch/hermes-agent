@@ -59,15 +59,15 @@ def _derived_version(
     return base_version
 
 
-def _git_unusable() -> bool:
+def _git_unusable(cwd: Path | None = None) -> bool:
     """Missing git, or macOS's uninstalled CLT stub (any launch opens Apple's install dialog)."""
     from hermes_cli._subprocess_compat import _git_argv0_unusable
 
-    return _git_argv0_unusable(["git"])
+    return _git_argv0_unusable(["git"], cwd=cwd)
 
 
 def _run_git(repo_dir: Path, *args: str) -> str | None:
-    if _git_unusable():
+    if _git_unusable(repo_dir):
         return None
     # bounded_probe_run, not subprocess.run(timeout=3): on Windows run()'s post-timeout cleanup
     # calls an *unbounded* communicate(), and killing the direct child can leave a git descendant
@@ -239,7 +239,7 @@ def _git_version_info(repo_dir: Path, *, include_untracked: bool = False) -> Ver
     if not include_untracked:
         status_command.append("-uno")
     status_result = None
-    if not _git_unusable():
+    if not _git_unusable(repo_dir):
         status_result = bounded_probe_run(status_command, timeout=3, cwd=str(repo_dir))
     dirty = (
         status_result is not None

@@ -44,32 +44,83 @@ def _find_stale_dashboard_pids(*, exclude_pids: set[int] | None = None,
     return _pids_owned_by_hermes_home(pids, scope_home) if scope_home else pids
 
 
-def _parse_dashboard_runtime(command: str) -> tuple[str, str, int] | None:
-    """Best-effort parse of a dashboard/server cmdline into mode, host, and port.
+def _extract_dashboard_bind(tokens: list[str], *, exact: bool) -> tuple[str, int] | None:
+    """Read ``--host`` and ``--port`` from *tokens*; None on invalid port.
+
+    *exact* (argv sequence or unwrapped inline bootstrap) uses last-value CLI semantics and
+    rejects invalid/negative ports even after a prior valid one; flattened text keeps the first
+    explicit valid bind so trailing path fragments cannot overwrite or erase it.
+    """
+    port = 9119
+    explicit_port = False
+    host = "127.0.0.1"
+    explicit_host = False
+    i = 0
+    while i < len(tokens):
+        raw = tokens[i].strip("\"'")
+        flag, eq, inline_value = raw.partition("=")
+        if flag == "--port" and (exact or not explicit_port):
+            if eq:
+                value, step = inline_value.strip("\"'"), 1
+            elif i + 1 < len(tokens):
+                value, step = tokens[i + 1].strip("\"'"), 2
+            else:
+                return None if exact else (host, port)
+            try:
+                parsed_port = int(value)
+            except ValueError:
+                return None
+            if parsed_port < 0:
+                return None
+            port, explicit_port = parsed_port, True
+        elif flag == "--host" and (exact or not explicit_host):
+            if eq:
+                value, step = inline_value.strip("\"'"), 1
+            elif i + 1 < len(tokens):
+                value, step = tokens[i + 1].strip("\"'"), 2
+            else:
+                break
+            host, explicit_host = value or "127.0.0.1", True
+        else:
+            step = 1
+        i += step
+    return host, port
+
+
+def _parse_dashboard_runtime(command: str | list[str] | tuple[str, ...]) -> tuple[str, str, int] | None:
+    """Best-effort parse of a dashboard/server cmdline or argv into mode, host, and port.
 
     The mode is the canonical holder subcommand, never an argv substring: this gates the launchd
     backend inventory (a kill + kickstart path) and ``--status`` (#121156).
     """
     from hermes_cli.update_cmd_windows import _hermes_holder_subcommand
-    mode = _hermes_holder_subcommand(command)
+    if isinstance(command, str):
+        exact = False
+        cmdline = command
+        try:
+            tokens = shlex.split(command, posix=False)
+        except ValueError:
+            tokens = command.split()
+    else:
+        exact = True
+        tokens = [str(part) for part in command]
+        cmdline = shlex.join(tokens)
+
+    mode = _hermes_holder_subcommand(cmdline)
     if mode not in ("dashboard", "serve"):
         return None
 
-    port = 9119
-    host = "127.0.0.1"
+    from gateway.status_inline_source import command_line_runs_inline_source, inline_bootstrap_argv
+    normalized = [t.strip("\"'").replace("\\", "/") for t in tokens]
+    if command_line_runs_inline_source(normalized):
+        unwrapped = inline_bootstrap_argv(normalized)
+        if unwrapped:
+            tokens, exact = unwrapped, True
 
-    port_match = re.search(r"(?:^|\s)--port(?:=|\s+)(\d+)", command)
-    if port_match:
-        try:
-            port = int(port_match.group(1))
-        except ValueError:
-            return None
-
-    host_match = re.search(r"(?:^|\s)--host(?:=|\s+)(\"[^\"]+\"|'[^']+'|\S+)", command)
-    if host_match:
-        host = host_match.group(1).strip("\"'") or "127.0.0.1"
-
-    return mode, host, port
+    bind = _extract_dashboard_bind(tokens, exact=exact)
+    if bind is None:
+        return None
+    return mode, bind[0], bind[1]
 
 
 def _dashboard_probe_host(host: str | None) -> str:
@@ -329,7 +380,7 @@ def _loaded_launchd_backend_jobs(
             if not label or not isinstance(args, list) or not args:
                 continue
             argv = [str(a) for a in args]
-            if _parse_dashboard_runtime(shlex.join(argv)) is None:
+            if _parse_dashboard_runtime(argv) is None:
                 continue
             domains = ("system",) if kind == "daemon" else (f"gui/{uid}", f"user/{uid}")
             for domain in domains:
@@ -585,6 +636,38 @@ def _finalize_update_output(state):
             log_file.close()
 
 
+def _pid_argv(pid: int) -> list[str] | None:
+    """Exact argv for *pid* from psutil or ``/proc/<pid>/cmdline`` (no subprocesses)."""
+    try:
+        import psutil
+    except ImportError:
+        psutil = None
+    if psutil is not None:
+        with contextlib.suppress(psutil.Error, OSError):
+            argv = psutil.Process(pid).cmdline()
+            if argv:
+                return [str(part) for part in argv]
+    if sys.platform != "win32":
+        with contextlib.suppress(OSError):
+            raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+            argv = [part.decode("utf-8", errors="replace") for part in raw.split(b"\x00") if part]
+            if argv:
+                return argv
+    return None
+
+
+def _status_runtime_source(pid: int, command: str) -> list[str] | str:
+    """Prefer *pid*'s exact OS argv when it matches the scanned *command*, else *command*."""
+    normalized_cmd = " ".join(command.split())
+    if not normalized_cmd:
+        return command
+    exact_argv = _pid_argv(pid)
+    # ps prints a multi-line -c source (the published launcher's) with its newlines as spaces.
+    if exact_argv and " ".join(" ".join(exact_argv).split()).startswith(normalized_cmd):
+        return exact_argv
+    return command
+
+
 def _report_dashboard_status(status_host: str = "127.0.0.1", status_port: int = 0) -> int:
     """Print live listening dashboard/serve processes and return the count.
 
@@ -616,7 +699,7 @@ def _report_dashboard_status(status_host: str = "127.0.0.1", status_port: int = 
     unclaimed: list[tuple[str, int]] = [(own, status_port)] if own else []
     candidates: list[tuple[int, str, str, tuple[str, int]]] = []
     for pid, command in _scan_dashboard_processes():
-        runtime = _parse_dashboard_runtime(command)
+        runtime = _parse_dashboard_runtime(_status_runtime_source(pid, command))
         if runtime is None:
             continue
         mode, host, port = runtime

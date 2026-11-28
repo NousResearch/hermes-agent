@@ -500,8 +500,7 @@ export const en: Translations = {
     catalogUpdateBtn: "Update available",
     catalogRemovedBadge: "Removed",
     catalogConfirmTitle: "Install this plugin?",
-    catalogConfirmInstallNote:
-      "Plugins install disabled; enable it after install to activate.",
+    catalogConfirmInstallNote: "The plugin turns on right away after install.",
     catalogRequiresEnv: "Requires env",
     removedFromCatalog: "Removed from catalog",
   },
@@ -965,5 +964,18 @@ export const en: Translations = {
       confirmTitle: "Delete task?",
       confirmManyTitle: "Delete {n} tasks?",
     },
+  },
+  channelsCatalog: {
+    title: "Available to install",
+    hint: "Messaging platforms from the Hermes plugin catalog. Installing one adds and enables its plugin, then opens its setup.",
+    badgeOfficial: "Official",
+    badgeVerified: "Verified",
+    disclosure: "Disclosure:",
+    lazyInstallsOff: "Automatic plugin installs are off (security.allow_lazy_installs).",
+    run: "Run:",
+    install: "Install",
+    installing: "Installing…",
+    installed: (title: string) => `${title} installed. Enter its credentials to connect it.`,
+    installFailed: (title: string) => `Could not install ${title}`,
   },
 };

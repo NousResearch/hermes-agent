@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.hermes_cli.test_plugin_host import _home_with_plugins
+from tests.hermes_cli.plugin_host_support import _home_with_plugins
 
 TERN = {'name': 'hermes-tern', 'version': '0.4.1'}
 

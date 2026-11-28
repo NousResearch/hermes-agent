@@ -590,7 +590,7 @@ def _init_prompt_cache_config(agent):
         agent._cache_ttl = ttl
     elif ttl == AUTO_CACHE_TTL and not getattr(agent, "side_agent", False):
         # From the session's source (delegate_tool clamps children to 5m; a side agent keeps 5m); a 1h
-        # choice starts on 5m and upgrades at the first pause over 5 minutes (prompt_cache_lifecycle.tier).
+        # choice starts on 5m and upgrades once its 5m entry first expires (prompt_cache_lifecycle.tier).
         agent._cache_ttl = auto_start_cache_ttl(agent)
     elif cache_ttl_means_disabled(ttl):
         agent._use_prompt_caching = False

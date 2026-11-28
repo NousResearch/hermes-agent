@@ -104,6 +104,25 @@ def _where_sql(clauses: list[str], lead: str = "") -> str:
     return f"{lead}WHERE {' AND '.join(clauses)}" if clauses else ""
 
 
+# The message floor counts the whole compression lineage: a root that rotated before its first
+# message flushed is empty, but the thread it lists as (its tip) is not. Same continuation edge
+# as the list CTE; the recursive walk only runs for compression-ended rows under the floor.
+_LINEAGE_MESSAGE_FLOOR_SQL = f"""(s.message_count >= ? OR (s.end_reason = 'compression' AND EXISTS (
+    WITH RECURSIVE _lin(id) AS (
+        SELECT s.id
+        UNION
+        SELECT child.id FROM _lin
+        JOIN sessions parent ON parent.id = _lin.id
+        JOIN sessions child ON child.parent_session_id = parent.id
+        WHERE parent.end_reason = 'compression'
+          AND {_sql_json_extract('child.model_config', '$._branched_from')} IS NULL
+          AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL
+          AND NOT ({_RESET_CHILD_SQL.format(a='child')})
+          AND COALESCE(child.source, '') != 'tool'
+    )
+    SELECT 1 FROM _lin JOIN sessions _lin_s ON _lin_s.id = _lin.id WHERE _lin_s.message_count >= ?)))"""
+
+
 def _session_filter_where(
     *, exclude_children: bool = False, source: str | None = None, sources: list[str] | None = None,
     session_key: str | None = None, exclude_sources: list[str] | None = None, cwd_prefix: str | None = None,
@@ -137,7 +156,7 @@ def _session_filter_where(
         (f"s.source NOT IN ({_session_ids_placeholders(exclude_sources or ())})", exclude_sources or []),
         (_cwd_prefix_clause(cwd_prefix) if cwd_prefix else ("", [])),
         (_workspace_key_clause(workspace_key) if workspace_key else ("", [])),
-        ("s.message_count >= ?", [min_message_count] if min_message_count > 0 else []),
+        (_LINEAGE_MESSAGE_FLOOR_SQL, [min_message_count] * 2 if min_message_count > 0 else []),
     ):
         if values:
             where.append(clause)

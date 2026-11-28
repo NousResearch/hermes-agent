@@ -2529,6 +2529,20 @@ export const en: Translations = {
   },
 
   messaging: {
+    catalog: {
+      sectionTitle: 'Available to install',
+      badges: { official: 'Official', verified: 'Verified' },
+      notInstalled: 'Not installed',
+      intro: (name: string) => `${name} is a plugin from the Hermes catalog. Install turns it on, then you can enter its credentials here.`,
+      disclosure: 'Disclosure:',
+      install: 'Install',
+      installing: 'Installing…',
+      installed: (name: string) => `${name} installed`,
+      installedDetail: 'Enter its credentials to connect it.',
+      installFailed: (name: string) => `Could not install ${name}`,
+      lazyOff: 'Automatic plugin installs are off (security.allow_lazy_installs), so Hermes does not install it from here.',
+      runCommand: 'Install it from a terminal:',
+    },
     search: 'Search messaging...',
     statusFilter: {
       all: 'All',

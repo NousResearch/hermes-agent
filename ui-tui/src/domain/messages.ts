@@ -20,6 +20,38 @@ export const userDisplay = (text: string) => {
   return t('libText.messages.longMessage', prefix || t('libText.messages.messageFallback'))
 }
 
+type TimelineEventText = (row: TranscriptRow, text: string) => string
+
+const backgroundFinished: TimelineEventText = ({ display_kind, display_metadata: meta }) => {
+  const count = meta && typeof meta.task_count === 'number' ? meta.task_count : undefined
+
+  const label =
+    display_kind === 'process_complete'
+      ? t('libText.messages.backgroundProcessFinished')
+      : count === undefined
+        ? t('libText.messages.backgroundAgentWorkFinished')
+        : t(
+            count === 1
+              ? 'libText.messages.backgroundAgentsFinishedOne'
+              : 'libText.messages.backgroundAgentsFinishedOther',
+            count
+          )
+
+  return typeof meta?.display_text === 'string' ? meta.display_text : label
+}
+
+/** The system line each display-only row kind renders as. */
+const TIMELINE_EVENTS: Record<string, TimelineEventText> = {
+  async_delegation_complete: backgroundFinished,
+  auto_continue: () => t('libText.messages.resumedInterruptedTurn'),
+  model_switch: () => t('libText.messages.modelChanged'),
+  personality_switch: () => t('libText.messages.personalityChanged'),
+  // A plugin's card (ctx.post_card): people read its own text, not the model's factual line.
+  plugin_card: ({ display_metadata: meta }, text) =>
+    typeof meta?.display_text === 'string' && meta.display_text.trim() ? meta.display_text : text,
+  process_complete: backgroundFinished
+}
+
 /** A resumed user row's durable message row (backtrack browsing finds its prompt by it). */
 const storedRowId = (role: string, rowId: unknown): Pick<Msg, 'rowId'> =>
   role === 'user' && Number.isSafeInteger(rowId) && (rowId as number) > 0 ? { rowId: rowId as number } : {}
@@ -73,48 +105,11 @@ export const toTranscriptMessages = (rows: unknown): Msg[] => {
       continue
     }
 
-    if (display_kind === 'model_switch') {
-      out.push({ kind: 'event', role: 'system', text: t('libText.messages.modelChanged') })
-      pending = []
+    const timelineEvent =
+      display_kind && Object.hasOwn(TIMELINE_EVENTS, display_kind) ? TIMELINE_EVENTS[display_kind] : undefined
 
-      continue
-    }
-
-    if (display_kind === 'auto_continue') {
-      out.push({ kind: 'event', role: 'system', text: t('libText.messages.resumedInterruptedTurn') })
-      pending = []
-
-      continue
-    }
-
-    if (display_kind === 'personality_switch') {
-      out.push({ kind: 'event', role: 'system', text: t('libText.messages.personalityChanged') })
-      pending = []
-
-      continue
-    }
-
-    if (display_kind === 'async_delegation_complete' || display_kind === 'process_complete') {
-      const meta = (row as TranscriptRow).display_metadata
-      const count = meta && typeof meta.task_count === 'number' ? meta.task_count : undefined
-
-      const label =
-        display_kind === 'process_complete'
-          ? t('libText.messages.backgroundProcessFinished')
-          : count === undefined
-            ? t('libText.messages.backgroundAgentWorkFinished')
-            : t(
-                count === 1
-                  ? 'libText.messages.backgroundAgentsFinishedOne'
-                  : 'libText.messages.backgroundAgentsFinishedOther',
-                count
-              )
-
-      out.push({
-        kind: 'event',
-        role: 'system',
-        text: typeof meta?.display_text === 'string' ? meta.display_text : label
-      })
+    if (timelineEvent) {
+      out.push({ kind: 'event', role: 'system', text: timelineEvent(row as TranscriptRow, text) })
       pending = []
 
       continue

@@ -499,6 +499,153 @@ class TestApplyWalWithFallback:
         )
 
 
+class TestWalBusyConvergence:
+    """Fresh connections racing to switch a DELETE database to WAL: losers get SQLITE_BUSY at once."""
+
+    def test_apply_wal_accepts_peer_wal_after_busy(self, tmp_path):
+        """Wired into apply_wal_with_fallback: a BUSY loser whose peer established WAL opens in WAL."""
+        target = tmp_path / "race.db"
+        peer = sqlite3.connect(str(target), isolation_level=None)
+        peer.execute("CREATE TABLE t (x INTEGER)")
+        attempts = [0]
+        downgrades = []
+
+        class _LoserConnection(sqlite3.Connection):
+            def execute(self, sql, *args, **kwargs):  # type: ignore[override]
+                if "journal_mode=delete" in sql.lower().replace(" ", ""):
+                    downgrades.append(sql)
+                if "journal_mode=wal" in sql.lower().replace(" ", ""):
+                    attempts[0] += 1
+                    if attempts[0] == 1:
+                        # The peer wins the header transition while this connection loses with BUSY.
+                        assert peer.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+                        raise sqlite3.OperationalError("database is locked")
+                return super().execute(sql, *args, **kwargs)
+
+        conn = sqlite3.connect(str(target), factory=_LoserConnection, isolation_level=None)
+        try:
+            # Without convergence the BUSY propagates out of apply_wal_with_fallback.
+            assert apply_wal_with_fallback(conn) == "wal"
+            assert attempts[0] >= 1
+            assert downgrades == []
+            conn.execute("INSERT INTO t VALUES (1)")
+            assert peer.execute("SELECT x FROM t").fetchall() == [(1,)]
+        finally:
+            conn.close()
+            peer.close()
+
+    def test_busy_setter_converges_when_peer_establishes_wal(self, monkeypatch):
+        """A loser in the fresh-connection WAL race accepts the peer's WAL."""
+        attempts = [0]
+
+        class _Conn:
+            def execute(self, sql):
+                attempts[0] += 1
+                raise sqlite3.OperationalError("database is locked")
+
+        monkeypatch.setattr(sqlite_support, "_on_disk_journal_mode", lambda _conn: "wal")
+
+        assert sqlite_support._set_wal_with_busy_convergence(_Conn()) == ("wal",)
+        assert attempts[0] == 1
+
+    def test_busy_setter_retries_when_mode_remains_delete(self, monkeypatch):
+        """If no peer won yet, one bounded retry may establish WAL locally."""
+        attempts = [0]
+
+        class _Cursor:
+            def fetchone(self):
+                return ("wal",)
+
+        class _Conn:
+            def execute(self, sql):
+                attempts[0] += 1
+                if attempts[0] == 1:
+                    raise sqlite3.OperationalError("database is locked")
+                return _Cursor()
+
+        monkeypatch.setattr(sqlite_support, "_on_disk_journal_mode", lambda _conn: "delete")
+        monkeypatch.setattr(sqlite_support.time, "sleep", lambda _seconds: None)
+
+        assert sqlite_support._set_wal_with_busy_convergence(_Conn()) == ("wal",)
+        assert attempts[0] == 2
+
+    def test_busy_setter_deadline_fails_closed_without_delete(self, monkeypatch):
+        """Persistent BUSY is bounded and never converted into a downgrade."""
+        calls = []
+        clock = iter([0.0, 2.0])
+
+        class _Conn:
+            def execute(self, sql):
+                calls.append(sql)
+                raise sqlite3.OperationalError("database is locked")
+
+        monkeypatch.setattr(sqlite_support, "_on_disk_journal_mode", lambda _conn: "delete")
+        monkeypatch.setattr(sqlite_support.time, "monotonic", lambda: next(clock))
+
+        with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+            sqlite_support._set_wal_with_busy_convergence(_Conn())
+
+        assert calls == ["PRAGMA journal_mode=WAL"]
+        assert not any("journal_mode=DELETE" in sql for sql in calls)
+
+    def test_busy_setter_accepts_peer_wal_at_deadline(self, tmp_path, monkeypatch):
+        """Re-probe a transiently unreadable mode before reporting timeout."""
+        target = tmp_path / "deadline.db"
+        peer = sqlite3.connect(str(target), isolation_level=None)
+        peer.execute("CREATE TABLE t (x INTEGER)")
+        attempts = [0]
+        probes = [0]
+
+        class _BusyConnection(sqlite3.Connection):
+            def execute(self, sql, *args, **kwargs):  # type: ignore[override]
+                if sql == "PRAGMA journal_mode=WAL":
+                    attempts[0] += 1
+                    raise sqlite3.OperationalError("database is locked")
+                if sql == "PRAGMA journal_mode":
+                    probes[0] += 1
+                    if probes[0] == 1:
+                        raise sqlite3.OperationalError("database is locked")
+                return super().execute(sql, *args, **kwargs)
+
+        conn = sqlite3.connect(str(target), factory=_BusyConnection, isolation_level=None)
+        clock_reads = 0
+
+        def clock():
+            nonlocal clock_reads
+            clock_reads += 1
+            if clock_reads == 1:
+                return 0.0
+            # The first mode probe was unreadable. Publish the peer's real WAL
+            # transition as the setter observes that its budget expired.
+            assert peer.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+            return 2.0
+
+        monkeypatch.setattr(sqlite_support.time, "monotonic", clock)
+        try:
+            assert sqlite_support._set_wal_with_busy_convergence(conn) == ("wal",)
+            assert attempts[0] == 1
+            conn.execute("INSERT INTO t VALUES (1)")
+            assert peer.execute("SELECT x FROM t").fetchall() == [(1,)]
+        finally:
+            conn.close()
+            peer.close()
+
+    def test_sqlite_locked_is_not_retried_as_busy(self, monkeypatch):
+        """SQLITE_LOCKED is not the cross-connection convergence race."""
+        attempts = [0]
+
+        class _Conn:
+            def execute(self, sql):
+                attempts[0] += 1
+                raise sqlite3.OperationalError("database table is locked")
+
+        monkeypatch.setattr(sqlite_support, "_on_disk_journal_mode", lambda _conn: "delete")
+
+        with pytest.raises(sqlite3.OperationalError, match="database table is locked"):
+            sqlite_support._set_wal_with_busy_convergence(_Conn())
+        assert attempts[0] == 1
+
+
 class TestRequireWal:
     """``require_wal=True`` turns either WAL-refusal shape into a hard
     ``WalUnsupportedError`` for callers that mandate WAL concurrency, instead

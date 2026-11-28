@@ -247,3 +247,83 @@ describe('approval card (#91706)', () => {
     expect(answer).toHaveBeenCalledWith(entry, MEMBERS[0], 'once')
   })
 })
+
+// A phone keyboard's only "line break" key is Enter, and this field's Enter
+// submits — so on a coarse pointer Enter must open a line and only the Send
+// button may send. A fine pointer keeps the existing contract untouched.
+//
+// `beforeEach` runs `vi.resetModules()`, so the atom must be imported inside the
+// test: a static import would be a different instance from the one the freshly
+// imported component reads.
+async function setTouchPointer(on: boolean) {
+  const { $touchPointer } = await import('@/lib/touch-interaction')
+
+  $touchPointer.set(on)
+}
+
+describe('the group composer Enter key on a phone keyboard', () => {
+  it('opens a line instead of submitting on a coarse pointer', async () => {
+    await setTouchPointer(true)
+    const { input, onChange, onSubmitDraft } = await mount('hi')
+
+    input.setSelectionRange(2, 2)
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    expect(onSubmitDraft).not.toHaveBeenCalled()
+    expect(onChange).toHaveBeenCalledWith('hi\n')
+  })
+
+  it('inserts at the caret, leaving the rest of the draft intact', async () => {
+    await setTouchPointer(true)
+    const { input, onChange } = await mount('ab')
+
+    input.setSelectionRange(1, 1)
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    expect(onChange).toHaveBeenCalledWith('a\nb')
+  })
+
+  it('keeps Cmd/Ctrl+Enter as a submit on a coarse pointer', async () => {
+    await setTouchPointer(true)
+    const { input, onChange, onSubmitDraft } = await mount('hi')
+
+    fireEvent.keyDown(input, { key: 'Enter', ctrlKey: true })
+
+    expect(onSubmitDraft).toHaveBeenCalledTimes(1)
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
+  it('replaces a selection with exactly one newline', async () => {
+    await setTouchPointer(true)
+    const { input, onChange } = await mount('abcd')
+
+    input.setSelectionRange(1, 3)
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    expect(onChange).toHaveBeenCalledWith('a\nd')
+  })
+
+  it('still submits on a fine pointer', async () => {
+    await setTouchPointer(false)
+    const { input, onChange, onSubmitDraft } = await mount('hi')
+
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    expect(onSubmitDraft).toHaveBeenCalledTimes(1)
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
+  it('labels the keyboard action key Return on a coarse pointer', async () => {
+    await setTouchPointer(true)
+    const { input } = await mount('hi')
+
+    expect(input.getAttribute('enterkeyhint')).toBe('enter')
+  })
+
+  it('leaves the hint to the browser on a fine pointer', async () => {
+    await setTouchPointer(false)
+    const { input } = await mount('hi')
+
+    expect(input.hasAttribute('enterkeyhint')).toBe(false)
+  })
+})

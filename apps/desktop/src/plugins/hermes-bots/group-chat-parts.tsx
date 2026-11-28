@@ -10,7 +10,9 @@
 
 import { Button, cn, Codicon, host, Input, RowButton, Textarea, useI18n, useValue } from '@hermes/plugin-sdk'
 import type { ClipboardEvent, Ref, RefObject } from 'react'
-import { useImperativeHandle, useRef, useState } from 'react'
+import { useEffect, useImperativeHandle, useRef, useState } from 'react'
+
+import { $touchPointer } from '@/lib/touch-interaction'
 
 import { $imagenAvailable, normalizeAvatarImage, pickImageFromDevice, probeImagen } from './avatar-image'
 import { $botMeta, botHandle, botMentionTag } from './data'
@@ -197,6 +199,27 @@ export function GroupMentionInput({ handleFor, members, onChange, onSubmitDraft,
   const allMeta: Record<string, BotMeta> = useValue($botMeta)
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
   useImperativeHandle(ref, () => inputRef.current as HTMLTextAreaElement)
+  // Same touch contract as the main composer (see app/chat/composer): a phone
+  // keyboard's only "line break" key is Enter, and this field's Enter submits.
+  const touch = useValue($touchPointer)
+
+  // A coarse-pointer keyboard takes its action key from the field, and the
+  // default there reads as "send" — the opposite of this contract. Set as an
+  // attribute rather than a JSX prop: React 19 has no `enterKeyHint` DOM
+  // mapping and drops it on the client without a warning.
+  useEffect(() => {
+    const el = inputRef.current
+
+    if (!el) {
+      return
+    }
+
+    if (touch) {
+      el.setAttribute('enterkeyhint', 'enter')
+    } else {
+      el.removeAttribute('enterkeyhint')
+    }
+  }, [touch])
   const [token, setToken] = useState<MentionToken | null>(null)
   const [selected, setSelected] = useState(0)
   const options: MentionOption[] = []
@@ -301,7 +324,9 @@ export function GroupMentionInput({ handleFor, members, onChange, onSubmitDraft,
         {...inputProps}
         // Input whose form submitted on every Enter — newlines were
         // impossible. Enter (no Shift) still submits via onSubmitDraft;
-        // Shift+Enter falls through to the textarea's native newline.
+        // Shift+Enter falls through to the textarea's native newline. On a
+        // coarse pointer Enter opens a line instead (below) and the Send
+        // button is the only submit.
         // Grow with wrapped text/newlines so long briefs stay reviewable
         // (#95300), then scroll internally before the composer takes over
         // the room — same field-sizing idiom as the Kanban drawer.
@@ -353,6 +378,31 @@ export function GroupMentionInput({ handleFor, members, onChange, onSubmitDraft,
 
               return
             }
+          }
+
+          // A phone keyboard has no Shift to pair with Enter, so Enter is its
+          // only line-break key — and here Enter submits. Open a line instead and
+          // let the Send button be the submit. The newline goes through the
+          // controlled value: a raw DOM insert is reverted on the next render.
+          // `preventDefault()` keeps the browser's own newline out of the DOM in
+          // the meantime (a textarea's Enter never implicitly submits a form) —
+          // the break is inserted below, once, into the value React owns.
+          //
+          // A hardware keyboard paired with the tablet/Chromebook keeps its
+          // submit: Cmd/Ctrl/Alt+Enter are explicit intents, and the main
+          // composer maps its modifier+Enter the same way.
+          if (touch && event.key === 'Enter' && !event.metaKey && !event.ctrlKey && !event.altKey) {
+            event.preventDefault()
+
+            const el = event.currentTarget
+            const start = el.selectionStart ?? el.value.length
+            const end = el.selectionEnd ?? start
+
+            el.setRangeText('\n', start, end, 'end')
+            onChange(el.value)
+            refreshToken(el)
+
+            return
           }
 
           if (event.key === 'Enter' && !event.shiftKey) {

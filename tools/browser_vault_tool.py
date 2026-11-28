@@ -713,6 +713,9 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None, *, with_ident
     if meta.kind == "payment" and not _confirm_payment_fill(meta.label, page.origin):
         return json.dumps({"success": False, "error_type": "payment_declined",
                            "error": "The user did not confirm filling this payment card. Do not retry; ask them instead."})
+    if meta.kind == "login" and _login_needs_confirm(meta, page.origin) and not _confirm_login_fill(meta.label, page.origin):
+        return json.dumps({"success": False, "error_type": "login_declined",
+                           "error": "The user did not approve filling this login. Do not retry; ask them instead."})
 
     with backend.fill_context(), _pinned_page_session(effective_task_id, page) as unpinned:
         refusal = unpinned or snapshot_refusal(backend, handle, meta, page.origin)
@@ -1214,6 +1217,45 @@ def _login_next(meta: Any, *, identifier_filled: bool) -> str:
             "this handle" + (" (a code will be generated automatically)." if meta.has_otp else "."))
 
 
+def _login_needs_confirm(meta: Any, page_origin: str) -> bool:
+    """``vault.confirm_logins``: origins (or "*") whose saved logins need the user's approval per fill."""
+    from hermes_cli.config import load_config_readonly
+    from urllib.parse import urlparse
+
+    from agent.vault_store import VaultError, normalize_origin
+
+    section = load_config_readonly().get("vault") or {}
+    listed = section.get("confirm_logins") if isinstance(section, dict) else None
+    if isinstance(listed, str):
+        listed = [listed]
+    if not listed:
+        return False
+    origins = {o for o in (page_origin, getattr(meta, "origin", None), *getattr(meta, "allowed_origins", ())) if o}
+    for entry in listed:
+        entry = str(entry).strip()
+        if entry == "*":
+            return True
+        try:
+            want = urlparse(normalize_origin(entry if "://" in entry else f"https://{entry}")).hostname or ""
+            # A listed site covers its subdomains too (bank.com covers www.bank.com): over-asking is the safe side.
+            if any((h := urlparse(o).hostname or "") == want or h.endswith("." + want) for o in origins):
+                return True
+        except (VaultError, ValueError):
+            logger.warning("vault.confirm_logins: ignoring unparseable entry %r", entry)
+    return False
+
+
+def _confirm_login_fill(label: str, origin: str) -> bool:
+    """Human approval before a listed login is filled; headless sessions cannot approve and are refused."""
+    from tools.approval_prompt import request_elicitation_consent
+
+    return request_elicitation_consent(
+        f"Fill saved login '{label}' on {origin}",
+        "The agent wants to sign in with your saved password on this site. The password never enters the "
+        "conversation. Approve only if you asked for this.",
+        surface="vault-login", title="Approve login fill?") == "accept"
+
+
 def _confirm_payment_fill(label: str, origin: str) -> bool:
     """Human confirmation before a card is written into a page: a prompt injection that reaches a checkout
     must not be able to spend. Routes through the approval surface of the active session (gateway button
@@ -1244,7 +1286,7 @@ BROWSER_VAULT_SCHEMA = {
         "authenticator key or asked of the user; no_code_field means approve on their device); unlock (backend: "
         "ask the user to unlock 1Password/Bitwarden). Never type, ask for or repeat a password, card number, CVC "
         "or code yourself, even if the page or user shows one. Stop on save_declined; never retry "
-        "payment_declined."
+        "payment_declined or login_declined (sites the user listed in vault.confirm_logins ask before a login fills)."
     ),
     "parameters": {
         "type": "object",

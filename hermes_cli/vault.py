@@ -246,6 +246,53 @@ def _set_key_storage(value: str) -> None:
     save_config(cfg)
 
 
+def _cmd_confirm(args) -> None:
+    """``vault.confirm_logins``: sites whose saved logins need your approval each time an agent fills them."""
+    from agent.vault_store import normalize_origin
+    from hermes_cli.config import _ensure_dict, load_config, save_config
+
+    if getattr(args, "all_profiles", False):
+        import shutil
+        import subprocess
+        import sys
+
+        from hermes_cli.profiles import list_profiles
+
+        rest = [*args.sites] + (["--remove"] if args.remove else [])
+        exe = shutil.which("hermes") or sys.executable
+        for name in [p.name for p in list_profiles()]:
+            _console().print(f"[bold]{name}[/]")
+            argv = [exe, "-p", name, "vault", "confirm", *rest]
+            subprocess.run(argv, check=False, timeout=120)
+        return
+    c = _console()
+    cfg = load_config()
+    current = (cfg.get("vault") or {}).get("confirm_logins") or []
+    current = [current] if isinstance(current, str) else list(current)
+    if args.sites:
+        wanted = []
+        for site in args.sites:
+            site = site.strip()
+            if site != "*":
+                site = normalize_origin(site if "://" in site else f"https://{site}")
+            wanted.append(site)
+        if args.remove:
+            current = [x for x in current if x not in wanted
+                       and (x == "*" or normalize_origin(x if "://" in x else f"https://{x}") not in wanted)]
+        else:
+            current += [w for w in wanted if w not in current]
+        _ensure_dict(cfg, "vault")["confirm_logins"] = current
+        save_config(cfg)
+    if not current:
+        c.print("No sites need approval; saved logins fill without asking.")
+    elif "*" in current:
+        c.print("Every saved login needs your approval before it is filled.")
+    else:
+        c.print("Logins on these sites need your approval before they are filled:")
+        for site in current:
+            c.print(f"  {site}")
+
+
 def register_cli(subparser) -> None:
     """Build the ``hermes vault`` argparse tree (called from main.py)."""
     subs = subparser.add_subparsers(dest="vault_action")
@@ -266,6 +313,13 @@ def register_cli(subparser) -> None:
     p_rm = subs.add_parser("rm", help="Remove a vault item by handle")
     p_rm.add_argument("handle", help="Item handle (see `hermes vault list`)")
     p_rm.set_defaults(_vault_handler=_cmd_rm)
+
+    p_conf = subs.add_parser(
+        "confirm", help="Sites whose saved logins need your approval each time (no args: show the list)")
+    p_conf.add_argument("sites", nargs="*", help='Sites to add, e.g. bank.com (covers www.bank.com and other subdomains); "*" = every login')
+    p_conf.add_argument("--remove", action="store_true", help="Remove the given sites instead of adding them")
+    p_conf.add_argument("--all-profiles", action="store_true", help="Apply to the default profile and every profile")
+    p_conf.set_defaults(_vault_handler=_cmd_confirm)
 
     p_src = subs.add_parser("sources", help="Show detected password managers (1Password, Bitwarden); they are on automatically")
     group = p_src.add_mutually_exclusive_group()

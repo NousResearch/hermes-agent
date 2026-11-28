@@ -91,38 +91,83 @@ def _manifest_name(child: Path) -> Optional[str]:
     return name if isinstance(name, str) and name else None
 
 
-def _walk(path: Path, prefix: str = "", depth: int = 0) -> Iterator[tuple[Path, str, str]]:
+def _walk(path: Path, prefix: str = "", depth: int = 0, *, skip_names: frozenset = frozenset(),
+          unreadable: Optional[list] = None) -> Iterator[tuple[Path, str, str]]:
     """``(tree, key, manifest name)`` in discovery's order and nesting (``plugins_discovery.scan_directory``:
-    a manifest-less dir at the top recurses once as a category)."""
+    a manifest-less dir at the top recurses once as a category). A folder discovery cannot read is skipped as
+    discovery skips it, and noted in *unreadable*: only a reader that selects it may refuse
+    (``pm.workspace.selected_plugin_dir``). Raises ``ValueError`` when *path* itself cannot be listed."""
     try:
         children = sorted(path.iterdir())
     except FileNotFoundError:
         return
     except OSError as exc:
+        if depth:
+            if unreadable is not None:
+                unreadable.append(path)
+            return
         raise ValueError(f"could not inspect plugin directory: {path}") from exc
     for child in children:
-        if is_skipped_plugin_dir(child.name):
+        if is_skipped_plugin_dir(child.name) or (depth == 0 and child.name in skip_names):
             continue
         try:
             if not stat.S_ISDIR(child.stat().st_mode):
                 continue
+            name = _manifest_name(child)
         except FileNotFoundError:
             continue
-        except OSError as exc:
-            raise ValueError(f"could not inspect plugin directory: {child}") from exc
-        name = _manifest_name(child)
+        except (OSError, ValueError):
+            if unreadable is not None:
+                unreadable.append(child)
+            continue
         if name:
             yield child, tree_key(prefix, child.name, name), name
         elif name == "" and depth == 0:
-            yield from _walk(child, tree_key(prefix, child.name, child.name), depth + 1)
+            yield from _walk(child, tree_key(prefix, child.name, child.name), depth + 1, unreadable=unreadable)
 
 
-def installed_trees(plugins_dir: Path) -> dict[Path, frozenset[str]]:
-    """Every plugin tree discovery reads from the user plugins dir *plugins_dir*, with its identity; on a key
-    collision the later tree wins, as in ``resolve_manifest_winners``. Raises ``ValueError`` on an unreadable
-    tree (a partial walk must not shrink a selection)."""
-    winners = {key: (tree, name) for tree, key, name in _walk(Path(plugins_dir))}
-    return {tree: plugin_identity(key, name) for key, (tree, name) in winners.items()}
+# Bundled top-level dirs with their own discovery (memory providers, context engines, ...): never plugins of the
+# general sweep (``plugins_discovery.collect_directory_manifests``).
+BUNDLED_OWN_DISCOVERY = frozenset({
+    "memory", "context_engine", "model-providers", "cron_providers", "computer_use", "config_backends",
+})
+
+
+def _bundled_dirs() -> dict[str, str]:
+    """Registry key -> directory name of every bundled plugin the general sweep reads."""
+    from hermes_cli import plugins as _origin  # patched names resolve through the origin, as in discovery
+    try:
+        found = _walk(Path(_origin.get_bundled_plugins_dir()), skip_names=BUNDLED_OWN_DISCOVERY)
+        return {key: tree.name for tree, key, _name in found}
+    except ValueError:
+        return {}  # discovery reads no bundled plugin from an unlistable dir either
+
+
+def _winners(plugins_dir: Path, unreadable: Optional[list] = None) -> dict[str, tuple[Path, str]]:
+    """Registry key -> ``(tree, manifest name)`` of every user tree discovery loads from *plugins_dir*, by
+    ``resolve_manifest_winners``' rule: on a key collision the later tree wins, and a flat tree claiming a bundled
+    plugin's key from a differently named directory is an impostor, skipped."""
+    winners: dict[str, tuple[Path, str]] = {}
+    bundled: Optional[dict[str, str]] = None
+    for tree, key, name in _walk(Path(plugins_dir), unreadable=unreadable):
+        if "/" not in key:  # a flat tree's key is its manifest name: it may claim a bundled one
+            bundled = _bundled_dirs() if bundled is None else bundled
+            if key in bundled and bundled[key] != tree.name:
+                continue
+        winners[key] = (tree, name)
+    return winners
+
+
+def installed_trees(plugins_dir: Path, unreadable: Optional[list] = None) -> dict[Path, frozenset[str]]:
+    """Every plugin tree discovery loads from the user plugins dir *plugins_dir* (:func:`_winners`), with its
+    identity. A folder it cannot read is left out, as discovery leaves it out, and noted in *unreadable*."""
+    return {tree: plugin_identity(key, name) for key, (tree, name) in _winners(plugins_dir, unreadable).items()}
+
+
+def registry_key(plugins_dir: Path, tree: Path) -> str:
+    """The registry key discovery gives *tree* under *plugins_dir* (unique per loaded tree), ``""`` for a tree
+    it does not load."""
+    return next((key for key, (found, _name) in _winners(plugins_dir).items() if found == Path(tree)), "")
 
 
 def tree_identity(plugins_dir: Path, tree: Path, *, default: str = "") -> frozenset[str]:

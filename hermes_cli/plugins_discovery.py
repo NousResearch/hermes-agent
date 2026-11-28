@@ -22,7 +22,7 @@ from hermes_cli.plugins_manifest import (
     PluginManifest, _detect_kind_from_source, manifest_key, _resolve_module_source,
     parse_manifest_file, portable_plugin_manifest,
 )
-from hermes_cli.plugin_identity import is_skipped_plugin_dir, manifest_identity, plugin_listed
+from hermes_cli.plugin_identity import BUNDLED_OWN_DISCOVERY, is_skipped_plugin_dir, manifest_identity, plugin_listed
 from hermes_cli.relay_plugin_cutover import LEGACY_RELAY_PLUGIN_KEYS, RELAY_PLUGINS_CONFIG_ENV
 
 logger = logging.getLogger("hermes_cli.plugins")
@@ -192,8 +192,7 @@ def collect_directory_manifests(user_home: Optional[Path] = None) -> list[Plugin
     # (``photon-platform``) stays an accepted alias through ``gate_manifest``.
     repo_plugins = _origin.get_bundled_plugins_dir()
     logger.debug("Scanning bundled plugins: %s", repo_plugins)
-    _scan("bundled (top-level)", repo_plugins, "bundled",
-          {"memory", "context_engine", "model-providers", "cron_providers", "computer_use", "config_backends"})
+    _scan("bundled (top-level)", repo_plugins, "bundled", set(BUNDLED_OWN_DISCOVERY))
     user_dir = (user_home or get_hermes_home()) / "plugins"
     logger.debug("Scanning user plugins: %s", user_dir)
     _scan("user", user_dir, "user")

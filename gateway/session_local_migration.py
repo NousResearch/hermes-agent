@@ -15,7 +15,7 @@ from gateway.config import Platform
 from gateway.session import SessionEntry, SessionSource
 from gateway.session_contract import SessionRef
 from gateway.session_persistence import authority_persistence, owner_rule
-from persistence.core.errors import AuthorityRefusal
+from persistence.core.errors import AuthorityRefusal, MUTATION_GUARD_REFUSALS
 from persistence.conversation.sessions import parse_model_config
 
 
@@ -270,7 +270,8 @@ def adopt_legacy_session(authority, actor, row):
     from gateway.session_local import commit_local_session
     from gateway.session_policy import build_policy, bind_launch_key
     from gateway.session_local_recovery import restore_local_session
-    from hermes_cli.active_sessions import active_session_liveness_guard, ActiveSessionRegistryError
+    from hermes_cli.active_sessions import (
+        ActiveSessionRegistryError, active_session_holders_guard, is_authority_lease)
 
     request_id = 'legacy:' + row.session_id
     sid = row.session_id
@@ -344,11 +345,40 @@ def adopt_legacy_session(authority, actor, row):
                'session_id': sid, 'route': route, 'entry': entry.to_dict(), 'policy': asdict(policy),
                'legacy_session_id': sid, 'lineage': [sid]}
     try:
-        # Same lock order as old Bot Chat: mailbox (if any), liveness, SQLite.
-        with active_session_liveness_guard(sid, registry_home=store.scope.profile_dir) as active:
-            if active:
-                raise AuthorityRefusal('runtime_coordination_required')
-            commit_local_session(store, epoch=authority.epoch, receipt=receipt, owner=rule)
+        # Hold the lease registry through the binding write. An authority lease is safe only because
+        # bind_legacy_target checks the durable turn lease in that same SQLite transaction.
+        with active_session_holders_guard(sid, registry_home=store.scope.profile_dir) as holders:
+            blocking = next((entry for entry in holders if not is_authority_lease(entry)), None)
+            if blocking is not None:
+                raise writer_held(blocking)
+            try:
+                commit_local_session(store, epoch=authority.epoch, receipt=receipt, owner=rule)
+            except MUTATION_GUARD_REFUSALS as exc:
+                # The authority-era pane is only safe to ignore while no turn holds the durable lease.
+                raise AuthorityRefusal('runtime_coordination_required', field='session_writer',
+                                       detail='a turn is running in another session writer') from exc
     except ActiveSessionRegistryError as exc:
-        raise AuthorityRefusal('runtime_coordination_required') from exc
+        raise registry_unprovable() from exc
     return restore_local_session(authority, sid)
+
+
+class _WriterHeldRefusal(AuthorityRefusal):
+    holder: dict[str, object]
+
+    def __init__(self, holder: dict[str, object]):
+        super().__init__('runtime_coordination_required', field='session_writer',
+                         detail='another session writer holds this session')
+        self.holder = holder
+
+
+def writer_held(entry):
+    """The refusal for a live lease on the session, naming its holder (never its metadata)."""
+    from hermes_cli.active_sessions import lease_holder_facts
+    return _WriterHeldRefusal(lease_holder_facts(entry))
+
+
+def registry_unprovable():
+    """The refusal when the active-session registry cannot prove who holds the session: still
+    closed, but distinct from a writer holding it, since no session exists to wait for."""
+    return AuthorityRefusal('runtime_coordination_required', field='session_registry',
+                            detail='the active-session registry is unreadable, so no writer can be ruled out')

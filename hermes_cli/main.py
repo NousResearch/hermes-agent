@@ -3324,10 +3324,10 @@ def main():
         _default_to_chat(args)
         return
 
-    # A handler's int return code becomes the exit code (None = success).
+    # A handler's int return becomes the exit code. bool is excluded: True would exit 1.
     if hasattr(args, "func"):
         rc = args.func(args)
-        if isinstance(rc, int) and rc != 0:
+        if isinstance(rc, int) and not isinstance(rc, bool) and rc != 0:
             sys.exit(rc)
     else:
         parser.print_help()

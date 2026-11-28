@@ -1,0 +1,24 @@
+name: openrecall-memory
+title: OpenRecall Memory
+repo: https://github.com/reverb256/hermes-openrecall-provider
+sha: dc8417b900c924351f3c91224d7b1ef9432c95b4
+subdir: openrecall_provider
+description: "Zero-knowledge encrypted memory provider: AES-256-GCM client-side, so the server stores only ciphertext. Provides openrecall_save/recall/search/list/delete through Hermes's memory provider hooks. Disclosure — sends encrypted entries to the user-configured OpenRecall server URL; the passphrase never leaves the machine. Requires a running OpenRecall server plus OPENRECALL_PASSPHRASE (profile-scoped) or a passphrase_file path you configure. No telemetry."
+maintainer: reverb256
+tier: community
+category: memory
+requires_hermes: ">=0.19"
+docs_url: https://github.com/reverb256/hermes-openrecall-provider
+version: "0.4.2"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - on_turn_start
+    - on_pre_compress
+    - on_memory_write
+    - on_session_end
+  provides_middleware: []
+  requires_env:
+    - OPENRECALL_PASSPHRASE

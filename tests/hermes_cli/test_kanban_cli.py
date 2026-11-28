@@ -12,6 +12,7 @@ import pytest
 from hermes_cli import kanban as kc
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_notify as kbn
 
 
 @pytest.fixture
@@ -279,6 +280,67 @@ def test_run_slash_reclaim_running_task(kanban_home):
     # Status back to ready.
     out2 = kc.run_slash(f"show {tid}")
     assert "ready" in out2.lower()
+
+
+# ---------------------------------------------------------------------------
+# notify-subscribe: notifier_profile stamping (#76483)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("profile,expected", [("default", None), ("writer", "writer")])
+def test_notify_subscribe_cli_leaves_notifier_profile_unset_by_default(
+    kanban_home, monkeypatch, profile, expected,
+):
+    """A default shell leaves ownership to the dispatcher, not a guessed profile."""
+    monkeypatch.setenv("HERMES_PROFILE_NAME", profile)
+    monkeypatch.delenv("HERMES_PROFILE", raising=False)
+
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="notify me")
+    finally:
+        conn.close()
+
+    out = kc.run_slash(
+        f"notify-subscribe {tid} --platform telegram --chat-id chat1"
+    )
+    assert "Subscribed" in out, out
+
+    conn = kbc.connect()
+    try:
+        subs = kbn.list_notify_subs(conn, tid)
+    finally:
+        conn.close()
+
+    assert len(subs) == 1
+    assert subs[0]["notifier_profile"] == expected
+
+
+def test_notify_subscribe_cli_honors_explicit_notifier_profile(
+    kanban_home, monkeypatch,
+):
+    """An explicit ``--notifier-profile`` still stamps the subscription."""
+    monkeypatch.delenv("HERMES_PROFILE_NAME", raising=False)
+    monkeypatch.delenv("HERMES_PROFILE", raising=False)
+
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="notify me")
+    finally:
+        conn.close()
+
+    kc.run_slash(
+        f"notify-subscribe {tid} --platform telegram --chat-id chat1 "
+        "--notifier-profile work"
+    )
+
+    conn = kbc.connect()
+    try:
+        subs = kbn.list_notify_subs(conn, tid)
+    finally:
+        conn.close()
+
+    assert len(subs) == 1
+    assert subs[0]["notifier_profile"] == "work"
 
 
 

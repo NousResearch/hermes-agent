@@ -1263,6 +1263,12 @@ hermes kanban notify-unsubscribe t_abcd \
 
 A subscription removes itself automatically once the task reaches `done` or `archived`; no cleanup needed.
 
+Use `--notifier-profile <name>` to select the profile that serves the destination
+chat, including chats pinned by `profile_routes`. Without the flag, an active
+named profile remains the subscription owner. A plain default-profile shell
+leaves the subscription unowned, so only the dispatcher-lock-owning gateway
+collects it; this does not infer another profile from the destination chat.
+
 When an agent runs `notify-subscribe` from inside a gateway chat (through its terminal tool) and the
 target is that same chat (and topic), a missing `--user-id` is filled with the sender of the turn. In groups with
 `group_sessions_per_user` (the default), that keeps the wake in the participant's own session instead

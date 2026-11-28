@@ -3,6 +3,7 @@ import base64
 import csv
 import hashlib
 import io
+import struct
 import tarfile
 import zipfile
 from pathlib import Path
@@ -25,6 +26,19 @@ def build_deb(path, control, files=(), compression="gz"):
         result.extend(data)
         result.extend(b"\n" if len(data) % 2 else b"")
     path.write_bytes(result)
+
+
+def elf_with_runpath(runpath):
+    """A minimal aarch64 ELF64 whose only dynamic string is its RUNPATH, loaded away from offset 0."""
+    base, strings_at = 0x10000, 64 + 2 * 56
+    strings = b"\0" + runpath.encode() + b"\0"
+    dynamic_at = strings_at + len(strings)
+    dynamic = struct.pack("<qQqQqQ", 5, base + strings_at, 29, 1, 0, 0)
+    size = dynamic_at + len(dynamic)
+    header = struct.pack("<4sBBBB8xHHIQQQIHHHHHH", b"\x7fELF", 2, 1, 1, 0, 3, 183, 1, 0, 64, 0, 0, 64, 56, 2, 0, 0, 0)
+    load = struct.pack("<IIQQQQQQ", 1, 4, 0, base, base, size, size, 0x1000)
+    dyn = struct.pack("<IIQQQQQQ", 2, 4, dynamic_at, base + dynamic_at, base + dynamic_at, len(dynamic), len(dynamic), 8)
+    return header + load + dyn + strings + dynamic
 
 
 def record_hash(data):

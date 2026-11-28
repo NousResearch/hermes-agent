@@ -99,10 +99,9 @@ def main() -> None:
             "PREFIX": str(prefix), "HOME": str(home), "HERMES_HOME": str(home / "state"),
             "PATH": str(prefix / "bin"), "TERM": "xterm-256color", "LANG": "C.UTF-8",
             "LD_LIBRARY_PATH": ":".join((
-                str(root / "tools/python" / prefix.relative_to("/") / "lib"),
                 str(root / "tools/node" / prefix.relative_to("/") / "lib"),
                 str(root / "tools/ffmpeg" / prefix.relative_to("/") / "lib"),
-                str(root / "runtime-libs/lib"), str(prefix / "lib"),
+                str(root / "runtime-libs/lib"),
             )),
             "HERMES_RUNTIME_DIR": str(root / "tools"),
             "PYTHONPATH": str(root / "app"),

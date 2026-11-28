@@ -78,6 +78,7 @@ def test_bionic_deb_stages_real_packages_without_host_execution(tmp_path, monkey
     from pm import paths
     from tests.pm.test_deb_safety import _build_deb
     from pm.registry import get_package
+    from tests.termux_fixtures import elf_with_runpath
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "store"))
@@ -85,7 +86,8 @@ def test_bionic_deb_stages_real_packages_without_host_execution(tmp_path, monkey
     monkeypatch.setattr(paths, "lockfile_path", lambda: lock.path)
     deb = tmp_path / "tool.deb"
     main = "data/data/com.termux/files/usr/" + relative
-    _build_deb(deb, [(main, b"bionic fixture"), ("data/data/com.termux/files/usr/lib/keep", b"library")])
+    fixture = elf_with_runpath(get_package("python")._BIONIC_RUNPATH)
+    _build_deb(deb, [(main, fixture), ("data/data/com.termux/files/usr/lib/keep", b"library")])
     digest = _sha(deb.read_bytes())
     lock.set_pin(name, "1.0", {TARGET: {"url": "https://example.invalid/tool.deb", "sha256": digest}})
     lock.save()
@@ -97,7 +99,7 @@ def test_bionic_deb_stages_real_packages_without_host_execution(tmp_path, monkey
     monkeypatch.setattr("pm.packages.subprocess.run", lambda *a, **kw: pytest.fail("bionic executed on host"))
     entry = ensure_mod.stage_only(name, TARGET)
     assert get_package(name).binary(entry, TARGET) == entry / main
-    assert (entry / main).read_bytes() == b"bionic fixture"
+    assert (entry / main).read_bytes() == fixture
     assert paths.facts_path().read_bytes() == before
     (entry / main).unlink()
     assert get_package(name).verify(entry, TARGET)

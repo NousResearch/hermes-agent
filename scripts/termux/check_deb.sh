@@ -8,7 +8,7 @@ ctmp=/tmp  # no-tmp: ok — where build_deb.sh mounts the inputs inside this con
 # Termux runs without root. The image already owns the writable prefix.
 dpkg --force-not-root --force-script-chrootless --install "$ctmp/pkg.deb"
 root="$PREFIX/lib/hermes-agent"
-export LD_LIBRARY_PATH="$root/tools/python$PREFIX/lib:$root/tools/node$PREFIX/lib:$root/tools/ffmpeg$PREFIX/lib:$root/runtime-libs/lib:$PREFIX/lib"
+export LD_LIBRARY_PATH="$root/tools/node$PREFIX/lib:$root/tools/ffmpeg$PREFIX/lib:$root/runtime-libs/lib"
 export PYTHONPATH="$root/app"
 "$root/venv/bin/python" "$ctmp/validate_installed.py"
 # Reinstall exercises maintainer-script idempotence without changing user state.

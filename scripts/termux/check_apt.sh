@@ -33,7 +33,7 @@ actual="$(dpkg-query -W -f='${Version}' hermes-agent)"
 [ "$actual" = "$expected" ]
 [ "$(cat "$work/state/sentinel")" = 'user data survives package replacement' ]
 root="$PREFIX/lib/hermes-agent"
-export LD_LIBRARY_PATH="$root/tools/python$PREFIX/lib:$root/tools/node$PREFIX/lib:$root/tools/ffmpeg$PREFIX/lib:$root/runtime-libs/lib:$PREFIX/lib"
+export LD_LIBRARY_PATH="$root/tools/node$PREFIX/lib:$root/tools/ffmpeg$PREFIX/lib:$root/runtime-libs/lib"
 export PYTHONPATH="$root/app"
 "$root/venv/bin/python" "$ctmp/validate_installed.py"
 printf 'SIGNED_APT_INSTALL_OK %s\n' "$actual"

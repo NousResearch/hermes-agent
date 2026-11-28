@@ -52,6 +52,31 @@ def test_launchers_forward_arguments_and_export_payload_environment(tmp_path):
 
 
 @pytest.mark.platforms("posix")
+def test_bionic_launcher_puts_no_libpython_folder_on_the_library_path(tmp_path):
+    """Regression for #158261: children inherit the variable, and a same-minor Python would load it."""
+    usr = "data/data/com.termux/files/usr"
+    payload, prefix = tmp_path / "payload", tmp_path / "prefix"
+    for folder in (payload / "tools/python" / usr / "lib", prefix / "lib"):
+        folder.mkdir(parents=True)
+        (folder / "libpython3.14.so").write_bytes(b"")
+    (payload / "venv/bin").mkdir(parents=True)
+    (payload / "venv/bin/python").symlink_to(sys.executable)
+    (payload / "app").mkdir()
+    (payload / "app/capture_entry.py").write_text(
+        "import os\ndef main():\n    print(os.environ['LD_LIBRARY_PATH'])\n", encoding="utf-8",
+    )
+    write_launchers(payload, {"hermes": "capture_entry:main"}, python="venv/bin/python", repo="app",
+                    site="venv/lib/python3.14/site-packages", target="linux-arm64-bionic")
+    result = subprocess.run(
+        [shutil.which("sh"), str(payload / "bin/hermes")], cwd=tmp_path, check=True,
+        capture_output=True, text=True, env={**os.environ, "PREFIX": str(prefix)},
+    )
+    folders = [Path(entry) for entry in result.stdout.strip().split(os.pathsep)]
+    assert payload / "runtime-libs/lib" in folders
+    assert not [folder for folder in folders if list(folder.glob("libpython*"))]
+
+
+@pytest.mark.platforms("posix")
 def test_postinst_refuses_foreign_path_and_prerm_preserves_it(tmp_path):
     from scripts.termux.launchers import write_maintainer_scripts
 

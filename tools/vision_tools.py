@@ -35,6 +35,7 @@ def _load_auxiliary_client() -> None:
 
 
 from hermes_constants import get_hermes_dir
+from hermes_logging import truncate_for_log
 from tools.debug_helpers import DebugSession
 from tools.website_policy import check_website_access
 from tools.vision_tools_history_budget import (
@@ -872,7 +873,9 @@ async def _run_analysis(
         return finish(result)
     except Exception as e:
         error_msg = f"Error analyzing {kind}: {e!s}"
-        logger.error("%s", error_msg, exc_info=True)
+        # Truncate + drop exc_info so large HTTP bodies are not written twice
+        # (message + traceback tail). Full detail still returned to the agent.
+        logger.error("Error analyzing %s: %s", kind, truncate_for_log(e))
         err_str = str(e).lower()
         template = next(
             (tpl for hints, tpl in rules if any(hint in err_str for hint in hints)),

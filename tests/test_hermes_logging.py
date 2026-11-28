@@ -1037,6 +1037,33 @@ class TestRolloverPreservesLogOwnership:
         assert log_path.exists()
 
 
+class TestTruncateForLog:
+    """truncate_for_log caps exception bodies before they hit log sinks (#75927)."""
+
+    def test_short_string_unchanged(self):
+        assert hermes_logging.truncate_for_log("short error") == "short error"
+
+    def test_none_becomes_empty(self):
+        assert hermes_logging.truncate_for_log(None) == ""
+
+    def test_exception_coerced_and_truncated(self):
+        body = "x" * 10_000
+        out = hermes_logging.truncate_for_log(RuntimeError(body))
+        assert len(out) == hermes_logging.DEFAULT_LOG_DETAIL_LIMIT
+        assert out.endswith("...")
+        assert out.startswith("x" * 100)
+        # Original exception text remains unbounded for agent-facing returns.
+        assert len(str(RuntimeError(body))) == 10_000
+
+    def test_custom_limit(self):
+        assert hermes_logging.truncate_for_log("abcdefghij", limit=5) == "ab..."
+
+    def test_at_limit_not_truncated(self):
+        limit = hermes_logging.DEFAULT_LOG_DETAIL_LIMIT
+        text = "y" * limit
+        assert hermes_logging.truncate_for_log(text) == text
+
+
 def test_profile_router_never_holds_its_lock_while_taking_the_logging_module_lock(hermes_home, monkeypatch):
     """T23: uvicorn's ``dictConfig`` holds ``logging._lock`` and, in ``logging.shutdown``, waits on
     every handler's lock. The QueueListener thread routing a record to a not-yet-opened profile

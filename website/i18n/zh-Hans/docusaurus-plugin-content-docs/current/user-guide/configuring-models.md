@@ -47,12 +47,13 @@ Hermes 使用两类模型槽位：
 
 ![辅助面板展开状态](/img/docs/dashboard-models/auxiliary-expanded.png)
 
-每个辅助任务默认为 `auto`，即 Hermes 对该任务也使用主模型。当某个边缘任务需要更便宜或更快的模型时，可单独覆盖该槽位。
+每个辅助任务默认为 `auto`。未设置共享路由时它使用主模型；设置 **Default** 会写入 `auxiliary.default`，让所有未固定的当前和未来任务动态继承该模型，再按需为单个任务设置例外。委派模型不继承此设置。
 
 ### 常见覆盖模式
 
 | 任务 | 何时覆盖 |
 |---|---|
+| **Default（默认）** | 当大多数边缘任务应共享同一个便宜/快速模型时。未固定的任务会动态继承。 |
 | **Title Gen（标题生成）** | 几乎总是。$0.10/M 的 flash 模型生成会话标题的效果与 Opus 相当。默认配置在 OpenRouter 上将此项设为 `google/gemini-3-flash-preview`。 |
 | **Vision（视觉）** | 当主模型是不支持视觉的编程模型时（如 Kimi、DeepSeek）。将其指向 `google/gemini-2.5-flash` 或 `gpt-4o-mini`。 |
 | **Compression（压缩）** | 当你在用 Opus/M2.7 的推理 token 来摘要上下文时。快速聊天模型以 1/50 的成本即可完成此工作。 |
@@ -65,11 +66,11 @@ Hermes 使用两类模型槽位：
 
 ### 单任务覆盖
 
-点击任意辅助行上的 **Change**，打开相同的选择器，操作方式相同 — 选择提供商和模型，点击 Switch。该行将从 `auto (use main model)` 更新为 `provider · model`。
+点击任意辅助行上的 **Change**，选择 provider 和模型并点击 Switch。该行会从继承路由变为显式 `provider · model`；再次选择 `auto` 会恢复跟随 Default（未设置 Default 时跟随主模型）。
 
 ### 全部重置为 auto
 
-如果调整过度想重新开始，点击辅助区域顶部的 **Reset all to auto**。所有槽位将恢复使用主模型。
+如果调整过度想重新开始，点击辅助区域顶部的 **Reset all to auto**。这会清除共享默认值和任务覆盖，使所有槽位恢复使用主模型。
 
 ## "Use as" 快捷方式
 
@@ -80,7 +81,7 @@ Hermes 使用两类模型槽位：
 下拉菜单包含：
 
 - **Main model** — 与点击主行上的 Change 效果相同。
-- **All auxiliary tasks** — 将此模型一次性分配给页面上的所有辅助槽位。适合将所有边缘任务统一切换到廉价 flash 模型的场景。
+- **All auxiliary tasks** — 将此模型批量写入页面当前列出的所有辅助槽位。需要动态继承并覆盖未来任务类型时，请改选 **Default**。
 - **单项任务选项** — Vision、Review、Compression 等。每项任务当前分配的模型标记为 `current`。
 
 当模型卡片当前已分配到某个槽位时，会显示 `main` 或 `aux · <task>` 标签，方便一眼看出历史模型的使用情况。
@@ -198,7 +199,7 @@ hermes model            # 交互式提供商 + 模型选择器（切换默认值
 
 `hermes model` 引导你选择提供商、完成认证（OAuth 流程会打开浏览器；API key 提供商会提示输入密钥），然后从该提供商的精选目录中选择具体模型。选择结果写入 `~/.hermes/config.yaml` 的 `model.provider` 和 `model.model` 字段。保存新模型后会紧接一步推理强度选择（`minimal` … `ultra`、**Disable reasoning**，或 **Skip** 保留当前值），写入 `agent.reasoning_effort`；目录标记为无推理控制的模型会跳过该步。提供商列表中还有 **Reasoning effort for the current model...** 一行，可只更改推理强度。
 
-**Configure auxiliary models...** 打开各辅助任务（视觉、压缩、审批、委派等）的侧模型选择器。每个任务在选完提供商 → 模型后同样会进入推理强度步骤，存为 `auxiliary.<task>.reasoning_effort`（或 `delegation.reasoning_effort`），并多一行 **Provider default** 把强度交给提供商决定。设计上没有 `reasoning_effort` 键的任务（MoA 槽位、记忆查询改写）会跳过该步。
+**Configure auxiliary models...** 打开侧模型选择器。**Default** 写入 `auxiliary.default` 以启用动态继承；Vision、Compression、Approval 等任务行用于创建例外；Delegation 仍单独写入 `delegation.*`。
 
 如需在不启动选择器的情况下列出提供商/模型，请使用仪表板或下方的 REST 端点。查看 CLI 当前实际使用的配置：`hermes config get model` 和 `hermes status`。
 

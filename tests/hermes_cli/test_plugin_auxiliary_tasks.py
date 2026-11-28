@@ -40,6 +40,8 @@ def patched_manager(monkeypatch):
 def test_all_aux_tasks_includes_plugin_registered(patched_manager):
     from hermes_cli.main_provider_setup import _AUX_TASKS, _all_aux_tasks
 
+    assert _AUX_TASKS[0][0] == "default"
+
     manifest = PluginManifest(name="hindsight")
     ctx = PluginContext(manifest, patched_manager)
     ctx.register_auxiliary_task(
@@ -134,6 +136,85 @@ def _grant_task_override(patched_manager, key):
     owner = patched_manager._aux_tasks[key]["plugin"]
     cfg.setdefault("plugins", {}).setdefault("entries", {})[owner] = {"llm": {"allow_task_override": True}}
     save_config(cfg)
+
+
+def test_unpinned_task_inherits_dynamic_auxiliary_default_route(aux_home, patched_manager):
+    from agent.auxiliary_client import _get_auxiliary_task_config as resolve
+
+    _set_aux(
+        default={
+            "provider": "custom",
+            "model": "cheap-a",
+            "base_url": "https://default.example/v1",
+            "api_key": "default-key",
+            "reasoning_effort": "low",
+            "timeout": 999,
+        },
+        compression={"provider": "auto", "model": "", "timeout": 17},
+    )
+
+    got = resolve("compression")
+    assert {key: got[key] for key in ("provider", "model", "base_url", "api_key", "reasoning_effort")} == {
+        "provider": "custom",
+        "model": "cheap-a",
+        "base_url": "https://default.example/v1",
+        "api_key": "default-key",
+        "reasoning_effort": "low",
+    }
+    assert got["timeout"] == 17
+
+    # Resolution is read-time inheritance, not a copied assignment.
+    _set_aux(default={"provider": "openrouter", "model": "vendor/cheap-b"})
+    got = resolve("compression")
+    assert (got["provider"], got["model"]) == ("openrouter", "vendor/cheap-b")
+    assert not got.get("base_url") and not got.get("api_key")
+
+
+def test_explicit_task_pin_replaces_auxiliary_default_route_as_a_unit(aux_home, patched_manager):
+    from agent.auxiliary_client import _get_auxiliary_task_config as resolve
+
+    _set_aux(
+        default={
+            "provider": "custom",
+            "model": "cheap",
+            "base_url": "https://default.example/v1",
+            "api_key": "default-key",
+            "reasoning_effort": "low",
+        },
+        vision={"provider": "anthropic", "model": "claude-vision", "reasoning_effort": "high"},
+    )
+
+    got = resolve("vision")
+    assert (got["provider"], got["model"], got["reasoning_effort"]) == (
+        "anthropic", "claude-vision", "high")
+    assert not got.get("base_url") and not got.get("api_key")
+
+
+def test_task_credential_never_binds_to_auxiliary_default_endpoint(aux_home, patched_manager):
+    from agent.auxiliary_client import _get_auxiliary_task_config as resolve
+
+    _set_aux(
+        default={
+            "provider": "custom",
+            "model": "cheap",
+            "base_url": "https://default.example/v1",
+            "api_key": "default-key",
+        },
+        compression={"provider": "auto", "model": "", "api_key": "task-key"},
+    )
+
+    got = resolve("compression")
+    assert got["provider"] == "auto"
+    assert got["api_key"] == "task-key"
+    assert not got.get("model") and not got.get("base_url")
+
+
+def test_auxiliary_default_is_not_an_executable_task(aux_home, patched_manager):
+    from agent.auxiliary_client import _get_auxiliary_task_config as resolve
+
+    _set_aux(default={"provider": "openrouter", "model": "vendor/cheap"})
+
+    assert resolve("default") == {}
 
 
 def test_inheriting_task_follows_base_until_pinned(aux_home, patched_manager):

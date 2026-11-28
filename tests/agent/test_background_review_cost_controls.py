@@ -159,6 +159,27 @@ def test_enabled_false_disables_automatic_review():
         assert br.load_background_review_settings()[0] is False
 
 
+def test_background_review_inherits_auxiliary_default_route_only():
+    cfg = {"auxiliary": {
+        "default": {
+            "provider": "openrouter",
+            "model": "vendor/cheap",
+            "reasoning_effort": "low",
+            "enabled": False,
+            "timeout": 999,
+        },
+        "background_review": {"enabled": True, "timeout": 23},
+    }}
+
+    with patch("hermes_cli.config.load_config_readonly", return_value=cfg):
+        enabled, task = br.load_background_review_settings()
+
+    assert enabled is True
+    assert (task["provider"], task["model"], task["reasoning_effort"]) == (
+        "openrouter", "vendor/cheap", "low")
+    assert task["timeout"] == 23
+
+
 def test_unresolvable_review_provider_falls_back_with_visible_warning(caplog):
     """The fork silently ran on the main model with only a debug line (#116055): the fallback must
     name the configured provider and reason at WARNING and reach the agent's user-visible warning rail."""
@@ -177,3 +198,22 @@ def test_unresolvable_review_provider_falls_back_with_visible_warning(caplog):
     warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
     assert warnings and all("no-such-provider" in w and "review-model" in w for w in warnings)
     assert len(emitted) == 1 and "no-such-provider" in emitted[0]  # once per agent on the user rail
+
+
+def test_provider_only_default_routes_background_review(monkeypatch):
+    agent = _FakeAgent()
+    cfg = {"auxiliary": {
+        "default": {"provider": "openrouter"},
+        "background_review": {"provider": "auto", "model": ""},
+    }}
+    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: cfg)
+    monkeypatch.setattr("agent.auxiliary_client._get_aux_model_for_provider",
+                        lambda _provider: "provider/default-model")
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", lambda **_kwargs: {
+        "provider": "openrouter", "api_key": "key",
+    })
+
+    runtime = br._resolve_review_runtime(agent)
+
+    assert runtime["routed"] is True
+    assert (runtime["provider"], runtime["model"]) == ("openrouter", "provider/default-model")

@@ -1612,10 +1612,26 @@ Every compaction (automatic, prepared, `/compress`, gateway hygiene and the cach
 
 ## Auxiliary Models
 
-Hermes uses "auxiliary" models for side tasks like image analysis, browser screenshot analysis, session-title generation, and context compression. By default (`auxiliary.*.provider: "auto"`), Hermes routes every auxiliary task to your **main chat model** — the same provider/model you picked in `hermes model`. You don't need to configure anything to get started, but be aware that on expensive reasoning models (Opus, MiniMax M2.7, etc.) auxiliary tasks add meaningful cost. If you want cheap-and-fast side tasks regardless of your main model, set `auxiliary.<task>.provider` and `auxiliary.<task>.model` explicitly (for example, Gemini Flash on OpenRouter for vision). (Web extraction is not an auxiliary task: `web_extract` and browser snapshots truncate long content deterministically and store the full text for `read_file` paging — no LLM involved.)
+Hermes uses "auxiliary" models for side tasks like image analysis, browser screenshot analysis, session-title generation, and context compression. By default (`auxiliary.*.provider: "auto"`), Hermes routes every auxiliary task to your **main chat model** — the same provider/model you picked in `hermes model`. You don't need to configure anything to get started, but be aware that on expensive reasoning models (Opus, MiniMax M2.7, etc.) auxiliary tasks add meaningful cost. Set `auxiliary.default` to give every unpinned auxiliary task one cheaper route, then use `auxiliary.<task>` for exceptions. (Web extraction is not an auxiliary task: `web_extract` and browser snapshots truncate long content deterministically and store the full text for `read_file` paging — no LLM involved.)
 
-:::note Why "auto" uses your main model
-Earlier builds split aggregator users (OpenRouter, Nous Portal) onto a cheap provider-side default. That was surprising — users who paid for an aggregator subscription would see a different model handling their auxiliary traffic. `auto` now uses the main model for everyone, and per-task overrides in `config.yaml` still win (see [Full auxiliary config reference](#full-auxiliary-config-reference) below).
+```yaml
+auxiliary:
+  default:
+    provider: openrouter
+    model: google/gemini-3-flash-preview
+    reasoning_effort: low
+  vision:
+    provider: anthropic
+    model: claude-sonnet-4-6
+  compression:
+    provider: openrouter
+    model: google/gemini-3.1-pro-preview
+```
+
+Precedence is: explicit task route → `auxiliary.default` → main model / automatic fallback. Inheritance is resolved when the task runs, so changing `auxiliary.default` immediately changes every unpinned task and newly introduced task class. Only route fields inherit (`provider`, `model`, `base_url`, credential references, `api_mode`, and `reasoning_effort`); task policy such as `timeout`, `enabled`, `extra_body`, and `fallback_chain` remains task-local. Delegated child agents are unchanged and continue to use `delegation.*`.
+
+:::note What "auto" inherits
+An unpinned task (`provider: auto`, empty model/endpoint) follows `auxiliary.default` when configured; without one it uses the main model. Explicit task routes still win.
 :::
 
 ### Configuring auxiliary models interactively
@@ -1626,6 +1642,7 @@ Instead of hand-editing YAML, run `hermes model` and pick **"Configure auxiliary
 $ hermes model
 → Configure auxiliary models
 
+[ ] default              currently: openrouter / google/gemini-3-flash-preview
 [ ] vision               currently: auto / main model
 [ ] title_generation     currently: openrouter / google/gemini-3-flash-preview
 [ ] tts_audio_tags       currently: auto / main model
@@ -1638,7 +1655,7 @@ $ hermes model
 [ ] delegation           currently: auto / inherit main agent
 ```
 
-Select a task, pick a provider (OAuth flows open a browser; API-key providers prompt), pick a model. The change persists to `auxiliary.<task>.*` in `config.yaml`. Same machinery as the main-model picker — no extra syntax to learn.
+Select **Default** to set the inherited route, or select a task to create an exception. Pick a provider (OAuth flows open a browser; API-key providers prompt), then pick a model. The change persists to `auxiliary.default.*` or `auxiliary.<task>.*` in `config.yaml`.
 
 The **Delegation** entry is special: it routes the model used by `delegate_task` subagents and persists to the top-level `delegation.*` section (`delegation.provider` / `delegation.model`) rather than `auxiliary.*`, because subagents are full child agents, not side-LLM calls. Its `auto` means "inherit the parent agent's provider, model, and credentials."
 
@@ -1757,6 +1774,16 @@ The `"main"` provider option means "use whatever provider my main agent uses" �
 
 ```yaml
 auxiliary:
+  # Dynamic route inherited by every task without an explicit route below.
+  # This is not an executable task and does not affect delegation.*.
+  default:
+    provider: "auto"
+    model: ""
+    base_url: ""
+    api_key: ""
+    api_mode: ""
+    reasoning_effort: ""
+
   # Image analysis (vision_analyze tool + browser screenshots)
   vision:
     provider: "auto"           # "auto", "openrouter", "nous", "codex", "main", etc.

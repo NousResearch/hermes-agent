@@ -813,10 +813,10 @@ Qwen Cloud（阿里巴巴 DashScope）上游将缓存 TTL 限制为 5 分钟，�
 
 ## 辅助模型 {#auxiliary-models}
 
-Hermes 使用"辅助"模型处理图像分析、浏览器截图分析、会话标题生成和上下文压缩等附带任务。默认情况下（`auxiliary.*.provider: "auto"`），Hermes 将每个辅助任务路由到您的**主聊天模型** —— 与您在 `hermes model` 中选择的相同 provider/模型。您无需配置任何内容即可开始，但请注意，在昂贵的推理模型（Opus、MiniMax M2.7 等）上，辅助任务会增加显著成本。如果您希望无论主模型如何都使用便宜且快速的附带任务，请显式设置 `auxiliary.<task>.provider` 和 `auxiliary.<task>.model`（例如，在 OpenRouter 上使用 Gemini Flash 进行视觉分析）。（网页提取不是辅助任务：`web_extract` 和浏览器快照会确定性截断长内容，并将完整文本存储供 `read_file` 分页读取 —— 不涉及 LLM。）
+Hermes 使用"辅助"模型处理图像分析、会话标题生成和上下文压缩等附带任务。未配置辅助路由时，这些任务使用主聊天模型。设置 `auxiliary.default` 可让所有未固定的辅助任务动态继承同一个便宜/快速模型，再用 `auxiliary.<task>` 为特定任务设置例外。优先级为：任务显式路由 → `auxiliary.default` → 主模型；委派子 agent 仍由 `delegation.*` 单独控制。
 
-:::note 为什么 "auto" 使用您的主模型
-早期版本将聚合器用户（OpenRouter、Nous Portal）分流到便宜的 provider 端默认值。这令人惊讶 —— 付费购买聚合器订阅的用户会看到不同的模型处理其辅助流量。`auto` 现在对所有人使用主模型，`config.yaml` 中的每任务覆盖仍然优先（见下方[完整辅助配置参考](#full-auxiliary-config-reference)）。
+:::note "auto" 继承什么
+未固定的任务（`provider: auto`，且模型/端点为空）在配置后跟随 `auxiliary.default`；未配置共享默认值时使用主模型。任务显式路由始终优先。
 :::
 
 ### 交互式配置辅助模型
@@ -827,6 +827,7 @@ Hermes 使用"辅助"模型处理图像分析、浏览器截图分析、会话�
 $ hermes model
 → Configure auxiliary models
 
+[ ] default              currently: openrouter / google/gemini-3-flash-preview
 [ ] vision               currently: auto / main model
 [ ] title_generation     currently: openrouter / google/gemini-3-flash-preview
 [ ] compression          currently: auto / main model
@@ -836,7 +837,7 @@ $ hermes model
 [ ] profile_describer    currently: auto / main model
 ```
 
-选择任务，选择 provider（OAuth 流程打开浏览器；API 密钥 provider 提示输入），选择模型。更改持久化到 `config.yaml` 中的 `auxiliary.<task>.*`。与主模型选择器相同的机制 —— 无需学习额外语法。
+选择 **Default** 设置动态继承路由，或选择具体任务创建例外。更改分别写入 `auxiliary.default.*` 或 `auxiliary.<task>.*`。
 
 ### 视频教程
 

@@ -274,7 +274,10 @@ def _explicit_aux_vision_override(cfg: Optional[dict[str, Any]]) -> bool:
     """True when the user configured a specific ``auxiliary.vision`` backend — the
     de-facto image route in ``auto`` mode even when the main model has native vision.
     ``auto``/empty provider with no model and no base_url is not explicit."""
-    vision = _dict_or_empty(_dict_or_empty(_dict_or_empty(cfg).get("auxiliary")).get("vision"))
+    auxiliary = _dict_or_empty(_dict_or_empty(cfg).get("auxiliary"))
+    from agent.auxiliary_task_config import resolve_auxiliary_task_config
+
+    vision = resolve_auxiliary_task_config(auxiliary, "vision")
     return bool(vision) and not (
         _clean_str(vision.get("provider")).lower() in {"", "auto"}
         and not _clean_str(vision.get("model"))

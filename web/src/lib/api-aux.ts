@@ -13,8 +13,10 @@ export interface AuxiliaryTaskAssignment {
   plugin?: string;
   /** Plugin tasks only: the slot this one follows until it is pinned itself. */
   inherit_from?: string | null;
-  /** Inheriting plugin tasks only: the route the task resolves to right now. */
+  /** Effective route for any executable auxiliary task. */
   effective?: { provider: string; model: string; base_url: string };
+  /** True when a built-in or standalone plugin task follows auxiliary.default. */
+  inherits_default?: boolean;
 }
 
 export interface AuxiliaryModelsResponse {

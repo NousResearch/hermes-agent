@@ -248,10 +248,14 @@ def get_auxiliary_models(profile: Optional[str] = None):
 
     Built-in slots come first; plugin-registered tasks follow, each carrying the
     ``label``/``hint``/``plugin`` the plugin declared (built-ins are labelled client-side) and
-    ``inherit_from`` (base slot key or null). An inheriting row also carries ``effective``: the
-    route it resolves to right now, which is the base's while the row itself is unpinned.
+    ``inherit_from`` (declared base slot key or null). Rows also carry ``effective`` (the route
+    they resolve to now) and ``inherits_default`` (whether that route actually came from
+    ``auxiliary.default`` rather than a declared base whose route was denied or absent).
     ``provider``/``model``/``base_url`` stay the slot's own stored values on every row."""
     from agent.auxiliary_client import _get_auxiliary_task_config
+    from agent.auxiliary_task_config import (
+        auxiliary_task_route_is_pinned, resolve_auxiliary_task_config,
+    )
 
     with http_failure("GET /api/model/auxiliary failed", 500, detail="Failed to read auxiliary config"):
         with _profile_scope(profile):
@@ -259,11 +263,21 @@ def get_auxiliary_models(profile: Optional[str] = None):
             # Inside the scope on purpose: plugin discovery, the resolver and ``is_local_server``'s
             # provider lookup key on the same context-local home, so profile B's rows are B's.
             plugin_tasks = _plugin_aux_tasks()
-            effective = {entry["key"]: _get_auxiliary_task_config(entry["key"])
-                         for entry in plugin_tasks if entry.get("inherit_from")}
+            effective = {
+                slot: _get_auxiliary_task_config(slot)
+                for slot in (*_AUX_TASK_SLOTS, *(entry["key"] for entry in plugin_tasks))
+                if slot != "default"
+            }
             aux_cfg = cfg.get("auxiliary", {})
             if not isinstance(aux_cfg, dict):
                 aux_cfg = {}
+            default_is_pinned = auxiliary_task_route_is_pinned(aux_cfg.get("default"))
+            aux_without_default = {key: value for key, value in aux_cfg.items() if key != "default"}
+            route_without_default = {
+                slot: resolve_auxiliary_task_config(aux_without_default, slot)
+                for slot in (*_AUX_TASK_SLOTS, *(entry["key"] for entry in plugin_tasks))
+                if slot != "default"
+            }
 
             def _row(slot: str) -> dict:
                 slot_cfg = aux_cfg.get(slot, {}) if isinstance(aux_cfg.get(slot), dict) else {}
@@ -275,6 +289,13 @@ def get_auxiliary_models(profile: Optional[str] = None):
                     "reasoning_effort": str(slot_cfg.get("reasoning_effort") or "") or None,
                     # Lets the UI tell a free local/LAN pin from a forgotten paid-provider pin.
                     "local_endpoint": is_local_server(base_url, provider),
+                    "inherits_default": bool(
+                        slot != "default" and default_is_pinned
+                        and not auxiliary_task_route_is_pinned(route_without_default.get(slot))
+                    ),
+                    **({"effective": {field: str(effective[slot].get(field) or "")
+                                      for field in ("provider", "model", "base_url")}}
+                       if slot in effective else {}),
                 }
 
             tasks = [_row(slot) for slot in _AUX_TASK_SLOTS]
@@ -284,9 +305,6 @@ def get_auxiliary_models(profile: Optional[str] = None):
                 "hint": str(entry.get("description") or ""),
                 "plugin": str(entry.get("plugin") or ""),
                 "inherit_from": entry.get("inherit_from") or None,
-                **({"effective": {field: str(effective[entry["key"]].get(field) or "")
-                                  for field in ("provider", "model", "base_url")}}
-                   if entry["key"] in effective else {}),
             } for entry in plugin_tasks)
 
         model, provider = _main_model_fields(cfg.get("model", {}))

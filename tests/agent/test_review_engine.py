@@ -121,6 +121,30 @@ def test_load_review_credentials_cfg_reads_config(monkeypatch):
         "api_mode": "",
     }
 
+def test_load_review_credentials_cfg_inherits_auxiliary_default(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {"auxiliary": {
+            "default": {
+                "provider": "custom",
+                "model": "cheap-review",
+                "base_url": "https://default.example/v1",
+                "api_mode": "chat_completions",
+                "timeout": 999,
+            },
+            "review": {"provider": "auto", "model": ""},
+        }},
+    )
+
+    assert re_mod._load_review_credentials_cfg() == {
+        "provider": "custom",
+        "model": "cheap-review",
+        "base_url": "https://default.example/v1",
+        "api_key": "",
+        "api_mode": "chat_completions",
+    }
+
+
 def test_load_review_credentials_cfg_auto_means_inherit(monkeypatch):
     monkeypatch.setattr(
         "hermes_cli.config.load_config_readonly",

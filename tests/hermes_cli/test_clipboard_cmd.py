@@ -170,3 +170,82 @@ def test_replacing_a_destination_keeps_its_permissions(tmp_path, monkeypatch, ca
 
     assert (code, dest.read_bytes()) == (0, _PNG)
     assert dest.stat().st_mode & 0o777 == mode
+
+
+@pytest.mark.platforms("posix")
+def test_a_dangling_symlink_at_out_is_replaced_by_the_image(
+        tmp_path, monkeypatch, capsys):
+    """A symlink at PATH is replaced by a regular file, including one with no target."""
+    monkeypatch.setattr(clipboard, "save_clipboard_image", _fake_save(_PNG))
+    dest = tmp_path / "out" / "paste.png"
+    dest.parent.mkdir()
+    dest.symlink_to(tmp_path / "missing.png")
+
+    code, out, _ = _run(capsys, "--out", str(dest), "--json")
+
+    assert code == 0
+    assert json.loads(out)["path"] == str(dest)
+    assert dest.is_symlink() is False
+    assert dest.read_bytes() == _PNG
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root ignores file modes")
+def test_a_symlink_to_a_read_only_file_is_replaced_and_the_target_kept(
+        tmp_path, monkeypatch, capsys):
+    """Replacing the link must not write the image through it into the target."""
+    monkeypatch.setattr(clipboard, "save_clipboard_image", _fake_save(_PNG))
+    target = tmp_path / "locked.png"
+    target.write_bytes(b"old")
+    target.chmod(0o444)
+    dest = tmp_path / "out" / "paste.png"
+    dest.parent.mkdir()
+    dest.symlink_to(target)
+
+    code, out, _ = _run(capsys, "--out", str(dest), "--json")
+
+    assert code == 0
+    assert json.loads(out)["path"] == str(dest)
+    assert dest.is_symlink() is False
+    assert dest.read_bytes() == _PNG
+    assert target.read_bytes() == b"old"
+
+
+@pytest.mark.platforms("posix")
+def test_a_symlink_to_a_directory_is_write_failed(tmp_path, monkeypatch, capsys):
+    """An existing PATH that is a directory stays write_failed, symlink included."""
+    monkeypatch.setattr(clipboard, "save_clipboard_image", _fake_save(_PNG))
+    directory = tmp_path / "dir"
+    directory.mkdir()
+    dest = tmp_path / "out" / "paste.png"
+    dest.parent.mkdir()
+    dest.symlink_to(directory)
+
+    code, out, _ = _run(capsys, "--out", str(dest), "--json")
+
+    assert (code, json.loads(out)["reason"]) == (4, "write_failed")
+    assert dest.is_symlink()
+    assert directory.is_dir() and not any(directory.iterdir())
+
+
+@pytest.mark.platforms("posix")
+def test_replacing_a_read_only_symlink_does_not_copy_target_mode(
+        tmp_path, monkeypatch, capsys):
+    """The new image must remain writable, not inherit the symlink target's 0444."""
+    monkeypatch.setattr(clipboard, "save_clipboard_image", _fake_save(_PNG))
+    target = tmp_path / "readonly.png"
+    target.write_bytes(b"untouched")
+    target.chmod(0o444)
+    dest = tmp_path / "out" / "paste.png"
+    dest.parent.mkdir()
+    dest.symlink_to(target)
+
+    code, out, _ = _run(capsys, "--out", str(dest), "--json")
+
+    assert code == 0
+    assert json.loads(out)["path"] == str(dest)
+    assert not dest.is_symlink()
+    assert dest.stat().st_mode & 0o200, "replacement must allow a subsequent paste"
+    assert dest.read_bytes() == _PNG
+    assert target.read_bytes() == b"untouched"
+    assert target.stat().st_mode & 0o777 == 0o444

@@ -42,7 +42,11 @@ def extract_clipboard_image(dest: Path) -> tuple[int, dict]:
         dest.parent.mkdir(parents=True, exist_ok=True)
         if not os.access(dest.parent, os.W_OK):
             raise PermissionError("directory is not writable")
-        if os.path.lexists(dest) and (dest.is_dir() or not os.access(dest, os.W_OK)):
+        # is_dir() and access() follow the link. A symlink is replaced by the rename
+        # below, so refuse only a real directory or a non-link that is not writable.
+        if os.path.lexists(dest) and (
+                dest.is_dir()
+                or (not dest.is_symlink() and not os.access(dest, os.W_OK))):
             raise PermissionError("file is not writable")
         # Extract into a private directory beside dest, then rename over it: the extractor
         # deletes its target on failure, so dest itself is only ever replaced by a full image.
@@ -52,7 +56,7 @@ def extract_clipboard_image(dest: Path) -> tuple[int, dict]:
                 with staged.open("rb") as f:
                     written = {"ok": True, "path": str(dest), "mime": _mime(f.read(16)),
                                "bytes": staged.stat().st_size}
-                if os.path.exists(dest):  # keep an overwritten file's mode: a 0600 temp file stays private
+                if os.path.exists(dest) and not dest.is_symlink():  # links have no file mode to keep
                     os.chmod(staged, os.stat(dest).st_mode & 0o7777)
                 os.replace(staged, dest)
     except OSError as exc:

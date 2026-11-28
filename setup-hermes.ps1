@@ -24,10 +24,9 @@ $lockPath = Join-Path $repo 'pm/lock.json'
 if (-not (Test-Path $lockPath)) { throw 'pm/lock.json not found' }
 $lock = Get-Content -Raw $lockPath | ConvertFrom-Json
 
-$machineArch = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment').PROCESSOR_ARCHITECTURE
+$machineArch = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' -ErrorAction SilentlyContinue).PROCESSOR_ARCHITECTURE
+if (-not $machineArch) { $machineArch = $env:PROCESSOR_ARCHITECTURE }
 $arch = if ($machineArch -eq 'ARM64') { 'arm64' } else { 'x64' }
-$target = "win32-$arch"
-
 # ---------------------------------------------------------------------------
 # Stage the pinned uv from pm/lock.json into the pm store slot
 # ---------------------------------------------------------------------------
@@ -124,13 +123,39 @@ if (-not (Test-Path $envFile)) {
 # ---------------------------------------------------------------------------
 $skillsDir = if ($env:HERMES_HOME) { Join-Path $env:HERMES_HOME 'skills' } else { Join-Path $HOME '.hermes/skills' }
 New-Item -ItemType Directory -Force -Path $skillsDir | Out-Null
-$sync = Join-Path $repo 'tools/skills_sync.py'
-$venvPy = Join-Path $repo 'venv/Scripts/python.exe'
-if ((Test-Path $sync) -and (Test-Path $venvPy)) {
-    & $venvPy $sync 2>$null
-    Write-Host 'Skills synced' -ForegroundColor Green
+Write-Host ''
+Write-Host 'Syncing bundled skills to ~/.hermes/skills/ ...'
+$pyCandidate = $null
+foreach ($candidate in @(
+    (Join-Path $repo '.venv\Scripts\python.exe'),
+    (Join-Path $repo 'venv\Scripts\python.exe')
+)) {
+    if (Test-Path -LiteralPath $candidate) {
+        $pyCandidate = $candidate
+        break
+    }
+}
+if (-not $pyCandidate -and $bootPy) {
+    $pyCandidate = $bootPy.Trim()
 }
 
+$synced = $false
+if ($pyCandidate) {
+    & $pyCandidate -m tools.skills_sync 2>$null
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host 'Skills synced' -ForegroundColor Green
+        $synced = $true
+    }
+}
+
+if (-not $synced) {
+    # Fallback: copy if sync script fails (missing deps, etc.)
+    $bundledSkills = Join-Path $repo 'skills'
+    if (Test-Path $bundledSkills) {
+        Copy-Item -Path (Join-Path $bundledSkills '*') -Destination $skillsDir -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Host 'Skills copied' -ForegroundColor Green
+    }
+}
 # ---------------------------------------------------------------------------
 # Done
 # ---------------------------------------------------------------------------

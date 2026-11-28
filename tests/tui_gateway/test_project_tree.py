@@ -98,6 +98,33 @@ def test_main_checkout_groups_by_recorded_branch_with_stable_lane_ids():
     assert all(g["isMain"] for repo in project["repos"] for g in repo["groups"])
 
 
+def test_lane_label_prefers_the_live_branch_over_the_persisted_one():
+    # ``git_branch`` is only written when a session's cwd CHANGES (update_session_cwd), so a
+    # `git switch` inside an open session used to leave its lane labelled with the branch the
+    # session was created on. The live probe must win over the stale column.
+    resolve = _resolver({"/repo": ("/repo", "/repo")})
+    sessions = [_session("/repo", branch="gemini-frontend")]
+
+    tree = pt.build_tree([], sessions, [], resolve, hydrate=True,
+                         branch_of=lambda _cwd: "epoxy49")
+    project = next(p for p in tree["projects"] if p["id"] == "/repo")
+
+    assert _lane_ids(project) == ["/repo::branch::epoxy49"]
+    assert [g["label"] for repo in project["repos"] for g in repo["groups"]] == ["epoxy49"]
+
+
+def test_lane_label_falls_back_to_the_persisted_branch_when_the_probe_is_silent():
+    # Deleted dirs / remote backends / non-repos: the probe returns "" and the row keeps its
+    # own recorded branch instead of collapsing to a nameless lane.
+    resolve = _resolver({"/repo": ("/repo", "/repo")})
+    sessions = [_session("/repo", branch="main")]
+
+    tree = pt.build_tree([], sessions, [], resolve, hydrate=True, branch_of=lambda _cwd: "")
+    project = next(p for p in tree["projects"] if p["id"] == "/repo")
+
+    assert _lane_ids(project) == ["/repo::branch::main"]
+
+
 def test_linked_worktrees_fold_under_their_common_repo_root():
     # The linked worktree's own toplevel is /elsewhere/wt, but its COMMON root is
     # /repo, so it must group under /repo (not as a separate project).

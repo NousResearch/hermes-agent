@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from tests.fixtures.gateway_owner import GatewayOwner
+from tests.fixtures.storage_read import session_row
 from tests.fixtures.storage_seed import seed_messages
 from tools.todo_tool import TodoStore
 
@@ -322,3 +323,48 @@ def test_new_session_with_title(capsys):
     assert "My Test Session" in captured.out
 
 
+
+
+def test_new_with_title_before_first_message_keeps_user_title(owner, monkeypatch, capsys):
+    """/new <title> as the first command (no agent yet) queues the title; agent setup persists it
+    as a user title on the new session's row, so the auto-titler cannot replace it (#124033)."""
+    import types
+    from hermes_cli import gateway_agent
+    from persistence.conversation.sessions import TitleSource
+
+    cli = _make_cli()
+    cli._session_db = owner.client()
+    cli.session_id = cli._session_db.open_session(cli)
+    cli._gateway_session_open = True
+    cli._confirm_destructive_slash = lambda *_a, **_kw: "once"
+    assert cli.agent is None
+
+    cli.process_command("/new  my experiment ")
+
+    assert cli._pending_title == "my experiment"
+    assert not cli._session_db.get_session_title(cli.session_id)
+    assert "my experiment" in capsys.readouterr().out
+
+    monkeypatch.setattr(gateway_agent, "GatewayAgent", lambda *_a, **_k: types.SimpleNamespace(
+        _ensure_db_session=lambda: None, _session_db_created=True))
+    cli._install_tool_callbacks = lambda: None
+    cli._ensure_runtime_credentials = lambda: True
+    assert cli._init_agent() is True
+
+    assert cli._pending_title is None
+    row = session_row(owner.persistence, cli.session_id)
+    assert (row["title"], row["title_source"]) == ("my experiment", "user")
+    assert owner.persistence.sessions.set_auto_title(
+        cli.session_id, "Derived from message", source=TitleSource.LLM) is False
+
+
+def test_new_with_rejected_title_before_first_message_starts_untitled(capsys):
+    cli = _make_cli()
+    cli._session_db = MagicMock()
+    assert cli.agent is None
+
+    cli.new_session(title="   ")
+
+    assert cli._pending_title is None
+    cli._session_db.set_session_title.assert_not_called()
+    assert "New session started:" not in capsys.readouterr().out

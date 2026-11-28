@@ -18,6 +18,7 @@ import { DropdownMenu, DropdownMenuContent } from '@/components/ui/dropdown-menu
 import { registry } from '@/contrib/registry'
 import { modelDisplayParts } from '@/lib/model-status-label'
 import { queryClient } from '@/lib/query-client'
+import { $touchPointer } from '@/lib/touch-interaction'
 import { $favoriteModels, favoriteModelKey, toggleFavoriteModel } from '@/store/favorite-models'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import { localModelsKey, localModelsOwner } from '@/store/local-runtime-jobs'
@@ -81,6 +82,7 @@ beforeEach((): void => {
 
 afterEach(() => {
   cleanup()
+  $touchPointer.set(false)
   queryClient.clear()
   // The backend mock echoes this snapshot; retire fixture jobs before jsdom
   // disappears so an in-flight app-level poll cannot schedule another tick.
@@ -681,6 +683,35 @@ describe('in-flight local downloads', () => {
 // editable behind it. The caret is that advertisement, and ArrowRight is the
 // way in for anyone not driving the menu with a mouse (#86966).
 describe('the per-row options submenu is discoverable', () => {
+  it('keeps touch model options inside the parent menu instead of opening offscreen sideways', async () => {
+    $touchPointer.set(true)
+    renderMenu()
+
+    await screen.findByText('Gemini 3.1 Pro')
+    fireEvent.click(screen.getByRole('button', { name: 'Options: Gemini 3.1 Pro' }))
+
+    const effort = await screen.findByText('Effort')
+
+    expect(screen.getAllByRole('menu')).toHaveLength(1)
+    expect(effort.closest('[data-slot="dropdown-menu-content"]')).toBeTruthy()
+    expect(closeMenu).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Options: Gemini 3.1 Pro' }))
+    expect(screen.queryByText('Effort')).toBeNull()
+    expect(closeMenu).not.toHaveBeenCalled()
+  })
+
+  it('opens model options by tapping the caret without selecting the model or closing the menu', async () => {
+    const select = renderMenu()
+
+    await screen.findByText('Gemini 3.1 Pro')
+    fireEvent.click(screen.getByRole('button', { name: 'Options: Gemini 3.1 Pro' }))
+
+    expect(await screen.findByText('Effort')).toBeTruthy()
+    expect(screen.getByRole('menuitemradio', { name: 'Extra High' })).toBeTruthy()
+    expect(select).not.toHaveBeenCalled()
+    expect(closeMenu).not.toHaveBeenCalled()
+  })
+
   it('marks each model row as opening a submenu', async () => {
     renderMenu()
 

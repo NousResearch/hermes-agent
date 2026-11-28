@@ -24,6 +24,7 @@ import {
 import { PlanLimitLine, UsageLevelTag } from '@/components/model-picker'
 import { ProviderStatusChip } from '@/components/provider-status-chip'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import {
@@ -49,6 +50,7 @@ import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
 import { accountResetMs, formatReset, modelResetMs } from '@/lib/provider-limit'
 import { reasoningEffortLabel } from '@/lib/reasoning-effort'
 import { foldIncludes, normalize } from '@/lib/text'
+import { $touchPointer } from '@/lib/touch-interaction'
 import { cn } from '@/lib/utils'
 import { $customModels, addCustomModel, customModelCandidate, withCustomModels } from '@/store/custom-models'
 import { $favoriteModels, favoriteModelKey, toggleFavoriteModel } from '@/store/favorite-models'
@@ -75,7 +77,13 @@ import { $collapsedProviders, toggleCollapsedProvider } from '@/store/provider-c
 import { $defaultReasoningEffort } from '@/store/session'
 import type { LocalModelLoadProgress, LocalRuntimeJob } from '@/types/hermes'
 
-import { type DaybreakControl, type FastControl, ModelEditSubmenu, resolveFastControl } from './model-edit-submenu'
+import {
+  type DaybreakControl,
+  type FastControl,
+  ModelEditSubmenu,
+  ModelOptionsContent,
+  resolveFastControl
+} from './model-edit-submenu'
 import { ModelMenuRowIcon, useModelMenuRowDecoration } from './model-menu-row-decorations'
 
 // Lets the host dropdown (model-pill, a kanban field trigger, …) hand the panel
@@ -1059,6 +1067,11 @@ function ModelFamilyRow({
   const copyPicker = t.modelPicker
   const closeMenu = useContext(ModelMenuCloseContext)
   const showPricing = useStore($showModelPricing)
+  const [optionsOpen, setOptionsOpen] = useState(false)
+  const touchPointer = useStore($touchPointer)
+  // A sideways submenu cannot fit next to a phone-width catalog. Reuse the
+  // same options rows inside its scrolling menu; native keeps its submenu.
+  const OptionsContent = touchPointer ? ModelOptionsContent : ModelEditSubmenu
 
   const rowKey = `${provider.slug}:${family.id}`
 
@@ -1142,8 +1155,15 @@ function ModelFamilyRow({
   const favoriteLabel = favorite ? copy.removeFavorite : copy.addFavorite
 
   return (
-    <DropdownMenuSub onOpenChange={open => onSubOpenChange?.(open, rowKey)}>
+    <DropdownMenuSub
+      onOpenChange={open => {
+        setOptionsOpen(open)
+        onSubOpenChange?.(open, rowKey)
+      }}
+      open={optionsOpen}
+    >
       <DropdownMenuSubTrigger
+        hideChevron
         onClick={event => {
           // Shift-click stars, the same gesture that pins a chat row in the
           // sidebar. Nothing is picked and the menu stays open, so a second
@@ -1222,25 +1242,49 @@ function ModelFamilyRow({
           </ModelChip>
         ))}
         {isCurrent ? <Codicon className="text-foreground" name="check" size="0.75rem" /> : null}
+        <Button
+          aria-expanded={optionsOpen}
+          aria-label={`${t.shell.modelOptions.options}: ${name}`}
+          className="ml-auto"
+          onClick={event => {
+            event.preventDefault()
+            event.stopPropagation()
+            setOptionsOpen(!optionsOpen)
+            onSubOpenChange?.(!optionsOpen, rowKey)
+          }}
+          onKeyDown={event => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.stopPropagation()
+            }
+          }}
+          size="icon-xs"
+          tabIndex={-1}
+          type="button"
+          variant="ghost"
+        >
+          <Codicon name="chevron-right" size="1rem" />
+        </Button>
       </DropdownMenuSubTrigger>
-      <ModelEditSubmenu
-        canDisableReasoning={caps?.can_disable_reasoning ?? undefined}
-        daybreak={daybreak}
-        defaultEffort={defaultEffort}
-        effort={effEffort}
-        effortWire={isCurrent ? current.effortWire : undefined}
-        fastControl={fastControl}
-        isActive={isCurrent}
-        model={family.id}
-        onSelectModel={nextModel => controller.select(nextModel, provider.slug)}
-        onSetOptions={patch =>
-          controller.setOptions(patch, { isActive: isCurrent, model: family.id, provider: provider.slug })
-        }
-        provider={provider.slug}
-        reasoning={caps?.reasoning ?? true}
-        serviceTier={effTier}
-        ultrafastSupported={controller.allowSpeed !== false && (caps?.ultrafast ?? false)}
-      />
+      {(!touchPointer || optionsOpen) && (
+        <OptionsContent
+          canDisableReasoning={caps?.can_disable_reasoning ?? undefined}
+          daybreak={daybreak}
+          defaultEffort={defaultEffort}
+          effort={effEffort}
+          effortWire={isCurrent ? current.effortWire : undefined}
+          fastControl={fastControl}
+          isActive={isCurrent}
+          model={family.id}
+          onSelectModel={nextModel => controller.select(nextModel, provider.slug)}
+          onSetOptions={patch =>
+            controller.setOptions(patch, { isActive: isCurrent, model: family.id, provider: provider.slug })
+          }
+          provider={provider.slug}
+          reasoning={caps?.reasoning ?? true}
+          serviceTier={effTier}
+          ultrafastSupported={controller.allowSpeed !== false && (caps?.ultrafast ?? false)}
+        />
+      )}
     </DropdownMenuSub>
   )
 }

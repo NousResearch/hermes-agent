@@ -8,6 +8,7 @@ import { type SessionView, SessionViewProvider } from '@/app/chat/session-view'
 import { ModelMenuCloseContext } from '@/app/shell/model-menu-panel'
 import { registry } from '@/contrib/registry'
 import { formatModelPillLabel } from '@/lib/model-status-label'
+import { $touchPointer } from '@/lib/touch-interaction'
 import {
   $activeSessionId,
   $currentModel,
@@ -36,6 +37,7 @@ afterEach(() => {
   setCurrentModel('')
   setCurrentModelSource('')
   setCurrentServiceTier('')
+  $touchPointer.set(false)
 })
 
 // #62055: a manual composer pick is sticky and silently overrides the
@@ -102,6 +104,37 @@ function MenuChoice() {
   return <button onClick={() => close?.()}>Choose model</button>
 }
 
+it.each([false, true])('keeps the current model readable in the compact touch picker (live menu: %s)', liveMenu => {
+  $touchPointer.set(true)
+  render(
+    <ModelPill
+      compact
+      disabled={false}
+      model={modelState({ model: 'gpt-6.1-sol-900k', modelMenuContent: liveMenu ? <MenuChoice /> : undefined })}
+    />
+  )
+
+  const picker = screen.getByRole('button')
+  expect(picker.textContent).toContain('GPT-6.1-sol-900k')
+  expect(picker.className).toMatch(/\bmin-w-0\b/)
+  expect(picker.className).toMatch(/\bshrink\b/)
+})
+
+it('keeps the non-touch compact picker icon-only', () => {
+  render(<ModelPill compact disabled={false} model={modelState({ model: 'gpt-6.1-sol-900k' })} />)
+
+  expect(screen.getByRole('button').textContent).toBe('')
+})
+
+it('does not keep a stale compact touch label while its model is unknown', () => {
+  $touchPointer.set(true)
+  const { rerender } = render(<ModelPill compact disabled={false} model={modelState({ model: 'gpt-6.1-sol-900k' })} />)
+
+  rerender(<ModelPill compact disabled={false} model={modelState({ model: '' })} />)
+
+  expect(screen.queryByText('GPT-6.1-sol-900k')).toBeNull()
+})
+
 it('returns to the exact caret or backward selection after the model menu closes', async () => {
   const surface = document.createElement('div')
   surface.dataset.composerTarget = 'main'
@@ -140,41 +173,46 @@ it('returns to the exact caret or backward selection after the model menu closes
 })
 
 describe('ModelPill per-surface model label', () => {
-  it('shows the chat-bar model even when the primary global differs', () => {
-    setCurrentModel('primary/model')
-    $activeSessionId.set('primary-runtime')
+  it.each([false, true])(
+    'shows the chat-bar model even when the primary global differs (compact touch: %s)',
+    compact => {
+      $touchPointer.set(compact)
+      setCurrentModel('primary/model')
+      $activeSessionId.set('primary-runtime')
 
-    const tileView: SessionView = {
-      kind: 'tile',
-      $awaitingResponse: atom(false),
-      $busy: atom(false),
-      $cwd: atom(''),
-      $fast: atom(false),
-      $lastVisibleIsUser: atom(false),
-      $messages: atom([]),
-      $messagesEmpty: atom(true),
-      $model: atom('tile/claude-sonnet'),
-      $provider: atom('anthropic'),
-      $reasoningEffort: atom('high'),
-      $reasoningEffortPending: atom(false),
-      $reasoningEffortWire: atom(''),
-      $runtimeId: atom('tile-runtime'),
-      $storedId: atom('stored-tile'),
-      $turnStartedAt: atom<number | null>(null)
+      const tileView: SessionView = {
+        kind: 'tile',
+        $awaitingResponse: atom(false),
+        $busy: atom(false),
+        $cwd: atom(''),
+        $fast: atom(false),
+        $lastVisibleIsUser: atom(false),
+        $messages: atom([]),
+        $messagesEmpty: atom(true),
+        $model: atom('tile/claude-sonnet'),
+        $provider: atom('anthropic'),
+        $reasoningEffort: atom('high'),
+        $reasoningEffortPending: atom(false),
+        $reasoningEffortWire: atom(''),
+        $runtimeId: atom('tile-runtime'),
+        $storedId: atom('stored-tile'),
+        $turnStartedAt: atom<number | null>(null)
+      }
+
+      render(
+        <SessionViewProvider value={tileView}>
+          <ModelPill
+            compact={compact}
+            disabled={false}
+            model={modelState({ model: 'tile/claude-sonnet', provider: 'anthropic', modelMenuContent: <div /> })}
+          />
+        </SessionViewProvider>
+      )
+
+      expect(screen.getByText('Sonnet')).toBeTruthy()
+      expect(screen.queryByText(/primary/i)).toBeNull()
     }
-
-    render(
-      <SessionViewProvider value={tileView}>
-        <ModelPill
-          disabled={false}
-          model={modelState({ model: 'tile/claude-sonnet', provider: 'anthropic', modelMenuContent: <div /> })}
-        />
-      </SessionViewProvider>
-    )
-
-    expect(screen.getByText('Sonnet')).toBeTruthy()
-    expect(screen.queryByText(/primary/i)).toBeNull()
-  })
+  )
 })
 
 // #49340: long model names ("DeepSeek V4 Flash · Med") were truncated with a
@@ -235,9 +273,8 @@ describe('ModelPill label providers', () => {
     expect(label).toHaveBeenCalled()
     unmount()
 
-    // Floating-composer (compact) mode renders only the chevron: providers are
-    // not consulted at all (the chevron has no text to leak, so only the spy
-    // proves the skip).
+    // Non-touch compact mode renders only the chevron. Providers are skipped
+    // in either compact layout; touch shows the core model name instead.
     label.mockClear()
 
     const compactRender = render(
@@ -246,6 +283,17 @@ describe('ModelPill label providers', () => {
 
     expect(label).not.toHaveBeenCalled()
     compactRender.unmount()
+
+    $touchPointer.set(true)
+
+    const touchCompactRender = render(
+      <ModelPill compact disabled={false} model={modelState({ model: 'deepseek/deepseek-v4-flash' })} />
+    )
+
+    expect(label).not.toHaveBeenCalled()
+    expect(screen.getByRole('button').textContent).toContain(formatModelPillLabel('deepseek/deepseek-v4-flash'))
+    touchCompactRender.unmount()
+    $touchPointer.set(false)
 
     // Declining provider: the override text is gone, the core label is back.
     disposers.splice(0).forEach(dispose => dispose())

@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { atom } from 'nanostores'
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
 import { useTourMarker } from '@/app/chat/tour-marker'
@@ -14,14 +14,46 @@ import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { ChevronDown } from '@/lib/icons'
 import { formatModelPillLabel, providerDisplayName } from '@/lib/model-status-label'
+import { useShortViewport } from '@/lib/short-viewport'
+import { $touchPointer } from '@/lib/touch-interaction'
 import { cn } from '@/lib/utils'
 import { $currentModelSource, setModelPickerOpen } from '@/store/session'
 
 import { useComposerModelPillLabel } from './contrib'
-import { onComposerModelMenuRequest } from './focus'
+import { type ComposerTarget, onComposerModelMenuRequest } from './focus'
 import { RICH_INPUT_SLOT } from './rich-editor'
 import { useComposerScope } from './scope'
 import type { ChatBarState } from './types'
+
+/** Which composers currently have their model menu open, by composer scope target.
+ *  A single shared boolean let one pane speak for every pane: opening a menu there kept a *different* pane's
+ *  short-height collapse from minimizing, and unmounting any pill cleared the state for a menu that was still open.
+ *  The owner is the composer target the hotkey and the focus bus already route by. */
+export const $composerModelMenuOpen = atom<ReadonlySet<ComposerTarget>>(new Set())
+
+/** Claim or release ``owner``'s menu. Rewrites the set so subscribers re-render on a real change only. */
+export function setComposerModelMenuOpen(owner: ComposerTarget, open: boolean): void {
+  const owners = $composerModelMenuOpen.get()
+
+  if (owners.has(owner) === open) {
+    return
+  }
+
+  const next = new Set(owners)
+
+  if (open) {
+    next.add(owner)
+  } else {
+    next.delete(owner)
+  }
+
+  $composerModelMenuOpen.set(next)
+}
+
+/** Whether THIS composer's model menu is open. */
+export function useComposerModelMenuOpen(owner: ComposerTarget): boolean {
+  return useStore($composerModelMenuOpen).has(owner)
+}
 
 // `shrink` (not `shrink-0`) with a truncating label: the pill is the one
 // control in the row that can give width back continuously, so it absorbs the
@@ -54,6 +86,11 @@ export function ModelPill({
   model: ChatBarState['model']
 }) {
   const copy = useI18n().t.shell.statusbar
+  const touchPointer = useStore($touchPointer)
+  const short = useShortViewport()
+  // The phone footer may yield its model label to quota values. Keep the
+  // current choice readable normally; keyboard-height collapse keeps its chevron.
+  const iconOnly = compact && (!touchPointer || short)
   // Two return branches below, one handle: only ever one of them mounts.
   const tourMarker = useTourMarker('model-pill')
   const view = useSessionView()
@@ -68,9 +105,33 @@ export function ModelPill({
   const reasoningEffort = useStore(view.$reasoningEffort)
   const modelSource = useStore($currentModelSource)
   const runtimeId = useStore(view.$runtimeId)
-  const [open, setOpen] = useState(false)
-  const restoreSelection = useRef<(() => void) | null>(null)
   const scope = useComposerScope()
+  const [open, setOpen] = useState(false)
+  // Mirrors `open` for the hotkey handler, so the toggle reads the live value without re-subscribing per render.
+  const openRef = useRef(false)
+
+  // Every transition goes through here — Radix's onOpenChange and the hotkey alike — so this composer's claim can
+  // never disagree with the mounted menu. A hotkey that only set `open` left the claim unset, and the short-height
+  // row then unmounted the menu it had just opened.
+  const setMenuOpen = useCallback(
+    (next: boolean) => {
+      openRef.current = next
+      setOpen(next)
+      setComposerModelMenuOpen(scope.target, next)
+
+      // Closing the menu ends its claim on the keyboard: Radix restores focus to this pill (a toolbar button), so
+      // without the release the Enter that committed a model also swallows whatever you type next.
+      if (!next) {
+        releaseTypingFocus()
+      }
+    },
+    [scope.target]
+  )
+
+  // An unmount releases its OWN claim and no other: clearing the whole registry here closed a state that a
+  // neighbouring composer's still-open menu depended on.
+  useEffect(() => () => setComposerModelMenuOpen(scope.target, false), [scope.target])
+  const restoreSelection = useRef<(() => void) | null>(null)
   const hasLiveMenu = Boolean(model.modelMenuContent)
 
   // The `composer.modelPicker` hotkey, routed to exactly one surface (the pane
@@ -113,12 +174,12 @@ export function ModelPill({
             }
           }
 
-          setOpen(prev => !prev)
+          setMenuOpen(!openRef.current)
         } else {
           setModelPickerOpen(true)
         }
       }),
-    [scope.target, disabled, hasLiveMenu]
+    [disabled, hasLiveMenu, scope.target, setMenuOpen]
   )
 
   // The composer pick is sticky: a manual selection is pinned and every NEW
@@ -139,7 +200,7 @@ export function ModelPill({
   // the text changes, and a provider that declines leaves the core label.
   const pillLabel = useComposerModelPillLabel({ compact, model: currentModel, reasoningEffort: reasoningEffort || '' })
 
-  const label = compact ? (
+  const label = iconOnly ? (
     <ChevronDown className="size-3.5 shrink-0 opacity-70" />
   ) : (
     <>
@@ -169,9 +230,9 @@ export function ModelPill({
     </>
   )
 
-  // Compact (floating composer): a snug square holding just the chevron — no pill
-  // padding, sized to match the other composer icon buttons.
-  const pillClass = compact
+  // Non-touch compact mode keeps its snug icon button. Touch uses the normal
+  // truncating/shrinking pill, so Send and the other controls keep their room.
+  const pillClass = iconOnly
     ? cn(
         'size-(--composer-control-size) shrink-0 justify-center gap-0 rounded-md p-0',
         'text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground'
@@ -200,17 +261,6 @@ export function ModelPill({
         </Button>
       </Tip>
     )
-  }
-
-  // Closing the menu ends its claim on the keyboard: Radix restores focus to
-  // this pill (a toolbar button), so without the release the Enter that
-  // committed a model also swallows whatever you type next.
-  const setMenuOpen = (next: boolean) => {
-    setOpen(next)
-
-    if (!next) {
-      releaseTypingFocus()
-    }
   }
 
   return (

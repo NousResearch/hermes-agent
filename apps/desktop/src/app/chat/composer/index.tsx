@@ -23,6 +23,7 @@ import { chatMessageText } from '@/lib/chat-messages'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
+import { useShortViewport } from '@/lib/short-viewport'
 import { $touchPointer } from '@/lib/touch-interaction'
 import { useStoreSelector, useStoresSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
@@ -88,6 +89,7 @@ import { useStatusDrawer } from './hooks/use-status-drawer'
 import { useSessionStatusPresence } from './hooks/use-status-presence'
 import { shouldConvertPasteToAttachment } from './large-paste'
 import { ActionBadges } from './micro-actions'
+import { useComposerModelMenuOpen } from './model-pill'
 import { chipTypedPathOnSpace, pathifyRefs } from './path-refs'
 import { enterLocked, pausedReplyControls } from './paused-reply'
 import { PreparedImageRecovery } from './prepared-image-recovery'
@@ -102,6 +104,7 @@ import {
 } from './rich-editor'
 import { useComposerScope, useComposerSurfaceId } from './scope'
 import { SendTargetHint } from './send-target-hint'
+import { shortHeightCollapse } from './short-height'
 import { ComposerStatusStack } from './status-stack'
 import { CodingStatusRow } from './status-stack/coding-row'
 import { StatusDrawerContent, StatusDrawerToggle } from './status-stack/drawer'
@@ -435,6 +438,10 @@ export function ChatBar({
     editorRef,
     poppedOut
   })
+
+  const shortViewport = useShortViewport()
+  // This composer's OWN menu, not "a" menu: a neighbour's open picker must not keep this row expanded.
+  const modelMenuOpen = useComposerModelMenuOpen(scope.target)
 
   const hasComposerPayload = hasText || attachments.length > 0
   const { cardWaiting } = useCardWaitingSubmit(sessionId ?? null, busy, hasComposerPayload)
@@ -1174,7 +1181,12 @@ export function ChatBar({
       foldVoice={foldVoice}
       hasComposerPayload={hasComposerPayload}
       hideModelPill={guidedChat}
-      minimal={minimal || chatOnboardingSolo}
+      keepModelPicker={touchPointer && shortViewport && !minimal && !chatOnboardingSolo}
+      // Touch keyboard: keep a compact model trigger even after its menu closes,
+      // without bringing the voice row back. Genuine narrow-width minimal still wins.
+      // Non-touch retains the open-menu exception so a search field's keyboard
+      // does not unmount the menu mid-pick.
+      minimal={minimal || chatOnboardingSolo || shortHeightCollapse(shortViewport, touchPointer, modelMenuOpen)}
       onDictate={dictate}
       onQueue={() => {
         // Queueing clears the draft too, so the list over it closes with it.

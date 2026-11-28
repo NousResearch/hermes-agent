@@ -23,9 +23,17 @@ def _redact(response_text, **_):
     return re.sub(r"SECRET-\\d+", "[REDACTED]", response_text)
 
 
+def _redact_note(text, **_):
+    if "SECRET-0" in text:
+        raise RuntimeError("redactor failed")
+    if "SECRET-9" in text:
+        return ""
+    return re.sub(r"SECRET-\\d+", "[REDACTED]", text) if "SECRET-" in text else None
+
+
 def register(ctx):
     ctx.register_hook("transform_llm_output", _redact{hold})
-"""
+{interim}"""
 
 _CONFIG = (
     "updates:\n  check: false\n"
@@ -39,16 +47,18 @@ _CONFIG = (
 )
 
 
-def redactor_home(home: Path, base_url: str, *, hold: bool) -> Path:
+def redactor_home(home: Path, base_url: str, *, hold: bool, interim: bool = False) -> Path:
     plugin = home / "plugins" / "redactor"
     plugin.mkdir(parents=True, exist_ok=True)
     (plugin / "plugin.yaml").write_text("name: redactor\nversion: 0.1.0\n", encoding="utf-8")
-    (plugin / "__init__.py").write_text(_PLUGIN.format(hold=", hold_stream=True" if hold else ""), encoding="utf-8")
+    (plugin / "__init__.py").write_text(_PLUGIN.format(
+        hold=", hold_stream=True" if hold else "",
+        interim='    ctx.register_hook("transform_interim_message", _redact_note)\n' if interim else ""), encoding="utf-8")
     return write_hermes_home(home, base_url, extra_config=_CONFIG)
 
 
-def redactor_turn(*, delay_per_chunk: float = 0.0) -> list:
-    return [ToolCall("todo_list", {}, text=COMMENTARY), Text(RAW, chunk_chars=6, delay_per_chunk=delay_per_chunk)]
+def redactor_turn(*, delay_per_chunk: float = 0.0, commentary: str = COMMENTARY) -> list:
+    return [ToolCall("todo_list", {}, text=commentary), Text(RAW, chunk_chars=6, delay_per_chunk=delay_per_chunk)]
 
 
 def raw_leaks(texts) -> list[str]:

@@ -1756,7 +1756,7 @@ def register(ctx):
     ctx.register_hook("transform_llm_output", redact, hold_stream=True)
 ```
 
-Every session in the profile that loads the plugin then stops streaming its replies: the user sees the typing or thinking indicator, and then only your rewritten final, on the surfaces listed in the reference. Commentary between tool calls is dropped for those turns, and if your hook raises or times out the user gets a short "reply withheld" notice instead of the original. Leave the flag off for cosmetic transforms (footers, styling) so replies keep streaming. Details per surface: [Holding the reply until it is rewritten](../../user-guide/features/hooks.md#hold-stream).
+Every session in the profile that loads the plugin then stops streaming its replies: the user sees the typing or thinking indicator, and then only your rewritten final, on the surfaces listed in the reference. Commentary between tool calls is dropped for those turns unless you also register `transform_interim_message`, which sees each commentary message before it is shown (return the rewrite, `""` to drop it, or `None` to show it as is); and if your hook raises or times out the user gets a short "reply withheld" notice instead of the original. Leave the flag off for cosmetic transforms (footers, styling) so replies keep streaming. Details per surface: [Holding the reply until it is rewritten](../../user-guide/features/hooks.md#hold-stream).
 
 ### Hook reference
 
@@ -1809,6 +1809,7 @@ Every name in `hermes_cli.plugins.VALID_HOOKS` has at least one core fire site. 
 | `on_stream_start` / `on_stream_end` | `agent/stream_delivery.py` `StreamDeliveryMixin._emit_stream_start` / `_emit_stream_end` |
 | `on_stream_delta` | `agent/stream_delivery.py` `StreamDeliveryMixin._fire_stream_delta` (text) and `_fire_reasoning_delta` (reasoning) |
 | `on_interim_message` | `agent/stream_delivery.py` `StreamDeliveryMixin._emit_interim_assistant_message` |
+| `transform_interim_message` | `agent/stream_delivery.py` `StreamDeliveryMixin._held_interim_text`, called from `_deliver_interim` in held turns |
 | `pre_verify` | `hermes_cli/plugins.py` `get_pre_verify_continue_message`, called from `agent/turn_stop_gates.py` `_pre_verify_nudge` |
 | `pre_api_request` | `agent/turn_api_request.py` `_fire_pre_api_request_hook` |
 | `post_api_request` | `agent/turn_response_intake.py` `_fire_post_api_request_hook` |

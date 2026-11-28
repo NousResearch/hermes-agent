@@ -222,6 +222,7 @@ def scan(paths=None, root: Path | None = None) -> dict[str, list[tuple[int, str]
 _BASELINE: dict[str, int] = {
     # a tree listing inside a fenced code block; an inline marker would render on the page
     "website/docs/getting-started/nix-setup.md": 1,
+    "website/mintlify-docs/getting-started/nix-setup.mdx": 1,
 }
 
 

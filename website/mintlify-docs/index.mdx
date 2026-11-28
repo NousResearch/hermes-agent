@@ -1,0 +1,185 @@
+---
+title: "Hermes Agent Documentation"
+description: "The self-improving AI agent built by Nous Research. A built-in learning loop that creates skills from experience, improves them during use, and remembers across sessions."
+mode: "custom"
+---
+
+<section className="relative overflow-hidden bg-[#0000f2] dark:bg-[#000091] text-[#f2f2f2]">
+  <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 pt-12 pb-16 lg:pt-16 lg:pb-20 grid grid-cols-1 lg:grid-cols-2 gap-10 items-center">
+    <div>
+      <h1 className="hermes-display text-[#f2f2f2] text-7xl sm:text-8xl lg:text-9xl m-0">Hermes Agent</h1>
+      <p className="mt-8 max-w-xl text-lg leading-relaxed text-[#f2f2f2]">
+        The self-improving AI agent built by <a href="https://nousresearch.com" className="text-[#f2f2f2] underline underline-offset-4 decoration-[#f2f2f2]/50 hover:decoration-[#f2f2f2]">Nous Research</a>. The only agent with a built-in learning loop — it creates skills from experience, improves them during use, nudges itself to persist knowledge, and builds a deepening model of who you are across sessions.
+      </p>
+      <div className="mt-8 flex flex-wrap gap-3">
+        <a className="hermes-btn hermes-btn-paper" href="/getting-started/installation">Get Started</a>
+        <a className="hermes-btn hermes-btn-ghost" href="/user-guide/bot-mode">Explore Bot Mode</a>
+        <a className="hermes-btn hermes-btn-ghost" href="https://hermes-agent.nousresearch.com/">Download Desktop</a>
+        <a className="hermes-btn hermes-btn-ghost" href="https://github.com/NousResearch/hermes-agent">View on GitHub</a>
+      </div>
+    </div>
+    <div className="hidden lg:flex justify-end">
+      <img src="/img/brand/hero.webp" alt="Engraving of Hermes holding rays of light" noZoom className="w-full max-w-[460px] mix-blend-screen pointer-events-none select-none" />
+    </div>
+  </div>
+</section>
+
+<div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 pt-16 lg:pt-20">
+  <div className="grid grid-cols-1 lg:grid-cols-[1fr_2fr] gap-x-12 gap-y-6">
+    <h2 id="install" className="hermes-display text-6xl lg:text-7xl hermes-heading m-0">Install</h2>
+    <div className="prose prose-gray dark:prose-invert max-w-none">
+
+### Windows or macOS
+
+To easily install the command-line and desktop applications, [download the Hermes Desktop installer](https://hermes-agent.nousresearch.com/) from our website and run it.
+
+### Without Hermes Desktop:
+
+For a command-line only install without Hermes Desktop, run:
+
+For aarch64 Android devices, use the separate [Termux APT guide](/getting-started/termux).
+
+#### Linux / macOS / WSL2
+
+```bash
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+```
+
+#### Windows (native)
+
+Run in powershell:
+
+```powershell
+iex (irm https://hermes-agent.nousresearch.com/install.ps1)
+```
+
+See the full **[Installation Guide](/getting-started/installation)** for what the installer does, installation ownership and data locations, and Windows-specific notes. For the complete platform support matrix, see **[Platform Support](/getting-started/platform-support)**.
+
+<Tip>
+
+**Fastest path to a working agent**
+
+After installing, run `hermes setup --portal` — one OAuth covers a model plus all four Tool Gateway tools (web search, image generation, TTS, browser). See [Nous Portal](/integrations/nous-portal).
+
+</Tip>
+
+    </div>
+  </div>
+</div>
+
+<div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 pt-16 lg:pt-24">
+  <div className="grid grid-cols-1 lg:grid-cols-[1fr_2fr] gap-x-12 gap-y-6">
+    <h2 id="what-is-hermes-agent" className="hermes-display text-6xl lg:text-7xl hermes-heading m-0">What is Hermes Agent?</h2>
+    <div className="prose prose-gray dark:prose-invert max-w-none text-lg">
+
+It's not a coding copilot tethered to an IDE or a chatbot wrapper around a single API. It's an **autonomous agent** that gets more capable the longer it runs. It lives wherever you put it — a \$5 VPS, a GPU cluster, or serverless infrastructure (Daytona, Modal) that costs nearly nothing when idle. Talk to it from Telegram while it works on a cloud VM you never SSH into yourself. It's not tied to your laptop.
+
+    </div>
+  </div>
+</div>
+
+<div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 pt-16 lg:pt-24">
+  <h2 id="quick-links" className="hermes-display text-6xl lg:text-7xl hermes-heading m-0">Quick Links</h2>
+  <div className="hermes-quick-links prose prose-gray dark:prose-invert max-w-none mt-8">
+
+|                                                                         |                                                                       |
+| ----------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| 🚀 **[Installation](/getting-started/installation)**                    | Install in 60 seconds on Linux, macOS, WSL2, native Windows, Nix & NixOS or Android |
+| 📖 **[Quickstart Tutorial](/getting-started/quickstart)**               | Your first conversation and key features to try                       |
+| 🗺️ **[Learning Path](/getting-started/learning-path)**                  | Find the right docs for your experience level                         |
+| ⚙️ **[Configuration](/user-guide/configuration)**                       | Config file, providers, models, and options                           |
+| 💬 **[Messaging Gateway](/user-guide/messaging/index)**                       | Set up Telegram, Discord, Slack, WhatsApp, Teams, or more             |
+| 🤖 **[Bot Mode](/user-guide/bot-mode)**                                | Named Bots with their own model, memory, skills, routines, and chats  |
+| 🔧 **[Tools & Toolsets](/user-guide/features/tools)**                   | 60+ built-in tools and how to configure them                          |
+| 🧠 **[Memory System](/user-guide/features/memory)**                     | Persistent memory that grows across sessions                          |
+| 📚 **[Skills System](/user-guide/features/skills)**                     | Procedural memory the agent creates and reuses                        |
+| 🔌 **[MCP Integration](/user-guide/features/mcp)**                      | Connect to MCP servers, filter their tools, and extend Hermes safely  |
+| 🧭 **[Use MCP with Hermes](/guides/use-mcp-with-hermes)**               | Practical MCP setup patterns, examples, and tutorials                 |
+| 🎙️ **[Voice Mode](/user-guide/features/voice-mode)**                    | Real-time voice interaction in CLI, Telegram, Discord, and Discord VC |
+| 🗣️ **[Use Voice Mode with Hermes](/guides/use-voice-mode-with-hermes)** | Hands-on setup and usage patterns for Hermes voice workflows          |
+| 🎭 **[Personality & SOUL.md](/user-guide/features/personality)**        | Define Hermes' default voice with a global SOUL.md                    |
+| 📄 **[Context Files](/user-guide/features/context-files)**              | Project context files that shape every conversation                   |
+| 🔒 **[Security](/user-guide/security)**                                 | Command approval, authorization, container isolation                  |
+| 💡 **[Tips & Best Practices](/guides/tips)**                            | Quick wins to get the most out of Hermes                              |
+| 🏗️ **[Architecture](/developer-guide/architecture)**                    | How it works under the hood                                           |
+| ❓ **[FAQ & Troubleshooting](/reference/faq)**                          | Common questions and solutions                                        |
+
+  </div>
+</div>
+
+<div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 pt-16 lg:pt-24">
+  <h2 id="key-features" className="hermes-display text-6xl lg:text-7xl hermes-heading m-0">Key Features</h2>
+  <div className="mt-10 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-x-10 gap-y-10">
+    <div>
+      <p className="hermes-caption text-primary dark:text-primary-light m-0">#1</p>
+      <h3 className="hermes-display text-3xl font-normal hermes-heading mt-2 mb-3">A closed learning loop</h3>
+      <p className="text-base leading-relaxed hermes-body m-0">Agent-curated memory with periodic nudges, autonomous skill creation, skill self-improvement during use, FTS5 cross-session recall with LLM summarization, and <a className="hermes-link" href="https://github.com/plastic-labs/honcho">Honcho</a> dialectic user modeling</p>
+    </div>
+    <div>
+      <p className="hermes-caption text-primary dark:text-primary-light m-0">#2</p>
+      <h3 className="hermes-display text-3xl font-normal hermes-heading mt-2 mb-3">Runs anywhere, not just your laptop</h3>
+      <p className="text-base leading-relaxed hermes-body m-0">6 built-in terminal backends (local, Docker, SSH, Daytona, Modal, Vercel Sandbox) plus plugin backends such as Singularity. Daytona and Modal offer serverless persistence — your environment hibernates when idle, costing nearly nothing</p>
+    </div>
+    <div>
+      <p className="hermes-caption text-primary dark:text-primary-light m-0">#3</p>
+      <h3 className="hermes-display text-3xl font-normal hermes-heading mt-2 mb-3">Lives where you do</h3>
+      <p className="text-base leading-relaxed hermes-body m-0">CLI, Telegram, Discord, Slack, WhatsApp, Signal, Matrix, Mattermost, Email, SMS, DingTalk, Feishu, WeCom, Weixin, QQ Bot, Yuanbao, BlueBubbles, Home Assistant, Microsoft Teams, Google Chat, and more — 20+ platforms from one gateway</p>
+    </div>
+    <div>
+      <p className="hermes-caption text-primary dark:text-primary-light m-0">#4</p>
+      <h3 className="hermes-display text-3xl font-normal hermes-heading mt-2 mb-3">Built by model trainers</h3>
+      <p className="text-base leading-relaxed hermes-body m-0">Created by <a className="hermes-link" href="https://nousresearch.com">Nous Research</a>, the lab behind Hermes, Nomos, and Psyche. Works with <a className="hermes-link" href="https://portal.nousresearch.com">Nous Portal</a>, <a className="hermes-link" href="https://openrouter.ai">OpenRouter</a>, OpenAI, or any endpoint</p>
+    </div>
+    <div>
+      <p className="hermes-caption text-primary dark:text-primary-light m-0">#5</p>
+      <h3 className="hermes-display text-3xl font-normal hermes-heading mt-2 mb-3">Scheduled automations</h3>
+      <p className="text-base leading-relaxed hermes-body m-0">Built-in cron with delivery to any platform</p>
+    </div>
+    <div>
+      <p className="hermes-caption text-primary dark:text-primary-light m-0">#6</p>
+      <h3 className="hermes-display text-3xl font-normal hermes-heading mt-2 mb-3"><a className="hermes-link" href="/user-guide/bot-mode">Bot Mode</a></h3>
+      <p className="text-base leading-relaxed hermes-body m-0">Build a durable team of specialist Bots that work together in group chats and through <code>@mentions</code></p>
+    </div>
+    <div>
+      <p className="hermes-caption text-primary dark:text-primary-light m-0">#7</p>
+      <h3 className="hermes-display text-3xl font-normal hermes-heading mt-2 mb-3">Delegates & parallelizes</h3>
+      <p className="text-base leading-relaxed hermes-body m-0">Spawn isolated subagents for parallel workstreams. Programmatic Tool Calling via <code>execute_code</code> collapses multi-step pipelines into single inference calls</p>
+    </div>
+    <div>
+      <p className="hermes-caption text-primary dark:text-primary-light m-0">#8</p>
+      <h3 className="hermes-display text-3xl font-normal hermes-heading mt-2 mb-3">Open standard skills</h3>
+      <p className="text-base leading-relaxed hermes-body m-0">Compatible with <a className="hermes-link" href="https://agentskills.io">agentskills.io</a>. Skills are portable, shareable, and community-contributed via the Skills Hub</p>
+    </div>
+    <div>
+      <p className="hermes-caption text-primary dark:text-primary-light m-0">#9</p>
+      <h3 className="hermes-display text-3xl font-normal hermes-heading mt-2 mb-3">Full web control</h3>
+      <p className="text-base leading-relaxed hermes-body m-0">Search, extract, browse, vision, image generation, TTS — one subscription via <a className="hermes-link" href="/integrations/nous-portal">Nous Portal</a> bundles all of them</p>
+    </div>
+    <div>
+      <p className="hermes-caption text-primary dark:text-primary-light m-0">#10</p>
+      <h3 className="hermes-display text-3xl font-normal hermes-heading mt-2 mb-3">MCP support</h3>
+      <p className="text-base leading-relaxed hermes-body m-0">Connect to any MCP server for extended tool capabilities</p>
+    </div>
+    <div>
+      <p className="hermes-caption text-primary dark:text-primary-light m-0">#11</p>
+      <h3 className="hermes-display text-3xl font-normal hermes-heading mt-2 mb-3">Research-ready</h3>
+      <p className="text-base leading-relaxed hermes-body m-0">Batch processing, trajectory export, RL training with Atropos. Built by <a className="hermes-link" href="https://nousresearch.com">Nous Research</a> — the lab behind Hermes, Nomos, and Psyche models</p>
+    </div>
+  </div>
+</div>
+
+<div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 pt-16 lg:pt-24 pb-20 lg:pb-28">
+  <div className="grid grid-cols-1 lg:grid-cols-[1fr_2fr] gap-x-12 gap-y-6 hermes-rule pt-10">
+    <h2 id="for-llms-and-coding-agents" className="hermes-display text-5xl lg:text-6xl hermes-heading m-0">For LLMs and coding agents</h2>
+    <div className="prose prose-gray dark:prose-invert max-w-none">
+
+Machine-readable entry points to this documentation:
+
+- **[`/llms.txt`](https://hermes-agent.nousresearch.com/docs/llms.txt)** — curated index of every doc page with short descriptions. ~17 KB, safe to load into an LLM context.
+- **[`/llms-full.txt`](https://hermes-agent.nousresearch.com/docs/llms-full.txt)** — every doc page concatenated into a single markdown file for one-shot ingestion. ~1.8 MB.
+
+Both files also resolve at `/docs/llms.txt` and `/docs/llms-full.txt`. Generated fresh on every deploy.
+
+    </div>
+  </div>
+</div>

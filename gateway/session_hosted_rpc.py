@@ -11,11 +11,12 @@ from functools import partial
 import hashlib
 import json
 
+from session_rules.hosted_tasks import parse_hosted_attempt
 from gateway.owner_identity import same_owner
 from gateway.session_contract import SessionRef, Submission
 from gateway.session_persistence import authority_persistence
 from persistence.core.errors import AuthorityRefusal
-from persistence.gateway.hosted_rooms import HostedTaskIdentity
+from persistence.gateway.hosted_rooms import HostedAttemptGuard, HostedTaskIdentity
 
 _RESULTLESS_OUTCOMES = frozenset({'interrupted', 'cancelled'})
 # Encoded receipts per ``results`` read; under the 512 KiB private-socket response line.
@@ -23,6 +24,9 @@ _RESULTS_BUDGET_BYTES = 384 * 1024
 
 
 class HostedRoomAuthorityRPC:
+    fenced_interrupts = True
+    requires_interrupt_generation = True
+    interrupt_ack_is_delivery = True
     accepts_attachments = True  # submit resolves event-bound bytes per member
 
     def __init__(self, authority, loop, *, room_id, member_id, profile, principal,
@@ -124,17 +128,33 @@ class HostedRoomAuthorityRPC:
         for row in rows:
             if not same_owner(row['principal_id'], self.principal.subject) or not row['request_id'].startswith('hosted:'):
                 continue
-            try:
-                task, generation = json.loads(row['request_id'][7:])
-                identity = HostedTaskIdentity(**task)
-                if identity.room_id != self.room_id or type(generation) is not int:
-                    raise ValueError('invalid hosted identity')
-            except (TypeError, ValueError, KeyError) as exc:
-                raise AuthorityRefusal('storage_unavailable') from exc
+            identity, generation = parse_hosted_attempt(row['request_id'], self.room_id)
             result.append((row, identity, generation))
         return result
 
-    def _terminal(self, row, task, generation, *, notify=True):
+    async def _lookup_attempt(self, params):
+        """Find this attempt, or durably close its unused key before reporting absence.
+
+        Like peer Discard's find-or-close, the absence and fence share the admission
+        writer transaction: a submit already attested on another daemon cannot land later.
+        """
+        task_id, generation = params['expected_task_id'], params['execution_generation']
+        if not isinstance(task_id, str) or not task_id or type(generation) is not int or generation < 1:
+            raise AuthorityRefusal('invalid_params')
+        self.authority.authorize(self.principal, self.ref, 'session:read')
+        from gateway.session_runtime_workers import tracked_write
+        from gateway.session_persistence import owner_rule
+        store = authority_persistence(self.authority)
+        row = await tracked_write(self.authority, partial(store.hosted_rooms.find_or_close_attempt,
+            epoch=self.authority.epoch, session_id=self.ref.session_id, room_id=self.room_id, task_id=task_id,
+            generation=generation, principal=self.principal.subject, owner=owner_rule()))
+        if row is None:
+            return {'status': 'absent'}
+        if row['status'] == 'terminal':
+            return {'status': 'terminal', 'receipt': self._terminal(row, task_id, generation, bounded=True, notify=False)}
+        return {'status': 'running' if row['status'] == 'started' else row['status']}
+
+    def _terminal(self, row, task_id, generation, *, notify=True, bounded=False):
         from gateway.session_results import admission_result
         saved = admission_result(authority_persistence(self.authority), row['admission_id'])
         # Unknown discard and queued cancellation never ran: no result exists to recover.
@@ -144,10 +164,15 @@ class HostedRoomAuthorityRPC:
         status = {'completed': 'settled', 'interrupted': 'cancelled', 'cancelled': 'cancelled'}.get(row['outcome'], 'failed')
         receipt = {'status': status, 'text': value.get('final_response', ''),
                    'message_id': row['admission_id'], 'settlement_id': row['admission_id'],
-                   'task_id': task.task_id, 'execution_generation': generation}
+                   'task_id': task_id, 'execution_generation': generation}
         callback = self.callbacks.pop(row['admission_id'], None)
         if callback is not None and notify:
             callback(receipt)
+        if bounded:
+            from tui_gateway.hosted_room_driver import MAX_TERMINAL_TEXT_BYTES
+            raw = receipt['text'].encode('utf-8')
+            if len(raw) > MAX_TERMINAL_TEXT_BYTES:
+                receipt['text'] = raw[:MAX_TERMINAL_TEXT_BYTES + 4].decode('utf-8', 'ignore')
         return receipt
 
     async def _submit(self, params):
@@ -165,7 +190,8 @@ class HostedRoomAuthorityRPC:
         with capture_lease():
             payload = await asyncio.to_thread(prepare_before_submit, partial(
                 submission_payload, self, params['prompt'], params.get('attachments')))
-            hosted = self.hosted_guard(task, generation) if self.hosted_guard is not None else None
+            hosted = (self.hosted_guard(task, generation) if self.hosted_guard is not None
+                      else HostedAttemptGuard(task, generation))
             receipt = await self.authority.submit(self.principal, Submission(
                 request_id, self.ref, payload, 'queue'), hosted=hosted)
         self.callbacks[receipt.admission_id] = params['on_terminal']
@@ -178,7 +204,7 @@ class HostedRoomAuthorityRPC:
         if receipt.status == 'terminal':
             for row, identity, gen in self._rows():
                 if row['admission_id'] == receipt.admission_id:
-                    self._terminal(row, identity, gen)
+                    self._terminal(row, identity.task_id, gen)
         return asdict(receipt)
 
     def _completed(self, admission_id, future):
@@ -193,7 +219,7 @@ class HostedRoomAuthorityRPC:
             return
         for row, task, generation in self._rows():
             if row['admission_id'] == admission_id and row['status'] == 'terminal':
-                self._terminal(row, task, generation)
+                self._terminal(row, task.task_id, generation)
 
     async def _history(self, params):
         from gateway.session_local_recovery import local_history, prepare_history
@@ -206,7 +232,7 @@ class HostedRoomAuthorityRPC:
             self.ref, lambda: list(local_history(self.authority, self.ref, prepared)))
         for row, task, generation in rows:
             if row['status'] == 'terminal':
-                receipt = self._terminal(row, task, generation)
+                receipt = self._terminal(row, task.task_id, generation)
                 history.append({**receipt, 'role': 'assistant', 'content': receipt['text']})
         return history
 
@@ -221,15 +247,11 @@ class HostedRoomAuthorityRPC:
         if wanted is not None and (not isinstance(wanted, list) or len(wanted) > 256
                                    or not all(isinstance(i, str) and i for i in wanted)):
             raise AuthorityRefusal('invalid_params')
-        from tui_gateway.hosted_room_driver import MAX_TERMINAL_TEXT_BYTES
         receipts, used = [], 0
         for row, task, generation in reversed(self._rows()):
             if row['status'] != 'terminal' or (wanted is not None and row['admission_id'] not in wanted):
                 continue
-            receipt = self._terminal(row, task, generation)
-            raw = receipt['text'].encode('utf-8')
-            if len(raw) > MAX_TERMINAL_TEXT_BYTES:
-                receipt['text'] = raw[:MAX_TERMINAL_TEXT_BYTES + 4].decode('utf-8', 'ignore')
+            receipt = self._terminal(row, task.task_id, generation, bounded=True)
             used += len(json.dumps(receipt))
             if receipts and used > _RESULTS_BUDGET_BYTES:
                 break
@@ -240,9 +262,10 @@ class HostedRoomAuthorityRPC:
         rows = self._rows()
         for row, task, generation in rows:
             if row['status'] == 'terminal':
-                self._terminal(row, task, generation)
+                self._terminal(row, task.task_id, generation)
         current = next(((row, task, generation) for row, task, generation in rows if row['status'] in {'started', 'unknown', 'queued'}), None)
-        result = {'active': current is not None and current[0]['status'] != 'unknown',
+        result = {'lookup_attempt': True, 'interrupt_execution_generation': True,
+                  'active': current is not None and current[0]['status'] != 'unknown',
                   'task_id': current[1].task_id if current else None,
                   'execution_generation': current[2] if current else None,
                   'status': current[0]['status'] if current else 'idle'}
@@ -261,10 +284,15 @@ class HostedRoomAuthorityRPC:
 
     async def _interrupt(self, params):
         rows = self._rows()
-        current = next(((row, task) for row, task, _ in rows if row['status'] in {'started', 'unknown', 'queued'}), None)
-        if current is None or current[1].task_id != params['expected_task_id']:
+        current = next(((row, task, generation) for row, task, generation in rows
+                        if row['status'] in {'started', 'unknown', 'queued'}), None)
+        expected = params.get('execution_generation')
+        if expected is not None and (type(expected) is not int or expected < 1):
+            raise AuthorityRefusal('invalid_params')
+        if (current is None or current[1].task_id != params['expected_task_id']
+                or expected not in (None, current[2])):
             raise AuthorityRefusal('stale_generation')
-        row, _ = current
+        row, _, _ = current
         if row['status'] == 'unknown':
             raise AuthorityRefusal('unknown_execution')
         if row['status'] == 'queued':
@@ -296,7 +324,7 @@ class HostedRoomAuthorityRPC:
         # The discarding caller settles the room task from this reply. The attempt's own terminal
         # callback would settle it a second time and, for a local member, re-enter the room's
         # preparation from the loop while the caller waits on this reply.
-        return {**self._terminal(row, task, generation, notify=False), 'discarded': True}
+        return {**self._terminal(row, task.task_id, generation, notify=False), 'discarded': True}
 
     async def _approve(self, params):
         if params['choice'] not in {'once', 'deny'}:
@@ -337,8 +365,13 @@ class HostedRoomAuthorityRPC:
     def info(self, *, profile, session_id, source):
         return self._call('info', profile=profile, session_id=session_id, source=source)
 
-    def interrupt(self, *, profile, session_id, source, expected_task_id):
-        return self._call('interrupt', profile=profile, session_id=session_id, source=source, expected_task_id=expected_task_id)
+    def lookup_attempt(self, *, profile, session_id, source, expected_task_id, execution_generation):
+        return self._call('lookup_attempt', profile=profile, session_id=session_id, source=source,
+                          expected_task_id=expected_task_id, execution_generation=execution_generation)
+
+    def interrupt(self, *, profile, session_id, source, expected_task_id, execution_generation=None):
+        return self._call('interrupt', profile=profile, session_id=session_id, source=source,
+                          expected_task_id=expected_task_id, execution_generation=execution_generation)
 
     def discard(self, *, profile, session_id, source, expected_task_id, execution_generation):
         return self._call('discard', profile=profile, session_id=session_id, source=source,

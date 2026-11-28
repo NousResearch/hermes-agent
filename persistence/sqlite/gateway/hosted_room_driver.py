@@ -89,7 +89,7 @@ def _generation_update(set_clause: str, status: str) -> str:
 
 
 _SETTLE_RUNNING_SQL = _generation_update(_SETTLE_SET, "running") + f" AND {_RUN_FENCE}"
-_SETTLE_STOPPING_SQL = _generation_update(_SETTLE_SET, "stopping")
+_SETTLE_STOPPING_SQL = _task_update(_SETTLE_SET, f"status IN ('stopping', 'deferred') AND {_GENERATION_FENCE}")
 _REQUEUE_RUNNING_SQL = _task_update(
     f"{_REQUEUE_SET}, started_at=NULL, updated_at=?", f"status='running' AND {_GENERATION_FENCE} AND {_RUN_FENCE}")
 _CANCEL_QUEUED_SQL = _task_update(_CANCEL_SET, "status IN ('queued', 'deferred') AND cancel_generation=?")
@@ -97,7 +97,7 @@ _BEGIN_STOP_SQL = _task_update(
     "status='stopping', cancel_generation=?, cancel_id=?, updated_at=?",
     "status IN ('running', 'indeterminate') AND cancel_generation=?")
 _COMPLETE_STOP_SQL = _task_update(
-    "status='cancelled', terminal_at=?, updated_at=?", "status='stopping' AND cancel_id=? AND cancel_generation=?")
+    "status='cancelled', terminal_at=?, updated_at=?", "status IN ('stopping', 'deferred') AND cancel_id=? AND cancel_generation=?")
 
 # Lease-first recovery transitions: name -> (fenced status, SET clause, generation-guard stale message,
 # row stale message); the UPDATE is _generation_update(set_clause, status).
@@ -377,7 +377,7 @@ class SQLiteHostedRoomDriverRepository:
         self, placement: HostedPlacement, identity: HostedTaskIdentity, *, sql: str, set_params: tuple[Any, ...],
         fence_params: tuple[Any, ...], stale: str, now: float, lease: DriverLease | None = None,
         lease_first: bool = True, replay: Replay | None = None, guard: Callable[[Row], None] | None = None,
-        allow_expired_lease: bool = False,
+        allow_expired_lease: bool = False, expected_execution_generation: int | None = None,
     ) -> dict[str, Any]:
         """Run one fenced task transition: load -> idempotent replay -> lease/fence guard -> UPDATE.
 
@@ -392,6 +392,8 @@ class SQLiteHostedRoomDriverRepository:
             if lease is not None and lease_first:
                 _require_active_lease(conn, lease, now=now)
             row = _load_task(conn, identity)
+            if expected_execution_generation is not None and row["execution_generation"] != expected_execution_generation:
+                raise StaleTaskError("task execution changed during control")
             if replay is not None and (replayed := replay(row)) is not None:
                 return replayed
             if lease is not None and not lease_first:
@@ -702,7 +704,8 @@ class SQLiteHostedRoomDriverRepository:
 
     # Cancels a queued or deferred task; running work goes through ``begin_task_cancel``.
     def cancel_task(self, identity: HostedTaskIdentity, *, placement: HostedPlacement, cancel_id: str,
-                    expected_cancel_generation: int, now: float | None = None) -> Mapping[str, JsonValue]:
+                    expected_cancel_generation: int, now: float | None = None,
+                    expected_execution_generation: int | None = None) -> Mapping[str, JsonValue]:
         now = clock(now)
 
         def guard(row: Row) -> None:
@@ -713,12 +716,14 @@ class SQLiteHostedRoomDriverRepository:
             _require_cancel_generation(row, expected_cancel_generation)
         return self._transition(
             placement, identity, now=now, replay=_cancel_replay(cancel_id), guard=guard, sql=_CANCEL_QUEUED_SQL,
+            expected_execution_generation=expected_execution_generation,
             set_params=(expected_cancel_generation + 1, cancel_id, now, now), fence_params=(expected_cancel_generation,),
             stale="task changed during cancellation")
 
     # Moves a running or indeterminate task to ``stopping`` under the next cancel generation.
     def begin_task_cancel(self, identity: HostedTaskIdentity, *, placement: HostedPlacement, cancel_id: str,
-                          expected_cancel_generation: int, now: float | None = None) -> Mapping[str, JsonValue]:
+                          expected_cancel_generation: int, now: float | None = None,
+                          expected_execution_generation: int | None = None) -> Mapping[str, JsonValue]:
         now = clock(now)
 
         def guard(row: Row) -> None:
@@ -727,20 +732,23 @@ class SQLiteHostedRoomDriverRepository:
             _require_cancel_generation(row, expected_cancel_generation)
         return self._transition(
             placement, identity, now=now, replay=_cancel_replay(cancel_id, "stopping"), guard=guard, sql=_BEGIN_STOP_SQL,
+            expected_execution_generation=expected_execution_generation,
             set_params=(expected_cancel_generation + 1, cancel_id, now), fence_params=(expected_cancel_generation,),
             stale="task changed during stop request")
 
     # Cancels a stopping task once its stop is acknowledged.
     def complete_task_cancel(self, identity: HostedTaskIdentity, *, placement: HostedPlacement, cancel_id: str,
-                             expected_cancel_generation: int, now: float | None = None) -> Mapping[str, JsonValue]:
+                             expected_cancel_generation: int, now: float | None = None,
+                             expected_execution_generation: int | None = None) -> Mapping[str, JsonValue]:
         now = clock(now)
 
         def guard(row: Row) -> None:
-            if (row["status"], row["cancel_id"], int(row["cancel_generation"])) != (
-                "stopping", cancel_id, expected_cancel_generation):
+            if row["status"] not in {"stopping", "deferred"} or (row["cancel_id"], int(row["cancel_generation"])) != (
+                    cancel_id, expected_cancel_generation):
                 raise StaleTaskError("task stop acknowledgement is stale")
         return self._transition(
             placement, identity, now=now, replay=_cancel_replay(cancel_id), guard=guard, sql=_COMPLETE_STOP_SQL,
+            expected_execution_generation=expected_execution_generation,
             set_params=(now, now), fence_params=(cancel_id, expected_cancel_generation),
             stale="task changed during stop acknowledgement")
 

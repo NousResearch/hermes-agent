@@ -231,9 +231,13 @@ def _mark_retired(conn, key, *, expires, **fields):
 
 
 def retire_routes(conn, session_ids, *, expiring=()):
+    from persistence.sqlite.gateway._hosted_attempts import closed_attempt_prefix
     expiring = set(expiring)
     for sid in session_ids:
-        _mark_retired(conn, RETIRED_PREFIX + sid, expires=sid in expiring, own=True)
+        # The permanent session fence replaces every closed attempt, including on an empty sweep.
+        prefix = closed_attempt_prefix(sid)
+        closed = conn.execute('DELETE FROM state_meta WHERE key>=? AND key<?', (prefix, prefix + '\uffff')).rowcount
+        _mark_retired(conn, RETIRED_PREFIX + sid, expires=sid in expiring and not closed, own=True)
         conn.execute('DELETE FROM state_meta WHERE key=?', ('gateway.api.settings.v1.' + sid,))
         conn.execute('DELETE FROM state_meta WHERE key=?', (VIEWER_CLOSE_PREFIX + sid,))
     targets = set(session_ids)

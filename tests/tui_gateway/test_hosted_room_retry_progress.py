@@ -3,9 +3,8 @@ tool and last-frame time must not ride into the new attempt's ``member_activity`
 
 from __future__ import annotations
 
-import threading
 import time
-from types import SimpleNamespace
+from tests.tui_gateway.test_hosted_room_service import _server
 
 import pytest
 
@@ -28,7 +27,7 @@ def _deferred_room(tmp_path, monkeypatch, store):
     monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
     (tmp_path / ".hermes" / "profiles" / "reviewer").mkdir(parents=True)
     (tmp_path / ".hermes" / "profiles" / "reviewer" / "config.yaml").write_text("{}\n")
-    server = SimpleNamespace(_methods={}, _sessions={}, _sessions_lock=threading.Lock())
+    server = _server()
     service = HostedRoomService(server, store=store, placement="profile")
     service.create_room(room_id="room", name="Room", members=[
         {"member_id": "worker", "profile": "default", "handle": "worker"},

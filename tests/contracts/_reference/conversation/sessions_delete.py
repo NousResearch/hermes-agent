@@ -145,6 +145,7 @@ class SessionDeleteMixin:
             for key in [k for k, entry in entries.items() if str(entry.session_id) in doomed_set]:
                 del entries[key]
         for sid in doomed:
+            staged_authority.get("closed_hosted_attempts", {}).pop(sid, None)
             record_retirement(staged_authority, SessionId(sid))
 
     def _delete_cascade(self, scope: ProfileScope, doomed: Sequence[str], media_root: str) -> None:

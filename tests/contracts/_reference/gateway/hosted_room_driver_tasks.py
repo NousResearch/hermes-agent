@@ -158,13 +158,15 @@ class DriverTaskMixin:
 
     _store: Any
 
-    def _transition(self, placement: HostedPlacement, identity: HostedTaskIdentity, *, changes: Row, fence: Callable[[Row], bool], stale: str, now: float, lease: DriverLease | None = None, lease_first: bool = True, replay: Replay | None = None, guard: Callable[[Row], None] | None = None, allow_expired_lease: bool = False) -> dict[str, Any]:
+    def _transition(self, placement: HostedPlacement, identity: HostedTaskIdentity, *, changes: Row, fence: Callable[[Row], bool], stale: str, now: float, lease: DriverLease | None = None, lease_first: bool = True, replay: Replay | None = None, guard: Callable[[Row], None] | None = None, allow_expired_lease: bool = False, expected_execution_generation: int | None = None) -> dict[str, Any]:
         """One transition in one write: lease check, row load, replay, guard, then the fenced update. ``allow_expired_lease`` relaxes only the post-replay lease check."""
         with write_tables(self._store, placement) as tables:
             if lease is not None and lease_first:
                 require_active_lease(tables, lease, now=now)
             row = load_task(tables, identity)
             assert row is not None
+            if expected_execution_generation is not None and row["execution_generation"] != expected_execution_generation:
+                raise StaleTaskError("task execution changed during control")
             if replay is not None and (replayed := replay(row)) is not None:
                 return replayed
             if lease is not None and not lease_first:
@@ -255,7 +257,8 @@ class DriverTaskMixin:
         replay, changes = _settlement(settlement_id, status, result, now)
 
         def fence(row: Row) -> bool:
-            return _generations_match(row, "stopping", expected_execution_generation, expected_cancel_generation)
+            return row["status"] in {"stopping", "deferred"} and (row["execution_generation"], row["cancel_generation"]) == (
+                expected_execution_generation, expected_cancel_generation)
 
         return self._transition(placement, identity, lease=lease, lease_first=False, now=now, replay=replay, fence=fence, changes=changes, stale="task completion lost the stop race")
 
@@ -324,7 +327,7 @@ class DriverTaskMixin:
             placement, attempt, guard_stale="not-admitted task attempt lost its fence", lease_generation=lambda value: int(value or 0), now=now,
             replay=replay, changes={**_REQUEUE, "started_at": None, "updated_at": now}, stale="not-admitted task changed during requeue")
 
-    def cancel_task(self, identity: HostedTaskIdentity, *, placement: HostedPlacement, cancel_id: str, expected_cancel_generation: int, now: float | None = None) -> Mapping[str, JsonValue]:
+    def cancel_task(self, identity: HostedTaskIdentity, *, placement: HostedPlacement, cancel_id: str, expected_cancel_generation: int, now: float | None = None, expected_execution_generation: int | None = None) -> Mapping[str, JsonValue]:
         now = rules.clock(now)
 
         def guard(row: Row) -> None:
@@ -339,9 +342,9 @@ class DriverTaskMixin:
             return row["status"] in {"queued", "deferred"} and int(row["cancel_generation"]) == expected_cancel_generation
 
         changes = {"status": "cancelled", "cancel_generation": expected_cancel_generation + 1, "cancel_id": cancel_id, "terminal_at": now, "updated_at": now}
-        return self._transition(placement, identity, now=now, replay=_cancel_replay(cancel_id), guard=guard, fence=fence, changes=changes, stale="task changed during cancellation")
+        return self._transition(placement, identity, now=now, expected_execution_generation=expected_execution_generation, replay=_cancel_replay(cancel_id), guard=guard, fence=fence, changes=changes, stale="task changed during cancellation")
 
-    def begin_task_cancel(self, identity: HostedTaskIdentity, *, placement: HostedPlacement, cancel_id: str, expected_cancel_generation: int, now: float | None = None) -> Mapping[str, JsonValue]:
+    def begin_task_cancel(self, identity: HostedTaskIdentity, *, placement: HostedPlacement, cancel_id: str, expected_cancel_generation: int, now: float | None = None, expected_execution_generation: int | None = None) -> Mapping[str, JsonValue]:
         now = rules.clock(now)
 
         def guard(row: Row) -> None:
@@ -354,16 +357,16 @@ class DriverTaskMixin:
             return row["status"] in {"running", "indeterminate"} and int(row["cancel_generation"]) == expected_cancel_generation
 
         changes = {"status": "stopping", "cancel_generation": expected_cancel_generation + 1, "cancel_id": cancel_id, "updated_at": now}
-        return self._transition(placement, identity, now=now, replay=_cancel_replay(cancel_id, "stopping"), guard=guard, fence=fence, changes=changes, stale="task changed during stop request")
+        return self._transition(placement, identity, now=now, expected_execution_generation=expected_execution_generation, replay=_cancel_replay(cancel_id, "stopping"), guard=guard, fence=fence, changes=changes, stale="task changed during stop request")
 
-    def complete_task_cancel(self, identity: HostedTaskIdentity, *, placement: HostedPlacement, cancel_id: str, expected_cancel_generation: int, now: float | None = None) -> Mapping[str, JsonValue]:
+    def complete_task_cancel(self, identity: HostedTaskIdentity, *, placement: HostedPlacement, cancel_id: str, expected_cancel_generation: int, now: float | None = None, expected_execution_generation: int | None = None) -> Mapping[str, JsonValue]:
         now = rules.clock(now)
 
         def fence(row: Row) -> bool:
-            return (row["status"], row["cancel_id"], int(row["cancel_generation"])) == ("stopping", cancel_id, expected_cancel_generation)
+            return row["status"] in {"stopping", "deferred"} and (row["cancel_id"], row["cancel_generation"]) == (cancel_id, expected_cancel_generation)
 
         def guard(row: Row) -> None:
             if not fence(row):
                 raise StaleTaskError("task stop acknowledgement is stale")
 
-        return self._transition(placement, identity, now=now, replay=_cancel_replay(cancel_id), guard=guard, fence=fence, changes={"status": "cancelled", "terminal_at": now, "updated_at": now}, stale="task changed during stop acknowledgement")
+        return self._transition(placement, identity, now=now, expected_execution_generation=expected_execution_generation, replay=_cancel_replay(cancel_id), guard=guard, fence=fence, changes={"status": "cancelled", "terminal_at": now, "updated_at": now}, stale="task changed during stop acknowledgement")

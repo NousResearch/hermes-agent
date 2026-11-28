@@ -201,6 +201,24 @@ class InMemoryHostedRoomRepository(HostedRoomLogMixin, HostedRoomHandoffMixin):
                 raise AuthorityRefusal("permission_denied")
             meta.setdefault(TRANSPORT_PREFIX + session_id, binding)
 
+    def find_or_close_attempt(self, *, epoch: int, session_id: str, room_id: str, task_id: str, generation: int,
+                              principal: str, owner: OwnerRule) -> Mapping[str, JsonValue] | None:
+        from session_rules.hosted_tasks import parse_hosted_attempt
+        state = authority_state(self._store, self._store.scope)
+        with state.transaction() as staged:
+            state.require_epoch(staged.authority, epoch)
+            if session_id not in staged.scope.get("sessions", {}):
+                raise AuthorityRefusal("not_found")
+            for row in staged.authority["admissions"].values():
+                if (row["target_session_id"] == session_id and row["request_id"].startswith("hosted:")
+                        and (task_id in row["request_id"] or r"\u" in row["request_id"])
+                        and same_owner(row["principal_id"], principal, owner)):
+                    identity, attempt = parse_hosted_attempt(row["request_id"], room_id)
+                    if (identity.task_id, attempt) == (task_id, generation):
+                        return {key: row[key] for key in ("admission_id", "status", "outcome")}
+            staged.authority.setdefault("closed_hosted_attempts", {}).setdefault(session_id, set()).add((task_id, generation))
+        return None
+
     def label_room_session(self, *, epoch: int, session_id: str, title: str) -> None:
         self._require_epoch(epoch)
         table = self._store.scope_store(self._store.scope).setdefault("sessions", {})

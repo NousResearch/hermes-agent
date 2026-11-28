@@ -112,4 +112,16 @@ export const ROSTER_CHROME = {
     currentGateway: "البوابة الحالية",
     hidden: "مخفي"
   },
+
+  cs: {
+    title: 'Boti',
+    toastsOn: 'Upozornění na aktivitu zapnuta — kliknutím ztišíte',
+    toastsOff: 'Upozornění na aktivitu vypnuta — kliknutím zapnete',
+    newMenu: 'Nové…',
+    filter: 'Filtrovat seznam',
+    filtersActive: (count) => `Filtrovat seznam, ${count} aktivní`,
+    allGateways: 'Všechny brány',
+    currentGateway: 'Aktuální brána',
+    hidden: 'Skrytí',
+  }
 } satisfies Record<keyof typeof CANONICAL_GROUP_LOCALES, RosterChromeMessages>

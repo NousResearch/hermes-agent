@@ -68,6 +68,12 @@ export const LOCALE_OPTIONS = [
     name: LOCALE_ENDONYMS.es,
     englishName: 'Spanish',
     configValue: 'es'
+  },
+  {
+    id: 'cs',
+    name: LOCALE_ENDONYMS.cs,
+    englishName: 'Czech',
+    configValue: 'cs'
   }
 ] as const satisfies readonly { configValue: string; englishName: string; id: BundledLocale; name: string }[]
 
@@ -206,7 +212,13 @@ const LOCALE_ALIASES: Record<string, BundledLocale> = {
   es_419: 'es',
   spanish: 'es',
   español: 'es',
-  espanol: 'es'
+  espanol: 'es',
+  cs: 'cs',
+  'cs-cz': 'cs',
+  cs_cz: 'cs',
+  czech: 'cs',
+  čeština: 'cs',
+  cestina: 'cs'
 }
 
 /** A language the app can render right now: bundled or registered. Aliases

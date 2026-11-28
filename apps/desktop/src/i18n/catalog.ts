@@ -1,4 +1,5 @@
 import { ar } from './ar'
+import { cs } from './cs'
 import { de } from './de'
 import { en } from './en'
 import { es } from './es'
@@ -21,7 +22,8 @@ export const TRANSLATIONS: Record<BundledLocale, Translations> = {
   ru,
   fr,
   de,
-  es
+  es,
+  cs
 }
 
 export const BUNDLED_LOCALES = Object.keys(TRANSLATIONS) as readonly BundledLocale[]

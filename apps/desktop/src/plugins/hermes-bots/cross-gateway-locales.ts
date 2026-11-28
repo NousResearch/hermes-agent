@@ -177,5 +177,24 @@ export const CROSS_GATEWAY_GROUP_LOCALES = {
     memberRollbackFailed: (connection, bot) =>
       `Miembros no guardados, y el cambio ya hecho para ${bot} en ${connection} no se pudo deshacer: puede que ${connection} todavía lo tenga. El chat de grupo muestra lo último que informó ${connection}; vuelve a conectarlo y revisa los miembros.`,
     selectionElsewhere: connection => `Todos estos bots están en ${connection}. Añade un bot de esta conexión o cambia a ${connection} para crear un grupo con sus bots.`
+  },
+  cs: {
+    groupsOffline: (connection, bot) => `${connection} je offline — pro změnu skupin bota ${bot} se znovu připojte.`,
+    memberOffline: (connection, bot) => `${connection} je offline — pro odebrání bota ${bot} se znovu připojte.`,
+    memberSaveFailed: (connection, bot) =>
+      `Členové nebyli uloženi: ${connection} nepřevzal změnu pro bota ${bot}. Nic se nezměnilo; zkuste to znovu, až bude dostupný.`,
+    memberRollbackFailed: (connection, bot) =>
+      `Členové nebyli uloženi a již provedenou změnu pro bota ${bot} na ${connection} se nepodařilo vrátit: ${connection} ji může stále mít. Místnost zobrazuje poslední stav, který ${connection} nahlásil; připojte jej znovu a zkontrolujte členy.`,
+    selectionElsewhere: connection =>
+      `Všichni tito boti jsou na ${connection}. Přidejte bota z tohoto připojení, nebo přejděte na ${connection} a vytvořte skupinu z jeho botů.`,
+    checkingPeers: 'Kontrola, zda je každý počítač v tomto skupinovém chatu připravený…',
+    gatewayMembership: 'Členství se ukládá s tímto skupinovým chatem na jeho počítači.',
+    gatewayPeer: (owner, local = false) => `Běží na ${local ? 'tomto zařízení' : owner}, i když je tento Desktop zavřený. Na boty na jiných počítačích se posílá jen text.`,
+    ownerCannotSeatPeers: place => `Hermes na ${place} zatím nedokáže obsadit boty z jiných počítačů. Aktualizujte tam Hermes a spusťte jeho bránu (hermes gateway run), pak to zkuste znovu.`,
+    ownerUpdateRequired: place => `Hermes na ${place} je příliš starý na provoz skupinových chatů. Aktualizujte ho tam a pak to zkuste znovu.`,
+    peerCheckFailed: (connection, local = false) => `Nepodařilo se zkontrolovat ${local ? 'toto zařízení' : connection}. Ověřte, že tam Hermes běží, a pak to zkuste znovu.`,
+    peerGatewayChanged: place => `${place} nyní používá jinou instalaci Hermesu, než ze které tento bot pochází. Připojte ji znovu a pak to zkuste znovu.`,
+    peerRouteMissing: 'Počítač vybraného bota není připojený. Připojte ho a pak to zkuste znovu.',
+    pickBots: max => `Vyberte 2–${max} botů.`
   }
 } satisfies Record<string, CrossGatewayGroupMessages>

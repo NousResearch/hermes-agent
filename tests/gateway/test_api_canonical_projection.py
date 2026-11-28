@@ -224,6 +224,48 @@ async def test_session_chat_stream_keeps_a_bounded_worker_failure(api, owner):
 
 
 @pytest.mark.asyncio
+async def test_session_chat_stream_returns_the_late_steer_with_the_original_answer(api, owner):
+    import json
+
+    from gateway.run_turn_runner import TurnRunner
+    from gateway.turn_context import TurnContext
+    from tests.gateway.test_local_viewer_events_submit import _RecordingAgent, _gateway_runner
+
+    calls = []
+
+    class Agent(_RecordingAgent):
+        def run_conversation(self, message, **kwargs):
+            calls.append(message)
+            return {'final_response': 'original answer', 'messages': [], 'pending_steer': 'add a title'}
+
+    async def handle(event):
+        ctx = TurnContext(
+            source=event.source, message=event.text, history=[], session_id=event.source.chat_id,
+            session_key='api-session', user_config={}, AIAgent=Agent,
+            resolve_display_setting=lambda *_a: False, _run_still_current=lambda: True,
+            _hooks_ref=SimpleNamespace(loaded_hooks=False))
+        result = TurnRunner(_gateway_runner(), ctx).run_sync()
+        return result['final_response']
+
+    owner.runner._handle_message = handle
+    api._api_key = 'request-scope-key-long-enough'
+    seed_session(owner.persistence, 'late-steer', 'api_server')
+    app = web.Application()
+    app.router.add_post('/api/sessions/{session_id}/chat/stream', api._handle_session_chat_stream)
+    async with TestClient(TestServer(app)) as client:
+        response = await client.post('/api/sessions/late-steer/chat/stream', json={'message': 'explain clocks'},
+                                     headers={'Authorization': 'Bearer ' + api._api_key})
+        text = await response.text()
+    frames = [dict(line.split(': ', 1) for line in block.splitlines() if ': ' in line) for block in text.split('\n\n')]
+    terminal = {f['event']: json.loads(f['data']) for f in frames
+                if f.get('event') in {'assistant.completed', 'run.completed'}}
+    assert calls == ['explain clocks']
+    assert terminal['assistant.completed']['content'] == 'original answer'
+    assert terminal['assistant.completed']['pending_steer'] == 'add a title'
+    assert terminal['run.completed']['pending_steer'] == 'add a title'
+
+
+@pytest.mark.asyncio
 async def test_exact_responses_retry_replays_before_conversation_expansion(api, owner):
     calls = []
 

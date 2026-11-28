@@ -1494,11 +1494,11 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
     async def _run_agent_drain_pending(
         self, result: Any, adapter: Any, source: SessionSource, session_key: Optional[str]
     ) -> tuple[Any, Optional[str]]:
-        """Dequeue the adapter's pending / interrupt / leftover-steer follow-up as ``(pending_event, pending)``.
-
-        Keyed by session_key (not source.chat_id) to match the adapter's storage keys."""
+        """Drain follow-ups by session key; the HTTP terminal event owns leftover API steers."""
         from gateway.run import _build_media_placeholder, _dequeue_pending_event, _is_control_interrupt_message
         from gateway.session_ingress import executing_admission
+        if source.platform == Platform.API_SERVER and result and "pending_steer" in result:
+            result = {key: value for key, value in result.items() if key != "pending_steer"}
         pending_event = None
         pending = None
         if result and adapter and session_key:
@@ -1533,7 +1533,6 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
                 if pending:
                     logger.debug("Processing queued message after agent completion: '%s...'", pending[:40])
 
-        # Leftover /steer (arrived after the last tool batch): deliver as the next user turn.
         pending_event, pending = self._merge_leftover_steer(result, adapter, source, session_key, pending_event, pending)
 
         # Safety net: a pending slash command is never passed to the agent as user input.

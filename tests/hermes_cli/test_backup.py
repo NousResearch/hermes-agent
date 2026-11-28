@@ -388,7 +388,7 @@ class TestBackup:
         monkeypatch.setattr(backup_mod, "_safe_copy_db", _spy)
         result = backup_mod._write_full_zip_backup(out_zip, hermes_home)
 
-        assert result is not None
+        assert result.status == "complete"
         assert staged_dirs, "no SQLite snapshot was staged"
         assert all(d.is_relative_to(out_zip.parent) for d in staged_dirs), staged_dirs
 
@@ -1829,7 +1829,7 @@ class TestFailedZipMemberRecovery:
 
         from hermes_cli.backup import _write_full_zip_backup
 
-        assert _write_full_zip_backup(archive, hermes_home) is None
+        assert _write_full_zip_backup(archive, hermes_home).status == "incomplete"
         assert not archive.exists()
         salvage = tmp_path / "automatic.incomplete.zip"
         # A streaming reader scans local headers, so the dropped member's bytes must be gone too.

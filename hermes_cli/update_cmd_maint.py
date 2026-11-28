@@ -692,9 +692,10 @@ def _run_quick_snapshots() -> Optional[str]:
 
 
 def _run_full_backup() -> None:
-    """Zip HERMES_HOME under ``backups/`` (restorable via ``hermes import``). Never raises."""
+    """Zip HERMES_HOME under ``backups/`` (restorable via ``hermes import``). Never raises. Reports
+    what happened: a published ``*.incomplete.zip`` salvage is never "skipped" (#147246)."""
     try:
-        from hermes_cli.backup import create_pre_update_backup
+        from hermes_cli.backup import create_pre_update_backup_outcome
     except Exception as exc:
         print(f"⚠ Pre-update backup: could not load backup module ({exc}); continuing update.")
         print()
@@ -708,7 +709,7 @@ def _run_full_backup() -> None:
     print("◆ Creating pre-update backup...")
     t0 = _time.monotonic()
     try:
-        out_path = create_pre_update_backup(keep=int(_keep))
+        outcome = create_pre_update_backup_outcome(keep=int(_keep))
     except Exception as exc:  # defensive — helper already swallows, but just in case
         print(f"  ⚠ Backup failed: {exc}")
         print("  Continuing with update.")
@@ -716,10 +717,15 @@ def _run_full_backup() -> None:
         return
     elapsed = _time.monotonic() - t0
 
-    if out_path is None:
-        print("  ⚠ Backup skipped (no files found or write failed); continuing update.")
+    if outcome.status == "empty":
+        print("  ⚠ Backup skipped: nothing to copy; continuing update.")
         print()
         return
+    if outcome.path is None:
+        print(f"  ⚠ Backup failed: {outcome.detail}; continuing update.")
+        print()
+        return
+    out_path = outcome.path
 
     try:
         size_bytes = out_path.stat().st_size
@@ -734,7 +740,20 @@ def _run_full_backup() -> None:
     except Exception:
         display_path = str(out_path)
 
-    print(f"  Saved:    {display_path} ({format_bytes(size_bytes)}, {elapsed:.1f}s)")
+    if outcome.status == "incomplete":
+        print(f"  ⚠ Backup incomplete: {len(outcome.errors)} file(s) could not be read "
+              f"({outcome.files} saved, {format_bytes(size_bytes)}, {elapsed:.1f}s)")
+        print(f"  Saved:    {display_path}")
+        for error in outcome.errors[:3]:
+            print(f"    skipped: {error}")
+        if len(outcome.errors) > 3:
+            print(f"    … and {len(outcome.errors) - 3} more (see hermes logs)")
+        print(f"  Restore:  hermes import {out_path}   (the archive is valid as-is)")
+        print("  Continuing with update.")
+        print()
+        return
+
+    print(f"  Saved:    {display_path} ({outcome.files} file(s), {format_bytes(size_bytes)}, {elapsed:.1f}s)")
     print(f"  Restore:  hermes import {out_path}")
     print("  Disable:  set updates.pre_update_backup: quick (or off) in config.yaml")
     print()

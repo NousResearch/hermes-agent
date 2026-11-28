@@ -1312,6 +1312,13 @@ class SessionAuthority:
                         from gateway.session_unattended_unknown import settle_unattended_unknown
                         if await settle_unattended_unknown(self, ref):
                             continue
+                        # A person's turn whose owner process is provably gone (every lease on the
+                        # conversation expired or dead) can never be completed or resolved on a
+                        # messaging surface: settle it too, so the queue behind it runs instead of
+                        # pausing forever behind a worker that already died.
+                        from gateway.session_unattended_unknown import settle_dead_owner_unknown
+                        if await settle_dead_owner_unknown(self, ref):
+                            continue
                     if exc.reason == 'admission_conflict':
                         # A verdict on the head alone (its route or binding moved under it) that every drain
                         # repeats: pausing behind it strands the FIFO for good. Refused only once the same

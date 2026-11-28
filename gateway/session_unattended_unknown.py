@@ -81,3 +81,52 @@ async def settle_unattended_unknown(authority, ref) -> bool:
             continue
         settled = True
     return settled
+
+
+async def settle_dead_owner_unknown(authority, ref) -> bool:
+    """Settle ``unknown`` admissions no process can still complete, a person's included.
+
+    A person's lost turn pauses the FIFO so they can choose to resend it (``/discard``), but that
+    choice presumes somebody can still complete the fenced turn. On a messaging surface the
+    pause notice may never be seen: a Discord thread sat a full day behind one dead worker
+    (Hermes 0.23.x, 2026-11-21) with every later message queued behind it. The transcript's write
+    guards make a live turn hold a live turn lease, so when the conversation has lease rows and
+    every one of them is expired or names a provably dead pid, nobody can complete the fenced
+    turn: settle it through the same resolution a Discard uses — terminal ``interrupted``, never
+    replayed — with the person's failed-turn notice, and the queued followers run. No lease rows
+    is no proof (the owner may simply never have reached its lease write), so the pause keeps its
+    meaning; any live (or unprobeable) lease keeps the pause unchanged.
+    """
+    import asyncio
+    import time
+
+    from agent.turn_failure_copy import FAILED_TURN_NOTICE
+    from gateway.session_persistence import authority_persistence
+    from persistence.core.errors import AuthorityRefusal
+    from process_identity import holder_process_is_dead
+
+    store = authority_persistence(authority)
+    rows = await asyncio.to_thread(store.admissions.list, session_id=ref.session_id)
+    from gateway.session_authority import admission_row
+    unknown = [row for row in map(admission_row, rows) if row['status'] == 'unknown']
+    if not unknown:
+        return False
+    leases = await asyncio.to_thread(store.coordination.session_turn_leases, session_id=ref.session_id)
+    if not leases:
+        return False  # no lease rows: no proof the owner is gone, the person's pause keeps its meaning
+    now = time.time()
+    if any(float(expires_at) > now and not holder_process_is_dead(holder)
+           for holder, expires_at in leases):
+        return False  # a live owner may still complete or explicitly resolve the turn
+    settled = False
+    for row in unknown:
+        try:
+            await authority.resolve_unknown_as_owner(ref, row['admission_id'], row['generation'],
+                                                     notice=FAILED_TURN_NOTICE)
+        except AuthorityRefusal as exc:
+            logger.warning('Dead-owner admission %s left unknown: %s', row['admission_id'], exc.reason)
+            continue
+        settled = True
+        logger.info("Lost admission %s on session %s settled interrupted (owner gone; not replayed)",
+                    row['admission_id'], ref.session_id)
+    return settled

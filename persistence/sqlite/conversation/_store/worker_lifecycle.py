@@ -94,6 +94,15 @@ def insert_session_row_in_transaction(
         _delete_unreferenced_system_prompts(conn)
     if parent_session_id:
         _inherit_parent_session_metadata(conn, session_id)
+        if isinstance(model_config, dict) and model_config.get("_reset_from") is not None:
+            # A reset continuation of a hidden canonical session (e.g. Bot Chat) must stay hidden
+            # rather than leaking into the visible regular session list as a duplicate row.
+            conn.execute(
+                "UPDATE sessions SET hidden = 1 "
+                "WHERE id = ? AND COALESCE(hidden, 0) = 0 "
+                "AND EXISTS (SELECT 1 FROM sessions p WHERE p.id = ? AND p.hidden = 1)",
+                (session_id, parent_session_id),
+            )
     # The upsert may have just filled a compression tip's created_source (update_token_counts).
     from persistence.sqlite.conversation._store.compression import stamp_compression_ancestors
     stamp_compression_ancestors(conn, session_id)

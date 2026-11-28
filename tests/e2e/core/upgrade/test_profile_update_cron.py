@@ -95,7 +95,9 @@ def world(tmp_path_factory) -> World:
     w.after_install = I.cron_jobs(w.installed)
     # The user schedules a job of their own and pauses the shipped digest they do not want yet.
     w.cli("-p", "shipped-bot", "cron", "create", "--name", "my-own-reminder", "0 7 * * *", "the user's own reminder")
-    w.cli("-p", "shipped-bot", "cron", "pause", str(_by_name(I.cron_jobs(w.installed))["weekly-digest"]["id"]))
+    w.cli("-p", "shipped-bot", "cron", "pause",
+          str(_by_name(I.cron_jobs(w.installed))["weekly-digest"]["id"]),
+          "--reason", "user does not want the digest yet")
     w.before_update = I.cron_jobs(w.installed)
     assert set(_by_name(w.before_update)) == {"weekly-digest", "retired-job", "my-own-reminder"}, w.before_update
     assert not _is_scheduled(_by_name(w.before_update)["weekly-digest"]), f"harness: pause did not land: {w.before_update}"

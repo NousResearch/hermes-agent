@@ -994,14 +994,43 @@ def _update_run_fields(job: dict[str, Any], a: dict[str, Any], updates: dict[str
         parsed_schedule = parse_schedule(a["schedule"])
         updates["schedule"] = parsed_schedule
         updates["schedule_display"] = parsed_schedule.get("display", a["schedule"])
-        if job.get("state") != "paused":
+        # A schedule edit must not resurrect a disabled job: the effective disabled
+        # state is ``enabled == False`` regardless of the legacy ``state`` spelling,
+        # so only an actively-enabled job is re-marked scheduled (incident class:
+        # unattributed state changes; found while testing f586101aac06's shape).
+        if job.get("state") != "paused" and job.get("enabled", True):
             updates["state"] = "scheduled"
             updates["enabled"] = True
     return None
 
 
+def _update_lifecycle_fields(job: dict[str, Any], a: dict[str, Any], updates: dict[str, Any]) -> Optional[str]:
+    """``enabled`` flips (create/edit lifecycle): the reason must ride the same update.
+
+    ``update_job`` stamps ``disabled_reason``/``disabled_at`` (or clears them on re-enable);
+    this step only translates the tool's fields into the update payload. A reason-less
+    disable still lands the store's unattributed marker — the CLI refuses those up front.
+    """
+    if a.get("enabled") is None:
+        return None
+    if not isinstance(a["enabled"], bool):
+        return "enabled must be a boolean."
+    updates["enabled"] = a["enabled"]
+    if a["enabled"] is False:
+        updates["state"] = "paused"
+        updates["paused_reason"] = a.get("paused_reason")
+        from hermes_time import now as _hermes_now
+        updates["paused_at"] = _hermes_now().isoformat()
+    else:
+        reason = str(a.get("enabled_reason") or "").strip() or None
+        if reason:
+            updates["enabled_reason"] = reason
+    return None
+
+
 # Validation order is behavior (first failing field wins): keep this sequence.
-_UPDATE_STEPS = (_update_core_fields, _update_script_fields, _update_context_from, _update_run_fields)
+_UPDATE_STEPS = (_update_core_fields, _update_script_fields, _update_context_from,
+                 _update_run_fields, _update_lifecycle_fields)
 
 
 def _action_update(job: dict[str, Any], a: dict[str, Any]) -> str:
@@ -1074,6 +1103,8 @@ def cronjob(
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
     reason: Optional[str] = None,
+    enabled: Optional[bool] = None,
+    enabled_reason: Optional[str] = None,
     script: Optional[str] = None,
     context_from: Optional[str | list[str]] = None,
     continuity: Optional[bool] = None,
@@ -1141,6 +1172,8 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
         "properties": {
             "paused": {"type": "boolean", "description": "Create only: persist disabled atomically. Resume to schedule; explicit run remains available. Default false."},
             "paused_reason": {"type": "string", "description": "Create only: auditable reason; requires paused=true."},
+            "enabled": {"type": "boolean", "description": "Update only: flip the job's enabled flag. Setting false pauses the job; the disable is recorded on the job (provide paused_reason so it is attributed to you — disables without reasons are unattributable)."},
+            "enabled_reason": {"type": "string", "description": "Update only: optional note recorded when re-enabling a job."},
             "action": {
                 "type": "string",
                 "description": "One of: create, list, update, pause, resume, remove, run, cancel. When action=create, the 'schedule' and 'prompt' fields are REQUIRED."
@@ -1259,7 +1292,7 @@ def check_cronjob_requirements() -> bool:
 _HANDLER_FORWARDED_ARGS = (
     "job_id", "prompt", "schedule", "name", "repeat", "deliver", "failure_deliver", "skill", "skills", "reason",
     "script", "context_from", "continuity", "enabled_toolsets", "workdir", "no_agent", "attach_to_session",
-    "paused_reason", "pinned", "timezone", "grace_minutes", "catch_up", "wrap_response")
+    "paused_reason", "pinned", "timezone", "grace_minutes", "catch_up", "wrap_response", "enabled", "enabled_reason")
 
 
 def _cronjob_handler(args, **kw):

@@ -130,6 +130,56 @@ async def test_the_prepared_text_step_returns_the_plugin_reply_instead_of_a_prom
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("include_fresh_clip", [False, True], ids=["restored-only", "mixed"])
+async def test_already_echoed_handoff_still_reaches_the_hook(tmp_path, include_fresh_clip):
+    from gateway.run_inbound_transcription import hand_prepared_voice_to_turn
+
+    seen = []
+
+    def consume(**kwargs):
+        seen.append(kwargs["text"])
+        return {"action": "handled", "reply": "Lights are off."}
+
+    _register(consume)
+    runner = _runner()
+    runner._should_echo_stt_transcripts = lambda: True
+    runner._echo_stt_transcripts = AsyncMock()
+
+    original = tmp_path / "busy.ogg"
+    original.write_bytes(b"OggS busy voice")
+    busy = _voice_event(path=str(original))
+    busy._gateway_pending_stt_clips = {str(original): ("lights out", "prior note")}
+    busy._gateway_pending_stt_shown = {0}
+    hand_prepared_voice_to_turn(busy)
+
+    # FIFO restores a new event and may re-capture the same bytes under a different path.
+    restored = tmp_path / "restored.ogg"
+    restored.write_bytes(original.read_bytes())
+    event = _voice_event(path=str(restored))
+    if include_fresh_clip:
+        fresh = tmp_path / "fresh.ogg"
+        fresh.write_bytes(b"OggS fresh voice")
+        event.media_urls.insert(0, str(fresh))
+        event.media_types.insert(0, "audio/ogg")
+
+    with _patch_stt("extra words") as stt:
+        prepared = await runner._prepare_inbound_message_text(
+            event=event, source=event.source, history=[], session_key="wa:123",
+        )
+
+    assert seen == ["extra words\nlights out" if include_fresh_clip else "lights out"]
+    assert prepared is None  # no prompt for the model
+    assert event._gateway_turn_refusal == "Lights are off."
+    if include_fresh_clip:
+        stt.assert_called_once()
+        runner._echo_stt_transcripts.assert_awaited_once()
+        assert runner._echo_stt_transcripts.await_args.args[2] == ["extra words"]
+    else:
+        stt.assert_not_called()
+        runner._echo_stt_transcripts.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_an_unhandled_transcript_leaves_the_turn_alone():
     """A plugin that does not consume the message must not change the turn's behaviour."""
     _register(lambda **_k: None)

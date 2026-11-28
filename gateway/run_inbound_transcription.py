@@ -212,25 +212,27 @@ class GatewayInboundTranscriptionMixin:
         handed = await asyncio.to_thread(take_handed_off_clips, event, audio_paths)  # paid when it arrived busy
         shown = {path for path, (_transcript, was_shown) in handed.items() if was_shown}
         clips: dict = {path: (transcript, transcript_note(transcript, path)) for path, (transcript, _s) in handed.items()}
-        message_text, _ = await self._enrich_message_with_transcription(message_text, audio_paths, clips)
-        # ``clips`` holds each clip once, in order (enrichment dedupes repeated paths and bytes).
-        _successful_transcripts = [transcript for path, (transcript, _note) in clips.items()
-                                   if transcript is not None and path not in shown]
+        message_text, successful_transcripts = await self._enrich_message_with_transcription(
+            message_text, audio_paths, clips,
+        )
         # A plugin may consume a voice message by its SPOKEN text, which only exists after
         # transcription (#145125). The hook runs here, while the turn is still being prepared
         # and the agent has not run, so a ``handled`` result can still skip the turn.
         await self._hm_post_transcription_admission(
-            event, source, _successful_transcripts,
+            event, source, successful_transcripts,
             session_key or self._session_key_for_source(source),
         )
         # Echo each successful transcript back immediately when configured so users can verify STT
         # quality in real time. On transcription failure do NOT send a hardcoded notice: that
         # bypassed the LLM and produced two replies; enrichment leaves one neutral marker instead.
-        if _successful_transcripts and self._should_echo_stt_transcripts():
+        # A prior chat echo does not mean a plugin has handled the transcript.
+        echo_transcripts = [transcript for path, (transcript, _note) in clips.items()
+                            if transcript is not None and path not in shown]
+        if echo_transcripts and self._should_echo_stt_transcripts():
             _echo_adapter = self._delivery_adapter_for(source)
             if _echo_adapter:
                 _echo_meta = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
-                await self._echo_stt_transcripts(_echo_adapter, source, _successful_transcripts, metadata=_echo_meta)
+                await self._echo_stt_transcripts(_echo_adapter, source, echo_transcripts, metadata=_echo_meta)
         return message_text
 
     @staticmethod

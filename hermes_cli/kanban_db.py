@@ -1815,16 +1815,9 @@ def delete_attachment(conn: sqlite3.Connection, attachment_id: int) -> Optional[
         if att is None:
             return None
         conn.execute("DELETE FROM task_attachments WHERE id = ?", (attachment_id,))
-        has_remaining_blob_reference = conn.execute(
-            "SELECT 1 FROM task_attachments WHERE stored_path = ? LIMIT 1",
-            (att.stored_path,),
-        ).fetchone() is not None
+        orphaned = _unreferenced_blobs(conn, [att.stored_path])
         _append_event(conn, att.task_id, "attachment_removed", {"filename": att.filename})
-    if not has_remaining_blob_reference:
-        with contextlib.suppress(OSError):
-            p = Path(att.stored_path)
-            if p.is_file():
-                p.unlink()
+    _unlink_blobs(orphaned)
     return att
 
 
@@ -3833,11 +3826,14 @@ def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> b
     return True
 
 
-def _delete_task_relations(conn: sqlite3.Connection, task_id: str) -> None:
-    """Delete every row referencing ``task_id`` (schema has no ON DELETE CASCADE)."""
+def _delete_task_relations(conn: sqlite3.Connection, task_id: str) -> list[str]:
+    """Delete every row referencing ``task_id`` (no ON DELETE CASCADE); returns the blobs left unreferenced."""
     conn.execute("DELETE FROM task_links WHERE parent_id = ? OR child_id = ?", (task_id, task_id))
     for table in ("task_comments", "task_events", "task_runs", "kanban_notify_subs"):
         conn.execute(f"DELETE FROM {table} WHERE task_id = ?", (task_id,))
+    stored = [r["stored_path"] for r in conn.execute("SELECT stored_path FROM task_attachments WHERE task_id = ?", (task_id,))]
+    conn.execute("DELETE FROM task_attachments WHERE task_id = ?", (task_id,))
+    return _unreferenced_blobs(conn, stored)
 
 
 def delete_archived_task(conn: sqlite3.Connection, task_id: str) -> bool:
@@ -3846,9 +3842,10 @@ def delete_archived_task(conn: sqlite3.Connection, task_id: str) -> bool:
     with write_txn(conn):
         if _task_status(conn, task_id) != "archived":
             return False
-        _delete_task_relations(conn, task_id)
-        cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
-        return cur.rowcount == 1
+        orphaned = _delete_task_relations(conn, task_id)
+        deleted = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,)).rowcount == 1
+    _unlink_blobs(orphaned)
+    return deleted
 
 
 def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
@@ -3857,7 +3854,8 @@ def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
         cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
         if cur.rowcount != 1:
             return False
-        _delete_task_relations(conn, task_id)
+        orphaned = _delete_task_relations(conn, task_id)
+    _unlink_blobs(orphaned)
     recompute_ready(conn)
     return True
 
@@ -4215,6 +4213,8 @@ from hermes_cli.kanban_db_workspace import (
     _is_managed_scratch_path,
     _managed_scratch_path_info,
     _scratch_workspace,
+    _unlink_blobs,
+    _unreferenced_blobs,
 )
 from hermes_cli.kanban_db_dispatch import (
     DEFAULT_FAILURE_LIMIT,

@@ -60,7 +60,7 @@ class TestHooksList:
         }
 
         # Approve one of the two so we can see both states in the output
-        shell_hooks._record_approval("pre_tool_call", str(script))
+        shell_hooks.record_approval("pre_tool_call", str(script))
 
         with patch("hermes_cli.config.load_config", return_value=cfg):
             out = _run(SimpleNamespace(hooks_action="list"))
@@ -139,7 +139,7 @@ class TestHooksTest:
 class TestHooksRevoke:
     def test_revoke_removes_entry(self, tmp_path):
         script = _hook_script(tmp_path, "#!/usr/bin/env bash\n")
-        shell_hooks._record_approval("on_session_start", str(script))
+        shell_hooks.record_approval("on_session_start", str(script))
 
         out = _run(SimpleNamespace(hooks_action="revoke", command=str(script)))
         assert "Removed 1" in out
@@ -205,7 +205,7 @@ class TestHooksDoctor:
 def test_print_run_result_shows_decision_for_error_and_timeout():
     """A failing hook's decision must be printed, not hidden by early returns (#115968).
 
-    run_once always sets ``parsed`` (agent/shell_hooks.py::_evaluate_result), so `hooks test` must show
+    run_once always sets ``parsed`` (agent/shell_hooks/runner.py::_evaluate_result), so `hooks test` must show
     it even when the hook errored or timed out. Before this fix the ``return`` on error/timeout skipped
     the parsed tail, so a fail-closed blocker rendered identically to a fail-open pass-through.
     """

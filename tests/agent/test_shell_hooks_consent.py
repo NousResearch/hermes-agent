@@ -248,7 +248,7 @@ class TestAllowlistOps:
         target.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
         target.chmod(0o755)
 
-        shell_hooks._record_approval("on_session_start", "~/hook.sh")
+        shell_hooks.record_approval("on_session_start", "~/hook.sh")
         entry = shell_hooks.allowlist_entry_for(
             "on_session_start", "~/hook.sh",
         )
@@ -259,7 +259,7 @@ class TestAllowlistOps:
     def test_duplicate_approval_replaces_mtime(self, tmp_path):
         """Re-approving the same pair refreshes the approval timestamp."""
         script = _write_hook_script(tmp_path)
-        shell_hooks._record_approval("on_session_start", str(script))
+        shell_hooks.record_approval("on_session_start", str(script))
         original_entry = shell_hooks.allowlist_entry_for(
             "on_session_start", str(script),
         )
@@ -271,7 +271,7 @@ class TestAllowlistOps:
         time.sleep(0.01)
         os.utime(script, None)  # current time
 
-        shell_hooks._record_approval("on_session_start", str(script))
+        shell_hooks.record_approval("on_session_start", str(script))
 
         # Exactly one entry per (event, command).
         approvals = shell_hooks.load_allowlist().get("approvals", [])
@@ -295,7 +295,7 @@ class TestHooksAutoAcceptParsing:
     """
 
     def test_bool_true_accepts(self):
-        assert shell_hooks._resolve_effective_accept(
+        assert shell_hooks.consent._resolve_effective_accept(
             {"hooks_auto_accept": True}, accept_hooks_arg=False,
         ) is True
 
@@ -307,13 +307,13 @@ class TestHooksAutoAcceptParsing:
 
 
     def test_none_rejects(self):
-        assert shell_hooks._resolve_effective_accept(
+        assert shell_hooks.consent._resolve_effective_accept(
             {"hooks_auto_accept": None}, accept_hooks_arg=False,
         ) is False
 
     def test_integer_ignored(self):
         # Only bool and str are honored; anything else (including 1) is False.
-        assert shell_hooks._resolve_effective_accept(
+        assert shell_hooks.consent._resolve_effective_accept(
             {"hooks_auto_accept": 1}, accept_hooks_arg=False,
         ) is False
 

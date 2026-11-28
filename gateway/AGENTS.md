@@ -194,7 +194,7 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
   profile's OWN scope through `run_turn.py::_standalone_launch_scope` — `.env` over the env frozen at
   activation, never a `.env`-only rebuild (systemd / `op run` keys have no file) and never live
   `os.environ`. Gate a new standalone path on that helper, not on the config flag (#112878).
-- **Hooks and observers register per served profile.** `agent/shell_hooks.py::register_from_config`
+- **Hooks and observers register per served profile.** `agent.shell_hooks.register_from_config`
   and lifecycle observers are prepared under each profile's scope at startup
   and on profile add/remove; idempotence keys include the profile, and `hooks/` paths resolve at call
   time (a module constant freezes to the first importer). Shell hooks are also re-synced (added AND

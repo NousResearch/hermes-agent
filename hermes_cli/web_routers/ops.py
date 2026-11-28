@@ -792,7 +792,7 @@ async def create_hook(body: HookCreate, profile: Optional[str] = None):
         approved = False
         if body.approve:
             try:
-                shell_hooks._record_approval(event, command)
+                shell_hooks.record_approval(event, command)
                 approved = True
             except Exception:
                 _log.exception("hook consent record failed")

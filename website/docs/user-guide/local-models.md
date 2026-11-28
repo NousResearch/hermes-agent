@@ -157,7 +157,8 @@ local_runtime:
                      # The desktop "Use" button sets this automatically.
   backend: auto      # auto | cuda | metal | vulkan | hip | cpu
   detect_ports: [8081]  # extra ports to probe for a llama-server you run
-                        # yourself (the default probe is :8080 only)
+                        # yourself (the default probe is :8080, then :9931,
+                        # llama-server's default in current builds)
 ```
 
 Running `llama-server` yourself on a fixed port works with the same

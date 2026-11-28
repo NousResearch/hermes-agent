@@ -61,6 +61,23 @@ describe('group mention rendering', () => {
     expect(html).not.toMatch(/data-ref="[^"]*"[^>]*>@example/)
     expect(html.replace(/<[^>]+>/g, '')).toBe(text)
   })
+
+  it('colours a mention nested in emphasis (bot markdown **@name**)', () => {
+    const html = renderToStaticMarkup(
+      <p>{groupMentionText(members)(['Please ', <strong key="s">@planner</strong>, ' take this'])}</p>
+    )
+
+    expect(html).toContain('<span class="ref font-medium" data-ref="agent"')
+    expect(html).toContain('>@planner</span>')
+    expect(html.replace(/<[^>]+>/g, '')).toBe('Please @planner take this')
+  })
+
+  it('leaves a mention inside inline code as prose', () => {
+    const html = renderToStaticMarkup(<p>{groupMentionText(members)(['run ', <code key="c">@planner</code>])}</p>)
+
+    expect(html).not.toContain('data-ref')
+    expect(html).toContain('@planner')
+  })
 })
 
 function TranslatedMentions() {

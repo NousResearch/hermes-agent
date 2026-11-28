@@ -113,3 +113,66 @@ def test_build_failure_without_any_compiler_names_the_install(tmp_path):
     ran = missing.replace("[Errno 2] No such file or directory: 'clang++'",
                           "command '/usr/bin/gcc' failed with exit code 1")
     assert "build-essential" not in classify_uv_failure("pip", 1, ran).remedy
+
+
+def test_build_failure_on_missing_re2_headers_names_the_packages():
+    from pm.environment import BuildFailure, classify_uv_failure
+
+    # The compiler ran; the header google-re2's sdist includes is not installed (Alpine without re2-dev).
+    missing = ("error: Failed to build `google-re2==1.1.20251105`\n  ├─▶ The build backend returned an error\n"
+               "  ╰─▶ Call to `setuptools.build_meta.build_wheel` failed (exit status: 1)\n"
+               "      _re2.cc:21:10: fatal error: re2/filtered_re2.h: No such file or directory\n"
+               "      error: command '/usr/bin/g++' failed with exit code 1\n")
+    failure = classify_uv_failure("pip", 1, missing)
+    assert isinstance(failure, BuildFailure)
+    assert all(package in failure.remedy for package in ("build-base", "re2-dev", "abseil-cpp-dev"))
+    abseil = missing.replace("re2/filtered_re2.h", "absl/strings/string_view.h")
+    assert "abseil-cpp-dev" in classify_uv_failure("pip", 1, abseil).remedy
+    # Any other missing header is a source error this hint does not explain.
+    other = missing.replace("re2/filtered_re2.h", "pybind11/buffer_info.h")
+    assert "re2-dev" not in classify_uv_failure("pip", 1, other).remedy
+
+
+def test_missing_re2_headers_under_clang_get_the_same_hint():
+    from pm.environment import classify_uv_failure
+
+    # PM keeps the recorded clang++ whenever it is on PATH; clang quotes the missing header.
+    clang = ("error: Failed to build `google-re2==1.1.20251105`\n  ├─▶ The build backend returned an error\n"
+             "  ╰─▶ Call to `setuptools.build_meta.build_wheel` failed (exit status: 1)\n"
+             "      _re2.cc:21:10: fatal error: 're2/filtered_re2.h' file not found\n"
+             "      error: command '/usr/bin/clang++' failed with exit code 1\n")
+    assert "re2-dev" in classify_uv_failure("pip", 1, clang).remedy
+    abseil = clang.replace("re2/filtered_re2.h", "absl/strings/string_view.h")
+    assert "abseil-cpp-dev" in classify_uv_failure("pip", 1, abseil).remedy
+
+
+def test_re2_header_hint_names_the_packages_of_every_host_that_builds_the_sdist():
+    from pm.environment import classify_uv_failure
+
+    # The sdist is built on Alpine, and also on macOS < 13, old glibc and other CPUs: the hint
+    # must not send those hosts to apk.
+    missing = ("error: Failed to build `google-re2==1.1.20251105`\n  ├─▶ The build backend returned an error\n"
+               "  ╰─▶ Call to `setuptools.build_meta.build_wheel` failed (exit status: 1)\n"
+               "      _re2.cc:21:10: fatal error: re2/filtered_re2.h: No such file or directory\n")
+    remedy = classify_uv_failure("pip", 1, missing).remedy
+    for host, command in (("Alpine", "apk add build-base re2-dev abseil-cpp-dev"),
+                          ("Debian/Ubuntu", "sudo apt install build-essential libre2-dev libabsl-dev"),
+                          ("Fedora", "sudo dnf install gcc-c++ re2-devel abseil-cpp-devel"),
+                          ("Arch", "sudo pacman -S re2 abseil-cpp"),
+                          ("macOS", "brew install re2 abseil")):
+        assert f"{host}: `{command}`" in remedy
+
+
+def test_google_re2_build_without_a_compiler_names_compiler_and_headers_at_once():
+    from pm.environment import classify_uv_failure
+
+    # A fresh Alpine host has no compiler and no headers: one failure must give the whole fix,
+    # not a compiler hint that leads to a second failure on the headers.
+    no_compiler = ("error: Failed to build `google-re2==1.1.20251105`\n  ├─▶ The build backend returned an error\n"
+                   "  ╰─▶ Call to `setuptools.build_meta.build_wheel` failed (exit status: 1)\n"
+                   "      error: command 'clang++' failed: No such file or directory\n")
+    remedy = classify_uv_failure("pip", 1, no_compiler).remedy
+    assert "build-base re2-dev abseil-cpp-dev" in remedy
+    # Any other package keeps the compiler-only hint, which now names Alpine as well.
+    other = classify_uv_failure("pip", 1, no_compiler.replace("google-re2==1.1.20251105", "python-olm==3.2.16")).remedy
+    assert "re2-dev" not in other and "Alpine: `apk add build-base`" in other

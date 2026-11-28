@@ -120,6 +120,50 @@ def test_source_pin_survives_resolution_build_and_offline_install(tmp_path, monk
     assert result.strip() == "from pinned source"
 
 
+def test_google_re2_builds_in_the_pinned_toolchain_environment(tmp_path, monkeypatch):
+    # Stands in for the real sdist: named google-re2, and buildable only where the build runs in
+    # the caller's environment. Its declared build requirement exists on no index, so an isolated
+    # build (which must install it first) cannot start; the real sdist needs the pybind11 that
+    # TOOLCHAIN_PINS installs and declares nothing. Its backend refuses GITHUB_ACTIONS, the
+    # variable that switches the real setup.py to a bazel build.
+    project = tmp_path / "google-re2-source"
+    project.mkdir()
+    (project / "pyproject.toml").write_text(
+        '[build-system]\nrequires = ["hermes-absent-build-requirement==1.0"]\n'
+        'build-backend = "backend"\nbackend-path = ["."]\n'
+        '[project]\nname = "google-re2"\nversion = "8.0.0"\n', encoding="utf-8")
+    backend = _IN_TREE_BACKEND.replace("hermes_source_fixture", "google_re2").replace(
+        "hermes-source-fixture", "google-re2")
+    (project / "backend.py").write_text(
+        'import os\nassert "GITHUB_ACTIONS" not in os.environ\n' + backend, encoding="utf-8")
+    (project / "source_fixture.py").write_text("VALUE = 1\n", encoding="utf-8")
+    wheels = tmp_path / "wheels"
+    wheels.mkdir()
+    build_env = tmp_path / "build-env"
+    venv.EnvBuilder(with_pip=True).create(build_env)
+    python = build_env / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    monkeypatch.setenv("PIP_NO_INDEX", "1")
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    specs = {"google-re2": f" @ {project.as_uri()}"}
+    builder.build_wheels(["google-re2"], specs, wheels, python=str(python))
+    assert len(list(wheels.glob("google_re2-8.0.0-*.whl"))) == 1
+
+
+def test_import_gate_names_the_module_google_re2_installs(tmp_path):
+    # The distribution is google-re2, the importable extension re2._re2: the gate's default name
+    # (google_re2) exists nowhere. A stand-in package answers for the real one.
+    package = tmp_path / "re2"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "_re2.py").write_text("print('stand-in extension loaded')\n", encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, str(Path(builder.__file__).resolve()), "--import-modules", "google-re2"],
+        cwd=tmp_path, env={**os.environ, "PYTHONPATH": str(tmp_path)},
+        capture_output=True, text=True, timeout=60, check=False)
+    assert result.returncode == 0, result.stderr
+    assert "stand-in extension loaded" in result.stdout and "imported re2._re2" in result.stdout
+
+
 def test_source_pin_rejects_moved_revision_and_missing_locked_metadata(tmp_path):
     commit = "a" * 40
     source = "https://example.invalid/package.git"
@@ -134,3 +178,22 @@ def test_source_pin_rejects_moved_revision_and_missing_locked_metadata(tmp_path)
     lock.write_text("package = []\n", encoding="utf-8")
     with pytest.raises(ValueError, match="lock"):
         builder.normalize_reqs(export, lock, resolved)
+
+
+@pytest.mark.platforms("posix")
+def test_termux_and_musl_builds_compile_google_re2_against_the_same_pybind11():
+    # Termux builds google-re2 inside the TOOLCHAIN_PINS venv, musl through uv's
+    # extra-build-dependencies table: a bump of one would split the two source builds.
+    import tomllib
+
+    from packaging.requirements import Requirement
+
+    repo = Path(__file__).resolve().parents[2]
+    shell = subprocess.run(
+        ["bash", "-c", 'source scripts/termux/build_config.sh && printf "%s\\n" "${TOOLCHAIN_PINS[@]}"'],
+        cwd=repo, capture_output=True, text=True, check=True)
+    toolchain = [Requirement(pin) for pin in shell.stdout.split()]
+    uv = tomllib.loads((repo / "pyproject.toml").read_text(encoding="utf-8-sig"))["tool"]["uv"]
+    extra = [Requirement(spec) for spec in uv["extra-build-dependencies"]["google-re2"]]
+    pybind11 = [str(requirement) for requirement in toolchain if requirement.name == "pybind11"]
+    assert pybind11 and pybind11 == [str(requirement) for requirement in extra if requirement.name == "pybind11"]

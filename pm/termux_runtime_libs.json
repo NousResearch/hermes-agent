@@ -6,6 +6,11 @@
     "version": "2.2"
   },
   "libs": {
+    "abseil-cpp": {
+      "sha256": "b698963bb7096494ad928ce89cd869a53e6adf0b05f5f407b40fda9c85c6e2b0",
+      "url": "https://packages.termux.dev/apt/termux-main/pool/main/a/abseil-cpp/abseil-cpp_20260817.0_aarch64.deb",
+      "version": "20260817.0"
+    },
     "brotli": {
       "sha256": "db1502601d40fb44e6085ad8bfd9311a8b472e98db831ceec9d404c5708bb52c",
       "url": "https://packages.termux.dev/apt/termux-main/pool/main/b/brotli/brotli_1.2.0_aarch64.deb",
@@ -235,6 +240,11 @@
       "sha256": "ac7842a5896bdff1b4d4974d9c02e60f7d4a587b8618df691118a8591f8dbccf",
       "url": "https://packages.termux.dev/apt/termux-main/pool/main/libr/librav1e/librav1e_0.8.1_aarch64.deb",
       "version": "0.8.1"
+    },
+    "libre2": {
+      "sha256": "a278604c6518bfe87f49f5f2f82e4924d91278a5975d5cd95aafb32b76237324",
+      "url": "https://packages.termux.dev/apt/termux-main/pool/main/libr/libre2/libre2_2025-11-05-3_aarch64.deb",
+      "version": "2025-11-05-3"
     },
     "libsamplerate": {
       "sha256": "521d46cc49557c00b2d5c107da1f86f0cdda8a3a3b84bd9958bd7fc52bec2dae",

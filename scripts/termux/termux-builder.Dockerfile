@@ -37,7 +37,8 @@ RUN printf '%s\n' "deb https://packages.termux.dev/apt/termux-main stable main" 
       libandroid-posix-semaphore libandroid-support libbz2 libffi \
       libjpeg-turbo libpng freetype libtiff libwebp openjpeg littlecms \
       libheif \
-      libyaml openssl readline zlib liblzma libsqlite ncurses
+      libyaml openssl readline zlib liblzma libsqlite ncurses \
+      libre2 abseil-cpp
 
 # No /bin/sh link here: uid 1000 cannot write /, and the runtime wheelhouse
 # phase links it itself (termux_build.sh) inside its --tmpfs /bin, which

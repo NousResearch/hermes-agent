@@ -75,6 +75,7 @@ if [ "${1:-}" = "--in-container" ]; then
             libjpeg-turbo libpng freetype libtiff libwebp openjpeg littlecms \
             libheif \
             libyaml openssl readline zlib liblzma libsqlite ncurses \
+            libre2 abseil-cpp \
             || fail "apt install of the build toolchain failed"
     fi
     # The payload's libc++ leads LD_LIBRARY_PATH, so it must be the one apt's cmake needs. If the

@@ -207,6 +207,23 @@ def build_wheels(build_set: list[str], specs: dict[str, str], wheelhouse: Path,
                     print("stdout:", proc.stdout[-2000:])
                     print("stderr:", proc.stderr[-2000:])
                     raise subprocess.CalledProcessError(proc.returncode, proc.args)
+        elif name == "google-re2":
+            # Its sdist declares no build requirements, yet setup.py needs the pybind11 headers,
+            # so an isolated build cannot find them. Build in THIS environment instead:
+            # termux_build.sh installs TOOLCHAIN_PINS (setuptools, pybind11) into it. With
+            # GITHUB_ACTIONS set the same setup.py runs a bazel build, so the variable is dropped.
+            print(f"==> building {name} (direct pip wheel, pinned toolchain, no build isolation)")
+            proc = subprocess.run(
+                [python, "-m", "pip", "wheel", "--no-deps", "--no-binary", ":all:",
+                 "--no-build-isolation", "-w", str(wheelhouse), req],
+                check=False, capture_output=True, text=True, encoding="utf-8", timeout=3600,
+                env={key: value for key, value in os.environ.items() if key != "GITHUB_ACTIONS"},
+            )
+            if proc.returncode != 0:
+                print(f"BUILD FAILED: {name}")
+                print("stdout:", proc.stdout[-2000:])
+                print("stderr:", proc.stderr[-2000:])
+                raise subprocess.CalledProcessError(proc.returncode, proc.args)
         else:
             # Build isolation LEFT ON: --no-build-isolation requires every
             # sdist's declared backend (pdm, hatchling, maturin...) to be
@@ -341,6 +358,8 @@ def import_native_modules(build_set: list[str]) -> None:
         # DeferredError that only fires on first use. Import the C
         # extension directly so the dlopen itself is what's proven.
         "pillow-heif": "_pillow_heif",
+        # The distribution installs the package `re2`; hermes_re loads its extension module.
+        "google-re2": "re2._re2",
     }
     for name in build_set:
         module = modules.get(name, name.replace("-", "_"))

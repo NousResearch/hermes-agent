@@ -64,6 +64,14 @@ describe('hermesDirectiveFormatter.parse', () => {
       { kind: 'text', text: ' next' }
     ])
   })
+
+  it('ignores directives wrapped in inline code or quotes and stops bare values before closing delimiters', () => {
+    expect(hermesDirectiveFormatter.parse('type `@session:<profile>/<id>` or (@file:src/main.tsx) here')).toEqual([
+      { kind: 'text', text: 'type `@session:<profile>/<id>` or (' },
+      { kind: 'mention', type: 'file', label: 'src/main.tsx', id: 'src/main.tsx' },
+      { kind: 'text', text: ') here' }
+    ])
+  })
 })
 
 describe('inline skill references', () => {

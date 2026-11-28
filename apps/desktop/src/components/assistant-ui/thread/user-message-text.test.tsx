@@ -61,6 +61,15 @@ describe('a sent reference renders as the chip the composer showed', () => {
     expect(screen.queryByTitle('apps/desktop/a b.ts')).not.toBeNull()
   })
 
+  it('keeps an inline-code directive example as code without swallowing trailing prose', () => {
+    const { container } = render(
+      <UserMessageText text="> 2. 拖拽原会话到新会话输入框（或输入 `@session:<profile>/<id>`） | 渲染为会话 Chip" />
+    )
+
+    expect(container.querySelector('[data-slot="aui_user-inline-code"]')?.textContent).toBe('@session:<profile>/<id>')
+    expect(container.textContent).toContain('） | 渲染为会话 Chip')
+  })
+
   it('leaves a fenced block alone', () => {
     render(<UserMessageText text={'before\n```ts\nconst x = 1\n```\nafter'} />)
 

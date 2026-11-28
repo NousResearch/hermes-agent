@@ -39,6 +39,8 @@ import { api } from "@/lib/api";
 import type { ManagedFileEntry, ManagedFilesResponse } from "@/lib/api";
 import { PluginSlot } from "@/plugins";
 import { errorMessage } from "@/lib/api-error";
+import { useI18n } from "@/i18n";
+import { en } from "@/i18n/en";
 
 const DATE_FORMAT = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",
@@ -70,8 +72,8 @@ function downloadDataUrl(dataUrl: string, name: string) {
   link.remove();
 }
 
-function displayPath(path: string | null | undefined): string {
-  return path?.trim() || "Files";
+function displayPath(path: string | null | undefined, fallback: string): string {
+  return path?.trim() || fallback;
 }
 
 function transferHasFiles(event: ReactDragEvent<HTMLElement>): boolean {
@@ -80,6 +82,8 @@ function transferHasFiles(event: ReactDragEvent<HTMLElement>): boolean {
 
 export default function FilesPage() {
   const { toast, showToast } = useToast();
+  const { t } = useI18n();
+  const files = t.files ?? en.files!;
   const { setAfterTitle, setEnd } = usePageHeader();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const dragDepthRef = useRef(0);
@@ -99,7 +103,7 @@ export default function FilesPage() {
   const activePath = listing?.path ?? currentPath ?? "";
   const canChangePath = listing?.can_change_path ?? false;
   const canUpload = Boolean(activePath) && !uploading;
-  const headerPath = displayPath(listing?.locked_root ?? listing?.path ?? currentPath);
+  const headerPath = displayPath(listing?.locked_root ?? listing?.path ?? currentPath, files.title);
 
   const load = useCallback(
     async (path = currentPath) => {
@@ -140,7 +144,7 @@ export default function FilesPage() {
           type="button"
           onClick={() => void load()}
           disabled={loading}
-          aria-label="Refresh files"
+          aria-label={files.refresh}
         >
           {loading ? <Spinner /> : <RefreshCw />}
         </Button>
@@ -150,7 +154,7 @@ export default function FilesPage() {
       setAfterTitle(null);
       setEnd(null);
     };
-  }, [headerPath, load, loading, setAfterTitle, setEnd]);
+  }, [files.refresh, headerPath, load, loading, setAfterTitle, setEnd]);
 
   const openDirectory = (entry: ManagedFileEntry) => {
     if (entry.is_directory) {
@@ -161,7 +165,7 @@ export default function FilesPage() {
   const goToPath = async () => {
     const nextPath = pathInput.trim();
     if (!nextPath) {
-      showToast("Path required", "error");
+      showToast(files.pathRequired, "error");
       return;
     }
     await load(nextPath);
@@ -170,11 +174,11 @@ export default function FilesPage() {
   const createDirectory = async () => {
     const name = folderName.trim();
     if (!activePath) {
-      showToast("Directory unavailable", "error");
+      showToast(files.directoryUnavailable, "error");
       return;
     }
     if (!name) {
-      showToast("Folder name required", "error");
+      showToast(files.folderNameRequired, "error");
       return;
     }
     setCreating(true);
@@ -182,26 +186,31 @@ export default function FilesPage() {
       await api.createDirectory(joinPath(activePath, name));
       setFolderName("");
       setCreateDialogOpen(false);
-      showToast("Folder created", "success");
+      showToast(files.folderCreated, "success");
       await load();
     } catch (e) {
-      showToast(`Create failed: ${errorMessage(e)}`, "error");
+      showToast(files.createFailed.replace("{detail}", errorMessage(e)), "error");
     } finally {
       setCreating(false);
     }
   };
 
-  const uploadFiles = async (files: FileList | null) => {
-    if (!files?.length) return;
+  const uploadFiles = async (selectedFiles: FileList | null) => {
+    if (!selectedFiles?.length) return;
     setUploading(true);
     try {
-      for (const file of Array.from(files)) {
+      for (const file of Array.from(selectedFiles)) {
         await api.uploadFile(joinPath(activePath, file.name), file, true);
       }
-      showToast(`${files.length} file${files.length === 1 ? "" : "s"} uploaded`, "success");
+      showToast(
+        files.filesUploaded
+          .replace("{count}", String(selectedFiles.length))
+          .replace("{files}", selectedFiles.length === 1 ? files.file : files.files),
+        "success",
+      );
       await load();
     } catch (e) {
-      showToast(`Upload failed: ${errorMessage(e)}`, "error");
+      showToast(files.uploadFailed.replace("{detail}", errorMessage(e)), "error");
     } finally {
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
@@ -244,7 +253,7 @@ export default function FilesPage() {
       const file = await api.readFile(entry.path);
       downloadDataUrl(file.data_url, file.name);
     } catch (e) {
-      showToast(`Download failed: ${errorMessage(e)}`, "error");
+      showToast(files.downloadFailed.replace("{detail}", errorMessage(e)), "error");
     }
   };
 
@@ -253,11 +262,11 @@ export default function FilesPage() {
     setDeleting(true);
     try {
       await api.deleteFile(pendingDelete.path, pendingDelete.is_directory);
-      showToast("Deleted", "success");
+      showToast(files.deleted, "success");
       setPendingDelete(null);
       await load();
     } catch (e) {
-      showToast(`Delete failed: ${errorMessage(e)}`, "error");
+      showToast(files.deleteFailed.replace("{detail}", errorMessage(e)), "error");
     } finally {
       setDeleting(false);
     }
@@ -287,12 +296,12 @@ export default function FilesPage() {
             <Input
               value={pathInput}
               onChange={(event) => setPathInput(event.target.value)}
-              aria-label="Path"
-              placeholder="Path"
+              aria-label={files.path}
+              placeholder={files.path}
               className="h-9 min-w-0 flex-1 font-mono"
             />
             <Button type="submit" size="sm" outlined className="uppercase">
-              Go
+              {files.go}
             </Button>
           </form>
         ) : (
@@ -310,7 +319,7 @@ export default function FilesPage() {
             className="uppercase"
             prefix={uploading ? <Spinner /> : <Upload />}
           >
-            Upload
+            {files.upload}
           </Button>
           <Button
             type="button"
@@ -321,7 +330,7 @@ export default function FilesPage() {
             className="uppercase"
             prefix={<FolderPlus />}
           >
-            Create
+            {files.create}
           </Button>
         </div>
       </div>
@@ -334,7 +343,7 @@ export default function FilesPage() {
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
         disabled={!canUpload}
-        aria-label="Upload files"
+        aria-label={files.uploadFiles}
         className={`flex min-h-20 w-full min-w-0 items-center justify-between gap-4 border border-dashed px-4 py-3 text-left transition ${
           draggingFiles
             ? "border-primary bg-primary/10 text-foreground"
@@ -347,15 +356,15 @@ export default function FilesPage() {
           </span>
           <span className="min-w-0">
             <span className="block text-sm font-semibold uppercase tracking-[0.08em] text-foreground">
-              {uploading ? "Uploading" : draggingFiles ? "Release to upload" : "Drop files here"}
+              {uploading ? files.uploading : draggingFiles ? files.releaseToUpload : files.dropFilesHere}
             </span>
             <span className="block truncate font-mono text-xs text-text-secondary" title={activePath}>
-              {activePath || "Loading"}
+              {activePath || t.common.loading}
             </span>
           </span>
         </span>
         <span className="hidden shrink-0 text-xs font-semibold uppercase tracking-[0.08em] text-text-tertiary sm:block">
-          Choose files
+          {files.chooseFiles}
         </span>
       </button>
 
@@ -368,10 +377,10 @@ export default function FilesPage() {
           )}
 
           <div className="grid min-w-[42rem] grid-cols-[minmax(12rem,1fr)_7rem_10rem_5.5rem] items-center gap-3 border-b border-border px-4 py-2 text-xs font-semibold uppercase tracking-[0.08em] text-text-tertiary">
-            <span>Name</span>
-            <span>Size</span>
-            <span>Modified</span>
-            <span className="text-right">Actions</span>
+            <span>{files.name}</span>
+            <span>{files.size}</span>
+            <span>{files.modified}</span>
+            <span className="text-right">{files.actions}</span>
           </div>
 
           {listing?.parent && (
@@ -393,10 +402,10 @@ export default function FilesPage() {
           {loading && !listing ? (
             <div className="flex items-center justify-center gap-2 py-12 text-sm text-muted-foreground">
               <Spinner />
-              Loading files...
+              {files.loadingFiles}
             </div>
           ) : listing && listing.entries.length === 0 ? (
-            <div className="py-12 text-center text-sm text-muted-foreground">No files</div>
+            <div className="py-12 text-center text-sm text-muted-foreground">{files.noFiles}</div>
           ) : (
             listing?.entries.map((entry) => (
               <div
@@ -407,7 +416,7 @@ export default function FilesPage() {
                   type="button"
                   onClick={() => (entry.is_directory ? openDirectory(entry) : void downloadFile(entry))}
                   disabled={entry.broken_link}
-                  title={entry.broken_link ? "Broken symbolic link" : undefined}
+                  title={entry.broken_link ? files.brokenSymbolicLink : undefined}
                   className="flex min-w-0 items-center gap-2 text-left font-mono text-foreground disabled:cursor-not-allowed disabled:text-text-tertiary"
                 >
                   {entry.is_directory ? (
@@ -420,7 +429,7 @@ export default function FilesPage() {
                   <span className="truncate">{entry.name}</span>
                   {entry.broken_link && (
                     <Badge tone="destructive" className="shrink-0 text-xs">
-                      Broken link
+                      {files.brokenLink}
                     </Badge>
                   )}
                 </button>
@@ -437,7 +446,7 @@ export default function FilesPage() {
                       size="icon"
                       type="button"
                       onClick={() => openDirectory(entry)}
-                      aria-label={`Open ${entry.name}`}
+                      aria-label={files.openNamed.replace("{name}", entry.name)}
                     >
                       <FolderOpen />
                     </Button>
@@ -448,7 +457,7 @@ export default function FilesPage() {
                       type="button"
                       onClick={() => void downloadFile(entry)}
                       disabled={entry.broken_link}
-                      aria-label={`Download ${entry.name}`}
+                      aria-label={files.downloadNamed.replace("{name}", entry.name)}
                     >
                       <Download />
                     </Button>
@@ -458,7 +467,7 @@ export default function FilesPage() {
                     size="icon"
                     type="button"
                     onClick={() => setPendingDelete(entry)}
-                    aria-label={`Delete ${entry.name}`}
+                    aria-label={files.deleteNamed.replace("{name}", entry.name)}
                     className="text-destructive hover:text-destructive"
                   >
                     <Trash2 />
@@ -482,9 +491,9 @@ export default function FilesPage() {
       >
         <DialogContent className="max-w-sm">
           <DialogHeader>
-            <DialogTitle>Create folder</DialogTitle>
+            <DialogTitle>{files.createFolder}</DialogTitle>
             <DialogDescription>
-              Target: {activePath || "Loading"}
+              {files.target.replace("{path}", activePath || t.common.loading)}
             </DialogDescription>
           </DialogHeader>
           <div className="p-4">
@@ -495,7 +504,7 @@ export default function FilesPage() {
               onKeyDown={(event) => {
                 if (event.key === "Enter") void createDirectory();
               }}
-              placeholder="Folder name"
+              placeholder={files.folderName}
               disabled={creating}
             />
           </div>
@@ -509,7 +518,7 @@ export default function FilesPage() {
               }}
               disabled={creating}
             >
-              Cancel
+              {t.common.cancel}
             </Button>
             <Button
               type="button"
@@ -517,7 +526,7 @@ export default function FilesPage() {
               disabled={creating}
               prefix={creating ? <Spinner /> : <FolderPlus />}
             >
-              Create
+              {files.create}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -528,11 +537,11 @@ export default function FilesPage() {
         loading={deleting}
         onCancel={() => setPendingDelete(null)}
         onConfirm={() => void confirmDelete()}
-        title={pendingDelete ? `Delete ${pendingDelete.name}?` : "Delete item?"}
+        title={pendingDelete ? `${files.deleteNamed.replace("{name}", pendingDelete.name)}?` : files.deleteItemTitle}
         description={
           pendingDelete?.is_directory
-            ? "This removes the folder and everything inside it."
-            : "This removes the file."
+            ? files.deleteFolderDescription
+            : files.deleteFileDescription
         }
       />
     </div>

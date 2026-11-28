@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import threading
 import time
 from urllib.parse import urlencode
 
@@ -91,6 +93,56 @@ def test_streams_pcm_frames_then_end(stream_client, monkeypatch):
         assert conn.receive_json() == {"type": "end"}
 
     assert streamer.requests == ["Hello there."]
+
+
+@pytest.mark.parametrize("partial_pcm", [False, True], ids=["before-pcm", "after-pcm"])
+def test_provider_failure_keeps_details_private_and_finishes_stream(
+    stream_client, monkeypatch, caplog, partial_pcm
+):
+    private_marker = "private-provider-response-secret-7f36"
+    cleaned_up = threading.Event()
+    pcm = b"\x01\x02\x03\x04"
+
+    class FailingStreamer(_FakeStreamer):
+        def stream(self, text):
+            self.requests.append(text)
+            try:
+                if partial_pcm:
+                    yield pcm
+                raise RuntimeError(f"Provider rejected request: {private_marker}")
+            finally:
+                cleaned_up.set()
+
+    streamer = FailingStreamer([])
+    _patch_provider(monkeypatch, streamer)
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.web_server"):
+        with stream_client.websocket_connect(_url()) as conn:
+            conn.send_text(json.dumps({"text": "Hello there.", "done": True}))
+            if partial_pcm:
+                assert conn.receive_json() == {
+                    "type": "start", "sample_rate": 24000, "channels": 1
+                }
+                assert conn.receive_bytes() == pcm
+                assert conn.receive_json() == {"type": "end"}
+            else:
+                assert conn.receive_json() == {"type": "fallback"}
+            closed = conn.receive()
+            assert closed["type"] == "websocket.close"
+            assert closed["code"] == 1000
+
+    assert streamer.requests == ["Hello there."]
+    assert cleaned_up.is_set()
+    warnings = [
+        record for record in caplog.records
+        if record.name == "hermes_cli.web_server" and record.levelno == logging.WARNING
+    ]
+    assert len(warnings) == 1
+    assert "RuntimeError" in warnings[0].getMessage()
+    assert warnings[0].exc_info is None
+    assert private_marker not in caplog.text
+    assert all(private_marker not in repr(record.__dict__) for record in caplog.records)
+
 
 
 def test_short_cjk_opener_is_synthesized_alone_with_configured_min_len(stream_client, monkeypatch):

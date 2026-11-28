@@ -280,7 +280,7 @@ def test_satellite_home_channel_rides_the_primarys_bot_without_the_plugin(tmp_pa
 _HOME_PLATFORMS = [f for f in LEFT_CORE if f.platform and f"{f.platform.upper()}_HOME_CHANNEL" in f.private_env]
 
 
-@pytest.mark.parametrize("saved_in", ["env", "config.yaml"])
+@pytest.mark.parametrize("saved_in", ["env", "config.yaml", "gateway.platforms", "gateway.<platform> over platforms"])
 @pytest.mark.parametrize("feature", _HOME_PLATFORMS, ids=[f.platform for f in _HOME_PLATFORMS])
 def test_worker_without_any_registration_reads_the_satellite_home(tmp_path, monkeypatch, feature, saved_in):
     """A managed cron worker holds no registration for the platform (not this profile's, not the primary's): a bare
@@ -305,9 +305,16 @@ def test_worker_without_any_registration_reads_the_satellite_home(tmp_path, monk
             for chat in ("chat-1", "chat-2"):
                 if saved_in == "env":
                     monkeypatch.setenv(f"{feature.platform.upper()}_HOME_CHANNEL", chat)
-                else:  # what ``/sethome`` writes; greptile #159651
-                    (home / "config.yaml").write_text(yaml.safe_dump(
-                        {"platforms": {feature.platform: {"home_channel": {"chat_id": chat}}}}), encoding="utf-8")
+                else:  # what ``/sethome`` writes (greptile #159651), and the gateway loader's other blocks
+                    saved = {"home_channel": {"chat_id": chat}}
+                    (home / "config.yaml").write_text(yaml.safe_dump({
+                        "config.yaml": {"platforms": {feature.platform: saved}},
+                        "gateway.platforms": {"gateway": {"platforms": {feature.platform: saved}}},
+                        # an older home under platforms: the gateway reads gateway.<platform>'s, and so does cron
+                        "gateway.<platform> over platforms": {
+                            "platforms": {feature.platform: {"home_channel": {"chat_id": "chat-1"}}},
+                            "gateway": {feature.platform: saved}},
+                    }[saved_in]), encoding="utf-8")
                 target, error = resolve_cron_destination(job, feature.platform)
                 verdicts[chat] = (target and target["chat_id"], error is None, _preflight_check_delivery(job) is None)
     finally:

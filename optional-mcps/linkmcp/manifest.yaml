@@ -1,0 +1,72 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: linkmcp
+description: >-
+  LinkedIn profiles, companies, posts, jobs, search and your own inbox
+  through LinkMCP's hosted MCP (not affiliated with LinkedIn).
+source: https://app.linkmcp.io/install#hermes
+
+# Hosted remote MCP (URL only; Hermes never spawns a local process for this
+# entry). OAuth 2.1 with Dynamic Client Registration and PKCE. The `ref`
+# query only tags sign-ups that come from this catalog.
+transport:
+  type: http
+  url: https://app.linkmcp.io/api/mcp?ref=hermes-catalog
+
+auth:
+  type: oauth
+
+tools:
+  # Only tools with readOnlyHint: true in the live tools/list are on by
+  # default. Tools that act on the user's LinkedIn account (send message,
+  # connection requests, posts, comments, reactions, mark as read), the
+  # feedback tool and the email and phone lookups stay off until the user
+  # selects them with `hermes mcp configure linkmcp`.
+  default_enabled:
+    - linkedin_who_am_i
+    - linkedin_get_profile
+    - linkedin_bulk_get_profiles
+    - linkedin_get_company
+    - linkedin_bulk_get_companies
+    - linkedin_get_person_posts
+    - linkedin_get_company_posts
+    - linkedin_get_post_comments
+    - linkedin_get_nested_comments
+    - linkedin_get_post_reactions
+    - linkedin_search_people
+    - linkedin_search_sales_navigator
+    - linkedin_search_jobs
+    - linkedin_get_job
+    - linkedin_get_connections
+    - linkedin_get_shared_connections
+    - linkedin_list_connection_requests
+    - linkedin_list_conversations
+    - linkedin_get_conversation_messages
+    - linkedin_get_post_analytics
+    - linkedin_get_profile_views
+    - linkedin_get_my_saved_items
+    - linkedin_get_my_engagement
+    - linkedin_list_company_pages
+
+suggest:
+  keywords:
+    - linkmcp
+  hosts:
+    - linkmcp.io
+
+post_install: |
+  On first connection Hermes opens a browser to sign in to LinkMCP
+  (or run `hermes mcp login linkmcp`). Approve access, then restart
+  the session so tools load. Connect your LinkedIn account at
+  https://app.linkmcp.io to use the tools on your own account.
+
+  By default only read tools are on. Tools that act on your LinkedIn
+  account (send messages, connection requests, posts, comments,
+  reactions, mark as read), the feedback tool and the email and phone
+  lookups stay off until you select them with:
+    hermes mcp configure linkmcp
+
+  LinkMCP is a paid service with a free trial. It is not affiliated
+  with LinkedIn.

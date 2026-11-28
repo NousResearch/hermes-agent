@@ -197,7 +197,12 @@ def handoff_head(holder, session_id):
 _BOOT_RECEIPTS_SQL = (
     "SELECT m.key FROM state_meta m LEFT JOIN sessions s "
     "ON s.id = CASE WHEN json_valid(m.value) THEN json_extract(m.value, '$.entry.session_id') END "
-    "WHERE m.key LIKE ? AND (s.ended_at IS NULL OR s.end_reason = 'compression' "
+# ``GLOB``, not ``LIKE``: SQLite serves a prefix ``LIKE`` from an index only when the column's
+# collation is NOCASE, and ``state_meta.key`` keeps the default BINARY one - so a ``LIKE`` here
+# left every boot walking every ``state_meta`` row, including the rows this query never reads.
+# ``GLOB`` is case-sensitive and index-backed, so the same receipts arrive through a range scan
+# of the key's own index - the convention the store's local helpers already use for this prefix.
+    "WHERE m.key GLOB ? AND (s.ended_at IS NULL OR s.end_reason = 'compression' "
     "OR EXISTS (SELECT 1 FROM session_admissions a WHERE a.target_session_id = substr(m.key, ?) "
     "AND a.status IN ('queued','started','unknown')) "
     "OR EXISTS (SELECT 1 FROM state_meta c WHERE c.key = ? || substr(m.key, ?)))")
@@ -210,7 +215,7 @@ def local_receipt_ids(holder):
     start = len(POLICY_PREFIX) + 1
     with holder._read_ctx() as conn:
         return [row[0][len(POLICY_PREFIX):] for row in conn.execute(
-            _BOOT_RECEIPTS_SQL, (POLICY_PREFIX + '%', start, CLOSE_PREFIX, start))]
+            _BOOT_RECEIPTS_SQL, (POLICY_PREFIX + '*', start, CLOSE_PREFIX, start))]
 
 
 def end_idle_local_session(holder, *, epoch, session_id, target_id, reason):

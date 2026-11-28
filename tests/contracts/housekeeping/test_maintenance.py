@@ -265,6 +265,94 @@ def test_ghost_prune_two_contenders_disjoint(backend, scope_a):
     assert all(store_a.sessions.get(SessionId(sid)) is None for sid in ids)
 
 
+# ── stale open-empty prune ───────────────────────────────────────────────────
+
+
+def _cron_open(session_id: str, started_at: float, **kw: Any) -> dict[str, Any]:
+    """An open (never-ended), empty cron row: the shape a dead fire's process leaves behind."""
+    return _payload(session_id, source="cron", messages=[], started_at=started_at, **kw)
+
+
+def test_stale_open_empty_prune_reaps_only_state_owned_empty_old_rows(backend, scope_a):
+    store_a = backend.open(scope_a)
+    now = time.time()
+    _seed(
+        backend, scope_a,
+        _cron_open("soe-cron", now - 3 * _DAY),
+        _cron_open("soe-young", now - _HOUR),
+        _payload("soe-tui", source="tui", messages=[], started_at=now - 3 * _DAY),
+        _payload("soe-msgs", source="cron", started_at=now - 3 * _DAY),
+        _payload("soe-ended", source="cron", messages=[], ended_at=_BASE + 60, end_reason="done"),
+        _cron_open("soe-pinned", now - 3 * _DAY),
+    )
+    assert store_a.sessions.set_pinned(SessionId("soe-pinned"), True)
+    # CONTRACT: only open, unpinned, message-less rows of the state-owned sources past the age floor are deleted, and their ids are returned.
+    assert store_a.maintenance.prune_stale_open_empty_sessions(media_root=MEDIA_ROOT) == (SessionId("soe-cron"),)
+    assert store_a.sessions.get(SessionId("soe-cron")) is None
+    # CONTRACT: a reaped id is retired like a deleted one.
+    with pytest.raises(RetiredSessionError):
+        store_a.sessions.create(NewSession(SessionId("soe-cron"), "cron"))
+    for sid in ("soe-young", "soe-tui", "soe-msgs", "soe-ended", "soe-pinned"):
+        assert store_a.sessions.get(SessionId(sid)) is not None, sid
+    # CONTRACT: a second run finds nothing.
+    assert store_a.maintenance.prune_stale_open_empty_sessions(media_root=MEDIA_ROOT) == ()
+
+
+def test_stale_open_empty_prune_spares_live_process_owned_sources(backend, scope_a):
+    store_a = backend.open(scope_a)
+    now = time.time()
+    _seed(
+        backend, scope_a,
+        _payload("soe-cli", source="cli", messages=[], started_at=now - 3 * _DAY),
+        _payload("soe-api", source="api_server", messages=[], started_at=now - 3 * _DAY),
+        _payload("soe-acp", source="acp", messages=[], started_at=now - 3 * _DAY),
+        _cron_open("soe-titled", now - 3 * _DAY, title="kept: a deliberate creation"),
+    )
+    # CONTRACT: a cli, api_server or acp row can be a LIVE process's own empty session between
+    # turns (an eager /new, a provisioned API session) — those are left to the orphan sweep's
+    # close, never deleted here, and a titled open row is a deliberate creation, not a leak.
+    assert store_a.maintenance.prune_stale_open_empty_sessions(media_root=MEDIA_ROOT) == ()
+    for sid in ("soe-cli", "soe-api", "soe-acp", "soe-titled"):
+        assert store_a.sessions.get(SessionId(sid)) is not None, sid
+
+
+def test_stale_open_empty_prune_spares_a_live_turn_lease(backend, scope_a):
+    store_a = backend.open(scope_a)
+    now = time.time()
+    _seed(backend, scope_a, _cron_open("soe-lease", now - 3 * _DAY))
+    store_a.coordination.try_acquire_turn_lease(session_id=SessionId("soe-lease"), holder="opaque", ttl_seconds=3600)
+    # CONTRACT: a row a live turn lease guards is acting right now; it survives the reap.
+    assert store_a.maintenance.prune_stale_open_empty_sessions(media_root=MEDIA_ROOT) == ()
+    assert store_a.sessions.get(SessionId("soe-lease")) is not None
+
+
+def test_stale_open_empty_prune_two_contenders_disjoint(backend, scope_a):
+    store_a = backend.open(scope_a)
+    ids = [f"soe-race-{i}" for i in range(5)]
+    now = time.time()
+    _seed(backend, scope_a, *(_cron_open(sid, now - 3 * _DAY) for sid in ids))
+    prune = partial(store_a.maintenance.prune_stale_open_empty_sessions, media_root=MEDIA_ROOT)
+    a, b = _race(prune, prune)
+    # RACE OUTCOME: each stale empty row is deleted exactly once; the two id sets are disjoint and cover the rows.
+    assert set(a).isdisjoint(b) and set(a) | set(b) == {SessionId(sid) for sid in ids}
+    assert all(store_a.sessions.get(SessionId(sid)) is None for sid in ids)
+
+
+def test_stale_open_empty_prune_detaches_a_child(backend, scope_a):
+    store_a = backend.open(scope_a)
+    now = time.time()
+    _seed(
+        backend, scope_a,
+        _cron_open("soe-parent", now - 3 * _DAY),
+        dict(_payload("soe-child", source="cron", started_at=now - 2 * _DAY), parent_session_id="soe-parent"),
+    )
+    # CONTRACT: the empty parent is reaped; its child (which holds messages, so it is not a
+    # candidate) survives, detached — the delete never cascades.
+    assert store_a.maintenance.prune_stale_open_empty_sessions(media_root=MEDIA_ROOT) == (SessionId("soe-parent"),)
+    child = store_a.sessions.get(SessionId("soe-child"))
+    assert child is not None and child.parent_session_id is None
+
+
 def test_prune_counts_mirror_candidates_and_open_skips(backend, scope_a):
     store_a = backend.open(scope_a)
     _seed(

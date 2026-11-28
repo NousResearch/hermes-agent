@@ -30,6 +30,7 @@ def test_maintenance_steps_renew_the_armed_watchdog_lease(tmp_path, monkeypatch)
         # Maintenance is throttled by state_meta; a fresh DB has never run it.
         # VACUUM only runs after a real prune
         monkeypatch.setattr(SQLiteSessionMaintenance, "prune_sessions", lambda self, **kw: PruneResult(count=120))
+        monkeypatch.setattr(SQLiteSessionMaintenance, "prune_stale_open_empty_sessions", lambda self, **kw: [])
         monkeypatch.setattr(SQLiteSessionMaintenance, "sweep_orphaned_sessions", lambda self, **kw: [])
         monkeypatch.setattr(admin, "freelist_ratio", lambda: 1.0)
         monkeypatch.setattr(admin, "vacuum", lambda: None)
@@ -42,9 +43,9 @@ def test_maintenance_steps_renew_the_armed_watchdog_lease(tmp_path, monkeypatch)
             retention_days=90, min_interval_hours=0, vacuum=True, min_vacuum_interval_days=0,
         )
 
-        # One renewal per long step (archive, prune, sweep, vacuum), the last one
-        # taken right before VACUUM so a multi-minute rewrite never outlives the clamp.
-        assert handle._lease_count - before == 4
+        # One renewal per long step (archive, prune, open-empty reap, sweep, vacuum), the last
+        # one taken right before VACUUM so a multi-minute rewrite never outlives the clamp.
+        assert handle._lease_count - before == 5
         assert handle._lease_phase == "state_db_auto_vacuum"
         assert handle._lease_until > time.monotonic()
     finally:

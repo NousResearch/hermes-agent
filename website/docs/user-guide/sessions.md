@@ -1247,7 +1247,12 @@ session stays resumable — and the row is aged from its close, so it is only
 deleted by a *later* pass after a further full retention window. Messaging
 platform sessions (Telegram, Discord, …), TUI/desktop sessions, pinned
 sessions, and sessions with a live turn or compression in progress are
-never closed by this sweep.
+never closed by this sweep. One exception deletes rather than closes: an
+open row of a fire-driven source (`cron`, `kanban`, `subagent`, `tool`,
+`recovered`) that is untitled, holds no messages, and has been idle for at
+least 24 hours holds nothing to resume, so startup maintenance deletes it
+outright (never a `cli`, `api_server` or `acp` row, which may be a live
+process's own session between turns).
 
 **Local sessions nobody closed.** A CLI, TUI or Desktop session whose last
 viewer disappeared without closing it (a killed terminal, a dropped connection,

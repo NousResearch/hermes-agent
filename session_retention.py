@@ -180,11 +180,11 @@ def run_auto_prune_and_vacuum(
 ) -> dict[str, Any]:
     """Idempotent startup auto-maintenance (never raises): prune inactive sessions, reap stale open state-owned rows, optional VACUUM.
 
-    Runs at most once per ``min_interval_hours`` (the ``last_auto_prune`` state key). Stale-open reconciliation: cron, kanban, subagent and one-shot CLI rows never set ``ended_at`` when their process dies and prune only deletes ended rows, so after pruning, open rows from ``AUTO_PRUNE_STALE_OPEN_SOURCES`` older than ``retention_days`` are closed (``startup_orphan_reap``); they stay resumable and age from their close. Transcript files of pruned sessions under *sessions_dir* are removed in the same sweep. Messaging and UI sources are never touched here.
+    Runs at most once per ``min_interval_hours`` (the ``last_auto_prune`` state key). Stale-open reconciliation: cron, kanban, subagent and one-shot CLI rows never set ``ended_at`` when their process dies and prune only deletes ended rows, so after pruning, open rows from ``AUTO_PRUNE_STALE_OPEN_SOURCES`` older than ``retention_days`` are closed (``startup_orphan_reap``); they stay resumable and age from their close. Untitled, message-less open rows of the fire-driven subset ``STALE_OPEN_EMPTY_SOURCES`` hold nothing to resume, so they are deleted outright once ``STALE_OPEN_EMPTY_MIN_AGE`` old and equally idle (``reaped_open_empty``) instead of waiting out the sweep. Transcript files of pruned sessions under *sessions_dir* are removed in the same sweep. Messaging and UI sources are never touched here.
 
-    *admin* is the store's physical admin handle, or ``AdminUnsupported`` (or None) when the backend has none. With it, the pass holds the auto-maintenance lock (held elsewhere: skipped) and may VACUUM: only when rows were freed, ``min_vacuum_interval_days`` passed since ``last_vacuum``, no other holder blocks it and the freelist ratio is above ``min_vacuum_freelist_ratio``. Without it, the lock and VACUUM steps are skipped. Returns ``{"skipped", "pruned", "closed", "vacuumed"}`` plus ``"freelist_ratio"`` when a VACUUM was considered, ``"vacuum_skipped_holders"`` when holders blocked it and ``"error"`` on failure.
+    *admin* is the store's physical admin handle, or ``AdminUnsupported`` (or None) when the backend has none. With it, the pass holds the auto-maintenance lock (held elsewhere: skipped) and may VACUUM: only when rows were freed, ``min_vacuum_interval_days`` passed since ``last_vacuum``, no other holder blocks it and the freelist ratio is above ``min_vacuum_freelist_ratio``. Without it, the lock and VACUUM steps are skipped. Returns ``{"skipped", "pruned", "reaped_open_empty", "closed", "vacuumed"}`` plus ``"freelist_ratio"`` when a VACUUM was considered, ``"vacuum_skipped_holders"`` when holders blocked it and ``"error"`` on failure.
     """
-    result: dict[str, Any] = {"skipped": False, "pruned": 0, "closed": 0, "vacuumed": False}
+    result: dict[str, Any] = {"skipped": False, "pruned": 0, "reaped_open_empty": 0, "closed": 0, "vacuumed": False}
     if retention_days is None or retention_days < 0:
         # A negative retention would build a future cutoff and match every ended
         # session; auto_prune=false is the disable switch, not a negative bound.
@@ -216,6 +216,24 @@ def run_auto_prune_and_vacuum(
             older_than_days=retention_days, exclude_active_write_guards=True, media_root=media_root)
         after_sessions_removed(store, store_home, outcome.deleted_ids, reason="prune", sessions_dir=sessions_dir)
         result["pruned"] = pruned = outcome.count
+        # Stale open-empty reconciliation before the orphan sweep: an empty row of a fire-driven
+        # source holds nothing to resume, so it is deleted outright (past STALE_OPEN_EMPTY_MIN_AGE,
+        # under the write guards) instead of waiting out the sweep's retention-day window while its
+        # open row keeps weighing on every live-session iteration. Isolated like the VACUUM step:
+        # a failing reap must not starve the sweep or the throttle stamp below it.
+        report_startup_progress(900.0, phase="state_db_auto_open_empty_reap")
+        try:
+            reaped = store.maintenance.prune_stale_open_empty_sessions(media_root=media_root)
+        except Exception as exc:  # health: allow BLE001 -- a failing reap never blocks the sweep
+            logger.warning("state.db stale open-empty reap failed: %s", exc)
+            reaped = ()
+        # The count is recorded before the post-delete work, so a failure there does not
+        # zero the reap out of the result (and out of the VACUUM consideration) for rows
+        # that were in fact freed.
+        result["reaped_open_empty"] = reaped_count = len(reaped)
+        if reaped:
+            logger.info("state.db auto-maintenance: deleted %d stale open empty session(s)", reaped_count)
+            after_sessions_removed(store, store_home, reaped, reason="prune", sessions_dir=sessions_dir)
         report_startup_progress(900.0, phase="state_db_auto_sweep")
         closed = store.maintenance.sweep_orphaned_sessions(
             max_idle_seconds=float(retention_days) * 86400.0,
@@ -227,7 +245,7 @@ def run_auto_prune_and_vacuum(
         # freelist ratio passed: it holds an exclusive lock for a full rewrite.
         since_vacuum = _seconds_since(now, store.state_meta.get("last_vacuum"))
         vacuum_due = since_vacuum is None or since_vacuum >= min_vacuum_interval_days * 86400
-        if admin is not None and vacuum and pruned > 0 and vacuum_due:
+        if admin is not None and vacuum and pruned + reaped_count > 0 and vacuum_due:
             result["freelist_ratio"] = ratio = admin.freelist_ratio()
             # VACUUM retires the store generation another writer still holds, which every agent
             # then refuses turns in: automatic maintenance only ever SKIPS while a holder exists.
@@ -254,7 +272,7 @@ def run_auto_prune_and_vacuum(
                              ratio * 100.0, min_vacuum_freelist_ratio * 100.0)
         # Record even when pruned == 0 so the throttle holds.
         store.state_meta.set("last_auto_prune", str(now))
-        if closed or pruned > 0:
+        if closed or pruned > 0 or reaped_count > 0:
             logger.info("state.db auto-maintenance: closed %d stale open session(s), "
                         "pruned %d session(s) inactive for %d days%s",
                         len(closed), pruned, retention_days, " + VACUUM" if result["vacuumed"] else "")

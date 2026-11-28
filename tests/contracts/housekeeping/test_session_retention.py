@@ -34,6 +34,12 @@ def _seed(store, *payloads):
     assert store.maintenance.import_sessions(list(payloads)).ok
 
 
+def _cron_open(sid, started):
+    """An open (never-ended), empty cron row: the shape a dead fire's process leaves behind."""
+    return {"id": sid, "source": "cron", "started_at": started, "ended_at": None, "end_reason": None,
+            "model": "model-a", "messages": []}
+
+
 def _transcript_files(sessions_dir: Path, sid: str) -> None:
     sessions_dir.mkdir(parents=True, exist_ok=True)
     for name in (f"{sid}.json", f"{sid}.jsonl", f"session_{sid}.json", f"request_dump_{sid}_1.json"):
@@ -222,7 +228,7 @@ def _prune(store, scope, admin, **kwargs):
 def test_run_auto_prune_refuses_a_negative_retention(backend, scope_a, caplog):
     admin = _Admin()
     caplog.set_level(logging.DEBUG, logger="hermes_state")
-    assert _prune(backend.open(scope_a), scope_a, admin, retention_days=-1) == {"skipped": True, "pruned": 0, "closed": 0, "vacuumed": False}
+    assert _prune(backend.open(scope_a), scope_a, admin, retention_days=-1) == {"skipped": True, "pruned": 0, "reaped_open_empty": 0, "closed": 0, "vacuumed": False}
     assert _messages(caplog) == [("WARNING", "state.db auto-maintenance skipped: sessions.retention_days=-1 is outside the allowed range "
                                              "(a whole number of days >= 0); set sessions.auto_prune: false to disable pruning")]
     # CONTRACT: refused before the maintenance lock is touched.
@@ -237,7 +243,7 @@ def test_run_auto_prune_prunes_closes_and_vacuums(backend, scope_a, sessions_dir
     admin = _Admin(ratio=0.0)
     caplog.set_level(logging.DEBUG, logger="hermes_state")
     result = _prune(store, scope_a, admin, retention_days=90, sessions_dir=sessions_dir, min_vacuum_freelist_ratio=-1.0)
-    assert result == {"skipped": False, "pruned": 2, "closed": 1, "vacuumed": True, "freelist_ratio": 0.0}
+    assert result == {"skipped": False, "pruned": 2, "reaped_open_empty": 0, "closed": 1, "vacuumed": True, "freelist_ratio": 0.0}
     assert _messages(caplog) == [("INFO", "state.db auto-maintenance: closed 1 stale open session(s), pruned 2 session(s) inactive for 90 days + VACUUM")]
     files = ["request_dump_s-old1_1.json", "s-old1.json", "s-old1.jsonl", "session_s-old1.json"]
     # CONTRACT: the prune's post-commit work in order, the transcript files last.
@@ -255,7 +261,7 @@ def test_run_auto_prune_prunes_closes_and_vacuums(backend, scope_a, sessions_dir
     assert admin.calls == ["acquire", "freelist_ratio", "vacuum_blockers", "vacuum", ("release", "lock-1")]
     # CONTRACT: a second pass inside the interval is skipped, still under the lock.
     admin.calls.clear()
-    assert _prune(store, scope_a, admin, retention_days=90, sessions_dir=sessions_dir) == {"skipped": True, "pruned": 0, "closed": 0, "vacuumed": False}
+    assert _prune(store, scope_a, admin, retention_days=90, sessions_dir=sessions_dir) == {"skipped": True, "pruned": 0, "reaped_open_empty": 0, "closed": 0, "vacuumed": False}
     assert admin.calls == ["acquire", ("release", "lock-1")]
 
 
@@ -264,7 +270,7 @@ def test_run_auto_prune_without_pruned_rows_never_considers_vacuum(backend, scop
     _seed(store, _payload("s-young", NOW, NOW, "done"))
     admin = _Admin()
     caplog.set_level(logging.DEBUG, logger="hermes_state")
-    assert _prune(store, scope_a, admin, retention_days=90) == {"skipped": False, "pruned": 0, "closed": 0, "vacuumed": False}
+    assert _prune(store, scope_a, admin, retention_days=90) == {"skipped": False, "pruned": 0, "reaped_open_empty": 0, "closed": 0, "vacuumed": False}
     assert _messages(caplog, debug=True) == []
     assert events == [["collect", []]]
     assert admin.calls == ["acquire", ("release", "lock-1")]
@@ -281,7 +287,7 @@ def test_run_auto_prune_skips_vacuum(backend, scope_a, events, caplog, admin, ex
     _seed(store, _payload("s-o", NOW - 100 * DAY, NOW - 100 * DAY, "done"))
     caplog.set_level(logging.DEBUG, logger="hermes_state")
     ratio = {"min_vacuum_freelist_ratio": -1.0} if admin.blockers else {}
-    assert _prune(store, scope_a, admin, retention_days=90, **ratio) == {"skipped": False, "pruned": 1, "closed": 0, "vacuumed": False, **expected}
+    assert _prune(store, scope_a, admin, retention_days=90, **ratio) == {"skipped": False, "pruned": 1, "reaped_open_empty": 0, "closed": 0, "vacuumed": False, **expected}
     assert _messages(caplog, debug=True) == [("DEBUG", debug_line),
                                              ("INFO", "state.db auto-maintenance: closed 0 stale open session(s), pruned 1 session(s) inactive for 90 days")]
     assert "vacuum" not in admin.calls
@@ -292,7 +298,7 @@ def test_run_auto_prune_skips_while_the_lock_is_held(backend, scope_a, events):
     store = backend.open(scope_a)
     _seed(store, _payload("s-o", NOW - 100 * DAY, NOW - 100 * DAY, "done"))
     admin = _Admin(lock=None)
-    assert _prune(store, scope_a, admin, retention_days=90) == {"skipped": True, "pruned": 0, "closed": 0, "vacuumed": False}
+    assert _prune(store, scope_a, admin, retention_days=90) == {"skipped": True, "pruned": 0, "reaped_open_empty": 0, "closed": 0, "vacuumed": False}
     # CONTRACT: nothing ran and nothing is released.
     assert admin.calls == ["acquire"]
     assert store.sessions.get(SessionId("s-o")) is not None
@@ -308,7 +314,7 @@ def test_run_auto_prune_reports_a_failing_prune_and_releases_the_lock(backend, s
 
     monkeypatch.setattr(store.maintenance, "prune_sessions", boom)
     caplog.set_level(logging.DEBUG, logger="hermes_state")
-    assert _prune(store, scope_a, admin, retention_days=90) == {"skipped": False, "pruned": 0, "closed": 0, "vacuumed": False, "error": "prune boom"}
+    assert _prune(store, scope_a, admin, retention_days=90) == {"skipped": False, "pruned": 0, "reaped_open_empty": 0, "closed": 0, "vacuumed": False, "error": "prune boom"}
     assert _messages(caplog) == [("WARNING", "state.db auto-maintenance failed: prune boom")]
     assert store.state_meta.get("last_auto_prune") is None
     assert admin.calls == ["acquire", ("release", "lock-1")]
@@ -319,7 +325,7 @@ def test_run_auto_prune_survives_a_failing_vacuum(backend, scope_a, events, capl
     _seed(store, _payload("s-o", NOW - 100 * DAY, NOW - 100 * DAY, "done"))
     caplog.set_level(logging.DEBUG, logger="hermes_state")
     result = _prune(store, scope_a, _Admin(vacuum_error=RuntimeError("vac boom")), retention_days=90, min_vacuum_freelist_ratio=-1.0)
-    assert result == {"skipped": False, "pruned": 1, "closed": 0, "vacuumed": False, "freelist_ratio": 0.0}
+    assert result == {"skipped": False, "pruned": 1, "reaped_open_empty": 0, "closed": 0, "vacuumed": False, "freelist_ratio": 0.0}
     assert _messages(caplog) == [("WARNING", "state.db VACUUM failed: vac boom"),
                                  ("INFO", "state.db auto-maintenance: closed 0 stale open session(s), pruned 1 session(s) inactive for 90 days")]
     assert {key: store.state_meta.get(key) is not None for key in ("last_auto_prune", "last_vacuum")} == {"last_auto_prune": True, "last_vacuum": False}
@@ -330,9 +336,26 @@ def test_run_auto_prune_without_a_physical_admin_skips_lock_and_vacuum(backend, 
     _seed(store, _payload("s-o", NOW - 100 * DAY, NOW - 100 * DAY, "done"))
     # A backend without a physical admin prunes and closes; the lock and VACUUM steps do not exist there.
     assert _prune(store, scope_a, None, retention_days=90, min_vacuum_freelist_ratio=-1.0) == {
-        "skipped": False, "pruned": 1, "closed": 0, "vacuumed": False}
+        "skipped": False, "pruned": 1, "reaped_open_empty": 0, "closed": 0, "vacuumed": False}
     assert store.state_meta.get("last_vacuum") is None
     assert store.state_meta.get("last_auto_prune") is not None
+
+
+def test_run_auto_prune_reaps_stale_open_empty_rows(backend, scope_a, sessions_dir, events, caplog):
+    store = backend.open(scope_a)
+    _seed(store, _cron_open("s-dead-cron", NOW - 3 * DAY), _payload("s-open-cli", NOW - 100 * DAY))
+    admin = _Admin()
+    caplog.set_level(logging.DEBUG, logger="hermes_state")
+    result = _prune(store, scope_a, admin, retention_days=90)
+    # CONTRACT: the empty open cron row is deleted outright (nothing to resume), while the open cli row WITH messages is only closed by the sweep, as before. A reap counts toward the VACUUM consideration like a prune does.
+    assert result == {"skipped": False, "pruned": 0, "reaped_open_empty": 1, "closed": 1, "vacuumed": False, "freelist_ratio": 0.0}
+    assert store.sessions.get(SessionId("s-dead-cron")) is None
+    closed = store.sessions.get(SessionId("s-open-cli"))
+    assert closed.ended_at is not None and closed.end_reason == "startup_orphan_reap"
+    assert _messages(caplog) == [("INFO", "state.db auto-maintenance: deleted 1 stale open empty session(s)"),
+                                 ("INFO", "state.db auto-maintenance: closed 1 stale open session(s), pruned 0 session(s) inactive for 90 days")]
+    # CONTRACT: the reap notifies the plugin like any delete, before the sweep runs.
+    assert [event[1] for event in events if event[0] == "hook"] == ["on_session_delete"]
 
 
 # ── collect_retired_media and collect_retired_spillover ──────────────────────

@@ -25,6 +25,8 @@ from persistence.housekeeping.maintenance import (
     GHOST_SESSION_SOURCE,
     IMPORT_MAX_SESSIONS,
     ORPHAN_REAP_END_REASON,
+    STALE_OPEN_EMPTY_MIN_AGE,
+    STALE_OPEN_EMPTY_SOURCES,
     SESSION_PROJECTION_FIELDS,
     ForeignImportResult,
     ForeignOrigin,
@@ -394,6 +396,27 @@ class InMemoryMaintenance:
             ]
             sessions._retire_staged(staged.scope, staged.authority, ghosts, media_root)
         return tuple(SessionId(sid) for sid in ghosts)
+
+    def prune_stale_open_empty_sessions(self, *, media_root: str) -> tuple[SessionId, ...]:
+        cutoff = time.time() - STALE_OPEN_EMPTY_MIN_AGE.total_seconds()
+        sessions = self._backend.sessions
+        transcripts = _messages_namespace(self._backend, self._scope)["transcripts"]
+        tail = self._pinned_tail()
+        with authority_state(self._backend, self._scope).transaction() as staged:
+            doomed = [
+                sid for sid, row in staged.scope.get("sessions", {}).items()
+                if row["ended_at"] is None and row["source"] in STALE_OPEN_EMPTY_SOURCES
+                and row["title"] is None and not (row.get("pinned") or sid in tail)
+                and row["started_at"].timestamp() < cutoff and self._recency(row) < cutoff
+                and not (sid in transcripts and transcripts[sid].rows)
+                and not self._guarded(sid)
+                and sessions._ledger_idle(staged.authority, sid)
+            ]
+            sessions._retire_staged(staged.scope, staged.authority, doomed, media_root)
+            for row in staged.scope.get("sessions", {}).values():
+                if row["parent_session_id"] in doomed:
+                    row["parent_session_id"] = None
+        return tuple(SessionId(sid) for sid in doomed)
 
     # ── orphan sweep ──────────────────────────────────────────────────────
 

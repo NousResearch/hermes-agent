@@ -130,12 +130,12 @@ def install_desktop_plugin(identifier: str, *, ref: Optional[str], catalog_name:
             target = root / folder
             # A package's half keeps the marker Electron writes (the Plugins page pairs it to the agent
             # row); a standalone plugin carries none.
-            marker = {"package": package_name, "repo": git_url, "source": str(target),
+            marker = {"package": package_name, "repo": pc._scrub_git_url(git_url), "source": str(target),
                       "sourceMtimeMs": halves.mtime_ms((source_dir / "plugin.js").stat())} if package_name else None
             # A standalone plugin installed from a catalog entry records that entry, so the card shows it.
             # ``sha`` = the commit checked out; ``pin`` = the catalog pin it satisfies when that names an
             # annotated-tag object (the agent's catalog record keeps both the same way).
-            origin = ({"catalogName": catalog_name, "repo": git_url, "sha": head,
+            origin = ({"catalogName": catalog_name, "repo": pc._scrub_git_url(git_url), "sha": head,
                        **({"pin": catalog_sha.lower()} if catalog_sha and catalog_sha.lower() != head else {})}
                       if catalog_name and not package_name else None)
             # The exists check and the publish must not interleave with a reconcile pass.

@@ -5,7 +5,7 @@ from prompt_toolkit.document import Document
 
 from hermes_cli.commands import COMMAND_REGISTRY, COMMANDS_BY_CATEGORY, CommandDef, GATEWAY_KNOWN_COMMANDS, command_desktop_meta, gateway_help_lines, infer_argument_mode, resolve_command
 from hermes_cli.commands_completion import SlashCommandAutoSuggest, SlashCommandCompleter
-from hermes_cli.commands_platforms import (_CMD_NAME_LIMIT, _SLACK_RESERVED_COMMANDS, _SLACK_VIA_HERMES_ONLY, _clamp_command_names, _sanitize_telegram_name, discord_skill_commands_by_category, slack_app_manifest, slack_native_slashes, slack_subcommand_map, telegram_bot_commands, telegram_menu_commands)
+from hermes_cli.commands_platforms import (_clamp_command_names, _CMD_NAME_LIMIT, discord_skill_commands_by_category, _sanitize_telegram_name, slack_app_manifest, _SLACK_MAX_SLASH_COMMANDS, slack_native_slashes, _slack_registrable_names, _SLACK_RESERVED_COMMANDS, slack_slash_command_pattern, slack_subcommand_map, _SLACK_VIA_HERMES_ONLY, telegram_bot_commands, telegram_menu_commands)
 
 
 def _completions(completer: SlashCommandCompleter, text: str):
@@ -224,9 +224,9 @@ class TestSlackSubcommandMap:
 
 
 class TestSlackNativeSlashes:
-    """Slack native slash command generation — used to register every
-    COMMAND_REGISTRY entry as a first-class Slack slash, matching Discord
-    and Telegram."""
+    """Slack native slash command generation — registers the most-used
+    COMMAND_REGISTRY entries as first-class Slack slashes within Slack's
+    25-per-app cap; the rest stay reachable via ``/hermes <command>``."""
 
 
     def test_names_respect_slack_limits(self):
@@ -243,7 +243,7 @@ class TestSlackNativeSlashes:
 
         This catches the old behavior where Slack users couldn't invoke
         commands like /btw natively. If a future command surfaces on
-        Telegram but not Slack (because of Slack's 50-slash cap), this
+        Telegram but not Slack (because of Slack's 25-slash cap), this
         test fails loudly so we can curate the list rather than silently
         dropping parity.
 
@@ -261,12 +261,81 @@ class TestSlackNativeSlashes:
         tg_norm = {_norm(n) for n in tg_names}
         reserved_norm = {_norm(n) for n in _SLACK_RESERVED_COMMANDS}
         # Commands deliberately routed through /hermes <command> on Slack only
-        # (Slack's 50-slash cap) are expected to be absent from native slashes.
+        # (Slack's 25-slash cap) are expected to be absent from native slashes.
         via_hermes_norm = {_norm(n) for n in _SLACK_VIA_HERMES_ONLY}
         missing = (tg_norm - slack_norm) - reserved_norm - via_hermes_norm
         assert not missing, (
             f"commands on Telegram but missing from Slack native slashes: {sorted(missing)}"
         )
+
+
+    def test_via_hermes_only_never_return_as_native_slashes(self, monkeypatch):
+        """Demotion is the generator's filter, not a side effect of slot order:
+        over a fixed registry with room to spare, a demoted command never takes
+        a native slot, and taking it off the demotion set puts it back."""
+        from hermes_cli import commands_platforms
+
+        registry = [CommandDef(n, f"{n} command", "Session") for n in ("alpha", "beta", "gamma")]
+        monkeypatch.setattr(commands_platforms, "_gateway_available_commands", lambda: registry)
+        monkeypatch.setattr(commands_platforms, "_iter_plugin_command_entries", list)
+
+        monkeypatch.setattr(commands_platforms, "_SLACK_VIA_HERMES_ONLY", frozenset({"beta"}))
+        assert [n for n, _d, _h in slack_native_slashes()] == ["hermes", "alpha", "gamma"]
+
+        monkeypatch.setattr(commands_platforms, "_SLACK_VIA_HERMES_ONLY", frozenset())
+        assert [n for n, _d, _h in slack_native_slashes()] == ["hermes", "alpha", "beta", "gamma"]
+
+
+    def test_every_demoted_name_still_resolves_via_hermes(self):
+        """Demotion must not mean removal: every _SLACK_VIA_HERMES_ONLY
+        name has to stay reachable through the /hermes handler, or the
+        parity exemption above would be hiding a dead command."""
+        subcommands = slack_subcommand_map()
+        dead = sorted(_SLACK_VIA_HERMES_ONLY - subcommands.keys())
+        assert not dead, f"demoted names unreachable via /hermes: {dead}"
+
+
+    def test_plugin_commands_win_slots_at_the_cap_ahead_of_aliases(self, monkeypatch):
+        """At the cap, plugin commands claim the remaining slots before generated
+        aliases: a dropped plugin command loses its only dedicated entry point,
+        while an alias stays reachable via its canonical slash and /hermes."""
+        from hermes_cli import commands_platforms
+
+        registry = [CommandDef("alpha", "Alpha", "Session", aliases=("al",)),
+                    CommandDef("beta", "Beta", "Session", aliases=("be",))]
+        monkeypatch.setattr(commands_platforms, "_gateway_available_commands", lambda: registry)
+        monkeypatch.setattr(commands_platforms, "_SLACK_VIA_HERMES_ONLY", frozenset())
+        monkeypatch.setattr(commands_platforms, "_SLACK_MAX_SLASH_COMMANDS", 5)
+        monkeypatch.setattr(
+            commands_platforms, "_iter_plugin_command_entries",
+            lambda: [("plug-alpha", "First plugin command", ""),
+                     ("plug-beta", "Second plugin command", "")])
+
+        native = [n for n, _d, _h in slack_native_slashes()]
+        assert native == ["hermes", "alpha", "beta", "plug-alpha", "plug-beta"]
+
+
+    def test_matcher_universe_stays_uncapped_for_grandfathered_apps(self):
+        """The adapter's slash matcher is built from the uncapped registrable
+        universe, not the capped manifest list: an app created under Slack's
+        older 50-command cap keeps its extra commands declared and delivered,
+        and capping the matcher alongside the manifest would leave those
+        arriving with nobody answering (#124762)."""
+        universe = set(_slack_registrable_names())
+        manifest = {n for n, _d, _h in slack_native_slashes()}
+        assert manifest <= universe, "manifest names outside the matcher universe"
+        demoted = universe & _SLACK_VIA_HERMES_ONLY
+        assert demoted, "grandfathered demoted names left the matcher universe"
+        assert demoted <= set(slack_subcommand_map()), (
+            "matcher-answered names with no /hermes route: "
+            f"{sorted(demoted - set(slack_subcommand_map()))}"
+        )
+        assert len(universe) > _SLACK_MAX_SLASH_COMMANDS
+        pattern = slack_slash_command_pattern()
+        assert pattern.match("/hermes")
+        assert pattern.match("/version")  # demoted for the manifest, still answerable at runtime
+        assert not pattern.match("/topic")  # Slack built-in, never ours
+        assert not pattern.match("/hermes-evil")  # alternation must anchor at the name boundary
 
 
 class TestSlackAppManifest:
@@ -282,6 +351,15 @@ class TestSlackAppManifest:
             # should_escape must be present (Slack defaults to True which
             # HTML-escapes args — we want the raw text)
             assert "should_escape" in entry
+
+
+    def test_manifest_never_exceeds_slacks_25_command_ceiling(self):
+        """Slack rejects a manifest whose app would hold more than 25 slash
+        commands outright ("Too many commands. Each app can have up to 25
+        commands associated with it."), so the generator must never emit one."""
+        assert _SLACK_MAX_SLASH_COMMANDS == 25
+        m = slack_app_manifest()
+        assert len(m["features"]["slash_commands"]) <= _SLACK_MAX_SLASH_COMMANDS
 
 
 

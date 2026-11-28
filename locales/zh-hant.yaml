@@ -1493,6 +1493,10 @@ platform:
       expired: "該請求已逾期 — 請重新傳送你的訊息。"
     standalone:
       attachments_not_deliverable: "[已產生 {count} 個附件；無法從排程任務傳送]"
+    document:
+      attachment_alt: "附件：{display_name}"
+      download_hint: "點擊下方按鈕下載 {display_name}"
+
   wecom:
     media:
       kind_image: "圖片"

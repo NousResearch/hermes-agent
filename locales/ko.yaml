@@ -1493,6 +1493,10 @@ platform:
       expired: "요청이 만료됐어요 — 메시지를 다시 보내 주세요."
     standalone:
       attachments_not_deliverable: "[첨부 파일 {count}개 생성됨; 크론에서는 전송할 수 없어요]"
+    document:
+      attachment_alt: "첨부 파일: {display_name}"
+      download_hint: "아래 버튼을 눌러 {display_name}을(를) 다운로드하세요"
+
   wecom:
     media:
       kind_image: "이미지"

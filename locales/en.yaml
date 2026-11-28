@@ -1559,6 +1559,9 @@ platform:
       expired: "That request has expired — send your message again."
     standalone:
       attachments_not_deliverable: "[{count} attachment(s) generated; not deliverable from cron]"
+    document:
+      attachment_alt: "Attachment: {display_name}"
+      download_hint: "Tap the button below to download {display_name}"
 
   wecom:
     media:

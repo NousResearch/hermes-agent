@@ -1493,6 +1493,10 @@ platform:
       expired: "Bu isteğin süresi doldu — mesajınızı yeniden gönderin."
     standalone:
       attachments_not_deliverable: "[{count} ek oluşturuldu; cron'dan teslim edilemiyor]"
+    document:
+      attachment_alt: "Ek: {display_name}"
+      download_hint: "İndirmek için aşağıdaki düğmeye dokunun: {display_name}"
+
   wecom:
     media:
       kind_image: "Görüntü"

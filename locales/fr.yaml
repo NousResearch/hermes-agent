@@ -1742,6 +1742,10 @@ platform:
       expired: "Cette demande a expiré — renvoyez votre message."
     standalone:
       attachments_not_deliverable: "[{count} pièce(s) jointe(s) générée(s) ; non transmissible(s) depuis cron]"
+    document:
+      attachment_alt: "Pièce jointe : {display_name}"
+      download_hint: "Appuyez sur le bouton ci-dessous pour télécharger {display_name}"
+
   wecom:
     media:
       kind_image: "Image"

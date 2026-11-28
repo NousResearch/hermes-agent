@@ -1493,6 +1493,10 @@ platform:
       expired: "Questa richiesta è scaduta — invia di nuovo il messaggio."
     standalone:
       attachments_not_deliverable: "[Allegati generati: {count}; non consegnabili da cron]"
+    document:
+      attachment_alt: "Allegato: {display_name}"
+      download_hint: "Tocca il pulsante qui sotto per scaricare {display_name}"
+
   wecom:
     media:
       kind_image: "Immagine"

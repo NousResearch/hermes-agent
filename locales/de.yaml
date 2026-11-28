@@ -1493,6 +1493,10 @@ platform:
       expired: "Diese Anfrage ist abgelaufen — senden Sie Ihre Nachricht erneut."
     standalone:
       attachments_not_deliverable: "[{count} Anhang/Anhänge erzeugt; aus Cron nicht zustellbar]"
+    document:
+      attachment_alt: "Anhang: {display_name}"
+      download_hint: "Tippe auf die Schaltfläche unten, um {display_name} herunterzuladen"
+
   wecom:
     media:
       kind_image: "Bild"

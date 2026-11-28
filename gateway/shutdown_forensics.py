@@ -214,41 +214,77 @@ def check_systemd_timing_alignment(
     """
     if not os.environ.get("INVOCATION_ID"):
         return None  # Not running under systemd (or at least not directly)
-    # /proc/self/cgroup: "0::/user.slice/.../hermes-gateway.service"
-    unit_name: Optional[str] = None
-    with contextlib.suppress(OSError), open("/proc/self/cgroup", encoding="utf-8") as fh:
-        for line in fh:
-            parts = reversed(line.strip().split("/"))
-            unit_name = next((p for p in parts if p.endswith(".service")), None)
-            if unit_name:
-                break
-    if (timeout_us := _systemd_timeout_stop_us(unit_name) if unit_name else None) is None:
+    unit_name, scope = _systemd_unit_and_scope()
+    if (timeout_us := _systemd_timeout_stop_us(unit_name, scope) if unit_name else None) is None:
         return None
     timeout_stop_sec = timeout_us / 1_000_000.0
     expected = float(resolve_systemd_timeout_stop_sec(drain_timeout, cron_drain_timeout))
-    return {"unit": unit_name, "timeout_stop_sec": timeout_stop_sec, "drain_timeout": drain_timeout,
-            "cron_drain_timeout": cron_drain_timeout, "expected_min": expected,
-            "mismatch": timeout_stop_sec < expected}
+    return {"unit": unit_name, "scope": scope, "timeout_stop_sec": timeout_stop_sec,
+            "drain_timeout": drain_timeout, "cron_drain_timeout": cron_drain_timeout,
+            "expected_min": expected, "mismatch": timeout_stop_sec < expected}
 
 
-def _systemd_timeout_stop_us(unit_name: str) -> Optional[int]:
-    """``TimeoutStopUSec`` of ``unit_name`` in microseconds; ``--user`` first (hermes' usual)."""
-    for flag in (["--user"], []):
+def _systemd_unit_and_scope() -> tuple[Optional[str], Optional[str]]:
+    """``(unit_name, owning manager)`` for this process, read from /proc/self/cgroup."""
+    with contextlib.suppress(OSError), open("/proc/self/cgroup", encoding="utf-8") as fh:
+        return _parse_cgroup_unit_scope(fh.read())
+    return None, None
+
+
+def _parse_cgroup_unit_scope(text: str) -> tuple[Optional[str], Optional[str]]:
+    """``(unit_name, owning manager)`` from ``/proc/self/cgroup`` content.
+
+    ``"0::/system.slice/hermes-gateway.service"`` belongs to the system manager,
+    ``"0::/user.slice/user-0.slice/user@0.service/hermes-gateway.service"`` to the user one.
+    The slice names the manager that owns the unit, so it can be asked first — no heuristic.
+    Scope is ``None`` when the slice is unrecognised (the caller then probes both managers).
+    """
+    unit_name: Optional[str] = None
+    scope: Optional[str] = None
+    for line in text.splitlines():
+        unit_name = next((p for p in reversed(line.strip().split("/")) if p.endswith(".service")), None)
+        if not unit_name:
+            continue
+        if "/system.slice/" in line:
+            scope = "system"
+        elif "/user.slice/" in line:
+            scope = "user"
+        break
+    return unit_name, scope
+
+
+def _systemd_timeout_stop_us(unit_name: str, scope: Optional[str] = None) -> Optional[int]:
+    """``TimeoutStopUSec`` of ``unit_name`` in microseconds, read from the manager that owns it.
+
+    ``--user`` first for a user unit (hermes' usual install), system manager first when the
+    cgroup says ``/system.slice/``. Every probe asks for ``LoadState`` and a manager that has
+    not *loaded* the unit is skipped: ``systemctl --user show <system unit>`` exits 0 and
+    reports the user manager's own ``DefaultTimeoutStopUSec``, which is not this unit's value.
+    A value nobody can attribute to the unit is not a measurement, so the result is ``None``.
+    """
+    flags = [[], ["--user"]] if scope == "system" else [["--user"], []]
+    for flag in flags:
         try:
             result = subprocess.run(
-                ["systemctl", *flag, "show", unit_name, "--property=TimeoutStopUSec"],
+                ["systemctl", *flag, "show", unit_name, "--property=LoadState", "--property=TimeoutStopUSec"],
                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=2.0,
                 check=False,
             )
         except (subprocess.TimeoutExpired, OSError):
             continue
+        if result.returncode != 0:
+            continue
+        props = {k.strip(): v.strip()
+                 for k, v in (line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)}
+        if props.get("LoadState") != "loaded":
+            continue  # not-found (or masked/error): this manager's default is not the unit's value
         # Output: "TimeoutStopUSec=1min 30s" or "TimeoutStopUSec=90000000"
-        for line in result.stdout.splitlines() if result.returncode == 0 else ():
-            if line.startswith("TimeoutStopUSec="):
-                value = line.split("=", 1)[1].strip()
-                timeout_us = int(value) if value.isdigit() else parse_systemd_duration_to_us(value)
-                if timeout_us is not None:
-                    return timeout_us
+        value = props.get("TimeoutStopUSec", "")
+        if not value:
+            continue
+        timeout_us = int(value) if value.isdigit() else parse_systemd_duration_to_us(value)
+        if timeout_us is not None:
+            return timeout_us
     return None
 
 

@@ -179,3 +179,107 @@ class TestParseSystemdDuration:
 # ---------------------------------------------------------------------------
 # check_systemd_timing_alignment
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# check_systemd_timing_alignment — systemd ignores the manager that does not own the unit
+# ---------------------------------------------------------------------------
+
+class TestParseCgroupUnitScope:
+    """Regression for #85117: the cgroup slice names the manager that owns the unit."""
+
+    def test_system_slice_is_system_scope(self):
+        assert sf._parse_cgroup_unit_scope("0::/system.slice/hermes-gateway.service\n") == (
+            "hermes-gateway.service", "system")
+
+    def test_user_slice_is_user_scope(self):
+        assert sf._parse_cgroup_unit_scope(
+            "0::/user.slice/user-1000.slice/user@1000.service/hermes-gateway.service\n"
+        ) == ("hermes-gateway.service", "user")
+
+    def test_cgroup_v1_lines_keep_the_scope(self):
+        assert sf._parse_cgroup_unit_scope(
+            "12:pids:/system.slice/hermes-gateway.service\n1:name=systemd:/system.slice/hermes-gateway.service\n"
+        ) == ("hermes-gateway.service", "system")
+
+    def test_unknown_slice_leaves_scope_unset(self):
+        assert sf._parse_cgroup_unit_scope("0::/hermes-gateway.service\n") == (
+            "hermes-gateway.service", None)
+
+    def test_no_service_unit(self):
+        assert sf._parse_cgroup_unit_scope("0::/init.scope\n") == (None, None)
+
+
+class _FakeSystemctl:
+    """Answers ``systemctl [--user] show <unit> --property=LoadState --property=TimeoutStopUSec``.
+
+    Like the real thing: a manager that has not loaded the unit still exits 0 and reports its
+    own default, which is the whole failure mode in #85117.
+    """
+
+    def __init__(self, answers, failing=()):
+        self.answers = answers
+        self.failing = set(failing)
+        self.calls = []
+
+    def __call__(self, argv, **kwargs):
+        scope = "user" if "--user" in argv else "system"
+        unit = argv[argv.index("show") + 1]
+        self.calls.append((scope, tuple(argv)))
+        if (scope, unit) in self.failing:
+            return subprocess.CompletedProcess(argv, 1, "", "Failed to connect to bus")
+        load_state, value = self.answers.get((scope, unit), ("not-found", "1min 30s"))
+        stdout = f"LoadState={load_state}\nTimeoutStopUSec={value}\n"
+        return subprocess.CompletedProcess(argv, 0, stdout, "")
+
+
+def _probe(monkeypatch, scope, answers, failing=()):
+    monkeypatch.setenv("INVOCATION_ID", "test-invocation")
+    monkeypatch.setattr(sf, "_systemd_unit_and_scope", lambda: ("hermes-gateway.service", scope))
+    fake = _FakeSystemctl(answers, failing)
+    monkeypatch.setattr(sf.subprocess, "run", fake)
+    return fake
+
+
+class TestSystemdTimingAlignmentScope:
+    """Regression for #85117: a system unit's value comes from the system manager."""
+
+    def test_system_unit_reads_the_system_manager_not_the_user_default(self, monkeypatch):
+        fake = _probe(monkeypatch, "system", {
+            ("user", "hermes-gateway.service"): ("not-found", "1min 30s"),
+            ("system", "hermes-gateway.service"): ("loaded", "3min 30s"),
+        })
+        result = sf.check_systemd_timing_alignment(180.0, 30.0)
+        assert result["timeout_stop_sec"] == 210.0
+        assert result["mismatch"] is False
+        assert result["scope"] == "system"
+        assert fake.calls[0][0] == "system", "the owning manager is asked first"
+
+    def test_attribution_is_requested_from_systemctl(self, monkeypatch):
+        fake = _probe(monkeypatch, "system", {})
+        sf.check_systemd_timing_alignment(180.0, 30.0)
+        assert "--property=LoadState" in fake.calls[0][1]
+
+    def test_no_manager_owns_the_unit_means_no_verdict(self, monkeypatch):
+        _probe(monkeypatch, "system", {})  # both managers answer not-found with a default
+        assert sf.check_systemd_timing_alignment(180.0, 30.0) is None
+
+    def test_user_owned_unit_still_measured_and_a_real_mismatch_still_fires(self, monkeypatch):
+        # Positive control: a user unit keeps being read from the user manager, and 60s < 210s
+        # must still warn — the guard must not turn the check into a no-op.
+        fake = _probe(monkeypatch, "user", {
+            ("user", "hermes-gateway.service"): ("loaded", "1min"),
+            ("system", "hermes-gateway.service"): ("loaded", "3min 30s"),
+        })
+        result = sf.check_systemd_timing_alignment(180.0, 30.0)
+        assert result["scope"] == "user"
+        assert result["timeout_stop_sec"] == 60.0
+        assert result["mismatch"] is True
+        assert fake.calls[0][0] == "user", "a user unit is read from the user manager first"
+
+    def test_user_manager_unreachable_falls_through_to_the_system_manager(self, monkeypatch):
+        _probe(monkeypatch, "user", {
+            ("system", "hermes-gateway.service"): ("loaded", "3min 30s"),
+        }, failing=[("user", "hermes-gateway.service")])
+        result = sf.check_systemd_timing_alignment(180.0, 30.0)
+        assert result["timeout_stop_sec"] == 210.0
+        assert result["mismatch"] is False

@@ -18,6 +18,7 @@ import { composerFloatingPill } from '@/components/chat/composer-dock'
 import { Codicon } from '@/components/ui/codicon'
 import { useI18n } from '@/i18n'
 import { wantsNativeBrowser } from '@/lib/external-link'
+import { openResponseAnnotations } from '@/lib/response-annotations'
 import { cn } from '@/lib/utils'
 
 /** Moving between the chip and the pill crosses a gap where neither is hovered.
@@ -81,13 +82,37 @@ export function ComposerDirectiveActions({ editorRef }: { editorRef: RefObject<H
   }, [cancelHide])
 
   useEffect(() => {
+    const onActivateAnnotation = (event: MouseEvent | KeyboardEvent) => {
+      if (event instanceof KeyboardEvent && event.key !== 'Enter' && event.key !== ' ') {
+        return
+      }
+
+      const editor = editorRef.current
+      const chip = editor && actionableChipAt(event.target, editor)
+
+      if (chip?.dataset.refKind !== 'annotation') {
+        return
+      }
+
+      event.preventDefault()
+      event.stopPropagation()
+      const rect = chip.getBoundingClientRect()
+      const remove = event.target instanceof Element && Boolean(event.target.closest('[data-annotation-remove]'))
+      openResponseAnnotations({ value: chip.dataset.refId!, editable: true, anchor: rect, remove })
+      setAnchor(null)
+    }
+
     const onPointerOver = (event: PointerEvent) => {
       const editor = editorRef.current
       const chip = editor && actionableChipAt(event.target, editor)
 
-      if (!chip) {
+      if (chip?.dataset.refKind === 'annotation') {
+        if (!(event.relatedTarget instanceof Node) || !chip.contains(event.relatedTarget)) {
+          openResponseAnnotations({ value: chip.dataset.refId!, editable: true, anchor: chip.getBoundingClientRect(), interaction: 'hover' })
+        }
         return
       }
+      if (!chip) { return }
 
       cancelHide()
       setAnchor(current => (current?.chip === chip ? current : anchorFor(chip)))
@@ -104,20 +129,40 @@ export function ComposerDirectiveActions({ editorRef }: { editorRef: RefObject<H
         return
       }
 
+      if (chip.dataset.refKind === 'annotation') {
+        openResponseAnnotations({ value: chip.dataset.refId!, editable: true, interaction: 'leave' })
+        return
+      }
       hideSoon()
+    }
+
+    const onAnnotationFocus = (event: FocusEvent) => {
+      const editor = editorRef.current
+      const chip = editor && actionableChipAt(event.target, editor)
+      if (chip?.dataset.refKind === 'annotation' && !(event.relatedTarget instanceof Node && chip.contains(event.relatedTarget))) {
+        openResponseAnnotations({ value: chip.dataset.refId!, editable: true, anchor: chip.getBoundingClientRect(), interaction: event.type === 'focusin' ? 'focus' : 'leave' })
+      }
     }
 
     // The chip can move or vanish under a parked pointer: the editor scrolls,
     // the window resizes, or the user deletes the reference the pill points at.
     const reanchor = () => setAnchor(current => (current ? anchorFor(current.chip) : null))
 
+    document.addEventListener('focusin', onAnnotationFocus)
+    document.addEventListener('focusout', onAnnotationFocus)
     document.addEventListener('pointerover', onPointerOver)
+    document.addEventListener('click', onActivateAnnotation, true)
+    document.addEventListener('keydown', onActivateAnnotation, true)
     document.addEventListener('pointerout', onPointerOut)
     window.addEventListener('scroll', reanchor, true)
     window.addEventListener('resize', reanchor)
 
     return () => {
+      document.removeEventListener('focusin', onAnnotationFocus)
+      document.removeEventListener('focusout', onAnnotationFocus)
       document.removeEventListener('pointerover', onPointerOver)
+      document.removeEventListener('click', onActivateAnnotation, true)
+      document.removeEventListener('keydown', onActivateAnnotation, true)
       document.removeEventListener('pointerout', onPointerOut)
       window.removeEventListener('scroll', reanchor, true)
       window.removeEventListener('resize', reanchor)

@@ -105,6 +105,21 @@ def send_message_response(payload: dict) -> dict:
     return {"message": payload}
 
 
+def return_immediately(params: dict) -> bool:
+    """Whether SendMessage asked for an early in-progress Task response.
+
+    A2A v1.0 uses ``configuration.returnImmediately``. Accept the proto's
+    snake-case spelling for direct JSON callers and the v0.3 ``blocking=false``
+    equivalent; malformed truthy values must not silently opt into async mode.
+    """
+    config = params.get("configuration") if isinstance(params, dict) else None
+    if not isinstance(config, dict):
+        return False
+    return (config.get("returnImmediately") is True
+            or config.get("return_immediately") is True
+            or config.get("blocking") is False)
+
+
 def unwrap_send_message_response(result: Any) -> Any:
     """Task/Message inside a v1.0 response; legacy bare payloads pass through."""
     if isinstance(result, dict):
@@ -382,11 +397,14 @@ class TaskStore:
         with self._lock:
             return dict(rec) if (rec := self._scoped(task_id, agent_slug, tenant)) else None
 
-    def complete(self, task_id: str, state: str, reply: str = "") -> Optional[dict]:
-        """Transition a task to a terminal state. Idempotent."""
+    def complete(self, task_id: str, state: str, reply: str = "", *, force_terminal: bool = False) -> Optional[dict]:
+        """Transition a task to a terminal state (or INPUT_REQUIRED). Idempotent.
+        ``force_terminal`` allows CancelTask or hard timeout to override INPUT_REQUIRED."""
         with self._lock:
             rec = self._tasks.get(task_id)
             if not rec or rec["state"] in TERMINAL_STATES:
+                return None
+            if rec["state"] == STATE_INPUT_REQUIRED and not force_terminal:
                 return None
             rec.update(state=state, reply=reply, completed_at=time.time())
             watchers = self._watchers.pop(task_id, [])
@@ -402,7 +420,7 @@ class TaskStore:
             if not (rec := self._scoped(task_id, agent_slug, tenant)):
                 return None
             fut: Future = Future()
-            if rec["state"] in TERMINAL_STATES:
+            if rec["state"] in TERMINAL_STATES or rec["state"] == STATE_INPUT_REQUIRED:
                 fut.set_result((rec["state"], rec.get("reply", "")))
             else:
                 self._watchers.setdefault(task_id, []).append(fut)
@@ -422,16 +440,23 @@ class TaskStore:
         next_offset = offset + page_size if offset + page_size < total else 0
         return (page, next_offset, total) if with_total else (page, next_offset)
 
-    def fail_orphans(self, timeout_seconds: float = 300, *, exclude: set[str] | None = None) -> list[str]:
+    def fail_orphans(self, timeout_seconds: float = 300, *, exclude: set[str] | None = None,
+                     hard_timeout: float = 3600.0) -> list[str]:
         excluded = exclude or set()
+        now = time.time()
         with self._lock:
-            stale = [tid for tid, rec in self._tasks.items()
-                     if tid not in excluded and rec["state"] not in TERMINAL_STATES
-                     and time.time() - rec["created_at"] > timeout_seconds]
-        return [tid for tid in stale if self.complete(tid, STATE_FAILED, "[task orphaned — no reply produced]")]
+            stale = [
+                tid for tid, rec in self._tasks.items()
+                if rec["state"] not in TERMINAL_STATES
+                and (
+                    (tid not in excluded and rec["state"] != STATE_INPUT_REQUIRED and now - rec["created_at"] > timeout_seconds)
+                    or (now - rec["created_at"] > hard_timeout)
+                )
+            ]
+        return [tid for tid in stale if self.complete(tid, STATE_FAILED, "[task orphaned — no reply produced]", force_terminal=True)]
 
     def _trim_locked(self) -> None:
-        terminal = [tid for tid, rec in self._tasks.items() if rec["state"] in TERMINAL_STATES]
+        terminal = [tid for tid, rec in self._tasks.items() if rec["state"] in TERMINAL_STATES or rec["state"] == STATE_INPUT_REQUIRED]
         for tid in terminal[:max(0, len(terminal) - self._MAX_TERMINAL)]:
             self._tasks.pop(tid, None)
 

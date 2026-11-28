@@ -26,7 +26,7 @@ from gateway.platforms.base_kanban_media import _kanban_attachment_roots, _kanba
 from gateway.runtime_footer import footer_onto_photo_caption, send_footer_unless_captioned
 from gateway.platforms.session_model import _SessionModelSettingsMixin
 from utils import normalize_proxy_url, unlink_files_older_than
-from agent.file_safety import is_project_env_basename
+from gateway.platforms.base_secret_files import is_undeliverable_secret_file
 from agent.i18n import t
 from agent.retry_utils import jittered_backoff
 from agent.proxy_bypass import first_proxy_env_value, should_bypass_proxy as _should_bypass_proxy
@@ -1047,11 +1047,8 @@ def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[s
     resolved = _translate_docker_container_media_path(expanded, session_key=session_key) or _resolve_path(expanded, strict=True)
     if resolved is None or not resolved.is_file():
         return None
-    # Project-local secret env files (.env, .envrc, ...) are read-blocked anywhere on disk by
-    # agent/file_safety.get_read_block_error; mirror that here (the denylist's stated invariant)
-    # before the allowlist, so they are never deliverable in any mode or location. Judged on the
-    # resolved name, so a symlink to a .env is caught; the predicate case-folds.
-    if is_project_env_basename(resolved.name):
+    # Before the allowlist, in every mode: project .env files, and (opt-in) a file holding a profile secret.
+    if is_undeliverable_secret_file(resolved):
         return None
     # Cache / operator allowlist is trusted unconditionally, regardless of mode.
     for root in _media_delivery_allowed_roots():

@@ -20,6 +20,7 @@ from __future__ import annotations
 import re
 
 from agent.redact import _PREFIX_SUBSTRINGS
+from agent.redact_env_values import registered_secret_forms
 from agent.redact_control_split import _strip_shadow
 from agent.redact_phone_policy import redact_for_chat_egress as redact_for_egress
 
@@ -186,6 +187,23 @@ def _open_tail_start(text: str, end: int) -> int:
     return best
 
 
+def _registered_value_cut(text: str, end: int) -> int:
+    """``end`` moved back to the start of any of the profile's exact secret values (``.env`` /
+    secret-source) it would cut: one still arriving at the tail, or a complete one ``end`` falls
+    inside. Such a value has no shape the probes above can see, and either half alone no longer
+    matches it, so a cut through it would settle its head raw."""
+    n = len(text)
+    for form in registered_secret_forms():
+        lo = max(0, min(end, n) - len(form) + 1)
+        start = text.find(form[0], lo, end)  # candidate starts only: bounded by the value's length
+        while start != -1:
+            if form.startswith(text[start:start + len(form)]) and start + len(form) > end:
+                end = start
+                break
+            start = text.find(form[0], start + 1, end)
+    return end
+
+
 def settled_end(text: str) -> int:
     """Index where the text that can no longer become part of a secret ends."""
     n = len(text)
@@ -219,6 +237,7 @@ def settled_end(text: str) -> int:
             end = start
         if (begin := _open_key_block(text, block_lo, end)) >= 0:
             end = min(end, begin)
+        end = _registered_value_cut(text, end)
         if end == prev:
             return end
 

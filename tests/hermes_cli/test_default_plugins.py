@@ -49,6 +49,20 @@ def test_a_tree_the_left_core_migrator_could_not_enable_is_owed_not_settled(tmp_
     assert installs == [(home, "accent-picker")]
 
 
+@pytest.mark.parametrize("name", ["platforms/weixin", "weixin-platform"])
+def test_a_core_era_disable_keeps_the_tree_the_left_core_migrator_could_not_enable(tmp_path, installs, name):
+    """The same refused-enable tree, in a home whose ``plugins.disabled`` names Weixin by its core-era key: the
+    user chose it off, so the default pass keeps that copy as it is (never discards it to retry a download)."""
+    home = tmp_path / "home"
+    (home / "plugins" / "weixin").mkdir(parents=True)
+    (home / "config.yaml").write_text(f"plugins:\n  disabled: [{name}]\n", encoding="utf-8")
+    lcm._placed(home, "weixin").parent.mkdir(parents=True)
+    lcm._placed(home, "weixin").touch()
+
+    assert default_plugins.install_defaults(home, entries=[_entry("weixin")])["installed"] == []
+    assert installs == [] and (home / "plugins" / "weixin").is_dir()
+
+
 def test_default_is_installed_once_and_a_removal_sticks(tmp_path, installs):
     home = tmp_path / "home"
     home.mkdir()

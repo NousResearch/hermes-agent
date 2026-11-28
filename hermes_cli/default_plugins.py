@@ -173,7 +173,7 @@ def _settled(home: Path, entry) -> bool:
     Explicit ``plugins.disabled`` is checked before any stale ``installing`` marker so a crashed
     automatic attempt never deletes or re-enables a plugin the user disabled."""
     from hermes_cli.left_core_migration import _placed as _left_core_placed
-    from hermes_cli.left_core_migration import _plugins_listed
+    from hermes_cli.left_core_migration import _plugins_listed, legacy_plugin_keys
     from hermes_cli.memory_provider_migration import _failure_stamp
     target = _installed_dir(home, entry)
     enabled, disabled = _plugins_listed(home, _entry_spellings(entry, target))
@@ -185,7 +185,8 @@ def _settled(home: Path, entry) -> bool:
         return _placed(home, entry).exists()  # the tree a failed attempt left is gone: the user removed it
     if not _failure_stamp(home, _attempt(entry)).exists() and not _left_core_placed(home, entry.name).exists():
         return True  # neither installer left it unfinished: the user's tree
-    return enabled
+    # An unfinished tree is kept when the user chose it off by its core-era key too: the retry would discard it.
+    return enabled or _plugins_listed(home, tuple(sorted(legacy_plugin_keys(entry.name))))[1]
 
 
 def _attempt(entry) -> str:

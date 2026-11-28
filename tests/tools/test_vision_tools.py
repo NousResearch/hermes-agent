@@ -95,6 +95,20 @@ class TestDetermineMimeType:
         # Unknown extensions fall back to JPEG.
         assert _determine_mime_type(Path("file.xyz")) == "image/jpeg"
 
+    def test_bytes_win_over_the_extension(self, tmp_path):
+        """A capture helper writing JPEG bytes into ``shot.png`` used to declare image/png and the
+        provider rejected the request; the magic bytes decide now."""
+        lying = tmp_path / "shot.png"
+        lying.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 32)
+        assert _determine_mime_type(lying) == "image/jpeg"
+        assert _image_to_base64_data_url(lying).startswith("data:image/jpeg;base64,")
+
+        # And the mirror case: real PNG bytes behind a .jpg name.
+        other = tmp_path / "capture.jpg"
+        other.write_bytes(VALID_PNG + b"\x00" * 8)
+        assert _determine_mime_type(other) == "image/png"
+        assert _image_to_base64_data_url(other).startswith("data:image/png;base64,")
+
 
 # ---------------------------------------------------------------------------
 # _image_to_base64_data_url

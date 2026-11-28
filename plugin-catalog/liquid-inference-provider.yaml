@@ -1,17 +1,18 @@
 name: liquid-inference-provider
+title: Architect Inference
 repo: https://github.com/architect-xyz/hermes-liquid-inference
-sha: acd120f007367c1f422d3cd6ffe643f916f0b5f7
-description: "Liquid Inference, an auction exchange for LLM inference, as a Hermes model provider (provider id `liquid`): the exchange sends each request to the eligible offer with the lowest estimated charge, and each request carries a cap on its charge (1 USD by default; set `model.default_headers.x-liquid-cap-usd` to change it). Submitted by Architect, the operator of Liquid Inference. Disclosure — registers one model provider at import and nothing else (no tools, hooks, commands or threads). Chat requests (full prompts and tool results), auxiliary tasks (model `liquid.auto`) and the model list go through Hermes's own client to https://router.inference.ai.exchange/v1 (or LIQUID_BASE_URL) with LIQUID_API_KEY. The exchange forwards each request to whichever third-party provider wins its auction. Each request is billed up to its `x-liquid-cap-usd` cap (1 USD by default, set with `model.default_headers.x-liquid-cap-usd`) and carries `X-Title: Hermes Agent`. A top-level `reasoning_effort` is sent only when you select a level."
+sha: 8667e5284836fcef447ef8f43865e88edbaf8ab3
+description: "Architect Inference (formerly Liquid Inference), an auction exchange for LLM inference, as a Hermes model provider (provider id `architect`; `liquid` stays an alias): the exchange sends each request to the eligible offer with the lowest estimated charge, and each request carries a cap on its charge (1 USD by default; set `model.default_headers.x-architect-cap-usd` to change it). Submitted by Architect, the operator of Architect Inference. Disclosure — registers one model provider at import and nothing else (no tools, hooks, commands or threads). Chat requests (full prompts and tool results), auxiliary tasks (model `architect.auto`) and the model list go through Hermes's own client to https://router.inference.ai.exchange/v1 (or ARCHITECT_BASE_URL) with ARCHITECT_API_KEY (LIQUID_API_KEY when that is not set). The exchange forwards each request to whichever third-party provider wins its auction. Each request is billed up to its x-architect-cap-usd cap (1 USD by default, set with `model.default_headers.x-architect-cap-usd`) and carries `X-Title: Hermes Agent`. Task requests send `reasoning_effort: medium` unless you select another level; `none` or reasoning off sends no effort."
 maintainer: architect-xyz
 tier: community
 category: models
 requires_hermes: ">=0.21.6"
 docs_url: https://github.com/architect-xyz/hermes-liquid-inference
-version: "0.2.0"
+version: "0.4.0"
 platforms: []
 capabilities:
   provides_tools: []
   provides_hooks: []
   provides_middleware: []
   requires_env:
-  - LIQUID_API_KEY
+  - ARCHITECT_API_KEY

@@ -39,6 +39,9 @@ minimumReleaseAgeExclude:
 overrides:
   '@electron/osx-sign>isbinaryfile': 5.0.7
   lodash: 4.18.1
+  '@eslint/config-array>minimatch': 11.0.1  # GHSA-g3hv-75wg-m249 / CVE-2026-118764
+  '@typescript-eslint/typescript-estree>minimatch': 11.0.1
+  'eslint>minimatch': 11.0.1
   protobufjs: '^8.7.1'
   brace-expansion: 5.0.12
   dompurify: 3.4.17

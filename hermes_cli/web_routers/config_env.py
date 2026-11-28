@@ -977,16 +977,77 @@ def delete_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
         return response
 
 
+def _resolve_saved_custom_endpoint_key(endpoint_id: str, base_url: str) -> str:
+    """Return the stored API key for *endpoint_id* when probing the same origin.
+
+    Matches the origin boundary enforced by ``_drop_credentials_on_origin_move`` so
+    a Test click on a saved endpoint reuses its stored credential without ever
+    shipping it to a different scheme, host, or port.
+    """
+    from agent.secret_scope import get_secret_str
+    from utils import same_base_url_origin
+
+    cfg = load_config()
+    _stored_key, entry = _resolve_custom_endpoint_entry(cfg.get("providers"), endpoint_id)
+    if entry is None:
+        slug = _custom_endpoint_id(endpoint_id)
+        for item in get_compatible_custom_providers(cfg):
+            if not item.get("provider_key") and _custom_endpoint_id(item.get("name", "")) == slug:
+                entry = item
+                break
+    if entry is None and endpoint_id == "custom":
+        model_cfg = cfg.get("model")
+        if isinstance(model_cfg, dict) and str(model_cfg.get("provider") or "").strip().lower() == "custom":
+            if any(str(model_cfg.get(f) or "").strip() for f in ENDPOINT_ADDRESS_FIELDS):
+                entry = model_cfg
+    if not isinstance(entry, dict):
+        return ""
+
+    saved_url = next(
+        (str(entry.get(f) or "").strip() for f in ENDPOINT_ADDRESS_FIELDS if str(entry.get(f) or "").strip()),
+        "",
+    )
+    if not saved_url or not same_base_url_origin(saved_url, base_url):
+        return ""
+
+    key_env = str(entry.get("key_env") or entry.get("api_key_env") or "").strip()
+    if key_env:
+        secret = get_secret_str(key_env, "").strip()
+        if secret:
+            return secret
+    plaintext = str(entry.get("api_key") or "").strip()
+    if plaintext and not _ENV_REF_RE.fullmatch(plaintext):
+        return plaintext
+
+    try:
+        from hermes_cli import runtime_provider as rp
+        from hermes_cli.runtime_provider_custom import _pool_probe_key
+
+        pooled = (_pool_probe_key(rp, saved_url, _stored_key or entry.get("name")) or "").strip()
+        if pooled and not _ENV_REF_RE.fullmatch(pooled):
+            return pooled
+    except (ImportError, OSError, ValueError, KeyError, TypeError, AttributeError, RuntimeError):
+        _log.debug("pool probe key lookup failed for %s", endpoint_id, exc_info=True)
+    return ""
+
+
 @router.post("/api/providers/custom-endpoints/validate")
-async def validate_custom_endpoint(body: CustomEndpointUpdate):
+async def validate_custom_endpoint(body: CustomEndpointUpdate, profile: Optional[str] = None):
     """Probe a custom endpoint by calling its OpenAI-compatible /models URL."""
     base_url = (body.base_url or "").strip().rstrip("/")
     if not base_url:
         return {"ok": False, "reachable": True, "message": "Enter an endpoint URL first.", "models": []}
 
+    api_key = body.api_key.strip() if body.api_key is not None else ""
+    endpoint_id = (body.id or "").strip()
+    if body.api_key is None and endpoint_id:
+        api_key = await config_scoped_to_thread(
+            profile, lambda: _resolve_saved_custom_endpoint_key(endpoint_id, base_url)
+        )
+
     headers = {"Accept": "application/json"}
-    if body.api_key and body.api_key.strip():
-        headers["Authorization"] = f"Bearer {body.api_key.strip()}"
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
 
     resolved, resp = await _probe_openai_compatible_models(base_url, headers)
     if resp is None:
@@ -1049,26 +1110,49 @@ def _no_models_probe_message(resp: Any, base_url: str) -> str:
             "Start a model on that endpoint and try again.")
 
 
+def _probe_response_rank(resp: Any) -> int:
+    """Rank ``/models`` probe candidates so a real catalog or auth rejection
+    beats an SPA catch-all HTML page or 404 (ties keep the first candidate)."""
+    if resp.is_success:
+        if _parse_model_entries(resp):
+            return 5
+        try:
+            payload = resp.json()
+        except (ValueError, TypeError):
+            payload = None
+        if isinstance(payload, (dict, list)):
+            return 4
+        return 1
+    if resp.status_code in (401, 403):
+        return 3
+    if resp.status_code == 404:
+        return 0
+    return 2
+
+
 async def _probe_openai_compatible_models(base_url: str, headers: Optional[dict]) -> tuple[str, Any]:
     """GET ``{base}/models``, then ``{base}/v1/models`` (or the ``/v1``-stripped variant) when the
-    first answers a non-success. Returns ``(resolved_base_url, response)`` — the base that served the
-    model list is what the caller must PERSIST: the runtime appends ``/chat/completions`` to the saved
-    URL verbatim, so a bare host root that only "detected" via ``/v1/models`` would 404 every chat
-    (#65488). ``response`` is None when no candidate could be reached at all."""
+    first does not return a usable model list. Returns ``(resolved_base_url, response)`` — the base
+    that served the model list is what the caller must PERSIST: the runtime appends
+    ``/chat/completions`` to the saved URL verbatim, so a bare host root that only "detected" via
+    ``/v1/models`` would 404 every chat (#65488). ``response`` is None when no candidate could be
+    reached at all."""
     base = base_url.rstrip("/")
     alternate = base[:-3].rstrip("/") if base.lower().endswith("/v1") else base + "/v1"
     resolved, resp = base, None
+    best_rank = -1
     async with _endpoint_probe_client(base, 8.0) as client:
         for candidate in (base, alternate):
             try:
                 candidate_resp = await client.get(candidate + "/models", headers=headers)
             except Exception:
                 continue
-            # Keep the most telling failure: a 401/403 from the /v1 alternate says "server is
-            # there, key rejected", which beats the typed root's 404 (wrong path).
-            if resp is None or candidate_resp.is_success or resp.status_code == 404:
-                resolved, resp = candidate, candidate_resp
-            if candidate_resp.is_success:
+            # Keep the most informative response: a real JSON model list or 401/403 from /v1
+            # must not be overwritten by a 200 HTML SPA catch-all on the alternate path.
+            rank = _probe_response_rank(candidate_resp)
+            if resp is None or rank > best_rank:
+                resolved, resp, best_rank = candidate, candidate_resp, rank
+            if best_rank == 5:
                 break
     return resolved, resp
 

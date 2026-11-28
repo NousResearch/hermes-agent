@@ -103,6 +103,23 @@ def make_message(*, message_id=1, author_id=42, content="please ingest", reactio
     )
 
 
+@pytest.mark.asyncio
+async def test_backfill_marks_only_recovered_ingress_events(adapter, monkeypatch):
+    monkeypatch.setattr(adapter, "_discord_require_mention", lambda: False)
+    monkeypatch.setattr(adapter, "_get_no_thread_channels", lambda: {"*"})
+    monkeypatch.setattr(adapter, "_discord_free_response_channels", lambda: {"*"})
+    monkeypatch.setattr(adapter, "_discord_free_response_auto_thread", lambda: False)
+    monkeypatch.setattr(adapter, "_text_batch_delay_seconds", 0)
+    monkeypatch.setattr(adapter, "handle_message", AsyncMock())
+    monkeypatch.delattr(adapter, "_handle_message")
+
+    assert await adapter._dispatch_recovered_message(make_message(message_id=10))
+    assert await adapter._handle_message(make_message(message_id=11))
+
+    events = [call.args[0] for call in adapter.handle_message.await_args_list]
+    assert [(event.message_id, event.recovered) for event in events] == [("10", True), ("11", False)]
+
+
 def make_bot_message(*, message_id=1, content="please ingest", channel=None, mentions=None):
     message = make_message(
         message_id=message_id,

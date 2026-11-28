@@ -121,7 +121,8 @@ class CLIInitMixin:
         # A local /reasoning show|hide or /footer saves the per-platform ``cli`` key: read it (T7).
         from gateway.display_config import local_display_config
         display = local_display_config(CLI_CONFIG["display"])
-        self.compact = compact if compact is not None else display.get("compact", False)
+        # CLI args win over config; compact defaults from config (None → read config)
+        self.compact = display.get("compact", False) if compact is None else compact
         # tool_progress: "off" | "new" | "all" | "verbose"; YAML 1.1 parses bare `off` as False.
         _raw_tp = display.get("tool_progress", "all")
         self.tool_progress_mode = "off" if _raw_tp is False else str(_raw_tp)

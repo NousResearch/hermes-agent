@@ -58,7 +58,8 @@ def _has_healthy_oauth_fallback_for_apikey_provider(provider_label: str) -> bool
 def _build_apikey_providers_list() -> list:
     """Build the API-key provider health-check list once and cache it.
 
-    Tuple format: (name, env_vars, default_url, base_env, supports_models_endpoint). Base list augmented
+    Tuple format: (name, env_vars, default_url, base_env, supports_models_endpoint, probe_fallback_key).
+    Base list augmented
     with any ProviderProfile with auth_type="api_key" not already present — adding
     plugins/model-providers/<name>/ is sufficient to get into doctor.
     """
@@ -115,7 +116,10 @@ def _build_apikey_providers_list() -> list:
                 continue
             _base_var = next((v for v in _pp.env_vars if _is_url(v)), None)
             _models_url = (_pp.models_url or (_pp.base_url.rstrip("/") + "/models")) if _pp.base_url else None
-            _static.append((_label, _key_vars, _models_url, _base_var, getattr(_pp, "supports_health_check", True)))
+            # Profile fallback keys can belong to another regional profile.  Doctor must not send
+            # one of those keys to this profile's endpoint just because the runtime can fall back to it.
+            _static.append((_label, _key_vars, _models_url, _base_var,
+                            getattr(_pp, "supports_health_check", True), False))
     except Exception:
         pass
     return _static
@@ -174,9 +178,12 @@ def _probe_anthropic() -> ProbeResult:
     return _row(name, *{200: ("ok",), 401: ("fail", "(invalid API key)")}.get(r.status_code, ("warn", "(couldn't verify)")))
 
 
-def _probe_apikey_provider(pname, env_vars, default_url, base_env, supports_health_check) -> ProbeResult:
-    key = next((k for k in (os.getenv(ev, "") for ev in env_vars) if k), "")
+def _probe_apikey_provider(pname, env_vars, default_url, base_env, supports_health_check,
+                           probe_fallback_key: bool = True) -> ProbeResult:
+    key_var, key = next(((ev, key) for ev in env_vars if (key := os.getenv(ev, ""))), (None, ""))
     if not key:
+        return _skip(pname)
+    if key_var != env_vars[0] and not probe_fallback_key:
         return _skip(pname)
     label = pname.ljust(20)
     if not supports_health_check:
@@ -190,7 +197,7 @@ def _probe_apikey_provider(pname, env_vars, default_url, base_env, supports_heal
             if r.status_code == 400:  # Anthropic-shaped 400 still proves route + auth (#66756)
                 return _row(pname, "ok", label=label)
             if r.status_code == 403:
-                return _row(pname, "fail", "(access denied)", [f"Check {env_vars[0]} in .env"], label=label)
+                return _row(pname, "fail", "(access denied)", [f"Check {key_var} in .env"], label=label)
         else:
             r = httpx.get(url, headers=headers, timeout=10)
         if pname == "Alibaba/DashScope" and not base and r.status_code == 401:
@@ -198,7 +205,7 @@ def _probe_apikey_provider(pname, env_vars, default_url, base_env, supports_heal
     except Exception as e:
         return _row(pname, "warn", f"({e})", label=label)
     if r.status_code == 401:
-        return _row(pname, "fail", "(invalid API key)", [f"Check {env_vars[0]} in .env"], label=label)
+        return _row(pname, "fail", "(invalid API key)", [f"Check {key_var} in .env"], label=label)
     return _row(pname, "ok", label=label) if r.status_code == 200 else _row(pname, "warn", f"(HTTP {r.status_code})", label=label)
 
 

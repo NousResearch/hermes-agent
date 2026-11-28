@@ -444,6 +444,9 @@ def _write_zip_entries(
                 _write_zip_file(zf, abs_path, str(rel_path))
                 if track_bytes:
                     total_bytes += abs_path.stat().st_size
+        except FileNotFoundError as exc:
+            logger.warning("Backup skipped vanished file %s: %s", rel_path, exc)
+            continue
         except (PermissionError, OSError, ValueError) as exc:
             on_error(rel_path, exc)
             continue
@@ -567,6 +570,8 @@ def _run_backup_locked(args, hermes_root: Path) -> bool:
             try:
                 _write_zip_file(zf, abs_path, arcname)
                 total_bytes += abs_path.stat().st_size
+            except FileNotFoundError as exc:
+                logger.warning("Backup skipped vanished file %s: %s", arcname, exc)
             except (PermissionError, OSError, ValueError) as exc:
                 errors.append(f"{arcname}: {exc}")
     elapsed = time.monotonic() - t0

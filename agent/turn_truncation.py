@@ -206,6 +206,7 @@ class TruncationVerdict:
     truncated_tool_call_retries: int
     retry_count: int
     compression_attempts: int
+    active_system_prompt: Any = None
 
 
 @dataclass(kw_only=True)
@@ -269,7 +270,9 @@ def _abort_reason(agent: Any, content: Any, has_tool_calls: bool) -> Optional[tu
     return None
 
 
-def _content_filter_fallback(st: _Trunc, _retry: TurnRetryState) -> Optional[TruncationVerdict]:
+def _content_filter_fallback(
+    st: _Trunc, _retry: TurnRetryState, *, api_messages=None, active_system_prompt=None,
+) -> Optional[TruncationVerdict]:
     """Content-filter stream stall → fallback. ``_content_filter_terminated`` is
     content-deterministic, so escalate before retrying the primary; without a fallback
     fall through to normal continuation (best-effort, may loop)."""
@@ -286,6 +289,13 @@ def _content_filter_fallback(st: _Trunc, _retry: TurnRetryState) -> Optional[Tru
     agent._emit_diagnostic_status("Content filter terminated stream; switching to fallback...")
     if agent._try_activate_fallback(reason=FailoverReason.content_policy_blocked):
         logger.warning("%sContent filter terminated the stream — switched to fallback", agent.log_prefix)
+        # This path restarts with rebuilt messages. Those are built from
+        # active_system_prompt, which still names the model the filter rejected
+        # unless the in-flight system message is refreshed here.
+        if api_messages is not None:
+            from agent.conversation_loop import _sync_failover_system_message
+            st.active_system_prompt = _sync_failover_system_message(
+                agent, api_messages, active_system_prompt)
         # Roll partial content back to the last clean turn so the fallback gets a
         # coherent continuation point; unmark survivors (their text left the partial).
         if st.truncated_response_parts:
@@ -458,7 +468,7 @@ def recover_from_truncation(
     messages: list[dict[str, Any]], conversation_history: Any, api_kwargs: Any, api_call_count: int,
     effective_task_id: Any, current_turn_user_idx: Any, length_continue_retries: int,
     truncated_response_parts: list[tuple[str, bool]], truncated_tool_call_retries: int, retry_count: int,
-    compression_attempts: int,
+    compression_attempts: int, api_messages=None, active_system_prompt=None,
 ) -> TruncationVerdict:
     """Recover from a truncated response. Order is load-bearing: thinking exhaustion and
     repetition abort BEFORE any continuation; a content-filter stall escalates to the
@@ -531,7 +541,8 @@ def recover_from_truncation(
         return st.end_turn(user_response, error)
 
     if agent.api_mode in _CONTINUABLE_MODES:
-        cf = _content_filter_fallback(st, _retry)
+        cf = _content_filter_fallback(
+            st, _retry, api_messages=api_messages, active_system_prompt=active_system_prompt)
         if cf is not None:
             return cf
         if _trunc_msg is not None:

@@ -1719,6 +1719,26 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
     return msg
 
 
+_FALLBACK_IDENTITY_OPEN = "\n\n[Fallback identity]"
+_FALLBACK_IDENTITY_RE = re.compile(r"\n\n\[Fallback identity\].*?\[/Fallback identity\]", re.DOTALL)
+
+
+def append_fallback_identity_note(agent, old_model: str, old_provider: str, fb_model: str, fb_provider: str) -> None:
+    """After a mid-turn fallback, tell the model what it really is. A queued ``/model`` switch note
+    ("[Note: model was just switched ... to X]") rides in the user message and otherwise wins over
+    the rewritten ``Model:`` line, so the fallback answers as X. Stripped by the next
+    ``rewrite_prompt_model_identity`` (primary restore / later fallback)."""
+    sp = getattr(agent, "_cached_system_prompt", None)
+    if not isinstance(sp, str) or not sp:
+        return
+    sp = _FALLBACK_IDENTITY_RE.sub("", sp)
+    agent._cached_system_prompt = (
+        f"{sp}{_FALLBACK_IDENTITY_OPEN} The requested model {old_model} (via {old_provider}) failed for this turn. "
+        f"You are actually {fb_model} via {fb_provider}, running as an automatic fallback. Any "
+        f"\"[Note: model was just switched ...]\" in the user's message names the requested model, not you. "
+        f"If asked which model you are, say {fb_model} (fallback for {old_model}). [/Fallback identity]")
+
+
 def rewrite_prompt_model_identity(agent, model: str, provider: str) -> None:
     """Rewrite the cached prompt's ``Model:``/``Provider:`` lines after a provider switch.
 
@@ -1728,6 +1748,7 @@ def rewrite_prompt_model_identity(agent, model: str, provider: str) -> None:
     sp = getattr(agent, "_cached_system_prompt", None)
     if not isinstance(sp, str) or not sp:
         return
+    sp = _FALLBACK_IDENTITY_RE.sub("", sp)
     for label, value in (("Model", model), ("Provider", provider)):
         if not value:
             continue
@@ -2017,6 +2038,7 @@ def try_activate_fallback(agent, reason: FailoverReason | None = None, reset_at=
             old_model, old_provider = bound
             fb_model = agent.model  # normalized by the binder
             rewrite_prompt_model_identity(agent, fb_model, fb_provider)
+            append_fallback_identity_note(agent, old_model, old_provider, fb_model, fb_provider)
 
             notice = (
                 f"⚠️ Model fallback: {old_model} via {old_provider} could not respond "

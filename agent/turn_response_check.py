@@ -185,9 +185,12 @@ def check_api_response(
             length_continue_retries=length_continue_retries,
             truncated_response_parts=truncated_response_parts,
             truncated_tool_call_retries=truncated_tool_call_retries, retry_count=retry_count,
-            compression_attempts=compression_attempts,
+            compression_attempts=compression_attempts, api_messages=api_messages,
+            active_system_prompt=active_system_prompt,
         )
         messages = _tv.messages
+        if _tv.active_system_prompt is not None:
+            active_system_prompt = _tv.active_system_prompt
         length_continue_retries = _tv.length_continue_retries
         truncated_response_parts = _tv.truncated_response_parts
         truncated_tool_call_retries = _tv.truncated_tool_call_retries

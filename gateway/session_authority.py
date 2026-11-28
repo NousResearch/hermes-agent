@@ -903,6 +903,8 @@ class SessionAuthority:
                 live.event_stream.execution = running
         # Published once: a later exact retry re-collects media but never repeats the completion.
         self.cancel_obligations.discard(admission_id)
+        from gateway.session_api_turn import release_unrun_request_context
+        release_unrun_request_context(self, admission_id)
         self.native_waiters.discard(admission_id)
         drop_producer_turn(self, admission_id)
         waiter = self.waiters.pop(admission_id, None)

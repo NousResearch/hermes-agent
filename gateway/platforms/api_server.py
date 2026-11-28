@@ -108,6 +108,7 @@ except ImportError:
     AIOHTTP_AVAILABLE = False
     web = None  # type: ignore[assignment]
 
+from agent import request_context
 from gateway.config import Platform, PlatformConfig
 from gateway.display_config import resolve_display_setting
 from gateway.platforms import api_server_room_dispatch as _room_dispatch
@@ -788,14 +789,13 @@ def _admit_api_agent_request(handler):
             else self._check_auth(request))
         if auth_err:
             return auth_err
-        draining = self._draining_response()
-        if draining is not None:
+        if (draining := self._draining_response()) is not None:
             return draining
-        reservation = {"active": True}
-        token = _api_agent_request_reservation.set(reservation)
+        token = _api_agent_request_reservation.set(reservation := {"active": True})
         self._pending_agent_requests += 1
         try:
-            return await handler(self, request, *args, **kwargs)
+            async with request_context.captured(request):  # the turn's plugin context
+                return await handler(self, request, *args, **kwargs)
         finally:
             _release_pending_api_work(self, reservation)
             _api_agent_request_reservation.reset(token)
@@ -3669,11 +3669,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 approval_notify_callback=approval_notify_callback, approval_session_key=approval_session_key)
         loop = asyncio.get_running_loop()
         # ContextVars do not follow run_in_executor threads: capture here, re-enter in _run().
-        request_profile = _api_request_profile.get()
+        request_profile, context = _api_request_profile.get(), request_context.current()
 
         def _run():
             from gateway.session_context import clear_session_vars
-            with self._profile_scope(request_profile):
+            with self._profile_scope(request_profile), request_context.bound(context):
                 tokens = self._bind_api_server_session(
                     chat_id=session_id or "", session_key=gateway_session_key or session_id or "",
                     session_id=session_id or "", profile=request_profile or "",

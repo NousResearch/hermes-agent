@@ -44,6 +44,9 @@ Every middleware callback receives:
 - Runtime context such as `session_id`, `task_id`, `turn_id`,
   `api_request_id`, `provider`, `model`, `api_mode`, `tool_name`, and
   `tool_call_id` when applicable.
+- `request_context`: the string dict that `api_server_request` hooks returned
+  for the API server request whose turn is running; `{}` in any other turn.
+  See [`api_server_request`](../user-guide/features/hooks.md#api_server_request).
 
 Supported middleware kinds:
 

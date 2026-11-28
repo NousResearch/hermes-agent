@@ -8,6 +8,7 @@ import json
 import re
 import uuid
 
+from agent import request_context
 from gateway.config import Platform
 from gateway.session_api import bind_api_steps, restore_api_session, run_steps, run_steps_off_loop
 from gateway.session_authority import admission_row
@@ -232,10 +233,59 @@ def _admit_api_payload(authority, adapter, sid, request_id, payload, settings, d
     # deleted session's tombstone still spends a client key), and the session's settings for its later
     # payload-less (internal) turns, committed with the admitted turn rather than by the drain (N50).
     target = ApiTargetClaim(settings=payload['api_turn_v1']['settings'], client_key=bool(kwargs.get('request_id')))
-    row, _created = yield lambda: store.admissions.admit(
-        epoch=authority.epoch, principal_id='api', session_id=sid, request_id=request_id, payload=payload,
-        gate=authority.gate_refusal(), api_target=target)
+    # Held before the write commits: a drain already running for this session may claim the row the
+    # moment it lands. Kept only while this request's own row is queued to run it.
+    held = _hold_request_context(authority, sid, request_id)
+    queued = False
+    try:
+        row, _created = yield lambda: store.admissions.admit(
+            epoch=authority.epoch, principal_id='api', session_id=sid, request_id=request_id, payload=payload,
+            gate=authority.gate_refusal(), api_target=target)
+        queued = row.status == 'queued'
+    finally:
+        if held and not queued:
+            _held_request_contexts(authority).pop((sid, request_id), None)
     return authority, ref, admission_row(row)
+
+
+def _held_request_contexts(authority):
+    """``(target session, request id) -> request context`` of API admissions not yet executed, RAM only."""
+    held = getattr(authority, 'api_request_contexts', None)
+    if held is None:
+        held = authority.api_request_contexts = {}
+    return held
+
+
+def _hold_request_context(authority, sid, request_id):
+    """Hold the admitting request's context for its admission; True when this call holds it."""
+    context, held = request_context.current(), _held_request_contexts(authority)
+    if not context or (sid, request_id) in held:
+        return False
+    held[(sid, request_id)] = context
+    return True
+
+
+def release_request_context(authority, row):
+    """Drop *row*'s held request context: ``{}`` for a row that holds none."""
+    if row.get('principal_id') != 'api':
+        return {}
+    return _held_request_contexts(authority).pop((row['target_session_id'], row['request_id']), {})
+
+
+def release_unrun_request_context(authority, admission_id):
+    """A queued admission settled without running (cancelled, steered, replaced) drops its context."""
+    if getattr(authority, 'api_request_contexts', None):
+        row = authority_persistence(authority).admissions.get(admission_id=admission_id)
+        if row is not None:
+            release_request_context(authority, admission_row(row))
+
+
+@contextmanager
+def request_context_scope(authority, row):
+    """Bind *row*'s own request context while it executes, and an empty one for any other row: the drain
+    task is reused across admissions and inherits the context of whichever request scheduled it."""
+    with request_context.bound(release_request_context(authority, row)):
+        yield
 
 
 def owns_api_run(adapter, run_id, owner_scope):

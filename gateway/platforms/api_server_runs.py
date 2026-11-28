@@ -26,6 +26,7 @@ except ImportError:
     # would reset the already-imported ``web`` to None (500 on POST /v1/runs).
     RequestKey = None  # type: ignore[assignment,misc]
 
+from agent import request_context
 from gateway.platforms.api_server_room_grants import _json_error, _room_grant_error_response, room_run_claims
 from gateway.turn_executor import _UnboundedThreadExecutor
 from gateway.platforms.api_server_run_idempotency import TERMINAL_STATUSES
@@ -1143,8 +1144,12 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
                     interim_assistant_callback=_interim_cb, **run.agent_kwargs)
             self._active_run_agents[run_id] = agent
             approval_notify = _make_approval_notify(self, run, _api_server=_api_server)
-            result, usage, served_runtime = await _submit_api_worker(
-                loop, lambda: _run_agent_sync(self, run, agent, approval_notify, _api_server=_api_server))
+            context = request_context.current()  # the worker thread does not inherit it
+
+            def _run_bound():
+                with request_context.bound(context):
+                    return _run_agent_sync(self, run, agent, approval_notify, _api_server=_api_server)
+            result, usage, served_runtime = await _submit_api_worker(loop, _run_bound)
         # Publish request metrics (daily counters + latency) with each completed run (#52323).
         self._record_api_metrics(usage, time.perf_counter() - _run_started_at)
         if not isinstance(result, dict):

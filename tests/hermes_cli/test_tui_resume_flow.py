@@ -2,6 +2,7 @@ from argparse import Namespace
 import os
 from pathlib import Path
 import sys
+from unittest.mock import Mock
 
 import pytest
 from hermes_cli import main_tui_launch, session_worktree
@@ -215,3 +216,20 @@ def test_launch_tui_bypass_without_model_refuses_before_the_tui_starts(monkeypat
     with pytest.raises(SystemExit):
         main_mod._launch_tui(model="stub-model")
     assert spawned and spawned[-1][flag] == "1" and spawned[-1]["HERMES_MODEL"] == "stub-model"
+
+
+def test_launch_tui_exit_summary_ctrl_c_exits_cleanly(monkeypatch, main_mod):
+    """Ctrl-C during _print_tui_exit_summary exits cleanly with 130 instead of traceback (#158439)."""
+    monkeypatch.setenv("HERMES_PYTHON", sys.executable)
+    monkeypatch.setattr(main_tui_launch, "_make_tui_argv",
+                        lambda tui_dir, tui_dev, notices=None: (["node", "dist/entry.js"], Path(".")))
+    monkeypatch.setattr(main_mod.subprocess, "call", lambda *a, **k: 0)
+    mock_interrupt = Mock(side_effect=KeyboardInterrupt)
+    monkeypatch.setattr(main_tui_launch, "_print_tui_exit_summary", mock_interrupt)
+
+    with pytest.raises(SystemExit) as exc:
+        main_mod._launch_tui()
+
+    assert exc.value.code == 130
+    assert mock_interrupt.called
+

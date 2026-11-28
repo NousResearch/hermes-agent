@@ -2,7 +2,6 @@
 import json
 import logging
 import os
-import re
 import shutil
 import sys
 import threading
@@ -514,10 +513,14 @@ def _mcp_server_line(srv: dict, *, dim: str, text: str) -> str:
 
 def _mcp_failed_line(name: str, transport: str, error: Optional[str]) -> str:
     """Failed MCP connect: the short reason (already humanised by ``_format_connect_error``) and the
-    exact next command, so 'failed' is never the whole story."""
+    exact next command, so 'failed' is never the whole story. The command follows the same failure
+    class ``get_mcp_status()`` reports (``reason == "AUTH"``: sign in again) rather than a regex
+    over the message kept here."""
     from rich.markup import escape
+
+    from tools.mcp_tool_errors import _connect_failure_reason
     reason = escape(" ".join(str(error or "").split())[:120]) or "no details recorded"
-    next_cmd = (f"hermes mcp login {name}" if re.search(r"\b401\b|unauthori[sz]ed", reason, re.IGNORECASE)
+    next_cmd = (f"hermes mcp login {name}" if _connect_failure_reason(error) == "AUTH"
                 else f"hermes mcp test {name}")
     return (f"[red]{name}[/] [dim]({transport})[/] [red]— could not connect:[/] {reason} "
             f"[dim]— run `{next_cmd}`[/]")

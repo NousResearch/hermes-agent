@@ -2174,6 +2174,10 @@ With `fail_closed: true`, each of these now **blocks** the tool call with `hook 
 
 A hook finishes when **its own process** exits. A helper it leaves running in the background (`some-daemon &`) keeps running, even when it still holds the hook's stdout/stderr; the hook's verdict is read from what it printed before exiting, and only the timeout and Ctrl+C paths kill the hook's whole process tree. Redirect a helper's output (`> /dev/null 2>&1`) when you don't want its later writes to land in the hook's pipes.
 
+### Output limits
+
+A hook answers with one JSON object, so its output is bounded. If a hook prints more than **1 MiB** on stdout or stderr, Hermes stops its whole process tree right away and treats the run as a failed hook: logged and ignored, or a block when the hook is `fail_closed`. Text a hook hands the model (`context`, a block reason, a `pre_verify` message) is cut to its first **50,000 characters**, followed by a note giving the original length.
+
 ### Worked examples
 
 #### 1. Auto-format Python files after every write

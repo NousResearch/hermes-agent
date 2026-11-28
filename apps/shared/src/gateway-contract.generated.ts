@@ -5629,6 +5629,16 @@ export interface CanonicalBotDeliverParams {
   session_id?: string | null
   author?: Record<string, unknown> | null
   notification_category?: string | null
+  expected_incarnation?: BotTargetIncarnation | null
+}
+export interface BotTargetIncarnation {
+  home: string
+  directory: number[]
+  store?: BotStoreIncarnation | null
+}
+export interface BotStoreIncarnation {
+  file: number[]
+  instance?: string | null
 }
 export interface CanonicalBotCancelParams {
   profile?: string | null

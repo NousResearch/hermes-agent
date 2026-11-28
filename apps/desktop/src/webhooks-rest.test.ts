@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { deleteWebhook } from './hermes'
+import { createWebhook, deleteWebhook, getWebhooks } from './hermes'
 
 describe('Webhook REST parity helpers', () => {
   let api: ReturnType<typeof vi.fn>
@@ -16,6 +16,16 @@ describe('Webhook REST parity helpers', () => {
   afterEach(() => {
     vi.restoreAllMocks()
     Reflect.deleteProperty(window, 'hermesDesktop')
+  })
+
+  it.each(['bot-chat', 'bot-chat:recipient'])('keeps %s distinct from the execution and store profiles', async deliver => {
+    const body = { name: 'fixture', deliver, route_profile: 'producer', deliver_only: true }
+
+    await createWebhook(body, 'operator')
+    expect(api).toHaveBeenCalledWith(expect.objectContaining({ method: 'POST', path: '/api/webhooks',
+      profile: 'operator', body }))
+    await getWebhooks('operator')
+    expect(api).toHaveBeenLastCalledWith(expect.objectContaining({ path: '/api/webhooks', profile: 'operator' }))
   })
 
   it('encodes the name when deleting a subscription', async () => {

@@ -4388,7 +4388,7 @@ def _start_gateway_housekeeping(
     so chores run under any ``CronScheduler`` provider (external scale-to-zero has no 60s loop).
     Cadences are ticks of ``interval``; inner gates own the real cadence."""
     from gateway.run_delivery_queue_watch import DRAIN_LABEL, DeliveryQueueWatch, wait_for_next_tick
-    from gateway.run_profile_reconcile import _mcp_config_reconciler, profile_scoped_chore
+    from gateway.run_profile_reconcile import profile_reconciliation_chores, profile_scoped_chore
     from gateway.run_housekeeping_disk import housekeeping_media_caches, maybe_post_auto_prune_prompt
     from hermes_cli.plugins_idle_tasks import IdleTaskFence
     chores: list[tuple[int, str, Any]] = [
@@ -4427,7 +4427,7 @@ def _start_gateway_housekeeping(
         (1, "Plugin update check", profile_scoped_chore(runner, _housekeeping_plugin_update_check)),
         (1, "Deferred FTS retry tick", _housekeeping_deferred_fts_retry),
         (1, "gateway housekeeping memory trim", _housekeeping_memory_trim),
-        (1, "MCP config reconcile", _mcp_config_reconciler(runner)),
+        *profile_reconciliation_chores(runner, loop),
         # Last: a real prune can hold this thread for a while; every other chore of the tick runs first.
         (1, "Checkpoint prune tick", _housekeeping_checkpoint_prune)]
 

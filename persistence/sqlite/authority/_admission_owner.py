@@ -48,8 +48,11 @@ __all__ = [
 
 
 def authorize_admission(holder, conn, *, epoch, principal_id, session_id, request_id, replaces=None, supersedes=None,
-                        api_target=None, rewrite=None, hosted=None, fold=None) -> None:
+                        api_target=None, rewrite=None, hosted=None, fold=None, incarnation=None) -> None:
     """The typed extras of one admission, inside its write after the queue cap and gate and before the insert."""
+    if incarnation is not None:
+        from ._webhook_store import require_incarnation
+        require_incarnation(holder, conn, incarnation)
     if replaces is not None:
         retire_replaced_input(conn, replaces.admission_id, replacement_binding(principal_id, session_id, request_id))
     if supersedes is not None:

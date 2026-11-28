@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from ..authority.admissions import AdmissionRepository
+from ..authority.webhooks import WebhookDeliveryRepository
 from ..authority.bindings import SessionBindingRepository
 from ..authority.coordination import CoordinationRepository
 from ..authority.runtime import SessionRuntimeRepository
@@ -55,6 +56,7 @@ class PersistenceStore(Protocol):
     usage: UsageRepository
     usage_analytics: UsageAnalytics
     admissions: AdmissionRepository
+    webhook_deliveries: WebhookDeliveryRepository
     runtime: SessionRuntimeRepository
     bindings: SessionBindingRepository
     coordination: CoordinationRepository

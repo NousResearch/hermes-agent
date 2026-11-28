@@ -90,6 +90,7 @@ _FLAG_OWNERS = {
     "authority_fences": ("runtime",),
     "durable_admissions": ("admissions",),
     "receipted_writes": ("worker_executions", "bindings"),
+    "webhook_delivery_fences": ("webhook_deliveries",),
 }
 
 

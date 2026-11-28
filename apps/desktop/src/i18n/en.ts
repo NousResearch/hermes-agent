@@ -2769,6 +2769,11 @@ export const en: Translations = {
   },
 
   webhooks: {
+    targetProfile: 'Target profile',
+    executingProfile: 'Executing profile',
+    executionProfile: 'Execution profile',
+    botChatHint: 'I deliver to the canonical local Bot Chat. The receiving Bot Chat may run its model and incur cost, even with deliver only.',
+
     search: 'Search webhooks...',
     loading: 'Loading webhooks...',
     loadFailed: 'Webhooks failed to load',
@@ -2833,6 +2838,7 @@ export const en: Translations = {
     createFailed: (detail: string) => `Failed to create: ${detail}`,
     copy: 'Copy',
     deliverOptions: {
+      'bot-chat': 'Bot Chat',
       log: 'Log',
       telegram: 'Telegram',
       discord: 'Discord',

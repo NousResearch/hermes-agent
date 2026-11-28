@@ -27,6 +27,7 @@ from persistence.core.backend import PersistenceStore
 
 __all__ = [
     "Persistence",
+    "capture_store_incarnation",
     "close_all_stores",
     "close_stores_under",
     "live_stores",
@@ -294,6 +295,22 @@ def open_profile_repair(scope: ProfileScope, *, read_only: bool) -> ProfileRepai
     return _admin_door(_provider_for_home(scope.profile_dir), {scope.hermes_home_key: _state_db(scope)}, read_only,
                        lambda backend: backend.open_profile_repair(scope, read_only=read_only))
 
+
+
+def capture_store_incarnation(scope: ProfileScope):
+    """Capture a recipient generation without creating, migrating or repairing its store.
+
+    A missing first store is represented explicitly; its directory must already exist.
+    The recipient alone opens a writer. Admission checks its open generation atomically.
+    """
+    from persistence.authority.webhooks import StoreIncarnation
+    from persistence.sqlite.authority._webhook_store import file_identity
+    home = scope.profile_dir
+    directory = file_identity(home)
+    if not _state_db(scope).exists():
+        return StoreIncarnation(str(home), directory, None, None)
+    with open_persistence_reader(home) as reader:
+        return reader.webhook_deliveries.capture_incarnation()
 
 def store_location(scope: ProfileScope) -> Optional[Path]:
     """The file that holds ``scope``'s store under the configured provider, or ``None`` for a provider without one."""

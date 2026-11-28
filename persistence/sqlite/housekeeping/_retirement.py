@@ -26,8 +26,11 @@ def prune_retired_tombstones(conn, older_than=RETRY_HORIZON_S):
         conn.execute("UPDATE state_meta SET value=json_set(value, '$.retired_at', ?) WHERE key GLOB ? "
                      "AND json_valid(value) AND json_extract(value, '$.retired_at') IS NULL", (now, prefix + '*'))
     cutoff = now - older_than
-    for key, raw in conn.execute(f'SELECT key,value FROM state_meta WHERE key GLOB ? AND {_EXPIRED}',
-                                 (ADMISSION_PREFIX + '*', cutoff)).fetchall():
+    expired = conn.execute(f'SELECT key,value FROM state_meta WHERE key GLOB ? AND {_EXPIRED}',
+                           (ADMISSION_PREFIX + '*', cutoff)).fetchall()
+    from ..authority._webhook_retirement import expire_webhook_payloads
+    expire_webhook_payloads(conn, [json.loads(raw) for key, raw in expired], now=now, cutoff=cutoff)
+    for key, raw in expired:
         row = json.loads(raw)
         conn.execute('DELETE FROM state_meta WHERE key IN (?,?,?)', (key, RESULT_PREFIX + row['admission_id'],
                      identity_key(row['principal_id'], row['target_session_id'], row['request_id'])))

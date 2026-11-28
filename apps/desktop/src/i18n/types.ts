@@ -2437,6 +2437,10 @@ export interface Translations extends NoticeTranslations {
   }
 
   webhooks: {
+    targetProfile: string
+    executingProfile: string
+    executionProfile: string
+    botChatHint: string
     search: string
     loading: string
     loadFailed: string

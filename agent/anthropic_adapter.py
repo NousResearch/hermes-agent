@@ -170,11 +170,21 @@ def _resolve_anthropic_messages_max_tokens(requested, model: str, context_length
     )
 
 
+def _model_name_is_qwen_family(model: str) -> bool:
+    """Qwen models on Alibaba Bailian's Anthropic-compatible endpoint implement the adaptive
+    contract (thinking.type=adaptive + output_config.effort). Bailian docs deprecate
+    thinking.budget_tokens in favor of output_config.effort; the legacy manual path sends
+    budget_tokens which Bailian accepts but no longer honors for effort scaling."""
+    m = (model or "").lower()
+    return "qwen" in m
+
+
 def _supports_adaptive_thinking(model: str) -> bool:
     """True for Claude models using adaptive thinking (4.6+): unknown Claude models default to
     adaptive, the explicit legacy list stays manual, and non-Claude models return False — except
-    Kimi/Moonshot, whose Anthropic-compatible endpoints implement the adaptive contract."""
-    return _model_name_is_kimi_family(model) or (
+    Kimi/Moonshot and Qwen (Bailian), whose Anthropic-compatible endpoints implement the adaptive
+    contract."""
+    return _model_name_is_kimi_family(model) or _model_name_is_qwen_family(model) or (
         _is_claude_model(model) and not _model_matches(model, _LEGACY_MANUAL_THINKING_CLAUDE_SUBSTRINGS)
     )
 

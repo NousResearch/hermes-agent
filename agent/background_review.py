@@ -1221,6 +1221,11 @@ def _review_tool_whitelist(
     memory_on = review_agent._memory_enabled or review_agent._user_profile_enabled
     review_toolsets = ["memory", "skills"] if memory_on and review_memory else ["skills"]
     whitelist = {t["function"]["name"] for t in get_tool_definitions(enabled_toolsets=review_toolsets, quiet_mode=True)}
+    # A tool deferred behind ``tool_search`` leaves the assembled list, and the ``tool_call``
+    # bridge's inner dispatch is checked against this same whitelist. Admit the review toolsets'
+    # raw names too, so a deferred ``skill_manage`` stays usable exactly as a directly exposed one.
+    whitelist |= {t["function"]["name"] for t in get_tool_definitions(
+        enabled_toolsets=review_toolsets, quiet_mode=True, skip_tool_search_assembly=True)}
     # Read-only file tools: denying read_file/search_files caused a per-review denial storm that
     # starved the loop (read_file also registers the read with the read-before-write guard).
     # Write tools stay denied — autonomous maintenance goes through skill_manage's validation.

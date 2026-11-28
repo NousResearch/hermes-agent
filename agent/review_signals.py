@@ -32,11 +32,14 @@ class ReviewSignals(dict):
 
 def skill_review_due(agent: Any) -> bool:
     """The skill-review trigger: enough tool-calling iterations since the last skill review (or
-    ``skill_manage`` call) and the agent can manage skills at all."""
+    ``skill_manage`` call) and the agent can manage skills at all, directly or through a deferred
+    ``tool_call`` bridge."""
+    from agent.tool_executor import session_can_reach_tool
+
     return (
         agent._skill_nudge_interval > 0
         and agent._iters_since_skill >= agent._skill_nudge_interval
-        and "skill_manage" in agent.valid_tool_names
+        and session_can_reach_tool(agent, "skill_manage")
     )
 
 

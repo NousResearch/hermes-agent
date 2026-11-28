@@ -171,6 +171,51 @@ for sock in /var/run/docker.sock /run/docker.sock; do
     break
 done
 
+# --- Preserve Docker-granted supplementary groups (group_add) ---
+# `docker run --group-add <gid>` / Compose `group_add:` grants supplementary
+# GIDs to PID 1, but our s6-setuidgid privilege drop calls initgroups() for
+# the hermes user, which rebuilds the supp-group list from /etc/group — the
+# same wipe the docker-socket block above works around. Any granted GID with
+# no /etc/group entry (e.g. a shared host GID like 1001 for a group-writable
+# bind mount) is silently dropped, so Hermes can't write to it. See #75627.
+#
+# Fix: snapshot the GIDs Docker granted to PID 1 from /proc/1/status and
+# ensure /etc/group carries a matching entry that includes hermes, before
+# the drop. This generalizes the socket-group handling above — the socket
+# case is subsumed (hermes is already a member, so it is skipped here).
+# Idempotent across container restarts; a no-op when /proc/1/status is
+# unavailable (non-Linux / restricted /proc).
+granted_gids=$(awk '/^Groups:/ { for (i=2; i<=NF; i++) print $i }' /proc/1/status 2>/dev/null) || granted_gids=""
+# shellcheck disable=SC2086 # intentional word splitting over the GID list
+for gid in $granted_gids; do
+    # GID 0 is always in PID 1's list and can never be distinguished from
+    # an explicit grant; adding hermes to the root group on every boot
+    # would silently broaden every install. The docker-socket block above
+    # already covers the one case that genuinely needs it (GID-0 socket).
+    if [ "$gid" = "0" ]; then
+        continue
+    fi
+    # Already a member? Nothing to do.
+    if id -G hermes 2>/dev/null | tr ' ' '\n' | grep -qx "$gid"; then
+        continue
+    fi
+    # Resolve or create a group name for this GID.
+    granted_group=$(getent group "$gid" 2>/dev/null | cut -d: -f1)
+    if [ -z "$granted_group" ]; then
+        granted_group="hostgrp$gid"
+        if ! groupadd -g "$gid" "$granted_group" 2>/dev/null; then
+            echo "[stage2] Warning: groupadd -g $gid $granted_group failed; skipping granted GID $gid"
+            continue
+        fi
+        echo "[stage2] Created group $granted_group (GID $gid) for Docker-granted supplementary group"
+    fi
+    if usermod -aG "$granted_group" hermes 2>/dev/null; then
+        echo "[stage2] Added hermes to group $granted_group (GID $gid) from Docker group_add"
+    else
+        echo "[stage2] Warning: usermod -aG $granted_group hermes failed; granted GID $gid not preserved"
+    fi
+done
+
 # --- Fix ownership of data volume ---
 # When HERMES_UID is remapped or the top-level $HERMES_HOME isn't owned by
 # the runtime hermes UID, restore ownership to hermes — but ONLY for the

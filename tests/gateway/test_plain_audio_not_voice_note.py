@@ -43,13 +43,14 @@ async def test_bluebubbles_sends_plain_audio_without_the_voice_memo_flag(tmp_pat
     response.json.return_value = {"status": 200, "data": {"guid": "g1"}}
     adapter.client = SimpleNamespace(post=AsyncMock(return_value=response))
     monkeypatch.setattr(adapter, "_resolve_chat_guid", AsyncMock(return_value="iMessage;-;+15551234567"))
-    path = tmp_path / "door_knock.mp3"
-    path.write_bytes(b"ID3\x04" + b"\x00" * 32)
+    # Native CAF makes the voice/plain distinction independent of installed codecs.
+    path = tmp_path / "door_knock.caf"
+    path.write_bytes(b"caff" + b"\x00" * 32)
 
     assert (await adapter.send_voice("+15551234567", str(path), is_voice=is_voice)).success
     data = adapter.client.post.await_args.kwargs["data"]
     assert ("isAudioMessage" in data) is audio_message
-    assert data["name"] == "door_knock.mp3"
+    assert data["name"] == ("Audio Message.caf" if audio_message else "door_knock.caf")
 
 
 @pytest.mark.asyncio

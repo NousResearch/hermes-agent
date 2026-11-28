@@ -114,6 +114,17 @@ def _synced(root: Path, sentinel: str | None = "{root}/state/facts.json") -> boo
     return "SYNCED" in run.stderr
 
 
+def test_unactivated_current_install_is_composed_without_sync(checkout: Path):
+    _record(checkout)
+    for _ in range(2):
+        run = _run_in(checkout, "bash", "-c", 'printf "%s" "$__HERMES_ACTIVATED"', sentinel=None)
+        assert run.returncode == 0, run.stderr
+        assert run.stdout == f"{posix(checkout)}/state/facts.json"
+        assert "SYNCED" not in run.stderr
+    _set_mtime(checkout / "pyproject.toml", JUST_AFTER)
+    assert _synced(checkout, sentinel=None)
+
+
 def test_foreign_checkout_with_matching_input_times_resyncs(checkout: Path):
     _record(checkout)
     other = checkout.parent / "other"

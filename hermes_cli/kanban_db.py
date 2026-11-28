@@ -2472,22 +2472,59 @@ def _extend_live_stale_claim(conn: sqlite3.Connection, row: sqlite3.Row, now: in
         )
 
 
+RECLAIM_NOT_CLAIMABLE = "not_claimable"
+RECLAIM_WORKER_ALIVE = "worker_alive"
+
+
 def reclaim_task(
-    conn: sqlite3.Connection, task_id: str, *, reason: Optional[str] = None, signal_fn=None,
-) -> bool:
+    conn: sqlite3.Connection, task_id: str, *, reason: Optional[str] = None,
+    force: bool = False, signal_fn=None, with_reason: bool = False,
+):
     """Operator reclaim regardless of TTL: release the claim, restore the source
-    phase, reset the failure counter. False when not running."""
+    phase, reset the failure counter. False when not running. Returns ``bool``,
+    or ``(ok, reason_code)`` with ``with_reason`` -- ``None`` on success,
+    :data:`RECLAIM_NOT_CLAIMABLE` (unknown id, or nothing to reclaim) or
+    :data:`RECLAIM_WORKER_ALIVE` (deferred, below) on failure. Operator
+    surfaces must branch on that code: the two failures need opposite advice,
+    and reporting a deferral as "not running, or unknown id" sends the operator
+    looking for a card that is, in fact, running and known.
+
+    Like its two siblings (``reclaim_stale_tasks`` and the heartbeat-stale
+    backstop in ``reclaim_unresponsive_tasks``), this refuses to release a
+    claim whose host-local worker we actually signalled and which is still
+    alive: doing so lets the dispatcher spawn a second worker beside the
+    first, which is the duplication loop. The claim is held with a
+    ``reclaim_deferred`` event and the next attempt retries the kill.
+    ``force=True`` releases it anyway, recorded as ``forced: true`` so the
+    resulting concurrency stays attributable.
+
+    A worker we REFUSED to signal (``signal_refused``: an UNVERIFIED spawn
+    fingerprint, where killing by bare PID could hit a recycled number) is
+    deliberately still released here. Deferring on that would never clear --
+    the next attempt refuses for the same reason -- so the card would be
+    stranded; the operator reclaim is the documented human override for it."""
+    def _ret(ok: bool, code: Optional[str] = None):
+        return (ok, code) if with_reason else ok
+
     row = conn.execute(
         "SELECT status, claim_lock, worker_pid, worker_started_at FROM tasks WHERE id = ?", (task_id,),
     ).fetchone()
     if not row:
-        return False
+        return _ret(False, RECLAIM_NOT_CLAIMABLE)
     if row["status"] != "running" and row["claim_lock"] is None:
         # Nothing to reclaim — already ready / blocked / done.
-        return False
+        return _ret(False, RECLAIM_NOT_CLAIMABLE)
     prev_lock = row["claim_lock"]
     termination = _terminate_reclaimed_worker(
         row["worker_pid"], prev_lock, signal_fn=signal_fn, started_at=row["worker_started_at"])
+    # Only a worker we actually signalled and that survived blocks the reclaim;
+    # a signal_refused worker would defer forever (see the docstring).
+    if not force and termination.get("termination_attempted") and not termination.get("terminated"):
+        _defer_reclaim_for_live_worker(
+            conn, task_id, prev_lock, int(time.time()), termination,
+            reason="manual_reclaim_worker_alive",
+        )
+        return _ret(False, RECLAIM_WORKER_ALIVE)
     with write_txn(conn):
         retry_status = _retry_status_for_run(conn, task_id)
         cur = conn.execute(
@@ -2497,33 +2534,53 @@ def reclaim_task(
             "AND claim_lock IS ?", (retry_status, task_id, prev_lock),
         )
         if cur.rowcount != 1:
-            return False
+            return _ret(False, RECLAIM_NOT_CLAIMABLE)
+        payload = {
+            "manual": True, "reason": reason, "prev_lock": prev_lock,
+            "retry_status": retry_status,
+        }
+        if force:
+            payload["forced"] = True
         _record_reclaim(
             conn, task_id, termination,
             error=f"manual_reclaim: {reason}" if reason else f"manual_reclaim lock={prev_lock}",
-            payload={"manual": True, "reason": reason, "prev_lock": prev_lock, "retry_status": retry_status},
+            payload=payload,
         )
     # Operator intervention = fresh retry budget (own txn, runs after commit).
     _clear_failure_counter(conn, task_id)
-    return True
+    return _ret(True)
 
 
 def reassign_task(
     conn: sqlite3.Connection, task_id: str, profile: Optional[str], *, reclaim_first: bool = False,
-    reason: Optional[str] = None,
-) -> bool:
+    reason: Optional[str] = None, force: bool = False, with_reason: bool = False,
+):
     """Reassign (None unassigns); a running task is refused unless
-    ``reclaim_first`` releases its claim — the "this profile's model is broken" path."""
+    ``reclaim_first`` releases its claim — the "this profile's model is broken" path.
+
+    When ``reclaim_first`` hits a worker that survived termination the reclaim
+    defers (see :func:`reclaim_task`) and the reassign fails with
+    :data:`RECLAIM_WORKER_ALIVE`: the claim is deliberately still held, and
+    telling the operator to "pass --reclaim" when they just did is what sent
+    them in circles. ``force=True`` forwards to the forced reclaim. Returns
+    ``bool``, or ``(ok, reason_code)`` with ``with_reason``.
+    """
+    def _ret(ok: bool, code: Optional[str] = None):
+        return (ok, code) if with_reason else ok
+
     if reclaim_first:
         # Safe to call even if nothing to reclaim.
-        reclaim_task(conn, task_id, reason=reason or "reassign")
+        _, code = reclaim_task(
+            conn, task_id, reason=reason or "reassign", force=force, with_reason=True)
+        if code == RECLAIM_WORKER_ALIVE:
+            return _ret(False, RECLAIM_WORKER_ALIVE)
     # assign_task handles its own txn + the still-running guard.
     try:
-        return assign_task(conn, task_id, profile)
+        return _ret(assign_task(conn, task_id, profile))
     except RuntimeError:
         # Task is still running and reclaim_first was False; caller
         # needs to decide whether to retry with reclaim.
-        return False
+        return _ret(False)
 
 
 def _verify_created_cards(
@@ -3125,6 +3182,7 @@ def edit_task(
 def block_task(
     conn: sqlite3.Connection, task_id: str, *, reason: Optional[str] = None,
     kind: Optional[str] = None, expected_run_id: Optional[int] = None,
+    force: bool = False,
 ) -> bool:
     """``running``/``ready`` -> ``blocked`` (or ``todo`` / ``triage``, see
     :func:`_route_block`). ``kind='dependency'`` with no incomplete parent is
@@ -3139,15 +3197,28 @@ def block_task(
     audit event is appended, while status, failure evidence and the terminal
     runs stay exactly as the breaker left them. A typed block, a card with a
     live run, or a kind-less call on a blocked card are still refused.
+
+    A ``running`` task under a live claim is only blocked with proof of
+    ownership (``expected_run_id``) or ``force=True`` (explicit operator
+    override) -- otherwise :class:`LiveClaimError`, the same fence
+    :func:`complete_task` and :func:`request_review` apply. Without it a
+    worker whose claim was revoked, but which is still executing because the
+    reclaim failed to kill it, could block the successor's live run.
     """
     if kind is not None and kind not in VALID_BLOCK_KINDS:
         raise ValueError(f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None")
     with write_txn(conn):
         cur_row = conn.execute(
-            "SELECT status, block_kind, block_recurrences FROM tasks WHERE id = ?", (task_id,),
+            "SELECT status, block_kind, block_recurrences, claim_lock, worker_pid, "
+            "worker_started_at FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
         if cur_row is None:
             return False
+        # Refuse to close a LIVE worker's run without proof of ownership
+        # (expected_run_id) or an explicit human override (force=True); see
+        # _claim_is_live for what "live" means.
+        if expected_run_id is None and not force and _claim_is_live(cur_row):
+            raise LiveClaimError(task_id)
         # The breaker (``_record_task_failure``) parks cards ``blocked`` with no
         # ``block_kind`` and no ``blocked`` event -- the policy is the
         # supervisor's, not the kernel's -- but the transition guard below only
@@ -3407,20 +3478,37 @@ def _nonblank_str(value: Any) -> Optional[str]:
 
 def request_changes(
     conn: sqlite3.Connection, task_id: str, *, reason: str, expected_run_id: Optional[int] = None,
+    force: bool = False,
 ) -> tuple[bool, Optional[str]]:
     """Close an active reviewer run (claimed from ``review``) and hand the task
     back to the implementer from the latest ``review_requested`` event, parent
-    gating reapplied. Returns ``(ok, implementer | reason)``."""
+    gating reapplied. Returns ``(ok, implementer | reason)``.
+
+    This ends the live run, so it carries the same live-claim fence as
+    :func:`complete_task` and :func:`request_review`: without proof of
+    ownership (``expected_run_id``) or ``force=True`` a reviewer whose claim was
+    revoked, but which is still executing because the reclaim failed to kill
+    it, could close the successor reviewer's live run. Both callers (the CLI
+    verb and ``kanban_request_changes``) pass ``expected_run_id``, so the fence
+    only bites the env-less/stale-env caller.
+    """
     reason = str(redact_review_value(reason or "")).strip()
     if not reason:
         return False, "reason is required"
 
     with write_txn(conn):
         task_row = conn.execute(
-            "SELECT status, assignee, current_run_id FROM tasks WHERE id = ?", (task_id,),
+            "SELECT status, assignee, current_run_id, claim_lock, worker_pid, "
+            "worker_started_at FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
         if task_row is None:
             return False, "task not found"
+        if expected_run_id is None and not force and _claim_is_live(task_row):
+            return False, (
+                "task is running under a live claim; pass expected_run_id "
+                "(worker ownership) or force=True (explicit operator override) "
+                "instead of closing the live run"
+            )
         current_run_id = task_row["current_run_id"]
         if task_row["status"] != "running" or current_run_id is None:
             return False, "task is not in an active review run"
@@ -3864,11 +3952,27 @@ def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
 
 def schedule_task(
     conn: sqlite3.Connection, task_id: str, *, reason: Optional[str] = None,
-    expected_run_id: Optional[int] = None,
+    expected_run_id: Optional[int] = None, force: bool = False,
 ) -> bool:
     """Park in ``scheduled`` (waiting on time, not a human; not dispatchable)
-    until ``unblock_task`` re-gates it."""
+    until ``unblock_task`` re-gates it.
+
+    ``scheduled`` ends the live run, so it carries the same live-claim fence as
+    :func:`complete_task` and :func:`block_task`: a ``running`` task under a
+    live claim is only parked with proof of ownership (``expected_run_id``) or
+    ``force=True``, otherwise :class:`LiveClaimError`. Without it a worker whose
+    claim was revoked, but which is still executing because the reclaim failed
+    to kill it, could park the card its successor is working.
+    """
     with write_txn(conn):
+        trow = conn.execute(
+            "SELECT status, claim_lock, worker_pid, worker_started_at FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if trow is None:
+            return False
+        if expected_run_id is None and not force and _claim_is_live(trow):
+            raise LiveClaimError(task_id)
         params: list[Any] = [task_id]
         sql = """
             UPDATE tasks

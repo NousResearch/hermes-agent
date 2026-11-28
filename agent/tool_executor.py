@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import contextlib
+import copy
 import importlib
 import json
 from pathlib import Path
@@ -736,7 +737,9 @@ def _dispatch_authorized_once(
 
     guardrail_decision = None
     if block_body is None:
-        guardrail_decision = agent._tool_guardrails.before_call(ref.name, ref.args)
+        # Guardrails inspect a detached payload: mutating a nested argument here must
+        # not change the operation already authorized by a plugin approval gate.
+        guardrail_decision = agent._tool_guardrails.before_call(ref.name, copy.deepcopy(ref.args))
         if guardrail_decision.allows_execution:
             guardrail_decision = None
 
@@ -1036,7 +1039,7 @@ def _safe_callback(callback, label: str, *args, **kwargs) -> None:
 def _begin_tool_execution(agent, ref: _ToolCallRef, display_index: int | None) -> None:
     """Run user-visible and checkpoint preflight on final tool arguments."""
     function_name, function_args, effective_task_id, tool_call_id = ref.name, ref.args, ref.task_id, ref.call_id
-    display_args = _redact_tool_args_for_display(function_name, function_args) or function_args
+    display_args = copy.deepcopy(_redact_tool_args_for_display(function_name, function_args))
     if _tool_progress_enabled(agent):
         prefix = f"Tool {display_index}" if display_index is not None else "Tool"
         if agent.verbose_logging:

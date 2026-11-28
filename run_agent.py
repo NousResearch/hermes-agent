@@ -1411,7 +1411,7 @@ class AIAgent(
             subagent_id=function_args.get("subagent_id"), message=function_args.get("message"), parent_agent=self,
         )
 
-    _invoke_tool = _forward("agent.agent_runtime_helpers", "invoke_tool")
+    _invoke_tool = _forward("agent.tool_invocation.dispatch", "invoke_tool")
 
     @staticmethod
     def _wrap_verbose(label: str, text: str, indent: str = "     ") -> str:

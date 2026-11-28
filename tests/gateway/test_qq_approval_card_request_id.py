@@ -108,6 +108,30 @@ async def test_a_qq_tap_without_a_request_id_settles_nothing(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_qq_nonpermanent_approval_exposes_session_choice(monkeypatch):
+    (pending,) = _queue(monkeypatch, "a")
+    adapter = _qq()
+    cards = _keyboards(adapter)
+    await adapter.send_exec_approval(chat_id="u-42", command="ls", session_key=SK,
+                                     request_id="a", allow_permanent=False)
+    assert "session" in cards[0] and "always" not in cards[0]
+    await _tap(adapter, cards[0]["session"])
+    assert pending.result == "session"
+
+
+@pytest.mark.asyncio
+async def test_qq_no_session_when_not_offered_or_smart_denied(monkeypatch):
+    adapter = _qq()
+    cards = _keyboards(adapter)
+    await adapter.send_exec_approval(chat_id="u-42", command="ls", session_key=SK,
+                                     request_id="a", allow_permanent=False, allow_session=False)
+    assert set(cards[0]) == {"allow", "deny"}
+    await adapter.send_exec_approval(chat_id="u-42", command="ls", session_key=SK,
+                                     request_id="b", smart_denied=True)
+    assert set(cards[1]) == {"allow", "deny"}
+
+
+@pytest.mark.asyncio
 async def test_qq_card_approve_and_deny_resolve_their_request(monkeypatch):
     (pending,) = _queue(monkeypatch, "a")
     adapter = _qq()

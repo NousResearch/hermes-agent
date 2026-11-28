@@ -61,15 +61,16 @@ def _bridge_skipping_wrapper_policy(**extra):
 
 
 def test_unwrapped_tool_runs_its_own_pre_tool_call_hook(monkeypatch, deferred_tool):
-    from hermes_cli import plugins
+    from hermes_cli import lifecycle
 
     seen = []
 
-    def _hook(name, args, **kw):
-        seen.append((name, args))
-        return None, None
+    def _hook(event, **kw):
+        if event == "pre_tool_call":
+            seen.append((kw["tool_name"], kw["args"]))
+        return []
 
-    monkeypatch.setattr(plugins, "_dispatch_pre_tool_call_hooks", _hook)
+    monkeypatch.setattr(lifecycle, "invoke_hook", _hook)
 
     result = json.loads(_bridge_skipping_wrapper_policy())
 
@@ -81,12 +82,14 @@ def test_unwrapped_tool_runs_its_own_pre_tool_call_hook(monkeypatch, deferred_to
 
 
 def test_a_guardrail_matched_on_the_underlying_tool_blocks_it(monkeypatch, deferred_tool):
-    from hermes_cli import plugins
+    from hermes_cli import lifecycle
 
-    def _hook(name, args, **kw):
-        return ("blocked by policy", None) if name == TOOL else (None, None)
+    def _hook(event, **kw):
+        if event == "pre_tool_call" and kw["tool_name"] == TOOL:
+            return [{"action": "block", "message": "blocked by policy"}]
+        return []
 
-    monkeypatch.setattr(plugins, "_dispatch_pre_tool_call_hooks", _hook)
+    monkeypatch.setattr(lifecycle, "invoke_hook", _hook)
 
     result = json.loads(_bridge_skipping_wrapper_policy())
 

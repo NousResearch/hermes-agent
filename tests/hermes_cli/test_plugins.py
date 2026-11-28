@@ -1842,11 +1842,9 @@ class TestResolvePreToolBlock:
         monkeypatch.setattr("tools.approval.request_tool_approval", _approve)
 
         assert resolve_pre_tool_block("write_file", {}) is None
-        assert seen == {
-            "tool_name": "write_file",
-            "reason": "why",
-            "rule_key": "write_file:ssh",
-        }
+        assert seen["tool_name"] == "write_file"
+        assert seen["rule_key"].startswith("payload_hmac_sha256:")
+        assert seen["reason"].startswith("why")
 
 
     def test_approve_gate_exception_fails_closed(self, monkeypatch):

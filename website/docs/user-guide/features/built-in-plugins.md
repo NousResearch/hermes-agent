@@ -56,6 +56,7 @@ The repo ships these bundled plugins under `plugins/`. All are opt-in — enable
 | Plugin | Kind | Purpose |
 |---|---|---|
 | `disk-cleanup` | hooks + slash command | Auto-track ephemeral files and clean them on session end |
+| `kill-guard` | hooks | Block terminal `pkill`/`killall` commands that would signal every process of the user (BSD `pkill` treats an option after the pattern as another pattern); `KILL_GUARD_DISABLE=1` bypasses |
 | `security-guidance` | hooks | Pattern-match dangerous code on `write_file`/`patch` and append a security warning (or block) — 25 rules (Apache-2.0 fork of Anthropic's `claude-plugins-official` patterns) |
 | `teams_pipeline` | standalone | Microsoft Teams meeting pipeline — Graph-backed, transcript-first meeting summaries |
 | `google_meet` | standalone | Join Meet calls, live-caption transcription, optional realtime duplex audio |

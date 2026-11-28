@@ -17,7 +17,7 @@ import time
 
 from agent.i18n import t
 from agent.interrupt_compat import request_hard_interrupt
-from hermes_cli.commands_completion import SlashCommandAutoSuggest, cli_slash_completer
+from hermes_cli.commands_completion import SlashCommandAutoSuggest, cli_slash_completer, ghost_suggestion_visible
 from pathlib import Path
 from prompt_toolkit.filters import Condition
 from prompt_toolkit.history import FileHistory
@@ -1037,7 +1037,7 @@ class CLITuiMixin:
             if completion is None:
                 return
             buf.apply_completion(completion)
-        elif buf.suggestion and buf.suggestion.text:
+        elif ghost_suggestion_visible(buf):
             buf.insert_text(buf.suggestion.text)
         else:
             buf.start_completion()

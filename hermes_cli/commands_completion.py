@@ -524,6 +524,12 @@ class SlashCommandAutoSuggest(AutoSuggest):
         return self._history_suggestion(buffer, document)
 
 
+def ghost_suggestion_visible(buffer) -> bool:
+    """A non-empty ghost suggestion is on screen: prompt_toolkit draws it (and keeps a stale one after
+    a cursor move) only with the cursor at the end, so Tab must not insert it anywhere else."""
+    return bool(buffer.suggestion and buffer.suggestion.text and buffer.document.is_cursor_at_the_end)
+
+
 def cli_slash_completer(cli):
     """The classic CLI prompt's slash completer; on a gateway session its skills and plugin commands are
     the gateway's (``commands.catalog``), so completing loads no plugin in the CLI process."""

@@ -15,11 +15,10 @@
  *   installed NSMenu; it only suppresses the default when it runs first.
  *
  * `installApplicationMenuAfterFirstWindow` is the ready-phase half: create the
- * first window, then install the menu (macOS only; the other platforms ship
- * without an application menu).
+ * first window, then install the menu. macOS gets the full native menu; other
+ * platforms get only the File and View menus needed for their native roles.
  */
 export interface ApplicationMenuStartupDeps<TMenu> {
-  isMac: boolean
   buildMenu: () => TMenu
   setApplicationMenu: (menu: TMenu | null) => void
   createWindow: () => void
@@ -28,7 +27,5 @@ export interface ApplicationMenuStartupDeps<TMenu> {
 export function installApplicationMenuAfterFirstWindow<TMenu>(deps: ApplicationMenuStartupDeps<TMenu>): void {
   deps.createWindow()
 
-  if (deps.isMac) {
-    deps.setApplicationMenu(deps.buildMenu())
-  }
+  deps.setApplicationMenu(deps.buildMenu())
 }

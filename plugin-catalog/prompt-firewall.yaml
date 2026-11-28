@@ -15,13 +15,13 @@
 # The sha is the release: bump it (and `version`) in the same PR.
 name: prompt-firewall
 title: Prompt Firewall
-description: "Community security-preview plugin that detects and quarantines selected prompt-injection patterns in tool results and evaluates risky tool actions; limited to hook/Core enforcement semantics. Disclosure — Rewrites tool results the agent sees: spans that match its injection heuristics are replaced with `[QUARANTINED:<category>]` markers, and output past its scan budget (or output it fails to scan) is withheld with a notice; may block or escalate to the Hermes approval prompt writes to protected config/instruction/credential paths, endpoint changes and commands that disable prompt-firewall; adds a fixed trust-boundary notice to every turn; to pick the approval card's language it reads `HERMES_LANGUAGE`, `display.language` and, read-only, your last few messages in the current session; appends metadata-only audit records (tool name, target path, reason) to `<HERMES_HOME>/logs/prompt-firewall.jsonl`. No network."
+description: "Community security-preview plugin that detects and quarantines selected prompt-injection patterns in tool results and evaluates risky tool actions; limited to hook/Core enforcement semantics. Disclosure — Rewrites tool results the agent sees: spans that match its injection heuristics are replaced with `[QUARANTINED:<category>]` markers, and output past its scan budget (or output it fails to scan) is withheld with a notice; may block or escalate to the Hermes approval prompt writes to protected config/instruction/credential paths, endpoint changes and commands that disable prompt-firewall; an allowlisted operator (checked against `<PLATFORM>_ALLOWED_USERS`) can lift its own instruction-file block for one exact write by sending `authorize write to <path> sha256 <hash>`; adds a fixed trust-boundary notice to every turn; to pick the approval card's language it reads `HERMES_LANGUAGE`, `display.language` and, read-only, your last few messages in the current session; appends metadata-only audit records (tool name, target path, reason, session and tool-call ids, timings) to `<HERMES_HOME>/logs/prompt-firewall.jsonl` (or the path in `PROMPT_FIREWALL_AUDIT_LOG`). No network."
 repo: https://github.com/Gaijin-01/prompt-firewall
-sha: 7c2dcdd638d2fb650dc4eb3dd0c670b0cac29d7a
+sha: 12e8199b38ef120311eeb0c66e583f773be2eef1
 maintainer: Gaijin-01
 tier: community
 category: tools
-version: "1.1.6"
+version: "1.1.8"
 requires_hermes: ">=0.22.7"
 readme: true
 platforms: []

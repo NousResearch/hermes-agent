@@ -31,7 +31,9 @@ class CLITuiRuntimeMixin:
     def _tui_process_loop(self):
         """REPL worker thread: drain ``_pending_input``, run idle housekeeping, dispatch each input."""
         held = None
+        self._program_resume_interactive = True
         self._sync_program_status()
+        self._sync_program_resume()
         while not self._should_exit:
             try:
                 if held is not None:
@@ -160,6 +162,7 @@ class CLITuiRuntimeMixin:
         self._program_turn_outcome = None
         self._agent_running = self._interactive_turn = True
         self._sync_program_status()
+        self._sync_program_resume()
         self._pet_turn_error = self._pet_reasoning = False
         self._turn_summary_begin()
         self._app.invalidate()
@@ -182,6 +185,8 @@ class CLITuiRuntimeMixin:
             _cprint(f"\n[dim]{t('cli.tui.command_interrupted')}[/dim]")
             return None
         _seed, self._pending_agent_seed = self._pending_agent_seed, None
+        if not self._should_exit:
+            self._sync_program_resume()
         return _seed or None
 
     def _tui_after_turn(self):
@@ -189,6 +194,7 @@ class CLITuiRuntimeMixin:
         from cli import _DIM, _RST, _cprint
         self._agent_running = self._pet_reasoning = False
         self._sync_program_status()  # setup failures and early returns land here too
+        self._sync_program_resume()
         self._spinner_text = self._last_scrollback_tool = ""
         self._tool_start_time = 0.0
         self._pending_tool_info.clear()
@@ -279,6 +285,14 @@ class CLITuiRuntimeMixin:
         except Exception:
             pass
         raise KeyboardInterrupt()  # fallback for non-prompt_toolkit contexts
+
+    def _tui_continue_handler(self, signum, frame):
+        """SIGCONT (fg after Ctrl+Z, or an external stop): OSC 7577 reports again, since another program may
+        have replaced the pane's record meanwhile. Off the handler: the sync may read the session store."""
+        if not self._program_resume.active:
+            return
+        from agent.memory_provider import spawn_context_thread
+        spawn_context_thread(self._sync_program_resume, kwargs={"force": True}, name="program-resume-sigcont").start()
 
     def _tui_print_startup(self):
         """Startup output: light-mode probe, banner, advisories, resume/welcome lines, tips."""
@@ -478,6 +492,8 @@ class CLITuiRuntimeMixin:
             _signal.signal(_signal.SIGTERM, self._tui_signal_handler)
             if hasattr(_signal, 'SIGHUP'):
                 _signal.signal(_signal.SIGHUP, self._tui_signal_handler)
+            if hasattr(_signal, 'SIGCONT'):
+                _signal.signal(_signal.SIGCONT, self._tui_continue_handler)
 
             # Windows: absorb SIGINT. Win32 delivers spurious CTRL_C_EVENT when children spawn
             # from background threads, which would unwind app.run() mid-turn. Real Ctrl+C is
@@ -524,10 +540,23 @@ class CLITuiRuntimeMixin:
     def _tui_shutdown(self):
         """Teardown after the app exits: interrupt agent, stop voice/pet, persist + close session, cleanup, exit summary."""
         from cli import _DIM, _RST, _cprint, _invoke_interrupted_session_end, _run_cleanup, set_approval_callback, set_secret_capture_callback, set_sudo_password_callback
-        self._should_exit = True
+        user_exit, self._should_exit = self._should_exit, True
         # First, before anything that can hang or be cut short by the exit watchdog: a pane back at its
         # shell must not keep listing Hermes as an agent (OSC 7501 idle/done outlive the process).
         self._clear_program_status()
+        # OSC 7577: clear only when the user ended Hermes (/quit, Ctrl+D set _should_exit before app.run()
+        # returned). Keep the record on a signal, terminal loss, the /update relaunch, and an exception that
+        # unwinds app.run() before any exit was asked for.
+        import cli as _cli_mod_resume
+        if user_exit and not (
+            _cli_mod_resume._signal_watchdog_armed
+            or self._viewer_disconnected
+            or getattr(self, "_terminal_io_broken", False)
+            or getattr(self, "_pending_relaunch", None)
+        ):
+            self._clear_program_resume()
+        else:
+            self._program_resume.keep()
         self._pet_stop_anim()
         # Without this line the terminal sits silent through the whole cleanup window.
         with suppress(Exception):

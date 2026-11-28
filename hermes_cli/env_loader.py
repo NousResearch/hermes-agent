@@ -9,6 +9,7 @@ import logging
 import os
 import sys
 import threading
+from collections.abc import Callable
 from pathlib import Path
 
 # Kept at module level on purpose: importing this module must fail when the dotenv install is
@@ -419,30 +420,69 @@ def _parse_dotenv_file(path: Path) -> list[tuple[str, str | None]]:
 def _dotenv_lookup_env(load_pass: int | None) -> dict[str, str]:
     """``os.environ`` with every value an earlier pass (any pass, for ``None``) published peeled back to
     its baseline — what ``${VAR}`` resolves against (see ``_DOTENV_PUBLISHED``). Caller holds the lock."""
-    lookup_env = dict(os.environ)
-    for name, (baseline, published, published_pass) in _DOTENV_PUBLISHED.items():
-        if published_pass != load_pass and lookup_env.get(name) == published:
+    return _peel_dotenv_output(dict(os.environ), _DOTENV_PUBLISHED, load_pass)
+
+
+def _peel_dotenv_output(env: dict[str, str], published: dict[str, tuple[str | None, str, int]],
+                        load_pass: int | None) -> dict[str, str]:
+    """*env* with every value *published* records from a pass other than *load_pass* peeled back to its
+    baseline, in place."""
+    for name, (baseline, value, published_pass) in published.items():
+        if published_pass != load_pass and env.get(name) == value:
             if baseline is None:
-                del lookup_env[name]  # absent, so ``${VAR:-default}`` takes the default again
+                del env[name]  # absent, so ``${VAR:-default}`` takes the default again
             else:
-                lookup_env[name] = baseline
-    return lookup_env
+                env[name] = baseline
+    return env
+
+
+def dotenv_publication_lock() -> threading.RLock:
+    """The lock a dotenv load holds while it publishes into ``os.environ`` and ``_DOTENV_PUBLISHED``.
+    Holding it, a copy of both is one moment's (``launch_profile_policy``'s capture). Lock order: this
+    lock before ``launch_profile_policy``'s own; this module never calls into that one while holding it."""
+    return _DOTENV_LOCK
+
+
+def dotenv_publication_record() -> dict[str, tuple[str | None, str, int]]:
+    """A copy of this process's dotenv publication record (``_DOTENV_PUBLISHED``)."""
+    with _DOTENV_LOCK:
+        return dict(_DOTENV_PUBLISHED)
+
+
+def dotenv_lookup_from(env: dict[str, str], record: dict[str, tuple[str | None, str, int]]) -> dict[str, str]:
+    """What ``${VAR}`` resolves against in *env*, a copy of ``os.environ`` taken with *record*: this
+    process's dotenv output peeled back by that record (a later reload's record no longer matches it)."""
+    return _peel_dotenv_output(dict(env), record, None)
 
 
 def _resolve_dotenv_assignments(
     assignments: list[tuple[str, str | None]], lookup_env: dict[str, str], *, override: bool,
+    live_env: dict[str, str] | None = None, live_names: Callable[[str], bool] | None = None,
 ) -> dict[str, str | None]:
     """Expand ``${VAR}`` / ``${VAR:-default}`` like ``dotenv.main.resolve_variables``, minus the live
     ``os.environ``: a line sees *lookup_env* and the file's earlier lines (earlier lines win under
-    *override*, the environment otherwise)."""
+    *override*, the environment otherwise). With *live_env* (and *override*), each line is also expanded as
+    a load against *live_env* would expand it, a name *live_names* marks takes that value, which later lines
+    then see, and *live_env* takes the file's live values, as the caller does with *lookup_env*."""
     from dotenv.variables import parse_variables
 
+    def expand(value: str, lookup: dict[str, str | None]) -> str:
+        return "".join(atom.resolve(lookup) for atom in parse_variables(value))
+
     resolved: dict[str, str | None] = {}
+    live: dict[str, str | None] = {}
     for name, value in assignments:
-        if value is not None:
-            lookup = {**lookup_env, **resolved} if override else {**resolved, **lookup_env}
-            value = "".join(atom.resolve(lookup) for atom in parse_variables(value))
-        resolved[name] = value
+        if value is None:  # a bare key: nothing to expand
+            live[name] = resolved[name] = None
+            continue
+        if live_env is not None:
+            live[name] = expand(value, {**live_env, **live})
+        if live_env is not None and live_names(name):
+            resolved[name] = live[name]
+        else:
+            resolved[name] = expand(value, {**lookup_env, **resolved} if override else {**resolved, **lookup_env})
+    if live_env is not None:
+        live_env.update((k, v) for k, v in live.items() if v is not None)
     return resolved
 
 
@@ -479,18 +519,30 @@ def resolve_project_dotenv(project_env: Path, home: Path, *, removed: frozenset[
             if value is not None and (override or name not in lookup_env)}
 
 
-def resolve_home_dotenv(home: Path, *, lookup_env: dict[str, str] | None = None) -> dict[str, str]:
+def resolve_home_dotenv(home: Path, *, lookup_env: dict[str, str] | None = None,
+                        live_names: Callable[[str], bool] | None = None) -> dict[str, str]:
     """What ``load_hermes_dotenv`` would publish from *home*'s dotenv layers, read-only: the home's
     ``.env`` then the administrator-managed ``.env``, both with override and ``${VAR}`` expanded by the
     same rules against the process's own environment (this process's dotenv output peeled back), each
     layer seeing the one before. External secret sources and the project ``.env`` are not included.
-    *lookup_env* replaces that environment: another profile's file must not resolve against this one's."""
+    *lookup_env* replaces that environment: another profile's file must not resolve against this one's.
+    With it, *live_names* marks the names that read the process's own environment instead: a line naming one
+    sees its live value, set or unset, and one a line assigns takes what the live resolution gives it (what a
+    load published), which later lines then see. ``HERMES_HOME`` reads *home* in both, as the load of *home*
+    saw it: an embedding host mirrors the active turn's profile into the live env's."""
     from hermes_cli import managed_scope
 
     managed_dir = managed_scope.get_managed_dir()
     layers = [home / ".env", *([managed_dir / ".env"] if managed_dir is not None else [])]
+    live_env = None
     if lookup_env is not None:
         lookup_env = dict(lookup_env)
+        if live_names is not None:
+            with _DOTENV_LOCK:
+                live_env = _dotenv_lookup_env(None)
+            lookup_env = {k: v for k, v in lookup_env.items() if not live_names(k)}
+            lookup_env.update((k, v) for k, v in live_env.items() if live_names(k))
+            live_env["HERMES_HOME"] = lookup_env["HERMES_HOME"] = str(home)
     else:
         with _DOTENV_LOCK:
             lookup_env = _dotenv_lookup_env(None)
@@ -500,7 +552,9 @@ def resolve_home_dotenv(home: Path, *, lookup_env: dict[str, str] | None = None)
             assignments = _parse_dotenv_file(path)
         except OSError:
             continue
-        for name, value in _resolve_dotenv_assignments(assignments, lookup_env, override=True).items():
+        resolved = _resolve_dotenv_assignments(assignments, lookup_env, override=True, live_env=live_env,
+                                               live_names=live_names)
+        for name, value in resolved.items():
             if value is not None:
                 lookup_env[name] = out[name] = value
     return out
@@ -892,7 +946,11 @@ def load_hermes_dotenv(
     fallback that only fills gaps when the user env exists (and overrides shell vars when it does not).
     *home_elsewhere* is a caller's answer to :func:`_home_runs_elsewhere` for the home; None asks."""
     from agent.safe_worker_policy import worker_config_snapshot
+    from hermes_cli.terminal_notify import claim_osc7577_token
 
+    # Every entry point loads its env here first: the pane's OSC 7577 token leaves os.environ before a
+    # secret source (or anything after it) can start a child that inherits it.
+    claim_osc7577_token()
     # The private bootstrap supplies credentials explicitly; do not rehydrate
     # profile behavior, external secret plugins, or managed env in this worker.
     if worker_config_snapshot() is not None:

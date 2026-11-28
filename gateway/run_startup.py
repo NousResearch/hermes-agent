@@ -1228,9 +1228,7 @@ class GatewayStartupMixin:
     async def _start_prefilter_platforms(self) -> tuple[bool, int, list, list]:
         """Create + wire an adapter per enabled platform (no connects). Returns
         (aborted, enabled_platform_count, multiplex_skipped_platforms, pending_connects)."""
-        from gateway.run import _platform_has_bot_credential
         enabled_platform_count = 0
-        _multiplex_on = self._multiplex_on()
         _multiplex_skipped_platforms: list[Platform] = []
         _pending_connects = []  # (platform, platform_config, adapter); connected concurrently later
         for platform, platform_config in self.config.platforms.items():
@@ -1239,12 +1237,10 @@ class GatewayStartupMixin:
             if not platform_config.enabled:
                 continue
             # Multiplex: a platform enabled in the shared config.yaml may hold its token only in a
-            # secondary profile's .env; an empty primary would queue a reconnect loop that never heals.
-            # Starting that primary adapter with an empty token fails immediately and queues an infinite
-            # reconnect loop that can never heal (#64674). Secondary profiles still start their own adapters
-            # under _profile_runtime_scope with the real token -- skip the empty primary instead of failing
-            # loudly.
-            if _multiplex_on and not _platform_has_bot_credential(platform, platform_config):
+            # secondary profile's .env; an empty primary would queue a reconnect loop that never heals
+            # (#64674). Secondary profiles still start their own adapters under _profile_runtime_scope
+            # with the real token -- skip the empty primary instead of failing loudly.
+            if not self._primary_platform_wanted(platform, platform_config):
                 logger.info(
                     "Skipping %s on default profile: no bot credential in this "
                     "profile's secrets. Secondary multiplexed profiles that "
@@ -1253,27 +1249,10 @@ class GatewayStartupMixin:
                 _multiplex_skipped_platforms.append(platform)
                 continue
             enabled_platform_count += 1
-            adapter = await self._create_adapter_off_loop_deps(platform, platform_config)
-            if not adapter:
-                # Distinguish between missing builtin deps and missing plugin
-                if platform.value in {m.value for m in Platform.__members__.values()}:
-                    logger.warning("No adapter available for %s", platform.value)
-                else:
-                    logger.warning(
-                        "No adapter for '%s' -- is the plugin installed? "
-                        "(platform is enabled in config.yaml but no plugin registered it)", platform.value,
-                    )
-                # Only a platform that can heal on its own is queued for the reconnect watcher; either way
-                # flag it so the unserved enabled platform is visible.
-                heals = self._adapter_may_heal(platform, platform_config)
-                self._mark_adapter_unavailable(platform.value, platform, retrying=heals, needs_attention=True)
-                if heals:
-                    self._failed_platforms[platform] = self._startup_retry_entry(platform, None, platform_config)
-                continue
-            # Under multiplexing the default profile needs the same whole-handler runtime scope as a
-            # secondary (authorization and prompt rendering run before the agent-turn scope).
-            self._wire_adapter_handlers(adapter)
-            _pending_connects.append((platform, platform_config, adapter))
+            build_print = await asyncio.to_thread(self._primary_build_print, platform, platform_config)
+            adapter = await self._prepare_primary_adapter(platform, platform_config, build_print)
+            if adapter:
+                _pending_connects.append((platform, platform_config, adapter))
         return False, enabled_platform_count, _multiplex_skipped_platforms, _pending_connects
 
     async def _start_connect_pending(self, _pending_connects: list) -> Optional[list]:
@@ -1695,6 +1674,7 @@ class GatewayStartupMixin:
 
     async def _start_impl(self) -> bool:
         logger.info("Starting Hermes Gateway...")
+        await self._note_boot_platform_signature()  # before boot builds adapters from the config it read
         self._start_install_faulthandler()
         await self._start_log_startup_environment()
         if await self._abort_startup_if_shutdown_requested():

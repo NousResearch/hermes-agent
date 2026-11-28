@@ -161,31 +161,27 @@ def test_plugins_disabled_naming_the_bundled_adapter_is_not_use_and_still_disabl
 
 def test_a_bare_yuanbao_in_plugins_disabled_is_still_use(tmp_path):
     """Core's adapter was ``platforms/yuanbao`` / ``yuanbao-platform``: a bare ``yuanbao`` never stopped it, so
-    the home gets the plugin. The install's enable lifts that entry; one that survives it (a managed overlay
-    pin) now turns the plugin off, and the notice says so."""
-    from hermes_cli.config import read_user_config_raw
+    the home gets the plugin. The automatic install keeps that entry (the plugin is placed but off), and the
+    one notice names the enable command."""
+    import shutil
     home = _home(tmp_path, env="YUANBAO_APP_ID=a\nYUANBAO_APP_SECRET=s\n",
                  config="plugins:\n  disabled: [yuanbao]\n")
     assert lcm.yuanbao_in_use(home) is True
-    sentence = "plugins.disabled lists 'yuanbao', which now turns Yuanbao off; remove it to keep using Yuanbao"
-    for lifted in (True, False):
-        (home / "config.yaml").write_text("plugins:\n  disabled: [yuanbao]\n", encoding="utf-8")
+    sentence = "so it is installed but off: run `hermes plugins enable yuanbao`"
+    for kept_off in (True, False):
         said = []
 
         def install(name):
             (home / "plugins" / name).mkdir(parents=True, exist_ok=True)
-            if lifted:  # what the real enable does (_apply_activation)
-                (home / "config.yaml").write_text("plugins:\n  enabled: [yuanbao]\n  disabled: []\n", encoding="utf-8")
-            return {"ok": True}
+            return {"ok": True, **({"kept_disabled": True} if kept_off else {})}
 
         lcm._attempted.clear()
-        import shutil
         shutil.rmtree(home / "plugins", ignore_errors=True)
+        (home / "config.yaml").write_text("plugins:\n  disabled: [yuanbao]\n", encoding="utf-8")
         assert lcm.migrate_home(home, install=install, say=said.append) == ["yuanbao"]
-        assert (sentence in said[0]) is (not lifted)
-        assert ("yuanbao" in (read_user_config_raw(home / "config.yaml")["plugins"].get("disabled") or [])) is (not lifted)
+        assert said[0].count(sentence) == (1 if kept_off else 0), said
 
-    # A failed install leaves the entry, but the install command it names lifts it: no sentence there either.
+    # A failed install names the install command: no off sentence there.
     (home / "config.yaml").write_text("plugins:\n  disabled: [yuanbao]\n", encoding="utf-8")
     shutil.rmtree(home / "plugins", ignore_errors=True)
     lcm._attempted.clear()

@@ -3064,7 +3064,7 @@ def _save_compose_deliver(
         return
     d.unresolved_origin = (
         _normalize_deliver_value(_delivery_lane_value(job, for_failure=not d.success)) == "origin"
-        and not _resolve_delivery_targets(job, for_failure=not d.success)
+        and not _resolve_delivery_targets(job, for_failure=not d.success, skipped=(skipped := [])) and not skipped
     )
     execution_id = job.get('execution_id')
     if execution_id and not job.get('no_agent'):
@@ -3133,7 +3133,7 @@ def _deliver_crash_failure(
     unresolved_origin = bool(
         not delivery_error
         and normalized_deliver == "origin"
-        and not _resolve_delivery_targets(job, for_failure=True)
+        and not _resolve_delivery_targets(job, for_failure=True, skipped=(skipped := [])) and not skipped
     )
     delivery_outcome = _classify_delivery_outcome(
         delivery_error=delivery_error, should_deliver=True, unresolved_origin=unresolved_origin,

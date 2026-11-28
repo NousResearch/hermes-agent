@@ -1165,6 +1165,7 @@ The backup uses SQLite's `backup()` API for safe copying, so it works correctly 
 - Browser profiles: `browser-profile/` (the real-profile snapshot — copied Cookies / Login Data), `browser-profiles/` (live CDP profiles) at any depth, and `browser_profiles/` (the Browser Use CLI backend's Chromium user-data dir, with its own Login Data / Cookies) at the root of `~/.hermes` and of each `profiles/<name>/`. Credential stores that must never enter an archive; all are regenerated on the next launch.
 - Regenerable entries of `cache/` at those same roots — model/plugin catalogs, stamps, browser profiles, tool-output spill. Durable artifacts stay in: `cache/images`, `cache/audio`, `cache/videos`, `cache/documents`, `cache/screenshots` (media delivered to or received from you) and `cache/citations` (the grounded-citations ledger). A deeper `cache/` (inside a skill) is kept whole.
 - Unix sockets, devices, and symlinks — a zip cannot hold them; before they were excluded, a stray `gateway.sock` made every full backup report `Backup incomplete`.
+- `portal-recovery/` and `lost+found/` at the root of `~/.hermes` — the host's own state (Hermes Cloud's recovery snapshots, often unreadable by the agent, and the volume's `lost+found/`). `hermes import` skips them in older archives that still carry them. Same-named folders in a skill or a named profile are kept.
 - The `hermes-agent` code itself (this is a user-data backup, not a repo snapshot).
 
 ### Examples
@@ -1869,14 +1870,16 @@ You can also generate a brand-new pet from a text description with the `/hatch` 
 ## `hermes sessions`
 
 ```bash
-hermes sessions <subcommand>
+hermes sessions [<subcommand>]
 ```
+
+With no subcommand on a terminal, `hermes sessions` opens the same picker as `browse`: pick a recent conversation with the arrow keys and Enter resumes it (`hermes --resume <id>`). Off a terminal it prints the `list` output.
 
 Subcommands:
 
 | Subcommand | Description |
 |------------|-------------|
-| `list` | List recent sessions. |
+| `list` | List recent conversations: one row per thread (a compressed thread shows its live continuation's id), ranked by last message. Subagent runs are left out; so are cron/webhook/push/kanban/tool/one-shot runs and empty sessions unless you pass `--all`. |
 | `browse` | Interactive session picker with search and resume. Each row shows a lifecycle status tag (`done` / `intr` / `err` / `empty`, derived from the session's final message) and its message count. Press `d` on a highlighted row (while the search filter is empty) to delete that session after a y/N confirmation; while a filter is active, `d` types into the search instead. |
 | `export <output> [--session-id ID]` | Export sessions to JSONL. |
 | `delete <session-id>` | Delete one session. |

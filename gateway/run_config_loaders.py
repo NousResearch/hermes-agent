@@ -189,6 +189,21 @@ class GatewayConfigLoadersMixin:
             return None
         return _get_channel_override(config, platform, chat_id, thread_id=thread_id, parent_id=parent_id)
 
+    def _idle_compact_after_for_source(self, source: SessionSource, user_config: dict) -> int:
+        """``compression.idle_compact_after_seconds`` for *source*'s chat: the first ``channel_overrides``
+        entry along chat -> thread -> parent that sets it (0 = off in that channel), else the global
+        value from the turn's *user_config*. A channel policy, so it outlives ``/new``."""
+        override = self._channel_override(source.platform, source.chat_id or "", source.thread_id,
+                                          source.parent_chat_id, source)
+        value = getattr(override, "idle_compact_after_seconds", None)
+        if value is not None:
+            return value
+        configured = cfg_get(user_config or {}, "compression", "idle_compact_after_seconds", default=0)
+        try:
+            return max(0, int(configured or 0))
+        except (TypeError, ValueError):
+            return 0
+
     def _serving_channel_config(self, source: SessionSource, *, unbound_reads_home: bool = False):
         """The config whose ``channel_overrides`` serve *source*.
 

@@ -100,9 +100,9 @@ async def apply_chat_pick(authority, ref, owner, live, params, *, principal_id):
     result = {'session_id': ref.session_id, 'operation': operation, 'revision': row.revision,
               'execution_generation': row.generation, **fields}
     result = await asyncio.to_thread(runtime.commit_chat_pick, authority.epoch, **fenced, result=result)
-    from gateway.session_local import local_session_info
+    from gateway.session_local import publish_local_session_info
     # Every viewer repaints its model and reasoning pill, as after a LOCAL pick.
-    live.event_stream.publish(owner.session_id, local_session_info(authority, owner), event_type='session.info')
+    publish_local_session_info(authority, owner, live=live)
     return result
 
 
@@ -111,7 +111,7 @@ def messaging_route_info(runner, live):
     or resolving credentials: session ``/model`` > ``channel_overrides`` > config.yaml, and the session
     ``/reasoning`` > per-model > global level (``_resolve_session_reasoning_config``)."""
     from gateway.run import _load_gateway_config, _resolve_gateway_model
-    from gateway.session_local import effort_fields
+    from gateway.session_local import _resolved_provider_identity, effort_fields
     config = _load_gateway_config()
     block = config.get('model')
     block = block if isinstance(block, dict) else {}
@@ -127,4 +127,5 @@ def messaging_route_info(runner, live):
     api_mode = override.get('api_mode') or (block.get('api_mode') if provider == block.get('provider') else None)
     reasoning = runner._resolve_session_reasoning_config(source=live.source, session_key=live.route, model=model)
     tier = runner._resolve_session_service_tier(source=live.source, session_key=live.route)
-    return {'model': model, **effort_fields(reasoning, tier, model, provider, base_url, api_mode)}
+    resolved_provider = _resolved_provider_identity(provider, None, base_url, model, config=config)
+    return {'model': model, 'provider': resolved_provider, **effort_fields(reasoning, tier, model, provider, base_url, api_mode)}

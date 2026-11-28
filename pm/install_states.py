@@ -32,6 +32,8 @@ import shutil
 import time
 from pathlib import Path
 
+from pm.filesystem import long_root
+
 logger = logging.getLogger(__name__)
 
 
@@ -144,7 +146,7 @@ def _remove_contents(state: Path) -> bool:
         if child.name in _KEPT_UNTIL_LAST:
             continue
         if child.is_dir() and not child.is_symlink():
-            shutil.rmtree(child, ignore_errors=True)
+            shutil.rmtree(long_root(child), ignore_errors=True)
         else:
             with contextlib.suppress(OSError):
                 child.unlink()
@@ -169,7 +171,7 @@ def collect_orphan_install_states(installs: Path) -> list[Path]:
                 continue
             emptied = _remove_contents(state)
             if emptied:  # still under the lock: only the record is left, so it goes last
-                shutil.rmtree(state / "inputs", ignore_errors=True)
+                shutil.rmtree(long_root(state / "inputs"), ignore_errors=True)
                 # POSIX: unlink while still holding it. A launcher already waiting on this file
                 # then sees it gone once it gets the lock and retries on a fresh one (lock_path);
                 # unlinked after release, the path could be a file that launcher just made.

@@ -20,13 +20,15 @@ import re
 import sys
 import threading
 import types
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Tuple, Union
+from typing import Any, Callable, Dict, Iterator, List, Mapping, Optional, Set, Tuple, Union
 
-from hermes_constants import get_hermes_home, get_process_hermes_home, hermes_home_key
+from hermes_constants import (
+    PROFILE_ID_RE, get_hermes_home, get_process_hermes_home, hermes_home_key, named_profile_is_deleted,
+)
 from registration_lifecycle import replacement_coordinator
 from utils import env_var_enabled
 from hermes_cli.config import load_config_readonly
@@ -44,7 +46,7 @@ from hermes_cli.plugins_discovery import (
     scan_directory,
 )
 from hermes_cli.plugins_loader import (
-    PluginLoaderMixin, _BARE_MODULE_SCOPE, _MODULE_NAMESPACE_LOCK, _NS_PARENT, _evict_modules,
+    PluginHomeMoved, PluginLoaderMixin, _BARE_MODULE_SCOPE, _MODULE_NAMESPACE_LOCK, _NS_PARENT, _evict_modules,
     _plugin_home_scope, _serialized_replacement, in_plugin_load_worker,
 )
 from hermes_cli.plugins_dispatch import (
@@ -278,9 +280,12 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         # matches the key the registries store under (normcase on Windows).
         self.scope_key = hermes_home_key(scope_key)
         self.home_path = Path(self.scope_key)
-        # The home as the profile was named, before resolving: a marked profile whose directory is a link
-        # out of the Hermes root is found by that name only (``plugin_isolation.host_launcher``).
-        self.owner_home = Path(owner_home) if owner_home is not None else self.home_path
+        # The home as the profile was named (see ``owner_home``). Made absolute now, links kept: a relative
+        # home (a symbolic profile id) must keep naming the directory ``home_path`` keys.
+        self._named_home = Path(owner_home).expanduser().absolute() if owner_home is not None else self.home_path
+        # Whether the directory has existed while this manager served it (``_leads_here``): one removed before the
+        # first lookup (background discovery) is removed, not never created.
+        self._saw_home = os.path.isdir(self.home_path)
         self._discovery_lock = threading.RLock()
         self._discovered: bool = False
         # True once a discovery re-applied plugin secret sources for this home: the per-home snapshot and
@@ -361,6 +366,58 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._predeclared_tools: dict[str, list[str]] = {}
 
     @property
+    def owner_home(self) -> Path:
+        """The home this manager's code runs under (discovery, a plugin's calls, the plugin host): the profile's
+        name, because a marked profile whose directory is a link out of the Hermes root is found by that name
+        only. That is the name it was opened by while it still leads to this manager's directory; after a
+        rename, the name beside it that does. With no such name left, :class:`PluginHomeMoved`: the directory
+        alone reads as an unmarked profile. ``home_path`` stays the registries' key."""
+        home = self._name_leading_here()
+        if home is None:
+            raise PluginHomeMoved(f"no profile name leads to {self.home_path} any more ({self._named_home} was "
+                                  "repointed, renamed or removed): restart Hermes to run this profile's plugins")
+        return home
+
+    def _name_leading_here(self) -> Optional[Path]:
+        """:attr:`owner_home`, or None when no name leads here. The old name is kept then, so a name that leads
+        here later is still found."""
+        named = self._named_home
+        if self._leads_here(named):  # even a name equal to the directory: it may have been replaced by a link
+            return named
+        renamed = next((p for p in self._profile_names_beside(named) if self._leads_here(p)), None)
+        if renamed is not None:
+            self._named_home = renamed
+        return renamed
+
+    def _leads_here(self, path: Path) -> bool:
+        # The process's remembered key for that spelling too (hermes_home_key keeps one per path text): a name
+        # repointed here from another directory still keys that one, so plugin code bound to it would run there.
+        # The directory's key, not scope_key: a transient hook manager's scope_key carries a suffix.
+        here = os.fspath(self.home_path)
+        if os.path.normcase(os.path.realpath(path)) != here or hermes_home_key(path) != here:
+            return False
+        # A plain directory's name resolves to itself even once it is removed or renamed away: after the directory
+        # was seen, a name that leads to no directory leads nowhere. A home not created yet still counts.
+        if os.path.isdir(path):
+            self._saw_home = True
+            return True
+        return not self._saw_home
+
+    @staticmethod
+    def _profile_names_beside(named: Path) -> list[Path]:
+        """The other live named profiles of the root *named* is a profile of (none for a home outside
+        ``profiles/``): a name the marker lookup reads as a named profile (lowercased, as a case-insensitive
+        volume opens any case), not ``default``, not deleted."""
+        if named.parent.name != "profiles":
+            return []
+        try:
+            entries = sorted(named.parent.iterdir())
+        except OSError:
+            return []
+        return [p for p in entries if p.name != named.name and p.name.lower() != "default"
+                and PROFILE_ID_RE.match(p.name.lower()) and not named_profile_is_deleted(p)]
+
+    @property
     def has_gateway_message_injector(self) -> bool:
         """Return whether a live gateway can accept plugin-triggered turns."""
         return self._gateway_message_injector is not None
@@ -412,7 +469,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
             # deadline worker that cannot re-acquire the sweep's RLock; the flag is already set for the
             # whole sweep, so return where the locked re-entry used to. Every other caller still waits.
             return
-        with self._discovery_lock, _plugin_home_scope(self.home_path):
+        with self._discovery_lock, _plugin_home_scope(self.owner_home):
             if self._discovered and not force:
                 return
             # ``on_plugin_loaded`` reports the plugins this sweep loads that the process did not have before
@@ -604,8 +661,9 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         return registered
 
     def _collect_directory_manifests(self) -> list[PluginManifest]:
-        """Directory manifests in full-discovery order (see :func:`collect_directory_manifests`)."""
-        return collect_directory_manifests()
+        """Directory manifests in full-discovery order (see :func:`collect_directory_manifests`). User plugins
+        are read from ``home_path``, so their paths outlive a rename of the link the profile was opened by."""
+        return collect_directory_manifests(self.home_path)
 
     def has_enabled_portable_mcp(self, raw_config: Mapping[str, Any]) -> bool:
         """Probe enabled portable MCP packages without loading plugins (shares the full-discovery
@@ -720,10 +778,10 @@ sys.modules[PluginContext.__module__].PluginManager = PluginManager
 # working — ``get_plugin_manager()`` still reads/writes this name.
 _plugin_manager: Optional[PluginManager] = None
 
-# Resolved Hermes home -> PluginManager. A process can switch profiles via
+# Hermes home key -> PluginManager. A process can switch profiles via
 # ``set_hermes_home_override()``; a single slot would leak one profile's plugin/context-engine state
-# into another, and keying by resolved home lets a re-entered profile reuse its imported modules.
-_plugin_managers_by_home: dict[Path, PluginManager] = {}
+# into another, and keying by the home's key lets a re-entered profile reuse its imported modules.
+_plugin_managers_by_home: dict[str, PluginManager] = {}
 _plugin_managers_lock = threading.RLock()
 
 # Process-wide messaging-gateway host. A multiplexed gateway owns one scheduler while plugins are
@@ -738,13 +796,15 @@ _published_tui_message_injector: tuple[object, Callable] | None = None
 _published_tui_host_lock = threading.Lock()
 
 
-def _plugin_home_key() -> Path:
-    """Resolved active Hermes home — the key for per-profile plugin managers (plugins capture the
-    home at registration, so a process serving several profiles cannot share one manager)."""
-    try:
-        return get_hermes_home().expanduser().resolve()
-    except Exception:
-        return get_hermes_home().expanduser()
+def _plugin_home_key() -> str:
+    """The active Hermes home's remembered key (``hermes_home_key``): the key for per-profile plugin managers
+    (plugins capture the home at registration, so a process serving several profiles cannot share one manager).
+    Not the link's live target: a name repointed while the process runs finds the manager it was opened by, never
+    the manager of the directory it now leads to. That manager runs under whichever profile name still leads to its
+    directory (a renamed profile's new name) and refuses when none does (``PluginManager.owner_home``), so a name
+    reused for another profile reaches that profile's plugins only after a restart. A relative home is
+    made absolute first, so a later lookup from another working directory finds the directory it names there."""
+    return hermes_home_key(get_hermes_home().absolute())
 
 
 def _clear_plugin_submodules(manager: Optional[PluginManager]) -> None:
@@ -846,7 +906,7 @@ def get_plugin_manager() -> PluginManager:
         else:
             manager = _plugin_managers_by_home.get(current_home)
             if manager is None:
-                manager = PluginManager(scope_key=hermes_home_key(current_home), owner_home=get_hermes_home())
+                manager = PluginManager(scope_key=current_home, owner_home=get_hermes_home())
                 _plugin_managers_by_home[current_home] = manager
             _plugin_manager = manager
     _attach_published_gateway_host(manager)
@@ -1060,6 +1120,15 @@ def has_hook(hook_name: str) -> bool:
     Lazy-discovers first — same gate-before-invoke rationale as :func:`has_middleware` (tracking #64178).
     """
     return _delivery_manager().has_hook(hook_name)
+
+
+@contextmanager
+def settled_plugin_registrations() -> Iterator[None]:
+    """Hold this home's plugin discovery lock, so registrations read inside are never a force reload's
+    midpoint (it unregisters every plugin's platforms and tools first, then re-registers them as it loads
+    each plugin). Blocking: waits out a sweep in flight, so never call it on an event loop."""
+    with get_plugin_manager()._discovery_lock:
+        yield
 
 
 def _loaded_registry_nowait(check: Callable[[PluginManager], bool]) -> bool:

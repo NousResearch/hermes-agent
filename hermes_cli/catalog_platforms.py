@@ -55,18 +55,28 @@ def _served_env(home: Path) -> set[str]:
     return served
 
 
-def pending_entries(home: Path) -> list:
+def _catalog_entries(*, allow_network: bool) -> list:
+    """Live catalog when unattended network fetches are allowed; otherwise the fresh on-disk cache
+    or in-tree catalog with zero network I/O."""
+    from hermes_cli.plugin_catalog import load_catalog, load_catalog_cached, load_catalog_live
+    if allow_network:
+        return load_catalog_live()
+    cached = load_catalog_cached()
+    return cached if cached is not None else load_catalog()
+
+
+def pending_entries(home: Path, *, _catalog: list | None = None) -> list:
     """Platform entries *home* has the credentials for and has never had installed. Read-only.
 
     An entry whose required env a platform plugin *home* already has also requires is not pending: those
     credentials are served (``hermes-tag`` overrides Feishu with the same ``FEISHU_*``), so naming it would
     tell a working Feishu user on every start that a plugin they do not need is missing."""
-    from hermes_cli.default_plugins import _installed_dir, _recorded
+    from hermes_cli.default_plugins import _installed_dir, _recorded, fetch_allowed
     from hermes_cli.left_core_migration import LEFT_CORE, _plugins_listed
-    from hermes_cli.plugin_catalog import load_catalog_live
     owned = {feature.plugin for feature in LEFT_CORE}
     done = _recorded(home)
-    candidates = [entry for entry in load_catalog_live()
+    catalog = _catalog if _catalog is not None else _catalog_entries(allow_network=fetch_allowed(home))
+    candidates = [entry for entry in catalog
                   if entry.category == "platform" and entry.name not in owned and entry.name not in done
                   and _configured(entry, home) and _installed_dir(home, entry) is None
                   and not _plugins_listed(home, (entry.name,))[1]]
@@ -95,17 +105,21 @@ def recover_in(home: Path, *, report: Callable[[str], None]) -> list[str]:
 
 def _recover(home: Path, *, report: Callable[[str], None], seen: set[str]) -> list[str]:
     """One pass over the pending entries not in *seen* (which it extends): a re-pass never repeats one."""
-    from hermes_cli.default_plugins import fetch_allowed, install_defaults, installer_lock
+    from hermes_cli.default_plugins import _filter_defaults, fetch_allowed, install_defaults, installer_lock
     from hermes_cli.left_core_migration import startup_lock_wait
     from hermes_cli.memory_provider_migration import _install_command
     try:
-        entries = [entry for entry in pending_entries(home) if entry.name not in seen]
+        allowed = fetch_allowed(home)
+        offline_catalog = None if allowed else _catalog_entries(allow_network=False)
+        entries = [entry for entry in pending_entries(home, _catalog=offline_catalog) if entry.name not in seen]
         seen.update(entry.name for entry in entries)
         if not entries:
             return []
-        from hermes_cli.default_plugins import default_entries
-        defaults = {entry.name for entry in default_entries()}  # one catalog snapshot for the pass
-        allowed = fetch_allowed(home)
+        if allowed:
+            from hermes_cli.default_plugins import default_entries
+            defaults = {entry.name for entry in default_entries()}  # one catalog snapshot for the pass
+        else:
+            defaults = {entry.name for entry in _filter_defaults(offline_catalog or [])}
         unattended = [entry for entry in entries if entry.name in defaults] if allowed else []
         for entry in entries:
             if entry in unattended:

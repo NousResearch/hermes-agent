@@ -1,0 +1,18 @@
+name: social-media-ad-research
+title: Social Media & Ad Library Research
+repo: https://github.com/afzalbuilds/social-media-ad-research
+sha: 6486af98a24369de76436eb4bd2b5f1b299f3fc2
+version: "1.0.0"
+description: "Research competitors' ads and social content from chat: the public ad libraries of Meta (Facebook and Instagram), TikTok, LinkedIn and Google, YouTube search, channel stats and transcripts, Instagram's trending Reels, Threads posts and profiles, and Reddit posts and comments. Four workflow skills (competitor ad research sorted by days running, social content research, audience insights with quoted pain points, cost estimate) drive ten Actors on Apify's hosted MCP server (Streamable HTTP at https://mcp.apify.com). Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only, no local code. Disclosure — every tool call goes to Apify's hosted MCP server at mcp.apify.com and starts a pay-per-result run of an Actor published by the plugin's author (Apify user muhammadafzal), who is paid for each run; runs are billed to the user's own Apify account (about USD 0.0015 to 0.01 per ad, video, post or comment plus up to USD 0.02 per run). Brand names, website domains, keywords, channel handles and post or video links are sent to Apify; the Actors read public ad libraries and public YouTube, Instagram, Threads and Reddit content, and the results are kept in the user's Apify datasets. Public posts carry their authors' usernames; the skills quote content rather than people and decline requests to track a private individual. Apify sign-in is OAuth, which Hermes runs only for a server in the user's own config, so the README has the user add the same-name server with `hermes mcp add social-research --auth oauth`; that entry replaces the package's own, so the user adds `trust: untrusted` to it to keep Hermes asking before each paid run. The tool set is served by the remote server at runtime and is not covered by the pinned sha. No telemetry. Independent tool, not affiliated with Meta, TikTok, LinkedIn, Google, YouTube or Reddit."
+maintainer: Imzlab Technologies
+tier: community
+category: tools
+docs_url: https://github.com/afzalbuilds/social-media-ad-research#readme
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

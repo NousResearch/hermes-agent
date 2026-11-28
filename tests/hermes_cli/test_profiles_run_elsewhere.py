@@ -78,6 +78,17 @@ def test_one_plugin_cannot_take_over_or_clear_another_plugins_marker(root):
     assert pre.run_elsewhere("ops").plugin == "sandbox-plugin"
 
 
+def test_mark_publishes_the_marker_on_a_python_without_os_link(root, monkeypatch):
+    """Termux's bionic CPython has no ``os.link`` at all (#158513): the missing attribute takes
+    the same path as a filesystem without hard links."""
+    monkeypatch.delattr(os, "link", raising=False)
+
+    entry = pre.mark_profile_run_elsewhere("ops", "sandbox-plugin")
+
+    assert pre.run_elsewhere("ops").plugin == "sandbox-plugin"
+    assert [item.name for item in entry.path.parent.iterdir()] == ["ops.json"]
+
+
 @pytest.mark.parametrize("profile, plugin", [("../evil", "sandbox-plugin"), ("ops", ""), ("ops", None)])
 def test_mark_rejects_bad_profile_ids_and_plugin_names(root, profile, plugin):
     with pytest.raises(ValueError):

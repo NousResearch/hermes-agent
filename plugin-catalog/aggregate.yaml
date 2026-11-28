@@ -1,0 +1,18 @@
+name: aggregate
+title: Aggregate
+repo: https://github.com/Izzy-Gottz/aggregate-finance
+sha: a2d996ee8d39f3ce09e22c0a40a65989b42e7867
+subdir: plugins/hermes
+description: "Answers about your companies' and your own money (cash, burn, runway, invoices, bills, payroll, cap table) from your banks, cards, payment apps and books in one ledger, with any model Hermes runs. Portable Agent Plugins v1 package with a skill and hosted Streamable HTTP MCP; no local executable code. Disclosure — Hosted remote MCP server at app.aggregate.finance (no local code); tool calls send your queries to app.aggregate.finance, which returns your balances, transactions, invoices and reports into the model context (and so to your model provider). Sign-in is Aggregate's own OAuth with dynamic client registration; the server is behind the pin, so its tools can change without a catalog update. Read tools, plus write tools that record entries in Aggregate only if the connection is granted write access (each previewable and undoable for 30 days); nothing moves money. Free during beta."
+maintainer: Izzy-Gottz
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/Izzy-Gottz/aggregate-finance/blob/a2d996ee8d39f3ce09e22c0a40a65989b42e7867/plugins/hermes/README.md
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

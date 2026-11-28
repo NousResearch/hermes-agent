@@ -32,6 +32,33 @@ def test_prefixed_inert_heredoc_body_path_not_walked_as_script(tmp_path):
     assert guard(command, cwd=str(tmp_path)) is False
 
 
+@pytest.mark.parametrize(("opener", "body", "blocked"), [
+    # A wrapper or a downstream text filter does not change who consumes the body: python3.
+    ("timeout 600 python3 - <<'PY'", "d = open('{big}').read()", False),
+    ("python3 - <<'PY' 2>&1 | grep -v x", "d = open('{big}').read()", False),
+    ("nice -n 5 python3 - <<'PY' | head -n 3", "d = open('{big}').read()", False),
+    # A shell owner, a shell downstream of the pipe, or a shell heredoc later on the line still is.
+    ("timeout 5 bash <<'PY'", "bash {big}", True),
+    ("python3 - <<'PY' | bash", "x = 1\nbash {big}", True),
+    ("python3 - <<'PY' | grep x | sh", "x = 1\nbash {big}", True),
+    ("python3 - <<'PY'; bash <<'SH'", "print(1)\nPY\nbash {big}\nSH", True),
+    ("env -S 'bash -s' python3 <<'PY'", "bash {big}", True),
+    ("cat <<'PY' | sort --compress-program=sh", "hermes gateway restart", True),
+    ("timeout 600 python3 - <<'PY' 2>&1 | grep -v x", "import os\nos.system('hermes gateway restart')", True),
+    # A later command on the line may run what the first one wrote, and a path-qualified filter is
+    # whatever that file is (an earlier revision of this fix allowed all three).
+    ("cat <<'PY' > run.sh; f=run.sh; bash \"$f\"", "hermes gateway restart", True),
+    ("cat <<'PY' | cat > run.sh && bash run.sh", "hermes gateway restart", True),
+    ("cat <<'PY' | ./grep", "hermes gateway restart", True),
+])
+def test_heredoc_body_belongs_to_its_owner_through_wrappers_and_pipes(tmp_path, opener, body, blocked):
+    """A wrapped (`timeout 600 python3 - <<'PY'`) or filter-piped Python heredoc that only reads a
+    >1 MiB data file is not refused as an unscannable script; shell consumers still are."""
+    big = _big_file(tmp_path)
+    command = f"{opener}\n{body.format(big=big)}\n" + ("" if body.endswith("SH") else "PY")
+    assert guard(command, cwd=str(tmp_path)) is blocked
+
+
 def test_allowlisted_name_function_heredoc_stays_visible(tmp_path):
     command = "python3() { bash; }; python3 <<'PY'\nhermes gateway restart\nPY"
     assert guard(command, cwd=str(tmp_path)) is True

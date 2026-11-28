@@ -63,7 +63,7 @@ def _git_run(args: list[str], *, cwd: Optional[Path] = None, timeout: int = 5, t
     """Read Git state without prompts, optional index writes, or inherited targeting."""
     from hermes_cli._subprocess_compat import _git_argv0_unusable, windows_hide_flags
 
-    if _git_argv0_unusable([git]):
+    if _git_argv0_unusable([git], cwd=cwd):
         return None
     kwargs: dict = {"creationflags": windows_hide_flags(), "env": source_git_env(), "stdin": subprocess.DEVNULL}
     try:

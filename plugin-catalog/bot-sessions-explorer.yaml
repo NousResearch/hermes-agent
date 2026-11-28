@@ -1,0 +1,21 @@
+name: bot-sessions-explorer
+title: "Bots & Sessions Explorer"
+repo: https://github.com/appliman/hermes-agent
+sha: a2bc77b7e813f9aafb690c94f3c1cdfd61995140
+subdir: plugins/bot-sessions-explorer
+description: Two-column docked explorer for browsing local and remote (multi-gateway) bots and their sessions.
+maintainer: Appliman
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/appliman/hermes-agent/tree/a2bc77b7e813f9aafb690c94f3c1cdfd61995140/plugins/bot-sessions-explorer
+version: "1.0.0"
+screenshots:
+  - https://raw.githubusercontent.com/appliman/hermes-agent/a2bc77b7e813f9aafb690c94f3c1cdfd61995140/docs/bot-sessions-explorer-preview.svg
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

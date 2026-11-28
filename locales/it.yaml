@@ -443,7 +443,7 @@ gateway:
     cache_unknown_runtime: "Cache del prompt: sconosciuta (questo runtime imposta le proprie opzioni di cache, che Hermes non può osservare)."
     cache_unknown_storage: "Cache del prompt: sconosciuta (impossibile leggere l'archivio della sessione)."
     cache_warming_off: "Keep-alive: disattivati (mancati due volte)."
-    cache_tier_pending: "Livello: 5m fino alla prima pausa oltre 5 minuti, poi 1h."
+    cache_tier_pending: "Livello: 5m finché la cache da 5 minuti non scade per la prima volta, poi 1h."
     cache_learned: "Appreso: {rule}."
     cache_confidence:
       proven: "provato"

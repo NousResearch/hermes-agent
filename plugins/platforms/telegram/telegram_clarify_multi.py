@@ -118,7 +118,7 @@ async def resolve_clarify_choice(adapter: Any, query: Any, clarify_id: str, prom
     adapter._clarify_state.pop(clarify_id, None)
     adapter._clarify_multi.pop(clarify_id, None)
     from tools.clarify_gateway import resolve_gateway_clarify
-    resolved = resolve_gateway_clarify(clarify_id, resolved_text)  # a locked dict read + Event.set
+    resolved = resolve_gateway_clarify(clarify_id, resolved_text, session_key=prompt.session_key)
     if not resolved:  # entry evicted / gateway restarted between ask and tap
         await adapter._notify_clarify_expired(query, user_display)
         logger.warning("Telegram clarify button: resolve_gateway_clarify returned False (id=%s)", clarify_id)

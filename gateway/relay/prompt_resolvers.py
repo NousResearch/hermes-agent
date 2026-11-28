@@ -88,8 +88,12 @@ async def resolve_clarify(adapter, state, option_id, chat_id, ack_meta) -> None:
     except ValueError:
         idx = -1
     if 0 <= idx < len(choices):
-        resolve_gateway_clarify(clarify_id, str(choices[idx]))
-        adapter._send_lifecycle_ack(chat_id, f"✅ {choices[idx]}", ack_meta)
+        # Bind to the owning session: a cross-session tap must not settle the prompt,
+        # and the ✅ ack is written only when this session actually resolved it.
+        if resolve_gateway_clarify(
+            clarify_id, str(choices[idx]), session_key=str(state.get("session_key") or "")
+        ):
+            adapter._send_lifecycle_ack(chat_id, f"✅ {choices[idx]}", ack_meta)
     else:
         # Unmappable option: flip to text capture (never dead-end a clarify).
         mark_awaiting_text(clarify_id)

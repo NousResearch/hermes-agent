@@ -19,14 +19,27 @@ import pytest
 
 @pytest.fixture()
 def isolated_kanban_home(monkeypatch):
-    """Spin up a fresh HERMES_HOME with a clean kanban DB."""
+    """Spin up a fresh HERMES_HOME with a clean kanban DB.
+
+    The module purge makes the CLI re-import under the fresh HOME (some
+    constants latch at import). The purge MUST be undone on teardown: a
+    permanently-replaced sys.modules leaves every LATER test file executing a
+    copy different from the one its top-level imports (and its monkeypatches)
+    reference — patches land on the orphaned old module while call paths run
+    the new one. Restoring the pre-fixture graph makes the isolation local."""
     test_home = tempfile.mkdtemp(prefix="kanban_cli_passthrough_")
     os.makedirs(os.path.join(test_home, "profiles", "default"), exist_ok=True)
     monkeypatch.setenv("HERMES_HOME", test_home)
+    saved = {}
     for mod in list(sys.modules.keys()):
         if mod.startswith("hermes_cli") or mod.startswith("hermes_state") or mod == "hermes_constants":
-            del sys.modules[mod]
+            saved[mod] = sys.modules.pop(mod)
     yield test_home
+    for mod in list(sys.modules.keys()):
+        if mod.startswith("hermes_cli") or mod.startswith("hermes_state") or mod == "hermes_constants":
+            if mod not in saved:
+                del sys.modules[mod]
+    sys.modules.update(saved)
 
 
 def test_cli_dispatch_passes_max_in_progress_from_config(isolated_kanban_home, monkeypatch):

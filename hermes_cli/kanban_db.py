@@ -921,6 +921,10 @@ CREATE TABLE IF NOT EXISTS task_runs (
     -- worker_pid after the run ends so a worker that outlives its terminal transition can
     -- still be found and reaped; NULL = legacy row, never signalled.
     worker_started_at   INTEGER,
+    -- Set once the terminal-worker reaper has verifiably resolved this attempt's process
+    -- evidence (every spawned/worker_bound identity gone). NULL = evidence unresolved: the
+    -- sweep keeps checking the run row AND its spawned/worker_bound events every tick.
+    worker_reaped       INTEGER,
     max_runtime_seconds INTEGER,
     last_heartbeat_at   INTEGER,
     started_at          INTEGER NOT NULL,
@@ -2230,22 +2234,9 @@ def claim_review_task(
             expect_assignee=expect_assignee)
         if run_id is None:
             return None
+        _review_claim_collision_at_claim(conn, task_id, run_id, lock)
         return get_task(conn, task_id)
 
-
-def _retry_status_for_run(
-    conn: sqlite3.Connection, task_id: str, run_id: Optional[int] = None,
-) -> str:
-    """``review`` when the run's ``claimed`` event says ``source_status=review``,
-    else ``ready`` — one place, so crash/timeout/reclaim can't silently turn a
-    reviewer run into an implementation run."""
-    if run_id is None:
-        run_id = _current_run_id(conn, task_id)
-    if run_id is None:
-        return "ready"
-    event = _latest_event(conn, task_id, "claimed", run_id)
-    payload = _json_dict(_row_get(event, "payload"))
-    return "review" if payload.get("source_status") == "review" else "ready"
 
 
 # Run outcome -> lifecycle status a goal loop should report for a handed-off run.
@@ -2674,6 +2665,10 @@ def complete_task(
     acceptance = prepare_acceptance(conn, task_id, expected_run_id, metadata)
     if acceptance is False:
         return False
+    # D3 attribution + supersede witness: who is recording this completion, and which run
+    # was active when the transition began (read BEFORE the UPDATE clears current_run_id).
+    actor = _actor_attribution(conn, task_id)
+    ending_run_id = _record_ending_run_id(conn, task_id)
     with write_txn(conn):
         # Hard invariant even for human review approval: a parent may have
         # reopened while this task waited.
@@ -2730,9 +2725,15 @@ def complete_task(
             event_summary = _REVIEW_APPROVED_NOTE
         _append_event(
             conn, task_id, "completed",
-            _completed_event_payload(result, event_summary, verified_cards, metadata),
+            {**_completed_event_payload(result, event_summary, verified_cards, metadata),
+             # D3: recording session/run identity — a completion that closes (or supersedes)
+             # a live review execution must name the execution that holds authority.
+             "actor": actor},
             run_id=run_id,
         )
+    _after_review_transition(
+        conn, task_id, run_id=run_id, ending_run_id=ending_run_id, actor=actor, kind="completed",
+    )
     _flag_phantom_prose_refs(conn, task_id, run_id, summary, result, verified_cards)
     # Success wipes the breaker counter (history stays on the event log).
     _clear_failure_counter(conn, task_id)
@@ -2833,31 +2834,6 @@ def _cleaned_artifact_paths(metadata: Any) -> list[str]:
     if not isinstance(raw, (list, tuple)):
         return []
     return [str(p).strip() for p in raw if isinstance(p, str) and str(p).strip()]
-
-
-def _completed_event_payload(
-    result: Optional[str], event_summary: Optional[str], verified_cards: list[str], metadata: Any,
-) -> dict:
-    """``completed`` event payload: first summary line (400 chars) so gateway
-    notifiers / dashboard WS render without a second round-trip; verified
-    cards; and ``metadata["artifacts"]`` promoted so the notifier can upload
-    them as native attachments without fetching the run row."""
-    # Mirror CLI's _show_voice_status: include STT/TTS provider availability so the user can tell at a
-    # glance *why* voice mode isn't working ("STT provider: MISSING ..." is the common case). ``record_key``
-    # mirrors the configured ``voice.record_key`` so the TUI can both bind it (frontend
-    # ``isVoiceToggleKey``) and display it in /voice status — previously the TUI hardcoded Ctrl+B and
-    # ignored the config (#18994).
-    payload: dict = {
-        "result_len": len(result) if result else 0,
-        "summary": _first_line(event_summary, 400) or None,
-    }
-    if verified_cards:
-        payload["verified_cards"] = verified_cards
-    if isinstance(metadata, dict):
-        cleaned = _cleaned_artifact_paths(metadata)
-        if cleaned:
-            payload["artifacts"] = cleaned
-    return payload
 
 
 def _flag_phantom_prose_refs(
@@ -3415,6 +3391,10 @@ def request_changes(
     if not reason:
         return False, "reason is required"
 
+    # D3 attribution: WHO is recording this verdict, captured before the txn so the
+    # identity is the caller's own context, not something the transition rewrote.
+    actor = _actor_attribution(conn, task_id)
+    ending_run_id = _record_ending_run_id(conn, task_id)
     with write_txn(conn):
         task_row = conn.execute(
             "SELECT status, assignee, current_run_id FROM tasks WHERE id = ?", (task_id,),
@@ -3469,9 +3449,16 @@ def request_changes(
                 "implementer": implementer,
                 "reviewer": reviewer,
                 "status": new_status,
+                # D3: the posting session/run identity, so a merge-order witness can assert
+                # WHICH execution held authority at this transition, not just its order.
+                "actor": actor,
             },
             run_id=run_id,
         )
+    _after_review_transition(
+        conn, task_id, run_id=run_id, ending_run_id=ending_run_id, actor=actor,
+        kind="changes_requested",
+    )
     return True, implementer
 
 
@@ -4224,8 +4211,16 @@ from hermes_cli.kanban_db_dispatch import (
     _defer_reclaim_for_live_worker,
     _pid_alive,
     _record_task_failure,
-    _terminate_reclaimed_worker,
     _worker_alive,
-    _worker_survived_termination,
     _worker_terminal_timeout_env,
+)
+from hermes_cli.kanban_db_termination import (
+    _actor_attribution,
+    _after_review_transition,
+    _completed_event_payload,
+    _record_ending_run_id,
+    _retry_status_for_run,
+    _review_claim_collision_at_claim,
+    _terminate_reclaimed_worker,
+    _worker_survived_termination,
 )

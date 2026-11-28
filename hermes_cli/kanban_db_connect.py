@@ -904,6 +904,9 @@ _TASK_RUN_COLUMNS = (
     # Spawn-time start fingerprint of the run's worker_pid (PID-reuse guard for the
     # terminal-worker reaper; NULL = legacy row, never signalled).
     ("worker_started_at", "worker_started_at INTEGER"),
+    # Reaper resolution marker (see SCHEMA_SQL): NULL = evidence still unresolved, so the
+    # sweep re-checks the run row plus its spawned/worker_bound event identities each tick.
+    ("worker_reaped", "worker_reaped INTEGER"),
 )
 
 

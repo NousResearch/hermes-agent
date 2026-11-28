@@ -46,7 +46,10 @@ KANBAN_TERMINAL_TIMEOUT_GRACE_SECONDS = 30
 # A healthy worker is still alive for a while after kanban_complete /
 # kanban_request_review returns (final assistant turn, session persistence), so
 # a run's retained worker is only reaped once ended_at is at least this old
-# (two default dispatch ticks).
+# (two default dispatch ticks). Review-lane runs are exempt: a terminal review
+# transition terminates its worker immediately (kill_run_worker_now), because a
+# reviewer whose authority has ended keeps comment rights and shell/gh CLI
+# capability — the PR#51 class of survivor-merge.
 TERMINAL_WORKER_REAP_GRACE_SECONDS = 120
 
 # ---------------------------------------------------------------------------
@@ -437,138 +440,6 @@ def _sigkill(kill, pid: int) -> bool:
         return True
     except (ProcessLookupError, OSError):
         return False
-
-
-def _terminate_reclaimed_worker(
-    pid: Optional[int],
-    claim_lock: Optional[str],
-    *,
-    signal_fn=None,
-    started_at=None,
-) -> dict[str, Any]:
-    """Best-effort host-local worker termination for reclaim paths. ``started_at`` is the spawn-time
-    fingerprint: when the live process no longer matches it, the PID was recycled and nothing is
-    signalled — the worker is gone, which is what the reclaim wanted (``terminated`` = True). An
-    UNVERIFIED spawn (fingerprint capture failed) that is still live is never signalled either, but
-    it is reported as surviving (``signal_refused``) so the reclaim holds the claim instead of
-    spawning a duplicate beside it."""
-    info: dict[str, Any] = {
-        "prev_pid": int(pid) if pid else None,
-        "host_local": False,
-        "termination_attempted": False,
-        "terminated": False,
-        "sigkill": False,
-    }
-    if not pid or pid <= 0 or not claim_lock:
-        return info
-    if not str(claim_lock).startswith(_kb._host_prefix()):
-        return info
-    info["host_local"] = True
-
-    kill = _kill_fn(signal_fn)
-    if kill is None:
-        return info
-    if started_at == UNVERIFIED_WORKER_FINGERPRINT:
-        # Never signal by bare number: a dead PID is "gone" (reclaim proceeds), a live one is held.
-        info["signal_refused"] = True
-        info["terminated"] = not _kb._pid_alive(pid)
-        return info
-    if _kb._pid_alive(pid) and _pid_recycled(pid, started_at):
-        info["terminated"] = True
-        info["pid_recycled"] = True
-        return info
-
-    info["termination_attempted"] = True
-    try:
-        kill(int(pid), signal.SIGTERM)
-    except OSError:
-        # Already gone = successful termination (Windows reports an absent pid as a bare OSError, not
-        # ProcessLookupError). Leaving terminated=False would make the reclaim defer forever.
-        info["terminated"] = not _worker_alive(pid, started_at)
-        return info
-
-    if _poll_worker_exit(pid, started_at):
-        info["terminated"] = True
-        return info
-    if _worker_alive(pid, started_at):
-        if not _sigkill(kill, pid):
-            return info
-        info["sigkill"] = True
-    info["terminated"] = not _worker_alive(pid, started_at)
-    return info
-
-
-def reap_terminal_workers(conn: sqlite3.Connection, *, signal_fn=None) -> list[str]:
-    """End host-local workers that outlived their run (issue #111791) — a worker
-    that called ``kanban_complete`` and then hung keeps its ``state.db`` sidecar
-    fds open and no ``running``-only sweep can see it once ``tasks.worker_pid`` is
-    cleared. Keys on the closed ``task_runs`` row's retained pid + spawn
-    fingerprint: a legacy row (NULL fingerprint) or a recycled PID is never
-    signalled; a pid that is simply gone just has its evidence cleared. A run
-    that ended less than ``TERMINAL_WORKER_REAP_GRACE_SECONDS`` ago is left
-    alone so a worker still finalising after its own transition is not killed.
-    One row's failure (signal, /proc probe) is logged and skips only that row.
-    Returns the task ids whose worker was terminated."""
-    rows = conn.execute(
-        "SELECT id, task_id, worker_pid, worker_started_at, claim_lock FROM task_runs "
-        "WHERE ended_at IS NOT NULL AND ended_at <= ? "
-        "AND worker_pid IS NOT NULL AND worker_started_at IS NOT NULL",
-        (int(time.time()) - TERMINAL_WORKER_REAP_GRACE_SECONDS,),
-    ).fetchall()
-    host_prefix = _kb._host_prefix()
-    reaped: list[str] = []
-    for row in rows:
-        try:
-            _reap_terminal_worker_row(conn, row, host_prefix, signal_fn, reaped)
-        except Exception:
-            _kb._log.debug(
-                "kanban dispatch: terminal worker reap failed for run %s (task %s)",
-                row["id"], row["task_id"], exc_info=True,
-            )
-    return reaped
-
-
-def _reap_terminal_worker_row(conn, row, host_prefix: str, signal_fn, reaped: list[str]) -> None:
-    pid, fingerprint = int(row["worker_pid"]), row["worker_started_at"]
-    if pid == os.getpid() or not str(row["claim_lock"] or "").startswith(host_prefix):
-        return
-    if fingerprint == UNVERIFIED_WORKER_FINGERPRINT and _kb._pid_alive(pid):
-        return  # unproven identity: never signalled; its evidence is cleared once the pid is gone
-    alive = _worker_alive(pid, fingerprint)
-    termination = None
-    if alive:
-        termination = _terminate_reclaimed_worker(
-            pid, row["claim_lock"], signal_fn=signal_fn, started_at=fingerprint)
-        if not termination["terminated"]:
-            return  # still alive: try again next tick
-    with _kb.write_txn(conn):
-        conn.execute(
-            "UPDATE task_runs SET worker_pid = NULL, worker_started_at = NULL "
-            "WHERE id = ? AND worker_pid = ? AND worker_started_at = ?",
-            (row["id"], pid, fingerprint),
-        )
-        if alive:
-            _kb._append_event(
-                conn, row["task_id"], "terminal_worker_reaped",
-                {"pid": pid, "worker_started_at": fingerprint, **termination}, run_id=row["id"],
-            )
-    if alive:
-        reaped.append(row["task_id"])
-
-
-def _worker_survived_termination(termination: dict) -> bool:
-    """True when we tried to kill our own host-local worker and it is still alive.
-
-    Reclaiming then would release the claim and spawn a second worker while the
-    first still runs — the duplication loop. Only host-local workers we actually
-    signalled count; a non-local lock or no-op attempt (no ``os.kill``) must fall
-    through to the normal release path since we cannot manage that worker anyway.
-    """
-    return bool(
-        termination.get("host_local")
-        and (termination.get("termination_attempted") or termination.get("signal_refused"))
-        and not termination.get("terminated")
-    )
 
 
 def _defer_reclaim_for_live_worker(
@@ -2890,8 +2761,16 @@ def run_daemon(
 
 
 # Late-bound origin namespace (see module docstring); imported LAST so this
-# module is fully populated before ``kanban_db`` imports from it.
+# module is fully populated before ``kanban_db`` imports from it. The
+# termination machinery lives in kanban_db_termination (size ratchet); it is
+# re-read here by name so the reclaim/tick paths and the existing patch seams
+# on this module keep resolving.
 from hermes_cli import kanban_db as _kb
 from hermes_cli import kanban_db_connect as _kbc
 from hermes_cli import kanban_db_default_assignee as _kbda
+from hermes_cli.kanban_db_termination import (
+    _terminate_reclaimed_worker,
+    _worker_survived_termination,
+    reap_terminal_workers,
+)
 from hermes_cli import kanban_db_workspace as _kbw

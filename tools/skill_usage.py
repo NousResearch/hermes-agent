@@ -245,8 +245,9 @@ def list_archived_skill_names() -> list[str]:
 
 def read_skill_name(skill_md: Path, fallback: str) -> str:
     """The frontmatter ``name:`` field of a SKILL.md (first 4000 chars), else *fallback*."""
+    from utils.files import read_regular_text
     try:
-        lines = [line.strip() for line in skill_md.read_text(encoding="utf-8-sig", errors="replace")[:4000].split("\n")]
+        lines = [line.strip() for line in read_regular_text(skill_md, errors="replace")[:4000].split("\n")]
     except OSError:
         return fallback
     if "---" not in lines:

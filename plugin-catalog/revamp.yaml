@@ -1,15 +1,15 @@
 name: revamp
 repo: https://github.com/KeyArgo/hermes-revamp
-sha: 617436edf25822876afde5a8117f876906f58947
-description: "Winamp-style music, audiobook and radio player for Hermes Desktop. Disclosure — starts a token-protected HTTP server on 127.0.0.1 for as long as Hermes runs (Host-checked); scans `~/Music` (or the configured library folders) and stores its library index, playlists and a credential-masked agent-activity ticker in its own data dir, with automatic backups every 10 minutes under `~/.local/share/revamp/backups/`; contacts Radio Browser for station search, the radio stations (and their redirect/playlist/favicon hosts) you or the agent pick, `api.webamp.org` / `r2.webampskins.org` for the Skin Museum and `lrclib.net` for lyrics; may run `ffprobe` for audiobook chapters; the optional pop-out launches a local Chrome/Chromium with a private profile and, on Linux, writes desktop entries and icons under `~/.local/share`; its hooks observe tool calls and approvals without answering or changing them; no telemetry."
+sha: ba151786747978995799017316992def3fa96fe8
+description: "Winamp-style music, audiobook and radio player for Hermes Desktop. Disclosure — while Hermes runs it serves a token-protected API on 127.0.0.1 (Host-checked); on Linux it refuses other local accounts (via /proc/net/tcp; if that is unreadable it logs a warning and does not check), while on macOS and Windows another local account can load the player page and read the API token. It reads Hermes settings, scans `~/Music` (or the configured library folders), makes a read-only check of Music Studio's library.json and .wav folder, and keeps its library index, playlists, a credential-masked agent-activity ticker, a private rotating log and automatic 10-minute backups in its own data dir; port leases and locks live in `~/.local/state/revamp/run` (`%LOCALAPPDATA%\\revamp\\run` on Windows). It runs `git` to identify checkout builds and, at startup, `ps` to find and stop its own leftover pop-out. It contacts Radio Browser for station search (public addresses only), the stations you or the agent pick and their logo hosts, `lrclib.net` for lyrics and `api.webamp.org` / `r2.webampskins.org` for the Skin Museum; it may run low-priority `ffprobe`. The optional pop-out launches a local Chrome/Chromium with a private profile and never opens a DevTools port; on Linux it writes two desktop entries under `~/.local/share/applications` and icons in its data folder. Its hooks observe tool calls and approvals without answering or changing them; no accounts, telemetry or stored passwords."
 maintainer: KeyArgo
 tier: community
 category: desktop
 docs_url: https://github.com/KeyArgo/hermes-revamp#readme
-version: "1.0.0-alpha.6"
-image: https://raw.githubusercontent.com/KeyArgo/hermes-revamp/617436edf25822876afde5a8117f876906f58947/assets/social-card.png
+version: "1.0.0"
+image: https://raw.githubusercontent.com/KeyArgo/hermes-revamp/ba151786747978995799017316992def3fa96fe8/assets/social-card.png
 screenshots:
-  - https://raw.githubusercontent.com/KeyArgo/hermes-revamp/617436edf25822876afde5a8117f876906f58947/assets/screenshots/full-player.png
+  - https://raw.githubusercontent.com/KeyArgo/hermes-revamp/ba151786747978995799017316992def3fa96fe8/assets/screenshots/full-player.png
 capabilities:
   provides_tools:
     - revamp_player

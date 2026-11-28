@@ -572,14 +572,12 @@ export const coreCommands: SlashCommand[] = [
     help: 'compose your next prompt in $EDITOR (same as Ctrl+G)',
     name: 'prompt',
     run: (arg, ctx) => {
-      if (arg) {
-        // The TUI editor opens with the current composer draft; there is no
-        // separate seed arg. Drop any inline text into the composer first so
-        // it carries into the editor, matching the CLI's /prompt <text>.
-        ctx.composer.setInput(arg)
-      }
-
-      void ctx.composer.openEditor().catch((err: unknown) => {
+      // Pass only the text after /prompt as the seed. An explicit arg
+      // replaces the draft; bare /prompt omits the seed so the editor
+      // follows the live composer refs (already cleared), matching Ctrl+G.
+      // setInput() would not flush before the editor opened, and the
+      // closed-over draft still contains `/prompt` (#84714).
+      void ctx.composer.openEditor(arg || undefined).catch((err: unknown) => {
         ctx.transcript.sys(t('slashCmd.core.prompt.editorFailed', String(err)))
       })
     }

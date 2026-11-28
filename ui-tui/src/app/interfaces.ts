@@ -437,7 +437,7 @@ export interface ComposerActions {
   dequeue: (retry?: boolean) => QueueItem | undefined
   enqueue: (text: string, display?: string, destination?: SubmissionDestination, attachments?: QueueItem['attachments']) => QueueItem | void
   handleTextPaste: (event: PasteEvent) => MaybePromise<ComposerPasteResult | null>
-  openEditor: () => Promise<void>
+  openEditor: (seed?: string) => Promise<void>
   prependQueue: (item: QueueItem, destination?: SubmissionDestination) => void
   pushHistory: (text: string) => void
   /** Put a submitted draft (text with chips + their tokens) back into the same session's empty
@@ -607,7 +607,7 @@ export interface SlashHandlerContext {
     attachImagePaths: ComposerActions['attachImagePaths']
     enqueue: ComposerActions['enqueue']
     hasSelection: boolean
-    openEditor: () => Promise<void>
+    openEditor: (seed?: string) => Promise<void>
     queueRef: MutableRefObject<QueueItem[]>
     restoreDraft?: ComposerActions['restoreDraft']
     selection: SelectionApi

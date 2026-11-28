@@ -902,14 +902,18 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
 
   const attachImagePath = useCallback((path: string) => attachImagePaths([path]), [attachImagePaths])
 
-  const openEditor = useCallback(async () => {
+  const openEditor = useCallback(async (seed?: string) => {
     const destination = captureDestination()
     const draft = captureDraft(inputRef.current)
     const dir = mkdtempSync(join(tmpdir(), 'hermes-'))
     const file = join(dir, 'prompt.md')
     const [cmd, ...args] = resolveEditor()
+    // Explicit seed is the /prompt argument (never the raw slash line).
+    // Ctrl+G omits seed and edits the live refs. Those refs, not the
+    // closed-over state, are what clearIn() has already emptied (#84714).
+    const initial = seed !== undefined ? seed : [...inputBufRef.current, inputRef.current].join('\n')
 
-    writeFileSync(file, [...inputBuf, input].join('\n'))
+    writeFileSync(file, initial)
 
     let exitCode: null | number = null
 
@@ -940,7 +944,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
     } finally {
       rmSync(dir, { force: true, recursive: true })
     }
-  }, [captureDraft, enqueue, input, inputBuf, isFresh, setInput, setInputBuf, submitRef])
+  }, [captureDraft, enqueue, isFresh, setInput, setInputBuf, submitRef])
 
   const actions = useMemo(
     () => ({

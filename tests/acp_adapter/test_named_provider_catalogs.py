@@ -15,7 +15,7 @@ import pytest
 from acp_adapter.model_catalog import _named_custom_provider_catalogs, build_model_state
 from acp_adapter.server import HermesACPAgent
 from acp_adapter.session import SessionManager
-from acp.schema import SessionModelState
+from acp.schema import SessionConfigOptionSelect
 
 
 MANTLE_URL = "https://bedrock-mantle.us-east-1.api.aws/openai/v1"
@@ -31,8 +31,8 @@ def test_codex_session_model_is_not_an_undiscovered_choice(listed, provider):
         picker = build_model_state("gpt-6.2-sol", provider, "")
 
     assert picker is not None
-    assert picker.current_model_id == "openai-codex:gpt-6.2-sol"
-    assert [item.model_id for item in picker.available_models] == [f"openai-codex:{model}" for model in listed]
+    assert picker.current_value == "openai-codex:gpt-6.2-sol"
+    assert [item.value for item in picker.options] == [f"openai-codex:{model}" for model in listed]
 
 
 def test_custom_codex_key_keeps_its_current_model():
@@ -48,8 +48,8 @@ def test_custom_codex_key_keeps_its_current_model():
         picker = build_model_state("gpt-6.2-sol", "custom:openai-codex", "https://proxy.example/v1")
 
     assert picker is not None
-    assert picker.current_model_id == "custom:openai-codex:gpt-6.2-sol"
-    assert picker.available_models[0].model_id == picker.current_model_id
+    assert picker.current_value == "custom:openai-codex:gpt-6.2-sol"
+    assert picker.options[0].value == picker.current_value
 
 
 def test_gateway_catalog_failure_keeps_codex_current_id_without_offering_it():
@@ -59,8 +59,8 @@ def test_gateway_catalog_failure_keeps_codex_current_id_without_offering_it():
         picker = model_state({"model": "gpt-6.2-sol", "provider": "chatgpt"})
 
     assert picker is not None
-    assert picker.current_model_id == "openai-codex:gpt-6.2-sol"
-    assert picker.available_models == []
+    assert picker.current_value == "openai-codex:gpt-6.2-sol"
+    assert picker.options == []
 
 
 def _cfg(providers=None, custom_providers=None):
@@ -232,15 +232,17 @@ class TestModelStateIncludesNamedProviders:
         ):
             resp = await acp_agent.new_session(cwd="/tmp")
 
-        assert isinstance(resp.models, SessionModelState)
-        assert resp.models.current_model_id == ""
+        assert resp.config_options is not None
+        model_option = resp.config_options[0]
+        assert isinstance(model_option, SessionConfigOptionSelect)
+        assert model_option.current_value == ""
         assert all(
-            not item.model_id.startswith(("ollama:", "custom:ollama:"))
-            for item in resp.models.available_models
+            not opt.value.startswith(("ollama:", "custom:ollama:"))
+            for opt in model_option.options
         )
 
     @pytest.mark.asyncio
-    async def test_named_provider_models_appear_in_model_state(self):
+    async def test_named_provider_models_appear_in_model_config(self):
         manager = SessionManager(
             agent_factory=lambda: SimpleNamespace(
                 model="gpt-5.4", provider="openai-codex"
@@ -260,15 +262,17 @@ class TestModelStateIncludesNamedProviders:
         ):
             resp = await acp_agent.new_session(cwd="/tmp")
 
-        assert isinstance(resp.models, SessionModelState)
-        ids = [m.model_id for m in resp.models.available_models]
+        assert resp.config_options is not None
+        model_option = resp.config_options[0]
+        assert isinstance(model_option, SessionConfigOptionSelect)
+        ids = [opt.value for opt in model_option.options]
         # Current provider's models come first, named endpoints after.
         assert ids[0] == "openai-codex:gpt-5.4"
         assert "custom:bedrock-mantle:openai.gpt-5.5" in ids
         named = next(
-            m
-            for m in resp.models.available_models
-            if m.model_id == "custom:bedrock-mantle:openai.gpt-5.5"
+            opt
+            for opt in model_option.options
+            if opt.value == "custom:bedrock-mantle:openai.gpt-5.5"
         )
         assert "AWS Bedrock Mantle" in (named.description or "")
 
@@ -300,8 +304,11 @@ class TestModelStateIncludesNamedProviders:
             return_value=[("custom:relay", "Relay", [("model-a", "")])],
         ):
             resp = await acp_agent.new_session(cwd="/tmp")
-            choice_ids = [item.model_id for item in resp.models.available_models]
-            provider, model = parse_model_input(resp.models.current_model_id, "relay")
+            assert resp.config_options is not None
+            model_option = resp.config_options[0]
+            assert isinstance(model_option, SessionConfigOptionSelect)
+            choice_ids = [item.value for item in model_option.options]
+            provider, model = parse_model_input(model_option.current_value, "relay")
 
         assert choice_ids == ["custom:relay:model-a"]
         assert provider == "custom:relay"
@@ -366,5 +373,11 @@ class TestModelStateIncludesNamedProviders:
         ):
             resp = await acp_agent.new_session(cwd="/tmp")
 
-        assert resp.models.current_model_id == "openrouter:model-c"
-        assert [m.model_id for m in resp.models.available_models] == ["openrouter:model-c", "custom:openrouter:model-a"]
+        assert resp.config_options is not None
+        model_option = resp.config_options[0]
+        assert isinstance(model_option, SessionConfigOptionSelect)
+        assert model_option.current_value == "openrouter:model-c"
+        assert [opt.value for opt in model_option.options] == [
+            "openrouter:model-c",
+            "custom:openrouter:model-a",
+        ]

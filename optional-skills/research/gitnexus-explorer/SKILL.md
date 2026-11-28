@@ -150,10 +150,18 @@ http.createServer((req, res) => {
 npx gitnexus serve &
 
 # Terminal 2: Proxy (web UI + API on one port)
+# With Basic Auth (recommended for tunneling):
+GITNEXUS_USER=admin GITNEXUS_PASS=your-secret-password \
+  node "$GITNEXUS_DIR/proxy.mjs" "$GITNEXUS_DIR/gitnexus-web/dist" 8888 &
+
+# Without auth (localhost-only, skip tunnel):
 node "$GITNEXUS_DIR/proxy.mjs" "$GITNEXUS_DIR/gitnexus-web/dist" 8888 &
 ```
 
 Verify: `curl -s http://localhost:8888/api/repos` should return the indexed repo(s).
+
+When Basic Auth is enabled, the browser will prompt for credentials on first visit.
+Set `GITNEXUS_USER` and `GITNEXUS_PASS` to enable; omit both to skip auth entirely.
 
 ### 6. Tunnel with Cloudflare (optional — for remote access)
 

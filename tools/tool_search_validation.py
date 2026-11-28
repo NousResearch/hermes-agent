@@ -159,7 +159,7 @@ def normalize_tool_call_entries(args: dict[str, Any]) -> tuple[list[dict[str, An
         try:
             raw_calls = json.loads(raw_calls)
         except json.JSONDecodeError as e:
-            return [], f"tool_call 'calls' is not valid JSON: {e}"
+            return [], "tool_call 'calls' is not valid JSON: " + _malformed_json_error(raw_calls, e, shape="a JSON array")
     if isinstance(raw_calls, dict):
         raw_calls = [raw_calls]
     if not isinstance(raw_calls, list) or not raw_calls:
@@ -185,7 +185,10 @@ def normalize_tool_call_entries(args: dict[str, Any]) -> tuple[list[dict[str, An
             try:
                 raw_args = json.loads(raw_args)
             except json.JSONDecodeError as e:
-                return [], f"tool_call calls[{position}].arguments is not valid JSON: {e}"
+                return [], (
+                    f"tool_call calls[{position}].arguments is not valid JSON: "
+                    + _malformed_json_error(raw_args, e, shape="a JSON object")
+                )
         if not isinstance(raw_args, dict):
             return [], f"tool_call calls[{position}].arguments must be an object"
         entries.append({"name": name, "arguments": raw_args})
@@ -193,6 +196,17 @@ def normalize_tool_call_entries(args: dict[str, Any]) -> tuple[list[dict[str, An
 
 
 _ECHO_ARGS_MAX_CHARS = 1500
+
+
+def _malformed_json_error(raw: str, e: json.JSONDecodeError, *, shape: str) -> str:
+    """Recovery-oriented rejection for a model-emitted JSON string that failed to parse.
+
+    Echoes the caller's own (truncated) input and names the wire shape to re-emit,
+    mirroring the caller-echo idiom of :func:`local_batch_error`: a cheap model cannot
+    self-correct from a bare ``json.JSONDecodeError`` and re-sends the same broken string.
+    """
+    echo = raw if len(raw) <= _ECHO_ARGS_MAX_CHARS else raw[:_ECHO_ARGS_MAX_CHARS] + "…"
+    return f"{e} — re-emit it as {shape}, not a JSON string; you sent: {echo!r}"
 
 
 def local_batch_error(entries: list[dict[str, Any]]) -> str:

@@ -18,6 +18,11 @@ logger = logging.getLogger("tools.mcp_tool")
 
 # Stateless (2026-07-28) servers reject a legacy ``initialize`` with this or plain method-not-found.
 _JSONRPC_UNSUPPORTED_PROTOCOL_VERSION = -32022
+# ...or with invalid-params naming the per-request ``params._meta`` envelope that every 2026-07-28
+# request carries and no handshake-era request does (official SDK: "params._meta ...", effect:
+# "Required request metadata is missing"). A bare -32602 stays a handshake-era rejection.
+_JSONRPC_INVALID_PARAMS = -32602
+_MISSING_ENVELOPE_MARKERS = ("_meta", "request metadata")
 
 
 def _jsonrpc_matches(exc: BaseException, codes: tuple, markers: tuple, code=None) -> bool:
@@ -32,7 +37,13 @@ def _handshake_rejected_as_modern(exc: BaseException) -> bool:
     return _jsonrpc_matches(
         exc, (_JSONRPC_UNSUPPORTED_PROTOCOL_VERSION, _core._JSONRPC_METHOD_NOT_FOUND),
         ("unsupported protocol version", str(_JSONRPC_UNSUPPORTED_PROTOCOL_VERSION)),
-        code=getattr(exc, "code", None)) or _is_method_not_found_error(exc)
+        code=getattr(exc, "code", None)) or _is_method_not_found_error(exc) or _rejected_for_missing_envelope(exc)
+
+
+def _rejected_for_missing_envelope(exc: BaseException) -> bool:
+    """True for the 2026-07-28 invalid-params rejection of a request without the ``_meta`` envelope."""
+    code = getattr(getattr(exc, "error", None), "code", None) or getattr(exc, "code", None)
+    return code == _JSONRPC_INVALID_PARAMS and any(marker in str(exc).lower() for marker in _MISSING_ENVELOPE_MARKERS)
 
 
 def _handshake_answered_with_unsupported_version(exc: BaseException) -> bool:

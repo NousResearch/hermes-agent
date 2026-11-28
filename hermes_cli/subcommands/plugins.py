@@ -10,7 +10,7 @@ from hermes_cli.subcommands._shared import add_json_flag
 def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
     """Attach the ``plugins`` subcommand to ``subparsers``."""
     plugins_parser = subparsers.add_parser(
-        "plugins", help="Manage and validate plugins",
+        "plugins", aliases=["plugin"], help="Manage and validate plugins",
         description="Install, update, remove, list, or validate native Hermes plugins "
             "and portable Agent Plugins v1 packages. Portable packages install disabled.")
     plugins_subparsers = plugins_parser.add_subparsers(dest="plugins_action")

@@ -1,0 +1,36 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: climate-insights-directory
+description: Free, no API key. Discover what civil-society reports, policy briefs and analyses say about climate and energy, improve your desk research for policy, finance, scholarship, and journalism.
+source: https://climateinsightsdirectory.org/api-docs#mcp
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). No authentication required (verified live:
+# initialize succeeds anonymously).
+
+transport:
+  type: http
+  url: https://climateinsightsdirectory.org/api/mcp?utm_source=hermes&utm_medium=mcp
+
+auth:
+  type: none
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - climate insights directory
+    - climate policy
+    - energy transition
+    - climate finance
+    - climate adaptation
+    - fossil fuel phase-out
+    - civil society reports
+  hosts:
+    - climateinsightsdirectory.org
+
+post_install: |
+  No account or API key needed — tools are available as soon as the
+  session restarts. Ask for civil-society reports on climate and energy;
+  each result links to its original publisher.

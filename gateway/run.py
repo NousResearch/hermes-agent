@@ -4357,7 +4357,7 @@ def _housekeeping_checkpoint_prune() -> None:
 
 def _drain_restart_safe_cron_deliveries(adapters, loop, runner=None) -> None:
     """Drain each profile's worker queue through its matching live adapters. A credential-less satellite
-    profile (no bot of its own) drains through the primary's adapters routed by its own profile routes."""
+    (no bot of its own) drains through the primary's routed native bots or the process Relay."""
     from cron import scheduler as cron_scheduler
     from cron import scheduler_preflight as sched_preflight
 

@@ -1,0 +1,18 @@
+name: manina
+title: Manina AI
+repo: https://github.com/onehumanbeing/esp32-iphone-agent
+sha: 6af87ec7a5ad2f19e2d98d39222e19ca4fd1958b
+subdir: integrations/hermes
+description: "See and drive a real, non-jailbroken iPhone through an ESP32 Agent (Manina AI) board: the board is the iPhone's Bluetooth/USB mouse and keyboard and receives its AirPlay screen mirroring, so the agent takes screenshots, taps, swipes, types and presses Home. Agent Plugins v1 package (plugin.json + mcp.json + skills/manina), configuration only; the esp32agent MCP server runs over stdio with npx, and the manina skill teaches the see-act loop and safety rules. Needs the board, Node.js 18+ and ffmpeg. Disclosure — `npx -y esp32agent@0.1.5` installs the esp32agent npm package, whose postinstall downloads the matching esp32agent CLI binary (v0.1.4, built by the repository's own GitHub Actions) from the repository's GitHub Release and checks its SHA-256 against that release's checksums.txt; the plugin never updates it (the CLI's own `esp32agent upgrade` runs only when the user types it and is not an MCP tool). The CLI starts a background esp32agent daemon (holds the Bluetooth session, decodes the mirrored video, exits after 10 minutes idle) on a unix socket in its config dir, stores its pairing keys there (mode 0600), and talks only to the board over Bluetooth LE or the local Wi-Fi (TCP 7202); no cloud service. Tools act on a real phone and the package keeps the server at full trust, so Hermes does not ask before each tap; the skill asks the user before payments, messages, calls, deletions and security changes, and a config.yaml esp32agent entry with trust: untrusted makes Hermes ask before every call."
+maintainer: onehumanbeing
+tier: community
+category: tools
+requires_hermes: ">=0.22.3"
+docs_url: https://manina.ai/docs/cli
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

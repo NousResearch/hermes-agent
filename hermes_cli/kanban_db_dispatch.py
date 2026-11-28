@@ -507,8 +507,11 @@ def reap_terminal_workers(conn: sqlite3.Connection, *, signal_fn=None) -> list[s
     signalled; a pid that is simply gone just has its evidence cleared. A run
     that ended less than ``TERMINAL_WORKER_REAP_GRACE_SECONDS`` ago is left
     alone so a worker still finalising after its own transition is not killed.
-    One row's failure (signal, /proc probe) is logged and skips only that row.
-    Returns the task ids whose worker was terminated."""
+    One row's failure (signal, /proc probe) is logged and skips only that row —
+    including the workspace cleanup it re-runs from this process once a run's
+    worker is confirmed gone (on Windows the worker could not delete the
+    directory it was started in). Returns the task ids whose worker was
+    terminated."""
     rows = conn.execute(
         "SELECT id, task_id, worker_pid, worker_started_at, claim_lock FROM task_runs "
         "WHERE ended_at IS NOT NULL AND ended_at <= ? "
@@ -554,6 +557,9 @@ def _reap_terminal_worker_row(conn, row, host_prefix: str, signal_fn, reaped: li
             )
     if alive:
         reaped.append(row["task_id"])
+    # The worker is gone; clean up what it could not delete from inside itself
+    # (its old cwd on Windows). Best-effort, under the caller's per-row except.
+    _kbw._retry_workspace_cleanup_after_exit(conn, row["task_id"])
 
 
 def _worker_survived_termination(termination: dict) -> bool:
@@ -877,10 +883,8 @@ def reconcile_orphaned_running(conn: sqlite3.Connection) -> list[str]:
         pid = row["worker_pid"]
         if pid and _worker_alive(pid, _kb._row_get(row, "worker_started_at")):
             # Never requeue beside a live process. Retry next tick.
-            _kb._log.debug(
-                "kanban reconcile: task %s has broken claim bookkeeping but "
-                "pid %s is alive on this host — deferring", tid, pid,
-            )
+            _kb._log.debug("kanban reconcile: task %s has broken claim bookkeeping but "
+                           "pid %s is alive on this host — deferring", tid, pid)
             continue
         with _kb.write_txn(conn):
             if owner_reclaim_blocked(conn, tid):
@@ -1746,10 +1750,8 @@ def _dispatch_profile_allowlist(normalize_profile_name) -> Optional[frozenset]:
         if kanban is not None and not isinstance(kanban, Mapping):
             raise TypeError(f"the `kanban` section is {type(kanban).__name__}, not a mapping")
     except Exception as exc:
-        _kb._log.warning(
-            "kanban: kanban.dispatch_profiles cannot be resolved (%s: %s) — this home claims no cards",
-            type(exc).__name__, exc,
-        )
+        _kb._log.warning("kanban: kanban.dispatch_profiles cannot be resolved (%s: %s) — "
+                         "this home claims no cards", type(exc).__name__, exc)
         return frozenset()
     if "dispatch_profiles" not in (kanban or {}):
         return None
@@ -2248,10 +2250,8 @@ def _tick_spawn_budget(
     pressure = _memory_pressure_level()
     if pressure == "critical":
         result.memory_pressure = pressure
-        _kb._log.warning(
-            "kanban dispatch: system memory pressure is critical; "
-            "spawning no new workers this tick (deferred, not dropped)"
-        )
+        _kb._log.warning("kanban dispatch: system memory pressure is critical; "
+                         "spawning no new workers this tick (deferred, not dropped)")
         return False, None
     if pressure == "elevated":
         result.memory_pressure = pressure

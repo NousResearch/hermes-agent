@@ -439,6 +439,13 @@ _SPECS = [
              help="Delete task_events older than N days for terminal tasks (default: 30; 0 disables)"),
         _arg("--log-retention-days", type=_nonnegative_int, default=30,
              help="Delete worker log files older than N days (default: 30; 0 disables)"),
+        _arg("--workspaces", action="store_true",
+             help="Instead of the retention sweep: list terminal (done/archived/failed/"
+                  "cancelled) tasks' scratch and worktree workspaces that the completion "
+                  "cleanup would remove now. Dry run unless --apply; events and logs untouched"),
+        _arg("--apply", action="store_true",
+             help="With --workspaces: remove the listed workspaces"),
+        _json_flag(help="With --workspaces: emit the plan as JSON"),
     ], help="Garbage-collect archived-task workspaces, old events, and old logs"),
     _cmd("repair", [_json_flag(help="Emit the repair report as JSON")],
          help="Check kanban.db integrity and auto-repair index-only corruption",

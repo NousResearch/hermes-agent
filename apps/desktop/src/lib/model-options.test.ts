@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { getGlobalModelOptions } from '@/hermes'
 
 import {
+  catalogProviderIsCurrent,
   catalogProviderMatches,
   customDefaultSupersedesPick,
   moaPickRemoved,
@@ -228,6 +229,43 @@ describe('catalogProviderMatches', () => {
     expect(catalogProviderMatches(cloudflare, 'Cloudflare')).toBe(true)
     expect(catalogProviderMatches(cloudflare, 'custom:cloudflare')).toBe(true)
     expect(catalogProviderMatches(cloudflare, 'openrouter')).toBe(false)
+  })
+})
+
+describe('catalogProviderIsCurrent', () => {
+  // Two user-defined endpoints that both serve the same model id. Their provider
+  // string is the bare `custom` for both, so only the gateway's `is_current`
+  // (computed from the route's base URL) can tell them apart.
+  const relayA = {
+    is_current: true,
+    models: ['shared-model-id'],
+    name: 'relay-a',
+    slug: 'custom:relay-a'
+  }
+  const relayB = {
+    is_current: false,
+    models: ['shared-model-id'],
+    name: 'relay-b',
+    slug: 'custom:relay-b'
+  }
+
+  it('keeps two endpoints that share a model id apart', () => {
+    expect(catalogProviderIsCurrent(relayA, 'custom')).toBe(true)
+    expect(catalogProviderIsCurrent(relayB, 'custom')).toBe(false)
+  })
+
+  it('lets is_current=false outvote a stale provider name', () => {
+    expect(catalogProviderIsCurrent(relayB, 'relay-b')).toBe(false)
+  })
+
+  it('falls back to name matching when the payload has no is_current', () => {
+    const legacy = { models: ['shared-model-id'], name: 'relay-a', slug: 'custom:relay-a' }
+    expect(catalogProviderIsCurrent(legacy, 'relay-a')).toBe(true)
+    expect(catalogProviderIsCurrent(legacy, 'relay-b')).toBe(false)
+  })
+
+  it('never reports current without a provider string when the flag is absent', () => {
+    expect(catalogProviderIsCurrent({ slug: 'relay-a' }, '')).toBe(false)
   })
 })
 

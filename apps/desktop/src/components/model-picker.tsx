@@ -14,7 +14,12 @@ import { useQuery } from '@tanstack/react-query'
 import { type ReactElement, useMemo, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
-import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
+import {
+  catalogProviderIsCurrent,
+  catalogProviderMatches,
+  modelOptionsQueryKey,
+  requestModelOptions
+} from '@/lib/model-options'
 import { currentPickerSelection } from '@/lib/model-status-label'
 import { accountResetMs, formatReset, modelResetMs } from '@/lib/provider-limit'
 import { foldIncludes, normalize } from '@/lib/text'
@@ -357,7 +362,7 @@ function ModelResults({
         const accountLimited = accountResetMs(provider) !== null
 
         const renderModel = (model: string) => {
-          const isCurrent = model === currentModel && catalogProviderMatches(provider, currentProvider)
+          const isCurrent = model === currentModel && catalogProviderIsCurrent(provider, currentProvider)
           const price = provider.pricing?.[model]
           const locked = unavailable.has(model)
           const resetMs = modelResetMs(provider, model)

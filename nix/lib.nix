@@ -257,6 +257,12 @@ let
       export NIX_NPM_REGISTRY=''${NIX_NPM_REGISTRY:-https://registry.npmjs.org/}
       export PATH=${pmNode}/bin:$PATH
     '';
+    # On macOS, pnpm's directory-clone probe leaves an empty v11/links in
+    # the store, which changes the archive's hash from the Linux one.
+    # rmdir keeps the directory if it is ever non-empty.
+    preFixup = ''
+      rmdir "$storePath/v11/links" 2>/dev/null || true
+    '';
     hash = lib.fileContents ./pnpm-deps-hash;
   };
 

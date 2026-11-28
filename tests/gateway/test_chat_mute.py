@@ -2,7 +2,7 @@
 
 The mute is a harness-level state command: while a chat is muted the gateway drops
 conversational messages deterministically (idle and mid-run), and slash commands
-(notably /unmute) always pierce it.
+(notably the second /mute that unmutes) always pierce it.
 """
 from __future__ import annotations
 
@@ -103,18 +103,19 @@ def _runner():
 
 @pytest.mark.asyncio
 async def test_muted_chat_drops_text_while_commands_pierce():
-    """/mute through the real handler silences plain text (no agent run); /status and
-    /unmute still dispatch, and after /unmute the chat is live again."""
+    """/mute through the real handler silences plain text (no agent run); /status still
+    dispatches, and a second /mute toggles the chat live again."""
     runner = _runner()
     runner._handle_status_command = AsyncMock(return_value="status ok")
 
-    assert "/unmute" in await runner._handle_message(_event("/mute"))
+    assert "/mute" in await runner._handle_message(_event("/mute"))
     assert await runner._handle_message(_event("hello there")) is None
     runner._handle_message_with_agent.assert_not_awaited()
 
     assert await runner._handle_message(_event("/status")) == "status ok"
-    await runner._handle_message(_event("/unmute"))
+    await runner._handle_message(_event("/mute"))
     assert not is_chat_muted("telegram", "c1")
+    assert await runner._handle_message(_event("hello again")) == "agent reply"
 
 
 @pytest.mark.asyncio

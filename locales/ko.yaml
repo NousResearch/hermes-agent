@@ -388,13 +388,9 @@ gateway:
     truncated_note: "\n... (잘림 — 총 {lines}줄. 요약은 /diff --stat을 사용하세요)"
   mute:
     unmuted: "🔊 음소거를 해제했습니다 — 다시 듣고 있습니다."
-    was_not_muted: "🔊 이 채팅은 음소거되어 있지 않았습니다."
-    status_unmuted: "🔊 이 채팅은 음소거되어 있지 않습니다."
-    status_timed: "🔇 음소거됨 — {remaining} 남음. `/unmute`로 일찍 해제할 수 있습니다."
-    status_indefinite: "🔇 무기한 음소거됨. `/unmute`로 해제할 수 있습니다."
-    usage: "사용법: `/mute [duration|off|status]` — 예: `/mute`, `/mute 30m`, `/mute 2h`, `/mute off`."
-    muted_timed: "🔇 {remaining} 동안 음소거했습니다. 그때까지 이 채팅의 메시지를 무시합니다 — 슬래시 명령은 계속 작동하며, `/unmute`로 일찍 해제할 수 있습니다."
-    muted_indefinite: "🔇 음소거했습니다. `/unmute`를 보낼 때까지 이 채팅의 메시지를 무시합니다 — 슬래시 명령은 계속 작동합니다."
+    usage: "사용법: `/mute [duration]` — 예: `/mute`, `/mute 30m`, `/mute 2h`."
+    muted_timed: "🔇 {remaining} 동안 음소거했습니다. 그때까지 이 채팅의 메시지를 무시합니다 — 슬래시 명령은 계속 작동하며, `/mute`로 일찍 해제할 수 있습니다."
+    muted_indefinite: "🔇 음소거했습니다. `/mute`를 보낼 때까지 이 채팅의 메시지를 무시합니다 — 슬래시 명령은 계속 작동합니다."
   set_home:
     save_failed: "홈 채널 저장에 실패했습니다: {error}"
     success: "✅ 홈 채널이 **{name}**(ID: {chat_id})(으)로 설정되었습니다.\n크론 작업과 플랫폼 간 메시지가 여기로 전달됩니다."

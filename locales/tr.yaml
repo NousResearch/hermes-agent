@@ -388,13 +388,9 @@ gateway:
     truncated_note: "\n... (kesildi — toplam {lines} satır; özet için /diff --stat kullanın)"
   mute:
     unmuted: "🔊 Sohbetin sesi açıldı — yeniden dinliyorum."
-    was_not_muted: "🔊 Bu sohbet sessize alınmamıştı."
-    status_unmuted: "🔊 Bu sohbet sessize alınmış değil."
-    status_timed: "🔇 Sessizde — {remaining} kaldı. Erken kaldırmak için `/unmute`."
-    status_indefinite: "🔇 Süresiz sessizde. Kaldırmak için `/unmute`."
-    usage: "Kullanım: `/mute [duration|off|status]` — ör. `/mute`, `/mute 30m`, `/mute 2h`, `/mute off`."
-    muted_timed: "🔇 {remaining} boyunca sessize alındı. O zamana kadar bu sohbetteki mesajları yok sayacağım — eğik çizgi komutları çalışmaya devam eder, `/unmute` erken kaldırır."
-    muted_indefinite: "🔇 Sessize alındı. `/unmute` gönderene kadar bu sohbetteki mesajları yok sayacağım — eğik çizgi komutları çalışmaya devam eder."
+    usage: "Kullanım: `/mute [duration]` — ör. `/mute`, `/mute 30m`, `/mute 2h`."
+    muted_timed: "🔇 {remaining} boyunca sessize alındı. O zamana kadar bu sohbetteki mesajları yok sayacağım — eğik çizgi komutları çalışmaya devam eder, `/mute` erken kaldırır."
+    muted_indefinite: "🔇 Sessize alındı. `/mute` gönderene kadar bu sohbetteki mesajları yok sayacağım — eğik çizgi komutları çalışmaya devam eder."
   set_home:
     save_failed: "Ana kanal kaydedilemedi: {error}"
     success: "✅ Ana kanal **{name}** (ID: {chat_id}) olarak ayarlandı.\nCron işleri ve platformlar arası mesajlar buraya iletilecek."

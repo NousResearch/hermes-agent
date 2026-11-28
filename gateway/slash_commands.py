@@ -689,25 +689,16 @@ class GatewaySlashCommandsMixin(
         return t("gateway.set_home.success", name=chat_name, chat_id=chat_id)
 
     async def _handle_mute_command(self, event: MessageEvent) -> str:
-        """Handle /mute and /unmute — harness-level chat silencing.
+        """Handle /mute — a harness-level toggle that silences this chat.
 
-        "Be quiet" is a state command parsed by the harness, not conversation the model
-        can argue with. While muted, the gateway drops this chat's inbound
-        conversational messages deterministically — no agent turn, no tokens,
-        no reply. Slash commands always pierce the mute, so /unmute (and
-        /status etc.) keep working.
-
-        Usage:
-            /mute            → mute this chat indefinitely
-            /mute 30m|2h|1d  → mute for a duration (bare number = minutes)
-            /mute off        → unmute (same as /unmute)
-            /mute status     → show current state
-            /unmute          → unmute
+        While muted, the gateway drops this chat's inbound conversational messages
+        deterministically (no agent turn, no tokens, no reply); slash commands always
+        pierce it. A bare ``/mute`` toggles; ``/mute 30m|2h|1d`` (bare number =
+        minutes) mutes for that long, replacing any current mute.
         """
         from gateway.chat_mute import (
             clear_chat_mute,
             format_remaining,
-            get_mute_entry,
             parse_mute_duration,
             set_chat_mute,
         )
@@ -715,23 +706,10 @@ class GatewaySlashCommandsMixin(
         source = event.source
         platform_value = source.platform.value if source.platform else "unknown"
         chat_id = source.chat_id
-        typed = event.get_command() or "mute"
         arg = event.get_command_args().strip().lower()
 
-        if typed == "unmute" or arg in {"off", "cancel"}:
-            was_live = clear_chat_mute(platform_value, chat_id)
-            if was_live:
-                return t("gateway.mute.unmuted")
-            return t("gateway.mute.was_not_muted")
-
-        if arg in {"status", "?"}:
-            entry = get_mute_entry(platform_value, chat_id)
-            if entry is None:
-                return t("gateway.mute.status_unmuted")
-            remaining = format_remaining(entry)
-            if remaining:
-                return t("gateway.mute.status_timed", remaining=remaining)
-            return t("gateway.mute.status_indefinite")
+        if not arg and clear_chat_mute(platform_value, chat_id):
+            return t("gateway.mute.unmuted")
 
         ok, duration_seconds = parse_mute_duration(arg)
         if not ok:

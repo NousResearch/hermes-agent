@@ -388,13 +388,9 @@ gateway:
     truncated_note: "\n... (truncado — {lines} líneas en total; usa /diff --stat para ver un resumen)"
   mute:
     unmuted: "🔊 Chat reactivado — vuelvo a escuchar."
-    was_not_muted: "🔊 Este chat no estaba silenciado."
-    status_unmuted: "🔊 Este chat no está silenciado."
-    status_timed: "🔇 Silenciado — quedan {remaining}. `/unmute` para quitarlo antes."
-    status_indefinite: "🔇 Silenciado indefinidamente. `/unmute` para quitarlo."
-    usage: "Uso: `/mute [duration|off|status]` — p. ej. `/mute`, `/mute 30m`, `/mute 2h`, `/mute off`."
-    muted_timed: "🔇 Silenciado durante {remaining}. Ignoraré los mensajes de este chat hasta entonces — los comandos con barra siguen funcionando, `/unmute` lo quita antes."
-    muted_indefinite: "🔇 Silenciado. Ignoraré los mensajes de este chat hasta que envíes `/unmute` — los comandos con barra siguen funcionando."
+    usage: "Uso: `/mute [duration]` — p. ej. `/mute`, `/mute 30m`, `/mute 2h`."
+    muted_timed: "🔇 Silenciado durante {remaining}. Ignoraré los mensajes de este chat hasta entonces — los comandos con barra siguen funcionando, `/mute` lo quita antes."
+    muted_indefinite: "🔇 Silenciado. Ignoraré los mensajes de este chat hasta que envíes `/mute` — los comandos con barra siguen funcionando."
   set_home:
     save_failed: "No se pudo guardar el canal principal: {error}"
     success: "✅ Canal principal establecido en **{name}** (ID: {chat_id}).\nLas tareas cron y los mensajes entre plataformas se entregarán aquí."

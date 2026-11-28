@@ -388,13 +388,9 @@ gateway:
     truncated_note: "\n... (省略 — 全 {lines} 行。要約を見るには /diff --stat を使ってください)"
   mute:
     unmuted: "🔊 ミュートを解除しました — また聞いています。"
-    was_not_muted: "🔊 このチャットはミュートされていませんでした。"
-    status_unmuted: "🔊 このチャットはミュートされていません。"
-    status_timed: "🔇 ミュート中 — 残り {remaining}。`/unmute` で早めに解除できます。"
-    status_indefinite: "🔇 無期限でミュート中。`/unmute` で解除できます。"
-    usage: "使い方: `/mute [duration|off|status]` — 例: `/mute`, `/mute 30m`, `/mute 2h`, `/mute off`。"
-    muted_timed: "🔇 {remaining} ミュートしました。それまでこのチャットのメッセージは無視します — スラッシュコマンドは引き続き使え、`/unmute` で早めに解除できます。"
-    muted_indefinite: "🔇 ミュートしました。`/unmute` を送るまでこのチャットのメッセージは無視します — スラッシュコマンドは引き続き使えます。"
+    usage: "使い方: `/mute [duration]` — 例: `/mute`, `/mute 30m`, `/mute 2h`。"
+    muted_timed: "🔇 {remaining} ミュートしました。それまでこのチャットのメッセージは無視します — スラッシュコマンドは引き続き使え、`/mute` で早めに解除できます。"
+    muted_indefinite: "🔇 ミュートしました。`/mute` を送るまでこのチャットのメッセージは無視します — スラッシュコマンドは引き続き使えます。"
   set_home:
     save_failed: "ホームチャンネルを保存できませんでした: {error}"
     success: "✅ ホームチャンネルを **{name}** (ID: {chat_id}) に設定しました。\nCron ジョブとプラットフォーム間メッセージはここに配信されます。"

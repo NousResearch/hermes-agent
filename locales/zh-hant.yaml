@@ -388,13 +388,9 @@ gateway:
     truncated_note: "\n...（已截斷 — 共 {lines} 行；使用 /diff --stat 查看摘要）"
   mute:
     unmuted: "🔊 已取消靜音 — 我又在聽了。"
-    was_not_muted: "🔊 此聊天未被靜音。"
-    status_unmuted: "🔊 此聊天目前未靜音。"
-    status_timed: "🔇 已靜音 — 剩餘 {remaining}。傳送 `/unmute` 可提前解除。"
-    status_indefinite: "🔇 已無限期靜音。傳送 `/unmute` 解除。"
-    usage: "用法：`/mute [duration|off|status]` — 例如 `/mute`, `/mute 30m`, `/mute 2h`, `/mute off`。"
-    muted_timed: "🔇 已靜音 {remaining}。在此之前我會忽略此聊天中的訊息 — 斜線指令仍可使用，`/unmute` 可提前解除。"
-    muted_indefinite: "🔇 已靜音。在你傳送 `/unmute` 之前，我會忽略此聊天中的訊息 — 斜線指令仍可使用。"
+    usage: "用法：`/mute [duration]` — 例如 `/mute`, `/mute 30m`, `/mute 2h`。"
+    muted_timed: "🔇 已靜音 {remaining}。在此之前我會忽略此聊天中的訊息 — 斜線指令仍可使用，`/mute` 可提前解除。"
+    muted_indefinite: "🔇 已靜音。在你傳送 `/mute` 之前，我會忽略此聊天中的訊息 — 斜線指令仍可使用。"
   set_home:
     save_failed: "無法儲存主頻道：{error}"
     success: "✅ 主頻道已設定為 **{name}**（ID：{chat_id}）。\n排程任務和跨平台訊息將傳送至此處。"

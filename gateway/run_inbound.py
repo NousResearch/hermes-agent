@@ -1237,7 +1237,7 @@ class GatewayInboundMixin(
     ) -> tuple[bool, Optional[str]]:
         """``(True, reply)`` when a person's message ends here, before every turn path (authority
         FIFO, busy steer/interrupt, idle): a pending-reply intercept answered it, or ``/mute``
-        drops it (``reply`` None). Commands pierce the mute so ``/unmute`` always works; internal
+        drops it (``reply`` None). Commands pierce the mute so a second ``/mute`` always unmutes; internal
         events skip both, so background completions are never lost."""
         if is_internal:
             return False, None

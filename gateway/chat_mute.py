@@ -1,10 +1,10 @@
-"""Per-chat mute store for the gateway (``/mute`` / ``/unmute``).
+"""Per-chat mute store for the gateway (the ``/mute`` toggle).
 
 "Be quiet" is a *state command handled by the harness*, not conversational
 input the model gets to argue with. While a chat is muted the gateway drops
 inbound conversational messages for that chat deterministically — no agent
-turn, no tokens, no reply. Slash commands always pierce the mute so
-``/unmute`` (and everything else) keeps working.
+turn, no tokens, no reply. Slash commands always pierce the mute so a
+second ``/mute`` (and everything else) keeps working.
 
 State lives in ``{HERMES_HOME}/.chat_mutes.json`` so a mute survives gateway
 restarts. Entries are keyed by ``"<platform>:<chat_id>"`` — chat-scoped, not
@@ -89,7 +89,7 @@ def _entry_active(entry: dict[str, Any], now: Optional[float] = None) -> bool:
         return float(expires_at) > now
     except (TypeError, ValueError):
         # Unparsable expiry degrades to indefinite: the user explicitly asked
-        # for silence and only an explicit /unmute (or a valid expiry) ends it.
+        # for silence and only a second /mute (or a valid expiry) ends it.
         return True
 
 
@@ -108,14 +108,6 @@ def is_source_muted(source: Any) -> bool:
         return False
     logger.debug("Dropping message for muted chat %s:%s", platform, source.chat_id)
     return True
-
-
-def get_mute_entry(platform_value: str, chat_id: Any) -> Optional[dict[str, Any]]:
-    """Return the live mute entry for a chat, or None when unmuted/expired."""
-    entry = _load_store().get(mute_key(platform_value, chat_id))
-    if entry is not None and _entry_active(entry):
-        return entry
-    return None
 
 
 def set_chat_mute(

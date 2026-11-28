@@ -1,0 +1,42 @@
+name: session-navigation
+title: Session navigation
+repo: https://github.com/pureliture/session-navigation
+sha: 353ea920f588848f3a8866a250539fcc03716a88
+subdir: hermes-plugin
+description: >-
+  Reversible request-side context management using deterministic Hide, session-model
+  Summarize and exact Unhide. Disclosure: stores selected session originals and
+  replacements in local SQLite; Summarize sends selected originals through the
+  configured Hermes model provider; mid-session request-copy edits invalidate the
+  provider prompt-cache prefix from the first changed position onward (batched to
+  mitigate). Uses only public Hermes plugin surfaces. No telemetry, credential-file
+  access or self-updater.
+maintainer: pureliture
+tier: community
+category: memory
+requires_hermes: ">=0.20.1"
+version: "0.1.0"
+docs_url: https://github.com/pureliture/session-navigation/blob/353ea920f588848f3a8866a250539fcc03716a88/docs/hermes-plugin.md
+readme: false
+platforms: []
+known_issues:
+  - Competing llm_request middlewares cannot be enumerated via a public Hermes API; safe coexistence and exclusive rewrite ownership are not guaranteed.
+  - Mid-session Hide/Summarize/Unhide request-copy edits invalidate the provider prompt-cache prefix from the first changed position onward; cleanup reminders are batched to mitigate overhead.
+  - Local next approximation footer token estimates are rough Unicode-aware approximations (display-only) and may drift from actual model tokenization or future Hermes releases.
+  - Requires both host activation and settings.enabled true; settings default to false.
+  - Local state must be shared with Paseo; cross-machine synchronization is not provided.
+capabilities:
+  provides_tools:
+    - hide_context
+    - summarize_context
+    - list_context_items
+    - unhide_context
+    - manage_context
+  provides_hooks:
+    - post_api_request
+    - subagent_start
+  provides_middleware:
+    - llm_request
+    - tool_request
+  requires_env: []
+

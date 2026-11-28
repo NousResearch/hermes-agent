@@ -214,6 +214,14 @@ def left_unfinished(home: Path, name: str) -> bool:
     return installing_marker(home, name).exists() or (home / "cache" / f"default-plugins.placed-{name}").exists()
 
 
+def forget_unfinished(home: Path, name: str) -> None:
+    """Another installer finished *name* in *home* under :func:`installer_lock`: the markers this installer
+    left (:func:`left_unfinished`) describe an install nobody runs now (the lock is held by the caller), so
+    they come off; left behind, the next pass would discard the finished tree and a send would wait on them."""
+    installing_marker(home, name).unlink(missing_ok=True)
+    (home / "cache" / f"default-plugins.placed-{name}").unlink(missing_ok=True)
+
+
 def _phase_timer() -> tuple[Callable[[object], None], Callable[[], str]]:
     """An ``on_step`` hook and a formatter for one install's phases: fetch+place runs until the Python
     packages phase (or, without Python dependencies, the load phase: enabling is folded into placing),

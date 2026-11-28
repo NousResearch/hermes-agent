@@ -290,6 +290,23 @@ def test_a_send_whose_in_flight_install_failed_installs_weixin_itself(tmp_path, 
         (signals / "release").touch()
         child.wait(timeout=60)
     assert installed == ["weixin"] and seen == [True]
+    from hermes_cli.default_plugins import left_unfinished
+    assert not left_unfinished(home, "weixin"), "the recovered install left the default installer's markers behind"
+
+
+def test_a_ready_weixin_never_waits_on_a_leftover_installing_marker(tmp_path, monkeypatch):
+    """An earlier ``hermes send`` recovered the install the default-plugin child was killed in, so weixin is enabled
+    while that child's ``installing`` marker is still on disk; another process now holds the installer lock for
+    something else. The ready plugin outranks the leftover marker: the send goes straight to its target."""
+    home, signals, child = _send_only_home_with_installer_in_flight(tmp_path)
+    try:
+        (home / "config.yaml").write_text("platforms:\n  weixin:\n    enabled: false\nplugins:\n  enabled: [weixin]\n",
+                                          encoding="utf-8")
+        seen = _run_send(monkeypatch, home)
+    finally:
+        (signals / "release").touch()
+        child.wait(timeout=60)
+    assert seen == [True]
 
 
 def test_a_send_that_outwaits_its_budget_says_the_installer_is_busy(tmp_path, monkeypatch, capsys):

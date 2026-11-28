@@ -1464,7 +1464,9 @@ def _install_locked(home: Path, feature: LeftCoreFeature, *, install: Callable[[
         result = {"ok": False, "error": str(exc)}
     default = _ships_by_default(feature)
     if result.get("ok"):
+        from hermes_cli.default_plugins import forget_unfinished
         _placed(home, feature.plugin).unlink(missing_ok=True)
+        forget_unfinished(home, feature.plugin)  # under the installer lock: an interrupted default install of it is done
         _record_installed(home, feature)
         if result.get("kept_disabled"):
             say(_noticed(f"  ⚠ {feature.label}: installed the '{feature.plugin}' plugin from the catalog "
@@ -1695,7 +1697,8 @@ def _attempt(home: Path, *, deliver: Callable[[str], None], gateway_start: bool,
 def recover_for_platform(name: Optional[str]) -> None:
     """``hermes send --to <name>``, a platform a left-core plugin ships, in a home that uses it: make that one
     plugin ready in this invocation before the target resolves. Nothing waits for a plugin that is ready or
-    disabled. One the default-plugin child is placing right now (its ``installing`` marker) is waited for on
+    disabled (a ready plugin outranks a leftover ``installing`` marker). One the default-plugin child is placing right
+    now (its ``installing`` marker) is waited for on
     the installer lock (bounded, :func:`startup_lock_wait`), then rechecked; one still owed (:func:`_pending` for this row
     only: never over a removal) is installed through :func:`_install_one`, which takes the same lock and
     rechecks under it. Starts no adapter (the send resolves its config as before). Outcomes print to stderr."""
@@ -1710,7 +1713,7 @@ def recover_for_platform(name: Optional[str]) -> None:
 
     def say(message: str) -> None:
         print(message, file=sys.stderr)
-    if installing_marker(home, feature.plugin).exists():
+    if installing_marker(home, feature.plugin).exists() and not _installed_for_good(home, feature.plugin):
         try:
             with installer_lock(startup_lock_wait(gateway_start=False)):
                 pass  # the lock only says that installer stopped: the recheck below says whether it placed it

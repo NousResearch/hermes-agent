@@ -796,6 +796,15 @@ def _probe_codex_quota_restored(
                     used = (rate_limit.get(key) or {}).get("used_percent")
                     if isinstance(used, (int, float)):
                         worst_used = max(worst_used or 0.0, float(used))
+            # Workspace seats (business/enterprise) report ``rate_limit: null``; their 429s come
+            # from the workspace spend control, so it is the window that decides "restored".
+            spend = payload.get("spend_control") or {}
+            if isinstance(spend, dict):
+                used = (spend.get("individual_limit") or {}).get("used_percent")
+                if isinstance(used, (int, float)):
+                    worst_used = max(worst_used or 0.0, float(used))
+                if spend.get("reached") is True:
+                    worst_used = 100.0
             if worst_used is not None:
                 result = worst_used < 100.0
         elif response.status_code == 429:

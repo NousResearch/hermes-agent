@@ -2041,17 +2041,16 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
                 exhausted_until = _exhausted_until(entry, sole_credential=sole_credential)
                 # Codex quota windows can reopen EARLY; a throttled live probe
                 # lifts a stale cooldown (issue #43747).
-                if (
-                    exhausted_until is not None
-                    and now < exhausted_until
-                    and not (clear_expired and self._codex_quota_restored_upstream(entry))
-                ):
+                reopened_early = exhausted_until is not None and now < exhausted_until
+                if reopened_early and not (clear_expired and self._codex_quota_restored_upstream(entry)):
                     continue
                 if clear_expired:
-                    # The probe may have rotated this row's single-use token pair: clear the
-                    # cooldown on the live row, not on this pre-probe copy.
+                    # The probe may have rotated this row's single-use token pair: clear the cooldown on the
+                    # live row. A probe-confirmed reopen is stamped now, so the recency merge persists it over
+                    # the older on-disk bench (a peer's newer 429 still wins).
                     entry = self._find(lambda e, i=entry.id: e.id == i) or entry
-                    entry = self._adopt(entry, persist=False, **_MARK_OK)
+                    stamp = {"last_status_at": now} if reopened_early else {}
+                    entry = self._adopt(entry, persist=False, **{**_MARK_OK, **stamp})
                     cleared_any = True
             if refresh and self._entry_needs_refresh(entry):
                 if self.provider in _TOKENS_SINGLETON_PROVIDERS:

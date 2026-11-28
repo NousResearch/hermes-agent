@@ -13,7 +13,7 @@ active agent turn fails closed with `No active Hermes parent session`.
 The facade also works when a plugin runs under `plugins.isolation: host`.
 
 Requests accept `goal`, `context`, `role`, `model`, `provider`, `allowed_toolsets`,
-`blocked_tools`, `working_directory`, `parent_session_id`, `correlation_id`,
+`images`, `output_schema`, `blocked_tools`, `working_directory`, `parent_session_id`, `correlation_id`,
 `metadata`, and `timeout_seconds`, subject to the restrictions below.
 
 ```python
@@ -25,6 +25,8 @@ def launch_review(ctx):
     handle = service.launch(SubagentLaunchRequest(
         goal="Review this change for regressions.",
         context="Only inspect the supplied repository.",
+        images=("https://example.com/change.png",),
+        output_schema={"type": "object", "required": ["verdict"]},
         role="leaf",
         correlation_id="review-42",
         allowed_toolsets=("file",),
@@ -71,6 +73,13 @@ known), and per-tool blocks, working-directory overrides, and per-launch
 timeouts are explicitly rejected until Hermes can
 support them without weakening isolation. Use `allowed_toolsets` to narrow a
 child; Hermes's existing unsafe-tool block remains enforced.
+
+`images` and `output_schema` use the same validation and child execution path
+as native `delegate_task`: images reach the first child turn, and an output
+schema adds its output contract plus one bounded correction turn. When a
+schema is requested, `result(handle).structured_payload` preserves the native
+`schema_valid`, `schema_errors`, and `schema_note` receipt. A persistent
+contract miss keeps the child's raw final answer in `summary`.
 
 ## Routing
 

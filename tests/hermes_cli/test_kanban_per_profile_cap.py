@@ -63,6 +63,15 @@ def test_cap_2_balances_two_profiles(isolated_kanban_home_with_profiles):
     assert spawn_assignees.count("beta") == 2
     assert capped_assignees.count("alpha") == 3
     assert capped_assignees.count("beta") == 1
+    assert kbd.describe_suppression([res]) == "per_profile_capped=4"
+
+
+def test_suppression_sums_per_profile_caps_across_boards():
+    from hermes_cli.kanban_db_dispatch import DispatchResult, describe_suppression
+
+    first = DispatchResult(skipped_per_profile_capped=[("a", "alpha", 2)])
+    second = DispatchResult(skipped_per_profile_capped=[("b", "beta", 2), ("c", "beta", 2)])
+    assert describe_suppression([first, None, second]) == "per_profile_capped=3"
 
 
 

@@ -89,17 +89,11 @@ _RESPAWN_GUARD_PR_URL_RE = re.compile(
 
 @dataclass
 class DispatchResult:
-    """Outcome of a single ``dispatch`` pass.
+    """Outcome of a dispatch pass, including deferred-work telemetry.
 
-    ``kanban.default_assignee`` applied this tick before spawning (#27145). Surfaces the auto-assignment to
-    telemetry / CLI / dashboard so the operator can see when the dispatcher is acting on the fallback rule
-    ``kanban.max_in_progress_per_profile`` (#21582). Each entry is ``(task_id, assignee,
-    current_running_count)``. NOT an operator-actionable failure — the task will be picked up on a
-    subsequent tick when the assignee has capacity. Separate bucket so telemetry / dashboards can show "this
-    profile is busy" vs
-    the board's dispatch lock (issue #35240). A losing dispatcher does no DB writes this tick — the lock
-    holder is making progress on the same board. This is the steady-state signal that a single-writer guard
-    is
+    ``skipped_per_profile_capped`` records tasks deferred while an assignee has
+    no worker slot; ``skipped_locked`` records a competing board dispatcher.
+    Neither condition drops a task or indicates a spawn failure.
     """
 
     reclaimed: int = 0
@@ -128,6 +122,9 @@ class DispatchResult:
     """``(task_id, assignee, current_running_count)`` deferred because the
     assignee is at ``kanban.max_in_progress_per_profile``. Picked up on a later
     tick; separate bucket so dashboards show "profile busy" vs "stuck"."""
+    spawn_budget_hold: Optional[str] = None
+    """``board_capacity`` or ``host_capacity`` when the respective concurrent
+    worker limit prevented this tick from spawning; no task was dropped."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
@@ -154,14 +151,10 @@ class DispatchResult:
 
 
 def describe_suppression(results: Iterable[Optional[DispatchResult]]) -> str:
-    """One line naming why the tick(s) held ready work back, or ``""``.
+    """Summarize why ready work was held back across dispatcher ticks.
 
-    ``active_pr=1, recent_success=2, rate_limited=1, skipped_locked=1,
-    memory_pressure=critical`` — the respawn-guard reasons counted per task
-    plus the tick-level holds. Feeds the "dispatcher stuck" warnings of the
-    CLI daemon and the embedded gateway dispatcher, which otherwise report a
-    bare zero-spawn count while ``hermes kanban tail`` is the only place the
-    guard reason is written (#111910).
+    Feeds CLI and embedded-gateway health warnings; counts task-level guards
+    and per-profile holds, plus board/host capacity and memory-pressure holds.
     """
     counts: dict[str, int] = {}
     pressure: Optional[str] = None
@@ -172,6 +165,10 @@ def describe_suppression(results: Iterable[Optional[DispatchResult]]) -> str:
             counts[reason] = counts.get(reason, 0) + 1
         if res.rate_limited:
             counts["rate_limited"] = counts.get("rate_limited", 0) + len(res.rate_limited)
+        if res.skipped_per_profile_capped:
+            counts["per_profile_capped"] = counts.get("per_profile_capped", 0) + len(res.skipped_per_profile_capped)
+        if res.spawn_budget_hold:
+            counts[res.spawn_budget_hold] = counts.get(res.spawn_budget_hold, 0) + 1
         if res.skipped_locked:
             counts["skipped_locked"] = counts.get("skipped_locked", 0) + 1
         if res.memory_pressure:
@@ -2203,6 +2200,13 @@ def _run_reclaim_phase(
     result.promoted = _kb.recompute_ready(conn, failure_limit=failure_limit)
 
 
+def _pending_capacity_work(conn: sqlite3.Connection) -> bool:
+    """Match the gateway's spawnable ready/review health predicate."""
+    return has_spawnable_ready(conn) or (
+        review_dispatch_enabled() and has_spawnable_review(conn)
+    )
+
+
 def _tick_spawn_budget(
     conn: sqlite3.Connection,
     result: DispatchResult,
@@ -2211,17 +2215,11 @@ def _tick_spawn_budget(
     max_in_progress: Optional[int],
     board: Optional[str],
 ) -> tuple[bool, Optional[int]]:
-    """``(may_spawn, spawn_budget)`` for this tick; ``budget None`` = uncapped.
+    """Return whether another worker may spawn and the remaining budget.
 
-    ``max_spawn`` is a live per-board concurrency cap (running + this tick's
-    spawns), not a per-tick budget — a per-tick reading would grow concurrency
-    by N every tick. ``max_in_progress`` is a HOST-level cap: running workers on
-    every other board count against the same budget, else N boards multiply the
-    cap by N — exactly the fan-out the memory-derived default exists to prevent.
+    ``max_spawn`` caps this board; ``max_in_progress`` caps all boards.
     """
-    # Count already-running tasks so max_spawn enforces concurrency, not a
-    # per-tick budget: "running" tasks stay running until the worker makes a terminal
-    # board call (kanban_complete/kanban_block/kanban_request_review) or the TTL reclaims them.
+    # Running workers consume capacity until they finish or are reclaimed.
     running_count = 0
     spawn_budget: Optional[int] = None
     if max_spawn is not None or max_in_progress is not None:
@@ -2230,21 +2228,22 @@ def _tick_spawn_budget(
     # Both ready and review loops consume from the same budget.
     if max_spawn is not None:
         if running_count >= max_spawn:
+            if _pending_capacity_work(conn):
+                result.spawn_budget_hold = "board_capacity"
             return False, None
         spawn_budget = max_spawn - running_count
 
     if max_in_progress is not None:
         total_running = running_count + count_running_tasks_other_boards(board)
         if total_running >= max_in_progress:
+            if _pending_capacity_work(conn):
+                result.spawn_budget_hold = "host_capacity"
             return False, None
         remaining = max_in_progress - total_running
         if spawn_budget is None or spawn_budget > remaining:
             spawn_budget = remaining
 
-    # Memory-pressure guard: a static cap can't see the host's actual state.
-    # critical -> spawn nothing this tick; elevated -> at most one new worker.
-    # Reclaim/promotion already ran, so bookkeeping stays live; deferred tasks
-    # wait for a later tick. "unknown" imposes no restriction.
+    # Memory pressure can further restrict the static capacity budget.
     pressure = _memory_pressure_level()
     if pressure == "critical":
         result.memory_pressure = pressure
@@ -2338,11 +2337,10 @@ def _dispatch_once_locked(
     max_in_progress_per_profile: Optional[int] = None,
     reconcile_orphans: bool = True,
 ) -> DispatchResult:
-    """One dispatcher tick: reclaim stale/crashed running tasks, promote
-    todo -> ready, then atomically claim each spawnable ready/review row and
-    call ``spawn_fn(task, workspace_path, board) -> Optional[int]``, recording
-    the PID so later ticks catch crashes before the TTL. Cap semantics:
-    :func:`_tick_spawn_budget`."""
+    """Reclaim, promote, then claim and spawn eligible ready/review tasks.
+
+    Board and host concurrency are enforced by :func:`_tick_spawn_budget`.
+    """
     result = DispatchResult()
     _run_reclaim_phase(
         conn, result, stale_timeout_seconds=stale_timeout_seconds,

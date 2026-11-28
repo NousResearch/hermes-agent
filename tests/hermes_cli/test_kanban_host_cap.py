@@ -133,6 +133,77 @@ def test_max_in_progress_counts_other_boards(
     # Host budget (2) already consumed by the second board → nothing spawns.
     assert not spawns
     assert not res.spawned
+    assert res.spawn_budget_hold == "host_capacity"
+    assert kbd.describe_suppression([res]) == "host_capacity=1"
+
+
+def test_board_budget_reports_board_capacity(kanban_home, all_assignees_spawnable):
+    with kbc.connect() as conn:
+        busy = kb.create_task(conn, title="busy", assignee="alice")
+        assert kb.claim_task(conn, busy) is not None
+        kb.create_task(conn, title="waiting", assignee="alice")
+        res = kbd.dispatch_once(conn, spawn_fn=_fake_spawn_factory([]), max_spawn=1)
+    assert res.spawn_budget_hold == "board_capacity"
+    assert kbd.describe_suppression([res]) == "board_capacity=1"
+
+
+@pytest.mark.parametrize("cap", ["board", "host"])
+def test_idle_board_does_not_report_capacity_hold(kanban_home, all_assignees_spawnable, cap):
+    kb.create_board("second")
+    with kbc.connect(board="second") as conn:
+        busy = kb.create_task(conn, title="busy", assignee="alice")
+        assert kb.claim_task(conn, busy) is not None
+    with kbc.connect() as conn:
+        # No ready/review work on this board, even though another board is busy.
+        if cap == "board":
+            busy = kb.create_task(conn, title="running", assignee="alice")
+            assert kb.claim_task(conn, busy) is not None
+            res = kbd.dispatch_once(conn, spawn_fn=_fake_spawn_factory([]), max_spawn=1)
+        else:
+            res = kbd.dispatch_once(conn, spawn_fn=_fake_spawn_factory([]), max_in_progress=1)
+    assert res.spawn_budget_hold is None
+    assert kbd.describe_suppression([res]) == ""
+
+
+@pytest.mark.parametrize("cap", ["board", "host"])
+def test_nonspawnable_ready_does_not_report_capacity_hold(kanban_home, monkeypatch, cap):
+    monkeypatch.setattr(kbd, "_profile_exists_fn", lambda: lambda name: name == "alice")
+    kb.create_board("second")
+    with kbc.connect(board="second") as conn:
+        busy = kb.create_task(conn, title="busy elsewhere", assignee="alice")
+        assert kb.claim_task(conn, busy) is not None
+    with kbc.connect() as conn:
+        kb.create_task(conn, title="terminal lane", assignee="orion-cc")
+        if cap == "board":
+            busy = kb.create_task(conn, title="busy here", assignee="alice")
+            assert kb.claim_task(conn, busy) is not None
+            res = kbd.dispatch_once(conn, spawn_fn=_fake_spawn_factory([]), max_spawn=1)
+        else:
+            res = kbd.dispatch_once(conn, spawn_fn=_fake_spawn_factory([]), max_in_progress=1)
+    assert res.spawn_budget_hold is None
+    assert kbd.describe_suppression([res]) == ""
+
+
+@pytest.mark.parametrize("review_enabled", [False, True])
+def test_review_only_capacity_hold_follows_review_dispatch(
+    kanban_home, all_assignees_spawnable, monkeypatch, review_enabled,
+):
+    monkeypatch.setattr(kbd, "review_dispatch_enabled", lambda: review_enabled)
+    with kbc.connect() as conn:
+        busy = kb.create_task(conn, title="busy", assignee="alice")
+        assert kb.claim_task(conn, busy) is not None
+        review = kb.create_task(conn, title="review", assignee="reviewer")
+        _set_task_status(conn, review, "review")
+        res = kbd.dispatch_once(conn, spawn_fn=_fake_spawn_factory([]), max_spawn=1)
+    assert res.spawn_budget_hold == ("board_capacity" if review_enabled else None)
+
+
+def test_budget_hold_empty_when_spawn_has_capacity(kanban_home, all_assignees_spawnable):
+    with kbc.connect() as conn:
+        kb.create_task(conn, title="ready", assignee="alice")
+        res = kbd.dispatch_once(conn, spawn_fn=_fake_spawn_factory([]), max_in_progress=2)
+    assert res.spawn_budget_hold is None
+    assert kbd.describe_suppression([res]) == ""
 
 
 def test_max_in_progress_partial_budget_across_boards(

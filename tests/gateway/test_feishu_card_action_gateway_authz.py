@@ -464,3 +464,59 @@ class TestIdFormFallback:
         assert response.card is None
         submit.assert_not_called()
         assert 1 in adapter._approval_state
+
+
+class TestDelegatedAdminIdentityFailClosed:
+    """A card delegated to a specific admin must not be approvable by another
+    allowlisted member whose callback omits operator.user_id (fail-closed)."""
+
+    @staticmethod
+    def _adapter():
+        from plugins.platforms.feishu.cards.authz import validate_card_action
+        adapter = MagicMock()
+        adapter._admins = {"ou-admin", "ou-attacker"}
+        adapter._allowed_group_users = set()
+        adapter._chat_info_cache = {}
+        adapter._is_sender_authorized.return_value = True
+        adapter._get_cached_sender_name.side_effect = lambda oid: oid
+        return adapter, validate_card_action
+
+    @staticmethod
+    def _event(open_id, user_id, chat_id="oc_admin"):
+        return SimpleNamespace(
+            operator=SimpleNamespace(open_id=open_id, user_id=user_id, union_id=""),
+            context=SimpleNamespace(open_chat_id=chat_id),
+        )
+
+    def _delegated_state(self):
+        return {"chat_id": "oc_admin", "admin_user_id": "ADM-1",
+                "session_key": "agent:main:weixin:dm:user-1", "request_id": "req-secret"}
+
+    def test_named_admin_with_user_id_can_approve(self):
+        adapter, validate = self._adapter()
+        result = validate(adapter, event=self._event("ou-admin", "ADM-1"),
+                          state=self._delegated_state(), label="approval", ident=1)
+        assert result is not None
+
+    def test_other_allowlisted_member_with_different_user_id_denied(self):
+        adapter, validate = self._adapter()
+        result = validate(adapter, event=self._event("ou-attacker", "ATK-9"),
+                          state=self._delegated_state(), label="approval", ident=1)
+        assert result is None
+
+    def test_other_allowlisted_member_without_user_id_denied(self):
+        """Fail-closed: missing clicker user_id must not bypass the admin bind."""
+        adapter, validate = self._adapter()
+        result = validate(adapter, event=self._event("ou-attacker", ""),
+                          state=self._delegated_state(), label="approval", ident=1)
+        assert result is None
+
+    def test_non_delegated_card_without_user_id_still_approvable(self):
+        """Unchanged behavior for ordinary (non-delegated) cards: no admin_user_id
+        in state, so an allowlisted clicker without user_id still works."""
+        adapter, validate = self._adapter()
+        state = {"chat_id": "oc_admin", "session_key": "agent:main:weixin:dm:user-1",
+                 "request_id": "req-secret"}
+        result = validate(adapter, event=self._event("ou-attacker", ""),
+                          state=state, label="approval", ident=1)
+        assert result is not None

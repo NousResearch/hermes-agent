@@ -197,6 +197,13 @@ def _installing(home: Path, entry) -> Path:
     return home / "cache" / f"default-plugins.installing-{entry.name}"
 
 
+def left_unfinished(home: Path, name: str) -> bool:
+    """An automatic install of *name* in *home* did not finish: its ``installing`` marker outlived it (killed),
+    or its ``placed`` marker says the tree is on disk but the enable was refused. Either tree is owed."""
+    cache = home / "cache"
+    return (cache / f"default-plugins.installing-{name}").exists() or (cache / f"default-plugins.placed-{name}").exists()
+
+
 def _phase_timer() -> tuple[Callable[[object], None], Callable[[], str]]:
     """An ``on_step`` hook and a formatter for one install's phases: fetch+place runs until the Python
     packages phase (or, without Python dependencies, the load phase: enabling is folded into placing),

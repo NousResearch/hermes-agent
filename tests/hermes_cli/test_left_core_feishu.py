@@ -311,3 +311,43 @@ def test_host_isolation_pinned_in_the_managed_layer_is_named(tmp_path, monkeypat
     home = _home(tmp_path, env=_CREDS)
     (home / "plugins" / "feishu").mkdir(parents=True)
     assert "plugins.isolation: host" in next(f for f in lcm.LEFT_CORE if f.plugin == "feishu").notice(home)
+
+
+@pytest.mark.parametrize("stop", ["refused", "killed"])
+def test_a_feishu_tree_the_default_installer_left_unfinished_is_installed_by_the_upgrade(tmp_path, monkeypatch, stop):
+    """The default installer placed feishu in a home core ran Feishu for, then its enable was refused (its own
+    failure stamp and placed marker) or it was killed mid-install (its installing marker): that tree is owed,
+    not installed, so the upgrade installs and enables it instead of recording it as the home's."""
+    from hermes_cli import default_plugins
+    from hermes_cli.plugin_catalog import entry_from_mapping
+    monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+    home = _home(tmp_path, env=_CREDS)
+
+    def default_install(h, consent=None):
+        def install(name, discard=None):
+            (h / "plugins" / name).mkdir(parents=True, exist_ok=True)  # the clone lands before the enable
+            if stop == "killed":
+                raise SystemExit(9)
+            return {"ok": False, "error": "enable refused: dependency resolution failed"}
+        return install
+    monkeypatch.setattr(lcm, "_install_into", default_install)
+    entry = entry_from_mapping({"name": "feishu", "repo": "https://github.com/NousResearch/hermes-official-plugins",
+                                "sha": "a" * 40, "description": "d", "maintainer": "NousResearch",
+                                "tier": "official", "default": True}, "feishu")
+    if stop == "killed":
+        with pytest.raises(SystemExit):
+            default_plugins.install_defaults(home, entries=[entry])
+    else:
+        assert default_plugins.install_defaults(home, entries=[entry])["owed"] == ["feishu"]
+    assert (home / "plugins" / "feishu").is_dir()
+
+    calls, said = [], []
+
+    def install(name):  # the real install enables the tree in place
+        calls.append(name)
+        (home / "config.yaml").write_text(f"plugins:\n  enabled: [{name}]\n", encoding="utf-8")
+        return {"ok": True}
+
+    assert lcm.migrate_home(home, install=install, say=said.append) == ["feishu"]
+    assert lcm.migrate_home(home, install=install, say=said.append) == []
+    assert calls == ["feishu"], said

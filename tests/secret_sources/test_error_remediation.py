@@ -98,6 +98,37 @@ def test_remediation_never_raises_on_junk_cfg():
         assert isinstance(OnePasswordSource().remediation(ErrorKind.AUTH_FAILED, cfg), str)
 
 
+def test_bundled_source_hint_names_the_secrets_group():
+    hint = BitwardenSource().remediation(ErrorKind.AUTH_EXPIRED, {})
+    assert "hermes secrets bitwarden setup" in hint
+
+
+def test_plugin_source_hint_names_its_own_command_group():
+    """A plugin-provided source owns a top-level ``hermes <name>`` group, so the
+    generic ``hermes secrets <name>`` form would name a command the CLI rejects
+    (``hermes secrets`` answers an unknown name with "Did you mean: bitwarden?")."""
+    from agent.secret_sources import registry
+
+    class PluginSource(SecretSource):
+        name = "pluginhint"
+        label = "Plugin hint"
+        shape = "mapped"
+
+        def fetch(self, cfg, home_path):
+            return FetchResult()
+
+    registry._reset_registry_for_tests()
+    source = PluginSource()
+    assert registry.register_source(source)
+    try:
+        assert source.origin == "plugin"
+        hint = source.remediation(ErrorKind.AUTH_EXPIRED, {})
+        assert "hermes pluginhint setup" in hint
+        assert "hermes secrets pluginhint" not in hint
+    finally:
+        registry._reset_registry_for_tests()
+
+
 # ---------------------------------------------------------------------------
 # env_loader startup hint
 # ---------------------------------------------------------------------------

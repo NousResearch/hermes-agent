@@ -123,11 +123,14 @@ class FetchResult:
         return self
 
 
+# ``{cmd}`` is resolved by :meth:`SecretSource.setup_command`, which knows
+# whether the source is bundled (``hermes secrets <name>``) or plugin-provided
+# (a top-level ``hermes <name>`` group).
 _GENERIC_REMEDIATION = {
-    ErrorKind.NOT_CONFIGURED: "Run `hermes secrets {name} setup` to finish configuration.",
-    ErrorKind.BINARY_MISSING: "Run `hermes secrets {name} setup` to install the helper CLI.",
-    ErrorKind.AUTH_FAILED: "Credentials rejected — run `hermes secrets {name} setup` to re-authenticate.",
-    ErrorKind.AUTH_EXPIRED: "Credentials expired — run `hermes secrets {name} setup` to re-authenticate.",
+    ErrorKind.NOT_CONFIGURED: "Run `{cmd}` to finish configuration.",
+    ErrorKind.BINARY_MISSING: "Run `{cmd}` to install the helper CLI.",
+    ErrorKind.AUTH_FAILED: "Credentials rejected — run `{cmd}` to re-authenticate.",
+    ErrorKind.AUTH_EXPIRED: "Credentials expired — run `{cmd}` to re-authenticate.",
     ErrorKind.NETWORK: "Network problem reaching the secrets backend — check connectivity and retry.",
     ErrorKind.TIMEOUT: "Backend was slow — raise secrets.{name}.timeout_seconds if this recurs.",
 }
@@ -156,6 +159,11 @@ class SecretSource(ABC):
     default_token_env: str = ""
     override_existing_default: bool = False
     remediation_hints: dict[ErrorKind, str] = {}
+
+    # Provenance, stamped by ``registry.register_source``: "builtin" for the
+    # bundled sources, "plugin" for anything registered by a plugin. It decides
+    # which CLI group :meth:`setup_command` points at.
+    origin: str = "builtin"
 
     @abstractmethod
     def fetch(self, cfg: dict, home_path: Path) -> FetchResult:
@@ -196,7 +204,21 @@ class SecretSource(ABC):
         if kind is None:
             return ""
         template = self.remediation_hints.get(kind) or _GENERIC_REMEDIATION.get(kind, "")
-        return template.format(name=self.name, token_env=self.token_env(cfg))
+        return template.format(name=self.name, token_env=self.token_env(cfg),
+                               cmd=self.setup_command())
+
+    def setup_command(self) -> str:
+        """The CLI invocation that configures this source.
+
+        Bundled sources are ``hermes secrets <name>`` subcommands; a
+        plugin-provided source owns a top-level ``hermes <name>`` group instead,
+        so a hint naming ``hermes secrets <name>`` would send the operator to a
+        command that rejects it (``hermes secrets`` answers an unknown name with
+        "Did you mean: bitwarden?").
+        """
+        if self.origin == "plugin":
+            return f"hermes {self.name} setup"
+        return f"hermes secrets {self.name} setup"
 
 
 # --- Shared helpers — use these instead of hand-rolling per backend ---------

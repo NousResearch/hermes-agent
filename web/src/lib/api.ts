@@ -1629,7 +1629,7 @@ export interface McpServer {
   command: string | null;
   args: string[];
   env: Record<string, string>;
-  auth: "header" | "oauth" | null;
+  auth: "header" | "query" | "oauth" | null;
   enabled: boolean;
   tools: string[] | null;
 }
@@ -1664,7 +1664,7 @@ export interface McpCatalogDiagnostic {
 }
 
 
-export type McpHttpAuth = "none" | "header" | "oauth";
+export type McpHttpAuth = "none" | "header" | "query" | "oauth";
 
 export interface McpServerCreate {
   name: string;

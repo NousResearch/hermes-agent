@@ -401,7 +401,9 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         base_url = resolved.base_url
         if base_url and base_url_hostname(base_url) in ("localhost", "127.0.0.1", "0.0.0.0"):
             lines.append(t("gateway.session.info_endpoint", url=base_url))
-        return "\n".join(lines)
+        # Blank lines are dropped: a locale overlay that silences a field (e.g. info_provider /
+        # info_endpoint set to "") must not leave an empty row behind in the reset notice.
+        return "\n".join(line for line in lines if line.strip())
 
     def _resolve_enabled_toolsets_for_source(
         self, user_config: dict, source: SessionSource, platform_key: str,

@@ -78,6 +78,57 @@ class TestScheduleResolution:
 
 
 
+class TestScheduleWording:
+    """``scheduleHuman`` (catalog/dashboard/docs) must describe the template's real recurrence."""
+
+    @staticmethod
+    def _wording(template, *slots):
+        from cron.blueprint_catalog import AutomationBlueprint, _humanize_schedule
+
+        bp = AutomationBlueprint(
+            key="t", title="T", description="d", category="general",
+            schedule_template=template, prompt_template="p",
+            slots=[BlueprintSlot(name="time", type="time", label="Time", default="09:00"), *slots],
+        )
+        return _humanize_schedule(bp)
+
+    @pytest.mark.parametrize(
+        ("template", "expected"),
+        [
+            ("{minute} {hour} * * *", "daily at 09:00"),
+            ("{minute} {hour} * * 1-5", "weekdays at 09:00"),
+            ("{minute} {hour} * * 1", "every Monday at 09:00"),
+            ("{minute} {hour} * * 1,4", "every Monday and Thursday at 09:00"),
+            ("{minute} {hour} * * 0,6", "weekends at 09:00"),
+            ("{minute} {hour} 1 * *", "monthly on the 1st at 09:00"),
+            ("{minute} {hour} 1,15 * *", "monthly on the 1st and 15th at 09:00"),
+            ("{minute} {hour} L * *", "on the last day of each month at 09:00"),
+            ("{minute} {hour} * * 1#2", "on the second Monday of each month at 09:00"),
+            ("{minute} {hour} * * L4", "on the last Thursday of each month at 09:00"),
+            ("30 7 * * 1", "every Monday at 07:30"),
+            # cron ORs a restricted day-of-month with a restricted day-of-week; never call it daily
+            ("{minute} {hour} 1-7 * 1", "on a custom schedule at 09:00"),
+            ("{minute} {hour} 1 1 *", "on a custom schedule at 09:00"),
+        ],
+    )
+    def test_recurrence_is_described(self, template, expected):
+        assert self._wording(template) == expected
+
+    def test_day_of_month_slot_uses_its_default(self):
+        dom = BlueprintSlot(name="dom", type="enum", label="Day", default="10", options=("1", "10", "28"))
+        assert self._wording("{minute} {hour} {dom} * *", dom) == "monthly on the 10th at 09:00"
+
+    def test_hour_step_slot_uses_its_default(self):
+        step = BlueprintSlot(name="interval_h", type="enum", label="Every", default="6", options=("1", "6"))
+        assert self._wording("0 */{interval_h} * * *", step) == "every 6 hours"
+
+    def test_builtin_catalog_wording(self):
+        from cron.blueprint_catalog import _humanize_schedule
+
+        assert _humanize_schedule(get_blueprint("morning-brief")).startswith("daily at ")
+        assert _humanize_schedule(get_blueprint("price-watch")) == "every 6 hours"
+
+
 class TestValidation:
     def test_invalid_time_rejected(self):
         with pytest.raises(BlueprintFillError, match="invalid time"):

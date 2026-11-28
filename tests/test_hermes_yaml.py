@@ -105,3 +105,53 @@ def test_parallel_calls_do_not_share_parser_or_emitter_state():
     with pytest.raises(yaml.YAMLError):
         yaml.safe_dump(object())
     assert yaml.safe_load(yaml.safe_dump({"healthy": True})) == {"healthy": True}
+
+
+_NO_DOT_FLOAT_PROBE = """
+import json
+
+import hermes_yaml
+
+print(json.dumps({
+    "safe": hermes_yaml.safe_load("threshold: 5e-1\\ntarget_ratio: 2e-1\\n"),
+    "roundtrip": hermes_yaml.roundtrip_yaml().load("threshold: 5e-1\\n"),
+}))
+"""
+
+
+def test_bare_exponent_floats_are_not_linted_onto_stderr():
+    # YAML 1.1's float type wants a dot in the mantissa, so ruamel warns about scalars like "5e-1"
+    # even though it parses them correctly as 0.5 — ~28 lines of stderr per scalar, per load, in
+    # every process that reads config. A config with eight of them put 32 warning blocks (~900
+    # lines) around a 14-line `hermes status`, burying the output and breaking stderr parsers.
+    #
+    # A fresh interpreter is the only honest way to assert this: once a warning has been shown for
+    # a call site, the same process will not show it again, so an in-process check cannot tell a
+    # suppressed lint from an already-consumed one.
+    import json
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    repo_root = Path(yaml.__file__).resolve().parent
+    proc = subprocess.run([sys.executable, "-c", _NO_DOT_FLOAT_PROBE],
+                          cwd=repo_root, capture_output=True, text=True, check=False)
+
+    assert proc.returncode == 0, proc.stderr
+    assert "MantissaNoDot" not in proc.stderr
+    assert "Correct your float" not in proc.stderr
+    # Silencing the lint must not change what the scalars parse to.
+    loaded = json.loads(proc.stdout)
+    assert loaded["safe"] == {"threshold": 0.5, "target_ratio": 0.2}
+    assert loaded["roundtrip"] == {"threshold": 0.5}
+
+
+def test_the_float_lint_filter_is_narrow():
+    # The 1.1 float lint is answered for that one category only — a blanket ignore would also hide
+    # the diagnostics that make a bad config visible in the first place.
+    import warnings
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.warn("still visible", UserWarning)
+
+    assert [entry.category for entry in caught] == [UserWarning]

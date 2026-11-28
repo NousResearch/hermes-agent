@@ -4,12 +4,22 @@ Ruamel's native schema includes bare y/n booleans and rejects duplicate keys.
 Every operation owns its parser/emitter; instances must not be shared by threads.
 """
 
+import warnings
 from io import StringIO
 from typing import Any, IO, overload
 
 from ruamel.yaml import YAML
-from ruamel.yaml.error import YAMLError
+from ruamel.yaml.error import MantissaNoDotYAML1_1Warning, YAMLError
 from ruamel.yaml.resolver import VersionedResolver
+
+# YAML 1.1's float type wants a dot in the mantissa, so ruamel lints scalars like ``5e-1`` even
+# though it parses them correctly (0.5). Hermes asks for 1.1 to keep bare ``y``/``n`` booleans, so
+# that lint fires on every such scalar, on every load, in every process — ~28 lines of stderr each,
+# which buries CLI output and breaks callers that parse stderr. Silence that one category: the 1.1
+# policy is deliberate here, and real faults still raise (duplicate keys and syntax errors arrive as
+# YAMLError). Registered at import so both loaders are covered — ``roundtrip_yaml()`` resolves 1.1
+# through ``_Yaml11Resolver`` rather than ``yaml.version``, and it lints too.
+warnings.filterwarnings("ignore", category=MantissaNoDotYAML1_1Warning)
 
 
 class _Yaml11Resolver(VersionedResolver):

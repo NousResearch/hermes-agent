@@ -128,6 +128,11 @@ def aux_probe_mode():
 
 
 from agent.credential_pool import load_pool
+from agent.usage_admission import policy as usage_policy
+from agent.usage_admission.aux_client import (
+    codex_admission_for_client, codex_credential_and_base, drop_denied_cached_client, effective_aux_provider,
+    recover_pool_after_auth_error,
+)
 from agent.credential_pool_model_cooldowns import pool_failure_reason
 from agent.custom_entry_pool import entry_scoped_pool, pool_for_aux_provider
 from agent.message_metadata import data_use_requirement
@@ -1792,54 +1797,14 @@ class AsyncAnthropicAuxiliaryClient(_AsyncAuxiliaryClientBase):
     pass
 
 
-class _BedrockCompletionsAdapter:
-    """Translates ``chat.completions.create(**kwargs)`` into Bedrock Converse."""
-
-    def __init__(self, region: str, model: str):
-        self._region = region
-        self._model = model
-
-    def create(self, **kwargs) -> Any:
-        from agent.bedrock_adapter import call_converse
-        model = kwargs.get("model", self._model)
-        max_tokens = kwargs.get("max_tokens") or kwargs.get("max_completion_tokens")
-        # OpenAI accepts ``stop`` as str or list; Converse requires a list.
-        stop = kwargs.get("stop")
-        if isinstance(stop, str):
-            stop = [stop]
-        if kwargs.get("tool_choice") is not None:
-            # Converse toolChoice isn't wired through call_converse(); surface the drop.
-            logger.debug(
-                "BedrockAuxiliaryClient: tool_choice=%r not supported by the "
-                "Converse shim — ignored.", kwargs.get("tool_choice"),
-            )
-        if kwargs.get("stream"):
-            # Converse streaming isn't wired here; call_llm's streaming consumer
-            # detects a final object and downgrades to non-live output.
-            logger.debug(
-                "BedrockAuxiliaryClient: stream=True requested for %s — returning a complete response "
-                "(Converse shim does not stream); caller downgrades to non-streaming.", model,
-            )
-        response = call_converse(
-            region=self._region, model=model, messages=kwargs.get("messages", []), tools=kwargs.get("tools"),
-            # Converse specifically defaults to the model maximum when omitted.
-            # Truthiness mirrors the Anthropic shim: explicit 0 means omit.
-            max_tokens=int(max_tokens) if max_tokens else None, temperature=kwargs.get("temperature"),
-            top_p=kwargs.get("top_p"), stop_sequences=stop,
-        )
-        # Converse is complete-response here: mark provider progress only after
-        # return so TTFP reflects real Bedrock latency, not dispatch/setup.
-        _notify_aux_provider_response()
-        return response
-
-
 class BedrockAuxiliaryClient:
     """OpenAI-client-compatible wrapper over AWS Bedrock Converse API."""
 
     def __init__(self, region: str, model: str):
         self._region = region
         self._model = model
-        self.chat = _ChatShim(_BedrockCompletionsAdapter(region, model))
+        from agent.bedrock_adapter import BedrockCompletionsAdapter
+        self.chat = _ChatShim(BedrockCompletionsAdapter(region, model))
         self.api_key = "aws-sdk"
         self.base_url = f"https://bedrock-runtime.{region}.amazonaws.com"
 
@@ -2080,6 +2045,9 @@ def _resolve_codex_credential_and_base(model: Optional[str] = None) -> tuple[Opt
             # Same route rule as the chat path (row URL, else ``model.base_url``); never empty.
             from hermes_cli.auth_codex import _codex_pool_route_base_url
             return token, _codex_pool_route_base_url(_pool_runtime_base_url(entry))
+        if usage_policy.usage_admission_policy_denied("openai-codex"):
+            # Every eligible pool entry is excluded by usage policy: do not fall back to the singleton.
+            return None, override or _CODEX_AUX_BASE_URL
     # No usable pool token: auth.json only (re-selecting could pair another row's key with the default).
     return _read_codex_singleton_token(), override or _CODEX_AUX_BASE_URL
 
@@ -2722,8 +2690,8 @@ def _runtime_main_value(field: str) -> Any:
 
 def set_runtime_main(
     provider: str, model: str, *, requested_provider: str = "", base_url: str = "",
-    api_key: Any = "", api_mode: str = "", auth_mode: str = "", session_id: str = "",
-    cache_scope: str = "",
+    api_key: Any = "", api_mode: str = "", auth_mode: str = "",
+    credential_pool_entry_id: str = "", session_id: str = "", cache_scope: str = "",
 ) -> contextvars.Token:
     """Record the current context's live main runtime for auxiliary routing.
 
@@ -2741,6 +2709,7 @@ def set_runtime_main(
         "api_key": _normalize_api_key(api_key),
         "api_mode": (api_mode or "").strip(),
         "auth_mode": (auth_mode or "").strip().lower(),
+        "credential_pool_entry_id": (credential_pool_entry_id or "").strip(),
         "session_id": (session_id or "").strip(),
         "cache_scope": (cache_scope or "").strip(),
     }
@@ -2920,10 +2889,13 @@ def _codex_base_url_override() -> str:
     return _scoped_key_env("HERMES_CODEX_BASE_URL").rstrip("/")
 
 
-def _build_codex_client(model: str) -> tuple[Optional[Any], Optional[str]]:
+def _build_codex_client(
+    model: str, *, access_token: Optional[str] = None, base_url: Optional[str] = None,
+) -> tuple[Optional[Any], Optional[str]]:
     """CodexAuxiliaryClient for an explicit model; (None, None) without a Codex OAuth token.
 
     No auto-selected default: the Codex model allow-list is undocumented and drifts.
+    ``access_token``/``base_url`` bind the client to a credential the caller already selected.
     """
     if not model:
         logger.warning(
@@ -2931,7 +2903,7 @@ def _build_codex_client(model: str) -> tuple[Optional[Any], Optional[str]]:
             "pass model explicitly (auxiliary.<task>.model in config.yaml)."
         )
         return None, None
-    codex_token, base_url = _resolve_codex_credential_and_base(model)
+    codex_token, base_url = codex_credential_and_base(model, access_token, base_url)
     if not codex_token:
         return None, None
     logger.debug("Auxiliary client: Codex OAuth (%s via Responses API)", model)
@@ -3061,7 +3033,7 @@ def _try_anthropic(explicit_api_key: Optional[str | Callable[[], str]] = None,
 
 _MAIN_RUNTIME_FIELDS = ("provider", "model", "base_url", "api_key", "api_mode", "auth_mode")
 _MAIN_RUNTIME_CONTEXT_FIELDS = _MAIN_RUNTIME_FIELDS + (
-    "requested_provider", "session_id", "cache_scope",
+    "requested_provider", "credential_pool_entry_id", "session_id", "cache_scope",
 )
 
 
@@ -3337,8 +3309,9 @@ def _evict_cached_clients(provider: str) -> None:
     normalized = _normalize_aux_provider(provider)
     home = hermes_home_key()
     with _client_cache_lock:
-        for key in [key for key in _client_cache
-                    if key[0] == home and _normalize_aux_provider(str(key[1])) == normalized]:
+        for key in [key for key, entry in _client_cache.items()
+                    if key[0] == home and (_normalize_aux_provider(str(key[1])) == normalized
+                                           or _normalize_aux_provider(effective_aux_provider(entry[0])) == normalized)]:
             _client_cache.pop(key, None)
 
 
@@ -3527,9 +3500,9 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
         return True
 
     if aux_errors.auth_refresh(verdict):
-        if pool.try_refresh_current() is not None:
-            _evict_cached_clients(normalized)
-            return True
+        recovered = recover_pool_after_auth_error(pool, normalized, failed_api_key)
+        if recovered is not None:
+            return recovered
         return _rotate(401)
     if not verdict.should_rotate_credential:  # e.g. an overloaded server or an upstream model throttle
         return False
@@ -4842,16 +4815,20 @@ def _resolve_openai_codex_branch(req: _ResolveRequest) -> _ResolveResult:
                        "or auxiliary.<task>.model for per-task aux routing).")
         return None, None
     no_token_msg = "resolve_provider_client: openai-codex requested but no Codex OAuth token found (run: hermes model)"
+    explicit_key = req.explicit_api_key if isinstance(req.explicit_api_key, str) else ""
+    if explicit_key and usage_policy.usage_admission_credential_denied("openai-codex", explicit_key):
+        logger.info("resolve_provider_client: rejected a policy-denied openai-codex credential")
+        return None, None
     if req.raw_codex:
         # Raw OpenAI client for callers needing responses.stream() (main agent loop).
-        codex_token, base_url = _resolve_codex_credential_and_base(model)
+        codex_token, base_url = codex_credential_and_base(model, explicit_key, req.explicit_base_url)
         if not codex_token:
             logger.warning(no_token_msg)
             return None, None
         raw_client = _create_openai_client(api_key=codex_token, base_url=base_url,
                                            default_headers=_codex_cloudflare_headers(codex_token, base_url=base_url))
         return raw_client, _normalize_resolved_model(model, req.provider)
-    client, default = _build_codex_client(model)
+    client, default = _build_codex_client(model, access_token=explicit_key, base_url=req.explicit_base_url)
     return _route_or_warn(req, client, default, no_token_msg)
 
 
@@ -5582,13 +5559,13 @@ def _client_cache_key(
     provider: str, *, async_mode: bool, base_url: Optional[str] = None,
     api_key: Optional[str] = None, api_mode: Optional[str] = None,
     main_runtime: Optional[dict[str, Any]] = None, is_vision: bool = False,
-    task: Optional[str] = None, model: Optional[str] = None,
+    task: Optional[str] = None, model: Optional[str] = None, pool_hint_override: Optional[str] = None,
 ) -> tuple:
     runtime = _normalize_main_runtime(main_runtime)
     # `auto` resolves through the main runtime and task-specific policy, so both join the key.
     runtime_key = tuple(_runtime_cache_discriminator(f, runtime.get(f, "")) for f in _MAIN_RUNTIME_FIELDS) if provider == "auto" else ()
     task_key = (task or "", _task_prefers_fast_model(task)) if provider == "auto" else ""
-    pool_hint = _pool_cache_hint(provider, main_runtime=main_runtime)
+    pool_hint = pool_hint_override if pool_hint_override is not None else _pool_cache_hint(provider, main_runtime=main_runtime)
     # Model MUST be in the key: concurrent calls to the same endpoint with different models would
     # share an entry, and the second builder's _store_cached_client would close the first's client.
     model_key = model or runtime.get("model", "")
@@ -5829,9 +5806,18 @@ def _get_cached_client(
         base_url, api_key = local
     current_loop = _current_event_loop() if async_mode else None
     runtime = _normalize_main_runtime(main_runtime)
+    admission = codex_admission_for_client(provider, runtime, api_key, base_url)
+    if admission.denied:
+        drop_denied_cached_client(
+            admission, provider, async_mode=async_mode, base_url=base_url, api_key=api_key, api_mode=api_mode,
+            main_runtime=main_runtime, is_vision=is_vision, task=task, model=model,
+        )
+        return None, None
     cache_key = _client_cache_key(
-        provider, async_mode=async_mode, base_url=base_url, api_key=api_key, api_mode=api_mode,
+        provider, async_mode=async_mode, base_url=admission.base_url or base_url,
+        api_key=admission.api_key or api_key, api_mode=api_mode,
         main_runtime=main_runtime, is_vision=is_vision, task=task, model=model,
+        pool_hint_override=admission.pool_hint,
     )
     with _client_cache_lock:
         if cache_key in _client_cache:
@@ -5848,7 +5834,7 @@ def _get_cached_client(
     # Build outside the lock. For pool-backed providers derive the key from the pool entry:
     # resolve_api_key_provider_credentials prefers env vars, which would bypass pool rotation
     # and retry an exhausted key. A custom entry peeks only its rows bound to the address called.
-    effective_api_key = api_key
+    effective_api_key = admission.api_key or api_key
     if not effective_api_key and _normalize_aux_provider(provider) != "anthropic":  # it picks its own (#154242)
         from hermes_cli.runtime_provider import choose_pool_key
         _pool = pool_for_aux_provider(provider, _normalize_aux_provider(provider), lambda k: _load_pool_with_credentials(k, " (peek)"), base_url)
@@ -5856,8 +5842,8 @@ def _get_cached_client(
             if (_pk := choose_pool_key(_pool, provider, model=_normalize_resolved_model(model, provider) if model else None, mode="peek")):
                 effective_api_key = _pk.api_key.strip() or api_key
     client, default_model = resolve_provider_client(
-        provider, model, async_mode, explicit_base_url=base_url, explicit_api_key=effective_api_key,
-        api_mode=api_mode, main_runtime=runtime, is_vision=is_vision, task=task,
+        admission.provider or provider, model, async_mode, explicit_base_url=admission.base_url or base_url,
+        explicit_api_key=effective_api_key, api_mode=api_mode, main_runtime=runtime, is_vision=is_vision, task=task,
     )
     if client is not None and _aux_probe_active():
         # Availability probes answer "resolvable?" and must leave the cache untouched: the

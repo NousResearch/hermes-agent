@@ -22,6 +22,7 @@ from agent.credential_pool import (  # custom_provider_pool_key_candidates is re
     AUTH_TYPE_OAUTH, CredentialPool, PooledCredential, _is_manual_source, credential_pool_matches_provider,
     custom_provider_pool_key_candidates, load_pool,
 )
+from agent.usage_admission.policy import usage_admission_credential_denied, usage_admission_policy_denied
 from agent.secret_scope import get_secret_str
 from hermes_cli.auth import (  # resolve_external_process_provider_credentials is read via origin by runtime_provider_backends
     ACTUAL_LOCAL_NOAUTH_PLACEHOLDER, AuthError, DEFAULT_CODEX_BASE_URL, MODEL_RATE_LIMITED_CODE, DEFAULT_QWEN_BASE_URL, DEFAULT_XAI_OAUTH_BASE_URL,
@@ -727,7 +728,8 @@ def choose_pool_key(pool: Optional[CredentialPool], provider: str, *, model: Opt
     ``credential_pool_selection.AsCalled``), the provider profile's preparation of its secret, and a
     usable-secret check. ``mode``: ``select`` counts and rotates as the pick is made; ``choose`` makes
     the same pick without touching the pool (the caller ``pool.commit``s it once the key is sent);
-    ``peek`` reads the entry the pool is already on. None when no entry qualifies."""
+    ``peek`` reads the entry the pool is already on. All three modes apply ``credential_pool_usage_limits``
+    (a cold admission cache is probed by the pool). None when no entry qualifies."""
     if pool is None or not pool.has_credentials():
         return None
     model = model or None
@@ -794,7 +796,10 @@ class PoolChoice:
         from agent.auxiliary_client import _to_openai_base_url
         if self.picked.pool.commit(self.picked.entry.id, model=self.model, endpoint_url=self._endpoint_url,
                                    as_called=_to_openai_base_url) is None:
-            logger.info("Credential pool entry %s left the pool before its first request", self.picked.entry.id)
+            # ``commit`` re-checks availability, including the usage ceiling (a cold admission cache is probed
+            # there), so an entry that crossed its ceiling after ``choose`` is refused here, not sent.
+            logger.info("Credential pool entry %s left the pool (or reached its usage ceiling) before its first request",
+                        self.picked.entry.id)
 
 
 def _resolve_from_pool(provider: str, requested_provider: str, model_cfg: dict[str, Any], explicit_api_key, explicit_base_url,
@@ -847,6 +852,13 @@ def _creds_fallback(api_key, explicit_base_url, base_url, expiry, expiry_key, re
 def _explicit_codex(requested_provider, model_cfg, api_key, explicit_base_url, target_model):
     api_key, base_url, last_refresh = _creds_fallback(api_key, explicit_base_url, explicit_base_url or DEFAULT_CODEX_BASE_URL,
                                                       None, "last_refresh", resolve_codex_runtime_credentials)
+    if api_key and usage_admission_credential_denied("openai-codex", api_key):
+        raise AuthError(
+            "The selected Codex credential is excluded by its configured usage policy.",
+            provider="openai-codex",
+            code="codex_credential_usage_policy_denied",
+            relogin_required=False,
+        )
     return _runtime("openai-codex", "codex_responses", base_url, api_key, source="explicit", last_refresh=last_refresh,
                     requested_provider=requested_provider)
 
@@ -963,6 +975,13 @@ def _resolve_oauth_runtime(provider, requested_provider, model_cfg, target_model
     """Runtime from an ``_OAUTH_RUNTIME_PROVIDERS`` spec; raises AuthError when the credential is
     stale/revoked/benched (``_ladder_rungs`` decides whether an "auto" request falls through)."""
     spec = _OAUTH_RUNTIME_PROVIDERS[provider]
+    if provider == "openai-codex" and usage_admission_policy_denied(provider):
+        raise AuthError(
+            "No eligible Codex credential is available in the configured pool.",
+            provider="openai-codex",
+            code="codex_pool_no_eligible_credentials",
+            relogin_required=False,
+        )
     creds = spec.resolve()
     api_mode = spec.api_mode(_effective_model(model_cfg, target_model)) if callable(spec.api_mode) else spec.api_mode
     return _runtime(provider, api_mode, (creds.get("base_url") or "").rstrip("/") or spec.default_base_url,

@@ -280,7 +280,7 @@ def _pool_serves_endpoint(pool: Any, provider: Optional[str], base_url: Optional
 
 def _resolve_child_credential_pool(
     effective_provider: Optional[str], parent_agent, effective_base_url: Optional[str] = None,
-    effective_requested_provider: Optional[str] = None,
+    effective_requested_provider: Optional[str] = None, *, explicit_api_key: Optional[str] = None,
 ):
     """Credential pool for the child: parent's pool (same provider), that provider's own pool, or None (child keeps
     its fixed credential). Custom endpoints all collapse to ``provider="custom"``, so they are matched by endpoint
@@ -298,6 +298,15 @@ def _resolve_child_credential_pool(
     ``requested_provider`` identity takes precedence over URL-only matching (#45763): the child must not
     lease the first pool registered for the shared endpoint.
     """
+    if explicit_api_key:
+        # An operator-supplied delegation.api_key is a fixed credential, not permission to substitute any sibling
+        # from that provider's pool. A pooled Codex token still honors its stable-ID usage policy; an unrelated
+        # explicit token stays usable and never acquires a lease.
+        if str(effective_provider or "").strip().lower() == "openai-codex":
+            from agent.usage_admission.policy import usage_admission_credential_denied
+            if usage_admission_credential_denied("openai-codex", explicit_api_key):
+                raise ValueError("Explicit delegation credential is excluded by the configured usage policy")
+        return None
     parent_pool = getattr(parent_agent, "_credential_pool", None)
     if not effective_provider:
         return parent_pool

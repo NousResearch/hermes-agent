@@ -78,6 +78,21 @@ def _codex_pool_only_store(*, exhausted: bool = False) -> dict:
     }
 
 
+def test_auth_list_displays_stable_credential_id(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, _codex_pool_only_store())
+
+    from hermes_cli.auth_commands import auth_list_command
+
+    class _Args:
+        provider = "openai-codex"
+
+    auth_list_command(_Args())
+
+    output = capsys.readouterr().out
+    assert "id=codex-1" in output
+
+
 @pytest.fixture(autouse=True)
 def _clear_provider_env(monkeypatch):
     for key in (

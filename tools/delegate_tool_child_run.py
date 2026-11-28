@@ -510,6 +510,29 @@ def _defer_close_after_timeout(child: Any, child_future: Any, *, cleanup: Any = 
     _resweep_timer.daemon = True
     _resweep_timer.start()
 
+class ChildCredentialUnavailable(RuntimeError):
+    """Every credential the child's pool could lease is excluded by its configured usage policy."""
+
+
+def _policy_denied(pool: Any) -> bool:
+    try:
+        from agent.usage_admission.policy import usage_admission_policy_denied
+        provider = str(getattr(pool, "provider", "") or "")
+        return bool(provider and usage_admission_policy_denied(provider))
+    except Exception:
+        logger.debug("Failed to inspect child credential admission", exc_info=True)
+        return False
+
+
+def _usage_limited(pool: Any) -> bool:
+    try:
+        from agent.usage_admission.policy import get_pool_usage_limits
+        return bool(get_pool_usage_limits(str(getattr(pool, "provider", "") or "")))
+    except Exception:
+        logger.debug("Failed to read child credential usage limits", exc_info=True)
+        return False
+
+
 def _lease_child_credential(child: Any) -> tuple[Any, Optional[str]]:
     """Lease a credential from the child's pool (if any) and bind it; ``(pool, lease_id)``. The bound entry must
     serve the child's endpoint: on a mixed same-provider pool the least-leased pick may target another host, so it is
@@ -524,8 +547,24 @@ def _lease_child_credential(child: Any) -> tuple[Any, Optional[str]]:
     base_url = getattr(child, "base_url", None)
     with child_profile_scope(child):
         leased_cred_id = child_pool.acquire_lease()
+        if leased_cred_id is None and _policy_denied(child_pool):
+            # Nothing is leasable because of the usage ceiling: try the child's fallback provider.
+            activate = getattr(child, "_try_activate_fallback", None)
+            activated = False
+            if callable(activate):
+                try:
+                    activated = bool(activate())
+                except Exception:
+                    logger.debug("Failed to activate child fallback after policy denial", exc_info=True)
+            child_pool = getattr(child, "_credential_pool", None) if activated else None
+            leased_cred_id = child_pool.acquire_lease() if child_pool is not None else None
+            if leased_cred_id is None and (child_pool is None or _policy_denied(child_pool)):
+                raise ChildCredentialUnavailable(
+                    "No credential is eligible under the configured usage admission policy, "
+                    "and no fallback provider is available."
+                )
         if leased_cred_id is not None:
-            with _quiet("Failed to bind child to leased credential: %s"):
+            try:
                 # Resolve the leased entry by id: the pool is shared with the parent/siblings, so current() is a
                 # mutable cursor that may already point at someone else's pick.
                 leased_entry = next((e for e in child_pool.entries() if e.id == leased_cred_id), None)
@@ -536,8 +575,20 @@ def _lease_child_credential(child: Any) -> tuple[Any, Optional[str]]:
                         None,
                     )
                     leased_cred_id = child_pool.acquire_lease(leased_entry.id) if leased_entry is not None else None
+                if leased_entry is None and _usage_limited(child_pool):
+                    raise RuntimeError("leased credential no longer exists in child pool")
                 if leased_entry is not None and hasattr(child, "_swap_credential"):
                     child._swap_credential(leased_entry)
+            except Exception as exc:
+                logger.debug("Failed to bind child to leased credential: %s", exc)
+                if _usage_limited(child_pool):
+                    # With a usage ceiling configured, a child that kept its inherited credential could run on
+                    # an account the policy excluded: fail closed instead of starting it.
+                    if leased_cred_id is not None:
+                        child_pool.release_lease(leased_cred_id)
+                    raise ChildCredentialUnavailable(
+                        "The leased credential could not be bound to the delegated child, so the child was not started."
+                    ) from exc
     return child_pool, leased_cred_id
 
 def _merge_late_steer(result: dict[str, Any], subagent_id: Optional[str], child: Any) -> None:

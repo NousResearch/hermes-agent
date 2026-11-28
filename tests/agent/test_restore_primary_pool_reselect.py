@@ -87,6 +87,7 @@ class TestRestorePrimaryPoolReselect:
             "base_url": "https://chatgpt.com/backend-api/codex",
             "api_mode": "codex_responses",
             "api_key": "original-key-entry-1",
+            "credential_pool_entry_id": "entry-1",
             "client_kwargs": {
                 "api_key": "original-key-entry-1",
                 "base_url": "https://chatgpt.com/backend-api/codex",
@@ -147,3 +148,109 @@ class TestRestorePrimaryPoolReselect:
         assert result is True
         assert "custom-endpoint.example.com" in agent.base_url
         assert "custom-endpoint.example.com" in agent._client_kwargs["base_url"]
+
+    def test_restore_stays_on_fallback_when_primary_pool_is_policy_denied(
+        self, monkeypatch
+    ):
+        from agent import account_usage, credential_pool
+        from agent.usage_admission import policy
+
+        pool = _build_mock_pool([_make_entry("entry-1", "key-1", priority=0)])
+        agent = self._make_agent(pool)
+        agent.provider = "openrouter"
+        agent.model = "fallback-model"
+        agent.base_url = "https://openrouter.ai/api/v1"
+        agent.api_key = "fallback-key"
+        agent._client_kwargs = {
+            "api_key": "fallback-key",
+            "base_url": "https://openrouter.ai/api/v1",
+        }
+        monkeypatch.setattr(
+            policy,
+            "get_pool_usage_limits",
+            lambda provider: {"entry-1": 80.0},
+        )
+        monkeypatch.setattr(
+            account_usage,
+            "fetch_account_usage",
+            lambda provider, **kwargs: account_usage.AccountUsageSnapshot(
+                provider="openai-codex",
+                source="test",
+                fetched_at=account_usage._utc_now(),
+                windows=(
+                    account_usage.AccountUsageWindow(
+                        label="Weekly",
+                        used_percent=80,
+                        limit_window_seconds=604_800,
+                    ),
+                ),
+            ),
+        )
+
+        result = agent._restore_primary_runtime()
+
+        assert result is False
+        assert agent.provider == "openrouter"
+        assert agent.api_key == "fallback-key"
+
+    def test_restore_reloads_missing_primary_pool_before_policy_admission(
+        self, monkeypatch
+    ):
+        from agent import account_usage, credential_pool
+        from agent.usage_admission import policy
+
+        primary_pool = _build_mock_pool(
+            [_make_entry("entry-1", "original-key-entry-1", priority=0)]
+        )
+        agent = self._make_agent(primary_pool)
+        agent.provider = "openrouter"
+        agent.model = "fallback-model"
+        agent.base_url = "https://openrouter.ai/api/v1"
+        agent.api_key = "fallback-key"
+        agent._client_kwargs = {
+            "api_key": "fallback-key",
+            "base_url": "https://openrouter.ai/api/v1",
+        }
+        # A fallback without its own pool clears the attached primary pool.
+        agent._credential_pool = None
+        agent._credential_pool_entry_id = None
+        load_calls = []
+        probe_calls = []
+        monkeypatch.setattr(
+            credential_pool,
+            "load_pool",
+            lambda provider: load_calls.append(provider) or primary_pool,
+        )
+        monkeypatch.setattr(
+            policy,
+            "get_pool_usage_limits",
+            lambda provider: {"entry-1": 80.0},
+        )
+        monkeypatch.setattr(
+            account_usage,
+            "fetch_account_usage",
+            lambda provider, **kwargs: (
+                probe_calls.append((provider, kwargs))
+                or account_usage.AccountUsageSnapshot(
+                    provider="openai-codex",
+                    source="test",
+                    fetched_at=account_usage._utc_now(),
+                    windows=(
+                        account_usage.AccountUsageWindow(
+                            label="Weekly",
+                            used_percent=80,
+                            limit_window_seconds=604_800,
+                        ),
+                    ),
+                )
+            ),
+        )
+
+        result = agent._restore_primary_runtime()
+
+        assert result is False
+        assert agent.provider == "openrouter"
+        assert agent.api_key == "fallback-key"
+        # main's Codex reopen-early check also loads the pool before the admission gate does
+        assert load_calls and set(load_calls) == {"openai-codex"}
+        assert len(probe_calls) == 1

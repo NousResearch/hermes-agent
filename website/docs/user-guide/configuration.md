@@ -1551,6 +1551,20 @@ credential_pool_strategies:
 
 Options: `fill_first` (default), `round_robin`, `least_used`, `random`. See [Credential Pools](./features/credential-pools.md) for full documentation.
 
+For ChatGPT/Codex pools, you can also keep an individual credential out of new
+work once its longest reported quota window reaches a percentage threshold:
+
+```yaml
+credential_pool_usage_limits:
+  openai-codex:
+    "abc123": 80  # stable credential ID from `hermes auth list openai-codex`
+```
+
+This is a soft admission limit: existing work can continue beyond the
+threshold. Hermes caches successful checks for five minutes, fails open when
+the usage endpoint is unavailable, and automatically readmits the credential
+after a fresh below-threshold result. See [Codex Soft Usage Limits](/user-guide/features/credential-pools#codex-soft-usage-limits) for semantics and rollback.
+
 ## Prompt caching
 
 Hermes turns on cross-session prompt caching automatically when the active provider supports it — no user config needed.

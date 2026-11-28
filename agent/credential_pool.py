@@ -7,6 +7,7 @@ from agent.credential_pool_model_cooldowns import CredentialPoolModelCooldownMix
 from agent.credential_pool_errors import _normalize_error_context, redact_error_text
 from agent.credential_pool_selection import CredentialPoolSelectionMixin
 from agent.credential_pool_timestamps import _parse_absolute_timestamp
+from agent.usage_admission.pool_mixin import CredentialPoolUsageAdmissionMixin
 
 import logging
 import os
@@ -939,7 +940,7 @@ class _RefreshDone(Exception):
         self.result = result
 
 
-class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin):
+class CredentialPool(CredentialPoolUsageAdmissionMixin, CredentialPoolSelectionMixin, CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin):
     def __init__(self, provider: str, entries: list[PooledCredential]):
         self.provider = provider
         self._entries = sorted(entries, key=lambda entry: entry.priority)
@@ -956,6 +957,7 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
         self._lock = threading.RLock()
         self._active_leases: dict[str, int] = {}
         self._max_concurrent = DEFAULT_MAX_CONCURRENT_PER_CREDENTIAL
+        self._usage_limits: dict[str, float] = {}
         # Monotonic timestamp of the last "no available entries" log (see
         # NO_AVAILABLE_ENTRIES_LOG_THROTTLE_SECONDS). Re-armed to None on every
         # successful selection so a recover->re-exhaust transition logs promptly.
@@ -2066,6 +2068,8 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
                 # row read straight off disk); leasing it would send an empty
                 # bearer. The API-key guard above does not cover it.
                 continue
+            if self._usage_admission_denied(entry):
+                continue
             available.append(entry)
         if entries_to_prune:
             pruned_ids = set(entries_to_prune)
@@ -2086,7 +2090,9 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
     def reclaim(self, credential_id: str, *, model: Optional[str] = None) -> Optional[PooledCredential]:
         """Entry *credential_id* once its cooldown has lifted (cleared and token-refreshed the way
         ``select`` would), else ``None``. Never bumps ``request_count`` or round-robin order: a
-        live session asking "may I go back?" every turn is not a request."""
+        live session asking "may I go back?" every turn is not a request. A cold usage-admission cache is
+        probed first, so a session is never moved back onto a credential that is over its configured ceiling."""
+        self._refresh_usage_admission_cache()
         with self._lock:
             available, pending = self._available_entries(clear_expired=True, refresh=True, model=model)
         if any(e.id == credential_id for e in pending):
@@ -2177,6 +2183,7 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
         failure_reason: Optional[str] = None,
         model: Optional[str] = None,
     ) -> Optional[PooledCredential]:
+        self._refresh_usage_admission_cache()
         with self._lock:
             identity_supplied = bool(credential_id or api_key_hint)
             entry = self._identify_failed_entry(credential_id, api_key_hint)
@@ -2255,9 +2262,11 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
         every credential is at the soft cap, still return the least-leased
         one instead of blocking.
         """
+        self._refresh_usage_admission_cache()
         chosen_id, pending_refresh = self._acquire_lease_under_lock(credential_id)
         if pending_refresh:
             self._refresh_pending_entries(pending_refresh)
+            self._refresh_usage_admission_cache()
             # Mirror select(): a pool whose entries all needed a deferred
             # refresh must retry once they are back in rotation, or the caller
             # sees "no credentials available" after a successful refresh.
@@ -2270,6 +2279,12 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
     ) -> tuple[Optional[str], list[PooledCredential]]:
         with self._lock:
             if credential_id:
+                requested = next(
+                    (entry for entry in self._entries if entry.id == credential_id),
+                    None,
+                )
+                if requested is not None and self._usage_admission_denied(requested):
+                    return None, []
                 self._active_leases[credential_id] = self._active_leases.get(credential_id, 0) + 1
                 self._current_id = credential_id
                 return credential_id, []
@@ -2296,34 +2311,6 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
                 self._active_leases[credential_id] = count - 1
 
     # ---- explicit refresh / admin ------------------------------------------
-
-    def try_refresh_current(self) -> Optional[PooledCredential]:
-        with self._lock:
-            return self._try_refresh_current_unlocked()
-
-    def try_refresh_matching(
-        self,
-        api_key_hint: Optional[str] = None,
-        credential_id: Optional[str] = None,
-    ) -> Optional[PooledCredential]:
-        """Force-refresh the entry that supplied the failed request.
-
-        Direct integrations may reload the pool after a request failed, so
-        ``current_id`` cannot identify the issuing credential. With no hint,
-        select WITHOUT the normal proactive refresh: the forced refresh below
-        must consume a rotating refresh token exactly once.
-        """
-        with self._lock:
-            entry = self._find(lambda e: e.id == credential_id) if credential_id else None
-            if entry is None:
-                if api_key_hint:
-                    entry = self._find(lambda e: e.runtime_api_key == api_key_hint)
-                else:
-                    entry = self._current_unlocked() or self._select_unlocked(refresh=False, count=False)[0]
-            if entry is None:
-                return None
-            self._current_id = entry.id
-            return self._try_refresh_current_unlocked(failed_key=api_key_hint)
 
     def _try_refresh_current_unlocked(self, failed_key: Optional[str] = None) -> Optional[PooledCredential]:
         entry = self._current_unlocked()

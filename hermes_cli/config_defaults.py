@@ -27,7 +27,7 @@ DEFAULT_CONFIG = {
     # sooner than this many seconds, stay on it (the retry backoff rides out the window) instead
     # of switching the turn to a fallback model.
     "fallback": {"min_switch_reset_seconds": 0},
-    "credential_pool_strategies": {},
+    "credential_pool_strategies": {}, "credential_pool_usage_limits": {},
     "toolsets": ["hermes-cli"],
     # journal_mode: SQLite journal mode for every Hermes DB. "wal" default; use "delete" on
     # weak-fsync/shared filesystems where WAL is not crash-safe (macOS virtiofs, NFS, SMB).

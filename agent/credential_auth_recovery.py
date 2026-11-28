@@ -133,7 +133,26 @@ def recover_auth_failure(agent, pool, *, status_code, has_retried_429, error_con
     refresh_kwargs = {"api_key_hint": api_key_hint}
     if credential_id:
         refresh_kwargs["credential_id"] = credential_id
-    refreshed = pool.try_refresh_matching(**refresh_kwargs)
+    refresh_with_status = getattr(pool, "try_refresh_matching_with_admission_status", None)
+    if callable(refresh_with_status):
+        refreshed, policy_denied_id = refresh_with_status(**refresh_kwargs)
+    else:
+        # Backward compatibility for third-party/lightweight pool adapters.
+        refreshed = pool.try_refresh_matching(**refresh_kwargs)
+        policy_denied_id = None
+    if refreshed is None and policy_denied_id is not None:
+        # Refresh succeeded, but the same stable entry is at/above its configured admission ceiling.
+        # Do not mark it exhausted for the original 401: policy exclusion is separate from credential
+        # health. Select an eligible sibling or allow provider fallback.
+        next_entry = pool.select()
+        if next_entry is not None:
+            log.info(
+                "Credential auth refresh produced policy-excluded pool entry %s — selected eligible "
+                "pool entry %s", policy_denied_id, getattr(next_entry, "id", "?"),
+            )
+            agent._swap_credential(next_entry)
+            return True, False
+        return False, has_retried_429
     if refreshed is None:
         # Refresh failed; rotate (the failed entry is already marked exhausted).
         return (True, False) if rotate_and_swap(401, "auth refresh failed") else (False, has_retried_429)

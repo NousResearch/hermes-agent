@@ -548,6 +548,16 @@ def load_yaml_layer(home: Path, gw_data: dict) -> None:
     """Overlay YAML and retract missing bridge-owned settings only after a successful load."""
     from gateway.platforms._shared import yaml_env_refresh
 
+    # Discover plugins BEFORE yaml_env_refresh() takes YAML_ENV_LOCK. A cold sweep imports every
+    # plugin and re-applies secret sources, which rebuilds profile scopes and takes that same lock;
+    # doing it under the lock inverts the order discover_and_load() uses (discovery lock, then the
+    # bridged-env lock) and deadlocks the gateway until the loop-liveness watchdog kills it.
+    try:
+        from hermes_cli.plugins import discover_plugins
+        discover_plugins()  # idempotent
+    except Exception as e:
+        logger.debug("plugin discovery skipped before YAML layer: %s", e, exc_info=True)
+
     with yaml_env_refresh():
         _load_yaml_layer(home, gw_data)
 
@@ -564,8 +574,9 @@ def _load_yaml_layer(home: Path, gw_data: dict) -> None:
     platforms_data = merge_platform_sections(yaml_cfg, gateway_section, gw_data)
 
     try:
-        from hermes_cli.plugins import discover_plugins
-        discover_plugins()  # idempotent
+        from hermes_cli.plugins import discover_plugins, get_plugin_manager
+        if not get_plugin_manager()._discovered:  # discovery normally ran before the YAML lock
+            discover_plugins()  # idempotent
         from gateway.platform_registry import platform_registry as registry
     except Exception as e:
         from gateway.platforms._shared import cancel_yaml_env_refresh

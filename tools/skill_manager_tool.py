@@ -718,8 +718,8 @@ def _skill_manage_from(payload: dict[str, Any], **extra) -> str:
 
 def apply_skill_pending(payload: dict[str, Any], origin: str = "foreground") -> str:
     """Replay a staged skill write, bypassing the gate (the /skills approve handler). A write the
-    background-review fork staged keeps its mandatory scan; only the scan, not the fork's other
-    guards, follows it, since the approving user has not skill_view'd the target."""
+    background-review fork staged keeps its mandatory scan and create provenance; only those, not
+    the fork's other guards, follow it, since the approving user has not skill_view'd the target."""
     from tools.skill_provenance import BACKGROUND_REVIEW
     token = _skill_gate_bypass.set(True)
     bg_token = _replaying_background_write.set(origin == BACKGROUND_REVIEW)
@@ -780,8 +780,12 @@ def _record_success(action, name, result, *, file_path, absorbed_into, task_id,
         # Foreground, user-directed deletes keep their existing hard-delete semantics.
         from tools.skill_provenance import is_background_review
         if action == "create":
-            record_created(name, agent_created=is_background_review(),
-                           task_id=task_id, session_id=session_id)
+            record_created(
+                name,
+                agent_created=is_background_review() or _replaying_background_write.get(),
+                task_id=task_id,
+                session_id=session_id,
+            )
         elif action in {"patch", "edit", "write_file", "remove_file"}:
             bump_patch(name, action=action, task_id=task_id, session_id=session_id)
         elif action == "delete" and not result.get("_archived"):

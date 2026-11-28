@@ -430,3 +430,112 @@ def test_staged_hint_keeps_command_for_chat_gateway_platform(hermes_home, monkey
     monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
     r = _stage_one_memory_write()
     assert "/memory pending" in r["message"], r["message"]
+
+
+_APPROVAL_SKILL_MD = (
+    "---\n"
+    "name: {name}\n"
+    "description: Use when testing approval provenance.\n"
+    "---\n"
+    "\n"
+    "# Test\n"
+    "body\n"
+)
+
+
+@pytest.mark.parametrize("shape", ["single", "batch"])
+def test_handle_approve_background_skill_marks_agent_created(hermes_home, shape):
+    """A staged background-review skill create must remain curator-managed after
+    foreground /skills approve replay, while foreground creates stay user-owned."""
+    import tools.skill_manager_tool as smt
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    from tools.skill_provenance import (
+        BACKGROUND_REVIEW,
+        reset_current_write_origin,
+        set_current_write_origin,
+    )
+    from tools.skill_usage import load_usage
+
+    _set_approval("skills", True)
+    bg_name = f"review-approved-{shape}"
+    bg_content = _APPROVAL_SKILL_MD.format(name=bg_name)
+    fg_name = f"user-approved-{shape}"
+    fg_content = _APPROVAL_SKILL_MD.format(name=fg_name)
+
+    token = set_current_write_origin(BACKGROUND_REVIEW)
+    try:
+        if shape == "single":
+            staged_bg = json.loads(smt.skill_manage("create", bg_name, content=bg_content))
+        else:
+            staged_bg = json.loads(
+                smt.skill_manage("", "", operations=[{"action": "create", "name": bg_name, "content": bg_content}])
+            )
+    finally:
+        reset_current_write_origin(token)
+
+    staged_fg = json.loads(smt.skill_manage("create", fg_name, content=fg_content))
+
+    assert staged_bg.get("staged") is True, staged_bg
+    assert staged_fg.get("staged") is True, staged_fg
+    rec_bg = wa.get_pending(wa.SKILLS, staged_bg["pending_id"])
+    rec_fg = wa.get_pending(wa.SKILLS, staged_fg["pending_id"])
+    assert rec_bg["origin"] == BACKGROUND_REVIEW
+    assert rec_fg["origin"] == "foreground"
+    assert " [auto]" in handle_pending_subcommand(wa.SKILLS, ["pending"])
+
+    out_bg = handle_pending_subcommand(wa.SKILLS, ["approve", rec_bg["id"]])
+    out_fg = handle_pending_subcommand(wa.SKILLS, ["approve", rec_fg["id"]])
+    assert "Approved 1 skills write(s)." in out_bg
+    assert "Approved 1 skills write(s)." in out_fg
+    usage = load_usage()
+    assert usage[bg_name]["created_by"] == "agent"
+    assert usage.get(fg_name, {}).get("created_by") != "agent"
+
+
+def test_handle_approve_background_skill_patch_uses_approval_context(hermes_home):
+    """Replaying a staged background-review patch must not re-enable live read-before-write guards."""
+    import tools.skill_manager_guards as smg
+    import tools.skill_manager_tool as smt
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    from tools.skill_provenance import (
+        BACKGROUND_REVIEW,
+        reset_current_write_origin,
+        set_current_write_origin,
+    )
+
+    skill_name = "review-patched-skill"
+    token = set_current_write_origin(BACKGROUND_REVIEW)
+    try:
+        created = json.loads(
+            smt.skill_manage("create", skill_name, content=_APPROVAL_SKILL_MD.format(name=skill_name))
+        )
+    finally:
+        reset_current_write_origin(token)
+    assert created["success"] is True, created
+
+    _set_approval("skills", True)
+    skill_md = smt._find_skill(skill_name)["path"] / "SKILL.md"
+    token = set_current_write_origin(BACKGROUND_REVIEW)
+    try:
+        smg.mark_background_review_skill_read(skill_md)
+        staged = json.loads(
+            smt.skill_manage(
+                "patch",
+                skill_name,
+                old_string="# Test\nbody",
+                new_string="# Test\nupdated body",
+            )
+        )
+    finally:
+        reset_current_write_origin(token)
+
+    assert staged.get("staged") is True, staged
+    rec = wa.get_pending(wa.SKILLS, staged["pending_id"])
+    assert rec["origin"] == BACKGROUND_REVIEW
+
+    smg._reset_background_review_read_marks()
+    out = handle_pending_subcommand(wa.SKILLS, ["approve", rec["id"]])
+    assert "Approved 1 skills write(s)." in out, out
+    assert "updated body" in skill_md.read_text(encoding="utf-8")

@@ -13,6 +13,7 @@ best-effort: ledger failures must never block a send; callers wrap every call in
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import re
@@ -51,7 +52,7 @@ FLOOD_MARKER = ("♻️ Recovered reply — the messaging platform's rate limit 
 # used to strand the reply in ``failed`` until the next restart), but only after a backoff that grows
 # with the attempts already spent, so a platform-side outage is not hammered by the redelivery timer.
 # A whole-chat death (blocked bot, deleted group, deactivated user) is never retried: the target is gone.
-_RUNTIME_RETRYABLE_ERRORS = frozenset({"send_path_degraded"})
+_RUNTIME_RETRYABLE_ERRORS = frozenset({"send_path_degraded", "relay routing metadata unavailable"})
 # One tier per in-process retry; the last budgeted attempt is left to the boot sweep (retry_not_before).
 _RETRY_BACKOFF_SECONDS = (30.0, 120.0)
 assert len(_RETRY_BACKOFF_SECONDS) == MAX_ATTEMPTS - 1
@@ -234,7 +235,8 @@ def compute_obligation_id(session_key: str, message_ref: str, content: str) -> s
 
 
 def record_obligation(*, obligation_id: str, session_key: str, platform: str, chat_id: str,
-                      thread_id: Optional[str], content: str, adapter_profile: Optional[str] = None) -> None:
+                      thread_id: Optional[str], content: str, adapter_profile: Optional[str] = None,
+                      routing_metadata: Optional[dict] = None) -> None:
     """Record a final response as owed to the platform (state='pending'); the store prunes old rows
     in the same write."""
     pid, started = _owner_stamp()
@@ -242,7 +244,8 @@ def record_obligation(*, obligation_id: str, session_key: str, platform: str, ch
         store.coordination.record_delivery_obligation(
             obligation_id=obligation_id, session_key=session_key, platform=platform, chat_id=chat_id,
             thread_id=thread_id, content=content, adapter_profile=adapter_profile,
-            owner=OwnerStamp(pid=pid, started_at=started))
+            owner=OwnerStamp(pid=pid, started_at=started),
+            routing_metadata=json.dumps(_routing_snapshot(routing_metadata)))
 
 
 def record_crash_left_reply(*, obligation_id: str, session_key: str, platform: str, chat_id: str,
@@ -287,6 +290,20 @@ def release_runtime_claim(obligation_id: str, error: str = "") -> bool:
             obligation_id=obligation_id, error=error, owner=OwnerStamp(pid=pid, started_at=started))
 
 
+def _routing_snapshot(metadata: Optional[dict]) -> dict[str, str]:
+    """Persist only the routing discriminators, never arbitrary outbound metadata."""
+    return {key: value for key in ("scope_id", "user_id", "profile")
+            if isinstance(value := (metadata or {}).get(key), str) and value.strip()}
+
+
+def _decode_routing_snapshot(raw: Optional[str]) -> dict[str, str]:
+    try:
+        value = json.loads(raw) if raw else None
+    except (TypeError, ValueError):
+        return {}
+    return _routing_snapshot(value) if isinstance(value, dict) else {}
+
+
 def _claimed_dict(row: ClaimedObligation) -> dict[str, Any]:
     """Claimed-row dict handed back for redelivery. A marked row names its own cause: a flood row gets
     FLOOD_MARKER, a runtime reconnect replay RECONNECTED_MARKER, and a boot-recovered crash keeps the
@@ -300,7 +317,8 @@ def _claimed_dict(row: ClaimedObligation) -> dict[str, Any]:
                 "not_before": row.not_before}
     return {**head, "needs_marker": row.needs_marker, **({"marker": row.marker} if row.marker else {}),
             "profile": row.profile, **({"runtime_recovery": True} if row.runtime_recovery else {}),
-            **({"last_error": row.last_error} if row.last_error else {}), "attempts": row.attempts}
+            **({"last_error": row.last_error} if row.last_error else {}), "attempts": row.attempts,
+            "routing_metadata": _decode_routing_snapshot(row.routing_metadata)}
 
 
 def sweep_recoverable(now: Optional[float] = None, *, deliverable_platforms: Optional[set] = None,
@@ -337,7 +355,8 @@ def sweep_recoverable(now: Optional[float] = None, *, deliverable_platforms: Opt
 
 
 def sweep_failed_for_runtime(platform: str, now: Optional[float] = None, *,
-                             profile: Optional[str] = None) -> list[dict[str, Any]]:
+                             profile: Optional[str] = None,
+                             relay_reconnected: bool = False) -> list[dict[str, Any]]:
     """Claim this process's failed rows that are due for another send, for one adapter.
 
     ``profile`` scopes multiplexed gateways to the bot identity that owned the failed send (``None`` =
@@ -355,10 +374,16 @@ def sweep_failed_for_runtime(platform: str, now: Optional[float] = None, *,
     with _DB_LOCK, _store() as store:
         # Deadlines are computed between the candidate read and the claim, which takes a row only while
         # it is as the read saw it; a row with no deadline is left alone.
-        due = [RetryDue(obligation_id=row.obligation_id, updated_at=row.updated_at, last_error=row.last_error,
-                        attempts=row.attempts, not_before=not_before)
-               for row in store.coordination.list_runtime_retry_candidates(platform, profile=profile, owner=owner)
-               if (not_before := retry_not_before(row.updated_at, row.last_error, row.attempts)) is not None]
+        due = []
+        for row in store.coordination.list_runtime_retry_candidates(platform, profile=profile, owner=owner):
+            if relay_reconnected and row.last_error == "relay transport not connected":
+                # The handshake is the recovery signal for a send refused before writing a frame.
+                not_before = now
+            else:
+                not_before = retry_not_before(row.updated_at, row.last_error, row.attempts)
+            if not_before is not None:
+                due.append(RetryDue(obligation_id=row.obligation_id, updated_at=row.updated_at,
+                                    last_error=row.last_error, attempts=row.attempts, not_before=not_before))
         claimed = store.coordination.sweep_failed_obligations_for_runtime(
             platform, now=now, profile=profile, owner=owner, due=due)
     return [_claimed_dict(row) for row in claimed]

@@ -19,6 +19,8 @@ from hermes_constants import get_hermes_home
 
 @pytest.fixture
 def rows(monkeypatch):
+    # These tests use the test interpreter, independently of installed payload manifests.
+    monkeypatch.setattr("pm.environments._payload_manifest", lambda _root: None)
     got = []
     monkeypatch.setattr(rsm, "enabled", lambda: True)
     monkeypatch.setattr(rsm, "record_process_mark",

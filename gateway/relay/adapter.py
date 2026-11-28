@@ -28,6 +28,7 @@ from gateway.platforms.event import ProcessingOutcome
 from gateway.platforms.helpers import clarify_text_with_choices
 from agent.i18n import t
 from gateway.relay.adapter_discord_interaction import RelayDiscordInteractionMixin
+from gateway.relay.adapter_routing import with_cached_scope
 from gateway.relay.admitted_authors import note_delivered
 from gateway.relay.descriptor import CapabilityDescriptor
 from gateway.relay.egress import (
@@ -1090,21 +1091,14 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
             pass
 
     def _with_scope(self, chat_id: str, metadata: Optional[dict[str, Any]]) -> dict[str, Any]:
-        """Outbound metadata carrying the tenant discriminators (see _capture_scope).
-        Both are attached when known and not already set; the connector tries scope_id
-        first and only falls back to user_id on a route miss, so carrying both never
-        overrides routing-table resolution."""
-        meta: dict[str, Any] = dict(metadata or {})
-        # ``getattr``: relay tests build bare adapters via ``__new__`` without ``__init__``.
-        for key, cache in (
-            ("scope_id", self._scope_by_chat), ("user_id", self._dm_user_by_chat),
-            ("profile", getattr(self, "_profile_by_chat", {})),
-        ):
-            if not meta.get(key):
-                value = cache.get(str(chat_id))
-                if value:
-                    meta[key] = value
-        return meta
+        return with_cached_scope(self, chat_id, metadata)
+
+    def _final_delivery_metadata(self, source, metadata):
+        metadata = dict(metadata or {})
+        for key in ("scope_id", "user_id", "profile"):
+            if value := getattr(source, key, None):
+                metadata.setdefault(key, value)
+        return self._with_scope(source.chat_id, metadata)
 
     def fronts_platform(self, platform: Any) -> bool:
         """Whether the authenticated relay transport advertises ``platform`` — a
@@ -1224,11 +1218,14 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         content: str,
         reply_to: Optional[str] = None,
         metadata: Optional[dict[str, Any]] = None,
+        *,
+        replay: bool = False,
     ) -> SendResult:
         """Send to an explicitly advertised logical platform over Relay. Scheduled and
         persisted-home deliveries have no fresh inbound event to populate
         ``_platform_by_chat``. The delivery resolver calls this only after
-        ``fronts_platform`` succeeds; repeated here fail-closed."""
+        ``fronts_platform`` succeeds; repeated here fail-closed. A persisted replay
+        uses its saved routing and cannot seal a newer turn's live stream."""
         platform_value = str(getattr(logical_platform, "value", logical_platform))
         if not self.fronts_platform(platform_value):
             return SendResult(success=False, error=f"relay does not front platform {platform_value}")
@@ -1237,23 +1234,23 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         _interim = bool(_sfp_metadata.pop("_interim_send", False))
         # The delivery resolver calls THIS method directly, bypassing send() — an
         # open native stream must absorb the turn-final here too.
-        seal = await self._absorb_into_open_draft(chat_id, content, _sfp_metadata, _interim)
-        if seal is not None:
-            return seal
+        if not replay:
+            seal = await self._absorb_into_open_draft(chat_id, content, _sfp_metadata, _interim)
+            if seal is not None:
+                return seal
         if self._transport is None:
             return SendResult(success=False, error="no transport")
         self._stamp_slack_unfurl(platform_value, _sfp_metadata)
+        _sfp_metadata = self._with_format_hints_for_platform(platform_value, _sfp_metadata)
+        if not replay:
+            _sfp_metadata = self._with_scope(chat_id, _sfp_metadata)
         result = await self._transport.send_outbound(
             {
                 "op": "send",
                 "chat_id": chat_id,
                 "content": content,
                 "reply_to": reply_to,
-                # format_hints on the explicit-platform lane too: the cron brief
-                # must render blocks exactly like an interactive send.
-                "metadata": self._with_scope(
-                    chat_id, self._with_format_hints_for_platform(platform_value, _sfp_metadata)
-                ),
+                "metadata": _sfp_metadata,
             },
             platform=platform_value,
         )

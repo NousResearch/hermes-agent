@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional
 
 from agent.message_metadata import append_message
 from agent.message_sanitization import close_interrupted_tool_sequence, normalize_provider_tool_call_ids
-from session_rules.turns import coalesce_tool_call_id
+from session_rules.turns import coalesce_tool_call_id, is_no_arguments
 from agent.turn_failure_copy import site_copy, stamp_failure
 from hermes_constants import FINISH_REASON_LENGTH
 
@@ -63,10 +63,10 @@ def _route_deferred_call(agent, tc) -> bool:
     name = _canonical_tool_name(tc.function.name)
     if TOOL_CALL_NAME not in agent.valid_tool_names or name not in _tool_search_scoped_names(agent):
         return False
-    args = tc.function.arguments or "{}"
+    args = "{}" if is_no_arguments(tc.function.arguments) else tc.function.arguments
     if isinstance(args, str):
         try:
-            args = json.loads(args.strip() or "{}")
+            args = json.loads(args)
         except json.JSONDecodeError:
             return False
     if not isinstance(args, dict):
@@ -197,7 +197,7 @@ def validate_tool_calls(
             continue
         if args is not None and not isinstance(args, str):
             tc.function.arguments = args = str(args)
-        if not args or not args.strip():
+        if is_no_arguments(args):
             tc.function.arguments = "{}"
             continue
         try:

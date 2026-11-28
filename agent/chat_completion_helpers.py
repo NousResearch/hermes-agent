@@ -41,7 +41,7 @@ from agent.gemini_urls import is_native_gemini_base_url
 # Never fingerprint a remote endpoint: Ollama-compat routes misidentify and 401 without a key (#89863).
 from agent.model_metadata import is_local_endpoint
 from agent.process_transport import waits_like_local
-from session_rules.turns import flatten_message_text
+from session_rules.turns import flatten_message_text, is_no_arguments
 from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, append_message, data_use_requirement, stamp_message_timestamp
 from agent.message_sanitization import (
     _sanitize_messages_surrogates, _sanitize_surrogates, _repair_tool_call_arguments,
@@ -3191,7 +3191,7 @@ class _StreamingCall(StreamingWaitMonitor):
         for idx in sorted(tool_calls_acc):
             tc = tool_calls_acc[idx]
             arguments = tc["function"]["arguments"]
-            if arguments and arguments.strip():
+            if not is_no_arguments(arguments):
                 try:
                     json.loads(arguments)
                 except json.JSONDecodeError:

@@ -8,6 +8,7 @@ import logging
 import re
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from session_rules.turns import is_no_arguments
 from tools.registry import tool_error
 from tools.tool_search_catalog import BRIDGE_TOOL_NAMES, _registry_entry
 
@@ -175,7 +176,7 @@ def normalize_tool_call_entries(args: dict[str, Any]) -> tuple[list[dict[str, An
         if name in BRIDGE_TOOL_NAMES:
             return [], f"tool_call cannot invoke '{name}' (it is itself a bridge tool)"
         raw_args = raw.get("arguments")
-        if raw_args is None or (isinstance(raw_args, str) and not raw_args.strip()):
+        if is_no_arguments(raw_args):
             # "" / whitespace is how some OpenAI-compatible gateways spell "no arguments" for a
             # parameterless tool (#83937); the loop already treats an empty outer arguments string
             # as {} (turn_tool_validation), and a missing required param still surfaces below via

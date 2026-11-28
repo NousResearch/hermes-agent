@@ -39,6 +39,7 @@ def _validate(arguments, *, name="process_manage",
     ("process_manage", json.dumps(_ARGS), _ARGS, "process_manage"),
     ("process", json.dumps(_ARGS), _ARGS, "process_manage"),  # legacy alias, as older hints spell it
     ("process_manage", "", {}, "tool_call"),  # the bridge's schema probe refuses the missing 'action'
+    ("process_manage", "null", {}, "tool_call"),  # JSON null means "no arguments", same as "" (#159689)
 ])
 def test_real_name_is_rewritten_into_the_bridge_call(name, arguments, expected, executor_name):
     """The call runs as a model-written ``tool_call`` would, and signed-thinking turns, which
@@ -81,3 +82,11 @@ def test_unroutable_call_is_still_rejected(arguments, kwargs):
     assert verdict.action == "continue"
     assert tc.function.name == "process_manage"
     assert errors and errors[0].startswith("Tool 'process_manage' does not exist")
+
+
+@pytest.mark.parametrize("arguments", ["", "null", " null "])
+def test_no_arguments_spellings_run_a_loaded_tool_with_empty_object(arguments):
+    """A parameterless tool the model calls with ``null`` runs with {} like ``""`` does (#159689)."""
+    verdict, tc, errors, _ = _validate(arguments, name="ping", valid_tool_names=("ping",))
+
+    assert (verdict.action, errors, tc.function.arguments) == ("ok", [], "{}")

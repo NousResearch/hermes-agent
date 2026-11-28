@@ -413,7 +413,7 @@ class TestBridgeDispatch:
         })
         assert err is not None
 
-    @pytest.mark.parametrize("raw_args", ["", "  \n", None])
+    @pytest.mark.parametrize("raw_args", ["", "  \n", None, "null"])
     def test_resolve_underlying_call_treats_blank_arguments_as_no_arguments(self, raw_args):
         """An OpenAI-compatible gateway emitting ``arguments: ""`` for a parameterless deferred tool
         must execute with {} instead of looping on a JSON parse error (#83937); malformed

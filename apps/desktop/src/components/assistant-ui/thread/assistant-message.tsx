@@ -369,6 +369,9 @@ const StoppedNotice: FC = () => {
   // The chat's newest reply was stopped only to be continued (store/paused-replies.ts): it goes on by itself.
   const paused = useReplyAwaitingContinuation(useStore(view.$storedId), useStore(view.$runtimeId))
 
+  // #131296 dropped the stopped marker row: a reply the user stopped renders
+  // as a regular message that ends at the interrupt point. What remains is
+  // the paused-continue signal for a reply that goes on by itself.
   const mark = useAuiState(s => {
     if (s.message.status?.type === 'running') {
       return null
@@ -378,7 +381,7 @@ const StoppedNotice: FC = () => {
       return 'continuing'
     }
 
-    return s.message.metadata?.custom?.interrupted === true ? 'stopped' : null
+    return null
   })
 
   if (!mark) {
@@ -388,14 +391,10 @@ const StoppedNotice: FC = () => {
   return (
     <div
       className="flex items-center gap-1 px-(--message-text-indent) pt-1 text-[0.72rem] text-(--ui-text-tertiary)"
-      data-slot={mark === 'stopped' ? 'aui_assistant-message-stopped' : 'aui_assistant-message-continuing'}
+      data-slot="aui_assistant-message-continuing"
     >
-      {mark === 'stopped' ? (
-        <Codicon className="size-3" name="debug-stop" />
-      ) : (
-        <Loader2Icon aria-hidden className="size-3 animate-spin motion-reduce:animate-none" />
-      )}
-      {mark === 'stopped' ? t.assistant.thread.responseStopped : t.assistant.thread.responseContinuing}
+      <Loader2Icon aria-hidden className="size-3 animate-spin motion-reduce:animate-none" />
+      {t.assistant.thread.responseContinuing}
     </div>
   )
 }

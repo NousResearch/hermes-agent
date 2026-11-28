@@ -78,6 +78,7 @@ beforeEach(() => {
       useKeybinds({
         requestGateway: vi.fn(),
         archiveSelectedSession: () => undefined,
+        isActiveRunBusy: () => false,
         openNewSessionTab: () => undefined,
         startFreshSession: () => undefined,
         toggleCommandCenter: () => undefined,

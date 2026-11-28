@@ -27,6 +27,7 @@ const wrapper = ({ children }: { children: ReactNode }) => createElement(MemoryR
 
 const deps = {
   archiveSelectedSession: vi.fn(),
+  isActiveRunBusy: () => false,
   openNewSessionTab: vi.fn(),
   requestGateway: <T>() => Promise.resolve(undefined as T),
   startFreshSession: vi.fn(),

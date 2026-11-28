@@ -261,9 +261,35 @@ def _settled_mtime(mtime):
     return mtime
 
 
+def _gateway_served_profile_homes() -> tuple[Path, ...]:
+    """Secondary profile homes served by the live multiplexed GatewayRunner, if one runs in-process."""
+    try:
+        from gateway.run import _gateway_runner_ref
+        runner = _gateway_runner_ref()
+        homes = getattr(runner, "_served_profile_homes", None)
+        if isinstance(homes, dict):
+            return tuple(Path(h) for h in homes.values() if h)
+    except Exception:
+        pass
+    return ()
+
+
 def _watched_homes() -> tuple[Path, ...]:
     """The watcher home and every sibling profile home this gateway serves."""
-    return (_watcher_home(), *_served_profile_homes)
+    seen: dict[str, Path] = {}
+    for root in (_watcher_home(), *_served_profile_homes, *_gateway_served_profile_homes()):
+        p = Path(root)
+        try:
+            key = str(p.resolve())
+        except OSError:
+            key = str(p)
+        seen.setdefault(key, p)
+    return tuple(seen.values())
+
+
+def _cron_sig():
+    """Per-file stat signature of ``cron/jobs.json`` across the active and served profile stores."""
+    return _files_sig(root / "cron" / "jobs.json" for root in _watched_homes())
 
 
 def _sessions_sig():
@@ -464,7 +490,7 @@ def _skills_sig():
 # persists platform connect/disconnect/health (the Messaging page's status signal).
 _CHANGE_WATCHES: dict[str, tuple[float, Any, Any] | tuple[float, Any, Any, Any]] = {
     "pet.changed": (2.0, _pet_sig, _pet_changed_payload),
-    "cron.changed": (1.0, lambda: _home_mtime_ns("cron", "jobs.json"), dict),
+    "cron.changed": (1.0, _cron_sig, dict),
     "sessions.changed": (0.5, _sessions_sig, dict),
     # Projects created/switched by CLI or agent tooling write projects.db without any
     # state.db movement, so sessions.changed never fires and the desktop Projects

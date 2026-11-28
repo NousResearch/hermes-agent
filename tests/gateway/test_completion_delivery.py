@@ -10,6 +10,7 @@ import asyncio
 import json
 import queue
 from collections import OrderedDict
+from threading import Event
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -125,6 +126,99 @@ def test_duplicate_async_queue_replay_injects_once(monkeypatch, isolated_registr
     asyncio.run(runner._async_delegation_watcher(interval=0))
 
     adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_watcher_keeps_draining_while_orphan_sweep_holds_ledger_lock(
+    monkeypatch, isolated_registry,
+):
+    from persistence.sqlite.authority.coordination import SQLiteCoordinationRepository
+    from tests.waiting import async_wait_until
+    from tools import async_delegation
+
+    adapter = SimpleNamespace(handle_message=AdmittingHandler())
+    runner = _runner(adapter)
+    pending = isolated_registry.completion_queue
+    events = [_distinct_async_event(f"deleg_while_locked_{i}") for i in range(2)]
+    for event in events:
+        _persist_pending_completion(event)
+        pending.put(dict(event))
+    monkeypatch.setenv("HERMES_BACKGROUND_NOTIFICATIONS", "all")
+    monkeypatch.setattr(async_delegation, "ORPHAN_SWEEP_INTERVAL_S", 0)
+
+    entered, release = Event(), Event()
+    list_orphans = SQLiteCoordinationRepository.list_orphan_completions
+
+    def stall_first_sweep(store, **kwargs):
+        if not entered.is_set():
+            entered.set()
+            assert release.wait(15), "test did not release the ledger lock"
+        return list_orphans(store, **kwargs)
+
+    sweeps = []
+    sweep = runner._sweep_orphaned_completion_ledgers
+
+    def count_sweeps():
+        sweeps.append(None)
+        sweep()
+
+    ticks = 0
+    drain = runner._drain_watch_notifications
+
+    async def observe_drains(completion_queue):
+        nonlocal ticks
+        await drain(completion_queue)
+        ticks += 1
+        if ticks == 1:
+            # This event can only be delivered on a later tick, after the watcher saw the durable batch.
+            pending.put({"type": "watch_match", "session_id": "proc_ledger_test",
+                         "session_key": "agent:main:telegram:dm:123:42", "pattern": "READY"})
+
+    monkeypatch.setattr(SQLiteCoordinationRepository, "list_orphan_completions", stall_first_sweep)
+    monkeypatch.setattr(runner, "_sweep_orphaned_completion_ledgers", count_sweeps)
+    monkeypatch.setattr(runner, "_drain_watch_notifications", observe_drains)
+
+    watcher = asyncio.create_task(runner._async_delegation_watcher(interval=0.01))
+    try:
+        await async_wait_until(lambda: entered.is_set(), what="sweep inside the ledger lock")
+        await async_wait_until(lambda: ticks >= 3, timeout=5, what="watcher ticks while ledger is locked")
+        assert async_delegation._DB_LOCK.locked()
+        adapter.handle_message.assert_awaited_once()
+        assert 'watch pattern "READY"' in adapter.handle_message.await_args.args[0].text
+        assert not runner._scale_to_zero_has_live_background_work()
+
+        watcher.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await watcher
+        before_restart = ticks
+        watcher = asyncio.create_task(runner._async_delegation_watcher(interval=0.01))
+        await async_wait_until(lambda: ticks >= before_restart + 2, what="restarted watcher ticks")
+        assert async_delegation._DB_LOCK.locked()
+        assert len(sweeps) == 1
+        adapter.handle_message.assert_awaited_once()
+
+        monkeypatch.setattr(async_delegation, "ORPHAN_SWEEP_INTERVAL_S", 60)
+        release.set()
+        await async_wait_until(lambda: adapter.handle_message.await_count == 2, what="durable batch admission")
+        runner._running = False
+        await asyncio.wait_for(watcher, timeout=5)  # let the acceptance settle both ledger claims
+    finally:
+        release.set()
+        watcher.cancel()
+        await asyncio.gather(watcher, *runner._background_tasks, return_exceptions=True)
+
+    assert len(sweeps) == 1
+    assert pending.empty()
+    delivered = adapter.handle_message.await_args.args[0].text
+    for event in events:
+        delegation_id = event["delegation_id"]
+        assert delegation_id in delivered
+        row = async_delegation.get_durable_delegation(delegation_id)
+        assert row is not None
+        assert (row["delivery_state"], row["delivery_attempts"]) == ("delivered", 1)
+        # A fresh runner has no in-memory dedupe; the durable claim itself must reject a replay.
+        assert await _runner(adapter)._deliver_async_delegation_group([dict(event)]) is None
+    assert adapter.handle_message.await_count == 2
 
 
 def test_unroutable_async_event_remains_retryable(

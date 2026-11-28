@@ -491,10 +491,6 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
                 # not come back (disabled, removed, or omitted from this discovery pass) so e.g. a disabled
                 # auth plugin's provider does not stay live process-wide until restart. See #91701.
                 self._evict_stale_persistent_registrations()
-                # load_hermes_dotenv() ran at import, before plugin secret sources existed: re-pull.
-                # Plugin secret sources register during discover; the initial load_hermes_dotenv() already
-                # ran at import time. Re-pull so the first process sees plugin backends (tracking #64177).
-                self._refresh_secret_sources_after_discovery()
                 if force:
                     # config.yaml shell hooks / outbound webhooks live in ``_hooks`` but are
                     # config-owned; unload() wiped them and cannot restore them.
@@ -509,6 +505,20 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
             except BaseException:
                 self._discovered = False
                 raise
+        # Outside the lock: re-applying secret sources rebuilds profile scopes that follow the
+        # YAML->env bridge (``follow_bridged_env``), which takes YAML_ENV_LOCK. Holding the
+        # discovery lock across that inverts ``load_yaml_layer``'s order (YAML_ENV_LOCK, then the
+        # discovery lock) and deadlocks the gateway until the loop-liveness watchdog kills it.
+        # load_hermes_dotenv() ran at import, before plugin secret sources existed: re-pull. Plugin
+        # secret sources register during discover; re-pull so the first process sees plugin
+        # backends (tracking #64177). A failing scan is not cached as "discovered with an empty
+        # registry" (see above), so reset the flag here too.
+        try:
+            with _plugin_home_scope(self.owner_home):
+                self._refresh_secret_sources_after_discovery()
+        except BaseException:
+            self._discovered = False
+            raise
         # Outside the lock: a listener (the gateway's re-wire) may read the registry from another thread.
         self._notify_plugin_loaded(loaded_before)
 

@@ -326,6 +326,7 @@ class FeishuAdapterSettings:
     allow_bots: str = "none"  # "none" | "mentions" | "all"
     require_mention: bool = True
     allow_all_dm: bool = False  # resolved per-profile so multiplexed adapters honor their own .env
+    ignore_at_all: bool = False
 
 
 @dataclass
@@ -1423,6 +1424,12 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
             default_group_policy=str(extra.get("default_group_policy", "")).strip().lower(),
             group_rules=group_rules, allow_bots=allow_bots, allow_all_dm=allow_all_dm,
             require_mention=_to_boolean(extra.get("require_mention", _get_scoped_secret("FEISHU_REQUIRE_MENTION", "true"))),
+            # Env wins over extra-config (matches the _apply_yaml_config
+            # bridge contract: "Env vars take precedence over YAML").
+            ignore_at_all=_to_boolean(
+                _get_scoped_secret("FEISHU_IGNORE_AT_ALL")
+                or str(extra.get("ignore_at_all", "false")).lower()
+            ),
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
@@ -1432,6 +1439,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
         self._allowed_group_users = set(settings.allowed_group_users)
         self._admins = set(settings.admins)
         self._default_group_policy = settings.default_group_policy or settings.group_policy
+        self._ignore_at_all = settings.ignore_at_all
 
     def _build_event_handler(self) -> Any:
         if EventDispatcherHandler is None:
@@ -3329,8 +3337,10 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
 
     def _mentions_self(self, message: Any) -> bool:
         # @_all is Feishu's @everyone placeholder.
+        # When the ignore_at_all setting is enabled, @_all alone does not
+        # trigger the bot; an explicit bot mention is still required.
         raw_content = getattr(message, "content", "") or ""
-        if "@_all" in raw_content:
+        if not self._ignore_at_all and "@_all" in raw_content:
             return True
         mentions = getattr(message, "mentions", None) or []
         if mentions and self._message_mentions_bot(mentions):
@@ -4330,10 +4340,14 @@ def interactive_setup() -> None:
 
 
 def _apply_yaml_config(yaml_cfg: dict, feishu_cfg: dict) -> dict | None:
-    """``apply_yaml_config_fn`` (#24849): bridge config.yaml feishu.allow_bots to FEISHU_ALLOW_BOTS (env wins) and
-    seed ``extra.allow_bots`` so a multiplexed secondary profile's adapter reads its own value."""
-    seeded = _apply_yaml_bridge(feishu_cfg, (("allow_bots", "FEISHU_ALLOW_BOTS", "lower"),))
-    return {"allow_bots": str(seeded["allow_bots"]).lower()} if seeded else None
+    """``apply_yaml_config_fn`` (#24849): bridge config.yaml feishu.{allow_bots,ignore_at_all} to
+    FEISHU_{ALLOW_BOTS,IGNORE_AT_ALL} (env wins) and seed ``extra`` so a multiplexed secondary
+    profile's adapter reads its own values."""
+    seeded = _apply_yaml_bridge(
+        feishu_cfg,
+        (("allow_bots", "FEISHU_ALLOW_BOTS", "lower"), ("ignore_at_all", "FEISHU_IGNORE_AT_ALL", "lower")),
+    )
+    return {k: str(v).lower() for k, v in seeded.items()} if seeded else None
 
 
 def _is_connected(config) -> bool:

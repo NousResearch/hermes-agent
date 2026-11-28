@@ -902,3 +902,121 @@ def test_synthetic_group_drop_warns_once_for_empty_default_allowlist(event_kind,
     assert len(warnings) == 1
     assert "FEISHU_ALLOWED_USERS is empty" in warnings[0]
     assert "oc_unconfigured" in warnings[0]
+
+
+# --- FEISHU_IGNORE_AT_ALL ---------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "env_value, extra, expected",
+    [
+        (None, {}, False),
+        ("true", {}, True),
+        ("false", {}, False),
+        # Env wins over extra-config (documented bridge contract).
+        ("true", {"ignore_at_all": False}, True),
+        (None, {"ignore_at_all": True}, True),
+        (None, {"ignore_at_all": False}, False),
+        ("TRUE", {}, False),
+        ("1", {}, False),
+    ],
+)
+def test_feishu_load_settings_ignore_at_all(monkeypatch, env_value, extra, expected):
+    from plugins.platforms.feishu.adapter import FeishuAdapter
+
+    monkeypatch.setenv("FEISHU_APP_ID", "cli_test")
+    monkeypatch.setenv("FEISHU_APP_SECRET", "secret_test")
+    if env_value is None:
+        monkeypatch.delenv("FEISHU_IGNORE_AT_ALL", raising=False)
+    else:
+        monkeypatch.setenv("FEISHU_IGNORE_AT_ALL", env_value)
+
+    settings = FeishuAdapter._load_settings(extra=extra)
+    assert settings.ignore_at_all is expected
+
+
+def _mentions_self_message(**overrides) -> SimpleNamespace:
+    fields = dict(
+        message_id="om_mentions",
+        chat_type="group",
+        chat_id="oc_group",
+        message_type="text",
+        content="@_all hello everyone",
+        mentions=None,
+    )
+    fields.update(overrides)
+    return SimpleNamespace(**fields)
+
+
+@pytest.mark.parametrize(
+    "ignore_at_all, expected",
+    [
+        (False, True),
+        (True, False),
+    ],
+)
+def test_mentions_self_at_all_gated_by_ignore_at_all(ignore_at_all, expected):
+    """@_all alone triggers the bot unless FEISHU_IGNORE_AT_ALL is set."""
+    adapter = make_adapter_skeleton(bot_open_id="ou_self", ignore_at_all=ignore_at_all)
+    message = _mentions_self_message()
+    assert adapter._mentions_self(message) is expected
+
+
+def test_mentions_self_at_all_with_explicit_mention_still_triggers():
+    """Explicit bot mention still triggers even when ignore_at_all=True."""
+    adapter = make_adapter_skeleton(bot_open_id="ou_self", ignore_at_all=True)
+    mention = SimpleNamespace(
+        key="@_user_1",
+        id=SimpleNamespace(union_id="", user_id="", open_id="ou_self"),
+        name="Hermes",
+        mentioned_type="bot",
+        tenant_key="",
+    )
+    message = _mentions_self_message(mentions=[mention])
+    assert adapter._mentions_self(message) is True
+
+
+def test_admit_ignore_at_all_rejects_at_all_only_group_message():
+    """Group message with ONLY @_all is rejected when FEISHU_IGNORE_AT_ALL=true."""
+    adapter = make_adapter_skeleton(
+        bot_open_id="ou_self",
+        ignore_at_all=True,
+        require_mention=True,
+        group_policy="open",
+    )
+    sender = make_sender(sender_type="user", open_id="ou_human")
+    message = _mentions_self_message(chat_type="group")
+    assert adapter._admit(sender, message) == "group_policy_rejected"
+
+
+def test_admit_ignore_at_all_admits_at_all_only_when_unset():
+    """Group message with ONLY @_all is admitted when FEISHU_IGNORE_AT_ALL is unset/false."""
+    adapter = make_adapter_skeleton(
+        bot_open_id="ou_self",
+        ignore_at_all=False,
+        require_mention=True,
+        group_policy="open",
+    )
+    sender = make_sender(sender_type="user", open_id="ou_human")
+    message = _mentions_self_message(chat_type="group")
+    assert adapter._admit(sender, message) is None
+
+
+def test_admit_ignore_at_all_still_admits_explicit_mention():
+    """Message with BOTH @_all and explicit bot open_id mention still admitted when ignore_at_all=True."""
+    adapter = make_adapter_skeleton(
+        bot_open_id="ou_self",
+        ignore_at_all=True,
+        require_mention=True,
+        group_policy="open",
+    )
+    mention = SimpleNamespace(
+        key="@_user_1",
+        id=SimpleNamespace(union_id="", user_id="", open_id="ou_self"),
+        name="Hermes",
+        mentioned_type="bot",
+        tenant_key="",
+    )
+    sender = make_sender(sender_type="user", open_id="ou_human")
+    message = _mentions_self_message(chat_type="group", mentions=[mention])
+    assert adapter._admit(sender, message) is None

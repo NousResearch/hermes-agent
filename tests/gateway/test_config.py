@@ -358,6 +358,24 @@ class TestLoadGatewayConfig:
 
         assert os.getenv("SLACK_IGNORED_CHANNELS") == "C0123456789,C0987654321"
 
+    def test_feishu_ignore_at_all_config_sets_env_bridge(self, tmp_path, monkeypatch):
+        """``feishu.ignore_at_all`` bridges to FEISHU_IGNORE_AT_ALL via the
+        plugin's apply_yaml_config_fn hook (requested in #60910 review)."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "feishu:\n"
+            "  ignore_at_all: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("FEISHU_IGNORE_AT_ALL", raising=False)
+
+        load_gateway_config()
+
+        assert os.getenv("FEISHU_IGNORE_AT_ALL") == "true"
+
 
     def test_typing_status_text_from_nested_platforms_block(self, tmp_path, monkeypatch):
         """``platforms.slack.typing_status_text`` reaches PlatformConfig via

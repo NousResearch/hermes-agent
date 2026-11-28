@@ -250,6 +250,8 @@ Set `FEISHU_REQUIRE_MENTION=false` to let Hermes read all group traffic without 
 FEISHU_REQUIRE_MENTION=false
 ```
 
+In announcement-heavy groups, set `FEISHU_IGNORE_AT_ALL=true` to prevent `@everyone`/`@所有人` mentions from triggering the bot — only explicit @-mentions of the bot will do so.
+
 For per-chat control, set `require_mention` on a `group_rules` entry — see [Per-Group Access Control](#per-group-access-control) below.
 
 ### Bot Identity
@@ -565,6 +567,7 @@ Inbound messages are deduplicated using message IDs with a 24-hour TTL. The dedu
 | `FEISHU_ALLOWED_USERS` | — | _(empty)_ | Comma-separated open_id list for user allowlist |
 | `FEISHU_ALLOW_BOTS` | — | `none` | Accept messages from other bots: `none`, `mentions`, or `all` |
 | `FEISHU_REQUIRE_MENTION` | — | `true` | Whether group messages must @mention the bot |
+| `FEISHU_IGNORE_AT_ALL` | — | `false` | When true, @所有人/@everyone mentions don't trigger the bot; only explicit @-mentions do |
 | `FEISHU_HOME_CHANNEL` | — | — | Chat ID for cron/notification output |
 | `FEISHU_ENCRYPT_KEY` | — | _(empty)_ | Encrypt key for webhook signature verification |
 | `FEISHU_VERIFICATION_TOKEN` | — | _(empty)_ | Verification token for webhook payload auth |

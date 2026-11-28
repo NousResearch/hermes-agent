@@ -3223,6 +3223,8 @@ def set_config_value(key: str, value: str, force: bool = False):
         user_config["model"] = {"default": _model_val}
     from hermes_cli.config_section_guard import _guard_section_overwrite
     key = _guard_section_overwrite(key, value, user_config, force)
+    from hermes_cli.config_credential_guard import guard_basic_auth_lockout
+    guard_basic_auth_lockout(key, value, user_config)
     value = _refuse_container_type_mismatch(key, value, user_config, force)
     from hermes_cli.config_secret_refs import config_set_secret_value, masked_display_value
     value = config_set_secret_value(key, value, user_config)

@@ -101,6 +101,12 @@ class RangeHandler(BaseHTTPRequestHandler):
         self.wfile.flush()
 
 
+class RangeServer(HTTPServer):
+    # The downloader opens eight ranges concurrently. macOS resets connections
+    # that overflow the default listen queue while this server handles a request.
+    request_queue_size = 64
+
+
 @pytest.fixture
 def dl_server():
     RangeHandler.payloads = {}
@@ -110,7 +116,7 @@ def dl_server():
     RangeHandler.no_range = False
     RangeHandler.etags = True
     RangeHandler.chunk = 1 << 20
-    server = HTTPServer(("127.0.0.1", 0), RangeHandler)
+    server = RangeServer(("127.0.0.1", 0), RangeHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:

@@ -781,3 +781,53 @@ class TestBlueBubblesAttachmentAuthorization:
 
         assert response.status == 200
         assert mark_read.await_count == (1 if verdict is True else 0)
+
+
+class TestBlueBubblesStandaloneSendBesideGateway:
+    """A one-shot ``_standalone_send`` runs while a gateway may already own this platform's
+    webhook port, its server-side webhook registration and the shared runtime status."""
+
+    @staticmethod
+    def _run(monkeypatch, *, port_held: bool):
+        import socket
+
+        from plugins.platforms.bluebubbles import adapter as mod
+
+        holder = socket.socket()
+        holder.bind(("127.0.0.1", 0))
+        port = holder.getsockname()[1]
+        if port_held:
+            holder.listen()  # the running gateway's webhook listener
+        else:
+            holder.close()
+        cfg = PlatformConfig(enabled=True, extra={
+            "server_url": "http://bb.test:1234", "password": "secret", "webhook_port": port})
+        gateway_hook = {"id": 7, "url": mod.BlueBubblesAdapter(cfg)._webhook_url}
+        calls = []
+
+        def server(request):
+            calls.append((request.method, request.url.path))
+            data = {"/api/v1/server/info": {"private_api": False},
+                    "/api/v1/webhook": [gateway_hook],
+                    "/api/v1/message/text": {"guid": "msg-1"}}.get(request.url.path, {})
+            return httpx.Response(200, json={"status": 200, "data": data})
+
+        real_client = httpx.AsyncClient
+        monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real_client(
+            transport=httpx.MockTransport(server), timeout=kw.get("timeout")))
+        published = []
+        monkeypatch.setattr("gateway.status.publish_runtime_status",
+                            lambda *a, **kw: published.append(kw.get("platform_state")))
+        try:
+            result = asyncio.run(mod._standalone_send(cfg, "iMessage;-;+15550001111", "hello"))
+        finally:
+            holder.close()
+        return result, calls, published
+
+    @pytest.mark.parametrize("port_held", [True, False])
+    def test_send_leaves_the_gateways_webhook_and_status_alone(self, monkeypatch, port_held):
+        result, calls, published = self._run(monkeypatch, port_held=port_held)
+        assert result["success"] is True, result
+        assert ("POST", "/api/v1/message/text") in calls
+        assert not [c for c in calls if c[1].startswith("/api/v1/webhook")], calls
+        assert published == []

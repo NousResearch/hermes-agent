@@ -453,6 +453,72 @@ def _retry_truncated_tool_call(st: _Trunc, api_kwargs: Any) -> TruncationVerdict
     )
 
 
+def _has_iteration_left(agent: Any, api_call_count: int) -> bool:
+    """Whether the turn loop (``conversation_loop``) runs another iteration after this one."""
+    return (
+        (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0)
+        or agent._budget_grace_call
+    )
+
+
+def _recover_from_repetition_cut(st: _Trunc, _retry: TurnRetryState) -> Optional[TruncationVerdict]:
+    """Re-issue the call with feedback counting the repeated statements, up to
+    ``repetition_guard.recovery.max_attempts`` times per turn; None once they are spent. The cut
+    reply is dropped, never replayed: looped text in the next request re-seeds the loop (#112764)."""
+    from agent.circling_guard import DEFAULT_RECOVERY_ATTEMPTS, recovery_feedback, repetition_turn
+    from hermes_cli.observability.shared_metrics_harness import record_guardrail_decision
+
+    agent = st.agent
+    cut = getattr(st.response, "_repetition_cut", None)
+    turn = repetition_turn(agent)
+    turn.note_cut(cut)
+    if cut is not None and cut.detector == "circling":
+        record_guardrail_decision(agent, "block", "circling_reasoning_cut")
+    limit = getattr(agent, "_repetition_recovery_limit", DEFAULT_RECOVERY_ATTEMPTS)
+    # A visible-text cut already reached the user, and append-only streams cannot take it back.
+    if turn.recoveries >= limit or (cut is not None and cut.channel != "reasoning"):
+        return None
+    if not _has_iteration_left(agent, st.api_call_count):
+        return None  # the loop would end on the iteration-limit summary, not the re-issued call
+    turn.recoveries += 1
+    record_guardrail_decision(agent, "retry", "repetition_recovery")
+    logger.warning("%sRepetition cut: recovering with feedback (attempt %d/%d, %s)", agent.log_prefix,
+                   turn.recoveries, limit, cut.describe() if cut is not None else "no detail")
+    agent._vprint(
+        f"{agent.log_prefix}🔁 Reply cut mid-loop — asking for one different action or a blocker report "
+        f"({turn.recoveries}/{limit})...", force=True, diagnostic=True)
+    if getattr(agent, "_repetition_recovery_reasoning_off", False):
+        agent._ephemeral_reasoning_off = True  # consumed by the re-issued call only
+    append_message(st.messages, {
+        "role": "user", "content": recovery_feedback(cut.repeated if cut is not None else None),
+        "_length_continuation_nudge": True,
+    })
+    agent._session_messages = st.messages
+    _retry.restart_with_repetition_feedback = True
+    return st.done("break")
+
+
+def _end_turn_on_repetition_cut(st: _Trunc) -> TruncationVerdict:
+    """Recoveries spent or off, or a visible-text cut: end the turn, saying how often the model restated
+    itself."""
+    from agent.circling_guard import (DEFAULT_RECOVERY_ATTEMPTS, repeated_statements_copy, repetition_result,
+                                      repetition_turn)
+    from hermes_cli.observability.shared_metrics_harness import record_guardrail_decision
+
+    agent = st.agent
+    cut = getattr(st.response, "_repetition_cut", None)
+    line, user_response, error = _REPETITION_STREAM_CUT
+    recoveries = repetition_turn(agent).recoveries
+    if recoveries and recoveries >= getattr(agent, "_repetition_recovery_limit", DEFAULT_RECOVERY_ATTEMPTS):
+        record_guardrail_decision(agent, "halt", "repetition_recovery_exhausted")
+        logger.warning("%sRepetition cut again after %d recovery attempt(s): ending the turn",
+                       agent.log_prefix, recoveries)
+    agent._vprint(f"{agent.log_prefix}{line}", force=True, diagnostic=True)
+    verdict = st.end_turn(user_response + repeated_statements_copy(cut.repeated if cut is not None else None), error)
+    verdict.result.update(repetition_result(agent))
+    return verdict
+
+
 def recover_from_truncation(
     agent: Any, response: Any, finish_reason: str, _retry: TurnRetryState, *,
     messages: list[dict[str, Any]], conversation_history: Any, api_kwargs: Any, api_call_count: int,
@@ -475,10 +541,8 @@ def recover_from_truncation(
     )
     if getattr(response, "_runaway_repetition", False):
         # The streaming call cut a live repetition loop: a continuation would only re-enter it,
-        # whatever the partial or its tool calls look like.
-        line, user_response, error = _REPETITION_STREAM_CUT
-        agent._vprint(f"{agent.log_prefix}{line}", force=True, diagnostic=True)
-        return st.end_turn(user_response, error)
+        # whatever the partial or its tool calls look like. Re-issue with feedback, or end the turn.
+        return _recover_from_repetition_cut(st, _retry) or _end_turn_on_repetition_cut(st)
     st.window_filled = _prompt_filled_window(agent, response)
     if st.is_stub and getattr(response, "_clean_eof", False):
         _banner = ("Response truncated — server ended the stream without ever sending finish_reason "

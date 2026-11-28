@@ -54,6 +54,8 @@ class TurnRetryState:
     # Restart signals (read by the outer loop after the attempt)
     restart_with_compressed_messages: bool = False
     restart_with_length_continuation: bool = False
+    # A repetition cut re-issued with feedback: a fresh request, so no continuation cap boost.
+    restart_with_repetition_feedback: bool = False
     # A fallback activation (incl. content-filter stream stalls) rolled partial content
     # off ``messages``; re-issue the call against the new provider.
     restart_with_rebuilt_messages: bool = False

@@ -667,6 +667,23 @@ tool_loop_guardrails:
     idempotent_no_progress: 5
 
 # =============================================================================
+# Repetition Guard
+# =============================================================================
+# A reasoning stream that keeps restating the same statements is cut mid-stream,
+# and the call is re-issued with a message saying how often it repeated itself and
+# asking for one different action or a blocker report. The cut reasoning is dropped.
+repetition_guard:
+  circling:
+    enabled: true
+    window_units: 60    # judge the last N lines of the reasoning
+    stale_ratio: 0.95   # share of them already written in this reply
+    repeat_count: 3     # half of them written this many times or more
+    min_chars: 8000     # never cut before this many characters
+  recovery:
+    max_attempts: 1     # re-issued calls per turn; 0 ends the turn on the first cut
+    reasoning: keep     # keep | off (reasoning disabled on the re-issued call)
+
+# =============================================================================
 # Context Compression (Auto-shrinks long conversations)
 # =============================================================================
 # When conversation approaches model's context limit, middle turns are

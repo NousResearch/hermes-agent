@@ -2357,6 +2357,35 @@ agent:
 
 Legitimately slow work is not penalized: streaming responses, tool heartbeats (every 30s while a tool runs), and approval waits all keep touching the clock, so only a turn making *zero* progress for the full bound fires the watchdog. Invalid values (a typo, `NaN`, `Inf`, non-positive `poll_s`) log a warning and fall back to the defaults — they never crash startup or silently disable the watchdog. A fired abort reports the stall as it begins recovery, and publishes the definitive aborted/lease-stopped outcome only once the interrupt has actually committed.
 
+## Repetition Guard
+
+A reasoning model can spend a whole reply restating the same plan without acting: the same few
+statements come back every few thousand characters with other text in between. Hermes watches the
+reasoning stream while it arrives and cuts it once the reply is circling, then re-issues the call
+with a short message that says how often the reply restated itself and asks for one different
+concrete action or a blocker report. The cut reasoning is dropped, never replayed or quoted. If the
+re-issued call is cut too, the turn ends with "Response Stopped — Repetition Detected" and how often
+the reasoning repeated itself.
+
+```yaml
+repetition_guard:
+  circling:
+    enabled: true       # false: only the exact-loop cut (a 64k-character tail of one repeated loop) stays on
+    window_units: 60    # the last N lines (long lines are split into sentences) that are judged
+    stale_ratio: 0.95   # share of those lines that must already have appeared in this reply
+    repeat_count: 3     # half of them must have appeared this many times or more
+    min_chars: 8000     # never cut a reply shorter than this
+  recovery:
+    max_attempts: 1     # re-issued calls per turn after a cut; 0 ends the turn on the first cut
+    reasoning: keep     # keep | off: "off" sends the re-issued call with reasoning disabled
+```
+
+Only the reasoning channel is watched this way: visible text and tool output often repeat lines on
+purpose (a requested repetition, a table, a log), and lines shorter than 30 characters are ignored.
+The recovery applies to reasoning cuts only: a visible-text cut has already reached the user, so it
+ends the turn as before. A cut reply's tool calls are never dispatched. Bad values fall back to the
+defaults. A larger `repeat_count` or `window_units` cuts later and less often.
+
 ## TTS Configuration
 
 ```yaml

@@ -319,7 +319,12 @@ _GUARD_DETECTORS = {
     "identical_call_streak_halt": "identical_call_streak", "identical_call_streak": "identical_call_streak",
     "identical_cycle_halt": "identical_cycle", "identical_cycle": "identical_cycle",
     "loop_web_search_cap": "web_search_cap", "loop_subagent_cap": "subagent_cap",
+    # A reply cut mid-stream (agent.circling_guard), the re-issued call, and the turn ended after it.
+    "circling_reasoning_cut": "circling_reasoning",
+    **dict.fromkeys(("repetition_recovery", "repetition_recovery_exhausted"), "repetition_recovery"),
 }
+_GUARD_SIGNALS = {"warn": "repeated_tool_call", "block": "loop_detected", "halt": "loop_detected",
+                  "retry": "recovery_retry"}
 
 
 def _record_guard(agent: Any, signal: str, detector: str) -> None:
@@ -331,12 +336,13 @@ def _record_guard(agent: Any, signal: str, detector: str) -> None:
 
 
 def record_guardrail_decision(agent: Any, action: Any, code: Any) -> None:
-    """A tool-loop guardrail verdict: ``warn`` (the call ran, the model was told it is repeating)
-    is ``repeated_tool_call``; ``block``/``halt`` (the harness stopped it) is ``loop_detected``.
-    Once per turn per detector and signal."""
+    """A loop guard verdict: ``warn`` (the call ran, the model was told it is repeating) is
+    ``repeated_tool_call``; ``block``/``halt`` (the harness stopped it) is ``loop_detected``;
+    ``retry`` (a cut reply re-issued with feedback) is ``recovery_retry``. Once per turn per
+    detector and signal."""
     try:
         detector = _GUARD_DETECTORS.get(str(code or ""))
-        signal = {"warn": "repeated_tool_call", "block": "loop_detected", "halt": "loop_detected"}.get(str(action or ""))
+        signal = _GUARD_SIGNALS.get(str(action or ""))
         if detector is None or signal is None or not _active(agent):
             return
         _record_guard(agent, signal, detector)

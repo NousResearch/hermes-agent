@@ -545,6 +545,8 @@ def apply_retry_restarts(
         _preflight_compression_blocked = False
         return _verdict("continue")
 
+    if _retry.restart_with_repetition_feedback:
+        return _verdict("continue")  # keeps the configured output cap; no continuation boost
     if _retry.restart_with_length_continuation:
         # Boost the output budget per retry (shared ladder, see boosted_output_cap).
         agent._ephemeral_max_output_tokens = boosted_output_cap(

@@ -263,6 +263,7 @@ from hermes_cli.main_resume_args import apply_in_dir as _apply_in_dir
 from hermes_cli.subcommands.cron import build_cron_parser
 from hermes_cli.subcommands.gateway import build_gateway_parser
 from hermes_cli.subcommands.profile import build_profile_parser
+from hermes_cli.subcommands.workflow import build_workflow_parser
 from hermes_cli.subcommands.model import build_model_parser
 from hermes_cli.subcommands.setup import build_setup_parser
 
@@ -2268,6 +2269,7 @@ def _coalesce_session_name_args(argv: list) -> list:
 
 
 from hermes_cli.profile_cmd import cmd_profile
+from hermes_cli.workflow_cmd import cmd_workflow
 
 
 def _dashboard_lifecycle_flags(args, token_file) -> None:
@@ -2542,7 +2544,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "project", "proxy", "prompt-size", "resume", "send", "sessions", "setup",
         "skin", "skills", "slack", "status", "tools", "uninstall", "update",
         "usage", "vault",
-        "webhook", "whatsapp", "whatsapp-cloud", "worktree", "chat", "secrets", "security",
+        "webhook", "whatsapp", "whatsapp-cloud", "workflow", "worktree", "chat", "secrets", "security",
         "browser",
         "verify",
         # Plugin commands missing from top-level --help is an accepted trade-off.
@@ -3159,6 +3161,7 @@ def _build_cli_parser():
     build_uninstall_parser(subparsers, cmd_uninstall=cmd_uninstall)
     build_acp_parser(subparsers, cmd_acp=cmd_acp)
     build_profile_parser(subparsers, cmd_profile=cmd_profile)
+    build_workflow_parser(subparsers, cmd_workflow=cmd_workflow)
     build_completion_parser(subparsers, cmd_completion=cmd_completion, parser=parser)
     build_dashboard_parser(
         subparsers, cmd_dashboard=cmd_dashboard, cmd_dashboard_register=cmd_dashboard_register)

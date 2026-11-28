@@ -46,6 +46,7 @@ from agent.turn_context import compression_made_progress
 from agent.session_activity import ActivityProvenance, AwakeIdleMeter
 from hermes_cli.config import _is_ssh_remote_tilde_cwd, cfg_get, config_exists
 from gateway.run_common import _csv_or_list_to_set
+from gateway.response_filters import is_machinery_display_kind
 from hermes_cli.fallback_config import pre_agent_fallback_notice
 from gateway.turn_executor import _UnboundedThreadExecutor
 
@@ -1240,10 +1241,8 @@ def _build_gateway_agent_history(
 
     Observed context stays out of ``conversation_history`` so consecutive-user repair can't merge it in."""
     from hermes_time import get_timezone as _get_msg_tz
-    from gateway.message_timestamps import (
-        render_user_content_with_timestamp as _render_msg_ts,
-        strip_leading_message_timestamps as _strip_msg_ts,
-    )
+    from gateway.message_timestamps import render_user_content_with_timestamp as _render_msg_ts
+    from gateway.message_timestamps import strip_leading_message_timestamps as _strip_msg_ts
 
     _msg_tz = _get_msg_tz()
     agent_history: list[dict[str, Any]] = []
@@ -1283,7 +1282,8 @@ def _build_gateway_agent_history(
                     continue
             # Keep user timestamps for the stale-dangerous-confirmation stripper in agent/replay_cleanup.py.
             entry = _build_replay_entry(role, content, msg, preserve_timestamp=(role == "user"))
-            if inject_timestamps and role == "user" and isinstance(content, str) and not is_compaction_scaffolding(msg):
+            if (inject_timestamps and role == "user" and isinstance(content, str) and not is_compaction_scaffolding(msg)
+                    and not is_machinery_display_kind(msg.get("display_kind"))):
                 rendered = _render_msg_ts(content, replay_timestamp, tz=_msg_tz)
                 # Preserve only a sidecar matching the complete rendered message,
                 # optionally followed by the normal context separator. Cleanup

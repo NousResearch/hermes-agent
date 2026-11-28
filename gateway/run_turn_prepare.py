@@ -19,6 +19,7 @@ from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.event import MessageEvent
+from gateway.response_filters import display_kind_for_event, is_machinery_display_kind
 from gateway.session import (
     SessionSource, _session_key_namespace, build_channel_continuity_note,
     build_session_context,
@@ -734,7 +735,8 @@ class GatewayTurnPrepareMixin:
         """Capture the platform event time as message metadata and keep the persisted transcript
         clean — strip any leading timestamp prefix and the Discord triggering-message note (a
         model instruction, not authored text) — regardless of the toggle; only the in-context
-        RENDER is gated behind gateway.message_timestamps.enabled (default OFF)."""
+        RENDER is gated behind gateway.message_timestamps.enabled (default OFF) and skips runtime
+        notices (machinery display kinds), which no person sent."""
         from gateway.run import _load_gateway_config, _message_timestamps_enabled
         from gateway.run_inbound import strip_discord_triggering_note
         persist_user_message = None
@@ -752,10 +754,11 @@ class GatewayTurnPrepareMixin:
                 persist_user_message = strip_discord_triggering_note(event, _clean_message_text)
                 _event_epoch = _coerce_msg_ts(getattr(event, "timestamp", None), tz=_evt_tz)
                 persist_user_timestamp = _event_epoch if _event_epoch is not None else _embedded_ts
-                if _message_timestamps_enabled(_load_gateway_config()):
+                if (_message_timestamps_enabled(_load_gateway_config())
+                        and not is_machinery_display_kind(display_kind_for_event(event))):
                     message_text = _render_msg_ts(_clean_message_text, persist_user_timestamp, tz=_evt_tz)
                 else:
-                    # Toggle off: the model sees the clean message; timestamp stored for later opt-in.
+                    # Toggle off or a runtime notice: the model sees the clean message; the timestamp is still stored.
                     message_text = _clean_message_text
         except Exception as _ts_err:
             logger.debug("Message timestamp injection failed (non-fatal): %s", _ts_err)
@@ -789,7 +792,6 @@ class GatewayTurnPrepareMixin:
         # Session context variables for tools (task-local, concurrency-safe)
         _session_env_tokens = self._set_session_env(context)
         # Self-injected turns (internal=True) persist with a DB-only display_kind: timeline notices, not user bubbles.
-        from gateway.response_filters import display_kind_for_event
         persist_user_display_kind = display_kind_for_event(event)
         _redact_pii = False  # privacy.redact_pii, re-read per message
         with suppress(Exception):

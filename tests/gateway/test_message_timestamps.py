@@ -1,5 +1,6 @@
 import sys
 from datetime import datetime, timezone, UTC
+from functools import partial
 from unittest.mock import Mock
 from zoneinfo import ZoneInfo
 
@@ -316,3 +317,66 @@ def test_compaction_summary_stays_unstamped_across_real_prune(tmp_path):
         store.close_all_db_handles()
     assert pruned
     assert first[0]["content"] == replay[0]["content"] == summary["content"]
+
+
+
+_NOTICE = "[ASYNC DELEGATION BATCH COMPLETE — deleg_1]\nlane transcript"
+_PROCESS_NOTICE = "[IMPORTANT: Background process proc_1 finished]"
+
+
+def test_runtime_notices_replay_unstamped(tmp_path):
+    """Regression for #159772: a stored runtime notice has no person behind it, so replay leaves it unstamped.
+    A stamped notice no longer matched the compressor's prefix checks, and lean compaction quoted it as the user."""
+    from agent.context_compressor import _build_verbatim_user_section
+    from gateway.config import GatewayConfig
+    from gateway.run import _build_gateway_agent_history
+    from gateway.session import SessionStore
+    from persistence.conversation.messages import NewMessage
+    from tests.fixtures.storage_seed import seed_session
+
+    sent_at = _epoch(2026, 4, 28, 13, 40, 53)
+    rows = [{"role": "user", "content": "keep the bounce", "timestamp": sent_at},
+            {"role": "assistant", "content": "ok"},
+            {"role": "user", "content": _NOTICE, "timestamp": sent_at, "display_kind": "async_delegation_complete"},
+            {"role": "assistant", "content": "noted"},
+            {"role": "user", "content": _PROCESS_NOTICE, "timestamp": sent_at, "display_kind": "internal_notification"},
+            {"role": "assistant", "content": "seen"}]
+    store = SessionStore(tmp_path / "sessions", GatewayConfig())
+    try:
+        seed_session(store.persistence, "room", "matrix")
+        store.persistence.messages.compact("room", [NewMessage.from_live(m) for m in rows])
+        replay, _ = _build_gateway_agent_history(store.load_transcript("room"), inject_timestamps=True)
+    finally:
+        store.close_all_db_handles()
+    user_rows = [m["content"] for m in replay if m["role"] == "user"]
+    assert user_rows[0] != "keep the bounce" and user_rows[0].endswith("keep the bounce")
+    assert user_rows[1:] == [_NOTICE, _PROCESS_NOTICE]
+    section = _build_verbatim_user_section(replay)
+    assert "keep the bounce" in section
+    assert "ASYNC DELEGATION" not in section and "Background process" not in section
+
+
+def test_runtime_notice_turn_runs_unstamped(monkeypatch):
+    """Regression for #159772: the live turn of a runtime notice reaches the model unstamped, a human turn keeps its stamp."""
+    from agent.context_compressor import _build_verbatim_user_section
+    from gateway.config import Platform
+    from gateway.platforms.event import MessageEvent
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionSource
+
+    monkeypatch.setattr("gateway.run._load_gateway_config", partial(dict, gateway={"message_timestamps": True}))
+    runner = object.__new__(GatewayRunner)
+    source = SessionSource(platform=Platform.DISCORD, chat_id="dm1", chat_type="dm", user_id="u1")
+    card = {"display_kind": "async_delegation_complete", "display_text": "lane done"}
+    notice = MessageEvent(text=_NOTICE, source=source, internal=True, metadata=card)
+    process = MessageEvent(text=_PROCESS_NOTICE, source=source, internal=True)
+    human = MessageEvent(text="keep the bounce", source=source)
+    notice_text, _, _ = runner._hmwa_apply_message_timestamp(notice, _NOTICE)
+    process_text, _, _ = runner._hmwa_apply_message_timestamp(process, _PROCESS_NOTICE)
+    human_text, _, _ = runner._hmwa_apply_message_timestamp(human, "keep the bounce")
+    assert [notice_text, process_text] == [_NOTICE, _PROCESS_NOTICE]
+    assert human_text != "keep the bounce" and human_text.endswith("keep the bounce")
+    section = _build_verbatim_user_section(
+        [{"role": "user", "content": text} for text in (human_text, notice_text, process_text)])
+    assert "keep the bounce" in section
+    assert "ASYNC DELEGATION" not in section and "Background process" not in section

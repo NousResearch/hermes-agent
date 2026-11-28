@@ -37,10 +37,18 @@ def _is_deepseek_thinking_model(model: str | None) -> bool:
     return (m.startswith("deepseek-v") and not m.startswith("deepseek-v3")) or m in _THINKING_CAPABLE_IDS
 
 
-def _is_glm_5_2_model(model: str | None) -> bool:
-    """GLM-5.2 across alias spellings (glm-5.2 / glm-5-2 / glm-5p2)."""
+def _is_glm_reasoning_effort_model(model: str | None) -> bool:
+    """GLM-5.2 and newer across alias spellings (glm-5.2 / glm-5-2 / glm-5p2, and the 5.3 set).
+
+    The Go relay takes the same native ``reasoning_effort`` knob for 5.3 — a live probe shows the
+    levels scale (``low`` 2, ``high`` 7, ``max`` 26-79) and that a request with no field lands at the
+    relay's max tier. A version this list does not name therefore silently ignores every effort
+    preference the user set (#158478)."""
     m = _flat_model_name(model)
-    return any(token in m for token in ("glm-5.2", "glm-5-2", "glm-5p2"))
+    return any(token in m for token in (
+        "glm-5.2", "glm-5-2", "glm-5p2",
+        "glm-5.3", "glm-5-3", "glm-5p3",
+    ))
 
 
 def _classify_go_error(error, *, status_code, message, **_):
@@ -102,7 +110,7 @@ class OpenCodeGoProfile(ProviderProfile):
     def build_api_kwargs_extras(
         self, *, reasoning_config: dict | None = None, model: str | None = None, **context
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        if _is_glm_5_2_model(model):
+        if _is_glm_reasoning_effort_model(model):
             # Native reasoning_effort knob (high/max); server default when unset/disabled.
             effort = re_.requested_effort(reasoning_config)
             if effort is None or effort == "none":

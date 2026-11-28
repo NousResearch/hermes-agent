@@ -5110,6 +5110,75 @@ export interface SkinPayload {
   help_header?: string
   [key: string]: unknown
 }
+export interface DurableCancelParams {
+  profile?: string | null
+  owner: DurableOwner
+  session_id: string
+  submission_id: string
+  files: DurableFile[]
+}
+export interface DurableOwner {
+  store_id: string
+  profile_id: string
+  principal_id: string
+}
+export interface DurableFile {
+  id: string
+  name: string
+  mediaType: string
+  size: number
+  sha256: string
+}
+export interface DurableCancelResult {
+  cancelled: boolean
+}
+export interface DurableDescribeResult {
+  store_id: string
+  instance_id: string
+  profile_id: string
+  principal_id: string
+  capabilities: string[]
+}
+export interface DurableCreateParams {
+  profile?: string | null
+  owner: DurableOwner
+  params: Record<string, unknown>
+}
+export interface DurableCreateResult {
+  session_id: string
+}
+export interface DurableUploadParams {
+  profile?: string | null
+  owner: DurableOwner
+  session_id: string
+  submission_id: string
+  file: DurableFile
+  offset: number
+  data: string
+}
+export interface DurableUploadResult {
+  reference: string
+  sha256: string
+  size: number
+  offset: number
+  complete: boolean
+}
+export interface DurableSubmitParams {
+  profile?: string | null
+  owner: DurableOwner
+  session_id: string
+  submission_id: string
+  text: string
+  attachments: DurableAttachment[]
+}
+export interface DurableAttachment {
+  id: string
+  name: string
+  mediaType: string
+  size: number
+  sha256: string
+  reference: string
+}
 export interface ClarifyRespondParams {
   session_id: string
   execution_generation: number
@@ -7243,6 +7312,16 @@ export interface CanonicalRpcMethods {
   'cron.status': { params: CronAdmissionParams; result: CronStatusResult }
   /** Admit one cron firing into the owning profile's durable FIFO. */
   'cron.submit': { params: CronRunParams; result: CronSubmitResult }
+  /** Reconcile cancellation before admission, tombstone the identity and release unadmitted uploads. */
+  'durable.cancel': { params: DurableCancelParams; result: DurableCancelResult }
+  /** Owner-fenced exact session.create; no profile or principal retargeting after reconnect. */
+  'durable.create': { params: DurableCreateParams; result: DurableCreateResult }
+  /** Authenticated identity and scoped durable Desktop upload/admission protocol. */
+  'durable.describe': { params: ProfileParams; result: DurableDescribeResult }
+  /** Admit a frozen message only after every owned attachment verifies; exact retries use the admission ledger. */
+  'durable.submit': { params: DurableSubmitParams; result: AdmissionStatus }
+  /** Persist/reconcile one attachment chunk for the exact principal, session and submission. */
+  'durable.upload': { params: DurableUploadParams; result: DurableUploadResult }
   'groups.approve': { params: CanonicalRoomApproveParams; result: GroupsApproveResult }
   /** Read one committed attachment for a live room viewer. */
   'groups.attachment.download': { params: GroupsAttachmentDownloadParams; result: RoomAttachmentBytes }
@@ -7327,6 +7406,11 @@ export const CANONICAL_RPC_METHODS = [
   'cron.recover',
   'cron.status',
   'cron.submit',
+  'durable.cancel',
+  'durable.create',
+  'durable.describe',
+  'durable.submit',
+  'durable.upload',
   'groups.approve',
   'groups.attachment.download',
   'groups.attachment.upload',

@@ -12,6 +12,7 @@ import type { BusyInputMode } from '@/store/busy-input-mode'
 import { hasClarifyRequest, skipClarifyRequest } from '@/store/clarify'
 import {
   type ComposerAttachment,
+  draftKey,
   freezeComposerTransportPayload,
   isFreshDraftScope,
   takeSessionDraft
@@ -21,6 +22,7 @@ import { resetBrowseState } from '@/store/composer-input-history'
 import { journalOutgoingSend, type OutgoingSend } from '@/store/composer-outbox'
 import { enqueueQueuedPrompt, type QueuedPromptEntry, serverOwnsComposerQueue } from '@/store/composer-queue'
 import { hasConnectionRequest, skipConnectionRequest } from '@/store/connection-request'
+import { durableComposerOwner, enqueueDurableComposer } from '@/store/durable-composer'
 import { notify } from '@/store/notifications'
 import { isOnboardingChat } from '@/store/onboarding-session'
 import { answerParkedCard, skipParkedCards, yieldParkedCardsToMessage } from '@/store/parked-card-answers'
@@ -131,6 +133,7 @@ export function useComposerSubmit({
   rememberDraftRetry,
   takeDraftRetry
 }: UseComposerSubmitArgs) {
+  const durablePending = useRef(false)
   const paneVisible = usePaneVisible()
   const scope = useComposerScope()
   const surfaceId = useComposerSurfaceId()
@@ -150,14 +153,12 @@ export function useComposerSubmit({
     target?: Parameters<ChatBarProps['onSubmit']>[1],
     onRejected?: (scope: string | null, submissionId: string) => void
   ) => {
-    // A fresh chat's composer is keyed by its per-lifecycle fresh-draft key
-    // (`__new__:<uuid>`), but the submit contract spells "no session yet" as
-    // null: the create handoff below and the composer drift prong both key off
-    // it, and draftKey(null) resolves to that same fresh bucket.
-    const submittedScope =
-      target?.storedSessionId ?? (isFreshDraftScope(draftScopeRef.current) ? null : draftScopeRef.current)
+    // Pin the draft's lifecycle now. null is only the submit contract's
+    // "no session yet": resolving it after an await could name another new chat.
+    const submittedDraftScope = draftKey(target?.storedSessionId ?? draftScopeRef.current)
+    const submittedScope = isFreshDraftScope(submittedDraftScope) ? null : submittedDraftScope
 
-    let restoreScope = submittedScope
+    let restoreScope = submittedDraftScope
     const submittedAttachments = attachments ?? []
 
     let outgoing: OutgoingSend | undefined
@@ -183,14 +184,14 @@ export function useComposerSubmit({
     // chain must not take the words with it (see composer-outbox).
     outgoing = displayKind
       ? undefined
-      : journalOutgoingSend(submittedScope, draftRetry(submissionId, text, submittedAttachments))
+      : journalOutgoingSend(submittedDraftScope, draftRetry(submissionId, text, submittedAttachments))
 
     const restore = () => {
       stashAt(restoreScope, text, submittedAttachments)
       // Restored with its identity: Enter on this exact draft retries the same send.
       rememberDraftRetry?.(restoreScope, draftRetry(submissionId, text, submittedAttachments))
 
-      if ((isFreshDraftScope(draftScopeRef.current) ? null : draftScopeRef.current) === restoreScope) {
+      if (draftKey(draftScopeRef.current) === restoreScope) {
         loadIntoComposer(text, submittedAttachments)
       }
     }
@@ -220,10 +221,10 @@ export function useComposerSubmit({
       .then(accepted => {
         if (accepted === false) {
           rejected()
-        } else if (stashStillHoldsSent(submittedScope, text, submittedAttachments)) {
+        } else if (stashStillHoldsSent(submittedDraftScope, text, submittedAttachments)) {
           // Through the composer's own save, so a next message the user types
           // into this emptied draft counts as unsaved and is saved again.
-          stashAt(submittedScope, '', [])
+          stashAt(submittedDraftScope, '', [])
         }
       })
       .catch(rejected)
@@ -625,6 +626,33 @@ export function useComposerSubmit({
     // instead; the prompt stays answerable and the queue drains on settle. A
     // setup card that just closed for this message ends its turn the same way.
     const blockingPrompt = !queueEdit && (parked === 'yielded' || hasBlockingPromptRequest(sessionId))
+
+    const durableScope = draftKey(draftScopeRef.current)
+    const durableOwner = durableComposerOwner(durableScope)
+
+    if (payloadPresent && !queueEdit && durableOwner && !isSlashCommandText(text) && !isOnboardingChat(sessionId)) {
+      if (durablePending.current) {return}
+      durablePending.current = true
+      const submitted = cloneAttachments(attachments)
+      void enqueueDurableComposer(durableScope, text, submitted, durableOwner, draftRef.current).then(() => {
+        // Navigation/typing during disk copy cannot clear another chat or the next message.
+        if (draftKey(draftScopeRef.current) === durableScope && pathifyRefs(draftRef.current) === text &&
+            scope.attachments.$attachments.get().every(file => submitted.some(sent => sameOccurrence(sent, file)))) {
+          clearDraft()
+          scope.attachments.removeOccurrences(submitted)
+        }
+
+        if (stashStillHoldsSent(durableScope, text, submitted)) {stashAt(durableScope, '', [])}
+        triggerHaptic('submit')
+        void window.hermesDesktop?.durableSend?.pump().catch(() => {})
+      }).catch(() => {
+        notify({ id: 'durable-send-storage', kind: 'error', title: 'Mensagem não enviada',
+          message: 'Não foi possível preservar a mensagem e seus anexos. O texto continua no campo; confira os arquivos e o espaço disponível.' })
+      }).finally(() => { durablePending.current = false })
+      refocusAfterSend(editorHadFocus)
+
+      return
+    }
 
     if (queueEdit) {
       exitQueuedEdit('save')

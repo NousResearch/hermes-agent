@@ -4,6 +4,7 @@ import type { TranslucencyState } from '@hermes/shared/translucency'
 
 import type { ChallengeOutcome } from '../electron/challenge-window'
 import type { ScreenshotApi } from '../electron/command-screenshot-types'
+import type { DurableSendApi } from '../electron/durable-send-types'
 import type { HudModifierApi } from '../electron/hud-modifier-types'
 import type { MachineProfile } from '../electron/machine-profile'
 import type { HermesNotification } from '../electron/notification-types'
@@ -505,6 +506,7 @@ declare global {
         pickDefaultProjectDir: () => Promise<{ canceled: boolean; dir: null | string }>
         setDefaultProjectDir: (dir: null | string) => Promise<{ dir: null | string }>
       }
+      durableSend?: DurableSendApi
       preparedSubmissions?: {
         read: () => Promise<string>
         update: (key: string, entry: string | null) => Promise<void>

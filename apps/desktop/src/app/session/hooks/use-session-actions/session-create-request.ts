@@ -94,7 +94,8 @@ export async function desktopSessionCreateParams(
   capturedRoute = resolveNewChatOwnerRoute(),
   requestedProfile?: string,
   legacyProfileIntent = false,
-  includeComposerSelection = true
+  includeComposerSelection = true,
+  ensureRoute = true
 ): Promise<Record<string, unknown>> {
   // Treat Send as the linearization point for the user's sticky selection. The
   // profile handshake below can yield long enough for background config/model
@@ -121,7 +122,9 @@ export async function desktopSessionCreateParams(
     $newChatProfile.get() ||
     normalizeProfileKey($activeGatewayProfile.get())
 
-  if (capturedRoute) {
+  if (!ensureRoute) {
+    // Durable enqueue freezes the launch while offline; the consumer authenticates the exact owner.
+  } else if (capturedRoute) {
     await ensureGatewayAgent(capturedRoute.connectionId, profile)
   } else if (legacyProfileIntent) {
     await ensureGatewayProfile(profile, { forceLegacyRoute: true })

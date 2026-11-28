@@ -41,6 +41,7 @@ import { installSelectionCopyColorGuard } from './lib/selection-copy-colors'
 import { isTransparentWindow } from './lib/transparent-windows'
 import { startUiPreferencesSync } from './lib/ui-preferences/sync'
 import { installBrowserTabTitle } from './store/browser-tab-title'
+import { refreshDurableSends, startDurableSends } from './store/durable-composer'
 import { ThemeProvider } from './themes/context'
 
 installClipboardShim()
@@ -92,21 +93,26 @@ if (winParam === 'overlay') {
   // main window's visibility state to :root so decorative infinite
   // animations stop producing frames when nobody can see them.
   installRendererAnimationPauseState()
+  startDurableSends()
 
-  createRoot(document.getElementById('root')!).render(
-    <StrictMode>
-      <RootErrorBoundary>
-        <QueryClientProvider client={queryClient}>
-          <I18nProvider>
-            <ThemeProvider>
-              <HapticsProvider>
-                {/* ONE tooltip provider for the whole app. Every `Tip` used to
+  // Native-only local hydration: committed sends retire their old stash before any editor mounts.
+  void refreshDurableSends()
+    .catch(() => {})
+    .finally(() => {
+      createRoot(document.getElementById('root')!).render(
+        <StrictMode>
+          <RootErrorBoundary>
+            <QueryClientProvider client={queryClient}>
+              <I18nProvider>
+                <ThemeProvider>
+                  <HapticsProvider>
+                    {/* ONE tooltip provider for the whole app. Every `Tip` used to
                     carry its own, and with ~107 call sites those subtrees
                     dominated unrelated interactions (52,784 TooltipProvider
                     renders in a single sash drag). Radix's provider holds only
                     refs and stable callbacks, so hoisting is what it's for. */}
-                <RootTooltipProvider>
-                  {/* useTransitions={false}: react-router v7's HashRouter wraps every
+                    <RootTooltipProvider>
+                      {/* useTransitions={false}: react-router v7's HashRouter wraps every
                     route state update in React.startTransition() by default. In
                     React 19's concurrent renderer, transitions are non-urgent — React
                     can yield mid-render and resume later. When the app is under load
@@ -115,15 +121,16 @@ if (winParam === 'overlay') {
                     the route change commit. The session sidebar highlight + main pane
                     both freeze for seconds despite the main thread being free.
                     Disabling transitions makes navigate() commit at default priority. */}
-                  <HashRouter useTransitions={false}>
-                    <App />
-                  </HashRouter>
-                </RootTooltipProvider>
-              </HapticsProvider>
-            </ThemeProvider>
-          </I18nProvider>
-        </QueryClientProvider>
-      </RootErrorBoundary>
-    </StrictMode>
-  )
+                      <HashRouter useTransitions={false}>
+                        <App />
+                      </HashRouter>
+                    </RootTooltipProvider>
+                  </HapticsProvider>
+                </ThemeProvider>
+              </I18nProvider>
+            </QueryClientProvider>
+          </RootErrorBoundary>
+        </StrictMode>
+      )
+    })
 }

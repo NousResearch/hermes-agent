@@ -101,8 +101,12 @@ goes to `apps/desktop/release/`.
 
 The scripts do not sign or notarize. They remove `AZURE_SIGN_*` (Windows) and the
 `CSC_*`/`APPLE_*` signing variables (macOS, Linux) from the build, and restore your
-Windows shell afterward. macOS can still sign nested binaries when it finds a
-Developer ID in your keychain.
+Windows shell afterward. This repository installs a custom macOS `sign` callback,
+so the generic electron-builder advice to use `CSC_IDENTITY_AUTO_DISCOVERY=false`
+or `mac.sign.identity: null` cannot be assumed to control the callback's behavior.
+Do not use those as a workaround for a missing outer bundle seal. A local signing
+mode must be validated against this custom callback and the pinned electron-builder
+version on macOS before it is documented as a build recipe.
 
 `-Store` allocates a local claim tag `rc.<N>-vX.Y.Z` (N starts at 900) for the
 next patch after the newest published stable tag, and deletes it when the

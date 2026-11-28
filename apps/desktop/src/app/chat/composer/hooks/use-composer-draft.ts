@@ -12,6 +12,7 @@ import {
   adoptNewSessionDraft,
   type ComposerAttachment,
   type ComposerDraftSyncMode,
+  draftKey,
   freshDraftScope,
   isFreshDraftScope,
   newSessionDraftAnnouncedFor,
@@ -383,8 +384,9 @@ export function useComposerDraft({
     }
   }, [appendExternalText, focusInput, inputDisabled, paintDraft, target])
 
-  const sameDraftScope = (a: string | null | undefined, b: string | null | undefined) =>
-    (isFreshDraftScope(a) || !a ? null : a) === (isFreshDraftScope(b) || !b ? null : b)
+  // Only the current fresh key aliases null; separate new-chat lifecycles
+  // must not share saved baselines or restored-send identities.
+  const sameDraftScope = (a: string | null | undefined, b: string | null | undefined) => draftKey(a) === draftKey(b)
 
   const stashAt = (scope: string | null, text = draftRef.current, attachments = attachmentScope.$attachments.get()) => {
     if (sameDraftScope(scope, draftScopeRef.current)) {

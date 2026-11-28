@@ -481,6 +481,37 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     setDefaultProjectDir: dir => ipcRenderer.invoke('hermes:setting:defaultProjectDir:set', dir),
     pickDefaultProjectDir: () => ipcRenderer.invoke('hermes:setting:defaultProjectDir:pick')
   },
+  durableSend: {
+    negotiate: route => ipcRenderer.invoke('hermes:durable-send:negotiate', route),
+    pump: () => ipcRenderer.invoke('hermes:durable-send:pump'),
+    onChange: handler => {
+      const listener = () => handler()
+      ipcRenderer.on('hermes:durable-send:changed', listener)
+
+      return () => ipcRenderer.removeListener('hermes:durable-send:changed', listener)
+    },
+    onTransportRequest: handler => {
+      const listener = (_event, request) => {
+        void Promise.resolve().then(() => handler(request)).then(
+          result => ipcRenderer.invoke('hermes:durable-send:transport-reply', request.token, { ok: true, result }),
+          error => ipcRenderer.invoke('hermes:durable-send:transport-reply', request.token, {
+            ok: false, refused: ['permission_denied', 'profile_mismatch', 'admission_conflict', 'invalid_params', 'not_found', 'unknown_method']
+              .includes(error?.data?.reason)
+          })
+        ).catch(() => {})
+      }
+
+      ipcRenderer.on('hermes:durable-send:transport', listener)
+
+      return () => ipcRenderer.removeListener('hermes:durable-send:transport', listener)
+    },
+    begin: intent => ipcRenderer.invoke('hermes:durable-send:begin', intent),
+    append: (id, fileId, offset, bytes) => ipcRenderer.invoke('hermes:durable-send:append', id, fileId, offset, bytes),
+    commit: id => ipcRenderer.invoke('hermes:durable-send:commit', id),
+    list: () => ipcRenderer.invoke('hermes:durable-send:list'),
+    retired: ids => ipcRenderer.invoke('hermes:durable-send:retired', ids),
+    cancel: id => ipcRenderer.invoke('hermes:durable-send:cancel', id)
+  },
   preparedSubmissions: {
     read: () => ipcRenderer.invoke('hermes:prepared-submissions:read'),
     update: (key, entry) => ipcRenderer.invoke('hermes:prepared-submissions:update', key, entry),

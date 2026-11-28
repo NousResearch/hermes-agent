@@ -201,6 +201,7 @@ export async function uploadComposerAttachment(
         ...attachment,
         attachedSessionId: liveSessionId,
         label: attachedPath ? pathLabel(attachedPath) : attachment.label,
+        durableSourcePath: attachment.durableSourcePath ?? path,
         path: attachedPath,
         uploadState: undefined
       }

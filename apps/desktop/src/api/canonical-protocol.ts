@@ -5,6 +5,8 @@
 
 import { randomUuid } from '@hermes/shared'
 
+import { canonicalCreateParams } from '../../electron/canonical-create-params'
+
 export const CANONICAL_GATEWAY_PROTOCOL = 'hermes-gateway-v1'
 
 /** Dial `/api/ws` or a sibling stream beside it. A local gateway's one-use ticket leaves the URL
@@ -525,32 +527,10 @@ export class CanonicalDesktopProtocol {
   // pins priority, Normal pins normal over a profile tier, omitted inherits); `cwd_explicit` is the
   // provenance that lets a named profile's own workspace beat an inherited cwd.
   private prepareCreate(input: Record<string, unknown>): Record<string, unknown> {
-    // `room_plumbing` is the serve socket's flag for a room member session: it only skips the stored
-    // runtime overrides (serve's agent_factory), which the owner calls `follow_profile_config`. It
-    // does not imply hidden there, so `hidden` stays whatever the caller sent.
-    const { reasoning_effort: effort, fast, service_tier: picked, room_plumbing: roomPlumbing, ...params } = input
-    const tier = typeof picked === 'string' && picked ? picked : fast === true ? 'priority' : fast === false ? 'normal' : undefined
-
-    if (roomPlumbing === true) { params.follow_profile_config = true }
-
-    if (typeof effort === 'string' && effort) { params.reasoning = effort }
-
-    if (tier) { params.service_tier = tier }
-
-    if (typeof params.cwd_explicit !== 'boolean') { delete params.cwd_explicit }
-
-    const allowed = new Set(['request_id', 'source', 'cwd', 'model', 'provider', 'toolsets', 'reasoning', 'profile', 'cols', 'title', 'hidden', 'follow_profile_config', 'service_tier', 'cwd_explicit'])
-    const unsupported = Object.keys(params).filter(key => !allowed.has(key))
-
-    if (unsupported.length) { throw new Error(`Canonical gateway does not support explicit session options: ${unsupported.join(', ')}`) }
-
-    // RT-26: the picked profile always rides, `default` included: a socket launched as a named
-    // profile (active-profile.json) reads an omitted profile as its own launch profile.
-    const result = Object.fromEntries(Object.entries(params).filter(([key, value]) =>
-      ['request_id', 'cwd', 'model', 'provider', 'toolsets', 'reasoning', 'title', 'hidden', 'follow_profile_config', 'service_tier', 'cwd_explicit'].includes(key) || (key === 'profile' && typeof value === 'string' && value !== '')))
+    const result = canonicalCreateParams(input)
 
     const key = JSON.stringify(result)
-    const requestId = params.request_id ?? this.creates.get(key) ?? randomUuid()
+    const requestId = result.request_id ?? this.creates.get(key) ?? randomUuid()
     this.creates.set(key, String(requestId))
 
     return { ...result, request_id: requestId, source: 'gui' }

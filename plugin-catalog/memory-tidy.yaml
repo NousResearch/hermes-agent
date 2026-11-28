@@ -1,0 +1,35 @@
+name: memory-tidy
+title: Memory Tidy
+repo: https://github.com/Santrionlinecom/hermes-memory-tidy
+sha: 0de5cb307f2f4e1f2d1f6d734ec1ed678de1ff83
+description: >-
+  Keeps the persistent memory files (MEMORY.md, USER.md) lean: finds entries that duplicate SOUL.md or a
+  skill, procedures that belong in a skill and overlapping entries, and applies a reviewed tidy plan with
+  dry run by default, backups, the memory tool's lock files and atomic writes. SOUL.md is never written;
+  a remove or replace that would lose a literal (path, URL, ID, number) or a unique sentence is refused.
+  Disclosure — no network calls, LLM calls, credentials, shell commands or background processes. Reads
+  SOUL.md, memories/MEMORY.md, memories/USER.md and the SKILL.md files under skills/. The
+  memory_tidy_apply tool commits only remove actions, and only while memory.write_approval is off; plans
+  with add, replace or append_skill (model-written text), or any plan while memory/skills.write_approval
+  is on, are saved under $HERMES_HOME/memory-tidy/plans/ for the user to apply with
+  `hermes memory-tidy apply <plan> --write`. Memory files and .md files inside existing skill folders are
+  written only by those commits (backups under $HERMES_HOME/memory-tidy/backups/), plus the periodic check's timestamp in
+  $HERMES_HOME/memory-tidy/state.json. One pre_llm_call hook adds a short suggestion on the first turn of a
+  new session when a memory file is near its budget (at most once per check_interval_hours); with
+  auto_apply_exact true (default false) that check also removes near-exact SOUL.md duplicates, with a backup,
+  except while memory.write_approval is on.
+maintainer: Santrionlinecom
+tier: community
+category: general
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/Santrionlinecom/hermes-memory-tidy#readme
+version: "0.1.2"
+platforms: [linux, macos]
+known_issues:
+  - "Similarity is lexical (shingles and token containment), not semantic: a paraphrase of a SOUL.md rule in other words is reported as an overlap to review, not as a duplicate."
+  - "move_to_skill targets are word-based hints: a skill must name the entry's topic in its name/description, but a good home described in other words is missed. Review the dry run before append_skill."
+capabilities:
+  provides_tools: [memory_tidy_scan, memory_tidy_apply]
+  provides_hooks: [pre_llm_call]
+  provides_middleware: []
+  requires_env: []

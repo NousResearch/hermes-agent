@@ -2691,6 +2691,7 @@ export interface Translations extends NoticeTranslations {
     manage: string
     showRuns: string
     hideRuns: string
+    uncategorized: string
     runHistory: string
     actionsTitle: string
     resume: string

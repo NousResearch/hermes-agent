@@ -5,7 +5,7 @@ from gateway.platform_env import EnvCred, home_step, int_or, mention_patterns, s
 from utils import is_truthy_value
 
 ENV_ENABLE_CREDENTIALS = ("BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_PASSWORD")
-# ``require_mention`` is always written: an unset env reads as "" -> False.
+# With no env and no config.yaml value, ``require_mention`` is "" -> False.
 ENV_OVERRIDES = (
     EnvCred(
         Platform.BLUEBUBBLES, ("BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_PASSWORD"),

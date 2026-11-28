@@ -142,7 +142,8 @@ class EnvCred:
 
     ``creds``: env names that must ALL be truthy (inner tuple = ANY of). ``token``: env stored as
     ``PlatformConfig.token`` even when yaml disables the adapter (sending skills use it). ``fixed``:
-    ``(extra_key, env[, default[, fn]])`` always written once enabled. ``optional*``: ``env_extras``
+    ``(extra_key, env[, default[, fn]])`` written once enabled: the env value when set, else the
+    config.yaml value when present, else the default. ``optional*``: ``env_extras``
     specs. ``warn_missing``: ``(env, msg)`` logged BEFORE enabling when blank. ``then``: tail
     ``fn(config, platform_config)``. ``home``: ``env_home_channel`` env base applied only when the gate passed.
     """
@@ -167,9 +168,19 @@ class EnvCred:
             platform_config.token = token
         extra = platform_config.extra
         for key, env, *rest in self.fixed:
-            default = rest[0] if rest else ""
-            value = env_first(env) or default if isinstance(env, tuple) else getenv(env, default)
-            extra[key] = rest[1](value) if len(rest) > 1 else value
+            convert = rest[1] if len(rest) > 1 else None
+            value = env_first(env)
+            if not value and key in extra:
+                # Env is silent, so the config.yaml value stands. It still goes through the
+                # converter (a quoted "9999" or "true" would otherwise stay a string), and
+                # converters parse env strings, so a native yaml scalar is stringified first.
+                if convert is None:
+                    continue
+                raw = extra[key]
+                value = raw if isinstance(raw, str) else "" if raw is None else str(raw)
+            elif not value:
+                value = rest[0] if rest else ""
+            extra[key] = convert(value) if convert else value
         env_extras(extra, self.optional)
         env_extras(extra, self.optional_stripped, strip=True)
         if self.then is not None:

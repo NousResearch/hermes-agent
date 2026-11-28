@@ -70,6 +70,7 @@ import { joinBackendApiUrl } from './backend-api-url'
 import { stopBackendChild as stopBackendChildImpl, waitForBackendExit } from './backend-child'
 import {
   execText,
+  execTextWithIgnoredStdin,
   isPidOnlyStartMarker,
   processStartMarker,
   REAP_PROBE_TIMEOUT_MS
@@ -9199,7 +9200,7 @@ async function effectiveSshConfigFingerprint(sshConfig) {
   let output: string
 
   try {
-    output = await execText(ssh, args, { timeout: 10_000 })
+    output = await execTextWithIgnoredStdin(ssh, args, { timeout: 10_000 })
   } catch (error) {
     // `ssh -G` only parses local config, so a failure here is the local client
     // itself (missing, broken, or a bad ssh_config) and retrying cannot fix

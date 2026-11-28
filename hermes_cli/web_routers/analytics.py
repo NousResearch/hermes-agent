@@ -5,19 +5,31 @@ Extracted from ``hermes_cli.web_server``; app state and helpers are late-bound t
 """
 
 import asyncio
+import logging
 import time
 from typing import Any, Dict, List, Optional
 
 import hermes_yaml as yaml
 from fastapi import APIRouter, HTTPException, Query
+from ruamel.yaml import YAML
+from ruamel.yaml.error import YAMLError
+from ruamel.yaml.nodes import MappingNode, ScalarNode, SequenceNode
 
 from hermes_cli.config import get_config_path, read_raw_config
 from hermes_cli.web_deps import late
 from hermes_cli.web_routers._common import corrupt_store_as_status, http_failure
+from hermes_cli.web_routers.config_env import (
+    DASHBOARD_SECRET_PLACEHOLDER,
+    _redact_dashboard_secrets,
+    _redact_secret_tree,
+    _restore_dashboard_secrets,
+)
 from hermes_cli.web_server_profiles import (
     _approval_mode_of, _aux_task_summary, _aux_usage_rows, _broadcast_gateway_session_info, _is_other_profile, _merge_aux_into_by_model,
 )
 from hermes_cli.web_models import RawConfigUpdate
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -28,6 +40,128 @@ _profile_scope = late("_profile_scope", "hermes_cli.web_server_profiles")
 save_config = late("save_config", "hermes_cli.config")
 
 # ── Raw YAML config ──────────────────────────────────────────────────────────
+
+
+# dashboard login secrets (basic_auth / oauth) must not leave the server through the
+# raw-YAML editor either. Values are located on the composed node graph and spliced out of the original
+# text, so the editor still shows the file byte-for-byte apart from the secrets.
+def _mapping_value(node: MappingNode, wanted: str):
+    for key_node, value_node in node.value:
+        if isinstance(key_node, ScalarNode) and key_node.value == wanted:
+            return value_node
+    return None
+
+
+def _dashboard_secret_spans(node: MappingNode, yaml_text: str):
+    dashboard = _mapping_value(node, "dashboard")
+    if not isinstance(dashboard, MappingNode):
+        return set()
+
+    spans = set()
+
+    def _walk(mapping: MappingNode, depth: int = 0):
+        if depth > 20:
+            return
+        for key_node, value_node in mapping.value:
+            if not isinstance(key_node, ScalarNode):
+                continue
+            if isinstance(value_node, ScalarNode):
+                # Reuse the settings endpoint's exact secret predicate, including
+                # its empty-string and ${ENV_VAR} exclusions.
+                redacted = _redact_secret_tree({key_node.value: value_node.value})
+                if redacted.get(key_node.value) == DASHBOARD_SECRET_PLACEHOLDER:
+                    spans.add((value_node.start_mark.index, value_node.end_mark.index))
+            else:
+                _walk_container(value_node, depth + 1)
+
+    def _walk_container(node, depth: int):
+        if depth > 20:
+            return
+        if isinstance(node, MappingNode):
+            _walk(node, depth)
+        elif isinstance(node, SequenceNode):
+            for item in node.value:
+                _walk_container(item, depth + 1)
+
+    for section in ("basic_auth", "oauth"):
+        section_node = _mapping_value(dashboard, section)
+        if isinstance(section_node, MappingNode):
+            _walk(section_node)
+    return spans
+
+
+def _collect_secret_values(loaded) -> list:
+    """Dashboard secret values in a constructed config (merge keys / aliases already expanded)."""
+    if not isinstance(loaded, dict) or not isinstance(loaded.get("dashboard"), dict):
+        return []
+    values = []
+
+    def _collect(orig, red, depth=0):
+        if depth > 20:
+            return
+        if isinstance(orig, dict) and isinstance(red, dict):
+            for k, v in orig.items():
+                if red.get(k) == DASHBOARD_SECRET_PLACEHOLDER and v != DASHBOARD_SECRET_PLACEHOLDER:
+                    values.append(v)
+                else:
+                    _collect(v, red.get(k), depth + 1)
+        elif isinstance(orig, list) and isinstance(red, list):
+            for o, r in zip(orig, red):
+                _collect(o, r, depth + 1)
+
+    _collect(loaded, _redact_dashboard_secrets(loaded))
+    return values
+
+
+def _merged_secret_spans(node, yaml_text: str, composer) -> set:
+    """Spans of every scalar that holds a dashboard secret of the CONSTRUCTED config.
+
+    The key-name walk can be routed around by a YAML merge key at the root or dashboard level
+    (``dashboard: {<<: *defaults}``). Secret values are taken from the config as both the app's loader
+    and this YAML 1.1 composer construct it, and each scalar node is compared by its own constructed
+    value (type + value) as well as its source text, so ``0x1F`` / ``1_000`` / ``1.5e10`` spellings
+    cannot slip past a ``str()`` comparison. Fail closed: an identical value elsewhere is masked too."""
+    secrets = _collect_secret_values(yaml.safe_load(yaml_text))
+    try:
+        secrets += _collect_secret_values(composer.constructor.construct_document(node))
+    except (YAMLError, ValueError, TypeError):  # the safe_load values above still apply
+        logger.debug("dashboard secret scan: composer construction failed", exc_info=True)
+    if not secrets:
+        return set()
+    typed = {(type(v), v) for v in secrets if isinstance(v, (str, int, float))}
+    texts = {str(v) for v in secrets}
+    spans, seen, stack = set(), set(), [node]
+    while stack:
+        n = stack.pop()
+        if id(n) in seen:
+            continue
+        seen.add(id(n))
+        if isinstance(n, ScalarNode):
+            try:
+                c = composer.constructor.construct_object(n, deep=True)
+            except (YAMLError, ValueError, TypeError):  # source-text comparison still applies
+                c = None
+            if n.value in texts or (isinstance(c, (str, int, float)) and (type(c), c) in typed):
+                spans.add((n.start_mark.index, n.end_mark.index))
+        elif isinstance(n, MappingNode):
+            for k, v in n.value:
+                stack += [k, v]
+        elif isinstance(n, SequenceNode):
+            stack += list(n.value)
+    return spans
+
+
+def _redact_dashboard_secrets_in_yaml(yaml_text: str) -> str:
+    """Redact dashboard credentials without re-serializing the raw editor text."""
+    composer = YAML(typ="safe", pure=True)
+    composer.version = (1, 1)
+    node = composer.compose(yaml_text)
+    if not isinstance(node, MappingNode):
+        return yaml_text
+    spans = _dashboard_secret_spans(node, yaml_text) | _merged_secret_spans(node, yaml_text, composer)
+    for start, end in sorted(spans, reverse=True):
+        yaml_text = yaml_text[:start] + DASHBOARD_SECRET_PLACEHOLDER + yaml_text[end:]
+    return yaml_text
 
 
 @router.get("/api/config/raw")
@@ -48,7 +182,8 @@ async def get_config_raw(profile: Optional[str] = None):
             path = get_config_path()
         if not path.exists():  # config-reader: ok — file tooling (gated above)
             return {"yaml": "", "path": str(path)}
-        return {"yaml": path.read_text(encoding="utf-8-sig"), "path": str(path)}  # config-reader: ok — file tooling (gated above)
+        yaml_text = path.read_text(encoding="utf-8-sig")  # config-reader: ok — file tooling (gated above)
+        return {"yaml": _redact_dashboard_secrets_in_yaml(yaml_text), "path": str(path)}
 
     return await asyncio.to_thread(_run)
 
@@ -63,6 +198,8 @@ async def update_config_raw(body: RawConfigUpdate, profile: Optional[str] = None
         if not isinstance(parsed, dict):
             raise HTTPException(status_code=400, detail="YAML must be a mapping")
         with _profile_scope(body.profile or profile):
+            # the placeholder means "unchanged" — swap the stored secret back in.
+            parsed = _restore_dashboard_secrets(parsed, read_raw_config())
             # Full-document replacement: the editor owns the whole file; never
             # merge omitted sections back from disk.
             # See #62723.

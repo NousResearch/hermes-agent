@@ -1,6 +1,7 @@
 """Discord audio delivery: plain audio is an attachment, voice messages are real Ogg/Opus."""
 import json
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -84,7 +85,7 @@ async def test_voice_message_carries_ogg_opus_bytes_and_their_real_duration(tmp_
     assert post["payload"]["attachments"][0]["duration_secs"] == 3.0
     assert post["file"]["value"] == opus.read_bytes()
 
-    monkeypatch.setattr("gateway.platforms.base.transcode_to_ogg_opus", lambda *a, **k: None)
+    monkeypatch.setattr("plugins.platforms.discord.ffmpeg_utils.transcode_voice_audio", AsyncMock(return_value=None))
     mp3 = tmp_path / "spoken.mp3"
     mp3.write_bytes(b"ID3\x04" + b"\x00" * 64)
     assert (await adapter.send_voice("222", str(mp3), **flag)).success
@@ -95,25 +96,17 @@ async def test_voice_message_carries_ogg_opus_bytes_and_their_real_duration(tmp_
 @pytest.mark.asyncio
 async def test_non_opus_voice_reply_is_transcoded_with_the_converted_streams_duration(tmp_path, monkeypatch):
     """An mp3 TTS reply becomes a voice message carrying the transcoder's Ogg/Opus bytes and their
-    length (read from page headers, not from an "OggS" run inside packet data); the temporary
-    transcode is removed."""
+    length (read from page headers, not from an "OggS" run inside packet data)."""
     adapter, channel = _adapter()
     mp3 = tmp_path / "tts_reply.mp3"
     mp3.write_bytes(b"ID3\x04" + b"\x00" * 64)
-    converted = tmp_path / "voice_transcode_1.ogg"
+
     opus = _ogg_opus(2.5, last_packet=b"\xfcOggS\x00" + b"\x00" * 16)
-    calls = []
-
-    def fake_transcode(path, **kwargs):
-        calls.append(path)
-        converted.write_bytes(opus)
-        return str(converted)
-
-    monkeypatch.setattr("gateway.platforms.base.transcode_to_ogg_opus", fake_transcode)
+    transcode = AsyncMock(return_value=opus)
+    monkeypatch.setattr("plugins.platforms.discord.ffmpeg_utils.transcode_voice_audio", transcode)
 
     assert (await adapter.send_voice("222", str(mp3))).success
-    assert calls == [str(mp3)]
+    transcode.assert_awaited_once_with(str(mp3))
     [post] = channel.voice_posts
     assert post["file"]["value"] == opus
     assert post["payload"]["attachments"][0]["duration_secs"] == 2.5
-    assert not converted.exists()

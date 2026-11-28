@@ -8,6 +8,58 @@ description: "How the messaging gateway boots, authorizes users, routes sessions
 
 The messaging gateway is the long-running process that connects Hermes to 20+ external messaging platforms through a unified architecture.
 
+## Detached attachment speech
+
+`BasePlatformAdapter` inherits its auto-TTS synthesis and playback helpers from
+`base_auto_tts.AutoTTSMixin`. The `background_auto_tts(chat_id)` capability defaults
+to false. `DiscordMediaMixin` opts in only when the chat is not connected to live
+voice playback. This is an adapter delivery capability, not a new user setting or
+an alternative to the runner's `run_voice.py` global voice-reply path.
+
+The normal final-text lane schedules speech only after a successful ledgered text
+send returns a message ID. The delivery adapter owns the task, destination,
+reply anchor and thread metadata. Each task also belongs to the runner's
+`_background_tasks` set when available. The conversation guard and typing lifetime
+end independently; `/agents` reports audio pending without calling it an agent
+turn. Admission counts at most two unfinished audio tasks per adapter, with no
+synthesis queue. Excess jobs get an independently scheduled, bounded notice.
+
+`base_auto_tts._deliver` binds `_media_delivery_scope(event.source)` for the entire
+job. `base_auto_tts_worker.synthesize` builds the subprocess environment through
+`served_profile_child_env` for that home, so alternating routed profiles cannot
+reuse the launch profile's provider or credentials. Each job gets a temporary
+directory under its profile's `cache/auto_tts`; `TMPDIR`, `TEMP` and `TMP` point
+there for provider sidecars. The worker receives text over stdin, not argv, and
+returns a bounded JSON result file. Success requires every declared audio file to
+exist before upload begins. Worker stdout/stderr are discarded; parent failures
+log the exception class and a sanitized traceback without exception text or chains.
+
+The 120-second deadline covers synthesis and sequential uploads. Failure attempts
+one anchored notice with a separate five-second timeout. Jobs across turns may
+finish out of order; already accepted uploads are not undone. Cancellation skips
+the failure notice. Idle `/stop`, adapter interruption, session cancellation and
+shutdown cancel the owned tasks. Worker spawn and reaping are shielded against
+repeated cancellation, then cancellation is re-raised to prevent a late upload.
+
+Discord's attachment encoder is also owned: `ffmpeg_utils.transcode_voice_audio`
+starts an asyncio subprocess, reads Ogg/Opus from stdout rather than a temporary
+file, and kills and drains the encoder before cancellation returns. Spawn and
+cleanup remain shielded through repeated cancellation. The encoder has a
+30-second timeout inside the overall audio deadline; unavailable or failed
+encoding retains the original-file fallback. This applies to Discord voice
+attachments generally, not live voice-channel playback. No executor thread can
+continue encoding after its attachment task exits.
+
+On POSIX the worker starts its own process session. Cleanup suspends the worker,
+uses psutil to kill its discoverable descendants, kills the worker and its process
+group, and waits for exit. On Windows psutil supplies descendant handling and the
+asyncio process is killed and awaited without POSIX signals. Descendant cleanup
+is best effort if inspection is denied or a provider reparents/escapes before the
+snapshot; this is not a sandbox or a Windows Job Object containment guarantee.
+Native macOS and Windows execution is required to validate those host behaviors;
+Linux subprocess coverage is not evidence for them. A deadline initiates cleanup,
+not a hard bound on OS reaping or a transport that suppresses cancellation.
+
 ## Canonical group metadata and profile discovery
 
 The authenticated canonical WebSocket exposes `groups.capabilities`, `groups.list`,

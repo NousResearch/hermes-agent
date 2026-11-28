@@ -93,6 +93,20 @@ class DiscordMediaMixin:
             logger.debug("[%s] Could not delete Discord message %s: %s", self.name, message_id, e)
             return False
 
+    def background_auto_tts(self, chat_id: str) -> bool:
+        # Keep live VC ordering/barge-in unchanged; only attachments are detached.
+        return not any(str(text_id) == str(chat_id) and self.is_in_voice_channel(gid)
+                       for gid, text_id in self._voice_text_channels.items())
+
+    async def play_tts(self, chat_id: str, audio_path: str, **kwargs) -> SendResult:
+        """Play auto-TTS audio: in the guild's VC if joined, else as a file attachment."""
+        for gid, text_ch_id in self._voice_text_channels.items():
+            if str(text_ch_id) == str(chat_id) and self.is_in_voice_channel(gid):
+                logger.info("[%s] Playing TTS in voice channel (guild=%d)", self.name, gid)
+                success = await self.play_in_voice_channel(gid, audio_path)
+                return SendResult(success=success)
+        return await self.send_voice(chat_id=chat_id, audio_path=audio_path, **kwargs)
+
     @staticmethod
     def _discord_upload_limit_bytes(channel: Any) -> int:
         """Return the effective Discord attachment size limit for *channel*.
@@ -113,6 +127,7 @@ class DiscordMediaMixin:
 
     async def _reject_oversized_upload(
         self, channel: Any, file_path: str, filename: str, *, caption: Optional[str] = None,
+        notify_failure: bool = True,
     ) -> Optional[SendResult]:
         """Preflight ``file_path`` against the channel's upload cap (#50846): a doomed
         ``413`` round-trip is skipped and the user gets a notice naming the size and the
@@ -128,6 +143,8 @@ class DiscordMediaMixin:
         limit_mb = limit / (1024 * 1024)
         error = f"File too large for Discord upload: {filename} is {size_mb:.1f} MB (limit {limit_mb:.0f} MB)"
         logger.warning("[%s] %s", self.name, error)
+        if not notify_failure:  # auto-TTS owns its one anchored failure notice
+            return SendResult(success=False, error=error)
         notice = t(
             "platform.discord.media.upload_too_large",
             filename=filename, size_mb=f"{size_mb:.1f}", limit_mb=f"{limit_mb:.0f}")
@@ -370,7 +387,9 @@ class DiscordMediaMixin:
             if not os.path.exists(audio_path):
                 return SendResult(success=False, error=f"Audio file not found: {audio_path}")
             filename = os.path.basename(audio_path)
-            rejected = await self._reject_oversized_upload(channel, audio_path, filename, caption=caption)
+            rejected = await self._reject_oversized_upload(
+                channel, audio_path, filename, caption=caption,
+                notify_failure=kwargs.get("notify_failure", True))
             if rejected is not None:
                 return rejected
             reference = self._reply_reference_for_send(reply_to, channel)
@@ -409,20 +428,15 @@ class DiscordMediaMixin:
     async def _ogg_opus_voice_payload(audio_path: str) -> Optional[tuple[bytes, float]]:
         """``(ogg_opus_bytes, duration_secs)`` for a voice message: the file itself when it already
         is Ogg/Opus, else an ffmpeg transcode; None when neither yields Ogg/Opus."""
-        from gateway.platforms.base import transcode_to_ogg_opus
+        from plugins.platforms.discord.ffmpeg_utils import transcode_voice_audio
 
         data = await asyncio.to_thread(Path(audio_path).read_bytes)
         duration = _ogg_opus_duration(data)
         if duration is not None:
             return data, duration
-        converted = await asyncio.to_thread(transcode_to_ogg_opus, audio_path, bitrate="48k", timeout=30)
-        if not converted:
+        data = await transcode_voice_audio(audio_path)
+        if not data:
             return None
-        try:
-            data = await asyncio.to_thread(Path(converted).read_bytes)
-        finally:
-            with contextlib.suppress(OSError):
-                os.unlink(converted)
         duration = _ogg_opus_duration(data)
         return (data, duration) if duration is not None else None
 

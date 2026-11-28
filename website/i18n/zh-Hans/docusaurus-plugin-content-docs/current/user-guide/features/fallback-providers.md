@@ -352,7 +352,7 @@ auxiliary:
 
 ## 委派提供商覆盖
 
-由 `delegate_task` 生成的子 Agent 会继承父 Agent 的主备用链。你仍然可以将子 Agent 路由到不同的主提供商:模型对以进行成本优化：
+由 `delegate_task` 生成且未固定路由的子 Agent 会继承父 Agent 的主备用链（若父 Agent 没有备用链，则子 Agent 也没有备用提供商）。一旦通过 `provider`、`model` 或 `base_url` 覆盖固定了子 Agent 路由，它就**不会**借用父 Agent 的备用链——如需为覆盖路由配置备用，请显式声明 `delegation.fallback_providers`（或设为 `[]` 禁用备用）：
 
 ```yaml
 delegation:
@@ -360,6 +360,7 @@ delegation:
   model: "google/gemini-3-flash-preview"      # 覆盖模型
   # base_url: "http://localhost:1234/v1"      # 或使用直接端点
   # api_key: "local-key"
+  # fallback_providers: []                    # 可选显式备用链（[] 表示禁用备用）
 ```
 
 完整配置详情参见[子 Agent 委派](./delegation.md)。
@@ -368,7 +369,7 @@ delegation:
 
 ## Cron 任务提供商
 
-Cron 任务在创建 Agent 时会继承你配置的 `fallback_providers` 链（或旧版 `fallback_model`）。要为 Cron 任务使用不同的主提供商，请在 Cron 任务本身配置 `provider` 和 `model` 覆盖：
+未固定路由的 Cron 任务在创建 Agent 时会继承你配置的 `fallback_providers` 链（或旧版 `fallback_model`）。固定到自身 `provider`、`model` 或端点的任务**不会**继承该链，规则与固定路由的[委派](./delegation.md)子 Agent 一致。要为 Cron 任务固定主提供商，请在 Cron 任务本身配置 `provider` 和 `model` 覆盖：
 
 ```python
 cronjob(
@@ -397,5 +398,5 @@ cronjob(
 | 审批分类 | 分层（见上文） | `auxiliary.approval` |
 | 标题生成 | 分层（见上文） | `auxiliary.title_generation` |
 | Triage Specifier | 分层（见上文） | `auxiliary.triage_specifier` |
-| 委派 | 仅提供商覆盖（无自动备用） | `delegation.provider` / `delegation.model` |
-| Cron 任务 | 仅每任务提供商覆盖（无自动备用） | 每任务 `provider` / `model` |
+| 委派 | 声明时使用 `delegation.fallback_providers`；否则仅未固定路由的子 Agent 继承父链 | `delegation.provider` / `delegation.model` / `delegation.fallback_providers` |
+| Cron 任务 | 未固定任务继承配置的 `fallback_providers` 链；配置了自身 `provider` / `model` / `base_url` 的任务不会回退到该链 | 每任务 `provider` / `model`，或 `cron.model` / `cron.model_provider` |

@@ -187,12 +187,12 @@ Hermes 支持配置回退 provider 链——一个按顺序尝试的 `(provider,
    - Gateway：`gateway/run.py._load_fallback_model()` 读取 `config.yaml` → 传递给 `AIAgent`
    - 验证：`provider` 和 `model` 键均须非空，否则回退被禁用
 
-### 不支持回退的场景
+### 其他场景中的回退行为
 
-- **子代理委托**（`tools/delegate_tool.py`）：子代理继承父代理的 provider，但不继承回退配置
+- **子代理委托**（`tools/delegate_tool.py` / `tools/delegate_tool_config.py`）：若声明了 `delegation.fallback_providers`（或路由自身的 `fallback_providers`），则使用该链；否则，未固定路由的子代理继承父代理的回退链（父代理回退链为空时传入 `fallback_model=None`），而通过 `delegation.provider`、`delegation.model` 或 `delegation.base_url` 固定路由的子代理不会借用父代理的回退链。设置 `fallback_providers: []` 可在两种情况下均禁用回退。
 - **辅助任务**：使用各自独立的 provider 自动检测链（见上方辅助模型路由）
 
-Cron 任务**支持**回退：`run_job()` 从 `config.yaml` 读取 `fallback_providers`（或旧版 `fallback_model`）并传递给 `AIAgent(fallback_model=...)`，与 gateway 的 `_load_fallback_model()` 模式一致。参见 [Cron 内部机制](./cron-internals.md)。
+未固定路由的 Cron 任务**支持**回退：`run_job()` 从 `config.yaml` 读取 `fallback_providers`（或旧版 `fallback_model`）并传递给 `AIAgent(fallback_model=...)`，与 gateway 的 `_load_fallback_model()` 模式一致。配置了自身 `provider` / `model` / `base_url` 的任务不会继承该链，规则与固定路由的委派子代理一致。参见 [Cron 内部机制](./cron-internals.md)。
 
 ### 测试覆盖
 

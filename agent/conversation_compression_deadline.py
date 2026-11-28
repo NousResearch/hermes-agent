@@ -11,7 +11,7 @@ fence instead of adding the configured limit to the time they started waiting.
 from __future__ import annotations
 
 import contextlib
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
     from agent.conversation_compression import CompressionCommitFence
@@ -55,6 +55,38 @@ def resolve_context_compression_timeouts(compression_cfg: Optional[dict] = None)
             ceiling = max(ceiling, _aux_budget)
             idle = max(idle, min(_aux_budget, ceiling))
     return idle, ceiling
+
+
+def cap_compaction_to_run_budget(agent: Any, idle: float, ceiling: float) -> tuple[float, float]:
+    """Cap the compaction watchdog at the host's remaining run budget.
+
+    :func:`resolve_context_compression_timeouts` floors both windows at the auxiliary compression
+    request budget (min 300s, #114594) so prep/chunking before the first streamed token is never
+    judged silent. That floor is right when the turn has room for it and *inoperative* when it does
+    not: a host whose whole run budget is shorter than the floor (a 300s ``hermes_local`` wall
+    clock) is killed by its own supervisor at the same instant the watchdog would first have
+    spoken, so the pass still emits no work and the run is still recorded as an ordinary timeout.
+    The floor also cannot be lowered by configuration — an explicit
+    ``context_timeout_seconds`` below it is overridden — which is what makes that inoperability a
+    fleet defect rather than a misconfiguration.
+
+    So apply the same remaining-run-budget rule the stale-stream resolvers already use (#97968): one
+    compaction pass must not outlive the turn that started it, and the run-budget wrap-up notice
+    must stay reachable. A wrapper the operator explicitly disabled (``idle <= 0``) is never
+    resurrected here — an explicit 0/negative idle still means "no owned wrapper".
+
+    Returns ``(idle, ceiling)`` unchanged when no run budget is active or the budget already exceeds
+    the resolved windows, so the #114594 floor governs every ordinary turn.
+    """
+    if idle <= 0:
+        return idle, ceiling
+    from agent.chat_completion_helpers import cap_to_run_budget
+
+    capped_ceiling = cap_to_run_budget(agent, ceiling)
+    if capped_ceiling >= ceiling:
+        return idle, ceiling
+    # idle never exceeds ceiling (the resolver's invariant).
+    return min(idle, capped_ceiling), capped_ceiling
 
 
 def effective_ceiling(fence: CompressionCommitFence, ceiling: float, wait_started: float) -> float:

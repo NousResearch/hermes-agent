@@ -1,0 +1,50 @@
+# Nous Hermes plugin catalog entry — worker-watch
+#
+# OWNER-SUBMITTED (rule 5): the PR author owns the repository.
+# Exact-SHA pin (40-hex) at the commit that passed `hermes plugins validate`
+# (manifest, loadable __init__.py, capability probe, security scan SAFE, no core
+# override). No self-updating code: the plugin never fetches, downloads or
+# replaces its own files (rule 3).
+#
+# `subdir` is the plugin root, not the dashboard dir: the installer resolves the
+# install target to `subdir` and names the installed directory after its leaf
+# (hermes_cli/plugins_cmd_install.py), so `plugin/worker-watch` installs a
+# `worker-watch` plugin dir whose plugin.yaml, __init__.py, dashboard/ and
+# WorkerWatch package all sit together.
+name: worker-watch
+title: Worker Watch
+repo: https://github.com/I74IV3/hermes-worker-watch
+sha: 95b344f25c25aa84ecf6b3c706baa6f99f8a7967
+subdir: plugin/worker-watch
+description: >-
+  Read-only dashboard tab for watching kanban work across every board of a
+  Hermes host: running cards with their worker profile, elapsed time, token
+  counts and a same-origin chat-session resume link; each card's parent/child
+  depth, so a board group renders as its tree; one card in full in a drawer
+  (status, block kind, failure stamp, body capped at 4000 chars, newest 8 events
+  and newest 3 comments); the parked cards the dispatcher has stopped spawning
+  (ready, assigned, still carrying a failure stamp); this host's own root chats,
+  pinned first, 25 per page; and one relationship graph per board, experimental.
+  Disclosure — opens every kanban/boards/*/kanban.db and the session state.db
+  through SQLite mode=ro URIs and has no write path to either store (no -wal or
+  -shm sidecar is created, and a store it cannot open answers empty); its one
+  POST (Restart) writes nothing itself: it runs `hermes kanban retry <board>
+  <card>` as an argv list without a shell, only for a parked card whose failure
+  text is a quota/rate-limit stamp, and re-reads the row afterwards; that button
+  is hidden on any install whose CLI has no `kanban retry` verb — stock Hermes
+  today, where the verb is a local overlay — so /stalled reports
+  retry_available: false, the bundle disarms every Restart button, and the route
+  refuses with 409/502 before shelling out. No network calls of its own, no
+  telemetry, no credentials, no background processes, no agent tools, hooks or
+  middleware. Reads only what a signed-in dashboard user can already see.
+maintainer: I74IV3
+tier: community
+category: automation
+requires_hermes: ">=0.15.0"
+docs_url: https://github.com/I74IV3/hermes-worker-watch#readme
+version: "1.0.0"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -735,6 +735,24 @@ How `mentions` mode gates:
 
 For strict multi-bot deployments, pair with `require_mention: true` and `strict_mention: true` — see the smoke-check profile below.
 
+### Mail sent to a channel's email address
+
+Slack gives each channel an email address (channel details, **Integrations**, **Send emails to this channel**). A mail sent there is posted by Slackbot, as a bot message carrying the mail as a file. Hermes reads that file's sender, recipients, subject and plain-text body, and the agent gets:
+
+```text
+[Email: Site is down]:
+From: "A Customer" <customer@example.com>
+DMARC: pass
+To: support@example.com
+Subject: Site is down
+
+Hello, the site does not work.
+```
+
+`DMARC` is Slack's own check of the sender's domain (`pass`, `fail` or `unknown`); the `From` line is otherwise whatever the sender wrote. Anyone who knows the address can write to the channel, so treat the mail like any document from outside. A mail over 100 KB is not inlined: the agent reads the whole mail from the cached file.
+
+To have Hermes answer each mail, the channel must admit Slackbot's posts and need no mention: `allow_bots: all` (see above on loops) and the channel in `free_response_channels`. Otherwise a mail starts no turn; when a human mentions the bot in the mail's thread, the agent sees `[email from <sender>: <subject>]` in the thread context, not the body.
+
 ### Treating your own app's user-token posts as human (`api_human_users`)
 
 A message posted through the Web API with a **user token** (`xoxp-`) is

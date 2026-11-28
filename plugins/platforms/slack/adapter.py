@@ -50,11 +50,12 @@ from gateway.platforms._shared import (
 )
 from gateway.platforms.base_log_safety import safe_url_for_log
 from gateway.platforms.helpers import MessageDeduplicator, clarify_text_with_choices, inline_document_text
+from plugins.platforms.slack.files import DOCUMENT_MAX, cache_email_file, document_injection
 from plugins.platforms.slack.adapter_config_readers import (
     _extra_or_env_channel_set_getter, _extra_or_env_flag_getter)
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
-    SendResult, SUPPORTED_DOCUMENT_TYPES, SUPPORTED_VIDEO_TYPES, _TEXT_INJECT_EXTENSIONS,
+    SendResult, SUPPORTED_DOCUMENT_TYPES, SUPPORTED_VIDEO_TYPES,
     is_host_excluded_by_no_proxy, resolve_proxy_url, safe_proxy_url_for_log, ssrf_redirect_guard, describe_proxy_error,
     cache_document_from_bytes_async, cache_video_from_bytes_async,
 )
@@ -4931,7 +4932,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
             ext = mime_to_ext.get(mimetype, "")
         # Any extension accepted (authorization is the gate); Slack bot upload cap is 20 MB.
         file_size = f.get("size", 0)
-        if not file_size or file_size > 20 * 1024 * 1024:
+        if not file_size or file_size > DOCUMENT_MAX:
             logger.warning("[Slack] Document too large or unknown size: %s", file_size)
             return None
         raw_bytes = await self._download_slack_file_bytes(url, team_id=team_id)
@@ -4939,17 +4940,8 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
             raw_bytes, original_filename or f"document{ext or '.bin'}")
         doc_mime = SUPPORTED_DOCUMENT_TYPES.get(ext, mimetype or "application/octet-stream")
         logger.debug("[Slack] Cached user document: %s (%s)", cached_path, doc_mime)
-        injection = ""
-        _is_text = ext in _TEXT_INJECT_EXTENSIONS or (mimetype or "").startswith("text/")
-        if _is_text and len(raw_bytes) <= 100 * 1024:
-            try:
-                text_content = raw_bytes.decode("utf-8")
-                display_name = original_filename or f"document{ext or '.txt'}"
-                display_name = re.sub(r"[^\w.\- ]", "_", display_name)
-                injection = f"[Content of {display_name}]:\n{text_content}"
-            except UnicodeDecodeError:
-                pass  # Binary content, skip injection
-        return cached_path, doc_mime, injection
+        return cached_path, doc_mime, document_injection(
+            raw_bytes, original_filename or f"document{ext or '.txt'}", ext, mimetype)
 
     async def _collect_inbound_media(
         self, event: dict, channel_id: str, team_id: str, text: str,
@@ -4957,7 +4949,8 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
     ) -> tuple[list[str], list[str], list[bool], str]:
         """Download/cache ``event["files"]`` → ``(media_urls, media_types, media_text_inlined, text)``;
         root images lead. Small text-like docs are injected into ``text`` (gated on ext/MIME, not blind
-        UTF-8 decode — PDF/zip headers decode) and flagged True in ``media_text_inlined``. Failures are
+        UTF-8 decode — PDF/zip headers decode) and flagged True in ``media_text_inlined``. An email
+        file with plain text is cached and inlined from its object, not downloaded. Failures are
         prepended as an attachment notice."""
         media_urls = list(thread_root_media_urls)
         media_types = list(thread_root_media_types)
@@ -4974,7 +4967,9 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
                 continue
             kind = self._slack_file_kind(f, mimetype)
             try:
-                cached = await self._cache_slack_file(kind, f, url, mimetype, team_id)
+                cached = await cache_email_file(f, functools.partial(
+                    self._resolve_file_stub, channel_id=channel_id, team_id=team_id, notices=None),
+                ) or await self._cache_slack_file(kind, f, url, mimetype, team_id)
                 if cached is None:
                     continue
                 cached_path, media_type, injection = cached

@@ -1,9 +1,12 @@
 'use client'
 
+import { useStore } from '@nanostores/react'
 import { cva, type VariantProps } from 'class-variance-authority'
 import { Slot } from 'radix-ui'
 import * as React from 'react'
 
+import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
+import { $layoutTree } from '@/components/pane-shell/tree/store'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
@@ -14,6 +17,7 @@ import { useIsMobile } from '@/hooks/use-mobile'
 import { useI18n } from '@/i18n'
 import { PanelLeftIcon } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { invalidateSidebarGlassGeometry } from '@/store/translucency'
 
 const SIDEBAR_COOKIE_NAME = 'sidebar_state'
 const SIDEBAR_COOKIE_MAX_AGE = 60 * 60 * 24 * 7
@@ -142,6 +146,16 @@ function Sidebar({
 }) {
   const { isMobile, state, openMobile, setOpenMobile } = useSidebar()
   const { t } = useI18n()
+  const tree = useStore($layoutTree)
+  const paneVisible = usePaneVisible()
+
+  // Keyed/anchored panes can move without resizing. Publish only AFTER React
+  // commits placement/visibility, including cold mount and final unmount.
+  React.useLayoutEffect(() => {
+    invalidateSidebarGlassGeometry()
+
+    return invalidateSidebarGlassGeometry
+  }, [tree, paneVisible, isMobile, openMobile, state, collapsible, side, variant])
 
   if (collapsible === 'none') {
     return (

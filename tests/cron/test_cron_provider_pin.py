@@ -19,6 +19,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from tests.fixtures.storage_seed import seed_session
 from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
+from tests.cron.conftest import claim_stamp
 
 # Ensure project root is importable.
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -41,7 +42,7 @@ def _run_owned_job(job, tmp_path):
     )
     row = {
         "admission_id": admission_id, "request_id": request_id,
-        "principal_id": "cron-owner", "owner_epoch": 1, "generation": 1, "payload": {"text": ""},
+        "principal_id": "cron-owner", **claim_stamp(store, ref.session_id), "payload": {"text": ""},
     }
     policy = SimpleNamespace(request_json=json.dumps({
         "cron_job": job, "extra_prompt": None, "request_id": request_id,

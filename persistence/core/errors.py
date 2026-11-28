@@ -151,6 +151,15 @@ class TurnLeaseLost(_SessionConflict, RuntimeError):
     default_message = "Session turn lease lost; refusing transcript write for {session_id!r}"
 
 
+class TurnFenceSuperseded(TurnLeaseLost):
+    """A write made under a bound claimed turn carried a fence its session's lease no longer holds: the authority epoch
+    moved (another owner took over) or the session's execution generation moved (a newer claim). Checked inside the
+    write's own transaction, so nothing of the write landed. A ``TurnLeaseLost``: callers that treat a lost turn lease
+    as "another writer owns this turn" handle it the same way."""
+
+    default_message = "Claimed turn's fence no longer holds the lease of {session_id!r}; refusing its write"
+
+
 class SessionWriteGuarded(_SessionConflict, RuntimeError):
     """A guarded delete refused because the session or a delegate child in its cascade holds a live turn lease or compression lease; nothing removed.
 
@@ -271,6 +280,16 @@ class DeclarativeDrift(PermanentStoreError, RuntimeError):
     def __init__(self, detail: str, *, owned: bool = False) -> None:
         super().__init__(detail)
         self.owned = owned
+
+
+class ScopePinRefused(PersistenceError):
+    """A store handle was asked for a scope it may not serve: a pinned scope on a backend without ``scope_pinning``, a
+    pin other than the bound hosted scope's, or a hosted activity naming a profile home. Nothing was opened."""
+
+
+class IsolationUnsupported(PersistenceError):
+    """``assert_isolating`` refused: the backend cannot prove that a query missing its pin sees no rows (a local
+    single-tenant store, or a database role that bypasses row security). Hosted boot refuses on it."""
 
 
 class StoreUnavailable(PersistenceError):

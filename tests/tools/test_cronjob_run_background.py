@@ -67,23 +67,25 @@ class TestBackgroundDispatch:
             assert run_release.wait(timeout=5.0)
             return True
 
+        # The runner executes on a daemon thread: the patches stay active until it has started,
+        # or a worker that starts after the block runs the real run_one_job on the fake claim.
         with _bound_session_key():
             with patch("tools.cronjob_tools.claim_job_for_fire", side_effect=lambda jid, **kw: {**_job(jid), "fire_claim": {"by": "bg-owner"}}), \
                  patch("cron.scheduler.run_one_job", side_effect=slow_run_one_job), \
                  patch("tools.cronjob_tools.get_job",
                        return_value={"last_status": "ok", "last_error": None}):
                 res = _try_dispatch_background_run(_job('job-bg-01'))
-
-        try:
-            # Returned BEFORE the job finished — that's the whole point.
-            assert res is not None
-            assert res["claimed"] is True
-            assert res["dispatched"] is True
-            assert res["delegation_id"]
-            # The job actually starts on the daemon executor.
-            assert run_started.wait(timeout=5.0), "job never started in background"
-        finally:
-            run_release.set()
+                try:
+                    # Returned BEFORE the job finished — that's the whole point.
+                    assert res is not None
+                    assert res["claimed"] is True
+                    assert res["dispatched"] is True
+                    assert res["delegation_id"]
+                    assert not run_release.is_set()
+                    # The job actually starts on the daemon executor.
+                    assert run_started.wait(timeout=5.0), "job never started in background"
+                finally:
+                    run_release.set()
 
     def test_completion_event_reaches_shared_queue(self):
         """The finished run pushes a type='async_delegation' event carrying

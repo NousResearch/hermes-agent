@@ -1,6 +1,6 @@
 """What a backend presents to the assembly.
 
-A backend is assembled over the stores it serves and opens one store handle per profile through ``PersistenceBackend.open(scope)``. The handle carries one named repository attribute per capability, each declared on ``PersistenceStore`` with its protocol, the backend's declared capabilities and the awaitable view ``aio``; no verb takes a scope. The admin doors answer the physical admin capability, or ``AdminUnsupported`` on a backend without it.
+A backend is assembled over the stores it serves and opens one store handle per profile through ``PersistenceBackend.open(scope)``; a pinned scope (``ProfileScope.pin``) is served only by a backend declaring ``scope_pinning`` and refused with ``ScopePinRefused`` by any other. The handle carries one named repository attribute per capability, each declared on ``PersistenceStore`` with its protocol, the backend's declared capabilities and the awaitable view ``aio``; no verb takes a scope. The admin doors answer the physical admin capability, or ``AdminUnsupported`` on a backend without it.
 """
 
 from __future__ import annotations
@@ -93,6 +93,13 @@ class PersistenceBackend(Protocol):
 
     def open_profile_repair(self, scope: ProfileScope, *, read_only: bool) -> ProfileRepairAdmin | AdminUnsupported:
         """A ``ProfileRepairAdmin`` bound to ``scope`` when the backend declares ``physical_admin``, else ``AdminUnsupported``."""
+        ...
+
+    def assert_isolating(self) -> None:
+        """Return only when this backend, as connected now, isolates pinned scopes: a query that omits its pin sees no
+        rows (for a database with row-level security: the role is neither a superuser nor exempt from row security).
+        Raise ``IsolationUnsupported`` otherwise. A backend without ``scope_pinning`` always raises. Hosted boot calls
+        it and refuses to start on the refusal."""
         ...
 
     def reopen(self) -> None:

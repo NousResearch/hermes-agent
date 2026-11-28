@@ -12,6 +12,7 @@ import pytest
 
 from tests.fixtures.storage_seed import seed_session
 from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
+from tests.cron.conftest import claim_stamp
 
 @pytest.fixture(autouse=True)
 def _isolated_config_env(monkeypatch, tmp_path):
@@ -78,7 +79,7 @@ class TestCronRunJobGuard:
         owner = SimpleNamespace(persistence=persistence, pending_results={}, sessions={
             ref.session_id: SimpleNamespace(source=SimpleNamespace(user_id="cron-owner"))})
         admission = {"admission_id": "guard-fire", "request_id": "guard-fire",
-                     "principal_id": "cron-owner", "owner_epoch": 1, "generation": 1, "payload": {"text": ""}}
+                     "principal_id": "cron-owner", **claim_stamp(persistence, ref.session_id), "payload": {"text": ""}}
         policy = SimpleNamespace(request_json=json.dumps({
             "cron_job": self._job(), "extra_prompt": None, "request_id": "guard-fire"}))
         previous = current_execution()

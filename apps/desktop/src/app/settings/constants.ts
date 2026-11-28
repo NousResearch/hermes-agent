@@ -247,7 +247,8 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   // tools/terminal_tool.py::_create_environment (local/docker/singularity/
   // modal/daytona/ssh). Remote backends need extra env (image, tokens, host).
   'terminal.backend': ['local', 'docker', 'singularity', 'modal', 'daytona', 'ssh'],
-  'stt.elevenlabs.model_id': ['scribe_v2', 'scribe_v1'],
+  'stt.elevenlabs.model_id': ['scribe_v3', 'scribe_v2', 'scribe_v1'],
+  'stt.elevenlabs.streaming_model': ['scribe_v3_live', 'scribe_v2_realtime'],
   'stt.local.model': ['tiny', 'base', 'small', 'medium', 'large-v3', 'turbo'],
   // Speech-to-text backends — kept in sync with BUILTIN_STT_PROVIDERS in
   // tools/transcription_common.py (local_command is auto-detected, not picked).
@@ -837,6 +838,7 @@ export const SECTIONS: DesktopConfigSection[] = [
       'stt.xai.model',
       'stt.deepinfra.model',
       'stt.elevenlabs.model_id',
+      'stt.elevenlabs.streaming_model',
       'stt.elevenlabs.language_code',
       'stt.elevenlabs.tag_audio_events',
       'stt.elevenlabs.diarize',

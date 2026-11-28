@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+from contextlib import ExitStack
 from pathlib import Path
 from urllib.parse import quote
 
@@ -29,7 +30,7 @@ def validate_contract(value: str | None) -> str:
 
 
 def _api(endpoint: str, *, query: str | None = None, paginate: bool = False,
-         profile_home: str | None = None):
+         env: dict[str, str] | None = None):
     command = ["gh", "api", endpoint, "--hostname", "github.com"]
     if query is not None:
         command += ["-f", "query=" + query]
@@ -38,7 +39,7 @@ def _api(endpoint: str, *, query: str | None = None, paginate: bool = False,
     try:
         result = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True,
                                 text=True, encoding="utf-8", errors="replace", timeout=30,
-                                check=True, env=_gh_env(profile_home))
+                                check=True, env=env)
     except subprocess.CalledProcessError as exc:
         # 401/403/404 = the login cannot see this repository (wrong profile identity
         # or missing grant), not a transient API failure. Persist only the status
@@ -97,10 +98,30 @@ def _gh_env(profile_home: str | None) -> dict[str, str] | None:
     """
     if not profile_home:
         return None
-    from agent.secret_scope import build_profile_secret_scope
+    from agent.runtime_scope import bind_state, scope_for_profile
+    from agent.secret_scope import build_profile_secret_scope, reset_multiplex_context, set_multiplex_context
+    from hermes_cli.config_backend import ConfigBackendUnavailable
+    from hermes_cli.env_loader import hydrate_profile_secret_sources
+    from hermes_cli.plugins import discover_plugins
     from tools.environments.local import _is_routed_home, hermes_subprocess_env, served_profile_child_env
     base = hermes_subprocess_env(inherit_credentials=False)
     routed = _is_routed_home(profile_home)
+    try:
+        with ExitStack() as stack:
+            # register() can read bootstrap secrets before any sources have been discovered.
+            stack.enter_context(bind_state(
+                scope_for_profile(profile_home), hydrate_secrets=False, defer_terminal=True,
+            ))
+            if routed:
+                stack.callback(reset_multiplex_context, set_multiplex_context(True))
+            discover_plugins()
+            hydrate_profile_secret_sources(profile_home)
+    except ConfigBackendUnavailable as exc:
+        detail = "assignee profile configuration/secret sources unavailable"
+        if exc.clashing_env_names:
+            detail += (f"; a secret source supplies protected environment names: {', '.join(exc.clashing_env_names)}. "
+                       "Remove those mappings from the secret source configuration.")
+        raise _GateAuthError(detail) from None
     if routed:
         # The launcher's own gh login must not reach the child: GH_TOKEN/GITHUB_TOKEN are
         # already scrubbed by hermes_subprocess_env, but the enterprise trio (GH_HOST,
@@ -151,9 +172,10 @@ def collect_acceptance(contract: str, published_pr: str | None,
             return receipt
         repo, number = match[1], int(match[2])
         receipt["pr_url"] = url
+        env = _gh_env(profile_home)
         owner, name = repo.split("/")
         query = f'{{repository(owner:{json.dumps(owner)},name:{json.dumps(name)}){{pullRequest(number:{number:d}){{headRefOid baseRefName state\n            baseRef{{branchProtectionRule{{requiredStatusChecks{{context app{{databaseId}}}}}}}}}}}}}}'
-        repository = _api("graphql", query=query, profile_home=profile_home)["data"]["repository"]
+        repository = _api("graphql", query=query, env=env)["data"]["repository"]
         if repository is None:
             # A private repo the login cannot read resolves to null, not an error.
             raise _GateAuthError(f"HTTP 404 on graphql {repo}")
@@ -165,7 +187,7 @@ def collect_acceptance(contract: str, published_pr: str | None,
         protection = (pr.get("baseRef") or {}).get("branchProtectionRule") or {}
         required = {(r["context"], (r.get("app") or {}).get("databaseId")) for r in protection.get("requiredStatusChecks", [])}
         rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100",
-                     paginate=True, profile_home=profile_home)
+                     paginate=True, env=env)
         for page in rules:
             for rule in page:
                 if rule["type"] == "required_status_checks":
@@ -176,12 +198,12 @@ def collect_acceptance(contract: str, published_pr: str | None,
             receipt["detail"] = "No repository-required checks are configured; explicitly use a local-only contract for non-CI tasks."
             return receipt
         pages = _api(f"repos/{repo}/commits/{sha}/check-runs?per_page=100&filter=latest",
-                     paginate=True, profile_home=profile_home)
+                     paginate=True, env=env)
         runs = [run for page in pages for run in page["check_runs"]]
         if len({r["id"] for r in runs}) != pages[0]["total_count"]:
             raise ValueError("Incomplete check-run pagination")
         statuses = [{**s, "sha": sha} for page in _api(f"repos/{repo}/commits/{sha}/statuses?per_page=100",
-                                                       paginate=True, profile_home=profile_home) for s in page]
+                                                       paginate=True, env=env) for s in page]
         outcomes = []
         for context, app_id in sorted(required, key=str):
             matching = [r for r in runs if r["name"] == context and
@@ -206,7 +228,7 @@ def collect_acceptance(contract: str, published_pr: str | None,
                     "head_sha": check.get("head_sha", check.get("sha")),
                     "classification": classification, "conclusion": outcome})
         # Re-read after all pages: old-head successes are never transferable.
-        current = _api(f"repos/{repo}/pulls/{number}", profile_home=profile_home)
+        current = _api(f"repos/{repo}/pulls/{number}", env=env)
         if current["head"]["sha"] != sha or current["base"]["ref"] != branch or (current["state"] == "closed" and not current.get("merged")):
             receipt.update(classification="stale", detail="PR head/base changed while collecting evidence; retry.")
             return receipt

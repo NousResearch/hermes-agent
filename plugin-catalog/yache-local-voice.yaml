@@ -1,0 +1,68 @@
+# plugin-catalog entry — pinned to the exact commit a reviewer reads.
+# Bumps are new PRs: change `sha` (and `version` together), never a branch.
+# `version` is the human-facing label shown on the install button, in quotes.
+
+name: yache-local-voice
+version: "0.1.2"
+tier: community
+author: LuuMoss
+maintainer: LuuMoss
+repo: https://github.com/LuuMoss/yache-local-voice
+sha: 104e9e4b168e8a22a057e500d33a79c58daac70d     # full 40-char commit (0.1.2 tip)
+requires_hermes: ">=0.22.5"
+platforms: [windows]
+category: voice
+requires_bins: []
+requires_env: []
+python_dependencies: []                            # everything vendored or in the plugin-owned stt runtime the panel installs
+
+title_i18n:
+  zh-CN: 雅澈全链路语音
+
+tagline_i18n:
+  en-US: Full local voice loop — wake word, spoken conversation with your cloned TTS voice, and a transcription workbench, all on your own machine
+  zh-CN: 唤醒词、克隆声对话、转录工作台的全本地语音链路，全部跑在您自己的机器上
+
+description_i18n:
+  en-US: >-
+    Turns Hermes Desktop into a full-duplex local voice assistant: the
+    sherpa-onnx wake word engine (bundled with Hermes) wakes it, faster-whisper
+    transcribes what you say, Qwen3-TTS 1.7B answers out loud in the cloned
+    "Xiaoya" voice, and the conversation hands itself back to listening — no
+    cloud round-trip in the loop. TTS runs through a pure C++ GGML inference
+    engine (streaming, zero-disk playback, VRAM released right after each
+    reply, so it coexists with a loaded chat model). A desktop dashboard and a
+    status-bar quick panel manage synthesis, voice cloning (record ~10 s, get
+    your own voice), the wake-and-talk loop, wake-word tuning, and STT
+    transcription with word-level timestamps; missing engines offer one-click
+    installers with progress bars instead of error walls. Fully offline by
+    default; every network download (model weights, an optional CUDA
+    acceleration pack, optional OpenAI-compatible cloud transcription) is
+    user-initiated with a progress bar, and the plugin returns control to the
+    host with clear diagnostics when local engines are absent.
+
+short_description: Local TTS (Qwen3-TTS, zero-disk streaming) + faster-whisper STT + sherpa-onnx wake word + voice cloning + transcription workbench — one wake-and-talk loop, fully offline by default.
+
+docs_url: https://github.com/LuuMoss/yache-local-voice/blob/v0.1.2/README.md
+
+# Card icon + gallery (the docs plugin page renders the pinned README below
+# this block). Tag-pinned raw URLs; re-pin on every SHA bump PR.
+image: https://raw.githubusercontent.com/LuuMoss/yache-local-voice/v0.1.2/docs/screenshots/02-console-home.png
+screenshots:
+  - https://raw.githubusercontent.com/LuuMoss/yache-local-voice/v0.1.2/docs/screenshots/01-quickpanel-status.png
+  - https://raw.githubusercontent.com/LuuMoss/yache-local-voice/v0.1.2/docs/screenshots/02-console-home.png
+  - https://raw.githubusercontent.com/LuuMoss/yache-local-voice/v0.1.2/docs/screenshots/03-panel-tts-synthesis.png
+  - https://raw.githubusercontent.com/LuuMoss/yache-local-voice/v0.1.2/docs/screenshots/04-panel-voice-cloning.png
+  - https://raw.githubusercontent.com/LuuMoss/yache-local-voice/v0.1.2/docs/screenshots/05-panel-wake-conversation.png
+  - https://raw.githubusercontent.com/LuuMoss/yache-local-voice/v0.1.2/docs/screenshots/06-panel-stt-transcription.png
+
+# Binaries vendored in-tree are compiled by this repo's GitHub Actions and
+# carry SLSA build provenance (rule 17): CI joins each path onto the pinned
+# clone and verifies its attestation against the workflow run. The CUDA
+# accelerator pack (45 runtime DLLs, same CI job, same attestation) ships as
+# the versioned Release asset of v0.1.1 and is SHA-256 pinned in plugin source.
+attested_binaries:
+  - vendor/qwentts_cpp/lib/qwen.dll
+  - vendor/qwentts_cpp/lib/ggml.dll
+  - vendor/qwentts_cpp/lib/ggml-base.dll
+  - vendor/qwentts_cpp/lib/ggml-cpu.dll

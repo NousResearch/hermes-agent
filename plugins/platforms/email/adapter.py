@@ -47,6 +47,12 @@ _AUTOMATED_HEADERS = {"Auto-Submitted": lambda v: v.lower() != "no",
                       "X-Auto-Response-Suppress": lambda v: bool(v), "List-Unsubscribe": lambda v: bool(v)}
 MAX_MESSAGE_LENGTH = 50_000  # Gmail-safe max length per email body
 SMTP_CONNECT_TIMEOUT = 30
+# Deadline for the whole connect-probe phase (IMAP probe + SMTP probe, the latter retried over an
+# IPv4-only socket), in seconds. The probes are blocking socket work; three parked probes in a row is
+# the loop-liveness watchdog's firing condition, so an unreachable host used to turn a slow connect
+# into a crash loop. The probes run off the event loop now, and this deadline bounds the phase even
+# when the socket itself never returns. Override with EMAIL_CONNECT_PROBE_TIMEOUT.
+CONNECT_PROBE_TIMEOUT = 90
 _TRUTHY = {"true", "1", "yes"}
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 # Charset labels seen in the wild that Python's codec registry doesn't know: "unknown-8bit"/"x-unknown" are
@@ -492,6 +498,7 @@ class EmailAdapter(BasePlatformAdapter):
         self._smtp_security = _normalize_security(setting("EMAIL_SMTP_SECURITY", "smtp_security"), default="tls" if self._smtp_port == 465 else "starttls")
         self._smtp_tls_verify = tls_verify("EMAIL_SMTP_TLS_VERIFY", "smtp_tls_verify")
         self._poll_interval = _esecret_int("EMAIL_POLL_INTERVAL", 15)
+        self._connect_probe_timeout = _esecret_int("EMAIL_CONNECT_PROBE_TIMEOUT", CONNECT_PROBE_TIMEOUT)
         self._skip_attachments = extra.get("skip_attachments", False)  # platforms.email.skip_attachments
         # Require an authenticated From: domain (SPF/DKIM/DMARC) before trusting it for authorization
         # (GHSA-rxqh-5572-8m77). Default ON; opt out via require_authenticated_sender: false / EMAIL_TRUST_FROM_HEADER=true.
@@ -615,6 +622,35 @@ class EmailAdapter(BasePlatformAdapter):
             return self._fail("[Email] SMTP connection failed: %s", e, "email_smtp_connect_error",
                               f"SMTP connection to {self._smtp_host} failed: {e}", retryable=True)
 
+    def _probes(self, is_reconnect: bool) -> bool:
+        """Both connection probes, in order, short-circuiting on the first failure.
+
+        Plain synchronous socket work — never call this on the event loop; ``connect`` runs it
+        through ``asyncio.to_thread``, the same discipline ``_fetch_new_messages`` already uses.
+        """
+        return self._probe_imap(is_reconnect) and self._probe_smtp()
+
+    async def _probe_connection(self, is_reconnect: bool) -> bool:
+        """Run the probes off the event loop, under a deadline.
+
+        ``_probe_imap``/``_probe_smtp`` block for the socket timeout when the host is unreachable
+        (``SMTP_CONNECT_TIMEOUT``, plus a retry over an IPv4-only socket), and calling them
+        directly from ``connect`` parked the entire event loop for that window. Three parked probes
+        in a row is the loop-liveness watchdog's firing condition, so one blackholed mail host was
+        enough to crash the gateway into a respawn loop. Off-loop keeps the loop's own liveness
+        probes answering; the deadline bounds the phase even when the socket never returns. A
+        timed-out probe abandons its worker thread (which ends with the socket timeout) and reports
+        a retryable fatal error, so the gateway's reconnect machinery owns the retry instead of a
+        wedged loop.
+        """
+        try:
+            return await asyncio.wait_for(asyncio.to_thread(self._probes, is_reconnect), timeout=self._connect_probe_timeout)
+        except asyncio.TimeoutError:
+            return self._fail("[Email] Connection probe did not finish within %ss", self._connect_probe_timeout,
+                              "email_connect_probe_timeout",
+                              f"IMAP/SMTP connection test exceeded {self._connect_probe_timeout}s; treating the host as unreachable.",
+                              retryable=True)
+
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to the IMAP server and start polling for new messages."""
         # Validate up front so a missing host is an actionable config error, not IMAP4_SSL("") raising ``[Errno 8]``.
@@ -623,7 +659,7 @@ class EmailAdapter(BasePlatformAdapter):
             message = f"Not configured — missing {', '.join(missing)}. Set it via `hermes gateway setup` (env) or platforms.email in config.yaml."
             # Non-retryable: a blank-but-present env var used to drive an indefinite retry loop that leaked until OOM.
             return self._fail("[Email] %s", message, "email_missing_configuration", message, retryable=False)
-        if not self._probe_imap(is_reconnect) or not self._probe_smtp():
+        if not await self._probe_connection(is_reconnect):
             return False
         if self._require_authenticated_sender and not self._authserv_id and self._address not in EmailAdapter._missing_pin_warned:
             EmailAdapter._missing_pin_warned.add(self._address)

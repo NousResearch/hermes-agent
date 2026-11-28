@@ -353,6 +353,21 @@ class TestTelegramClarifyPromptBinding:
         assert entry.event.is_set()
         assert entry.response == "a"
 
+    @pytest.mark.asyncio
+    async def test_other_edit_escapes_the_prompt_text(self):
+        """Tapping "Other" re-edits the card as HTML: the question text, which Telegram hands
+        back as plain text, must not be parsed as markup (a ``<a href>`` would become a link)."""
+        adapter = _make_adapter()
+        self._ask(adapter)
+        update, query = self._tap(self.ASK_CHAT_ID, self.ASK_MESSAGE_ID, token="other")
+        query.message.text = 'Use <b>bold</b> & <a href="https://example.com">docs</a>?'
+
+        await self._deliver(adapter, update)
+
+        edited = query.edit_message_text.call_args.kwargs["text"]
+        assert "&lt;b&gt;bold&lt;/b&gt; &amp; &lt;a href=" in edited
+        assert "<b>" not in edited and "<a " not in edited
+
 
 # ===========================================================================
 # Base adapter fallback render — text numbered list

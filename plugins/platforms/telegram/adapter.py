@@ -4474,7 +4474,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             await answer_callback(query, _toast("platform.telegram.prompt.type_answer"))
             await self._edit_html_quiet(
                 query,
-                f"❓ {query.message.text or ''}\n\n"
+                f"❓ {_html.escape(query.message.text or '')}\n\n"
                 f"<i>{_html.escape(t('platform.telegram.prompt.awaiting_typed', user=user_display))}</i>")
             return
         # Numeric choice → resolve immediately with the chosen text

@@ -5,7 +5,7 @@ import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
 import { isPaneVisible, revealTreePane } from '@/components/pane-shell/tree/store'
 import type { HermesReviewFile, HermesReviewScope, HermesReviewShipInfo } from '@/global'
 import { matchesQuery } from '@/hooks/use-media-query'
-import { desktopGit } from '@/lib/desktop-git'
+import { desktopGit, desktopGitFor } from '@/lib/desktop-git'
 import { isExcludedPath } from '@/lib/excluded-paths'
 import { requestOneShot } from '@/lib/oneshot'
 import { Codecs, persistentAtom } from '@/lib/persisted'
@@ -15,7 +15,8 @@ import { refreshRepoStatus, repoStatusForCwd } from './coding-status'
 import { noteAreaClosed, recordFeatureUse } from './desktop-metrics'
 import { stampSessionPrBranch } from './pull-requests'
 import { $busy, $currentCwd, $selectedStoredSessionId, $sessions } from './session'
-import { $sessionStates } from './session-states'
+import { isSessionOwnerRoute } from './session-request-router'
+import { $sessionStates, knownOwnerForSession, ownerConnectionMode } from './session-states'
 import { $workspaceChangeTick } from './workspace-events'
 
 // State for the review pane: the working-tree changed-file list, the selected
@@ -168,11 +169,27 @@ let reviewSelectionSeq = 0
 let shipInfoSeq = 0
 let shipInfoLastCheckedAt = 0
 
+// A session's repo lives on the machine of the gateway that OWNS the session, not
+// the window's: a local window showing an SSH-owned session must read its git over
+// that gateway's /api/git, never run git here against the remote cwd (#150024).
+// Mirrors the projects store's owner-routed gitFor.
+function reviewGitFor(sessionId: null | string | undefined) {
+  const owner = knownOwnerForSession(sessionId)
+
+  if (isSessionOwnerRoute(owner) && ownerConnectionMode(owner) === 'remote') {
+    return desktopGitFor({ connectionId: owner.connectionId, profile: owner.targetProfile ?? owner.profile })
+  }
+
+  return desktopGit()
+}
+
+const reviewGit = () => reviewGitFor($selectedStoredSessionId.get())
+
 // The two things every review op needs: the repo cwd + the IPC bridge. Null when
 // either is missing (no session, remote backend), so callers bail in one line.
 function reviewCtx(): { cwd: string; review: ReviewBridge } | null {
   const cwd = repoCwd()
-  const review = desktopGit()?.review
+  const review = reviewGit()?.review
 
   return cwd && review ? { cwd, review } : null
 }
@@ -513,7 +530,7 @@ export async function stageReviewFile(path: null | string): Promise<void> {
     return
   }
 
-  await desktopGit()?.review?.stage(repoCwd() ?? '', path)
+  await reviewGit()?.review?.stage(repoCwd() ?? '', path)
   await afterMutation()
 }
 
@@ -522,7 +539,7 @@ export async function unstageReviewFile(path: null | string): Promise<void> {
     return
   }
 
-  await desktopGit()?.review?.unstage(repoCwd() ?? '', path)
+  await reviewGit()?.review?.unstage(repoCwd() ?? '', path)
   await afterMutation()
 }
 
@@ -531,7 +548,7 @@ export async function revertReviewFile(path: null | string): Promise<void> {
     return
   }
 
-  await desktopGit()?.review?.revert(repoCwd() ?? '', path)
+  await reviewGit()?.review?.revert(repoCwd() ?? '', path)
   await afterMutation()
 }
 
@@ -734,7 +751,7 @@ $sessionStates.subscribe(states => {
       const cwd = state.cwd?.trim()
 
       if (cwd) {
-        void desktopGit()
+        void reviewGitFor(runtimeId)
           ?.review?.revParse(cwd, 'HEAD')
           .then(sha => {
             if (sha) {

@@ -21,10 +21,11 @@ from agent.checkpoints.manager import (
     _touch_project,
     _dir_file_count,
 )
+from agent.checkpoints import manager as cpm
 from agent.checkpoints.maintenance import (
     clear_all, clear_legacy, maybe_auto_prune_checkpoints, prune_checkpoints, store_status,
 )
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, get_scratch_dir, session_scratch_dir
 
 
 # =========================================================================
@@ -1484,3 +1485,36 @@ class TestSessionDiff:
         assert result["success"] is True
         assert "feature.py" in result["diff"]
         assert "+x = 1" in result["diff"]
+
+
+# =========================================================================
+# Scratch tree — never snapshotted
+# =========================================================================
+
+class TestScratchTreeIsNeverSnapshotted:
+    def test_scratch_lane_creates_no_checkpoint_project(self, monkeypatch, tmp_path):
+        """The runtime-environment block sends the model to the scratch dir for helper scripts and
+        probes; snapshotting it would stage throwaway files (and pay for the whole tree)."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        scratch = get_scratch_dir(prune=False)
+        lane = session_scratch_dir(session_id="api_1_abc")
+        assert lane is not None and scratch in lane.parents
+        (lane / "helper.sh").write_text("echo hi\n", encoding="utf-8")
+
+        mgr = CheckpointManager(enabled=True, max_snapshots=5)
+        assert mgr.ensure_checkpoint(str(lane), "scratch write") is False
+        assert mgr.ensure_checkpoint(str(scratch), "scratch root") is False
+        assert mgr.list_checkpoints(str(lane)) == []
+        assert not _project_meta_path(_store_path(), _project_hash(str(lane))).exists()
+
+    def test_a_sibling_of_the_scratch_tree_is_still_snapshotted(self, monkeypatch, tmp_path):
+        """Only the scratch tree is exempt: a real project next to it keeps its checkpoints."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        get_scratch_dir(prune=False)  # materialize the scratch tree
+        project = tmp_path / "home" / "cache" / "results"
+        project.mkdir(parents=True)
+        (project / "main.py").write_text("x = 1\n", encoding="utf-8")
+
+        mgr = CheckpointManager(enabled=True, max_snapshots=5)
+        assert mgr.ensure_checkpoint(str(project), "real work") is True
+        assert _project_meta_path(_store_path(), _project_hash(str(project))).exists()

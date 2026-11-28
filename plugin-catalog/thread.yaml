@@ -1,0 +1,25 @@
+name: thread
+repo: https://github.com/VIP-DANaiL/hermes-thread
+sha: 88ce440aa063447ee53fa4b369e63397322028c0
+description: "Operational session continuity — captures what you were working on and what you owe at session end, then re-orients the next session. Includes live Desktop dashboard pane. Hermes never starts cold."
+maintainer: Danny Purdy
+tier: community
+category: memory
+requires_hermes: ">=0.21"
+version: "2.0.0"
+capabilities:
+  provides_tools:
+    - thread_whats_owed
+    - thread_log
+    - thread_dashboard
+    - thread_resolve
+  provides_hooks:
+    - pre_llm_call
+    - post_tool_call
+    - post_llm_call
+    - on_session_end
+  provides_commands:
+    - resume
+    - thread-dashboard
+  provides_middleware: []
+  requires_env: []

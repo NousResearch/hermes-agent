@@ -87,7 +87,7 @@ import {
 } from './session'
 import { $sessionsWaitingOnCard, sessionNeedsInput } from './session-card-wait'
 import { secondaryProfileOwnerForEvent } from './session-event-provenance'
-import { $focusedStoredSessionId, TILE_PANE_PREFIX } from './session-focus'
+import { $focusedSessionIsTile, $focusedStoredSessionId, TILE_PANE_PREFIX } from './session-focus'
 import { turnHasReply, withNoReplyNotice } from './session-no-reply'
 import { assertSessionOwnerResolved } from './session-owner-resolution'
 import {
@@ -2857,6 +2857,16 @@ export function reopenLastClosedTile(): void {
 // statusbar context / timer / model) reads it and the derivations below
 // instead of the primary-only atoms.
 // ---------------------------------------------------------------------------
+
+/** The session TILE the user is looking at, or `null` when the focused pane is
+ *  anything else (the route-driven primary, a page, another pane kind). The
+ *  cold-start "reopen last chat" memory keys off this: fronting a tile never
+ *  moves the route (`focusedSessionNeedsRoute`), so a route-only memory ignored
+ *  every chat worked in as a tab. */
+export const $focusedTileStoredSessionId = computed(
+  [$focusedStoredSessionId, $focusedSessionIsTile],
+  (stored, isTile) => (isTile ? stored : null)
+)
 
 /** Every session currently OPEN as a surface: the primary's selection plus
  *  every tile's stored id. The sidebar highlights all of them (the focused one

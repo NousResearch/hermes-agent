@@ -121,3 +121,79 @@ def redact_credential_store_lines(text: str, mask, should_redact) -> str:
     for pattern in _CREDENTIAL_STORE_RES:
         text = pattern.sub(_sub, text)
     return text
+
+
+# Whole-line ``KEY=value`` / ``export KEY=value`` in KNOWN env-dump / env-file output (opt-in: too greedy
+# for prose or code). _ENV_ASSIGN_RE's ``(\S+)`` stops at the first space, so a multi-word value
+# (``AUTHORIZATION="Bearer <token>"``) kept its token visible. A credential value is masked to end of line.
+_ENV_LINE_RE = re.compile(
+    rf"^([ \t]*{_LINE_NUMBER_GUTTER}(?:export[ \t]+)?)([A-Za-z_][A-Za-z0-9_]*)[ \t]*=[ \t]*([^\r\n]*)",
+    re.MULTILINE,
+)
+_DOTENV_COMMENT_RE = re.compile(r"[ \t]+#")
+
+
+def _is_whole_command_substitution(value: str) -> bool:
+    """True only when ``value`` is exactly one balanced ``$(...)`` (nothing after its closing paren)."""
+    if not value.startswith("$("):
+        return False
+    depth = 0
+    for i, ch in enumerate(value):
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return i == len(value) - 1
+    return False
+
+
+def _closing_quote(value: str) -> int:
+    """Index of the quote closing ``value[0]`` (backslash escapes count inside double quotes), else -1."""
+    q, i = value[0], 1
+    while i < len(value):
+        if q == '"' and value[i] == "\\":
+            i += 2
+            continue
+        if value[i] == q:
+            return i
+        i += 1
+    return -1
+
+
+def _split_env_value(value: str, dotenv: bool) -> tuple[str, str]:
+    """``(value, kept_tail)``. ``env`` / ``printenv`` print values literally, so a quote or ``#`` never
+    ends one there (tail is empty). In a dotenv file a closing quote or `` #`` comment does; the tail is
+    kept only when it is plainly a comment, and an ambiguous quote masks the whole line."""
+    if value[:1] in ("'", '"'):
+        end = _closing_quote(value) if len(value) > 1 else -1
+        if not dotenv:
+            return (value[1:-1] if end == len(value) - 1 else value), ""
+        tail = value[end + 1:] if end > 0 else ""
+        if end > 0 and (not tail.strip() or tail.lstrip().startswith("#")):
+            return value[1:end], tail
+        return value, ""
+    comment = _DOTENV_COMMENT_RE.search(value) if dotenv else None
+    return (value[:comment.start()], value[comment.start():]) if comment else (value, "")
+
+
+def redact_env_lines(text: str, should_redact, *, dotenv: bool = False) -> str:
+    """Mask credential ``KEY=value`` lines to end of line (``KEY=***``); see _ENV_LINE_RE.
+
+    ``should_redact(key, value)`` is agent.redact's assignment gate, so ``SSH_AUTH_SOCK=$HOME/...``
+    stays readable. A multi-word value keeps that readability exemption only when the WHOLE value is one
+    command substitution (``export SSH_AUTH_SOCK=$(gpgconf --list-dirs agent-ssh-socket)``); a reference
+    followed by anything else (``KEY=$HOME/x <secret>``) is judged as the full value.
+    ``dotenv=True`` (a ``.env`` file read) keeps a trailing `` # comment`` readable.
+    """
+    def _sub(m):
+        key = m.group(2)
+        value, tail = _split_env_value(m.group(3).rstrip(), dotenv)
+        if not value.strip():
+            return m.group(0)
+        if _is_whole_command_substitution(value) and not should_redact(key, value.split(None, 1)[0]):
+            return m.group(0)
+        if not should_redact(key, value):
+            return m.group(0)
+        return f"{m.group(1)}{key}=***{tail}"
+    return _ENV_LINE_RE.sub(_sub, text)

@@ -24,7 +24,7 @@ from agent.redact_db_url import _DSN_PW_PLACEHOLDER_RE, _is_userinfo_placeholder
 from agent.redact_discord import _redact_discord_tokens
 from agent.redact_credential_stores import (
     _LINE_NUMBER_GUTTER, _SECRET_CFG_NAMES, aws_credential_process_keys, outside_spans,
-    redact_credential_store_lines,
+    redact_credential_store_lines, redact_env_lines,
 )
 from agent.redact_headers import (
     _COOKIE_HEADER_JSON_RE, _COOKIE_HEADER_JSON_UNTERMINATED_RE, _SECRET_HEADER_JSON_RE,
@@ -358,7 +358,7 @@ _YAML_CFG_WORD_RE = re.compile(_YAML_CFG_NAMES, re.IGNORECASE)
 # almost never prose, the same rationale as _ENV_ASSIGN_RE.
 _KEY_KEYWORD_RE = re.compile(
     r"(?:api|auth|access|refresh|session|secret)[ _.\\-]?(?:key|token)"
-    r"|token|secret|passwd|password|pass|pw|credential|auth|key",
+    r"|token|secret|passwd|password|pass|pw|credential|authorization|auth|key",
     re.IGNORECASE,
 )
 
@@ -368,7 +368,7 @@ _KEY_KEYWORD_RE = re.compile(
 # are gated on value shape (_looks_like_opaque_credential).
 _STRONG_KEY_KEYWORD_RE = re.compile(
     r"(?:api|auth|access|refresh|session|id|bearer)[ _.\\-]?(?:key|token)"
-    r"|key[ _.\\-]?material|secret|passwd|password|pass|pw|credential|auth|bearer",
+    r"|key[ _.\\-]?material|secret|passwd|password|pass|pw|credential|authorization|auth|bearer",
     re.IGNORECASE,
 )
 # Password-class keys mask any literal value; for other keys a value that starts like ``$HOME/...``,
@@ -1484,7 +1484,7 @@ def _redact_phone(m):
 
 def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = False,
                           file_read: bool = False, secret_file: bool = False,
-                          redact_url_credentials: bool = False, keep_phone_numbers: bool = False) -> str:
+                          redact_url_credentials: bool = False, keep_phone_numbers: bool = False, env_assign: bool = False) -> str:
     """Apply all redaction patterns to a block of text.
 
     Safe on any string. Enabled by default (``security.redact_secrets: false``
@@ -1533,12 +1533,12 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
         return text
     return redact_credential_shapes(text, force=force, code_file=code_file, file_read=file_read,
                                     secret_file=secret_file, redact_url_credentials=redact_url_credentials,
-                                    keep_phone_numbers=keep_phone_numbers)
+                                    keep_phone_numbers=keep_phone_numbers, env_assign=env_assign)
 
 
 def redact_credential_shapes(text: str, *, force: bool = False, code_file: bool = False,
                              file_read: bool = False, secret_file: bool = False,
-                             redact_url_credentials: bool = False, keep_phone_numbers: bool = False) -> str:
+                             redact_url_credentials: bool = False, keep_phone_numbers: bool = False, env_assign: bool = False) -> str:
     """The pattern passes of ``redact_sensitive_text`` alone: no registered exact values, no preference
     gate. A classifier (does this value have a credential shape?) must not read a registry, or another
     profile's values would decide what this one treats as secret."""
@@ -1549,6 +1549,10 @@ def redact_credential_shapes(text: str, *, force: bool = False, code_file: bool 
     # Key blocks first: a body line holding a token prefix (``gAAAA``) would otherwise be masked into
     # ``gAAAAh...Y2Nj`` and end the partial-key run there, leaving the lines past it visible.
     text = _redact_private_key_blocks(text)
+    # Env dumps mask credential values to end of line, AFTER the key-block pass (else the BEGIN marker hides).
+    if env_assign and "=" in text:
+        text = outside_spans(text, aws_credential_process_keys(text) if secret_file else [], lambda t: redact_env_lines(
+            t, lambda k, v: _should_redact_assignment(k, v, check_keyword=True), dotenv=secret_file))
     # Control/zero-width chars can split a token body so _PREFIX_RE alone misses it.
     if _has_known_prefix_substring(text):
         _prefix_sub = _mask_token_nonreusable if file_read else _mask_token
@@ -1811,14 +1815,14 @@ def redact_terminal_output(output: str, command: str | None = None, *, force: bo
         return output
     secret_file = _command_reads_secret_file(command)
     code_file = not (secret_file or is_env_dump_command(command))
-    redacted = redact_sensitive_text(output, force=force, code_file=code_file, secret_file=secret_file)
+    redacted = redact_sensitive_text(output, force=force, code_file=code_file, secret_file=secret_file,
+                                     env_assign=not code_file)
     # Source-preserving output still gets the Python-repr pass on high-confidence
     # diagnostic lines (pytest ``E   `` introspection, final exception lines): that is
     # where {'BRAVE_API_KEY': '…'} leaks, not in source dumps.
     if code_file and (force or _redact_enabled()) and ":" in redacted and "'" in redacted:
         redacted = _redact_python_diagnostic_repr_fields(redacted)
     return redacted
-
 
 
 # execute_code output is script stdout, not a command line, so redact_terminal_output's command

@@ -158,6 +158,32 @@ _MARKDOWN_MEDIA_RE = re.compile(
 )
 _BARE_MEDIA_RE = re.compile(_MEDIA_URL_PATTERN, re.IGNORECASE)
 _MEDIA_PATH_RE = re.compile(r"^/media/(?P<sha>[0-9a-f]{64})(?P<ext>\.[a-z0-9]{1,10})?/?$", re.IGNORECASE)
+# Buzz PTT clips are named ``voice-note-<ts>.mp4`` (AAC-in-MP4). Bare ``.mp4`` classifies as video
+# and skips STT; rename into the audio cache path and emit MessageType.VOICE (WhatsApp ptt parity).
+_VOICE_NOTE_NAME_RE = re.compile(r"(?i)(?:^|[/\\])voice-note")
+
+
+def _is_buzz_voice_note_name(name: str) -> bool:
+    return bool(name and _VOICE_NOTE_NAME_RE.search(str(name).replace("\\", "/")))
+
+
+def _buzz_voice_cache_args(filename: str, mime_type: str) -> tuple[str, str]:
+    """Return ``(filename, mime)`` so ``cache_media_bytes`` stores a voice note as audio, not video."""
+    stem = Path(filename or "voice").stem or "voice"
+    mime = (mime_type or "").lower()
+    if not mime.startswith("audio/"):
+        mime = "audio/mp4"
+    return f"{stem}.m4a", mime
+
+
+def _voice_note_urls_from_text(text: str, relay_url: str) -> set[str]:
+    """Same-relay markdown media URLs whose alt text is a Buzz ``voice-note-*`` clip."""
+    found: set[str] = set()
+    for match in _MARKDOWN_MEDIA_RE.finditer(text or ""):
+        url = match.group("url")
+        if _is_buzz_voice_note_name(match.group("alt")) and _is_relay_media_url(url, relay_url):
+            found.add(url)
+    return found
 
 
 def _consume_ws_read_task(task: asyncio.Task) -> None:
@@ -504,8 +530,9 @@ def _p_tagged(event: dict, pubkey: str) -> bool:
 
 # Cap stored parent content snippets (gateway reply injection also clips).
 _EVENT_META_CONTENT_CAP = 500
-_MEDIA_KIND_PRIORITY = (("image", MessageType.PHOTO), ("audio", MessageType.AUDIO), ("video", MessageType.VIDEO))
-_ATTACHMENT_KIND_TYPES = {"image": MessageType.PHOTO, "video": MessageType.VIDEO, "audio": MessageType.AUDIO, "document": MessageType.DOCUMENT}
+# audio → VOICE so gateway STT runs (MessageType.AUDIO is treated as a file attachment, not a voice note).
+_MEDIA_KIND_PRIORITY = (("image", MessageType.PHOTO), ("audio", MessageType.VOICE), ("video", MessageType.VIDEO))
+_ATTACHMENT_KIND_TYPES = {"image": MessageType.PHOTO, "video": MessageType.VIDEO, "audio": MessageType.VOICE, "document": MessageType.DOCUMENT}
 
 
 class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
@@ -1389,8 +1416,12 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
         """Return a fixed-width diagnostic for malformed or excess metadata."""
         return f"[{rejected if rejected <= 999 else '999+'} Buzz attachment(s) rejected as malformed or over limits.]"
 
-    async def _download_attachment(self, metadata: dict) -> Optional[CachedMedia]:
-        """Download, integrity-check, and cache one authorized Buzz attachment."""
+    async def _download_attachment(self, metadata: dict, *, prefer_voice: bool = False) -> Optional[CachedMedia]:
+        """Download, integrity-check, and cache one authorized Buzz attachment.
+
+        Auth-gated Blossom relays reject anonymous GET (HTTP 401). Use the same
+        signed ``buzz media get`` path as ``_localize_inbound_media``.
+        """
         url = metadata["url"]
         try:
             parsed_url = urlsplit(url)
@@ -1400,32 +1431,19 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
         if parsed_url is None or parsed_url.scheme != "https" or origin not in self._attachment_origins:
             logger.warning("Buzz: refusing attachment from untrusted origin %s:%s", origin[0] or "<missing>", origin[1])
             return None
-        import httpx
         try:
-            timeout = httpx.Timeout(_ATTACHMENT_DOWNLOAD_TIMEOUT)
-            async with (
-                asyncio.timeout(_ATTACHMENT_DOWNLOAD_TIMEOUT),
-                httpx.AsyncClient(follow_redirects=False, timeout=timeout, headers={"Accept-Encoding": "identity"}) as client,
-                client.stream("GET", url) as response,
-            ):
-                if response.status_code != 200:
-                    logger.warning("Buzz: attachment download returned HTTP %s", response.status_code)
+            with tempfile.TemporaryDirectory(prefix="hermes-buzz-attach-") as temp_dir:
+                download_path = Path(temp_dir) / metadata["filename"]
+                async with asyncio.timeout(_ATTACHMENT_DOWNLOAD_TIMEOUT):
+                    code, _out, _err = await self._run_cli(["media", "get", "-o", str(download_path), url])
+                if code != 0 or not download_path.is_file():
+                    logger.warning("Buzz: attachment download failed (buzz media get exit %d)", code)
                     return None
-                if content_length := response.headers.get("content-length"):
-                    try:
-                        declared_response_size = int(content_length)
-                    except ValueError:
-                        return None
-                    if declared_response_size != metadata["size"]:
-                        logger.warning("Buzz: attachment Content-Length does not match imeta size")
-                        return None
-                data = bytearray()
-                async for chunk in response.aiter_bytes():
-                    data.extend(chunk)
-                    if len(data) > metadata["size"]:
-                        logger.warning("Buzz: attachment exceeded its declared size")
-                        return None
-        except (TimeoutError, httpx.HTTPError, OSError, ValueError) as exc:
+                data = await asyncio.to_thread(download_path.read_bytes)
+                if len(data) > metadata["size"]:
+                    logger.warning("Buzz: attachment exceeded its declared size")
+                    return None
+        except (TimeoutError, OSError, ValueError) as exc:
             logger.warning("Buzz: attachment download failed: %s", exc)
             return None
         for bad, what in ((len(data) != metadata["size"], "size"), (hashlib.sha256(data).hexdigest() != metadata["sha256"], "SHA-256")):
@@ -1433,13 +1451,23 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
                 logger.warning("Buzz: attachment %s does not match imeta", what)
                 return None
         try:
-            return await cache_media_bytes_async(bytes(data), filename=metadata["filename"], mime_type=metadata["mime_type"])
+            filename, mime_type = metadata["filename"], metadata["mime_type"]
+            # imeta often declares video/mp4 for PTT; markdown alt ``voice-note-*`` is the reliable hint.
+            if prefer_voice or _is_buzz_voice_note_name(filename) or (mime_type or "").lower().startswith("audio/"):
+                filename, mime_type = _buzz_voice_cache_args(filename, mime_type)
+            return await cache_media_bytes_async(bytes(data), filename=filename, mime_type=mime_type)
         except (OSError, ValueError) as exc:
             logger.warning("Buzz: attachment cache write failed: %s", exc)
             return None
 
-    async def _cache_inbound_attachments(self, metadata_items: list[dict]) -> list[CachedMedia]:
-        return [a for m in metadata_items if (a := await self._download_attachment(m)) is not None]
+    async def _cache_inbound_attachments(
+        self, metadata_items: list[dict], *, voice_urls: Optional[set[str]] = None,
+    ) -> list[CachedMedia]:
+        voice_urls = voice_urls or set()
+        return [
+            a for m in metadata_items
+            if (a := await self._download_attachment(m, prefer_voice=m["url"] in voice_urls)) is not None
+        ]
 
     async def _handle_event(self, channel_id: str, state: dict, event: dict) -> None:
         """De-dupe, filter, and dispatch a single ``messages get`` event."""
@@ -1486,14 +1514,17 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
         # The message still dispatches so GatewayRunner can apply denial/pairing.
         chat_type = "dm" if is_dm else "group"
         fetch_allowed = bool(attachment_metadata) and self._is_sender_authorized(pubkey, chat_type, channel_id) is True
-        attachments = await self._cache_inbound_attachments(attachment_metadata) if fetch_allowed else []
+        voice_urls = _voice_note_urls_from_text(content, self.relay_url)
+        attachments = (
+            await self._cache_inbound_attachments(attachment_metadata, voice_urls=voice_urls) if fetch_allowed else []
+        )
         if rejected_attachments:
             dispatch_text = f"{dispatch_text}\n{self._attachment_rejection_note(rejected_attachments)}".strip()
         if fetch_allowed and (failed := len(attachment_metadata) - len(attachments)):
             dispatch_text = f"{dispatch_text}\n[{failed} Buzz attachment(s) could not be downloaded or failed integrity checks.]".strip()
         message_type = MessageType.TEXT
         if attachments:
-            # Mixed kinds use document semantics so an audio member is not mistaken for a voice note (STT).
+            # Mixed kinds use document semantics (avoids mis-routing a multi-kind batch through STT/vision).
             kinds = {attachment.kind for attachment in attachments}
             message_type = _ATTACHMENT_KIND_TYPES.get(next(iter(kinds)), MessageType.DOCUMENT) if len(kinds) == 1 else MessageType.DOCUMENT
         await self._dispatch_message(
@@ -1681,6 +1712,11 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
         media_urls: list[str] = []
         media_types: list[str] = []
         media_kinds: list[str] = []
+        url_alts: dict[str, str] = {}
+        for match in _MARKDOWN_MEDIA_RE.finditer(text):
+            ref = match.group("url")
+            if _is_relay_media_url(ref, self.relay_url):
+                url_alts[ref] = match.group("alt").strip()
         from gateway.platforms.base import cache_media_bytes_async, validate_inbound_media_size
         for url in urls:
             path_match = _MEDIA_PATH_RE.fullmatch(urlsplit(url).path)
@@ -1696,9 +1732,12 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
                         continue
                     validate_inbound_media_size(download_path.stat().st_size, media_type="Buzz media")
                     mime_type = mimetypes.guess_type(download_path.name)[0] or "application/octet-stream"
+                    filename = download_path.name
+                    if _is_buzz_voice_note_name(url_alts.get(url, "")):
+                        filename, mime_type = _buzz_voice_cache_args(url_alts.get(url) or filename, mime_type)
                     # Up to the inbound media cap (128 MiB) — read off the loop too.
                     data = await asyncio.to_thread(download_path.read_bytes)
-                    cached = await cache_media_bytes_async(data, filename=download_path.name, mime_type=mime_type)
+                    cached = await cache_media_bytes_async(data, filename=filename, mime_type=mime_type)
             except Exception as exc:
                 logger.warning("Buzz: failed to localize inbound media %s (%s)", label, type(exc).__name__)
                 continue
@@ -1739,8 +1778,19 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
         if message_type == MessageType.TEXT:
             message_type = localized_type
         elif localized_urls and localized_type not in (message_type, MessageType.TEXT):
-            # Mixed sources use document semantics so audio isn't routed to STT.
-            message_type = MessageType.DOCUMENT
+            # Voice notes often arrive as imeta video/mp4 + localized audio — prefer VOICE for STT.
+            if MessageType.VOICE in (message_type, localized_type):
+                message_type = MessageType.VOICE
+            else:
+                message_type = MessageType.DOCUMENT
+        # Drop duplicate video twin when we already have the audio cache of the same PTT clip.
+        if message_type == MessageType.VOICE or any((t or "").startswith("audio/") for t in media_types):
+            kept = [(p, t) for p, t in zip(media_urls, media_types) if not (t or "").startswith("video/")]
+            if kept:
+                media_urls = [p for p, _ in kept]
+                media_types = [t for _, t in kept]
+                if any((t or "").startswith("audio/") for t in media_types):
+                    message_type = MessageType.VOICE
         source = self.build_source(
             chat_id=chat_id, chat_name=self._channel_names.get(chat_id, chat_id), chat_type=chat_type,
             user_id=user_id, user_name=user_name, thread_id=thread_id, message_id=message_id,

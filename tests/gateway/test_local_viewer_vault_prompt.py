@@ -159,12 +159,15 @@ def test_interrupt_withdraws_the_code_card():
                what='request.cancel')
 
 
-def test_no_attached_viewer_returns_at_once():
+def test_no_attached_viewer_on_a_finite_turn_returns_at_once():
+    """``chat -q`` detaches on purpose; any other turn waits for a viewer that attaches later
+    (``test_local_viewer_prompts_wait_for_viewer.py``)."""
     from agent.vault_backends import unlock
     from gateway.session_events import SessionEvents
+    from gateway.session_finite import finite_turn_scope
     from gateway.session_vault_prompt import vault_prompt_scope
     started = time.monotonic()
-    with vault_prompt_scope(_turn(SessionEvents()), SimpleNamespace()):
+    with finite_turn_scope(True), vault_prompt_scope(_turn(SessionEvents()), SimpleNamespace()):
         assert unlock.get_code_prompt_callback()('example.com', '') == ''
     assert time.monotonic() - started < 2
 

@@ -25,6 +25,7 @@ function renderSlot(
     queueEdit: null,
     queueParked: false,
     queuedPrompts: getQueuedPrompts('stored'),
+    redirectQueuedText: vi.fn(async () => true),
     sendQueuedNow: vi.fn(),
     sessionId: 'runtime-1',
     steerQueuedNow: vi.fn(),
@@ -72,7 +73,7 @@ it('Delete on a server-queued card cancels its admission at the authority', asyn
   await vi.waitFor(() => expect(request).toHaveBeenCalledWith('prompt.cancel', { session_id: 'runtime-1', admission_id: 'adm-1' }))
 })
 
-it('a server-queued card shows the Steer and Edit its owner serves, and never Next (RT-35)', async () => {
+it('a server-queued card shows the Steer, Edit and Next its owner serves (RT-35)', async () => {
   reconcilePendingSubmissions('stored', [
     { admission_id: 'adm-1', status: 'queued', user: 'later please', controls: ['steer', 'replace'] }
   ])
@@ -81,18 +82,37 @@ it('a server-queued card shows the Steer and Edit its owner serves, and never Ne
 
   await expand()
   expect(labels(rowButtons('later please')).sort()).toEqual(
-    [en.composer.queueDelete, en.composer.queueEdit, en.composer.queueSteer].sort()
+    [en.composer.queueDelete, en.composer.queueEdit, en.composer.queueSteer, en.composer.queueSendNext].sort()
   )
   // The local row keeps its own controls, Next included.
   expect(labels(rowButtons('local words'))).toContain(en.composer.queueSendNext)
 })
 
-it('a server-queued card from an owner without the queued-row verbs keeps only Delete', async () => {
+it('a server-queued card without owner verbs keeps Delete and Next (Next withdraws the admission)', async () => {
   reconcilePendingSubmissions('stored', [{ admission_id: 'adm-1', status: 'queued', user: 'later please' }])
   renderSlot()
   await expand()
 
-  expect(labels(rowButtons('later please'))).toEqual([en.composer.queueDelete])
+  expect(labels(rowButtons('later please')).sort()).toEqual([en.composer.queueDelete, en.composer.queueSendNext].sort())
+})
+
+it('Next on a server-queued card withdraws the admission then redirects the live turn', async () => {
+  reconcilePendingSubmissions('stored', [
+    { admission_id: 'adm-1', status: 'queued', user: 'later please', controls: ['steer', 'replace'] }
+  ])
+
+  const request = vi.fn(async () => ({}))
+  const inputs = renderSlot(request)
+  await expand()
+
+  fireEvent.click(rowButtons('later please').getByRole('button', { name: en.composer.queueSendNext }))
+
+  // Send-now is forbidden here: it ends in the hard Stop, and the withdrawn row is already
+  // gone by then - that path lost the words (2026-10-20). Withdraw the admission, then
+  // deliver the captured text as a redirect so the gateway restarts the live request.
+  await vi.waitFor(() => expect(inputs.redirectQueuedText).toHaveBeenCalledWith('later please'))
+  expect(request).toHaveBeenCalledWith('prompt.cancel', expect.objectContaining({ admission_id: 'adm-1' }))
+  expect(inputs.sendQueuedNow).not.toHaveBeenCalled()
 })
 
 it('Steer on a server-queued card asks the authority to steer that admission', async () => {

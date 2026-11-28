@@ -40,6 +40,7 @@ class ResponseCheckVerdict:
     truncated_response_parts: Any
     truncated_tool_call_retries: Any
     _preflight_compression_blocked: Any
+    _preflight_blocked_at_tokens: Any
     _last_preflight_pressure: Any
     api_duration: Any
     result: Optional[dict[str, Any]] = None
@@ -97,7 +98,8 @@ def check_api_response(
     max_compression_attempts: Any, length_continue_retries: Any, truncated_response_parts: Any,
     truncated_tool_call_retries: Any, current_turn_user_idx: Any, api_call_count: Any,
     api_request_id: Any, api_start_time: Any, effective_task_id: Any, turn_id: Any,
-    _preflight_compression_blocked: Any, _last_preflight_pressure: Any,
+    _preflight_compression_blocked: Any, _preflight_blocked_at_tokens: Any,
+    _last_preflight_pressure: Any,
 ) -> ResponseCheckVerdict:
     """Verify ``response`` in the original order. The retry buffer is NOT cleared on success
     (bytes back != usable content); ``_preflight_compression_blocked``/``_last_preflight_pressure``
@@ -113,6 +115,7 @@ def check_api_response(
             truncated_response_parts=truncated_response_parts,
             truncated_tool_call_retries=truncated_tool_call_retries,
             _preflight_compression_blocked=_preflight_compression_blocked,
+            _preflight_blocked_at_tokens=_preflight_blocked_at_tokens,
             _last_preflight_pressure=_last_preflight_pressure, api_duration=api_duration,
             result=result,
         )
@@ -206,6 +209,7 @@ def check_api_response(
     compression_attempts = _usage_outcome.compression_attempts
     if _usage_outcome.rearmed:
         _preflight_compression_blocked = False
+        _preflight_blocked_at_tokens = 0
         _last_preflight_pressure = None
     # Arm a bounded replay (smallest output cap) of THIS request before the clock's guaranteed window
     # ends, so a tool round longer than the TTL does not turn the next request into a full-price cache write.

@@ -120,6 +120,10 @@ class FileOperations(ABC):
         """Apply a V4A format patch."""
 
     @abstractmethod
+    def entry_write_denied(self, path: str, verb: str) -> Optional[str]:
+        """Why deleting or moving the directory entry ``path`` is refused, or None."""
+
+    @abstractmethod
     def delete_file(self, path: str) -> WriteResult:
         """Delete a file. Returns WriteResult with .error set on failure."""
 
@@ -1315,15 +1319,19 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             return ReadResult(error=f"Backend returned invalid binary data for: {path}")
         return ReadResult(base64_content=compact, file_size=file_size, is_binary=True)
 
+    def entry_write_denied(self, path: str, verb: str) -> Optional[str]:
+        """Why deleting or moving the directory entry ``path`` is refused, or None. An entry operation removes
+        the entry itself (a symlink, not its target), so the guards vet the entry as well as the target it
+        resolves to. V4A validation calls this too, so a refused entry fails the patch before anything applies."""
+        return get_write_denied_error(self._expand_path(path), verb=verb, entry=True)
+
     def delete_file(self, path: str) -> WriteResult:
         """Delete a single file (directories rejected) via the backend's ``python -c``
         so one code path works on local/docker/ssh AND Windows shells (no ``rm``)."""
-        path = self._expand_path(path)
-        # Delete removes the directory entry (a symlink itself, not its target), so
-        # the guards vet the entry as well as the target it resolves to.
-        denied = get_write_denied_error(path, verb="Delete", entry=True)
+        denied = self.entry_write_denied(path, verb="Delete")
         if denied:
             return WriteResult(error=denied)
+        path = self._expand_path(path)
         # Path baked in via repr() for shell-independent quoting; no
         # ``unlink(missing_ok=True)`` (a 3.7 remote interpreter lacks it).
         snippet = (
@@ -1356,13 +1364,12 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         return WriteResult()
 
     def move_file(self, src: str, dst: str) -> WriteResult:
-        src = self._expand_path(src)
-        dst = self._expand_path(dst)
-        # Entry-level op like delete_file: vet both entries, not just their targets.
         for p in (src, dst):
-            denied = get_write_denied_error(p, verb="Move", entry=True)
+            denied = self.entry_write_denied(p, verb="Move")
             if denied:
                 return WriteResult(error=denied)
+        src = self._expand_path(src)
+        dst = self._expand_path(dst)
         result = self._exec(f"mv {self._escape_shell_arg(src)} {self._escape_shell_arg(dst)}")
         if result.exit_code != 0:
             return WriteResult(error=f"Failed to move {src} -> {dst}: {result.stdout}")

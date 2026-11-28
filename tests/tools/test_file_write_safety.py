@@ -1161,3 +1161,125 @@ def test_config_hard_block_follows_file_identity_not_spelling(tmp_path):
         reset_hermes_home_override(tok)
     assert err is not None and "Refusing to write to Hermes config file" in err
     assert other is None
+
+
+class TestPseudoFilesystemWriteGuard:
+    """Regression for #156063: refuse mutating device and kernel paths before I/O."""
+
+    @pytest.mark.platforms("posix")
+    @pytest.mark.parametrize(
+        "path",
+        (
+            "/dev/null",
+            "/dev/zero",
+            "/proc/sysrq-trigger",
+            "/proc/sys/vm/drop_caches",
+            "/sys/kernel/debug",
+        ),
+    )
+    def test_both_file_write_guards_deny_pseudo_files(self, path):
+        from agent.file_safety import get_write_denied_error
+        from tools.file_tools_write_guards import _check_sensitive_path
+
+        assert _check_sensitive_path(path) is not None
+        assert _is_write_denied(path)
+        assert "device or kernel pseudo-filesystem" in (get_write_denied_error(path) or "")
+
+    @pytest.mark.platforms("posix")
+    def test_all_mutators_reject_device_symlink_before_backend_io(
+        self, tmp_path: Path, monkeypatch
+    ):
+        from tools.environments.local import LocalEnvironment
+        from tools.file_operations import ShellFileOperations
+
+        alias = tmp_path / "device-alias"
+        alias.symlink_to("/dev/null")
+        dev_dir = tmp_path / "devdir"  # `mv x devdir` moves INTO /dev
+        dev_dir.symlink_to("/dev")
+        ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)), cwd=str(tmp_path))
+
+        def no_io(*args, **kwargs):
+            pytest.fail("a rejected path reached backend I/O")
+
+        for name in ("_atomic_write", "_read_exact_bytes", "_exec_python_snippet", "_exec"):
+            monkeypatch.setattr(ops, name, no_io)
+
+        safe = str(tmp_path / "regular.txt")
+        actions = (
+            lambda: ops.write_file(str(alias), "test"),
+            lambda: ops.patch_replace(str(alias), "old", "new"),
+            lambda: ops.delete_file(str(alias)),
+            lambda: ops.move_file(str(alias), safe),
+            lambda: ops.move_file(safe, str(alias)),
+            lambda: ops.move_file(safe, str(dev_dir)),
+        )
+        for action in actions:
+            result = action()
+            assert "device or kernel pseudo-filesystem" in (result.error or "")
+
+    @pytest.mark.platforms("posix")
+    def test_dev_shm_stays_writable(self):
+        from tools.file_tools_write_guards import _check_sensitive_path
+
+        path = "/dev/shm/hermes-scratch.txt"
+        assert _check_sensitive_path(path) is None
+        assert not _is_write_denied(path)
+
+    @pytest.mark.platforms("linux")
+    def test_a_link_in_dev_shm_to_a_device_is_still_refused(self):
+        """The exemption covers files in /dev/shm, not what a link there points at."""
+        import shutil
+        import tempfile
+
+        from tools.file_tools_write_guards import _check_sensitive_path
+
+        if not os.access("/dev/shm", os.W_OK):
+            pytest.skip("/dev/shm is not writable here")
+        scratch = tempfile.mkdtemp(dir="/dev/shm")
+        try:
+            os.symlink("/dev/null", os.path.join(scratch, "nl"))
+            os.symlink("/dev/pts", os.path.join(scratch, "pts"))
+            for path in (os.path.join(scratch, "nl"), os.path.join(scratch, "pts", "..", "null")):
+                assert _is_write_denied(path)
+                assert "device or kernel pseudo-filesystem" in (_check_sensitive_path(path) or "")
+        finally:
+            shutil.rmtree(scratch)
+
+    @pytest.mark.platforms("linux")
+    def test_a_refused_v4a_entry_applies_no_part_of_the_patch(self, tmp_path: Path):
+        """A Delete entry under /proc (reached through a link to /dev) is refused before the patch's earlier
+        Update runs, not after it applied: preflight vets entries like the operation layer does."""
+        import json
+
+        from tools.file_tools import patch_tool
+
+        plain = tmp_path / "plain.txt"
+        plain.write_text("hello\n")
+        (tmp_path / "devdir").symlink_to("/dev")
+        regular = tmp_path / "regular.txt"
+        regular.write_text("")
+        with regular.open() as fh:
+            patch = (f"*** Begin Patch\n*** Update File: {plain}\n@@\n-hello\n+world\n"
+                     f"*** Delete File: {tmp_path / 'devdir' / 'fd' / str(fh.fileno())}\n*** End Patch")
+            result = json.loads(patch_tool(mode="patch", patch=patch))
+        assert "device or kernel pseudo-filesystem" in result.get("error", "")
+        assert plain.read_text() == "hello\n" and regular.exists()
+
+    @pytest.mark.platforms("linux")
+    @pytest.mark.parametrize("spelling", ("/dev/fd/{fd}", "//dev/fd/{fd}", "/dev/shm/../fd/{fd}"))
+    def test_a_dev_path_that_resolves_outside_dev_is_refused_by_its_text(self, tmp_path: Path, spelling):
+        """/dev/fd/N resolves to the open file itself, so only the path text can refuse it."""
+        from tools.file_tools_write_guards import _check_sensitive_path
+
+        regular = tmp_path / "regular.txt"
+        regular.write_text("")
+        with regular.open() as fh:
+            assert os.path.realpath(f"/dev/fd/{fh.fileno()}") == os.path.realpath(regular)
+            path = spelling.format(fd=fh.fileno())
+            assert _is_write_denied(path)
+            assert "device or kernel pseudo-filesystem" in (_check_sensitive_path(path) or "")
+
+    @pytest.mark.platforms("posix")
+    @pytest.mark.parametrize("path", ("/dev/shmx", "/dev/shm/../null", "//dev/shm/../../dev/sda", "/dev/mqueue/q"))
+    def test_the_dev_shm_exemption_covers_nothing_else(self, path):
+        assert _is_write_denied(path)

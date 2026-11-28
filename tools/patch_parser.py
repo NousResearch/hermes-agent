@@ -185,6 +185,17 @@ def _backend_is_windows(env: Any, cwd: str) -> bool:
         re.match(r"^[A-Za-z]:[\\/]", cwd))
 
 
+def _entry_refusal(op: PatchOperation, file_ops: Any) -> Optional[str]:
+    """The refusal a Delete or Move entry meets when applied, checked by the same ``file_ops`` on the same paths,
+    so a refused entry fails validation before any operation of the patch runs (#156063)."""
+    if op.operation == OperationType.DELETE:
+        return file_ops.entry_write_denied(op.file_path, verb="Delete")
+    if op.operation == OperationType.MOVE:
+        return next(filter(None, (file_ops.entry_write_denied(p, verb="Move") for p in (op.file_path, op.new_path) if p)),
+                    None)
+    return None
+
+
 def _validate_operations(operations: list[PatchOperation], file_ops: Any) -> list[str]:
     """Dry-run every operation -> error strings (empty = safe). UPDATE hunks are simulated in
     order so later hunks see post-earlier-hunk content, exactly as apply will."""
@@ -274,6 +285,9 @@ def _validate_operations(operations: list[PatchOperation], file_ops: Any) -> lis
             _validate_update(op)
             continue
         real_change_count += 1
+        if denied := _entry_refusal(op, file_ops):
+            errors.append(denied)
+            continue
         if op.operation == OperationType.DELETE:
             # A file over read_file_raw's cap exists; Delete needs no content, so it stays legal.
             _content, read_err, too_large = _read_checked(op.file_path)
@@ -353,7 +367,7 @@ def _unified_diff(path: str, old: str, new: Optional[str]) -> str:
 def apply_v4a_operations(operations: list[PatchOperation], file_ops: Any) -> PatchResult:
     """Two-phase: validate everything, then apply (atomic on validation failure). A phase-2
     failure (validate/apply race) carries a ``git diff`` note since state may be inconsistent.
-    ``file_ops`` needs read_file_raw/write_file/delete_file/move_file."""
+    ``file_ops`` needs read_file_raw/write_file/delete_file/move_file, and entry_write_denied for Delete/Move."""
 
     def _bullets(errs: list[str]) -> str:
         return "\n".join(f"  • {e}" for e in errs)

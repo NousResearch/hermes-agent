@@ -2,6 +2,8 @@
 
 from types import SimpleNamespace
 
+import pytest
+
 from tools.patch_parser import (
     OperationType,
     apply_v4a_operations,
@@ -487,6 +489,9 @@ class TestValidationPhase:
                     return SimpleNamespace(content=state[path], error=None)
                 return SimpleNamespace(content=None, error=f"File not found: {path}", not_found=True)
 
+            def entry_write_denied(self, path, verb):
+                return None
+
             def delete_file(self, path):
                 state.pop(path, None)
                 return SimpleNamespace(error=None)
@@ -521,6 +526,9 @@ class TestApplyDelete:
                     error=None,
                 )
 
+            def entry_write_denied(self, path, verb):
+                return None
+
             def delete_file(self, path):
                 self.deleted = True
                 return SimpleNamespace(error=None)
@@ -547,6 +555,9 @@ class TestApplyDelete:
         class FakeFileOps:
             def read_file_raw(self, path):
                 return SimpleNamespace(content="", error=None)
+
+            def entry_write_denied(self, path, verb):
+                return None
 
             def delete_file(self, path):
                 return SimpleNamespace(error=None)
@@ -760,9 +771,32 @@ class _DictFileOps:
         self.files[dst] = self.files.pop(src)
         return SimpleNamespace(error=None)
 
+    def entry_write_denied(self, path, verb):
+        return None
+
     def delete_file(self, path):
         self.files.pop(path, None)
         return SimpleNamespace(error=None)
+
+
+class TestRefusedEntryFailsValidation:
+    """A Delete or Move entry the backend refuses fails validation, so no operation of the patch applies: the
+    backend judges the same path strings it would judge at apply time, on host and non-host backends alike."""
+
+    class _Refusing(_DictFileOps):
+        def entry_write_denied(self, path, verb):
+            return f"{verb} denied: {path}" if path.startswith("mt/") else None
+
+    @pytest.mark.parametrize("entry_op", [
+        "*** Delete File: mt/token", "*** Move File: a.py -> mt/new", "*** Move File: mt/token -> moved.py"])
+    def test_nothing_applies(self, entry_op):
+        ops = self._Refusing({"a.py": "x = 1\n", "mt/token": "t", "plain.py": "hello\n"})
+        patch = f"*** Begin Patch\n*** Update File: plain.py\n@@\n-hello\n+world\n{entry_op}\n*** End Patch"
+        operations, err = parse_v4a_patch(patch)
+        assert err is None
+        result = apply_v4a_operations(operations, ops)
+        assert not result.success and "denied: mt/" in result.error
+        assert ops.files == {"a.py": "x = 1\n", "mt/token": "t", "plain.py": "hello\n"}
 
 
 class TestDuckTypedWriteFileCompat:

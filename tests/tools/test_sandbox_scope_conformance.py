@@ -343,7 +343,8 @@ def test_a_hosted_process_is_never_checkpointed_and_a_recovered_one_stays_its_ag
         assert json.loads(checkpoint.read_text()) == []
         checkpoint.write_text(json.dumps([{"session_id": "proc_hosted_ckpt", "command": "sleep 600",
                                            "task_id": key, "sandbox_key": key, "pid": os.getpid(),
-                                           "pid_scope": "host", "host_start_time": 1.0}]))
+                                           "pid_scope": "host", "host_start_time": 1.0,
+                                           "owner_pid": os.getpid()}]))  # its writer: this process
         restarted = ProcessRegistry()
         monkeypatch.setattr(restarted, "_host_pid_is_ours", lambda *_a: True)
         monkeypatch.setattr(restarted, "_is_host_pid_alive", lambda *_a: True)

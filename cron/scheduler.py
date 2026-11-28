@@ -890,15 +890,11 @@ def _cron_interval_minutes(expr: str) -> Optional[float]:
 
         ok = _ensure_croniter()
         if ok:
-            from cron.jobs import croniter as _croniter
+            from cron.jobs import _cron_gap_seconds
             from datetime import datetime
 
-            base = datetime.now()
-            it = _croniter(expr, base)
-            first = it.get_next(datetime)
-            second = it.get_next(datetime)
-            gap = (second - first).total_seconds() / 60.0
-            result = gap if gap > 0 else None
+            gap_seconds = _cron_gap_seconds(expr, datetime.now())
+            result = gap_seconds / 60.0 if gap_seconds is not None else None
     # Cache a real cadence or a bad-expr None (croniter loaded, expr invalid: stable). Skip the
     # None from a transient croniter ImportError so it can't pin the floor allowance for the
     # process lifetime once the import recovers.

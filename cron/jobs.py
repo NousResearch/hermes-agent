@@ -1031,6 +1031,21 @@ def _job_is_stale_error_recurring(
 _cron_cadence_cache: dict[str, Optional[float]] = {}
 
 
+def _cron_gap_seconds(expr: str, base: datetime) -> Optional[float]:
+    """Gap in seconds between the next two fires of ``expr`` from ``base``, or None on any failure.
+
+    Single derivation shared by the cadence cache here and the scheduler's interval cache;
+    each caller keeps its own base time and caching policy. Callers must ensure croniter first.
+    """
+    try:
+        it = croniter(expr, base)
+        first = it.get_next(datetime)
+        gap = (it.get_next(datetime) - first).total_seconds()
+        return gap if gap > 0 else None
+    except Exception:
+        return None
+
+
 def _schedule_cadence_seconds(schedule: dict[str, Any]) -> Optional[float]:
     """Approximate schedule period in seconds, or None (croniter missing / malformed expr). Cron
     results are cached per expr because this runs under ``_jobs_lock`` every tick; the gap can vary
@@ -1051,13 +1066,7 @@ def _schedule_cadence_seconds(schedule: dict[str, Any]) -> Optional[float]:
         return None
     if expr in _cron_cadence_cache:
         return _cron_cadence_cache[expr]
-    try:
-        it = croniter(expr, _hermes_now())
-        first = it.get_next(datetime)
-        gap = (it.get_next(datetime) - first).total_seconds()
-        result = gap if gap > 0 else None
-    except Exception:
-        result = None
+    result = _cron_gap_seconds(expr, _hermes_now())
     # Hard bound so deleted/edited exprs can't grow the cache unboundedly in a long-lived gateway.
     if len(_cron_cadence_cache) >= 256:
         _cron_cadence_cache.clear()

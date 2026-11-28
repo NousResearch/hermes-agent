@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from agent import i18n_layers
-from agent.i18n_languages import language_options
+from agent.i18n_languages import LanguageOption, describe_language
 
 logger = logging.getLogger(__name__)
 
@@ -266,6 +266,21 @@ def t(key: str, lang: str | None = None, **format_kwargs: Any) -> str:
     except (KeyError, IndexError, ValueError) as exc:
         logger.warning("i18n format failed for key=%r lang=%r kwargs=%r: %s", key, target, format_kwargs, exc)
         return value
+
+
+def language_options() -> list[LanguageOption]:
+    """``[{"id", "endonym", "rtl", "source", "surfaces"}, ...]`` for every supported language, ``en`` first then sorted
+    by id — the list ``i18n.languages`` serves and every switcher renders (endonym only, no flags)."""
+    from hermes_constants import get_hermes_home
+
+    home = get_hermes_home()
+    overlay_langs = i18n_layers.overlay_languages(home)
+    surfaces = language_surfaces(str(home))
+    return [
+        describe_language(lang, pack=i18n_layers.pack_info(lang), overlay=lang in overlay_langs,
+                          surfaces=surfaces.get(lang, ()))
+        for lang in supported_languages()
+    ]
 
 
 __all__ = [

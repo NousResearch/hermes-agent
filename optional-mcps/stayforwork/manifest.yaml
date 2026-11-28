@@ -1,0 +1,45 @@
+# Vendor-hosted remote MCP catalog submission; approval follows maintainer review.
+manifest_version: 1
+
+name: stayforwork
+description: "Find extended-stay hotels and furnished housing near work assignments."
+source: https://www.stayforwork.com/mcp/docs
+
+transport:
+  type: http
+  url: https://www.stayforwork.com/mcp
+
+auth:
+  type: none
+
+tools:
+  default_enabled:
+    - search_stays
+    - get_hotel_details
+    - get_hotel_offers
+    - get_home_details
+    - get_home_offers
+
+suggest:
+  keywords:
+    - "stayforwork"
+    - "extended-stay housing"
+  hosts:
+    - stayforwork.com
+  examples:
+    - "Find an extended-stay hotel near a hospital assignment."
+    - "Compare furnished housing for a four-week work trip."
+
+post_install: |
+  No account, API key or credentials are required. Restart the session
+  after installation to discover the enabled read-only tools.
+
+  Find hotels, motels and furnished housing for work trips lasting weeks or
+  months. Provide a destination, dates and guests. Inspect hotels by name or
+  returned property ID, and homes by a property reference returned by search.
+  Some private hotel prices require sign-in on the website. Booking and
+  payment happen outside the MCP tools; prices and estimates can change.
+
+  Documentation: https://www.stayforwork.com/mcp/docs
+  Privacy: https://www.stayforwork.com/privacy
+  Contact: leo@pageonelab.com.

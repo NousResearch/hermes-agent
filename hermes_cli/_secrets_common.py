@@ -21,7 +21,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from hermes_cli.config import load_config, save_config
-from hermes_cli.secret_prompt import masked_secret_prompt
+from hermes_cli.secret_prompt import masked_secret_prompt, resolve_secret_arg
 
 
 _CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
@@ -154,7 +154,7 @@ def rotate_token(
     in effect. Old cached pulls are keyed on the previous token's fingerprint; clearing them
     makes the next startup fetch fresh with the new credential.
     """
-    token = (given or "").strip()
+    token = resolve_secret_arg(given)
     if not token:
         if not sys.stdin.isatty():
             console.print(f"[red]No TTY — pass the token with {flag}.[/red]")

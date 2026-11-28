@@ -16,6 +16,7 @@ import json
 import socketserver
 import threading
 import time
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -111,3 +112,49 @@ def test_oversize_body_is_capped(server_base, client):
     assert 0 < len(text) <= 64 * 1024
     # Capping must return promptly, not after draining the whole body.
     assert elapsed < 9.0
+
+
+def test_stalled_body_releases_the_drain_thread(server_base, client):
+    """After the deadline the worker must unwind, not stay parked in ``recv`` for as long as the
+    server holds the connection open (on Linux, ``close()`` from another thread does not wake it)."""
+    with client.stream("POST", server_base + "/stall") as response:
+        text = read_streaming_error_body(response, timeout_s=0.5)
+    assert text == "partial failure detail"
+    drains = [t for t in threading.enumerate() if t.name == "bounded-error-body-read"]
+    for thread in drains:
+        thread.join(timeout=5.0)
+    assert not any(t.is_alive() for t in drains)
+
+
+class _BlockedReadResponse:
+    """Response whose body read blocks until its socket is shut down, recording whether
+    ``close()`` arrived while the reader was still inside that read."""
+
+    def __init__(self):
+        self.woken = threading.Event()
+        self.in_read = False
+        self.close_while_reading: list[bool] = []
+        sock = SimpleNamespace(settimeout=lambda _t: None, shutdown=lambda _how: self.woken.set())
+        self.extensions = {"network_stream": SimpleNamespace(get_extra_info=lambda key: sock if key == "socket" else None)}
+
+    def iter_bytes(self):
+        yield b"partial"
+        self.in_read = True
+        self.woken.wait(10.0)
+        self.in_read = False
+
+    def close(self):
+        self.close_while_reading.append(self.in_read)
+
+
+def test_deadline_never_closes_under_a_blocked_read():
+    """close() from the caller's thread while the worker is still in the socket read releases an
+    FD the reader's SSL BIO caches (the TLS FD-recycle class): the deadline shuts the socket down
+    first and closes only after the reader has unwound."""
+    response = _BlockedReadResponse()
+    try:
+        text = read_streaming_error_body(response, timeout_s=0.3)
+    finally:
+        response.woken.set()
+    assert text == "partial"
+    assert response.close_while_reading == [False]

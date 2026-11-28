@@ -5,8 +5,9 @@ a few hundred chars). A bare ``response.read()`` is unbounded two ways: arbitrar
 (memory) or a body that stalls forever (hang). ``read_streaming_error_body`` caps bytes and enforces a
 hard wall-clock deadline; callers use the returned text instead of ``response.text`` (unbounded /
 raises after a partial stream read). ``httpx.iter_bytes()`` blocks *inside* the socket read, so the
-read runs on a daemon thread; on timeout we close the response (unblocking the read) and return the
-partial bytes. Used by the streaming error-body sites: native Gemini, Gemini Cloud Code, Antigravity.
+read runs on a daemon thread; on timeout we ``shutdown()`` the socket (waking the read without releasing
+the FD), give the reader a moment to unwind, then close the response and return the partial bytes. Used
+by the streaming error-body sites: native Gemini, Gemini Cloud Code, Antigravity.
 """
 
 from __future__ import annotations
@@ -23,6 +24,8 @@ logger = logging.getLogger(__name__)
 DEFAULT_ERROR_BODY_MAX_BYTES = 64 * 1024
 # Hard deadline for the whole read; past it the connection is closed and the partial bytes are kept.
 DEFAULT_ERROR_BODY_TIMEOUT_S = 10.0
+# After the deadline's socket shutdown, how long the reader gets to unwind before we close anyway.
+_READER_UNWIND_GRACE_S = 2.0
 
 
 def read_streaming_error_body(
@@ -66,7 +69,16 @@ def read_streaming_error_body(
             "bounded error-body read: hard timeout after %.1fs (%d bytes so far)",
             timeout_s, sum(len(c) for c in chunks),
         )
-    # Closing cancels any in-flight socket read so the worker unwinds. No join (daemon, may be blocked in C).
+        # Never close() under a read still blocked in the kernel: on Linux it does not wake the read,
+        # and it releases an FD the reader's SSL BIO still caches (the TLS FD-recycle class, see
+        # ``_shutdown_socket``). shutdown() is FD-safe from this thread and wakes the read.
+        from agent.agent_runtime_helpers import _shutdown_socket, _socket_from_response
+
+        sock = _socket_from_response(response)
+        if sock is not None:
+            _shutdown_socket(sock)
+        done.wait(timeout=_READER_UNWIND_GRACE_S)
+    # No join past the grace: the worker is a daemon and may be blocked in C.
     try:
         response.close()
     except Exception:

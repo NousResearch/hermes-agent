@@ -384,7 +384,8 @@ def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[_Check
     login page). Returns the origin (its URL for ``origin=""``) and the session ``focus_page`` attached
     when a tab was focused, else None (caller falls back to the current page).
     A plugin page backend's current page IS the tab the agent drove, so there is nothing to focus."""
-    if _page_backend(task_id) is not None:
+    if kind == "otp" or _page_backend(task_id) is not None:
+        # enter_code already selected a unique page before checking saved origins.
         return None
     try:
         supervisor = _ensure_supervisor(task_id)
@@ -554,6 +555,8 @@ def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> 
                       ensure_ascii=False)
 
 
+from agent.vault_login_classifier import build_otp_probe_js
+
 # Digits with the separators people type a number with ("+48 600 100 200", "(600) 100-200").
 # The + may lead, or follow one "(" ("(+48) 600 ..."), as the tel read-back allows; nowhere else.
 _RE_PHONE = re.compile(r"(?:\(\s*)?\+?[\d\s().-]+")
@@ -566,8 +569,7 @@ def _looks_like_phone(identifier: str) -> bool:
     return bool(_RE_PHONE.fullmatch(identifier)) and sum(ch.isdigit() for ch in identifier) >= 7
 
 
-_TAB_PROBES["otp"] = _deep_probe("input[autocomplete=one-time-code], input[name*=otp i], input[name*=code i], "
-                                  "input[id*=otp i], input[id*=code i], input[name*=totp i], input[aria-label*=code i]")
+_TAB_PROBES["otp"] = build_otp_probe_js()
 
 
 def _saved_login(handle: str) -> tuple[Any, Any]:
@@ -591,6 +593,21 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
     their surface for the code their phone/email/app shows. The code goes into the page over the supervisor
     socket and never enters the conversation. A saved login's code is only minted on its saved origin(s)."""
     effective_task_id = task_id or "default"
+    page = _page_backend(effective_task_id)
+    if page is not None:
+        probe = _eval_js(effective_task_id, _TAB_PROBES["otp"])
+        if not probe.get("success") or _parse_json_result(probe.get("result")) is not True:
+            return json.dumps({"success": False, "error_type": "no_code_field",
+                               "error": "No unique one-time-code field on the current page; nothing was resolved or filled."})
+    supervisor = _ensure_supervisor(effective_task_id) if page is None else None
+    discovered_session = None
+    if supervisor is not None:
+        focused = supervisor.focus_page("", accept=_TAB_PROBES["otp"], unique=True)
+        if not focused.get("ok"):
+            return json.dumps({"success": False, "error_type": "no_code_field",
+                               "error": "No unique page with a one-time-code field; nothing was resolved or filled."})
+        discovered_session = focused.get("session_id")
+    discovered_plugin = page
     backend, meta = _saved_login(handle)
     if meta is not None:
         page = _bound_page_origin(effective_task_id, meta, "otp")
@@ -604,6 +621,8 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
         page = _current_page_check(effective_task_id)
         if page is None:
             return json.dumps({"success": False, "error": "No page with a code field is open."})
+    if page.page is not discovered_plugin or page.session != discovered_session:
+        return json.dumps(_MOVED)
     with _pinned_page_session(effective_task_id, page) as unpinned:
         if unpinned is not None:
             return json.dumps(unpinned)

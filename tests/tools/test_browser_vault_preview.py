@@ -36,7 +36,10 @@ class PreviewWindow:
         if request["operation"] == "close":
             return json.dumps({"success": True})
         expression = request["expression"]
-        if "location.href" in expression:
+        from tools.browser_vault_tool import _TAB_PROBES
+        if expression == _TAB_PROBES["otp"]:
+            result = True
+        elif "location.href" in expression:
             result = self.origin + "/login"
         elif 'setAttribute("data-hermes-vault-slot-" + nonce' in expression:
             result = json.dumps(CONTROLS)
@@ -123,7 +126,7 @@ def test_saved_code_is_origin_bound_on_the_preview(home, monkeypatch):
     result = json.loads(registry.dispatch("browser_vault", {"action": "enter_code", "handle": meta.id,
                                                              "target": "preview"}, preview_callback=window))
     assert result["error_type"] == "origin_mismatch"
-    assert window.ops() == ["open", "evaluate", "close"]
+    assert window.ops() == ["open", "evaluate", "evaluate", "close"]
 
 
 @pytest.mark.parametrize("surface", ["preview", "preview_deferred", "managed_page", "plugin_page", "no_preview", "explicit"])

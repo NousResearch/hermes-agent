@@ -30,6 +30,9 @@ _CONTROLS = {
 
 
 def _answer(expression: str, controls: list[dict]) -> str:
+    from tools.browser_vault_tool import _TAB_PROBES
+    if expression == _TAB_PROBES["otp"]:
+        return "true"
     if "location.href" in expression:
         return "https://example.com/login"
     if "unstamped" in expression:
@@ -86,7 +89,7 @@ class _Channels:
     def current_page_session(self):
         return self.sid
 
-    def focus_page(self, origin, accept=None):
+    def focus_page(self, origin, accept=None, unique=False):
         return {"ok": True, "url": origin + "/login", "session_id": self.sid}
 
     def evaluate_runtime(self, expression, *, session_id=None, **kwargs):
@@ -97,7 +100,7 @@ class _Channels:
 
     def after(self, expression: str) -> str:
         out = _answer(expression, self.controls)
-        if self.flip_on and self.flip_on in expression:
+        if self.flip_on and self.flip_on in expression and "const controls = JSON.parse" not in expression:
             self.flip_on = ""
             self.flip()
         return out

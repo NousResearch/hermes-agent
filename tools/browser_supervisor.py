@@ -359,7 +359,8 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         with self._state_lock:
             self._driven_target_id = target_id
 
-    def focus_page(self, origin: str, *, accept: Optional[str] = None, timeout: float = 10.0) -> dict[str, Any]:
+    def focus_page(self, origin: str, *, accept: Optional[str] = None, unique: bool = False,
+                   timeout: float = 10.0) -> dict[str, Any]:
         """Re-attach the supervisor's page session to an open page target on ``origin``
         (``scheme://host[:port]``). The initial attach picks the FIRST page target, but tools
         that open their own tabs (browser_exec) put the login form somewhere else. With
@@ -393,6 +394,7 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                         candidates.append((t["targetId"], url))
                 except Exception:
                     continue
+            matched = []
             with self._state_lock:
                 driven = self._driven_target_id
             probe = accept
@@ -408,9 +410,20 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                     if not probed.get("result", {}).get("result", {}).get("value"):
                         await self._cdp("Target.detachFromTarget", {"sessionId": sid}, timeout=timeout)
                         continue
+                if unique:
+                    matched.append((sid, url))
+                    continue
                 with self._state_lock:
                     self._page_session_id = sid
                 return {"ok": True, "url": url, "session_id": sid}
+            if unique and len(matched) == 1:
+                with self._state_lock:
+                    self._page_session_id = matched[0][0]
+                return {"ok": True, "url": matched[0][1], "session_id": matched[0][0]}
+            for sid, _ in matched:
+                await self._cdp("Target.detachFromTarget", {"sessionId": sid}, timeout=timeout)
+            if matched:
+                return {"ok": False, "error": "multiple pages with the expected form", "ambiguous": True}
             return _fail(f"no open page on {origin or 'any site'}" + (" with the expected form" if accept and candidates else ""))
 
         try:

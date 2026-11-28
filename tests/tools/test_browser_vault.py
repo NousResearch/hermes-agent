@@ -741,7 +741,7 @@ class TestBrowserVaultTools:
         def current_page_session(self):
             return self.sid
 
-        def focus_page(self, origin, accept=None):
+        def focus_page(self, origin, accept=None, unique=False):
             return {"ok": True, "url": origin + "/login", "session_id": self.sid}
 
         def evaluate_runtime(self, expression, *, session_id=None, **kwargs):
@@ -834,7 +834,7 @@ class TestBrowserVaultTools:
         meta = _add_login(store, origin="https://example.com")
 
         class _NoFocus(self._RecordingSup):
-            def focus_page(self, origin, accept=None):
+            def focus_page(self, origin, accept=None, unique=False):
                 return {"ok": False, "error": "no open page"}
 
             def evaluate_runtime(self, expression, **kwargs):
@@ -861,7 +861,7 @@ class TestBrowserVaultTools:
         meta = _add_login(store, origin="https://example.com")
 
         class _MovedAfterFocus(self._RecordingSup):
-            def focus_page(self, origin, accept=None):
+            def focus_page(self, origin, accept=None, unique=False):
                 out = super().focus_page(origin, accept)
                 self.sid = "S2"
                 return out

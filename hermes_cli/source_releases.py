@@ -15,10 +15,18 @@ from hermes_cli.update_channel import STABLE_TAG_RE, is_canary_tag
 logger = logging.getLogger(__name__)
 _PUBLIC_BASE = "https://hermes-assets.nousresearch.com"
 OFFICIAL_REPOSITORY = "NousResearch/hermes-agent"
+# An https remote may carry credentials (`https://user:token@github.com/...`). Userinfo may not
+# contain `/`, `?`, `#` or a backslash, so `https://example.com?next=@github.com/...` is not GitHub.
 _GITHUB_ORIGIN = re.compile(
-    r"^(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)"
+    r"^(?:https://(?:[^@/?#\\\s]+@)?github\.com/|git@github\.com:|ssh://git@github\.com/)"
     r"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:\.git)?/?$", re.IGNORECASE,
 )
+
+
+def github_repository(url: str) -> str | None:
+    """``owner/name`` of a GitHub remote URL (https with or without credentials, scp or ssh), else None."""
+    match = _GITHUB_ORIGIN.fullmatch(url.strip())
+    return match[1] if match else None
 _SHA = re.compile(r"[0-9a-f]{40}")
 
 
@@ -33,9 +41,9 @@ def source_repository(git_cmd=None, cwd=None) -> str:
             stdin=subprocess.DEVNULL, env=source_git_env(),
             check=False,
         )
-        match = _GITHUB_ORIGIN.fullmatch(result.stdout.strip())
-        if result.returncode == 0 and match:
-            return match[1]
+        repository = github_repository(result.stdout) if result.returncode == 0 else None
+        if repository:
+            return repository
     return OFFICIAL_REPOSITORY
 
 

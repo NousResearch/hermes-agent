@@ -179,8 +179,12 @@ def test_source_check_honors_transient_channel_without_rewriting_record(releases
     assert releases.tags["stable"] in capsys.readouterr().out
 
 
-def test_fork_origin_uses_its_own_published_release_not_the_official_pointer(releases):
-    url = "https://github.com/Fixture/hermes-agent.git"
+@pytest.mark.parametrize("url", [
+    "https://github.com/Fixture/hermes-agent.git",
+    # A token-bearing remote is still this fork, not an unknown host that falls back to the official repo.
+    "https://me:ghp_token@github.com/Fixture/hermes-agent.git",
+])
+def test_fork_origin_uses_its_own_published_release_not_the_official_pointer(releases, url):
     git(releases.root, "config", "remote.origin.url", url)
     git(releases.root, "config", f"url.{releases.origin}.insteadOf", url)
     tag = releases.tags["stable"]
@@ -191,6 +195,17 @@ def test_fork_origin_uses_its_own_published_release_not_the_official_pointer(rel
     releases.responses[f"/repos/Fixture/hermes-agent/commits/{tag}"] = {"sha": releases.commits[3]}
     assert resolve_source_release("stable", ["git"], releases.root) == (tag, releases.commits[3])
     assert not any(path.startswith("/releases/") for path in releases.requests)
+
+
+@pytest.mark.parametrize("url, fork", [
+    ("https://x-access-token:abc@github.com/NousResearch/hermes-agent.git", False),
+    ("https://me:ghp_token@github.com/Fixture/hermes-agent", True),
+    ("https://example.com?next=@github.com/NousResearch/hermes-agent", True),
+])
+def test_token_in_origin_url_does_not_change_fork_detection(url, fork):
+    from hermes_cli.update_cmd_git import _is_fork
+
+    assert _is_fork(url) is fork
 
 
 def test_zip_fallback_keeps_selected_repository_and_commit(releases, monkeypatch):

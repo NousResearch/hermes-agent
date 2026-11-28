@@ -1,0 +1,61 @@
+name: ruse
+version: "2.0.1"
+title: Ruse — Bounded Browser Authority for Hermes
+description: |
+  **The gap**: Hermes can drive a real browser using the user's authenticated
+  sessions. That gives an agent everything the account can do — not just what
+  the owner intended for the task. Browser work runs through unrestricted
+  surfaces (model-supplied Python, raw CDP), and a page the agent visits acts
+  with the user's real logins.
+
+  **The primitive**: a browser capability lease. The owner grants one origin,
+  exact readable pages, one write operation with allowed fields and values, a
+  TTL and commit budget, and instant revocation. The agent cannot exceed the
+  grant.
+
+  **Enforcement**: the model never touches a free browser. Ruse's broker owns a
+  dedicated Playwright profile and checks every outbound request — navigation,
+  form submit, page fetch, XHR — with a fail-closed decision function before it
+  reaches the application. Writes are prepared (frozen proposal), committed
+  exactly once, and verified by re-reading the record. Receipts log every
+  allow/deny with the server-side fixture proving blocked requests never
+  arrived.
+
+  **Evidence**: 32 decision-matrix tests, 45 plugin-surface tests (including
+  lease-name containment for `../x` and `/abs/x`) and 24 real-Chrome end-to-end
+  tests, including a hostile page script (destructive DELETE, wrong-record write,
+  cross-origin exfiltration) that is fully contained — the application's own
+  audit log shows zero mutating requests arrived.
+
+  **Disclosure**: launches a dedicated headless Chrome profile owned by Ruse
+  under its plugin data dir (never the user's everyday browser profile); the
+  profile persists the owner's sign-in session so auto-login can be skipped on
+  later runs. Network access is limited to origins the owner lists in the lease;
+  Playwright may download Chromium from its official CDN on first use and the
+  declared `playwright` dependency is installed on enable. The broker runs as a
+  daemon thread for the life of the session. No telemetry, no self-update, no
+  shell commands from the plugin. The login password is read only through
+  Hermes' secret scope (`RUSE_CRM_PASSWORD`), never from a file.
+repo: https://github.com/HillaryIkhais/Ruse.git
+sha: df34949ec5e16eef7c078690a01eb8d0114a7c22
+maintainer: HillaryIkhais
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/HillaryIkhais/Ruse/blob/df34949ec5e16eef7c078690a01eb8d0114a7c22/README.md
+platforms: []
+capabilities:
+  provides_tools:
+    - ruse_connect
+    - ruse_inspect
+    - ruse_navigate
+    - ruse_fill
+    - ruse_prepare
+    - ruse_commit
+    - ruse_verify
+    - ruse_revoke
+    - ruse_status
+    - ruse_receipts
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

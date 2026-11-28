@@ -196,6 +196,61 @@ async def test_native_thread_rename_passes_only_the_initial_name_guard():
     assert calls == [("999", "Semantic Session Title", "Initial words")]
 
 
+@pytest.mark.anyio
+async def test_native_thread_rename_resolves_adapter_when_runner_adapters_is_empty():
+    """A multiplexed gateway keeps adapters per profile, so ``runner.adapters`` is empty.
+
+    The semantic rename must still reach the delivery adapter that
+    ``_delivery_adapter_for`` resolves; gating on ``self.adapters`` silently dropped every
+    rename on multiplexed gateways.
+    """
+    calls: list[tuple[str, str, str | None]] = []
+
+    class ProfileAdapter:
+        async def rename_thread(
+            self,
+            thread_id: str,
+            name: str,
+            *,
+            only_if_current_name: str | None = None,
+        ) -> bool:
+            calls.append((thread_id, name, only_if_current_name))
+            return True
+
+    adapter = ProfileAdapter()
+
+    class MultiplexedRenameRunner:
+        _is_discord_auto_thread_lane = GatewayRunner._is_discord_auto_thread_lane
+        _sanitize_discord_thread_title = GatewayRunner._sanitize_discord_thread_title
+        _rename_discord_auto_thread_for_session_title = (
+            GatewayRunner._rename_discord_auto_thread_for_session_title
+        )
+
+        def __init__(self):
+            self.adapters = {}  # multiplexed: adapters live per profile, not here
+
+        def _delivery_adapter_for(self, source):
+            return adapter
+
+    source = types.SimpleNamespace(
+        platform=Platform.DISCORD,
+        chat_id="999",
+        chat_type="thread",
+        thread_id="999",
+        auto_thread_created=True,
+        auto_thread_initial_name="Initial words",
+    )
+
+    runner = MultiplexedRenameRunner()
+    await runner._rename_discord_auto_thread_for_session_title(
+        source,
+        "session-1",
+        "Semantic Session Title",
+    )
+
+    assert calls == [("999", "Semantic Session Title", "Initial words")]
+
+
 def test_title_thread_copy_preserves_transport_adapter_ref(monkeypatch):
     """Multiplex-routed sources must keep their transport owner for side effects."""
     captured_sources = []

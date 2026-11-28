@@ -258,3 +258,80 @@ def test_decompression_bomb_warning_is_a_refusal(tmp_path, monkeypatch):
     path = _png(tmp_path / "bomb.png", (400, 400))
     monkeypatch.setattr(PIL, "MAX_IMAGE_PIXELS", 100_000)
     assert render_inline_image(path, mode="kitty", max_cols=20, max_rows=8) is None
+
+
+# ---------------------------------------------------------------------------
+# multiplexers erase the emulator identity
+# ---------------------------------------------------------------------------
+
+
+def test_multiplexer_term_program_cannot_be_detected_through(monkeypatch, caplog):
+    # herdr (like zellij) rewrites TERM_PROGRAM to its own name and preserves the
+    # outer emulator nowhere, so a kitty-capable Ghostty is indistinguishable from
+    # a dumb one. Detection must fall back rather than guess a protocol the pane
+    # cannot paint — but the fallback used to be silent, which is the actual bug:
+    # the caller could not tell "no graphics" from "cannot see this terminal".
+    _clear_graphics_env(monkeypatch)
+    monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.setenv("TERM_PROGRAM", "herdr")
+    monkeypatch.setenv("HERDR_ENV", "1")
+    monkeypatch.setattr(terminal_image, "_multiplexer_warned", False, raising=False)
+
+    with caplog.at_level("INFO", logger="agent.terminal_image"):
+        assert terminal_image.detect_terminal_graphics() == "unicode"
+
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("display.inline_images" in m for m in messages), messages
+
+
+def test_multiplexer_warning_is_emitted_once_per_process(monkeypatch, caplog):
+    # It is one line at startup, not one per frame: the pet repaints constantly and
+    # a per-call warning would flood the log into uselessness.
+    _clear_graphics_env(monkeypatch)
+    monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.setenv("TERM_PROGRAM", "herdr")
+    monkeypatch.setattr(terminal_image, "_multiplexer_warned", False, raising=False)
+
+    with caplog.at_level("INFO", logger="agent.terminal_image"):
+        for _ in range(5):
+            terminal_image.detect_terminal_graphics()
+
+    assert len([m for m in (r.getMessage() for r in caplog.records) if "blind inside" in m]) == 1
+
+
+def test_herdr_marker_alone_is_enough(monkeypatch, caplog):
+    # TERM_PROGRAM may be absent entirely (Windows Terminal-launched herdr, #100169)
+    # while the terminal underneath IS capable. Asserting only "unicode" would pass on
+    # the unfixed code too, by falling through — same answer, wrong reason. The warning
+    # is what distinguishes "I cannot see this terminal" from "this terminal has none".
+    _clear_graphics_env(monkeypatch)
+    monkeypatch.setenv("TERM", "xterm-ghostty")  # capable emulator, identity erased
+    monkeypatch.setenv("HERDR_ENV", "1")
+    monkeypatch.setattr(terminal_image, "_multiplexer_warned", False, raising=False)
+
+    with caplog.at_level("INFO", logger="agent.terminal_image"):
+        assert terminal_image.detect_terminal_graphics() == "unicode"
+
+    assert any("blind inside" in r.getMessage() for r in caplog.records), [r.getMessage() for r in caplog.records]
+
+
+def test_real_ghostty_still_detects_kitty(monkeypatch):
+    # The guard must not swallow an emulator it CAN see — the whole point is that
+    # detection still works wherever the identity survives.
+    _clear_graphics_env(monkeypatch)
+    monkeypatch.setenv("TERM", "xterm-ghostty")
+    monkeypatch.setenv("TERM_PROGRAM", "ghostty")
+
+    assert terminal_image.detect_terminal_graphics() == "kitty"
+
+
+def test_tmux_and_screen_are_not_treated_as_identity_erasing(monkeypatch):
+    # Deliberately absent from the list: tmux/screen pass the outer identity through
+    # when configured to, and many users depend on that. A regression here would
+    # break image support for everyone inside tmux.
+    _clear_graphics_env(monkeypatch)
+    for term in ("screen-256color", "tmux-256color", "xterm-ghostty"):
+        monkeypatch.setenv("TERM", term)
+        monkeypatch.delenv("TERM_PROGRAM", raising=False)
+        assert "screen" not in terminal_image._MULTIPLEXER_TERM_PROGRAMS
+        assert "tmux" not in terminal_image._MULTIPLEXER_TERM_PROGRAMS

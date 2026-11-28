@@ -563,6 +563,39 @@ display:
 
 Only local files are drawn; remote image URLs are not fetched. Sixel terminals get half-blocks.
 
+#### Behind a multiplexer: pin the mode
+
+Detection is env-var-only by design (a DA1 query could hang a pipe), so it can only see
+what `TERM`/`TERM_PROGRAM`/`KITTY_WINDOW_ID` tell it. **A multiplexer that renames
+`TERM_PROGRAM` to itself destroys the emulator identity underneath, and none passes the
+outer value through.** [herdr](https://herdr.dev) and Zellij do exactly this; tmux and
+screen usually preserve it.
+
+Inside such a pane a kitty-capable Ghostty is therefore indistinguishable from a dumb
+terminal, and `auto` correctly declines to guess — you get half-blocks. The log says so
+once:
+
+```
+terminal graphics detection is blind inside herdr: it rewrites TERM_PROGRAM and does not
+preserve the emulator underneath. Falling back to unicode/block rendering. If the outer
+terminal supports images (Ghostty, kitty, WezTerm), pin it:
+`hermes config set display.inline_images kitty` (or pet.render_mode).
+```
+
+Pin the mode to get full-resolution images:
+
+```bash
+hermes config set display.inline_images kitty
+```
+
+**Config is per profile, not inherited.** `hermes config set` without `-p` writes the
+default profile only; a named profile needs `hermes -p <name> config set display.inline_images kitty`
+(or the same key added to that profile's `config.yaml`). Set it for every profile that
+opens a TUI in that terminal.
+
+The pin is a claim about the terminal, not a detection: if you later run that profile in a
+terminal that genuinely has no graphics support, remove it and go back to `auto`.
+
 After a terminal resize the CLI redraws its transcript. kitty and half-block images come back in the redraw; iTerm2-protocol images (iTerm2, WezTerm, Konsole) leave blank rows in the redrawn screen and stay visible only in the scrollback above it.
 
 ## Session Management

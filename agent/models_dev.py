@@ -116,7 +116,7 @@ PROVIDER_TO_MODELS_DEV: dict[str, str] = {
     "moonshot": "kimi-for-coding", "stepfun": "stepfun",
     "kimi-coding-cn": "kimi-for-coding", "minimax": "minimax",
     "minimax-oauth": "minimax", "minimax-cn": "minimax-cn", "deepseek": "deepseek",
-    "alibaba": "alibaba", "qwen-oauth": "alibaba",
+    "deepinfra": "deepinfra", "alibaba": "alibaba", "qwen-oauth": "alibaba",
     "ai-gateway": "vercel", "opencode-zen": "opencode",
     "opencode-go": "opencode-go",
     "kilocode": "kilo", "fireworks": "fireworks-ai",

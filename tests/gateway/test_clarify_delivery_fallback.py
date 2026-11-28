@@ -216,6 +216,36 @@ def test_card_declined_after_the_ack_window_releases_with_the_declined_notice(lo
     assert adapter.sent_text == []
 
 
+# --- Atom: a local route whose card registration is refused ---------------------------------
+
+
+def test_local_card_refused_releases_at_once_instead_of_a_silent_text_send(loop, monkeypatch):
+    """A local viewer's card is the registered prompt; ``LocalSessionAdapter.send`` publishes
+    nothing. When registration is refused (``stale_generation``: the turn is not the session's
+    running claim), the plain-text fallback ACKed a message no one received and the turn waited
+    the whole clarify_timeout behind ``Running clarify``. Real adapter + real ``_send_shared_clarify``."""
+    from gateway.platforms.base import Platform
+    from gateway.session_local import LocalSessionAdapter
+    from hermes_state_runtime import RuntimeStoreError
+
+    class _RefusingAuthority:
+        sessions = {"s1": SimpleNamespace(controls=SimpleNamespace(snapshot=lambda *a: None))}
+
+        def register_clarify(self, *a, **k):
+            raise RuntimeStoreError("stale_generation")
+
+    adapter = LocalSessionAdapter(SimpleNamespace(sessions={}))
+    adapter.pause_typing_for_chat = lambda chat_id: None
+    runner = _runner(adapter, loop, monkeypatch, timeout=30)
+    runner._ctx.source = SimpleNamespace(platform=Platform.LOCAL)
+    runner._approval_owner = (_RefusingAuthority(), "s1", 7)
+    started = time.monotonic()
+    response, answered = runner._ask_clarify_question("Pick?", ["alpha", "beta"], False)
+    assert (response, answered) == (UNDELIVERED + "]", False)
+    assert time.monotonic() - started < 10  # never the 30 s clarify_timeout
+    assert cm.get_pending_for_session("sk-fallback", include_choice_prompts=True) is None
+
+
 # --- Atom: no chat surface at all -----------------------------------------------------------
 
 

@@ -222,6 +222,36 @@ def test_decompose_fanout_false_invalid_llm_assignee_uses_default(kanban_home):
     assert task.assignee == "fallback"
 
 
+def test_decompose_fanout_false_keeps_leading_routing_label(kanban_home):
+    """The same routing-label contract as `specify`: `fanout=false` rewrites
+    the ROOT card's title, so a leading `Spec:`/`Build:` label must survive
+    the rewrite — the board's automation dispatches on it."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="Spec: stitch the money tracker", triage=True)
+
+    llm_payload = jsonlib.dumps({
+        "fanout": False,
+        "rationale": "single unit",
+        "title": "Specify stitch the money tracker",
+        "body": "Concrete spec.",
+    })
+
+    patches = _patch_list_profiles(["orchestrator"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(llm_payload), _patch_extra_body():
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert task.title == "Spec: stitch the money tracker"
+
+
 def test_load_routing_falls_back_to_defaults_when_config_unreadable(kanban_home, monkeypatch):
     """decompose_task promises ok=False on expected failures; a config read that raises (missing
     profile home, HomeInitializationError) must not escape _load_routing as an exception."""

@@ -3,7 +3,7 @@ import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { NO_PROJECT_ID, type SidebarProjectTree } from '@/app/chat/sidebar/projects/workspace-groups'
-import { $sidebarAgentsGrouped, setSidebarAgentsGrouped } from '@/store/layout'
+import { $sidebarAgentsGrouped, $sidebarGrouping, setSidebarAgentsGrouped, setSidebarGrouping } from '@/store/layout'
 import { $activeGatewayProfile, $profiles, $profileScope, ALL_PROFILES, setShowAllProfiles } from '@/store/profile'
 import { $currentCwd, $selectedStoredSessionId, $sessions, applyConfiguredDefaultProjectDir } from '@/store/session'
 import { deferred } from '@/test/deferred'
@@ -22,6 +22,7 @@ import {
   deleteProject,
   enterProject,
   fetchProjectSessions,
+  followActiveSessionCwd,
   openProjectCreate,
   pickProjectFolder,
   pickProjectFolders,
@@ -122,6 +123,43 @@ describe('project scope', () => {
   it('persists the scope to localStorage', () => {
     enterProject('p_abc')
     expect(window.localStorage.getItem('hermes.desktop.projectScope')).toBe('p_abc')
+  })
+})
+
+// Following a session whose cwd moved into a project is a detour, not a
+// preference change: the sidebar shows the project tree, but the grouping the
+// user picked is still what it returns to.
+describe('following a session into a project', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    window.localStorage.clear()
+    $activeGatewayProfile.set('default')
+    $profiles.set([{ is_default: true, name: 'default' } as never])
+    $projectTree.set([])
+    exitProjectScope()
+  })
+
+  it('borrows the project tree without overwriting the grouping the user picked', async () => {
+    // Both refreshes fail and keep the tree we seeded; the follow itself is
+    // what this test is about.
+    activeGateway.mockReturnValue({
+      connectionState: 'open',
+      request: vi.fn().mockRejectedValue(new Error('offline'))
+    } as never)
+    $projectTree.set([{ id: 'p_follow', label: 'Follow', path: '/work/follow', repos: [], sessionCount: 0 }] as never)
+
+    setSidebarGrouping('date')
+    window.localStorage.removeItem('hermes.desktop.agentsGroupedByWorkspace')
+    await followActiveSessionCwd('/work/follow/src')
+
+    expect($sidebarGrouping.get()).toBe('project')
+    expect($sidebarAgentsGrouped.get()).toBe(false)
+    expect(window.localStorage.getItem('hermes.desktop.agentsGroupedByWorkspace')).toBeNull()
+    expect($projectScope.get()).toBe('p_follow')
+
+    exitProjectScope()
+
+    expect($sidebarGrouping.get()).toBe('date')
   })
 })
 

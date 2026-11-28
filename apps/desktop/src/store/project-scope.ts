@@ -1,3 +1,5 @@
+import { atom } from 'nanostores'
+
 import { persistentAtom } from '@/lib/persisted'
 
 // ── Project scope (the "you're inside a project" view, mirroring profile scope)─
@@ -21,6 +23,14 @@ export const $projectScope = persistentAtom<string>(PROJECT_SCOPE_KEY, ALL_PROJE
   encode: value => value || ALL_PROJECTS
 })
 
+// True while the project tree is on screen only because an automatic follow
+// pulled the sidebar into it (the active session's cwd moved into a project).
+// Never persisted: the stored grouping is the user's own choice and an
+// automatic detour must not overwrite it — leaving the scope drops this flag
+// and the sidebar falls back to the grouping that was there before.
+export const $projectScopeAuto = atom(false)
+
 export function exitProjectScope(): void {
+  $projectScopeAuto.set(false)
   $projectScope.set(ALL_PROJECTS)
 }

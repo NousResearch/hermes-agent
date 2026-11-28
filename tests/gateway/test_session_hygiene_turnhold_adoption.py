@@ -439,3 +439,192 @@ async def test_turn_hold_without_watermark_fence_still_cancels(
     # Legacy path still records the flat retry-after immediately.
     assert handle.messages.record_compression_cooldown.called
     assert not handle.coordination.increment_hygiene_failure_streak.called
+
+
+@pytest.mark.asyncio
+async def test_turn_hold_deferred_adoption_resets_last_prompt_tokens_after_turn_finishes(
+    monkeypatch, tmp_path
+):
+    """Issue #160944 (Order B): when the concurrent uncompressed turn finishes before
+    the watermark-fenced worker commits, deferred adoption must reset last_prompt_tokens
+    to 0 on both session_entry and session_store so the next turn does not re-compress."""
+    fake_db = MagicMock()
+    worker_started = threading.Event()
+    release_worker = threading.Event()
+    committed = threading.Event()
+
+    class FencedLateCommitAgent:
+        def __init__(self, **kwargs):
+            self.session_id = kwargs.get("session_id", "sess-97963")
+            self._session_db = kwargs.get("persistence")
+            self._last_compaction_in_place = False
+            self.context_compressor = SimpleNamespace(
+                bind_session_state=MagicMock(),
+                _last_compress_aborted=False,
+                _last_aux_model_failure_model=None,
+            )
+            self.shutdown_memory_provider = MagicMock()
+            self.close = MagicMock()
+
+        def _compress_context(self, messages, *_args, commit_fence=None, **_kwargs):
+            if commit_fence is not None:
+                commit_fence.mark_commit_watermark_fenced()
+            worker_started.set()
+            _spin_started = time.monotonic()
+            while not release_worker.is_set():
+                if time.monotonic() - _spin_started > 20:
+                    return (messages, None)
+                if commit_fence is not None:
+                    commit_fence.touch_progress()
+                time.sleep(0.01)
+            if commit_fence is not None and not commit_fence.begin_commit():
+                return (messages, None)
+            try:
+                self._session_db.archive_and_compact(
+                    self.session_id,
+                    [{"role": "assistant", "content": "summary"}],
+                    watermark=6,
+                )
+                self._last_compaction_in_place = True
+                committed.set()
+                return ([{"role": "assistant", "content": "summary"}], None)
+            finally:
+                if commit_fence is not None:
+                    commit_fence.finish_commit()
+
+    gateway_run = importlib.import_module("gateway.run")
+    _write_turnhold_config(tmp_path)
+    _install_fakes(monkeypatch, gateway_run, tmp_path, FencedLateCommitAgent)
+
+    adapter = _CaptureAdapter()
+    runner = _build_runner(gateway_run, adapter, fake_db)
+    session_entry = runner.session_store.get_or_create_session.return_value
+    session_entry.last_prompt_tokens = 111_027
+
+    def _apply_update(_key, last_prompt_tokens=None, **_kw):
+        if last_prompt_tokens is not None:
+            session_entry.last_prompt_tokens = last_prompt_tokens
+
+    runner.session_store.update_session.side_effect = _apply_update
+    runner._run_agent = AsyncMock(
+        return_value={
+            "final_response": "ok",
+            "messages": [],
+            "tools": [],
+            "history_offset": 0,
+            "last_prompt_tokens": 112_029,
+        }
+    )
+    _install_handle(monkeypatch, gateway_run, fake_db)
+
+    result = await asyncio.wait_for(runner._handle_message(_make_event()), timeout=15)
+    assert result == "ok"
+    assert session_entry.last_prompt_tokens == 112_029
+
+    # Worker commits after the concurrent turn already persisted 112_029.
+    release_worker.set()
+    await asyncio.wait_for(asyncio.to_thread(committed.wait, 5), timeout=6)
+    await _drain_deferred(runner)
+    await asyncio.sleep(0.05)
+
+    assert session_entry.last_prompt_tokens == 0, (
+        "deferred hygiene adoption must reset stale last_prompt_tokens to 0"
+    )
+    reset_calls = [
+        c
+        for c in runner.session_store.update_session.call_args_list
+        if c.kwargs.get("last_prompt_tokens") == 0
+    ]
+    assert reset_calls, "deferred adoption must persist last_prompt_tokens=0 to session_store"
+
+
+@pytest.mark.asyncio
+async def test_turn_hold_deferred_adoption_during_turn_prevents_stale_token_overwrite(
+    monkeypatch, tmp_path
+):
+    """Issue #160944 (Order A): when the watermark-fenced worker commits while the
+    concurrent uncompressed turn is still running, run_turn_persistence must not overwrite
+    last_prompt_tokens back to the stale pre-compression count."""
+    fake_db = MagicMock()
+    worker_started = threading.Event()
+    release_worker = threading.Event()
+    committed = threading.Event()
+
+    class FencedInTurnCommitAgent:
+        def __init__(self, **kwargs):
+            self.session_id = kwargs.get("session_id", "sess-97963")
+            self._session_db = kwargs.get("persistence")
+            self._last_compaction_in_place = False
+            self.context_compressor = SimpleNamespace(
+                bind_session_state=MagicMock(),
+                _last_compress_aborted=False,
+                _last_aux_model_failure_model=None,
+            )
+            self.shutdown_memory_provider = MagicMock()
+            self.close = MagicMock()
+
+        def _compress_context(self, messages, *_args, commit_fence=None, **_kwargs):
+            if commit_fence is not None:
+                commit_fence.mark_commit_watermark_fenced()
+            worker_started.set()
+            _spin_started = time.monotonic()
+            while not release_worker.is_set():
+                if time.monotonic() - _spin_started > 20:
+                    return (messages, None)
+                if commit_fence is not None:
+                    commit_fence.touch_progress()
+                time.sleep(0.01)
+            if commit_fence is not None and not commit_fence.begin_commit():
+                return (messages, None)
+            try:
+                self._session_db.archive_and_compact(
+                    self.session_id,
+                    [{"role": "assistant", "content": "summary"}],
+                    watermark=6,
+                )
+                self._last_compaction_in_place = True
+                committed.set()
+                return ([{"role": "assistant", "content": "summary"}], None)
+            finally:
+                if commit_fence is not None:
+                    commit_fence.finish_commit()
+
+    gateway_run = importlib.import_module("gateway.run")
+    _write_turnhold_config(tmp_path)
+    _install_fakes(monkeypatch, gateway_run, tmp_path, FencedInTurnCommitAgent)
+
+    adapter = _CaptureAdapter()
+    runner = _build_runner(gateway_run, adapter, fake_db)
+    session_entry = runner.session_store.get_or_create_session.return_value
+    session_entry.last_prompt_tokens = 111_027
+
+    def _apply_update(_key, last_prompt_tokens=None, **_kw):
+        if last_prompt_tokens is not None:
+            session_entry.last_prompt_tokens = last_prompt_tokens
+
+    runner.session_store.update_session.side_effect = _apply_update
+
+    async def _run_agent_while_worker_commits(*_args, **_kwargs):
+        release_worker.set()
+        await asyncio.wait_for(asyncio.to_thread(committed.wait, 5), timeout=6)
+        # Let the done_callback run before this uncompressed turn finishes.
+        await asyncio.sleep(0.05)
+        return {
+            "final_response": "ok",
+            "messages": [],
+            "tools": [],
+            "history_offset": 0,
+            "last_prompt_tokens": 112_029,
+        }
+
+    runner._run_agent = AsyncMock(side_effect=_run_agent_while_worker_commits)
+    _install_handle(monkeypatch, gateway_run, fake_db)
+
+    result = await asyncio.wait_for(runner._handle_message(_make_event()), timeout=15)
+    assert result == "ok"
+    await _drain_deferred(runner)
+
+    assert session_entry.last_prompt_tokens == 0, (
+        "concurrent uncompressed turn must not overwrite deferred adoption's token reset "
+        f"with stale pre-compression tokens (got {session_entry.last_prompt_tokens})"
+    )

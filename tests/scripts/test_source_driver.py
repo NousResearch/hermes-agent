@@ -72,11 +72,11 @@ def test_installer_marker_is_the_only_dirty_state_a_driver_accepts(tmp_path):
     assert refused.returncode != 0 and "M tracked" in refused.stderr
 
 
-def _init_case_collision_repo(root: Path, *, ignore_case: bool = True) -> list[str]:
+def _init_case_collision_repo(root: Path, *, ignore_case: bool = True, autocrlf: bool = False) -> list[str]:
     root.mkdir(parents=True, exist_ok=True)
     git = ["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]
     subprocess.run([*git, "init", "-q"], check=True)
-    subprocess.run([*git, "config", "core.autocrlf", "false"], check=True)
+    subprocess.run([*git, "config", "core.autocrlf", "true" if autocrlf else "false"], check=True)
     subprocess.run([*git, "config", "core.ignorecase", "true" if ignore_case else "false"], check=True)
     blobs = {}
     for name, body in (
@@ -93,7 +93,10 @@ def _init_case_collision_repo(root: Path, *, ignore_case: bool = True) -> list[s
         subprocess.run([*git, "update-index", "--add", "--cacheinfo", f"100644,{oid},{name}"], check=True)
     subprocess.run([*git, "commit", "-qm", "base with case collision"], check=True)
     subprocess.run([*git, "checkout", "--force", "HEAD"], check=True)
-    (root / "contributors/emails/agent@Agents-Mac-mini.local").write_bytes(b"momomojo\n")
+    # On APFS/NTFS both names are one file, holding the sibling checked out
+    # last; copying its bytes gives a case-sensitive filesystem the same state.
+    emails = root / "contributors/emails"
+    (emails / "agent@Agents-Mac-mini.local").write_bytes((emails / "agent@agents-Mac-mini.local").read_bytes())
     return git
 
 
@@ -117,9 +120,6 @@ def test_accept_installer_marker_tolerates_only_head_case_collisions(tmp_path):
     assert accept().returncode == 0
     assert (root / ".install_method").read_text(encoding="utf-8") == "git\n"
 
-    (root / "contributors/emails/agent@Agents-Mac-mini.local").write_bytes(b"momomojo\r\n")
-    assert accept().returncode == 0
-
     (root / "contributors/emails/agent@Agents-Mac-mini.local").write_bytes(b"edited\n")
     refused = accept()
     assert refused.returncode != 0 and "agent@Agents-Mac-mini.local" in refused.stderr
@@ -140,6 +140,23 @@ def test_accept_installer_marker_tolerates_only_head_case_collisions(tmp_path):
 
     subprocess.run([*git, "config", "core.ignorecase", "false"], check=True)
     assert accept().returncode != 0
+
+
+@pytest.mark.platforms("posix")
+def test_accept_installer_marker_tolerates_a_sibling_checked_out_with_crlf(tmp_path):
+    # Installers through v2026.9.24 cloned under Git for Windows' core.autocrlf=true.
+    root = tmp_path / "installed source"
+    git = _init_case_collision_repo(root, autocrlf=True)
+    status = subprocess.run([*git, "status", "--porcelain"], capture_output=True, text=True, check=True).stdout
+    assert status == " M contributors/emails/agent@Agents-Mac-mini.local\n"
+    assert (root / "contributors/emails/agent@Agents-Mac-mini.local").read_bytes() == b"momomojo\r\n"
+
+    env = dict(os.environ, INSTALL_DIR=str(root), ASSETS=str(ASSETS), HOME=str(tmp_path))
+    accepted = subprocess.run(
+        ["bash", "-euc", 'source "$ASSETS/source-driver.sh"; accept_installer_marker "$INSTALL_DIR"'],
+        env=env, capture_output=True, text=True, timeout=30, check=False,
+    )
+    assert accepted.returncode == 0, accepted.stderr
 
 
 @pytest.mark.platforms("windows", "posix")

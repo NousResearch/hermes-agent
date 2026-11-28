@@ -281,7 +281,7 @@ test('does not turn a completed check without an update into success', async () 
   expect(f.shot).toHaveBeenCalledWith(f.page, 'ERROR-no-update-now')
 })
 
-function initCaseCollisionRepo(root, entries, { ignoreCase = true } = {}) {
+function initCaseCollisionRepo(root, entries, { ignoreCase = true, autocrlf = false } = {}) {
   const git = process.env.HERMES_E2E_REAL_GIT || 'git'
   const run = (args, opts = {}) => execFileSync(git, ['-C', root, ...args], {
     encoding: 'utf8',
@@ -289,7 +289,7 @@ function initCaseCollisionRepo(root, entries, { ignoreCase = true } = {}) {
   }).trim()
   fs.mkdirSync(root, { recursive: true })
   run(['init', '-b', 'main'])
-  run(['config', 'core.autocrlf', 'false'])
+  run(['config', 'core.autocrlf', autocrlf ? 'true' : 'false'])
   run(['config', 'core.ignorecase', ignoreCase ? 'true' : 'false'])
   for (const { mode = '100644', content, path: relPath } of entries) {
     const oid = execFileSync(git, ['-C', root, 'hash-object', '-w', '--stdin'], {
@@ -323,10 +323,6 @@ test('assertStagedBranch tolerates dirty=true only when repoDir has verified HEA
     const ok = fixture({ statusOverride: dirtyStatus })
     await updateUi.assertStagedBranch(ok.page, sha, ok.log, { repoDir: dir, gitExe: git })
     expect(ok.log).toHaveBeenCalledWith(expect.stringContaining('tolerating dirty=true'))
-
-    fs.writeFileSync(path.join(dir, upper), 'momomojo\r\n')
-    const crlf = fixture({ statusOverride: dirtyStatus })
-    await updateUi.assertStagedBranch(crlf.page, sha, crlf.log, { repoDir: dir, gitExe: git })
 
     const wrongTarget = fixture({ statusOverride: { ...dirtyStatus, targetSha: 'c'.repeat(40) } })
     await expect(updateUi.assertStagedBranch(wrongTarget.page, sha, wrongTarget.log, { repoDir: dir, gitExe: git }))
@@ -375,6 +371,32 @@ test('assertStagedBranch tolerates dirty=true only when repoDir has verified HEA
   }
 })
 
+test('assertStagedBranch tolerates a sibling blob an autocrlf checkout left with CRLF', async () => {
+  const sha = 'a'.repeat(40)
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'desktop-case-collision-crlf-'))
+  try {
+    const upper = 'contributors/emails/agent@Agents-Mac-mini.local'
+    const lower = 'contributors/emails/agent@agents-Mac-mini.local'
+    const { git } = initCaseCollisionRepo(dir, [
+      { path: upper, content: 'skip-agent\n' },
+      { path: lower, content: 'momomojo\n' },
+    ], { autocrlf: true })
+    // On APFS/NTFS both names are one file, holding the sibling checked out last.
+    fs.writeFileSync(path.join(dir, upper), fs.readFileSync(path.join(dir, lower)))
+    expect(fs.readFileSync(path.join(dir, upper), 'latin1')).toBe('momomojo\r\n')
+    expect(caseCollision.inspectCaseCollisionDirty(dir, git)).toEqual({ ignoreCase: true, collisions: [upper], other: [] })
+
+    const crlf = fixture({ statusOverride: {
+      supported: true, branch: 'main', currentSha: 'b'.repeat(40),
+      targetSha: sha, behind: 1, dirty: true,
+    } })
+    await updateUi.assertStagedBranch(crlf.page, sha, crlf.log, { repoDir: dir, gitExe: git })
+    expect(crlf.log).toHaveBeenCalledWith(expect.stringContaining('tolerating dirty=true'))
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('case-collision helper handles spaces, renames, binary blobs, and CLI modes', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'case-collision-edge-'))
   try {
@@ -404,9 +426,11 @@ test('case-collision helper handles spaces, renames, binary blobs, and CLI modes
     expect(listed.status, listed.stderr).toBe(0)
     expect(JSON.parse(listed.stdout).other).toEqual([])
 
+    // On APFS/NTFS the two names are one file, so the sibling is dirty too.
     fs.writeFileSync(path.join(dir, upperBin), Buffer.from([0x00, 0x02, 0x0d, 0x0a]))
     const binBad = caseCollision.inspectCaseCollisionDirty(dir, git)
-    expect(binBad.other.length).toBe(1)
+    expect(binBad.collisions).toEqual([upperSpace])
+    expect(binBad.other.some(raw => raw.endsWith(` ${upperBin}`))).toBe(true)
     expect(spawnSync(process.execPath, [cli, '--only-collisions', dir, '--git', git]).status).toBe(1)
     fs.writeFileSync(path.join(dir, upperBin), Buffer.from([0x00, 0x02, 0x0a]))
 
@@ -436,7 +460,7 @@ test.skipIf(process.platform === 'win32')('case-collision helper never follows a
       fs.symlinkSync(external, path.join(dir, upper))
       const res = caseCollision.inspectCaseCollisionDirty(dir, git)
       expect(res.collisions).toEqual([])
-      expect(res.other.length).toBe(1)
+      expect(res.other.some(raw => raw.endsWith(` ${upper}`))).toBe(true)
     } finally {
       fs.rmSync(external, { force: true })
     }

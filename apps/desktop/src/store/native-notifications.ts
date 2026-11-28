@@ -18,8 +18,8 @@ import {
   sessionApprovalRequests
 } from './prompts'
 import { isSessionGone, isSessionGoneForBackgroundPolling, markSessionGone } from './runtime-gone'
-import { $activeSessionId, ownerLookupSessionRows, sessionMatchesStoredId } from './session'
-import { storedSessionIdForRuntimeId } from './session-states'
+import { $activeSessionId, lineageAliases, ownerLookupSessionRows, sessionMatchesStoredId } from './session'
+import { $focusedRuntimeId, $sessionTiles, storedSessionIdForRuntimeId } from './session-states'
 
 export type { HermesOpenTarget }
 
@@ -40,6 +40,7 @@ export const NATIVE_NOTIFICATION_KINDS: readonly NativeNotificationKind[] = [
 
 // Blocking prompts — surface even while focused if they're for another session.
 const ATTENTION_KINDS = new Set<NativeNotificationKind>(['approval', 'input'])
+const COMPLETION_KINDS = new Set<NativeNotificationKind>(['turnDone', 'turnError', 'backgroundDone'])
 
 export interface NativeNotificationPrefs {
   enabled: boolean
@@ -157,9 +158,29 @@ function shouldFire(kind: NativeNotificationKind, sessionId?: null | string, glo
     return isBackgrounded() || (Boolean(sessionId) && sessionId !== $activeSessionId.get())
   }
 
-  // Completion kinds: only the active session, only while away — so a busy
-  // gateway (messaging, kanban, cron) can't spam a toast per background session.
-  return isBackgrounded() && Boolean(sessionId) && sessionId === $activeSessionId.get()
+  if (!COMPLETION_KINDS.has(kind)) {
+    return isBackgrounded() && Boolean(sessionId) && sessionId === $activeSessionId.get()
+  }
+
+  if (!sessionId) {
+    return false
+  }
+
+  // Notify for open chats the user isn't watching, but keep unrelated gateway
+  // sessions (messaging, kanban, cron) from spamming this window.
+  const storedId = storedSessionIdForRuntimeId(sessionId) ?? sessionId
+  const aliases = lineageAliases(storedId, ownerLookupSessionRows())
+
+  const matches = (runtimeId: null | string | undefined, boundStoredId?: string) =>
+    Boolean(
+      runtimeId &&
+        (runtimeId === sessionId || aliases.includes(boundStoredId ?? storedSessionIdForRuntimeId(runtimeId) ?? runtimeId))
+    )
+
+  return (
+    (isBackgrounded() || !matches($focusedRuntimeId.get())) &&
+    (matches($activeSessionId.get()) || $sessionTiles.get().some(tile => matches(tile.runtimeId, tile.storedSessionId)))
+  )
 }
 
 /** Last-resort label for a session the renderer has no row for (yet): the id

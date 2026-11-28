@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import io
+import re
 import shlex
 from contextlib import redirect_stdout
 from io import StringIO
@@ -30,6 +31,37 @@ def _pr(*lines: str) -> None:
     """print() each line."""
     for line in lines:
         print(line)
+
+
+def menu_label(value: object, width: int) -> str:
+    """Single-line label for curses menus, capped at width."""
+    raw = re.sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]", "", str(value or ""))
+    text = " ".join(re.sub(r"[\x00-\x1f\x7f]", " ", raw).split())
+    if len(text) > width:
+        text = text[: width - 3] + "..."
+    return text.ljust(width)
+
+
+def _take_flag(parts: list, flag: str):
+    """Pop ``flag VALUE`` out of ``parts``: ``(rest, value, ok)``; ok=False when the value is
+    missing (caller prints usage)."""
+    if flag not in parts:
+        return parts, None, True
+    idx = parts.index(flag)
+    if idx + 1 >= len(parts):
+        return parts, None, False
+    return parts[:idx] + parts[idx + 2:], parts[idx + 1], True
+
+
+def _ellipsize(text: str, limit: int) -> str:
+    """``text[:limit]`` plus ``...`` when truncated."""
+    return f"{text[:limit]}{'...' if len(text) > limit else ''}"
+
+
+def _summarize_paths(paths, limit: int = 5) -> str:
+    """``a, b, c (+N more)`` for a list of paths."""
+    more = _t("shared.more_suffix", count=len(paths) - limit) if len(paths) > limit else ""
+    return ", ".join(paths[:limit]) + more
 
 
 def _save(key: str, value) -> bool:

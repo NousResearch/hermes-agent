@@ -404,7 +404,11 @@ def _restore_state_db_from_snapshot(state_path: Path, snap_state: Path) -> bool:
     from hermes_cli.backup_restore import _safe_restore_db
 
     snap_state.stat()  # Preserve the caller's OSError reporting for missing snapshots.
-    if not verify_sqlite_integrity(snap_state, check_header=True, run_pragma=True).get("valid"):
+    snap_check = verify_sqlite_integrity(snap_state, check_header=True, run_pragma=True)
+    if not snap_check.get("valid"):
+        # The caller says "see the restore diagnostic above": a silent False would leave none.
+        print(f"  ✗ Snapshot {snap_state.parent.name} did not verify ({snap_check.get('message', 'unknown error')});"
+              " state.db was not restored.")
         return False
     if not _safe_restore_db(snap_state, state_path):
         print("  ✗ Auto-restore refused or failed; state.db was not restored.")

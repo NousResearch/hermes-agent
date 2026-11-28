@@ -369,3 +369,21 @@ def test_restore_is_reported_by_sqlite_not_by_a_refused_header_read(tmp_path, mo
     snap = tmp_path / "state-snapshots" / "20261120-pre-update" / "state.db"
     assert _restore_state_db_from_snapshot(state, snap) is True
     assert _row_count(state) == 25
+
+
+@pytest.mark.skipif(os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+                    reason="root and Windows read mode-0 files")
+def test_snapshot_unverifiable_at_restore_time_says_why(tmp_path, capsys):
+    """The caller prints "see the restore diagnostic above", so a snapshot that stops verifying
+    between the caller's check and the restore must leave that diagnostic, not a silent False."""
+    state = tmp_path / "state.db"
+    _make_valid_db(state, 3)
+    _make_valid_snapshot(tmp_path, "20261120-pre-update", 25)
+    snap = tmp_path / "state-snapshots" / "20261120-pre-update" / "state.db"
+    snap.chmod(0)
+    try:
+        assert _restore_state_db_from_snapshot(state, snap) is False
+    finally:
+        snap.chmod(0o600)
+    assert "20261120-pre-update did not verify" in capsys.readouterr().out
+    assert _row_count(state) == 3

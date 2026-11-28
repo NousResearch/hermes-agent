@@ -89,7 +89,7 @@ def daemon(root, home, env, *, barrier, fixture='local_recovery_daemon.py'):
     with (home / ('first.log' if barrier else 'restart.log')).open('w+') as log:
         proc = subprocess.Popen(command, cwd=root, env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
         try:
-            deadline = time.monotonic() + 120
+            deadline = time.monotonic() + int(os.environ.get("HERMES_TEST_DAEMON_DEADLINE", 120))
             desc = {}
             while proc.poll() is None and time.monotonic() < deadline:
                 try:

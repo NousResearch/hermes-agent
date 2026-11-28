@@ -1,7 +1,6 @@
 # health: allow FILE_LINES -- +3 lines for the mid-turn notification control state; splitting this orchestrator is a separate change, and the per-agent defaults belong beside _pending_steer
 """Implementation of :meth:`AIAgent.__init__` as ``init_agent(agent, ...)``.
 
-# orchestrator is a separate change, and these per-agent defaults belong beside _pending_steer.
 
 ``init_agent`` is a thin, ordered orchestrator over ``_init_*`` / ``_build_*`` phase
 helpers (routing → callbacks → client → tools → session → config sections → compression →

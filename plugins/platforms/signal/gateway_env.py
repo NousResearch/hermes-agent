@@ -21,5 +21,6 @@ ENV_OVERRIDES = (
 AUTHZ = {
     "allowed_users_env": "SIGNAL_ALLOWED_USERS",
     "allow_all_env": "SIGNAL_ALLOW_ALL_USERS",
+    "group_allowed_chats_env": "SIGNAL_GROUP_ALLOWED_USERS",
     "allowlist_suppresses_pairing": True,
 }

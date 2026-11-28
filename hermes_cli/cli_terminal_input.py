@@ -342,6 +342,14 @@ _KITTY_KEYBOARD_PUSH_SEQ = "\x1b[>1u"
 _MODIFY_OTHER_KEYS_SEQ = "\x1b[>4;2m"
 
 
+# Ghostty branch: level 1 — only control-char modified keys (Enter,
+# Backspace, Tab) are re-encoded as CSI 27;mod;code~; Shift+letters stay
+# plain. Level 2 re-encodes every modified key, and Ghostty+macOS IME can
+# split the ESC byte from the CSI body, which prompt_toolkit flushes as
+# the Escape key — leaking "[27;2;65~" literal text (Shift+letter breaks).
+_MODIFY_OTHER_KEYS_LEVEL1_SEQ = "\x1b[>4;1m"
+
+
 _EXTENDED_ENTER_KEYS_SEQ = _KITTY_KEYBOARD_PUSH_SEQ + _MODIFY_OTHER_KEYS_SEQ
 
 
@@ -351,8 +359,17 @@ _BACKSLASH_LINE_CONTINUATION_RE = re.compile(r"\\[ \t]*$")
 def _is_ghostty_terminal(env: Optional[Mapping[str, str]] = None) -> bool:
     """Whether the terminal is Ghostty.
 
-    Ghostty gets ONLY modifyOtherKeys: its Kitty disambiguate mode strips Alt from
+    Ghostty gets ONLY modifyOtherKeys, and only at LEVEL 1: its Kitty disambiguate mode strips Alt from
     Backspace (upstream bug), breaking backward-kill-word.
+
+    - Level 2 (``CSI >4;2m``) re-encodes EVERY modified key as ``CSI 27;mod;code~``. On macOS with an IME
+      active, Ghostty can deliver that sequence with the ESC byte in a separate read from the
+      ``[27;...~`` body; prompt_toolkit's read loop flushes a lone ESC as the Escape key
+      (``flush_keys``), so the body leaks into the prompt as literal ``[27;2;65~`` text — every
+      Shift+letter dies (#91937).
+    - Level 1 (``CSI >4;1m``) reports ONLY modified keys whose unmodified form is a control character
+      (Enter/Backspace/Tab), so Shift+letters stay plain and every alias this CLI maps still fires —
+      Shift+Enter/Backspace/Ctrl+Enter included.
 
     Ghostty implements modifyOtherKeys correctly (it then emits ``\\x1b[27;3;127~``, which the alias table
     also maps). See #87630.
@@ -393,12 +410,21 @@ def _enable_extended_enter_keys(output=None, env: Optional[Mapping[str, str]] = 
     BOTH formats, so every existing key binding continues to fire — including Ctrl+C, which is handled by
     prompt_toolkit's ``c-c`` binding (raw mode clears ISIG, so the kernel INTR path was never in play for
     the CLI).
+    Ghostty is the exception on the modifyOtherKeys side: level 1, never level 2 (see
+    ``_is_ghostty_terminal``, #91937).
     See #87630.
     """
-    from cli import _EXTENDED_ENTER_KEYS_SEQ, _MODIFY_OTHER_KEYS_SEQ, _is_ghostty_terminal, _terminal_supports_extended_enter_keys
+    from cli import (
+        _EXTENDED_ENTER_KEYS_SEQ,
+        _MODIFY_OTHER_KEYS_LEVEL1_SEQ,
+        _is_ghostty_terminal,
+        _terminal_supports_extended_enter_keys,
+    )
     if not _terminal_supports_extended_enter_keys(env):
         return False
-    seq = _MODIFY_OTHER_KEYS_SEQ if _is_ghostty_terminal(env) else _EXTENDED_ENTER_KEYS_SEQ
+    # Ghostty exception: level 1 modifyOtherKeys only — see _is_ghostty_terminal (level 2 re-encodes
+    # Shift+letters and leaks as literal "[27;2;<code>~" when Ghostty+IME splits the ESC byte).
+    seq = _MODIFY_OTHER_KEYS_LEVEL1_SEQ if _is_ghostty_terminal(env) else _EXTENDED_ENTER_KEYS_SEQ
     try:
         if output is not None and hasattr(output, "write_raw"):
             output.write_raw(seq)

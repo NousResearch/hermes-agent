@@ -1244,17 +1244,17 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
 def _account_crashes(conn: sqlite3.Connection, crash_details: list) -> list[str]:
     """Count each crash against the breaker; returns the task ids it tripped.
 
-    Protocol violations get a BOUNDED violation-only budget independent of
-    ``consecutive_failures`` (per-task ``max_retries`` takes precedence);
-    systemic same-error crashes (>= 3 identical fingerprints this tick) and
-    terminal provider errors (credential revoked, model gone — a retry cannot
-    heal them) trip immediately.
+    Protocol violations have a separate budget. Owner-recorded worker losses
+    use the ordinary per-card budget: one owner stall can lose many workers.
+    Other same-error crashes (>= 3 this tick) and terminal provider errors trip
+    immediately.
     """
     auto_blocked: list[str] = []
     fp_counts: dict[str, int] = {}
     for _, _, _, dead in crash_details:
-        fp = _error_fingerprint(dead.error_text)
-        fp_counts[fp] = fp_counts.get(fp, 0) + 1
+        if "worker_lost" not in dead.event_payload:
+            fp = _error_fingerprint(dead.error_text)
+            fp_counts[fp] = fp_counts.get(fp, 0) + 1
     for tid, pid, claimer, dead in crash_details:
         error_text = dead.error_text
         if dead.protocol_violation:
@@ -1302,10 +1302,10 @@ def _account_crashes(conn: sqlite3.Connection, crash_details: list) -> list[str]
                 event_payload_extra={"pid": pid, "claimer": claimer, "terminal_provider": True},
             )
         else:
-            is_systemic = fp_counts.get(_error_fingerprint(error_text), 0) >= 3
+            fp = _error_fingerprint(error_text)
+            is_systemic = "worker_lost" not in dead.event_payload and fp_counts.get(fp, 0) >= 3
             extra = {"pid": pid, "claimer": claimer}
             if is_systemic:
-                # Trips at 1, below any ``failure_limit``: hold it for an operator.
                 extra["sticky"] = True
             tripped = _record_task_failure(
                 conn, tid,

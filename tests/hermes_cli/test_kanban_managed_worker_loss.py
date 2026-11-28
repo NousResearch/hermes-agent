@@ -140,6 +140,25 @@ def test_a_killed_managed_worker_is_disposed_of_within_one_tick(board):
     assert row["last_failure_error"]
 
 
+@pytest.mark.parametrize("owner_loss", [True, False], ids=["owner-loss", "plain-crash"])
+def test_same_error_batch_applies_the_normal_budget_to_owner_losses(board, owner_loss):
+    task_ids = [f"t_batch_{i}" for i in range(3)]
+    run_ids = [
+        board.running(
+            tid, owner=owner_loss, worker_pid=_absent_pid(3_800_000 + i * 100),
+            worker_lost="managed_worker_failed" if owner_loss else None,
+        )
+        for i, tid in enumerate(task_ids)
+    ]
+
+    board.tick()
+
+    assert [board.run(run_id)["outcome"] for run_id in run_ids] == ["crashed"] * 3
+    rows = [board.state(tid) for tid in task_ids]
+    assert [row["consecutive_failures"] for row in rows] == [1] * 3
+    assert [row["status"] for row in rows] == ["ready" if owner_loss else "blocked"] * 3
+
+
 def test_a_killed_managed_worker_blocks_the_card_at_the_failure_limit(board):
     """The breaker covers this class: one loss short of the limit, the next loss blocks.
 

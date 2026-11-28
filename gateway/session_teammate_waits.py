@@ -21,18 +21,17 @@ def _target_live_state(runner, _name, home, record):
     profile scope; the durable store alone when this process does not serve that profile."""
     from gateway.session_authorities import authority_for_home, owner_scope
     from gateway.session_persistence import authority_persistence
-    from tools.bot_delivery_status import stored_live_state
+    from tools.bot_delivery_status import delivery_admission_status, stored_live_state
 
     target = authority_for_home(runner, home) if runner is not None else None
     if target is None or getattr(target, 'retired', False):
         return stored_live_state(_name, home, record)
-    admission_id = record.get('retry_admission_id') or record.get('admission_id') or ''
     with owner_scope(target):
-        row = authority_persistence(target).admissions.get(admission_id=admission_id) if admission_id else None
+        admission_status = delivery_admission_status(authority_persistence(target), home, record)
         live = target.sessions.get(record.get('session_id') or '')
         kinds = live.controls.waiting_kinds() if live is not None and getattr(live, 'controls', None) else []
     # One open prompt is enough to say "waiting on you"; a clarify is named before an approval.
-    return (row.status if row else None), (kinds[0] if kinds else None)
+    return admission_status, (kinds[0] if kinds else None)
 
 
 async def bot_delivery_list(connection, _ref, params):

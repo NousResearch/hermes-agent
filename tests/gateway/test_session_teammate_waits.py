@@ -15,6 +15,11 @@ from types import SimpleNamespace
 
 from gateway.session_pending_controls import PendingControls
 from gateway.session_teammate_waits import bot_delivery_list
+from persistence.conversation.lineage import CompressionChild
+from persistence.conversation.messages import NewMessage
+from persistence.core.identity import SessionId
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_session
 from tools.bot_delivery_status import FAILED_VISIBLE_SECONDS, list_sender_deliveries
 
 
@@ -38,6 +43,56 @@ def _receipt(home: Path, key: str, *, sender: str, status: str, age: float = 0.0
         stamp = time.time() - age
         os.utime(path, (stamp, stamp))
     return path
+
+
+@pytest.mark.parametrize("live_owner", [False, True])
+def test_legacy_tickets_for_a_replaced_bot_chat_stop_looking_queued(tmp_path, live_owner):
+    root = tmp_path / "hermes"
+    sender, target = _profile(root, "default"), _profile(root, "scribe")
+    store = open_persistence(profile_scope(home=target))
+    try:
+        seed_session(store, "previous-chat", "desktop", title="Previous Bot Chat")
+        seed_session(store, "current-chat", "desktop", title="Bot Chat")
+        store.lineage.publish_compression_child(
+            SessionId("current-chat"), CompressionChild(session_id=SessionId("current-tip"), source="desktop"),
+            [NewMessage.from_live({"role": "user", "content": "summary"})],
+            require_compression_lease=False,
+        )
+        now = time.time()
+        for letter, session_id, status, age in (
+            ("a", "previous-chat", "queued", 2 * FAILED_VISIBLE_SECONDS),
+            ("b", "previous-chat", "claimed", 0),
+            # A compression ancestor is still part of the current chat and can be recovered.
+            ("c", "current-chat", "queued", 2 * FAILED_VISIBLE_SECONDS),
+        ):
+            key = letter * 32
+            path = _receipt(target, key, sender="default", status=status, session_id=session_id,
+                            id=key, created_at=int(now * 1e9), owner={"profile_home": str(target),
+                            "session_id": session_id, "live_session_id": session_id, "lease_id": "legacy"})
+            record = json.loads(path.read_bytes())
+            del record["admission_id"], record["principal_id"]
+            path.write_text(json.dumps(record), encoding="utf-8")
+            os.utime(path, (now - age, now - age))
+        mailbox = target / "runtime" / "bot_live_delivery"
+        before = {p.name: (p.read_bytes(), p.stat().st_mtime_ns) for p in mailbox.iterdir()}
+
+        if live_owner:
+            owner = SimpleNamespace(profile_id=str(target), persistence=store, retired=False, sessions={})
+            registry = SimpleNamespace(for_home=lambda home: owner if Path(home) == target else None)
+            authority = SimpleNamespace(profile_id=str(sender), retired=False,
+                                        runner=SimpleNamespace(session_authorities=registry))
+            actor = SimpleNamespace(capabilities={"session:read"})
+            rows = asyncio.run(bot_delivery_list(SimpleNamespace(authority=authority, actor=actor), None, {}))[
+                "deliveries"]
+        else:
+            rows = list_sender_deliveries(root, "default", profiles=[("scribe", target)], now=now)
+
+        assert {r["delivery_id"][0]: (r["state"], r.get("reason")) for r in rows} == {
+            "b": ("failed", "unknown_outcome"), "c": ("queued", None),
+        }
+        assert {p.name: (p.read_bytes(), p.stat().st_mtime_ns) for p in mailbox.iterdir()} == before
+    finally:
+        store.close()
 
 
 def test_lists_only_this_senders_unsettled_deliveries_and_never_writes(tmp_path):

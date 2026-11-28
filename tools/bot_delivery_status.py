@@ -13,7 +13,13 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import Any, Callable, Iterable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Optional
+
+from persistence.conversation.sessions import CANONICAL_BOT_CHAT_TITLE
+from tools.bot_live_delivery import legacy_ticket_targets_chat
+
+if TYPE_CHECKING:
+    from persistence_assembly import Persistence
 
 log = logging.getLogger(__name__)
 
@@ -24,11 +30,12 @@ PREVIEW_CHARS = 140
 
 _PENDING_RECEIPTS = frozenset({"queued", "claimed", "canonical"})
 _FAILED_RECEIPTS = frozenset({"failed", "cancelled", "ambiguous"})
+_ORPHANED_LEGACY = "orphaned_legacy"
 # ``session_admissions.status`` of the admission the receipt follows → strip state.
 _ADMISSION_STATES = {"queued": "queued", "started": "working", "terminal": "claimed"}
 
-# ``(admission_status | None, waiting_on | None)`` for one pending receipt; waiting_on is the kind
-# of the target's open prompt (``"clarify"`` / ``"approval"``).
+# ``(admission_status | orphaned_legacy | None, waiting_on | None)`` for one pending receipt;
+# waiting_on is the kind (``"clarify"`` / ``"approval"``) of the target's open prompt.
 LiveState = Callable[[str, Path, dict], tuple[Optional[str], Optional[str]]]
 
 
@@ -43,7 +50,7 @@ def delivery_state(receipt_status: str, admission_status: str | None,
         return "failed"
     if receipt_status not in _PENDING_RECEIPTS:
         return None
-    if admission_status == "unknown":
+    if admission_status in ("unknown", _ORPHANED_LEGACY):
         return "failed"
     if waiting_on and admission_status == "started":
         # The open prompt belongs to the turn running THIS delivery; one queued behind it in the
@@ -57,7 +64,7 @@ def delivery_state(receipt_status: str, admission_status: str | None,
 def _failure_reason(record: dict, admission_status: str | None) -> str:
     """Typed reason for a failed row (``tools.bot_failure_reasons`` vocabulary where the owner
     wrote one). Unknown outcomes say so: the user must not resend those."""
-    if record.get("status") == "ambiguous" or admission_status == "unknown":
+    if record.get("status") == "ambiguous" or admission_status in ("unknown", _ORPHANED_LEGACY):
         return "unknown_outcome"
     if record.get("status") == "cancelled":
         return str(record.get("reason") or "cancelled")
@@ -89,22 +96,32 @@ def _read_receipt(path: Path) -> dict | None:
     return record if isinstance(record, dict) else None
 
 
-def stored_admission_status(home: Path, admission_id: str) -> str | None:
-    """``session_admissions.status`` read from the target's own store, read-only. None when the
-    profile has no store or the row is gone."""
-    from persistence_assembly import open_persistence_reader, profile_scope, store_exists
-
-    if not admission_id or not store_exists(profile_scope(home=home)):
-        return None
-    with open_persistence_reader(home) as store:
+def delivery_admission_status(store: Persistence, home: Path, record: dict) -> str | None:
+    """Read the admission, or detect a legacy ticket recovery skips for a replaced Bot Chat."""
+    if admission_id := record.get("retry_admission_id") or record.get("admission_id"):
         row = store.admissions.get(admission_id=admission_id)
-    return row.status if row else None
+        return row.status if row else None
+    owner = record.get("owner")
+    if not isinstance(owner, dict) or not isinstance(owner.get("profile_home"), str):
+        return None
+    if not isinstance(pinned_session := owner.get("session_id"), str) or not pinned_session:
+        return None
+    row = store.sessions.get_by_title(CANONICAL_BOT_CHAT_TITLE)
+    if row is not None and not legacy_ticket_targets_chat(store.lineage, home, owner, store.lineage.tip(row.session_id)):
+        return _ORPHANED_LEGACY
+    return None
 
 
 def stored_live_state(_name: str, home: Path, record: dict) -> tuple[str | None, str | None]:
-    """Default join when the target's authority is not in this process: the durable admission
-    state only (an open prompt lives in the owner's memory, so it cannot be seen from here)."""
-    return stored_admission_status(home, record.get("retry_admission_id") or record.get("admission_id") or ""), None
+    """Join against the target's durable state; open prompts require the live owner."""
+    from persistence_assembly import open_persistence_reader, profile_scope, store_exists
+
+    if not (record.get("retry_admission_id") or record.get("admission_id") or record.get("owner")):
+        return None, None
+    if not store_exists(profile_scope(home=home)):
+        return None, None
+    with open_persistence_reader(home) as store:
+        return delivery_admission_status(store, home, record), None
 
 
 # receipts dir -> {file name: (stat identity, record)}. Receipts are kept on disk for recovery and
@@ -176,6 +193,9 @@ def list_sender_deliveries(
                 admission, waiting_on = None, None
             else:
                 admission, waiting_on = live_state(name, Path(home), record)
+                if admission == _ORPHANED_LEGACY and now - since > FAILED_VISIBLE_SECONDS:
+                    # Use the same visibility window as ambiguous receipts, without rewriting one.
+                    continue
             state = delivery_state(status, admission, waiting_on)
             if state is None:
                 continue

@@ -20,12 +20,19 @@ from pathlib import Path
 from typing import Any, Callable
 
 from hermes_cli.active_sessions import _FileLock
+from persistence.conversation.lineage import LineageRepository
+from persistence.core.identity import SessionId
 
 log = logging.getLogger(__name__)
 
 DELIVERY_DIR_NAME = "bot_live_delivery"
 _OWNER_KEYS = ("profile_home", "session_id", "lease_id", "live_session_id")
 _TERMINAL = frozenset({"settled", "failed", "cancelled", "ambiguous"})
+
+
+def legacy_ticket_targets_chat(lineage: LineageRepository, home: Path, owner: dict[str, Any], session_id: str) -> bool:
+    """Legacy tickets can follow compression, but not a replacement Bot Chat."""
+    return owner["profile_home"] == str(home) and lineage.tip(SessionId(owner["session_id"])) == session_id
 
 
 def _bot_chat_tip(home: Path) -> str | None:

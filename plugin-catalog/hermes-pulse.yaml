@@ -1,0 +1,43 @@
+name: hermes-pulse
+repo: https://github.com/notwitcheer/hermes-pulse
+sha: 588adc7ccdbc5b8b5fb353951b2ad6196aa56604
+title: "Hermes Pulse"
+description: >-
+  Local, low-RAM (~25-40 MB) multi-source social and community intelligence engine for
+  any open-source project, product, company, or topic. Ingests public posts and comments
+  from Reddit (Arctic Shift, $0), Hacker News (Algolia, $0), GitHub (REST or GraphQL, $0),
+  YouTube Data API v3 ($0 free quota), and optional official X API v2 ($0.005/tweet with
+  hard 30-day USD budget cap) into SQLite WAL + FTS5, classifies themes via Hermes's
+  built-in ctx.llm, and adds a native Web Dashboard tab (/pulse), 8 tools, /pulse slash
+  command, CLI subcommand, and onboarding skill. Disclosure — makes outbound HTTPS read
+  requests to arctic-shift.photon-reddit.com, hn.algolia.com, api.github.com,
+  www.googleapis.com (when YOUTUBE_API_KEY is set), api.x.com (only when explicitly
+  enabled with X_BEARER_TOKEN, paid pay-per-use with hard spend cap), and optional
+  api.fxtwitter.com (on-demand handle lookup for handleless X quotes); stores SQLite
+  data under Hermes's profile-scoped plugin-data/hermes-pulse directory; reads optional
+  credentials exclusively via agent.secret_scope.get_secret; invokes ctx.llm for theme
+  labelling; spawns a background thread only when the user clicks Sync Now in the
+  dashboard.
+maintainer: notwitcheer
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/notwitcheer/hermes-pulse#readme
+version: "0.1.0"
+screenshots:
+  - https://raw.githubusercontent.com/notwitcheer/hermes-pulse/588adc7ccdbc5b8b5fb353951b2ad6196aa56604/assets/hermes-pulse-observatory.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - pulse_configure
+    - pulse_sync
+    - pulse_overview
+    - pulse_themes
+    - pulse_search
+    - pulse_verbatim_quotes
+    - pulse_release_impact
+    - pulse_top_threads
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

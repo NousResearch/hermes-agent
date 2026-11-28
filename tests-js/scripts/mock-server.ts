@@ -1107,6 +1107,8 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
                 resolveClose()
               }
             })
+            // `close()` alone waits on open sockets, e.g. a client's held stream.
+            server.closeAllConnections()
           }),
       })
     })

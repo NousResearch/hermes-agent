@@ -8,6 +8,8 @@ predicates live together here as pure functions (no I/O, SDK or credentials) tha
 cycle.
 """
 
+import ipaddress
+import re
 from urllib.parse import urlparse
 
 from utils import base_url_host_matches, base_url_hostname
@@ -132,6 +134,70 @@ def _requires_bearer_auth(base_url: str | None) -> bool:
         or base_url_host_matches(normalized, "palantirfoundry.com")
         or base_url_host_matches(normalized, "api.commandcode.ai")
     )
+
+
+# Hosts (and subdomains) whose Anthropic Messages auth core decides: native Anthropic / Claude, Azure,
+# MiniMax, Kimi / Moonshot and Nous. A provider profile claiming one in ``hostnames`` never changes the
+# auth style or client headers there (``ProviderProfile.anthropic_auth_style``).
+_CORE_ANTHROPIC_AUTH_HOSTS = (
+    "anthropic.com", "claude.com", "azure.com", "minimax.io", "minimaxi.com", "kimi.com", "moonshot.ai",
+    "moonshot.cn", "nousresearch.com",
+)
+
+
+def _core_owns_anthropic_auth(base_url: str | None) -> bool:
+    """True when core alone decides the Anthropic client's auth for *base_url*: the native default
+    (no base_url), every endpoint ``_requires_bearer_auth`` or ``_is_kimi_coding_endpoint`` matches, and
+    any host under ``_CORE_ANTHROPIC_AUTH_HOSTS``."""
+    normalized = _normalize_base_url_text(base_url)
+    if not normalized:
+        return True
+    return (
+        _requires_bearer_auth(normalized)
+        or _is_kimi_coding_endpoint(normalized)
+        or any(base_url_host_matches(normalized, host) for host in _CORE_ANTHROPIC_AUTH_HOSTS)
+    )
+
+
+_CLEARTEXT_LOCAL_NAMES = frozenset({"localhost", "127.0.0.1", "::1"})
+_CLEARTEXT_CONTAINER_SUFFIXES = (".docker.internal", ".containers.internal", ".lima.internal")
+# Explicit, version-independent list: ``ipaddress.is_private`` also covers 6to4 (2002::/16), Teredo, NAT64,
+# benchmarking (198.18/15) and reserved ranges, and before CVE-2024-4032 every ``::ffff:0:0/96`` address.
+_CLEARTEXT_NETS = tuple(ipaddress.ip_network(n) for n in (
+    "127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "0.0.0.0/32",
+    "::1/128", "::/128", "fc00::/7", "fe80::/10"))
+
+
+def _cleartext_endpoint_ok(base_url: str | None) -> bool:
+    """Whether a provider profile may handle an ``http`` (cleartext) *base_url*: only ``localhost``,
+    loopback, a container-host name, or an IP literal in ``_CLEARTEXT_NETS`` (loopback, RFC 1918 private,
+    link-local, unspecified, IPv6 ULA; an IPv4-mapped IPv6 address is judged by its IPv4 address). Stricter
+    than ``model_metadata.is_local_endpoint``: dotless names (DNS search suffixes), ``*.local``, all-digit or
+    hex hosts (``http://3627730435``, which the resolver maps to a public address) and an IP literal with a
+    trailing dot are not local here. False on a malformed URL."""
+    text = _normalize_base_url_text(base_url)
+    try:
+        host = base_url_hostname(text)
+        raw_host = urlparse(text if "://" in text else f"//{text}").hostname or ""
+    except ValueError:
+        return False
+    if not host or re.fullmatch(r"(?:0x[0-9a-f]+|\d+)", host):
+        return False
+    # A trailing dot (``10.0.0.1.``): base_url_hostname strips it but httpx keeps it, so it is never judged as
+    # an IP literal; only the DNS names ``localhost.`` and container hosts may carry one, and never an empty label.
+    if raw_host.startswith(".") or raw_host.endswith(".."):
+        return False
+    if raw_host.endswith(".") and host != "localhost" and not host.endswith(_CLEARTEXT_CONTAINER_SUFFIXES):
+        return False
+    if host in _CLEARTEXT_LOCAL_NAMES or host.endswith(_CLEARTEXT_CONTAINER_SUFFIXES):
+        return True
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped:
+        addr = addr.ipv4_mapped
+    return any(addr in net for net in _CLEARTEXT_NETS)
 
 
 def _base_url_needs_context_1m_beta(base_url: str | None) -> bool:

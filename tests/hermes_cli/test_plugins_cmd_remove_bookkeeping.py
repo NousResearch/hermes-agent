@@ -96,3 +96,44 @@ def test_remove_of_a_symlink_inside_the_plugins_dir_unlinks_only_the_link(home):
     assert (victim / "plugin.yaml").exists()
     assert "victim" in (home / "plugins" / ".install-metadata.json").read_text(encoding="utf-8")
     assert _config(home)["plugins"]["enabled"] == ["victim"]
+
+
+@pytest.mark.parametrize(
+    ("web", "remaining", "expected"),
+    [
+        (
+            {"backend": "exa", "search_backend": " Test-Web ", "extract_backend": "firecrawl"},
+            False,
+            {"backend": "exa", "extract_backend": "firecrawl"},
+        ),
+        (
+            {"backend": "test-web", "search_backend": "exa", "extract_backend": "test-web"},
+            False,
+            {"search_backend": "exa"},
+        ),
+        (
+            {"backend": "test-web", "search_backend": "test-web", "extract_backend": "test-web"},
+            True,
+            {"backend": "test-web", "search_backend": "test-web", "extract_backend": "test-web"},
+        ),
+    ],
+    ids=["search-overrides-shared", "shared-and-extract", "provider-still-installed"],
+)
+def test_remove_clears_only_web_selections_for_removed_providers(home, web, remaining, expected):
+    from tools.tool_backend_helpers import read_web_capability_selection
+
+    plugins = home / "plugins"
+    manifest = "kind: backend\nprovides_web_providers: [test-web]\n"
+    _write_plugin(plugins, "web-plugin", "web-plugin", manifest)
+    if remaining:
+        _write_plugin(plugins, "other-web-plugin", "other-web-plugin", manifest)
+    (home / "config.yaml").write_text(
+        yaml.safe_dump({"web": {**web, "keyless_fallback": False}}), encoding="utf-8",
+    )
+
+    assert plugins_cmd.dashboard_remove_user_plugin("web-plugin")["ok"] is True
+
+    assert not (plugins / "web-plugin").exists()
+    assert read_web_capability_selection("search") == expected.get("search_backend", expected.get("backend"))
+    assert read_web_capability_selection("extract") == expected.get("extract_backend", expected.get("backend"))
+    assert _config(home)["web"] == {**expected, "keyless_fallback": False}

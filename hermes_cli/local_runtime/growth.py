@@ -49,6 +49,30 @@ def clear_window_override(model_id: str) -> None:
         _write_overrides(overrides)
 
 
+def parallel_overrides_path():
+    from hermes_cli.local_runtime.binaries import runtimes_root
+
+    return runtimes_root() / "parallel_overrides.json"
+
+
+def load_parallel_overrides() -> dict:
+    """model_id -> server slot count. Empty on any read problem.
+
+    An operator choice, never a growth state: nothing in the runtime writes it.
+    Carving the granted window into per-slot contexts leaves the priced KV pool
+    unchanged, so the launch policy has no physics to re-check. It renders the
+    split into the preset and the server owns the rest.
+    """
+    try:
+        with open(parallel_overrides_path(), encoding="utf-8-sig") as fh:
+            data = json.load(fh)
+        if not isinstance(data, dict):
+            return {}
+        return {str(k): int(v) for k, v in data.items()}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
 def is_managed_endpoint(base_url: str) -> bool:
     """True when base_url is the server this process's state file points at."""
     with suppress(Exception):

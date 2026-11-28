@@ -304,6 +304,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
 
     Returns a JSON string ``{"success": bool, "data": {"web": [{"title", "url", "description", "position"},
     ...]}}`` (metadata only — use web_extract_tool for page content) or ``{"success": false, "error": ...}``.
+    Rows also carry ``published_date`` / ``updated_date`` / ``crawl_date`` when the backend reports them.
     """
     try:
         limit = min(max(int(limit), 1), 100)

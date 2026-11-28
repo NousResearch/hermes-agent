@@ -44,13 +44,36 @@ def search_fail(error: str) -> dict[str, Any]:
     return {"success": False, "error": error}
 
 
-def web_hit(url: str, title: str, description: str, position: int) -> dict[str, Any]:
-    return {"url": url, "title": title, "description": description, "position": position}
+def row_dates(published_date: Any = None, updated_date: Any = None, crawl_date: Any = None) -> dict[str, str]:
+    """The dates a vendor reported for one search row, appended after ``position``; a row without
+    them keeps the four-key shape. ``published_date``: the page's own date as the vendor gives it
+    (some vendors fold the last-modified date into it); ``updated_date``: the last update, when
+    reported apart; ``crawl_date``: when the vendor fetched the copy the snippet was cut from.
+    Without them the model cannot tell a stale index copy from a current page. Values pass through
+    as the vendor wrote them; blanks and non-strings are dropped."""
+    dates = {"published_date": published_date, "updated_date": updated_date, "crawl_date": crawl_date}
+    return {key: value.strip() for key, value in dates.items() if isinstance(value, str) and value.strip()}
 
 
-def title_hit(title: str, url: str, description: str, position: int) -> dict[str, Any]:
+def web_hit(
+    url: str, title: str, description: str, position: int,
+    *, published_date: Any = None, updated_date: Any = None, crawl_date: Any = None,
+) -> dict[str, Any]:
+    return {
+        "url": url, "title": title, "description": description, "position": position,
+        **row_dates(published_date, updated_date, crawl_date),
+    }
+
+
+def title_hit(
+    title: str, url: str, description: str, position: int,
+    *, published_date: Any = None, updated_date: Any = None, crawl_date: Any = None,
+) -> dict[str, Any]:
     """Title-first row — the historical wire shape of brave/searxng/ddgs/tavily/xai."""
-    return {"title": title, "url": url, "description": description, "position": position}
+    return {
+        "title": title, "url": url, "description": description, "position": position,
+        **row_dates(published_date, updated_date, crawl_date),
+    }
 
 
 def document(url: str, title: str, content: str, *, source_url: Optional[str] = None) -> dict[str, Any]:
@@ -235,10 +258,17 @@ def http_get_json(
         return None, search_fail(f"Could not parse {label} response as JSON")
 
 
-def titled_rows(raw_results: list[dict[str, Any]], description_key: str) -> list[dict[str, Any]]:
-    """Brave/SearXNG row normalizer: ``str()`` every field, 1-based positions."""
+def titled_rows(
+    raw_results: list[dict[str, Any]], description_key: str, *, date_keys: Optional[dict[str, str]] = None,
+) -> list[dict[str, Any]]:
+    """Brave/SearXNG row normalizer: ``str()`` every field, 1-based positions. ``date_keys`` maps a
+    :func:`row_dates` name to the vendor field that carries it."""
+    date_keys = date_keys or {}
     return [
-        title_hit(str(r.get("title", "")), str(r.get("url", "")), str(r.get(description_key, "")), i + 1)
+        title_hit(
+            str(r.get("title", "")), str(r.get("url", "")), str(r.get(description_key, "")), i + 1,
+            **{name: r.get(field) for name, field in date_keys.items()},
+        )
         for i, r in enumerate(raw_results)
     ]
 

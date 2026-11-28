@@ -177,6 +177,18 @@ The tool wrapper expects a fixed envelope so it doesn't have to translate betwee
 }
 ```
 
+A row may also carry the dates your backend reports for it, as strings in the backend's own format,
+after `position`. Leave a key out when the backend has no value for it:
+
+| Key | Meaning |
+|---|---|
+| `published_date` | The page's own date (publication, or last modification for backends that fold the two together) |
+| `updated_date` | The page's last update, when the backend reports it apart from the publication date |
+| `crawl_date` | When the backend fetched the copy the snippet was cut from |
+
+Search results come from the backend's index, not from a live fetch, so these dates are how the model tells a
+stale copy from a current page.
+
 **Extract success:**
 
 ```python

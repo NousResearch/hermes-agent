@@ -50,7 +50,10 @@ class ExaWebSearchProvider(BaseWebSearchProvider):
             logger.info("Exa search: '%s' (limit=%d)", query, limit)
             response = _get_exa_client().search(query, num_results=limit, contents={"highlights": True})
             return search_ok([
-                web_hit(r.url or "", r.title or "", " ".join(r.highlights or []), i + 1)
+                web_hit(
+                    r.url or "", r.title or "", " ".join(r.highlights or []), i + 1,
+                    published_date=getattr(r, "published_date", None), crawl_date=getattr(r, "crawl_date", None),
+                )
                 for i, r in enumerate(response.results or [])
             ])
 

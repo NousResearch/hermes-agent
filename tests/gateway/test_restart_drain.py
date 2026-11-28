@@ -261,6 +261,7 @@ async def test_a_restart_whose_stop_fails_before_its_guard_is_logged(monkeypatch
         raise RuntimeError("can't start new thread")
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
     monkeypatch.setattr(run_shutdown, "arm_shutdown_watchdog", arm_fails)
+    monkeypatch.setattr("gateway.shutdown_watchdog.arm_shutdown_watchdog", MagicMock())
     runner, _adapter = make_restart_runner()
     runner._scale_to_zero_status = MagicMock()
 

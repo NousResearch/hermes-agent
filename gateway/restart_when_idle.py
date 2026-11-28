@@ -20,6 +20,7 @@ import logging
 import os
 import time
 
+from gateway.shutdown_watchdog import recover_failed_restart_stop
 from hermes_constants import get_hermes_home
 
 logger = logging.getLogger("gateway.run")
@@ -160,8 +161,10 @@ def request_restart(runner, *, detached: bool, via_service: bool) -> bool:
                 if not in_stop:
                     logger.warning("Restart wait failed while the gateway was already stopping", exc_info=True)
                 elif not getattr(runner, "_stop_guard_entered", False):
-                    logger.exception("Restart stop failed before its teardown began; the gateway stays "
-                                     "draining with no shutdown watchdog and needs an external restart")
+                    if runner._restart_via_service:
+                        recover_failed_restart_stop(runner)
+                    else:
+                        logger.exception("Restart stop failed before its teardown began; needs an external restart")
                 return
             # No stop has begun: keep serving and let the next restart request run.
             logger.exception("Restart failed before the gateway began stopping; still serving, and the "

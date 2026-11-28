@@ -448,13 +448,16 @@ def _format_loop_thread_section(loop_thread_id: int) -> str:
 def arm_shutdown_watchdog(
     delay_s: float, *, done_event: Optional[threading.Event] = None,
     snapshot_fn: Optional[Callable[[], dict[str, Any]]] = None, exit_code: int = 1,
-    dump_path: Optional[Path] = None, name: str = "gateway-shutdown-watchdog") -> threading.Event:
+    dump_path: Optional[Path] = None, name: str = "gateway-shutdown-watchdog",
+    required: bool = False) -> threading.Event:
     """Arm a daemon-thread hard-exit backstop for a wedged shutdown path: exits quietly if
     ``done_event`` is set within ``delay_s``, else dumps diagnostics and ``os._exit(exit_code)``.
-    Never raises; returns ``done_event`` for disarming."""
+    Best effort by default. With ``required=True``, returning means the thread was started."""
     done = done_event if done_event is not None else threading.Event()
     delay = _coerce_float(delay_s, DEFAULT_SHUTDOWN_WATCHDOG_GRACE_S)
     if delay <= 0:
+        if required:
+            raise ValueError("required watchdog needs a positive deadline")
         return done
 
     def _watchdog() -> None:
@@ -491,8 +494,37 @@ def arm_shutdown_watchdog(
     try:
         threading.Thread(target=_watchdog, daemon=True, name=name).start()
     except Exception:
+        if required:
+            raise
         logger.debug("Failed to arm shutdown watchdog", exc_info=True)
     return done
+
+
+def recover_failed_restart_stop(runner) -> None:
+    """Called in the restart exception handler, before any teardown phase ran (#160095).
+
+    Admission stays closed. An operator may retry stop(), but never retire the only exit timer
+    until that stop has actually started its own. A supervisor can also relaunch us after exit 1.
+    """
+    original = sys.exc_info()
+    failed_stop = runner._stop_task
+    if not failed_stop.done() or failed_stop.cancelled() or failed_stop.exception() is not original[1]:
+        logger.error("Restart failed while another stop owns teardown", exc_info=original)
+        return
+    arm_failed = False
+    try:
+        runner._restart_failure_watchdog = arm_shutdown_watchdog(
+            DEFAULT_SHUTDOWN_WATCHDOG_GRACE_S, exit_code=1, name="gateway-restart-failure-exit", required=True)
+    except Exception:
+        arm_failed = True
+        logger.exception("Cannot arm restart recovery watchdog; exiting now")
+        logger.error("Restart stop failed before its teardown began", exc_info=original)
+        return
+    finally:
+        if arm_failed:
+            _hard_exit(1)
+    runner._stop_task = None  # the failed task is done; stop() would otherwise re-await it forever
+    logger.error("Restart stop failed before its teardown began; recovery watchdog is armed", exc_info=original)
 
 
 @contextlib.contextmanager

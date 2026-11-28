@@ -1,5 +1,7 @@
+import { setTimeout as nodeSetTimeout } from 'node:timers'
+
 import { configure } from '@testing-library/react'
-import { afterEach } from 'vitest'
+import { afterAll, afterEach } from 'vitest'
 
 import { clearPlaybackSourceCache } from './src/lib/playback-source-cache'
 import { InertResizeObserver } from './src/test/jsdom'
@@ -84,3 +86,16 @@ configure({ asyncUtilTimeout: 12_000 })
 // Resolved stream URLs outlive a mount on purpose; a test file reusing one path must not
 // inherit the previous case's source.
 afterEach(() => clearPlaybackSourceCache())
+
+// Radix overlays (menus, popovers, dialogs) hand focus back from a
+// `setTimeout(0)` scheduled when their FocusScope unmounts. When a file's last
+// test closes one, that timer can outlive the file and fire after the jsdom
+// environment is torn down: it builds a Node `CustomEvent`, dispatches it on a
+// jsdom node, and the run fails with an unhandled "parameter 1 is not of type
+// 'Event'" even though every test passed. Registered here, this hook runs after
+// the file's own hooks (cleanup included), and a same-delay timer created later
+// fires later, so every unmount timer already queued runs inside the live
+// environment. Node's own timer, not the global: a test that stubs or fakes
+// `setTimeout` and is not restored (a `-t` filter skipping the restore) must not
+// hang this hook; the real timer shares the queue Radix's timer sits in.
+afterAll(() => new Promise<void>(resolve => nodeSetTimeout(resolve, 0)))

@@ -150,10 +150,11 @@ def legacy_creation_source(row, rule: Optional[OwnerRule]) -> str:
 
 
 def legacy_account_label(row):
-    # main's Desktop stamped the signed-in Nous account on its chats. That is a label, not a route or
-    # an authenticated owner, so it does not block adoption of an otherwise unrouted Desktop row.
+    # main's Desktop and the Hermes relay APK stamped the signed-in Nous account on their chats. That is a
+    # label, not a route or an authenticated owner, so it does not block adoption of an otherwise
+    # unrouted Desktop/webui row.
     user_id = row.get('user_id')
-    return row['source'] == 'desktop' and isinstance(user_id, str) and user_id.startswith('nous:')
+    return row['source'] in ('desktop', 'webui') and isinstance(user_id, str) and user_id.startswith('nous:')
 
 
 def login_owned_by(row, subject, rule: Optional[OwnerRule]) -> bool:

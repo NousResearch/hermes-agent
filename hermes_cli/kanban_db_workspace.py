@@ -257,6 +257,43 @@ def _lexical_path(path: Path | str) -> Path:
     return Path(_path_key(os.path.abspath(path)))
 
 
+_SCRATCH_ROOT_DIRNAME = "hermes-workspaces"
+
+
+def _beside_home(home: Path) -> bool:
+    """True when scratch lives beside *home* rather than inside it: the home
+    itself is a dot-directory (``~/.hermes``) and nothing above it is."""
+    parts = Path(os.path.abspath(home)).parts
+    # ``len(parts) > 2``: a home directly under ``/`` would put scratch in a
+    # top-level folder that may sit outside the data volume.
+    return (
+        len(parts) > 2
+        and parts[-1].startswith(".")
+        and not any(part.startswith(".") for part in parts[:-1])
+    )
+
+
+def default_workspaces_root(slug: str) -> Path:
+    """Default scratch root of board *slug*.
+
+    Web-framework file senders commonly reject an otherwise safe absolute path
+    when any ancestor is a dot-directory, so a kanban home that is itself a
+    dot-directory (the usual ``~/.hermes``) puts scratch beside it in
+    ``<home-parent>/hermes-workspaces/<home-name>/<slug>``. The home's own name
+    keeps two installs that share a parent (``~/.hermes``, ``~/.hermes-work``)
+    from sharing, or deleting, each other's scratch. Any other home keeps the
+    legacy ``kanban/workspaces`` / ``kanban/boards/<slug>/workspaces`` roots:
+    the parent of such a home (e.g. a container's ``/opt/data`` volume) need
+    not be writable or persistent.
+    """
+    home = _kb.kanban_home()
+    if _beside_home(home):
+        return home.parent / _SCRATCH_ROOT_DIRNAME / home.name.lstrip(".") / slug
+    if slug == _kb.DEFAULT_BOARD:
+        return home / "kanban" / "workspaces"
+    return _kb.board_dir(slug) / "workspaces"
+
+
 def _managed_scratch_path_info(p: Path) -> tuple[bool, Optional[str]]:
     """Return whether *p* is managed scratch storage and the matching board.
 
@@ -308,7 +345,12 @@ def _managed_scratch_path_info(p: Path) -> tuple[bool, Optional[str]]:
         home_real = home.resolve(strict=False)
     except OSError:
         home = None
+    # The beside-home roots exist only for a home below a dot-directory.
+    beside = home is not None and _beside_home(home)
     if home is not None:
+        if beside:
+            own = (_SCRATCH_ROOT_DIRNAME, home.name.lstrip("."))
+            _add_root(home.parent, home_real.parent, (*own, _kb.DEFAULT_BOARD), _kb.DEFAULT_BOARD)
         _add_root(home, home_real, ("kanban", "workspaces"), _kb.DEFAULT_BOARD)
         entries: list[Path] = []
         with contextlib.suppress(OSError):
@@ -319,6 +361,12 @@ def _managed_scratch_path_info(p: Path) -> tuple[bool, Optional[str]]:
                     _add_root(
                         home, home_real, ("kanban", "boards", entry.name, "workspaces"), entry.name
                     )
+                    # ``boards/_archived`` and other non-slug dirs are not boards
+                    # and own no default root; skip them rather than validate.
+                    if beside and _kb._BOARD_SLUG_RE.match(entry.name):
+                        _add_root(
+                            home.parent, home_real.parent, (*own, entry.name), entry.name,
+                        )
     for root, lexical_roots, board in roots:
         if p_abs == root:
             continue
@@ -344,9 +392,10 @@ def _scratch_workspace(conn: sqlite3.Connection, task_id: str) -> Optional[Path]
 
 
 def _is_managed_scratch_path(p: Path) -> bool:
-    """True iff *p* is a STRICT descendant of a kanban-managed ``workspaces/``
-    root (``HERMES_KANBAN_WORKSPACES_ROOT``, ``<kanban_home>/kanban/workspaces``,
-    or ``<kanban_home>/kanban/boards/<slug>/workspaces``). A path equal to a
+    """True iff *p* is a STRICT descendant of a kanban-managed scratch root
+    (``HERMES_KANBAN_WORKSPACES_ROOT``, :func:`default_workspaces_root`, or the
+    legacy ``<kanban_home>/kanban/workspaces`` and
+    ``<kanban_home>/kanban/boards/<slug>/workspaces``). A path equal to a
     root is not managed (deleting it would wipe every task's scratch dir);
     ``<kanban_home>/kanban``, ``.../logs`` and ``.../boards/<slug>`` hold
     Hermes' own DB and metadata. :func:`_cleanup_workspace` refuses
@@ -787,7 +836,7 @@ def _resolve_worktree_workspace(task: Task, *, board: Optional[str] = None) -> t
 def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
     """Resolve (and create if needed) the workspace for a task.
 
-    ``scratch``: ``<board-root>/workspaces/<id>/`` — path-stable across the
+    ``scratch``: ``workspaces_root(board)/<id>/`` — path-stable across the
     dispatcher and every profile worker. ``dir``: ``workspace_path``, created
     if missing; MUST be absolute (relative paths would resolve against the
     dispatcher's CWD — confused-deputy traversal). ``worktree``: a linked git

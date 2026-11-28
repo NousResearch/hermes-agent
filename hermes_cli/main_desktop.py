@@ -50,8 +50,14 @@ def _packaged_resources_dir(desktop_dir: Path) -> Optional[Path]:
     executable = _desktop_packaged_executable(desktop_dir)
     if executable is None:
         return None
-    # macOS: …/Hermes.app/Contents/MacOS/Hermes → …/Contents/Resources
-    return executable.parent.parent / "Resources" if sys.platform == "darwin" else executable.parent / "resources"
+    # Infer the layout from the executable's own shape, not the running host:
+    # a macOS bundle is …/Hermes.app/Contents/MacOS/Hermes → …/Contents/Resources,
+    # a Windows/Linux one is <release>/<…>-unpacked/Hermes(.exe) → ./resources.
+    # Branching on sys.platform misverified a Windows bundle from a macOS host
+    # (the update-verify hand-off) by inventing a release/Resources dir.
+    if executable.parent.name == "MacOS":
+        return executable.parent.parent / "Resources"
+    return executable.parent / "resources"
 
 
 # The module files the renderer fetches before any app code runs: Vite emits

@@ -4198,8 +4198,8 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             delivery_adapter._schedule_ephemeral_delete(event.source.chat_id, result.message_id, ephemeral_ttl)
 
     async def _notify_turn_error(self, event: MessageEvent, e: BaseException) -> Optional[dict]:
-        """Tell the user a turn failed rather than leaving radio silence (last resort:
-        a failing notice is logged, never raised). Returns the thread metadata used."""
+        """Tell the user a turn failed instead of silence (a failing notice is logged, never raised); returns thread metadata."""
+        from gateway.failure_reply import apply_failure_reply  # failure_reply imports this package
         _thread_metadata = None
         try:
             _thread_metadata = _thread_metadata_for_event(event)
@@ -4207,7 +4207,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             # as before, so delivery bookkeeping keeps landing where boot-time recovery reads it.
             with self._media_delivery_scope(event.source):
                 content = None if diagnostic_wake_muted(event) else self.warning_text(
-                    t("gateway.errors.generic_failed"),  # raw exception text can carry credentials (logged above)
+                    apply_failure_reply(event.source, t("gateway.errors.generic_failed")),  # raw exception text can carry credentials (logged above)
                     t("gateway.notify.turn_error"),
                     logical_platform=event.source.platform, chat_id=event.source.chat_id, metadata=_thread_metadata)
             if content is None:

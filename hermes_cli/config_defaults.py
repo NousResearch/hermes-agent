@@ -2055,11 +2055,10 @@ DEFAULT_CONFIG = {
         # Seconds a SIGTERM-interrupted agent unwinds before teardown (short: service stop budgets).
         "signal_interrupt_grace_timeout": 1,
         "service_install_choice": None,  # null | install | decline; never authorizes ordinary launch installation.
-        # Durable delivery-obligation ledger: final responses are recorded in state.db around the
-        # platform send; a gateway that died between finalize and platform ACK redelivers on next
-        # boot (ambiguous cases carry a "recovered reply — may be a duplicate" marker;
-        # at-least-once). Disable to lose in-flight final responses on crash/restart.
+        # Durable delivery-obligation ledger: final responses are recorded in state.db around the platform send; a gateway that died between
+        # finalize and platform ACK redelivers on next boot ("recovered reply — may be a duplicate" marker; at-least-once). Disable to lose in-flight finals.
         "delivery_ledger": True,
+        "failure_reply": {"text": "", "scope": "non_dm"},  # plain message replacing Hermes's failure copy in chats; non_dm | all; empty = off
         # Seconds the gateway waits for a single messaging platform to finish connecting during startup (and
         # on reconnect). Discord in particular can blow past the old fixed 30s when an account has many
         # slash commands to sync (#19776: 90-173 skills → ~28-31s sync). Raise this if your gateway hits

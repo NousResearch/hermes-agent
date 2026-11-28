@@ -38,6 +38,7 @@ from agent.conversation_compression import (
     COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE, IDLE_COMPACTION_STATUS_TEMPLATE,
     PRE_API_COMPRESSION_STATUS_TEMPLATE, PREFLIGHT_COMPRESSION_STATUS_TEMPLATE)
 from gateway.run_status_filter import EMPTY_LADDER_STATUS_PATTERN, _status_template_to_regex, hidden_outside_dm, is_terminal_failure_status
+from gateway.failure_reply import apply_failure_reply
 from agent.conversation_compression_archive import MERGED_DURABLE_ROWS, RETIRED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.interrupt_compat import request_hard_interrupt
@@ -670,9 +671,8 @@ def _looks_like_gateway_provider_error(text: str) -> bool:
     return bool(_GATEWAY_PROVIDER_ERROR_SHAPE_RE.search(body))
 
 
-def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
-    """Sanitize final gateway replies for chat surfaces: concise, secret-redacted provider failure
-    categories instead of raw HTTP bodies, request IDs, leaked credentials, or policy text."""
+def _sanitize_gateway_final_response(platform: Any, text: str, source: Any = None) -> str:
+    """Chat-safe final replies: concise, redacted provider-failure categories, or ``source``'s gateway.failure_reply."""
     if not text or _gateway_surface_passes_raw_text(platform):
         return text
 
@@ -703,7 +703,7 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
 
     redacted = _redact_gateway_user_facing_secrets(str(text))
     if _looks_like_gateway_provider_error(redacted):
-        return _gateway_provider_error_reply(redacted)
+        return apply_failure_reply(source, _gateway_provider_error_reply(redacted), original=redacted)
     return redacted
 
 

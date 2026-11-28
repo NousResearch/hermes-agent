@@ -1,0 +1,41 @@
+name: hermes-chrome
+repo: https://github.com/whoisdhana/hermes-chrome
+sha: b47cc7300bd4391cf125f5c9e4be50bb9e3475bb
+subdir: ""
+description: Let Hermes control your paired Chrome with a visible cursor, isolated tab group, human handoff, side-panel chat, and recorded workflows.
+maintainer: Dhana
+title: "Hermes Chrome"
+tier: community
+category: web
+requires_hermes: ">=0.21.3"
+version: "0.9.0"
+screenshots: []
+readme: true
+capabilities:
+  provides_tools:
+    - chrome_status
+    - chrome_tabs
+    - chrome_open
+    - chrome_close
+    - chrome_navigate
+    - chrome_read_page
+    - chrome_find
+    - chrome_text
+    - chrome_screenshot
+    - chrome_click
+    - chrome_type
+    - chrome_key
+    - chrome_scroll
+    - chrome_batch
+    - chrome_wait
+    - chrome_handoff
+    - chrome_eval
+    - chrome_plan
+    - chrome_report
+    - chrome_replay
+    - chrome_extract
+    - chrome_export
+  provides_hooks:
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

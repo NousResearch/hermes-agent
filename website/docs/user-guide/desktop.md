@@ -868,6 +868,8 @@ An earlier update that replaced the checkout without keeping `apps/desktop/relea
 
 If the local Hermes backend process exits after it was ready, Desktop restarts it on its own and shows a **Hermes stopped working in the background** notice; the chat reconnects once the replacement is up. `HERMES_HOME/logs/desktop.log` records the exit code together with the backend's last output lines (`Hermes backend exited (1)` followed by `Recent backend output:`), so the reason it died is in the log even when the app recovered by itself. A backend that keeps dying within seconds of every restart points at the backend itself — look at the traceback in that tail. After three such restarts within two minutes Desktop stops respawning and shows a **keeps crashing** notice instead of cycling; relaunch the app once the cause is fixed.
 
+After the local gateway has connected once, a failed runtime check during reconnect does not reopen first-run setup. Use **Reconnect gateway** and check `desktop.log` if the failure persists.
+
 ### Failed turns name the failing layer
 
 When a turn fails, the chat renders an error card that names **which layer

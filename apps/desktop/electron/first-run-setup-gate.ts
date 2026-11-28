@@ -24,6 +24,7 @@ export function createFirstRunSetupGate({
   stuckAfterMs = 120000
 }: FirstRunSetupGateOptions = {}) {
   let localBootstrapConfirmed = false
+  let localGatewayWasReady = false
 
   let waiter: {
     promise: Promise<FirstRunSetupDecision>
@@ -59,11 +60,18 @@ export function createFirstRunSetupGate({
     }
   }
 
-  const shouldGate = (backend?: FirstRunSetupBackend | null) =>
-    Boolean(backend && backend.kind === 'bootstrap-needed' && !localBootstrapConfirmed)
+  const wait = async (backend?: FirstRunSetupBackend | null, repairRequested = false) => {
+    if (backend?.kind !== 'bootstrap-needed') {
+      return 'continue-local' as const
+    }
 
-  const wait = async (backend?: FirstRunSetupBackend | null) => {
-    if (!shouldGate(backend)) {
+    // A failed probe during reconnect does not undo a successful local boot.
+    // Do not wait for setup or reuse consent from an earlier first-run install.
+    if (localGatewayWasReady && !repairRequested) {
+      throw new Error('Could not verify the existing local Hermes installation. Retry the gateway connection.')
+    }
+
+    if (localBootstrapConfirmed) {
       return 'continue-local' as const
     }
 
@@ -134,15 +142,18 @@ export function createFirstRunSetupGate({
 
   const isLocalBootstrapConfirmed = () => localBootstrapConfirmed
   const hasWaiter = () => Boolean(waiter)
+  const markLocalGatewayReady = () => {
+    localGatewayWasReady = true
+  }
 
   return {
     abandonForRemoteApply,
     continueLocal,
     hasWaiter,
     isLocalBootstrapConfirmed,
+    markLocalGatewayReady,
     resetForRepair,
     resetForRetry,
-    shouldGate,
     wait
   }
 }

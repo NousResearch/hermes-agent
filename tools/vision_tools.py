@@ -368,6 +368,20 @@ _EMBED_MAX_DIMENSION = 1568
 # Target when auto-resizing after a provider size rejection (retry once).
 _RESIZE_TARGET_BYTES = 5 * 1024 * 1024
 
+
+def _vision_resize_target_bytes() -> int:
+    """Resolve the auxiliary vision retry target for the active profile."""
+    try:
+        raw = _cfg_auxiliary("vision", "resize_target_bytes", default=_RESIZE_TARGET_BYTES)
+        if isinstance(raw, bool):
+            raise ValueError("invalid retry target")
+        target = int(raw)
+        if not 0 < target <= _MAX_BASE64_BYTES:
+            raise ValueError("invalid retry target")
+        return target
+    except (TypeError, ValueError, OverflowError):
+        return _RESIZE_TARGET_BYTES
+
 _SIZE_ERROR_HINTS = (
     "too large", "payload", "413", "content_too_large",
     "request_too_large", "exceeds", "size limit",
@@ -917,12 +931,13 @@ async def vision_analyze_tool(
         try:
             response = await async_call_llm(**call_kwargs)
         except Exception as _api_err:
-            if not (_is_image_size_error(_api_err) and len(image_data_url) > _RESIZE_TARGET_BYTES):
+            retry_target = _vision_resize_target_bytes()
+            if not (_is_image_size_error(_api_err) and len(image_data_url) > retry_target):
                 raise
             logger.info(
-                "API rejected image (%.1f MB, likely too large); auto-resizing to ~%.0f MB and retrying...",
-                len(image_data_url) / (1024 * 1024), _RESIZE_TARGET_BYTES / (1024 * 1024))
-            image_data_url = await _resize_prepared(prepared, _scale_info)
+                "API rejected image (%.1f MB, likely too large); auto-resizing to ~%.1f MB and retrying...",
+                len(image_data_url) / (1024 * 1024), retry_target / (1024 * 1024))
+            image_data_url = await _resize_prepared(prepared, _scale_info, max_base64_bytes=retry_target)
             messages[0]["content"][1]["image_url"]["url"] = image_data_url
             response = await async_call_llm(**call_kwargs)
         analysis = await _call_vision_llm(

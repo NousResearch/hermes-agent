@@ -668,6 +668,37 @@ class TestBase64SizeLimit:
 
         assert result["success"] is True
 
+    @pytest.mark.asyncio
+    async def test_configured_retry_target_recovers_provider_size_rejection(self, tmp_path):
+        """A proxy's lower limit can trigger a retry below the default 5 MiB target."""
+        img = tmp_path / "large.png"
+        img.write_bytes(VALID_PNG + b"\0" * (3 * 1024 * 1024 + 500000))
+        response = MagicMock()
+        response.choices[0].message.content = "An image"
+        payload_sizes = []
+
+        async def call_llm(**kwargs):
+            payload_sizes.append(len(kwargs["messages"][0]["content"][1]["image_url"]["url"]))
+            if len(payload_sizes) == 1:
+                raise Exception("413 payload too large")
+            return response
+
+        with (patch("hermes_cli.config.load_config", return_value={"auxiliary": {"vision": {"resize_target_bytes": 4194304}}}),
+              patch("tools.vision_tools.async_call_llm", side_effect=call_llm)):
+            result = json.loads(await vision_analyze_tool(str(img), "describe", "test/model"))
+
+        assert result["success"] is True
+        assert len(payload_sizes) == 2
+        assert 4 * 1024 * 1024 < payload_sizes[0] < 5 * 1024 * 1024
+        assert payload_sizes[1] <= 4 * 1024 * 1024
+
+    def test_retry_target_invalid_config_uses_default(self):
+        from tools.vision_tools import _vision_resize_target_bytes
+
+        for value in (0, -1, True, "invalid", None):
+            with patch("hermes_cli.config.load_config", return_value={"auxiliary": {"vision": {"resize_target_bytes": value}}}):
+                assert _vision_resize_target_bytes() == 5 * 1024 * 1024
+
 
 # ---------------------------------------------------------------------------
 # Error classification for 400 responses

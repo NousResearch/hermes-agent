@@ -950,6 +950,7 @@ compression:
 #     timeout: 30            # LLM API call timeout (seconds)
 #     download_timeout: 30   # Image HTTP download timeout (seconds)
 #                            # Increase for slow connections or self-hosted image servers
+#     resize_target_bytes: 5242880  # Base64 image target on a provider size-error retry (5 MiB)
 #     reasoning_effort: ""   # Per-task thinking level: none, minimal, low, medium,
 #                            # high, xhigh, max, ultra. Empty = provider default.
 #                            # Works on every auxiliary task block (vision,

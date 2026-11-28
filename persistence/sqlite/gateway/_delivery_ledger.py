@@ -49,8 +49,13 @@ def _ensure_obligations_table(conn) -> None:
             adapter_profile TEXT
         )"""
     )
-    if "adapter_profile" not in {row[1] for row in conn.execute("PRAGMA table_info(delivery_obligations)")}:
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(delivery_obligations)")}
+    if "adapter_profile" not in cols:
         add_column_if_missing(conn, "delivery_obligations", "adapter_profile", "adapter_profile TEXT")
+    if "media_path" not in cols:
+        add_column_if_missing(conn, "delivery_obligations", "media_path", "media_path TEXT")
+    if "media_kind" not in cols:
+        add_column_if_missing(conn, "delivery_obligations", "media_kind", "media_kind TEXT")
 
 
 # Drops settled rows past retention, then the oldest rows over the row cap, settled ones first.
@@ -74,7 +79,8 @@ def _prune_unlocked(conn, now: float) -> None:
 
 def _claimed_row(oid, session_key, platform, chat_id, thread_id, content, attempts, profile, *,
                  needs_marker: bool, runtime: bool = False, flood: bool = False,
-                 last_error: Optional[str] = None) -> ClaimedObligation:
+                 last_error: Optional[str] = None,
+                 media_path: Optional[str] = None, media_kind: Optional[str] = None) -> ClaimedObligation:
     """A claimed row for redelivery. A marked row names its own cause: ``flood`` gets the flood marker at boot or at
     runtime, a ``runtime`` reconnect replay the reconnect marker, and a boot-recovered crash the caller's restart
     marker default (``marker`` None). ``last_error`` is the row's pre-claim error."""
@@ -82,7 +88,8 @@ def _claimed_row(oid, session_key, platform, chat_id, thread_id, content, attemp
     return ClaimedObligation(
         obligation_id=oid, session_key=session_key, platform=platform, chat_id=chat_id, thread_id=thread_id,
         content=content, needs_marker=needs_marker, marker=marker if needs_marker and marker else None,
-        profile=profile, runtime_recovery=runtime, last_error=last_error or None, attempts=attempts + 1)
+        profile=profile, runtime_recovery=runtime, last_error=last_error or None, attempts=attempts + 1,
+        media_path=media_path, media_kind=media_kind)
 
 
 def _expected_profile(profile: Optional[str]) -> str:
@@ -109,17 +116,21 @@ class DeliveryObligationVerbs:
     # Records a pending obligation owned by ``owner``, replacing a row with the same id, then prunes.
     def record_delivery_obligation(self, *, obligation_id: str, session_key: str, platform: str, chat_id: str,
                                    thread_id: Optional[str], content: str, adapter_profile: Optional[str] = None,
+                                   media_path: Optional[str] = None, media_kind: Optional[str] = None,
                                    owner: OwnerStamp) -> None:
         now, (pid, started) = time.time(), (owner.pid, owner.started_at)
+        stored_path = str(media_path) if media_path else None
+        stored_kind = str(media_kind).strip().lower() if media_kind else None
         def _do(conn):
             conn.execute(
                 """INSERT OR REPLACE INTO delivery_obligations
                    (obligation_id, session_key, platform, chat_id, thread_id,
                     content, state, attempts, created_at, updated_at,
-                    owner_pid, owner_started_at, adapter_profile)
-                   VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?)""",
+                    owner_pid, owner_started_at, adapter_profile, media_path, media_kind)
+                   VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?, ?, ?)""",
                 (obligation_id, session_key, platform, str(chat_id), str(thread_id) if thread_id else None,
-                 content, now, now, pid, started, str(adapter_profile).strip() if adapter_profile else "default"))
+                 content, now, now, pid, started, str(adapter_profile).strip() if adapter_profile else "default",
+                 stored_path, stored_kind))
             _prune_unlocked(conn, now)
         with translated():
             self._obligation_write(_do)
@@ -200,12 +211,14 @@ class DeliveryObligationVerbs:
             rows = conn.execute(
                 """SELECT obligation_id, session_key, platform, chat_id, thread_id,
                           content, state, attempts, created_at,
-                          owner_pid, owner_started_at, adapter_profile, last_error, updated_at
+                          owner_pid, owner_started_at, adapter_profile, last_error, updated_at,
+                          media_path, media_kind
                    FROM delivery_obligations
                    WHERE state IN ('pending', 'attempting', 'failed')"""
             ).fetchall()
             for (oid, session_key, platform, chat_id, thread_id, content, state, attempts, created_at,
-                 owner_pid, owner_started_at, adapter_profile, last_error, updated_at) in rows:
+                 owner_pid, owner_started_at, adapter_profile, last_error, updated_at,
+                 media_path, media_kind) in rows:
                 if RecordedOwner(pid=owner_pid, started_at=owner_started_at) not in dead_owners:
                     continue  # a live gateway still owns this row
                 if attempts >= OBLIGATION_MAX_ATTEMPTS or (now - created_at) > OBLIGATION_STALE_AFTER_SECONDS:
@@ -230,7 +243,8 @@ class DeliveryObligationVerbs:
                         claimed.append(ClaimedObligation(
                             obligation_id=oid, session_key=session_key, platform=platform, chat_id=chat_id,
                             thread_id=thread_id, content=content, profile=adapter_profile or "default",
-                            attempts=attempts, adopted=True, not_before=flood_not_before(updated_at, last_error)))
+                            attempts=attempts, adopted=True, not_before=flood_not_before(updated_at, last_error),
+                            media_path=media_path, media_kind=media_kind))
                     continue
                 # Every claim starts a send, so the row leaves 'pending'/'failed' for 'attempting' in the same CAS; a
                 # claimed flood row also drops its stale refusal.
@@ -245,7 +259,8 @@ class DeliveryObligationVerbs:
                     # A never-claimed pending row was never sent: redeliver plainly; anything else carries a marker.
                     claimed.append(_claimed_row(oid, session_key, platform, chat_id, thread_id, content, attempts,
                                                 adapter_profile or "default",
-                                                needs_marker=state != "pending" or attempts > 0, flood=flood_row))
+                                                needs_marker=state != "pending" or attempts > 0, flood=flood_row,
+                                                media_path=media_path, media_kind=media_kind))
             return tuple(claimed)
         with translated():
             return self._obligation_write(_do)
@@ -267,7 +282,8 @@ class DeliveryObligationVerbs:
             rows = conn.execute(
                 """SELECT obligation_id, session_key, platform, chat_id, thread_id,
                           content, attempts, created_at, owner_pid,
-                          owner_started_at, last_error, adapter_profile, updated_at
+                          owner_started_at, last_error, adapter_profile, updated_at,
+                          media_path, media_kind
                    FROM delivery_obligations
                    WHERE state='failed' AND platform=?""", (platform,)).fetchall()
             current = {row[0]: row for row in rows}
@@ -276,7 +292,8 @@ class DeliveryObligationVerbs:
                 if row is None:
                     continue
                 (oid, session_key, row_platform, chat_id, thread_id, content, attempts, created_at,
-                 owner_pid, owner_started_at, last_error, adapter_profile, updated_at) = row
+                 owner_pid, owner_started_at, last_error, adapter_profile, updated_at,
+                 media_path, media_kind) = row
                 # Exact process-start matching prevents PID reuse from stealing work.
                 if adapter_profile != expected_profile or owner_pid != pid or owner_started_at != started:
                     continue
@@ -301,7 +318,8 @@ class DeliveryObligationVerbs:
                 if cursor.rowcount:
                     claimed.append(_claimed_row(oid, session_key, row_platform, chat_id, thread_id, content,
                                                 attempts, adapter_profile, needs_marker=True, runtime=True,
-                                                flood=is_flood_error(last_error), last_error=last_error))
+                                                flood=is_flood_error(last_error), last_error=last_error,
+                                                media_path=media_path, media_kind=media_kind))
             return tuple(claimed)
         with translated():
             return self._obligation_write(_do)

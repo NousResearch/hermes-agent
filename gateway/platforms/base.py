@@ -4079,6 +4079,93 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         """Settle a ledgered final from its send result (``base_delivery_ledger.finalize_final_obligation``)."""
         await finalize_final_obligation(self, obligation_id, result, event, delivery_adapter)
 
+    def _media_obligation_kind(self, path: str, *, is_voice: bool, media_tag: bool) -> str:
+        """The redelivery kind for one attachment — exactly the routing ``_send_one`` takes, so the
+        reconnect sweep re-sends the file through the same adapter method
+        (image | video | voice | document)."""
+        ext = Path(path).suffix.lower()
+        if media_tag and should_send_media_as_audio(self.platform, ext, is_voice=is_voice):
+            return "voice"
+        if ext in _VIDEO_EXTS:
+            return "video"
+        return "document"
+
+    async def _record_media_obligation(
+        self, event: MessageEvent, delivery_adapter: "BasePlatformAdapter", path: str, kind: str,
+    ) -> Optional[str]:
+        """Ledger ONE attachment BEFORE its send — the media half of the final-text bracket (I-018).
+
+        Without it a transport death (846609 subscription lost) at this exact point left only an
+        ERROR log: the ledger never learned a file was owed, so the reconnect sweep could not
+        re-send it (10-05: 8 files silently lost inside the storm). Rows carry the file path and its
+        redelivery kind instead of text (``content`` = ''). Only local files are ledgered — a URL or
+        a vanished path cannot be re-sent from the ledger and would only burn the retry budget.
+        Best-effort: a ledger failure never blocks the send.
+        """
+        try:
+            if not os.path.isfile(path):
+                return None
+            from gateway.delivery_ledger import (
+                compute_obligation_id, ledger_enabled, mark_attempting, record_obligation)
+            if not await asyncio.to_thread(ledger_enabled):
+                return None
+            source = event.source
+            session_key = getattr(event, "session_key", "") or ""
+            # ``ledger_message_id`` wins when set (a queued chain's final answers its last message).
+            _ledger_id = getattr(event, "ledger_message_id", None)
+            if _ledger_id is None:
+                _ledger_id = getattr(event, "message_id", "")
+            # The media marker inside the hashed content keeps a file row distinct from the turn's
+            # text row, and two different files of one turn from each other.
+            obligation_id = compute_obligation_id(
+                session_key, str(_ledger_id or ""), f"media:{kind}:{path}")
+            await asyncio.to_thread(
+                record_obligation, obligation_id=obligation_id, session_key=session_key,
+                platform=str(getattr(source.platform, "value", source.platform)),
+                chat_id=source.chat_id, thread_id=getattr(source, "thread_id", None),
+                content="", media_path=path, media_kind=kind,
+                adapter_profile=getattr(delivery_adapter, "_owner_profile", None))
+            await asyncio.to_thread(mark_attempting, obligation_id)
+            return obligation_id
+        except Exception:
+            logger.debug("delivery ledger record failed for media", exc_info=True)
+            return None
+
+    async def _finalize_media_obligation(
+        self, obligation_id: str, result: Any, event: MessageEvent,
+        delivery_adapter: "BasePlatformAdapter") -> None:
+        """Close one media ledger row from its send result.
+
+        ``send_path_degraded`` (provably undelivered) stays failed for the reconnect sweep and, when
+        a replacement adapter is already live, kicks that sweep immediately — the same bracket the
+        final text uses, minus the flood branch (media sends fail with the transport error itself,
+        never ``flood_control:``).
+        """
+        try:
+            from gateway.delivery_ledger import is_reconnect_only, mark_delivered, mark_failed
+            if getattr(result, "success", False):
+                await asyncio.to_thread(mark_delivered, obligation_id)
+                return
+            error = str(getattr(result, "error", "") or "")
+            await asyncio.to_thread(mark_failed, obligation_id, error)
+            if is_reconnect_only(error):
+                redeliver = getattr(
+                    self.gateway_runner, "_redeliver_failed_obligations_for_platform", None)
+                live = self._final_delivery_adapter(event.source)
+                if live is not delivery_adapter and callable(redeliver):
+                    await redeliver(event.source.platform,
+                                    profile=getattr(delivery_adapter, "_owner_profile", None))
+        except Exception:
+            logger.debug("delivery ledger update failed for media", exc_info=True)
+
+    async def _finalize_media_batch(
+        self, obligation_ids: list, result: Any, event: MessageEvent,
+        delivery_adapter: "BasePlatformAdapter") -> None:
+        """One batch send answers for every image in it: all rows delivered on success, all failed
+        (same error) otherwise — a failed batch is then re-sent one file per row by the sweep."""
+        for obligation_id in obligation_ids:
+            await self._finalize_media_obligation(obligation_id, result, event, delivery_adapter)
+
     async def _deliver_media_attachments(
         self, event: MessageEvent, media_files: list, local_files: list, *,
         force_document_attachments: bool, human_delay: float, metadata: dict[str, Any],
@@ -4096,7 +4183,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         if _image_paths:
             await self._send_image_batch(
                 event, [(f"file://{_quote(p)}", "") for p in _image_paths], metadata, human_delay,
-                record_delivery)
+                record_delivery, ledger_paths=_image_paths)
         chat_id = event.source.chat_id
 
         async def _send_one(path: str, *, is_voice: bool, media_tag: bool) -> SendResult:
@@ -4123,10 +4210,21 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         for path, is_voice, media_tag in queue:
             if human_delay > 0:
                 await asyncio.sleep(human_delay)
+            # Ledger the attachment BEFORE the send (media half of the final-text bracket): a
+            # transport death here must leave a row to re-send by path, not a silently lost file.
+            obligation_id = await self._record_media_obligation(
+                event, self, path,
+                self._media_obligation_kind(path, is_voice=is_voice, media_tag=media_tag))
             try:
-                record_delivery(await _send_one(path, is_voice=is_voice, media_tag=media_tag))
+                result = await _send_one(path, is_voice=is_voice, media_tag=media_tag)
+                record_delivery(result)
+                if obligation_id is not None:
+                    await self._finalize_media_obligation(obligation_id, result, event, self)
             except Exception as err:
-                record_delivery(SendResult(success=False, error=str(err)))
+                failure = SendResult(success=False, error=str(err))
+                record_delivery(failure)
+                if obligation_id is not None:
+                    await self._finalize_media_obligation(obligation_id, failure, event, self)
                 if media_tag:
                     logger.warning("[%s] Error sending media: %s", self.name, err)
                 else:
@@ -4134,8 +4232,17 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
 
     async def _send_image_batch(
         self, event: MessageEvent, images: list, metadata: dict[str, Any], human_delay: float,
-        record_delivery: Callable) -> None:
-        """Batch-send images; a failure is logged (never raised) and recorded, so other attachments still go."""
+        record_delivery: Callable, ledger_paths: Optional[list] = None) -> None:
+        """Batch-send images; a failure is logged (never raised) and recorded, so other attachments still go.
+        The batch result feeds ``record_delivery`` so media-only turns report their real
+        outcome instead of FAILURE. ``ledger_paths`` (local files, one per image in the batch)
+        ledgers each image BEFORE the batch: the platform answers one result for the whole batch, so
+        on failure every row is marked failed and the reconnect sweep re-sends them one file each."""
+        obligation_ids = []
+        for _path in ledger_paths or []:
+            _oid = await self._record_media_obligation(event, self, _path, "image")
+            if _oid is not None:
+                obligation_ids.append(_oid)
         try:
             result = await self.send_multiple_images(
                 chat_id=event.source.chat_id, images=images, metadata=metadata, human_delay=human_delay)
@@ -4144,7 +4251,10 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             result = SendResult(success=False, error=str(batch_err))
         if result is not None and not result.success:
             logger.warning("[%s] %d image(s) not delivered: %s", self.name, len(images), result.error)
-        record_delivery(result)  # a footer the captioned photo lost goes out on its own (#74547):
+        record_delivery(result)
+        if obligation_ids:
+            await self._finalize_media_batch(obligation_ids, result, event, self)
+        # a footer the captioned photo lost goes out on its own (#74547):
         await send_footer_unless_captioned(self, event.source.chat_id, images, result, metadata, record_delivery)
 
     async def send_final_ledgered(

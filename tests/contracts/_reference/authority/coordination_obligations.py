@@ -44,14 +44,17 @@ def _stamped(row: dict[str, Any], owner: OwnerStamp) -> bool:
 
 
 def _claimed_row(row: dict[str, Any], profile: str, *, needs_marker: bool, runtime: bool = False, flood: bool = False,
-                 last_error: Optional[str] = None) -> ClaimedObligation:
+                 last_error: Optional[str] = None,
+                 media_path: Optional[str] = None, media_kind: Optional[str] = None) -> ClaimedObligation:
     """The claimed obligation built from the row as it stood before the claim, its attempt counted and its marker chosen."""
     marker = OBLIGATION_FLOOD_MARKER if flood else (OBLIGATION_RECONNECTED_MARKER if runtime else None)
+    path = media_path if media_path is not None else row.get("media_path")
+    kind = media_kind if media_kind is not None else row.get("media_kind")
     return ClaimedObligation(
         obligation_id=row["obligation_id"], session_key=row["session_key"], platform=row["platform"], chat_id=row["chat_id"],
         thread_id=row["thread_id"], content=row["content"], profile=profile, attempts=row["attempts"] + 1,
         needs_marker=needs_marker, marker=marker if needs_marker and marker else None, runtime_recovery=runtime,
-        last_error=last_error or None)
+        last_error=last_error or None, media_path=path, media_kind=kind)
 
 
 class ObligationLedger:
@@ -63,14 +66,16 @@ class ObligationLedger:
     def _obligations(self) -> dict[str, dict[str, Any]]:
         return self._table("delivery_obligations")
 
-    def record_delivery_obligation(self, *, obligation_id: str, session_key: str, platform: str, chat_id: str, thread_id: Optional[str], content: str, adapter_profile: Optional[str] = None, owner: OwnerStamp) -> None:
+    def record_delivery_obligation(self, *, obligation_id: str, session_key: str, platform: str, chat_id: str, thread_id: Optional[str], content: str, adapter_profile: Optional[str] = None, media_path: Optional[str] = None, media_kind: Optional[str] = None, owner: OwnerStamp) -> None:
         now = time.time()
         rows = self._obligations()
+        stored_kind = str(media_kind).strip().lower() if media_kind else None
         rows[obligation_id] = {
             "obligation_id": obligation_id, "session_key": session_key, "platform": platform, "chat_id": str(chat_id),
             "thread_id": str(thread_id) if thread_id else None, "content": content, "state": "pending", "attempts": 0,
             "created_at": now, "updated_at": now, "owner_pid": owner.pid, "owner_started_at": owner.started_at,
-            "last_error": None, "adapter_profile": _profile(adapter_profile)}
+            "last_error": None, "adapter_profile": _profile(adapter_profile),
+            "media_path": str(media_path) if media_path else None, "media_kind": stored_kind}
         for key in [key for key, row in rows.items() if row["state"] in ("delivered", "abandoned") and row["updated_at"] < now - OBLIGATION_RETENTION_SECONDS]:
             del rows[key]
         if len(rows) > OBLIGATION_MAX_ROWS:
@@ -137,7 +142,8 @@ class ObligationLedger:
             return ClaimedObligation(
                 obligation_id=row["obligation_id"], session_key=row["session_key"], platform=row["platform"], chat_id=row["chat_id"],
                 thread_id=row["thread_id"], content=row["content"], profile=profile, attempts=row["attempts"], adopted=True,
-                not_before=flood_not_before(row["updated_at"], row["last_error"]))
+                not_before=flood_not_before(row["updated_at"], row["last_error"]),
+                media_path=row.get("media_path"), media_kind=row.get("media_kind"))
         claimed = _claimed_row(row, profile, needs_marker=row["state"] != "pending" or row["attempts"] > 0, flood=flood_row)
         row.update(owner_pid=owner.pid, owner_started_at=owner.started_at, attempts=row["attempts"] + 1, updated_at=now,
                    adapter_profile=profile, state="attempting", last_error=None if flood_row else row["last_error"])

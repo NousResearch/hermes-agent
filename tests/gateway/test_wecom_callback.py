@@ -152,6 +152,155 @@ class TestWecomCallbackSendTokenRefresh:
         assert adapter._access_tokens["test-app"]["token"] == "fresh"
 
 
+class TestWecomCallbackImageMessage:
+    """A callback app cannot post a URL: the file goes through media/upload, then media_id."""
+
+    @staticmethod
+    def _client(uploads, sends):
+        class FakeClient:
+            async def post(self, url, json=None, data=None, files=None, **kw):
+                class R:
+                    def __init__(inner, payload):
+                        inner._payload = payload
+
+                    def json(inner):
+                        return inner._payload
+
+                if "media/upload" in url:
+                    uploads.append({"url": url, "data": data, "filename": files["media"][0]})
+                    return R({"errcode": 0, "media_id": "MEDIA-1"})
+                sends.append({"url": url, "json": json})
+                return R({"errcode": 0, "msgid": "img-ok"})
+
+        return FakeClient()
+
+    @pytest.mark.asyncio
+    async def test_send_image_file_uploads_then_sends_image_message(self, tmp_path, monkeypatch):
+        image = tmp_path / "chart.png"
+        image.write_bytes(b"\x89PNG\r\n\x1a\n")
+        adapter = WecomCallbackAdapter(_config())
+        # Delivery-root policy is its own concern (and scans the operator's home); pin it here.
+        monkeypatch.setattr(adapter, "validate_media_delivery_path", staticmethod(lambda *_a, **_k: str(image)))
+        adapter._access_tokens["test-app"] = {"token": "tok", "expires_at": 9999999999}
+        adapter._user_app_map["ww1234567890:alice"] = "test-app"
+        uploads, sends = [], []
+        adapter._http_client = self._client(uploads, sends)
+
+        result = await adapter.send_image_file("ww1234567890:alice", str(image))
+
+        assert result.success is True, result.error
+        assert result.message_id == "img-ok"
+        assert uploads and uploads[0]["data"] == {"type": "image"}
+        assert uploads[0]["filename"] == "chart.png"
+        assert sends[0]["json"]["msgtype"] == "image"
+        assert sends[0]["json"]["image"] == {"media_id": "MEDIA-1"}
+        assert sends[0]["json"]["touser"] == "alice"
+
+    @pytest.mark.asyncio
+    async def test_send_image_file_retries_with_fresh_token(self, tmp_path, monkeypatch):
+        image = tmp_path / "chart.jpg"
+        image.write_bytes(b"jpeg")
+        adapter = WecomCallbackAdapter(_config())
+        monkeypatch.setattr(adapter, "validate_media_delivery_path", staticmethod(lambda *_a, **_k: str(image)))
+        adapter._access_tokens["test-app"] = {"token": "stale", "expires_at": 9999999999}
+        adapter._user_app_map["ww1234567890:alice"] = "test-app"
+        upload_errcodes = [40001, 0]
+        uploads, sends = [], []
+        client = self._client(uploads, sends)
+
+        original_post = client.post
+
+        class FreshTokenClient:
+            async def post(self, url, json=None, data=None, files=None, **kw):
+                if "media/upload" in url:
+                    code = upload_errcodes.pop(0)
+                    if code != 0:
+                        class R:
+                            def json(self):
+                                return {"errcode": code}
+                        return R()
+                return await original_post(url, json=json, data=data, files=files, **kw)
+
+            async def get(self, url, params=None, **kw):
+                class R:
+                    def json(self):
+                        return {"errcode": 0, "access_token": "fresh", "expires_in": 7200}
+                return R()
+
+        adapter._http_client = FreshTokenClient()
+        result = await adapter.send_image_file("ww1234567890:alice", str(image))
+
+        assert result.success is True, result.error
+        assert upload_errcodes == []
+        assert adapter._access_tokens["test-app"]["token"] == "fresh"
+        assert sends and "fresh" in sends[0]["url"]
+
+    @pytest.mark.asyncio
+    async def test_path_outside_delivery_roots_uses_the_base_notice(self, tmp_path):
+        adapter = WecomCallbackAdapter(_config())
+        adapter._http_client = self._client([], [])
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(adapter, "validate_media_delivery_path", staticmethod(lambda *_a, **_k: None))
+            result = await adapter.send_image_file("ww1234567890:alice", "/nope/x.png")
+        assert result.success is False
+
+
+class TestWecomCallbackStandaloneSender:
+    """cron / cross-platform notices: no live adapter to borrow, so send one-shot."""
+
+    @pytest.mark.asyncio
+    async def test_register_wires_a_standalone_sender(self, monkeypatch):
+        from plugins.platforms.wecom import adapter as _wecom_adapter
+
+        entries = {}
+
+        class _Ctx:
+            def register_platform(self, **kwargs):
+                entries[kwargs["name"]] = kwargs
+
+        monkeypatch.setattr(_wecom_adapter, "check_wecom_requirements", lambda: False)
+        import plugins.platforms.wecom.callback_adapter as cb
+
+        monkeypatch.setattr(cb, "check_wecom_callback_requirements", lambda: False)
+        monkeypatch.setattr(cb, "ensure_wecom_callback_requirements", lambda: False)
+        _wecom_adapter.register(_Ctx())
+
+        assert entries["wecom_callback"]["standalone_sender_fn"] is _wecom_adapter._standalone_callback_send
+
+    @pytest.mark.asyncio
+    async def test_sends_image_then_text(self, monkeypatch):
+        from plugins.platforms.wecom import adapter as _wecom_adapter
+        import plugins.platforms.wecom.callback_adapter as cb
+
+        sent = []
+
+        class FakeAdapter:
+            def __init__(self, pconfig):
+                self._http_client = None
+
+            async def send_image_file(self, chat_id, path, **kw):
+                sent.append(("image", path))
+                from gateway.platforms.base import SendResult
+
+                return SendResult(success=True, message_id="img")
+
+            async def send(self, chat_id, text, **kw):
+                sent.append(("text", text))
+                from gateway.platforms.base import SendResult
+
+                return SendResult(success=True, message_id="msg-1")
+
+        monkeypatch.setattr(cb, "WecomCallbackAdapter", FakeAdapter)
+        monkeypatch.setattr(cb, "check_wecom_callback_requirements", lambda: True)
+
+        result = await _wecom_adapter._standalone_callback_send(
+            _config(), "ww1234567890:alice", "hello", media_files=["/tmp/chart.png"])
+
+        assert result["success"] is True
+        assert result["message_id"] == "msg-1"
+        assert sent == [("image", "/tmp/chart.png"), ("text", "hello")]
+
+
 class TestWecomCallbackPollLoop:
     @requires_defusedxml
     @pytest.mark.asyncio

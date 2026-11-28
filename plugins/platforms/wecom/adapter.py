@@ -744,6 +744,42 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
         return send_error(f"WeCom send failed: {describe_proxy_error(e, env_proxy_for_redaction(getattr(adapter, '_ws_url', DEFAULT_WS_URL), trust_env=gateway_trust_env())) or e}")
 
 
+async def _standalone_callback_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False):
+    """Deliver WeCom callback messages from an out-of-process worker (cron).
+
+    A callback app pushes over HTTPS (``message/send``) and needs no inbound listener, so a
+    one-shot adapter is enough. ``_http_client`` is normally created in ``connect()``; this path
+    skips connect(), so the client is provided here and closed afterwards.
+    """
+    try:
+        import httpx
+        from gateway.platforms._http_client_limits import platform_httpx_limits
+        from plugins.platforms.wecom.callback_adapter import (
+            WecomCallbackAdapter, check_wecom_callback_requirements)
+        if not check_wecom_callback_requirements():
+            return send_error("WeCom callback requirements not met.")
+        adapter = WecomCallbackAdapter(pconfig)
+        adapter._http_client = httpx.AsyncClient(timeout=20.0, limits=platform_httpx_limits())
+        try:
+            for media in media_files or []:
+                path = media[0] if isinstance(media, (tuple, list)) else media
+                result = await adapter.send_image_file(chat_id, str(path))
+                if not result.success:
+                    return send_error(f"WeCom callback image send failed: {result.error}")
+            if not message:
+                return {"success": True, "platform": "wecom_callback", "chat_id": chat_id}
+            result = await adapter.send(chat_id, message)
+            if not result.success:
+                return send_error(f"WeCom callback send failed: {result.error}")
+            return {"success": True, "platform": "wecom_callback", "chat_id": chat_id, "message_id": result.message_id}
+        finally:
+            if adapter._http_client:
+                await adapter._http_client.aclose()
+                adapter._http_client = None
+    except Exception as exc:
+        return send_error(f"WeCom callback send failed: {exc}")
+
+
 _MANUAL_SETUP_STEPS = (
     "1. Go to WeCom Application → Workspace → Smart Robot -> Create smart robots",
     "2. Select API Mode",
@@ -886,4 +922,6 @@ def register(ctx) -> None:
         display_tier="low",
         env_overrides=gateway_env.CALLBACK_ENV_OVERRIDES,
         env_enable_credentials=gateway_env.CALLBACK_ENV_ENABLE_CREDENTIALS, **gateway_env.CALLBACK_AUTHZ,
+        # Out-of-process delivery (cron, cross-platform notices) has no live adapter to borrow.
+        standalone_sender_fn=_standalone_callback_send,
     )

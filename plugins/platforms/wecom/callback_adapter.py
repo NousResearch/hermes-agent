@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import socket as _socket
 import time
 from typing import Any, Dict, List, Optional
@@ -46,7 +47,15 @@ _MAX_BODY = 65_536  # pre-auth body cap: callbacks are small encrypted XML envel
 ACCESS_TOKEN_TTL_SECONDS = 7200
 MESSAGE_DEDUP_TTL_SECONDS = 300
 _SEND_URL = "https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token="
+# Temporary media (``type=image`` caps at 2 MB); the returned media_id is valid for 3 days.
+_UPLOAD_URL = "https://qyapi.weixin.qq.com/cgi-bin/media/upload?access_token="
 _TOKEN_URL = "https://qyapi.weixin.qq.com/cgi-bin/gettoken"
+
+
+def _read_file_bytes(path: str) -> bytes:
+    """Blocking read kept out of the event loop (``send_image_file`` runs on it)."""
+    with open(path, "rb") as fh:
+        return fh.read()
 
 
 def _utf8_len(text: str) -> int:
@@ -207,6 +216,65 @@ class WecomCallbackAdapter(BasePlatformAdapter):
                     continue
                 return SendResult(success=True, message_id=str(data.get("msgid", "")), raw_response=data) if errcode == 0 else SendResult(success=False, error=str(data))
             return SendResult(success=False, error="send failed after token refresh")
+        except Exception as exc:
+            return SendResult(success=False, error=str(exc))
+
+    async def send_image_file(
+        self,
+        chat_id: str,
+        image_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Publish a local image through the temporary-media API, then send it as an image message.
+
+        A callback app cannot hand WeCom a URL: the file must be uploaded (``type=image``, 2 MB
+        cap) and delivered by ``media_id``. The base adapter's default is a "can't attach" notice,
+        so without this every chart/screenshot reply degraded to text.
+        """
+        resolved = self.validate_media_delivery_path(image_path)
+        if not resolved:  # outside the delivery roots — keep the base notice
+            return await super().send_image_file(
+                chat_id=chat_id, image_path=image_path, caption=caption,
+                reply_to=reply_to, metadata=metadata, **kwargs,
+            )
+        app = self._resolve_app_for_chat(chat_id)
+        touser = chat_id.split(":", 1)[-1]
+        try:
+            file_bytes = await asyncio.to_thread(_read_file_bytes, resolved)
+            mime = "image/png" if resolved.lower().endswith(".png") else "image/jpeg"
+            for _attempt in range(2):
+                token = await self._get_access_token(app)
+                upload = await self._http_client.post(
+                    f"{_UPLOAD_URL}{token}",
+                    data={"type": "image"},
+                    files={"media": (os.path.basename(resolved), file_bytes, mime)},
+                )
+                udata = upload.json()
+                if udata.get("errcode") in {40001, 42001} and _attempt == 0:  # token rejected — retry fresh
+                    self._access_tokens.pop(app["name"], None)
+                    continue
+                if udata.get("errcode") != 0:
+                    return SendResult(success=False, error=str(udata))
+                payload = {
+                    "touser": touser,
+                    "msgtype": "image",
+                    "agentid": int(str(app.get("agent_id") or 0)),
+                    "image": {"media_id": udata.get("media_id")},
+                    "safe": 0,
+                }
+                resp = await self._http_client.post(f"{_SEND_URL}{token}", json=payload)
+                data = resp.json()
+                errcode = data.get("errcode")
+                if errcode in {40001, 42001} and _attempt == 0:
+                    self._access_tokens.pop(app["name"], None)
+                    continue
+                if errcode != 0:
+                    return SendResult(success=False, error=str(data))
+                return SendResult(success=True, message_id=str(data.get("msgid", "")), raw_response=data)
+            return SendResult(success=False, error="image send failed after token refresh")
         except Exception as exc:
             return SendResult(success=False, error=str(exc))
 

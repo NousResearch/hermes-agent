@@ -19,7 +19,7 @@ export function isPreviewableTarget(target: string): boolean {
   return Boolean(
     target &&
     (/^file:\/\//i.test(target) ||
-      (looksLikePath(target) && /\.html?$/i.test(target)) ||
+      (looksLikePath(target) && /\.(?:html?|svg)$/i.test(target)) ||
       /^https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])/i.test(target))
   )
 }

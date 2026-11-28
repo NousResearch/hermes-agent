@@ -8039,6 +8039,21 @@
             ],
             "default": null,
             "title": "Profile"
+          },
+          "desktop_env": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Desktop Env"
           }
         },
         "title": "BrowserManageParams",

@@ -4216,6 +4216,7 @@ export interface BrowserManageParams {
   url?: string | null
   session_id?: string | null
   profile?: string | null
+  desktop_env?: Record<string, string> | null
 }
 export type BrowserAction = 'status' | 'connect' | 'disconnect'
 export interface BrowserManageResult {

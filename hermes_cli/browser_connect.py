@@ -1125,12 +1125,26 @@ def _read_stderr_tail(path: str) -> str:
         return ""
 
 
+DESKTOP_ENV_KEYS = ("DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "XDG_RUNTIME_DIR")
+
+
 def launch_chrome_debug(
-    port: int = DEFAULT_BROWSER_CDP_PORT, system: str | None = None) -> ChromeDebugLaunch:
+    port: int = DEFAULT_BROWSER_CDP_PORT, system: str | None = None,
+    *, desktop_env: dict[str, str] | None = None) -> ChromeDebugLaunch:
     """Launch a Chromium-family browser with remote debugging, trying each candidate in turn. One
     that exits before the CDP port opens (crash, singleton forward, bad profile dir) is logged with
     exit code + stderr tail and the next is tried."""
     system = system or platform.system()
+    # The owner can predate login. Desktop context belongs to this child only.
+    child_env = None
+    if desktop_env is not None:
+        if any(key not in DESKTOP_ENV_KEYS or not isinstance(value, str)
+               or len(value) > 4096 or "\0" in value for key, value in desktop_env.items()):
+            raise ValueError("invalid browser desktop context")
+        child_env = dict(os.environ)
+        for key in DESKTOP_ENV_KEYS:
+            child_env.pop(key, None)
+        child_env.update(desktop_env)
     result = ChromeDebugLaunch()
     candidates = get_chrome_debug_candidates(system)
     if not candidates:
@@ -1145,7 +1159,8 @@ def launch_chrome_debug(
             with _open_launch_stderr_log(stderr_path) as stderr_file:
                 proc = subprocess.Popen(
                     [candidate, *_chrome_debug_args(port)],
-                    stdout=subprocess.DEVNULL, stderr=stderr_file, **_detach_kwargs(system))
+                    stdout=subprocess.DEVNULL, stderr=stderr_file,
+                    **({"env": child_env} if child_env is not None else {}), **_detach_kwargs(system))
         except Exception as exc:
             result.attempts.append(LaunchAttempt(binary=candidate, state="spawn-failed"))
             logger.info("browser debug launch: failed to spawn %s: %s", candidate, exc)

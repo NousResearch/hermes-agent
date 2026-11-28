@@ -10,6 +10,7 @@ import psutil
 import pytest
 
 from hermes_cli.windows_ssh_runtime import process_state
+from tests.waiting import wait_until
 
 
 @pytest.mark.platforms("posix")
@@ -25,6 +26,9 @@ def test_isolated_bootstrap_is_owned_without_accepting_foreign_source(tmp_path):
     env = {"PATH": os.defpath, "HOME": str(tmp_path)}
     child = subprocess.Popen([sys.executable, "-I", "-c", source, "serve", "--isolated", "--ssh-owner-nonce", nonce], env=env)
     try:
+        # Popen can return inside the exec window, where /proc/<pid>/cmdline still reads empty and
+        # process_state rightly answers "argv-unavailable"; probe once the new image is in place.
+        wait_until(lambda: "--ssh-owner-nonce" in psutil.Process(child.pid).cmdline(), what="the child's exec")
         created = int(psutil.Process(child.pid).create_time() * 1_000_000_000)
         launcher = str(tmp_path / "hermes.exe")
         state = process_state(child.pid, created, launcher, nonce)

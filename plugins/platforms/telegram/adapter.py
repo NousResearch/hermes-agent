@@ -300,6 +300,7 @@ from plugins.platforms.telegram.telegram_markdown import (
     degrade_unrenderable_links, escape_rich_currency_dollars, normalize_rich_latex, to_markdown_v2)
 from plugins.platforms.telegram.rich_markdown import (
     RICH_EMAIL_TOKEN_RE, escape_literal_hash_prefixes, rich_normalize_linebreaks)
+from plugins.platforms.telegram.rich_buttons import has_button_fence, render_rich_buttons
 from plugins.platforms.telegram.rich_parts import edit_rich_parts, resume_rich_parts, send_rich_parts
 
 
@@ -495,6 +496,10 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         # separate opt-in (Desktop can leave rich draft frames overlaid): off keeps native draft transport
         # but skips rich draft rendering; the final reply still lands via sendRichMessage.
         self._rich_messages_enabled: bool = self._coerce_bool_extra("rich_messages", False)
+        # Bot API 10.3 native buttons inside a rich message: a ```buttons fence becomes
+        # <tg-button-row>/<tg-button>. Opt-in (default off keeps payloads byte-identical); it also
+        # makes the fence itself a rich-rendering trigger, since MarkdownV2 has no button syntax.
+        self._rich_buttons_enabled: bool = self._coerce_bool_extra("rich_buttons", False)
         # CJK stays on legacy MarkdownV2 by default (Desktop/macOS garble, #47653); opt-in for unaffected clients.
         self._allow_cjk_rich_messages: bool = self._coerce_bool_extra("allow_cjk_rich_messages", False)
         self._rich_drafts_enabled, self.DRAFT_STREAM_PREFIX_STABLE = self._coerce_bool_extra("rich_drafts", False), self._coerce_bool_extra("plain_drafts", False)
@@ -1196,6 +1201,8 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             return True
         if re.search(r"(?m)^<details\b|^</details>|^<summary\b|^</summary>", content):
             return True
+        if getattr(self, "_rich_buttons_enabled", False) and has_button_fence(content):
+            return True
         return "$$" in content
 
     def _rich_delivery_enabled(self) -> bool:
@@ -1254,9 +1261,14 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
 
     def _rich_message_payload(self, content: str, *, skip_entity_detection: bool = False) -> dict[str, Any]:
         """``InputRichMessage`` from RAW markdown — never ``format_message(content)``, whose MarkdownV2
-        escaping destroys table pipes. Currency ``$`` is escaped so two amounts never pair as inline math."""
-        payload: dict[str, Any] = {"markdown": degrade_unrenderable_links(
-            escape_rich_currency_dollars(rich_normalize_linebreaks(escape_literal_hash_prefixes(normalize_rich_latex(content)))))}
+        escaping destroys table pipes. Currency ``$`` is escaped so two amounts never pair as inline math.
+        With ``rich_buttons`` on, a ```buttons fence becomes native ``<tg-button>`` rows — applied last, so
+        the escaping passes above never touch the emitted tags."""
+        markdown = degrade_unrenderable_links(
+            escape_rich_currency_dollars(rich_normalize_linebreaks(escape_literal_hash_prefixes(normalize_rich_latex(content)))))
+        if getattr(self, "_rich_buttons_enabled", False):
+            markdown = render_rich_buttons(markdown)
+        payload: dict[str, Any] = {"markdown": markdown}
         if skip_entity_detection or RICH_EMAIL_TOKEN_RE.search(content):
             payload["skip_entity_detection"] = True
         return payload

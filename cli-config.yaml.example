@@ -1520,6 +1520,7 @@ platform_toolsets:
 #       disable_link_previews: false  # Set true to suppress Telegram URL previews in bot messages
 #       rich_messages: false          # Bot API 10.1 rich messages (tables/task lists/details/math); default false for copyable legacy MarkdownV2, set true to opt in
 #       rich_drafts: false            # Experimental rich draft previews during Telegram DM streaming; default false because Telegram Desktop/macOS can visually overlay draft frames
+#       rich_buttons: false           # Bot API 10.3 native buttons inside a rich message: a ```buttons fence becomes <tg-button-row>/<tg-button> rows (url/callback/copy/disabled); default false leaves the fence as a plain code block
 #       allow_cjk_rich_messages: false # Keep CJK content on the safe MarkdownV2 path unless an unaffected client explicitly opts in to native rich rendering
 #       command_menu:
 #         # Telegram allows up to 100 BotCommands; Hermes defaults to 60 so

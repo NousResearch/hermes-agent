@@ -79,6 +79,14 @@ class DiscordThreadTitlesMixin:
     _semantic_thread_renames: SemanticThreadRenames
     _is_forum_parent: Callable[[Any], bool]
     _get_effective_topic: Callable[..., str | None]
+    _threads: Any
+
+    async def _note_thread_send(self, channel: Any, conversational: bool) -> None:
+        """A conversational send into a thread is participation, so follow-ups there skip the mention
+        gate as they do after an inbound turn. Cron and agent posts never pass the inbound path that
+        records it, which left a media-only message (a voice note carries no mention) unanswerable."""
+        if conversational and discord is not None and isinstance(channel, discord.Thread):
+            await self._threads.mark_async(str(channel.id))
 
     async def _on_platform_raw_thread_update(self, payload: Any) -> None:
         # discord.py updates the cached thread before cached callbacks run, so batched updates

@@ -1879,7 +1879,12 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         notify_mode = self._load_background_notifications_mode()  # the owning profile's (scope bound above)
         logger.debug("Process watcher started: %s (every %ss, notify=%s, agent_notify=%s)",
                       session_id, interval, notify_mode, agent_notify)
-        silent = notify_mode == "off" and not agent_notify
+        # The profile-level setting is authoritative: ``off`` means "no process watcher
+        # messages at all", and the docs, the CLI drain and the TUI poller all read it
+        # that way -- a completion must never start an agent turn there, whether the
+        # agent asked for notify_on_complete or not. This watcher was the one surface
+        # where a per-call flag could re-enable the delivery the operator turned off.
+        silent = notify_mode == "off"
         last_output_len = 0
         completion_attempts = 0
         retry_interval = interval

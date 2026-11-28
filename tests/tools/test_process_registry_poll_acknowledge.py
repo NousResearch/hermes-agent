@@ -35,7 +35,10 @@ def _watcher_turns(session_id: str) -> list:
 
     runner._enqueue_process_completion_notification = _enqueue
     runner._launching_turn_active = _not_busy
-    runner._load_background_notifications_mode = lambda *_a, **_k: "off"
+    # A non-``off`` mode: this test counts the completion TURNS the watcher enqueues,
+    # so it must not depend on what ``off`` means for delivery. ``off`` used to pass
+    # here only because the watcher ignored it whenever notify_on_complete was set.
+    runner._load_background_notifications_mode = lambda *_a, **_k: "concise"
     runner.adapters = {}
     watcher = {"session_id": session_id, "check_interval": 0.01, "platform": "telegram", "chat_id": "1",
                "session_key": "agent:main:telegram:dm:1", "notify_on_complete": True}

@@ -16,7 +16,10 @@ import pytest
 from persistence import CompressionBusy, CompressionPublishRefused, Conflict, MessageId, RowVisibility, SessionId
 from persistence.conversation.lineage import CompressionChild, LineageRepository
 from persistence.conversation.messages import NewMessage, RowDisposition, TranscriptRead, TranscriptView
-from persistence.conversation.sessions import AUTOMATIC_END_REASONS, END_REASON_ORPHANED_COMPRESSION, NewSession, SessionLineageKind
+from persistence.conversation.sessions import (
+    AUTOMATIC_END_REASONS, END_REASON_ORPHANED_COMPRESSION, CanonicalTitleLocked, NewSession, SessionLineageKind,
+    SessionQuery, SessionWindow,
+)
 from persistence.conversation.usage import UsageDelta
 from tests.contracts._concurrency import run_concurrently
 from tests.contracts._waiting import wait_past
@@ -1142,6 +1145,33 @@ def test_publish_stamps_unset_ancestors_with_the_parents_surface_and_carries_its
     _publish(backend, scope_a, "cp-sp-tip", _child("cp-sp-next", source="cli"), [_msg("s")])
     # CONTRACT: a stamped parent surface is the child's creation surface whatever the child's own source.
     assert store_a.sessions.get(SessionId("cp-sp-next")).created_source == "telegram"
+
+
+def test_publish_keeps_a_hidden_conversation_hidden_and_its_canonical_title_locked(backend, scope_a):
+    store_a = backend.open(scope_a)
+
+    def listed(query: SessionQuery) -> set:
+        return {entry.session.session_id for entry in store_a.sessions.list_sessions(query, SessionWindow(limit=100))}
+
+    # A canonical Bot Chat: hidden, and named by its registry title.
+    store_a.sessions.create(_new("cp-hd-root"))
+    assert store_a.sessions.set_title(SessionId("cp-hd-root"), "Bot Chat") is True
+    assert store_a.sessions.set_hidden(SessionId("cp-hd-root"), True) is True
+    _publish(backend, scope_a, "cp-hd-root", _child("cp-hd-tip"), [_msg("s")])
+    # CONTRACT: hidden is lineage state like the pin: a continuation published under a hidden parent is hidden.
+    assert store_a.sessions.get(SessionId("cp-hd-tip")).hidden is True
+    # The compressor moves the title onto the tip. A listing that admits children filters hidden per row,
+    # so only a hidden tip keeps the conversation out of it.
+    assert store_a.sessions.set_title(SessionId("cp-hd-tip"), "Bot Chat") is True
+    assert not listed(SessionQuery(include_children=True)) & {SessionId("cp-hd-root"), SessionId("cp-hd-tip")}
+    assert SessionId("cp-hd-tip") in listed(SessionQuery(include_children=True, include_hidden=True))
+    # CONTRACT: the tip is still the hidden canonical chat, so a user rename stays refused.
+    with pytest.raises(CanonicalTitleLocked):
+        store_a.sessions.set_title(SessionId("cp-hd-tip"), "renamed")
+    # CONTRACT: a visible parent yields a visible continuation.
+    store_a.sessions.create(_new("cp-hd-plain"))
+    _publish(backend, scope_a, "cp-hd-plain", _child("cp-hd-plain-tip"), [_msg("s")])
+    assert store_a.sessions.get(SessionId("cp-hd-plain-tip")).hidden is False
 
 
 # ── durable compressor counters ────────────────────────────────────────────────

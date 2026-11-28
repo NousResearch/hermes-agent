@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from agent.message_metadata import append_message
+from agent.tool_arg_repair import repair_tool_arguments
 from agent.message_sanitization import close_interrupted_tool_sequence, normalize_provider_tool_call_ids
 from session_rules.turns import coalesce_tool_call_id
 from agent.turn_failure_copy import site_copy, stamp_failure
@@ -202,11 +203,21 @@ def validate_tool_calls(
             continue
         try:
             json.loads(args)
-        except json.JSONDecodeError as e:
+        except json.JSONDecodeError:
+            # Usually the value is right and only the transport is wrong: a literal
+            # newline or tab inside a string, which JSON forbids. Escape those and carry
+            # on — a blind retry would resend the same bytes.
+            repaired, diagnosis = repair_tool_arguments(args)
+            if repaired is not None:
+                tc.function.arguments = args = repaired
+                agent._buffer_vprint(
+                    "\U0001f527 Escaped raw control characters in the arguments for "
+                    f"'{tc.function.name}' so the JSON parses (no values changed).")
+                continue
             # A mixed-batch invalid-name call never executes (error result later);
             # don't let its broken args trigger the whole-turn JSON retry.
             if not (_mixed_invalid_batch and tc.function.name not in valid_names):
-                invalid_json_args.append((tc.function.name, str(e)))
+                invalid_json_args.append((tc.function.name, diagnosis or "invalid JSON"))
 
     if invalid_json_args:
         invalid_names = {n for n, _ in invalid_json_args}
@@ -256,7 +267,9 @@ def validate_tool_calls(
                 return "Skipped: other tool call in this response had invalid JSON."
             err = next(e for n, e in invalid_json_args if n == tc.function.name)
             return (
-                f"Error: Invalid JSON arguments. {err}. "
+                f"Error: Invalid JSON arguments for '{tc.function.name}'. {err}. "
+                "Every string value must be valid JSON: write line breaks as \\n, tabs as "
+                "\\t, double quotes as \\\" and backslashes as \\\\. "
                 f"For tools with no required parameters, use an empty object: {{}}. "
                 f"Please retry with valid JSON."
             )

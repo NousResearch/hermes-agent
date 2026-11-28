@@ -21,6 +21,9 @@ class ReadResult:
     file_size: int = 0
     truncated: bool = False
     truncated_lines: Optional[bool] = None
+    #: 1-indexed continuation offset when this page stopped short of ``total_lines``:
+    #: the machine-readable form of what ``hint`` spells out in prose.
+    next_offset: Optional[int] = None
     hint: Optional[str] = None
     is_binary: bool = False
     is_image: bool = False

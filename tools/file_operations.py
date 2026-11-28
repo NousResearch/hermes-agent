@@ -839,6 +839,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         return ReadResult(
             content=self._add_line_numbers(content, offset), total_lines=total_lines,
             file_size=file_size, truncated=truncated, hint=" ".join(hint_parts),
+            next_offset=(end_line + 1) if truncated else None,
             truncated_lines=True if truncated_lines else None)
 
     def read_file(self, path: str, offset: int = 1, limit: int = 2000) -> ReadResult:
@@ -1196,6 +1197,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         return ReadResult(
             content=self._add_line_numbers(read_output, offset), total_lines=total_lines,
             file_size=file_size, truncated=truncated, hint=hint,
+            next_offset=(end_line + 1) if truncated else None,
             truncated_lines=True if truncated_lines else None)
 
     def _unicode_variant_match(self, path: str) -> Optional[str]:

@@ -54,6 +54,8 @@ def test_chromium_resolves_installed_binary_without_mutation(homes):
 
 def test_configured_executable_wins_without_installing(homes, monkeypatch):
     override = homes / "external browser"
+    override.write_bytes(b"browser-fixture")
+    override.chmod(0o755)
     _write_config(homes / "home", f"browser:\n  executable_path: '{override}'\n")
 
     def forbidden(*args, **kwargs):
@@ -130,3 +132,27 @@ def test_termux_hint_never_mentions_npm(homes, monkeypatch):
     monkeypatch.setattr(runtime, "is_termux", lambda: True)
     hint = browser_runtime.chromium_missing_hint()
     assert "pkg install" in hint and "npm" not in hint and "npx" not in hint
+
+
+@pytest.mark.platforms("posix")
+def test_stale_override_uses_installed_browser_without_installing(homes, monkeypatch):
+    binary, _ = _fake_pm_chromium(homes / "tools")
+    _write_config(homes / "home", f"browser:\n  executable_path: '{homes / 'missing-chrome'}'\n")
+    monkeypatch.setattr(pm, "ensure", lambda *_a, **_kw: pytest.fail("must not install"))
+    assert browser_runtime.chromium_executable() == str(binary)
+
+
+@pytest.mark.platforms("posix")
+def test_nonexecutable_override_uses_installed_browser(homes):
+    binary, _ = _fake_pm_chromium(homes / "tools")
+    override = homes / "nonexecutable"
+    override.write_bytes(b"not executable")
+    override.chmod(0o644)
+    _write_config(homes / "home", f"browser:\n  executable_path: '{override}'\n")
+    assert browser_runtime.chromium_executable() == str(binary)
+
+
+@pytest.mark.platforms("posix")
+def test_bare_command_override_is_returned_as_configured(homes, monkeypatch):
+    _write_config(homes / "home", "browser:\n  executable_path: google-chrome\n")
+    assert browser_runtime.chromium_executable() == "google-chrome"

@@ -17,7 +17,8 @@ from agent.interrupt_compat import _accepts_keyword
 from agent.replay_cleanup import strip_stale_dangerous_confirmations
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
-from gateway.platforms.base import BasePlatformAdapter
+from gateway.run_turn_history_fold import HistoryFold
+from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.helpers import typing_metadata_for_turn
 from gateway.turn_context import TurnContext
 from hermes_cli.config import cfg_get
@@ -187,6 +188,27 @@ class GatewayTurnProgressMixin:
         ctx = self._ctx
         if ctx._cleanup_progress and getattr(result, "success", False) and getattr(result, "message_id", None):
             ctx._cleanup_msg_ids.append(str(result.message_id))
+
+    # The turn's history fold (display.progress_fold_after): resolved once, False when off.
+    _fold: Any = None
+
+    def _history_fold(self) -> Optional[HistoryFold]:
+        if self._fold is None:
+            ctx = self._ctx
+            resolve = getattr(ctx, "resolve_display_setting", None)
+            platform = getattr(ctx.source, "platform", None)
+            key = "cli" if platform == Platform.LOCAL else getattr(platform, "value", "")
+            fold_after = resolve(ctx.user_config, key, "progress_fold_after") if resolve else 0
+            self._fold = HistoryFold.for_turn(
+                self._runner._delivery_adapter_for(ctx.source) if fold_after else None,
+                ctx.source.chat_id, fold_after, getattr(ctx, "_status_thread_metadata", None)) or False
+        return self._fold or None
+
+    def _history_fold_note_narration(self, message_id, text) -> None:
+        """Stream-consumer hook: an interim commentary / narration message landed."""
+        fold = self._history_fold()
+        if fold is not None:
+            fold.note_narration(message_id, text)
 
     def _track_future_cleanup_id(self, fut) -> None:
         try:
@@ -667,12 +689,18 @@ class GatewayTurnProgressMixin:
 
     async def _edit_progress_message(self, st, message_id: str, content: str):
         ctx = self._ctx
+        fold = self._history_fold()
+        if fold is not None and fold.is_folded(message_id):
+            return SendResult(success=True, message_id=message_id)  # folded away: the summary owns it now
         kwargs = {"chat_id": ctx.source.chat_id, "message_id": message_id, "content": content}
         if getattr(st.adapter, "REQUIRES_EDIT_FINALIZE", False):
             kwargs["finalize"] = True
         if st._edit_accepts_metadata:
             kwargs["metadata"] = ctx._progress_metadata
-        return await st.adapter.edit_message(**kwargs)
+        result = await st.adapter.edit_message(**kwargs)
+        if fold is not None and result.success:
+            fold.note_progress(message_id, content)
+        return result
 
     @staticmethod
     def _progress_text(lines: list) -> str:
@@ -707,6 +735,9 @@ class GatewayTurnProgressMixin:
             chat_id=ctx.source.chat_id, content=text, reply_to=ctx._progress_reply_to, metadata=ctx._progress_metadata,
         )
         self._track_progress_result(result)
+        fold = self._history_fold()
+        if fold is not None and result.success and result.message_id:
+            fold.note_progress(result.message_id, text)
         return result
 
     @staticmethod

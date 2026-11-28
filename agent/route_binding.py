@@ -61,18 +61,19 @@ def resolve_route_entry_client(entry: dict[str, Any], provider: str, model: str,
 
 
 def bind_route_entry(agent: Any, entry: dict[str, Any], provider: str, model: str, *,
-                     commit_pool_choice: bool = True) -> Optional[tuple[str, str]]:
+                     commit_pool_choice: bool = True, route: Optional[RouteEntryClient] = None) -> Optional[tuple[str, str]]:
     """Swap ``agent`` onto ``entry`` (a fallback-chain-shaped dict). Returns ``(old_model,
     old_provider)``, or None when the provider has no usable client. Sets ``_fallback_activated``
     so the next turn's ``restore_primary_runtime`` reverts it; raises on a failed swap.
     ``commit_pool_choice=False`` leaves the pool's pick uncounted in ``agent._route_pool_choice``
-    for a caller that may still refuse the route (it calls ``.commit()`` once it keeps it)."""
+    for a caller that may still refuse the route (it calls ``.commit()`` once it keeps it). ``route``
+    is a :func:`resolve_route_entry_client` result the caller already judged; None resolves here."""
     from agent.chat_completion_helpers import (
         _fallback_api_mode_resolved, _rebind_fallback_credential_pool,
         _reresolve_fallback_reasoning_config, _rescope_fallback_extra_body, _update_fallback_context_compressor,
     )
     # raw_codex=True: the main agent needs direct responses.stream() access for Codex providers.
-    route = resolve_route_entry_client(entry, provider, model)
+    route = route or resolve_route_entry_client(entry, provider, model)
     client, model, api_mode_explicit, api_mode = route.client, route.model, route.api_mode_explicit, route.api_mode
     if client is None:
         return None

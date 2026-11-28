@@ -71,6 +71,10 @@ _SCHEMA_OVERRIDES: dict[str, dict[str, Any]] = {
         *_timezone_options(), searchable=True, clearable=True,
     ),
     "memory.provider": _select("Memory provider plugin", *_memory_provider_options()),
+    "fallback.on_subscription_limit": _select(
+        "When a subscription primary hits its limit and the next fallback bills per token: switch, wait or ask",
+        "switch", "wait", "ask", category="agent",
+    ),
     "model": {
         "type": "string",
         "description": "Default model (e.g. anthropic/claude-sonnet-4.6)",
@@ -226,7 +230,7 @@ _CATEGORY_MERGE: dict[str, str] = {
     "nous": "agent",
     "connections": "agent",
     "auth": "security",
-    # `fallback.min_switch_reset_seconds` is the only schema-surfaced fallback field.
+    # `fallback.min_switch_reset_seconds` and `fallback.on_subscription_limit` are the schema-surfaced fallback fields.
     "fallback": "agent",
 }
 

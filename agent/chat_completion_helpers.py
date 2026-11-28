@@ -36,6 +36,7 @@ from agent.chat_completion_headers import _chat_completion_capturing_headers
 from agent.chat_completion_stream_monitor import StreamingWaitMonitor, StreamLifetimeExceeded
 from agent.transports.chat_completions import is_router_timeout_shim, router_timeout_shim_may_follow
 from agent.fast_mode import effective_request_overrides
+from agent.fallback_billing import FallbackWalk
 from agent.turn_context import substitute_api_content
 from agent.gemini_urls import is_native_gemini_base_url
 # Never fingerprint a remote endpoint: Ollama-compat routes misidentify and 401 without a key (#89863).
@@ -1989,9 +1990,10 @@ def try_activate_fallback(agent, reason: FailoverReason | None = None, reset_at=
     model slug and provider in place so the retry loop continues on the new backend; client
     construction goes through resolve_provider_client (no duplicated provider→key mappings)."""
     from agent.fallback_cooldown import _arm_rate_limit_cooldown, switch_deferred_by_reset
-    from agent.fallback_notice import announce_fallback_switch, fallback_trigger_text
+    from agent.fallback_notice import announce_fallback_switch
     if switch_deferred_by_reset(agent, reason, reset_at):
         return False
+    walk = FallbackWalk(agent, reason, reset_at)  # billing view + opt-in fallback.on_subscription_limit
     cooldown_seconds = _arm_rate_limit_cooldown(agent, reason, reset_at=reset_at)
     while True:
         if agent._fallback_index >= len(agent._fallback_chain):
@@ -2008,8 +2010,11 @@ def try_activate_fallback(agent, reason: FailoverReason | None = None, reset_at=
             continue
 
         try:
+            held, route = walk.check(fb, fb_provider, fb_model)  # before any route change
+            if held:
+                return False
             from agent.route_binding import bind_route_entry
-            bound = bind_route_entry(agent, fb, fb_provider, fb_model)
+            bound = bind_route_entry(agent, fb, fb_provider, fb_model, route=route)
             if bound is None:
                 logger.warning("Fallback to %s failed: provider not configured", fb_provider)
                 unavailable.add(fb_key)
@@ -2018,13 +2023,7 @@ def try_activate_fallback(agent, reason: FailoverReason | None = None, reset_at=
             fb_model = agent.model  # normalized by the binder
             rewrite_prompt_model_identity(agent, fb_model, fb_provider)
 
-            notice = (
-                f"⚠️ Model fallback: {old_model} via {old_provider} could not respond "
-                f"({fallback_trigger_text(agent, reason)}); using {fb_model} via {fb_provider}.")
-            if cooldown_seconds is not None:
-                remaining = max(0, math.ceil(agent._rate_limited_until - time.monotonic()))
-                notice += f" Primary retry eligible in ~{remaining} s; recovery is not guaranteed."
-            announce_fallback_switch(agent, notice)
+            announce_fallback_switch(agent, walk.notice(old_model, old_provider, cooldown_seconds))
             # ``_fallback_activated`` is also reused by `/model --once` restoration; separate
             # provenance so the restore path only emits a recovery notice after a real fallback.
             agent._provider_fallback_active = True

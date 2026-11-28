@@ -49,6 +49,24 @@ fallback:
 | Key | Default | Effect |
 |-----|---------|--------|
 | `fallback.min_switch_reset_seconds` | `0` (off) | A rate-limited primary whose declared reset is sooner than this many seconds is not swapped for a fallback; the retry backoff waits out the window instead. |
+| `fallback.on_subscription_limit` | `switch` | What happens when a subscription primary hits its limit and the next fallback bills per token: `switch` (switch and say so), `wait` (stay on the primary; the retry loop waits out the window), or `ask` (ask once per turn; a session with nobody to ask waits). |
+
+### Leaving a subscription for a pay-per-token fallback
+
+Hermes tells subscription routes apart from metered ones. Subscription routes are a Claude Pro/Max sign-in, a ChatGPT (Codex) sign-in, the Nous Portal plan and the other OAuth sign-in providers. Metered routes are API keys on OpenRouter or on the OpenAI, Anthropic and Google APIs. When a fallback leaves a subscription for a metered route, the switch notice says so and gives the primary's reset time when the provider sends one:
+
+```
+⚠️ gpt-5.5 via openai-codex limit reached (resets 14:05). Continuing on openai/gpt-5 via openrouter, billed per token. Back on gpt-5.5 at the first turn after the reset.
+```
+
+To keep the switch from happening on its own:
+
+```yaml
+fallback:
+  on_subscription_limit: ask   # switch (default) | wait | ask
+```
+
+With `wait` or `ask` (answered "stay"), the turn stays on the primary and a `⏸️ … limit reached` line names the fallback it skipped. The normal retry backoff waits out a short window; a window longer than the retries cover ends the turn with the limit error, and the next turn tries the primary again. Custom endpoints, local servers and coding plans sold as API keys make no billing claim, so they always switch as before. A Nous Portal plan limit never falls back by itself: the limit card offers the alternatives.
 
 Gemini fallback entries accept `gemini`, `google`, `google-gemini`, and
 `google-ai-studio`. On Google's native API endpoint, all use the native Gemini

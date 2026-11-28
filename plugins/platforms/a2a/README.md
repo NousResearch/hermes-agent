@@ -75,8 +75,9 @@ via `tasks/get`.
   key you trust. Configure `A2A_TRUSTED_SIGNERS` (a JWKS) and a card whose
   signature does not verify against one of those keys is refused by
   `a2a_discover` / `a2a_call`, so a card forged under a legitimate `kid` can no
-  longer steer a call. Inert until configured; `A2A_REQUIRE_CARD_SIGNATURE`
-  additionally rejects any unsigned peer card.
+  longer steer a call. Inert until configured. An attacker who controls the
+  card can instead drop its signature, so set `A2A_REQUIRE_CARD_SIGNATURE` to
+  also reject unsigned or unfetchable peer cards.
 - Push callbacks are SSRF-guarded and HMAC-SHA256 signed (`X-A2A-Signature`).
 - Every exchange is logged to `~/.hermes/a2a_audit.jsonl`.
 - Conversations persist to `~/.hermes/a2a_conversations/` — they survive context

@@ -36,6 +36,7 @@ import { $sessionsLoading } from '@/store/session'
 
 import { cloneAttachments, type QueueEditState } from '../composer-utils'
 import { replaceQueuedPrompt } from '../discard-lost-prompt'
+import { pathifyRefs } from '../path-refs'
 import { useComposerScope } from '../scope'
 import type { ChatBarProps } from '../types'
 
@@ -416,7 +417,8 @@ export function useComposerQueue({
   // `submissionId` names the restored send this draft retries: the admission (or the local entry that
   // drains under its id) keeps it, so the owner never runs the interrupted original a second time.
   const queueCurrentDraft = useCallback((submissionId?: string) => {
-    const text = draftRef.current
+    const draftText = draftRef.current
+    const text = pathifyRefs(draftText)
 
     if (!activeQueueSessionKey || (!text.trim() && attachments.length === 0)) {
       return false
@@ -468,7 +470,7 @@ export function useComposerQueue({
             return false
           }
 
-          if (currentQueueKeyRef.current === activeQueueSessionKey && draftRef.current === text) {
+          if (currentQueueKeyRef.current === activeQueueSessionKey && draftRef.current === draftText) {
             clearDraft()
             scope.attachments.removeOccurrences(attachments)
           }
@@ -497,7 +499,7 @@ export function useComposerQueue({
     triggerHaptic('selection')
 
     return true
-  }, [activeQueueSessionKey, attachments, clearDraft, draftRef, scope.attachments, onSubmit, replyPaused, sessionId, t.composer])
+  }, [activeQueueSessionKey, attachments, clearDraft, draftRef, scope.attachments, onSubmit, replyPaused, sessionId, t])
 
   // All queue drain paths share one lock + send-then-remove sequence.
   // `pickEntry` lets each caller choose head, by-id, or skip-edited, from the

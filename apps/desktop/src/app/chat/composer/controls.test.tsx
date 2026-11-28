@@ -148,6 +148,17 @@ describe('ComposerControls shortcut tooltips', () => {
     await expectShortcutTooltip('Steer the current run', '↵')
   })
 
+  it('does not advertise Enter when a session is still loading its busy policy', async () => {
+    renderControls({ busy: true, busyAction: 'queue', canSubmit: false })
+    expect(screen.getByLabelText('Queue message')).toHaveProperty('disabled', false)
+    const send = screen.getByLabelText('Send')
+    expect(send).toHaveProperty('disabled', true)
+    fireEvent.pointerMove(send, { pointerType: 'mouse' })
+    const tooltip = await screen.findByRole('tooltip')
+    expect(tooltip.textContent).toContain('Send')
+    expect(tooltip.textContent).not.toContain('↵')
+  })
+
   // A reply paused for its continuation holds a send in the queue, even while the
   // backend restarts and the composer is otherwise disabled.
   it('keeps Send usable while disabled when a send would be held for a paused reply', () => {
@@ -165,7 +176,7 @@ describe('ComposerControls shortcut tooltips', () => {
   it('shows Stop only when the composer is empty mid-turn', async () => {
     renderControls({ busy: true, busyAction: 'stop', canSubmit: true, hasComposerPayload: false })
 
-    await expectShortcutTooltip('Stop', '↵')
+    await expectShortcutTooltip('Stop', 'Esc')
   })
 
   it('answers a waiting card with Send when the draft has text, and offers no Queue', () => {

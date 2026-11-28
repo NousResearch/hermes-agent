@@ -8,7 +8,8 @@ import {
   KEYBIND_ACTIONS,
   KEYBIND_READONLY,
   keybindAction,
-  keybindActionAllowedInEditableTarget
+  keybindActionAllowedInEditableTarget,
+  readonlyKeybindsFor
 } from './actions'
 import { canonicalizeCombo } from './combo'
 
@@ -133,5 +134,27 @@ describe('view.tabSlot.N layers over profile.switch.N on ⌘1…⌘9 (#92569)', 
 
     expect(firstTabSlot).toBeGreaterThanOrEqual(0)
     expect(firstProfileSwitch).toBeGreaterThan(firstTabSlot)
+  })
+})
+
+
+describe('readonlyKeybindsFor', () => {
+  const keyFor = (mode: 'interrupt' | 'steer' | 'queue', id: string) =>
+    readonlyKeybindsFor(mode).find(shortcut => shortcut.id === id)?.keys
+
+  it('tracks Queue, Redirect and Steer shortcuts when the busy mode changes', () => {
+    expect(keyFor('queue', 'composer.queue')).toEqual(['enter'])
+    expect(keyFor('queue', 'composer.redirect')).toEqual(['mod+enter'])
+    expect(keyFor('queue', 'composer.steer')).toBeUndefined()
+    expect(keyFor('steer', 'composer.steer')).toEqual(['enter'])
+    expect(keyFor('steer', 'composer.queue')).toEqual(['mod+enter'])
+    expect(keyFor('steer', 'composer.redirect')).toBeUndefined()
+  })
+
+  it('does not claim a Steer shortcut when Interrupt is active', () => {
+    expect(keyFor('interrupt', 'composer.steer')).toBeUndefined()
+    expect(keyFor('interrupt', 'composer.queue')).toEqual(['mod+enter'])
+    expect(keyFor('interrupt', 'composer.redirect')).toEqual(['enter'])
+    expect(keyFor('interrupt', 'composer.send')).toEqual(['enter'])
   })
 })

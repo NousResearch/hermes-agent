@@ -183,6 +183,7 @@ function Harness({ pendingScope, suspend, onSubmit }: HarnessProps) {
     activeQueueSessionKey,
     attachments,
     busy: false,
+    busyInputMode: 'interrupt',
     disabled: false,
     inputDisabled: false,
     drainNextQueued: async () => false,

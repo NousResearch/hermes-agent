@@ -3,11 +3,12 @@ import type { ReadableAtom } from 'nanostores'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
-import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
+import { Tip, TipHintLabel, TipKeybindLabel } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { hostHas } from '@/lib/host-capabilities'
 import { Ear, EarOff, iconSize, Layers3, Loader2, Square } from '@/lib/icons'
+import { formatCombo } from '@/lib/keybinds/combo'
 import { cn } from '@/lib/utils'
 import { recordAction } from '@/store/desktop-metrics'
 import { $hudMode, closeHud, resetHudLayout } from '@/store/hud'
@@ -104,10 +105,9 @@ export function ComposerControls({
   // a waiting card). Stop only when the composer is empty and a turn is running.
   const showStop = busy && !hasComposerPayload
 
-  const showQueueButton = queueButtonVisible(busy, busyAction, hasComposerPayload, cardWaiting)
+  const showQueueButton = queueButtonVisible(busy, busyAction, hasComposerPayload, cardWaiting, canSubmit)
+  const sendLabel = composerSendLabel(busy, busyAction, cardWaiting, canSubmit, c)
 
-  // A waiting card takes the draft as its answer through Send, whatever the busy action.
-  const sendLabel = composerSendLabel(busy && !cardWaiting, busyAction, c)
 
   // The HUD is a Spotlight bar a few hundred pixels wide, so the four separate
   // voice toggles fold into one menu there and leave the row to the input. A
@@ -161,7 +161,7 @@ export function ComposerControls({
       )}
       {renderSteerButton(busy, busyAction, onSteer, disabled, c.steer)}
       {showQueueButton ? (
-        <Tip label={<TipKeybindLabel actionId="composer.queue" text={c.queueMessage} />} placement="control">
+        <Tip label={<TipHintLabel hint={formatCombo('mod+enter')} text={c.queueMessage} />} placement="control">
           <Button
             aria-label={c.queueMessage}
             className={GHOST_ICON_BTN}
@@ -180,13 +180,7 @@ export function ComposerControls({
         <StartVoiceButton disabled={disabled} label={c.startVoice} onStart={conversation.onStart} />
       ) : (
         <Tip
-          label={
-            showStop ? (
-              <TipKeybindLabel actionId="composer.send" text={c.stop} />
-            ) : (
-              <TipKeybindLabel actionId="composer.send" text={sendLabel} />
-            )
-          }
+          label={primaryTooltip(showStop, canSubmit, sendLabel, c.stop)}
           placement="control"
         >
           <Button
@@ -223,17 +217,28 @@ function queueButtonVisible(
   busy: boolean,
   busyAction: 'interrupt' | 'steer' | 'queue' | 'stop',
   hasPayload: boolean,
-  cardWaiting: boolean
+  cardWaiting: boolean,
+  canSubmit: boolean
 ): boolean {
-  return busy && busyAction !== 'stop' && busyAction !== 'queue' && hasPayload && !cardWaiting
+  return busy && busyAction !== 'stop' && (busyAction !== 'queue' || !canSubmit) && hasPayload && !cardWaiting
 }
 
 function composerSendLabel(
   busy: boolean,
   busyAction: 'interrupt' | 'steer' | 'queue' | 'stop',
+  cardWaiting: boolean,
+  canSubmit: boolean,
   c: { redirect: string; queueMessage: string; send: string; steer: string; stop: string }
 ): string {
-  return busy ? { interrupt: c.redirect, queue: c.queueMessage, steer: c.steer, stop: c.stop }[busyAction] : c.send
+  return busy && !cardWaiting && canSubmit
+    ? { interrupt: c.redirect, queue: c.queueMessage, steer: c.steer, stop: c.stop }[busyAction]
+    : c.send
+}
+
+function primaryTooltip(showStop: boolean, canSubmit: boolean, sendLabel: string, stopLabel: string) {
+  return showStop
+    ? <TipKeybindLabel actionId="composer.cancel" text={stopLabel} />
+    : <TipHintLabel hint={canSubmit ? formatCombo('enter') : undefined} text={sendLabel} />
 }
 
 function renderSteerButton(

@@ -5,14 +5,13 @@ import { Button } from '@/components/ui/button'
 import { CountSkeleton } from '@/components/ui/skeleton'
 import { previewSkillHub, type ProfileScope, profileScopeKey } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { parseFrontmatter } from '@/lib/frontmatter'
 import { Loader2 } from '@/lib/icons'
 import type { OfficialSkillInfo } from '@/types/hermes'
 
 import { PanelPill } from '../../overlays/panel'
 import { asText, prettyName } from '../../settings/helpers'
 import { DetailHeader } from '../primitives'
-
-import { parseFrontmatter } from './frontmatter'
 
 // Detail pane for a not-yet-installed catalog skill.
 export function OfficialSkillDetail({

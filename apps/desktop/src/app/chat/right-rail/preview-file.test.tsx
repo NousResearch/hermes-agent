@@ -16,6 +16,19 @@ describe('MarkdownPreview', () => {
     cleanup()
   })
 
+  it('shows leading YAML frontmatter as metadata rows, not a rule and a paragraph', () => {
+    const { container } = render(
+      <MarkdownPreview text={'---\ntitle: Trip notes\ntags:\n  - travel\n  - food\n---\n\n# Day one\n\nBody.'} />
+    )
+
+    const block = container.querySelector('[data-preview-frontmatter]')
+    expect(block?.textContent).toContain('Trip notes')
+    expect(block?.textContent).toContain('- travel\n- food')
+    expect(container.querySelector('hr')).toBeNull()
+    expect(screen.getByRole('heading', { name: 'Day one' })).toBeTruthy()
+    expect(screen.queryByText(/title: Trip notes/)).toBeNull()
+  })
+
   it('renders block and inline math through KaTeX', () => {
     // KaTeX marks its output; raw "$" delimiters must be gone.
     const { container } = render(

@@ -768,12 +768,12 @@ async def test_slash_confirm_forum_callback_followup_keeps_existing_thread_behav
         call_log.append(dict(kwargs))
         return SimpleNamespace(message_id=9001)
 
-    async def resolve(_session_key, _confirm_id, _choice):
+    async def run(_choice):
         return "done"
 
     from tools import slash_confirm
 
-    monkeypatch.setattr(slash_confirm, "resolve", resolve)
+    monkeypatch.setattr(slash_confirm, "claim", lambda _session_key, _confirm_id: run)
     adapter._bot = SimpleNamespace(send_message=mock_send_message)
 
     class Query:

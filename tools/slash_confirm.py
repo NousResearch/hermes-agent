@@ -10,6 +10,7 @@ synchronous variant (``_prompt_slash_confirm`` in ``cli.py``).
 
 from __future__ import annotations
 
+import functools
 import logging
 import threading
 import time
@@ -65,6 +66,22 @@ def clear_if_stale(session_key: str, timeout: float = DEFAULT_TIMEOUT_SECONDS) -
         return stale
 
 
+def claim(session_key: str, confirm_id: str, timeout: float = DEFAULT_TIMEOUT_SECONDS
+          ) -> Optional[Callable[[str], Awaitable[Optional[str]]]]:
+    """Take this prompt's pending confirm: a callable that runs it with the choice, or None if it
+    was stale, already resolved, or superseded. A button adapter claims BEFORE it renders the
+    decision, so a tap that will run nothing is never shown as approved."""
+    with _lock:
+        entry = _pending.get(session_key)
+        if not entry or entry.get("confirm_id") != confirm_id:
+            return None
+        # Pop before running so duplicate callbacks (button double-click) cannot run it twice.
+        _pending.pop(session_key, None)
+        if _is_stale(entry, timeout) or not entry.get("handler"):
+            return None
+    return functools.partial(_run, entry["handler"], entry.get("command", "?"))
+
+
 async def resolve(session_key: str, confirm_id: str, choice: str,
                   timeout: float = DEFAULT_TIMEOUT_SECONDS) -> Optional[str]:
     """Run the pending handler with ``choice`` ("once" / "always" / "cancel").
@@ -72,19 +89,11 @@ async def resolve(session_key: str, confirm_id: str, choice: str,
     Returns the handler's output string, or None if the confirm was stale, already resolved,
     or the confirm_id doesn't match (superseded prompt).
     """
-    with _lock:
-        entry = _pending.get(session_key)
-        if not entry or entry.get("confirm_id") != confirm_id:
-            return None
-        # Pop before running so duplicate callbacks (button double-click) cannot run it twice.
-        _pending.pop(session_key, None)
-        if _is_stale(entry, timeout):
-            return None
-        handler = entry.get("handler")
-        command = entry.get("command", "?")
+    run = claim(session_key, confirm_id, timeout)
+    return await run(choice) if run else None
 
-    if not handler:
-        return None
+
+async def _run(handler: Callable[[str], Awaitable[Optional[str]]], command: str, choice: str) -> Optional[str]:
     try:
         result = await handler(choice)
     except Exception as exc:

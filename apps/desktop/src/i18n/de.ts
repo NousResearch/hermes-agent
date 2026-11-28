@@ -5531,6 +5531,8 @@ export const deOverrides = {
     imageDownloadFailed: 'Bild-Download fehlgeschlagen',
     openImage: 'Bild öffnen',
     downloadImage: 'Bild herunterladen',
+    previousImage: 'Vorheriges Bild',
+    nextImage: 'Nächstes Bild',
     savingImage: 'Speichert Bild',
     imagePreviewFailed: 'Bildvorschau fehlgeschlagen',
     imageAttach: 'Bild anhängen',

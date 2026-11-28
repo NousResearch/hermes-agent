@@ -1,13 +1,14 @@
 'use client'
 
 import { useStore } from '@nanostores/react'
-import { type ComponentProps, useEffect, useRef } from 'react'
+import { type ComponentProps, type ReactNode, useEffect, useRef, useState } from 'react'
 
 import { Dialog, DialogContent } from '@/components/ui/dialog'
 import { useZoomPan } from '@/components/ui/use-zoom-pan'
 import { useImageDownload } from '@/hooks/use-image-download'
 import { useI18n } from '@/i18n'
-import { Download, ZoomIn, ZoomOut } from '@/lib/icons'
+import { ChevronLeft, ChevronRight, Download, ZoomIn, ZoomOut } from '@/lib/icons'
+import { LIGHTBOX_SRC_ATTR, lightboxNeighbors, revealLightboxThumbnail } from '@/lib/transcript-gallery'
 import { cn } from '@/lib/utils'
 import { $transcriptLightbox, closeTranscriptLightbox, openTranscriptLightbox } from '@/store/transcript-lightbox'
 
@@ -29,6 +30,15 @@ export interface ImageActionCopy {
   zoomIn: string
   zoomOut: string
   resetZoom: string
+  previousImage?: string
+  nextImage?: string
+}
+
+/** Lightbox step targets: the neighbouring sources, and the callback that opens one. */
+export interface LightboxGallery {
+  next: string | null
+  previous: string | null
+  onStep: (src: string) => void
 }
 
 export function ZoomableImage({
@@ -56,12 +66,30 @@ export function ZoomableImage({
   const openSrc = useStore($transcriptLightbox)
   const lightboxOpen = openSrc !== null && openSrc === fullSrc
   const canOpen = Boolean(src)
+  const anchorRef = useRef<HTMLSpanElement>(null)
+  // Neighbours are read from the DOM when this image's lightbox opens: the
+  // transcript is the gallery, so there is no second list to keep in sync.
+  const [neighbors, setNeighbors] = useState<{ next: string | null; previous: string | null }>(NO_NEIGHBORS)
+
+  useEffect(() => {
+    setNeighbors(lightboxOpen ? lightboxNeighbors(anchorRef.current, fullSrc) : NO_NEIGHBORS)
+  }, [lightboxOpen, fullSrc])
+
+  const gallery: LightboxGallery = {
+    ...neighbors,
+    onStep: target => {
+      revealLightboxThumbnail(anchorRef.current, target)
+      openTranscriptLightbox(target)
+    }
+  }
 
   return (
     <>
       <span
         className={cn('group/image relative inline-block max-w-full align-top', containerClassName)}
         data-slot={slot ?? 'aui_zoomable-image'}
+        ref={anchorRef}
+        {...(src ? { [LIGHTBOX_SRC_ATTR]: fullSrc } : {})}
       >
         <button
           aria-label={canOpen ? copy.openImage : undefined}
@@ -83,6 +111,7 @@ export function ZoomableImage({
         <ImageLightbox
           alt={alt}
           copy={copy}
+          gallery={gallery}
           onClick={download}
           onOpenChange={open => (open ? openTranscriptLightbox(fullSrc) : closeTranscriptLightbox(fullSrc))}
           open={lightboxOpen}
@@ -94,9 +123,12 @@ export function ZoomableImage({
   )
 }
 
+const NO_NEIGHBORS = { next: null, previous: null }
+
 export function ImageLightbox({
   alt,
   copy,
+  gallery,
   onClick,
   onOpenChange,
   open,
@@ -105,6 +137,8 @@ export function ImageLightbox({
 }: {
   alt?: string
   copy: ImageActionCopy
+  /** Transcript images only: step to the previous/next image with ←/→ or the toolbar arrows. */
+  gallery?: LightboxGallery
   onClick: () => void
   onOpenChange: (open: boolean) => void
   open: boolean
@@ -136,6 +170,13 @@ export function ImageLightbox({
   }
 
   const cursor = scale > 1 ? (panning ? 'grabbing' : 'grab') : 'zoom-out'
+  const hasGallery = Boolean(gallery && (gallery.previous || gallery.next))
+
+  const step = (target: null | string | undefined) => {
+    if (target && gallery) {
+      gallery.onStep(target)
+    }
+  }
 
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
@@ -148,6 +189,11 @@ export function ImageLightbox({
               onClick={event => event.stopPropagation()}
               onPointerDown={event => event.stopPropagation()}
             >
+              {hasGallery && (
+                <ToolbarButton disabled={!gallery?.previous} label={copy.previousImage} onClick={() => step(gallery?.previous)}>
+                  <ChevronLeft className="size-4" />
+                </ToolbarButton>
+              )}
               <button
                 aria-label={copy.zoomOut}
                 className="grid size-8 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
@@ -174,6 +220,11 @@ export function ImageLightbox({
               >
                 <ZoomIn className="size-4" />
               </button>
+              {hasGallery && (
+                <ToolbarButton disabled={!gallery?.next} label={copy.nextImage} onClick={() => step(gallery?.next)}>
+                  <ChevronRight className="size-4" />
+                </ToolbarButton>
+              )}
             </div>
           )
         }
@@ -196,6 +247,12 @@ export function ImageLightbox({
 
           if (opener?.isConnected) {
             opener.focus({ preventScroll: true })
+          }
+        }}
+        onKeyDown={event => {
+          if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+            event.preventDefault()
+            step(event.key === 'ArrowLeft' ? gallery?.previous : gallery?.next)
           }
         }}
         onOpenAutoFocus={() => {
@@ -227,6 +284,30 @@ export function ImageLightbox({
         </div>
       </DialogContent>
     </Dialog>
+  )
+}
+
+function ToolbarButton({
+  children,
+  disabled,
+  label,
+  onClick
+}: {
+  children: ReactNode
+  disabled: boolean
+  label?: string
+  onClick: () => void
+}) {
+  return (
+    <button
+      aria-label={label}
+      className="grid size-8 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+      disabled={disabled}
+      onClick={onClick}
+      type="button"
+    >
+      {children}
+    </button>
   )
 }
 

@@ -1,3 +1,6 @@
+import { useStore } from '@nanostores/react'
+import { useState } from 'react'
+
 import { Codecs, persistentAtom } from '@/lib/persisted'
 
 const STORAGE_KEY = 'hermes.desktop.collapsed-providers'
@@ -25,4 +28,32 @@ export const $collapsedProviders = persistentAtom<string[]>(STORAGE_KEY, [], Cod
 export function toggleCollapsedProvider(slug: string): void {
   const current = $collapsedProviders.get()
   $collapsedProviders.set(current.includes(slug) ? current.filter(s => s !== slug) : [...current, slug])
+}
+
+export interface ProviderCollapse {
+  collapsed: readonly string[]
+  toggle: (slug: string) => void
+}
+
+/** Collapse state for a provider-grouped list with a search box. A search
+ *  opens every group so no match is hidden by the stored preference, and a
+ *  header click while searching folds that group for this search only: the
+ *  stored preference is untouched and applies again once the query clears. */
+export function useProviderCollapse(searching: boolean): ProviderCollapse {
+  const stored = useStore($collapsedProviders)
+  const [searchCollapsed, setSearchCollapsed] = useState<readonly string[]>([])
+
+  if (!searching && searchCollapsed.length > 0) {
+    setSearchCollapsed([])
+  }
+
+  if (!searching) {
+    return { collapsed: stored, toggle: toggleCollapsedProvider }
+  }
+
+  return {
+    collapsed: searchCollapsed,
+    toggle: slug =>
+      setSearchCollapsed(current => (current.includes(slug) ? current.filter(s => s !== slug) : [...current, slug]))
+  }
 }

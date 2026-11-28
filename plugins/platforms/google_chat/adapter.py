@@ -32,6 +32,7 @@ from gateway.platforms._shared import (
 )
 
 from .cards import card_spec_to_cards_v2, format_message as _format_message
+from .workspace_user import WorkspaceUser, WorkspaceUserSettings
 
 
 def _adc_would_borrow_foreign_credentials() -> bool:
@@ -429,6 +430,11 @@ class GoogleChatAdapter(BasePlatformAdapter):
         # Last inbound thread per space: DMs get a NEW thread per top-level message but users
         # see one conversation, so thread_id leaves the source (stable session key) and is cached here.
         self._last_inbound_thread: dict[str, str] = {}
+        # Quote-replies: quoted message name -> (text, sender display name, ours?), and the display names
+        # learned to be ours or not, so a later quote of the same sender needs no messages.get.
+        self._quoted_messages: dict[str, tuple[str, str, bool]] = {}
+        self._quote_own_names: set[str] = set()
+        self._quote_other_names: set[str] = set()
         from hermes_constants import get_hermes_home as _get_hermes_home
         self._thread_count_store = _ThreadCountStore(_get_hermes_home() / "google_chat_thread_counts.json")
         # In-flight typing-card creates per chat_id: reserved BEFORE the API call so
@@ -449,6 +455,9 @@ class GoogleChatAdapter(BasePlatformAdapter):
             extra, "http_events_audience", "GOOGLE_CHAT_HTTP_EVENTS_AUDIENCE", self._http_events_url)
         self._http_events_service_account_email = self._str_setting(
             extra, "http_events_service_account_email", "GOOGLE_CHAT_HTTP_EVENTS_SERVICE_ACCOUNT_EMAIL").lower()
+        # Opt-in Workspace user reached by domain-wide delegation (workspace_user.py); None = off.
+        ws_settings = WorkspaceUserSettings.from_extra(extra, _get_scoped_secret("GOOGLE_CHAT_ALLOWED_USERS", "") or "")
+        self._workspace_user = WorkspaceUser(self, ws_settings) if ws_settings else None
 
     @staticmethod
     def _int_setting(extra: dict[str, Any], key: str, env_name: str, default: int) -> int:
@@ -670,6 +679,8 @@ class GoogleChatAdapter(BasePlatformAdapter):
             else:
                 logger.info("[GoogleChat] bot_user_id not yet resolved; will resolve on first addedToSpace or member lookup")
         self._supervisor_task = asyncio.create_task(self._run_supervisor()) if subscription_path is not None else None
+        if self._workspace_user is not None:
+            self._workspace_user.start(pubsub=subscription_path is not None)
         self._mark_connected()
         logger.info(
             "[GoogleChat] Connected; project=%s, inbound=%s, subscription=%s, "
@@ -685,6 +696,8 @@ class GoogleChatAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Clean shutdown: stop accepting new messages, wait in-flight, close clients."""
         self._shutting_down = True
+        if self._workspace_user is not None:
+            await self._workspace_user.stop()
         if self._supervisor_task and not self._supervisor_task.done():
             self._supervisor_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, asyncio.TimeoutError):
@@ -836,7 +849,8 @@ class GoogleChatAdapter(BasePlatformAdapter):
             logger.exception("[GoogleChat] Could not parse Pub/Sub envelope")
             message.ack()
             return
-        ce_type = dict(getattr(message, "attributes", {}) or {}).get("ce-type") or ""
+        attrs = dict(getattr(message, "attributes", {}) or {})
+        ce_type = attrs.get("ce-type") or ""
         logger.debug("[GoogleChat] Envelope keys=%s, ce-type=%s", list(envelope.keys()), ce_type)
         if self._debug_raw:
             # Contains message text + sender email: redact and gate at DEBUG.
@@ -847,7 +861,9 @@ class GoogleChatAdapter(BasePlatformAdapter):
                 dump = "<redact filter unavailable>"
             logger.debug("[GoogleChat] RAW envelope (redacted): %s", dump[:2000])
         try:
-            if "membership" in ce_type or "MEMBERSHIP" in ce_type:
+            if self._workspace_user is not None and self._workspace_user.handle_event(attrs, envelope):
+                pass  # a Workspace Events delivery to the impersonated user (workspace_events.py)
+            elif "membership" in ce_type or "MEMBERSHIP" in ce_type:
                 mpl = (envelope.get("chat") or {}).get("membershipPayload") or {}
                 space = mpl.get("space") or {}
                 if "created" in ce_type:
@@ -1009,10 +1025,104 @@ class GoogleChatAdapter(BasePlatformAdapter):
             user_id=(sender_email or sender_name), user_name=sender.get("displayName") or sender_email or sender_name,
             thread_id=session_thread_id, user_id_alt=(sender_name or None), message_id=msg.get("name") or None,
         )
-        return MessageEvent(
+        event = MessageEvent(
             text=text, message_type=message_type, source=source, raw_message=msg, message_id=msg.get("name") or None,
             media_urls=media_urls, media_types=media_types,
         )
+        await self._apply_quoted_reply(event, msg)
+        return event
+
+    # -- quote-replies -------------------------------------------------------------------------
+    # Chat's "Quote in reply" puts ``quotedMessageMetadata`` on the message: {name, lastUpdateTime,
+    # quoteType: "REPLY", quotedMessageSnapshot: {sender: <display name>, text}}. It becomes the
+    # event's reply fields, so the gateway prepends its ``[Replying to ...]`` pointer as it does for
+    # Telegram and Discord replies, and plugins know which message was answered.
+    _QUOTE_FETCH_TIMEOUT = 4.0   # one messages.get on a quoted message, at most this long
+    _QUOTE_KEEP = 500            # quoted messages remembered
+
+    def _own_sender_ids(self) -> set[str]:
+        """``users/{id}`` this adapter posts as: the Chat app, and the Workspace user when configured."""
+        ids = {self._bot_user_id}
+        if self._workspace_user is not None:
+            ids.add(getattr(self._workspace_user.listener, "user_id", None))
+        return {str(i) for i in ids if i}
+
+    def _get_quoted_message(self, name: str) -> dict[str, Any]:
+        """Blocking (run in a thread): ``messages.get`` on a quoted message."""
+        return self._chat_api.spaces().messages().get(name=name).execute(http=self._new_authed_http())
+
+    async def _fetch_quoted_message(self, name: str) -> Optional[tuple[str, str, str, bool]]:
+        """(text, sender display name, sender id, ours?) of a quoted message, or None when it cannot be read
+        within ``_QUOTE_FETCH_TIMEOUT``. The sender's display name is remembered as ours or not."""
+        try:
+            m = await asyncio.wait_for(asyncio.to_thread(self._get_quoted_message, name), self._QUOTE_FETCH_TIMEOUT)
+        except TimeoutError:
+            logger.info("[GoogleChat] quoted message %s not fetched within %.1fs; the snapshot stands", name,
+                        self._QUOTE_FETCH_TIMEOUT)
+            return None
+        except Exception:
+            # Boundary: whatever messages.get raises, the message that quoted it still goes on.
+            logger.info("[GoogleChat] quoted message %s not fetched; the snapshot stands", name, exc_info=True)
+            return None
+        sender = (m or {}).get("sender") or {}
+        sid, display = str(sender.get("name") or ""), str(sender.get("displayName") or "")
+        own = bool(sid) and sid in self._own_sender_ids()
+        if display:
+            (self._quote_own_names if own else self._quote_other_names).add(display)
+        return str((m or {}).get("text") or ""), display, sid, own
+
+    async def _apply_quoted_reply(self, event: MessageEvent, msg: dict[str, Any]) -> None:
+        """Fill ``reply_to_message_id``, ``reply_to_text``, ``reply_to_author_name`` /
+        ``reply_to_author_id`` and ``reply_to_is_own_message`` from a REPLY quote. The snapshot names its
+        sender by display name only, so whose message it is comes from a learned display name, else one
+        bounded ``messages.get`` (which also fills an empty snapshot). Never raises: a quote that cannot
+        be read leaves the message as it was, and a slow fetch is cut at ``_QUOTE_FETCH_TIMEOUT``."""
+        try:
+            q = msg.get("quotedMessageMetadata")
+            if not isinstance(q, dict):
+                return
+            name = str(q.get("name") or "")
+            kind = str(q.get("quoteType") or "REPLY").upper()
+            if "/messages/" not in name:
+                return
+            if kind != "REPLY":
+                logger.info("[GoogleChat] message %s quotes %s as %s, not a reply; left as it is",
+                            msg.get("name"), name, kind)
+                return
+            snap = q.get("quotedMessageSnapshot") if isinstance(q.get("quotedMessageSnapshot"), dict) else {}
+            text, sender, sid = str(snap.get("text") or ""), str(snap.get("sender") or ""), ""
+            how = "snapshot" if text.strip() else "no snapshot text"
+            seen = self._quoted_messages.get(name)
+            if seen is not None:
+                if not text.strip():
+                    text, how = seen[0], "remembered"
+                sender = sender or seen[1]
+                own: Optional[bool] = seen[2]
+            elif sender and sender in self._quote_own_names:
+                own = True
+            elif sender and sender in self._quote_other_names:
+                own = False
+            else:
+                own = None
+            if not text.strip() or own is None:
+                got = await self._fetch_quoted_message(name)
+                if got is not None:
+                    if not text.strip():
+                        text, how = got[0], "fetched"
+                    sender, sid, own = sender or got[1], got[2], got[3]
+            event.reply_to_message_id = name
+            event.reply_to_text = text if text.strip() else None
+            event.reply_to_author_name = sender or None
+            if sid:
+                event.reply_to_author_id = sid
+            event.reply_to_is_own_message = bool(own)
+            self._quoted_messages[name] = (text, sender, bool(own))
+            while len(self._quoted_messages) > self._QUOTE_KEEP:
+                self._quoted_messages.pop(next(iter(self._quoted_messages)))
+            logger.info("[GoogleChat] message %s quotes %s (%s, %d chars, %s)", msg.get("name"), name,
+                        "ours" if own else (sender or "someone else's"), len(text), how)
+        except Exception:
+            logger.debug("[GoogleChat] quoted reply not read; the message goes on without it", exc_info=True)
 
     async def _download_attachment(self, attachment: dict[str, Any]) -> tuple[Optional[str], Optional[str]]:
         """Download an inbound attachment to the local cache; return (path, mime). Bot SA
@@ -1322,6 +1432,8 @@ class GoogleChatAdapter(BasePlatformAdapter):
         # Already have a card (real msg_id, sentinel, or in-flight) — bail.
         if chat_id in self._typing_messages:
             return
+        if self._workspace_user is not None and await self._workspace_user.wait_thinking(chat_id):
+            return  # the Workspace user's thinking reaction stands in for the marker
         if chat_id in self._typing_card_inflight:
             # Bounded wait for the running create so "the card is up when we return".
             with contextlib.suppress(asyncio.TimeoutError, KeyError):
@@ -1363,6 +1475,11 @@ class GoogleChatAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.debug(log_msg, *log_args, exc_info=not _proxy_error(exc))
 
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        """Put the Workspace user's thinking reaction on the asker's message (when configured)."""
+        if self._workspace_user is not None and event.source is not None:
+            self._workspace_user.begin_thinking(event.source.chat_id, event.message_id or "")
+
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Reap typing card(s) after the turn: pop the SENTINEL on success; on
         failure/cancel patch a still-tracked card to a final label (no tombstone);
@@ -1370,6 +1487,8 @@ class GoogleChatAdapter(BasePlatformAdapter):
         if event.source is None:
             return
         chat_id = event.source.chat_id
+        if self._workspace_user is not None:
+            await self._workspace_user.end_thinking(chat_id, event.message_id or "")
         try:
             current = self._typing_messages.pop(chat_id, None)
             if current and current != _TYPING_CONSUMED_SENTINEL:

@@ -183,23 +183,27 @@ def test_a_core_era_disable_keeps_weixin_off_through_both_installers(tmp_path, p
                and "plugins enable weixin`" in line for line in said), said
 
 
-# Holds the installer lock in another process, like the detached default-plugin child an upgrade starts, and
-# places the weixin plugin (tree + enable) only after *release* appears, then lets go of the lock.
+# The detached default-plugin child mid-install, in another process: holds the installer lock with weixin's tree
+# placed and its ``installing`` marker written, until the test signals *release*; then enables it and lets go.
 _INSTALLER_CHILD = """
-import sys, time
+import sys
 from pathlib import Path
-from hermes_cli.default_plugins import installer_lock
-home, signals, hold = Path(sys.argv[1]), Path(sys.argv[2]), float(sys.argv[3])
+from hermes_cli.default_plugins import installer_lock, installing_marker
+from tests.waiting import wait_until
+home, signals = Path(sys.argv[1]), Path(sys.argv[2])
 with installer_lock(5):
-    (signals / "holding").touch()
-    time.sleep(hold)
     (home / "plugins" / "weixin").mkdir(parents=True, exist_ok=True)
+    installing_marker(home, "weixin").parent.mkdir(parents=True, exist_ok=True)
+    installing_marker(home, "weixin").touch()
+    (signals / "holding").touch()
+    wait_until(lambda: (signals / "release").exists(), timeout=120, what="release signal")
     (home / "config.yaml").write_text("platforms:\\n  weixin:\\n    enabled: false\\n"
                                       "plugins:\\n  enabled: [weixin]\\n_default_plugins_installed: [weixin]\\n")
+    installing_marker(home, "weixin").unlink(missing_ok=True)  # a test may have cleared it
 """
 
 
-def _send_only_home_with_installer_in_flight(tmp_path, hold: float):
+def _send_only_home_with_installer_in_flight(tmp_path):
     import os
     import sys
     from hermes_constants import get_hermes_home
@@ -209,22 +213,30 @@ def _send_only_home_with_installer_in_flight(tmp_path, hold: float):
     (home / "config.yaml").write_text("platforms:\n  weixin:\n    enabled: false\n", encoding="utf-8")
     signals = tmp_path / "signals"
     signals.mkdir()
-    child = subprocess.Popen([sys.executable, "-c", _INSTALLER_CHILD, str(home), str(signals), str(hold)],
+    child = subprocess.Popen([sys.executable, "-c", _INSTALLER_CHILD, str(home), str(signals)],
                              env={**os.environ, "HERMES_HOME": str(home)}, cwd=str(Path(lcm.__file__).parents[1]))
     wait_until(lambda: (signals / "holding").exists(), timeout=60, what="installer child holding the lock")
-    return home, child
+    return home, signals, child
 
 
-def _run_send(monkeypatch, home):
+def _run_send(monkeypatch, home, *, on_wait=None):
     """``hermes send --to weixin:wxid_x hi`` through cmd_send; the delivery is a stand-in recording whether the
-    plugin was in the home when it ran."""
+    plugin was enabled in the home when it ran. *on_wait* runs as the send starts waiting on the installer lock."""
     import argparse
     from gateway.outbound import send as send_mod
-    from hermes_cli import send_cmd
+    from hermes_cli import default_plugins, send_cmd
     seen: list[bool] = []
+    real_lock = default_plugins.installer_lock
+
+    def installer_lock(wait):
+        if on_wait is None:
+            pytest.fail("a send whose plugin needs nothing waited on the installer lock")
+        on_wait()
+        return real_lock(wait)
+    monkeypatch.setattr(default_plugins, "installer_lock", installer_lock)
     monkeypatch.setattr(send_cmd, "_load_hermes_env", lambda: None)  # the predicate reads the home's .env itself
     monkeypatch.setattr(send_mod, "send_message_tool",
-                        lambda args: (seen.append(lcm.plugin_present("weixin", home)), '{"success": true}')[1])
+                        lambda args: (seen.append(lcm._plugins_listed(home, ("weixin",))[0]), '{"success": true}')[1])
     monkeypatch.setattr(lcm, "_install_into", lambda home, consent=None: pytest.fail("installed a second copy"))
     with pytest.raises(SystemExit):
         send_cmd.cmd_send(argparse.Namespace(to="weixin:wxid_x", message="hi", file=None, subject=None,
@@ -236,28 +248,46 @@ def test_the_first_send_waits_for_the_install_already_in_flight(tmp_path, monkey
     """An upgraded send-only home's first command is ``hermes send`` while the background default-plugin child
     is still installing weixin: the send waits for that install (the installer lock) and delivers through the
     plugin it placed, instead of failing on an unregistered platform. It never installs a second copy."""
-    home, child = _send_only_home_with_installer_in_flight(tmp_path, hold=1.5)
+    home, signals, child = _send_only_home_with_installer_in_flight(tmp_path)
     try:
-        seen = _run_send(monkeypatch, home)
+        seen = _run_send(monkeypatch, home, on_wait=lambda: (signals / "release").touch())
     finally:
+        (signals / "release").touch()
         child.wait(timeout=60)
     assert seen == [True]
 
 
-def test_a_send_that_outwaits_its_budget_names_the_install_in_progress(tmp_path, monkeypatch, capsys):
-    """Past the bounded wait the send fails, and says why: the plugin is still being installed, retry; never
+def test_a_send_that_outwaits_its_budget_says_the_installer_is_busy(tmp_path, monkeypatch, capsys):
+    """Past the bounded wait the send fails, and says why: another process is installing plugins, retry; never
     only the generic unknown-platform error with an install command that would race the running install."""
     from gateway.outbound.targets import unknown_platform_error
     monkeypatch.setattr(lcm, "_STARTUP_LOCK_WAIT", 1.0)
-    home, child = _send_only_home_with_installer_in_flight(tmp_path, hold=30)
+    home, signals, child = _send_only_home_with_installer_in_flight(tmp_path)
     try:
-        _run_send(monkeypatch, home)
+        _run_send(monkeypatch, home, on_wait=lambda: None)
         error = unknown_platform_error("weixin")
     finally:
-        child.kill()
+        (signals / "release").touch()
         child.wait(timeout=60)
-    assert "still installing" in capsys.readouterr().err
-    assert "being installed by another Hermes process" in error and "retry" in error, error
+    assert "installing plugins right now" in capsys.readouterr().err
+    assert "installing plugins right now" in error and "retry" in error, error
+
+
+@pytest.mark.parametrize("plugins", ["enabled: [weixin]", "disabled: [weixin]"])
+def test_a_send_whose_plugin_is_ready_or_disabled_never_waits_on_a_busy_installer(tmp_path, monkeypatch, plugins):
+    """Another process holds the installer lock (another plugin, another profile): a send whose weixin is already
+    installed, or that the user disabled, goes straight to its target."""
+    home, signals, child = _send_only_home_with_installer_in_flight(tmp_path)
+    try:
+        from hermes_cli.default_plugins import installing_marker
+        installing_marker(home, "weixin").unlink()  # the child is busy with something else
+        (home / "config.yaml").write_text(f"platforms:\n  weixin:\n    enabled: false\nplugins:\n  {plugins}\n"
+                                          "_default_plugins_installed: [weixin]\n", encoding="utf-8")
+        seen = _run_send(monkeypatch, home)
+    finally:
+        (signals / "release").touch()
+        child.wait(timeout=60)
+    assert seen == ["enabled" in plugins]
 
 
 # A saved ``hermes-weixin`` pick (a platform_toolsets row, a cron job, a delegation parent) resolved to core tools

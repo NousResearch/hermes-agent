@@ -846,8 +846,8 @@ def platform_install_hint(platform: str) -> str:
     if feature is None:
         return ""
     if _install_in_flight():
-        return (f". {feature.label} moved out of core into the '{feature.plugin}' plugin, which is being installed by "
-                "another Hermes process right now: retry in a minute, once that install finishes")
+        return (f". {feature.label} moved out of core into the '{feature.plugin}' plugin; another Hermes process is "
+                "installing plugins right now: retry in a minute, once it finishes")
     return f". {_install_sentence(feature)}"
 
 
@@ -1317,15 +1317,16 @@ def _stamp_created(home: Path, config: dict) -> None:
 
 
 def _pending(home: Path, *, say: Callable[[str], None], process_env: bool = False,
-             backoff: bool = False) -> list[LeftCoreFeature]:
+             backoff: bool = False, rows: tuple[LeftCoreFeature, ...] = ()) -> list[LeftCoreFeature]:
     """Rows *home* uses whose plugin it never had and that the catalog ships (a catalog miss is
     reported through *say*). Converts the toolset scope of every row *home* uses once
     (:func:`_record_migration`), installed or not; a row whose scope cannot be recorded is
     reported and skipped, never installed unscoped. A row marked installed is done for good.
-    *backoff* (startup) skips a row whose last attempt failed recently, before any network."""
+    *backoff* (startup) skips a row whose last attempt failed recently, before any network. *rows* limits
+    the pass to those rows (default every row)."""
     from hermes_cli.memory_provider_migration import catalog_source
     out = []
-    for feature in LEFT_CORE:
+    for feature in rows or LEFT_CORE:
         config = _read_config(home)
         if _marked(config, _INSTALLED_KEY, feature) or any(f.plugin == feature.plugin for f in out):
             continue  # one install per plugin: two rows may name the same one
@@ -1689,29 +1690,39 @@ def _attempt(home: Path, *, deliver: Callable[[str], None], gateway_start: bool,
 
 
 def recover_for_platform(name: Optional[str]) -> None:
-    """``hermes send --to <name>``, a platform a left-core plugin ships, in a home that uses it: make the plugin
-    ready in this invocation before the target resolves. On an upgraded home the first send can start while
-    the background installer (the detached default-plugin child) is still placing that plugin: wait for its
-    lock (bounded, :func:`startup_lock_wait`), then run :func:`recover_at_startup`, which installs it here only
-    if nothing did. Starts no adapter (the send resolves its config as before) and never installs over the
-    user's ``plugins.disabled`` or a removal (:func:`_pending`). Outcomes print to stderr."""
-    from hermes_cli.default_plugins import installer_lock
+    """``hermes send --to <name>``, a platform a left-core plugin ships, in a home that uses it: make that one
+    plugin ready in this invocation before the target resolves. Nothing waits for a plugin that is ready or
+    disabled. One the default-plugin child is placing right now (its ``installing`` marker) is waited for on
+    the installer lock (bounded, :func:`startup_lock_wait`); one still owed (:func:`_pending` for this row
+    only: never over a removal) is installed through :func:`_install_one`, which takes the same lock and
+    rechecks under it. Starts no adapter (the send resolves its config as before). Outcomes print to stderr."""
+    from hermes_cli.default_plugins import installer_lock, installing_marker
     from hermes_constants import get_hermes_home
     feature = _platform_feature(str(name or "").strip().lower())
     home = Path(get_hermes_home())
     if feature is None or _installs_held.get() or not feature_in_use(feature, home, process_env=True):
         return
+    if _plugin_lists(home, feature.plugin)[1]:
+        return  # disabled: the send's own error says so
+
     def say(message: str) -> None:
         print(message, file=sys.stderr)
-    if _install_in_flight():
+    if installing_marker(home, feature.plugin).exists():
         try:
             with installer_lock(startup_lock_wait(gateway_start=False)):
-                pass
+                return
         except TimeoutError:
-            say(f"  ⚠ {feature.label}: another Hermes process is still installing the '{feature.plugin}' plugin; "
-                "retry in a minute, once that install finishes.")
+            say("  ⚠ Another Hermes process is installing plugins right now; retry in a minute, once it finishes.")
             return
-    recover_at_startup(say=say)
+    if not _pending(home, say=say, process_env=True, backoff=True, rows=(feature,)):
+        return  # ready, removed after its install, or backed off
+    from pm.install import lazy_installs_allowed
+    if not lazy_installs_allowed():
+        say(f"  ⚠ {feature.label}: security.allow_lazy_installs is off, so Hermes did not fetch its "
+            f"'{feature.plugin}' plugin: run `{_install_command(feature.plugin, home)}`.")
+        return
+    _install_one(home, feature, install=_install_into(home, consent=True), say=say, process_env=True,
+                 wait=startup_lock_wait(gateway_start=False))
 
 
 def recover_for_command(name: Optional[str]) -> None:

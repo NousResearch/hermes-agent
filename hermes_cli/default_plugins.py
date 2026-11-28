@@ -200,7 +200,12 @@ def _installing(home: Path, entry) -> Path:
     """Present while an automatic install of *entry* runs: written before the install starts, removed once
     it reported (ok, or a handled failure that stamped it). One left behind marks an interrupted install
     (the tree may be on disk without its dependencies admitted), which the next pass redoes."""
-    return home / "cache" / f"default-plugins.installing-{entry.name}"
+    return installing_marker(home, entry.name)
+
+
+def installing_marker(home: Path, name: str) -> Path:
+    """:func:`_installing` by catalog name."""
+    return home / "cache" / f"default-plugins.installing-{name}"
 
 
 def _phase_timer() -> tuple[Callable[[object], None], Callable[[], str]]:

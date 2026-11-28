@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from agent.file_safety import HOME_CREDENTIAL_DIRS
+from hermes_platform.host.facts import os_family
 from hermes_cli.archive_safe import archive_root_dirs, make_targz, normalize_archive_parts, safe_extract_targz
 from hermes_cli import config_backend as _config_backend
 from hermes_cli.profiles_config import _migrate_profile_config_if_outdated
@@ -287,6 +288,13 @@ _HERMES_SUBCOMMANDS = frozenset({
 })
 
 
+_WINDOWS_DEVICE_PROFILE_NAMES = frozenset({
+    "con", "prn", "aux", "nul",
+    *(f"com{number}" for number in range(1, 10)),
+    *(f"lpt{number}" for number in range(1, 10)),
+})
+
+
 # Path helpers
 
 def _get_profiles_root() -> Path:
@@ -396,9 +404,17 @@ def normalize_profile_name(name: str) -> str:
     return stripped.lower()
 
 
+def _reject_reserved_windows_device_name(name: str) -> None:
+    if os_family() == "win32" and name in _WINDOWS_DEVICE_PROFILE_NAMES:
+        raise ValueError(
+            f"Profile name {name!r} is a reserved Windows device name. Pick a different name."
+        )
+
+
 def validate_profile_name(name: str) -> None:
     """Raise ``ValueError`` unless *name* is a valid profile id (strict as-given lowercase —
-    normalize mixed-case input first) and not in ``_RESERVED_NAMES``; ``default`` passes.
+    normalize mixed-case input first), not in ``_RESERVED_NAMES``, and not a reserved
+    Windows device name; ``default`` passes.
 
     Callers that accept mixed-case or title-cased input from users (dashboard UI, CLI args) should call
     :func:`normalize_profile_name` first. This separation keeps validate honest about what the on-disk
@@ -408,6 +424,7 @@ def validate_profile_name(name: str) -> None:
         return  # special alias for ~/.hermes
     if not _PROFILE_ID_RE.match(name):
         raise _invalid_profile_name_error(name)
+    _reject_reserved_windows_device_name(name)
     if name in _RESERVED_NAMES:
         raise ValueError(
             f"Profile name {name!r} is reserved — it collides with either "
@@ -421,6 +438,7 @@ def validate_alias_name(name: str) -> None:
     under ``~/.local/bin``, so ``../../.bashrc`` must never escape the wrapper dir."""
     if not _PROFILE_ID_RE.match(name):
         raise ValueError(f"Invalid alias name {name!r}. {_PROFILE_NAME_RULE}.")
+    _reject_reserved_windows_device_name(name)
 
 
 def _canon_valid(name: str) -> str:
@@ -451,6 +469,7 @@ def get_profile_dir(name: str) -> Path:
     # profiles/hermes may still exist and must keep resolving.
     if not _PROFILE_ID_RE.match(canon):
         raise _invalid_profile_name_error(canon)
+    _reject_reserved_windows_device_name(canon)
     return _get_profiles_root() / canon
 
 

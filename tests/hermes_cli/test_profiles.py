@@ -24,6 +24,7 @@ from hermes_cli.profiles import (
     _clone_all_copytree_ignore,
     normalize_profile_name,
     validate_profile_name,
+    validate_alias_name,
     get_profile_dir,
     create_profile,
     delete_profile,
@@ -105,6 +106,18 @@ class TestValidateProfileName:
         with pytest.raises(ValueError):
             validate_profile_name(name)
 
+    @pytest.mark.platforms("windows")
+    @pytest.mark.parametrize("name", [
+        "con", "prn", "aux", "nul",
+        *(f"com{number}" for number in range(1, 10)),
+        *(f"lpt{number}" for number in range(1, 10)),
+    ])
+    def test_windows_device_names_rejected_before_path_probes(self, name, profile_env):
+        for validator in (validate_profile_name, validate_alias_name, get_profile_dir):
+            with pytest.raises(ValueError, match="reserved Windows device name"):
+                validator(name)
+        assert profiles.profile_exists(name) is False
+
 
 # ===================================================================
 # TestGetProfileDir
@@ -137,6 +150,12 @@ class TestGetProfileDir:
 class TestCreateProfile:
     """Tests for create_profile()."""
 
+    @pytest.mark.platforms("windows")
+    def test_windows_device_profile_is_refused_without_writes(self, profile_env):
+        home = profile_env / ".hermes"
+        with pytest.raises(ValueError, match="reserved Windows device name"):
+            create_profile("nul", no_alias=True, no_skills=True, seed_model=False)
+        assert list(home.iterdir()) == []
 
     def test_seeds_placeholder_env_file(self, profile_env):
         """Fresh profiles get their own .env (owner-only) so channel/env

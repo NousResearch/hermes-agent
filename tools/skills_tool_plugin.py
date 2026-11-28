@@ -23,7 +23,9 @@ _SKILL_FILE_EXTS = {".md", ".py", ".yaml", ".yml", ".json", ".tex", ".sh"}
 
 
 def _json(payload: dict) -> str:
-    return json.dumps(payload, ensure_ascii=False)
+    # default=str: YAML frontmatter values such as ``last_updated: 2026-08-22`` parse to
+    # datetime.date, and skill_view returns ``metadata`` verbatim, so a dated skill failed to load.
+    return json.dumps(payload, ensure_ascii=False, default=str)
 
 
 def _fail(error: str, **extra) -> str:

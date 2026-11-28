@@ -1,0 +1,38 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: pethost
+description: >-
+  Pethost: deploy Docker Compose projects, read their logs and requests,
+  roll back and restore.
+source: https://github.com/pethost-dev/plugin
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Native OAuth 2.1: RFC 9728 protected-resource
+# metadata -> AS metadata at console.pethost.dev, with Client ID Metadata
+# Documents (Hermes signs in as its published client) and Dynamic Client
+# Registration; PKCE S256, no refresh tokens (a token lasts until revoked).
+transport:
+  type: http
+  url: https://mcp.pethost.dev/mcp
+
+auth:
+  type: oauth
+
+# Composer-suggestion triggers (desktop brand pills).
+# No `pethost.app` suggest host: apps people deploy are served under it, and
+# a pasted link to one is about that site, not about managing Pethost.
+suggest:
+  keywords:
+    - pethost
+  hosts:
+    - pethost.dev
+
+post_install: |
+  On first connection Hermes opens a browser to sign in to Pethost
+  (or run `hermes mcp login pethost`). Approve Hermes on the page,
+  then restart the session so tools load. The panel's Settings
+  lists the connection and revokes it. Tools act on the account's
+  machine: they deploy, restart, restore and delete projects and
+  run commands in their containers.

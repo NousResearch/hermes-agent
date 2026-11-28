@@ -1424,6 +1424,24 @@ button {
   -webkit-app-region: no-drag;
 }
 
+/* Every floating surface (menus, popovers, selects, tooltips, dialogs, sheets
+   and their backdrops) carves itself out of the titlebar's drag band. The OS
+   hit-tests drag regions before the page sees a press, ignoring z-order, so a
+   menu row drawn over a `[-webkit-app-region:drag]` strip was dead in the part
+   that overlaps it (the press started a window drag instead). One rule here
+   covers every overlay, present and future, instead of a per-surface opt-out. */
+[data-radix-popper-content-wrapper],
+[data-slot='dialog-content'],
+[data-slot='dialog-overlay'],
+[data-slot='sheet-content'],
+[data-slot='sheet-overlay'],
+[role='dialog'],
+[role='alertdialog'],
+[role='menu'],
+[role='listbox'] {
+  -webkit-app-region: no-drag;
+}
+
 /* Button variant styling lives entirely in the cva in components/ui/button.tsx
    (the single source of truth). Don't re-add [data-slot='button'] rules here —
    attribute selectors out-specify the Tailwind utilities and silently override

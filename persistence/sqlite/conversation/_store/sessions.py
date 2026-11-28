@@ -247,7 +247,7 @@ def _delete_delegate_children(conn, parent_ids: list[str], *, media_root: str) -
     return ids
 
 
-INTERNAL_LISTING_SOURCES = ("kanban", "tool", "oneshot")
+INTERNAL_LISTING_SOURCES = ("kanban", "tool", "oneshot", "cron")
 
 
 SESSION_STATUS_COMPLETE = "complete"

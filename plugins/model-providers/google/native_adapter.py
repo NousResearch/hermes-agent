@@ -104,6 +104,24 @@ _MISSING_KEY_ERROR = (
 )
 
 
+def _native_gemini_model_id(model: str) -> str:
+    """Strip the prefixes a Gemini native request can carry: an aggregator's vendor prefix
+    (``google/``, ``gemini/``) and the ``models/`` prefix Gemini's own listings return, which every
+    ``{base}/models/{model}:…`` builder would otherwise double (#152786). Kept separate from the
+    published ``agent.reasoning_effort.bare_gemini_model_id`` plugin helper whose contract only
+    strips provider prefixes."""
+    name = bare_gemini_model_id(model)
+    while True:
+        for prefix in ("google/", "gemini/", "models/"):
+            if name.lower().startswith(prefix) and len(name) > len(prefix):
+                stripped = name[len(prefix):].strip()
+                if stripped:
+                    name = stripped
+                    break
+        else:
+            return name
+
+
 def probe_gemini_tier(
     api_key: str, base_url: str = DEFAULT_GEMINI_BASE_URL, *, model: str = "gemini-3.7-flash", timeout: float = 10.0
 ) -> str:
@@ -835,6 +853,7 @@ class GeminiNativeClient:
         timeout: Any = None, **_: Any,
     ) -> Any:
         extra = extra_body if isinstance(extra_body, dict) else {}
+        model = _native_gemini_model_id(model)
         max_tokens = _long_decode_cap(max_tokens, extra)
         request = build_gemini_request(
             messages=messages or [], tools=tools, tool_choice=tool_choice, temperature=temperature, max_tokens=max_tokens,
@@ -842,7 +861,6 @@ class GeminiNativeClient:
             response_format=response_format or extra.get("response_format"), model=model,
             tools_as_json_schema=gemini_accepts_parameters_json_schema(self.base_url),
         )
-        model = bare_gemini_model_id(model)
         url = f"{self.base_url}/models/{model}:"
         if stream:
             return self._stream_completion(model, f"{url}{self.STREAM_METHOD}?alt=sse", request, timeout)

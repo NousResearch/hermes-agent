@@ -56,9 +56,17 @@ def logical_session_id(home, session_id):
     if not store_exists(scope):
         return session_id
     with open_persistence_reader(scope.profile_dir) as persistence:
-        lineage = persistence.lineage.lineage(session_id)
-        root = lineage[0] if lineage else session_id
-        return _local_owners(persistence).get(root, root)
+        # ``sessions adopt`` binds a pre-gateway chat at its compression TIP: ``validate_local_lineage``
+        # forces ``lineage[0] == legacy_lineage_root()`` and that root IS the tip for a legacy receipt.
+        # An editor that talked to the chat before the cutover holds the chain's CREATION id, so
+        # resolving the owner at the root alone answers ``not_found`` and the chat never reopens.
+        # Walk the chain from the tip down: the first segment a receipt owns is the logical id.
+        lineage = list(persistence.lineage.lineage(session_id) or (session_id,))
+        owners = _local_owners(persistence)
+        for candidate in reversed(lineage):
+            if candidate in owners:
+                return owners[candidate]
+        return lineage[0]
 
 
 def catalog_sessions(home, cwd=None):

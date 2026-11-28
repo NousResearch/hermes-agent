@@ -15,3 +15,5 @@ capabilities:
   requires_env:
   - FEISHU_APP_ID
   - FEISHU_APP_SECRET
+known_issues:
+  - "Stops loading on Hermes releases without built-in Feishu or DingTalk (they moved to plugins) until hermes-tag ships the compatibility fix from DanielLi202/hermes-tag#30 (expected 0.5.1)"

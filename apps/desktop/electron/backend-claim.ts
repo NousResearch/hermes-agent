@@ -112,6 +112,47 @@ export async function processStartMarker(pid: number, timeoutMs: number = 30_000
   return `ps:${started}`
 }
 
+// Native argv boundaries are required before a POSIX backend can be reaped.
+// ps command= is flattened and can mistake data arguments for a command.
+export async function processArgv(pid: number): Promise<string[] | null> {
+  try {
+    if (process.platform === 'linux') {
+      const raw = await fs.promises.readFile(`/proc/${pid}/cmdline`)
+      const args = raw.toString('utf8').split('\0')
+
+      if (args.at(-1) === '') {args.pop()}
+
+      return args.length && args.every(Boolean) ? args : null
+    }
+
+    if (process.platform === 'darwin') {
+      const script = `import ctypes,json,sys
+libc=ctypes.CDLL('/usr/lib/libSystem.B.dylib',use_errno=True)
+mib=(ctypes.c_int*3)(1,49,int(sys.argv[1]))
+size=ctypes.c_size_t(0)
+if libc.sysctl(mib,3,None,ctypes.byref(size),None,0)!=0 or size.value<4: raise OSError(ctypes.get_errno())
+buf=ctypes.create_string_buffer(size.value)
+if libc.sysctl(mib,3,buf,ctypes.byref(size),None,0)!=0: raise OSError(ctypes.get_errno())
+raw=buf.raw[:size.value]
+argc=int.from_bytes(raw[:4],sys.byteorder)
+if not 0<argc<4096: raise ValueError('invalid argc')
+start=raw.index(b'\\0',4)+1
+while raw[start]==0: start+=1
+args=[a.decode('utf-8','surrogateescape') for a in raw[start:].split(b'\\0',argc)[:argc]]
+if len(args)!=argc or not all(args): raise ValueError('incomplete argv')
+print(json.dumps(args))`
+
+      const args: unknown = JSON.parse(await execText('python3', ['-c', script, String(pid)]))
+
+      return Array.isArray(args) && args.length && args.every(arg => typeof arg === 'string' && arg) ? args : null
+    }
+  } catch {
+    return null
+  }
+
+  return null
+}
+
 const PID_ONLY_MARKER_PREFIX = 'pid-only:'
 
 /**

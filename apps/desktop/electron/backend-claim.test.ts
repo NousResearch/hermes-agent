@@ -2,9 +2,16 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { isPidOnlyStartMarker, processStartMarker } from './backend-claim'
+import { isPidOnlyStartMarker, processArgv, processStartMarker } from './backend-claim'
 
 // --- real probe: drives the actual OS helper (PowerShell on the Windows lane) ---
+
+test('native argv probe preserves the current process arguments on POSIX', async () => {
+  if (process.platform === 'win32') {return}
+  const argv = await processArgv(process.pid)
+  assert.ok(argv?.length, 'native argv must be readable for a live process')
+  assert.equal(argv?.[0]?.split('/').pop(), process.execPath.split('/').pop())
+})
 
 test('processStartMarker resolves a real marker for the current process', async () => {
   const marker = await processStartMarker(process.pid)

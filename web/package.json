@@ -56,6 +56,9 @@
     "three": "0.180.0",
     "typescript": "6.0.3",
     "vite": "8.3.4",
-    "vitest": "4.1.12"
+    "vitest": "4.1.12",
+    "@testing-library/dom": "10.4.2",
+    "@testing-library/react": "16.3.3",
+    "jsdom": "29.1.1"
   }
 }

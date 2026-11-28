@@ -24,7 +24,15 @@ from agent.tool_result_classification import (
     tool_may_have_side_effect,
 )
 from tools.threat_patterns import scan_for_threats
-from session_rules.turns import _is_multimodal_tool_result, _is_text_part, _multimodal_text_summary
+from session_rules.turns import (
+    _AUDIO_PART_TYPES,
+    _DOCUMENT_PART_TYPES,
+    _IMAGE_PART_TYPES,
+    _VIDEO_PART_TYPES,
+    _is_multimodal_tool_result,
+    _is_text_part,
+    _multimodal_text_summary,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -409,10 +417,20 @@ def _trajectory_normalize_msg(msg: dict[str, Any]) -> dict[str, Any]:
     if _is_multimodal_tool_result(content):
         return {**msg, "content": _multimodal_text_summary(content)}
     if isinstance(content, list):
-        return {**msg, "content": [
-            {"type": "text", "text": "[screenshot]"} if isinstance(p, dict) and p.get("type") in {"image", "image_url", "input_image"} else p
-            for p in content
-        ]}
+        def _norm_part(p: Any) -> Any:
+            if not isinstance(p, dict):
+                return p
+            ptype = p.get("type")
+            if ptype in _IMAGE_PART_TYPES:
+                return {"type": "text", "text": "[screenshot]"}
+            if ptype in _VIDEO_PART_TYPES:
+                return {"type": "text", "text": "[video]"}
+            if ptype in _AUDIO_PART_TYPES:
+                return {"type": "text", "text": "[audio]"}
+            if ptype in _DOCUMENT_PART_TYPES:
+                return {"type": "text", "text": "[document]"}
+            return p
+        return {**msg, "content": [_norm_part(p) for p in content]}
     return msg
 
 

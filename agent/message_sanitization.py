@@ -18,7 +18,13 @@ from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER, h
 from agent.message_metadata import DB_ROW_SNAPSHOT
 from agent.vision_message_prep import _provider_model_key
 from session_rules.turns import _tc_field, coalesce_tool_call_id
-from session_rules.turns import _IMAGE_PART_TYPES
+from session_rules.turns import (
+    _ALL_MEDIA_PART_TYPES,
+    _AUDIO_PART_TYPES,
+    _DOCUMENT_PART_TYPES,
+    _IMAGE_PART_TYPES,
+    _VIDEO_PART_TYPES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -360,15 +366,30 @@ def serialized_messages_bytes(messages: list) -> int:
         return sum(len(str(m)) for m in messages)
 
 
-def _strip_images_from_messages(messages: list) -> bool:
-    """Remove image content parts from all messages in-place (server rejected images).
+def _removed_media_label(removed_types: set[str], fallback: str) -> str:
+    """Infer an accurate modality label when stripping mixed/all media types."""
+    if fallback != "auto":
+        return fallback
+    hits = [
+        name for name, mtypes in (
+            ("image", _IMAGE_PART_TYPES),
+            ("video", _VIDEO_PART_TYPES),
+            ("audio", _AUDIO_PART_TYPES),
+            ("document", _DOCUMENT_PART_TYPES),
+        )
+        if removed_types & mtypes
+    ]
+    return hits[0] if len(hits) == 1 else "media"
 
-    ``tool`` / ``tool_calls`` messages left empty get a placeholder, NOT deleted (deleting
-    orphans the paired ``tool_call_id`` → HTTP 400); other now-empty messages are dropped.
-    Rewritten messages lose their ``api_content`` sidecar (it carries the removed images):
-    a caller rewriting a persisted row must not leave bytes that replay them next turn. The
-    current callers pass per-call clones, where this is a no-op.
-    """
+
+def _strip_media_types_from_messages(
+    messages: list,
+    media_types: frozenset[str],
+    *,
+    label: str = "media",
+    preserve_empty_user: bool = False,
+) -> bool:
+    """Remove specified media content parts from all messages in-place."""
     from agent.context_compressor import _DB_PERSISTED_MARKER
     from session_rules.turns import drop_stale_api_content
 
@@ -378,15 +399,22 @@ def _strip_images_from_messages(messages: list) -> bool:
         content = msg.get("content") if isinstance(msg, dict) else None
         if not isinstance(content, list):
             continue
-        new_parts = [p for p in content if not (isinstance(p, dict) and p.get("type") in _IMAGE_PART_TYPES)]
-        if len(new_parts) < len(content):
+        new_parts = []
+        removed_types: set[str] = set()
+        for p in content:
+            if isinstance(p, dict) and p.get("type") in media_types:
+                removed_types.add(str(p.get("type")))
+            else:
+                new_parts.append(p)
+        if removed_types:
             found = True
             if new_parts:
                 msg["content"] = new_parts
                 # Rewriting a stamped live dict stales its persisted row; pop the marker.
                 msg.pop(_DB_PERSISTED_MARKER, None)
-            elif msg.get("role") == "tool" or msg.get("tool_calls"):
-                msg["content"] = "[image content removed — server does not support images]"
+            elif msg.get("role") == "tool" or msg.get("tool_calls") or (preserve_empty_user and msg.get("role") == "user"):
+                eff_label = _removed_media_label(removed_types, label)
+                msg["content"] = f"[{eff_label} content removed — server does not support {eff_label} input]"
                 msg.pop(_DB_PERSISTED_MARKER, None)
             else:
                 to_delete.append(i)
@@ -394,6 +422,24 @@ def _strip_images_from_messages(messages: list) -> bool:
     for i in reversed(to_delete):
         del messages[i]
     return found
+
+
+def _strip_images_from_messages(messages: list) -> bool:
+    """Remove image content parts from all messages in-place (corrupt-image or image-only strip).
+
+    Restricted to ``_IMAGE_PART_TYPES`` so corrupt-image retry preserves healthy audio, PDF,
+    and video parts in the same request. ``tool`` / ``tool_calls`` messages left empty get a
+    placeholder, NOT deleted (deleting orphans the paired ``tool_call_id`` → HTTP 400); other
+    now-empty messages are dropped.
+    """
+    return _strip_media_types_from_messages(messages, _IMAGE_PART_TYPES, label="image")
+
+
+def _strip_all_media_from_messages(messages: list) -> bool:
+    """Remove all media content parts (image, video, audio, document) for a text-only rejecting model."""
+    return _strip_media_types_from_messages(
+        messages, _ALL_MEDIA_PART_TYPES, label="auto", preserve_empty_user=True,
+    )
 
 
 # Provider error bodies (lowercased substring match) meaning "image/multimodal input
@@ -442,27 +488,99 @@ _IMAGE_CORRUPT_PHRASES = (
     "failed to decode image",
 )
 
+_GENERIC_CONTENT_REJECTION_PHRASES = (
+    # DashScope-style gateways reject non-text or unknown media blocks with this generic body (issue #57948).
+    "unexpected item type in content",
+)
+
+_EXPLICIT_IMAGE_REJECTION_PHRASES = tuple(
+    p for p in _IMAGE_REJECTION_PHRASES if p not in _GENERIC_CONTENT_REJECTION_PHRASES
+)
+
+_VIDEO_REJECTION_PHRASES = (
+    "video is not supported", "videos are not supported", "video content is not supported",
+    "video input is not supported", "does not support video", "model does not support video",
+    "video_url is not supported", "input_video is not supported",
+    "unknown variant `video_url`", "unknown variant `input_video`", "unknown variant `video`",
+)
+
+_AUDIO_REJECTION_PHRASES = (
+    "audio is not supported", "audio content is not supported", "audio input is not supported",
+    "does not support audio", "model does not support audio", "input_audio is not supported",
+    "unknown variant `input_audio`", "unknown variant input_audio", "unknown variant `audio`",
+)
+
+_DOCUMENT_REJECTION_PHRASES = (
+    "document is not supported", "documents are not supported", "document input is not supported",
+    "pdf is not supported", "pdf input is not supported", "does not support pdf",
+    "does not support document", "model does not support pdf", "model does not support document",
+    "unknown variant `document`", "unknown variant `file`", "unknown variant `input_file`",
+)
+
+
+def _rejected_modalities_map(agent: Any) -> dict[tuple[str, str], set[str]]:
+    mod_map = getattr(agent, "_rejected_media_modalities", None)
+    if not isinstance(mod_map, dict):
+        mod_map = {}
+        agent._rejected_media_modalities = mod_map
+    return mod_map
+
+
+def _parts_carry_media_types(parts: Any, media_types: frozenset[str]) -> bool:
+    if not isinstance(parts, list):
+        return False
+    for p in parts:
+        if not isinstance(p, dict):
+            continue
+        ptype = p.get("type")
+        if ptype in media_types:
+            return True
+        if ptype == "tool_result" and _parts_carry_media_types(p.get("content"), media_types):
+            return True
+    return False
+
+
+def _messages_carry_media_types(messages: Any, media_types: frozenset[str]) -> bool:
+    return isinstance(messages, list) and any(
+        isinstance(m, dict)
+        and (_parts_carry_media_types(m.get("content"), media_types) or _parts_carry_media_types(m.get("output"), media_types))
+        for m in messages
+    )
+
+
 def strip_images_for_rejecting_model(agent: Any, api_messages: Any) -> bool:
-    """Send-path image strip for a model that rejected image content (see turn_recovery).
+    """Send-path media strip for a model that rejected image or modality content (see turn_recovery).
 
     Runs on the per-call ``api_messages`` copy in Hermes's own message format, BEFORE the
     provider-specific conversion: the part types this stripper knows are that format's, and a
     converted payload (Bedrock Converse ``{"image": ...}`` blocks carry no ``type``) would slip
     past it. History is never touched. Keyed on each rejecting (provider, model), so a model
-    that accepts images gets them again.
+    that accepts images gets them again, and video/PDF/audio rejection never blinds vision.
     """
-    if _provider_model_key(agent) not in agent._image_rejecting_models:
+    if not isinstance(api_messages, list):
         return False
-    return isinstance(api_messages, list) and _strip_images_from_messages(api_messages)
+    key = _provider_model_key(agent)
+    if key in (getattr(agent, "_image_rejecting_models", None) or ()):
+        return _strip_all_media_from_messages(api_messages)
+    mods = _rejected_modalities_map(agent).get(key)
+    if not mods:
+        return False
+    stripped = False
+    for name, mtypes in (
+        ("video", _VIDEO_PART_TYPES),
+        ("audio", _AUDIO_PART_TYPES),
+        ("document", _DOCUMENT_PART_TYPES),
+    ):
+        if name in mods:
+            stripped |= _strip_media_types_from_messages(
+                api_messages, mtypes, label=name, preserve_empty_user=True,
+            )
+    return stripped
 
 
 def _messages_carry_images(messages: Any) -> bool:
-    """True when any message holds an image part in Hermes's own message format."""
-    return isinstance(messages, list) and any(
-        isinstance(m, dict) and isinstance(m.get("content"), list)
-        and any(isinstance(p, dict) and p.get("type") in _IMAGE_PART_TYPES for p in m["content"])
-        for m in messages
-    )
+    """True when any message holds a media part (image, video, audio, document) in Hermes's own message format."""
+    return _messages_carry_media_types(messages, _ALL_MEDIA_PART_TYPES)
 
 
 def _looks_like_image_content_rejection(error_body: str) -> bool:
@@ -471,10 +589,74 @@ def _looks_like_image_content_rejection(error_body: str) -> bool:
     return any(phrase in body for phrase in _IMAGE_REJECTION_PHRASES)
 
 
+def _looks_like_video_content_rejection(error_body: str) -> bool:
+    """Return True when a provider error says video input is unsupported."""
+    body = str(error_body or "").lower()
+    return any(phrase in body for phrase in _VIDEO_REJECTION_PHRASES)
+
+
+def _looks_like_audio_content_rejection(error_body: str) -> bool:
+    """Return True when a provider error says audio input is unsupported."""
+    body = str(error_body or "").lower()
+    return any(phrase in body for phrase in _AUDIO_REJECTION_PHRASES)
+
+
+def _looks_like_document_content_rejection(error_body: str) -> bool:
+    """Return True when a provider error says PDF/document input is unsupported."""
+    body = str(error_body or "").lower()
+    return any(phrase in body for phrase in _DOCUMENT_REJECTION_PHRASES)
+
+
 def _looks_like_corrupt_image_rejection(error_body: str) -> bool:
     """Return True when the rejection is about a bad image payload, not the model's capability."""
     body = str(error_body or "").lower()
     return any(phrase in body for phrase in _IMAGE_CORRUPT_PHRASES)
+
+
+def record_media_rejection(agent: Any, error_body: str, messages: Any) -> str | None:
+    """Record a model's media rejection per modality so video/PDF/audio errors never poison vision.
+
+    Returns the rejected modality label (``"video"``, ``"audio"``, ``"document"``, ``"image"``, etc.) or ``None``.
+    """
+    key = _provider_model_key(agent)
+    mod_map = _rejected_modalities_map(agent)
+    rejected_mods = mod_map.get(key, set())
+    for name, detector, mtypes in (
+        ("video", _looks_like_video_content_rejection, _VIDEO_PART_TYPES),
+        ("audio", _looks_like_audio_content_rejection, _AUDIO_PART_TYPES),
+        ("document", _looks_like_document_content_rejection, _DOCUMENT_PART_TYPES),
+    ):
+        if detector(error_body) and name not in rejected_mods and _messages_carry_media_types(messages, mtypes):
+            mod_map.setdefault(key, set()).add(name)
+            return name
+    if not _looks_like_image_content_rejection(error_body):
+        return None
+    body_low = str(error_body or "").lower()
+    is_generic_only = not any(phrase in body_low for phrase in _EXPLICIT_IMAGE_REJECTION_PHRASES)
+    unrejected_non_image = [
+        name for name, mtypes in (
+            ("video", _VIDEO_PART_TYPES),
+            ("audio", _AUDIO_PART_TYPES),
+            ("document", _DOCUMENT_PART_TYPES),
+        )
+        if name not in rejected_mods and _messages_carry_media_types(messages, mtypes)
+    ]
+    if is_generic_only and unrejected_non_image:
+        mod_map.setdefault(key, set()).update(unrejected_non_image)
+        return "/".join(unrejected_non_image)
+    if not _messages_carry_media_types(messages, _IMAGE_PART_TYPES):
+        if unrejected_non_image:
+            mod_map.setdefault(key, set()).update(unrejected_non_image)
+            return "/".join(unrejected_non_image)
+        return None
+    img_rejected = getattr(agent, "_image_rejecting_models", None)
+    if not isinstance(img_rejected, set):
+        img_rejected = set()
+        agent._image_rejecting_models = img_rejected
+    if key not in img_rejected:
+        img_rejected.add(key)
+        return "image"
+    return None
 
 
 # Internal tool-call markup emitted in the agent's raw output stream. A closed block is replaced
@@ -519,6 +701,7 @@ __all__ = [
     "_sanitize_structure_surrogates",
     "_sanitize_surrogates",
     "_sanitize_tools_non_ascii",
+    "_strip_all_media_from_messages",
     "_strip_images_from_messages",
     "_strip_non_ascii",
     "apply_reasoning_content_policy",
@@ -531,6 +714,7 @@ __all__ = [
     "reapply_reasoning_echo",
     "reasoning_echo_family",
     "reasoning_replay_route",
+    "record_media_rejection",
     "record_reasoning_field_rejection",
     "rejected_reasoning_carriers",
     "route_reasoning_carriers",

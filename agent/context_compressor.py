@@ -59,6 +59,7 @@ from tools.todo_tool import TODO_INJECTION_HEADER
 from tools.tool_result_storage import strip_archive_list
 from session_rules.turns import _content_text_for_contains, is_compaction_summary_message, user_originated_turn_view
 from session_rules.turns import (
+    _ALL_MEDIA_PART_TYPES,
     _BACKGROUND_PROCESS_NOTIFICATION_PREFIX,
     _DB_PERSISTED_MARKER,
     _HISTORICAL_SUMMARY_PREFIXES,
@@ -67,6 +68,12 @@ from session_rules.turns import (
     _MERGED_PRIOR_CONTEXT_HEADER,
     _MERGED_SUMMARY_DELIMITER,
     _SUMMARY_END_MARKER,
+    _VIDEO_PART_TYPES,
+)
+from agent.context_compressor_media import (
+    extract_media_payloads as _extract_media_payloads,
+    media_placeholder as _media_placeholder,
+    multimodal_envelope_tag as _multimodal_envelope_tag,
 )
 
 logger = logging.getLogger(__name__)
@@ -1330,10 +1337,10 @@ def _append_text_to_content(content: Any, text: str, *, prepend: bool = False) -
 
 
 def _replace_image_parts(parts: Any, placeholder: str) -> Optional[list[Any]]:
-    """New parts list with every image part replaced by a text placeholder; None if no images."""
+    """New parts list with every media part replaced by a text placeholder; None if none."""
     if not isinstance(parts, list) or not any(_is_image_part(p) for p in parts):
         return None
-    return [{"type": "text", "text": placeholder} if _is_image_part(p) else p for p in parts]
+    return [({"type": "text", "text": _media_placeholder(p, placeholder)} if _is_image_part(p) else p) for p in parts]
 
 
 def _tool_result_parts(content: Any) -> Any:
@@ -1347,11 +1354,12 @@ def _tool_content_has_images(content: Any) -> bool:
 
 
 def _strip_images_from_tool_msg(msg: dict[str, Any]) -> Optional[dict[str, Any]]:
-    """Copy of a tool message with image payloads replaced (stale ``api_content`` dropped); ``None`` if nothing to strip."""
+    """Copy of a tool message with media payloads replaced (stale ``api_content`` dropped); ``None`` if nothing to strip."""
     content = msg.get("content")
     if isinstance(content, dict) and content.get("_multimodal"):
-        summary = content.get("text_summary") or "[screenshot removed to save context]"
-        return _rewritten(msg, f"[screenshot removed] {str(summary)[:200]}")
+        tag = _multimodal_envelope_tag(content)
+        summary = content.get("text_summary") or f"[{tag} removed to save context]"
+        return _rewritten(msg, f"[{tag} removed] {str(summary)[:200]}")
     stripped = _replace_image_parts(content, "[screenshot removed to save context]")
     return None if stripped is None else _rewritten(msg, stripped)
 
@@ -1388,29 +1396,15 @@ def _retire_stale_tool_result_images(
     return pruned
 
 
-def _image_payload(msg: dict[str, Any]) -> list[str]:
-    """Data URL / base64 string of each image block in a message (``""`` when unmeasurable).
+def _image_payload(msg: dict[str, Any], *, images_only: bool = False) -> list[str]:
+    """Data URL / base64 string of each media block in a message (``""`` when unmeasurable).
 
     The provider counts BLOCKS (one ``tool_result`` with three screenshots is three), so the
     block count is the list length. Bytes are the summed string lengths: the payload is ASCII and
     the JSON framing around it is noise against a 24 MB budget. The strings also let the caller
     read dimensions from headers only, without a second walk or a full decode.
     """
-    parts = _tool_result_parts(msg.get("content"))
-    if not isinstance(parts, list):
-        return []
-    sources: list[str] = []
-    for p in parts:
-        if not _is_image_part(p):
-            continue
-        image_url = p.get("image_url")
-        source = p.get("source")
-        data = (
-            (image_url.get("url") if isinstance(image_url, dict) else image_url)
-            or (source.get("data") if isinstance(source, dict) else None)
-        )
-        sources.append(data if isinstance(data, str) else "")
-    return sources
+    return _extract_media_payloads(_tool_result_parts(msg.get("content")), images_only=images_only)
 
 
 def evict_stale_outbound_tool_images(api_messages: list[dict[str, Any]], retired_ids: Optional[set[str]] = None) -> int:
@@ -1442,7 +1436,10 @@ def evict_stale_outbound_tool_images(api_messages: list[dict[str, Any]], retired
         len(reserved),
         carrier_bytes_newest_first=[sum(map(len, sources)) for _, sources in carriers],
         reserved_bytes=sum(map(len, reserved)),
-        many_image_safe=images_all_within_many_image_limit([*reserved, *(x for _, ss in carriers for x in ss)]),
+        many_image_safe=images_all_within_many_image_limit([
+            s for m in api_messages if isinstance(m, dict)
+            for s in _image_payload(m, images_only=True)
+        ]),
     )
     retire = latched_retire_count(retire, [api_messages[i].get("tool_call_id") for i, _ in carriers], retired_ids)
     pruned = 0
@@ -1455,8 +1452,8 @@ def evict_stale_outbound_tool_images(api_messages: list[dict[str, Any]], retired
 
 
 def _is_image_part(part: Any) -> bool:
-    """True if ``part`` is an image block (``image_url``, ``input_image``, or ``image``)."""
-    return isinstance(part, dict) and part.get("type") in _IMAGE_PART_TYPES
+    """True if ``part`` is a native media block (image, video, audio, or document)."""
+    return isinstance(part, dict) and part.get("type") in _ALL_MEDIA_PART_TYPES
 
 
 def _content_has_images(content: Any) -> bool:

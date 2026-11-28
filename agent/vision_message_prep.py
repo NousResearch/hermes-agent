@@ -15,14 +15,31 @@ from pathlib import Path
 from typing import Any, List, Optional
 
 from agent.lazy_forward import forward_static as _forward_static
-from session_rules.turns import _is_multimodal_tool_result, _multimodal_text_summary
+from session_rules.turns import (
+    _ALL_MEDIA_PART_TYPES,
+    _AUDIO_PART_TYPES,
+    _DOCUMENT_PART_TYPES,
+    _IMAGE_PART_TYPES,
+    _VIDEO_PART_TYPES,
+    _is_multimodal_tool_result,
+    _multimodal_text_summary,
+)
 from utils import base_url_host_matches, base_url_hostname
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.
 logger = logging.getLogger("run_agent")
 
-_IMAGE_PART_TYPES = {"image_url", "input_image"}
+_MEDIA_PART_TYPES = _ALL_MEDIA_PART_TYPES
 _TEXT_PART_TYPES = {"text", "input_text"}
+_VIDEO_OMITTED_NOTE = (
+    "[Video attached earlier in this conversation — omitted because the active model does not support video input.]"
+)
+_AUDIO_OMITTED_NOTE = (
+    "[Audio attached earlier in this conversation — omitted because the active model does not support audio input.]"
+)
+_DOCUMENT_OMITTED_NOTE = (
+    "[Document attached earlier in this conversation — omitted because the active model does not support native document input.]"
+)
 _DATA_URL_SUFFIXES = {
     "image/png": ".png", "image/gif": ".gif", "image/webp": ".webp", "image/jpeg": ".jpg", "image/jpg": ".jpg"
 }
@@ -30,6 +47,22 @@ _DATA_URL_SUFFIXES = {
 
 def _is_image_part(part: Any) -> bool:
     return isinstance(part, dict) and part.get("type") in _IMAGE_PART_TYPES
+
+
+def _is_video_part(part: Any) -> bool:
+    return isinstance(part, dict) and part.get("type") in _VIDEO_PART_TYPES
+
+
+def _is_audio_part(part: Any) -> bool:
+    return isinstance(part, dict) and part.get("type") in _AUDIO_PART_TYPES
+
+
+def _is_document_part(part: Any) -> bool:
+    return isinstance(part, dict) and part.get("type") in _DOCUMENT_PART_TYPES
+
+
+def _is_media_part(part: Any) -> bool:
+    return isinstance(part, dict) and part.get("type") in _MEDIA_PART_TYPES
 
 
 def _salvage_text_parts(content: list, *, any_dict_text: bool) -> list[str]:
@@ -63,6 +96,14 @@ class VisionMessagePrepMixin:
     @staticmethod
     def _content_has_image_parts(content: Any) -> bool:
         return isinstance(content, list) and any(_is_image_part(part) for part in content)
+
+    @staticmethod
+    def _content_has_video_parts(content: Any) -> bool:
+        return isinstance(content, list) and any(_is_video_part(part) for part in content)
+
+    @staticmethod
+    def _content_has_media_parts(content: Any) -> bool:
+        return isinstance(content, list) and any(_is_media_part(part) for part in content)
 
     # 20 MB base64 ≈ 15 MB decoded — prevents OOM from an oversized data: URL in a shared gateway process.
     _MAX_DATA_URL_BASE64_BYTES = 20 * 1024 * 1024
@@ -142,6 +183,116 @@ class VisionMessagePrepMixin:
         except Exception:
             return False
 
+    def _model_supports_video(self) -> bool:
+        """True if the active provider+model accepts native video parts (model/route capability,
+        independent of ``agent.video_input_mode: auxiliary`` so user/historical videos aren't stripped
+        from video-capable models)."""
+        try:
+            from hermes_cli.config import load_config
+            from agent.image_routing import _coerce_video_mode, _lookup_supports_video, supports_video_in_tool_results
+            provider = (getattr(self, "provider", "") or "").strip()
+            model = (getattr(self, "model", "") or "").strip()
+            base_url = (getattr(self, "base_url", "") or "").strip()
+            requested_provider = (getattr(self, "requested_provider", "") or "").strip()
+            api_mode = (getattr(self, "api_mode", "") or "").strip()
+            cfg = load_config()
+            if not supports_video_in_tool_results(provider, model, cfg, base_url=base_url, api_mode=api_mode):
+                return False
+            verdict = _lookup_supports_video(
+                provider, model, cfg, requested_provider=requested_provider, allow_network=False,
+            )
+            if verdict is not None:
+                return verdict is True
+            mode_cfg = _coerce_video_mode(((cfg or {}).get("agent") or {}).get("video_input_mode"))
+            return mode_cfg == "native"
+        except (ImportError, KeyError, TypeError, ValueError, OSError, RuntimeError, AttributeError):
+            return False
+
+    def _model_supports_audio(self) -> bool:
+        """True if the active provider+model+transport accepts Hermes native audio parts in user turns."""
+        try:
+            from hermes_cli.config import load_config
+            from agent.image_routing import _coerce_audio_mode, _lookup_supports_audio, supports_audio_in_user_turns
+            provider = (getattr(self, "provider", "") or "").strip()
+            model = (getattr(self, "model", "") or "").strip()
+            base_url = (getattr(self, "base_url", "") or "").strip()
+            requested_provider = (getattr(self, "requested_provider", "") or "").strip()
+            api_mode = (getattr(self, "api_mode", "") or "").strip()
+            cfg = load_config()
+            if not supports_audio_in_user_turns(provider, model, cfg, base_url=base_url, api_mode=api_mode):
+                return False
+            verdict = _lookup_supports_audio(
+                provider, model, cfg, requested_provider=requested_provider, allow_network=False, base_url=base_url,
+            )
+            if verdict is not None:
+                return verdict is True
+            return _coerce_audio_mode(((cfg or {}).get("agent") or {}).get("audio_input_mode")) == "native"
+        except (ImportError, KeyError, TypeError, ValueError, OSError, RuntimeError, AttributeError):
+            return False
+
+    def _model_supports_document(self) -> bool:
+        """True if the active provider+model+transport accepts Hermes native document (PDF) parts in user turns."""
+        try:
+            from hermes_cli.config import load_config
+            from agent.image_routing import (
+                _coerce_pdf_mode,
+                _is_native_anthropic_pdf_route,
+                _lookup_supports_pdf,
+                supports_pdf_in_user_turns,
+            )
+            provider = (getattr(self, "provider", "") or "").strip()
+            model = (getattr(self, "model", "") or "").strip()
+            base_url = (getattr(self, "base_url", "") or "").strip()
+            requested_provider = (getattr(self, "requested_provider", "") or "").strip()
+            api_mode = (getattr(self, "api_mode", "") or "").strip()
+            cfg = load_config()
+            if not supports_pdf_in_user_turns(provider, model, cfg, base_url=base_url, api_mode=api_mode):
+                return False
+            verdict = _lookup_supports_pdf(
+                provider, model, cfg, requested_provider=requested_provider, allow_network=False, base_url=base_url,
+            )
+            if verdict is not None:
+                return verdict is True
+            if _is_native_anthropic_pdf_route(provider, model, base_url=base_url, api_mode=api_mode):
+                return True
+            return _coerce_pdf_mode(((cfg or {}).get("agent") or {}).get("pdf_input_mode")) == "native"
+        except (ImportError, KeyError, TypeError, ValueError, OSError, RuntimeError, AttributeError):
+            return False
+
+    def _model_supports_audio_in_tool_results(self) -> bool:
+        """True if the active provider+model accepts native audio inside tool-result messages."""
+        if not self._model_supports_audio():
+            return False
+        try:
+            from hermes_cli.config import load_config
+            from agent.image_routing import supports_audio_in_tool_results
+            return supports_audio_in_tool_results(
+                (getattr(self, "provider", "") or "").strip(),
+                (getattr(self, "model", "") or "").strip(),
+                load_config(),
+                base_url=(getattr(self, "base_url", "") or "").strip(),
+                api_mode=(getattr(self, "api_mode", "") or "").strip(),
+            )
+        except (ImportError, KeyError, TypeError, ValueError, OSError, RuntimeError, AttributeError):
+            return False
+
+    def _model_supports_document_in_tool_results(self) -> bool:
+        """True if the active provider+model accepts native documents inside tool-result messages."""
+        if not self._model_supports_document():
+            return False
+        try:
+            from hermes_cli.config import load_config
+            from agent.image_routing import supports_pdf_in_tool_results
+            return supports_pdf_in_tool_results(
+                (getattr(self, "provider", "") or "").strip(),
+                (getattr(self, "model", "") or "").strip(),
+                load_config(),
+                base_url=(getattr(self, "base_url", "") or "").strip(),
+                api_mode=(getattr(self, "api_mode", "") or "").strip(),
+            )
+        except (ImportError, KeyError, TypeError, ValueError, OSError, RuntimeError, AttributeError):
+            return False
+
     def _provider_supports_vision_tool_messages(self) -> bool:
         """True if the active provider accepts list-type tool content (some, e.g. Xiaomi MiMo, take
         multimodal user messages but 400 on list-type tool content; profile ``supports_vision_tool_messages``)."""
@@ -185,38 +336,115 @@ class VisionMessagePrepMixin:
             cache[mode] = get_transport(mode)
         return cache[mode]
 
+    @staticmethod
+    def _content_has_audio_parts(content: Any) -> bool:
+        return isinstance(content, list) and any(_is_audio_part(part) for part in content)
+
+    @staticmethod
+    def _content_has_document_parts(content: Any) -> bool:
+        return isinstance(content, list) and any(_is_document_part(part) for part in content)
+
     def _prepare_messages_for_non_vision_model(self, api_messages: list) -> list:
-        """Replace native image parts with cached vision_analyze text when the active model lacks vision;
-        vision-capable models pass through unchanged (the provider adapter handles image parts natively)."""
-        if not any(
-            isinstance(msg, dict) and self._content_has_image_parts(msg.get("content")) for msg in api_messages
-        ) or self._model_supports_vision():
+        """Replace unsupported native media parts on the outbound copy when the active model lacks support;
+        capable models pass through unchanged (canonical history is never mutated)."""
+        has_images = any(isinstance(m, dict) and self._content_has_image_parts(m.get("content")) for m in api_messages)
+        has_videos = any(isinstance(m, dict) and self._content_has_video_parts(m.get("content")) for m in api_messages)
+        has_audio = any(isinstance(m, dict) and self._content_has_audio_parts(m.get("content")) for m in api_messages)
+        has_docs = any(isinstance(m, dict) and self._content_has_document_parts(m.get("content")) for m in api_messages)
+        has_tool_audio = has_audio and any(
+            isinstance(m, dict) and m.get("role") == "tool" and self._content_has_audio_parts(m.get("content"))
+            for m in api_messages
+        )
+        has_tool_docs = has_docs and any(
+            isinstance(m, dict) and m.get("role") == "tool" and self._content_has_document_parts(m.get("content"))
+            for m in api_messages
+        )
+
+        strip_images = has_images and not self._model_supports_vision()
+        strip_videos = has_videos and not self._model_supports_video()
+        strip_audio_user = has_audio and not self._model_supports_audio()
+        strip_docs_user = has_docs and not self._model_supports_document()
+        strip_audio_tool = has_tool_audio and (strip_audio_user or not self._model_supports_audio_in_tool_results())
+        strip_docs_tool = has_tool_docs and (strip_docs_user or not self._model_supports_document_in_tool_results())
+        if not (strip_images or strip_videos or strip_audio_user or strip_docs_user or strip_audio_tool or strip_docs_tool):
             return api_messages
 
-        transformed = copy.deepcopy(api_messages)
-        for msg in transformed:
-            if isinstance(msg, dict):
-                msg["content"] = self._preprocess_anthropic_content(
-                    msg.get("content"), str(msg.get("role", "user") or "user")
+        user_rules = (
+            (strip_videos, _is_video_part, _VIDEO_OMITTED_NOTE),
+            (strip_audio_user, _is_audio_part, _AUDIO_OMITTED_NOTE),
+            (strip_docs_user, _is_document_part, _DOCUMENT_OMITTED_NOTE),
+        )
+        tool_rules = (
+            (strip_videos, _is_video_part, _VIDEO_OMITTED_NOTE),
+            (strip_audio_tool, _is_audio_part, _AUDIO_OMITTED_NOTE),
+            (strip_docs_tool, _is_document_part, _DOCUMENT_OMITTED_NOTE),
+        )
+
+        # Copy-on-write: shallow outer list + clone only affected messages (avoids deep-copying
+        # multi-megabyte base64 blobs on every turn just to discard them).
+        transformed = list(api_messages)
+        for idx, msg in enumerate(transformed):
+            if not isinstance(msg, dict):
+                continue
+            content = msg.get("content")
+            new_content = content
+            changed = False
+            if isinstance(new_content, list):
+                rules = tool_rules if msg.get("role") == "tool" else user_rules
+                replaced: list[Any] = []
+                msg_media_stripped = False
+                fallback_note = _VIDEO_OMITTED_NOTE
+                for part in new_content:
+                    note = next((n for flag, pred, n in rules if flag and pred(part)), None)
+                    if note is not None:
+                        replaced.append({"type": "text", "text": note})
+                        msg_media_stripped = True
+                        fallback_note = note
+                    else:
+                        replaced.append(part)
+                if msg_media_stripped:
+                    # Strict OpenAI-compat providers (DeepSeek, Groq, MiMo) reject list-typed
+                    # ``role: "tool"`` content; flatten tool messages when no media parts remain.
+                    if msg.get("role") == "tool" and not self._content_has_media_parts(replaced):
+                        new_content = "\n\n".join(_salvage_text_parts(replaced, any_dict_text=False)) or fallback_note
+                    else:
+                        new_content = replaced
+                    changed = True
+            if strip_images and self._content_has_image_parts(new_content):
+                new_content = self._preprocess_anthropic_content(
+                    new_content, str(msg.get("role", "user") or "user")
                 )
+                changed = True
+            if changed:
+                transformed[idx] = {**msg, "content": new_content}
         return transformed
 
     # Same transform for the Anthropic route (callers/tests patch this name independently).
     _prepare_anthropic_messages_for_api = _prepare_messages_for_non_vision_model
 
     def _tool_result_content_for_active_model(self, tool_name: str, result: Any) -> Any:
-        """Tool message content that is safe for the active model. Text-only providers must not receive
-        image parts: a rejected tool result becomes canonical history and can break the next user turn."""
+        """Tool message content that is safe for the active model. Models/providers without support for
+        the carried media type fall back to ``text_summary`` so canonical history stays replay-safe."""
         if not _is_multimodal_tool_result(result):
             return result
 
         content = result.get("content") or []
-        if not self._content_has_image_parts(content):
+        has_images = self._content_has_image_parts(content)
+        has_videos = self._content_has_video_parts(content)
+        has_audio = self._content_has_audio_parts(content)
+        has_docs = self._content_has_document_parts(content)
+        if not (has_images or has_videos or has_audio or has_docs):
             return content
 
-        if self._model_supports_vision():
-            # Vision on paper, but the provider rejects list-type tool content (or we already learned that
-            # in-session): short-circuit to a text summary.
+        capable = (
+            (not has_images or self._model_supports_vision())
+            and (not has_videos or self._model_supports_video())
+            and (not has_audio or self._model_supports_audio_in_tool_results())
+            and (not has_docs or self._model_supports_document_in_tool_results())
+        )
+        if capable:
+            # Media-capable on paper, but the provider rejects list-type tool content (or we already
+            # learned that in-session): short-circuit to a text summary.
             if not self._provider_supports_vision_tool_messages():
                 logger.debug(
                     "Tool %s: provider %s does not accept list-type tool "
@@ -247,7 +475,7 @@ class VisionMessagePrepMixin:
             })
 
         logger.warning(
-            "Tool %s returned image content for non-vision model %s/%s; "
+            "Tool %s returned multimodal content for incompatible model %s/%s; "
             "falling back to text summary",
             tool_name, self.provider, self.model,
         )
@@ -258,7 +486,7 @@ class VisionMessagePrepMixin:
     def _try_strip_image_parts_from_tool_messages(
         self, api_messages: list, *, remember_model: bool = True
     ) -> bool:
-        """Downgrade list-type tool messages to text in place; True if any were downgraded.
+        """Downgrade list-type tool messages carrying image/video parts to text in place; True if any changed.
 
         Recovery for providers that 400 on list-type tool content (e.g. MiMo "text is not set"). By default
         records (provider, model) in ``_no_list_tool_content_models`` so later results downgrade without a
@@ -280,13 +508,13 @@ class VisionMessagePrepMixin:
             if not isinstance(msg, dict) or msg.get("role") != "tool":
                 continue
             content = msg.get("content")
-            # List content without image parts is left alone; stripping wouldn't reduce ambiguity.
-            if not self._content_has_image_parts(content):
+            # List content without image/video parts is left alone; stripping wouldn't reduce ambiguity.
+            if not isinstance(content, list) or not self._content_has_media_parts(content):
                 continue
 
             # Salvage any text parts so the model still sees some signal.
             msg["content"] = "\n\n".join(_salvage_text_parts(content, any_dict_text=False)) or (
-                "[image content removed — provider does not accept "
+                "[media content removed — provider does not accept "
                 "list-type tool message content]"
             )
             changed = True

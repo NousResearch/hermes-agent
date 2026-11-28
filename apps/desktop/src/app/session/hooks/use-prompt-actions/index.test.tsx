@@ -685,6 +685,57 @@ describe('usePromptActions slash session targeting', () => {
     expect(calls[1]?.params).toEqual({ command: 'goal status', session_id: RECOVERED_SESSION_ID })
   })
 
+  it.each([false, true])(
+    'restores a slash draft after a connection change only when no request was sent (sent=%s)',
+    async sent => {
+      const originalConnection = $connection.get()
+      const switchConnection = () => $connection.set({ connectionId: 'new-gateway', mode: 'remote' } as never)
+
+      const createBackendSessionForSend = vi.fn(async () => {
+        if (!sent) {
+          switchConnection()
+        }
+
+        return RECOVERED_SESSION_ID
+      })
+
+      const requestGateway = vi.fn(async (method: string) => {
+        if (method === 'slash.exec') {
+          switchConnection()
+          throw new Error('Gateway request timed out')
+        }
+
+        return {} as never
+      })
+
+      let handle: HarnessHandle | null = null
+      $connection.set({ connectionId: 'original-gateway', mode: 'remote' } as never)
+
+      try {
+        await actRender(
+          <Harness
+            activeSessionId={null}
+            activeSessionIdRef={{ current: null }}
+            createBackendSessionForSend={createBackendSessionForSend}
+            onReady={h => (handle = h)}
+            refreshSessions={async () => undefined}
+            requestGateway={requestGateway}
+            selectedStoredSessionIdRef={{ current: null }}
+            storedSessionId={null}
+          />
+        )
+
+        await expect(handle!.submitText('/goal status')).resolves.toBe(sent)
+        expect(createBackendSessionForSend).toHaveBeenCalledOnce()
+        expect(requestGateway.mock.calls.map(([method]) => method).filter(method => method !== SLASH_METRIC)).toEqual(
+          sent ? ['slash.exec'] : []
+        )
+      } finally {
+        $connection.set(originalConnection)
+      }
+    }
+  )
+
   it('does not fork the chat when the routed session cannot be rebound', async () => {
     const calls: string[] = []
     const createBackendSessionForSend = vi.fn(async () => 'rt-brand-new-WRONG')

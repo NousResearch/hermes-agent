@@ -78,7 +78,7 @@ import { queueKickoffIfSessionBusy } from './queue-if-busy'
 import { resolveTargetSessionId } from './resolve-target-session'
 import { desktopReadCommandHandlers } from './slash-desktop-commands'
 import { sessionCommandHandlers } from './slash-session-commands'
-import { captureSubmissionDestination } from './submission-destination'
+import { captureSubmissionDestination, SubmissionDestinationChangedError } from './submission-destination'
 import {
   type GatewayRequest,
   isSessionIdCandidate,
@@ -222,6 +222,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
       const initialRoutedId = getRoutedStoredSessionId()
 
       let submitted = true
+      let execMayHaveRun = false
 
       const initialStoredId =
         options?.storedSessionId ??
@@ -522,6 +523,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
         try {
           const execParams = { session_id: sessionId, command: command.replace(/^\/+/, '') }
           const result = await requestGateway<unknown>('slash.exec', execParams)
+          execMayHaveRun = true
 
           if (confirmGuardedModelExec(name, result, execParams, renderSlashOutput)) {
             return
@@ -550,6 +552,15 @@ export function useSlashCommand(deps: SlashCommandDeps) {
 
           return
         } catch (error) {
+          if (!execMayHaveRun && error instanceof SubmissionDestinationChangedError) {
+            submitted = false
+            renderSlashOutput(`error: ${error.message}`)
+
+            return
+          }
+
+          // Aliases can reenter runExec after a response or an ambiguous failure.
+          execMayHaveRun = true
           // Fall back to command.dispatch for skill/send/alias directives, but
           // keep the worker error: a slash.exec worker timeout/crash is the real
           // failure, not the "not a quick/plugin/skill command" routing noise.

@@ -11,6 +11,13 @@ import type { GatewayRequest } from './utils'
 
 const capturedRequests = new WeakMap<GatewayRequest, SubmissionDestination>()
 
+export class SubmissionDestinationChangedError extends Error {
+  constructor() {
+    super('Submission destination changed; retry from the original session')
+    this.name = 'SubmissionDestinationChangedError'
+  }
+}
+
 export interface SubmissionDestination {
   readonly scopeKey: string
   readonly owner: SessionOwnerScope
@@ -58,7 +65,7 @@ export function captureSubmissionDestination(
 
   const guardedRequest: GatewayRequest = (method, params, timeoutMs) => {
     if (connectionAuthority !== authority() || profile !== $activeGatewayProfile.get()) {
-      return Promise.reject(new Error('Submission destination changed; retry from the original session'))
+      return Promise.reject(new SubmissionDestinationChangedError())
     }
 
     return timeoutMs === undefined ? request(method, params) : request(method, params, timeoutMs)

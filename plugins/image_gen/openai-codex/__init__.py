@@ -173,15 +173,30 @@ def _normalize_input_images(
     return [_to_input_image(value) for value in values]
 
 
+def _gif_output_fields(gif: Any) -> dict[str, Any]:
+    """Flatten official Codex GifOptions into native Images API fields, without inventing defaults."""
+    if gif is None:
+        return {}
+    bounds = {"frame_count": (2, 16), "frame_duration_ms": (20, 2000)}
+    if not isinstance(gif, dict) or gif.keys() - bounds.keys():
+        raise ValueError("gif must be an object with optional frame_count and frame_duration_ms")
+    for name, value in gif.items():
+        lower, upper = bounds[name]
+        if type(value) is not int or not lower <= value <= upper:
+            raise ValueError(f"gif.{name} must be an integer between {lower} and {upper}")
+    return {"output_format": "gif", **gif}
+
+
 def _build_image_request(
-    *, prompt: str, size: str, quality: str, input_images: Optional[list[dict[str, str]]] = None
+    *, prompt: str, size: str, quality: str, input_images: Optional[list[dict[str, str]]] = None,
+    gif: Optional[dict[str, int]] = None,
 ) -> tuple[str, dict[str, Any]]:
     """``(endpoint_path, json_body)`` — ``images/edits`` when sources are present, else
     ``images/generations``. Field set mirrors the official client's ``ImageGenerationRequest`` /
     ``ImageEditRequest``."""
     body: dict[str, Any] = {
         "prompt": prompt, "model": API_MODEL, "n": 1, "quality": quality, "size": size,
-        "background": "opaque",
+        "background": "opaque", **_gif_output_fields(gif),
     }
     if input_images:
         body["images"] = input_images
@@ -192,6 +207,7 @@ def _build_image_request(
 def _post_image_request(
     token: str, *, prompt: str, size: str, quality: str, input_images: Optional[list[dict[str, str]]] = None,
     base_url: str,
+    gif: Optional[dict[str, int]] = None,
 ) -> dict[str, Any]:
     """POST to the native Codex images endpoint; return the decoded JSON body plus
     ``imagegen_request_id`` (backend correlation id, for support tickets).
@@ -207,7 +223,7 @@ def _post_image_request(
         "Content-Type": "application/json",
         "x-codex-image-turn-id": str(uuid.uuid4()),
     })
-    path, body = _build_image_request(prompt=prompt, size=size, quality=quality, input_images=input_images)
+    path, body = _build_image_request(prompt=prompt, size=size, quality=quality, input_images=input_images, gif=gif)
     timeout = httpx.Timeout(300.0, connect=30.0, read=300.0, write=60.0, pool=30.0)
     with httpx.Client(timeout=timeout, headers=headers) as http:
         response = http.post(f"{base_url}/{path}", json=body)
@@ -230,6 +246,18 @@ def _png_pixel_size(raw: bytes) -> Optional[str]:
         return None
     width, height = struct.unpack(">II", raw[16:24])
     return f"{width}x{height}"
+
+
+def _validate_gif(raw: bytes, *, animated: bool) -> None:
+    """Decode every GIF frame before reporting a usable artifact, without re-encoding it."""
+    import io
+    from PIL import Image, ImageSequence
+
+    with Image.open(io.BytesIO(raw)) as image:
+        if image.format != "GIF" or (animated and image.n_frames < 2):
+            raise ValueError("Codex images API did not return an animated GIF")
+        for frame in ImageSequence.Iterator(image):
+            frame.load()
 
 
 class OpenAICodexImageGenProvider(StaticImageGenProvider):
@@ -259,17 +287,23 @@ class OpenAICodexImageGenProvider(StaticImageGenProvider):
         }
 
     def capabilities(self) -> dict[str, Any]:
-        return {"modalities": ["text", "image"], "max_reference_images": _MAX_REFERENCE_IMAGES}
+        return {"modalities": ["text", "image"], "max_reference_images": _MAX_REFERENCE_IMAGES,
+                "creative_controls": ["gif"]}
 
     def generate(
         self, prompt: str, aspect_ratio: str = DEFAULT_ASPECT_RATIO, *,
         image_url: Optional[str] = None, reference_image_urls: Optional[list[str]] = None,
+        gif: Optional[dict[str, int]] = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
         prompt = (prompt or "").strip()
         aspect = resolve_aspect_ratio(aspect_ratio)
         if not prompt:
             return prompt_required_error("openai-codex", aspect)
+        try:
+            _gif_output_fields(gif)
+        except ValueError as exc:
+            return error_factory("openai-codex", aspect)(str(exc), "invalid_gif_options")
         token, base_url = _read_codex_credential()
         if not token:
             return error_factory("openai-codex", aspect)(_NO_AUTH, "auth_required")
@@ -288,7 +322,7 @@ class OpenAICodexImageGenProvider(StaticImageGenProvider):
         try:
             payload = _post_image_request(
                 token, prompt=prompt, size=size, quality=meta["quality"], input_images=input_images or None,
-                base_url=base_url)
+                base_url=base_url, gif=gif)
         except Exception as exc:
             logger.debug("Codex image generation failed", exc_info=True)
             return fail(f"OpenAI image generation via Codex auth failed: {exc}", "api_error")
@@ -299,8 +333,15 @@ class OpenAICodexImageGenProvider(StaticImageGenProvider):
             return fail("Codex images API response contained no image data", "empty_response")
 
         try:
-            pixel_size = _png_pixel_size(base64.b64decode(b64))
-            saved_path = save_b64_image(b64, prefix=f"openai_codex_{tier_id}")
+            raw = base64.b64decode(b64, validate=True)
+            mime = _sniff_image_mime(raw)
+            if gif is not None and mime != "image/gif":
+                return fail("Codex images API did not return the requested GIF output", "unexpected_output_format")
+            if mime == "image/gif":
+                _validate_gif(raw, animated=gif is not None)
+            pixel_size = _png_pixel_size(raw)
+            extension = {"image/gif": "gif", "image/jpeg": "jpg", "image/webp": "webp"}.get(mime, "png")
+            saved_path = save_b64_image(b64, prefix=f"openai_codex_{tier_id}", extension=extension)
         except Exception as exc:
             return fail(f"Could not save image to cache: {exc}", "io_error")
         return success_response(
@@ -311,6 +352,7 @@ class OpenAICodexImageGenProvider(StaticImageGenProvider):
                 "requested_size": size, "pixel_size": pixel_size,
                 "reported_quality": payload.get("quality"), "reported_size": payload.get("size"),
                 "imagegen_request_id": payload.get("imagegen_request_id"),
+                "output_format": extension, "mime_type": mime,
             })
 
 

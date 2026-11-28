@@ -107,6 +107,7 @@ The command exits with status 1 when any entry is not ready, so cron jobs and CI
 | Arcee AI | `arcee` | `ARCEEAI_API_KEY` |
 | GMI Cloud | `gmi` | `GMI_API_KEY` |
 | Nebius Token Factory | `nebius-token-factory` | `NEBIUS_API_KEY` |
+| TokenRhythm | `tokenrhythm` | `TOKENRHYTHM_API_KEY` |
 | Alibaba / DashScope | `alibaba` | `DASHSCOPE_API_KEY` |
 | Alibaba Coding Plan | `alibaba-coding-plan` | `ALIBABA_CODING_PLAN_API_KEY` (falls back to `DASHSCOPE_API_KEY`) |
 | Kimi / Moonshot (China) | `kimi-coding-cn` | `KIMI_CN_API_KEY` |

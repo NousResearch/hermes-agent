@@ -2056,9 +2056,9 @@ def _bridge_config_to_env(_cfg: dict) -> None:
     if (isinstance(_display_cfg, dict) and "busy_steer_ack_enabled" in _display_cfg
             and "HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED" not in os.environ):
         os.environ["HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED"] = str(_display_cfg["busy_steer_ack_enabled"])
-    _tz_cfg = _cfg.get("timezone", "")
-    if _tz_cfg and isinstance(_tz_cfg, str):
-        os.environ["HERMES_TIMEZONE"] = _tz_cfg.strip()
+    # Do not copy config.yaml's timezone into HERMES_TIMEZONE: that turns the startup
+    # value into an environment override and masks later file edits. Explicit env
+    # overrides still take precedence in hermes_time.
     _security_cfg = _cfg.get("security", {})
     if isinstance(_security_cfg, dict) and _security_cfg.get("redact_secrets") is not None:
         os.environ["HERMES_REDACT_SECRETS"] = str(_security_cfg["redact_secrets"]).lower()

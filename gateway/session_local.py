@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
@@ -439,21 +439,52 @@ def _lazy_model(authority, policy):
         return GUEST_MODEL if free_tier_route() else model
 
 
-def _session_provider(authority, agent, policy):
-    """The provider paired with ``session.info``'s reported model.
+def _resolved_provider_identity(provider, requested_provider, base_url, model, *, config=None):
+    name = str(provider or '').strip()
+    if not name or name.lower() == 'auto':
+        return ''
+    if name.lower() != 'custom':
+        return name
+    from hermes_cli.runtime_provider_custom import session_provider_identity
+    return session_provider_identity(name, requested_provider, base_url, model, config=config)
 
-    A built agent is authoritative because its runtime route may differ from the
-    frozen policy. Before first build, resolve the policy in the owning profile
-    scope so a following session reports the provider its next turn will use.
-    """
+
+def _session_provider(authority, agent, policy):
+    from gateway.session_authorities import owner_scope
+    scope = owner_scope(authority) if authority is not None and hasattr(authority, 'profile_id') else nullcontext()
     if agent is not None:
-        return str(getattr(agent, 'provider', '') or '')
+        from agent.voice_turn_route import session_runtime_view
+        view = session_runtime_view(agent)
+        config = policy.config(authority, secrets=False) if policy is not None and authority is not None else None
+        with scope:
+            return _resolved_provider_identity(
+                getattr(view, 'provider', None), getattr(view, 'requested_provider', None),
+                getattr(view, 'base_url', None), getattr(view, 'model', None), config=config,
+            )
     if policy is None:
         return ''
-    effective, _ = policy.effective(authority, secrets=False)
+    effective, next_model = policy.effective(authority, secrets=False)
     route = effective.get('model') or {}
-    provider = str(route.get('provider') or '')
-    return '' if provider.lower() == 'auto' else provider
+    with scope:
+        return _resolved_provider_identity(
+            route.get('provider'), None, route.get('base_url'), next_model, config=effective,
+        )
+
+
+def publish_local_session_info(authority, ref, payload=None, *, live=None):
+    # Stamp idle session.info at publish time rather than inside local_session_info so
+    # CanonicalSnapshotInfo (extra='forbid') stays valid on session.create/resume.
+    target = authority.sessions[ref.session_id] if live is None else live
+    info = dict(local_session_info(authority, ref) if payload is None else payload)
+    stream = target.event_stream
+    lock = getattr(stream, 'lock', None)
+    with lock if lock is not None else nullcontext():
+        handle_fn = getattr(authority, '_handle', None)
+        if callable(handle_fn):
+            handle = handle_fn(ref)
+            info.setdefault('execution_generation', handle.execution_generation)
+            info.setdefault('revision', handle.revision)
+        return stream.publish(ref.session_id, info, event_type='session.info')
 
 
 def _resolve_session_effort_fields(

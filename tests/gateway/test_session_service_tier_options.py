@@ -87,10 +87,10 @@ async def test_service_tier_config_publishes_route_gated_fast_on_session_info(tm
             if e.get('type') == 'session.info' and 'service_tier' in e.get('payload', {})
         ]
         assert ok_events[-2:] == [
-            {'service_tier': 'ultrafast', 'fast': True},
-            {'service_tier': '', 'fast': False},
+            {'service_tier': 'ultrafast', 'fast': True, 'execution_generation': 0, 'revision': 0},
+            {'service_tier': '', 'fast': False, 'execution_generation': 0, 'revision': 0},
         ]
-        assert no_events[-1] == {'service_tier': 'ultrafast', 'fast': False}
+        assert no_events[-1] == {'service_tier': 'ultrafast', 'fast': False, 'execution_generation': 0, 'revision': 0}
     finally:
         await owner.close()
         store.close_all_db_handles()
@@ -155,10 +155,10 @@ async def test_service_tier_config_publishes_route_gated_fast_for_cold_messaging
             if e.get('type') == 'session.info' and 'service_tier' in e.get('payload', {})
         ]
         assert ok_events[-2:] == [
-            {'service_tier': 'ultrafast', 'fast': True},
-            {'service_tier': '', 'fast': False},
+            {'service_tier': 'ultrafast', 'fast': True, 'execution_generation': 0, 'revision': 0},
+            {'service_tier': '', 'fast': False, 'execution_generation': 0, 'revision': 0},
         ]
-        assert no_events[-1] == {'service_tier': 'ultrafast', 'fast': False}
+        assert no_events[-1] == {'service_tier': 'ultrafast', 'fast': False, 'execution_generation': 0, 'revision': 0}
     finally:
         await viewer.close()
         runner.session_store.close_all_db_handles()

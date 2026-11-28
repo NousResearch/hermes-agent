@@ -4,6 +4,7 @@ Jittered delays (vs. fixed exponential) prevent thundering-herd retry spikes
 when many sessions hit the same rate-limited provider concurrently.
 """
 
+import json
 import random
 import re
 import threading
@@ -23,6 +24,9 @@ _jitter_lock = threading.Lock()
 # the cap stays interactive-friendly (a TUI message should fail visibly in minutes).
 # The short count is shared by ``adaptive_rate_limit_backoff`` and
 # ``zai_coding_overload_retry_ceiling`` so the two cannot silently desync.
+# The same schedule rides out code 1302 ("Rate limit reached for requests"), the plan's short
+# request-frequency window: it sends no ``Retry-After``, so the default 2-4s retries keep landing
+# inside it and a long-running agent dies in under ten seconds. Any Coding Plan model can get it.
 _ZAI_CODING_OVERLOAD_LONG_BACKOFF = (30.0, 60.0, 90.0, 120.0)
 _ZAI_CODING_OVERLOAD_SHORT_ATTEMPTS = 3
 
@@ -140,16 +144,41 @@ def _error_text(error: Any) -> str:
     return " ".join(str(part) for part in parts if part is not None).lower()
 
 
-def is_zai_coding_overload_error(*, base_url: str | None, model: str | None, error: Any) -> bool:
-    """True only for the narrow Z.AI Coding Plan overload shape (429 + code
-    1305 / "temporarily overloaded"), so ordinary quota 429s still fail fast."""
+def _zai_error_code(error: Any) -> str | None:
+    """Z.AI's structured ``error.code`` when the exception kept the response body, else None."""
+    body = getattr(error, "body", None)
+    if isinstance(body, str):
+        try:
+            body = json.loads(body)
+        except ValueError:
+            body = None
+    if isinstance(body, dict):
+        nested = body.get("error", body)
+        code = nested.get("code") if isinstance(nested, dict) else None
+        return str(code) if code is not None else None
+    return None
+
+
+def is_zai_coding_throttle_error(*, base_url: str | None, model: str | None, error: Any) -> bool:
+    """True for the Z.AI Coding Plan 429s that a longer wait rides out: code 1302 ("Rate limit
+    reached for requests" — the plan's short request-frequency window, which sends no
+    ``Retry-After``) on any model, and the GLM-5.2 overload shape (code 1305 / "temporarily
+    overloaded"). Quota 429s (1308 / 1310) and fair-use (1313) still fail fast: waiting does
+    not refill a quota."""
+    if getattr(error, "status_code", None) != 429:
+        return False
+    if "api.z.ai/api/coding/paas/v4" not in (base_url or "").lower():
+        return False
+    code = _zai_error_code(error)
+    if code == "1302" or (code is None and "rate limit reached for requests" in _error_text(error)):
+        return True
     text = _error_text(error)
-    return (
-        getattr(error, "status_code", None) == 429
-        and "api.z.ai/api/coding/paas/v4" in (base_url or "").lower()
-        and "glm-5.2" in (model or "").lower()
-        and ("1305" in text or "temporarily overloaded" in text)
-    )
+    return "glm-5.2" in (model or "").lower() and ("1305" in text or "temporarily overloaded" in text)
+
+
+def is_zai_coding_overload_error(*, base_url: str | None, model: str | None, error: Any) -> bool:
+    """Backward-compatible alias of :func:`is_zai_coding_throttle_error`."""
+    return is_zai_coding_throttle_error(base_url=base_url, model=model, error=error)
 
 
 def adaptive_rate_limit_backoff(

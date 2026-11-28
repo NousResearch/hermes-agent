@@ -2,6 +2,8 @@
 
 import threading
 
+import pytest
+
 from agent import retry_utils
 from types import SimpleNamespace
 
@@ -165,3 +167,52 @@ class TestParseRetryAfterSeconds:
                 raise RuntimeError("boom")
 
         assert parse_retry_after_seconds(Explosive()) is None
+
+
+def _zai_coded_error(code: str, message: str):
+    class _Err(Exception):
+        status_code = 429
+        body = {"error": {"code": code, "message": message}}
+
+    return _Err(f"Error code: 429 - {{'error': {{'code': '{code}', 'message': '{message}'}}}}")
+
+
+_ZAI_CODING_URL = "https://api.z.ai/api/coding/paas/v4"
+
+
+@pytest.mark.parametrize("model", ["glm-5.3-flash", "glm-5.3-flashx", "glm-5.4"])
+def test_zai_1302_request_frequency_limit_gets_long_backoff(model):
+    from agent.retry_utils import adaptive_rate_limit_backoff, is_zai_coding_overload_error
+    err = _zai_coded_error("1302", "Rate limit reached for requests")
+    assert is_zai_coding_overload_error(base_url=_ZAI_CODING_URL, model=model, error=err)
+    wait, policy = adaptive_rate_limit_backoff(1, base_url=_ZAI_CODING_URL, model=model, error=err, default_wait=2.6)
+    assert (wait, policy) == (2.6, "zai_coding_overload_short")
+    wait, policy = adaptive_rate_limit_backoff(4, base_url=_ZAI_CODING_URL, model=model, error=err, default_wait=2.6)
+    assert policy == "zai_coding_overload_long"
+    assert 30.0 <= wait <= 36.0
+
+
+@pytest.mark.parametrize("code", ["1308", "1310", "1313"])
+def test_zai_quota_and_fair_use_429s_still_fail_fast(code):
+    from agent.retry_utils import adaptive_rate_limit_backoff, is_zai_coding_overload_error
+    err = _zai_coded_error(code, "Rate limit reached")
+    assert not is_zai_coding_overload_error(base_url=_ZAI_CODING_URL, model="glm-5.3-flash", error=err)
+    assert adaptive_rate_limit_backoff(4, base_url=_ZAI_CODING_URL, model="glm-5.3-flash", error=err, default_wait=4.4) == (4.4, None)
+
+
+def test_zai_1302_outside_coding_endpoint_or_without_429_is_not_matched():
+    from agent.retry_utils import is_zai_coding_overload_error
+    err = _zai_coded_error("1302", "Rate limit reached for requests")
+    assert not is_zai_coding_overload_error(base_url="https://api.openai.com/v1", model="glm-5.3-flash", error=err)
+    err.status_code = 503
+    assert not is_zai_coding_overload_error(base_url=_ZAI_CODING_URL, model="glm-5.3-flash", error=err)
+
+
+def test_zai_1302_without_parsed_body_matches_on_message():
+    from agent.retry_utils import is_zai_coding_overload_error
+
+    class _Err(Exception):
+        status_code = 429
+
+    err = _Err("Error code: 429 - {'error': {'code': '1302', 'message': 'Rate limit reached for requests'}}")
+    assert is_zai_coding_overload_error(base_url=_ZAI_CODING_URL, model="glm-5.3-flash", error=err)

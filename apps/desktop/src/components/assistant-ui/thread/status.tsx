@@ -276,7 +276,6 @@ export const ResponseLoadingIndicator: FC = () => {
 // The parent is idle while its delegated children work. Name that wait rather
 // than echoing the child's CLI thinking spinner as if this thread were running.
 export const BackgroundResumeNotice: FC = () => {
-  const { t } = useI18n()
   const view = useSessionView()
   const sessionId = useStore(view.$runtimeId)
   const busy = useStore(view.$busy)
@@ -286,12 +285,23 @@ export const BackgroundResumeNotice: FC = () => {
     return null
   }
 
-  const label = t.assistant.thread.resumeWhenBackgroundDone(resume.count)
+  return <BackgroundResumeRow count={resume.count} since={resume.since} />
+}
+
+// Split out so the elapsed timer only ticks while there is a wait to time.
+// The motion is its own: a turning `sync` glyph, not the parent's dithered
+// pulse or the shimmer a thinking turn gets — this thread is waiting on work
+// elsewhere, not working, but the wait is live and should look it.
+const BackgroundResumeRow: FC<{ count: number; since: number }> = ({ count, since }) => {
+  const { t } = useI18n()
+  const elapsed = useElapsedSeconds(true, undefined, since)
+  const label = t.assistant.thread.resumeWhenBackgroundDone(count)
 
   return (
     <StatusRow className="pl-(--message-text-indent)" data-slot="aui_background-resume" label={label}>
-      <Codicon name="sync" size="0.875rem" />
+      <Codicon name="sync" size="0.875rem" spinning />
       <span className={cn(SCAFFOLD_LABEL_CLASS, 'min-w-0 truncate')}>{label}</span>
+      <ActivityTimerText aria-hidden={true} seconds={elapsed} />
     </StatusRow>
   )
 }

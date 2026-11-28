@@ -28,26 +28,78 @@ logger = logging.getLogger(__name__)
 
 _MODEL_CONFIG_KEY = "_anthropic_rejected_thinking"
 _THINKING_TYPES = frozenset({"thinking", "redacted_thinking"})
-_CARRIERS = ("reasoning_details", "anthropic_content_blocks", "_anthropic_content_blocks")
+# ``bedrock_content_blocks`` is the Converse ordered sidecar (``{"reasoningContent": {...}}`` entries).
+# Converse replays it ahead of ``reasoning_details``, so a repair that skips it resends the rejected block.
+_CARRIERS = ("reasoning_details", "anthropic_content_blocks", "_anthropic_content_blocks", "bedrock_content_blocks")
 
 
-def _fingerprint(block: Any) -> str | None:
-    if not isinstance(block, dict) or block.get("type") not in _THINKING_TYPES:
-        return None
-    kind = block["type"]
-    value = block.get("signature" if kind == "thinking" else "data")
+def _hash(kind: str, value: Any) -> str | None:
     if value in (None, "", b""):
         return None
     payload = value if isinstance(value, str) else repr(value)
     return hashlib.sha256(f"{kind}\0{payload}".encode("utf-8", "replace")).hexdigest()
 
 
+def _fingerprint(block: Any) -> str | None:
+    if not isinstance(block, dict) or block.get("type") not in _THINKING_TYPES:
+        return None
+    kind = block["type"]
+    return _hash(kind, block.get("signature" if kind == "thinking" else "data"))
+
+
+def _is_replay_reasoning(block: Any) -> bool:
+    """An Anthropic-shaped thinking block or a Converse ``reasoningContent`` sidecar entry."""
+    return isinstance(block, dict) and (
+        block.get("type") in _THINKING_TYPES or isinstance(block.get("reasoningContent"), dict)
+    )
+
+
+def _fingerprints(block: Any) -> set[str]:
+    """Signature fingerprints of one replay block. A Converse sidecar entry carries the same opaque
+    values as its ``reasoning_details`` twin (flat ``signature`` / ``redactedContentBase64``), so both
+    carriers hash alike and one rejection suppresses the turn on either wire."""
+    if not isinstance(block, dict):
+        return set()
+    if block.get("type") in _THINKING_TYPES:
+        fingerprint = _fingerprint(block)
+        return {fingerprint} if fingerprint else set()
+    reasoning = block.get("reasoningContent")
+    if not isinstance(reasoning, dict):
+        return set()
+    if isinstance(reasoning.get("reasoningText"), dict):  # nested sync-response shape
+        reasoning = {**reasoning, **reasoning["reasoningText"]}
+    found = (
+        _hash("thinking", reasoning.get("signature")),
+        _hash("redacted_thinking", reasoning.get("redactedContentBase64")),
+    )
+    return {fingerprint for fingerprint in found if fingerprint is not None}
+
+
+def _converse_signs_thinking(model: Any) -> bool:
+    """Claude on Bedrock Converse replays its signed reasoning verbatim (the adapter's ``signed`` policy)
+    and the same signature binding applies; other Converse models keep their own replay contract."""
+    if not isinstance(model, str) or not model:
+        return False
+    try:
+        from agent.bedrock_adapter import _converse_replay_policy
+
+        return _converse_replay_policy(model) == "signed"
+    except Exception:
+        logger.debug("Converse replay policy lookup failed for %s", model, exc_info=True)
+        return "claude" in model.lower()
+
+
 def tracks_rejected_thinking(agent: Any) -> bool:
-    """Signed-replay routes only (Anthropic and its cloud platforms, MiniMax): Kimi, DeepSeek and
-    third-party routes keep their own replay contract and the one-request ``reasoning_details`` repair."""
+    """Signed-replay routes only (Anthropic and its cloud platforms, MiniMax, Claude on Bedrock
+    Converse): Kimi, DeepSeek and third-party routes keep their own replay contract and the
+    one-request ``reasoning_details`` repair."""
+    api_mode = getattr(agent, "api_mode", None)
+    if api_mode == "bedrock_converse":
+        return _converse_signs_thinking(getattr(agent, "model", None))
+
     from agent.anthropic_thinking_policy import SIGNED_REPLAY_ROUTES, anthropic_thinking_route
 
-    return getattr(agent, "api_mode", None) == "anthropic_messages" and anthropic_thinking_route(
+    return api_mode == "anthropic_messages" and anthropic_thinking_route(
         getattr(agent, "base_url", None), getattr(agent, "model", None)
     ) in SIGNED_REPLAY_ROUTES
 
@@ -138,12 +190,7 @@ def strip_rejected_thinking(message: Any, rejected: set[str] | None) -> int:
             continue
         kept = []
         for block in blocks:
-            fingerprint = _fingerprint(block)
-            if (
-                isinstance(block, dict)
-                and block.get("type") in _THINKING_TYPES
-                and (rejected is None or (fingerprint is not None and fingerprint in rejected))
-            ):
+            if _is_replay_reasoning(block) and (rejected is None or bool(_fingerprints(block) & rejected)):
                 removed += 1
             else:
                 kept.append(block)
@@ -187,7 +234,7 @@ def remember_rejected_thinking(agent: Any, api_messages: Any) -> int:
         if isinstance(message, dict)
         for key in _CARRIERS
         for block in (message.get(key) if isinstance(message.get(key), list) else ())
-        if (fingerprint := _fingerprint(block)) is not None
+        for fingerprint in _fingerprints(block)
     }
     # The provider-visible history changed while the canonical content fingerprint did
     # not, so a previous prompt-token anchor is no longer valid for this request shape.

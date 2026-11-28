@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import platform
+import re
 import shutil
 import signal
 import subprocess
@@ -22,6 +23,7 @@ import tempfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field, replace
@@ -430,6 +432,138 @@ def _detect_docker_bridge_ip() -> Optional[str]:
     return str(addr)
 
 
+# iron-proxy's allowlist globs the PORT-STRIPPED host of each request (``hostmatch.StripPort`` +
+# ``MatchGlob``, v0.39.0), so a URL, ``host:port`` or ``host/path`` entry can never match: every
+# request from the sandbox 403s and nothing names the misconfigured entry. Labels may carry
+# ``*``/``?`` (``path.Match`` semantics: ``api-*.example.com``); a bare ``*`` allows every host.
+_ALLOWED_HOST_GLOB_RE = re.compile(r"^\*$|^(?:[a-z0-9*?_-]+\.)*[a-z0-9*?_-]+\.?$")
+_HOST_PORT_RE = re.compile(r"^(.*[^:]):\d+$")
+
+
+def _bare_host_hint(candidate: str) -> str:
+    host = candidate.strip().strip("[]").lower()
+    if host and (_ALLOWED_HOST_GLOB_RE.match(host) or _is_ip_literal(host)):
+        return f'use the bare host name "{host}"'
+    return "use a host name such as api.example.com or *.example.com"
+
+
+def _is_ip_literal(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return True
+
+
+# IP and CIDR entries go to the allowlist transform's native ``cidrs`` list: v0.39.0 matches them
+# when the port-stripped request host is a literal IP inside the range, so they allow ANY port.
+# Domains never match a CIDR (a name is not resolved for the allowlist check).
+_IPNetwork = ipaddress.IPv4Network | ipaddress.IPv6Network
+
+
+def _allowed_network(host: str) -> Optional[_IPNetwork]:
+    try:
+        return ipaddress.ip_network(host.strip("[]"), strict=False)
+    except ValueError:
+        return None
+
+
+# ``upstream_deny_cidrs`` is enforced at DIAL time, after the allowlist, so an allowed private IP
+# would still be refused. Allowed nets are carved out of the DEFAULT deny list, except these ranges:
+# they guard the proxy host's own loopback and the cloud metadata service, so an allow entry
+# overlapping them is rejected instead of silently punching through the SSRF promise.
+_PROTECTED_DENY_CIDRS: tuple[str, ...] = ("127.0.0.0/8", "::1/128", "169.254.0.0/16", "fe80::/10", "::ffff:0:0/96")
+
+
+def _deny_overlap(net: _IPNetwork, deny_cidrs) -> Optional[str]:
+    for raw in deny_cidrs:
+        deny = ipaddress.ip_network(raw, strict=False)
+        if deny.version == net.version and deny.overlaps(net):
+            return str(deny)
+    return None
+
+
+def _cidr_entry_problem(net: _IPNetwork, upstream_deny_cidrs) -> Optional[str]:
+    if upstream_deny_cidrs is None:
+        if (hit := _deny_overlap(net, _PROTECTED_DENY_CIDRS)):
+            return (f"it overlaps {hit} (loopback / cloud metadata), which stays denied; to reach it anyway set "
+                    f"proxy.upstream_deny_cidrs to an explicit list without that range")
+        return None
+    if (hit := _deny_overlap(net, upstream_deny_cidrs)):
+        return f"proxy.upstream_deny_cidrs denies {hit}, which wins at connect time; remove that range from it"
+    return None
+
+
+def allowed_host_problem(raw) -> Optional[str]:
+    """Why ``raw`` cannot be an iron-proxy allowlist entry, with the fix; None when it can."""
+    if not isinstance(raw, str):
+        return "entries must be strings"
+    host = raw.strip().lower()
+    if not host:
+        return "the entry is empty; remove it"
+    if _ALLOWED_HOST_GLOB_RE.match(host) or _allowed_network(host) is not None:
+        return None
+    if "://" in host:
+        hostname = ""
+        with suppress(ValueError):
+            hostname = urllib.parse.urlsplit(host).hostname or ""
+        return f"allowed hosts are host names, not URLs; {_bare_host_hint(hostname)}"
+    if "/" in host and _is_ip_literal(host.split("/", 1)[0].strip("[]")):
+        return "the CIDR prefix length is invalid; use e.g. 10.0.0.0/24 or 2001:db8::/32"
+    if "/" in host:
+        return f"allowed hosts cannot contain a path; {_bare_host_hint(host.split('/', 1)[0].rsplit(':', 1)[0])}"
+    if (m := _HOST_PORT_RE.match(host)):
+        return f"the allowlist matches host names without a port; {_bare_host_hint(m.group(1))}"
+    return _bare_host_hint("")
+
+
+def _normalized_entry(host: str) -> str:
+    host = host.strip().lower()
+    net = _allowed_network(host)
+    if net is None:
+        return host
+    # A single address keeps its bare form; a range is masked the way iron-proxy's ParseCIDR does.
+    return str(net.network_address) if net.num_addresses == 1 and "/" not in host else str(net)
+
+
+def normalize_allowed_hosts(entries, *, warn, source: str = "proxy.extra_allowed_hosts", upstream_deny_cidrs=None) -> list[str]:
+    """Lower-cased, de-duplicated allowlist entries (host globs, IP literals, CIDRs); each invalid one is
+    dropped with ONE ``warn`` naming ``source``, the entry and the fix. Dropping only narrows egress (the
+    entry could never match, or the deny list would refuse it anyway), so setup proceeds instead of
+    shipping a silently dead allowlist. ``upstream_deny_cidrs`` is the configured override (None =
+    default list), used to reject IP entries the deny list would still refuse at connect time."""
+    out: list[str] = []
+    for entry in entries or []:
+        problem = allowed_host_problem(entry)
+        if problem is None and (net := _allowed_network(entry.strip().lower())) is not None:
+            problem = _cidr_entry_problem(net, upstream_deny_cidrs)
+        if problem:
+            warn(f"skipping allowed host {entry!r} in {source}: {problem}.")
+            continue
+        host = _normalized_entry(entry)
+        if host not in out:
+            out.append(host)
+    return out
+
+
+def _carve_allowed_nets(deny_cidrs, allowed_nets) -> list[str]:
+    """``deny_cidrs`` minus every allowed net (deny ranges an allowed net fully covers are dropped)."""
+    out: list[str] = []
+    for raw in deny_cidrs:
+        if not any(_deny_overlap(allow, (raw,)) for allow in allowed_nets):
+            out.append(raw)
+            continue
+        pending = [ipaddress.ip_network(raw, strict=False)]
+        for allow in allowed_nets:
+            pending = [
+                piece for deny in pending
+                for piece in ((deny,) if deny.version != allow.version or not deny.overlaps(allow)
+                              else () if allow.supernet_of(deny) else deny.address_exclude(allow))
+            ]
+        out.extend(str(net) for net in sorted(pending))
+    return out
+
+
 def build_proxy_config(
     *, mappings: list[TokenMapping], ca_cert: Path, ca_key: Path, tunnel_port: int = _DEFAULT_TUNNEL_PORT, audit_log: Optional[Path] = None,
     allowed_hosts: Optional[list[str]] = None, upstream_deny_cidrs: Optional[list[str]] = None, http_listen: Optional[list[str]] = None,
@@ -437,11 +571,17 @@ def build_proxy_config(
     """iron-proxy YAML config dict (v0.39.0 schema).  Real secrets come from iron-proxy's OWN env (``source: {type: env}``);
     the sandbox never sees them.  ``upstream_deny_cidrs=None`` = default SSRF deny list, ``[]`` opts out.
     ``audit_log`` is forward-compat only (v0.39 rejects ``audit_path``)."""
-    hosts: list[str] = list(allowed_hosts or _DEFAULT_ALLOWED_HOSTS)
+    entries: list[str] = list(allowed_hosts or _DEFAULT_ALLOWED_HOSTS)
     for h in (h for m in mappings for h in m.upstream_hosts):
-        if h not in hosts:
-            hosts.append(h)
-    deny_cidrs = list(_DEFAULT_UPSTREAM_DENY_CIDRS if upstream_deny_cidrs is None else upstream_deny_cidrs)
+        if h not in entries:
+            entries.append(h)
+    allowed_nets = [net for net in map(_allowed_network, entries) if net is not None]
+    hosts = [h for h in entries if _allowed_network(h) is None]
+    allow_rule = {"domains": hosts, **({"cidrs": [str(n) for n in allowed_nets]} if allowed_nets else {})}
+    # Allowed nets are carved out of the DEFAULT deny list only (normalize_allowed_hosts already
+    # refused entries overlapping the protected ranges); an explicit list is the operator's call.
+    deny_cidrs = (_carve_allowed_nets(_DEFAULT_UPSTREAM_DENY_CIDRS, allowed_nets) if upstream_deny_cidrs is None
+                  else list(upstream_deny_cidrs))
     # Query scan covers ``?key=<token>`` SDKs; body inspection deliberately off.  ``require`` fails
     # closed: an allowlisted-host request WITHOUT the proxy token is rejected, so a real key sent
     # directly can't cross the boundary.
@@ -473,7 +613,7 @@ def build_proxy_config(
         # Loopback only: sandboxes must never reach the management surface.
         "management": {"listen": f"127.0.0.1:{tunnel_port + _MGMT_PORT_OFFSET}", "api_key_env": _MGMT_API_KEY_ENV},
         "tls": {"ca_cert": str(ca_cert), "ca_key": str(ca_key), "cert_cache_size": 1000, "leaf_cert_expiry_hours": 168},
-        "transforms": [{"name": "allowlist", "config": {"domains": hosts}}, {"name": "secrets", "config": {"secrets": secrets_rules}}],
+        "transforms": [{"name": "allowlist", "config": allow_rule}, {"name": "secrets", "config": {"secrets": secrets_rules}}],
         "log": {"level": "info"},
     }
 
@@ -958,9 +1098,9 @@ def _reset_for_tests() -> None:
 
 
 __all__ = [
-    "ProxyStatus", "TokenMapping", "allowlisted_env", "build_proxy_config", "discover_provider_mappings",
+    "ProxyStatus", "TokenMapping", "allowed_host_problem", "allowlisted_env", "build_proxy_config", "discover_provider_mappings",
     "discover_uncovered_providers", "ensure_audit_log", "ensure_ca_cert", "ensure_management_token",
     "find_iron_proxy", "get_status", "install_iron_proxy", "iron_proxy_version", "load_mappings",
-    "merge_mappings", "mint_proxy_token", "reload_proxy", "start_proxy", "stop_proxy",
+    "merge_mappings", "mint_proxy_token", "normalize_allowed_hosts", "reload_proxy", "start_proxy", "stop_proxy",
     "write_mappings", "write_proxy_config",
 ]

@@ -561,13 +561,21 @@ def _mint_shell_launcher(name: str, out_dir: Path, python_exe: Path, script: str
     return _write_shell(out_dir / name, [str(python_exe), "-I", "-c", script])
 
 
-def _owns_launcher(target: Path, root: Path) -> bool:
-    """Recognize our old source/venv launchers, never a mere mention in a comment."""
+def _owns_launcher(target: Path, root: Path, *, strict_io: bool = False) -> bool:
+    """Recognize our old source/venv launchers, never a mere mention in a comment.
+
+    Destructive GC opts into I/O errors instead of silently treating a live
+    launcher as absent; the default preserves legacy publication behavior.
+    """
     if target.is_symlink():
         return target.resolve().is_relative_to(root)
     try:
         tokens = shlex.split(target.read_text(encoding="utf-8-sig"), comments=True)
-    except (OSError, UnicodeError, ValueError):
+    except OSError:
+        if strict_io:
+            raise
+        return False
+    except (UnicodeError, ValueError):
         return False
     paths = {str(root / p) for p in (
         "hermes", "run_agent.py", "venv/bin/python", "venv/bin/python3",
@@ -583,7 +591,7 @@ def _owns_launcher(target: Path, root: Path) -> bool:
     if target.name == "hermes-acp":
         sibling = target.with_name("hermes")
         return (tokens == ["exec", str(sibling), "acp", "$@"]
-                and _owns_launcher(sibling, root))
+                and _owns_launcher(sibling, root, strict_io=strict_io))
     return False
 
 
@@ -678,13 +686,16 @@ def _first_token(line: str) -> Path | None:
     return Path(text.split(None, 1)[0])
 
 
-def _launcher_python(target: Path) -> Path | None:
+def _launcher_python(target: Path, *, strict_io: bool = False) -> Path | None:
     """Embedded interpreter of an existing launcher, else None.
 
-    Fail-open: an unrecognized layout republishes exactly as before."""
+    Fail-open by default for republishing; destructive GC requests strict I/O.
+    """
     try:
         data = Path(target).read_bytes()
     except OSError:
+        if strict_io:
+            raise
         return None
     line: str | None = None
     suffix = Path(target).suffix.lower()
@@ -697,7 +708,11 @@ def _launcher_python(target: Path) -> Path | None:
         try:
             with ZipFile(target) as archive:
                 prefix = data[:archive.infolist()[0].header_offset]
-        except (BadZipFile, IndexError, OSError):
+        except OSError:
+            if strict_io:
+                raise
+            return None
+        except (BadZipFile, IndexError):
             return None
         start = prefix.find(b"#!", prefix.rfind(b"\0") + 1)
         shebang = prefix[start + 2:].rstrip(b"\r\n") if start != -1 else b""
@@ -712,8 +727,8 @@ def _launcher_python(target: Path) -> Path | None:
             text = data.decode("utf-8-sig")
         except UnicodeDecodeError:
             return None
-        lines = text.splitlines()
         if suffix == ".cmd":
+            lines = text.splitlines()
             # "@echo off", then '"<python>" -I -c "<code>" %*'. The file's
             # own \r\n pair gains a translated extra \r on Windows writes,
             # so the command may sit past a blank line — never assume its index.
@@ -721,14 +736,17 @@ def _launcher_python(target: Path) -> Path | None:
             if line is None:
                 return None
         else:
-            # POSIX shell wrapper: "#!/bin/sh", then "exec <python> -I -c ...".
-            line = next((entry for entry in lines if entry.startswith("exec ")), None)
-            if line is None:
+            import re
+
+            # A quoted POSIX filename can contain any line separator. Keep the
+            # complete command so splitting lines cannot truncate its first token.
+            command = re.search(r"^exec (.*)", text, re.MULTILINE | re.DOTALL)
+            if command is None:
                 return None
             # The writer quotes with shlex.join, which splices an apostrophe in as
             # '"'"', so read the first token the way sh does. Only the first: the
-            # rest of the line opens a multi-line -c argument.
-            lexer = shlex.shlex(line.removeprefix("exec "), posix=True)
+            # rest of the command opens a multi-line -c argument.
+            lexer = shlex.shlex(command[1], posix=True)
             lexer.whitespace_split = True
             try:
                 token = lexer.get_token()
@@ -737,11 +755,15 @@ def _launcher_python(target: Path) -> Path | None:
             return Path(token) if token else None
     try:
         return _first_token(line)
-    except (ValueError, OSError):
+    except OSError:
+        if strict_io:
+            raise
+        return None
+    except ValueError:
         return None
 
 
-def _launcher_checkout(target: Path) -> Path | None:
+def _launcher_checkout(target: Path, *, strict_io: bool = False) -> Path | None:
     """Checkout an existing Windows launcher starts, else None.
 
     Reads the script ``_launcher_script`` wrote: the ``__main__.py`` of the
@@ -766,7 +788,11 @@ def _launcher_checkout(target: Path) -> Path | None:
         inserted = re.search(r"""^sys\.path\.insert\(0, ('(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")\)\r?$""",
                              script, re.MULTILINE)
         return Path(ast.literal_eval(inserted[1])) if inserted else None
-    except (OSError, BadZipFile, KeyError, ValueError, SyntaxError):
+    except OSError:
+        if strict_io:
+            raise
+        return None
+    except (BadZipFile, KeyError, ValueError, SyntaxError):
         # binascii.Error and UnicodeDecodeError are ValueErrors.
         return None
 

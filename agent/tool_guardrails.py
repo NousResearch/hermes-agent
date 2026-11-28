@@ -42,6 +42,23 @@ _STALL_GUARD_CYCLE_HISTORY = 64
 IDENTICAL_RESULT_STUB_MIN_CHARS = 512
 _RESULT_STUB_ARGS_PREVIEW_CHARS = 120
 
+# Session-level dedupe (cross-turn, verified only): an idempotent read-only call repeated later in the
+# same session with a BYTE-IDENTICAL result is not re-delivered in full. Two verified cases:
+#   - the earlier identical result is still live in the conversation (its tool_call_id is in the
+#     turn-start snapshot the runtime passes) -> a short reference stub; the information is already there;
+#   - it was compacted out -> the fresh full result is persisted to the standard <persisted-output>
+#     archive (preview + path, tools/tool_result_storage.py) so the payload leaves the context but
+#     stays recoverable by paging — no starvation, no tool re-invocation.
+# The result hash gate means a same-args repeat whose content legitimately changed (fresh web search,
+# edited file) passes through whole: only PROVEN-redundant payloads are rewritten.
+# Everything below is opt-in per turn: the runtime must call set_live_tool_calls() with the live
+# tool_call_id snapshot; direct controller users (tests) see identical behavior to before.
+SESSION_DEDUPE_MAX_ENTRIES = 512
+# A re-materialized duplicate below this size passes through whole; persisting it saves too little
+# to justify a disk round-trip + preview overhead.
+SESSION_DEDUPE_REMAT_PERSIST_CHARS = 8_000
+
+
 # Tools whose "failure" is normal work output (red test run, empty grep, page timeout).
 # same_tool_failure (DIFFERENT commands) never halts these; only an exact-args replay with
 # no intervening change, or an identical-result streak, can.
@@ -57,7 +74,9 @@ PROGRESS_RESET_TOOL_NAMES = frozenset({
     "cronjob_manage", "todo", "todo_list", "memory", "skill_manage",
 })
 
-_BOOL_FIELDS = ("warnings_enabled", "hard_stop_enabled", "non_interactive_hard_stop_enabled")
+_BOOL_FIELDS = (
+    "warnings_enabled", "hard_stop_enabled", "non_interactive_hard_stop_enabled", "session_dedupe_enabled",
+)
 # Threshold field -> (nested section, nested key). The flat legacy key is the field name itself.
 _THRESHOLD_SOURCES: dict[str, tuple[str, str]] = {
     "exact_failure_warn_after": ("warn_after", "exact_failure"),
@@ -113,6 +132,9 @@ class ToolCallGuardrailConfig:
     warnings_enabled: bool = True
     hard_stop_enabled: bool = False
     non_interactive_hard_stop_enabled: bool = True
+    # Session-level duplicate delivery for idempotent read-only tools (see SESSION_DEDUPE_* above).
+    # Only VERIFIED-duplicate payloads are rewritten: result hash equal + prior occurrence known.
+    session_dedupe_enabled: bool = True
     exact_failure_warn_after: int = 2
     exact_failure_block_after: int = 5
     same_tool_failure_warn_after: int = 3
@@ -146,11 +168,14 @@ class ToolCallGuardrailConfig:
 @dataclass(frozen=True)
 class IdenticalCallObservation:
     """``notice`` is appended after the result, ``stub`` replaces a byte-identical duplicate result;
-    ``kind`` names the detector behind the notice (``identical_call_streak`` / ``identical_cycle``)."""
+    ``kind`` names the detector behind the notice (``identical_call_streak`` / ``identical_cycle``).
+    ``session_rematerialize``, when set, is the prior call whose byte-identical payload should be
+    re-delivered as a persisted-output archive instead of the full string (cross-turn case)."""
 
     notice: str | None = None
     stub: str | None = None
     kind: str | None = None
+    session_rematerialize: str | None = None
 
 
 @dataclass(frozen=True)
@@ -204,6 +229,25 @@ def canonical_tool_args(args: Mapping[str, Any]) -> str:
     if not isinstance(args, Mapping):
         raise TypeError(f"tool args must be a mapping, got {type(args).__name__}")
     return _canonical_json(args)
+
+
+def collect_live_tool_call_ids(messages: Any) -> frozenset[str]:
+    """tool_call_ids of every tool result message currently in the conversation.
+
+    The runtime snapshots this at batch start and hands it to set_live_tool_calls(); a prior
+    identical result is only stubbed as "still in context" when its id is in the snapshot —
+    compaction may have evicted it since it was written, and only the live message list knows.
+    """
+    live: set[str] = set()
+    if not isinstance(messages, (list, tuple)):
+        return frozenset(live)
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        call_id = msg.get("tool_call_id")
+        if call_id:
+            live.add(call_id)
+    return frozenset(live)
 
 
 def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]:
@@ -305,6 +349,29 @@ class ToolCallGuardrailController:
     def __init__(self, config: ToolCallGuardrailConfig | None = None):
         self.config = config or ToolCallGuardrailConfig()
         self.reset_for_turn()
+        # SESSION-SCOPED (never reset per turn): first successful occurrence of every idempotent
+        # read-only call, signature -> (first tool_call_id, result_hash), FIFO-capped. This is what
+        # lets a Nth-turn re-read of a byte-identical result be recognized as a duplicate.
+        self._session_dedupe: dict[ToolCallSignature, tuple[str, str]] = {}
+        self._session_dedupe_order: list[ToolCallSignature] = []
+        # tool_call_ids present in the conversation at batch start; None = runtime has not opted in,
+        # and every cross-turn stub/decision stays off (direct controller users see old behavior).
+        self._live_tool_call_ids: frozenset[str] | None = None
+
+    def reset_for_session(self) -> None:
+        """Clear the cross-turn duplicate registry (new conversation)."""
+        self._session_dedupe.clear()
+        self._session_dedupe_order.clear()
+        self._live_tool_call_ids = None
+
+    def set_live_tool_calls(self, live_tool_call_ids: frozenset[str] | None) -> None:
+        """Snapshot of the tool_call_ids present in the conversation BEFORE this batch runs.
+
+        Presence of the earlier identical result's call id in this snapshot is the proof that the
+        full payload is still in context (a reference stub is lossless); its absence is the proof
+        that a compaction evicted it (re-materialization is the lossless path instead).
+        """
+        self._live_tool_call_ids = live_tool_call_ids
 
     def reset_for_turn(self) -> None:
         self._exact_failure_counts: dict[ToolCallSignature, int] = {}
@@ -332,6 +399,9 @@ class ToolCallGuardrailController:
         self._persisted_result_paths: dict[str, str] = {}
         self._turn_web_search_count = 0
         self._turn_subagent_count = 0
+        # Cross-turn dedupe needs a FRESH presence snapshot per batch; the runtime re-sets it in
+        # _execute_tool_calls. Clearing here bounds staleness when it doesn't.
+        self._live_tool_call_ids = None
 
     @property
     def halt_decision(self) -> ToolGuardrailDecision | None:
@@ -488,7 +558,88 @@ class ToolCallGuardrailController:
         stub = None
         if is_plain_str and count >= 2 and not failed and len(result) >= IDENTICAL_RESULT_STUB_MIN_CHARS:
             stub = self._build_result_reference_stub(tool_name, args)
-        return IdenticalCallObservation(notice=notice, stub=stub, kind=kind)
+        # Session-level dedupe: register every successful idempotent call (cross-turn memory), then
+        # decide how a re-occurrence with a byte-identical result is delivered this time.
+        session_rematerialize = None
+        if (
+            self.config.session_dedupe_enabled and is_plain_str and not failed
+            and not is_stall_guard_repeatable(tool_name) and self._is_idempotent(tool_name)
+        ):
+            session_stub, session_rematerialize = self._observe_session_dedupe(
+                signature, tool_name, _coerce_args(args), tool_call_id, result, result_hash,
+            )
+            if stub is None and session_stub:
+                stub = session_stub
+        return IdenticalCallObservation(
+            notice=notice, stub=stub, kind=kind, session_rematerialize=session_rematerialize,
+        )
+
+    def _observe_session_dedupe(
+        self, signature: ToolCallSignature, tool_name: str, args: Mapping[str, Any],
+        tool_call_id: str, result: str, result_hash: str,
+    ) -> tuple[str | None, str | None]:
+        """Cross-turn duplicate handling for idempotent read-only tools.
+
+        Returns ``(session_stub, prior_call_id)``:
+        - ``session_stub`` — replacement for the duplicate payload whose source result is verified
+          still live in the conversation (or whose file content is unchanged and still on disk);
+        - ``prior_call_id`` — the earlier call whose byte-identical payload should be
+          RE-MATERIALIZED as a persisted-output archive instead of the full string (the runtime
+          persists it; see run_agent). The payload leaves context but stays pageable, so a
+          tool result lost to compaction is recoverable without paying for it in full again.
+        A same-args repeat whose result CHANGED passes whole — only proven duplicates are rewritten.
+        """
+        prior = self._session_dedupe.get(signature)
+        self._register_session_dedupe(signature, tool_call_id, result_hash)
+        if prior is None or self._live_tool_call_ids is None:
+            # First occurrence (or runtime never enabled cross-turn delivery): nothing to dedupe.
+            return None, None
+        prior_call_id, prior_hash = prior
+        if prior_hash != result_hash:
+            return None, None
+        if prior_call_id and prior_call_id in self._live_tool_call_ids:
+            if len(result) < IDENTICAL_RESULT_STUB_MIN_CHARS:
+                return None, None  # the payload is cheaper than the stub text
+            return self._build_session_dedupe_stub(tool_name, args, prior_call_id), None
+        if tool_name == "read_file":
+            # An unchanged file is still on disk at the same path: persisting a copy is redundant
+            # and hiding the payload behind a stub risks starvation. Read_file re-reads pass whole.
+            return None, None
+        if len(result) >= SESSION_DEDUPE_REMAT_PERSIST_CHARS:
+            return None, prior_call_id
+        return None, None
+
+    def _register_session_dedupe(
+        self, signature: ToolCallSignature, tool_call_id: str, result_hash: str,
+    ) -> None:
+        existing = self._session_dedupe.get(signature)
+        if existing is not None and existing[1] == result_hash:
+            return  # keep the FIRST occurrence's call id — later stubs reference it
+        if existing is None:
+            if len(self._session_dedupe_order) >= SESSION_DEDUPE_MAX_ENTRIES:
+                oldest = self._session_dedupe_order.pop(0)
+                self._session_dedupe.pop(oldest, None)
+            self._session_dedupe_order.append(signature)
+        self._session_dedupe[signature] = (tool_call_id or "", result_hash)
+
+    def _build_session_dedupe_stub(
+        self, tool_name: str, args: Mapping[str, Any], prior_call_id: str,
+    ) -> str:
+        args_preview = canonical_tool_args(args)
+        if len(args_preview) > _RESULT_STUB_ARGS_PREVIEW_CHARS:
+            args_preview = args_preview[:_RESULT_STUB_ARGS_PREVIEW_CHARS] + "…"
+        stub = (
+            f"[hermes note: this result is byte-identical to the {tool_name} result earlier this "
+            f"session (tool_call_id {prior_call_id}), which is still in the conversation above. "
+            f"It has not changed — refer to it. Args: {args_preview}]"
+        )
+        spill_path = self._persisted_result_paths.get(prior_call_id) if prior_call_id else None
+        if spill_path:
+            stub += (
+                f"\n[The referenced result was persisted to: {spill_path} — page through it "
+                "with read_file if you need the full content.]"
+            )
+        return stub
 
     def _detect_identical_cycle(self) -> tuple[int, int] | None:
         """Detect a repeating identical-call cycle ending at the latest observed call.

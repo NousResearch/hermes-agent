@@ -135,7 +135,10 @@ from agent.codex_responses_adapter import (
     _split_responses_tool_id as _codex_split_responses_tool_id,
     _summarize_user_message_for_log,
 )
-from agent.tool_guardrails import ToolGuardrailDecision, append_toolguard_guidance, toolguard_synthetic_result
+from agent.tool_guardrails import (
+    SESSION_DEDUPE_REMAT_PERSIST_CHARS, ToolGuardrailDecision, append_toolguard_guidance,
+    toolguard_synthetic_result,
+)
 from hermes_cli.observability.shared_metrics_harness import record_guardrail_decision, record_guardrail_warnings
 from utils import base_url_host_matches, base_url_hostname, env_float
 
@@ -1323,6 +1326,7 @@ class AIAgent(
         # Identical-call stall guards observe the RAW result (before the per-call loop suffix) and are applied
         # at result construction so tool results stay append-only / cache-safe.
         stall_notice = result_stub = stall_kind = None
+        session_rematerialize = None
         if self._stall_guards_enabled():
             try:
                 observation = self._tool_guardrails.observe_call(
@@ -1330,12 +1334,19 @@ class AIAgent(
                     tool_call_id=tool_call_id, failed=failed,
                 )
                 stall_notice, result_stub, stall_kind = observation.notice, observation.stub, observation.kind
+                session_rematerialize = observation.session_rematerialize
             except Exception as exc:
                 logger.debug("stall-guard identical-call observation failed: %s", exc)
         # Result-reference stubbing: a 2nd+ identical call with a byte-identical FRESH result enters
         # context as a short stub. Not a cache — the tool ran; only plain-string results are stubbed.
         if result_stub and isinstance(function_result, str):
             function_result = result_stub
+        elif session_rematerialize and isinstance(function_result, str):
+            # Cross-turn duplicate whose earlier copy a compaction evicted: deliver the verified-
+            # unchanged payload as a persisted-output archive (preview + path) instead of in full.
+            function_result = self._session_rematerialize_result(
+                function_result, tool_name, tool_call_id, session_rematerialize,
+            )
         if decision.action in {"warn", "halt"}:
             function_result = append_toolguard_guidance(function_result, decision)
         record_guardrail_warnings(self, decision, stall_kind if stall_notice else None)
@@ -1350,6 +1361,34 @@ class AIAgent(
         if stall_notice:
             function_result = (function_result or "") + "\n\n" + stall_notice
         return function_result
+
+    def _session_rematerialize_result(
+        self, function_result: str, tool_name: str, tool_call_id: str, prior_call_id: str,
+    ) -> str:
+        """Re-materialization path of the session dedupe: this call's result is byte-identical to
+        an earlier one whose copy was compacted out of context. Persist the payload to the standard
+        archive and deliver preview + path, so the payload leaves context but stays recoverable by
+        paging (no starvation). Fails open to the full result when persistence is unavailable."""
+        try:
+            if len(function_result) < SESSION_DEDUPE_REMAT_PERSIST_CHARS:
+                return function_result
+            from tools.tool_result_storage import maybe_persist_tool_result
+            persisted = maybe_persist_tool_result(
+                content=function_result, tool_name=tool_name, tool_use_id=tool_call_id,
+                env=get_active_env(getattr(self, "_current_task_id", None) or ""),
+                threshold=SESSION_DEDUPE_REMAT_PERSIST_CHARS,
+            )
+            if persisted == function_result:
+                return function_result
+            return persisted + (
+                f"\n\n[hermes note: this result is byte-identical to the {tool_name} call with "
+                f"tool_call_id {prior_call_id} earlier this session; that copy was compacted out "
+                "of context and the content has not changed. It was saved to the archive above — "
+                "page it with read_file instead of re-running the same call.]"
+            )
+        except Exception as exc:
+            logger.debug("session-dedupe re-materialization persist failed: %s", exc)
+            return function_result
 
     def _stall_guards_enabled(self) -> bool:
         """Config gate for the runtime anti-stall guards (agent.stall_guards)."""
@@ -1370,6 +1409,15 @@ class AIAgent(
         self._executing_tools = True  # allow _vprint during tool execution even with stream consumers
         try:
             with scoped_connection_surface(agent_connection_surface(self)):
+                # Fresh per-batch presence snapshot for the session-level duplicate delivery
+                # (agent/tool_guardrails.py): which tool results are still in context right now.
+                # Fails open to "not opted in" (cross-turn stubs off) when it can't be built.
+                if self._stall_guards_enabled():
+                    try:
+                        from agent.tool_guardrails import collect_live_tool_call_ids
+                        self._tool_guardrails.set_live_tool_calls(collect_live_tool_call_ids(messages))
+                    except Exception as exc:
+                        logger.debug("stall-guard live tool snapshot failed: %s", exc)
                 if len(tool_calls) <= 1:
                     self._execute_tool_calls_sequential(*args)
                 else:

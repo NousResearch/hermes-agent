@@ -147,6 +147,8 @@ class ApiRequestHooksMixin:
         tool_calls = getattr(assistant_message, "tool_calls", None) or []
         return self._sanitize_hook_payload(
             {
+                # The provider's response id — the join key for gateway spend logs.
+                "id": getattr(response, "id", None),
                 "model": getattr(response, "model", None),
                 # Downstream that served the call (relays re-roll it per request; #90216).
                 "upstream_provider": getattr(response, "provider", None),

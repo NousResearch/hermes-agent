@@ -35,6 +35,21 @@ def client(tmp_path, monkeypatch):
     return test_client
 
 
+@pytest.fixture
+def engine_client(client, monkeypatch):
+    """The registry endpoint tests assume "nothing installed" for the managed engine.
+    Since 0.23.0 the managed installed state resolves through the pm store (the real
+    install stamp), so pin it like the quickstart tests do. save_config also gained a
+    first-stamp step in 0.23.0 that probes the pm store for the browser-env migration;
+    the registry tests only exercise the local_runtime section, so no-op the stamp."""
+    import hermes_cli.config as config_mod
+    from hermes_cli.local_runtime import binaries
+
+    monkeypatch.setattr(binaries, "installed_engine", lambda *args, **kwargs: None)
+    monkeypatch.setattr(config_mod, "note_first_stamp", lambda *args, **kwargs: None)
+    return client
+
+
 def test_local_models_routes_require_auth(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     from hermes_cli import web_server
@@ -784,3 +799,162 @@ def test_download_failure_releases_resume_handle(client, monkeypatch):
     status = _poll_job(client, job_id)
     assert status["status"] == "error", status
     assert job_id not in lm._RUNNING
+
+
+# ── engine registry (Settings → Local models → Local engine) ─────────────
+
+
+def test_engines_list_shows_managed_first(engine_client):
+    r = engine_client.get("/api/local-models/engines")
+    assert r.status_code == 200
+    engines = r.json()["engines"]
+    assert engines[0]["id"] == "managed"
+    assert engines[0]["builtin"] is True and engines[0]["active"] is True
+
+
+def test_engine_crud_select_and_fallback(engine_client, tmp_path):
+    binary = tmp_path / "llama-server.exe"
+    binary.write_bytes(b"MZ")
+
+    r = engine_client.post(
+        "/api/local-models/engines",
+        json={
+            "name": "My Vulkan build",
+            "path": str(binary),
+            "backend": "vulkan",
+            "args": ["--flash-attn"],
+            "env": {"GGML_VK": "1"},
+        },
+    )
+    assert r.status_code == 200
+    engine_id = r.json()["engine"]["id"]
+    assert engine_id == "my-vulkan-build"
+
+    listing = engine_client.get("/api/local-models/engines").json()["engines"]
+    assert [e["id"] for e in listing] == ["managed", engine_id]
+    assert listing[1]["installed"] is True  # path exists
+    assert listing[1]["args"] == ["--flash-attn"]
+
+    # Selecting makes it active and the status contract carries it.
+    r = engine_client.post(f"/api/local-models/engines/{engine_id}/select", json={"engine_id": engine_id})
+    assert r.status_code == 200
+    listing = engine_client.get("/api/local-models/engines").json()["engines"]
+    assert next(e for e in listing if e["id"] == engine_id)["active"] is True
+    status = engine_client.get("/api/local-models/status").json()
+    assert status["active_engine_id"] == engine_id
+    assert status["engine_kind"] == "external"
+
+    # Edit keeps the id and replaces the launch parameters.
+    r = engine_client.put(
+        f"/api/local-models/engines/{engine_id}",
+        json={"name": "Renamed build", "path": str(binary), "backend": "cpu", "args": [], "env": {}},
+    )
+    assert r.status_code == 200
+    assert r.json()["engine"] == {
+        "id": engine_id, "name": "Renamed build", "kind": "external",
+        "path": str(binary), "backend": "cpu", "args": [], "env": {},
+    }
+
+    # Deleting the ACTIVE engine falls back to managed.
+    r = engine_client.delete(f"/api/local-models/engines/{engine_id}")
+    assert r.status_code == 200 and r.json()["was_active"] is True
+    assert [e["id"] for e in engine_client.get("/api/local-models/engines").json()["engines"]] == ["managed"]
+    assert engine_client.get("/api/local-models/status").json()["active_engine_id"] == "managed"
+
+
+def test_engine_validation_and_guards(client, tmp_path):
+    assert client.post("/api/local-models/engines", json={"name": "", "path": "x"}).status_code == 422
+    assert client.post(
+        "/api/local-models/engines", json={"name": "ok", "path": "x", "backend": "bogus"}
+    ).status_code == 422
+    assert client.put("/api/local-models/engines/managed",
+                      json={"name": "x", "path": "y"}).status_code == 422
+    assert client.delete("/api/local-models/engines/managed").status_code == 409
+    assert client.post("/api/local-models/engines/ghost/select",
+                       json={"engine_id": "ghost"}).status_code == 404
+    assert client.delete("/api/local-models/engines/ghost").status_code == 404
+
+
+def test_engine_probe_never_runs_a_non_binary(engine_client):
+    # Nothing installed: probing the managed engine says so instead of lying.
+    r = engine_client.post("/api/local-models/engines/probe", json={"engine_id": "managed"})
+    assert r.status_code == 422 and "managed" in r.json()["detail"].lower()
+
+    # A registered path that cannot run --version is a 422 with the reason, not a 500.
+    r = engine_client.post("/api/local-models/engines",
+                    json={"name": "Junk", "path": "Z:/definitely/not/here.exe"})
+    assert r.status_code == 200
+    r = engine_client.post("/api/local-models/engines/probe", json={"engine_id": r.json()["engine"]["id"]})
+    assert r.status_code == 422
+
+
+def test_engine_probe_accepts_unsaved_path(engine_client, tmp_path):
+    # The edit form probes what is on screen BEFORE registering it: a filled
+    # `path` wins over engine_id, so users validate a binary first.
+    r = engine_client.post("/api/local-models/engines/probe", json={"path": str(tmp_path / "nope.exe")})
+    assert r.status_code == 422 and "no file" in r.json()["detail"].lower()
+
+    if os.name == "nt":
+        script = tmp_path / "engine.bat"
+        script.write_text("@echo off\r\necho version: 1 (TEST)\r\n", encoding="ascii")
+    else:
+        script = tmp_path / "engine.sh"
+        script.write_text("#!/bin/sh\necho 'version: 1 (TEST)'\n", encoding="ascii")
+        script.chmod(0o755)
+    r = engine_client.post("/api/local-models/engines/probe", json={"path": str(script)})
+    assert r.status_code == 200, r.text
+    assert "version: 1" in r.json()["version"]
+    # Probing never registers anything.
+    assert [e["id"] for e in engine_client.get("/api/local-models/engines").json()["engines"]] == ["managed"]
+
+# ── engine mutation announce (bottom-left backend status) ──────────
+
+
+def test_engine_restart_reannounces_setup_ready(monkeypatch):
+    """An engine edit must re-broadcast setup.ready so the desktop's
+    backend indicator repaints with the new engine's verdict instead of
+    holding the previous one until an ambient tick."""
+    import sys
+    import types
+
+    from hermes_cli.web_routers import local_models
+
+    events: list[tuple[str, dict]] = []
+    sink = types.ModuleType("tui_gateway.server")
+    sink._broadcast_global_event = lambda name, payload=None: events.append((name, payload))
+    ftb = types.ModuleType("hermes_cli.free_tier_bootstrap")
+    ftb.SETUP_READY_EVENT = "setup.ready"
+    monkeypatch.setattr(local_models.bootstrap, "refresh_local_runtime", lambda: True)
+    # The announce imports lazily; stubbing inside a context keeps both doubles
+    # out of sys.modules before the gateway-state finalizer runs.
+    with monkeypatch.context() as m:
+        m.setitem(sys.modules, "tui_gateway.server", sink)
+        m.setitem(sys.modules, "hermes_cli.free_tier_bootstrap", ftb)
+        local_models._restart_for_engines()
+
+    assert events == [("setup.ready",
+                       {"reason": "engine_mutation", "runtime_restarted": True})]
+
+
+def test_engine_restart_announces_even_when_bounce_fails(monkeypatch):
+    import sys
+    import types
+
+    from hermes_cli.web_routers import local_models
+
+    events: list[tuple[str, dict]] = []
+    sink = types.ModuleType("tui_gateway.server")
+    sink._broadcast_global_event = lambda name, payload=None: events.append((name, payload))
+    ftb = types.ModuleType("hermes_cli.free_tier_bootstrap")
+    ftb.SETUP_READY_EVENT = "setup.ready"
+
+    def _boom() -> bool:
+        raise RuntimeError("supervisor down")
+    monkeypatch.setattr(local_models.bootstrap, "refresh_local_runtime", _boom)
+    with monkeypatch.context() as m:
+        m.setitem(sys.modules, "tui_gateway.server", sink)
+        m.setitem(sys.modules, "hermes_cli.free_tier_bootstrap", ftb)
+        local_models._restart_for_engines()
+
+    assert events and events[0][0] == "setup.ready"
+    assert events[0][1]["runtime_restarted"] is False

@@ -270,3 +270,64 @@ class TestResetNoticeSessionInfo:
         assert "anthropic" in info
         assert "base-model" not in info
 
+
+class TestProviderDisplayLabel:
+    """A bare ``custom`` banner cell names the saved endpoint serving the session.
+
+    Runtime resolution folds every named custom endpoint into the literal adapter id
+    ``custom``, so a user with several saved endpoints read ``custom`` for all of them.
+    """
+
+    _PROVIDERS = {
+        "workbuddy": {"api": "http://192.0.2.10:7863/v1", "models": {"cn:deepseek-v4.1-flash": {}}},
+        "traework": {"api": "http://192.0.2.10:7864/v1", "models": {"cn:minimax-m3.1-flash-max": {}}},
+    }
+
+    def _info(self, runner, tmp_path, provider, base_url, model):
+        p1, p2, p3 = _patch_info(
+            tmp_path, "model:\n  default: base-model\n", model,
+            {"provider": provider, "base_url": base_url, "api_key": ""})
+        config = {"providers": self._PROVIDERS}
+        with p1, p2, p3, patch("hermes_cli.config.load_config", return_value=config):
+            return runner._format_session_info()
+
+    def test_named_custom_endpoint_is_named(self, runner, tmp_path):
+        info = self._info(runner, tmp_path, "custom", "http://192.0.2.10:7863/v1", "cn:deepseek-v4.1-flash")
+        assert "custom:workbuddy" in info
+
+    def test_shared_url_resolves_by_model(self, runner, tmp_path):
+        """Two entries on one proxy: the entry that declares the model wins, not the first."""
+        shared = {"a-first": {"api": "http://192.0.2.20:9000/v1", "models": {"model-a": {}}},
+                  "z-second": {"api": "http://192.0.2.20:9000/v1", "models": {"model-b": {}}}}
+        p1, p2, p3 = _patch_info(
+            tmp_path, "model:\n  default: base-model\n", "model-b",
+            {"provider": "custom", "base_url": "http://192.0.2.20:9000/v1", "api_key": ""})
+        with p1, p2, p3, patch("hermes_cli.config.load_config", return_value={"providers": shared}):
+            info = runner._format_session_info()
+        assert "custom:z-second" in info
+        assert "custom:a-first" not in info
+
+    def test_unconfigured_endpoint_keeps_bare_custom(self, runner, tmp_path):
+        info = self._info(runner, tmp_path, "custom", "http://192.0.2.99:1234/v1", "unknown-model")
+        assert "custom: " not in info and ": custom" in info
+        assert "custom:" not in info
+
+    def test_builtin_provider_unchanged(self, runner, tmp_path):
+        info = self._info(runner, tmp_path, "openrouter", "https://openrouter.ai/api/v1", "gpt-5.5")
+        assert "openrouter" in info
+
+    def test_empty_provider_falls_back_to_openrouter(self, runner, tmp_path):
+        info = self._info(runner, tmp_path, "", "", "gpt-5.5")
+        assert "openrouter" in info
+
+    def test_unreadable_config_keeps_bare_custom(self, runner, tmp_path):
+        """Lookup failure must narrow the banner to what it showed before, never raise."""
+        info = self._info(runner, tmp_path, "custom", "http://192.0.2.10:7863/v1", "cn:deepseek-v4.1-flash")
+        assert "workbuddy" in info  # sanity: lookup works when config is readable
+        p1, p2, p3 = _patch_info(
+            tmp_path, "model:\n  default: base-model\n", "cn:deepseek-v4.1-flash",
+            {"provider": "custom", "base_url": "http://192.0.2.10:7863/v1", "api_key": ""})
+        with p1, p2, p3, patch("hermes_cli.config.load_config", side_effect=RuntimeError("bad yaml")):
+            info = runner._format_session_info()
+        assert "custom" in info
+        assert "workbuddy" not in info

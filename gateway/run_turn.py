@@ -372,7 +372,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         """Model / provider / context-length / endpoint block so users can spot bad context detection.
         With ``source``, the chat's ``channel_overrides`` route is reported (what its turn runs)."""
         from gateway.run import _resolve_gateway_model_context
-        from gateway.session_info_route import channel_override_route
+        from gateway.session_info_route import channel_override_route, provider_display_label
         model, route, force_provider = channel_override_route(source and self._serving_channel_config(source), source)
         resolved = _resolve_gateway_model_context(model=model, route=route)
         if force_provider:
@@ -388,7 +388,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         )
         lines = [
             t("gateway.session.info_model", model=resolved.model),
-            t("gateway.session.info_provider", provider=resolved.provider or "openrouter"),
+            t("gateway.session.info_provider", provider=provider_display_label(resolved)),
             t("gateway.session.info_context", tokens=ctx_display, source=ctx_source),
         ]
         if (resolved.provider or "") == "moa":

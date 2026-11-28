@@ -493,6 +493,33 @@ def _backdate_comments(conn, tid, seconds=60):
         )
 
 
+def test_active_pr_guard_lifts_after_manual_promotion_only_for_promoted_card(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Manual promotion after a PR comment is a deliberate handoff, not a bypass for other cards."""
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(profmod, "profile_exists", lambda _name: True)
+    with kbc.connect() as conn:
+        promoted_id = kb.create_task(conn, title="manual promotion", assignee="dev")
+        assert kb.block_task(conn, promoted_id, reason="waiting for a manual re-promotion")
+        guarded_id = kb.create_task(conn, title="unpromoted PR", assignee="dev")
+        pr_comment = "Opened https://github.com/example/repo/pull/44 for review."
+        kb.add_comment(conn, promoted_id, author="dev", body=pr_comment)
+        kb.add_comment(conn, guarded_id, author="dev", body=pr_comment)
+        _backdate_comments(conn, promoted_id)
+
+        # Open/unmerged PRs still protect cards that have not been explicitly promoted.
+        assert kbd.check_respawn_guard(conn, promoted_id) == "active_pr"
+        assert kbd.check_respawn_guard(conn, guarded_id) == "active_pr"
+        assert kb.promote_task(
+            conn, promoted_id, actor="operator", reason="resume after PR update"
+        ) == (True, None)
+
+        assert kbd.check_respawn_guard(conn, promoted_id) is None
+        assert kbd.check_respawn_guard(conn, guarded_id) == "active_pr"
+
+
 def test_active_pr_guard_lifts_for_profile_handed_the_card_after_the_pr(
     kanban_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

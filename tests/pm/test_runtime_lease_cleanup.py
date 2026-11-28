@@ -2,6 +2,9 @@
 
 import json
 import os
+import subprocess
+import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -37,6 +40,55 @@ def test_pruner_removes_abandoned_file_while_holding_its_lock(tmp_path, monkeypa
     assert not runtime_state.leases_held(generation)
     assert not lease.exists()
     assert locked_at_delete == [True]
+
+
+@pytest.mark.platforms("posix")
+def test_lease_records_its_lessee(tmp_path):
+    """A live lease has metadata; this read uses a second handle (POSIX only)."""
+    generation = _generation(tmp_path / "generation")
+    release = runtime_state.lease_directory(generation)
+    try:
+        lease = next((generation / ".leases").iterdir())
+        payload = json.loads(lease.read_text(encoding="utf-8"))
+        assert payload["pid"] == os.getpid()
+        assert payload["created"]
+        assert payload["argv0"]
+    finally:
+        release()
+    assert list((generation / ".leases").iterdir()) == []
+
+
+@pytest.mark.platforms("any")
+def test_orphaned_lease_records_its_lessee(tmp_path):
+    """Abrupt exit retains metadata readable after its lock is released (#122928)."""
+    generation = _generation(tmp_path / "generation")
+    child_code = (
+        "import os\n"
+        "from pathlib import Path\n"
+        "from hermes_cli.runtime_state import lease_directory\n"
+        f"lease_directory(Path({str(generation)!r}))\n"
+        "os._exit(0)\n"
+    )
+    # A live Windows byte lock denies separate-handle reads, even to its owner.
+    # A dead lessee releases the lock but skips the atexit unlink.
+    with subprocess.Popen(
+        [sys.executable, "-c", child_code],
+        cwd=Path(__file__).resolve().parents[2],
+        stderr=subprocess.PIPE,
+        text=True,
+    ) as child:
+        _, stderr = child.communicate(timeout=30)
+        assert child.returncode == 0, stderr
+        lessee_pid = child.pid
+
+    leases = list((generation / ".leases").iterdir())
+    assert len(leases) == 1
+    payload = json.loads(leases[0].read_text(encoding="utf-8"))
+    assert payload["pid"] == lessee_pid
+    assert datetime.fromisoformat(payload["created"]).utcoffset() == timedelta(0)
+    assert payload["argv0"] == "-c"
+    assert not runtime_state.leases_held(generation)
+    assert list((generation / ".leases").iterdir()) == []
 
 
 @pytest.mark.platforms("windows")

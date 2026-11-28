@@ -96,7 +96,16 @@ _PATTERNS: list[tuple[str, str, str]] = [
     # Anchored on C2 vocabulary. "register as a node" appears in legitimate distributed-systems
     # docs, so this is WARN not block: a researcher reading the Brainworm post keeps their session.
     (r'register\s{1,64}(as\s{1,64})?a?\s{0,64}node', "c2_node_registration", "context"),
-    (r'(heartbeat|beacon|check[\s\-]?in)\s{1,64}(to|with)\s{1,64}', "c2_heartbeat", "context"),
+    # The destination must look like C2 infrastructure (server/controller/host/URL/domain/IP):
+    # bare "heartbeat to" is ordinary ops vocabulary ("re-sets the interval on every heartbeat to
+    # the time until the next run") and blocked whole cron/monitoring AGENTS.md files.
+    (
+        r"(heartbeat|beacon|check[\s\-]?in)s?\s{1,64}(to|with)\s{1,64}(?:(?:the|a|an|our|your|my)\s{1,64})?"
+        r"(?:(?:c2|remote|central|command)\b|(?:server|controller|orchestrator|operator|listener|endpoint|host|node|hub)s?\b"
+        r"|https?://|\d{1,3}(?:\.\d{1,3}){3}\b|[\w-]{1,64}(?:\.[\w-]{1,64}){0,8}\.[a-z]{2,24}\b)",
+        "c2_heartbeat",
+        "context",
+    ),
     (r'pull\s{1,64}(down\s{1,64})?(?:new\s{1,64})?task(?:ing|s)?\b', "c2_task_pull", "context"),
     (r'connect\s{1,64}to\s{1,64}the\s{1,64}network\b', "c2_network_connect", "context"),
     # C2-specific verbs avoid the broader "you must X" false positive.

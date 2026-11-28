@@ -176,6 +176,8 @@ def _tts_stream_begin() -> Optional[queue.Queue]:
     if not _voice_tts_enabled():
         return None
     try:
+        from agent.memory_provider import spawn_context_thread
+        from gateway.session_context import get_session_env
         from tools.tts_tool import check_tts_requirements
         from tools.tts_tool_speaker import stream_tts_to_speaker
         if not check_tts_requirements():
@@ -183,10 +185,11 @@ def _tts_stream_begin() -> Optional[queue.Queue]:
     except Exception:
         return None
     _tts_stream_stop()
-    from agent.memory_provider import spawn_context_thread
     text_queue: queue.Queue = queue.Queue()
     stop, done = threading.Event(), threading.Event()
-    spawn_context_thread(stream_tts_to_speaker, name="voice-tts-stream", args=(text_queue, stop, done)).start()
+    speaker_kwargs = {"session_id": get_session_env("HERMES_SESSION_ID", ""), "platform": "tui"}
+    spawn_context_thread(stream_tts_to_speaker, name="voice-tts-stream", args=(text_queue, stop, done),
+                         kwargs=speaker_kwargs).start()
     global _tts_stream_state
     with _tts_stream_lock:
         _tts_stream_state = {"stop": stop, "done": done}
@@ -341,7 +344,7 @@ def _deliver_fd_transcript(text: str) -> None:
     _voice_emit("voice.transcript", {"stop_phrase": True, "text": text} if is_stop else {"text": text})
 
 
-def _speak_text_with_barge(text: str) -> None:
+def _speak_text_with_barge(text: str, session_id: str = "") -> None:
     """speak_text registered in ``_fd_speak_pipelines`` so the listener can cut it / waits for it."""
     from hermes_cli.voice import speak_text
     stop, done = threading.Event(), threading.Event()
@@ -350,7 +353,7 @@ def _speak_text_with_barge(text: str) -> None:
 
     def _speak():
         try:
-            speak_text(text, stop)
+            speak_text(text, stop, session_id=session_id)
         except TypeError:  # older wrapper without the stop_event parameter
             speak_text(text)
         finally:

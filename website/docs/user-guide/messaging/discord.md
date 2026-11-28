@@ -742,6 +742,22 @@ The Discord adapter supports native file uploads for every common media type via
 
 Discord's per-upload size limit depends on the server's boost tier (25 MB free, up to 500 MB). If Hermes gets an HTTP 413, the adapter falls back to a link pointing at the local cache path rather than failing silently.
 
+### Spoiler images
+
+A markdown image in a reply (`![alt](https://…/map.png)`) is downloaded and posted as an attachment. Wrap the whole tag in Discord's spoiler bars to post it as a spoiler, which Discord blurs until someone taps it:
+
+```markdown
+Here is the route: ![Route to the lighthouse](https://example.com/route.png)
+And the boss, hidden: ||![Final boss](https://example.com/boss.png)||
+```
+
+- The image is posted as a `SPOILER_` attachment, which Discord blurs, and its alt text as a spoilered caption.
+- If the image can't be downloaded, Hermes posts its link as `||<url>||` instead: hidden, with no preview.
+- A spoilered tag whose URL doesn't look like an image stays in the text as a hidden link, `||[alt](<url>)||`, with no preview.
+- The bars must wrap the image tag alone. Images without bars are posted as before.
+
+The agent isn't told about this syntax by default. To use it, describe it in a skill or in `SOUL.md`.
+
 ## Long Replies
 
 A reply that would need more than 8 Discord messages (about 16,000 characters) is sent as one `reply-<id>.md` attachment holding the complete text, with a short caption, instead of a long run of 2,000-character messages. While a long reply streams, Hermes stops opening new messages at the limit, uploads the finished reply, then deletes the partial messages it had already posted for it. If the upload fails (no **Attach Files** permission, for example), nothing is deleted and the whole reply is delivered as messages, never cut short; they go out at the pace Discord's rate limits allow (about five per channel every five seconds), and a rate-limited message is retried after the wait Discord asks for. A reply over the attachment limit is split across numbered files of at most 7 MB each.
@@ -876,7 +892,7 @@ Notes:
 
 Discord forum channels (type 15) don't accept direct messages — every post in a forum must be a thread. Hermes auto-detects forum channels and creates a new thread post whenever it needs to send there, so text replies, TTS, images, voice messages, and file attachments all work without special handling from the agent.
 
-- **Thread name** is derived from the first line of the message (markdown heading prefix stripped, capped at 100 chars). When the message is attachment-only, the filename is used as the fallback thread name.
+- **Thread name** is derived from the first line of the message (markdown heading prefix stripped, capped at 100 chars). When the message is attachment-only, the filename is used as the fallback thread name. A first line that starts with a spoiler (`||…||`) is never used, because thread names can't hide text: the post gets the default name instead.
 - **Attachments** ride along on the starter message of the new thread — no separate upload step, no partial sends.
 - **One call, one thread**: each forum send creates a new thread. Successive sends to the same forum will therefore produce separate threads.
 - **Detection is three-layered**: the channel directory cache first, a process-local probe cache second, and a live `GET /channels/{id}` probe as a last resort (whose result is then memoized for the life of the process).

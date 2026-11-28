@@ -21,6 +21,8 @@ from abc import ABC, abstractmethod
 from hermes_dir_acl import make_user_dir, unusable_dir_remedy
 from gateway.platforms.base_log_safety import _log_safe_path, describe_proxy_error, env_proxy_for_redaction, safe_proxy_url_for_log, safe_url_for_log
 from gateway.platforms.base_image_sniff import _looks_like_image
+from gateway.platforms.base_image_tags import (  # plugins import these names from here
+    extract_images, hidden_image_link, is_spoiler, spoiler_kwargs)
 from gateway.platforms.base_media_flags import pad_inline_flags
 from gateway.platforms.base_kanban_media import _kanban_attachment_roots, _kanban_board_db_paths
 from gateway.runtime_footer import footer_onto_photo_caption, send_footer_unless_captioned
@@ -1180,11 +1182,6 @@ _MEDIA_EXT_ALTERNATION = "|".join(sorted((e.lstrip(".") for e in MEDIA_DELIVERY_
 # ``MEDIA:D:\path\早报.pdf（782.6 KB）`` or ``MEDIA:...pdf：内容`` — without these, the lookahead fails and the
 # attachment is silently dropped (#88038).
 _MEDIA_CJK_TERMINATORS = "（）〈〉《》：，。；！？、\u201c\u201d\u2018\u2019【】"
-
-# Image tags ``extract_images`` turns into attachments (the streamed display hides the same tags).
-MD_IMAGE_TAG_PATTERN = r'!\[([^\]]*)\]\((https?://[^\s\)]+)\)'
-HTML_IMAGE_TAG_PATTERN = r'<img\s+src=["\']?(https?://[^\s"\'<>]+)["\']?\s*/?>\s*(?:</img>)?'
-_IMAGE_URL_MARKERS = ('.png', '.jpg', '.jpeg', '.gif', '.webp', 'fal.media', 'fal-cdn', 'replicate.delivery')
 
 MEDIA_TAG_CLEANUP_RE = re.compile(
     r'''[`"'*_]{0,3}MEDIA:\s*'''
@@ -2875,8 +2872,8 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                     sender, url_kw = self.send_animation, {"animation_url": image_url}
                 else:
                     sender, url_kw = self.send_image, {"image_url": image_url}
-                img_result = await sender(
-                    chat_id=chat_id, **url_kw, caption=alt_text or None, metadata=metadata)
+                img_result = await sender(chat_id=chat_id, **url_kw, caption=alt_text or None,
+                                          metadata=metadata, **spoiler_kwargs(sender, alt_text))
                 if not img_result.success:
                     logger.error("[%s] Failed to send image: %s", self.name, img_result.error)
                 else:
@@ -2909,27 +2906,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         """Check if a URL points to an animated GIF (vs a static image)."""
         return url.lower().split('?')[0].endswith('.gif')
 
-    @staticmethod
-    def extract_images(content: str) -> tuple[list[tuple[str, str]], str]:
-        """Extract ``![alt](url)`` and ``<img src=...>`` image URLs from a response;
-        returns ``([(url, alt_text), ...], content with those tags removed)``."""
-        md_pattern, html_pattern = MD_IMAGE_TAG_PATTERN, HTML_IMAGE_TAG_PATTERN
-        images = [(m.group(2), m.group(1)) for m in re.finditer(md_pattern, content)
-                  if any(m.group(2).lower().endswith(ext) or ext in m.group(2).lower()
-                         for ext in _IMAGE_URL_MARKERS)]  # only URLs that look like actual images
-        images.extend((match.group(1), "") for match in re.finditer(html_pattern, content))
-        if not images:
-            return images, content
-        # Remove only the tags we extracted, not every markdown image.
-        extracted_urls = {url for url, _ in images}
-
-        def _remove_if_extracted(match):
-            url = match.group(2) if match.lastindex >= 2 else match.group(1)
-            return '' if url in extracted_urls else match.group(0)
-        cleaned = content
-        for pattern in (md_pattern, html_pattern):
-            cleaned = re.sub(pattern, _remove_if_extracted, cleaned)
-        return images, re.sub(r'\n{3,}', '\n\n', cleaned).strip()  # leftover blank lines
+    extract_images = staticmethod(extract_images)
 
     async def send_voice(
         self, chat_id: str, audio_path: str, caption: Optional[str] = None,

@@ -307,6 +307,15 @@ def link_target_renders(target: str) -> bool:
     return bool(_RENDERABLE_LINK_TARGET_RE.match(target.strip()))
 
 
+def _link_destination(target: str) -> str | None:
+    """The URL Telegram opens for a link's ``target``, or None when it can't. CommonMark's optional
+    ``<…>`` goes: a hidden image link is written ``[alt](<url>)`` (``hidden_image_link``)."""
+    stripped = target.strip()
+    if stripped.startswith("<") and stripped.endswith(">"):
+        target = stripped[1:-1]
+    return target if link_target_renders(target) else None
+
+
 def degrade_unrenderable_links(markdown: str) -> str:
     """``[label](target)`` → ``label`` when Telegram cannot open ``target`` (rich-message path; code
     spans and fences stay verbatim)."""
@@ -316,7 +325,8 @@ def degrade_unrenderable_links(markdown: str) -> str:
 
 
 def _link_or_label(m) -> str:
-    return m.group(0) if link_target_renders(m.group(2)) else m.group(1)
+    target = _link_destination(m.group(2))
+    return m.group(1) if target is None else f"[{m.group(1)}]({target})"
 
 
 def _escape_mdv2(text: str) -> str:
@@ -387,9 +397,10 @@ def to_markdown_v2(content: str) -> str:
     def _convert_link(m):
         if _crosses_quote_edge(text, m.start(), m.end()):
             return m.group(0)  # Telegram ends the quote at the newline, cutting the link: keep it literal
-        if not link_target_renders(m.group(2)):
+        target = _link_destination(m.group(2))
+        if target is None:
             return _ph(_escape_mdv2(m.group(1)))  # Telegram would show the raw [label](target) syntax
-        url = m.group(2).replace('\\', '\\\\').replace(')', '\\)')
+        url = target.replace('\\', '\\\\').replace(')', '\\)')
         return _ph(f'[{_escape_mdv2(m.group(1))}]({url})')
 
     text = _MD_LINK_RE.sub(_convert_link, text)

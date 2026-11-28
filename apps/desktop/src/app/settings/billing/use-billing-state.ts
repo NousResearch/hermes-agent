@@ -1,4 +1,4 @@
-import { gaugeScope, gaugeTitle, PAYMENT_PAUSE_REASON } from '@hermes/shared'
+import { gaugeScope, gaugeTitle, PAYMENT_PAUSE_REASON, purchasePayer } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 
@@ -408,7 +408,8 @@ function noCardNotice(
   billing: BillingStateResponse,
   b: Translations['settings']['billing']
 ): BillingNoticeView | undefined {
-  if (billing.card) {
+  // A Managed Payments payer buys credits without a card; auto-refill's own row says it needs one.
+  if (purchasePayer(billing)) {
     return undefined
   }
 
@@ -648,6 +649,18 @@ function paymentMethodRow(
   const portalUrl = billing.portal_url ?? FALLBACK_PORTAL_BILLING_URL
   const card = billing.card
 
+  // Only without a card: the card on file stays here since auto-refill charges it, and
+  // the Buy row names Link and the tax it adds.
+  if (!card && billing.managed_payments) {
+    return {
+      action: { label: b.state.paymentMethod.updateAction, url: portalUrl },
+      description: b.state.paymentMethod.description,
+      id: 'payment_method',
+      title: b.state.paymentMethod.title,
+      value: billing.managed_payments.label
+    }
+  }
+
   if (!card) {
     // No card → a single "Add payment method" link, the way every other app does
     // it. The reason (buys/auto-refill are blocked) already leads the page as a
@@ -670,7 +683,9 @@ function paymentMethodRow(
 }
 
 function buyCreditsRow(billing: BillingStateResponse, b: Translations['settings']['billing']): BillingAccountRowView {
-  if (!billing.card) {
+  const payer = purchasePayer(billing)
+
+  if (!payer) {
     // The no-card blocker is already spelled out by the page-level warn banner
     // (noCardNotice); repeating it here — emoji and all — just clutters the row,
     // so keep the plain "what buying does" line and let the controls sit disabled.
@@ -696,7 +711,11 @@ function buyCreditsRow(billing: BillingStateResponse, b: Translations['settings'
   return {
     action: { disabled: true, label: b.buyCredits.buyButton },
     chips: billing.charge_presets.map(amount => ({ disabled: true, label: formatMoney(amount) })),
-    description: b.state.buyCredits.description,
+    // The Buy button charges straight from this row, so Link and the tax it adds are named here.
+    description:
+      payer.kind === 'managed_payments'
+        ? b.state.buyCredits.managedPaymentsDescription(payer.label)
+        : b.state.buyCredits.description,
     id: 'buy_credits',
     title: b.buyCredits.title
   }

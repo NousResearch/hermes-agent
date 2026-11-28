@@ -3208,6 +3208,7 @@
     "settings.billing.state.autoRefill.title",
     "settings.billing.state.autoRefill.turnOnCaption",
     "settings.billing.state.buyCredits.description",
+    "settings.billing.state.buyCredits.managedPaymentsDescription",
     "settings.billing.state.notice.loggedOut.action",
     "settings.billing.state.notice.loggedOut.message",
     "settings.billing.state.notice.loggedOut.title",

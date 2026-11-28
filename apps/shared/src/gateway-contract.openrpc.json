@@ -6683,6 +6683,21 @@
         "title": "BillingKeepGoingOnCreditsParams",
         "type": "object"
       },
+      "BillingManagedPayments": {
+        "additionalProperties": false,
+        "description": "Purchases bill Stripe Managed Payments instead of ``card``: Link charges this payer, adds any\nsales tax or VAT on top, and sends the receipt. ``label`` names it.",
+        "properties": {
+          "label": {
+            "title": "Label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "label"
+        ],
+        "title": "BillingManagedPayments",
+        "type": "object"
+      },
       "BillingMonthlyCap": {
         "additionalProperties": false,
         "properties": {
@@ -7253,6 +7268,17 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/BillingPaymentMethod"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "managed_payments": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BillingManagedPayments"
               },
               {
                 "type": "null"

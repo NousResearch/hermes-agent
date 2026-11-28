@@ -123,6 +123,15 @@ class AutoReload:
     card: Optional[AutoReloadCard] = None
 
 
+@dataclass(frozen=True)
+class ManagedPaymentsPayer:
+    """The portal bills credit purchases through Stripe Managed Payments instead of the card on
+    file: Link charges this payer, adds any sales tax or VAT on top, and sends the receipt.
+    ``label`` names it, e.g. "Subscription payment method (billed by Link)"."""
+
+    label: str
+
+
 class OrgRoleCapability:
     """``is_admin`` / ``can_change_plan`` shared by the billing and subscription states."""
 
@@ -157,6 +166,8 @@ class BillingState(OrgRoleCapability):
     max_usd: Optional[Decimal] = None
     card: Optional[CardInfo] = None
     payment_method: Optional[PaymentMethodInfo] = None
+    # Sent only to clients that name Managed Payments in Hermes-Billing-Payers (nous_billing does).
+    managed_payments: Optional[ManagedPaymentsPayer] = None
     monthly_cap: Optional[MonthlyCap] = None
     auto_reload: Optional[AutoReload] = None
     # Window plans only: "Keep going on credits". None below ADMIN, on any
@@ -170,6 +181,15 @@ class BillingState(OrgRoleCapability):
         """Offer charge/auto-reload actions: ``can_change_plan`` (server-grantable, e.g. FINANCE_ADMIN)
         AND the per-org kill-switch. Display gating only — the server still enforces."""
         return self.can_change_plan and self.cli_billing_enabled
+
+    @property
+    def purchase_payer(self) -> Optional[str]:
+        """What a credit purchase is paid with, for display: the Managed Payments payer when the
+        portal names one, else the card on file; None when nothing can pay yet (add a card first).
+        Auto-reload keeps reading ``card``: only purchases go through Managed Payments."""
+        if self.managed_payments is not None:
+            return self.managed_payments.label
+        return self.card.display if self.card is not None else None
 
 
 @_dict_parser
@@ -193,6 +213,12 @@ def _parse_payment_method(raw: dict) -> Optional[PaymentMethodInfo]:
     if kind == "link":
         return PaymentMethodInfo(kind="link", email=_optional_str(raw, "email"), resolved_via=resolved_via)
     return PaymentMethodInfo(kind="unknown", raw_kind=kind, resolved_via=resolved_via)
+
+
+@_dict_parser
+def _parse_managed_payments(raw: dict) -> Optional[ManagedPaymentsPayer]:
+    label = raw.get("label")
+    return ManagedPaymentsPayer(label=label) if isinstance(label, str) and label.strip() else None
 
 
 @_dict_parser
@@ -242,6 +268,7 @@ def billing_state_from_payload(payload: dict[str, Any], *, portal_url: Optional[
         max_usd=parse_money(bounds.get("maxUsd")),
         card=_parse_card(payload.get("card")),
         payment_method=_parse_payment_method(payload.get("paymentMethod")),
+        managed_payments=_parse_managed_payments(payload.get("managedPayments")),
         monthly_cap=_parse_monthly_cap(payload.get("monthlyCap")),
         auto_reload=_parse_auto_reload(payload.get("autoReload")),
         keep_going_on_credits=_parse_keep_going_on_credits(payload.get("keepGoingOnCredits")),

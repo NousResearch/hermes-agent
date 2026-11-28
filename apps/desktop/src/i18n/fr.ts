@@ -2094,7 +2094,9 @@ export const frOverrides = {
           }
         },
         buyCredits: {
-          description: 'Un débit unique sur votre carte, ajouté à votre solde dès aujourd’hui.'
+          description: 'Un débit unique sur votre carte, ajouté à votre solde dès aujourd’hui.',
+          managedPaymentsDescription: payer =>
+            `Un débit unique sur ${payer}, plus toute taxe de vente ou TVA applicable, ajouté à votre solde dès aujourd’hui.`
         },
         autoRefill: {
           title: 'Recharger quand le solde est bas',

@@ -11,10 +11,11 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+import pytest
 
 import tui_gateway.server as srv
 import agent.billing_view as bv
-from agent.billing_view import BillingState, CardInfo, MonthlyCap, PaymentMethodInfo
+from agent.billing_view import BillingState, CardInfo, ManagedPaymentsPayer, MonthlyCap, PaymentMethodInfo
 
 
 def _call(method: str, params: dict) -> dict:
@@ -77,6 +78,13 @@ def test_billing_state_serializes_decimals_as_strings(monkeypatch):
 def test_billing_state_carries_keep_going_on_credits(monkeypatch):
     monkeypatch.setattr(bv, "build_billing_state", lambda *a, **kw: BillingState(logged_in=True, keep_going_on_credits=False))
     assert _call("billing.state", {})["keep_going_on_credits"] is False
+
+
+@pytest.mark.parametrize("label", ["Subscription payment method (billed by Link)", None])
+def test_billing_state_carries_the_managed_payments_payer(monkeypatch, label):
+    payer = ManagedPaymentsPayer(label=label) if label else None
+    monkeypatch.setattr(bv, "build_billing_state", lambda *a, **kw: BillingState(logged_in=True, managed_payments=payer))
+    assert _call("billing.state", {})["managed_payments"] == ({"label": label} if label else None)
 
 
 # ---------------------------------------------------------------------------

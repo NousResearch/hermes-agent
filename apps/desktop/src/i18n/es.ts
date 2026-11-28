@@ -2079,7 +2079,9 @@ export const esOverrides = {
           }
         },
         buyCredits: {
-          description: 'Un único cargo en tu tarjeta que se añade hoy a tu saldo.'
+          description: 'Un único cargo en tu tarjeta que se añade hoy a tu saldo.',
+          managedPaymentsDescription: payer =>
+            `Un único cargo a ${payer}, más cualquier impuesto sobre las ventas o IVA, que se añade hoy a tu saldo.`
         },
         autoRefill: {
           title: 'Recargar cuando quede poco saldo',

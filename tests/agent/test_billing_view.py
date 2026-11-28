@@ -24,6 +24,7 @@ from agent.billing_view import (
     AutoReloadCard,
     BillingState,
     CardInfo,
+    ManagedPaymentsPayer,
     MonthlyCap,
     PaymentMethodInfo,
     billing_state_from_payload,
@@ -162,6 +163,30 @@ def test_state_owner_tier_parse():
     assert s.auto_reload == AutoReload(
         enabled=True, threshold_usd=Decimal(20), reload_to_usd=Decimal(100)
     )
+
+
+def test_state_managed_payments_payer_pays_for_purchases_not_auto_reload():
+    p = _owner_payload()
+    p["managedPayments"] = {"label": "Subscription payment method (billed by Link)"}
+    s = billing_state_from_payload(p)
+    assert s.managed_payments == ManagedPaymentsPayer(label="Subscription payment method (billed by Link)")
+    assert s.purchase_payer == "Subscription payment method (billed by Link)"
+    # Auto-reload still charges the card on file, so `card` keeps naming it.
+    assert s.card == CardInfo(brand="visa", last4="4242")
+
+
+@pytest.mark.parametrize("raw", [None, {}, {"label": ""}, {"label": 5}, "Link"])
+def test_state_without_a_managed_payments_label_buys_with_the_card(raw):
+    p = _owner_payload()
+    if raw is not None:
+        p["managedPayments"] = raw
+    s = billing_state_from_payload(p)
+    assert s.managed_payments is None
+    assert s.purchase_payer == "visa ····4242"
+
+
+def test_state_with_neither_payer_has_nothing_to_buy_with():
+    assert billing_state_from_payload(_member_payload()).purchase_payer is None
 
 
 

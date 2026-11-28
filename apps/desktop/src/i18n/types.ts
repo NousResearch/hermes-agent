@@ -1604,6 +1604,8 @@ export interface Translations extends NoticeTranslations {
         }
         buyCredits: {
           description: string
+          /** Purchases bill Stripe Managed Payments: Link charges `payer` and adds any tax on top. */
+          managedPaymentsDescription: (payer: string) => string
         }
         autoRefill: {
           title: string

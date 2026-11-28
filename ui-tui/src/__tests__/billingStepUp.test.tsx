@@ -174,3 +174,36 @@ describe('BillingOverlay — auto-reload card divergence', () => {
     expect(out).not.toContain(messages().billing.autoReload.manageCardOnPortal)
   })
 })
+
+describe('BillingOverlay — a Managed Payments payer', () => {
+  const label = 'Subscription payment method (billed by Link)'
+  const managed = { managed_payments: { label } }
+
+  it('buys with it when no card is on file, instead of taking the add-card path', () => {
+    const out = render({ ...overlay('buy'), state: billState({ ...managed, card: null }) })
+    expect(out).toContain(`Payment: ${label}`)
+    expect(out).toContain('$25')
+    expect(out).not.toContain('Add a card on the portal')
+  })
+
+  it('names Link and the tax it adds before the charge, over the card on file', () => {
+    const out = render({ ...overlay('confirm'), state: billState(managed) })
+    expect(out).toContain(`Payment: ${label}`)
+    expect(out).toContain('allow Link to charge')
+    expect(out).not.toContain('Nous Research to charge your card')
+    expect(out).not.toContain('visa')
+    // Link adds tax on top: the amount is the credits bought, never a "Total" or "Pay $X now".
+    expect(out).toContain('Before tax:')
+    expect(out).toContain('of credits')
+    expect(out).not.toContain('Total:')
+    expect(out).not.toContain('Pay $')
+  })
+
+  it('keeps the card on file when the portal names no Managed Payments payer', () => {
+    const out = render(overlay('confirm'))
+    expect(out).toContain('Payment: visa ····4242')
+    expect(out).toContain('Nous Research to charge your card')
+    expect(out).toContain('Total:')
+  })
+})
+

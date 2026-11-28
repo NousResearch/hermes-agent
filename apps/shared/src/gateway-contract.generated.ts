@@ -53,6 +53,7 @@ export interface BillingStateResult {
   max_usd?: string | null
   card?: BillingCardInfo | null
   payment_method?: BillingPaymentMethod | null
+  managed_payments?: BillingManagedPayments | null
   monthly_cap?: BillingMonthlyCap | null
   auto_reload?: BillingAutoReload | null
   keep_going_on_credits?: boolean | null
@@ -79,6 +80,10 @@ export interface BillingPaymentMethod {
   resolved_via?: string | null
 }
 export type PaymentMethodKind = 'card' | 'link' | 'unknown'
+/** Purchases bill Stripe Managed Payments instead of ``card``: Link charges this payer, adds any sales tax or VAT on top, and sends the receipt. ``label`` names it. */
+export interface BillingManagedPayments {
+  label: string
+}
 export interface BillingMonthlyCap {
   limit_usd?: string | null
   limit_display: string

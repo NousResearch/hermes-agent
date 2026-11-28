@@ -104,6 +104,13 @@ class BillingPaymentMethod(Result):
     resolved_via: str | None = None
 
 
+class BillingManagedPayments(Result):
+    """Purchases bill Stripe Managed Payments instead of ``card``: Link charges this payer, adds any
+    sales tax or VAT on top, and sends the receipt. ``label`` names it."""
+
+    label: str
+
+
 class BillingMonthlyCap(Result):
     limit_usd: str | None = None
     limit_display: str
@@ -159,6 +166,8 @@ class BillingStateResult(Result):
     max_usd: str | None = None
     card: BillingCardInfo | None = None
     payment_method: BillingPaymentMethod | None = None
+    # Set when purchases bill Managed Payments instead of ``card`` (which auto-reload still charges).
+    managed_payments: BillingManagedPayments | None = None
     monthly_cap: BillingMonthlyCap | None = None
     auto_reload: BillingAutoReload | None = None
     # Window plans: "Keep going on credits". None = no control (not admin,

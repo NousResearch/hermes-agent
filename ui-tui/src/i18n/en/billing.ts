@@ -55,9 +55,13 @@ export const billingEn = {
     confirm: {
       title: 'Confirm purchase',
       total: (amount: string) => `Total: ${amount}`,
+      beforeTax: (amount: string) => `Before tax: ${amount}`,
       portalCardCharged: 'Your card saved on the portal will be charged.',
       authorization: 'By confirming, you allow Nous Research to charge your card.',
+      authorizationManagedPayments:
+        'By confirming, you allow Link to charge this payment method for this amount plus any sales tax or VAT.',
       payNow: (amount: string) => `Pay ${amount} now`,
+      buyCredits: (amount: string) => `Buy ${amount} of credits`,
       hint: '↑/↓ select · Enter confirm · Y/N quick · Esc back'
     },
     // Keep going on credits (window plans only; the portal sends the setting only there).

@@ -144,6 +144,44 @@ describe('BillingSettings', () => {
     expect(screen.getByRole('button', { name: /^Buy$/ }).hasAttribute('disabled')).toBe(false)
   })
 
+  describe('a Managed Payments payer', () => {
+    const label = 'Subscription payment method (billed by Link)'
+    const taxNote = `A single charge to ${label}, plus any sales tax or VAT, added to your balance today.`
+
+    it('lets an account with no card buy, naming Link and the tax it adds', async () => {
+      apiMocks.fetchBillingState.mockResolvedValue(
+        okBilling({ ...postTrainBillingState, card: null, managed_payments: { label } })
+      )
+      apiMocks.fetchSubscriptionState.mockResolvedValue(okSubscription(postTrainSubscriptionState))
+      apiMocks.charge.mockResolvedValue({
+        ok: false,
+        refusal: { kind: 'stripe_unavailable', message: '', retryAfter: 120 },
+        idempotencyKey: 'fixture-charge'
+      })
+
+      renderBilling()
+
+      expect(await screen.findByText(taxNote)).toBeTruthy()
+      expect(screen.queryByText('No payment method on file')).toBeNull()
+      expect(screen.getByText(label)).toBeTruthy()
+
+      fireEvent.click(screen.getByRole('button', { name: /^Buy$/ }))
+
+      await waitFor(() => expect(apiMocks.charge).toHaveBeenCalledTimes(1))
+    })
+
+    it('keeps showing the card auto-refill charges when the account has one', async () => {
+      apiMocks.fetchBillingState.mockResolvedValue(okBilling({ ...postTrainBillingState, managed_payments: { label } }))
+      apiMocks.fetchSubscriptionState.mockResolvedValue(okSubscription(postTrainSubscriptionState))
+
+      renderBilling()
+
+      expect(await screen.findByText(taxNote)).toBeTruthy()
+      expect(screen.getByText('Visa •••• 4242 - subscription card')).toBeTruthy()
+      expect(screen.getByRole('button', { name: /^Buy$/ }).hasAttribute('disabled')).toBe(false)
+    })
+  })
+
   it('disables buy controls when no card is on file', async () => {
     const fixture = billingDevFixtures['no-card']
 

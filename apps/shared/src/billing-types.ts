@@ -197,6 +197,11 @@ export interface BillingStateResponse {
   // Typed payment-method union (newer gateways only); `card` remains the
   // compatibility field and stays populated for kind "card".
   payment_method?: BillingPaymentMethod | null
+  // Set when purchases bill Stripe Managed Payments instead of `card`: Link
+  // charges this payer, adds any sales tax or VAT on top, and sends the
+  // receipt. `card` still names the card on file, which auto-reload charges.
+  // Absent/null whenever the card on file pays, and on older gateways.
+  managed_payments?: { label: string } | null
   charge_presets: string[]
   charge_presets_display: string[]
   cli_billing_enabled: boolean

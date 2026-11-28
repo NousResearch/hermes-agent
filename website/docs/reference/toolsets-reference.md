@@ -106,7 +106,6 @@ Platform toolsets define the complete tool configuration for a deployment target
 | `hermes-email` | Same as `hermes-cli`. |
 | `hermes-sms` | Same as `hermes-cli`. |
 | `hermes-bluebubbles` | Same as `hermes-cli`. |
-| `hermes-dingtalk` | Same as `hermes-cli`. |
 | `hermes-feishu` | Adds the five `feishu_doc_*` / `feishu_drive_*` tools (only used by the document-comment handler, not the regular chat adapter). |
 | `hermes-qqbot` | Same as `hermes-cli`. |
 | `hermes-wecom` | Same as `hermes-cli`. |
@@ -115,7 +114,7 @@ Platform toolsets define the complete tool configuration for a deployment target
 | `hermes-webhook` | Restricted safe subset — only `web_search`, `web_extract`, `vision_analyze`, and `clarify`. Webhook-triggered runs get no terminal, file, or browser access. |
 | `hermes-gateway` | Internal gateway orchestrator toolset — union of every `hermes-<platform>` toolset; used when the gateway needs to accept any message source. |
 
-Platforms provided by plugins get an implicit `hermes-<platform>` bundle that is not part of `hermes-gateway`. For example, `hermes-homeassistant` and `hermes-yuanbao` still resolve once the `homeassistant` / `yuanbao` catalog plugin is installed, but they are no longer built-in toolsets.
+Platforms provided by plugins get an implicit `hermes-<platform>` bundle that is not part of `hermes-gateway`. For example, `hermes-homeassistant`, `hermes-yuanbao` and `hermes-dingtalk` still resolve once the `homeassistant` / `yuanbao` / `dingtalk` catalog plugin is installed, but they are no longer built-in toolsets.
 
 ## Dynamic Toolsets
 

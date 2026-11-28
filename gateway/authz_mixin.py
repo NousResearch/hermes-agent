@@ -690,7 +690,7 @@ class GatewayAuthorizationMixin:
                 keys = ("allow_from", "group_allow_from") if source.platform in _GROUP_USER_ENV else ("allow_from",)
             adapter_allow = [entry for key in keys for entry in _coerce_allow_set(extra.get(key))]
             if not adapter_allow:
-                # Plugin platforms (Buzz, DingTalk) spell their env allowlist as ``extra.allowed_users``;
+                # Plugin platforms (e.g. Buzz) spell their env allowlist as ``extra.allowed_users``;
                 # under multiplex only the default profile's list reaches the env (first-writer-wins
                 # bridge), so read the live adapter's.
                 entry = _registry_entry(source.platform)

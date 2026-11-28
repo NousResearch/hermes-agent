@@ -3,7 +3,7 @@ secret scope (#77548 cluster; #72348 / #86905 precedent).
 
 Under ``gateway.multiplex_profiles`` ``os.environ`` holds the DEFAULT profile's values. A raw
 ``os.getenv`` in an adapter's own gate let the default's ``GATEWAY_ALLOW_ALL_USERS=true`` open every
-secondary email/QQ/WhatsApp/Matrix/Teams/Slack/LINE/DingTalk bot, and the default's allowlist decide
+secondary email/QQ/WhatsApp/Matrix/Teams/Slack/LINE bot, and the default's allowlist decide
 who may approve on a secondary bot. Two invariants per adapter: the default env never answers a
 scoped gate; the scope's own opt-in/allowlist does.
 """
@@ -21,7 +21,7 @@ _DEFAULT_ENV = {
     "TEAMS_ALLOW_ALL_USERS": "true", "TEAMS_ALLOWED_USERS": "default-admin",
     "MATRIX_ALLOWED_USERS": "@default-admin:example.org", "MATRIX_IGNORE_USER_PATTERNS": r"^@spam:.*",
     "WHATSAPP_ALLOWED_USERS": "+15550001111", "SLACK_ALLOW_BOTS": "all", "SLACK_API_HUMAN_USERS": "U0DEFAULT",
-    "LINE_ALLOW_ALL_USERS": "true", "LINE_ALLOWED_USERS": "Udefault", "DINGTALK_ALLOWED_USERS": "default-admin",
+    "LINE_ALLOW_ALL_USERS": "true", "LINE_ALLOWED_USERS": "Udefault",
     "EMAIL_ALLOWED_USERS": "bot2-admin@example.org",
 }
 
@@ -62,14 +62,6 @@ def _slack():
     from plugins.platforms.slack.adapter import SlackAdapter
 
     adapter = SlackAdapter.__new__(SlackAdapter)
-    adapter.config = PlatformConfig(enabled=True, extra={})
-    return adapter
-
-
-def _dingtalk():
-    from plugins.platforms.dingtalk.adapter import DingTalkAdapter
-
-    adapter = DingTalkAdapter.__new__(DingTalkAdapter)
     adapter.config = PlatformConfig(enabled=True, extra={})
     return adapter
 
@@ -121,8 +113,6 @@ _GATES = [
      lambda: set(_slack()._slack_api_human_users()), set(), {"U0BOT2"}),
     ("line.allow_all", {"LINE_ALLOW_ALL_USERS": "true"}, lambda: _line().allow_all, False, True),
     ("line.allowed_users", {"LINE_ALLOWED_USERS": "Ubot2"}, lambda: _line().allowed_users, set(), {"Ubot2"}),
-    ("dingtalk.allowed_users", {"DINGTALK_ALLOWED_USERS": "Bot2Admin"},
-     lambda: {u.lower() for u in _dingtalk()._csv_setting("allowed_users", "DINGTALK_ALLOWED_USERS")}, set(), {"bot2admin"}),
 ]
 
 

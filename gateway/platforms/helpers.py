@@ -739,7 +739,7 @@ def compile_mention_patterns(raw, *, log_prefix: str, platform_label: str | None
                              logger_: logging.Logger | None = None) -> list[re.Pattern]:
     """Compile regex wake-word/mention patterns from config or env values.
 
-    * **Config-style** (dingtalk, telegram): pass ``platform_label``. ``raw`` must be a
+    * **Config-style** (telegram): pass ``platform_label``. ``raw`` must be a
       list or string (else warn + ``[]``); non-string entries skipped; info log on load.
     * **Wakeword-style** (photon, bluebubbles): pass ``defaults``. ``raw`` may be None
       (defaults), a string (JSON list or comma/newline separated), a list, or a scalar.

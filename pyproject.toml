@@ -480,18 +480,13 @@ termux = [
 termux-all = [
   # Best-effort "install all" profile for Termux. Same policy as [all]:
   # only includes extras that are not prepared on demand by PM.
-  # Backends like telegram/slack/dingtalk/feishu lazy-install at
+  # Backends like telegram/slack/feishu lazy-install at
   # first use, so they're no longer eager-installed here.
   "hermes-agent[termux]",
   "hermes-agent[google]",
   "hermes-agent[sms]",
   "hermes-agent[web]",
   "hermes-agent[pty]",
-]
-dingtalk = [
-  "dingtalk-stream==0.24.3",
-  "alibabacloud-dingtalk==2.2.65",
-  "qrcode==7.4.2",
 ]
 feishu = ["lark-oapi==1.7.5", "qrcode==7.4.2"]
 google = [
@@ -542,7 +537,7 @@ all = [
   #   anthropic, exa, firecrawl, parallel-web, fal, edge-tts,
   #   modal, daytona, vercel, messaging (telegram/discord/slack),
   #   matrix, slack, honcho, voice (faster-whisper),
-  #   dingtalk, feishu, bedrock, tts-premium (elevenlabs)
+  #   dingtalk (now a plugin), feishu, bedrock, tts-premium (elevenlabs)
   #
   # Why: the matrix extra in particular pulls `mautrix[encryption]`
   # which depends on `python-olm`. python-olm has Linux-only wheels and

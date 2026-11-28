@@ -445,12 +445,12 @@ These are set automatically by the Docker terminal backend when `proxy.enabled: 
 | `EMAIL_HOME_ADDRESS_NAME` | Display name for the email home target |
 | `EMAIL_POLL_INTERVAL` | Email polling interval in seconds |
 | `EMAIL_ALLOW_ALL_USERS` | Allow all inbound email senders |
-| `DINGTALK_CLIENT_ID` | DingTalk bot AppKey from developer portal ([open.dingtalk.com](https://open.dingtalk.com)) |
-| `DINGTALK_CLIENT_SECRET` | DingTalk bot AppSecret from developer portal |
-| `DINGTALK_ALLOWED_USERS` | Comma-separated DingTalk user IDs allowed to message the bot |
-| `DINGTALK_WEBHOOK_URL` | Static robot webhook URL for cross-platform / cron delivery. |
-| `DINGTALK_HOME_CHANNEL` | Default conversation ID for cron / notification delivery. |
-| `DINGTALK_HOME_CHANNEL_NAME` | Display name for the DingTalk home channel. |
+| `DINGTALK_CLIENT_ID` | DingTalk plugin: bot AppKey from developer portal ([open.dingtalk.com](https://open.dingtalk.com)); requires the `dingtalk` Hermes Labs plugin, see [DingTalk](../user-guide/messaging/dingtalk.md) |
+| `DINGTALK_CLIENT_SECRET` | DingTalk plugin: bot AppSecret from developer portal |
+| `DINGTALK_ALLOWED_USERS` | DingTalk plugin: comma-separated DingTalk user IDs allowed to message the bot |
+| `DINGTALK_WEBHOOK_URL` | DingTalk plugin: static robot webhook URL for cross-platform / cron delivery. |
+| `DINGTALK_HOME_CHANNEL` | DingTalk plugin: default conversation ID for cron / notification delivery. |
+| `DINGTALK_HOME_CHANNEL_NAME` | DingTalk plugin: display name for the DingTalk home channel. |
 | `FEISHU_APP_ID` | Feishu/Lark bot App ID from [open.feishu.cn](https://open.feishu.cn/) |
 | `FEISHU_APP_SECRET` | Feishu/Lark bot App Secret |
 | `FEISHU_DOMAIN` | `feishu` (China) or `lark` (international). Default: `feishu` |

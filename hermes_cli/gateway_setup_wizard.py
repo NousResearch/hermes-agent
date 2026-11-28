@@ -343,7 +343,7 @@ def _builtin_setup_fn(key: str):
     """Resolve a built-in platform's setup function; late-bound to dodge the hermes_cli.setup cycle."""
     from hermes_cli import setup as _s
     return {
-        # telegram/discord/slack/whatsapp/dingtalk/feishu/wecom setup_fns come from their plugins.
+        # telegram/discord/slack/whatsapp/feishu/wecom setup_fns come from their plugins.
         "webhooks": _gw().setup_platforms._setup_webhooks,
     }.get(key)
 

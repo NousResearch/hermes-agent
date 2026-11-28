@@ -1,11 +1,11 @@
 """Plain-text ``/approve`` prompt for adapters whose ``send`` cuts long text instead of splitting it.
 
-ntfy, DingTalk, Photon and LINE (``splits_long_messages = False``) deliver only the first N
-characters of a message. The default prompt puts the command first, so on those surfaces a long
-command pushed the answer instructions and the deadline past the cut. Here the instructions come
-first, and a command that would still be cut is shown shortened with the prompt marked Deny-only
-(a command that fits only beside Deny is shown whole, with a notice saying why only Deny is offered):
-the same rule and notice the button cards use (``render_exec_approval``).
+ntfy, Photon, LINE and plugin adapters such as DingTalk (``splits_long_messages = False``) deliver
+only the first N characters of a message. The default prompt puts the command first, so on those
+surfaces a long command pushed the answer instructions and the deadline past the cut. Here the
+instructions come first, and a command that would still be cut is shown shortened with the prompt
+marked Deny-only (a command that fits only beside Deny is shown whole, with a notice saying why only
+Deny is offered): the same rule and notice the button cards use (``render_exec_approval``).
 """
 
 from __future__ import annotations

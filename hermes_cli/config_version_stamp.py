@@ -87,8 +87,8 @@ def note_first_stamp(home, on_disk: dict, to_write: dict) -> list[str]:
     """``save_config`` is about to give *home*'s config.yaml (*on_disk*: missing or never stamped) its first
     ``_config_version`` outside a migration, so the steps up to that version never see this home. Do into
     *to_write* what they would have done with the home's pre-split files: record the left-core rows in use
-    (``left_core_migration.record_core_use``), or the stamp would make a home that ran the core feature look
-    newer than the split, and move its AGENT_BROWSER_* settings (``config_migrations_browser``), which
+    (``left_core_migration.record_core_use``; a Labs row is not, a missing file proving no use), or the stamp
+    would make a home that ran the core feature look newer than the split, and move its AGENT_BROWSER_* settings (``config_migrations_browser``), which
     nothing reads any more. Returns those browser moves."""
     if "_config_version" in on_disk or "_config_version" not in to_write:
         return []
@@ -98,7 +98,7 @@ def note_first_stamp(home, on_disk: dict, to_write: dict) -> list[str]:
     from hermes_cli.config_migrations_browser import adopt_agent_browser_env
     from hermes_cli.left_core_migration import LEFT_CORE, record_core_use
     for version in sorted({feature.left_at for feature in LEFT_CORE if feature.left_at}):
-        record_core_use(home, to_write, version)
+        record_core_use(home, to_write, version, first_stamp=True)
     return adopt_agent_browser_env(home, to_write)
 
 

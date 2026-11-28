@@ -70,8 +70,8 @@ def _adapter_event(event, **changes):
 
 
 def _drop_remote_media(event):
-    """An adapter that could not cache a download leaves its remote URL in ``media_urls`` (DingTalk
-    always does). Capture takes only local files, so that one entry refused the whole message, text
+    """An adapter that could not cache a download leaves its remote URL in ``media_urls`` (the DingTalk
+    plugin always does). Capture takes only local files, so that one entry refused the whole message, text
     included: drop it and tell the agent instead. Malformed media lists still reach validation."""
     urls, types = event.media_urls, event.media_types
     if not isinstance(event.text, str) or _media_clause(event) is not None or all(map(os.path.isabs, urls)):

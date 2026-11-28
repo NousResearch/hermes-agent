@@ -428,6 +428,16 @@ def _is_known_delivery_platform(platform_name: str) -> bool:
     return name in _KNOWN_DELIVERY_PLATFORMS or bool(_plugin_cron_env_var(name))
 
 
+def moved_platform_hint(platform_name: str) -> str:
+    """``". <label> moved out of core into the '<plugin>' plugin: install it with `<command>`"`` for a
+    platform that left core whose plugin is not loaded, else ``""``: a route saved while core shipped it
+    names the install instead of failing as an unknown target."""
+    from gateway.platform_registry import platform_registry
+    from hermes_cli.left_core_migration import platform_install_hint
+    name = platform_name.strip().lower()
+    return "" if platform_registry.get(name) else platform_install_hint(name)
+
+
 def _resolve_home_env_var(platform_name: str) -> str:
     """Env var name for a platform's cron home channel (``PlatformEntry.cron_deliver_env_var``)."""
     return _plugin_cron_env_var(platform_name.lower())
@@ -706,7 +716,11 @@ def _resolve_single_delivery_target(
         chat_id, thread_id, resolution_error = resolve_send_target(
             platform_key, rest, pass_unresolved_references=True)
         if resolution_error:
+            # Recorded in the run result, not only logged: another target reaching its chat must not
+            # hide this one (a saved route to a platform that left core carries its install command).
             logger.warning("Invalid cron delivery target '%s': %s", deliver_value, resolution_error)
+            if skipped is not None:
+                skipped.append(f"delivery target '{deliver_value}' skipped: {resolution_error}")
             return None
         # Chat-only target on the origin chat adopts the origin lane where it is a durable place
         # (Telegram topic, Slack thread); Matrix/Mattermost threads are per-message ids -> top-level.
@@ -739,7 +753,12 @@ def _resolve_single_delivery_target(
             "thread_id": origin.get("thread_id"),
         }
     if not _is_known_delivery_platform(platform_name):
-        _note_unloaded_homes([n for n in _unloaded_home_platforms() if n == platform_name.lower()], skipped)
+        if saved := [n for n in _unloaded_home_platforms() if n == platform_name.lower()]:
+            _note_unloaded_homes(saved, skipped)
+        elif (hint := moved_platform_hint(platform_name)) and skipped is not None:
+            # A bare route to a platform that left core (its home in DINGTALK_HOME_CHANNEL-style env, not
+            # config.yaml) is reported like a platform:chat route, not dropped without a word.
+            skipped.append(f"delivery target '{deliver_value}' skipped: no loaded plugin provides it{hint}")
         return None
     chat_id = _get_home_target_chat_id(platform_name)
     return _home_target(platform_name, chat_id, home_provenance) if chat_id else None
@@ -1686,7 +1705,8 @@ def _prepare_target_delivery(
     try:
         platform = Platform(platform_name.lower())
     except (ValueError, KeyError):
-        _note_target_error(job, f"unknown platform '{platform_name}'", delivery_errors)
+        from gateway.outbound.targets import unknown_platform_error
+        _note_target_error(job, unknown_platform_error(platform_name), delivery_errors)
         return None
 
     resolved, resolve_err = _resolve_target_transport(

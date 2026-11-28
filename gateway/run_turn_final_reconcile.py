@@ -39,8 +39,8 @@ def _flood_wait(result: Any) -> Optional[float]:
 def _edit_carries_whole(adapter: Any, chat_id: str, content: str) -> bool:
     """Whether one ``edit_message(finalize=True)`` can show all of *content*: the adapter splits an
     oversized final edit into continuations itself (``SPLITS_OVERSIZED_FINAL_EDIT``, Telegram), or
-    *content* fits one message in the adapter's own length units. Google Chat, Slack and DingTalk
-    cut an oversized edit short and still report success, so only the normal send is whole there.
+    *content* fits one message in the adapter's own length units. Google Chat, Slack (and plugin
+    adapters such as DingTalk) cut an oversized edit short and still report success, so only the normal send is whole there.
     Slack cuts the FORMATTED text (``&`` -> ``&amp;``), others the raw text: both must fit."""
     if getattr(adapter, "SPLITS_OVERSIZED_FINAL_EDIT", False) is True:
         return True

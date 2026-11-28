@@ -1504,10 +1504,6 @@ platform:
   email:
     image_line: "Imagen: {url}"
     standalone_subject: "Hermes Agent"
-  dingtalk:
-    emotion:
-      thinking: "🤔Pensando"
-      done: "🥳Listo"
   irc:
     quit_message: "Hermes Agent se está apagando"
     standalone_quit: "entregado"

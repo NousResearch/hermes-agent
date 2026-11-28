@@ -1,4 +1,4 @@
-"""The plain-text approval prompt on adapters whose ``send`` cuts long text (ntfy, DingTalk webhook,
+"""The plain-text approval prompt on adapters whose ``send`` cuts long text (ntfy,
 Photon, LINE): the answer instructions and the deadline survive the cut, and a command that cannot
 be shown whole leaves only Deny, the same rule the button cards follow (#62359)."""
 from __future__ import annotations
@@ -26,18 +26,6 @@ def _ntfy():
         wire.append(content.decode())
         return SimpleNamespace(status_code=200, headers={}, json=lambda: {"id": "x"}, text="")
     a._http_client = SimpleNamespace(post=post)
-    return a, wire
-
-
-def _dingtalk():
-    a = load_plugin_adapter("dingtalk").DingTalkAdapter(PlatformConfig(enabled=True, extra={}))
-    wire = []
-
-    async def post(url, json=None, timeout=None, **_k):
-        wire.append(json["markdown"]["text"])
-        return SimpleNamespace(status_code=200, text="{}", json=lambda: {"errcode": 0})
-    a._http_client = SimpleNamespace(post=post)
-    a._get_valid_webhook = lambda _chat: ("https://oapi.dingtalk.com/hook",)
     return a, wire
 
 
@@ -90,7 +78,7 @@ def pending():
         approval._gateway_queues.clear()
 
 
-@pytest.mark.parametrize("make", [_ntfy, _dingtalk, _photon, _line], ids=["ntfy", "dingtalk", "photon", "line"])
+@pytest.mark.parametrize("make", [_ntfy, _photon, _line], ids=["ntfy", "photon", "line"])
 def test_long_command_keeps_instructions_and_offers_only_deny(make, pending):
     adapter, wire = make()
     adapter.pause_typing_for_chat = lambda _c: None
@@ -103,7 +91,7 @@ def test_long_command_keeps_instructions_and_offers_only_deny(make, pending):
     assert approval.resolve_gateway_approval_card(SESSION, "once", "r1") == 0  # a crafted approve resolves nothing
 
 
-@pytest.mark.parametrize("make", [_ntfy, _dingtalk, _photon, _line], ids=["ntfy", "dingtalk", "photon", "line"])
+@pytest.mark.parametrize("make", [_ntfy, _photon, _line], ids=["ntfy", "photon", "line"])
 def test_short_command_is_shown_whole_with_every_choice(make, pending):
     adapter, wire = make()
     adapter.pause_typing_for_chat = lambda _c: None

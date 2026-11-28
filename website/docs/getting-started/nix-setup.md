@@ -901,7 +901,6 @@ requirements can still fail that resolution. The table lists common groups;
 |-------|-----------------|
 | `messaging` | Discord, Telegram, Slack |
 | `matrix` | Matrix/Element (mautrix with encryption; Linux only) |
-| `dingtalk` | DingTalk |
 | `feishu` | Feishu/Lark |
 | `voice` | Local speech-to-text (faster-whisper) |
 | `edge-tts` | Edge TTS provider |

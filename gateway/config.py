@@ -246,7 +246,6 @@ class Platform(Enum):
     MATRIX = "matrix"
     EMAIL = "email"
     SMS = "sms"
-    DINGTALK = "dingtalk"
     API_SERVER = "api_server"
     WEBHOOK = "webhook"
     MSGRAPH_WEBHOOK = "msgraph_webhook"
@@ -894,8 +893,8 @@ def _load_gateway_config_layers(_home: Path, gw_data: dict, strict: bool) -> Gat
             raise
         abort_yaml_env_refresh()
         logger.warning(
-            # DingTalk settings → env vars: migrated to the dingtalk plugin's apply_yaml_config_fn hook
-            # (plugins/platforms/dingtalk/adapter.py). #41112 / #3823.
+            # DingTalk settings → env vars: the dingtalk plugin (hermes-labs-plugins) bridges them in
+            # its apply_yaml_config_fn hook. #41112 / #3823.
             # Mattermost config bridge moved into plugins/platforms/mattermost/
             # adapter.py::_apply_yaml_config — see #25443 (apply_yaml_config_fn).
             # Matrix settings → env vars: migrated to the matrix plugin's apply_yaml_config_fn hook

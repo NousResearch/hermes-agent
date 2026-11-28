@@ -58,7 +58,6 @@
           "azure-identity"
           "bedrock"
           "daytona"
-          "dingtalk"
           "edge-tts"
           "exa"
           "fal"

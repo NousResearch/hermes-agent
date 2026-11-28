@@ -1,0 +1,33 @@
+name: sourcebook
+title: SourceBook
+repo: https://github.com/abundantbeing/sourcebook
+sha: b524c7175601f41db3ae99867afeac618748f919
+version: "0.1.0"
+description: "Source-grounded research notebooks and an 8-format interactive Studio for Hermes Desktop: ingest PDFs, DOCX, Markdown, CSV/JSON tables, YouTube transcripts, local folders, and web URLs into local SQLite WAL notebooks with hybrid semantic + FTS5 BM25 retrieval, clickable passage citations, visual PDF page previews, a live Claim Ledger with cross-source contradiction detection, Coverage Map, universal Hermes model routing, and eight Studio formats (Study Guides, 2-Host Audio Overviews with Spoken Join-the-Podcast interruption, Mind Maps, SM-2 Flashcards, Quizzes, Bento Infographics, multi-view Data Tables, and AI-illustrated Slide Decks with inline editing and PPTX/PDF export). Disclosure — no telemetry, no credentials or secret file reads, no shell commands, no self-updating; notebooks and media stay under the profile's plugin-data; outbound requests happen only on explicit user URL/YouTube/Deep Research ingestion or optional edge-tts Audio Overviews (checked via tools.url_safety and agent.redact); local files outside plugin-data are read only when explicitly uploaded or synced via Folder / /sourcebook sync (checked via agent.file_safety); clicking Memory appends a cited excerpt to the profile's MEMORY.md."
+maintainer: abundantbeing
+tier: community
+category: desktop
+requires_hermes: ">=0.22.6"
+docs_url: https://github.com/abundantbeing/sourcebook#readme
+image: https://raw.githubusercontent.com/abundantbeing/sourcebook/b524c7175601f41db3ae99867afeac618748f919/docs/catalog-cover.jpg
+screenshots:
+  - https://raw.githubusercontent.com/abundantbeing/sourcebook/b524c7175601f41db3ae99867afeac618748f919/docs/screenshots/workspace-chat.png
+  - https://raw.githubusercontent.com/abundantbeing/sourcebook/b524c7175601f41db3ae99867afeac618748f919/docs/screenshots/workspace-light.png
+  - https://raw.githubusercontent.com/abundantbeing/sourcebook/b524c7175601f41db3ae99867afeac618748f919/docs/screenshots/studio-slides.png
+  - https://raw.githubusercontent.com/abundantbeing/sourcebook/b524c7175601f41db3ae99867afeac618748f919/docs/screenshots/studio-audio.png
+  - https://raw.githubusercontent.com/abundantbeing/sourcebook/b524c7175601f41db3ae99867afeac618748f919/docs/screenshots/claim-ledger.png
+  - https://raw.githubusercontent.com/abundantbeing/sourcebook/b524c7175601f41db3ae99867afeac618748f919/docs/screenshots/studio-mindmap.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - sourcebook_search
+    - sourcebook_list_notebooks
+    - sourcebook_save_note
+    - sourcebook_studio
+    - sourcebook_analyze_data
+    - sourcebook_deep_research
+  provides_hooks:
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

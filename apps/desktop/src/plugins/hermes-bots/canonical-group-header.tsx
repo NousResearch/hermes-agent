@@ -19,6 +19,8 @@ interface CanonicalGroupHeaderProps {
   canDisband: boolean
   canRename: boolean
   canStop: boolean
+  /** The room's own connection, so member faces resolve that connection's bot meta. */
+  connectionId?: null | string
   detailsOpen: boolean
   driver?: CanonicalDriverStatus
   onBack?: () => void
@@ -33,7 +35,7 @@ interface CanonicalGroupHeaderProps {
 }
 
 /** Title (opens the details panel), each member's live chip, and quiet icon actions. */
-export function CanonicalGroupHeader({ binding, methods, onChanged, onReplaced, busy, canDisband, canRename, canStop, detailsOpen, driver, onBack, onDetails, onDisband, onRename, onStop, room, statuses, stopping, working }: CanonicalGroupHeaderProps) {
+export function CanonicalGroupHeader({ binding, methods, onChanged, onReplaced, busy, canDisband, canRename, canStop, connectionId, detailsOpen, driver, onBack, onDetails, onDisband, onRename, onStop, room, statuses, stopping, working }: CanonicalGroupHeaderProps) {
   const labels = useCanonicalGroupLabels()
   const badges: Record<string, string> = { missing: labels.peerNotJoinedBadge, unavailable: labels.peerOfflineBadge, needs_reauthorization: labels.peerRejoinBadge }
   const peerBadges = new Map(peerMemberStates(room?.members, driver?.peer_routes).map(({ member, status }) => [member.member_id, badges[status]]))
@@ -60,7 +62,7 @@ export function CanonicalGroupHeader({ binding, methods, onChanged, onReplaced, 
         {canDisband && action(labels.disband, 'trash', () => setEnding(true), busy || !room)}
       </>}
       working={working}>
-      <CanonicalGroupRoster label={labels.members} labels={labels} members={room?.members} peerBadges={peerBadges} statuses={statuses} />
+      <CanonicalGroupRoster connectionId={connectionId} label={labels.members} labels={labels} members={room?.members} peerBadges={peerBadges} statuses={statuses} />
       <CanonicalGroupAttention driver={driver} labels={labels} />
     </RoomHeader>
     <CanonicalPeerJoinRows binding={binding} methods={methods} onChanged={onChanged} onReplaced={onReplaced}

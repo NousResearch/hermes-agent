@@ -18,7 +18,7 @@ from typing import Any, Optional
 # too. zh-Hans is the only non-English locale this project ships documentation
 # for, which is where the list stops.
 LIVE_GATEWAY_SILENT_MARKERS = frozenset({
-    "[SILENT]", "SILENT", "NO_REPLY", "NO REPLY",
+    "[SILENT]", "SILENT", "NO_REPLY", "[NO_REPLY]", "NO REPLY",
     "[静默]", "静默", "[沉默]", "沉默",
     # Not a rendering of the sentinel word: a cron lane drifted to this label
     # (``[审核]``, "reviewed/audited") as its whole response and the token reached
@@ -30,8 +30,9 @@ LIVE_GATEWAY_SILENT_MARKERS = frozenset({
 # Bracketed markers drive the autonomous lane's prefix rule ("[SILENT] nothing
 # new this tick"). Derived from the set above so a new marker cannot be added to
 # one rule and forgotten in the other.
+# [NO_REPLY] is an exact-token alias, not a new autonomous prefix command.
 _BRACKETED_SILENCE_MARKERS = tuple(
-    sorted(m for m in LIVE_GATEWAY_SILENT_MARKERS if m.startswith("["))
+    sorted(m for m in LIVE_GATEWAY_SILENT_MARKERS if m.startswith("[") and m != "[NO_REPLY]")
 )
 
 # The persisted user-row kind of a self-injected MessageEvent(internal=True) turn; only these

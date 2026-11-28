@@ -3852,6 +3852,11 @@ export interface Translations extends NoticeTranslations {
       unreachableDescription: string
       openTarget: (url: string) => string
       fallbackTitle: string
+      textComment: string
+      textCommentOn: string
+      textCommentPlaceholder: string
+      sendTextComment: string
+      textCommentUnavailable: string
       annotate: string
       annotateOn: string
       annotateNeedPage: string

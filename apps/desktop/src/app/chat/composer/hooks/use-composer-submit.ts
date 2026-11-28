@@ -246,7 +246,7 @@ export function useComposerSubmit({
 
   useLayoutEffect(
     () =>
-      onComposerSubmitRequest(({ surfaceId: requestedSurfaceId, target, text, displayKind }) => {
+      onComposerSubmitRequest(({ surfaceId: requestedSurfaceId, target, text, displayKind, onAccepted }) => {
         if (
           target === scope.target &&
           surfaceId !== null &&
@@ -254,6 +254,7 @@ export function useComposerSubmit({
           paneVisible &&
           !refusesExternalSubmit(inputDisabled, backendTransition)
         ) {
+          onAccepted?.()
           const current = externalSubmitRef.current
           const queueKey = activeQueueSessionKeyRef.current
 

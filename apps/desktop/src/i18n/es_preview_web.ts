@@ -4,6 +4,11 @@ import type { Translations } from './types'
 
 // The in-app browser pane's copy (`preview.web`), composed by es.ts.
 export const esPreviewWeb: TranslationOverride<Translations['preview']['web']> = {
+  textComment: 'Comentar el texto seleccionado',
+  textCommentOn: 'Dejar de comentar texto',
+  textCommentPlaceholder: 'Añadir comentario…',
+  sendTextComment: 'Enviar cambio',
+  textCommentUnavailable: 'Abre el chat original e inténtalo de nuevo. Tu comentario no se ha enviado.',
   embeddedPreviewHint:
     'Algunos sitios bloquean las vistas previas incrustadas. Abre la página original en una pestaña del navegador.',
   appFailedToBoot: 'La app de vista previa no arrancó',

@@ -86,6 +86,8 @@ const cssEscape = (value: string): string => {
 }
 
 interface SubmitDetail {
+  /** Called synchronously after the recipient accepts responsibility for the send. */
+  onAccepted?: () => void
   /** Unique mounted composer surface captured at click time. */
   surfaceId: string
   target: ComposerTarget
@@ -650,14 +652,17 @@ export const onComposerDraftRequests = (
 
 /** Submit a prompt through a composer as if the user typed + sent it. Lets
  * external panels (e.g. the review pane's "let the agent ship it" button) hand
- * the agent a task without the user round-tripping through the input. */
+ * the agent a task without the user round-tripping through the input.
+ * `requireAccepted` reports synchronous recipient acceptance; rejected backend
+ * sends still use the composer's ordinary recoverable queue. */
 export const requestComposerSubmit = (
   text: string,
   {
     displayKind,
+    requireAccepted = false,
     surfaceId: requestedSurfaceId,
     target = 'active'
-  }: { displayKind?: 'hidden'; surfaceId?: null | string; target?: ComposerTarget | 'active' } = {}
+  }: { requireAccepted?: boolean; displayKind?: 'hidden'; surfaceId?: null | string; target?: ComposerTarget | 'active' } = {}
 ): boolean => {
   const trimmed = text.trim()
 
@@ -675,14 +680,19 @@ export const requestComposerSubmit = (
     return false
   }
 
+  let accepted = false
+
   dispatchNow<SubmitDetail>(SUBMIT_EVENT, {
     surfaceId,
     target: resolvedTarget,
     text: trimmed,
+    onAccepted: () => {
+      accepted = true
+    },
     ...(displayKind ? { displayKind } : {})
   })
 
-  return true
+  return !requireAccepted || accepted
 }
 
 // A popped-out Browser is a separate renderer, so its Comment Mode cannot use

@@ -14,7 +14,7 @@
  * buttons, so a glyph here and a glyph on the strip are still the same button.
  */
 
-import { useEffect, useState } from 'react'
+import { type ReactNode, useEffect, useState } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
 import { CopyButton } from '@/components/ui/copy-button'
@@ -30,6 +30,7 @@ import { PreviewVaultButton } from './preview-vault-picker'
 
 interface PreviewBrowserBarProps {
   annotateMode?: boolean
+  textCommentAction?: ReactNode
   canGoBack: boolean
   canGoForward: boolean
   commentCount?: number
@@ -108,6 +109,7 @@ export function externalOpenerFor(url: string): (() => void) | undefined {
 
 export function PreviewBrowserBar({
   annotateMode = false,
+  textCommentAction,
   canGoBack,
   canGoForward,
   commentCount = 0,
@@ -239,6 +241,7 @@ export function PreviewBrowserBar({
           onSelect={onToggleAnnotate}
         />
       ) : null}
+      {textCommentAction}
       {annotateMode ? (
         <span
           className="hidden shrink-0 items-center rounded-full px-2 py-0.5 text-[0.625rem] font-semibold tracking-wide text-white uppercase sm:inline-flex"

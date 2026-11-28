@@ -16,12 +16,27 @@
 // nothing there.
 
 import { installGuestExternalHandoff } from './preview-guest-preload'
+import { installGuestTextSelection, PREVIEW_TEXT_SELECTION_MODE_CHANNEL } from './preview-text-selection'
 
 const electron = require('electron') as {
-  ipcRenderer: { sendToHost(channel: string, ...args: unknown[]): void }
+  ipcRenderer: {
+    sendToHost(channel: string, ...args: unknown[]): void
+    on(channel: string, listener: (event: unknown, payload: unknown) => void): void
+    removeListener(channel: string, listener: (event: unknown, payload: unknown) => void): void
+  }
 }
 
 installGuestExternalHandoff({
   addEventListener: (type, listener, capture) => document.addEventListener(type, listener, capture),
   sendToHost: (channel, ...args) => electron.ipcRenderer.sendToHost(channel, ...args)
+})
+
+installGuestTextSelection(document, {
+  onMode: listener => {
+    const onMode = (_event: unknown, enabled: unknown) => listener(enabled)
+    electron.ipcRenderer.on(PREVIEW_TEXT_SELECTION_MODE_CHANNEL, onMode)
+
+    return () => electron.ipcRenderer.removeListener(PREVIEW_TEXT_SELECTION_MODE_CHANNEL, onMode)
+  },
+  sendToHost: (channel, payload) => electron.ipcRenderer.sendToHost(channel, payload)
 })

@@ -460,8 +460,6 @@ async def test_another_plugin_message_does_not_end_the_wait(monkeypatch, probe, 
 # queued behind the plugin's turn (queue mode, an ordinary interrupt) or taken into it (a steer, an
 # active-turn redirect, neither ever queued). The background work is then superseded at once.
 
-WELL_INSIDE_THE_GRACE = 1.0  # seconds; the grace is 120 s
-
 # control -> (busy_input_mode, the agent redirects its active turn, the person's text runs as its own
 # turn, what the person sends)
 _BUSY_CONTROLS = {
@@ -524,7 +522,7 @@ async def test_every_busy_control_a_person_sends_ends_the_wait(monkeypatch, prob
         assert await asyncio.to_thread(bg.handle.wait, 10)
         bg.refine.thread.join(10)
 
-    assert waiting == (False, False, False) and superseded_after < WELL_INSIDE_THE_GRACE
+    assert waiting == (False, False, False) and superseded_after < FAR_INSIDE_THE_GRACE
     assert (len(controls), probe.turns, bg.handle.outcome, bg.refine.outcome) == (
         int(control != "queue" and not refine), ["A", PROMPT, "B"] if own_turn else ["A", PROMPT],
         "cancelled", ["cancelled" if refine else "completed"])

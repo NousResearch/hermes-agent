@@ -57,7 +57,11 @@ def test_started_admission_binds_only_exact_owned_process_and_principal(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_reserved_process_uses_existing_authenticated_adoption_and_persistence(tmp_path):
+@pytest.mark.parametrize("storage_read", ["claim_origin", "verify_claim"])
+async def test_reserved_process_uses_existing_authenticated_adoption_and_persistence(tmp_path, monkeypatch, storage_read):
+    import asyncio
+    import threading
+
     from gateway.session_worker import worker_request
     from gateway.session_worker_reservation import reserve_admission_worker
     db = storage_handle(tmp_path)
@@ -76,7 +80,29 @@ async def test_reserved_process_uses_existing_authenticated_adoption_and_persist
         identity = {k: v for k, v in scope.items() if k != 'epoch'}
         with pytest.raises(Exception, match='permission_denied'):
             await worker_request(connection, None, identity | {'secret': 'wrong-secret-for-reservation'}, operation='adopt')
-        receipt = await worker_request(connection, None, identity, operation='adopt')
+        # A slow worker storage read must not stop the gateway from serving another
+        # callback while adoption waits for that read.
+        loop = asyncio.get_running_loop()
+        started = asyncio.Event()
+        release = threading.Event()
+        released_from_loop = []
+        service = type(db.worker_executions)
+        native_read = getattr(service, storage_read)
+
+        def slow_read(self, **kwargs):
+            loop.call_soon_threadsafe(started.set)
+            released_from_loop.append(release.wait(timeout=3))
+            return native_read(self, **kwargs)
+
+        with monkeypatch.context() as scoped:
+            scoped.setattr(service, storage_read, slow_read)
+            adoption = asyncio.create_task(worker_request(connection, None, identity, operation='adopt'))
+            try:
+                await asyncio.wait_for(started.wait(), timeout=6)
+            finally:
+                release.set()
+                receipt = await adoption
+        assert released_from_loop == [True]
         assert receipt['execution_id'] == scope['execution_id']
         params = scope | {'sequence': 1, 'operation': 'execution.finish', 'payload': {}}
         result = await worker_request(connection, None, params, operation='persist')

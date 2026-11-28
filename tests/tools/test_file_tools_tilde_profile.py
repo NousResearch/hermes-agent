@@ -32,17 +32,32 @@ class TestExpandTilde:
     """Verify the _expand_tilde() helper resolves ~ to the profile home."""
 
     @pytest.mark.platforms("linux")
-    def test_tilde_expands_to_profile_home(self):
-        """When get_subprocess_home returns a value, ~/path uses it."""
+    @pytest.mark.parametrize(
+        ("path", "expected"),
+        [
+            ("~", "/opt/data/profiles/coder/home"),
+            ("~/config.json", "/opt/data/profiles/coder/home/config.json"),
+            (r"~\config.json", "/opt/data/profiles/coder/home/config.json"),
+            (r"~\workspace\file.txt", "/opt/data/profiles/coder/home/workspace/file.txt"),
+        ],
+    )
+    def test_tilde_expands_to_profile_home(self, path, expected):
+        """When get_subprocess_home returns a value, ~ and Windows-style variants use it."""
         with patch("hermes_constants.get_subprocess_home", return_value="/opt/data/profiles/coder/home"):
-            result = ft._expand_tilde("~/scratch/file.txt")
-        assert result == "/opt/data/profiles/coder/home/scratch/file.txt"
-
+            result = ft._expand_tilde(path)
+        assert result == expected
 
     def test_empty_path_unchanged(self):
         """Empty string returns empty."""
         with patch("hermes_constants.get_subprocess_home", return_value="/opt/data/profiles/coder/home"):
             assert ft._expand_tilde("") == ""
+
+    def test_tilde_falls_back_to_expanduser_when_profile_home_unavailable(self):
+        """A missing profile home must fall back to the host default expansion."""
+        expected = os.path.expanduser(r"~\config.json")
+        with patch("hermes_constants.get_subprocess_home", side_effect=RuntimeError("no home")):
+            result = ft._expand_tilde(r"~\config.json")
+        assert result == expected
 
 
 # ---------------------------------------------------------------------------

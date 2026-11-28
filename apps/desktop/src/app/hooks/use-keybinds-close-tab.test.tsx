@@ -128,6 +128,20 @@ describe('close-tab chord over a focused terminal', () => {
     expect(mocks.closeActiveTerminal).toHaveBeenCalledOnce()
   })
 
+  it('leaves fullscreen remote Screen keys to the viewer and its local exit handler', () => {
+    const input = focusedTerminal(false)
+    const viewport = input.parentElement!
+    viewport.dataset.remoteScreen = ''
+    Object.defineProperty(document, 'fullscreenElement', { configurable: true, value: viewport })
+    try {
+      const event = pressCloseChord(input, { shiftKey: true })
+      expect(event.defaultPrevented).toBe(false)
+      expect(mocks.closeActiveTerminal).not.toHaveBeenCalled()
+    } finally {
+      Reflect.deleteProperty(document, 'fullscreenElement')
+    }
+  })
+
   it('keeps closing non-terminal surfaces', () => {
     const input = window.document.createElement('textarea')
     window.document.body.append(input)

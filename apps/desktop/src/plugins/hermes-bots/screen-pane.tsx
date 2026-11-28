@@ -14,7 +14,7 @@
 
 import { Button, Codicon, EmptyState, GlyphSpinner, host, Tip, useValue } from '@hermes/plugin-sdk'
 import type { RpcEvent } from '@hermes/plugin-sdk'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 
 import { useBots } from './i18n'
 import {
@@ -41,6 +41,7 @@ import {
   setScreenViewer
 } from './screen-state'
 import type { RosterRow } from './types'
+import { useScreenFullscreen } from './use-screen-fullscreen'
 
 type RfbLike = {
   viewOnly: boolean
@@ -86,8 +87,106 @@ function ScreenNeedsHttps({ label }: { label: string }) {
   )
 }
 
+/** The fullscreen toggle lives outside the pane so its branches don't bloat BotScreenPane. */
+function ScreenFullscreenButton({
+  fullscreen,
+  t
+}: {
+  fullscreen: ReturnType<typeof useScreenFullscreen>
+  t: ReturnType<typeof useBots>
+}) {
+  const label = fullscreen.active ? t.screen.exitFullscreen : t.screen.enterFullscreen
+
+  return (
+    <Tip label={`${label} · ${t.screen.fullscreenHint}`}>
+      <Button
+        aria-label={label}
+        onClick={() => void (fullscreen.active ? fullscreen.exit() : fullscreen.enter())}
+        ref={fullscreen.trigger}
+        size="sm"
+        variant="ghost"
+      >
+        <Codicon name={fullscreen.active ? 'screen-normal' : 'screen-full'} />
+      </Button>
+    </Tip>
+  )
+}
+
+/** Absolute banners painted over the viewport, in pane stacking order. */
+function ScreenViewportBanners({
+  conn,
+  evicted,
+  failed,
+  error,
+  t
+}: {
+  conn: ConnState
+  evicted: boolean
+  failed: boolean
+  error: string | null
+  t: ReturnType<typeof useBots>
+}) {
+  return (
+    <>
+      {conn === 'attaching' ? (
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-white/70">
+          <GlyphSpinner /> {t.screen.attaching}
+        </div>
+      ) : null}
+      {evicted ? (
+        <div className="pointer-events-none absolute inset-x-0 top-0 bg-amber-950/80 px-3 py-1.5 text-center text-xs text-amber-100">
+          {t.screen.controlTaken}
+        </div>
+      ) : null}
+      {failed ? (
+        <div className="absolute inset-x-0 bottom-0 bg-background px-3 py-1.5 text-xs text-foreground" role="alert">
+          {t.screen.fullscreenFailed}
+        </div>
+      ) : null}
+      {conn === 'error' && error ? (
+        <div className="absolute inset-x-0 bottom-0 bg-red-950/80 px-3 py-1.5 text-xs text-red-200">{error}</div>
+      ) : null}
+    </>
+  )
+}
+
+/** The floating, hover-revealed control strip painted inside the fullscreen viewport. */
+function ScreenFullscreenControls({
+  fullscreen,
+  toolbar,
+  hint
+}: {
+  fullscreen: ReturnType<typeof useScreenFullscreen>
+  toolbar: ReactNode
+  hint: string
+}) {
+  if (!fullscreen.active) {
+    return null
+  }
+
+  // NoMachine-style peel: a tiny always-visible tab in the corner is the only
+  // hover target, so drifting the cursor toward the remote menu bar no longer
+  // summons a full-width strip over it. The hidden panel is pointer-events-none,
+  // so clicks fall through to the remote surface until it is actually revealed.
+  return (
+    <div className="group absolute right-0 top-0 z-10 flex flex-col items-end" ref={fullscreen.controls}>
+      <div
+        aria-hidden="true"
+        className="flex h-4 w-6 items-center justify-center rounded-bl-md bg-background/70 text-muted-foreground shadow-nous transition-opacity group-hover:opacity-0"
+      >
+        <Codicon name="chevron-down" size={12} />
+      </div>
+      <div className="pointer-events-none rounded-bl-lg bg-background text-foreground opacity-0 shadow-nous transition-opacity duration-150 focus-within:pointer-events-auto focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100">
+        {toolbar}
+        <div className="px-3 pb-1 text-xs text-muted-foreground">{hint}</div>
+      </div>
+    </div>
+  )
+}
+
 export function BotScreenPane({ bot }: { bot: RosterRow }) {
   const t = useBots()
+  const fullscreen = useScreenFullscreen()
   const screen = useValue($screenState)
   const state = screenStateFor(screen, bot)
   const status = state?.status ?? null
@@ -352,6 +451,12 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
     }
   }, [iHold])
 
+  useEffect(() => {
+    if (fullscreen.active) {
+      rfb.current?.focus()
+    }
+  }, [fullscreen.active])
+
   const start = useCallback(async () => {
     setBusy(true)
 
@@ -489,98 +594,88 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
 
   const humanOther = lease?.holder === 'human' && !iHold
 
-  return (
-    <div className="flex h-full min-h-0 flex-col">
-      <div className="flex items-center gap-2 border-b px-3 py-1.5 text-xs">
-        <Codicon name="device-desktop" />
-        <span className="font-medium">{t.screen.title}</span>
-        {status?.display ? (
-          <span className="text-muted-foreground">
-            {status.display} · {status.geometry}
-          </span>
-        ) : null}
-        {status?.placement?.startsWith('terminal:') ? (
-          // Where the desktop lives matters for what a takeover can reach: inside the terminal's sandbox,
-          // not on the gateway host.
-          <span className="rounded bg-(--ui-bg-tertiary) px-1.5 py-0.5 text-muted-foreground">
-            {t.screen.placementSandbox(status.placement.slice('terminal:'.length))}
-          </span>
-        ) : null}
-        <span className="grow" />
-        {lease?.holder === 'human' && lease.reason ? (
-          // Why control was taken stays readable while the human acts.
-          <span
-            className="max-w-[40%] truncate rounded bg-amber-500/15 px-2 py-0.5 text-amber-600 dark:text-amber-400"
-            title={lease.reason}
-          >
-            <Codicon name="bell" /> {lease.reason}
-          </span>
-        ) : null}
-        {iHold ? (
-          <span className="rounded bg-red-500/15 px-2 py-0.5 font-medium text-red-600 dark:text-red-400">
-            {t.screen.youControl}
-          </span>
-        ) : humanOther ? (
-          <span className="rounded bg-muted px-2 py-0.5 text-muted-foreground">{t.screen.otherControls}</span>
-        ) : (
-          <span className="rounded bg-muted px-2 py-0.5 text-muted-foreground">{t.screen.agentControls}</span>
-        )}
-        {iHold ? (
-          <Button disabled={busy} onClick={() => void handBack()} size="sm" variant="secondary">
-            <Codicon name="debug-continue" /> {t.screen.handBack}
-          </Button>
-        ) : (
-          <>
-            {humanOther ? (
-              <Tip label={t.screen.handBackForceHint}>
-                <Button disabled={busy} onClick={() => void handBack(true)} size="sm" variant="secondary">
-                  <Codicon name="debug-continue" /> {t.screen.handBackForce}
-                </Button>
-              </Tip>
-            ) : null}
-            {/* The lease is granted to a server-minted viewer id; until `display.observe` has
+  const toolbar = (
+    <div className="flex flex-wrap items-center gap-2 px-3 py-1.5 text-xs">
+      <Codicon name="device-desktop" />
+      <span className="font-medium">{t.screen.title}</span>
+      {status?.display ? (
+        <span className="text-muted-foreground">
+          {status.display} · {status.geometry}
+        </span>
+      ) : null}
+      {status?.placement?.startsWith('terminal:') ? (
+        // Where the desktop lives matters for what a takeover can reach: inside the terminal's sandbox,
+        // not on the gateway host.
+        <span className="rounded bg-(--ui-bg-tertiary) px-1.5 py-0.5 text-muted-foreground">
+          {t.screen.placementSandbox(status.placement.slice('terminal:'.length))}
+        </span>
+      ) : null}
+      <span className="grow" />
+      {lease?.holder === 'human' && lease.reason ? (
+        // Why control was taken stays readable while the human acts.
+        <span
+          className="max-w-[40%] truncate rounded bg-amber-500/15 px-2 py-0.5 text-amber-600 dark:text-amber-400"
+          title={lease.reason}
+        >
+          <Codicon name="bell" /> {lease.reason}
+        </span>
+      ) : null}
+      {iHold ? (
+        <span className="rounded bg-red-500/15 px-2 py-0.5 font-medium text-red-600 dark:text-red-400">
+          {t.screen.youControl}
+        </span>
+      ) : humanOther ? (
+        <span className="rounded bg-muted px-2 py-0.5 text-muted-foreground">{t.screen.otherControls}</span>
+      ) : (
+        <span className="rounded bg-muted px-2 py-0.5 text-muted-foreground">{t.screen.agentControls}</span>
+      )}
+      {iHold ? (
+        <Button disabled={busy} onClick={() => void handBack()} size="sm" variant="secondary">
+          <Codicon name="debug-continue" /> {t.screen.handBack}
+        </Button>
+      ) : (
+        <>
+          {humanOther ? (
+            <Tip label={t.screen.handBackForceHint}>
+              <Button disabled={busy} onClick={() => void handBack(true)} size="sm" variant="secondary">
+                <Codicon name="debug-continue" /> {t.screen.handBackForce}
+              </Button>
+            </Tip>
+          ) : null}
+          {/* The lease is granted to a server-minted viewer id; until `display.observe` has
                 minted one for this attach a Take over could only send an empty id and dead-end
                 on "viewer_id required". Reconnect is the way to mint one. */}
-            <Button disabled={busy || conn === 'attaching' || !viewer} onClick={() => void takeOver()} size="sm">
-              <Codicon name="record-keys" /> {t.screen.takeOver}
-            </Button>
-          </>
-        )}
-        <Tip label={t.screen.reconnect}>
-          <Button
-            aria-label={t.screen.reconnect}
-            disabled={conn === 'attaching'}
-            onClick={() => void attach()}
-            size="sm"
-            variant="ghost"
-          >
-            <Codicon name="refresh" />
+          <Button disabled={busy || conn === 'attaching' || !viewer} onClick={() => void takeOver()} size="sm">
+            <Codicon name="record-keys" /> {t.screen.takeOver}
           </Button>
-        </Tip>
-      </div>
-      <div
-        className={
-          iHold ? 'relative min-h-0 grow bg-black ring-2 ring-inset ring-red-500/70' : 'relative min-h-0 grow bg-black'
-        }
-      >
+        </>
+      )}
+      <ScreenFullscreenButton fullscreen={fullscreen} t={t} />
+      <Tip label={t.screen.reconnect}>
+        <Button
+          aria-label={t.screen.reconnect}
+          disabled={conn === 'attaching'}
+          onClick={() => void attach()}
+          size="sm"
+          variant="ghost"
+        >
+          <Codicon name="refresh" />
+        </Button>
+      </Tip>
+    </div>
+  )
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      {!fullscreen.active ? <div className="border-b">{toolbar}</div> : null}
+      <div className="relative min-h-0 grow bg-black" data-remote-screen="" ref={fullscreen.viewportRef}>
+        <ScreenFullscreenControls fullscreen={fullscreen} hint={t.screen.fullscreenHint} toolbar={toolbar} />
         {/* data-terminal: the same keyboard-ownership marker the terminal pane uses, so the app's
             type-to-focus / bare-key shortcuts never steal keystrokes meant for the remote screen.
             data-remote-screen: tells the ⌘W close-tab router this is NOT a local terminal tab —
             the chord belongs to the remote desktop, nothing local should close. */}
         <div className="absolute inset-0" data-remote-screen="" data-terminal="" ref={canvasHost} />
-        {conn === 'attaching' ? (
-          <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-white/70">
-            <GlyphSpinner /> {t.screen.attaching}
-          </div>
-        ) : null}
-        {evicted ? (
-          <div className="pointer-events-none absolute inset-x-0 top-0 bg-amber-950/80 px-3 py-1.5 text-center text-xs text-amber-100">
-            {t.screen.controlTaken}
-          </div>
-        ) : null}
-        {conn === 'error' && error ? (
-          <div className="absolute inset-x-0 bottom-0 bg-red-950/80 px-3 py-1.5 text-xs text-red-200">{error}</div>
-        ) : null}
+        <ScreenViewportBanners conn={conn} error={error} evicted={evicted} failed={fullscreen.failed} t={t} />
         <ScreenNeedsHttps label={t.screen.needsHttps} />
       </div>
     </div>

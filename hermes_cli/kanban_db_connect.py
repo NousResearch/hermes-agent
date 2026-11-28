@@ -712,6 +712,71 @@ def _refuse_dead_board_resurrection(path: Path, board: Optional[str]) -> None:
         raise ValueError(f"kanban board {slug!r} does not exist; create it with `hermes kanban boards create {slug}`")
 
 
+
+def _board_lifecycle_lock_path(db_path: Path) -> Optional[Path]:
+    """Stable POSIX lock outside a named board directory so rename cannot move it."""
+    if _kb._IS_WINDOWS or db_path.name != "kanban.db":
+        return None
+    parent = db_path.absolute().parent
+    root = _kb.boards_root().absolute()
+    if parent.parent != root:
+        return None
+    try:
+        slug = _kb._normalize_board_slug(parent.name)
+    except ValueError:
+        return None
+    if not slug or slug == _kb.DEFAULT_BOARD:
+        return None
+    return root / f".{slug}.lifecycle.lock"
+
+
+class _BoardConnectionLease:
+    """SQLite owns the callback until connection close, including GC-only close."""
+
+    def __init__(self, handle):
+        self.handle = handle
+
+    def __call__(self):
+        return None
+
+    def __del__(self):
+        self.handle.close()
+
+
+def _acquire_board_connection_lease(path: Path):
+    lock_path = _board_lifecycle_lock_path(path)
+    if lock_path is None:
+        return None
+    import fcntl
+
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = lock_path.open("a+b")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_SH)
+    except BaseException:
+        handle.close()
+        raise
+    return handle
+
+
+@contextlib.contextmanager
+def board_removal_fence(slug: str):
+    """Refuse removal while any Core connection to this named board is alive."""
+    lock_path = _board_lifecycle_lock_path(_kb.board_dir(slug) / "kanban.db")
+    if lock_path is None:  # Windows already refuses rename/delete of open SQLite files.
+        yield
+        return
+    import fcntl
+
+    with lock_path.open("a+b") as handle:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ValueError(
+                f"board {slug!r} has active SQLite connections; close writers and retry"
+            ) from None
+        yield
+
 def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> sqlite3.Connection:
     """Open (and initialize if needed) the kanban DB. WAL is (re)enabled on
     every connection so a re-created file stays robust; the first connection
@@ -720,6 +785,24 @@ def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> s
     :func:`kanban_db_path` (``HERMES_KANBAN_DB`` -> ``HERMES_KANBAN_BOARD`` ->
     ``<root>/kanban/current`` -> ``default``)."""
     path = db_path if db_path is not None else _kb.kanban_db_path(board=board)
+    lease = _acquire_board_connection_lease(path)
+    try:
+        conn = _connect_unleased(path, board=board)
+        if lease is not None:
+            try:
+                # SQLite releases this callback only after closing the DB handle.
+                conn.create_function("_hermes_board_lifecycle_lease", 0, _BoardConnectionLease(lease))
+            except BaseException:
+                conn.close()
+                raise
+            lease = None
+        return conn
+    finally:
+        if lease is not None:
+            lease.close()
+
+
+def _connect_unleased(path: Path, *, board: Optional[str]) -> sqlite3.Connection:
     from agent.delegation_context import kanban_path_is_fenced
     if kanban_path_is_fenced(path):
         # Reads must not enter schema/backfill write transactions. Never create a

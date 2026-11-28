@@ -430,3 +430,55 @@ class TestBoardResurrection:
         assert meta["name"] == "My Board"
         assert "keepname" in [b["slug"] for b in kb.list_boards(include_archived=True)]
         assert "keepname" not in [b["slug"] for b in kb.list_boards(include_archived=False)]
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.parametrize("archive", [True, False])
+def test_posix_remove_rejects_inflight_external_writer(fresh_home, archive):
+    """#156335: removing a board must not detach a staged writer in another process."""
+    kb.create_board("remove-race")
+    with kbc.connect_closing(board="remove-race") as conn:
+        task_id = kb.create_task(conn, title="before", assignee="dev")
+
+    script = """
+import sys
+from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
+
+conn = kbc.connect(board="remove-race")
+conn.execute("BEGIN IMMEDIATE")
+conn.execute("UPDATE tasks SET title = ? WHERE id = ?", ("after", sys.argv[1]))
+print("STAGED", flush=True)
+assert sys.stdin.readline().strip() == "COMMIT"
+conn.execute("COMMIT")
+conn.close()
+print("COMMITTED", flush=True)
+"""
+    proc = subprocess.Popen(
+        [sys.executable, "-c", script, task_id],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, cwd=str(_WORKTREE), env=os.environ.copy(),
+    )
+    try:
+        assert proc.stdout.readline().strip() == "STAGED"
+        with pytest.raises(ValueError, match="active SQLite connections"):
+            kb.remove_board("remove-race", archive=archive)
+        assert kb.board_exists("remove-race")
+        proc.stdin.write("COMMIT\n")
+        proc.stdin.flush()
+        assert proc.stdout.readline().strip() == "COMMITTED"
+        assert proc.wait(timeout=10) == 0, proc.stderr.read()
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait(timeout=10)
+        proc.stdin.close()
+        proc.stdout.close()
+        proc.stderr.close()
+
+    with kbc.connect_closing(board="remove-race") as conn:
+        assert conn.execute(
+            "SELECT title FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()[0] == "after"
+    result = kb.remove_board("remove-race", archive=archive)
+    assert result["action"] == ("archived" if archive else "deleted")

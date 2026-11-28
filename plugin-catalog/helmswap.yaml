@@ -1,0 +1,19 @@
+name: helmswap
+title: HelmSwap
+repo: https://github.com/gambrelcolby63/helmswap-agent-plugins
+sha: 96187994e6262f4353791b00f78f86905349c6e1
+subdir: plugins/helmswap
+version: "1.0.0"
+description: "HelmSwap through its hosted MCP server (Streamable HTTP at https://helmswap.com/mcp, no sign-in, no keys in config): swap quotes and unsigned swap transactions on Solana, Base, Ethereum, BNB Chain, Robinhood Chain, Ink, HyperEVM, Elysium and Arc, with the fee disclosed in every quote. Bundles two skills (quote a swap; build an unsigned swap and hand it to the user). Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure: hosted-only connector with no local code; every tool call goes to helmswap.com, whose privacy policy (updated November 27, 2026) describes a non-custodial interface for Solana, Base, Ethereum, BNB Chain, Robinhood Chain, Ink, HyperEVM, Elysium, and Arc, states that the user signs and that this server never broadcasts, and says ordinary technical logs typically include IP address, request path, user-agent and timestamps, and that a wallet address passed to build_swap is processed to prepare the unsigned transaction. The server never holds keys and never signs or broadcasts: get_quote is read-only and build_swap returns an unsigned transaction for the user's own wallet to sign. Solana builds need a free HelmSwap API key sent as an X-Helm-Key header, which the package does not configure. The package marks the server untrusted. The tool set is served by the remote server at runtime and is not covered by the pinned sha."
+maintainer: Summit Private Credit LLC
+tier: community
+category: tools
+docs_url: https://github.com/gambrelcolby63/helmswap-agent-plugins/tree/main/plugins/helmswap
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

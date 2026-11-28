@@ -183,18 +183,21 @@ const MEDIA_DELIVERY_EXTS = [
 // prefix of a longer one (e.g. `tar` before a hypothetical `tar.gz`).
 const _MEDIA_EXT_ALTERNATION = [...MEDIA_DELIVERY_EXTS].sort((a, b) => b.length - a.length).join('|')
 
+// Mirrors `_MEDIA_CJK_TERMINATORS` in gateway/platforms/base.py.
+const _MEDIA_CJK_TERMINATORS = '（）〈〉《》：，。；！？、\u201c\u201d\u2018\u2019【】'
+
 /**
  * Unquoted path branch: starts with a path anchor (`~/`, `/`, `X:\` or `X:/`),
  * allows interior whitespace, and anchors the end on a known deliverable
  * extension. Matches the Python-side `MEDIA_TAG_CLEANUP_RE` behavior where
  * `(?:[^\S\n]+\S+?)*?\.(?:EXT)` permits spaces inside filenames (#96657).
  */
-const _MEDIA_PATH_ANCHORED = `(?:~/|/|[A-Za-z]:[/\\\\])\\S+?(?:[^\\S\\n]+\\S+?)*?\\.(?:${_MEDIA_EXT_ALTERNATION})(?=[\\s\`"'*_,;:)\\]}]|MEDIA:|$)`
+const _MEDIA_PATH_ANCHORED = `(?:~/|/|[A-Za-z]:[/\\\\])\\S+?(?:[^\\S\\n]+\\S+?)*?\\.(?:${_MEDIA_EXT_ALTERNATION})(?=[\\s\`"'*_,;:)\\]}${_MEDIA_CJK_TERMINATORS}]|MEDIA:|$)`
 
 // Bare-word fallback for paths the anchored branch misses (relative paths,
 // unknown extensions). Stop before backtick and double-quote so an inline-code
 // closer is not swallowed. Apostrophes stay legal inside the path.
-const _MEDIA_PATH_BARE = '[^\\s`"]+'
+const _MEDIA_PATH_BARE = `[^\\s\`"${_MEDIA_CJK_TERMINATORS}]+`
 
 // Sentence punctuation that can trail a bare capture when the tag sits in
 // prose (`open MEDIA:/tmp/a.pdf.`).

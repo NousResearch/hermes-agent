@@ -1,0 +1,18 @@
+name: graphiti
+title: Graphiti Memory (self-hosted)
+repo: https://github.com/christancho/hermes-graphiti-memory
+sha: 3ea1fe7704c19e0465e5c91c1500b01d72f64d1e
+description: "Memory provider backed by your own self-hosted Graphiti knowledge graph, reached through Graphiti's MCP server over Streamable HTTP. Before each turn it recalls related facts from the profile's own group, plus opt-in shared groups (time-boxed, skipped for trivial prompts); at session end it stores one episode of user/assistant text (never tool output); it mirrors built-in MEMORY.md/USER.md writes; and it adds graphiti_search and graphiti_remember (no delete tools). Standard library only. Disclosure — sends captured conversation text, remembered notes and mirrored memory entries only to the Graphiti MCP URL the user configures (optionally via HTTPS_PROXY); that server sends episodes to its own LLM/embedding provider for extraction, which costs LLM calls per episode. Optional bearer token read via Hermes's secret route (GRAPHITI_MCP_TOKEN). Short-lived background threads only; no shell commands, no stored credentials, no telemetry."
+maintainer: christancho
+tier: community
+category: memory
+version: "0.1.2"
+requires_hermes: ">=0.23.4"
+docs_url: https://github.com/christancho/hermes-graphiti-memory
+readme: true
+platforms: [linux, macos]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -48,6 +48,8 @@ const NON_ARTIFACT_LANGUAGES = new Set([
   'markdown',
   'md',
   'mermaid',
+  'chart',
+  'plot',
   'output',
   'patch',
   'plain',

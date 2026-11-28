@@ -86,8 +86,13 @@ def commit_compaction(
     storage interface handle *persistence*, which stamps each dict with the row state the commit gave it as
     the store's own writer does, else the method of *session_db*, a client of the file's owner. Held dicts
     become held records; a ``None`` ``covered_ids`` keeps the watermark path."""
+    from session_rules.durable import durable_row
+    if kwargs.get("carried_messages") is not None:
+        kwargs["carried_messages"] = [durable_row(m) for m in kwargs["carried_messages"]]
     if persistence is None:
-        session_db.archive_and_compact(session_id, compacted_messages, **kwargs)
+        from agent.session_persistence import durable_rows
+        with durable_rows(compacted_messages) as rows:
+            session_db.archive_and_compact(session_id, rows, **kwargs)
         return
 
     def held(key: str) -> Optional[tuple[HeldMessage, ...]]:
@@ -96,7 +101,7 @@ def commit_compaction(
 
     watermark, covered_ids = kwargs.get("watermark"), kwargs.get("covered_ids")
     result = persistence.messages.compact(
-        SessionId(session_id), [NewMessage.from_live(m) for m in compacted_messages],
+        SessionId(session_id), [NewMessage.from_live(durable_row(m)) for m in compacted_messages],
         watermark=None if watermark is None else Watermark(MessageId(int(watermark)) if watermark else None),
         carried_tail_count=kwargs.get("tail_count", 0), lock_holder=kwargs.get("lock_holder"),
         model_config_patch=kwargs.get("model_config_patch"), carried=held("carried_messages") or (),

@@ -37,14 +37,16 @@ def compress_in_transaction(holder, conn, session_id, payload, prepared):
     from ..workers._compression import archive_on_connection, publish_on_connection
     # No worker/turn/compactor can be active: validate_prepared checks those
     # obligations on this exact connection. No separate transaction runs.
+    from session_rules.durable import durable_row
+    messages = [durable_row(message) for message in prepared['messages']]
     if prepared['in_place']:
         child = target
-        archive_on_connection(holder, conn, target, prepared['messages'])
+        archive_on_connection(holder, conn, target, messages)
         affected = {session_id, target}
     else:
         child = uuid.uuid4().hex
         publish_on_connection(holder, conn, parent_session_id=target, child_session_id=child,
-            source=policy['source'], model=policy['model'], messages=prepared['messages'],
+            source=policy['source'], model=policy['model'], messages=messages,
             model_config={'_compressed_from': target}, cwd=policy['cwd'], require_compression_lease=False)
         # The conversation's name moves to the live segment, as an automatic rotation's does.
         from ..gateway._local_lineage import _title_follows_head
@@ -77,6 +79,18 @@ def _branch_boundary(conn, target, through):
                 break
             through = later['id']
     return through
+
+
+def _project_branch_rows(conn, child):
+    """A canonical branch is a generation writer; SQL clones elsewhere keep raw bytes."""
+    from session_rules.turns import _durable_content
+    from ..conversation._store.messages import _decode_content, _encode_content
+
+    for row in conn.execute('SELECT id, content FROM messages WHERE session_id=?', (child,)).fetchall():
+        content = _decode_content(row['content'])
+        durable = _durable_content(content)
+        if durable is not content:
+            conn.execute('UPDATE messages SET content=? WHERE id=?', (_encode_content(durable), row['id']))
 
 
 def _child_policy(policy, child, prepared):
@@ -130,6 +144,7 @@ def branch_in_transaction(holder, conn, session_id, payload, prepared=None):
         'SELECT id,tool_calls FROM messages WHERE session_id=? AND active=1 AND id<=? ORDER BY id',
         [target, _branch_boundary(conn, target, payload.get('through_message_id'))])
     _clone_message_rows(holder, conn, ids, session_id=child)
+    _project_branch_rows(conn, child)
     conn.execute('UPDATE sessions SET message_count=?,tool_call_count=? WHERE id=?', (len(ids), tools, child))
     from ..conversation._store.titles import _set_session_title_in_transaction
     if payload.get('title'):

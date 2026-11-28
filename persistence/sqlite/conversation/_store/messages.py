@@ -987,7 +987,7 @@ def _message_column_names(holder: StoreHolder, conn) -> list[str]:
 
 
 def set_user_message_content(holder: StoreHolder, session_id: str, row_id: int, content: Any,
-                             display_metadata: Optional[dict[str, Any]] = None) -> int:
+                             display_metadata: Optional[dict[str, Any]] = None, *, live: Optional[dict] = None) -> int:
     """Rewrite the content of ONE known active user row. Used when a user turn was written at submit
     time (before the agent ran) and the turn prologue then rewrote the prompt it persists (@-file
     expansion, native image parts, a ``pre_llm_call`` veto's placeholder): the early row must show what
@@ -995,14 +995,12 @@ def set_user_message_content(holder: StoreHolder, session_id: str, row_id: int, 
     the same input. ``display_metadata``, when given, is merge-patched in (``None`` deletes; reactions survive)."""
     if not session_id or isinstance(row_id, bool) or not isinstance(row_id, int) or row_id <= 0:
         return 0
-    if display_metadata is None:
-        return holder._write_rowcount(
-            "UPDATE messages SET content = ? WHERE id = ? AND session_id = ? AND role = 'user' AND active = 1",
-            (_encode_content(content), row_id, session_id))
-    return holder._write_rowcount(
-        f"UPDATE messages SET content = ?, api_content = NULL, display_metadata = {_MERGE_DISPLAY_META} "
-        "WHERE id = ? AND session_id = ? AND role = 'user' AND active = 1",
-        (_encode_content(content), _encode_display_metadata(display_metadata), row_id, session_id))
+    from .user_content import rewrite_user_row
+    count, snapshot = holder._execute_write(
+        lambda conn: rewrite_user_row(conn, session_id, row_id, content, display_metadata))
+    if live is not None and snapshot is not None:
+        live[DB_ROW_SNAPSHOT] = snapshot
+    return count
 
 
 def deactivate_message(holder: StoreHolder, session_id: str, row_id: int) -> int:

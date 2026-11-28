@@ -69,10 +69,14 @@ def transcript_append_kwargs(session_id: str, message: dict[str, Any], *, fallba
     (:func:`_bindable_text`), so one malformed field cannot make the row unwritable."""
     is_assistant = message.get("role") == "assistant"
     timestamp = message.get("timestamp")
+    content = message.get("content")
+    if isinstance(content, (list, dict)):
+        from session_rules.turns import _durable_content
+        content = _durable_content(content)
     kwargs = {
         "session_id": session_id,
         "role": message.get("role", "unknown"),
-        "content": message.get("content"),
+        "content": content,
         "tool_name": message.get("tool_name"),
         "tool_calls": message.get("tool_calls"),
         "tool_call_id": message.get("tool_call_id"),
@@ -557,8 +561,9 @@ class SessionTranscriptMixin:
                 # into the destructive replace on any DB error and can race a concurrent archive_and_compact
                 # — the same probe failure mode #80216's /retry fix (gateway/slash_commands.py) deliberately
                 # avoids.
+                from session_rules.durable import durable_row
                 replaced = store.messages.replace_transcript(
-                    session_id, [NewMessage.from_live(message) for message in messages],
+                    session_id, [NewMessage.from_live(durable_row(message)) for message in messages],
                     ReplaceMode.PRESERVE_EXISTING_ARCHIVE if active_only else ReplaceMode.DESTRUCTIVE,
                     reject_active_turn_lease=reject_active_turn_lease)
             except Exception as e:

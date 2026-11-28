@@ -220,6 +220,12 @@ def _holds_as_block(inner: str, outer: str) -> bool:
 
 def _images_replaced(stored: Any, held: Any) -> bool:
     """Whether ``held`` is ``stored`` with at least one image part swapped for a text part, all else equal."""
+    if isinstance(stored, str) and isinstance(held, str):
+        import re
+        was, now = stored.split("\n"), held.split("\n")
+        changed = [line for line, kept in zip(was, now) if line != kept]
+        return len(was) == len(now) and bool(changed) and all(
+            re.fullmatch(r"\[screenshot(?: detail=(?:low|high|auto))?\]", line) for line in changed)
     if not (isinstance(stored, list) and isinstance(held, list)) or len(stored) != len(held):
         return False
     swapped = False

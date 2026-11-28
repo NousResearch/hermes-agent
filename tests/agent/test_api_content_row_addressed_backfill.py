@@ -285,7 +285,7 @@ class TestRowAddressedBackfillThroughTheWriterHandle:
         message = {"role": "user", "_row_id": 9, "content": [
             {"type": "text", "text": "look"}, {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA=="}},
         ]}
-        _append_multimodal_context(agent, message, "", "PLUGIN CONTEXT", preflight_compressed=False)
+        _append_multimodal_context(agent, message, "", "PLUGIN CONTEXT")
         agent.persistence.messages.set_user_message_content.assert_called_once_with(
-            "s1", 9, _durable_content(message["content"]), {"typed_ask": "look"})
+            "s1", 9, _durable_content(message["content"]), {"typed_ask": "look"}, live=message)
         assert agent._session_db.method_calls == []

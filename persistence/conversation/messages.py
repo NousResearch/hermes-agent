@@ -1010,7 +1010,7 @@ class MessageRepository(Protocol):
         """Clear the content of every assistant row in the scope that has tool calls and whose stripped content is a bare tool-call marker. ``dry_run`` only reports; ``backup`` takes a physical snapshot first when the backend has one and a row will change."""
         ...
 
-    def set_user_message_content(self, session_id: SessionId, message_id: MessageId, content: JsonValue, display_metadata: Optional[Mapping[str, JsonValue]] = None) -> bool:
+    def set_user_message_content(self, session_id: SessionId, message_id: MessageId, content: JsonValue, display_metadata: Optional[Mapping[str, JsonValue]] = None, *, live: Optional[MutableMapping[str, Any]] = None) -> bool:
         """Rewrite the content of one active ``user`` row of the session; False when no such row. With ``display_metadata`` the same write also merge-patches it into the row's display metadata (its keys win, a ``None`` value removes the key, keys another writer added such as reactions stay) and clears its ``api_content`` sidecar, so the replay sends the new content."""
         ...
 

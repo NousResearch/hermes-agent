@@ -131,7 +131,9 @@ def _branch_message(msg: dict):
     """/branch child row; keeps the api_content sidecar so the branch's first turn replays the
     parent's exact wire bytes (warm provider prompt cache) instead of a cold prefill."""
     from persistence.conversation.messages import NewMessage
-    row = {k: msg.get(k) for k in _BRANCH_COPIED_FIELDS}
+    from session_rules.durable import durable_row
+    projected = durable_row(msg)
+    row = {k: projected.get(k) for k in _BRANCH_COPIED_FIELDS}
     row["tool_calls"] = tuple(row["tool_calls"] or ())
     row["data_use"] = tuple(row["data_use"] or ())
     return NewMessage(role=msg.get("role", "user"), tool_name=msg.get("tool_name") or msg.get("name"),
@@ -673,7 +675,8 @@ class GatewaySessionCommandsMixin:
             planned = CarrierRewind(session_id, plan.target_row_id, tuple(plan.expected_active_ids),
                                     plan.expected_target_content)
         else:
-            planned = ActiveReplace(session_id, tuple(dict(m) for m in truncated), tuple(pinned))
+            from session_rules.durable import durable_row
+            planned = ActiveReplace(session_id, tuple(durable_row(dict(m)) for m in truncated), tuple(pinned))
 
         def committed():
             self.session_store._clear_dirty_transcript(session_id)

@@ -3241,19 +3241,19 @@ def _publish_rotated_compaction(
     if store is not None:
         from persistence.conversation.lineage import CompressionChild
         from persistence.conversation.messages import NewMessage, ReplaceResult, stamp_live
+        from session_rules.durable import durable_row
         stamps = store.lineage.publish_compression_child(
             old_session_id, CompressionChild(session_id=new_session_id, **child),
-            [NewMessage.from_live(message) for message in compressed], **lease_terms)
+            [NewMessage.from_live(durable_row(message)) for message in compressed], **lease_terms)
         stamp_live(compressed, ReplaceResult(rows=stamps))
     else:
-        agent._session_db.publish_compression_child(
-            parent_session_id=old_session_id, child_session_id=new_session_id, messages=compressed, **child,
-            **lease_terms)
-    # `already_present` stamping is done by run_agent's _sync_persisted_markers;
-    # this branch covers inserted/merged only; direct callers must use that wrapper.
+        from agent.session_persistence import durable_rows
+        with durable_rows(compressed) as rows:
+            agent._session_db.publish_compression_child(
+                parent_session_id=old_session_id, child_session_id=new_session_id, messages=rows, **child, **lease_terms)
+    # Direct callers stamp inserted/merged anchors; the wrapper stamps already_present.
     if compressed_user_turn_outcome in {"inserted", "merged"}:
-        # Stamp the anchor source row itself, not the (drifted, possibly out-of-range)
-        # persist index; don't match the HANDOFF row — for `merged` it is a superset.
+        # Stamp the actual anchor, not the drifted persist index or a merged HANDOFF superset.
         _compressed_anchor_source = next((m for m in reversed(messages) if _is_real_user_message(m)), None)
         if isinstance(_compressed_anchor_source, dict):
             _compressed_anchor_source[_DB_PERSISTED_MARKER] = True

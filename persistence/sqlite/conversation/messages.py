@@ -415,11 +415,11 @@ class SQLiteMessageRepository:
                                  row_ids=tuple(MessageId(i) for i in report["row_ids"]),
                                  backup_path=report["backup_path"])
 
-    def set_user_message_content(self, session_id: SessionId, message_id: MessageId, content: JsonValue, display_metadata: Optional[Mapping[str, JsonValue]] = None) -> bool:
+    def set_user_message_content(self, session_id: SessionId, message_id: MessageId, content: JsonValue, display_metadata: Optional[Mapping[str, JsonValue]] = None, *, live: Optional[dict[str, Any]] = None) -> bool:
         holder = self._store.holder()
         metadata = dict(display_metadata) if display_metadata is not None else None
         with _refusals(holder, session_id):
-            return bool(set_user_message_content(holder, session_id, message_id, content, metadata))
+            return bool(set_user_message_content(holder, session_id, message_id, content, metadata, live=live))
 
     def deactivate_message(self, session_id: SessionId, message_id: MessageId) -> bool:
         holder = self._store.holder()

@@ -569,8 +569,9 @@ def _truncate_history_for_submit(rid, sid, session, params, requested_rebind_ids
                 old_survivor_row_ids = [_message_row_id(message) for message in truncated]
                 # Only the live rows: a bare replace would DELETE the compaction archive (active=0
                 # rows) on every edit.  Archived, not deleted: a mis-aimed cut stays recoverable.
+                from session_rules.durable import durable_row
                 replaced = persistence.messages.replace_transcript(
-                    truncation_key, [_new_message(message) for message in truncated], ReplaceMode.ARCHIVE_DROPPED,
+                    truncation_key, [_new_message(durable_row(message)) for message in truncated], ReplaceMode.ARCHIVE_DROPPED,
                     reject_active_turn_lease=True)
                 # The row state the write gave each message: a kept row only its id and uid, an inserted row
                 # its stored timestamp, ownership version and tool-call uids as well.

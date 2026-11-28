@@ -18,6 +18,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from cli import HermesCLI
 from tests.fixtures.gateway_owner import GatewayOwner
 from tests.fixtures.storage_seed import seed_messages
 
@@ -80,11 +81,25 @@ def _persist_history(owner, cli):
 class TestBranchCommandCLI:
     """Test the /branch command logic for the CLI."""
 
+    def test_branch_copy_projects_parts_before_handing_them_to_the_store(self):
+        from session_rules.turns import _durable_content
+
+        store = MagicMock()
+        store.get_session.return_value = {}
+        cli = _mock_cli(store)
+        cli._new_session_id = lambda *_args, **_kw: 'child'
+        parts = [{'type': 'text', 'text': 'look'},
+                 {'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,AA=='}}]
+        cli.conversation_history = [{'role': 'user', 'content': parts}]
+        HermesCLI._handle_branch_command(cli, '/branch copy')
+        rows = store.append_messages_batch.call_args.args[1]
+        assert rows[0]['content'] == _durable_content(parts)
+        assert cli.conversation_history[0]['content'] == parts
+
     def test_failed_branch_creation_leaves_original_session_open(self, gateway_cli, store):
         """Branching is child-first: when the gateway's branch fails the user stays on the original
         session, so it must not be marked ended as "branched" (#11030)."""
         from unittest.mock import patch
-        from cli import HermesCLI
 
         original = gateway_cli.session_id
         with patch.object(store, "branch", side_effect=RuntimeError("boom")):
@@ -97,7 +112,6 @@ class TestBranchCommandCLI:
     def test_gateway_refusal_is_reported_and_leaves_the_session(self, gateway_cli, store, capsys):
         """A gateway /branch step that fails (e.g. the child's YOLO could not be set, CLI-20) prints
         main's branch error and keeps the user on the original session, never a traceback."""
-        from cli import HermesCLI
         from hermes_cli.gateway_client import GatewayClientError
 
         def refused(now, **kw):
@@ -112,7 +126,6 @@ class TestBranchCommandCLI:
 
     def test_branch_copies_history(self, owner, gateway_cli, store):
         """Branching should copy all messages to the new session."""
-        from cli import HermesCLI
 
         _persist_history(owner, gateway_cli)
         HermesCLI._handle_branch_command(gateway_cli, "/branch")
@@ -124,7 +137,6 @@ class TestBranchCommandCLI:
 
     def test_branch_with_custom_name(self, gateway_cli, store):
         """Custom branch name should be used as the title."""
-        from cli import HermesCLI
 
         HermesCLI._handle_branch_command(gateway_cli, "/branch refactor approach")
 
@@ -135,7 +147,6 @@ class TestBranchCommandCLI:
 
     def test_branch_no_session_db(self, gateway_cli):
         """Branching without a session DB should show an error."""
-        from cli import HermesCLI
         original = gateway_cli.session_id
         gateway_cli._session_db = None
 
@@ -153,7 +164,6 @@ class TestBranchCommandCLI:
         Without this, providers that cache per-session state in
         initialize() keep writing under the old session_id. See #6672.
         """
-        from cli import HermesCLI
 
         # Wire a real-ish agent object with a MagicMock memory_manager
         agent = MagicMock()
@@ -184,7 +194,6 @@ class TestBranchFlushesBeforeEndSession:
     compress_context() already do."""
 
     def test_branch_flushes_when_agent_present(self, gateway_cli):
-        from cli import HermesCLI
 
         agent = MagicMock()
         gateway_cli.agent = agent
@@ -200,7 +209,6 @@ class TestBranchFlushesBeforeEndSession:
         """The branch's first turn must send the bytes the parent already sends: with no stored prompt the
         child rebuilds (a fresh workspace probe) and the copied transcript's warm cache is lost at byte 0.
         The owner creates the child row; the CLI hands the prompt to the store's ``create_session``."""
-        from cli import HermesCLI
 
         created = []
         monkeypatch.setattr(store, "create_session", lambda **kwargs: created.append(kwargs))
@@ -245,7 +253,6 @@ class TestBranchPreservesReasoningFields:
     """
 
     def test_reasoning_fields_survive_branch(self, owner, gateway_cli, store):
-        from cli import HermesCLI
 
         gateway_cli.conversation_history = [
             {"role": "user", "content": "Sort this list."},
@@ -267,3 +274,27 @@ class TestBranchPreservesReasoningFields:
         assert assistant["reasoning_details"] == REASONING_DETAILS
         assert assistant["codex_reasoning_items"] == CODEX_REASONING_ITEMS
         assert assistant["codex_message_items"] == CODEX_MESSAGE_ITEMS
+
+
+class TestBranchImageProjection:
+    def test_an_image_result_is_copied_as_the_flush_text(self, owner, gateway_cli, store):
+        """The branch stores what the per-tool flush stores (#148146): the vision result's row holds the text
+        projection, never the base64, while the live history keeps the image."""
+        from session_rules.turns import _durable_content
+
+        image = [{"type": "text", "text": "Image loaded into your context."},
+                 {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgo"}}]
+        gateway_cli.conversation_history = [
+            {"role": "user", "content": "what is on this label?"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "call_1", "type": "function", "function": {"name": "vision_analyze", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "call_1", "tool_name": "vision_analyze", "content": image},
+            {"role": "assistant", "content": "The label says 42."},
+        ]
+
+        _persist_history(owner, gateway_cli)
+        HermesCLI._handle_branch_command(gateway_cli, "/branch")
+
+        messages = store.get_messages_as_conversation(gateway_cli.session_id)
+        assert [m["content"] for m in messages if m["role"] == "tool"] == [_durable_content(image)]
+        assert gateway_cli.conversation_history[2]["content"] == image

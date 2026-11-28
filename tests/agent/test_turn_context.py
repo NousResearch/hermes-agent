@@ -441,7 +441,7 @@ def test_a_row_rewrite_keeps_a_reaction_another_writer_added(tmp_path, vetoed):
     db.messages.set_reaction("s", row["_row_id"], "👍", author="user")
     agent = types.SimpleNamespace(_session_db=db, persistence=db, session_id="s", _session_persist_lock=threading.Lock(),
                                   _persist_user_message_override=None, _last_compaction_in_place=False)
-    _append_multimodal_context(agent, row, "", "PLUGIN NOTE", preflight_compressed=False)
+    _append_multimodal_context(agent, row, "", "PLUGIN NOTE")
     if vetoed:
         _withhold_blocked_prompt(agent, row, row["content"])
 
@@ -468,7 +468,7 @@ def test_gateway_notes_alone_on_a_stored_image_turn_backfill_the_row(tmp_path):
                                   _persist_user_message_override=None, _last_compaction_in_place=False,
                                   _gateway_turn_context_notes="GATEWAY NOTE")
     plugin_user_context = _merge_gateway_notes(agent, [row], 0, "")
-    _append_multimodal_context(agent, row, "", plugin_user_context, preflight_compressed=False)
+    _append_multimodal_context(agent, row, "", plugin_user_context)
 
     reloaded = conversation(db, "s")
     assert "GATEWAY NOTE" in reloaded[-1]["content"]

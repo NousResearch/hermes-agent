@@ -241,3 +241,46 @@ def test_unconfirmed_deep_truncation_is_warn_only_this_release(monkeypatch, capl
     finally:
         server._sessions.pop("warn-only-sid", None)
 
+
+
+def test_a_cut_after_an_image_result_keeps_the_rows_before_it(monkeypatch, tmp_path):
+    """The live history keeps a vision result's image parts while its row holds the flush's text (#148146): the
+    cut matches the kept prefix as the flush stores it, so the rows before the cut stay in place and no base64
+    is stored."""
+    from session_rules.turns import _durable_content
+    from persistence_assembly import open_persistence, profile_scope
+    from persistence.conversation.messages import ConversationRequest
+    from tests.fixtures.storage_seed import seed_session, seed_messages
+    from tests.fixtures.storage_read import conversation
+    from tests.fixtures.storage_holder import raw_holder
+
+    image = [{"type": "text", "text": "Image loaded into your context."},
+             {"type": "image_url", "image_url": {"url": "data:image/png;base64," + "iVBORw0KGgo" * 64}}]
+    db = open_persistence(profile_scope(home=tmp_path))
+    seed_session(db, "session-key", source="tui")
+    seed_messages(db, "session-key", {"role": "user", "content": "what is on this label?"})
+    seed_messages(db, "session-key", {"role": "assistant", "content": "", "tool_calls": [
+        {"id": "call_1", "type": "function", "function": {"name": "vision_analyze", "arguments": "{}"}}]})
+    seed_messages(db, "session-key", {"role": "tool", "content": _durable_content(image),
+                                       "tool_call_id": "call_1", "tool_name": "vision_analyze"})  # the row the flush wrote for the image result
+    for role, text in (("assistant", "The label says 42."), ("user", "and the colour?"), ("assistant", "Blue.")):
+        seed_messages(db, "session-key", {"role": role, "content": text})
+    history = conversation(db, "session-key", ConversationRequest(include_row_ids=True))
+    history[2]["content"] = image  # the live dict still holds the image the model saw
+    sess = _session(history=history)
+    server._sessions["image-cut-sid"] = sess
+    _use_messages(monkeypatch, db.messages)
+    monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
+    monkeypatch.setattr(server.threading, "Thread", lambda *a, **k: types.SimpleNamespace(start=lambda: None))
+    try:
+        assert server.handle_request({"id": "1", "method": "prompt.submit", "params": {
+            "session_id": "image-cut-sid", "text": "and the shape?", "truncate_before_row_id": history[4]["_row_id"],
+            "confirm_truncate": True}}).get("error") is None
+        kept = conversation(db, "session-key", ConversationRequest(include_row_ids=True))
+        assert [m["_row_id"] for m in kept[:4]] == [m["_row_id"] for m in history[:4]]
+        base64_rows = "SELECT COUNT(*) FROM messages WHERE instr(CAST(content AS BLOB), CAST(';base64,' AS BLOB)) > 0"
+        assert not raw_holder(db)._read_one(base64_rows)[0]
+        assert sess["history"][2]["content"] == image
+    finally:
+        server._sessions.pop("image-cut-sid", None)
+        db.close()

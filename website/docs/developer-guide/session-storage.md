@@ -279,6 +279,14 @@ CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id, id);
 ```
 
 Notes:
+- Transcript generation writers (agent compaction, rotation, prune, gateway rewrite/retry/branch,
+  API fork, TUI edit/seed, and non-owning ACP saves) project `content` with
+  `session_rules.turns._durable_content`, the same projection as the per-tool flush. Text parts
+  stay in order and image parts become `[screenshot]` markers; the live dicts retain their parts.
+  The raw storage interface still round-trips structured content for imports, backups, and direct
+  callers. Projection belongs at these writer boundaries, not in the storage codec. A user-row
+  context backfill also returns its new row snapshot to the supplied `live` dict so later flushes
+  recognize their own write; `set_user_message_content` keeps its boolean result contract.
 - `tool_calls` is stored as a JSON string (serialized list of tool call objects)
 - `reasoning_details`, `codex_reasoning_items`, and `codex_message_items` are stored as JSON strings
 - `reasoning`, `reasoning_content` and `reasoning_details` are always kept in history. On the chat-completions wire every assistant turn replays its stored reasoning on the carriers the route reads (`agent/message_sanitization.py::route_reasoning_carriers`): `reasoning_content` everywhere by default; plus `reasoning` and `reasoning_details` on OpenRouter-format gateways (OpenRouter, Kilo, Vercel AI Gateway, Nous Portal); `reasoning_details` on Novita, MiniMax `/v1` and TokenHub; `reasoning` on local servers, Ollama and Upstage. Strict schemas (Mistral, Groq, Cerebras, SambaNova) get no reasoning key, and Fireworks gets `reasoning_content` only. Only DeepSeek, Kimi and MiMo pad a reasoning-less tool-call turn with `" "`. When a route rejects a field by name ("Extra inputs are not permitted, field: messages[N].reasoning_details"), Hermes records it for that provider/host/model, strips it and retries once. The record lasts for the session and never touches history.

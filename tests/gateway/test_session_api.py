@@ -63,6 +63,22 @@ def _create_session_app(adapter: APIServerAdapter) -> web.Application:
 
 
 @pytest.mark.asyncio
+async def test_fork_projects_legacy_image_parts_without_changing_the_parent(adapter, session_db):
+    from session_rules.turns import _durable_content
+    from tests.fixtures.storage_read import transcript_rows
+
+    parts = [{"type": "text", "text": "look"},
+             {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA=="}}]
+    seed_session(session_db, "parent", "api_server")
+    seed_messages(session_db, "parent", {"role": "user", "content": parts})
+    async with TestClient(TestServer(_create_session_app(adapter))) as client:
+        response = await client.post("/api/sessions/parent/fork", json={"id": "child"})
+        assert response.status == 201
+    assert transcript_rows(session_db, "child")[0]["content"] == _durable_content(parts)
+    assert transcript_rows(session_db, "parent")[0]["content"] == parts
+
+
+@pytest.mark.asyncio
 async def test_capabilities_advertises_session_control_surface(adapter):
     app = _create_session_app(adapter)
     async with TestClient(TestServer(app)) as cli:

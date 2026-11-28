@@ -190,16 +190,10 @@ def worker_user_content(holder, conn, session_id, payload):
     """Rewrite ONE active user row of this session, same guards as the store's ``set_user_message_content``."""
     if set(payload) - {'display_metadata'} != {'row_id', 'content'}:
         raise AuthorityRefusal('invalid_params')
-    from ..conversation._store.messages import _encode_content, _encode_display_metadata
-    if 'display_metadata' not in payload:
-        return {'value': conn.execute(
-            "UPDATE messages SET content=? WHERE id=? AND session_id=? AND role='user' AND active=1",
-            (_encode_content(payload['content']), _row_id(payload), session_id)).rowcount}
-    return {'value': conn.execute(
-        f"UPDATE messages SET content=?, api_content=NULL, display_metadata={_MERGE_DISPLAY_META} "
-        "WHERE id=? AND session_id=? AND role='user' AND active=1",
-        (_encode_content(payload['content']), _encode_display_metadata(payload['display_metadata']),
-         _row_id(payload), session_id)).rowcount}
+    from ..conversation._store.user_content import rewrite_user_row
+    count, snapshot = rewrite_user_row(conn, session_id, _row_id(payload), payload['content'],
+                                       payload.get('display_metadata'))
+    return {'value': count, 'db_row_snapshot': snapshot}
 
 
 WORKER_LIFECYCLE_HANDLERS = {

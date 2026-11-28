@@ -8,6 +8,7 @@ from pathlib import Path
 from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, PARTIAL_FAILED_TURN_NOTICE
 from persistence_assembly import close_stores_under, store_location
 from persistence.conversation.messages import ConversationRequest, TranscriptRead, TranscriptView
+from session_rules.turns import _durable_content
 from tests.fixtures.storage_read import conversation, transcript_rows
 from tests.fixtures.storage_seed import seed_messages, seed_session
 
@@ -124,7 +125,8 @@ def test_failure_owner_follows_only_live_lineage_markers(tmp_path):
             if not owned:
                 assert live_messages[-1]["content"] == PARTIAL_FAILED_TURN_NOTICE
                 persisted_user = live_messages[-2]
-                assert persisted_user["content"] == prepared.persist_user_message
+                # Stored as the agent's own flush stores the parts: their text.
+                assert persisted_user["content"] == _durable_content(prepared.persist_user_message)
                 assert persisted_user["display_metadata"]["gateway_input_owner"] == owner
             # A repeated delivery of the same closed turn adds no second boundary.
             closed = db.messages.count_all()

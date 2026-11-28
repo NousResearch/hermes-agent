@@ -42,6 +42,11 @@ def _images_replaced(stored: Any, held: Any) -> bool:
     """True when *held* is *stored* with at least one image part swapped for a text part, all else equal."""
     from persistence.sqlite.conversation._store.rules import _is_image_part
 
+    if isinstance(stored, str) and isinstance(held, str):
+        from agent.image_replay import _MARKER_RE
+        was, now = stored.split("\n"), held.split("\n")
+        changed = [line for line, kept in zip(was, now) if line != kept]
+        return len(was) == len(now) and bool(changed) and all(_MARKER_RE.match(line) for line in changed)
     if not (isinstance(stored, list) and isinstance(held, list)) or len(stored) != len(held):
         return False
     swapped = False

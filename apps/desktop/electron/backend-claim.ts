@@ -19,7 +19,7 @@ export function execText(command: string, args: string[], { timeout = 3000 } = {
         reject(error)
       } else if (timeout > 0 && child.killed) {
         // A SIGTERM handler can exit zero after execFile's timeout fired.
-        reject(new Error(`${command} timed out after ${timeout}ms`))
+        reject(Object.assign(new Error(`${command} timed out after ${timeout}ms`), { timedOut: true }))
       } else {
         resolve(String(stdout || '').trim())
       }

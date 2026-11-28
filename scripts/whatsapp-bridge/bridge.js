@@ -11,7 +11,7 @@
  *   POST /edit           - Edit a sent message { chatId, messageId, message }
  *   POST /send-media     - Send media natively { chatId, filePath, mediaType?, caption?, fileName?, mentions? }
  *   POST /send-location  - Send location pin { chatId, latitude, longitude, name?, address? }
- *   POST /typing         - Send typing indicator { chatId }
+ *   POST /typing         - Show or clear the typing indicator { chatId, state? }
  *   GET  /chat/:id       - Get chat info
  *   GET  /health         - Health check
  *
@@ -55,6 +55,7 @@ import {
   normalizeWhatsAppId,
   pollCreationMessageFromPayload,
   pollUpdateForAggregation,
+  sendTypingPresence,
   writeJsonLine,
 } from './bridge_helpers.js';
 
@@ -1159,11 +1160,11 @@ app.post('/typing', async (req, res) => {
     return res.status(503).json({ error: 'Not connected' });
   }
 
-  const { chatId } = req.body;
+  const { chatId, state } = req.body;
   if (!chatId) return res.status(400).json({ error: 'chatId required' });
 
   try {
-    await sock.sendPresenceUpdate('composing', chatId);
+    await sendTypingPresence(sock, chatId, state);
     res.json({ success: true });
   } catch (err) {
     res.json({ success: false });

@@ -1,0 +1,20 @@
+name: orthogonal
+repo: https://github.com/orthogonal-sh/orthogonal-plugins
+sha: a6df5f3573d3fe0b07e1a50c043cc23fb9e49555
+subdir: hermes
+description: "Find, price and run paid third-party APIs (web scraping and search, people and company data, enrichment, media and more) through Orthogonal's hosted MCP server, paid per call from one Orthogonal balance. Disclosure — Orthogonal (orthogonal.com) is a paid third-party API marketplace: the agent connects to mcp.orthogonal.com, sends your requests to Orthogonal and on to the provider that serves them, and each use/batch_use call spends your prepaid Orthogonal credits; search, get_details, quote, batch_get_details and integrate are free. The bundled skill treats a direct request for data as approval of a reasonably scoped paid call, and has the model quote first when the price is unclear, the call is expensive or several calls are planned; that is an instruction to the model, not a Hermes approval prompt, unless you add `trust: untrusted` to `mcp_servers.orthogonal`."
+maintainer: orthogonal-sh
+tier: community
+category: tools
+docs_url: https://github.com/orthogonal-sh/orthogonal-plugins/tree/main/hermes#readme
+version: "0.3.4"
+title: Orthogonal
+image: https://raw.githubusercontent.com/orthogonal-sh/orthogonal-plugins/a6df5f3573d3fe0b07e1a50c043cc23fb9e49555/assets/hermes-card.png
+readme: true
+known_issues:
+  - "Needs an Orthogonal account. Sign in with `hermes mcp add orthogonal --url https://mcp.orthogonal.com --auth oauth` then `hermes mcp login orthogonal` (or set an API key header); that profile entry replaces the package's declaration of the same server. Paid calls spend that account's credits."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

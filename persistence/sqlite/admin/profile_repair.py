@@ -292,11 +292,13 @@ class SQLiteProfileRepairAdmin(AdminFile):
         def _do(conn) -> bool:
             if conn.execute("SELECT 1 FROM sessions WHERE id = ?", (session_id,)).fetchone() is None:
                 return False
+            from ..conversation._store.sql_common import prompt_hashes_of
+            hashes = prompt_hashes_of(conn, [session_id])
             conn.execute("UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id = ?", (session_id,))
             conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM session_model_usage WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
-            _delete_unreferenced_system_prompts(conn)
+            _delete_unreferenced_system_prompts(conn, hashes)
             return True
         with self._writer("delete_moved_session") as holder:
             deleted = holder._execute_write(_do)

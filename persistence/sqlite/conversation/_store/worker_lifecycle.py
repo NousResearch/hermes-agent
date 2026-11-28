@@ -91,7 +91,8 @@ def insert_session_row_in_transaction(
         ),
     )
     if system_prompt_hash is not None:
-        _delete_unreferenced_system_prompts(conn)
+        from persistence.sqlite.conversation._store.sql_common import prompt_hashes_of
+        _delete_unreferenced_system_prompts(conn, prompt_hashes_of(conn, [session_id]) | {system_prompt_hash})
     if parent_session_id:
         _inherit_parent_session_metadata(conn, session_id)
     # The upsert may have just filled a compression tip's created_source (update_token_counts).

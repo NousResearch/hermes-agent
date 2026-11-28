@@ -1026,8 +1026,7 @@ def _download_url_with_cap(url: str, max_bytes: int) -> tuple[bytes, Optional[st
     for bad scheme, blocked target, too many redirects, or a body over the cap (checked
     while streaming, so nothing oversize is buffered)."""
     from urllib.parse import urljoin, urlparse
-    import httpx
-    from tools.url_safety import is_safe_url
+    from tools.url_safety import create_ssrf_safe_client, is_safe_url
     current_url = url
     for _ in range(_MAX_ATTACH_URL_REDIRECTS + 1):
         scheme = (urlparse(current_url).scheme or "").lower()
@@ -1038,8 +1037,14 @@ def _download_url_with_cap(url: str, max_bytes: int) -> tuple[bytes, Optional[st
                 f"URL blocked by SSRF protection (private/internal address): {current_url}")
         chunks: list[bytes] = []
         total = 0
-        with httpx.stream("GET", current_url, headers={"User-Agent": "hermes-kanban/attach"},
-                          timeout=30, follow_redirects=False) as resp:
+        # is_safe_url resolves DNS once; a bare httpx.stream resolves again at connect time, so a
+        # rebinding host defeats it. The SSRF-safe client re-checks the destination it actually
+        # connects to. trust_env=False: proxy mounts do not enforce that check, and a
+        # model-supplied URL must not inherit one (this also covers redirected hops).
+        with create_ssrf_safe_client(trust_env=False) as client, client.stream(
+            "GET", current_url, headers={"User-Agent": "hermes-kanban/attach"},
+            timeout=30, follow_redirects=False,
+        ) as resp:
             if resp.is_redirect:
                 location = resp.headers.get("location")
                 if not location:

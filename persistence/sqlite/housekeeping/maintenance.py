@@ -25,7 +25,7 @@ from .._backend import SQLiteStore, register_repository, translated
 from ..conversation._store.core import _delete_unreferenced_system_prompts
 from ..conversation._store.retirement import retire_prunable
 from ..conversation._store.sessions import _cwd_prefix_clause, _set_lineage_column_in_transaction
-from ..conversation._store.sql_common import _non_continuation_child_sql
+from ..conversation._store.sql_common import _non_continuation_child_sql, prompt_hashes_of
 from ..conversation._store.write_guards import _guarded_ids, _write_guards_reject
 from ..gateway._routes import _sql_session_last_active
 from ._portability import SessionPortability
@@ -255,13 +255,14 @@ class SQLiteSessionMaintenance(SessionPortability):
             if not session_ids:
                 return 0
             # Batched: a cron-heavy store prunes tens of thousands of ids in one call.
+            hashes = prompt_hashes_of(conn, session_ids)
             for chunk in _id_chunks(session_ids):
                 ph = _placeholders(chunk)
                 conn.execute(f"UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id IN ({ph})", chunk)
                 conn.execute(f"DELETE FROM messages WHERE session_id IN ({ph})", chunk)
                 conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", chunk)
                 removed_ids.extend(chunk)
-            _delete_unreferenced_system_prompts(conn)
+            _delete_unreferenced_system_prompts(conn, hashes)
             return len(session_ids)
         with translated():
             holder = self._store.holder()
@@ -281,11 +282,12 @@ class SQLiteSessionMaintenance(SessionPortability):
                       SELECT 1 FROM messages WHERE messages.session_id = sessions.id
                   )
             """, (cutoff,)).fetchall()]
+            hashes = prompt_hashes_of(conn, ids)
             ids = retire_prunable(conn, ids, media_root=media_root)
             for chunk in _id_chunks(ids):
                 conn.execute(f"DELETE FROM sessions WHERE id IN ({_placeholders(chunk)})", chunk)
             if ids:
-                _delete_unreferenced_system_prompts(conn)
+                _delete_unreferenced_system_prompts(conn, hashes)
             return ids
         with translated():
             removed_ids = self._store.holder()._execute_write(_do) or []

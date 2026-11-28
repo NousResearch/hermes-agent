@@ -1431,8 +1431,6 @@ def test_attach_url_happy_path_public_host(worker_env, default_url_guard, monkey
     """A public URL passes the guard and the bytes are stored (mocked fetch)."""
     from pathlib import Path
 
-    import httpx
-
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc
     from tools import kanban_tools as kt
@@ -1449,7 +1447,18 @@ def test_attach_url_happy_path_public_host(worker_env, default_url_guard, monkey
             body=payload,
         )
 
-    monkeypatch.setattr(httpx, "stream", fake_stream)
+    from tools import url_safety
+
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        stream = staticmethod(fake_stream)
+
+    monkeypatch.setattr(url_safety, "create_ssrf_safe_client", lambda **kwargs: FakeClient())
 
     out = kt._handle_attach_url({"url": "http://files.example.com/docs/spec.pdf"})
     d = json.loads(out)

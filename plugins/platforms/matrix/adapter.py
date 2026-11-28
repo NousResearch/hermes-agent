@@ -2399,11 +2399,11 @@ class MatrixAdapter(BasePlatformAdapter):
     @staticmethod
     def _approval_uses_list_only(prompt: _MatrixApprovalPrompt) -> bool:
         """Use the policy pinned to this exact approval, not today's profile config."""
-        if not prompt.request_id:
+        if not (request_id := getattr(prompt, "request_id", None)):
             return False
         from tools.approval import list_gateway_approval_authority
         return any(
-            entry.get("request_id") == prompt.request_id and entry.get("approvers_only") is True
+            entry.get("request_id") == request_id and entry.get("approvers_only") is True
             for entry in list_gateway_approval_authority(prompt.session_key)
         )
 

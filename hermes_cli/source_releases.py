@@ -22,19 +22,23 @@ _GITHUB_ORIGIN = re.compile(
 _SHA = re.compile(r"[0-9a-f]{40}")
 
 
+def _origin_url(git_cmd, cwd) -> str:
+    from hermes_cli.source_check import source_git_env
+
+    result = subprocess.run(
+        [*git_cmd, "config", "--get", "remote.origin.url"], cwd=cwd,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+        stdin=subprocess.DEVNULL, env=source_git_env(),
+        check=False,
+    )
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
 def source_repository(git_cmd=None, cwd=None) -> str:
     """GitHub forks own their releases; other origins must mirror official tags."""
     if git_cmd is not None:
-        from hermes_cli.source_check import source_git_env
-
-        result = subprocess.run(
-            [*git_cmd, "config", "--get", "remote.origin.url"], cwd=cwd,
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
-            stdin=subprocess.DEVNULL, env=source_git_env(),
-            check=False,
-        )
-        match = _GITHUB_ORIGIN.fullmatch(result.stdout.strip())
-        if result.returncode == 0 and match:
+        match = _GITHUB_ORIGIN.fullmatch(_origin_url(git_cmd, cwd))
+        if match:
             return match[1]
     return OFFICIAL_REPOSITORY
 
@@ -185,6 +189,14 @@ def _describe_release_failure(failure: BaseException) -> str:
 
         # The request that failed, not the configuration: a rejected token retries anonymously.
         return describe_github_failure(failure, authenticated=getattr(failure, "hermes_authenticated", False))
+    if isinstance(failure, subprocess.CalledProcessError):
+        from hermes_cli.git_credentials import is_rate_limited
+
+        stderr = failure.stderr or ""
+        if is_rate_limited(stderr):
+            hint = next((line for line in stderr.splitlines() if line.startswith("hint:")), "")
+            return ("GitHub is rate limiting git requests from this network (HTTP 429). "
+                    + (hint.removeprefix("hint: ") or "Try again in a few minutes."))
     return f"No published stable release could be verified: {failure}"
 
 
@@ -358,13 +370,26 @@ def _resolve_release(channel: str, git_cmd=None, cwd=None, *, repository=None,
     if not isinstance(sha, str) or not _SHA.fullmatch(sha):
         raise ValueError(f"No published commit for release {tag}")
     if git_cmd is not None:
-        from hermes_cli.source_check import remote_git_run
+        from hermes_cli.git_credentials import is_rate_limited, retry_git_with_credentials
+        from hermes_cli.source_check import remote_git_run, source_git_env
 
         ref = f"refs/tags/{tag}"
         argv = [*git_cmd, "ls-remote", "--tags", "origin", ref, ref + "^{}"]
-        result = remote_git_run(argv, cwd=cwd, timeout=60)
-        if result is None:
-            raise subprocess.TimeoutExpired(argv, 60)
+
+        def run(argv, *, env=None, **_kw):
+            result = remote_git_run(argv, cwd=cwd, timeout=60, env=env)
+            if result is None:
+                raise subprocess.TimeoutExpired(argv, 60)
+            return result
+
+        result = run(argv)
+        # GitHub throttles anonymous git by IP with HTTP 429, and this env reads no credential
+        # helper: a throttled lookup is retried with the user's own GitHub credential (#105857),
+        # through the same owned runner.
+        if result.returncode and is_rate_limited(result.stderr):
+            result = retry_git_with_credentials(
+                argv, _origin_url(git_cmd, cwd), result, env=source_git_env(),
+                retry_on_rate_limit=True, run=run)
         if result.returncode:
             raise subprocess.CalledProcessError(result.returncode, argv, result.stdout, result.stderr)
         refs = dict((parts[1], parts[0]) for line in result.stdout.splitlines()

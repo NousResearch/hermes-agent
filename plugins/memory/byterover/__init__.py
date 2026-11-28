@@ -22,7 +22,7 @@ from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
 
-_QUERY_TIMEOUT = 10    # brv query — should be fast
+_QUERY_TIMEOUT = 120   # brv query — LLM-driven search: warm ~2s, cold ~15s, provider stall observed >60s once; match curate's budget
 _CURATE_TIMEOUT = 120  # brv curate — may involve LLM processing
 _MIN_QUERY_LEN = 10    # noise filters
 _MIN_OUTPUT_LEN = 20
@@ -76,6 +76,28 @@ def _resolve_brv_path() -> Optional[str]:
         return _cached_brv_path or None
 
 
+def _brv_command(brv_path: str) -> list[str]:
+    """Base argv for the brv CLI. On Windows, a batch shim (.cmd/.bat) is a fragile
+    subprocess target (extra cmd.exe layer, quoting fragility, flaky PATH): when the
+    standard npm install layout is present, launch ``node + run.js`` directly instead.
+    Falls back to the shim itself if the layout or node cannot be found."""
+    p = Path(brv_path)
+    if p.suffix.lower() in {".cmd", ".bat"}:
+        runjs = p.parent.parent / "node_modules" / "byterover-cli" / "bin" / "run.js"
+        if runjs.exists():
+            node = None
+            hermes_home = os.environ.get("HERMES_HOME", "")
+            if hermes_home:
+                cand = Path(hermes_home) / "node" / "node.exe"
+                if cand.exists():
+                    node = cand
+            if node is None:
+                node = shutil.which("node")
+            if node:
+                return [str(node), str(runjs)]
+    return [brv_path]
+
+
 def _brv_child_env(brv_path: str) -> dict[str, str]:
     """Env for the ``brv`` child. Under gateway.multiplex_profiles ``os.environ`` holds the
     LAUNCH profile's ``.env``; the served profile's ``BRV_*`` (cloud identity) live only in its
@@ -112,7 +134,7 @@ def _run_brv(args: list[str], timeout: int = _QUERY_TIMEOUT, cwd: str | None = N
     env = _brv_child_env(brv_path)
     try:
         result = subprocess.run(
-            [brv_path] + args, capture_output=True, text=True, encoding='utf-8', errors='replace',
+            _brv_command(brv_path) + args, capture_output=True, text=True, encoding='utf-8', errors='replace',
             timeout=timeout, cwd=effective_cwd, env=env, stdin=subprocess.DEVNULL,
             check=False,
         )

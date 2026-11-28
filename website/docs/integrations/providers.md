@@ -55,6 +55,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **Qwen OAuth** | `hermes model` → "Qwen OAuth" (provider: `qwen-oauth`; browser PKCE login) |
 | **MiniMax OAuth** | `hermes model` → "MiniMax (OAuth)" (provider: `minimax-oauth`; browser PKCE login) |
 | **StepFun** | `STEPFUN_API_KEY` in `~/.hermes/.env` (provider: `stepfun`) |
+| **Perplexity** | `PERPLEXITY_API_KEY` in `~/.hermes/.env` (provider: `perplexity`, alias: `pplx`; Agent API on the Responses wire) |
 | **LM Studio** | `hermes model` → "LM Studio" (provider: `lmstudio`, optional `LM_API_KEY`) |
 | **Custom Endpoint** | `hermes model` → choose "Custom endpoint" (saved in `config.yaml`) |
 
@@ -288,6 +289,10 @@ hermes chat --provider gmi --model zai-org/GLM-5.1-FP8
 # Nebius Token Factory
 hermes chat --provider nebius --model deepseek-ai/DeepSeek-V4-Pro
 # Requires: NEBIUS_API_KEY in ~/.hermes/.env
+
+# Perplexity Agent API (model IDs carry the vendor prefix)
+hermes chat --provider perplexity --model anthropic/claude-opus-5-5
+# Requires: PERPLEXITY_API_KEY in ~/.hermes/.env
 ```
 
 Fireworks uses its native slash-form catalog IDs, such as `accounts/fireworks/models/kimi-k2p6`. Run `hermes model`, choose **Fireworks AI**, and select from the live catalog or enter another Fireworks model ID. The default endpoint is `https://api.fireworks.ai/inference/v1`; configure a different endpoint through `model.base_url` in `config.yaml`, not `.env`.
@@ -1552,18 +1557,13 @@ GROQ_API_KEY=your-groq-key
 
 #### Perplexity
 
-Useful when you want a model that does live web search and citation automatically. Strict about which models are available — check [perplexity.ai/settings/api](https://www.perplexity.ai/settings/api) for the current list.
+Perplexity is a built-in provider, so it needs no `providers:` entry. It calls the Agent API at `https://api.perplexity.ai/v1` on the Responses wire, and model IDs carry the vendor prefix (`anthropic/claude-opus-5-5`, `openai/gpt-5.5`). `hermes model` lists the models your key can call.
 
 ```yaml
 # ~/.hermes/config.yaml
-providers:
-  perplexity:
-    api: https://api.perplexity.ai
-    key_env: PERPLEXITY_API_KEY
-
 model:
-  default: sonar
-  provider: custom:perplexity
+  default: anthropic/claude-opus-5-5
+  provider: perplexity
 ```
 
 ```bash
@@ -1571,11 +1571,13 @@ model:
 PERPLEXITY_API_KEY=your-perplexity-key
 ```
 
+The same key runs the `perplexity` [web search backend](../user-guide/features/web-search.md). Setting the key alone does not make Perplexity the model provider, and on a fresh install it does not count as a configured provider: select it with `hermes model` or `model.provider`. Once a provider is configured, `--provider perplexity` also selects it for a single run. A `providers.perplexity` entry in an existing config takes precedence over the built-in provider.
+
 Perplexity's Agent API (`api: https://api.perplexity.ai/v1` with `api_mode: codex_responses`) reserves the function names `web_search`, `search_files`, `fetch_url`, `people_search` and `finance_search` for its own built-in tools. Hermes renames its client tools of the same name to `hermes_<name>` on the wire and maps them back before dispatch, for the main agent loop and auxiliary calls (title generation, compression, MoA aggregation) alike — the same treatment OpenCode's `/v1/responses` endpoints get.
 
 #### Multiple providers in one config
 
-The three recipes compose — use all of them together and switch per turn with `/model custom:<name>:<model>`:
+The Together and Groq recipes compose. Use both and switch per turn with `/model custom:<name>:<model>`:
 
 ```yaml
 providers:
@@ -1585,9 +1587,6 @@ providers:
   groq:
     api: https://api.groq.com/openai/v1
     key_env: GROQ_API_KEY
-  perplexity:
-    api: https://api.perplexity.ai
-    key_env: PERPLEXITY_API_KEY
 
 model:
   default: MiniMaxAI/MiniMax-M2.7
@@ -1596,7 +1595,7 @@ model:
 
 :::tip Troubleshooting
 - `hermes doctor` should print no `Unknown provider` warnings for any of these names after the CLI validator fixes in #15083.
-- If a provider's `/v1/models` endpoint is unreachable (Perplexity is the common one), `hermes model` will persist the model with a warning rather than hard-reject — see #15136.
+- If a provider's `/v1/models` endpoint is unreachable, `hermes model` will persist the model with a warning rather than hard-reject (see #15136).
 - To skip named providers entirely and use bare `provider: custom` with `CUSTOM_BASE_URL` env var, see #15103.
 :::
 

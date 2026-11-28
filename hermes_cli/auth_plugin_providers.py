@@ -332,6 +332,17 @@ def plugin_profile(provider: str) -> Optional[Any]:
     return get_provider_profile(provider)
 
 
+def env_key_held_for_tools(provider: str, env_var: str) -> bool:
+    """True when *env_var* also unlocks tools (``OPTIONAL_ENV_VARS`` ``tools``) and the profile sets
+    ``ambient_credentials``. Such a key may be set for the tools alone, so finding it does not show
+    that the user chose this provider for inference."""
+    from hermes_cli.config import OPTIONAL_ENV_VARS
+
+    if not (OPTIONAL_ENV_VARS.get(env_var) or {}).get("tools"):  # first: a profile miss walks the ladder
+        return False
+    return bool(getattr(plugin_profile(provider), "ambient_credentials", False))
+
+
 def _profile_hook(provider: str, name: str) -> Optional[Callable[..., Any]]:
     hook = getattr(plugin_profile(provider), name, None)
     return hook if callable(hook) else None

@@ -79,6 +79,7 @@ import {
   $switcherOpen,
   closeSwitcher,
   commitOnCtrlUp,
+  lastVisitedSessionId,
   noteSwitcherKeyDown,
   onSwitcherTabDown,
   onSwitcherTabUp,
@@ -329,6 +330,10 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'session.newWindow': () => void openNewWindow(),
     'session.next': () => cycleTab(1),
     'session.prev': () => cycleTab(-1),
+    'session.last': () => {
+      closeSwitcher()
+      goToSession(lastVisitedSessionId())
+    },
     ...sessionSlotHandlers,
     ...tabSlotHandlers,
     'session.focusSearch': requestSessionSearchFocus,

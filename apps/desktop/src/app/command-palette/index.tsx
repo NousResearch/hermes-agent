@@ -79,6 +79,7 @@ import { $projectTree, goToProject, openFolderAsProject, requestStartWorkSession
 import { $cronSessions, $messagingSessions, $sessions } from '@/store/session'
 import { $unconfirmedPinWrites } from '@/store/session-pin-sync'
 import { $removedSessionIds } from '@/store/session-removal'
+import { lastVisitedSessionId } from '@/store/session-switcher'
 import { runGatewayRestart } from '@/store/system-actions'
 import {
   requestActiveUpdate
@@ -410,6 +411,30 @@ type NonConfigSettingsLabel =
   | 'plugins'
   | 'providerAccounts'
   | 'providerApiKeys'
+
+// "Go to last session" (the chat this window showed before this one): a row
+// only while there is one, naming it so the jump is never blind.
+const lastSessionItems = (
+  label: string,
+  goSession: (sessionId: string) => PaletteItem['runWithEvent']
+): PaletteItem[] => {
+  const sessionId = lastVisitedSessionId()
+  const session = sessionId ? $sessions.get().find(row => row.id === sessionId) : undefined
+
+  return sessionId
+    ? [
+        {
+          action: 'session.last',
+          detail: session ? sessionTitle(session) : undefined,
+          icon: codiconIcon('arrow-swap'),
+          id: 'nav-last-session',
+          keywords: ['previous', 'back', 'recent', 'toggle', 'switch', 'chat'],
+          label,
+          runWithEvent: goSession(sessionId)
+        }
+      ]
+    : []
+}
 
 const NON_CONFIG_SETTINGS: ReadonlyArray<{
   icon: IconComponent
@@ -842,6 +867,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
                 }
               ]
             : []),
+          ...lastSessionItems(t.keybinds.actions['session.last'], goSession),
           {
             action: 'nav.settings',
             icon: Settings,
@@ -1046,6 +1072,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
     contributedItems,
     dismissedAutoProjects,
     go,
+    goSession,
     projectTree,
     selectTick,
     settingsSectionLabel,

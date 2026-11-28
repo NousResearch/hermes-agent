@@ -376,6 +376,7 @@ export const zhOverrides = {
       'session.newWindow': '新建窗口',
       'session.next': '下一个会话',
       'session.prev': '上一个会话',
+      'session.last': '返回上一个查看的会话',
       'session.slot.1': '切换到最近会话 1',
       'session.slot.2': '切换到最近会话 2',
       'session.slot.3': '切换到最近会话 3',

@@ -595,6 +595,7 @@ export const deOverrides = {
       'session.newWindow': 'Neues Fenster',
       'session.next': 'Nächste Session',
       'session.prev': 'Vorherige Session',
+      'session.last': 'Zur letzten Session',
       'session.slot.1': 'Zu letzter Session 1 wechseln',
       'session.slot.2': 'Zu letzter Session 2 wechseln',
       'session.slot.3': 'Zu letzter Session 3 wechseln',

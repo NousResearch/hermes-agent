@@ -4,6 +4,7 @@ import type { SessionInfo } from '@/types/hermes'
 
 import { completeFlow } from './desktop-metrics'
 import { $selectedStoredSessionId, $sessions } from './session'
+import { $focusedStoredSessionId } from './session-focus'
 
 // Mac-style session switcher (^Tab). Quick tap jumps on keydown; the HUD opens
 // only when Tab is held past REVEAL_MS or tapped again while Ctrl is down.
@@ -142,6 +143,38 @@ export function commitOnCtrlUp(): string | null {
 
   return target
 }
+
+// "Go to last session": the chats this window showed, most recent first. The
+// ^Tab switcher walks the sidebar's activity order, so when two chats are both
+// busy it rarely lands on the one you just left; this order is yours alone.
+// Pressing it again flips back, Alt-Tab style. Renderer-only presentation
+// state: each window keeps its own trail and nothing persists.
+const VISIT_TRAIL_LIMIT = 20
+let visitTrail: string[] = []
+
+export function noteSessionVisit(sessionId: null | string): void {
+  if (sessionId && visitTrail[0] !== sessionId) {
+    visitTrail = [sessionId, ...visitTrail.filter(id => id !== sessionId)].slice(0, VISIT_TRAIL_LIMIT)
+  }
+}
+
+$focusedStoredSessionId.subscribe(noteSessionVisit)
+
+// A chat that leaves the list (archived, deleted, another gateway) leaves the
+// trail too. One the list never held (opened from search past its page) stays.
+let listedIds = new Set<string>()
+
+$sessions.subscribe(sessions => {
+  const next = new Set(sessions.map(session => session.id))
+
+  visitTrail = visitTrail.filter(id => next.has(id) || !listedIds.has(id))
+  listedIds = next
+})
+
+/** The chat focused before the current one. From a blank draft this is the
+ *  chat you just left. */
+export const lastVisitedSessionId = (): string | null =>
+  visitTrail.find(id => id !== $focusedStoredSessionId.get()) ?? null
 
 export const switcherJustClosed = (): boolean => Date.now() - closedAt < 400
 

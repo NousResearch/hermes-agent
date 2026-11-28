@@ -9,6 +9,7 @@ import {
   $switcherSessions,
   closeSwitcher,
   commitOnCtrlUp,
+  lastVisitedSessionId,
   onSwitcherTabDown,
   onSwitcherTabUp,
   openOrAdvanceSwitcher,
@@ -111,5 +112,35 @@ describe('slotSessionId', () => {
     $sessions.set([session('x')])
 
     expect(slotSessionId(2)).toBe('b')
+  })
+})
+
+describe('lastVisitedSessionId', () => {
+  it('flips between the two chats you were on, not the sidebar activity order', () => {
+    // Sidebar order a, b, c (c least active). Visit a, then c.
+    seed(['a', 'b', 'c'], 'a')
+    $selectedStoredSessionId.set('c')
+
+    expect(lastVisitedSessionId()).toBe('a')
+    $selectedStoredSessionId.set('a')
+    expect(lastVisitedSessionId()).toBe('c')
+    // A blank draft goes back to the chat just left.
+    $selectedStoredSessionId.set(null)
+    expect(lastVisitedSessionId()).toBe('a')
+  })
+
+  it('skips a chat that left the list but keeps one the list never held', () => {
+    seed(['a', 'b', 'c'], 'b')
+    $selectedStoredSessionId.set('old-from-search')
+    $selectedStoredSessionId.set('c')
+    $selectedStoredSessionId.set('a')
+    $sessions.set([session('a'), session('b')])
+
+    expect(lastVisitedSessionId()).toBe('old-from-search')
+    $selectedStoredSessionId.set('old-from-search')
+    expect(lastVisitedSessionId()).toBe('a')
+    $selectedStoredSessionId.set('b')
+    // c was archived out of the list, so it never comes back as "last".
+    expect(lastVisitedSessionId()).toBe('old-from-search')
   })
 })

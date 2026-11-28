@@ -76,11 +76,13 @@ def test_show_json_survives_blob_cells_in_sibling_tables(board):
         json.dumps([dataclasses.asdict(c) for c in comments] + [dataclasses.asdict(e) for e in events])
 
 
-def test_respawn_guard_survives_blob_comment_body_and_failure_error(board):
-    """A BLOB-typed ``task_comments.body`` or ``tasks.last_failure_error`` must not
-    abort ``check_respawn_guard`` (issue #116473). Both raw reads previously handed
-    ``bytes`` to a ``str`` regex, raising ``TypeError`` and killing the whole
-    dispatch pass after the poisoned row."""
+def test_respawn_guard_survives_blob_comment_body_and_run_error(board):
+    """A BLOB-typed ``task_comments.body`` or ``task_runs.error`` must not abort
+    ``check_respawn_guard`` (issue #116473). The raw reads that reach a ``str``
+    regex are the comment body and the latest run's ``error`` — either as
+    ``bytes`` raises ``TypeError`` and kills the whole dispatch pass after the
+    poisoned row. ``tasks.last_failure_error`` is now only a NULL/non-NULL
+    latch, so it needs no decode."""
     with kbc.connect() as conn:
         tid = kb.create_task(conn, title="card", assignee="worker")
         kb.add_comment(conn, tid, author="worker", body="placeholder")
@@ -94,10 +96,19 @@ def test_respawn_guard_survives_blob_comment_body_and_failure_error(board):
         # The whole pass must not abort on the poisoned row.
         kbd.dispatch_once(conn, dry_run=True)
 
+        # BLOB run error still decodes lossily and matches the quota blocker.
+        kb.claim_task(conn, tid)
+        run_id = kb.get_task(conn, tid).current_run_id
         with kb.write_txn(conn):
             conn.execute(
-                "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
-                (sqlite3.Binary(b"429 quota exceeded"), tid),
+                "UPDATE task_runs SET outcome='spawn_failed', status='failed', "
+                "ended_at=?, error=? WHERE id=?",
+                (1000, sqlite3.Binary(b"429 quota exceeded"), run_id),
             )
-        # BLOB last_failure_error still matches the quota/auth blocker pattern.
+            conn.execute(
+                "UPDATE tasks SET status='ready', current_run_id=NULL, "
+                "claim_lock=NULL, claim_expires=NULL, worker_pid=NULL, "
+                "last_failure_error='failure recorded' WHERE id=?",
+                (tid,),
+            )
         assert kbd.check_respawn_guard(conn, tid) == "blocker_auth"

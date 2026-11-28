@@ -55,18 +55,24 @@ let
   # patchelf 0.19.2 corrupts executables whose headers it must move: running
   # --set-interpreter before --set-rpath (autoPatchelf's order) leaves a
   # read-only LOAD overlapping the RW one, so ld.so faults on .dynamic and
-  # node segfaults on start (NixOS/patchelf#674). Fixed upstream by #672, not
-  # yet released; drop this once nixpkgs ships a patchelf that contains it.
-  patchelfFixed = patchelf.overrideAttrs (old: {
-    patches = (old.patches or [ ]) ++ [
-      (fetchpatch {
-        name = "patchelf-fix-executable-header-load-overlap.patch";
-        url = "https://github.com/NixOS/patchelf/commit/59acc3d98b4961cfddf02090d9426ac735603218.patch";
-        includes = [ "src/*" ];
-        hash = "sha256-rQWWZlCa4IRrcPcxMD2xrTTD4nLOsWfdZLOk9UoIOIs=";
+  # node segfaults on start (NixOS/patchelf#674). Fixed by #672, released in
+  # 0.19.3. Only 0.19.0-0.19.2 need the backport: 0.19.3 contains it, and the
+  # 0.15.2 nixpkgs went back to (NixOS/nixpkgs@61a15beb37) has no bug and does
+  # not take the patch.
+  patchelfFixed =
+    if lib.versionAtLeast patchelf.version "0.19" && lib.versionOlder patchelf.version "0.19.3" then
+      patchelf.overrideAttrs (old: {
+        patches = (old.patches or [ ]) ++ [
+          (fetchpatch {
+            name = "patchelf-fix-executable-header-load-overlap.patch";
+            url = "https://github.com/NixOS/patchelf/commit/59acc3d98b4961cfddf02090d9426ac735603218.patch";
+            includes = [ "src/*" ];
+            hash = "sha256-rQWWZlCa4IRrcPcxMD2xrTTD4nLOsWfdZLOk9UoIOIs=";
+          })
+        ];
       })
-    ];
-  });
+    else
+      patchelf;
 
   # pnpm pins the @pnpm/exe executable and the `pnpm` launcher package, and both
   # archives wrap their tree in package/. Unpacked over one another, the

@@ -780,13 +780,76 @@ def launchd_install(force: bool = False, *, start_now: bool = True, force_unit_p
     print(f"  tail -f {_dhh()}/logs/gateway.log  # View logs")
 
 
+# A boot-out's exit code cannot separate "the job was already unloaded" (3/113/125) from "the
+# boot-out failed" (5/EIO on macOS 26+), so uninstall asks launchd whether the job is still
+# registered and retries the known flake before concluding anything.
+_LAUNCHD_BOOTOUT_ATTEMPTS = 3
+_LAUNCHD_BOOTOUT_RETRY_DELAY = 2.0
+# launchctl answers "no such job" with one of these codes, or with its message on stderr. Any other
+# non-zero exit is *not* that answer: an EIO or a domain error means the question went unanswered,
+# and reading it as "gone" is the very conflation this uninstall exists to fix.
+_LAUNCHD_NOT_FOUND_CODES = frozenset({3, 113, 125})
+_LAUNCHD_NOT_FOUND_STDERR = ("could not find service", "no such process", "service not found")
+
+
+def _launchctl_label_registered(label: str, domain: str) -> bool | None:
+    """Whether ``domain/label`` is still registered with launchd.
+
+    True while launchd lists the job; False only when launchctl answered that the job does not
+    exist; None when it could not answer at all (missing binary, timeout) or failed for another
+    reason (``EIO``, an unsupported domain). An unreadable answer is never read as "gone"."""
+    try:
+        result = subprocess.run(
+            ["launchctl", "print", f"{domain}/{label}"], check=False, timeout=10, **_gw()._CAPTURE_TEXT)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode == 0:
+        return True
+    stderr = (result.stderr or "").lower()
+    if result.returncode in _LAUNCHD_NOT_FOUND_CODES or any(hint in stderr for hint in _LAUNCHD_NOT_FOUND_STDERR):
+        return False
+    return None
+
+
+def _launchctl_bootout_until_dropped(label: str, domain: str) -> bool | None:
+    """Boot ``label`` out and confirm launchd dropped it.
+
+    True once a read answers that the job is gone, False when launchd still lists it after every
+    attempt, None when the reads were never answered — the caller keeps the plist on both False
+    and None, one because the job is still loaded, the other because nobody can say it is not."""
+    still_loaded = False
+    for attempt in range(_LAUNCHD_BOOTOUT_ATTEMPTS):
+        subprocess.run(
+            ["launchctl", "bootout", f"{domain}/{label}"], check=False, timeout=90, **_gw()._CAPTURE_TEXT)
+        registered = _launchctl_label_registered(label, domain)
+        if registered is False:
+            return True
+        if registered is True:
+            still_loaded = True
+        if attempt + 1 < _LAUNCHD_BOOTOUT_ATTEMPTS:
+            time.sleep(_LAUNCHD_BOOTOUT_RETRY_DELAY)
+    return False if still_loaded else None
+
+
 def launchd_uninstall():
     gateway_service_owner.refuse_foreign_launchd_plist("uninstall")
     plist_path = _gw().get_launchd_plist_path()
-    # Captured: uninstalling an already-unloaded job is fine — don't print Boot-out failed: 3.
-    subprocess.run(
-        ["launchctl", "bootout", f"{_launchd_domain()}/{get_launchd_label()}"],
-        check=False, timeout=90, **_gw()._CAPTURE_TEXT)
+    label, domain = get_launchd_label(), _launchd_domain()
+    # Unlinking a plist launchd still holds in memory orphans the job from its definition: KeepAlive
+    # keeps the gateway alive, `status` reads the loaded job, and no reboot/update can restore the
+    # service. An unloaded job is the only state in which removing the file is what was asked for.
+    dropped = _launchctl_bootout_until_dropped(label, domain)
+    if dropped is not True:
+        if dropped is None:
+            print(f"✗ launchctl did not confirm that {domain}/{label} was dropped — it failed to answer")
+            print("  (error or timeout) rather than reporting \"no such job\", so launchd may still")
+            print(f"  hold it. Leaving {plist_path} in place: removing the definition now is what")
+            print("  strands the service. Re-run 'hermes gateway uninstall' once launchctl answers.")
+        else:
+            print(f"✗ launchd still has {domain}/{label} loaded — leaving {plist_path} in place so the")
+            print(f"  service definition survives. Boot it out with 'launchctl bootout {domain}/{label}'")
+            print("  and re-run 'hermes gateway uninstall'.")
+        sys.exit(1)
     if plist_path.exists():
         plist_path.unlink()
         print(f"✓ Removed {plist_path}")

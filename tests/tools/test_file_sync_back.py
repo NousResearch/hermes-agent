@@ -34,12 +34,13 @@ def _dead_pid() -> int:
     proc.wait()
     return proc.pid
 
-def _make_tar(files: dict[str, bytes], dest: Path):
+def _make_tar(files: dict[str, bytes], dest: Path, *, mtime: float | None = None):
     """Write a tar archive containing the given arcname->content pairs."""
     with tarfile.open(dest, "w") as tar:
         for arcname, content in files.items():
             info = tarfile.TarInfo(name=arcname)
             info.size = len(content)
+            info.mtime = time.time() if mtime is None else mtime
             tar.addfile(info, io.BytesIO(content))
 
 
@@ -84,6 +85,7 @@ def _make_manager(
         upload_fn=MagicMock(),
         delete_fn=MagicMock(),
         bulk_download_fn=bulk_download_fn,
+        get_remote_time_fn=time.time,
     )
     if seed_pushed_state:
         # Seed _pushed_hashes so sync_back's "nothing previously pushed"
@@ -218,12 +220,32 @@ class TestSyncBackNewRemoteFile:
         mgr = _make_manager(tmp_path, file_mapping=mapping, bulk_download_fn=download_fn)
         # No entry in _pushed_hashes for the new file
 
+        mgr.sync(force=True)
         mgr.sync_back(hermes_home=tmp_path / ".hermes")
 
         # The new file should have been inferred and written to the host
         expected_host_path = tmp_path / "host" / "skills" / "new_skill.py"
         assert expected_host_path.exists()
         assert expected_host_path.read_bytes() == new_remote_content
+
+    def test_sync_back_skips_remote_file_older_than_session(self, tmp_path):
+        """An orphan from a previous session must not recreate a host-deleted skill."""
+        manifest = tmp_path / "host" / "skills" / ".bundled_manifest"
+        _write_file(manifest, b"{}")
+        mapping = [(str(manifest), "/root/.hermes/skills/.bundled_manifest")]
+
+        def download(dest: Path):
+            _make_tar(
+                {"root/.hermes/skills/cat/foo/SKILL.md": b"old remote skill"},
+                dest,
+                mtime=time.time() - 60,
+            )
+
+        mgr = _make_manager(tmp_path, file_mapping=mapping, bulk_download_fn=download)
+        mgr.sync(force=True)
+        mgr.sync_back(hermes_home=tmp_path / ".hermes")
+
+        assert not (tmp_path / "host" / "skills" / "cat" / "foo" / "SKILL.md").exists()
 
 
 class TestSyncBackConflict:

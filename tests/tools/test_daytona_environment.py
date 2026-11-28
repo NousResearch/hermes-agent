@@ -80,6 +80,9 @@ def make_env(daytona_sdk, monkeypatch):
         sandbox = sandbox or _make_sandbox()
         # Mock the $HOME detection
         sandbox.process.exec.return_value = _make_exec_response(result=home_dir)
+        if sandbox.process.exec.side_effect is None:
+            sandbox.process.exec.side_effect = lambda command, **kw: _make_exec_response(
+                result="1000000000" if command == "date +%s" else home_dir)
 
         mock_client = MagicMock()
         mock_client.create.return_value = sandbox
@@ -227,9 +230,10 @@ class TestCleanup:
 class TestExecute:
     def test_basic_command(self, make_env):
         sb = _make_sandbox()
-        # Calls: (1) $HOME detection, (2) init_session bootstrap, (3) actual command
+        # Calls: $HOME detection, initial sync clock, session bootstrap, actual command
         sb.process.exec.side_effect = [
             _make_exec_response(result="/root"),       # $HOME
+            _make_exec_response(result="1000000000"),  # remote clock
             _make_exec_response(result="", exit_code=0),  # init_session
             _make_exec_response(result="hello", exit_code=0),  # actual cmd
         ]
@@ -279,6 +283,8 @@ class TestInterrupt:
             if calls["n"] == 1:
                 return _make_exec_response(result="/root")  # $HOME detection
             if calls["n"] == 2:
+                return _make_exec_response(result="1000000000")  # remote clock
+            if calls["n"] == 3:
                 return _make_exec_response(result="", exit_code=0)  # init_session
             event.wait(timeout=5)  # simulate long-running command
             return _make_exec_response(result="done", exit_code=0)
@@ -310,6 +316,7 @@ class TestRetryExhausted:
         sb.state = "started"
         sb.process.exec.side_effect = [
             _make_exec_response(result="/root"),       # $HOME
+            _make_exec_response(result="1000000000"),  # remote clock
             _make_exec_response(result="", exit_code=0),  # init_session
             daytona_sdk.DaytonaError("fail1"),         # actual command fails
         ]

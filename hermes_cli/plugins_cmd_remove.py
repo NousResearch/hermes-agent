@@ -118,13 +118,35 @@ def cmd_remove(name: str) -> None:
     console.print()
 
 
+def _declared_web_backends(plugin_dir: Path) -> set[str]:
+    names = _pc()._read_manifest(plugin_dir).get("provides_web_providers")
+    if not isinstance(names, list):
+        return set()
+    return {name.strip().lower() for name in names if isinstance(name, str) and name.strip()}
+
+
+def _backends_no_longer_installed(names: set[str]) -> set[str]:
+    if not names:
+        return names
+
+    from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER
+
+    # A second plugin may still provide the same ID. Rescan after removal so a
+    # bundled plugin previously shadowed by the removed one is visible again.
+    remaining = {NOUS_MANAGED_PROVIDER}
+    for _name, _version, _desc, source, path, _key in _pc()._discover_all_plugins():
+        if source != "entrypoint":
+            remaining.update(_declared_web_backends(path))
+    return names - remaining
+
+
 def _remove_user_plugin(plugins_dir: Path, name: str, target: Path) -> dict[str, Any]:
     """Shared ``remove`` tail for the CLI, the dashboard and the ``plugins.manage`` RPC.
 
     *target* is the resolved directory; when ``plugins_dir/name`` itself is a symlink only the link
     goes — the tree it points at may be another installed plugin (a dev alias to a sibling checkout),
     and following it deleted that plugin plus its install metadata while the alias stayed dangling.
-    Config bookkeeping (aliases, toolset) is gathered before the tree disappears.
+    Gather config bookkeeping before the tree disappears.
     """
     link = plugins_dir / name.strip("/")
     if link.is_symlink():
@@ -135,10 +157,12 @@ def _remove_user_plugin(plugins_dir: Path, name: str, target: Path) -> dict[str,
     aliases = _pc()._plugin_aliases(key) | {target.name}
     from hermes_cli.plugin_oauth import forget_plugin_grants, plugin_key
     grant_key = plugin_key(target)  # grants are stored by directory key, which the manifest name may not match
+    web_backends = _declared_web_backends(target)
     _pc()._toggle_plugin_toolset(key, enable=False)
     _remove_plugin_core(target)
     forget_plugin_grants(grant_key)  # a later plugin installed under the same key must not inherit the sign-in
-    return {"ok": True, "name": name, **_pc()._forget_plugin_config(aliases)}
+    removed_backends = _backends_no_longer_installed(web_backends)
+    return {"ok": True, "name": name, **_pc()._forget_plugin_config(aliases, web_backends=removed_backends)}
 
 
 def dashboard_remove_user_plugin(name: str) -> dict[str, Any]:

@@ -604,14 +604,13 @@ def _disabled_by_update(key: str, aliases) -> bool:
     return isinstance(record, dict) and bool({key, *aliases} & set(record))
 
 
-def _forget_plugin_config(aliases: set) -> dict[str, Any]:
-    """Drop every trace of a removed plugin (its :func:`_plugin_aliases`, taken BEFORE the tree went)
-    from config.yaml: allow/deny-list entries, ``plugins.entries.<id>`` grants and a ``memory.provider``
-    selection naming it. A later reinstall under the same name must start from the "Enable now?"
-    decision, not inherit a stale enable or grant (#54336); a dangling ``memory.provider`` would make
-    the next agent init re-clone the plugin from the catalog, silently undoing the uninstall.
-    Returns ``{"cleared_memory_provider": True}`` when the selection was reset."""
-    from hermes_cli.config import load_config, save_config
+def _forget_plugin_config(
+    aliases: set, *, web_backends: set[str] | frozenset[str] = frozenset()
+) -> dict[str, Any]:
+    """Clear a removed plugin's allow/deny entries and grants so reinstall asks whether to enable it.
+    Reset a matching memory provider to prevent reinstall on startup, returning
+    ``{"cleared_memory_provider": True}``. Drop web selections whose providers disappeared."""
+    from hermes_cli.config import load_config, read_raw_config, save_config
     config = load_config()
     changed = False
     result: dict[str, Any] = {}
@@ -631,6 +630,14 @@ def _forget_plugin_config(aliases: set) -> dict[str, Any]:
     if isinstance(memory_cfg, dict) and str(memory_cfg.get("provider") or "").strip() in aliases:
         memory_cfg["provider"] = ""
         changed, result = True, {"cleared_memory_provider": True}
+    if web_backends:
+        raw_web = read_raw_config().get("web")
+        web_cfg = config.get("web")
+        if isinstance(raw_web, dict) and isinstance(web_cfg, dict):
+            for key in ("backend", "search_backend", "extract_backend"):
+                if str(raw_web.get(key) or "").strip().lower() in web_backends:
+                    web_cfg.pop(key, None)
+                    changed = True
     if changed:
         save_config(config)
     return result

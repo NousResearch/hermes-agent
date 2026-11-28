@@ -59,10 +59,58 @@ def _settle_job_record(job_id: str, execution_id: str, delivery_error: Optional[
 
 def _terminal(execution_id: str) -> Optional[tuple[str, Optional[str]]]:
     """``(ledger_outcome, delivery_error)`` once the queue row is terminal, else None."""
-    from cron.delivery_queue import get_status
+    from cron import delivery_queue as queue
 
-    row = get_status(str(execution_id))
-    if not row or row["status"] not in _LEDGER_OUTCOME:
+    row = queue.get_execution_status(str(execution_id))
+    if not row:
+        return None
+    if row.get("bot_chat_receipt"):
+        import json
+        from tools.bot_live_delivery import read_delivery_result
+        from cron.bot_chat_legacy import _require_key
+        try:
+            reference = json.loads(row["bot_chat_receipt"])
+            targets = reference.get("targets", [reference])
+            if not isinstance(targets, list) or not targets:
+                return None
+            for target in targets:
+                _require_key(target.get("delivery_id"))
+                if not isinstance(target.get("home"), str) or not target["home"]:
+                    return None
+        except (ValueError, TypeError, AttributeError):
+            return None  # Corrupt cron evidence cannot use the broader live protocol.
+        # A compatibility queue key is a delivery digest, never a ledger execution.
+        if reference.get("execution_id") != execution_id:
+            return None
+        handoff = row["status"] == "pending" and reference.get("handoff") is True
+        if row["status"] == "delivered" or handoff:
+            # Locally suppressed targets never entered the live authority. Their
+            # retained disposition is terminal without inventing a live receipt.
+            receipts = [read_delivery_result(target["home"], target["delivery_id"])
+                        for target in targets if target.get("local_disposition") != "suppressed"]
+            if any(not receipt or receipt.get("status") in ("queued", "claimed") for receipt in receipts):
+                return None  # SQL completion is transport handoff, not inference completion.
+            failed = next((r for r in receipts if r.get("status") not in ("settled", "suppressed")), None)
+            if failed is not None:
+                outcome, error = "failed", str(failed.get("error") or "Bot Chat completion unverified; do not resend")
+            elif all(r.get("status") == "suppressed" for r in receipts) and not reference.get("other_targets"):
+                outcome, error = "suppressed", None
+            else:
+                outcome, error = "delivered", None
+            if handoff:
+                from agent.redact import redact_sensitive_text
+                from hermes_time import now
+                error = redact_sensitive_text(error, force=True, redact_url_credentials=True) if error else None
+                with queue._transaction() as conn:
+                    cur = conn.execute(
+                        "UPDATE deliveries SET status=?, finished_at=?, error=? WHERE execution_id=? "
+                        "AND status='pending' AND next_attempt_at IS NULL AND bot_chat_receipt=?",
+                        (outcome, now().isoformat(), error, row["execution_id"], row["bot_chat_receipt"]))
+                    if cur.rowcount != 1:
+                        return None  # Another disposition won; re-observe on the next poll.
+                    queue._prune_terminal_unlocked(conn)
+            return outcome, error
+    if row["status"] not in _LEDGER_OUTCOME:
         return None
     delivery_error = None
     if row["status"] in ("failed", "unknown"):

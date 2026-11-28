@@ -159,6 +159,26 @@ def _is_protected_cron_path(p: Path) -> bool:
     return str(p.resolve()) in _protected_cron_paths(get_hermes_home())
 
 
+def _is_protected_scope(p: Path) -> bool:
+    """A STORED entry quick() must never act on, whatever category it claims (#135891).
+
+    Complements ``_is_protected_dir`` (directories) and ``_is_protected_cron_path`` (the cron
+    control plane) for the cases a hand-edited or pre-fix ``tracked.json`` can open:
+
+      * a path that is now a symlink (deleting it would act on the link, not the entry);
+      * a path that no longer resolves inside HERMES_HOME / ``/tmp/hermes-*``;
+      * a durable top-level HERMES_HOME FILE (``config.yaml``, ``.env``, ``auth.json``, ...).
+        ``_is_protected_dir`` guards directories only, so a stored ``temp``/``test`` entry for
+        one of these reached ``_delete_item`` and was unlinked once it aged out.
+    """
+    if p.is_symlink() or not is_safe_path(p):
+        return True
+    with contextlib.suppress(ValueError, OSError):
+        rel = p.resolve().relative_to(get_hermes_home())
+        return len(rel.parts) == 1 and rel.parts[0] in _NEVER_TRACK_TOP_LEVEL
+    return False
+
+
 def fmt_size(n: float) -> str:
     for unit in ("B", "KB", "MB", "GB", "TB"):
         if n < 1024:
@@ -184,6 +204,11 @@ def track(path_str: str, category: str, silent: bool = False) -> bool:
         return False
     if not is_safe_path(path):
         _log(f"REJECT: {path} (outside HERMES_HOME)")
+        return False
+    if _is_protected_scope(path):
+        # A durable top-level file (config.yaml/.env/auth.json/...) is never disposable, manual
+        # category or not — refusing here also keeps it out of tracked.json for quick() (#135891).
+        _log(f"REJECT: {path} (protected file — never disposable)")
         return False
     size = path.stat().st_size if path.is_file() else 0
     tracked = load_tracked()
@@ -260,7 +285,8 @@ def dry_run() -> tuple[list[dict], list[dict]]:
     for item, p, age in _live_items(load_tracked(), datetime.now(UTC)):
         cat = item["category"]
         # Stale cron-output entries and protected dirs are skipped by quick(); omit them here too.
-        if (cat == "cron-output" and guess_category(p) != "cron-output") or _is_protected_dir(p):
+        if ((cat == "cron-output" and guess_category(p) != "cron-output")
+                or _is_protected_dir(p) or _is_protected_scope(p)):
             continue
         if _is_auto_delete(cat, age):
             auto.append(item)
@@ -286,6 +312,11 @@ def quick() -> dict[str, Any]:
             continue
         if _is_protected_dir(p):
             _log(f"SKIPPED: {p} (protected top-level dir)")
+            continue
+        if _is_protected_scope(p):
+            # Re-validate scope and protected files immediately before deletion: a stale entry
+            # (symlink, out-of-scope path, durable top-level file) is dropped, never unlinked. (#135891)
+            _log(f"SKIP protected/out-of-scope entry: {p}")
             continue
         if not _is_auto_delete(cat, age):
             new_tracked.append(item)

@@ -390,16 +390,32 @@ def _coerce_str_list(value: Any, name: str, what: str, *, strip: bool = False):
     return value
 
 
-def _require_dict_metadata(metadata: Any) -> None:
-    _check(metadata is None or isinstance(metadata, dict),
-           f"metadata must be an object/dict, got {type(metadata).__name__}")
+def _coerce_metadata(metadata: Any) -> Optional[dict]:
+    """Return ``metadata`` as a dict, parsing a JSON object string.
+
+    Some models emit an object argument as a JSON-encoded string rather than a
+    nested object (flat key/value tool-call formats), which every transition
+    tool then rejected. Accepting that one shape here fixes them all at once;
+    anything that is not a JSON object is still rejected with the same message.
+    """
+    if metadata is None or isinstance(metadata, dict):
+        return metadata
+    if isinstance(metadata, str):
+        try:
+            parsed = json.loads(metadata)
+        except ValueError:
+            parsed = None
+        _check(isinstance(parsed, dict),
+               f"metadata must be an object/dict, got {type(metadata).__name__}")
+        return parsed
+    raise _Reject(f"metadata must be an object/dict, got {type(metadata).__name__}")
 
 
 def _merge_artifacts(metadata: Any, artifacts: list[str]) -> dict:
     """Fold ``artifacts`` into ``metadata["artifacts"]`` (merged with, never overwriting, a
     list the worker passed manually). Artifacts ride inside metadata so the completed-event
     payload needs no DB schema change; the gateway notifier uploads each as an attachment."""
-    _require_dict_metadata(metadata)
+    metadata = _coerce_metadata(metadata)
     metadata = {} if metadata is None else metadata
     existing = metadata.get("artifacts")
     if isinstance(existing, (list, tuple)):
@@ -747,7 +763,7 @@ def _handle_complete(args: dict, **kw) -> str:
     tid = _worker_guard("kanban_complete", args)
     summary = _redact_opt(args.get("summary"))
     result = _redact_opt(args.get("result"))
-    metadata = args.get("metadata")
+    metadata = _coerce_metadata(args.get("metadata"))
     if isinstance(metadata, dict):
         metadata = _redact_metadata(metadata)
     created_cards = _coerce_str_list(
@@ -756,7 +772,6 @@ def _handle_complete(args: dict, **kw) -> str:
     if artifacts:
         metadata = _merge_artifacts(metadata, artifacts)
     _check(summary or result, "provide at least one of: summary (preferred), result")
-    _require_dict_metadata(metadata)
     metadata = _stamp_worker_session_metadata(tid, metadata)
     with _board(args.get("board")) as (kb, conn):
         # Goal-mode pre-completion judge gate (Issue #38367). Prevent workers from bypassing the auxiliary
@@ -895,8 +910,7 @@ def _handle_request_review(args: dict, **kw) -> str:
     summary = _redact(_require_text(
         args, "summary", "summary is required — describe what was implemented and how it "
         "was verified so the reviewer has context"))
-    metadata = args.get("metadata")
-    _require_dict_metadata(metadata)
+    metadata = _coerce_metadata(args.get("metadata"))
     if metadata is not None:
         metadata = _redact_metadata(metadata)
     artifacts = _coerce_str_list(args.get("artifacts"), "artifacts", "file paths", strip=True)

@@ -1,23 +1,18 @@
 import './portal-sidebar.css'
 
 import { useStore } from '@nanostores/react'
-import { type ComponentProps, type KeyboardEvent, type ReactNode, useEffect, useRef, useState } from 'react'
+import { type ComponentProps, type KeyboardEvent, type ReactNode, useEffect, useState } from 'react'
 
 import { $sessionTileDragging } from '@/components/pane-shell/tree/store'
 import { Sidebar, SidebarContent } from '@/components/ui/sidebar'
 import { useI18n } from '@/i18n'
-import {
-  $portalAgentChatOrder,
-  $portalAgentShowAll,
-  agentSidebarKey,
-  setAgentChatOrder,
-  setAgentShowAll
-} from '@/store/agent-sidebar-preferences'
+import { $portalAgentChatOrder, agentSidebarKey, setAgentChatOrder } from '@/store/agent-sidebar-preferences'
 import { $activeConnectionId } from '@/store/connections'
 import { setPinnedSessionOrder } from '@/store/layout'
 import {
   $pendingPortalProjectForNewChat,
   $portalAgentProjects,
+  $portalProjectExpanded,
   agentPortalProjectsFor,
   claimPendingPortalProjectSession,
   clearPendingPortalProjectNewChat,
@@ -43,7 +38,7 @@ import { SimplifiedSessionList } from '../simplified-session-list'
 import { useAgentSidebar } from '../use-agent-sidebar'
 import { agentKey, agentOwner } from '../use-simplified-agents'
 
-import { AGENT_CHAT_CAP, computeAgentChatLimits } from './agent-chat-cap'
+import { AGENT_CHAT_CAP, computeAgentChatLimits, computeShowMoreStep } from './agent-chat-cap'
 import { arrangeAgentChats, orderAgentChats } from './agent-chat-order'
 import { CreateAccountCard } from './create-account-card'
 import { PortalAgentProjects } from './portal-agent-projects'
@@ -175,6 +170,89 @@ function resolveAgentProjectSessions(
   return { looseCount, map }
 }
 
+function countExpandedProjectRows(
+  projects: readonly { id: string }[],
+  expandedProjects: Record<string, boolean>,
+  resolvedMap: Map<string, string | null>
+): number {
+  let rows = projects.length
+
+  for (const project of projects) {
+    if (!expandedProjects[project.id]) {
+      continue
+    }
+
+    let inProject = 0
+
+    for (const pid of resolvedMap.values()) {
+      if (pid === project.id) {
+        inProject += 1
+      }
+    }
+
+    rows += Math.max(1, inProject)
+  }
+
+  return rows
+}
+
+function buildAgentChatLimits(params: {
+  agents: ReturnType<typeof useAgentSidebar>['agents']
+  allProjects: ReturnType<typeof $portalAgentProjects.get>
+  expanded: Record<string, boolean>
+  expandedProjects: Record<string, boolean>
+  activeConnection: string | null
+  activeProfile: string | null
+  sectionsHeight: number
+  agentsViewportHeight: number
+  screenChromePx: number
+  groupRows: number
+  pinnedRows: number
+}) {
+  const machineIds = new Set(params.agents.agents.map(a => a.connectionId))
+  const openAgents: { key: string; count: number; showAll: boolean; active: boolean }[] = []
+  const resolvedProjectsByAgent = new Map<string, Map<string, string | null>>()
+  let collapsedAgentCount = 0
+  let projectRowsOverhead = 0
+
+  for (const agent of params.agents.agents) {
+    const isOpen = params.expanded[agentKey(agent)] ?? true
+    const owner = agentOwner(agent)
+    const key = agentSidebarKey(owner)
+    const agentProjects = agentPortalProjectsFor(params.allProjects, owner)
+    const agentSessions = params.agents.sessionsByAgent.get(agentKey(agent)) ?? []
+    const resolved = resolveAgentProjectSessions(agentProjects, agentSessions)
+    resolvedProjectsByAgent.set(agentKey(agent), resolved.map)
+
+    if (!isOpen) {
+      collapsedAgentCount += 1
+      continue
+    }
+
+    projectRowsOverhead += countExpandedProjectRows(agentProjects.projects, params.expandedProjects, resolved.map)
+    openAgents.push({
+      key,
+      count: resolved.looseCount,
+      showAll: false,
+      active: agent.connectionId === params.activeConnection && agent.profile === params.activeProfile
+    })
+  }
+
+  const projectPx = projectRowsOverhead * 40
+  const dynamicLimits = computeAgentChatLimits({
+    agentsViewportHeight: params.agentsViewportHeight > 0 ? Math.max(0, params.agentsViewportHeight - projectPx) : 0,
+    availableHeight: Math.max(0, params.sectionsHeight - projectPx),
+    collapsedAgentCount,
+    extraChromePx: params.screenChromePx,
+    groupRows: params.groupRows,
+    machineCount: machineIds.size,
+    openAgents,
+    pinnedRows: params.pinnedRows
+  })
+
+  return { dynamicLimits, resolvedProjectsByAgent }
+}
+
 /** Sync backend `projects.db` records into `$portalAgentProjects` for every visible agent and
  *  re-sync the active owner whenever `$projects` updates (never copying unscoped `$projects` across profiles). */
 function useSyncPortalBackendProjects(
@@ -250,11 +328,13 @@ export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
   } = useAgentSidebar(props)
 
   const searchBox = usePortalSidebarSearch(setQuery)
-  const sectionsRef = useRef<HTMLDivElement | null>(null)
-  const [sectionsHeight, setSectionsHeight] = useState(0)
+  const [sectionsEl, setSectionsEl] = useState<HTMLDivElement | null>(null)
+  const [layoutMetrics, setLayoutMetrics] = useState({ agentsViewportHeight: 0, screenChromePx: 0, sectionsHeight: 0 })
   const chatOrder = useStore($portalAgentChatOrder)
-  const showAll = useStore($portalAgentShowAll)
+  // Session-only stepped expansion (+10 per click) so one lookup never permanently blows up the sidebar.
+  const [extraChatsByAgent, setExtraChatsByAgent] = useState<Record<string, number>>({})
   const allProjects = useStore($portalAgentProjects)
+  const expandedProjects = useStore($portalProjectExpanded)
   const pendingProjectNewChat = useStore($pendingPortalProjectForNewChat)
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const activeConnection = useStore($activeConnectionId)
@@ -319,23 +399,48 @@ export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
   }, [agents, all, pendingProjectNewChat, selectedStoredSessionId])
   const botModeLoaded = useBotModeLoaded()
   useEffect(() => {
-    const el = sectionsRef.current
-
-    if (!el || typeof ResizeObserver === 'undefined') {
+    if (!sectionsEl || typeof ResizeObserver === 'undefined') {
       return
     }
 
+    const findAgentsScroll = () =>
+      sectionsEl.querySelector<HTMLElement>('[data-slot="agent-section"] .portal-section-scroll')
+
     const update = () => {
-      const next = Math.round(el.clientHeight)
-      setSectionsHeight(prev => (Math.abs(prev - next) >= 12 ? next : prev))
+      const agentsScroll = findAgentsScroll()
+      let screenPx = 0
+
+      for (const screen of sectionsEl.querySelectorAll<HTMLElement>(
+        '[data-slot="agent-screen-row"], .portal-agent-screen'
+      )) {
+        screenPx += Math.round(screen.getBoundingClientRect().height)
+      }
+
+      const next = {
+        agentsViewportHeight: agentsScroll ? Math.round(agentsScroll.clientHeight) : 0,
+        screenChromePx: screenPx,
+        sectionsHeight: Math.round(sectionsEl.clientHeight)
+      }
+      setLayoutMetrics(prev =>
+        Math.abs(prev.sectionsHeight - next.sectionsHeight) >= 8 ||
+        Math.abs(prev.agentsViewportHeight - next.agentsViewportHeight) >= 8 ||
+        Math.abs(prev.screenChromePx - next.screenChromePx) >= 8
+          ? next
+          : prev
+      )
     }
 
     update()
     const observer = new ResizeObserver(update)
-    observer.observe(el)
+    observer.observe(sectionsEl)
+    const agentsScroll = findAgentsScroll()
+
+    if (agentsScroll) {
+      observer.observe(agentsScroll)
+    }
 
     return () => observer.disconnect()
-  }, [botModeLoaded])
+  }, [agents.agents.length, botModeLoaded, pinned.length, sectionsEl])
   const searching = Boolean(query.trim())
   // Nothing in flight: a settled list may show its empty notes.
   const quiet = !loading && !search.pending && !search.failed
@@ -356,43 +461,18 @@ export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
     // so the first one is still a click away (HADESK-132).
     const noGroupChats = !searching && groups && groups.rooms.length + groups.names.length === 0
 
-    const machineIds = new Set(agents.agents.map(a => a.connectionId))
-    const openAgents: { key: string; count: number; showAll: boolean; active: boolean }[] = []
-    let collapsedAgentCount = 0
-
-    let projectRowsOverhead = 0
-    const resolvedProjectsByAgent = new Map<string, Map<string, string | null>>()
-
-    for (const agent of agents.agents) {
-      const isOpen = expanded[agentKey(agent)] ?? true
-      const owner = agentOwner(agent)
-      const key = agentSidebarKey(owner)
-      const agentProjects = agentPortalProjectsFor(allProjects, owner)
-      const agentSessions = agents.sessionsByAgent.get(agentKey(agent)) ?? []
-      const resolved = resolveAgentProjectSessions(agentProjects, agentSessions)
-      resolvedProjectsByAgent.set(agentKey(agent), resolved.map)
-
-      if (!isOpen) {
-        collapsedAgentCount += 1
-        continue
-      }
-
-      projectRowsOverhead += agentProjects.projects.length
-
-      openAgents.push({
-        key,
-        count: resolved.looseCount,
-        showAll: showAll[key] ?? false,
-        active: agent.connectionId === activeConnection && agent.profile === activeProfile
-      })
-    }
-    const dynamicLimits = computeAgentChatLimits({
-      availableHeight: Math.max(0, sectionsHeight - projectRowsOverhead * 36),
-      collapsedAgentCount,
+    const { dynamicLimits, resolvedProjectsByAgent } = buildAgentChatLimits({
+      activeConnection,
+      activeProfile,
+      agents,
+      agentsViewportHeight: layoutMetrics.agentsViewportHeight,
+      allProjects,
+      expanded,
+      expandedProjects,
       groupRows: groups ? groups.rooms.length + groups.names.length : 0,
-      machineCount: machineIds.size,
-      openAgents,
-      pinnedRows: pinned.length
+      pinnedRows: pinned.length,
+      screenChromePx: layoutMetrics.screenChromePx,
+      sectionsHeight: layoutMetrics.sectionsHeight
     })
     return (
       <>
@@ -401,7 +481,7 @@ export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
             {t.sidebar.noMatch(query)}
           </p>
         )}
-        <div className="portal-sidebar-sections" hidden={nothingFound} onKeyDown={moveRowFocus} ref={sectionsRef}>
+        <div className="portal-sidebar-sections" hidden={nothingFound} onKeyDown={moveRowFocus} ref={setSectionsEl}>
           {pinned.length > 0 ? (
             <SimplifiedPinnedSessions
               {...shared}
@@ -424,7 +504,8 @@ export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
             renderSessions={(sessions, agent) => {
               const owner = agentOwner(agent)
               const key = agentSidebarKey(owner)
-              const agentShowsAll = showAll[key] ?? false
+              const extraChats = extraChatsByAgent[key] ?? 0
+              const baseLimit = dynamicLimits[key] ?? AGENT_CHAT_CAP
               const agentProjects = agentPortalProjectsFor(allProjects, owner)
               const ordered = orderAgentChats(sessions, chatOrder[key])
               const resolvedMap = resolvedProjectsByAgent.get(agentKey(agent))
@@ -467,9 +548,33 @@ export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
                   <SimplifiedSessionList
                     {...shared}
                     cap={{
-                      limit: dynamicLimits[key] ?? AGENT_CHAT_CAP,
-                      showAll: agentShowsAll,
-                      onToggle: () => setAgentShowAll(owner, !agentShowsAll)
+                      extra: extraChats,
+                      limit: baseLimit,
+                      showAll: false,
+                      onShowLess: () =>
+                        setExtraChatsByAgent(current => {
+                          const { [key]: _dropped, ...rest } = current
+
+                          return rest
+                        }),
+                      onShowMore: () =>
+                        setExtraChatsByAgent(current => {
+                          const remaining = Math.max(0, looseSessions.length - (baseLimit + (current[key] ?? 0)))
+
+                          return { ...current, [key]: (current[key] ?? 0) + computeShowMoreStep(remaining) }
+                        }),
+                      onToggle: () =>
+                        setExtraChatsByAgent(current =>
+                          (current[key] ?? 0) > 0
+                            ? Object.fromEntries(Object.entries(current).filter(([k]) => k !== key))
+                            : {
+                                ...current,
+                                [key]: Math.max(
+                                  looseSessions.length - baseLimit,
+                                  computeShowMoreStep(looseSessions.length - baseLimit)
+                                )
+                              }
+                        )
                     }}
                     onReorder={rows => setAgentChatOrder(owner, arrangeAgentChats(rows))}
                     sessions={looseSessions}

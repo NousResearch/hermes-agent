@@ -72,6 +72,15 @@ describe('capAgentChats', () => {
     expect(capAgentChats([1, 2, 3, 4, 5], 2, row => row === 4)).toEqual([1, 2, 4])
     expect(capAgentChats([1, 2], 3, () => false)).toEqual([1, 2])
   })
+
+  it('bounds soft-kept unread rows so unread bursts never swallow sibling agents', () => {
+    expect(
+      capAgentChats([1, 2, 3, 4, 5, 6, 7, 8], 3, () => false, {
+        maxSoftKeep: 2,
+        softKeep: row => row >= 4
+      })
+    ).toEqual([1, 2, 3, 4, 5])
+  })
 })
 
 describe('computeAgentChatLimits', () => {
@@ -88,31 +97,49 @@ describe('computeAgentChatLimits', () => {
     ).toEqual({ a: AGENT_CHAT_CAP })
   })
 
-  it('expands a single agent to fill available sidebar height instead of folding over blank space', () => {
+  it('water-fills a single agent across the entire tall sidebar with no arbitrary ceiling', () => {
     const limits = computeAgentChatLimits({
-      availableHeight: 720,
+      availableHeight: 1100,
       collapsedAgentCount: 0,
       groupRows: 0,
       machineCount: 1,
-      openAgents: [{ key: 'a', count: 12, active: true }],
+      openAgents: [{ key: 'a', count: 30, active: true }],
       pinnedRows: 0
     })
-    expect(limits.a).toBe(12)
+    expect(limits.a).toBeGreaterThan(20)
   })
 
-  it('donates unused slack from small agents to larger ones and keeps the 3-chat floor when tight', () => {
-    const roomy = computeAgentChatLimits({
-      availableHeight: 720,
+  it('keeps sibling agents above the fold by accounting for real card chrome and Bot Screen rows', () => {
+    const withBotScreens = computeAgentChatLimits({
+      availableHeight: 820,
+      botScreenRows: 3,
+      collapsedAgentCount: 0,
+      groupRows: 0,
+      machineCount: 1,
+      openAgents: [
+        { key: 'default', count: 25, active: true },
+        { key: 'ops', count: 12 },
+        { key: 'scout', count: 8 }
+      ],
+      pinnedRows: 0
+    })
+    expect(withBotScreens).toEqual({ default: AGENT_CHAT_CAP, ops: AGENT_CHAT_CAP, scout: AGENT_CHAT_CAP })
+
+    const roomyNoScreens = computeAgentChatLimits({
+      availableHeight: 900,
       collapsedAgentCount: 0,
       groupRows: 0,
       machineCount: 1,
       openAgents: [
         { key: 'small', count: 1 },
-        { key: 'busy', count: 12, active: true }
+        { key: 'busy', count: 25, active: true },
+        { key: 'other', count: 18 }
       ],
       pinnedRows: 0
     })
-    expect(roomy.busy).toBeGreaterThan(8)
+    // Water-fills spare rows round-robin across busy + other without overflowing the 900px budget
+    expect(roomyNoScreens.busy).toBeGreaterThanOrEqual(roomyNoScreens.other)
+    expect(roomyNoScreens.busy + roomyNoScreens.other).toBeLessThanOrEqual(16)
 
     const tight = computeAgentChatLimits({
       availableHeight: 280,
@@ -180,6 +207,68 @@ describe("an agent card's chats", () => {
   it('offers no Show all row when everything fits', () => {
     render(<AgentChats sessions={chats.slice(0, 3)} />)
     expect(screen.queryByRole('button', { name: /Show all/ })).toBeNull()
+  })
+
+  it('steps +10 chats at a time with paired Show less and snaps to all when <= 12 remain', () => {
+    const manyChats: SessionInfo[] = Array.from({ length: 24 }, (_, index) =>
+      makeSessionInfo({ id: `chat-${index}`, connection_id: 'local', profile: 'default', title: `Chat ${index}` })
+    )
+
+    function SteppedAgentChats() {
+      const [extra, setExtra] = useState(0)
+
+      return (
+        <MemoryRouter>
+          <StableNavigateProvider>
+            <RootTooltipProvider>
+              <SimplifiedSessionList
+                activeSessionId={null}
+                ambiguousIds={new Set()}
+                cap={{
+                  extra,
+                  limit: 3,
+                  showAll: false,
+                  onShowLess: () => setExtra(0),
+                  onShowMore: () =>
+                    setExtra(current => {
+                      const remaining = Math.max(0, manyChats.length - (3 + current))
+
+                      return current + (remaining <= 12 ? remaining : 10)
+                    }),
+                  onToggle: () => setExtra(current => (current > 0 ? 0 : manyChats.length))
+                }}
+                onArchiveSession={noop}
+                onBranchSession={noop}
+                onDeleteSession={noop}
+                onResumeSession={noop}
+                onUpdate={noop}
+                pinnedIds={new Set()}
+                searching={false}
+                sessions={manyChats}
+              />
+            </RootTooltipProvider>
+          </StableNavigateProvider>
+        </MemoryRouter>
+      )
+    }
+
+    render(<SteppedAgentChats />)
+    expect(screen.queryAllByText(/^Chat \d+$/)).toHaveLength(3)
+    expect(screen.queryByRole('button', { name: en.simplifiedAgents.showFewerChats })).toBeNull()
+
+    // Step 1: 3 -> 13 (21 hidden -> > 12 -> stepped "+10")
+    fireEvent.click(screen.getByRole('button', { name: en.simplifiedAgents.showMoreChats(10, 21) }))
+    expect(screen.queryAllByText(/^Chat \d+$/)).toHaveLength(13)
+    // Paired Show less is immediately available without dumping all 24 chats
+    expect(screen.getByRole('button', { name: en.simplifiedAgents.showFewerChats })).toBeTruthy()
+
+    // Step 2: 11 remain (<= 12) -> snaps straight to Show all (24)
+    fireEvent.click(screen.getByRole('button', { name: en.simplifiedAgents.showAllChats(24) }))
+    expect(screen.queryAllByText(/^Chat \d+$/)).toHaveLength(24)
+
+    // Show less collapses cleanly back to 3
+    fireEvent.click(screen.getByRole('button', { name: en.simplifiedAgents.showFewerChats }))
+    expect(screen.queryAllByText(/^Chat \d+$/)).toHaveLength(3)
   })
 })
 

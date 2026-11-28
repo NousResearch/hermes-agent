@@ -1233,10 +1233,29 @@ button.portal-section-title:hover {
   color: var(--portal-sidebar-row-selected-ink);
 }
 
-/* "Show all (15)" / "Show less" under an agent's most recent chats: a chat row's pitch and title
-   inset, in the caption ink so it never reads as a chat. */
+/* "Show 10 more" / "Show less" row under an agent's most recent chats: a chat row's pitch and
+   title inset, in the caption ink so it never reads as a chat. */
+.portal-session-more-row {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+/* Keep Show more + Show less pinned at the bottom edge of the Agents scroll viewport while an
+   agent is expanded so collapsing back never requires scrolling past 10+ revealed chats. The
+   downward shadow masks the scroller's 1.25rem bottom padding so no scrolled chat peeks below it. */
+.portal-session-more-row[data-expanded='true'] {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  border-top: 1px solid var(--portal-sidebar-agent-rule);
+  background: var(--portal-sidebar-background);
+  box-shadow: 0 1.25rem 0 0 var(--portal-sidebar-background);
+}
 .portal-session-more {
   display: flex;
+  flex: 1;
+  min-width: 0;
   min-height: var(--portal-sidebar-chat-row);
   align-items: center;
   padding-inline: var(--portal-sidebar-chat-title) var(--portal-sidebar-chat-end);
@@ -1244,6 +1263,19 @@ button.portal-section-title:hover {
   color: var(--portal-sidebar-meta);
   font-size: var(--portal-type-meta-size);
   text-align: start;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.portal-session-more.portal-session-less {
+  flex: none;
+  padding-inline: 0.5rem;
+}
+
+.portal-session-more-row > .portal-session-less:only-child {
+  flex: 1;
+  padding-inline: var(--portal-sidebar-chat-title) var(--portal-sidebar-chat-end);
 }
 
 .portal-session-more:hover {
@@ -1255,7 +1287,6 @@ button.portal-section-title:hover {
   outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
   outline-offset: var(--portal-focus-ring-offset);
 }
-
 .portal-agent-sessions .portal-session-meta {
   margin-inline-start: 1rem;
 }

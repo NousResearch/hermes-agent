@@ -33,18 +33,109 @@ import { PIN_DROP_SELECTOR, startSessionDrag, UNPIN_DROP_SELECTOR } from '../ses
 import { SessionStatusDot } from '../session-status-dot'
 
 import { mergeVisibleReorder } from './order'
-import { capAgentChats } from './portal/agent-chat-cap'
+import {
+  AGENT_CHAT_SNAP_REMAINING,
+  AGENT_CHAT_STEP,
+  capAgentChats,
+  MAX_FOLDED_UNREAD_KEEP
+} from './portal/agent-chat-cap'
 import { type OutsideDrop, ReorderableList, shellOwnsPress, useSortableBindings } from './reorderable-list'
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
 import { SessionRowSlot } from './session-row-slots'
 import { sessionRowKey } from './simplified-session-identity'
 
-/** An agent card's cap: its most recent chats, then a row that shows the rest or folds them back. */
-interface SessionListCap {
+/** An agent card's cap: its most recent chats, stepped "Show more" (+10) and paired "Show less". */
+export interface SessionListCap {
   limit: number
   showAll: boolean
   onToggle: () => void
+  /** Additional chats currently revealed above `limit` (stepped Show more mode). */
+  extra?: number
+  onShowMore?: () => void
+  onShowLess?: () => void
 }
+interface SessionFoldState {
+  shown: SessionInfo[]
+  hiddenCount: number
+  isExpanded: boolean
+  foldable: boolean
+}
+
+function resolveSessionFold(
+  ordered: SessionInfo[],
+  cap: SessionListCap | undefined,
+  searching: boolean,
+  keep: (row: SessionInfo) => boolean
+): SessionFoldState {
+  if (!cap || searching) {
+    return { foldable: false, hiddenCount: 0, isExpanded: false, shown: ordered }
+  }
+
+  const softKeep = (row: SessionInfo) => row.unread === true
+  const extra = cap.extra ?? 0
+  const folded = capAgentChats(ordered, cap.limit + extra, keep, {
+    maxSoftKeep: MAX_FOLDED_UNREAD_KEEP,
+    softKeep
+  })
+  const baseFolded = capAgentChats(ordered, cap.limit, keep, {
+    maxSoftKeep: MAX_FOLDED_UNREAD_KEEP,
+    softKeep
+  })
+  const shown = cap.showAll ? ordered : folded
+  const hiddenCount = Math.max(0, ordered.length - shown.length)
+  const isExpanded = cap.showAll || extra > 0
+  const foldable = hiddenCount > 0 || (isExpanded && baseFolded.length < ordered.length)
+
+  return { foldable, hiddenCount, isExpanded, shown }
+}
+
+function SessionFoldBar({
+  cap,
+  fold,
+  totalCount
+}: {
+  cap: SessionListCap
+  fold: SessionFoldState
+  totalCount: number
+}) {
+  const { t } = useI18n()
+  const showMoreLabel =
+    cap.onShowMore && fold.hiddenCount > AGENT_CHAT_SNAP_REMAINING
+      ? t.simplifiedAgents.showMoreChats(AGENT_CHAT_STEP, fold.hiddenCount)
+      : t.simplifiedAgents.showAllChats(totalCount)
+
+  return (
+    <div
+      className="portal-session-more-row"
+      data-expanded={fold.isExpanded ? 'true' : undefined}
+      data-slot="portal-session-more-row"
+    >
+      {fold.hiddenCount > 0 && (
+        <RowButton
+          aria-expanded={fold.isExpanded}
+          className="portal-session-more"
+          onClick={cap.onShowMore ?? cap.onToggle}
+        >
+          {showMoreLabel}
+        </RowButton>
+      )}
+      {fold.isExpanded && (
+        <RowButton
+          aria-expanded={true}
+          className="portal-session-more portal-session-less"
+          onClick={event => {
+            const group = event.currentTarget.closest('[data-slot="agent-group"]')
+            ;(cap.onShowLess ?? cap.onToggle)()
+            requestAnimationFrame(() => group?.scrollIntoView?.({ block: 'nearest' }))
+          }}
+        >
+          {t.simplifiedAgents.showFewerChats}
+        </RowButton>
+      )}
+    </div>
+  )
+}
+
 
 interface SimplifiedSessionListProps {
   cap?: SessionListCap
@@ -431,15 +522,11 @@ export function SimplifiedSessionList({
     )
   }
 
-  // A search lists every match; otherwise the cap keeps whatever needs attention in reach.
-  const capped = cap && !cap.showAll && !props.searching
-  const keep = (row: SessionInfo) => isSelected(row) || row.unread === true || (dots[row.id] ?? 'idle') !== 'idle'
-  const folded = cap ? capAgentChats(ordered, cap.limit, keep) : ordered
-  const shown = capped ? folded : ordered
-  // The fold is offered only when folding hides something: kept rows may already be every row.
-  const foldable = cap && !props.searching && folded.length < ordered.length
-
-  // A search is a result list, never an arrangement.
+  // A search lists every match; otherwise the cap keeps the selected + working chats unconditionally
+  // and bounds extra unread rows so unread bursts never swallow sibling agents.
+  const keep = (row: SessionInfo) => isSelected(row) || (dots[row.id] ?? 'idle') !== 'idle'
+  const fold = resolveSessionFold(ordered, cap, Boolean(props.searching), keep)
+  const { shown } = fold
   const reorder = props.searching ? undefined : onReorder
 
   // Rows past the cap and in the other partition keep their places: only the moved ones trade slots.
@@ -531,11 +618,7 @@ export function SimplifiedSessionList({
   return (
     <div className="portal-session-list">
       {lists}
-      {foldable && (
-        <RowButton aria-expanded={cap.showAll} className="portal-session-more" onClick={cap.onToggle}>
-          {cap.showAll ? t.simplifiedAgents.showFewerChats : t.simplifiedAgents.showAllChats(ordered.length)}
-        </RowButton>
-      )}
+      {fold.foldable && cap && <SessionFoldBar cap={cap} fold={fold} totalCount={ordered.length} />}
     </div>
   )
 }

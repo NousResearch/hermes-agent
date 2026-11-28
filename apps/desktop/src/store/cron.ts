@@ -22,10 +22,14 @@ let cronJobsRequestScope = ''
 let cronJobsScopeGeneration = 0
 // The backend scope (connection + profile) the published list was fetched from; '' once a
 // connection switch wiped it. A cleared cache is not evidence about any backend's jobs.
-let cronJobsSnapshotScope = ''
+// An atom, so a view waiting on its first list settles whichever surface's request publishes it.
+export const $cronJobsSnapshotScope = atom('')
+// The scope whose newest list request failed. Kept beside the snapshot because any surface's
+// request may be the one that fails for the scope a view waits on; a new request clears it.
+export const $cronJobsFailedScope = atom('')
 
 export function getCronJobsSnapshotScope(): string {
-  return cronJobsSnapshotScope
+  return $cronJobsSnapshotScope.get()
 }
 
 function activateCronJobsScope(scope: string): void {
@@ -41,6 +45,7 @@ function activateCronJobsScope(scope: string): void {
 export function beginCronJobsRequest(scope: string): CronJobsRequest {
   activateCronJobsScope(scope)
   cronJobsRequestGeneration += 1
+  $cronJobsFailedScope.set('')
 
   return { generation: cronJobsRequestGeneration, scope }
 }
@@ -72,15 +77,27 @@ export function commitCronJobsRequest(request: CronJobsRequest, jobs: CronJob[])
   // Consume the token so neither a duplicate completion nor any older request
   // can publish after this authoritative snapshot.
   cronJobsRequestGeneration += 1
-  cronJobsSnapshotScope = request.scope
+  $cronJobsSnapshotScope.set(request.scope)
   $cronJobs.set(jobs)
+
+  return true
+}
+
+/** Records a failed list request; false when a newer request supersedes it. */
+export function failCronJobsRequest(request: CronJobsRequest): boolean {
+  if (!isCronJobsRequestCurrent(request)) {
+    return false
+  }
+
+  $cronJobsFailedScope.set(request.scope)
 
   return true
 }
 
 export const setCronJobs = (jobs: CronJob[]) => {
   cronJobsRequestGeneration += 1
-  cronJobsSnapshotScope = ''
+  $cronJobsFailedScope.set('')
+  $cronJobsSnapshotScope.set('')
   $cronJobs.set(jobs)
 }
 

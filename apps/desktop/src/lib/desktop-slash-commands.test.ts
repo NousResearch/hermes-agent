@@ -193,6 +193,34 @@ describe('desktop slash command curation', () => {
     }
   })
 
+  it('routes /focus and /verbose through the gateway config.set branch, not the slash worker (#136058)', () => {
+    for (const name of ['/focus', '/verbose']) {
+      const surface = resolveDesktopCommand(name)?.surface
+      expect(surface?.kind).toBe('rpc')
+
+      if (surface?.kind !== 'rpc') {
+        continue
+      }
+
+      expect(surface.rpc).toBe('config.set')
+      // A bare invocation forwards an empty value (the gateway cycles/toggles);
+      // an explicit argument forwards verbatim — both stay session-scoped.
+      expect(surface.buildParams({ arg: '', command: name, name: name.slice(1), sessionId: 's-1' })).toEqual({
+        key: name.slice(1), value: '', session_id: 's-1'
+      })
+      expect(surface.buildParams({ arg: ' on ', command: name, name: name.slice(1), sessionId: 's-1' })).toEqual({
+        key: name.slice(1), value: 'on', session_id: 's-1'
+      })
+      expect(desktopSlashCommandArgumentMode(name)).toBe('options')
+      expect(isDesktopSlashCommand(name)).toBe(true)
+      expect(isDesktopSlashSuggestion(name)).toBe(true)
+    }
+
+    // The registry used to hide /verbose as terminal-only; the offered row
+    // keeps the popover honest now that the desktop can route it.
+    expect(desktopSlashRegistry['/verbose']).toBeNull()
+  })
+
   it('still routes commands without dedicated RPCs through exec()', () => {
     // /background deliberately NOT here — it has the dedicated
     // prompt.background RPC since #97635 (the slash worker's completion

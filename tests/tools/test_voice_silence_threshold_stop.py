@@ -40,7 +40,7 @@ class _FakeAudio:
 @pytest.fixture
 def mock_audio(monkeypatch, tmp_path):
     monkeypatch.setattr("tools.voice_mode._import_audio", lambda: (None, _FakeAudio()))
-    monkeypatch.setattr("tools.voice_mode._TEMP_DIR", str(tmp_path))
+    monkeypatch.setattr("tools.voice_mode._recordings_dir", lambda: str(tmp_path))
     return _FakeAudio()
 
 

@@ -120,6 +120,22 @@ def _default_output_dir() -> str:
     return str(get_hermes_dir("cache/audio", "audio_cache"))
 
 
+def tts_scratch_dir() -> str:
+    """Where Hermes's own synthesis (CLI/TUI voice replies, gateway auto-TTS, Discord acks) writes.
+
+    The profile's audio dir, not the OS temp dir: the tool refuses ``output_path`` outside
+    ``HERMES_WRITE_SAFE_ROOT`` (Docker sets it to the home, so ``/tmp`` broke auto-TTS, #80386),
+    and a fixed ``/tmp/hermes_voice`` is shared with every account on the host. A home outside
+    the safe root falls back to the first root's ``cache/hermes_voice``."""
+    from agent.file_safety import get_safe_write_roots
+    scratch, roots = _default_output_dir(), get_safe_write_roots()
+    resolved = os.path.realpath(scratch)
+    if roots and not any(resolved == r or resolved.startswith(r + os.sep) for r in roots):
+        scratch = os.path.join(min(roots), "cache", "hermes_voice")
+    os.makedirs(scratch, exist_ok=True)
+    return scratch
+
+
 def _load_tts_config() -> dict[str, Any]:
     """Return the ``tts`` config section ({} when unavailable)."""
     try:

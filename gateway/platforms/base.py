@@ -220,11 +220,9 @@ def build_auto_tts_output_path(platform) -> str:
     (``_repair_ogg_container``) then guarantees real Ogg/Opus bytes for every provider, including MP3-only
     backends like Edge TTS. Everything else keeps the MP3 default. See #36685, #57049.
     """
-    from tools.tts_tool import OPUS_VOICE_PLATFORMS
+    from tools.tts_tool import OPUS_VOICE_PLATFORMS, tts_scratch_dir
     ext = "ogg" if _platform_name(platform) in OPUS_VOICE_PLATFORMS else "mp3"
-    audio_path = os.path.join(
-        tempfile.gettempdir(), "hermes_voice", f"tts_reply_{uuid.uuid4().hex[:12]}.{ext}")
-    os.makedirs(os.path.dirname(audio_path), exist_ok=True)
+    audio_path = os.path.join(tts_scratch_dir(), f"tts_reply_{uuid.uuid4().hex[:12]}.{ext}")
     return audio_path
 
 

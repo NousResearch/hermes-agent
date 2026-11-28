@@ -353,3 +353,150 @@ class TestSplitTextFenceBalanced:
             )
 
 
+def _texts(blocks):
+    """Every string a reader would actually see, flattened out of the block tree."""
+    out = []
+
+    def visit(node):
+        if isinstance(node, dict):
+            if node.get("type") == "text" and isinstance(node.get("text"), str):
+                out.append(node["text"])
+            for value in node.values():
+                visit(value)
+        elif isinstance(node, list):
+            for value in node:
+                visit(value)
+
+    visit(blocks)
+    return out
+
+
+def _elements(blocks, kind):
+    """Every element of ``kind`` anywhere in the block tree."""
+    out = []
+
+    def visit(node):
+        if isinstance(node, dict):
+            if node.get("type") == kind:
+                out.append(node)
+            for value in node.values():
+                visit(value)
+        elif isinstance(node, list):
+            for value in node:
+                visit(value)
+
+    visit(blocks)
+    return out
+
+
+class TestEmphasisSpanningAnotherInlineConstruct:
+    """Emphasis is resolved before the constructs it may wrap.
+
+    Regression: emphasis used to be resolved LAST — after inline code and after
+    links — so a span wrapping either one had its delimiters consumed as ordinary
+    text by the earlier passes. The message then rendered with a literal ``**`` in
+    it: either as a standalone element, or glued to the surrounding words when the
+    span wrapped code.
+    """
+
+    def test_emphasis_wrapping_a_link_styles_the_link_element(self):
+        blocks = render_blocks("- **[docs](https://example.com/x)** — read this")
+        # no element is left holding only emphasis markers
+        markers_only = [t for t in _texts(blocks) if t.strip() and set(t.strip()) <= set("*_~`")]
+        assert markers_only == []
+        links = _elements(blocks, "link")
+        assert [link["url"] for link in links] == ["https://example.com/x"]
+        # the emphasis lands on the link instead of being dropped
+        assert links[0]["style"]["bold"] is True
+
+    def test_emphasis_spanning_inline_code_keeps_both_styles(self):
+        blocks = render_blocks("- **upstream `hermes send --blocks` only** — one route")
+        # markers must not survive into any visible string
+        assert [t for t in _texts(blocks) if "**" in t or "__" in t] == []
+        code = [e for e in _elements(blocks, "text") if e.get("style", {}).get("code")]
+        assert [e["text"] for e in code] == ["hermes send --blocks"]
+        # the inner element inherits the emphasis the span was wrapped in
+        assert code[0]["style"]["bold"] is True
+        # and code stays opaque: markers INSIDE backticks are never emphasis
+        assert "a_b_c" in _texts(render_blocks("- `a_b_c` stays literal"))
+
+
+
+
+
+class TestOpaqueInlineConstructs:
+    """Emphasis delimiters inside identifiers, link targets and bare URLs are text.
+
+    Regression: ``_`` was emphasis anywhere, so ``config_version`` or a path such as
+    ``/home/mike_kim/a_b`` rendered an italic fragment, and resolving emphasis before
+    links let a ``_`` in a link target pair with one in the label.
+    """
+
+    def test_intraword_underscores_stay_literal(self):
+        blocks = render_blocks("- config_version and /home/mike_kim/a_b")
+        assert _texts(blocks) == ["config_version and /home/mike_kim/a_b"]
+
+    def test_word_bounded_underscore_emphasis_still_renders(self):
+        blocks = render_blocks("- _note_ and __loud__")
+        styled = {e["text"]: e["style"] for e in _elements(blocks, "text") if e.get("style")}
+        assert styled == {"note": {"italic": True}, "loud": {"bold": True}}
+
+    def test_underscores_in_a_link_target_do_not_pair_with_the_label(self):
+        blocks = render_blocks("- see [a_b](https://example.com/x_y_z) now")
+        links = _elements(blocks, "link")
+        assert [(link["text"], link["url"]) for link in links] == [("a_b", "https://example.com/x_y_z")]
+        assert "style" not in links[0]
+
+    def test_bare_url_becomes_a_link_without_trailing_punctuation(self):
+        blocks = render_blocks("- docs: https://example.com/a_b_c.")
+        links = _elements(blocks, "link")
+        assert [link["url"] for link in links] == ["https://example.com/a_b_c"]
+        assert _texts(blocks)[-1] == "."
+
+    def test_bare_url_inside_bold_keeps_the_marker_out_of_the_href(self):
+        blocks = render_blocks("- **PR open https://example.com/pull/94** done")
+        links = _elements(blocks, "link")
+        assert [link["url"] for link in links] == ["https://example.com/pull/94"]
+        assert links[0]["style"] == {"bold": True}
+
+    def test_bare_url_stops_at_non_ascii_text(self):
+        links = _elements(render_blocks("- https://example.com/a에서 확인"), "link")
+        assert [link["url"] for link in links] == ["https://example.com/a"]
+
+
+class TestParagraphsRenderAsRichText:
+    """Paragraphs use rich_text so emphasis does not depend on mrkdwn word boundaries.
+
+    Regression: paragraphs were ``section`` blocks holding mrkdwn, and Slack only
+    closes ``*bold*`` when the next character is not a letter or digit. Unspaced text
+    (Korean particles, Japanese, Chinese) therefore showed literal asterisks:
+    ``**Claude Opus 5.5(`m`)**로`` rendered as ``*Claude Opus 5.5(m)*로``.
+    """
+
+    def test_bold_flush_against_unspaced_text_is_styled(self):
+        blocks = render_blocks("지금 **Claude Opus 5.5(`m`)**로 응답해요.")
+        assert _types(blocks) == ["rich_text"]
+        assert [t for t in _texts(blocks) if "*" in t] == []
+        bold = [e["text"] for e in _elements(blocks, "text") if e.get("style", {}).get("bold")]
+        assert bold == ["Claude Opus 5.5(", "m", ")"]
+        assert _texts(blocks)[-1] == "로 응답해요."
+
+    def test_paragraph_lines_keep_their_line_breaks(self):
+        blocks = render_blocks("first line\nsecond **line**")
+        assert "".join(_texts(blocks)) == "first line\nsecond line"
+
+    def test_paragraph_text_is_not_html_escaped(self):
+        blocks = render_blocks("A & B <not a token>")
+        assert _texts(blocks) == ["A & B <not a token>"]
+
+    def test_mentions_and_links_in_paragraphs_become_elements(self):
+        blocks = render_blocks("ping <@U123> about <https://example.com|the doc>")
+        assert _elements(blocks, "user") == [{"type": "user", "user_id": "U123"}]
+        assert [link["url"] for link in _elements(blocks, "link")] == ["https://example.com"]
+
+    def test_oversized_paragraph_is_split_across_blocks(self):
+        line = "x" * 1000
+        blocks = render_blocks("\n".join([line] * 7))
+        assert len(blocks) > 1
+        assert all(len("".join(_texts([b]))) <= MAX_SECTION_TEXT for b in blocks)
+        assert "".join(_texts(blocks)).replace("\n", "") == "x" * 7000

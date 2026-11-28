@@ -247,6 +247,26 @@ Hermes to apply changes to existing sessions. Built-in memory and normal
 plugin-hook spilling are unaffected. See
 [Plugins — oversized-context spill](./plugins/index.md#oversized-context-spill).
 
+## Structured Pre-Compression Context
+
+`on_pre_compress(messages)` can return a string or a `CompressionContext`.
+Use `text` for ordinary context and `key_facts` for facts the summary
+should prioritize.
+
+```python
+from agent.memory_provider import CompressionContext
+
+def on_pre_compress(self, messages):
+    return CompressionContext(
+        text="Relevant project state",
+        key_facts=["Python version: 3.11", "Database migrations run from CI"],
+    )
+```
+
+Hermes labels key facts in the summary prompt and applies the same redaction
+and size limit as for plain strings. Checkpoint providers can return either
+form after saving their durable checkpoint.
+
 ## Pre-Compress Checkpoints (fail-closed)
 
 `on_pre_compress()` is best-effort by default: if your provider raises, the

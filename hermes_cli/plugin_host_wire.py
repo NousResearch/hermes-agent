@@ -181,6 +181,11 @@ def restore(value: Any, hint: Any) -> Any:
     origin = typing.get_origin(hint)
     if origin in (typing.Union, types.UnionType):
         arms = [arm for arm in typing.get_args(hint) if arm is not type(None)]
+        # A wire record can only match the dataclass arm of a string-or-dataclass return.
+        if isinstance(value, Record) and len(arms) == 2 and str in arms:
+            record_type = arms[1] if arms[0] is str else arms[0]
+            if isinstance(record_type, type) and dataclasses.is_dataclass(record_type):
+                return restore(value, record_type)
         return restore(value, arms[0]) if len(arms) == 1 else value
     if origin is not None:
         return _restore_container(value, origin, typing.get_args(hint))

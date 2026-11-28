@@ -12,7 +12,7 @@ import logging
 import re
 import threading
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -79,6 +79,14 @@ def is_trivial_prompt(text: Optional[str]) -> bool:
     if not stripped or stripped.startswith("/"):
         return True
     return bool(TRIVIAL_PROMPT_RE.match(stripped))
+
+
+@dataclass(frozen=True)
+class CompressionContext:
+    """Optional text and key facts to include in the compression summary prompt."""
+
+    text: str = ""
+    key_facts: list[str] = field(default_factory=list)
 
 
 class MemoryProvider(ABC):
@@ -205,8 +213,8 @@ class MemoryProvider(ABC):
         ``reset`` is True only for a genuinely new conversation (flush buffers); ``rewound``:
         same id but the transcript was truncated."""
 
-    def on_pre_compress(self, messages: list[dict[str, Any]]) -> str:
-        """Extract insights from ``messages`` about to be compressed, fed into the summary prompt."""
+    def on_pre_compress(self, messages: list[dict[str, Any]]) -> str | CompressionContext:
+        """Return summary-prompt text or structured insights from messages about to be compressed."""
         return ""
 
     def on_delegation(self, task: str, result: str, *, child_session_id: str = "", **kwargs) -> None:

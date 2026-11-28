@@ -83,6 +83,24 @@ class MyMemoryProvider(MemoryProvider):
 | `on_memory_write(action, target, content)` | 内置 memory 写入时 | 同步到你的后端 |
 | `shutdown()` | 进程退出时 | 清理连接 |
 
+## 结构化压缩前上下文
+
+`on_pre_compress(messages)` 可以返回字符串或 `CompressionContext`。
+`text` 用于提供普通上下文，`key_facts` 用于列出摘要应优先保留的事实。
+
+```python
+from agent.memory_provider import CompressionContext
+
+def on_pre_compress(self, messages):
+    return CompressionContext(
+        text="相关的项目状态",
+        key_facts=["Python 版本为 3.11", "数据库迁移由 CI 执行"],
+    )
+```
+
+Hermes 会在摘要提示中标记关键事实，并应用与普通字符串相同的脱敏规则和长度限制。
+支持检查点的 provider 在持久化保存检查点后，可以返回任一形式。
+
 ## 配置 Schema
 
 `get_config_schema()` 返回一个字段描述符列表，供 `hermes memory setup` 使用：

@@ -70,6 +70,11 @@ class TestSafeStrftime:
         json.dumps(rendered, ensure_ascii=False).encode("utf-8")
         assert rendered.startswith("Tue 2026-07-14 13:05 Paris, Madrid (heure d'")
         assert rendered.endswith(") +0200 %Z")
+
+        zone = rendered.removeprefix("Tue 2026-07-14 13:05 ").removesuffix(" +0200 %Z")
+        assert hermes_time.safe_strftime(value, "%Z | %%Z | %%%Z | %z") == (
+            f"{zone} | %Z | %{zone} | +0200"
+        )
         # The escaped bytes decode back through the Windows ANSI code page.
         assert hermes_time._repair_surrogates(_ESCAPED_ZONE, "cp1252") == "Paris, Madrid (heure d'été)"
 

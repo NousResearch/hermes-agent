@@ -59,9 +59,13 @@ def safe_strftime(value: datetime, fmt: str) -> str:
     try:
         return _repair_surrogates(value.strftime(fmt))
     except UnicodeEncodeError:
-        zone = _repair_surrogates(value.tzname() or "").replace("%", "%%")
-        return _repair_surrogates(value.strftime(
-            re.sub(r"%([%Z])", lambda m: zone if m.group(1) == "Z" else "%%", fmt)))
+        # Keep the repaired name out of the format string, which strftime may encode
+        # with a locale codec that cannot represent the replacement character.
+        literals = {"%Z": _repair_surrogates(value.tzname() or ""), "%%": "%"}
+        return _repair_surrogates("".join(
+            literals[part] if part in literals else value.strftime(part)
+            for part in re.split(r"(%%|%Z)", fmt)
+        ))
 
 
 def _env_timezone() -> str:

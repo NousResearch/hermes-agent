@@ -479,6 +479,48 @@ mcp_servers:
 
 An explicit entry in the server's `headers` mapping with the same name (any casing) always wins; the identity header never overrides your own header config. Invalid `identity_header` blocks are warned about and ignored — they never block the server from connecting. On stdio servers the key is ignored with a warning (stdio transports have no headers).
 
+## Delegated user tokens
+
+`identity_header` tells a server *who* is asking. `auth_scope: user` lets it verify that claim: it forwards the signed-in dashboard user's OAuth **access token** so the server can authorise the call as that user (a Kingdee K3Cloud MCP server, a per-user API gateway, any resource server behind your IdP).
+
+```yaml
+mcp_servers:
+  kingdee:
+    url: "https://k3cloud.example.com/mcp"
+    auth_scope: user
+    service_credentials:            # how Hermes proves it may connect at all
+      token_url: "https://idp/realms/r/protocol/openid-connect/token"
+      client_id: "hermes-mcp-client"
+      client_secret_env: HERMES_MCP_CLIENT_SECRET
+```
+
+### Two credentials, one connection
+
+One MCP connection is opened once and then used by every conversation, so which credential it carries cannot be decided when it connects. It is decided **per request**, by asking whether a login is driving the request:
+
+| Request | Credential | Identity the server sees |
+|---|---|---|
+| Connection traffic (`initialize`, `tools/list`), keepalive `ping`, schema refresh, anything from CLI / cron / messaging | `service_credentials` (`client_credentials`) | Hermes the integration — a caller role, no `kd_username` |
+| A request made on behalf of a signed-in user (`tools/call`, `resources/read`, `prompts/get`) | that user's own OAuth access token | the person who asked, with their `kd_username` |
+
+That split is what makes it safe: the server can accept the connection before anyone signs in, and still authorise each query as the right person. `service_credentials` is optional — without it, the integration-side requests go out bare and the server's own `401` is what you see.
+
+The connection's own background work is deliberately turn-less: a lazily-connected server inherits no credential from whichever turn happened to trigger the connect, so its keepalives and reconnects never carry a token after that person signs out.
+
+### What you should know
+
+- **Per turn, not per connection.** Resolved from the turn that is running when the request is issued, so two people in two tabs never see each other's token, and a long tool call keeps the token it started with.
+- **Fail closed, never silently re-scoped.** A user-scoped request on an `auth_scope: user` server with no usable token is **refused** with a "sign in again" message. If the token expires *during* the turn, after that check, the request goes out **unauthenticated** and the server's own `401`/`403` fails it. It is never retried as the service account: that would return data the asker is not entitled to, which is worse than an error.
+- **`auth_scope: service` never sends a user token**, even inside a signed-in turn — that entry asked to act as the integration account, so that is the only credential it gets.
+- **Your own credential wins.** If the entry already sets `headers.Authorization`, an `identity_header` named `Authorization`, or `auth: oauth`, Hermes manages no credential for that server — including the "send nothing when the user token is gone" rule, which would otherwise quietly become "send the static bearer".
+- **This is not the ID token.** A stock OIDC provider keeps the ID token as the dashboard's session credential, and its audience is Hermes — a resource server rejects it. The bundled Keycloak provider instead keeps the OAuth **access token** as the session credential (it reads `access_token` from the token response and verifies that one), so the credential forwarded here is the same one the IdP minted for the resource server. On a provider that still stores the ID token, `auth_scope` will forward an ID token — configure the resource server's audience accordingly, or use the Keycloak provider.
+- **The service secret stays out of `config.yaml`.** `client_secret_env` names an environment variable read from the profile's `.env` (or another secret source), so the config file can be shared without carrying a credential.
+- **Desktop and the browser share one sign-in.** A Desktop runs the same `dashboard.oauth` login as the browser (RFC 8252 loopback flow, brokered by the gateway against that same provider and client), and its tokens land in the same store. Nothing extra to configure: one Keycloak block serves both. A native/Desktop socket that forwards a dashboard login resolves to the same stored token the browser tab would use.
+- **Token lifetime.** The user token is renewed by the dashboard's normal session refresh, and again at the start of each turn: a browser left idle long enough for the access token to lapse has its refresh token exchanged before the turn runs, so an idle tab does not force a re-login. The service token is minted on demand and refreshed ahead of expiry. An expired token of either kind is not sent.
+- **HTTP/SSE only.** `auth_scope` and `service_credentials` inject request headers, which a stdio child has none of — both are ignored with a warning on stdio servers.
+
+The IDP must be configured to issue an access token with the claims and audience your MCP server checks (for Keycloak: a `kd_username` user-attribute mapper, and the roles your server expects). The service-account client needs its own `client_credentials` grant and role.
+
 ## Basic configuration reference
 
 Hermes reads MCP config from `~/.hermes/config.yaml` under `mcp_servers`.

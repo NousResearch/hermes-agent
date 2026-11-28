@@ -362,7 +362,18 @@ async def execute_admission(authority, ref, row):
     # This drain, not the handler's unwind, releases the turn's crash marker (see below).
     event._turn_marker_handoff = True
     handed = False
+    from agent.turn_token import bind_session_token_async, reset_turn_token
+    # Assigned before the try so the finally's reset cannot see an unbound name when the bind
+    # itself raises (a bind now performs network I/O, so it has a real failure path).
+    credential_token = None
     try:
+        # The signed-in user's delegated token, bound for THIS admission only: the executor copies
+        # this context onto the turn's agent thread, so a nested MCP call can read it without any
+        # argument being threaded through. Resolved here (not at submit) so a refresh that landed
+        # while the turn queued is already visible; absent for a login that issued no token.
+        # The async form renews an expired token on a worker thread — the first chance a browser
+        # left idle for hours gets, since no request has arrived to trigger the gate's refresh.
+        credential_token = await bind_session_token_async(ref.session_id)
         async with _admission_scope(authority, ref, home, row, event, captured):
             if is_api:
                 # Committed media resolves under the owning profile's home, like admission did.
@@ -415,6 +426,8 @@ async def execute_admission(authority, ref, row):
             _take_post_delivery(authority, row['admission_id'], event.source, route)
         if not handed:
             await _release_turn_marker(authority, event)
+        if credential_token is not None:  # the bind raised: nothing was set, nothing to undo
+            reset_turn_token(credential_token)
         executing_admission.reset(token)
         execution_result.reset(result_token)
         api_execution.reset(api_token)

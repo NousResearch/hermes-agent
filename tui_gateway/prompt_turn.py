@@ -1194,6 +1194,13 @@ def _run_prompt_submit(
         # before any tool can commission a child (delegate_task captures it as authority).
         transport_token = bind_transport(session.get("transport"))
         runtime_session_token = _current_runtime_session_record.set(session)
+        # This login's delegated token, bound for the whole turn so a nested MCP call can send it
+        # (the tool executor copies this context). The login rides the socket that submitted this
+        # turn, exactly as session ownership does; a session opened without a dashboard sign-in
+        # binds nothing, which is the correct fail-closed answer — there is no user to act as.
+        from agent.turn_token import bind_session_token, note_login
+        note_login(sid, getattr(session.get("transport"), "auth_identity", None))
+        credential_token = bind_session_token(sid)
         st = _TurnRun(
             session["agent"], session.pop("one_turn_model_restore", None), terminal_callback,
             receipt_committed=terminal_callback is None)
@@ -1234,6 +1241,8 @@ def _run_prompt_submit(
             try:  # a raising settle step must not skip the trim / HERMES_HOME reset
                 _current_runtime_session_record.reset(runtime_session_token)
                 reset_transport(transport_token)
+                from agent.turn_token import reset_turn_token
+                reset_turn_token(credential_token)
                 # A stale interim closure must not fire during a later turn.
                 st.agent.interim_assistant_callback = None
                 with session["history_lock"]:

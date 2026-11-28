@@ -838,6 +838,12 @@ class AuthorityConnection:
         if self._voice_stop_replay(ref, params) or await self._typed_voice_stop(ref, params):
             self._record_voice_stop(ref, params)
             return {'voice_stopped': True}
+        # Which login is driving this session. Ownership deliberately collapses every login onto
+        # the machine owner (so Desktop and a browser tab resume the same chats), but a delegated
+        # downstream token must stay scoped to the person who signed in — this records the
+        # verified identity triple, never the token itself.
+        from agent.turn_token import note_login
+        note_login(ref.session_id, self._identity)
         # The interactive WS is the one surface a restart's after-turn wait admits (#139041).
         receipt = await self.authority.submit(self.actor, self.submission(ref, params),
                                               queue_while_restarting=self._operator is True)

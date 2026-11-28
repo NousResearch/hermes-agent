@@ -36,6 +36,7 @@ from hermes_cli.dashboard_auth.request_utils import (
     access_token_max_age as _expires_in_seconds, client_ip as _client_ip,
     cookie_origin_is_allowed, extract_bearer as _extract_bearer, is_safe_next_path,
     scan_session_providers, unreachable_response)
+from agent.turn_token import backfill, remember
 
 _log = logging.getLogger(__name__)
 
@@ -231,6 +232,9 @@ async def _serve_refreshed(request: Request, call_next, new_session, provider: s
         prefix=prefix_from_request(request), provider=provider,
         gateway=webapp_sign_in.cookie_gateway(request))
     webapp_sign_in.renew(response, request)
+    # Replace the stored token with the rotated one: a refresh happens precisely because the
+    # previous AT is dead, so keeping the old entry would forward a token the server rejects.
+    remember(new_session)
     audit_log(AuditEvent.REFRESH_SUCCESS, provider=provider, user_id=new_session.user_id,
               ip=_client_ip(request))
     return response
@@ -274,6 +278,7 @@ async def _serve_bearer(request: Request, call_next: Callable[[Request], Awaitab
         return unreachable_response(str(e))
     if bearer_session is not None:
         request.state.session = bearer_session
+        backfill(bearer_session)  
         return await call_next(request)
     return _unauth_response(request, reason="invalid_or_expired_session")
 
@@ -352,6 +357,7 @@ async def gated_auth_middleware(
         return await _serve_refreshed(request, call_next, *refreshed)
 
     request.state.session = session
+    backfill(session)
     response = await call_next(request)
     if not provider_hint and session.provider:
         set_session_provider_cookie(

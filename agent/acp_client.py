@@ -90,6 +90,14 @@ def _acp_supported(command: str, args: list[str]) -> bool | None:
     return verdict
 
 
+_CURSOR_AUTH_METHOD_ID = "cursor_login"
+
+
+def _is_cursor_backend(command: str, args: list[str]) -> bool:
+    """True when the ACP child looks like a Cursor-backed CLI (binary or args mention cursor)."""
+    return any("cursor" in str(part).lower() for part in [command, *(args or [])])
+
+
 def _resolve_home_dir() -> str:
     """Stable HOME for child ACP processes; the temp dir as a last resort so the child never starts HOME-less."""
     if home := os.environ.get("HOME", "").strip():
@@ -488,6 +496,13 @@ class ACPClient:
 
         try:
             _request("initialize", _INITIALIZE_PARAMS)
+            if _is_cursor_backend(self._acp_command, self._acp_args):
+                # Cursor-backed ACP requires an explicit login handshake after
+                # initialize; without it permission-gated turns stall (#114313).
+                try:
+                    _request("authenticate", {"methodId": _CURSOR_AUTH_METHOD_ID})
+                except Exception as exc:
+                    logger.warning("Cursor ACP authenticate handshake failed; continuing unauthenticated: %s", exc, exc_info=True)
             session = _request("session/new", {"cwd": self._acp_cwd, "mcpServers": []}) or {}
             if not str(session.get("sessionId") or "").strip():
                 raise RuntimeError(f"{self.label} did not return a sessionId.")
@@ -546,7 +561,12 @@ class ACPClient:
             return True
         message_id = msg.get("id")
         if method == "session/request_permission":
-            response = _jsonrpc_result(message_id, {"outcome": {"outcome": "cancelled"}})
+            if _is_cursor_backend(self._acp_command, self._acp_args):
+                # Cursor advertises hyphenated permission option ids; the deny
+                # default would stall every Cursor tool/file prompt (#114313).
+                response = _jsonrpc_result(message_id, {"outcome": {"outcome": "selected", "optionId": "allow-once"}})
+            else:
+                response = _jsonrpc_result(message_id, {"outcome": {"outcome": "cancelled"}})
         elif method in _FS_HANDLERS:
             if not allow_file_requests:
                 response = _jsonrpc_error(message_id, -32601, "File access is unavailable during model discovery.")
@@ -555,6 +575,10 @@ class ACPClient:
                     response = _jsonrpc_result(message_id, _FS_HANDLERS[method](msg.get("params") or {}, cwd))
                 except Exception as exc:
                     response = _jsonrpc_error(message_id, -32602, str(exc))
+        elif method.startswith("cursor/"):
+            # Cursor-namespaced request with no Hermes-consumable contract:
+            # ack with an empty result instead of stalling the turn (#114313).
+            response = _jsonrpc_result(message_id, {})
         else:
             response = _jsonrpc_error(message_id, -32601, f"ACP client method '{method}' is not supported by Hermes yet.")
         process.stdin.write(json.dumps(response) + "\n")

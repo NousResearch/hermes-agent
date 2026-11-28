@@ -157,3 +157,31 @@ def test_interrupt_during_ladder_wait_returns_interrupted_result():
     verdict, retry = _settle(agent, _Err(503, "down"))
     assert verdict.action == "return" and verdict.result["interrupted"] is True
     assert retry.auto_recovery_cycles_used == 1
+
+def test_whatsapp_progress_opt_out_preserves_recovery_interrupt_and_final_notice():
+    config = {"display": {"platforms": {"whatsapp": {"auto_recovery_progress": False}}}}
+    muted = _Agent(platform="whatsapp")
+    muted._notification_config = config
+    verdict, retry = _settle(muted, _Err(503, "down"))
+    assert (verdict.action, retry.auto_recovery_cycles_used) == ("continue", 1)
+    assert muted.statuses == muted.waits == []
+
+    stopped = _Agent(platform="whatsapp")
+    stopped._notification_config = config
+    stopped.sleep_outcome = {"interrupted": True, "completed": False}
+    verdict, _ = _settle(stopped, _Err(503, "down"))
+    assert verdict.action == "return" and verdict.result["interrupted"] is True
+    assert stopped.statuses == stopped.waits == []
+
+    exhausted = _Agent(platform="whatsapp")
+    exhausted._notification_config = config
+    spent = TurnRetryState(primary_recovery_attempted=True, auto_recovery_cycles_used=5)
+    verdict, _ = _settle(exhausted, _Err(503, "down"), retry=spent)
+    assert verdict.action == "return" and verdict.result == {"failed": True}
+    assert any("gave up" in line for line in exhausted.statuses)
+
+    for surface in ("telegram", "cli", "cron"):
+        other = _Agent(platform=surface)
+        other._notification_config = config
+        _settle(other, _Err(503, "down"))
+        assert len(other.statuses) == len(other.waits) == 1

@@ -209,7 +209,8 @@ class SessionListingMixin:
             return False
         if query.min_message_count > 0 and not any(  # the floor counts the compression lineage, not one segment
                 self._counter(scope, sid) >= query.min_message_count for sid in self._chain_members(table, row["session_id"])):
-            return False
+            if row.get("end_reason") not in getattr(query, "keep_empty_end_reasons", ()):  # tip row's own reason only
+                return False
         return self._archive_admits(row, query)
 
     def _local_lineage_index(self, scope: ProfileScope, table: Mapping[str, Mapping[str, Any]]) -> tuple[set[str], dict[str, list[str]]]:

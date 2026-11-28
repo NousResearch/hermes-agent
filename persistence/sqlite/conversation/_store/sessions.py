@@ -128,7 +128,7 @@ def _session_filter_where(
     session_key: str | None = None, exclude_sources: list[str] | None = None, cwd_prefix: str | None = None,
     min_message_count: int = 0, archived_only: bool = False, include_archived: bool = False,
     include_subagents: bool = False, local_created_sources: Sequence[str] | None = None,
-    workspace_key: str | None = None,
+    workspace_key: str | None = None, keep_empty_end_reasons: tuple[str, ...] = (),
 ) -> tuple[list[str], list[Any]]:
     """Shared ``sessions s`` WHERE builder so counts line up with listed rows. ``exclude_children``
     hides sub-agent runs and compression continuations but keeps branch/reset children
@@ -150,13 +150,25 @@ def _session_filter_where(
     # created before the marker existed.
     include_sources = [source] if source else list(sources or [])
     source_clause, source_params = _source_match_clause(include_sources, local_created_sources)
+    # The message threshold admits the exempt reasons whole: a row that resumes
+    # from its job rather than its transcript is listed on its reason alone.
+    # The floor itself counts the whole compression lineage; the exemption keys
+    # only on the listed (tip) row's own end_reason, never on a chain member's.
+    # Empty, the clause is exactly the threshold's, so every other listing's
+    # SQL text is unchanged.
+    if min_message_count > 0 and keep_empty_end_reasons:
+        count_clause: tuple[str, list[Any]] = (
+            f"({_LINEAGE_MESSAGE_FLOOR_SQL} OR s.end_reason IN ({_session_ids_placeholders(keep_empty_end_reasons)}))",
+            [min_message_count] * 2 + list(keep_empty_end_reasons))
+    else:
+        count_clause = (_LINEAGE_MESSAGE_FLOOR_SQL, [min_message_count] * 2 if min_message_count > 0 else [])
     for clause, values in (
         (source_clause, source_params),
         ("s.session_key = ?", [session_key] if session_key else []),
         (f"s.source NOT IN ({_session_ids_placeholders(exclude_sources or ())})", exclude_sources or []),
         (_cwd_prefix_clause(cwd_prefix) if cwd_prefix else ("", [])),
         (_workspace_key_clause(workspace_key) if workspace_key else ("", [])),
-        (_LINEAGE_MESSAGE_FLOOR_SQL, [min_message_count] * 2 if min_message_count > 0 else []),
+        count_clause,
     ):
         if values:
             where.append(clause)
@@ -1290,7 +1302,7 @@ def list_sessions_rich(
     id_query: str | None = None, search_query: str | None = None, compact_rows: bool = False,
     include_pinned: bool = False, session_key: str | None = None, include_hidden: bool = False,
     include_subagents: bool = False, local_created_sources: Sequence[str] | None = None,
-    workspace_key: str | None = None,
+    workspace_key: str | None = None, keep_empty_end_reasons: tuple[str, ...] = (),
 ) -> list[dict[str, Any]]:
     """List sessions with preview and ``last_active`` in one query. ``order_by_last_active`` sorts
     by the chain TIP via a recursive CTE (the only path honouring ``id_query`` / ``search_query``);
@@ -1304,6 +1316,7 @@ def list_sessions_rich(
         exclude_sources=exclude_sources, cwd_prefix=cwd_prefix, min_message_count=min_message_count,
         archived_only=archived_only, include_archived=include_archived, include_subagents=include_subagents,
         local_created_sources=local_created_sources, workspace_key=workspace_key,
+        keep_empty_end_reasons=keep_empty_end_reasons,
     )
     # The archived-only view is the recovery surface for rows that dropped out of every
     # default list: a session that is archived AND hidden (Bot Mode marks its sessions
@@ -1412,7 +1425,7 @@ def list_sessions_rich(
             session_key=session_key, exclude_sources=exclude_sources, cwd_prefix=cwd_prefix,
             min_message_count=min_message_count, archived_only=False, include_archived=True,
             include_subagents=include_subagents, local_created_sources=local_created_sources,
-            workspace_key=workspace_key,
+            workspace_key=workspace_key, keep_empty_end_reasons=keep_empty_end_reasons,
         )
         if not include_hidden and not archived_only:
             pinned_clauses.append("s.hidden = 0")

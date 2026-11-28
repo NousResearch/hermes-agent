@@ -6,7 +6,9 @@ tool results, so a PDF-returning MCP tool appeared to return metadata only.
 """
 
 import base64
+import io
 import json
+import zipfile
 from types import SimpleNamespace
 
 import pytest
@@ -90,6 +92,29 @@ class TestResourceFilename:
         name = _mcp_resource_filename("x://h/" + "a" * 500 + ".pdf", "application/pdf")
         assert len(name) <= 150
         assert name.endswith(".pdf")
+
+    def test_octet_stream_without_extension_saved_readable(self, doc_cache):
+        """A download served as application/octet-stream keeps its real type, so read_file
+        can open it instead of refusing a ``.bin``/extensionless file (Claude Code 2.1.329)."""
+        from tools.mcp_tool_content import _render_mcp_resource_block
+
+        def ooxml(part):
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w") as z:
+                z.writestr("[Content_Types].xml", "<Types/>")
+                z.writestr(part, "<x/>")
+            return buf.getvalue()
+
+        png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+        cases = [(PDF_BYTES, "/download?id=7", "download.pdf"), (png, "", "resource.png"),
+                 (ooxml("word/document.xml"), "/d1", "d1.docx"), (ooxml("xl/workbook.xml"), "/d2", "d2.xlsx"),
+                 (ooxml("ppt/presentation.xml"), "/d3", "d3.pptx"), (ooxml("other.txt"), "/zip", "zip.bin"),
+                 (b"PK\x03\x04\x00\xff truncated", "/broken", "broken.bin"), (b"\x00\x01opaque", "/blob", "blob.bin"),
+                 (b"id,name\n1,caf\xc3\xa9\n", "/export", "export")]
+        for data, path, name in cases:
+            out = _render_mcp_resource_block(_embedded(_blob_resource(
+                data, uri=f"mcp://srv{path}" if path else "", mime="application/octet-stream")), "srv")
+            assert out.split("saved to ", 1)[1].split(" (", 1)[0].endswith("_" + name), (path, out)
 
 
 class TestPreDecodeSizeCap:

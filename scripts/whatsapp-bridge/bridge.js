@@ -39,6 +39,7 @@ import { bridgeAuthProof, createBridgeAuthMiddleware } from './bridge_auth.js';
 import {
   addMentions,
   buildPollPayload,
+  createCredsSaver,
   createReconnectScheduler,
   createVersionResolver,
   installConsoleStamps,
@@ -458,7 +459,8 @@ async function startSocket() {
     },
   });
 
-  sock.ev.on('creds.update', () => { saveCreds(); lidToPhone = buildLidMap(); });
+  const saveCredentials = createCredsSaver(saveCreds);
+  sock.ev.on('creds.update', async () => { await saveCredentials(); lidToPhone = buildLidMap(); });
 
   attachPasskeyFlow(sock, { logger, signAssertion: passkeySigner, confirmCode: confirmPasskeyCode });
   sock.ev.on('connection.update', (update) => {

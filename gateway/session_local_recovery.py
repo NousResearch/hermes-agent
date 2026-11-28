@@ -127,7 +127,13 @@ def owned_receipt(authority, sid):
     hashes it (``local_session_id``; a legacy-adopted receipt is bound by its route alone), so a
     store that moved with its profile (another machine, a moved home) still owns its rows. Its
     owner is this store; the route namespace binds the profile."""
-    receipt = _stored_receipt(authority, sid)
+    try:
+        receipt = _stored_receipt(authority, sid)
+    except AuthorityRefusal as exc:
+        # Deletion removes the private receipt; its fence is a terminal refusal, not a retry.
+        if exc.reason == 'storage_unavailable' and authority_persistence(authority).runtime.retired_session(sid):
+            raise AuthorityRefusal('not_found') from exc
+        raise
     chat_id = (receipt['legacy_session_id'] if 'legacy_session_id' in receipt else
                local_session_id(receipt['profile_id'], receipt['principal_id'], receipt['request_id']))
     if receipt['session_id'] != sid or sid != chat_id:

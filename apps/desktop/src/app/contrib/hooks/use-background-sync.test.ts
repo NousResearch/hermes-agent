@@ -6,6 +6,7 @@ import { type ChatMessage, toChatMessages } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { sessionListFingerprint, sessionMessagesSignature } from '@/lib/session-signatures'
 import { $changeEventsAvailable, notifyProjectsChanged, notifySessionsChanged, resetLiveSync } from '@/store/live-sync'
+import { $activeGatewayProfile, $profiles } from '@/store/profile'
 import {
   $activeSessionId,
   $selectedStoredSessionId,
@@ -43,7 +44,8 @@ import {
 vi.mock('@/hermes', async importOriginal => ({
   ...(await importOriginal()),
   getLatestSessionMessages: vi.fn(),
-  getOlderSessionMessages: vi.fn()
+  getOlderSessionMessages: vi.fn(),
+  getSession: vi.fn()
 }))
 
 vi.mock('@/store/projects', async importOriginal => ({
@@ -52,7 +54,10 @@ vi.mock('@/store/projects', async importOriginal => ({
   refreshProjects: vi.fn(async () => undefined)
 }))
 
-const { getLatestSessionMessages, getOlderSessionMessages } = await import('@/hermes')
+const { getLatestSessionMessages, getOlderSessionMessages, getSession, setApiRequestConnection } = await import(
+  '@/hermes'
+)
+
 const { refreshProjectTree, refreshProjects } = await import('@/store/projects')
 
 const ACTIVE_RUNTIME_ID = 'runtime-active'
@@ -1520,5 +1525,119 @@ describe('an empty persisted page over a populated runtime', () => {
         .get(ACTIVE_RUNTIME_ID)
         ?.messages.flatMap(message => message.parts.map(part => ('text' in part ? part.text : '')))
     ).toContain('a newer answer')
+  })
+})
+
+describe('tile owner recovery after a session 404', () => {
+  const STORED_ID = 'stored-owned-elsewhere'
+  const RUNTIME_ID = 'runtime-owned-elsewhere'
+  const SESSION_NOT_FOUND = '404: {"detail":"Session not found"}'
+
+  const tileRoute = () => $sessionTiles.get().find(tile => tile.storedSessionId === STORED_ID)?.ownerRoute
+
+  function reconcileOnce(signatureRef = { current: new Map<string, string>() }) {
+    const updateSessionState: Parameters<typeof reconcileTileTranscriptsForTest>[0]['updateSessionState'] = vi.fn(
+      (_sessionId, updater) => updater({} as Parameters<typeof updater>[0])
+    )
+
+    return {
+      run: () =>
+        reconcileTileTranscriptsForTest({
+          requestSequenceRef: { current: 0 },
+          signatureRef,
+          updateSessionState
+        }),
+      updateSessionState
+    }
+  }
+
+  beforeEach(() => {
+    // A remote primary serving two profiles; the window shows `worker`.
+    setApiRequestConnection('remote-1')
+    $profiles.set([{ name: 'default' }, { name: 'worker' }] as never)
+    $activeGatewayProfile.set('worker')
+    $activeSessionId.set('runtime-main-pane')
+  })
+
+  afterEach(() => {
+    setApiRequestConnection(null)
+    $profiles.set([])
+    $activeGatewayProfile.set('default')
+  })
+
+  it('pins the owning profile on an ownerless tile whose ambient read 404s, so the next tick reads its transcript', async () => {
+    $sessionTiles.set([{ runtimeId: RUNTIME_ID, storedSessionId: STORED_ID }])
+
+    // The session lives in `worker`; an unscoped read lands on the backend's default profile.
+    vi.mocked(getLatestSessionMessages).mockImplementation(async (_id, scope) => {
+      if (scope && typeof scope === 'object' && scope.profile === 'worker') {
+        return transcript('owner answer', STORED_ID) as never
+      }
+
+      throw new Error(SESSION_NOT_FOUND)
+    })
+    vi.mocked(getSession).mockImplementation(async (id, scope) => {
+      if (scope === 'worker') {
+        return makeSessionInfo({ id, profile: 'worker' })
+      }
+
+      throw new Error(SESSION_NOT_FOUND)
+    })
+
+    const signatureRef = { current: new Map<string, string>() }
+    await reconcileOnce(signatureRef).run()
+
+    expect(tileRoute()).toEqual({ connectionId: 'remote-1', profile: 'worker', targetProfile: 'worker' })
+
+    const second = reconcileOnce(signatureRef)
+    await second.run()
+
+    expect(getLatestSessionMessages).toHaveBeenLastCalledWith(
+      STORED_ID,
+      { connectionId: 'remote-1', profile: 'worker' },
+      { passive: true }
+    )
+    expect(second.updateSessionState).toHaveBeenCalledWith(RUNTIME_ID, expect.any(Function), STORED_ID)
+  })
+
+  it('stops re-reading a tile whose session no profile holds, instead of 404ing on every tick', async () => {
+    $sessionTiles.set([{ runtimeId: RUNTIME_ID, storedSessionId: STORED_ID }])
+    vi.mocked(getLatestSessionMessages).mockRejectedValue(new Error(SESSION_NOT_FOUND))
+    vi.mocked(getSession).mockRejectedValue(new Error(SESSION_NOT_FOUND))
+
+    const signatureRef = { current: new Map<string, string>() }
+
+    for (let tick = 0; tick < 3; tick += 1) {
+      await reconcileOnce(signatureRef).run()
+    }
+
+    expect(getLatestSessionMessages).toHaveBeenCalledTimes(1)
+    // One by-id lookup per profile, once.
+    expect(getSession).toHaveBeenCalledTimes(2)
+    expect(tileRoute()).toBeUndefined()
+  })
+
+  it('keeps an explicit tile owner fail-closed: its 404 never re-homes the tile', async () => {
+    const route = { connectionId: 'remote-1', profile: 'default', targetProfile: 'default' }
+    $sessionTiles.set([{ ownerRoute: route, runtimeId: RUNTIME_ID, storedSessionId: STORED_ID }])
+    vi.mocked(getLatestSessionMessages).mockRejectedValue(new Error(SESSION_NOT_FOUND))
+    vi.mocked(getSession).mockResolvedValue(makeSessionInfo({ id: STORED_ID, profile: 'worker' }))
+
+    await reconcileOnce().run()
+
+    expect(getSession).not.toHaveBeenCalled()
+    expect(tileRoute()).toEqual(route)
+  })
+
+  it('treats an unreachable backend as a transient failure, not a lost owner', async () => {
+    $sessionTiles.set([{ runtimeId: RUNTIME_ID, storedSessionId: STORED_ID }])
+    vi.mocked(getLatestSessionMessages).mockRejectedValue(new Error('net::ERR_CONNECTION_REFUSED'))
+
+    const signatureRef = { current: new Map<string, string>() }
+    await reconcileOnce(signatureRef).run()
+    await reconcileOnce(signatureRef).run()
+
+    expect(getSession).not.toHaveBeenCalled()
+    expect(getLatestSessionMessages).toHaveBeenCalledTimes(2)
   })
 })

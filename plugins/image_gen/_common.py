@@ -79,7 +79,14 @@ def resolve_static_model(
     ``passthrough``: an unknown id from ``env_var`` or the provider-scoped ``image_gen.<config_key>.model``
     is sent verbatim as the API model with no ``quality`` (OpenAI-compatible gateways serve their own
     image model names and reject unknown enum values, #97928). The shared top-level ``image_gen.model``
-    never passes through — it may hold another provider's id."""
+    never passes through — it may hold another provider's id.
+
+    The provider-scoped and env selections are explicit intent for THIS provider, so they are decided
+    before the shared top-level knob is consulted. Testing them against the catalog first instead let a
+    stale top-level catalog id shadow a scoped custom id: a gateway user with
+    ``image_gen.openai.model: ag/gemini-3.1-flash-image`` plus a leftover
+    ``image_gen.model: gpt-image-2-medium`` got the latter sent to the gateway, which rejected the
+    unknown model as a missing-credential error."""
     if isinstance(explicit, str) and explicit.strip() in models:
         return explicit.strip(), models[explicit.strip()]
     env_override = os.environ.get(env_var)
@@ -87,16 +94,18 @@ def resolve_static_model(
         return env_override, models[env_override]
     cfg = load_image_gen_config() if config is None else config
     scoped = cfg.get(config_key)
-    candidates = [scoped.get("model") if isinstance(scoped, dict) else None]
-    if include_top_level:
-        candidates.append(cfg.get("model"))
-    for candidate in candidates:
-        if isinstance(candidate, str) and candidate in models:
+    scoped_model = scoped.get("model") if isinstance(scoped, dict) else None
+    for candidate in (env_override, scoped_model):
+        if not isinstance(candidate, str) or not candidate.strip():
+            continue
+        candidate = candidate.strip()
+        if candidate in models:
             return candidate, models[candidate]
-    if passthrough:
-        custom = next((c.strip() for c in (env_override, candidates[0]) if isinstance(c, str) and c.strip()), "")
-        if custom:
-            return custom, {"display": custom, "api_model": custom, "quality": None}
+        if passthrough:
+            return candidate, {"display": candidate, "api_model": candidate, "quality": None}
+    top_level = cfg.get("model") if include_top_level else None
+    if isinstance(top_level, str) and top_level in models:
+        return top_level, models[top_level]
     return default, models[default]
 
 

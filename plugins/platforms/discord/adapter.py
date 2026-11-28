@@ -1677,6 +1677,11 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordCommandSyncMixin, DiscordAuth
                 return False, False
             role_authorized = bool(getattr(self, "_allowed_role_ids", set()))
         raw_self_mention = self._self_is_explicitly_mentioned(message)
+        if raw_self_mention and self._reply_ping_addresses_someone_else(message):
+            # A reply to one of our messages that tags other people, without typing our handle,
+            # is addressed to them: Discord's reply-ping put us in ``message.mentions``, the
+            # author didn't. Treat it like any other third-party mention below.
+            raw_self_mention = False
         if not isinstance(message.channel, discord.DMChannel) and (
             message.mentions or raw_self_mention
         ):
@@ -4871,6 +4876,15 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordCommandSyncMixin, DiscordAuth
         if self._client.user in getattr(message, "mentions", []):
             return True
         return str(self._client.user.id) in self._raw_mentioned_user_ids(message)
+
+    def _reply_ping_addresses_someone_else(self, message: Any) -> bool:
+        """True when our only "mention" is Discord's reply-ping and the author typed other users'
+        handles instead: replying to the bot's post to say "@Alice, see this" is meant for Alice."""
+        if not self._client or not self._client.user or self._self_is_raw_mentioned(message):
+            return False
+        other_ids = self._raw_mentioned_user_ids(message) - {str(self._client.user.id)}
+        # A literal user mention in inline code is not a resolved Discord mention.
+        return any(str(user.id) in other_ids for user in getattr(message, "mentions", ()))
 
     def _self_is_raw_mentioned(self, message: Any) -> bool:
         """True only for a literal ``<@bot>`` token: reply-pings add us to ``message.mentions``

@@ -847,9 +847,7 @@ def parse_schedule(schedule: str) -> dict[str, Any]:
         except ValueError:
             raise ValueError(
                 f"Invalid duration '{duration_str}' after 'in '. Use e.g. 'in 30m', 'in 2h'.")
-        now = _hermes_now()
-        # Durations measure elapsed time, not wall-clock hours across a DST transition.
-        run_at = (now.astimezone(UTC) + timedelta(minutes=minutes)).astimezone(now.tzinfo)
+        run_at = jobs_time.add_schedule_minutes(_hermes_now(), minutes)
         return {"kind": "once", "run_at": run_at.isoformat(), "display": f"once in {duration_str}"}
     with contextlib.suppress(ValueError):
         return _interval_schedule(parse_duration(schedule))
@@ -1214,9 +1212,7 @@ def compute_next_run(
         minutes = schedule.get("minutes")
         if minutes is None:
             return None
-        # Add in UTC so an interval keeps its duration when the profile's UTC offset changes.
-        next_run = base_time.astimezone(UTC) + timedelta(minutes=minutes)
-        return next_run.astimezone(base_time.tzinfo).isoformat()
+        return jobs_time.add_schedule_minutes(base_time, minutes).isoformat()
     if kind == "cron":
         expr = schedule.get("expr")
         if not expr:
@@ -2059,10 +2055,13 @@ def _apply_schedule_update(updated: dict[str, Any], updates: dict[str, Any], job
         updated["schedule"] = updated_schedule
     updated["schedule_display"] = updates.get(
         "schedule_display", updated_schedule.get("display", updated.get("schedule_display")))
-    if updated.get("state") != "paused":
-        updated["next_run_at"] = _next_run_or_reject_past_oneshot(
+    paused = updated.get("state") == "paused"
+    if not paused or updated_schedule.get("kind") == "interval":
+        next_run_at = _next_run_or_reject_past_oneshot(
             updated_schedule, updated.get("name", job_id), updated_schedule, "update ",
             updated.get("timezone"))
+        if not paused:
+            updated["next_run_at"] = next_run_at
 
 
 def _fill_missing_next_run(updated: dict[str, Any]) -> None:

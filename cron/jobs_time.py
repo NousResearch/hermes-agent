@@ -20,7 +20,7 @@ the "job timezone east of the profile timezone silently never fires" failure. Se
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -36,6 +36,14 @@ MAX_GRACE_MINUTES = 24 * 60
 
 # A corrupt persisted value would otherwise log on every 60s scan. Warn once per distinct value.
 _warned: set[str] = set()
+
+
+def add_schedule_minutes(base: datetime, minutes: int) -> datetime:
+    """Add elapsed minutes in UTC so daylight-saving transitions preserve the delay."""
+    try:
+        return (base.astimezone(UTC) + timedelta(minutes=minutes)).astimezone(base.tzinfo)
+    except OverflowError as exc:
+        raise ValueError("The cron execution date is out of range. Use a shorter duration.") from exc
 
 
 def reset_warning_state() -> None:

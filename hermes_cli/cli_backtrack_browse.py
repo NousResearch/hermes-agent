@@ -92,15 +92,16 @@ def scroll_into_view(offset: int, span: tuple[int, int], visible: int, total: in
 
 def fit_browse_hint(hint: str, width: int) -> str:
     """The browse footer for ``width`` cells, shedding hints the way Codex's prompt-navigation footer
-    does: full, then scroll/prompt keys without their words, then without fork, then edit + back,
-    then back, then the label. ``hint`` is the localized ``label · keys word · …`` line (5 hints)."""
+    does: full, then scroll/prompt keys without their words, then without cut and fork, then edit +
+    back, then back, then the label. ``hint`` is the localized ``label · keys word · …`` line
+    (6 hints: scroll, prompts, edit, cut, fork, back)."""
     from prompt_toolkit.utils import get_cwidth
     label, *hints = hint.split(" · ")
-    if len(hints) != 5 or get_cwidth(hint) <= width:
+    if len(hints) != 6 or get_cwidth(hint) <= width:
         return hint
-    scroll, prompts, edit, fork, back = hints
+    scroll, prompts, edit, cut, fork, back = hints
     nav = f"{scroll.split(' ')[0]} {prompts.split(' ')[0]}"
-    for rung in ([nav, edit, fork, back], [nav, edit, back], [edit, back], [back]):
+    for rung in ([nav, edit, cut, fork, back], [nav, edit, fork, back], [nav, edit, back], [edit, back], [back]):
         line = " · ".join([label, *rung])
         if get_cwidth(line) <= width:
             return line

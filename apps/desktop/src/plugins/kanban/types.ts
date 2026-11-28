@@ -252,7 +252,7 @@ export const columnMeta = (name: string) =>
   COLUMN_META[name] ?? { codicon: 'circle-outline', tone: 'var(--ui-text-secondary)' }
 
 export const SEVERITY_TONE: Record<Diagnostic['severity'], string> = {
-  critical: 'var(--destructive, #f87171)',
-  error: 'var(--destructive, #f87171)',
+  critical: 'var(--dt-destructive)',
+  error: 'var(--dt-destructive)',
   warning: '#fbbf24'
 }

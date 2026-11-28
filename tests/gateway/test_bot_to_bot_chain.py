@@ -61,6 +61,26 @@ def test_a_second_ask_before_any_reply_is_not_a_reply(clock):
     assert guard.chain_admit(CHAT, PEER, "thanks", is_bot=True) == (False, "reply_to_reply")
 
 
+def test_a_bot_without_a_user_id_is_admitted_on_its_first_message(clock):
+    """A Slack post from an integration (incoming webhook, workflow, an app without a bot user) carries
+    a bot_id but no user ID, so its sender is "". A fresh chain has replied to nobody: that first
+    message is an ask, not a reply to our reply."""
+    guard = _guard(clock)
+    assert guard.chain_admit(CHAT, "", "New bug: ABC-1", is_bot=True) == (True, "ok")
+
+
+def test_the_reply_rule_needs_a_sender_identity(clock):
+    """Senders without an ID cannot be told apart, so after our reply to one of them the next post
+    from any of them may be a new ask (a second notification, another integration). The reply rule
+    does not judge them; max_hops still ends the exchange."""
+    guard = _guard(clock, max_hops=3)
+    assert guard.chain_admit(CHAT, "", "New bug: ABC-1", is_bot=True) == (True, "ok")
+    guard.note_reply(CHAT, "")
+    assert guard.chain_admit(CHAT, "", "New bug: ABC-2", is_bot=True) == (True, "ok")
+    assert guard.chain_admit(CHAT, "", "New bug: ABC-3", is_bot=True) == (True, "ok")
+    assert guard.chain_admit(CHAT, "", "New bug: ABC-4", is_bot=True) == (False, "max_hops")
+
+
 def test_the_same_ask_repeated_inside_one_chain_is_one_hop(clock):
     guard = _guard(clock, bot_replies_expect_reply=True)
     assert guard.chain_admit(CHAT, PEER, "Interrupting current task", is_bot=True) == (True, "ok")

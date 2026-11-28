@@ -913,6 +913,7 @@ plugins:
   isolation: host        # default: in_process
   host:
     launcher: []         # optional argv prefix for the host, e.g. a sandbox runner
+    in_process_providers: []   # model-provider plugins allowed in the Hermes process (see below)
 ```
 
 Plugins do not change. They receive the same `ctx` and register tools, hooks, slash commands, skills and
@@ -935,16 +936,31 @@ process for each profile that has used a dashboard plugin.
 
 What changes in `host` mode:
 
-- **No shared interpreter.** A plugin's module never enters the Hermes process, so it cannot read
+- **No shared interpreter.** A plugin's module never enters the Hermes process (the one exception is a
+  model-provider plugin you list in `plugins.host.in_process_providers`, below), so it cannot read
   another profile's data from memory or patch Hermes internals. Under the multiplex gateway every
   profile gets its own host, started with only that profile's environment and secrets.
 - **Crashes stay contained.** A plugin that crashes or exits kills its host, not Hermes; the call in
   flight returns a tool error and Hermes restarts the host and reloads its plugins (bounded retries).
 - **A few surfaces need in-process code** and fail that plugin with a clear reason instead of loading:
   gateway platform adapters (`register_platform`), approval transports, Telegram/platform handlers,
-  model-provider profiles that build their own SDK client (`create_client`), terminal backends (the
-  backend's commands fail with this reason; the `singularity` plugin is one), streaming and websocket
-  dashboard endpoints, and plugins that monkeypatch Hermes modules. Run those with `isolation: in_process`.
+  terminal backends (the backend's commands fail with this reason; the `singularity` plugin is one),
+  streaming and websocket dashboard endpoints, and plugins that monkeypatch Hermes modules. Run those
+  with `isolation: in_process`.
+- **Model-provider profiles that build their own SDK client** (`create_client`) are refused one profile at a time: the
+  plugin's other profiles keep running in the host, and the refused one is logged as a warning that says
+  what to change, which is also the plugin's recorded load error. To keep such a provider working under `host`, add
+  its install directory name to `plugins.host.in_process_providers` (empty by default), for example
+  `in_process_providers: [claude-subscription-directsdk]`. Only the profiles that need it then load in the
+  Hermes process, outside the host's isolation; a plugin that is not listed never loads there, whatever
+  it reports about itself. Like other keys, a managed value of the list wins over the profile's; and when
+  managed scope pins `plugins.isolation`, only the managed list counts and a profile's own list is
+  ignored. If a managed config exists but cannot be read, the list allows no plugin. Restart Hermes
+  after changing the list. The list holds directory names, not particular installs: a listed name lets any
+  provider plugin installed under that name (`plugins/model-providers/<name>/` or `plugins/<name>/`) load
+  in the Hermes process, whoever installed it there, in the profile whose config lists it, or with the
+  managed list in every profile the process serves. Where profile owners install their own plugins, leave
+  the list empty.
 - **No cookies.** A hosted plugin's API answers are served from the gateway's own address, so Hermes
   drops any `Set-Cookie` header they carry (logging it once per plugin) rather than let a plugin set or
   overwrite the dashboard's cookies. This also applies to another profile's plugins, which always run in
@@ -961,6 +977,7 @@ plugins:
   isolation: host
   host:
     launcher: [...]      # pin the sandbox runner too, if you use one
+    in_process_providers: []   # the only list that counts once isolation is pinned here; [] = none
 ```
 
 Run the agents' terminal on an isolated backend (Docker, SSH, ...) as well, so the agent itself cannot

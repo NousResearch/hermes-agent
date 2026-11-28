@@ -5,6 +5,8 @@ third-party plugin code OUT of it: general plugins load in one plugin-host proce
 (:mod:`hermes_cli.plugin_host`) and talk to Hermes only through ``ctx``; every other path that would
 import a user-supplied module in-process (category providers, model-provider profiles, dashboard
 plugin APIs) refuses with a stated reason. Bundled plugins ship with Hermes and stay in-process.
+A model-provider plugin's profiles run in the host too; a profile that cannot (it builds its own SDK
+client) is refused, unless the operator names that plugin in ``plugins.host.in_process_providers``.
 
 That second half is the property a pooled deployment needs: one Hermes process serving many
 profiles must never share an interpreter with a profile's plugin code. The same boundary gives a
@@ -255,6 +257,81 @@ def in_process_import_refusal(what: str, *, source: str = "user",
         return None
     return (f"{what} runs only in-process, and plugins.isolation is 'host' (third-party plugin code "
             f"never runs inside the Hermes process); set plugins.isolation: in_process to load it")
+
+
+IN_PROCESS_PROVIDERS_KEY = "plugins.host.in_process_providers"
+
+
+# Where ``plugins.host.in_process_providers`` is read from (see :func:`_list_authority`).
+_LIST_FROM_PROFILE, _LIST_FROM_MANAGED, _LIST_UNREADABLE = "profile", "managed", "unreadable"
+
+
+def _list_authority() -> tuple[str, Mapping[str, Any]]:
+    """Which config the in-process provider list comes from, and that config when it is the managed one.
+
+    ``managed`` when managed scope pins ``plugins.isolation`` (its config alone counts); ``unreadable``
+    when a managed scope is present but its config.yaml cannot be read or parsed (no list then: the
+    pin may be in the file that failed); ``profile`` otherwise, including a managed directory with no
+    config.yaml. The strict reader tells a missing file (``{}``) from a failed one (it raises).
+    """
+    from hermes_cli.managed_scope import apply_managed_overlay, is_key_managed, load_managed_config
+    from hermes_yaml import YAMLError
+    try:
+        load_managed_config(strict=True)
+    except (OSError, ValueError, YAMLError):
+        return _LIST_UNREADABLE, {}
+    if is_key_managed("plugins.isolation"):
+        return _LIST_FROM_MANAGED, apply_managed_overlay({})
+    return _LIST_FROM_PROFILE, {}
+
+
+def host_in_process_providers(config: Optional[Mapping[str, Any]] = None) -> frozenset[str]:
+    """``plugins.host.in_process_providers``: install directory names of the model-provider plugins
+    the operator lets run in the Hermes process under ``host``. Empty by default.
+
+    The list comes from whoever set the isolation: when managed scope pins ``plugins.isolation``,
+    only the managed value counts and a profile's own config.yaml cannot add to it; when the managed
+    config cannot be read, the list is empty.
+    """
+    authority, managed = _list_authority()
+    if authority == _LIST_UNREADABLE:
+        return frozenset()
+    host = _plugins_config(managed if authority == _LIST_FROM_MANAGED else config).get("host")
+    names = host.get("in_process_providers") if isinstance(host, Mapping) else None
+    if isinstance(names, str):
+        names = [names]
+    if not isinstance(names, (list, tuple)):
+        return frozenset()
+    return frozenset(str(name).strip() for name in names if str(name).strip())
+
+
+def in_process_provider_refusal(plugin: str, profiles: Mapping[str, str], *,
+                                config: Optional[Mapping[str, Any]] = None) -> Optional[str]:
+    """Why the hosted model-provider plugin *plugin* (its install directory name) must not import
+    *profiles* (``{profile name: reason it cannot run in the plugin host}``) in-process, or ``None``
+    when the operator named it in ``plugins.host.in_process_providers``.
+
+    Only that operator list can allow the import: the profile list comes from the plugin's own
+    extraction, so what it reports can only ever get its profiles refused, never loaded here.
+    """
+    if plugin in host_in_process_providers(config):
+        return None
+    listed = ", ".join(f"{name!r} ({reason})" for name, reason in profiles.items())
+    refusal = in_process_import_refusal(f"provider profile {listed} of model-provider plugin {plugin!r}",
+                                        config=config)
+    if refusal is None:
+        return None
+    authority, _ = _list_authority()
+    if authority == _LIST_FROM_PROFILE:
+        return f"{refusal}, or add {plugin!r} to {IN_PROCESS_PROVIDERS_KEY}"
+    from hermes_cli.managed_scope import get_managed_dir
+    managed_dir = get_managed_dir()
+    where = f" ({managed_dir / 'config.yaml'})" if managed_dir is not None else ""
+    if authority == _LIST_UNREADABLE:
+        return (f"{refusal}; the managed config{where} could not be read, so {IN_PROCESS_PROVIDERS_KEY} "
+                f"allows no plugin until it can be")
+    return (f"{refusal}, or add {plugin!r} to {IN_PROCESS_PROVIDERS_KEY} in the managed config{where}, "
+            f"which sets plugins.isolation here; a profile's own list is ignored")
 
 
 def import_user_code(path: Any, module_name: str) -> Optional[ModuleType]:

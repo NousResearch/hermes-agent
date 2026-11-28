@@ -60,13 +60,16 @@ def plugin_activation_summary(manager: Any, plugin_key: str) -> dict[str, Any]:
         now["callbacks"] = callbacks
     if kinds.get("locale"):  # language-pack layers: the i18n caches reset on registration, so live at once
         now["locales"] = sorted(kinds["locale"])
-    load_error = ""
+    load_error, load_refused = "", False
     if getattr(manifest, "kind", None) == "model-provider":
         # providers/ discovery owns these and the forced sweep re-scans them: an updated tree serves new
         # sessions once it imported; a failed import leaves the previous version serving (#153300).
-        from providers import plugin_load_error
-        load_error = plugin_load_error(Path(getattr(manifest, "path", None) or name).name)
-        if not load_error:
+        from providers import plugin_load_error, plugin_load_refused, refusal_served_profiles
+        plugin_dir = Path(getattr(manifest, "path", None) or name).name
+        load_error = plugin_load_error(plugin_dir)
+        load_refused = plugin_load_refused(plugin_dir)
+        # A tree that loaded with some profiles refused still serves the ones it published.
+        if not load_error or refusal_served_profiles(plugin_dir):
             now["provider"] = [name]
     deferred: dict[str, list[str]] = {}
     tools = sorted(set(kinds.get("tool", ())) | set(getattr(loaded, "tools_registered", None) or ())
@@ -82,6 +85,8 @@ def plugin_activation_summary(manager: Any, plugin_key: str) -> dict[str, Any]:
     summary = {"name": name, "key": plugin_key, "activated_now": now, "deferred": deferred}
     if load_error:
         summary["load_error"] = load_error
+        if load_refused:
+            summary["load_refused"] = True
     # Read in the process that loaded the plugin (for a gateway answer, the gateway): a dependency
     # installed after it booted is not importable there until it restarts.
     from hermes_cli.plugins_loader import missing_python_dependencies
@@ -157,8 +162,16 @@ def activate_plugin_now(name: str, *, in_process: bool = True) -> dict[str, Any]
                       "missing_in": [process for process, deps in gaps.items() if deps]}
     if gateway_error := (gateway_activation or {}).get("load_error"):
         # The gateway's own import result decides what the gateway serves, whatever this process loaded.
+        # A failed import serves the previous version; a refusal (plugins.isolation: host) serves the profiles
+        # the gateway reports.
         now = {k: v for k, v in ((activation or {}).get("activated_now") or {}).items() if k != "provider"}
+        refused = bool((gateway_activation or {}).get("load_refused"))
+        if refused and (served := ((gateway_activation or {}).get("activated_now") or {}).get("provider")):
+            now["provider"] = served
         activation = {**(activation or gateway_activation), "activated_now": now, "load_error": gateway_error}
+        activation.pop("load_refused", None)
+        if refused:
+            activation["load_refused"] = True
     return {"gateway_reloaded": reloaded, "activation": activation,
             "restart_required": not reloaded or bool(missing)}
 
@@ -330,6 +343,14 @@ def activation_hint(result: dict[str, Any]) -> str:
     if missing := act.get("missing_dependencies"):
         return "\n".join([*lines, dependency_restart_hint(missing, act.get("missing_in") or [])])
     if error := act.get("load_error"):
+        # Under plugins.isolation: host the updated tree loads with a profile refused: the update is live,
+        # the refused profile gone.
+        if act.get("load_refused"):
+            if (act.get("activated_now") or {}).get("provider"):
+                return "\n".join([*lines, f"The updated provider plugin is active; Hermes refused some of its "
+                                          f"profiles ({error})."])
+            return "\n".join([*lines, f"The updated provider plugin serves no profile: Hermes refused them "
+                                      f"({error})."])
         return "\n".join([*lines, f"The updated provider plugin failed to load ({error}); "
                                   "the previous version keeps serving."])
     if not result.get("gateway_reloaded"):

@@ -111,7 +111,8 @@ _REGISTRATION_TARGET: ContextVar[_HomeLayer | None] = ContextVar("_provider_regi
 # Set by :func:`bundled_profiles`: registrations made in this context are collected, nothing else.
 _COLLECT: ContextVar[list | None] = ContextVar("_provider_collect", default=None)
 # Profile names an in-process import may register (None = all). Set while a hosted plugin's
-# profiles that cannot cross the host boundary are imported here: its hosted siblings stay hosted.
+# profiles that cannot cross the host boundary are imported here (only for a plugin named in
+# ``plugins.host.in_process_providers``): its hosted siblings stay hosted.
 _REGISTRATION_ONLY: ContextVar[frozenset[str] | None] = ContextVar("_provider_registration_only", default=None)
 
 # Repo-root ``plugins/model-providers/`` — populated at discovery time.
@@ -696,12 +697,14 @@ def _import_user_module(plugin_dir: Path, source: str, module_name: str, code_di
 
 def _import_hosted_plugin_dir(plugin_dir: Path, source: str, module_name: str, *,
                               code_dir: Path | None = None) -> None:
-    """Register a plugin's profiles as plugin-host proxies; a profile that cannot cross the host
-    boundary (e.g. it overrides ``create_client``) is imported in-process ALONE, with a warning,
-    so it never takes its hosted siblings down with it. The host is keyed by *plugin_dir*; that in-process
-    import reads *code_dir* (a frozen copy) when given."""
+    """Register a plugin's profiles as plugin-host proxies. A profile that cannot cross the host
+    boundary (e.g. it overrides ``create_client``) is refused with a stated reason, recorded as the
+    dir's load error, while its hosted siblings keep loading; only a plugin the operator names in
+    ``plugins.host.in_process_providers`` gets that profile imported in-process ALONE, with a warning.
+    The host is keyed by *plugin_dir*; that in-process import reads *code_dir* (a frozen copy) when given."""
     global _current_source
     from hermes_cli.plugin_host_profiles import load_hosted_profiles
+    from hermes_cli.plugin_isolation import IN_PROCESS_PROVIDERS_KEY, in_process_provider_refusal
     layer = _REGISTRATION_TARGET.get()
     if layer is not None and module_name in layer.hosted:
         return  # already imported into this home's layer
@@ -716,10 +719,18 @@ def _import_hosted_plugin_dir(plugin_dir: Path, source: str, module_name: str, *
         return
     finally:
         _current_source = None
-    if in_process:
+    # The plugin's own extraction names these profiles, so that answer may only refuse them; the
+    # operator's list is the one thing that lets them load here.
+    refusal = in_process_provider_refusal(plugin_dir.name, in_process) if in_process else None
+    if refusal is not None:
+        logger.warning("%s", refusal)
+        if layer is not None:
+            layer.errors[plugin_dir.name] = ProfileRefusal(refusal)
+    elif in_process:
         for name, reason in in_process.items():
             logger.warning("Provider plugin %s: profile %r cannot run in the plugin host (%s); loading it "
-                           "in-process, NOT isolated by plugins.isolation: host", plugin_dir.name, name, reason)
+                           "in-process because %s names this plugin, NOT isolated by plugins.isolation: host",
+                           plugin_dir.name, name, reason, IN_PROCESS_PROVIDERS_KEY)
         token = _REGISTRATION_ONLY.set(frozenset(in_process))
         try:
             _exec_plugin_module(code_dir or plugin_dir, source, module_name)
@@ -770,9 +781,36 @@ def _note_load_result(plugin_dir: Path, exc: BaseException | None) -> None:
         layer.errors[plugin_dir.name] = f"{type(exc).__name__}: {exc}"
 
 
+class ProfileRefusal(str):
+    """A plugin dir's recorded load error when ``plugins.isolation: host`` refused some of its profiles while
+    its tree loaded, as opposed to an import that failed. The text is the refusal; the type is the kind of
+    load result, so readers never classify a record by its wording. ``served``: the profiles that tree
+    published in the home layer alongside the refusal (its hosted siblings)."""
+
+    served: tuple[str, ...] = ()
+
+    def __new__(cls, text: str, served: tuple[str, ...] = ()) -> ProfileRefusal:
+        record = super().__new__(cls, text)
+        record.served = served
+        return record
+
+
 def plugin_load_error(plugin: str) -> str:
     """The error the bound home's provider plugin dir *plugin* raised on its last import, else ``""``."""
-    return _home_layer().errors.get(plugin, "")
+    return str(_home_layer().errors.get(plugin, ""))
+
+
+def plugin_load_refused(plugin: str) -> bool:
+    """Whether *plugin*'s recorded load error (:func:`plugin_load_error`) is a refusal of some of its
+    profiles, its tree loaded (:class:`ProfileRefusal`), rather than a failed import."""
+    return isinstance(_home_layer().errors.get(plugin), ProfileRefusal)
+
+
+def refusal_served_profiles(plugin: str) -> tuple[str, ...]:
+    """The profiles *plugin*'s live tree serves although its load error is a refusal
+    (:attr:`ProfileRefusal.served`); ``()`` when the record is not a refusal or the tree serves none."""
+    error = _home_layer().errors.get(plugin)
+    return error.served if isinstance(error, ProfileRefusal) else ()
 
 
 def _discover_entry_point_providers() -> None:

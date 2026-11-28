@@ -770,7 +770,8 @@ class PluginActivation(Result):
     running process cannot import (installed after it booted, or never); ``missing_in`` names which
     processes (``gateway``, ``backend`` = the Desktop / dashboard process) — only restarting them loads them.
     ``activated_now.provider``: a model-provider plugin whose current tree serves new sessions. ``load_error``: a
-    model-provider plugin's updated tree failed to import (the previous version keeps serving)."""
+    model-provider plugin's updated tree failed to import (the previous version keeps serving), or, with
+    ``load_refused``, ``plugins.isolation: host`` refused the profiles it names while the updated tree loaded."""
 
     name: str
     key: str
@@ -780,6 +781,7 @@ class PluginActivation(Result):
     missing_dependencies: list[str] = Field(default_factory=list)
     missing_in: list[PluginRestartTarget] = Field(default_factory=list)
     load_error: str | None = None
+    load_refused: bool = False
 
 
 class OnboardingCatalogPlugin(Result):

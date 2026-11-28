@@ -1056,7 +1056,9 @@ def patch_tool(mode: str = "replace", path: str | None = None, old_string: str |
                 if old_string is None or new_string is None:
                     return tool_error("old_string and new_string required")
                 _replace_target = _path_to_resolved.get(path) or path
-                result = file_ops.patch_replace(_replace_target, old_string, new_string, replace_all)
+                result = file_ops.patch_replace(
+                    _replace_target, old_string, new_string, replace_all,
+                    expected_sha256=take_planned_sha256(path, old_string, new_string, replace_all))
             elif mode == "patch":
                 if not patch:
                     return tool_error("patch content required")
@@ -1247,6 +1249,7 @@ def _note_search_complete(file_ops, result, result_dict: dict, *, pattern: str, 
 # Schemas + Registry
 # ---------------------------------------------------------------------------
 from tools.registry import registry, tool_error
+from tools.approval_gate import patch_preview, take_planned_sha256, write_file_preview
 
 
 def _check_file_reqs():
@@ -1520,7 +1523,7 @@ def _read_file_schema_overrides():
 
 registry.register(name="read_file", toolset="file", schema=READ_FILE_SCHEMA, handler=_handle_read_file, check_fn=_check_file_reqs, emoji="📖", max_result_size_chars=100_000, dynamic_schema_overrides=_read_file_schema_overrides)
 registry.register(name="write_file", toolset="file", schema=WRITE_FILE_SCHEMA, handler=_handle_write_file, check_fn=_check_file_reqs, emoji="✍️", max_result_size_chars=100_000,
-                  compat_args=("cross_profile",), self_checked_args=("path", "content"))
+                  compat_args=("cross_profile",), self_checked_args=("path", "content"), preview=write_file_preview)
 def _patch_schema_overrides():
     """Layer the V4A patch mode onto the base replace-only schema for
     OpenAI-family mains (see PATCH_SCHEMA comment). Config/context probe
@@ -1544,6 +1547,6 @@ def _patch_schema_overrides():
 
 
 registry.register(name="patch", toolset="file", schema=PATCH_SCHEMA, handler=_handle_patch, check_fn=_check_file_reqs, emoji="🔧", max_result_size_chars=100_000, dynamic_schema_overrides=_patch_schema_overrides,
-                  compat_args=("mode", "patch", "cross_profile"))
+                  compat_args=("mode", "patch", "cross_profile"), preview=patch_preview)
 registry.register(name="search_files", toolset="file", schema=SEARCH_FILES_SCHEMA, handler=_handle_search_files, check_fn=_check_file_reqs, emoji="🔎", max_result_size_chars=100_000,
                   self_checked_args=("pattern",))  # a files listing takes none; the handler refuses a content search without one

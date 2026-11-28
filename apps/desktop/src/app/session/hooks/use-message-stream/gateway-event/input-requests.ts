@@ -6,7 +6,7 @@ import { pendingClarifyToolPayload } from '@/app/session/hooks/use-session-actio
 import { connectionRequestToolPayload } from '@/app/session/hooks/use-session-actions/restore-pending-connection'
 import { translateNow } from '@/i18n'
 import { settlePendingClarifyToolCall, textPart } from '@/lib/chat-messages'
-import { $clarifyRequests, clearClarifyRequest } from '@/store/clarify'
+import { $clarifyRequests, clearClarifyRequest, settleAnsweredClarify } from '@/store/clarify'
 import {
   type ConnectionRequest,
   normalizeConnectionRequest,
@@ -225,6 +225,17 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
           streamId: state.busy ? (projection.streamId ?? state.streamId) : null
         }
       })
+    }
+
+    return true
+  }
+
+  // This window answered the clarify itself and already cleared its card. An agent's clarify settles from
+  // its own `tool.complete`, but a card a plugin asked (`ctx.ask_choice`) has no tool call: settle its row
+  // from the confirmed answers here and stop showing the chat as waiting for input.
+  if (payload?.reason === 'resolved' && settleAnsweredClarify(id)) {
+    if (sessionId) {
+      deps.updateSessionState(sessionId, state => ({ ...state, needsInput: false }))
     }
 
     return true

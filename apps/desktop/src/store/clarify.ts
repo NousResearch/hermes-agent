@@ -156,6 +156,13 @@ function settleClarify(request: ClarifyRequest, result: Record<string, unknown>)
   $settledClarifyResults.set({ ...$settledClarifyResults.get(), [request.requestId]: result })
 }
 
+/**
+ * Answers this window's card confirmed, kept until the gateway withdraws the request with `request.cancel`
+ * `reason: resolved`. An agent's clarify settles from its own `tool.complete`; a card a plugin asked
+ * (`ctx.ask_choice` from a slash command) has no tool call behind it, so nothing else ever settles its row.
+ */
+const confirmedClarify = new Map<string, Record<string, unknown>>()
+
 export function clearClarifyRequest(requestId?: string, sessionId?: string | null): void {
   const requests = $clarifyRequests.get()
 
@@ -178,6 +185,10 @@ export function clearClarifyRequest(requestId?: string, sessionId?: string | nul
 
   // Fallback with no session hint: drop every entry matching the request id
   // (or clear all when none is given).
+  if (!requestId) {
+    confirmedClarify.clear()
+  }
+
   const next: Record<string, ClarifyRequest> = {}
   let changed = false
 
@@ -221,6 +232,37 @@ function lockedAnswer(question: ClarifyQuestion, raw: string): string | string[]
   } catch {
     return raw
   }
+}
+
+/** Remember what the card confirmed for `request`, by question id (null: left unanswered). */
+export function rememberConfirmedClarify(request: ClarifyRequest, answers: Record<string, null | string>): void {
+  confirmedClarify.set(request.requestId, {
+    outcome: 'submitted',
+    responses: request.questions.map(question => {
+      const answer = answers[question.qid]
+
+      return typeof answer === 'string'
+        ? { question: question.question, status: 'answered', user_response: lockedAnswer(question, answer) }
+        : { question: question.question, status: 'skipped', user_response: null }
+    })
+  })
+}
+
+/**
+ * The gateway settled `requestId` (`request.cancel`, `reason: resolved`). True when this window answered it:
+ * the answers its card confirmed settle the row now; an answer the composer or Skip settled already stays.
+ */
+export function settleAnsweredClarify(requestId: string): boolean {
+  const result = confirmedClarify.get(requestId)
+
+  if (result) {
+    confirmedClarify.delete(requestId)
+    $settledClarifyResults.set({ ...$settledClarifyResults.get(), [requestId]: result })
+
+    return true
+  }
+
+  return requestId in $settledClarifyResults.get()
 }
 
 /**

@@ -148,6 +148,16 @@ export function PersistentTerminal({ onAddSelectionToChat }: PersistentTerminalP
 
         if (next.width > 0 && next.height > 0) {
           setReady(true)
+
+          // A measured, non-hidden slot means the layout shows the terminal
+          // zone — so an off toggle is stale (persisted tree unfolded the
+          // zone, a tab click, the sash). Re-arm it: the empty-but-tabbed
+          // body must not be reachable. Collapse paths (the rail chevron,
+          // the pane toggle) never measure a visible slot again, so their
+          // explicit false survives.
+          if (!next.hidden && !$terminalTakeover.get()) {
+            $terminalTakeover.set(true)
+          }
         }
 
         return true

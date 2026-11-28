@@ -431,6 +431,18 @@ def _restart_launchd_job(domain: str, label: str, old_pid: int | None, *, timeou
         return False
 
 
+def _unquote_ps_token(token: str) -> str:
+    """Drop the one quote pair ``ps``/launchd wraps around an argument that contains spaces.
+
+    Only a *matching outer* pair is removed (``shlex``'s POSIX mode would already have done this,
+    but it also destroys the ``\\012`` escapes this module needs). An unbalanced or inner quote is
+    left alone, so an argument that genuinely starts with a quote keeps it.
+    """
+    if len(token) >= 2 and token[0] == token[-1] and token[0] in "\"'":
+        return token[1:-1]
+    return token
+
+
 def _dashboard_cmdline_for_pid(pid: int) -> list[str] | None:
     """Exact argv of a running process: ``/proc/<pid>/cmdline`` (Linux), ``ps -o command=`` + shlex
     (macOS), None on Windows (no graceful taskkill window; Desktop manages its backend)."""
@@ -450,7 +462,11 @@ def _dashboard_cmdline_for_pid(pid: int) -> list[str] | None:
         if not command:
             return None
         try:
-            argv = shlex.split(command)
+            # ``posix=False`` is load-bearing, not a style choice: macOS ``ps`` spells a newline inside
+            # an argv element as ``\012``, and ``shlex``'s POSIX mode eats that backslash, leaving a
+            # bare ``012`` that no bootstrap matcher can unescape. Keep the escapes; strip the quote
+            # pair ``ps``/launchd adds around a quoted argument by hand instead.
+            argv = [_unquote_ps_token(t) for t in shlex.split(command, posix=False)]
         except ValueError:
             argv = command.split()
         return argv or None
@@ -462,20 +478,49 @@ _RESPAWN_LIVENESS_GRACE_SECONDS = 1.0
 
 
 def _respawnable_command_for_current_install(argv: list[str]) -> list[str]:
-    """Rebuild a captured ``[<interpreter>, <hermes launcher>, ...]`` argv on this install's launcher.
+    """Rebuild a captured ``<interpreter> …`` argv on this install's launcher.
 
-    A pre-PM-takeover install left ``~/.local/bin/hermes`` as a symlink to a Python console
-    script, so the kernel recorded a manual backend as ``[<old venv python>, <launcher>, dashboard,
-    ...]``. The takeover then rewrote that launcher into a POSIX shell shim, and replaying the
-    captured argv verbatim asks the old interpreter to parse a shell script (#124778). This
-    checkout's own ``hermes`` entry script stays Python, so it and every other shape replay unchanged.
+    Two captured shapes cannot be replayed verbatim and are rebuilt instead:
+
+    * ``[<interpreter>, <hermes launcher>, ...]`` — a pre-PM-takeover install left
+      ``~/.local/bin/hermes`` as a symlink to a Python console script, so the kernel recorded a
+      manual backend as ``[<old venv python>, <launcher>, dashboard, ...]``. The takeover then
+      rewrote that launcher into a POSIX shell shim, and replaying the captured argv verbatim asks
+      the old interpreter to parse a shell script (#124778).
+    * ``[<interpreter>, "-I", "-c", <bootstrap source>, ...]`` — a backend started through the
+      published launcher (``hermes_cli._launchers``) runs its bootstrap inline. ``ps`` splits that
+      source on every space, so the captured argv is hundreds of source fragments followed by the
+      real subcommand; spawning it asks the interpreter to execute ``import`` alone and the child
+      dies at parse time. The source is recognised through the same matcher the process-identity
+      readers use, then rebuilt from this install's launcher with the subcommand.
     """
     root = Path(project_root_str())
     if (len(argv) > 2 and os.path.basename(argv[0]).startswith("python")
             and os.path.basename(argv[1]) == "hermes" and Path(argv[1]) != root / "hermes"):
         from hermes_cli._launchers import runtime_command
         return runtime_command(root, argv[2:])
+    inline = _inline_bootstrap_subcommand(argv)
+    if inline is not None:
+        from hermes_cli._launchers import runtime_command
+        return runtime_command(root, inline)
     return list(argv)
+
+
+def _inline_bootstrap_subcommand(argv: list[str]) -> list[str] | None:
+    """``[<subcommand>, ...]`` when *argv* is an interpreter running one of Hermes' inline bootstraps.
+
+    ``gateway.status_inline_source.inline_bootstrap_argv`` already maps such a command line back to
+    ``<interpreter> -m <module> <argv…>``; only the trailing argv is wanted here, and only for a
+    Hermes entry point (the same matcher the gateway/dashboard identity readers use).
+    """
+    from gateway.status_inline_source import inline_bootstrap_argv
+    mapped = inline_bootstrap_argv([str(part) for part in argv])
+    if mapped is None or len(mapped) < 3 or mapped[1] != "-m":
+        return None
+    module = mapped[2]
+    if module != "hermes_cli.main" and not module.startswith("gateway."):
+        return None
+    return list(mapped[3:])
 
 
 def _respawn_dashboard_processes(commands: list[list[str]]) -> list[list[str]]:

@@ -169,3 +169,19 @@ def test_live_payload_launched_gateway_is_found_for_its_home(argv, profile, foun
     monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: " ".join(_payload_launcher(argv)))
 
     assert status.live_gateway_pid_for_home(home) == (4242 if found else None)
+
+
+@pytest.mark.parametrize("subcommand", [["gateway", "run", "--replace"], ["dashboard"], ["chat"]])
+def test_macos_ps_escaped_launcher_argv_still_reads_as_its_subcommand(subcommand: list[str]) -> None:
+    """macOS ``ps`` renders a newline inside an argv element as the four characters ``\\012``.
+
+    The published launcher passes its whole bootstrap as one ``-c`` argument, so the command line
+    ``ps`` reports for a launcher-started backend is the source with every line break escaped. The
+    identity matchers must undo that spelling: otherwise the gateway roster, ``hermes gateway
+    restart`` and the post-update dashboard respawn all stop recognising the process (#124778's
+    silent-death class).
+    """
+    argv = [PY, "-I", "-c", _SCRIPT.replace("\n", "\\012"), *subcommand]
+    command_line = " ".join(str(t) for t in argv)
+    assert _hermes_holder_subcommand(command_line) == subcommand[0]
+    assert inline_bootstrap_argv(shlex.split(command_line, posix=False)) == [PY, "-m", "hermes_cli.main", *subcommand]

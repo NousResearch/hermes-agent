@@ -201,6 +201,20 @@ def expand_link_entities(message: Any) -> str:
 _CRON_DELIVERY_PREFIX = "Cronjob Response: "
 
 
+def quote_rich_text(quote: Any) -> str | None:
+    """Text of a native quote chosen from a rich message (Bot API 10.4 ``TextQuote.rich_texts``),
+    or None when the quote has no such field. Its ``text`` is empty then, so without this the reply
+    context falls back to the WHOLE replied-to message (#22619). PTB 22.8 keeps the field in
+    ``api_kwargs``; top-level segments are separate quoted texts, joined by line feeds."""
+    rich_texts = getattr(quote, "rich_texts", None)
+    if rich_texts is None and isinstance(kwargs := getattr(quote, "api_kwargs", None), Mapping):
+        rich_texts = kwargs.get("rich_texts")
+    if rich_texts is None:
+        return None
+    segments = rich_texts if isinstance(rich_texts, list) else [rich_texts]
+    return "\n".join(text for text in (_rich_inline(segment) for segment in segments) if text.strip())
+
+
 def expand_quote_link_entities(quote: Any, replied: Any) -> str:
     """A native partial quote, links inlined, led by the delivery's header line when the
     replied-to message is a wrapped cron delivery: a selected line ("Deploy prod now") must keep

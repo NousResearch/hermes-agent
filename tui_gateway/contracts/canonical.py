@@ -255,6 +255,9 @@ class SessionStats(Result):
     model: str
     provider: str
     fallback_model: str | None = None
+    estimated_cost_usd: float | None = None
+    cost_status: str | None = None
+    cost_source: str | None = None
     plan_gauge: PlanGauge | None = None
 
 

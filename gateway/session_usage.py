@@ -18,6 +18,9 @@ _COUNTERS = (("input_tokens", "session_input_tokens"), ("output_tokens", "sessio
              ("prompt_tokens", "session_prompt_tokens"), ("completion_tokens", "session_completion_tokens"),
              ("total_tokens", "session_total_tokens"), ("reasoning_tokens", "session_reasoning_tokens"),
              ("api_calls", "session_api_calls"))
+# Cost statuses that mean "this session's spend is known". A real agent initializes the counter to
+# 0.0 with status "unknown"; reporting that as a price is a fabricated $0.00.
+_PRICED_COST_STATUSES = ("estimated", "actual", "included")
 # The output-token count at the start of the viewer's current turn (``↓ N tok`` on main's spinner).
 TURN_BASE_ATTR = "_viewer_turn_output_base"
 
@@ -98,6 +101,23 @@ def usage_stats(agent) -> dict:
                  model=str(getattr(agent, "model", "") or ""), provider=str(getattr(agent, "provider", "") or ""),
                  fallback_model=(str(getattr(agent, "model", "") or "") or None)
                  if getattr(agent, "_fallback_activated", False) is True else None)
+    # Money: the agent's own per-call accumulation (``agent/turn_usage.py`` prices every response
+    # through ``estimate_usage_cost``, cache reads/writes at their own rates).
+    #
+    # Only a route that actually priced the session may report a figure. A real agent starts with
+    # ``session_estimated_cost_usd = 0.0`` and ``session_cost_status = "unknown"``
+    # (``agent/agent_init.py``), so testing ``isinstance`` alone would emit 0.0 for a fresh session
+    # and for a model with no pricing entry — and a client would render "$0.0000", the exact
+    # fabrication this contract forbids. ``included`` is a known answer (a subscription) and rides
+    # through with its own label on the client.
+    cost = getattr(agent, "session_estimated_cost_usd", None)
+    cost_status = str(getattr(agent, "session_cost_status", "") or "") or None
+    estimated_cost = (round(float(cost), 6)
+                      if cost_status in _PRICED_COST_STATUSES
+                      and isinstance(cost, (int, float)) and not isinstance(cost, bool) else None)
+    stats.update(estimated_cost_usd=estimated_cost,
+                 cost_status=cost_status,
+                 cost_source=str(getattr(agent, "session_cost_source", "") or "") or None)
     if (gauge := plan_gauge(agent)) is not None:  # absent off a window plan, as on the embedded path
         stats["plan_gauge"] = gauge
     return stats
@@ -149,6 +169,18 @@ def tui_usage(stats: dict) -> dict:
     prompt_total, cache_read = stats.get("prompt_tokens") or 0, stats.get("cache_read_tokens") or 0
     if prompt_total > 0 and cache_read > 0:
         usage["cache_hit_pct"] = max(0, min(100, round(cache_read / prompt_total * 100)))
+    # The raw cache counts ride along so a client can show "8.4k cached / 1.2k written" beside the
+    # percentage; omitted at zero, like the hit rate.
+    for key, source_key in (("cache_read", "cache_read_tokens"), ("cache_write", "cache_write_tokens")):
+        if stats.get(source_key):
+            usage[key] = stats[source_key]
+    # Session spend (USD, estimated from the provider's published rates) — absent when the route
+    # has no pricing entry, so a client shows no money figure instead of a false $0.
+    cost = stats.get("estimated_cost_usd")
+    if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+        usage["cost_usd"] = round(float(cost), 6)
+    if stats.get("cost_status"):
+        usage["cost_status"] = stats["cost_status"]
     for key, source_key in (("avg_latency_s", "avg_latency_s"), ("avg_tps", "tokens_per_s")):
         if isinstance(stats.get(source_key), (int, float)):
             usage[key] = round(float(stats[source_key]), 1)
@@ -207,11 +239,18 @@ _STORED_COUNTERS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache
 
 def _stored_stats(row: dict) -> dict:
     """A session row's cumulative counters in ``usage_stats``' shape. The row's ``input_tokens`` excludes cache
-    reads and writes, so the prompt total adds them back for the cache hit rate."""
+    reads and writes, so the prompt total adds them back for the cache hit rate. A priced row also carries its
+    spend: a resumed session's meter must not read zero until the next model call."""
     counts = {key: int(row.get(key) or 0) for key in _STORED_COUNTERS}
-    return {**counts, "prompt_tokens": counts["input_tokens"] + counts["cache_read_tokens"] + counts["cache_write_tokens"],
-            "completion_tokens": counts["output_tokens"], "total_tokens": counts["input_tokens"] + counts["output_tokens"],
-            "api_calls": int(row.get("api_call_count") or 0), "model": row.get("model") or ""}
+    stats = {**counts, "prompt_tokens": counts["input_tokens"] + counts["cache_read_tokens"] + counts["cache_write_tokens"],
+             "completion_tokens": counts["output_tokens"], "total_tokens": counts["input_tokens"] + counts["output_tokens"],
+             "api_calls": int(row.get("api_call_count") or 0), "model": row.get("model") or ""}
+    cost = row.get("estimated_cost_usd")
+    status = str(row.get("cost_status") or "")
+    if status in _PRICED_COST_STATUSES and isinstance(cost, (int, float)) and not isinstance(cost, bool):
+        stats.update(estimated_cost_usd=round(float(cost), 6), cost_status=status,
+                     cost_source=row.get("cost_source") or None)
+    return stats
 
 
 def snapshot_usage(authority, ref, agent) -> dict | None:
@@ -272,3 +311,62 @@ async def stats(connection, ref, params):
     result = usage_stats(agent)
     result["compression_count"] = carried_compression_count(connection.authority.sessions.get(ref.session_id), agent)
     return result
+
+
+# A session's stored counters → the agent attributes the status bar reads. ``input_tokens`` in the
+# session row excludes cache reads/writes (the prompt total adds them back), matching CanonicalUsage.
+# ``api_call_count`` rides along because the gateway's cumulative writer sets it absolutely — leaving
+# it out would rewrite the session's call count with this process's few calls. The first-response
+# branches keyed on ``session_api_calls == 1`` are unaffected in practice: a resumed session is not
+# on its first response, and a fresh one seeds nothing.
+_STORED_TO_AGENT = (
+    ("input_tokens", "session_input_tokens"),
+    ("output_tokens", "session_output_tokens"),
+    ("cache_read_tokens", "session_cache_read_tokens"),
+    ("cache_write_tokens", "session_cache_write_tokens"),
+    ("reasoning_tokens", "session_reasoning_tokens"),
+    ("api_call_count", "session_api_calls"),
+)
+
+
+def seed_session_totals(agent, row) -> bool:
+    """Add a resumed agent's session history to the counters it has accumulated since this process
+    started, so the status bar reports the CONVERSATION (what the session has spent in total), not
+    just what happened after the last gateway restart.
+
+    Both halves are added together and stay consistent: a token count and a spend that describe the
+    same span. Seeding only the cost would show a few thousand tokens next to $1.41.
+
+    Idempotent per agent (``_session_totals_seeded``), and safe against double counting because the
+    destination is additive only once per process while the persistence path writes absolute totals
+    from these attributes — history + every increment since the restart, which is exactly the sum.
+
+    Derived fields (``session_prompt_tokens`` / ``session_completion_tokens`` / ``session_total_tokens``)
+    are recomputed from the seeded parts rather than added, so they cannot drift. ``api_calls`` is
+    seeded too (see ``_STORED_TO_AGENT``) because the cumulative writer stores it absolutely.
+    """
+    if agent is None or not isinstance(row, dict) or getattr(agent, "_session_totals_seeded", False):
+        return False
+    stored = {key: int(row.get(key) or 0) for key in
+              ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens",
+               "reasoning_tokens", "api_call_count")}
+    cost = row.get("estimated_cost_usd")
+    stored_cost = float(cost) if isinstance(cost, (int, float)) and not isinstance(cost, bool) else 0.0
+    if not any(stored.values()) and stored_cost <= 0:
+        agent._session_totals_seeded = True
+        return False
+    for row_key, attr in _STORED_TO_AGENT:
+        if stored[row_key] > 0:
+            setattr(agent, attr, int(getattr(agent, attr, 0) or 0) + stored[row_key])
+    prompt = sum(int(getattr(agent, attr, 0) or 0)
+                 for attr in ("session_input_tokens", "session_cache_read_tokens", "session_cache_write_tokens"))
+    completion = int(getattr(agent, "session_output_tokens", 0) or 0)
+    agent.session_prompt_tokens = prompt
+    agent.session_completion_tokens = completion
+    agent.session_total_tokens = prompt + completion
+    if stored_cost > 0:
+        agent.session_estimated_cost_usd = float(getattr(agent, "session_estimated_cost_usd", 0.0) or 0.0) + stored_cost
+        agent.session_cost_status = row.get("cost_status") or "estimated"
+        agent.session_cost_source = row.get("cost_source") or None
+    agent._session_totals_seeded = True
+    return True

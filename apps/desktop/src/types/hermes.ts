@@ -908,6 +908,9 @@ export interface UsageStats {
   avg_tps?: number
   /** Session prompt-cache hit rate, 0–100. Omitted (not 0) when the provider reports no cache reads. */
   cache_hit_pct?: number
+  /** Prompt-cache tokens read / written this session. Omitted at zero. */
+  cache_read?: number
+  cache_write?: number
   calls: number
   /** Successful context compressions in the current live agent runtime. */
   compressions?: number
@@ -916,7 +919,10 @@ export interface UsageStats {
   context_estimated?: boolean
   context_source?: string
   context_used?: number
+  /** Estimated session spend in USD; omitted (not 0) when the route has no pricing entry. */
   cost_usd?: number
+  /** How `cost_usd` was derived: `estimated` (published rates), `included` (subscription), `actual`. */
+  cost_status?: string
   input: number
   output: number
   /** Window plans only (tui_gateway `_get_usage`): today's allowance (else the binding one), for the status bar. */

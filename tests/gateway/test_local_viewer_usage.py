@@ -13,7 +13,7 @@ FIELDS = {'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_write_tok
           'completion_tokens', 'total_tokens', 'reasoning_tokens', 'api_calls', 'last_prompt_tokens',
           'context_tokens', 'context_length', 'config_context_length', 'context_source', 'compression_count',
           'avg_latency_s', 'tokens_per_s', 'last_turn_tokens', 'rate_limit', 'active_subagents', 'model',
-          'provider', 'fallback_model'}
+          'provider', 'fallback_model', 'estimated_cost_usd', 'cost_status', 'cost_source'}
 
 
 def _agent():
@@ -24,6 +24,8 @@ def _agent():
         session_input_tokens=100, session_output_tokens=40, session_cache_read_tokens=10,
         session_cache_write_tokens=5, session_prompt_tokens=115, session_completion_tokens=40,
         session_total_tokens=155, session_reasoning_tokens=3, session_api_calls=2,
+        session_estimated_cost_usd=0.01234, session_cost_status='estimated',
+        session_cost_source='official_docs_snapshot',
         context_compressor=compressor, _api_latency_history=deque([1.0, 3.0]),
         _api_output_history=deque([10, 30]), get_rate_limit_state=lambda: None,
         _session_messages=[], _turn_base_usage_anchor=None)
@@ -36,6 +38,7 @@ def test_usage_stats_is_exactly_the_frozen_field_list():
     assert stats['input_tokens'] == 100 and stats['api_calls'] == 2 and stats['total_tokens'] == 155
     assert stats['avg_latency_s'] == 2.0 and stats['tokens_per_s'] == 10.0
     assert stats['context_length'] == 128000 and stats['compression_count'] == 1
+    assert stats['estimated_cost_usd'] == 0.01234 and stats['cost_status'] == 'estimated'
     assert stats['rate_limit'] is None and stats['fallback_model'] is None
     from tui_gateway.contracts.registry import EVENTS
     EVENTS['session.usage'].payload.model_validate(stats)
@@ -148,6 +151,9 @@ def test_usage_frame_carries_the_tui_view_the_desktop_status_bar_reads():
     usage = frame['usage']
     assert usage['context_used'] == 900 and usage['context_max'] == 128000 and usage['context_percent'] == 1
     assert usage['avg_tps'] == 10.0 and usage['cache_hit_pct'] == 9 and usage['compressions'] == 1
+    # Session spend + the raw cache counts the status bar's money/token readouts use.
+    assert usage['cost_usd'] == 0.01234 and usage['cost_status'] == 'estimated'
+    assert usage['cache_read'] == 10 and usage['cache_write'] == 5
 
 
 def _parity_agents():
@@ -159,6 +165,17 @@ def _parity_agents():
     # Nothing measured yet: no context, cache, latency or throughput figures, never zeros.
     yield pytest.param(SimpleNamespace(model='fake-model', session_api_calls=0, context_compressor=None,
                                        get_rate_limit_state=lambda: None), id='fresh')
+    # A REAL fresh agent: the counter exists and is 0.0 with an unknown cost status. That must read
+    # as "no price yet", never as $0.00 — the fabrication this contract forbids.
+    yield pytest.param(SimpleNamespace(model='fake-model', session_api_calls=0, context_compressor=None,
+                                       get_rate_limit_state=lambda: None,
+                                       session_estimated_cost_usd=0.0, session_cost_status='unknown',
+                                       session_cost_source='none'), id='fresh-real-agent-shape')
+    # An unpriced route after a real call: same 0.0 counter, still unknown.
+    yield pytest.param(SimpleNamespace(model='unpriced-model', session_api_calls=1, context_compressor=None,
+                                       get_rate_limit_state=lambda: None,
+                                       session_estimated_cost_usd=0.0, session_cost_status='unknown',
+                                       session_cost_source='none'), id='unpriced-route')
 
 
 @pytest.mark.parametrize('agent', list(_parity_agents()))
@@ -272,3 +289,64 @@ def test_resume_snapshot_carries_the_resident_agents_own_readouts():
         stored = snapshot_usage(authority, ref, agent)
         assert stored['cache_hit_pct'] == 80 and stored['calls'] == 3 and 'avg_tps' not in stored
     assert snapshot_usage(authority, SimpleNamespace(session_id='gone'), None) is None
+
+
+def test_an_unpriced_session_reports_no_cost_rather_than_zero():
+    """A real agent's counter starts at 0.0 with cost_status "unknown": that means "not priced", and
+    both producers must omit the figure instead of rendering $0.00."""
+    from gateway.session_usage import tui_usage, usage_stats
+    from tui_gateway.server import _get_usage
+    agent = SimpleNamespace(model='m', session_api_calls=1, context_compressor=None,
+                            get_rate_limit_state=lambda: None,
+                            session_estimated_cost_usd=0.0, session_cost_status='unknown')
+    stats = usage_stats(agent)
+    assert stats['estimated_cost_usd'] is None and stats['cost_status'] == 'unknown'
+    assert 'cost_usd' not in tui_usage(stats)
+    assert 'cost_usd' not in _get_usage(agent)
+
+
+def test_a_resumed_snapshot_keeps_the_persisted_spend():
+    """After a restart the resume snapshot comes from the stored row; it must carry the row's spend,
+    or the meter reads zero until the next model call."""
+    from gateway.session_usage import snapshot_usage
+    row = {'input_tokens': 150, 'output_tokens': 40, 'cache_read_tokens': 800, 'cache_write_tokens': 50,
+           'api_call_count': 3, 'model': 'm', 'estimated_cost_usd': 0.42,
+           'cost_status': 'estimated', 'cost_source': 'official_docs_snapshot'}
+    record = SimpleNamespace(as_session_row=lambda: row)
+    authority = SimpleNamespace(sessions={'s': SimpleNamespace(compression_count=0)}, persistence=SimpleNamespace(
+        sessions=SimpleNamespace(get=lambda sid: record if sid == 's' else None)))
+    ref = SimpleNamespace(session_id='s')
+    usage = snapshot_usage(authority, ref, None)  # no resident agent
+    assert usage['cost_usd'] == 0.42 and usage['cost_status'] == 'estimated'
+    row.update(estimated_cost_usd=0.0, cost_status='unknown')
+    assert 'cost_usd' not in snapshot_usage(authority, ref, None)
+
+
+def test_seed_session_totals_adds_the_sessions_history_once():
+    """A resumed agent reports the CONVERSATION, not this process: the stored totals are added to
+    whatever it has accumulated since the restart, tokens and spend together."""
+    from gateway.session_usage import seed_session_totals
+    agent = _agent()  # input 100 / output 40 / cache 10 read + 5 write, cost 0.01234
+    row = {'input_tokens': 1_000, 'output_tokens': 400, 'cache_read_tokens': 5_000,
+           'cache_write_tokens': 100, 'estimated_cost_usd': 1.41, 'cost_status': 'estimated',
+           'api_call_count': 40}
+    assert seed_session_totals(agent, row) is True
+    assert agent.session_input_tokens == 1_100 and agent.session_output_tokens == 440
+    assert agent.session_cache_read_tokens == 5_010 and agent.session_cache_write_tokens == 105
+    # Derived totals are recomputed from the parts, so they cannot drift.
+    assert agent.session_prompt_tokens == 1_100 + 5_010 + 105
+    assert agent.session_completion_tokens == 440
+    assert agent.session_total_tokens == 1_100 + 5_010 + 105 + 440
+    assert round(agent.session_estimated_cost_usd, 5) == round(0.01234 + 1.41, 5)
+    # api_calls is seeded as well: the cumulative writer stores it absolutely.
+    assert agent.session_api_calls == 42
+    # Idempotent: a second read of the same agent must not add the history again.
+    assert seed_session_totals(agent, row) is False
+    assert round(agent.session_estimated_cost_usd, 5) == round(0.01234 + 1.41, 5)
+
+
+def test_seed_session_totals_leaves_a_fresh_session_alone():
+    from gateway.session_usage import seed_session_totals
+    agent = _agent()
+    assert seed_session_totals(agent, {'input_tokens': 0, 'output_tokens': 0, 'estimated_cost_usd': 0.0}) is False
+    assert agent.session_estimated_cost_usd == 0.01234

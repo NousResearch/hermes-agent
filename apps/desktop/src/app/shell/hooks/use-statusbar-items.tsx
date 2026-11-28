@@ -14,6 +14,7 @@ import { useChangeWorkspaceItem } from '@/app/shell/hooks/use-change-workspace'
 import { useCompactConversation } from '@/app/shell/hooks/use-compact-conversation'
 import { useContextBreakdown } from '@/app/shell/hooks/use-context-breakdown'
 import { useFocusedSessionRow } from '@/app/shell/hooks/use-focused-session-row'
+import { SessionUsagePanel } from '@/app/shell/session-usage-panel'
 import { useSystemResourcesStatusbarItem } from '@/app/shell/system-resources-statusbar'
 import { $paneVisible } from '@/components/pane-shell/tree/store'
 import { Badge } from '@/components/ui/badge'
@@ -27,6 +28,7 @@ import {
   AlertCircle,
   Clock,
   Command,
+  CreditCard,
   FolderOpen,
   Globe,
   Hash,
@@ -37,7 +39,7 @@ import {
 } from '@/lib/icons'
 import { type RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { resolveSessionTimerSince } from '@/lib/session-timer-since'
-import { cacheHitLabel, contextBarLabel, LiveDuration, tokensPerSecondLabel, usageContextLabel } from '@/lib/statusbar'
+import { cacheHitLabel, contextBarLabel, LiveDuration, sessionCostLabel, sessionTokensLabel, tokensPerSecondLabel, usageContextLabel } from '@/lib/statusbar'
 import { rollbackSentence } from '@/lib/update-copy'
 import { formatPercentUsed, formatResetsIn } from '@/lib/usage-percent'
 import { useStoreSelector } from '@/lib/use-session-slice'
@@ -371,6 +373,10 @@ export function useStatusbarItems({
   // Both ride the same usage payload the context meter does (session.usage
   // ticks mid-turn, message.complete after) — no extra RPC, no polling.
   const cacheHit = cacheHitLabel(currentUsage)
+  // Session-cumulative token and spend readouts (the third and fourth meters above the context
+  // gauge): same streamed payload, no poll. Both open the detail panel on click.
+  const sessionTokens = sessionTokensLabel(currentUsage)
+  const sessionCost = sessionCostLabel(currentUsage, copy.costIncluded)
   const planGauge = currentUsage.plan_gauge
   const planUsed = planGauge ? Math.min(1, Math.max(0, planGauge.used_bp / 10_000)) : 0
   const tokensPerSecond = tokensPerSecondLabel(currentUsage)
@@ -739,6 +745,18 @@ export function useStatusbarItems({
         variant: 'menu'
       },
       {
+        icon: <Hash className="size-3" />,
+        id: 'session-tokens',
+        // Never self-hide when opted in: a fresh session reads 0 tokens until its first call.
+        label: sessionTokens || '—',
+        menuAlign: 'end',
+        menuClassName: 'w-auto border-(--ui-stroke-secondary) p-0',
+        menuContent: <SessionUsagePanel usage={currentUsage} />,
+        title: copy.sessionTokensTitle,
+        toggleLabel: copy.toggleSessionTokens,
+        variant: 'menu'
+      },
+      {
         icon: <Layers3 className="size-3" />,
         id: 'cache-hit-rate',
         // Same never-self-hide rule as the context meter: opted in means a
@@ -747,6 +765,19 @@ export function useStatusbarItems({
         title: copy.cacheHitRateTitle,
         toggleLabel: copy.toggleCacheHitRate,
         variant: 'text'
+      },
+      {
+        icon: <CreditCard className="size-3" />,
+        id: 'session-cost',
+        // Money for this session so far; '—' while the route reports no price (subscription or
+        // an unpriced model), never a false $0.00.
+        label: sessionCost || '—',
+        menuAlign: 'end',
+        menuClassName: 'w-auto border-(--ui-stroke-secondary) p-0',
+        menuContent: <SessionUsagePanel usage={currentUsage} />,
+        title: copy.sessionCostTitle,
+        toggleLabel: copy.toggleSessionCost,
+        variant: 'menu'
       },
       {
         icon: <Zap className="size-3" />,
@@ -820,9 +851,12 @@ export function useStatusbarItems({
       contextBreakdownLoading,
       contextUsage,
       copy,
+      currentUsage,
       currentUsage.compressions,
       gaugeUsage,
       sessionStartedAt,
+      sessionTokens,
+      sessionCost,
       gatewayState,
       planGauge,
       planUsed,

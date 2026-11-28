@@ -58,4 +58,26 @@ describe('statusbar hidden items', () => {
 
     expect(reloaded.$statusbarHiddenIds.get()).toContain('approval-mode')
   })
+
+  it('pulls the cache hit rate out of a v2 seed so the session meters start visible', async () => {
+    window.localStorage.setItem(
+      'hermes.desktop.statusbarHidden.v2',
+      JSON.stringify(['cache-hit-rate', 'cron', 'tokens-per-second'])
+    )
+
+    const { $statusbarHiddenIds } = await loadStore()
+
+    expect($statusbarHiddenIds.get()).toEqual(['cron', 'tokens-per-second'])
+  })
+
+  it('keeps a cache hit rate the user hides again after the v3 update', async () => {
+    const first = await loadStore()
+
+    first.setStatusbarItemVisible('cache-hit-rate', false)
+
+    vi.resetModules()
+    const reloaded = await loadStore()
+
+    expect(reloaded.$statusbarHiddenIds.get()).toContain('cache-hit-rate')
+  })
 })

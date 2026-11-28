@@ -3737,6 +3737,26 @@ export interface Translations extends NoticeTranslations {
       }
       focusedSince: string
       focusedSinceTitle: string
+      toggleSessionTokens: string
+      toggleSessionCost: string
+      sessionTokensTitle: string
+      sessionCostTitle: string
+      costIncluded: string
+      sessionUsagePanel: {
+        title: string
+        subtitle: string
+        input: string
+        output: string
+        total: string
+        cacheRead: string
+        cacheWrite: string
+        cacheHit: string
+        calls: string
+        cost: string
+        costIncluded: string
+        costUnknown: string
+        costNote: string
+      }
       yoloOn: string
       yoloOff: string
       modelNone: string

@@ -19,7 +19,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 
-from hermes_cli.session_listing import subagent_listing_scope
+from hermes_cli.session_listing import session_listing_scope
 from hermes_cli.web_deps import late
 from hermes_cli.web_server_gateway import _strip_session_list_rows
 from hermes_cli.web_server_sessions import _listing_filters, _session_latest_descendant, _session_rows
@@ -230,9 +230,10 @@ def get_sessions(
             # Source scoping: the desktop splits recents (exclude=cron) from
             # the cron-jobs section (source=cron) into two independent lists.
             source_list = _csv(sources)
-            include_subagents, exclude_list = subagent_listing_scope(
+            include_subagents, _include_oneshot, exclude_list = session_listing_scope(
                 home, source=source or None, sources=source_list or None,
                 exclude_sources=_csv(exclude_sources) or None)
+            # ``show_oneshot`` acts through ``exclude_list`` alone; there is no query field for it.
             scope = dict(
                 source=source or None, sources=source_list or None,
                 exclude_sources=exclude_list or None, cwd_prefix=(cwd_prefix or None),

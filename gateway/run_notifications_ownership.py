@@ -110,6 +110,19 @@ class GatewayNotificationOwnershipMixin:
             return ""
         return target
 
+    async def _foreign_owner_route_verdict(self, store: Any, current_session_id: str) -> str:
+        """A resumed execution transcript belongs to its current human conversation."""
+        try:
+            current = await store.aio.sessions.get(current_session_id)
+        except Exception:
+            logger.debug("Current completion route lookup failed for %s", current_session_id, exc_info=True)
+            return "retry"
+        if current is None:
+            return "retry"
+        if current.source == "subagent" or current.model_config_corrupt or "_delegate_from" in current.model_config:
+            return "terminal"
+        return "deliver"
+
     async def _lookup_completion_owner(self, session_id: str, current_session_id: str = ""):
         """Nonmutating delegation proof shared by preflight and route resolution.
 
@@ -151,6 +164,10 @@ class GatewayNotificationOwnershipMixin:
             config = row.model_config
             if "_delegate_from" not in config:
                 verdict = "terminal" if row.source == "subagent" else "deliver"
+                if verdict == "deliver" and current_session_id and row.end_reason != "compression":
+                    # Own/descendant pins already returned at the exact-route check above.
+                    # Compression still goes through its existing lineage proof below.
+                    verdict = await self._foreign_owner_route_verdict(store, current_session_id)
                 return verdict, session_id, row
             parent = config["_delegate_from"]
             if not isinstance(parent, str) or not parent.strip() or hops == _MAX_DELEGATE_PROVENANCE_HOPS:

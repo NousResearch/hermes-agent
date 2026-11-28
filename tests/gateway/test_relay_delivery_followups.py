@@ -67,7 +67,8 @@ def _record(row):
     """A session row as the storage interface's record: the fields the resolver reads, as attributes."""
     if row is None:
         return None
-    return SimpleNamespace(**{"ended_at": None, "end_reason": None, "source": None, "model_config": {}, **row})
+    return SimpleNamespace(**{"ended_at": None, "end_reason": None, "source": None, "model_config": {},
+                                "model_config_corrupt": False, **row})
 
 
 def _runner_with_rows(rows, *, switched_entry=None):
@@ -97,7 +98,8 @@ async def test_resolver_retargets_idle_ended_pin_to_current_session(end_reason):
                 "id": "sess_idle",
                 "ended_at": "2026-08-09T00:00:00",
                 "end_reason": end_reason,
-            }
+            },
+            "sess_current": {"id": "sess_current", "source": "slack"},
         }
     )
 
@@ -149,7 +151,7 @@ async def test_classifier_and_resolver_agree_on_ended_parents(end_reason):
         "end_reason": end_reason,
     }
     current = _entry("sess_current")
-    runner = _runner_with_rows({"sess_x": row})
+    runner = _runner_with_rows({"sess_x": row, "sess_current": {"id": "sess_current", "source": "slack"}})
 
     verdict = await runner._classify_completion_target("sess_x")
     resolved = await runner._resolve_async_delegation_session(current, "sess_x")

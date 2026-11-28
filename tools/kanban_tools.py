@@ -1198,6 +1198,16 @@ def _live_tui_session_key(session_key: str, profile: Optional[str]) -> str:
         return session_key
 
 
+def _auto_subscribe_delivery_mode() -> str:
+    """``kanban.auto_subscribe_delivery_mode`` for non-TUI auto-subscriptions; an unset,
+    unreadable or invalid value keeps ``notify+wake``."""
+    try:
+        mode = cfg_get(load_config(), "kanban", "auto_subscribe_delivery_mode", default="notify+wake")
+    except Exception:
+        return "notify+wake"
+    return mode if mode in ("notify", "notify+wake", "wake") else "notify+wake"
+
+
 def _resolve_notify_target() -> Optional[dict[str, Any]]:
     """``kanban_db.add_notify_sub`` kwargs for the calling session, or None (CLI/cron/tests).
     Gateway sessions: ``HERMES_SESSION_PLATFORM``/``CHAT_ID`` ContextVars. TUI/desktop:
@@ -1240,7 +1250,7 @@ def _resolve_notify_target() -> Optional[dict[str, Any]]:
         user_id=env("HERMES_SESSION_USER_ID", "") or None,
         user_id_alt=env("HERMES_SESSION_USER_ID_ALT", "") or None,
         notifier_profile=notifier_profile,
-        delivery_mode="notify+wake" if platform != "tui" else None,
+        delivery_mode=_auto_subscribe_delivery_mode() if platform != "tui" else None,
         delivery_metadata=delivery_metadata or None)
 
 

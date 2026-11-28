@@ -1844,6 +1844,7 @@ def test_default_config_kanban_block_not_dropped_by_duplicate_key():
     kanban = DEFAULT_CONFIG["kanban"]
     # From the first (dropped) block:
     assert kanban.get("auto_subscribe_on_create") is True
+    assert kanban.get("auto_subscribe_delivery_mode") == "notify+wake"
     # From the second block:
     assert "dispatch_in_gateway" in kanban
     assert "auto_decompose" in kanban

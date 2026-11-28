@@ -96,3 +96,27 @@ def test_cli_max_flag_overrides_config_max_spawn(isolated_kanban_home, monkeypat
     )
 
 
+def test_cli_dispatch_dry_run_labels_candidates_as_planned(isolated_kanban_home, monkeypatch, capsys):
+    """Dry-run must never serialize candidates as real spawned workers."""
+    from hermes_cli import kanban as kb_cli
+    from hermes_cli import kanban_db
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    monkeypatch.setattr(
+        kbd,
+        "dispatch_once",
+        lambda conn, **kw: kanban_db.DispatchResult(
+            spawned=[("task-1", "builder", "")]
+        ),
+    )
+
+    args = argparse.Namespace(dry_run=True, max=1, failure_limit=2, json=True)
+    kb_cli._cmd_dispatch(args)
+
+    import json
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["dry_run"] is True
+    assert payload["spawned"] == []
+    assert payload["planned"] == [{"task_id": "task-1", "assignee": "builder", "workspace": ""}]
+
+

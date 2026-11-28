@@ -73,9 +73,29 @@ def test_promote_refuses_undone_parent_and_names_the_real_remedy(conn):
     assert kb.claim_task(conn, child) is None  # still gated; nothing pretended
 
 
+def test_promote_readiness_moves_triage_with_audit_event(conn):
+    task_id = kb.create_task(conn, title="readiness canary", triage=True)
+    ok, err = kb.promote_task(
+        conn, task_id, actor="tester", reason="bounded readiness inspection", readiness=True,
+    )
+    assert ok and err is None
+    assert kb.get_task(conn, task_id).status == "ready"
+    event = conn.execute(
+        "SELECT kind, payload FROM task_events WHERE task_id=? ORDER BY id DESC LIMIT 1", (task_id,),
+    ).fetchone()
+    assert event["kind"] == "promoted_readiness"
+    assert '"readiness": true' in event["payload"]
 
 
-# ---------------------------------------------------------------------------
+def test_promote_readiness_requires_reason_and_preserves_triage(conn):
+    task_id = kb.create_task(conn, title="readiness canary", triage=True)
+    ok, err = kb.promote_task(conn, task_id, actor="tester", readiness=True)
+    assert not ok
+    assert "audit reason" in err
+    assert kb.get_task(conn, task_id).status == "triage"
+
+
+
 # CLI `_cmd_promote` — bulk via `--ids` (the issue's anti-respawn use case:
 # promote all children of a closed parent in one command).
 # ---------------------------------------------------------------------------

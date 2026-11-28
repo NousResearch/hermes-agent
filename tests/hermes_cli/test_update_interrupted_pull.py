@@ -79,7 +79,11 @@ def checkout(tmp_path, monkeypatch):
     root = tmp_path / "install"
     _git(tmp_path, "clone", "-q", str(origin), str(root))
     _git(root, "reset", "-q", "--hard", "HEAD~1")
-    monkeypatch.setattr("hermes_cli.main.PROJECT_ROOT", root)
+    # Importing main runs launch recovery; never inspect the real checkout here.
+    with monkeypatch.context() as bootstrap_patch:
+        bootstrap_patch.setattr(er, "restore_interrupted_pull", lambda *args, **kwargs: False)
+        from hermes_cli import main
+    monkeypatch.setattr(main, "PROJECT_ROOT", root)
     return root, _git(root, "rev-parse", "HEAD"), _git(root, "rev-parse", "origin/main")
 
 

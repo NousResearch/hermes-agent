@@ -24,6 +24,8 @@ from agent.route_verdicts import ROUTE_VERDICT_FIELDS
 logger = logging.getLogger(__name__)
 
 TASK = "voice_chat"
+_MISSING = object()
+_REASONING_FIELDS = ("_fallback_reasoning_at_bind", "_fallback_reasoning_primary", "_fallback_reasoning_session_edit")
 
 # Agent fields the route swap touches outside the ``_primary_runtime``-shaped snapshot. The
 # rejection verdicts are facts about one route: binding the voice route clears them (route_verdicts)
@@ -109,15 +111,27 @@ def _capture(agent: Any) -> dict[str, Any]:
     from agent.primary_runtime_snapshot import _build_primary_runtime_snapshot
     return {
         "snapshot": _build_primary_runtime_snapshot(agent, agent.api_mode),
+        "reasoning_markers": {name: copy.deepcopy(vars(agent)[name]) if name in vars(agent) else _MISSING
+                              for name in _REASONING_FIELDS},
         **{name: getattr(agent, name, None) for name in _EXTRA_FIELDS},
     }
 
 
+def _restore_reasoning_markers(agent: Any, state: dict[str, Any]) -> None:
+    for name, value in state["reasoning_markers"].items():
+        if value is _MISSING:
+            vars(agent).pop(name, None)
+        else:
+            setattr(agent, name, value)
+
+
 def _reinstall(agent: Any, state: dict[str, Any]) -> None:
-    from agent.route_binding import reinstall_runtime_snapshot
-    reinstall_runtime_snapshot(agent, state["snapshot"])
+    from agent.route_binding import internal_reasoning_assignment, reinstall_runtime_snapshot
+    with internal_reasoning_assignment(agent):
+        reinstall_runtime_snapshot(agent, state["snapshot"])
     for name in _EXTRA_FIELDS:
         setattr(agent, name, state[name])
+    _restore_reasoning_markers(agent, state)
 
 
 def _warn_once(agent: Any, target: dict[str, Any], reason: str) -> None:
@@ -144,7 +158,21 @@ def begin_voice_turn_route(agent: Any, messages: list[dict[str, Any]], system_pr
     target = _route_target(agent, cfg)
     if target is None and effort is None:
         return system_prompt
-    state: dict[str, Any] = {"reasoning_config": copy.deepcopy(getattr(agent, "reasoning_config", None))}
+    # Preserve differing in-place edits before the voice override hides them.
+    if "_fallback_reasoning_at_bind" in vars(agent):
+        current, marker = agent.reasoning_config, agent._fallback_reasoning_at_bind
+        if type(current) is not type(marker) or current != marker:
+            agent._fallback_reasoning_session_edit = (copy.deepcopy(current),)
+    state: dict[str, Any] = {
+        "reasoning_config": copy.deepcopy(getattr(agent, "reasoning_config", None)),
+        # A voice turn always tracks edits: its own effort override must not hide (or
+        # invent) a session edit, with or without a fallback underneath.
+        "track_reasoning": True,
+    }
+    state["reasoning_markers"] = {
+        name: copy.deepcopy(vars(agent)[name]) if name in vars(agent) else _MISSING
+        for name in _REASONING_FIELDS
+    }
     agent._voice_route_state = state
     if target is not None:
         state.update(_capture(agent))
@@ -160,7 +188,11 @@ def begin_voice_turn_route(agent: Any, messages: list[dict[str, Any]], system_pr
         if reason:
             _reinstall(agent, state)
             _warn_once(agent, target, reason)
-            agent._voice_route_state = {"reasoning_config": state["reasoning_config"]}
+            agent._voice_route_state = {"reasoning_config": state["reasoning_config"],
+                                        "reasoning_markers": state["reasoning_markers"],
+                                        "track_reasoning": state["track_reasoning"]}
+            if state["track_reasoning"]:
+                agent._voice_route_state["reasoning_at_bind"] = copy.deepcopy(agent.reasoning_config)
             return agent._cached_system_prompt or system_prompt
         if (choice := getattr(agent, "_route_pool_choice", None)) is not None:
             choice.commit()  # the voice model takes the turn: its pool key is now in use
@@ -169,7 +201,13 @@ def begin_voice_turn_route(agent: Any, messages: list[dict[str, Any]], system_pr
         agent._turn_route_task = TASK
         logger.info("Voice turn routed to %s (%s)", agent.model, agent.provider)
     if effort is not None:
-        agent.reasoning_config = _voice_reasoning(agent, effort)
+        from agent.route_binding import internal_reasoning_assignment
+        with internal_reasoning_assignment(agent):
+            agent.reasoning_config = _voice_reasoning(agent, effort)
+        if "_fallback_reasoning_at_bind" in vars(agent):
+            agent._fallback_reasoning_at_bind = copy.deepcopy(agent.reasoning_config)
+    if state["track_reasoning"]:
+        state["reasoning_at_bind"] = copy.deepcopy(agent.reasoning_config)
     return agent._cached_system_prompt or system_prompt
 
 
@@ -182,7 +220,12 @@ class _SessionRuntimeView:
                ("model", "provider", "requested_provider", "base_url", "api_mode") if name in snapshot}
         if "anthropic_base_url" in snapshot:
             own["_anthropic_base_url"] = snapshot["anthropic_base_url"]
-        own["reasoning_config"] = state.get("reasoning_config")
+        edit = state.get("reasoning_session_edit")
+        current = getattr(agent, "reasoning_config", None)
+        marker = state.get("reasoning_at_bind", _MISSING)
+        if marker is not _MISSING and (type(current) is not type(marker) or current != marker):
+            edit = (current,)
+        own["reasoning_config"] = edit[0] if edit is not None else state.get("reasoning_config")
         self.__dict__.update(_agent=agent, _own=own)
 
     def __getattr__(self, name: str) -> Any:
@@ -203,6 +246,11 @@ def end_voice_turn_route(agent: Any) -> None:
     state = getattr(agent, "_voice_route_state", None)
     if not state:
         return
+    edit = state.get("reasoning_session_edit")
+    if "reasoning_at_bind" in state:
+        current, marker = agent.reasoning_config, state["reasoning_at_bind"]
+        if type(current) is not type(marker) or current != marker:
+            edit = (copy.deepcopy(current),)
     agent._voice_route_state = None
     agent._turn_route_task = ""
     try:
@@ -212,8 +260,16 @@ def end_voice_turn_route(agent: Any) -> None:
                 from agent.auxiliary_reasoning_floor import remember_reasoning_floor
                 remember_reasoning_floor(agent.provider, agent.base_url, {"model": agent.model}, None)
             _reinstall(agent, state)
+        elif not state.get("fallback_bound"):
+            _restore_reasoning_markers(agent, state)
     except Exception:
         logger.warning("Voice turn route restore failed; the next turn re-resolves the main runtime",
                        exc_info=True)
         agent._fallback_activated = True  # restore_primary_runtime takes it from here
-    agent.reasoning_config = state["reasoning_config"]
+    from agent.route_binding import internal_reasoning_assignment
+    if edit is not None and "_fallback_reasoning_at_bind" in vars(agent):
+        agent._fallback_reasoning_session_edit = copy.deepcopy(edit)
+    with internal_reasoning_assignment(agent):
+        agent.reasoning_config = copy.deepcopy(edit[0] if edit is not None else state["reasoning_config"])
+    if "snapshot" not in state and state.get("fallback_bound") and "_fallback_reasoning_at_bind" in vars(agent):
+        agent._fallback_reasoning_at_bind = copy.deepcopy(agent.reasoning_config)

@@ -8,6 +8,7 @@ removed mid-session can't hand the session another account's key.
 
 from __future__ import annotations
 
+import copy
 from typing import Any
 
 from agent.custom_entry_pool import SNAPSHOT_OWNER_KEY, runtime_entry_owner
@@ -60,7 +61,9 @@ def _build_primary_runtime_snapshot(agent, api_mode) -> dict[str, Any]:
         "client_kwargs": dict(agent._client_kwargs),
         "use_prompt_caching": agent._use_prompt_caching,
         "use_native_cache_layout": agent._use_native_cache_layout,
-        "reasoning_config": dict(agent.reasoning_config) if getattr(agent, "reasoning_config", None) else None,
+        # Deep copy, never a shallow dict(): the snapshot must not alias the session's live
+        # mapping, and an explicit empty mapping is a decision, not an absence.
+        "reasoning_config": copy.deepcopy(getattr(agent, "reasoning_config", None)),
         "reasoning_echo_flag": getattr(agent, "_reasoning_echo_flag", False),
         # Overrides must travel with the switched-to identity or a later recovery/restore resurrects
         # PRE-switch overrides from the stale init snapshot.

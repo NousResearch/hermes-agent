@@ -43,7 +43,12 @@ def _make_real_child():
     skill-review trigger is armed the way a long child run arms it — so turn
     finalization reaches the background-review gate.
     """
-    from run_agent import AIAgent
+    # Importing the agent bootstraps checkout recovery, unrelated to this test.
+    # Do not probe the real worktree's git directory under the user's home.
+    from hermes_cli import _early_recovery
+
+    with patch.object(_early_recovery, "restore_interrupted_pull", return_value=False):
+        from run_agent import AIAgent
 
     with (
         patch("model_tools.get_tool_definitions", return_value=[]),

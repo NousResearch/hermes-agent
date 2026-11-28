@@ -13,6 +13,7 @@ from contextvars import ContextVar, Token
 from typing import Iterator, Mapping, MutableMapping, overload
 
 _DELEGATED_CHILD_CONTEXT: ContextVar[bool] = ContextVar("hermes_delegated_child_context", default=False)
+_INHERITED_POLICY_BINDING: ContextVar = ContextVar("delegated_inherited_policy_binding", default=None)
 # Any in-process execution that is NOT the dispatcher-owned worker (cron jobs). Kept separate
 # so delegate_task-specific behaviour (subprocess env scrubbing, its error strings) is unchanged.
 _NON_DISPATCHER_OWNED_CONTEXT: ContextVar[bool] = ContextVar("hermes_non_dispatcher_owned_context", default=False)
@@ -30,6 +31,8 @@ def delegated_child_context(session_id: str | None = None) -> Iterator[None]:
     """Mark child execution and isolate its task-local session identity. Even a context
     entered without an id must restore the parent's session ContextVar (child
     construction calls ``set_current_session_id``)."""
+    from gateway.session_policy import active_policy_binding
+    inherited = _INHERITED_POLICY_BINDING.set(active_policy_binding())
     token = _DELEGATED_CHILD_CONTEXT.set(True)
     try:
         from gateway.session_context import scoped_current_session_id  # lazy: it calls is_delegated_child_context()
@@ -38,11 +41,20 @@ def delegated_child_context(session_id: str | None = None) -> Iterator[None]:
             yield
     finally:
         _DELEGATED_CHILD_CONTEXT.reset(token)
+        _INHERITED_POLICY_BINDING.reset(inherited)
 
 
 def is_delegated_child_context() -> bool:
     """Return True while code is running for a delegate_task child."""
     return bool(_DELEGATED_CHILD_CONTEXT.get())
+
+
+def has_inherited_policy_binding() -> bool:
+    """A copied parent's policy is not a policy newly bound to this child."""
+    if not is_delegated_child_context():
+        return False
+    from gateway.session_policy import active_policy_binding
+    return active_policy_binding() is _INHERITED_POLICY_BINDING.get()
 
 
 def enter_non_dispatcher_owned_context() -> Token[bool]:

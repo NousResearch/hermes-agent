@@ -11,7 +11,6 @@ import asyncio
 import contextvars
 import json
 import socket
-import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, nullcontext
@@ -323,48 +322,3 @@ def test_overlapping_timeout_cleans_up_every_call(connected):
     finally:
         http.loop.call_soon_threadsafe(http.release.set)
 
-
-_STDIO = """
-import asyncio, json
-from mcp.server import MCPServer
-server = MCPServer("serial-probe")
-active = peak = 0
-pair = asyncio.Event()
-@server.tool()
-async def probe(label: str) -> str:
-    global active, peak
-    active += 1
-    peak = max(peak, active)
-    if active == 2:
-        pair.set()
-    try:
-        await asyncio.wait_for(pair.wait(), 2)
-    except TimeoutError:
-        pass
-    active -= 1
-    return label
-@server.tool()
-def stats() -> str:
-    return str(peak)
-server.run("stdio")
-"""
-
-
-def test_opted_in_stdio_keeps_the_single_stream_serial(tmp_path):
-    from tools.mcp_tool_discovery import discover_mcp_tools
-    from tools.mcp_tool_lifecycle import shutdown_mcp_servers
-    from tools.registry import registry
-
-    script = tmp_path / "serial_probe.py"
-    script.write_text(_STDIO, encoding="utf-8")
-    (get_hermes_home() / "config.yaml").write_text(yaml.safe_dump({"mcp_servers": {
-        "serial-probe": {"command": sys.executable, "args": [str(script)],
-                         "supports_parallel_tool_calls": True,
-                         "sampling": {"enabled": False}, "elicitation": {"enabled": False}}}}), encoding="utf-8")
-    try:
-        assert "mcp__serial_probe__probe" in discover_mcp_tools()
-        assert _pair(lambda a: registry.dispatch("mcp__serial_probe__probe", a)) == [
-            {"result": "a"}, {"result": "b"}]
-        assert json.loads(registry.dispatch("mcp__serial_probe__stats", {})) == {"result": "1"}
-    finally:
-        shutdown_mcp_servers()

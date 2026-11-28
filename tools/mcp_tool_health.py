@@ -35,9 +35,13 @@ class MCPServerHealthMixin:
         self._lifecycle_started_at = self._last_tool_call_at = time.monotonic()
         self._recycled_reason = None
 
+    def _rpc_active(self) -> bool:
+        """True while an RPC holds the lock or a tracked call (one that overlaps without the lock) is running."""
+        return self._rpc_lock.locked() or any(not t.done() for t in getattr(self, "_inflight_tasks", ()))
+
     def _stdio_recycle_deadlines(self):
-        """``[(deadline, reason), ...]`` for the lifetime/idle limits; empty for HTTP or while an RPC holds the lock."""
-        if self._is_http() or self._rpc_lock.locked():
+        """``[(deadline, reason), ...]`` for the lifetime/idle limits; empty for HTTP or while an RPC is active."""
+        if self._is_http() or self._rpc_active():
             return []
         limits = ((self._lifecycle_started_at, self._max_lifetime_seconds, "max_lifetime_seconds"),
                   (self._last_tool_call_at, self._idle_timeout_seconds, "idle_timeout_seconds"))

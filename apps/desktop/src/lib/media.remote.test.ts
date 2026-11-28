@@ -96,9 +96,20 @@ describe('mediaExternalUrl', () => {
     }
   })
 
-  it('falls back to file:// when remote connection lacks a token', () => {
-    $connection.set({ mode: 'remote', baseUrl: 'https://gw' } as never)
-    expect(mediaExternalUrl('/tmp/a.png')).toBe('file:///tmp/a.png')
+  // A remote gateway with no bearer token to put in the URL (basic-auth dashboard, OAuth session) has
+  // nothing to authenticate a download link with — but its files still live on the gateway host, so a
+  // file:// link opens nothing on this one. Route it through the Electron media proxy, the same
+  // mechanism audio/video already use when a connection exposes no static token (#46895 added the
+  // token URL; this covers the connections that have no token to add).
+  it('routes a remote connection without a token through the media proxy', () => {
+    $connection.set({ mode: 'remote', baseUrl: 'https://gw', connectionId: 'conn-1' } as never)
+
+    const url = mediaExternalUrl('/tmp/a b.png')
+
+    expect(url.startsWith('hermes-media://remote/')).toBe(true)
+    expect(url).not.toContain('file://')
+    expect(url).toContain(encodeURIComponent('/tmp/a b.png'))
+    expect(url).toContain('connectionId=conn-1')
   })
 
   // #84361: the raw `file://${path}` concat broke on URL-structural

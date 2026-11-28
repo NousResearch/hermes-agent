@@ -2,7 +2,6 @@
 block it. ``scan_skill`` is reached lazily through ``tools.skill_manager_tool`` so that module
 stays the patch seam; ``_guarded_write`` there owns the write and rollback."""
 
-import contextvars as _ctxvars
 import hashlib
 import logging
 import re
@@ -11,19 +10,10 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Optional
 
-from tools.skill_manager_guards import _is_background_review
+from tools.skill_manager_guards import _is_curator_write
 from tools.skills_guard import _determine_verdict
 
 logger = logging.getLogger("tools.skill_manager_tool")
-
-# Set while replaying an approved write that the background-review fork staged.
-_replaying_background_write: _ctxvars.ContextVar[bool] = _ctxvars.ContextVar(
-    "replaying_background_write", default=False)
-
-
-def _background_origin() -> bool:
-    return _is_background_review() or _replaying_background_write.get()
-
 
 def _finding_keys(skill_dir: Path, findings) -> list[tuple[str, str, str, str]]:
     """(file, pattern_id, severity, sha256 of the full source line) per finding. Not the line number
@@ -84,7 +74,7 @@ def _scan_baseline(skill_dir: Path, target: Path) -> tuple[Optional[list[Path]],
     """Pre-write findings over the scan scope of *target* for a background-origin write, so only findings
     the write introduces block it (bundled skills already carry flagged examples the fork did not write).
     (scope, baseline, error); scope None (full scan) outside background origin."""
-    if not _background_origin():
+    if not _is_curator_write():
         return None, None, None
     from tools import skill_manager_tool
     try:

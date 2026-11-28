@@ -43,7 +43,8 @@ from hermes_constants import (
     apply_secure_dir_policy, get_managed_system)
 # Re-export from hermes_constants — canonical definition lives there.
 from hermes_constants import LAUNCH_ONLY_ENV_KEYS, get_hermes_home, is_launch_only_env_key, get_process_hermes_home
-from utils import atomic_replace, fast_safe_load, file_cache_version, file_signature, mkstemp_beside
+from utils import (atomic_replace, fast_safe_load, file_cache_version, file_has_bytes, file_signature,
+                   mkstemp_beside, preserve_file_mode)
 from hermes_cli.config_set_scalars import _SCALAR_WORDS, _coerce_float, _coerce_int, _quoted_bool
 from hermes_cli.config_issues import ConfigIssue, _issue
 from hermes_cli.config_credential_values import (
@@ -2431,12 +2432,11 @@ def _env_write_lock(env_path: Path):
 
 def _write_env_lines(env_path: Path, lines: list, *, preserve_mode: bool, newline: Optional[str] = None) -> None:
     """Atomically replace ``.env`` (tmp + fsync + rename); ``newline=""`` keeps the lines' own endings. ``preserve_mode``
-    keeps the file's mode (0640 for Docker mounts) over ``_secure_file``'s 0600; a new file is always secured."""
-    original_mode = None
-    try:
-        original_mode = stat.S_IMODE(env_path.stat().st_mode) if preserve_mode else None
-    except OSError:
-        pass
+    keeps the file's mode (0640 for Docker mounts) over ``_secure_file``'s 0600; a new file is always secured.
+    Identical bytes are left alone (a new inode reads as a credential change to the gateway)."""
+    if file_has_bytes(env_path, "".join(lines).replace("\n", "\n" if newline == "" else os.linesep).encode()):
+        return
+    original_mode = preserve_file_mode(env_path) if preserve_mode else None
     fd, tmp_path = mkstemp_beside(env_path, suffix=".tmp", prefix=".env_")
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline=newline) as f:

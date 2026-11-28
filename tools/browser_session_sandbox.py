@@ -100,9 +100,14 @@ _START_TIME_OF_P = 's=$(cat /proc/"$p"/stat 2>/dev/null) && s=${s##*")"} && set 
 _NOT_OURS_RC = 4
 # Signal "$1" only while it is still the launched browser: same start time ("$2"), and its argv carries the
 # launch's exact --user-data-dir token ("$3"). Check and signal in one exec inside the sandbox.
+# Chromium rewrites its process title on Linux, which leaves /proc/<pid>/cmdline as ONE space-joined string
+# instead of NUL-separated arguments; a cmdline that reads back as a single argument is therefore matched
+# on the space-delimited token (what psutil's cmdline() does for the host launcher's check).
 _STOP_SCRIPT = (
     f'p=$1; t=$({_START_TIME_OF_P}); [ -n "$t" ] && [ "$t" = "$2" ] || exit {_NOT_OURS_RC}; '
-    f'ok=; while IFS= read -r -d "" a; do [ "$a" = "$3" ] && ok=1; done < /proc/"$p"/cmdline; '
+    'ok=; n=0; one=; while IFS= read -r -d "" a; do n=$((n+1)); one=$a; [ "$a" = "$3" ] && ok=1; '
+    'done < /proc/"$p"/cmdline; '
+    '[ "$n" = 1 ] && case " $one " in *" $3 "*) ok=1 ;; esac; '
     f'[ -n "$ok" ] || exit {_NOT_OURS_RC}; kill -TERM "$p"'
 )
 

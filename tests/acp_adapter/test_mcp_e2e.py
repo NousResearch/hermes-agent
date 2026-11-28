@@ -16,6 +16,7 @@ from acp.schema import (
     EnvVariable,
     HttpHeader,
     McpServerHttp,
+    McpServerSse,
     McpServerStdio,
     NewSessionResponse,
     PromptResponse,
@@ -107,6 +108,27 @@ class TestMcpRegistrationE2E:
         assert state.agent.valid_tool_names == {
             "mcp_test_fs_read", "mcp_test_fs_write", "mcp_test_api_search", "terminal"
         }
+
+    @pytest.mark.asyncio
+    async def test_sse_server_registers_with_sse_transport(self, acp_agent):
+        """An ACP SSE server is pinned to the SSE transport; HTTP keeps the Streamable HTTP default."""
+        servers = [
+            McpServerSse(name="events", url="https://api.example.com/sse", headers=[]),
+            McpServerHttp(name="api", url="https://api.example.com/mcp", headers=[]),
+        ]
+
+        registered = {}
+        def mock_register(config_map):
+            registered.update(config_map)
+            return []
+
+        with patch("tools.mcp_tool_discovery.register_mcp_servers", side_effect=mock_register), \
+             patch("model_tools.get_tool_definitions", return_value=[]):
+            await acp_agent.new_session(cwd="/tmp", mcp_servers=servers)
+
+        assert registered["events"]["transport"] == "sse"
+        assert registered["events"]["url"] == "https://api.example.com/sse"
+        assert registered["api"].get("transport") != "sse"
 
     @pytest.mark.asyncio
     async def test_prompt_with_tool_calls_emits_acp_events(self, acp_agent, mock_manager):

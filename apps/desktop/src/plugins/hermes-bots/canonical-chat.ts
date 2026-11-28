@@ -368,6 +368,12 @@ async function findExistingCanonicalChat(owner: RosterRow | string): Promise<Can
     return match
   }
 
+  // Older gateways may ignore the title filter and return a recency window.
+  // A full page cannot prove absence, even without a canonical roster hint.
+  if (rows.length >= PROFILE_SESSION_LIST_LIMIT) {
+    throw confirmRegistryError(name)
+  }
+
   // A zero-row result is NOT the same as a thrown error, but it is just as
   // capable of forking the forever chat: a profile backend mid-restart can
   // answer `session.list` successfully with an empty list rather than

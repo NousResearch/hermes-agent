@@ -117,7 +117,7 @@ function inlineCodeRanges(text: string, fenced: TextRange[]) {
 /** The spans of `text` Markdown renders as code — fenced blocks plus inline
  *  spans. A URL inside one is verbatim payload (a stack trace, a log line, a
  *  command), not prose to chip, so the recognizer must leave it alone. */
-function markdownCodeRanges(text: string) {
+export function markdownCodeRanges(text: string) {
   const fenced = fencedCodeRanges(text)
 
   return [...fenced, ...inlineCodeRanges(text, fenced)]

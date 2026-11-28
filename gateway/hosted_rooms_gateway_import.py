@@ -109,6 +109,12 @@ def import_standalone_rooms(target_db: Path | None, *, runtime_epoch: int | None
             _fence_source(store, local_id, handoff_id)
             fenced = store.hosted_rooms.fenced_room_ids(handoff_gateway_id=handoff_id)
             if not fenced:
+                if store.hosted_rooms.locally_claimed_room_ids(local_gateway_id=local_id):
+                    moved_aside = store.hosted_rooms.move_aside_standalone_member_rows(
+                        epoch=runtime_epoch, room_ids=(), local_gateway_id=local_id)
+                    if moved_aside:
+                        logger.info("hosted rooms: moved %d standalone-era member session row(s) out of the "
+                                    "Group Chat title namespace", moved_aside)
                 return 0
             owner, now = host_owner_subject(), clock(None)
             copied = store.hosted_rooms.import_fenced_rooms(
@@ -122,6 +128,67 @@ def import_standalone_rooms(target_db: Path | None, *, runtime_epoch: int | None
     if copied:
         logger.info("hosted rooms: imported %d standalone Group Chat(s) from %s", copied, source)
     return copied
+
+
+def sweep_standalone_member_rows(authorities) -> int:
+    """Move pre-migration member rows aside in EVERY served profile store (#149682).
+
+    The standalone handoff is only visible beside the launch profile's store, so
+    ``import_standalone_rooms`` repairs that store; members seated on named profiles
+    keep their titled rows in their own stores, which have no import source of their
+    own. This sweep runs after the ready import against the union of locally-claimed
+    room ids and the same per-row rules (``bot_room``, no routing key, not
+    user-retitled).
+
+    Claims are recorded per source store and re-read immediately before each write:
+    every store carries ``hosted_rooms`` tables (empty in named stores, where the
+    authoritative claim lives in the claiming store's registry), so a room's claim is
+    revalidated in the registry that actually holds it. A demotion committed before a
+    store's write stops that room's sweep everywhere; one committed after the last
+    source read can still produce a single cosmetic suffix update — the row's
+    transcript, id, visibility and routing key are never touched. Idempotent: an
+    already-suffixed row no longer matches its room's title.
+    """
+    from gateway.hosted_rooms import local_authority_gateway_id
+    from gateway.session_persistence import authority_persistence
+    from persistence import PersistenceError
+
+    local_id = local_authority_gateway_id()
+    claim_sources: list = []
+    for authority in authorities:
+        try:
+            store = authority_persistence(authority)
+            rooms = store.hosted_rooms.locally_claimed_room_ids(local_gateway_id=local_id)
+            if rooms:
+                claim_sources.append((store, rooms))
+        except (OSError, PersistenceError):
+            continue
+    if not claim_sources:
+        return 0
+    claimed = set().union(*(rooms for _, rooms in claim_sources))
+
+    def fresh_claims() -> set:
+        fresh: set = set()
+        for source_store, _ in claim_sources:
+            try:
+                fresh |= set(source_store.hosted_rooms.locally_claimed_room_ids(local_gateway_id=local_id))
+            except (OSError, PersistenceError):
+                continue
+        return fresh
+
+    moved = 0
+    for authority in authorities:
+        try:
+            store = authority_persistence(authority)
+            epoch = getattr(authority, "epoch", None)
+            moved += store.hosted_rooms.move_aside_standalone_member_rows(
+                epoch=epoch, room_ids=claimed & fresh_claims(), local_gateway_id=local_id)
+        except (OSError, PersistenceError) as exc:
+            logger.warning("hosted rooms: standalone member-row sweep skipped for %s (%s)",
+                           getattr(authority, "profile_id", authority), exc)
+    if moved:
+        logger.info("hosted rooms: swept %d standalone-era member session row(s) across profile stores", moved)
+    return moved
 
 
 def import_after_ready(authorities) -> None:
@@ -141,9 +208,13 @@ def import_after_ready(authorities) -> None:
         from persistence_assembly import store_location
         target, epoch = store_location(authority_persistence(authority).scope), authority.epoch
 
-        def run(target=target, epoch=epoch, service=service, authority=authority):
+        def run(target=target, epoch=epoch, service=service, authority=authority,
+                authorities=tuple(authorities)):
             from gateway.session_authorities import owner_scope
             with owner_scope(authority):  # a new thread holds the launch profile's scope otherwise
                 if import_standalone_rooms(target, runtime_epoch=epoch):
                     service.wakeup()
+                # Named-profile member stores have no import source of their own; sweep
+                # them for the claimed rooms once the handoff import has settled.
+                sweep_standalone_member_rows(authorities)
         threading.Thread(target=run, name="hosted-rooms-ready-import", daemon=True).start()

@@ -100,9 +100,49 @@ class HostedRoomHandoffMixin:
             for room_id in copied:
                 _claim(tables, room_id, local_gateway_id=local_gateway_id, handoff_gateway_id=handoff_gateway_id,
                        now=timestamp)
+            claimed_now = {rid for rid, row in tables["hosted_rooms"].items()
+                           if row["authority_gateway_id"] == local_gateway_id}
+            self._move_aside_sessions(claimed_now)
         from .hosted_rooms import OWNER_PREFIX
 
         meta = self._meta()
         for room_id in copied:
             meta.setdefault(OWNER_PREFIX + room_id, owner)
         return len(copied)
+
+    def _move_aside_sessions(self, room_ids: Collection[str]) -> int:
+        table = self._store.scope_store(self._store.scope).get("sessions")
+        if not table or not room_ids:
+            return 0
+        moved = 0
+        for room_id in sorted(room_ids):
+            room_title = f"Group: {room_id}"
+            legacy = [sid for sid, row in table.items()
+                      if row.get("title") == room_title and row.get("source") == "bot_room"
+                      and not row.get("session_key") and (row.get("title_source") or "") != "user"]
+            if not legacy:
+                continue
+            suffix, n = " (standalone)", 1
+            legacy_set = set(legacy)
+            while any(row.get("title") == room_title + suffix and sid not in legacy_set for sid, row in table.items()):
+                n += 1
+                suffix = f" (standalone {n})"
+            for sid in legacy:
+                table[sid]["title"] = room_title + suffix
+            moved += len(legacy)
+        return moved
+
+    def locally_claimed_room_ids(self, *, local_gateway_id: str) -> frozenset[str]:
+        rooms = read_tables(self._store, "profile")["hosted_rooms"]
+        return frozenset(rid for rid, row in rooms.items() if row["authority_gateway_id"] == local_gateway_id)
+
+    def move_aside_standalone_member_rows(self, *, epoch: int | None, room_ids: Collection[str],
+                                          local_gateway_id: str | None = None) -> int:
+        with write_tables(self._store, "profile") as tables:
+            if epoch is not None:
+                self._require_epoch(epoch)
+            targets = set(room_ids)
+            if local_gateway_id is not None:
+                targets |= {rid for rid, row in tables["hosted_rooms"].items()
+                            if row["authority_gateway_id"] == local_gateway_id}
+            return self._move_aside_sessions(targets)

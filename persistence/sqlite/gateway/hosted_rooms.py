@@ -505,6 +505,33 @@ def _claim(conn: sqlite3.Connection, room_id: str, local_id: str, handoff_id: st
     conn.execute("INSERT OR IGNORE INTO state_meta(key, value) VALUES (?, ?)", (OWNER_PREFIX + room_id, owner))
 
 
+def _move_aside_standalone_member_rows(conn: sqlite3.Connection, room_ids: Collection[str]) -> int:
+    """Retitle each handed-over room's standalone-era member rows out of ``Group: <room_id>`` (#149682)."""
+    if not room_ids or not table_exists(conn, "sessions"):
+        return 0
+    moved = 0
+    for room_id in sorted(room_ids):
+        room_title = f"Group: {room_id}"
+        legacy = conn.execute(
+            "SELECT id FROM sessions WHERE title=? AND source='bot_room' "
+            "AND (session_key IS NULL OR session_key='') "
+            "AND ifnull(title_source,'')!='user'", (room_title,)).fetchall()
+        if not legacy:
+            continue
+        suffix = " (standalone)"
+        n = 1
+        ids = [row[0] for row in legacy]
+        placeholders = ",".join("?" * len(ids))
+        while conn.execute(
+                f"SELECT 1 FROM sessions WHERE title=? AND id NOT IN ({placeholders})",
+                (room_title + suffix, *ids)).fetchone():
+            n += 1
+            suffix = f" (standalone {n})"
+        conn.execute(f"UPDATE sessions SET title=title||? WHERE id IN ({placeholders})", (suffix, *ids))
+        moved += len(ids)
+    return moved
+
+
 def _import_fenced_rooms(conn: sqlite3.Connection, source: Path, *, epoch: int | None, room_ids: Collection[str],
                          owner: str, local_gateway_id: str, handoff_gateway_id: str, now: float) -> int:
     """Copy the fenced rooms this store has never known from ``source``, then claim them; returns rooms copied."""
@@ -517,6 +544,9 @@ def _import_fenced_rooms(conn: sqlite3.Connection, source: Path, *, epoch: int |
     copied = _copy_rows(conn, source, only=missing) if missing else 0
     for room_id in sorted(missing):
         _claim(conn, room_id, local_gateway_id, handoff_gateway_id, owner, now)
+    claimed_now = {str(row[0]) for row in conn.execute(
+        "SELECT room_id FROM hosted_rooms WHERE authority_gateway_id=?", (local_gateway_id,))}
+    _move_aside_standalone_member_rows(conn, claimed_now)
     return copied
 
 
@@ -562,6 +592,26 @@ class SQLiteHostedRoomRepository:
                 raise TitleConflict(title, SessionId(holder[0])) from exc
         with translated():
             self._store.holder()._execute_write(label)
+
+    # Compare-and-set repair for a room session committed without its title/hidden label (#149682).
+    def repair_unlabeled_room_session(self, *, epoch: int, room_id: str, session_id: str, title: str,
+                                      local_gateway_id: str | None = None) -> bool:
+        def repair(conn: sqlite3.Connection) -> bool:
+            _epoch(conn, epoch)
+            if local_gateway_id is not None:
+                if not table_exists(conn, "hosted_rooms"):
+                    return False
+                claimed = conn.execute(
+                    "SELECT 1 FROM hosted_rooms WHERE room_id=? AND authority_gateway_id=?",
+                    (room_id, local_gateway_id)).fetchone()
+                if claimed is None:
+                    return False
+            cur = conn.execute(
+                "UPDATE sessions SET title=?, hidden=1 WHERE id=? AND ifnull(title,'')=''",
+                (title, session_id))
+            return cur.rowcount > 0
+        with translated():
+            return self._store.holder()._execute_write(repair)
 
     # Creates the hidden ``bot_room`` session of a room member, or accepts the one there with the same title.
     def ensure_room_member_session(self, *, session_id: str, title: str) -> str:
@@ -921,6 +971,28 @@ class SQLiteHostedRoomRepository:
             return self._files._hosted_write("profile", lambda conn: _import_fenced_rooms(
                 conn, source, epoch=epoch, room_ids=room_ids, owner=owner, local_gateway_id=local_gateway_id,
                 handoff_gateway_id=handoff_gateway_id, now=timestamp), immediate=True)
+
+    def locally_claimed_room_ids(self, *, local_gateway_id: str) -> frozenset[str]:
+        def read_claimed(conn: sqlite3.Connection) -> frozenset[str]:
+            if not table_exists(conn, "hosted_rooms"):
+                return frozenset()
+            return frozenset(str(row[0]) for row in conn.execute(
+                "SELECT room_id FROM hosted_rooms WHERE authority_gateway_id=?", (local_gateway_id,)))
+        with translated():
+            return self._files._hosted_read("profile", read_claimed)
+
+    def move_aside_standalone_member_rows(self, *, epoch: int | None, room_ids: Collection[str],
+                                          local_gateway_id: str | None = None) -> int:
+        def sweep(conn: sqlite3.Connection) -> int:
+            if epoch is not None:
+                _epoch(conn, epoch)
+            target_rooms = set(room_ids)
+            if local_gateway_id is not None and table_exists(conn, "hosted_rooms"):
+                target_rooms |= {str(row[0]) for row in conn.execute(
+                    "SELECT room_id FROM hosted_rooms WHERE authority_gateway_id=?", (local_gateway_id,))}
+            return _move_aside_standalone_member_rows(conn, target_rooms)
+        with translated():
+            return self._files._hosted_write("profile", sweep, immediate=True)
 
 
 register_repository("hosted_rooms", SQLiteHostedRoomRepository)

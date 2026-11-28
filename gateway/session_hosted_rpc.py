@@ -11,11 +11,16 @@ from functools import partial
 import hashlib
 import json
 
+import logging
+from pathlib import Path
+
 from gateway.owner_identity import same_owner
 from gateway.session_contract import SessionRef, Submission
 from gateway.session_persistence import authority_persistence
-from persistence.core.errors import AuthorityRefusal
+from persistence.core.errors import AuthorityRefusal, PersistenceError
 from persistence.gateway.hosted_rooms import HostedTaskIdentity
+
+logger = logging.getLogger(__name__)
 
 _RESULTLESS_OUTCOMES = frozenset({'interrupted', 'cancelled'})
 # Encoded receipts per ``results`` read; under the 512 KiB private-socket response line.
@@ -25,9 +30,12 @@ _RESULTS_BUDGET_BYTES = 384 * 1024
 class HostedRoomAuthorityRPC:
     accepts_attachments = True  # submit resolves event-bound bytes per member
 
-    def __init__(self, authority, loop, *, room_id, member_id, profile, principal,
+    def __init__(self, authority, loop, *, room_id, member_id, profile, principal, claim_source=None,
                  authorize, hosted_guard=None, timeout=30):
         self.authority, self.loop = authority, loop
+        # Home (or state.db path) of the authority whose service claimed this room;
+        # None means this authority's own store (the service-constructed case).
+        self.claim_source = claim_source
         self.room_id, self.member_id, self.profile = room_id, member_id, profile
         self.principal, self.authorizer, self.timeout = principal, authorize, timeout
         self.hosted_guard = hosted_guard  # (task, generation) -> the admission's hosted member check
@@ -111,7 +119,63 @@ class HostedRoomAuthorityRPC:
             title=f'Group: {self.room_id}'))
         return await self._resume(params)
 
+    async def _repair_unlabeled_room_session(self):
+        """Idempotent convergence for a room session committed but never labeled."""
+        from gateway.hosted_rooms import local_authority_gateway_id
+        from gateway.session_runtime_workers import tracked_write
+        from persistence_assembly import open_persistence, profile_scope, store_location
+
+        room_title = f'Group: {self.room_id}'
+        local_id = local_authority_gateway_id()
+        store = authority_persistence(self.authority)
+        own_db = store_location(store.scope)
+
+        # The claiming registry is the claiming service's coordination database: the
+        # authority whose service claimed this room. Service-constructed RPCs claim in
+        # their own store (claim_source=None); member dispatch carries the claiming
+        # home in the binding (source_home).
+        source = self.claim_source
+        if source is None:
+            claiming_home = own_db.parent if own_db is not None else None
+            same_file = True
+        else:
+            source_path = Path(source)
+            claiming_db = source_path if source_path.name == 'state.db' else source_path / 'state.db'
+            claiming_home = claiming_db.parent
+            same_file = own_db is not None and claiming_db == own_db
+
+        if not same_file:
+            # The claiming registry lives in another store: check the claim just before
+            # the write. A demotion racing inside this window is bounded by the
+            # compare-and-set (only a never-labeled row can be touched).
+            if claiming_home is None or not (claiming_home / 'state.db').is_file():
+                return
+            try:
+                with open_persistence(profile_scope(home=claiming_home)) as claiming_store:
+                    if self.room_id not in claiming_store.hosted_rooms.locally_claimed_room_ids(
+                            local_gateway_id=local_id):
+                        return  # demoted to a peer: never label a room we no longer serve
+            except (OSError, PersistenceError):
+                return  # registry unreadable: fail closed, the normal path still runs
+        try:
+            await tracked_write(self.authority, partial(
+                store.hosted_rooms.repair_unlabeled_room_session,
+                epoch=self.authority.epoch, room_id=self.room_id, session_id=self.ref.session_id,
+                title=room_title, local_gateway_id=local_id if same_file else None))
+        except Exception as exc:  # health: allow BLE001 -- best-effort convergence only
+            # Best-effort: a busy store or still-squatted title must surface through the
+            # normal create/label path on the next attempt, never block the turn.
+            logger.warning("hosted rooms: unlabeled room-session repair deferred for %s (%s)",
+                           self.room_id, exc)
+
     async def _resume(self, params):
+        # Every entry path (create retry, driver resolve_exact, resume) converges here:
+        # a room session committed but never labeled (title squatted by pre-migration
+        # state before the import sweep ran, or a crash between commit and label) would
+        # otherwise strand forever behind a successful-looking resume. (#149682)
+        existing = authority_persistence(self.authority).sessions.get(self.ref.session_id)
+        if existing is not None and existing.title is None:
+            await self._repair_unlabeled_room_session()
         await self.authority.resolve(self.principal, self.ref)
         return {'session_id': self.ref.session_id, 'title': f'Group: {self.room_id}'}
 

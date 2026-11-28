@@ -72,10 +72,12 @@ def owner_request(home, verb, params, *, timeout=30):
         raise AuthorityRefusal('runtime_draining')
     response = json.loads(raw)
     if response.get('ok') is not True:
-        reason = str(response.get('error', '')).split(': ')[-1]
-        if reason not in {'permission_denied', 'profile_mismatch', 'invalid_params', 'unknown_execution',
-                          'stale_generation', 'admission_conflict', 'response_too_large', 'request_too_large'}:
+        reason = ' '.join(str(response.get('error', '')).split(': ')[-1].split())[:200]
+        if not reason:
             reason = 'runtime_draining'
+        # Unknown non-empty reasons pass through: a deterministic producer-side error
+        # (e.g. a storage TitleConflict / IntegrityError) must not masquerade as a
+        # retryable drain. Only transport noise (empty reason) folds to runtime_draining. (#149682)
         raise AuthorityRefusal(reason)
     if response.get('protocol') != 1 or response.get('id') != 1:
         raise AuthorityRefusal('runtime_draining')
@@ -239,7 +241,8 @@ def install_hosted_transport(server, authority, loop, *, attest):
         # the RPC's own authorize hook has nothing left to decide. A new operation must
         # be added to _OPERATIONS (and therefore attested) before it can reach _call.
         rpc = HostedRoomAuthorityRPC(authority, loop, **selector, principal=principal,
-                                    authorize=lambda *args: True)
+                                    authorize=lambda *args: True,
+                                    claim_source=binding['source_home'])
         authority_persistence(authority).hosted_rooms.bind_transport(
             epoch=authority.epoch, session_id=rpc.ref.session_id, binding=json.dumps(binding, sort_keys=True))
         if operation == 'submit':

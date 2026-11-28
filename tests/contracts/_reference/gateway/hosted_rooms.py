@@ -212,6 +212,20 @@ class InMemoryHostedRoomRepository(HostedRoomLogMixin, HostedRoomHandoffMixin):
             raise TitleConflict(title, SessionId(holder))
         row.update(title=title, hidden=True)
 
+    def repair_unlabeled_room_session(self, *, epoch: int, room_id: str, session_id: str, title: str,
+                                      local_gateway_id: str | None = None) -> bool:
+        self._require_epoch(epoch)
+        if local_gateway_id is not None:
+            room = read_tables(self._store, "profile")["hosted_rooms"].get(room_id)
+            if room is None or room["authority_gateway_id"] != local_gateway_id:
+                return False
+        table = self._store.scope_store(self._store.scope).setdefault("sessions", {})
+        row = table.get(session_id)
+        if row is None or (row.get("title") or "") != "":
+            return False
+        row.update(title=title, hidden=True)
+        return True
+
     def ensure_room_member_session(self, *, session_id: str, title: str) -> str:
         table = self._store.scope_store(self._store.scope).setdefault("sessions", {})
         row = table.get(session_id)

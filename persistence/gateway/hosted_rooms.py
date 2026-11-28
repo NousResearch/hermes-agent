@@ -483,6 +483,10 @@ class HostedRoomRepository(Protocol):
         """One write: the epoch fence, then the session row's title becomes ``title`` verbatim and the row is hidden; a missing row writes nothing; a title another session holds refuses :class:`persistence.TitleConflict`."""
         ...
 
+    def repair_unlabeled_room_session(self, *, epoch: int, room_id: str, session_id: str, title: str, local_gateway_id: str | None = None) -> bool:
+        """One write: the epoch fence, then if ``local_gateway_id`` is given require that this store's ``hosted_rooms`` table holds ``room_id`` under ``local_gateway_id``, then compare-and-set ``title`` and ``hidden=1`` only when the session row is still untitled. Returns True when a row was labeled."""
+        ...
+
     def ensure_room_member_session(self, *, session_id: str, title: str) -> str:
         """One write: an existing row must carry ``title`` and source ``bot_room``, else :class:`HostedRoomRefusal`; otherwise the sanitized title held by another session refuses :class:`HostedRoomRefusal`, else a hidden ``bot_room`` row is inserted. Returns ``session_id``."""
         ...
@@ -600,8 +604,16 @@ class HostedRoomRepository(Protocol):
     def import_fenced_rooms(self, *, epoch: int | None, room_ids: Collection[str], owner: str, local_gateway_id: str, handoff_gateway_id: str, now: float | None = None) -> int:
         """Copy the ``room_ids`` the bound profile's store has never known from the install-wide store and claim them, in one write on the profile's store; returns the rooms copied.
 
-        Order: with ``epoch``, the epoch fence (``FenceStale``); the ids with neither a room row nor a retired id in the profile's store are copied with every row of theirs the install-wide store holds, except driver leases and rows of no room (a row the profile's store already holds fails the whole write with ``PermanentStoreError``); then each copied room is claimed: an ``authority.claimed`` event at the room's next sequence and epoch + 1, naming ``handoff_gateway_id`` as the previous and ``local_gateway_id`` as the new authority, the room moves to that authority and epoch with its sequence and revision advanced and ``updated_at`` at ``now``, and its owner key becomes ``owner`` unless one is stored. The install-wide store is only read.
+        Order: with ``epoch``, the epoch fence (``FenceStale``); the ids with neither a room row nor a retired id in the profile's store are copied with every row of theirs the install-wide store holds, except driver leases and rows of no room (a row the profile's store already holds fails the whole write with ``PermanentStoreError``); then each copied room is claimed: an ``authority.claimed`` event at the room's next sequence and epoch + 1, naming ``handoff_gateway_id`` as the previous and ``local_gateway_id`` as the new authority, the room moves to that authority and epoch with its sequence and revision advanced and ``updated_at`` at ``now``, and its owner key becomes ``owner`` unless one is stored; then standalone-era ``bot_room`` session rows holding ``Group: <room_id>`` for locally-claimed rooms are retitled aside. The install-wide store is only read.
         """
+        ...
+
+    def locally_claimed_room_ids(self, *, local_gateway_id: str) -> frozenset[str]:
+        """Room ids this profile store's ``hosted_rooms`` registry holds under ``local_gateway_id``."""
+        ...
+
+    def move_aside_standalone_member_rows(self, *, epoch: int | None, room_ids: Collection[str], local_gateway_id: str | None = None) -> int:
+        """One write on the bound profile's store: with ``epoch``, the epoch fence; then move pre-migration ``bot_room`` rows (no ``session_key``, ``title_source != 'user'``) holding ``Group: <room_id>`` aside to ``Group: <room_id> (standalone)`` (suffix-bumped on collision) for every room in ``room_ids`` (and, when ``local_gateway_id`` is given, rooms this store's own registry holds under ``local_gateway_id``). Returns rows moved."""
         ...
 
 

@@ -83,6 +83,15 @@ def test_homeassistant_not_in_use(tmp_path, env, config):
 _JSON_ON = '{"platforms": {"homeassistant": {"enabled": true, "token": "t"}}}'
 
 
+def test_a_malformed_platform_extra_falls_back_to_gateway_json_like_the_loader(tmp_path):
+    """Another platform's non-mapping ``extra`` makes the gateway drop config.yaml for gateway.json;
+    the migration reads the same layers instead of raising out of the home's whole migration."""
+    home = _home(tmp_path, config="platforms:\n  homeassistant:\n    enabled: false\n"
+                                    "  discord:\n    extra: null\n")
+    (home / "gateway.json").write_text(_JSON_ON, encoding="utf-8")
+    assert lcm.homeassistant_in_use(home) is True
+
+
 @pytest.mark.parametrize(("gateway_json", "config", "in_use"), [
     (_JSON_ON, "", True),
     ("", "gateway:\n  homeassistant:\n    enabled: true\n    token: t\n", True),

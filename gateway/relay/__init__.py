@@ -123,22 +123,27 @@ def relay_explicitly_disabled() -> bool:
     is for every other platform, and an absent key keeps URL-only activation.
     """
     from gateway.config import Platform, PlatformConfig
-    from gateway.config_loader import bridge_platform_shared_keys, merge_platform_sections, read_yaml_layers
+    from gateway.config_loader import (
+        bridge_platform_shared_keys, merge_platform_sections, read_yaml_layers, with_yaml_fallback,
+    )
     from hermes_constants import get_hermes_home
 
-    try:
-        cfg = read_yaml_layers(get_hermes_home())
-    except Exception:
-        return False
-    if not isinstance(cfg, dict):
-        return False
-    gateway = cfg.get("gateway") if isinstance(cfg.get("gateway"), dict) else {}
-    platforms = merge_platform_sections(cfg, gateway, {})
-    bridge_platform_shared_keys(cfg, gateway.get("platforms"), {}, platforms, [Platform.RELAY])
-    block = platforms.get("relay")
-    if not isinstance(block, dict) or not block.get("extra", {}).get("_enabled_explicit"):
-        return False
-    return not PlatformConfig.from_dict(block).enabled
+    home = get_hermes_home()
+
+    def explicitly_disabled() -> bool:
+        cfg = read_yaml_layers(home)
+        if not isinstance(cfg, dict):
+            return False
+        gateway = cfg.get("gateway") if isinstance(cfg.get("gateway"), dict) else {}
+        platforms = merge_platform_sections(cfg, gateway, {})
+        bridge_platform_shared_keys(cfg, gateway.get("platforms"), {}, platforms, [Platform.RELAY])
+        block = platforms.get("relay")
+        if not isinstance(block, dict) or not block.get("extra", {}).get("_enabled_explicit"):
+            return False
+        return not PlatformConfig.from_dict(block).enabled
+
+    # A config.yaml the loader cannot process is dropped whole: no YAML ``enabled`` key, no veto.
+    return with_yaml_fallback(home, explicitly_disabled, lambda: False)
 
 
 def relay_url() -> Optional[str]:

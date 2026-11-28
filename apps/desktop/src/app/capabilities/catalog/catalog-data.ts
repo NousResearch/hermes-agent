@@ -170,6 +170,7 @@ function catalogEntry(kind: CatalogKind, row: any): CatalogEntry {
     ...catalogSignals(kind, row),
     search: [
       name,
+      identifier,
       description,
       text(row.overview),
       author,

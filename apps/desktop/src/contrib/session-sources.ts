@@ -13,6 +13,8 @@ export interface SessionSourceLabelContribution {
   profile?: string
   /** Match the durable lineage root, preserving grouping after compression. */
   sessionIdPrefix?: string
+  /** Platform id whose icon the section should wear (e.g. 'homeassistant'). Defaults to the source's own icon. */
+  icon?: string
 }
 
 export interface SessionSourceLabelContext {
@@ -37,7 +39,8 @@ function sourceLabelRules(contributions: readonly Contribution[]): SourceLabelRu
       typeof data.label !== 'string' ||
       !data.label.trim() ||
       (data.profile !== undefined && (typeof data.profile !== 'string' || !data.profile.trim())) ||
-      (data.sessionIdPrefix !== undefined && (typeof data.sessionIdPrefix !== 'string' || !data.sessionIdPrefix.trim()))
+      (data.sessionIdPrefix !== undefined && (typeof data.sessionIdPrefix !== 'string' || !data.sessionIdPrefix.trim())) ||
+      (data.icon !== undefined && (typeof data.icon !== 'string' || !data.icon.trim()))
     ) {
       return []
     }
@@ -47,6 +50,7 @@ function sourceLabelRules(contributions: readonly Contribution[]): SourceLabelRu
         ...data,
         source: normalize(data.source),
         label: data.label.trim(),
+        icon: data.icon === undefined ? undefined : normalize(data.icon),
         contributionId: contribution.id
       } as SourceLabelRule
     ]
@@ -62,7 +66,7 @@ export function resolveSessionSourceLabel(
   source: string,
   context?: SessionSourceLabelContext,
   contributions: readonly Contribution[] = registry.getArea(SESSION_SOURCE_LABELS_AREA)
-): { label: string; groupId: string; filtered: boolean } | null {
+): { label: string; groupId: string; filtered: boolean; icon?: string } | null {
   const id = normalize(source)
 
   const rule = sourceLabelRules(contributions).find(
@@ -82,7 +86,8 @@ export function resolveSessionSourceLabel(
   return {
     label: rule.label,
     groupId: filtered ? `${id}:${rule.contributionId}` : id,
-    filtered
+    filtered,
+    icon: rule.icon
   }
 }
 

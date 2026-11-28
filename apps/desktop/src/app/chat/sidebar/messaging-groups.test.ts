@@ -116,4 +116,31 @@ describe('buildMessagingGroups', () => {
       ['photon', 'Photon', 1, true]
     ])
   })
+
+  it('lets a rule choose the section icon and defaults to the backend source', () => {
+    const contributions: Contribution[] = [
+      {
+        area: 'session.sourceLabels',
+        data: { icon: 'homeassistant', label: 'Home Assistant', sessionIdPrefix: 'ha-', source: 'api_server' },
+        id: 'home-assistant',
+        source: 'plugin:channel-labels'
+      },
+      { area: 'session.sourceLabels', data: { icon: '  ', label: 'Bad', source: 'photon' }, id: 'bad', source: 'plugin:x' }
+    ]
+
+    const groups = buildMessagingGroups({
+      contributions,
+      getSourceTotal: () => undefined,
+      isPinned: () => false,
+      profile: 'default',
+      sessions: [row('ha-1', 'api_server'), row('api-1', 'api_server'), row('p-1', 'photon')],
+      truncated: false
+    })
+
+    const byLabel = Object.fromEntries(groups.map(g => [g.label, g.iconId]))
+
+    expect(byLabel['Home Assistant']).toBe('homeassistant')
+    expect(byLabel['API']).toBe('api_server')
+    expect(byLabel['Photon']).toBe('photon')
+  })
 })

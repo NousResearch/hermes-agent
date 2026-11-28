@@ -1986,7 +1986,7 @@ export function ChatSidebar({
                     labelIcon={
                       <PlatformAvatar
                         className="size-4 rounded-[4px] text-[0.5625rem] [&_svg]:size-3"
-                        platformId={group.sourceId}
+                        platformId={group.iconId}
                         platformName={group.label}
                       />
                     }

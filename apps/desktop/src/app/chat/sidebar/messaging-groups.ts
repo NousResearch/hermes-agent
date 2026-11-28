@@ -8,6 +8,8 @@ import { sessionRecency } from './projects/workspace-groups'
 export interface MessagingSection {
   groupId: string
   sourceId: string
+  /** Platform id for the section icon (differs from sourceId when a plugin rule sets `icon`). */
+  iconId: string
   label: string
   sessions: SessionInfo[]
   total: number
@@ -42,7 +44,7 @@ export function buildMessagingGroups({
       continue
     }
 
-    const { groupId, label, sourceId } = presentation
+    const { groupId, iconId, label, sourceId } = presentation
 
     if (isPinned(session)) {
       pinnedBySource.set(sourceId, (pinnedBySource.get(sourceId) ?? 0) + 1)
@@ -52,7 +54,7 @@ export function buildMessagingGroups({
 
     loadedBySource.set(sourceId, (loadedBySource.get(sourceId) ?? 0) + 1)
 
-    const group = byGroup.get(groupId) ?? { groupId, hasMore: false, label, sessions: [], sourceId, total: 0 }
+    const group = byGroup.get(groupId) ?? { groupId, hasMore: false, iconId, label, sessions: [], sourceId, total: 0 }
 
     group.sessions.push(session)
     byGroup.set(groupId, group)

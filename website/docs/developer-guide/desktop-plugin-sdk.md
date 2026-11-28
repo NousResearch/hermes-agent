@@ -253,7 +253,7 @@ Import the area constants from the SDK; each area has its own `data` payload.
 | Appearance settings | `APPEARANCE_AREAS.extra` | `render` — controls appended to Settings → Appearance |
 | Tool media | `TOOL_MEDIA_RENDERER_AREA` (`'transcript.toolMedia'`) | `data: { tools, render }` — draw the `MEDIA:` files your package's own tools produced ([Tool media renderers](#tool-media-renderers)) |
 | Plugin settings page | `SETTINGS_PLUGINS_AREA` (`'settings.plugins'`) | Use `ctx.registerSettingsPage({ id, title, render, icon?, order?, children? })` — your own entry (with sub-pages) under Settings → Plugins |
-| Session source labels | `SESSION_SOURCE_LABELS_AREA` | `data: { source, label, profile?, sessionIdPrefix? }` |
+| Session source labels | `SESSION_SOURCE_LABELS_AREA` | `data: { source, label, profile?, sessionIdPrefix?, icon? }` |
 
 ### Session source labels
 
@@ -287,6 +287,8 @@ export default {
   }
 }
 ```
+
+`icon` names a platform whose icon the section wears (for example `'homeassistant'`); without it the section uses its backend source's icon.
 
 The first matching contribution in registry order wins. Omitting `profile`
 applies the rule across profiles; a session row without a profile belongs to

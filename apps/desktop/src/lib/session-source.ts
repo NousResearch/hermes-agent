@@ -146,6 +146,8 @@ export interface SessionSourcePresentation {
   groupId: string
   label: string
   filtered: boolean
+  /** Platform id for the section icon: a rule's `icon`, else the source id. */
+  iconId: string
 }
 
 export function sessionSourcePresentation(
@@ -164,7 +166,8 @@ export function sessionSourcePresentation(
     sourceId,
     groupId: custom?.groupId ?? sourceId,
     label: custom?.label ?? sessionSourceLabel(sourceId, session, contributions)!,
-    filtered: custom?.filtered ?? false
+    filtered: custom?.filtered ?? false,
+    iconId: custom?.icon ?? sourceId
   }
 }
 

@@ -7,11 +7,11 @@ pending-prompt projection dropped the key).
 """
 import os
 import threading
-import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from cli import HermesCLI
+from tests.waiting import wait_until
 from tools.approval_prompt import prompt_dangerous_approval
 
 
@@ -37,11 +37,7 @@ def _panel_while_asking(monkeypatch, ask):
     cli, result = _bare_cli(), {}
     worker = threading.Thread(target=lambda: result.update(choice=ask(cli)), daemon=True)
     worker.start()
-    deadline = time.monotonic() + 5
-    while cli._approval_state is None and time.monotonic() < deadline:
-        time.sleep(0.01)
-    state = cli._approval_state
-    assert state is not None, "the approval panel never opened"
+    state = wait_until(lambda: cli._approval_state, timeout=5, what="the approval panel to open")
     text = "".join(fragment for _style, fragment in cli._get_approval_display_fragments())
     state["response_queue"].put("once")
     worker.join(5)

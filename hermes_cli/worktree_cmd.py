@@ -90,7 +90,8 @@ def _sweep(repo_root: str, dry_run: bool, older_than: Optional[float] = None) ->
     settings = worktree_sweep.sweep_settings()
     plan = worktree_sweep.plan_sweep(repo_root, settings=settings, older_than_days=older_than)
     if dry_run or worktree_sweep.classic_mode(settings):
-        return plan, []
+        shed = worktree_sweep.shed_idle_artifacts(repo_root, settings, dry_run=dry_run)
+        return plan, [f"{'would shed' if dry_run else 'shed'} ignored {s}" for s in shed]
     _, _, archived = worktree_sweep.execute_plan(repo_root, plan, settings)
     from hermes_cli.worktree_archive import prune_expired_archives
     expired = prune_expired_archives(repo_root, settings["archive_retention_days"])
@@ -98,7 +99,8 @@ def _sweep(repo_root: str, dry_run: bool, older_than: Optional[float] = None) ->
     saved = [t("cli.worktree.sweep_archived_removed", ref=ref) if removed
              else t("cli.worktree.sweep_archived_kept", ref=ref, reason=why or "?")
              for ref, removed, why in archived]
-    return plan, saved + [f"deleted expired archive {r}" for r in expired]
+    shed = worktree_sweep.shed_idle_artifacts(repo_root, settings)
+    return plan, saved + [f"deleted expired archive {r}" for r in expired] + [f"shed ignored {s}" for s in shed]
 
 
 def _attended_records(records, plan) -> list:

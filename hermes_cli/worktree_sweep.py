@@ -12,13 +12,18 @@ an untracked file over the size cap). With
 ``archive_dirty: false`` and no size budget the classic pruner runs unchanged.
 
 ``plan_sweep`` is read-only (``hermes worktree prune --dry-run`` prints it); ``execute_plan``
-applies a frozen plan.
+applies a frozen plan. ``shed_idle_artifacts`` (``worktrees.shed_artifacts_after_hours``, off by
+default) runs after it on the trees the sweep kept: an idle tree loses only its git-ignored
+dependency/build-cache directories (``SHED_DIR_NAMES``); tracked files, untracked work, the
+branch and the dirty state stay, so ``npm install`` / ``uv sync`` brings the tree back.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import re
+import shutil
 import subprocess
 import sys
 import time
@@ -28,7 +33,15 @@ from typing import Optional
 
 logger = logging.getLogger("cli")
 
-_DEFAULTS = {"archive_dirty": True, "archive_max_file_mb": 50, "archive_retention_days": 30, "max_total_gb": 0}
+_DEFAULTS = {"archive_dirty": True, "archive_max_file_mb": 50, "archive_retention_days": 30, "max_total_gb": 0,
+             "shed_artifacts_after_hours": 0}
+# Regenerable dependency/build-cache dirs an idle tree may lose. Generic names that can hold a
+# deliverable (``dist``, ``build``, ``out``) are deliberately absent.
+SHED_DIR_NAMES = frozenset({
+    "node_modules", ".venv", "venv", "target", ".next", ".nuxt", ".turbo", ".parcel-cache",
+    "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", ".gradle",
+})
+_KANBAN_TREE = re.compile(r"^t_[0-9a-f]+$")
 _PROTECTED_BRANCHES = {"main", "master", "develop", "dev", "trunk"}
 _ARCHIVE_REASONS = {"dirty": "uncommitted changes", "unpushed": "unpushed commits"}
 
@@ -64,7 +77,7 @@ def sweep_settings() -> dict:
     except Exception:
         logger.debug("worktrees config unreadable; using defaults", exc_info=True)
     settings["archive_dirty"] = bool(settings["archive_dirty"])
-    for key in ("archive_max_file_mb", "archive_retention_days", "max_total_gb"):
+    for key in ("archive_max_file_mb", "archive_retention_days", "max_total_gb", "shed_artifacts_after_hours"):
         try:
             settings[key] = max(0.0, float(settings[key]))
         except (TypeError, ValueError):
@@ -471,6 +484,115 @@ def execute_plan(repo_root: str, plan: list[Decision], settings: dict
         if kept:
             kept_branches.add(kept)
     return preserved, kept_branches, archived
+
+
+# ---------------------------------------------------------------- artifact shedding
+
+
+def _ignored_artifact_dirs(path: str) -> list[str]:
+    """Relative paths of the git-ignored directories in *path* whose basename is in
+    ``SHED_DIR_NAMES``. ``--directory`` collapses a directory only when everything in it is
+    untracked, so a listed directory holds no tracked file; symlinks (a shared venv) are never
+    listed. Unverifiable (git failed) = nothing."""
+    from hermes_cli._subprocess_compat import noninteractive_repo_git_env
+    env = noninteractive_repo_git_env(path)
+    if env is None:
+        return []
+    env["GIT_OPTIONAL_LOCKS"] = "0"
+    try:
+        out = subprocess.run(["git", "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"],
+                             cwd=path, env=env, capture_output=True, text=True, encoding="utf-8",
+                             errors="surrogateescape", timeout=60, stdin=subprocess.DEVNULL, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if out.returncode != 0:
+        return []
+    root = os.path.realpath(path)
+    found: list[str] = []
+    for entry in sorted(e for e in out.stdout.split("\0") if e.endswith("/")):
+        rel = entry.rstrip("/")
+        full = os.path.join(path, rel)
+        if (os.path.basename(rel) not in SHED_DIR_NAMES or os.path.islink(full) or not os.path.isdir(full)
+                or not os.path.realpath(full).startswith(root + os.sep)
+                or any(rel.startswith(prev + "/") for prev in found)):
+            continue
+        found.append(rel)
+    return found
+
+
+def _holds_repository(path: Path) -> bool:
+    """Whether a ``.git`` (an embedded repository or worktree, whose commits no branch of this
+    tree holds) sits anywhere under *path*. ``--directory`` collapses an ignored dir, so git
+    never reports one inside it. Unreadable = yes."""
+    failed: list = []
+    for _root, dirs, files in os.walk(path, onerror=failed.append):
+        if ".git" in dirs or ".git" in files:
+            return True
+    return bool(failed)
+
+
+def _shed_blocker(repo_root: str, path: str, target: Path, idle_since: float) -> Optional[str]:
+    """Why *target* inside the tree at *path* must stay right now (kanban, a resumable pin read
+    fresh, a live lock, a live process inside, activity after *idle_since* including the tree or
+    target dir itself, an embedded repository), else None. Run before EACH removal: an earlier
+    one can take long enough for an owner to come back."""
+    from hermes_cli import worktree_ops as ops
+    if _KANBAN_TREE.match(os.path.basename(path)):
+        return "owned by kanban gc"
+    if pinned := pinned_now(path):
+        return pinned
+    if ops._worktree_lock_is_live(repo_root, path, timeout=5) == "live":
+        return "lock owner still running"
+    try:
+        # A fresh top-level install stamps the tree dir and the install dir, not any git signal.
+        if max(Path(path).stat().st_mtime, target.stat().st_mtime) >= idle_since:
+            return "created or changed inside the window"
+    except OSError:
+        return "gone"
+    if busy := _in_use_since(path, idle_since):
+        return busy
+    return "holds an embedded repository" if _holds_repository(target) else None
+
+
+def _shed_one(entry: Path, rel: str) -> bool:
+    """Remove ``entry/rel``, then put its parent's times back so the tree stays exactly as idle
+    as it was (the tree dir's own mtime is the removal tiers' age clock). False on any OS error."""
+    target, parent = entry / rel, (entry / rel).parent
+    try:
+        stamp = parent.stat()
+        shutil.rmtree(target)
+        os.utime(parent, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+    except OSError as exc:
+        logger.warning("Sweep: could not shed %s/%s: %s", entry.name, rel, exc)
+        return False
+    return True
+
+
+def shed_idle_artifacts(repo_root: str, settings: dict, *, dry_run: bool = False,
+                        now: Optional[float] = None) -> list[str]:
+    """Delete git-ignored ``SHED_DIR_NAMES`` directories from every tree under
+    ``<repo>/.worktrees`` idle for ``worktrees.shed_artifacts_after_hours`` -> ``["<tree>/<dir>", ...]``.
+
+    Off when the setting is 0 (the default). Nothing tracked, nothing untracked-but-not-ignored,
+    no branch, ref or index is touched, so the tree keeps its work and a reinstall restores it.
+    """
+    hours = settings.get("shed_artifacts_after_hours") or 0
+    worktrees_dir = Path(repo_root) / ".worktrees"
+    if hours <= 0 or not worktrees_dir.is_dir():
+        return []
+    idle_since = (now or time.time()) - hours * 3600
+    shed: list[str] = []
+    for entry in sorted(p for p in worktrees_dir.iterdir() if p.is_dir() and (p / ".git").exists()):
+        for rel in _ignored_artifact_dirs(str(entry)):
+            why = _shed_blocker(repo_root, str(entry), entry / rel, idle_since)
+            if why:
+                logger.debug("Sweep: keeping %s/%s (%s)", entry.name, rel, why)
+                continue
+            if dry_run or _shed_one(entry, rel):
+                if not dry_run:
+                    logger.info("Sweep: shed ignored %s/%s (idle over %gh)", entry.name, rel, hours)
+                shed.append(f"{entry.name}/{rel}")
+    return shed
 
 
 def run_sweep(repo_root: str, max_age_hours: int, settings: dict) -> None:

@@ -1088,8 +1088,11 @@ class AIAgent(
     def _hydrate_todo_store(self, history: list[dict[str, Any]]) -> None:
         """Replay the most recent todo tool response (the gateway builds a fresh AIAgent per message). Only
         results paired with an earlier assistant Todo-tool call count — a forged bare ``role: tool`` message
-        must not seed the store (GHSA-5g4g-6jrg-mw3g)."""
-        found = self._latest_todo_response(history)
+        must not seed the store (GHSA-5g4g-6jrg-mw3g). A window that carries no result (a compaction
+        archived it before this agent was built) falls back to the session's durable store."""
+        found, source = self._latest_todo_response(history), "history"
+        if found is None:
+            found, source = self._durable_todo_response(), "the session store"
         if found is not None:
             last_todo_response, last_todo_revision = found
             # Restore only when history carries a newer revision than the store holds; empty lists are an
@@ -1101,7 +1104,7 @@ class AIAgent(
             if history_revision > int(self._todo_store.snapshot().get("revision", 0) or 0):
                 self._todo_store.restore(last_todo_response, revision=history_revision)
                 if not self.quiet_mode:
-                    self._vprint(f"{self.log_prefix}📋 Restored {len(last_todo_response)} todo item(s) from history")
+                    self._vprint(f"{self.log_prefix}📋 Restored {len(last_todo_response)} todo item(s) from {source}")
         _set_interrupt(False)
 
     def _latest_todo_response(self, history: list[dict[str, Any]]) -> Optional[tuple]:
@@ -1117,14 +1120,52 @@ class AIAgent(
                 logger.warning("Skipping oversized todo tool response during hydration: "
                                "session=%s chars=%d", self.session_id or "none", len(content))
                 continue
-            if '"todos"' not in content:  # cheap pre-filter before json.loads
-                continue
-            try:
-                data = json.loads(content)
-            except (json.JSONDecodeError, TypeError):
-                continue
-            if "todos" in data and isinstance(data["todos"], list):
-                return data["todos"], data.get("revision", 1)
+            payload = self._todo_result_payload(content)
+            if payload is not None:
+                return payload
+        return None
+
+    def _durable_todo_response(self) -> Optional[tuple]:
+        """The session store's newest valid Todo result → ``(todos, revision)``, or ``None``.
+
+        Compaction archives the pre-boundary rows out of the window a rebuilt agent replays, so the plan
+        can be missing from ``history`` while the store still holds it (archived rows included). It is the
+        read ``session.resume`` takes for the client's ``todo_state``, under the same pairing rule. At most
+        one read per agent, through a store the agent already holds: a persistence-isolated fork must not
+        open one."""
+        if getattr(self, "_persist_disabled", False) or getattr(self, "_todo_durable_read_done", False):
+            return None
+        self._todo_durable_read_done = True
+        latest = None
+        for handle in (getattr(self, "persistence", None), getattr(self, "_session_db", None)):
+            latest = getattr(getattr(handle, "messages", None), "latest_todo_result", None)
+            if callable(latest):
+                break
+        if not callable(latest) or not self.session_id:
+            return None
+        from persistence.core.errors import PersistenceError
+        from tools.todo_tool import MAX_TODO_RESULT_CHARS
+        try:
+            content = latest(self.session_id, max_chars=MAX_TODO_RESULT_CHARS)
+        except PersistenceError as exc:
+            logger.warning("Todo store hydration could not read the session store (session=%s): %s",
+                           self.session_id, exc)
+            return None
+        if not isinstance(content, str) or len(content) > MAX_TODO_RESULT_CHARS:
+            return None
+        return self._todo_result_payload(content)
+
+    @staticmethod
+    def _todo_result_payload(content: str) -> Optional[tuple]:
+        """``(todos, revision)`` of a valid todo tool result body, else ``None``."""
+        if '"todos"' not in content:  # cheap pre-filter before json.loads
+            return None
+        try:
+            data = json.loads(content)
+        except (json.JSONDecodeError, TypeError):
+            return None
+        if isinstance(data, dict) and isinstance(data.get("todos"), list):
+            return data["todos"], data.get("revision", 1)
         return None
 
     @classmethod

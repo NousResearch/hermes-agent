@@ -106,7 +106,9 @@ def _launchctl_bootstrap(domain: str, plist_path, label: str, *, timeout: int = 
     losing auto-start and crash-restart."""
     bootstrap = ["launchctl", "bootstrap", domain, str(plist_path)]
     try:
-        subprocess.run(bootstrap, check=True, timeout=timeout)
+        # Captured: EIO is this call's expected "label already registered" answer, recovered two
+        # lines below, and launchd's two stderr lines about it read as a fatal update failure.
+        subprocess.run(bootstrap, check=True, timeout=timeout, **_gw()._CAPTURE_TEXT)
     except subprocess.CalledProcessError as exc:
         if exc.returncode != _LAUNCHCTL_BOOTSTRAP_EIO:
             raise

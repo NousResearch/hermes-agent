@@ -235,6 +235,50 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         self._rg_resolution_cache: dict[str, str] = {}
         self._rg_modified_capability: dict[str, Optional[str]] = {}
 
+    def file_sha256(self, path: str) -> Optional[str]:
+        """Hash regular file bytes without transferring or buffering the file."""
+        path = self._expand_path(path)
+        if self._native_read_enabled():
+            try:
+                return _native_io.sha256_of(self._native_path(path))
+            except Exception:  # health: allow BLE001 -- backend exception text can contain secrets
+                return None
+        marker = _new_sentinel("HERMES_SHA256_")
+        snippet = (
+            "import hashlib, os, stat, sys\n"
+            f"p = {json.dumps(path)}\n"
+            f"marker = {json.dumps(marker)}\n"
+            "fd = None\n"
+            "try:\n"
+            "    fd = os.open(p, os.O_RDONLY | getattr(os, 'O_BINARY', 0) | getattr(os, 'O_NONBLOCK', 0))\n"
+            "    before = os.fstat(fd)\n"
+            "    if not stat.S_ISREG(before.st_mode): sys.exit(1)\n"
+            "    h = hashlib.sha256()\n"
+            "    while True:\n"
+            "        data = os.read(fd, 1048576)\n"
+            "        if not data: break\n"
+            "        h.update(data)\n"
+            "    after = os.fstat(fd)\n"
+            "    if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns): sys.exit(1)\n"
+            "    print(marker + h.hexdigest())\n"
+            "except Exception:\n"
+            "    sys.exit(1)\n"
+            "finally:\n"
+            "    if fd is not None: os.close(fd)\n"
+        )
+        try:
+            result = self._exec_python_snippet(snippet)
+            if result.exit_code == 127:
+                result = self._exec_python_snippet(snippet, py="python")
+        except Exception:  # health: allow BLE001 -- backend exception text can contain secrets
+            return None
+        lines = _strip_terminal_fence_leaks(result.stdout).splitlines()
+        matches = [line[len(marker):] for line in lines if line.startswith(marker)]
+        if result.exit_code != 0 or len(matches) != 1:
+            return None
+        digest = matches[0]
+        return digest if re.fullmatch(r"[0-9a-f]{64}", digest) else None
+
     def _exec(self, command: str, cwd: str | None = None, timeout: int | None = None,
               stdin_data: str | None = None) -> ExecuteResult:
         """Run ``command`` on the backend. cwd: explicit arg → live ``env.cwd`` →
@@ -1315,7 +1359,58 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             return ReadResult(error=f"Backend returned invalid binary data for: {path}")
         return ReadResult(base64_content=compact, file_size=file_size, is_binary=True)
 
-    def delete_file(self, path: str) -> WriteResult:
+    def _delete_with_fingerprint(self, path: str, expected: str) -> WriteResult:
+        """Hash then unlink in one backend invocation, refusing uncertainty.
+
+        The final stat narrows but cannot eliminate a concurrent path-replacement
+        race: operating systems expose unlink by path, not a content-bound unlink.
+        """
+        if not re.fullmatch(r"[0-9a-f]{64}", expected):
+            return WriteResult(error="Invalid fingerprint")
+        marker = _new_sentinel("HERMES_DELETE_")
+        snippet = (
+            "import hashlib, os, stat, sys\n"
+            f"path = {json.dumps(path)}\n"
+            f"expected = {json.dumps(expected)}\n"
+            f"marker = {json.dumps(marker)}\n"
+            "fd = None\n"
+            "try:\n"
+            "    entry = os.lstat(path)\n"
+            "    if not (stat.S_ISREG(entry.st_mode) or stat.S_ISLNK(entry.st_mode)): sys.exit(1)\n"
+            "    before = os.stat(path)\n"
+            "    if not stat.S_ISREG(before.st_mode): sys.exit(1)\n"
+            "    flags = os.O_RDONLY | getattr(os, 'O_BINARY', 0) | getattr(os, 'O_NONBLOCK', 0)\n"
+            "    if not stat.S_ISLNK(entry.st_mode): flags |= getattr(os, 'O_NOFOLLOW', 0)\n"
+            "    fd = os.open(path, flags)\n"
+            "    opened = os.fstat(fd)\n"
+            "    def identity(s): return (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns)\n"
+            "    if not stat.S_ISREG(opened.st_mode) or identity(before) != identity(opened): sys.exit(1)\n"
+            "    digest = hashlib.sha256()\n"
+            "    while True:\n"
+            "        data = os.read(fd, 1048576)\n"
+            "        if not data: break\n"
+            "        digest.update(data)\n"
+            "    if digest.hexdigest() != expected or identity(os.fstat(fd)) != identity(opened) or identity(os.stat(path)) != identity(opened) or identity(os.lstat(path)) != identity(entry): sys.exit(1)\n"
+            "    if os.name == 'nt': os.close(fd); fd = None\n"
+            "    os.unlink(path)\n"
+            "    print(marker + 'OK')\n"
+            "except Exception:\n"
+            "    sys.exit(1)\n"
+            "finally:\n"
+            "    if fd is not None: os.close(fd)\n"
+        )
+        try:
+            result = self._exec_python_snippet(snippet)
+            if result.exit_code == 127:
+                result = self._exec_python_snippet(snippet, py="python")
+        except Exception:  # health: allow BLE001 -- backend exception text can contain secrets
+            return WriteResult(error="Oversized source changed or cannot be verified")
+        lines = _strip_terminal_fence_leaks(result.stdout).splitlines()
+        if result.exit_code != 0 or sum(line.strip() == marker + "OK" for line in lines) != 1:
+            return WriteResult(error="Oversized source changed or cannot be verified")
+        return WriteResult()
+
+    def delete_file(self, path: str, expected_sha256: Optional[str] = None) -> WriteResult:
         """Delete a single file (directories rejected) via the backend's ``python -c``
         so one code path works on local/docker/ssh AND Windows shells (no ``rm``)."""
         path = self._expand_path(path)
@@ -1324,6 +1419,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         denied = get_write_denied_error(path, verb="Delete", entry=True)
         if denied:
             return WriteResult(error=denied)
+        if expected_sha256 is not None:
+            return self._delete_with_fingerprint(path, expected_sha256)
         # Path baked in via repr() for shell-independent quoting; no
         # ``unlink(missing_ok=True)`` (a 3.7 remote interpreter lacks it).
         snippet = (

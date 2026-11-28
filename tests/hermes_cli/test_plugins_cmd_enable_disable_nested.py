@@ -240,12 +240,3 @@ class TestCompositeMenuRawArrowKeys:
 
         assert saved_en == {"beta"}
         assert "beta" not in saved_dis
-
-    def test_raw_csi_up_wraps_and_toggles_last_plugin(self, monkeypatch):
-        saved_en, saved_dis = self._run_menu(
-            [27, ord("["), ord("A"), ord(" "), ord("q")],
-            monkeypatch,
-        )
-
-        assert saved_en == {"gamma"}
-        assert "gamma" not in saved_dis

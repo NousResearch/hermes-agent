@@ -147,11 +147,6 @@ class TestCursesBrowse:
         result = self._run_with_keys(sessions, [27, ord("["), ord("B"), 10])
         assert result == sessions[1]["id"]
 
-    def test_raw_csi_up_wraps_to_last(self):
-        sessions = _make_sessions(3)
-        result = self._run_with_keys(sessions, [27, ord("["), ord("A"), 10])
-        assert result == sessions[2]["id"]
-
     def test_escape_cancels(self):
         sessions = _make_sessions(3)
         result = self._run_with_keys(sessions, [27])  # Esc

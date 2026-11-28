@@ -72,10 +72,9 @@ jobs:
 
       # ── Restore visual baseline screenshots from main ──────────────────
       # Baselines are generated on main (via --update-snapshots) and cached.
-      # On PRs, we restore them so toHaveScreenshot has something to compare
-      # against.  The cache key is keyed on the desktop source files so a
-      # UI change naturally invalidates it — but we fall back to the main
-      # cache to avoid cold starts on unrelated PRs.
+      # On PRs, we restore baselines so toHaveScreenshot has something to
+      # compare against. Successful main runs publish per-run caches, and
+      # this prefix selects the newest available baseline.
       - name: Restore visual baseline screenshots
         id: restore-baselines
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -111,13 +110,13 @@ jobs:
           OPENAI_API_KEY: ''
           NOUS_API_KEY: ''
 
-      # ── Save updated baselines to cache (main only) ───────────────────
+      # ── Save updated baselines to cache (successful main only) ───────
       - name: Save updated baselines to cache
-        if: github.ref_name == 'main' && inputs.commit == '' && always()
+        if: github.ref_name == 'main' && inputs.commit == '' && success()
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: apps/desktop/e2e/*-snapshots
-          key: visual-baselines-main
+          key: visual-baselines-main-${{ github.run_id }}
 
       # ── Upload Playwright report (HTML + traces) ──────────────────────
       - name: Upload Playwright report

@@ -42,6 +42,11 @@ class _ProviderEntry:
     pending_401: dict[str, asyncio.Future[bool]] = field(default_factory=dict)
 
 
+class _RejectedTokenExpired(Exception):
+    """Ends one pass of ``HermesMCPOAuthProvider.async_auth_flow`` after it marked an access token the
+    server rejected as expired, so that the next pass refreshes it. Never leaves that method."""
+
+
 class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
     """OAuthClientProvider with pre-flow disk-mtime reload (external refreshes become visible to
     a running session), expiry seeding on cold load, pre-flight metadata discovery, dead-client
@@ -239,11 +244,39 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
             "client for this provider and add it under config.yaml mcp_servers.<name>.oauth (client_id, "
             f"client_secret), then run `hermes mcp login {name}`.")
 
+    def _hermes_can_refresh_rejected_token(self) -> bool:
+        """Whether a 401 for the stored token can be answered with one refresh before the SDK's full
+        authorization. The token endpoint must be known (a refresh token never goes to a guessed URL)
+        and the refresh token must belong to the issuer we discovered."""
+        if not getattr(self.context.oauth_metadata, "token_endpoint", None):
+            return False
+        from tools.mcp_oauth_provider import enforce_refresh_token_issuer
+        enforce_refresh_token_issuer(self.context)  # a refresh token minted by another issuer is stripped
+        return bool(self.context.can_refresh_token())
+
     async def async_auth_flow(self, request):  # type: ignore[override]
-        try:  # pre-flow hook: reload from disk if it changed (non-fatal on error)
-            await get_manager().invalidate_if_disk_changed(self._hermes_server_name, hermes_home=self._hermes_home)
-        except Exception as exc:  # pragma: no cover — defensive
-            self._log_nonfatal("pre-flow disk-watch", exc)
+        # One pass, plus a second when the first ended by expiring a token the resource server rejected
+        # (see _RejectedTokenExpired): that pass refreshes through the SDK's normal fenced path and sends
+        # the request again. Pumped by hand for the reason given in _hermes_auth_flow_pass.
+        for may_refresh_rejected_token in (True, False):
+            try:  # pre-flow hook: reload from disk if it changed (non-fatal on error)
+                await get_manager().invalidate_if_disk_changed(self._hermes_server_name, hermes_home=self._hermes_home)
+            except Exception as exc:  # pragma: no cover (defensive)
+                self._log_nonfatal("pre-flow disk-watch", exc)
+            flow = self._hermes_auth_flow_pass(request, may_refresh_rejected_token)
+            try:
+                outgoing = await flow.__anext__()
+                while True:
+                    incoming = yield outgoing
+                    outgoing = await flow.asend(incoming)
+            except StopAsyncIteration:
+                return
+            except _RejectedTokenExpired:
+                continue
+            finally:
+                await flow.aclose()
+
+    async def _hermes_auth_flow_pass(self, request, may_refresh_rejected_token: bool):
         # Bridge the bidirectional generator by hand: a naive ``async for item in inner: yield
         # item`` DISCARDS the responses httpx sends back via ``asend``, and the SDK crashes on None.
         # Manually bridge the bidirectional generator protocol. httpx's auth_flow driver
@@ -255,7 +288,7 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
         # into the inner generator via inner.asend(incoming), preserving the bidirectional contract.
         # Regression from PR #11383 caught by tests/tools/test_mcp_oauth_bidirectional.py.
         inner = super().async_auth_flow(request)
-        resource_lock_released = retry_after_concurrent_auth = False
+        resource_lock_released = retry_after_concurrent_auth = oauth_round_trip = False
         sent_access_token = None
         try:
             outgoing = await inner.__anext__()
@@ -268,11 +301,9 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
                     self.context.lock.release()
                     resource_lock_released = True
                 else:
-                    try:  # refuse the SDK's guessed DCR POST before it hits the network
-                        await self._maybe_reject_fabricated_registration(outgoing)
-                    except Exception:
-                        await inner.aclose()  # release the SDK's context.lock now, not at GC
-                        raise
+                    oauth_round_trip = True  # the SDK refreshed, discovered or authorized in this pass
+                    # refuse the SDK's guessed DCR POST before it hits the network
+                    await self._maybe_reject_fabricated_registration(outgoing)
                 incoming = yield outgoing
                 if resource_lock_released:
                     await self.context.lock.acquire()
@@ -283,9 +314,24 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
                 if (getattr(incoming, "status_code", None) in (401, 403) and self.context.is_token_valid()
                         and tokens is not None and tokens.access_token != sent_access_token):
                     self._add_auth_header(request)
-                    await inner.aclose()
                     retry_after_concurrent_auth = True
                     break
+                # The resource server rejected a token we still believe valid: it expired or was revoked
+                # there before its advertised ``expires_in``, or the clocks disagree (seen with a provider
+                # that states 60 minutes and refuses the token after 50). The SDK's 401 branch goes straight
+                # to browser authorization, which a background process cannot perform, so the server would
+                # stay parked until the recorded expiry passes. Spend the refresh token first: mark the
+                # token expired and let async_auth_flow run its second pass. Only when this pass sent the
+                # stored token as it was: a token the SDK has just refreshed or obtained and the server
+                # still rejects goes to the SDK's 401 branch.
+                if (may_refresh_rejected_token and not oauth_round_trip
+                        and getattr(incoming, "status_code", None) == 401
+                        and self._hermes_can_refresh_rejected_token()):
+                    logger.info("MCP OAuth '%s': the server rejected an access token that has not expired by "
+                                "our clock; refreshing it once before asking for authorization",
+                                self._hermes_server_name)
+                    self.context.token_expiry_time = time.time() - 1
+                    raise _RejectedTokenExpired
                 # Sniff the response for a dead-client-registration signal before handing it back to the SDK
                 # (best-effort, GH#36767).
                 await self._maybe_flag_poisoned_client(incoming)
@@ -293,12 +339,15 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
         except StopAsyncIteration:
             self._persist_oauth_metadata_if_changed()  # metadata discovered lazily in the 401 branch
         finally:
-            if resource_lock_released:
-                # Balance the SDK's surrounding ``async with`` even when HTTPX cancels/closes the
-                # flow mid-request; shield only this local bookkeeping.
-                import anyio
-                with anyio.CancelScope(shield=True):
-                    await self.context.lock.acquire()
+            # Close the SDK flow on every way out, so that its context.lock, and the refresh fence while a
+            # refresh is in flight, are free when this generator ends. Left open, the flow holds them until
+            # the garbage collector finalizes it, and the next pass or request needs the lock. Shielded,
+            # because HTTPX closes the flow from a cancelled task.
+            import anyio
+            with anyio.CancelScope(shield=True):
+                if resource_lock_released:
+                    await self.context.lock.acquire()  # balance the SDK's surrounding ``async with`` first
+                await inner.aclose()
         if retry_after_concurrent_auth:
             yield request
             self._persist_oauth_metadata_if_changed()

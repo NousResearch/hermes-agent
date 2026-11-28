@@ -137,6 +137,27 @@ def finish_background_review_run(agent: Any, run: Optional[_BackgroundReviewRun]
     run.request_done.set()
 
 
+def _owed(agent: Any) -> tuple[bool, bool]:
+    # The instance slot, not getattr: stand-in agents (MagicMock) answer every attribute.
+    owed = vars(agent).get("_owed_background_review") if hasattr(agent, "__dict__") else None
+    return owed if isinstance(owed, tuple) and len(owed) == 2 else (False, False)
+
+
+def owe_background_review(agent: Any, review_memory: bool, review_skills: bool) -> None:
+    """Carry a review a live turn superseded to the end of that turn. Without it a conversation whose
+    turns follow each other closely (an editor or harness answering at once, a user typing ahead)
+    loses every review, and the one that would have seen the outcome is never run."""
+    memory, skills = _owed(agent)
+    agent._owed_background_review = (memory or review_memory, skills or review_skills)
+
+
+def with_owed_background_review(agent: Any, review_memory: bool, review_skills: bool) -> tuple[bool, bool]:
+    """This turn's review scope widened by any owed one. The debt is cleared only when a review is
+    actually spawned, so a turn that cannot review (interrupted, no reply) passes it on."""
+    memory, skills = _owed(agent)
+    return review_memory or memory, review_skills or skills
+
+
 def _interrupt_background_review(
     review_agent: Any,
     *,

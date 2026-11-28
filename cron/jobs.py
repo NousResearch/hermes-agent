@@ -2362,6 +2362,8 @@ def _record_run_outcome(
     status: Optional[str], now: str,
 ) -> None:
     """Stamp one completed run onto *job*: status fields, failure streak, alert markers, claims."""
+    # The per-run failure-origin stamp is memory-only: drop it so it never reaches jobs.json.
+    job.pop("_failure_origin", None)
     job["last_run_at"] = now
     job.pop("manual_run_at", None)
     job.pop("manual_run_restore_at", None)

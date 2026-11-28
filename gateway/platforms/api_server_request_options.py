@@ -46,3 +46,30 @@ def _request_service_tier(model_options: Any) -> Any:
     if "fast" in model_options:
         return "priority" if _coerce_request_bool(model_options.get("fast"), default=False) else None
     return _REQUEST_OPTION_MISSING
+
+
+def _request_agent_overrides(
+    body: Any, *, virtual_model: Optional[str] = None, allow_bare_model: bool = True
+) -> dict[str, Any]:
+    """Extract per-request model/provider/options for _run_agent.
+
+    The virtual model (``hermes-agent``) means "gateway default". A bare ``model`` without
+    ``provider`` is honored only when ``allow_bare_model`` (generic clients hardcode "gpt-4o";
+    OpenAI-compatible handlers pass the ``direct_model_requests`` opt-in, Hermes-native
+    endpoints always allow it). An explicit ``provider`` is always honored.
+    """
+    from gateway.platforms.api_server import _clean_request_string
+
+    if not isinstance(body, dict):
+        return {}
+    overrides: dict[str, Any] = {}
+    provider = _clean_request_string(body.get("provider"))
+    if provider:
+        overrides["requested_provider"] = provider
+    model = _clean_request_string(body.get("model"))
+    if model and model != virtual_model and (provider or allow_bare_model):
+        overrides["requested_model"] = model
+    model_options = body.get("model_options")
+    if isinstance(model_options, dict):
+        overrides["model_options"] = dict(model_options)
+    return overrides

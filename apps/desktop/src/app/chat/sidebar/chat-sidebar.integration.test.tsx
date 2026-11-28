@@ -19,7 +19,7 @@ import {
 } from '@/store/layout'
 import { $activeGatewayProfile, $profiles, setShowAllProfiles } from '@/store/profile'
 import { $projectScope, ALL_PROJECTS } from '@/store/project-scope'
-import { $projectTree } from '@/store/projects'
+import { $projectDialog, $projectTree } from '@/store/projects'
 import {
   $currentCwd,
   $messagingSessions,
@@ -335,6 +335,31 @@ describe('ChatSidebar project entry', () => {
     renderSidebar('/', 'chat')
 
     expect($currentCwd.get()).toBe(project.path)
+  })
+})
+
+// The sessions header is the persistent project entry point; New session
+// remains available from the navigation rail regardless of this grouping.
+describe('ChatSidebar sessions header project creation', () => {
+  beforeEach(() => {
+    setSidebarGrouping('date')
+    $projectDialog.set(null)
+    $sessions.set(sessionRows)
+  })
+
+  afterEach(() => {
+    cleanup()
+    setSidebarGrouping('date')
+    $projectDialog.set(null)
+    $sessions.set([])
+  })
+
+  it('opens project creation from the sessions header outside project grouping', () => {
+    renderSidebar('/', 'chat')
+
+    fireEvent.click(screen.getByRole('button', { name: 'New project' }))
+
+    expect($projectDialog.get()).toEqual({ mode: 'create' })
   })
 })
 

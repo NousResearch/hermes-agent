@@ -47,6 +47,7 @@ import { trackGatewayEventDisposers } from './events'
 import { createPluginContext, declaredCapabilities, type HermesPlugin } from './plugin'
 import {
   $pluginRecords,
+  applyEnabledPackageHalves,
   dropPlugin,
   type PackageOrigin,
   pluginActive,
@@ -1021,6 +1022,10 @@ async function scanOnce(desktop: NonNullable<Window['hermesDesktop']>, reloadKno
 
       retireDiskPlugin(file, record)
     }
+
+    // CLI enable writes plugins.enabled without a desktop decision. Catch the
+    // half up once it is inventoried, unless the user switched it off.
+    await applyEnabledPackageHalves()
   } catch {
     // No plugin roots (or no gateway yet) — nothing to reconcile.
   }

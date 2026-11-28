@@ -125,7 +125,7 @@ def test_request_review_transitions_running_to_review(kanban_home: Path) -> None
 # ---------------------------------------------------------------------------
 
 
-def test_repeated_review_requests_never_triage(kanban_home: Path) -> None:
+def test_repeated_review_requests_never_triage(kanban_home: Path, all_assignees_spawnable) -> None:
     """A task that goes review -> rerun -> review again (the executor
     follow-up cycle) must stay in ``review`` every time. Under the old
     ``kanban_block(review-required:)`` approach the second pass hit
@@ -189,7 +189,7 @@ def test_request_review_unknown_task_returns_false(kanban_home: Path) -> None:
 
 
 def test_request_review_refuses_to_clear_live_claim_without_ownership(
-    kanban_home: Path,
+    kanban_home: Path, all_assignees_spawnable,
 ) -> None:
     """M1 regression: a run-id-less caller must not steal a live worker's claim.
 
@@ -232,11 +232,12 @@ def test_request_review_refuses_to_clear_live_claim_without_ownership(
         assert kb.get_task(conn, tid2).status == "review"
 
 
-def test_request_review_malformed_provenance_gets_distinct_reason(
-    kanban_home: Path,
+def test_request_review_malformed_provenance_falls_back_to_policy(
+    kanban_home: Path, all_assignees_spawnable,
 ) -> None:
-    """M1 regression: malformed re-review provenance is a named failure, not
-    the generic 'unknown id or not in running/ready'."""
+    """A corrupt ``changes_requested`` payload must not strand the re-review:
+    unusable provenance is ignored and the reviewer is resolved by policy (and
+    an explicit ``reviewer=`` still wins)."""
     with kbc.connect() as conn:
         tid = kb.create_task(conn, title="provenance", assignee="builder")
         claimed = kb.claim_task(conn, tid)
@@ -263,18 +264,16 @@ def test_request_review_malformed_provenance_gets_distinct_reason(
             conn, tid, summary="v2",
             expected_run_id=retry.current_run_id, with_reason=True,
         )
-        assert ok is False
-        assert reason is not None and "provenance" in reason
-        # Passing reviewer explicitly recovers, as the reason instructs.
-        assert kb.request_review(
-            conn, tid, summary="v2", reviewer="reviewer",
-            expected_run_id=retry.current_run_id,
-        ) is True
+        assert ok is True, reason
+        payload = _events(conn, tid, kind="review_requested")[-1][1]
+        assert payload["reviewer_source"] == "policy"
+        assert payload["reviewer"] == "architect"
+        assert kb.get_task(conn, tid).assignee == "architect"
 
 
 @pytest.mark.parametrize("blank", ["   ", "\n", "\t\n  "])
 def test_request_review_whitespace_only_summary_does_not_crash(
-    kanban_home: Path, blank: str
+    kanban_home: Path, all_assignees_spawnable, blank: str
 ) -> None:
     """A whitespace-only handoff summary must not crash the review transition.
 
@@ -307,7 +306,7 @@ def test_request_review_whitespace_only_summary_does_not_crash(
 # ---------------------------------------------------------------------------
 
 
-def test_complete_task_closes_review_to_done(kanban_home: Path) -> None:
+def test_complete_task_closes_review_to_done(kanban_home: Path, all_assignees_spawnable) -> None:
     """A task parked in ``review`` (with no active run — request_review
     closed it, so ``current_run_id IS NULL``, the #54823 shape) must be
     completable by a human approval via ``complete_task``."""
@@ -334,7 +333,7 @@ def test_complete_task_closes_review_to_done(kanban_home: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_review_requested_event_is_claimable_for_wake(kanban_home: Path) -> None:
+def test_review_requested_event_is_claimable_for_wake(kanban_home: Path, all_assignees_spawnable) -> None:
     """The gateway kanban-notifier wakes an origin subscription by claiming
     unseen events whose kind is in its terminal set. ``review_requested`` is
     now in that set, so a wake subscription must see the event — and the
@@ -381,7 +380,7 @@ def test_review_requested_event_is_claimable_for_wake(kanban_home: Path) -> None
 
 
 def test_review_dispatch_gate_prevents_phantom_reviewer(
-    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+    kanban_home: Path, all_assignees_spawnable, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """With ``kanban.review_dispatch=false`` the dispatcher must NOT claim a
     task parked in ``review`` (this deployment explicitly waits for a human).
@@ -790,7 +789,7 @@ def test_reopen_review_task_returns_to_ready(kanban_home: Path) -> None:
         assert kb.reopen_review_task(conn, tid) is False
 
 
-def test_review_cycle_end_to_end(kanban_home: Path) -> None:
+def test_review_cycle_end_to_end(kanban_home: Path, all_assignees_spawnable) -> None:
     """Full loop: run -> review -> follow-up reopen -> re-run -> review ->
     approve -> done. Never blocks, never triages, and stays wake-subscribed
     until done."""
@@ -828,7 +827,9 @@ def test_review_cycle_end_to_end(kanban_home: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_request_review_on_unclaimed_ready_synthesizes_run(kanban_home: Path) -> None:
+def test_request_review_on_unclaimed_ready_synthesizes_run(
+    kanban_home: Path, all_assignees_spawnable,
+) -> None:
     """A manual/CLI request-review on a never-claimed ``ready`` task has no
     active run to close. The handoff summary must still be preserved on a
     synthesized run so the reviewer keeps the context."""

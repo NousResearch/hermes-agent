@@ -70,7 +70,7 @@ def _claimed_review(
     return task_id, review
 
 
-def test_same_card_review_supports_changes_and_approval_without_block_loop(conn):
+def test_same_card_review_supports_changes_and_approval_without_block_loop(conn, all_assignees_spawnable):
     task_id = kb.create_task(conn, title="Implement guarded export", assignee="builder")
     implementation = kb.claim_task(conn, task_id, claimer="builder:1")
     assert implementation is not None
@@ -242,7 +242,7 @@ def test_review_changes_reapply_parent_gate(conn):
     assert regated.status == "todo"
 
 
-def test_parent_reopen_blocks_request_review_until_parent_is_done(conn) -> None:
+def test_parent_reopen_blocks_request_review_until_parent_is_done(conn, all_assignees_spawnable) -> None:
     parent_id = kb.create_task(conn, title="Parent", assignee="planner")
     assert kb.complete_task(conn, parent_id, result="done")
     task_id = kb.create_task(
@@ -624,9 +624,14 @@ def test_goal_run_status_is_bound_to_original_run(conn) -> None:
     assert current.current_run_id == successor.current_run_id
 
 
-def test_parked_review_approval_without_evidence_still_creates_audit_run(conn) -> None:
-    task_id = kb.create_task(conn, title="Manual approval", assignee="reviewer")
+def test_parked_review_approval_without_evidence_still_creates_audit_run(
+    conn, all_assignees_spawnable,
+) -> None:
+    # No active run: the approval is a human act on a card parked in review.
+    # The reviewer here is the policy-resolved profile (implementer "builder").
+    task_id = kb.create_task(conn, title="Manual approval", assignee="builder")
     assert kb.request_review(conn, task_id, summary="implementation handoff")
+    assert kb.get_task(conn, task_id).assignee == "architect"
     assert kb.complete_task(conn, task_id)
     completed_event = _event(kb.list_events(conn, task_id), "completed")
     assert completed_event.run_id is not None
@@ -634,7 +639,7 @@ def test_parked_review_approval_without_evidence_still_creates_audit_run(conn) -
     assert run is not None
     assert run.id == completed_event.run_id
     assert run.outcome == "completed"
-    assert run.profile == "reviewer"
+    assert run.profile == "architect"
     assert run.summary == "Review approved without additional evidence."
     assert run.metadata == {
         "source_status": "review",
@@ -728,7 +733,7 @@ def _failures(conn, task_id: str) -> int:
     ).fetchone()[0])
 
 
-def test_review_transitions_preserve_consecutive_failures(conn) -> None:
+def test_review_transitions_preserve_consecutive_failures(conn, all_assignees_spawnable) -> None:
     """M2 regression: review transitions neither reset nor increment the
     circuit-breaker counter.
 

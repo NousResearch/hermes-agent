@@ -228,7 +228,11 @@ def test_kanban_complete_corrupting_metadata_stays_structured(worker_env):
 def test_kanban_request_review_corrupting_metadata_stays_structured(worker_env, monkeypatch):
     from tools import kanban_tools as kt
     from hermes_cli import kanban_db as kb
+    from hermes_cli import profiles
     from hermes_cli.kanban_db_connect import connect
+
+    # The reviewer-routing policy needs at least one installed fallback profile.
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
 
     secret = "DB_PASSWORD=pw1longer" + "value99"
     conn = connect()

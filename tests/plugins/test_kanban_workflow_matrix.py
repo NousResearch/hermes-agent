@@ -68,8 +68,15 @@ def _task_in(client, src: str) -> str:
     return tid
 
 
+@pytest.fixture
+def spawnable_profiles(monkeypatch):
+    """Reviewer-routing policy candidates resolve as installed."""
+    from hermes_cli import profiles
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+
+
 @pytest.mark.parametrize("src", (*W.keys(), kw.ARCHIVED))
-def test_manual_moves_match_server(client, src):
+def test_manual_moves_match_server(client, spawnable_profiles, src):
     mismatches = []
     for dst in (*W.keys(), kw.ARCHIVED):
         if dst == src:

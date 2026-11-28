@@ -77,7 +77,7 @@ def test_claimless_complete_of_unclaimed_card_unchanged(conn):
     assert conn.execute("SELECT status FROM tasks WHERE id = ?", (tid,)).fetchone()["status"] == "done"
 
 
-def test_request_review_shares_the_live_worker_fence(conn):
+def test_request_review_shares_the_live_worker_fence(conn, all_assignees_spawnable):
     """``request_review`` keys on the same liveness as ``complete_task``: a claim
     without a live worker process is not a live claim (the human/library flow
     ``claim`` -> ``request_review`` works), a live worker's claim still is."""

@@ -165,6 +165,7 @@ def test_review_cli_round_trip_preserves_handoff(
 
 def test_domain_and_cli_review_handoffs_redact_before_persistence(
     monkeypatch: pytest.MonkeyPatch,
+    all_assignees_spawnable,
     tmp_path: Path,
 ) -> None:
     home = tmp_path / ".hermes"
@@ -233,6 +234,7 @@ def test_domain_and_cli_review_handoffs_redact_before_persistence(
 
 def test_cli_reopen_review_is_transition_first_and_redacts_reason(
     monkeypatch: pytest.MonkeyPatch,
+    all_assignees_spawnable,
     tmp_path: Path,
 ) -> None:
     home = tmp_path / ".hermes"

@@ -1897,6 +1897,22 @@ DEFAULT_CONFIG = {
         # On boards that never archive, the notifier GC purges subscriptions for tasks done with no
         # activity for this many days so stale rows aren't scanned forever. 0 = off.
         "done_sub_retention_days": 30,
+        # Reviewer separation: a review handoff must go to a DIFFERENT profile than
+        # the implementer. When a worker omits reviewer=, request_review resolves one:
+        # explicit reviewer= (refused if it is the implementer) -> the prior
+        # changes_requested reviewer (ignored if it is the implementer or missing)
+        # -> this policy. The defaults realise the rule with no host change; every
+        # candidate is skipped when it names the implementer, and the first
+        # installed profile wins. If nothing is eligible the handoff fails closed
+        # instead of returning to the implementer, so keep >= 1 fallback installed.
+        "review_routing": {
+            # Glob patterns matched against the implementer profile name.
+            "implementer_patterns": ["coder", "cloudops", "dev*"],
+            "implementer_reviewer": "qa",
+            "default_reviewer": "architect",
+            "fallback_reviewers": ["qa", "architect", "reviewer"],
+            "allow_self_review": False,
+        },
     },
     # Bot Mode cross-connection relay (tools/bot_relay.py): envelopes queued by message_agent for
     # agents on other connections wait in an on-disk outbox until the Desktop drains them.

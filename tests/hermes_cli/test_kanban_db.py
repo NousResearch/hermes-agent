@@ -847,7 +847,7 @@ def test_complete_task_persists_scratch_artifacts_before_cleanup(kanban_home):
     ]
 
 
-def test_review_bound_handoff_preserves_declared_artifacts(kanban_home):
+def test_review_bound_handoff_preserves_declared_artifacts(kanban_home, all_assignees_spawnable):
     """A review-bound card's declared files must outlive the reviewer's
     completion — that completion is what cleans the scratch workspace up."""
     with kbc.connect() as conn:
@@ -876,7 +876,7 @@ def test_review_bound_handoff_preserves_declared_artifacts(kanban_home):
     ]
 
 
-def test_request_review_rollback_discards_staged_copies(kanban_home):
+def test_request_review_rollback_discards_staged_copies(kanban_home, all_assignees_spawnable):
     """A failure after staging rolls the txn back; the copied file must go
     too, or the retry stages ``evidence_1.json`` next to an orphan."""
     with kbc.connect() as conn:

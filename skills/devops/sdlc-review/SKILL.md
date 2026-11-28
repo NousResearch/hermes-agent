@@ -54,6 +54,8 @@ This skill is loaded automatically by the review dispatcher. Start with `kanban_
 
 A requested-changes transition returns the task to its original implementer. When that implementer requests review again without naming a reviewer, the persisted reviewer provenance routes the re-review back to the same reviewer profile.
 
+Reviewers are resolved by policy at `request_review`, and self-review is refused: an explicit reviewer equal to the implementer is rejected, and when none is named the card goes to the prior reviewer if that is a different installed profile, else to `qa` for `coder`/`cloudops`/`dev*` implementers (anything else maps to `architect`, then `kanban.review_routing.fallback_reviewers`) — the first installed profile wins. If nothing is eligible the handoff fails closed rather than returning to the implementer. `kanban_show` surfaces the decision as a `Reviewer:` line.
+
 ## Review Lenses
 
 Vary how you look at the work on each round instead of repeating the same inspection. Decorrelated lenses catch different defect classes: a cold read of the artifact surfaces design and correctness problems that the implementer's narrative would have framed away, execution surfaces claims that do not reproduce, and a strict contract audit surfaces quiet scope drift. Repeating the round-1 lens on round 3 mostly re-finds what round 1 already found.

@@ -586,6 +586,26 @@ def _drag_to(conn, task_id: str, s: str) -> bool:
     return _set_status_direct(conn, task_id, s)
 
 
+def _review_status(conn, task_id: str, p) -> bool:
+    """PATCH status=review through request_review, surfacing its refusal reason.
+
+    A combined patch whose assignee is the implementer is now a self-review
+    refusal, and an unroutable handoff fails closed; both must reach the UI as
+    an actionable toast rather than the generic "transition not valid". A
+    dependency-gate refusal is left to ``_patch_status``, which names the open
+    parents with a 409.
+    """
+    ok, reason = kanban_db.request_review(
+        conn, task_id, summary=p.summary, metadata=p.metadata,
+        reviewer=(p.assignee or None), force=True, with_reason=True,
+    )
+    if ok:
+        return True
+    if kanban_db.unsatisfied_parents(conn, task_id):
+        return False
+    raise _StatusRejected(reason or "review handoff refused")
+
+
 # Status verb dispatch shared by PATCH /tasks/{id} and POST /tasks/bulk: (conn, task_id,
 # payload) -> ok. ``review`` uses request_review (never a block, so it can't trip unblock-loop
 # detection) and ``done`` pass ``force=True``: a dashboard action is a human override of a live worker claim.
@@ -594,8 +614,7 @@ _STATUS_HANDLERS: dict[str, Any] = {
         conn, tid, result=p.result, summary=p.summary, metadata=p.metadata, force=True),
     "blocked": lambda conn, tid, p: kanban_db.block_task(conn, tid, reason=getattr(p, "block_reason", None)),
     "scheduled": lambda conn, tid, p: kanban_db.schedule_task(conn, tid, reason=getattr(p, "block_reason", None)),
-    "review": lambda conn, tid, p: kanban_db.request_review(
-        conn, tid, summary=p.summary, metadata=p.metadata, reviewer=(p.assignee or None), force=True),
+    "review": _review_status,
     "ready": lambda conn, tid, p: _drag_to(conn, tid, "ready"),
     "todo": lambda conn, tid, p: _drag_to(conn, tid, "todo"),
     "triage": lambda conn, tid, p: _drag_to(conn, tid, "triage")}

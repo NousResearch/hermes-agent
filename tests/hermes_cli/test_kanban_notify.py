@@ -837,7 +837,9 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
     assert "real.pdf" in documents_uploaded[0]
 
 @pytest.mark.asyncio
-async def test_notifier_uploads_review_handoff_artifacts(kanban_home, tmp_path, monkeypatch):
+async def test_notifier_uploads_review_handoff_artifacts(
+    kanban_home, all_assignees_spawnable, tmp_path, monkeypatch,
+):
     """A review handoff's files are uploaded from the durable staged copy —
     not the scratch original the reviewer's completion is about to delete."""
     import hermes_cli.kanban_db as kb

@@ -58,7 +58,7 @@ def test_kanban_list_json_includes_session_id(kanban_home):
     )
 
 
-def test_run_slash_stats_text_includes_review_lane(kanban_home):
+def test_run_slash_stats_text_includes_review_lane(kanban_home, all_assignees_spawnable):
     """``stats`` text output must surface the ``review`` lane: board_stats() counts
     every non-archived status, so the ``By status:`` block must list ``review`` too
     or its count silently disappears while ``--json`` still shows it."""

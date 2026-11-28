@@ -693,10 +693,14 @@ def _wake_text(adapter):
 
 
 def _review_handoff_task(
+    monkeypatch,
     *,
     delivery_mode="notify+wake",
     summary="PR ready: https://example.invalid/pr/7\nfull details below",
 ):
+    from hermes_cli import profiles
+    # The reviewer-routing policy needs at least one installed fallback profile.
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
     conn = kbc.connect()
     try:
         tid = kb.create_task(
@@ -727,7 +731,7 @@ def test_review_requested_wakes_the_origin_session(tmp_path, monkeypatch):
     """A review handoff wakes the origin and carries the worker's summary."""
     monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "review-wake.db"))
     kb.init_db()
-    tid = _review_handoff_task()
+    tid = _review_handoff_task(monkeypatch)
 
     adapter = RecordingAdapter()
     runner = _make_runner(adapter)
@@ -786,7 +790,7 @@ def test_review_requested_does_not_wake_a_notify_only_subscription(
     """delivery_mode still decides whether a wake-worthy kind wakes at all."""
     monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "review-notify.db"))
     kb.init_db()
-    _review_handoff_task(delivery_mode="notify")
+    _review_handoff_task(monkeypatch, delivery_mode="notify")
 
     adapter = RecordingAdapter()
     runner = _make_runner(adapter)

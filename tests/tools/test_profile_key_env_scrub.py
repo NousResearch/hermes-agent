@@ -156,6 +156,25 @@ def test_look_alikes_are_not_denied(isolated_home, monkeypatch):
     assert not any(_is_provider_env_blocklisted(n) for n in OPERATOR_VARS)
 
 
+def test_numbered_credential_siblings_are_denied(isolated_home):
+    """The credential pool reads ``VAR_2``, ``VAR_3``, ... for every declared VAR until one does
+    not resolve (``agent/credential_pool.py`` ``_env_key_var_candidates``), so setting
+    ``NVIDIA_API_KEY_2`` is the whole opt-in: a numbered sibling of a blocklisted provider key
+    is the same credential and must scrub like its base name, not reach a child."""
+    assert _is_provider_env_blocklisted("NVIDIA_API_KEY_2")
+    assert _is_provider_env_blocklisted("OPENAI_API_KEY_3")
+    env = local._sanitize_subprocess_env(
+        {"NVIDIA_API_KEY": SECRET, "NVIDIA_API_KEY_2": SECRET, "OPENAI_API_KEY_3": SECRET, "PATH": "/usr/bin"})
+    assert not [k for k in env if "API_KEY" in k]
+
+
+def test_numbered_look_alikes_are_not_denied(isolated_home):
+    """Only a numbered sibling of a known credential counts: an operator var whose base name is
+    not a credential, or a non-numeric suffix, still passes."""
+    assert not _is_provider_env_blocklisted("MY_TOOL_TOKEN_2")
+    assert not _is_provider_env_blocklisted("OPENAI_API_KEY_V2")
+
+
 def test_declaring_a_key_mid_session_drops_it_from_the_live_snapshot(isolated_home, monkeypatch):
     """A terminal session whose snapshot captured the key before the declaration stops exporting it."""
     home = isolated_home / "hermes"

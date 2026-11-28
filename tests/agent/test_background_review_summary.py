@@ -7,6 +7,9 @@ history before the review started (e.g. an earlier "Cron job '...' created.").
 
 import json
 
+import pytest
+
+from hermes_constants import get_hermes_home
 from run_agent import AIAgent
 
 _summarize = AIAgent._summarize_background_review_actions
@@ -81,3 +84,46 @@ def test_handles_non_json_tool_content_gracefully():
 def test_empty_inputs():
     assert _summarize([], []) == []
     assert _summarize(None, None) == []
+
+
+@pytest.mark.parametrize(("language", "expected"), [
+    ("en", "Skill 'demo' patched (references/example.md)"),
+    ("zh", "技能 'demo' 已修补 (references/example.md)"),
+    ("ko", "스킬 'demo' 패치됨 (references/example.md)"),
+])
+def test_flat_and_batched_skill_patches_report_the_same_file(monkeypatch, language, expected):
+    from tools.skill_manager_tool import skill_manage
+
+    monkeypatch.setenv("HERMES_LANGUAGE", language)
+    root = get_hermes_home() / "skills" / "demo"
+    path = "references/example.md"
+    target = root / path
+    target.parent.mkdir(parents=True)
+    (root / "SKILL.md").write_text("---\nname: demo\ndescription: Example skill.\n---\n# Demo\n", encoding="utf-8")
+    target.write_text("first", encoding="utf-8")
+
+    for batched, old, new in [(False, "first", "second"), (True, "second", "third")]:
+        op = dict(action="patch", name="demo", file_path=path, old_string=old, new_string=new)
+        args = {"operations": [op]} if batched else op
+        raw = skill_manage(action="", name="", operations=[op]) if batched else skill_manage(**op)
+        assert target.read_text(encoding="utf-8") == new, raw
+        call = {"id": "patch", "function": {"name": "skill_manage", "arguments": json.dumps(args)}}
+        messages = [
+            {"role": "assistant", "tool_calls": [call]},
+            {"role": "tool", "tool_call_id": "patch", "content": raw},
+        ]
+        assert _summarize(messages, []) == [expected]
+
+
+@pytest.mark.parametrize(("result", "expected"), [
+    ({"success": True, "staged": True}, []),
+    ({"success": False, "error": "blocked"}, []),
+    ({"success": True, "_archived": True}, ["Skill 'demo' removed"]),
+    ({"success": True}, ["Skill 'demo' deleted"]),
+])
+def test_flat_delete_notification_reflects_the_outcome(monkeypatch, result, expected):
+    monkeypatch.setenv("HERMES_LANGUAGE", "en")
+    args = json.dumps({"action": "delete", "name": "demo"})
+    call = {"id": "delete", "function": {"name": "skill_manage", "arguments": args}}
+    messages = [{"role": "assistant", "tool_calls": [call]}, _tool_msg("delete", result)]
+    assert _summarize(messages, []) == expected

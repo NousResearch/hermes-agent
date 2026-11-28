@@ -113,6 +113,20 @@ async def await_idle(runner) -> bool:
     warn_every = float(getattr(runner, "_restart_after_turn_timeout", 0.0) or 0.0)
     logger.info("Restart requested; waiting for idle while serving normally (warn after %.0fs): %s",
                 warn_every, _log_view(runner._describe_active_work()))
+    # Managed worker turns (kanban cards, Bot Chat) are durable, re-admissible work: the worker
+    # client re-dials and the turn resumes on the next owner. A held or polling worker therefore
+    # must not pin the restart-when-idle wait indefinitely — every healthy fleet keeps the gateway
+    # non-idle, and only the wedged-chat and in-flight-cron exclusions keep this honest today. At
+    # wait start they get the same idempotent cooperative Stop the stop-drain sends at drain start
+    # (``_stop_drain_active_work``): a yielding worker settles at its next frame boundary in
+    # seconds, a wedged one escalates through the owner loop's STOP_ACK_SECONDS terminate. Chat
+    # turns, delegations, watched processes and queued notices are untouched — the wait is still
+    # never a timer-cut for them; an explicit force still stops everything immediately.
+    from gateway.run_runtime import stop_managed_turns
+    _yielded = stop_managed_turns(runner, runner._shutdown_interrupt_reason())
+    if _yielded:
+        logger.info("Restart wait: cooperative Stop sent to %d managed worker turn(s) at wait start",
+                    _yielded)
     loop = asyncio.get_running_loop()
     started = loop.time()
     next_warn = started + warn_every

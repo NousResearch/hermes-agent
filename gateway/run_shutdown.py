@@ -1784,16 +1784,32 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
                 "— waiting up to %.0fs for them (cron_drain_timeout=%.0fs, restart_drain_timeout=%.0fs)",
                 _cron_at_start, _api_at_start, _deleg_at_start, _cron_timeout, _cron_drain_cfg, timeout,
             )
+        # Managed worker turns (kanban cards, Bot Chat: durable, re-admissible work whose clients
+        # re-dial the next owner) get their cooperative Stop NOW, at drain start — not at the
+        # timeout edge an interrupt-then-settle round-trip later. A yielding child exits at its
+        # next frame boundary in seconds; without this it instead pinned every drain to the full
+        # cap (every "drain timed out after 50.1s with 0 active agent(s)" restart of t_b9436ad2
+        # was one of these, invisible because the timeout log prints ``_running_agent_count()``
+        # while the drain waits on agents PLUS managed turns). In-process chat agents in
+        # ``_running_agents`` are untouched and keep their natural drain; a turn still spawning
+        # is latched by the same call, and the post-timeout/settle stops stay (idempotent).
+        _managed_yielded = stop_managed_turns(self, self._shutdown_interrupt_reason())
+        if _managed_yielded:
+            logger.info(
+                "Shutdown drain: cooperative Stop sent to %d managed worker turn(s) at drain start",
+                _managed_yielded,
+            )
         _drain_started_at = time.monotonic()
         ctx.active_agents, ctx.timed_out = await self._drain_active_agents(timeout, _cron_timeout)
         ctx.drain_elapsed = time.monotonic() - _drain_started_at
         logger.info(
             "Shutdown phase: drain done at +%.2fs (drain took %.2fs, timed_out=%s, active_at_start=%d, "
             "active_now=%d, cron_at_start=%d, cron_now=%d, api_at_start=%d, api_now=%d, "
-            "deferred_at_start=%d, deferred_now=%d, deleg_at_start=%d, deleg_now=%d)", ctx.elapsed(),
+            "deferred_at_start=%d, deferred_now=%d, deleg_at_start=%d, deleg_now=%d, managed_now=%d)", ctx.elapsed(),
             ctx.drain_elapsed, ctx.timed_out, len(ctx.active_agents), self._running_agent_count(),
             _cron_at_start, self._active_cron_job_count(), _api_at_start, self._active_api_run_count(),
             _deferred_at_start, ctx.deferred_count(), _deleg_at_start, _active_async_delegation_count(),
+            managed_turn_count(self),
         )
         if ctx.timed_out:
             return
@@ -1811,9 +1827,11 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
         from gateway.run import GatewayRunner
         logger.warning(
             "Gateway drain timed out after %.1fs with %d active agent(s), "
-            "%d in-flight cron job(s), %d api_server run(s), and %d deferred agent worker(s); "
-            "interrupting remaining work.", ctx.drain_elapsed, self._running_agent_count(),
+            "%d in-flight cron job(s), %d api_server run(s), %d deferred agent worker(s), and "
+            "%d managed worker turn(s); interrupting remaining work.",
+            ctx.drain_elapsed, self._running_agent_count(),
             self._active_cron_job_count(), self._active_api_run_count(), ctx.deferred_count(),
+            managed_turn_count(self),
         )
         # Mark resume_pending BEFORE interrupting so the next message auto-resumes (stuck sessions
         # still escalate via .restart_failure_counts). CURRENT _running_agents, not the drain snapshot.
@@ -2080,6 +2098,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
             "active_cron_jobs": self._active_cron_job_count(),
             "active_api_runs": self._active_api_run_count(),
             "active_deferred_agent_workers": ctx.deferred_count(),
+            "managed_worker_turns": managed_turn_count(self),
             "restart_drain_timeout": self._restart_drain_timeout,
             "effective_drain_timeout": effective_stop_drain_timeout(self),
             "launchd_exit_timeout_s": getattr(self, "_launchd_exit_timeout_s", None),

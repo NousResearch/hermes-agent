@@ -98,7 +98,6 @@ def test_build_child_agent_strips_kanban_toolset_even_when_parent_is_worker(monk
             captured.update(kwargs)
             self.valid_tool_names = {"terminal"}
             self.session_id = "child-session"
-            self._session_db = kwargs.get("session_db")
 
     import run_agent
     from tools import delegate_tool
@@ -257,6 +256,39 @@ def test_delegate_child_kanban_cli_cannot_delete_parent_board(
     assert "delegate_task child contexts cannot mutate Kanban tasks" in result["output"]
     assert kb.board_exists("victim")
     assert kb.board_dir("victim").is_dir()
+
+
+def test_delegate_child_list_cli_succeeds_despite_fenced_recompute(monkeypatch, tmp_path):
+    """Regression for t_ba635639: a read-only `list` must not fail just
+    because its opportunistic `recompute_ready` tidy-up can't mutate the
+    fenced board. The real mutate guard (`boards rm --delete` etc, covered
+    above) must still raise."""
+    kb, _tid, _workspace, _attachments_root = _make_running_kanban_task(monkeypatch, tmp_path)
+    from agent.delegation_context import delegated_child_context
+    from hermes_cli import kanban_db_connect as kbc
+
+    conn = kbc.connect()
+    try:
+        with delegated_child_context():
+            # The underlying mutator still fails closed for a real mutating caller.
+            with pytest.raises(PermissionError, match="delegate_task child"):
+                kb.recompute_ready(conn)
+            # The best-effort wrapper `list`/`show` use instead no-ops quietly.
+            assert kbc.recompute_ready_best_effort(conn) == 0
+    finally:
+        conn.close()
+
+    import argparse
+
+    from hermes_cli import kanban
+    from hermes_cli.kanban_parser import build_parser
+
+    parser = argparse.ArgumentParser()
+    build_parser(parser.add_subparsers())
+    args = parser.parse_args(["kanban", "list", "--status", "running"])
+    with delegated_child_context():
+        rc = kanban.kanban_command(args)
+    assert rc == 0
 
 
 def test_delegate_child_attach_url_guard_leaves_no_row_or_file(monkeypatch, tmp_path):

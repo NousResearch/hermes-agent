@@ -1320,7 +1320,8 @@ def _pending(home: Path, *, say: Callable[[str], None], process_env: bool = Fals
         try:
             _record_migration(home, feature)
         except Exception as exc:
-            _say_once(home, feature, "unscoped", say, f"  ⚠ {feature.label} moved out of core into the "
+            state = "kept-off" if kept_off else "present" if present else "absent"  # a new state is said anew
+            _say_once(home, feature, f"unscoped-{state}", say, f"  ⚠ {feature.label} moved out of core into the "
                       f"'{feature.plugin}' plugin: its per-platform toolset selection could not be kept ({exc}). "
                       "Check `hermes tools`" + (f"; {kept_off_sentence(feature.plugin, home)}" if kept_off else
                                                 "." if present else

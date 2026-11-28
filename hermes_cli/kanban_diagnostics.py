@@ -343,19 +343,34 @@ def _rule_triage_aux_unavailable(task, events, runs, now, cfg) -> list[Diagnosti
 
 def _rule_prose_phantom_refs(task, events, runs, now, cfg) -> list[Diagnostic]:
     """Advisory: the completion summary mentions ``t_<hex>`` ids that don't
-    resolve. Warning only; clears on a later clean completion."""
+    resolve. Warning only; clears when the card is edited (any edited event)."""
     hits = _active_hallucination_events(events, "suspected_hallucinated_references")
     if not hits:
         return []
+    phantom_refs = _unique_payload_ids(hits, "phantom_refs")
+    try:
+        from hermes_cli.kanban_db import task_ids_on_any_board
+
+        found = task_ids_on_any_board(phantom_refs)
+        phantom_refs = [task_id for task_id in phantom_refs if task_id not in found]
+    except Exception:
+        # Diagnostics must fail open: a lookup problem must not hide a real
+        # unresolved reference.
+        pass
+    if not phantom_refs:
+        return []
+    task_id = _task_field(task, "id") or "<task_id>"
+    edit_cmd = f"hermes kanban edit {task_id} --result ..."
     return [Diagnostic(
         kind="prose_phantom_refs", severity="warning",
         title="Completion summary references unknown task ids",
-        detail="The completion summary mentions task ids that don't resolve in this board's database. "
+        detail="The completion summary mentions task ids that don't resolve on any board in this install. "
                "The completion itself succeeded, but downstream consumers parsing the summary may be "
                "pointed at cards that never existed.",
-        actions=_generic_recovery_actions(task, running=_is_running(task)),
+        actions=[_cli_hint(f"Correct the result: {edit_cmd}", edit_cmd, suggested=True)]
+                + _generic_recovery_actions(task, running=_is_running(task)),
         first_seen_at=_event_ts(hits[0]), last_seen_at=_event_ts(hits[-1]), count=len(hits),
-        data={"phantom_refs": _unique_payload_ids(hits, "phantom_refs")},
+        data={"phantom_refs": phantom_refs},
     )]
 
 

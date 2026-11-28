@@ -532,7 +532,7 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> dict[str, Any]:
             proc.wait(timeout=1)
         if not isinstance(exc, Exception):
             raise
-        if not isinstance(exc, subprocess.TimeoutExpired):  # pragma: no cover — defensive
+        if not isinstance(exc, subprocess.TimeoutExpired):  # runaway output, or defensive
             return failed(str(exc))
         result.update(timed_out=True, elapsed_seconds=round(time.monotonic() - t0, 3))
         return result
@@ -544,6 +544,16 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> dict[str, Any]:
 # left running (``some-daemon &``) still holds the pipes, so EOF may never come; its later output is
 # not the hook's answer.
 _PIPE_DRAIN_GRACE_SECONDS = 0.5
+# A hook's answer is one small JSON object. Past this many bytes on either pipe the hook is runaway
+# (``yes``, a log tail, a debug dump): it is killed instead of buffered, since an unbounded drain
+# grew the agent process by tens of GB within one default timeout.
+_MAX_HOOK_STREAM_BYTES = 1 << 20
+# Hook text that reaches the model (injected context, a block reason) is shortened past this.
+_MAX_HOOK_TEXT_CHARS = 50_000
+
+
+class _HookOutputOverflow(Exception):
+    """The hook printed more than ``_MAX_HOOK_STREAM_BYTES`` on one pipe and was killed."""
 
 
 def _communicate_until_exit(proc: subprocess.Popen, stdin_json: str, timeout: int) -> tuple[str, str]:
@@ -555,13 +565,19 @@ def _communicate_until_exit(proc: subprocess.Popen, stdin_json: str, timeout: in
     and had the helper it meant to leave running killed with the tree. The helper keeps the pipes;
     its reader threads end with it."""
     chunks: dict[str, list[bytes]] = {"stdout": [], "stderr": []}
+    overflowed: list[str] = []
     stdin = proc.stdin
     assert stdin is not None  # Popen(stdin=PIPE)
 
     def _drain(name: str) -> None:
-        stream = getattr(proc, name)
+        stream, size = getattr(proc, name), 0
         with suppress(OSError, ValueError):
             while chunk := os.read(stream.fileno(), 65536):
+                size += len(chunk)
+                if size > _MAX_HOOK_STREAM_BYTES:
+                    overflowed.append(name)
+                    kill_process_tree(proc)  # ends proc.wait() below now, not at the timeout
+                    return
                 chunks[name].append(chunk)
 
     def _feed() -> None:
@@ -574,6 +590,9 @@ def _communicate_until_exit(proc: subprocess.Popen, stdin_json: str, timeout: in
     for thread in threads:
         thread.start()
     proc.wait(timeout=timeout)
+    if overflowed:
+        raise _HookOutputOverflow(f"printed more than {_MAX_HOOK_STREAM_BYTES // (1 << 20)} MiB on "
+                                  f"{overflowed[0]} and was stopped; a hook answers with one JSON object")
     deadline = time.monotonic() + _PIPE_DRAIN_GRACE_SECONDS  # one grace budget shared by all three threads
     for thread in threads:
         thread.join(timeout=max(0.0, deadline - time.monotonic()))
@@ -677,7 +696,7 @@ def _serialize_payload(event: str, kwargs: dict[str, Any]) -> str:
 def _block_message(primary: Any, secondary: Any) -> str:
     """Validated string block message (primary wins), falling back to the default."""
     raw = primary or secondary
-    return raw if isinstance(raw, str) and raw else _DEFAULT_BLOCK_MESSAGE
+    return _shorten_hook_text(raw) if isinstance(raw, str) and raw else _DEFAULT_BLOCK_MESSAGE
 
 
 # pre_tool_call dialects in check order — Hermes ``action`` then Claude-Code ``decision`` — as (verb key,
@@ -709,13 +728,21 @@ def _parse_pre_verify(data: dict[str, Any]) -> Optional[dict[str, Any]]:
     action = str(data.get("action") or data.get("decision") or "").strip().lower()
     message = data.get("message") or data.get("reason")
     if action in {"continue", "block"} and isinstance(message, str) and message.strip():
-        return {"action": "continue", "message": message.strip()}
+        return {"action": "continue", "message": _shorten_hook_text(message.strip())}
     return None
 
 
 def _parse_context(data: dict[str, Any]) -> Optional[dict[str, Any]]:
     context = data.get("context")
-    return {"context": context} if isinstance(context, str) and context.strip() else None
+    return {"context": _shorten_hook_text(context)} if isinstance(context, str) and context.strip() else None
+
+
+def _shorten_hook_text(text: str) -> str:
+    """Hook text bound for the model, cut to ``_MAX_HOOK_TEXT_CHARS`` with a note saying so: a hook
+    pasting a whole log would otherwise overflow the context on every turn it fires."""
+    if len(text) <= _MAX_HOOK_TEXT_CHARS:
+        return text
+    return f"{text[:_MAX_HOOK_TEXT_CHARS]}\n[hook output shortened: {len(text):,} characters, first {_MAX_HOOK_TEXT_CHARS:,} kept]"
 
 
 def _parse_pre_llm_call(data: dict[str, Any]) -> Optional[dict[str, Any]]:

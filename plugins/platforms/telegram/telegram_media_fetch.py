@@ -21,6 +21,11 @@ logger = logging.getLogger("plugins.platforms.telegram.adapter")
 # Backoff (seconds) before each further attempt of one inbound file fetch.
 FETCH_RETRY_DELAYS = (2.0, 5.0)
 
+# Read budget (seconds) for one ``getFile``. The Bot API answers it only once a just-uploaded file
+# is ready, which has taken 90-150 s (#158107), so the 20 s general read timeout, repeated by every
+# retry, dropped the attachment. Once ready the same call answers in well under a second.
+GETFILE_READ_TIMEOUT = 180.0
+
 # Private event attributes, never ``event.metadata``: native admission refuses any metadata key
 # outside its allowlist, which dropped every Telegram reply carrying them (as ITEM_NOTES_ATTR).
 # TYPED_ATTR: a replying chunk's text before any replied-to note. VOICE_TYPED_ATTR: set when the
@@ -85,7 +90,7 @@ async def fetch_telegram_file(source: Any, what: str, local_root: str | None = N
     while True:
         attempt += 1
         try:
-            file_obj = await source.get_file()
+            file_obj = await source.get_file(read_timeout=GETFILE_READ_TIMEOUT)
             if local_root and (host_path := await asyncio.to_thread(
                     local_bot_api_path, getattr(file_obj, "file_path", None), local_root)):
                 return file_obj, await asyncio.to_thread(host_path.read_bytes)

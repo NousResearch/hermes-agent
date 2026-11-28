@@ -188,7 +188,7 @@ def _backend_is_windows(env: Any, cwd: str) -> bool:
 def _validate_operations(operations: list[PatchOperation], file_ops: Any) -> list[str]:
     """Dry-run every operation -> error strings (empty = safe). UPDATE hunks are simulated in
     order so later hunks see post-earlier-hunk content, exactly as apply will."""
-    from tools.fuzzy_match import fuzzy_find_and_replace, is_already_applied
+    from tools.fuzzy_match import is_already_applied
     errors: list[str] = []
     real_change_count = 0
     # Overlay so inter-op state validates (a MOVE creating the path a later UPDATE targets),
@@ -251,8 +251,7 @@ def _validate_operations(operations: list[PatchOperation], file_ops: Any) -> lis
                         errors.append(f"{op.file_path}: addition-only hunk {ambiguous}")
                 continue
             search_pattern, replacement = '\n'.join(search_lines), '\n'.join(replace_lines)
-            new_simulated, count, _strategy, match_error = fuzzy_find_and_replace(
-                simulated, search_pattern, replacement, replace_all=False)
+            new_simulated, count, _strategy, match_error = _replace_hunk(simulated, hunk, search_pattern, replacement)
             if count:
                 simulated = new_simulated
             elif not is_already_applied(simulated or "", search_pattern, replacement):
@@ -454,6 +453,35 @@ def _apply_move(op: PatchOperation, file_ops: Any) -> ApplyResult:
         True, f"# Moved: {op.file_path} -> {op.new_path}")
 
 
+def _replace_hunk(content: str, hunk: Hunk, search_pattern: str, replacement: str,
+                  notes: Optional[list[str]] = None) -> tuple[str, int, Optional[str], Optional[str]]:
+    """``(content, count, strategy, error)`` for one context-bearing hunk: a whole-content fuzzy replace, retried
+    inside a window around the ``@@ context hint @@`` when that fails. Validation and apply both use it: a hunk whose
+    context repeats in the file ("Found N matches") is exactly what the hint disambiguates, and a validation pass
+    that never consulted the hint rejected the patch before apply's retry could run."""
+    from tools.fuzzy_match import fuzzy_find_and_replace
+    new_content, count, strategy, error = fuzzy_find_and_replace(
+        content, search_pattern, replacement, replace_all=False, correction_notes=notes)
+    if not (error and count == 0):
+        return new_content, count, strategy, error
+    if not hunk.context_hint:
+        return content, 0, None, error
+    occurrences, ambiguous = _hint_ambiguity(content, hunk.context_hint, " — provide a more unique hint")
+    if ambiguous:
+        # A window around the first of several hint occurrences can hold a different copy of the block.
+        return content, 0, None, f"{error}; {ambiguous}"
+    if occurrences == 1:
+        hint_pos = content.find(hunk.context_hint)
+        window_start = max(0, hint_pos - 500)
+        window_end = min(len(content), hint_pos + 2000)
+        window_new, count, strategy, error = fuzzy_find_and_replace(
+            content[window_start:window_end], search_pattern, replacement, replace_all=False,
+            correction_notes=notes)
+        if count > 0:
+            return content[:window_start] + window_new + content[window_end:], count, strategy, None
+    return content, 0, None, error
+
+
 def _insert_addition_only(new_content: str, hunk: Hunk, insert_text: str) -> tuple[Optional[str], Optional[str]]:
     """Place an addition-only hunk after its context hint (or at EOF). Returns (content, error)."""
     if hunk.context_hint:
@@ -472,7 +500,7 @@ def _insert_addition_only(new_content: str, hunk: Hunk, insert_text: str) -> tup
 
 def _apply_update(op: PatchOperation, file_ops: Any) -> ApplyResult:
     """Apply each hunk via fuzzy replace, then write once."""
-    from tools.fuzzy_match import boundary_note, fuzzy_find_and_replace, is_already_applied
+    from tools.fuzzy_match import boundary_note, is_already_applied
     read_result = file_ops.read_file_raw(op.file_path)  # raw: no line numbers / truncation
     if read_result.error:
         return _fail(f"Cannot read file: {read_result.error}")
@@ -489,25 +517,10 @@ def _apply_update(op: PatchOperation, file_ops: Any) -> ApplyResult:
             if err:
                 return _fail(err)
             continue
-        new_content, count, strategy, error = fuzzy_find_and_replace(
-            new_content, search_pattern, replacement, replace_all=False, correction_notes=notes)
-        if not (error and count == 0):
-            if count > 0:
-                strategies.append(strategy)
-            continue
-        # Retry inside a window around the context hint, if any.
-        hint_pos = new_content.find(hunk.context_hint) if hunk.context_hint else -1
-        if hint_pos != -1:
-            window_start = max(0, hint_pos - 500)
-            window_end = min(len(new_content), hint_pos + 2000)
-            window_new, count, strategy, error = fuzzy_find_and_replace(
-                new_content[window_start:window_end], search_pattern, replacement, replace_all=False,
-                correction_notes=notes)
-            if count > 0:
-                strategies.append(strategy)
-                new_content = new_content[:window_start] + window_new + new_content[window_end:]
-                error = None
-        if error:
+        new_content, count, strategy, error = _replace_hunk(new_content, hunk, search_pattern, replacement, notes)
+        if count > 0:
+            strategies.append(strategy)
+        if error and count == 0:
             # Mirror validation's already-applied skip, else the two phases disagree and fail here.
             if is_already_applied(new_content, search_pattern, replacement):
                 continue

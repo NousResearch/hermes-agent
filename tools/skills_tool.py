@@ -791,7 +791,8 @@ def _skill_view_with_bump(args, **kw):
     with suppress(Exception):
         parsed = json.loads(result)
         if isinstance(parsed, dict) and parsed.get("success"):
-            if (stub := dedup_skill_view(dedup_task_id, name, args.get("file_path"), parsed, result)) is not None:
+            if (stub := dedup_skill_view(dedup_task_id, name, args.get("file_path"), parsed, result,
+                                         session_id=kw.get("session_id"))) is not None:
                 return stub
             if resolved := parsed.get("name") or name:  # qualified forms return the canonical name
                 from tools.skill_usage import bump_use, bump_view

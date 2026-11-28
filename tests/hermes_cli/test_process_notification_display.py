@@ -128,3 +128,65 @@ def test_process_completion_display_keeps_payload_separate_across_surfaces(monke
     assert text == payload
     assert kwargs["display_kind"] == PROCESS_COMPLETE_DISPLAY_KIND
     assert kwargs["display_metadata"] == {"display_text": expected}
+
+
+def _drain(monkeypatch, events, mode):
+    """Drive the real drain with a stubbed registry/claim chain; return the queued REPL inputs."""
+    cli = HermesCLI.__new__(HermesCLI)
+    cli.session_id = "display-session"
+    cli._pending_input = queue.Queue()
+    monkeypatch.setattr("tools.process_registry.process_registry", _registry(events))
+    monkeypatch.setattr("tools.async_delegation.claim_event_delivery", lambda *a: "claimed")
+    monkeypatch.setattr("tools.async_delegation.complete_event_delivery", lambda *a: None)
+    monkeypatch.setattr("cli.CLI_CONFIG", {"display": {"background_process_notifications": mode}})
+    cli._drain_process_notifications("cli-post-turn")
+    queued = []
+    while not cli._pending_input.empty():
+        queued.append(cli._pending_input.get_nowait())
+    return queued
+
+
+@pytest.mark.parametrize("mode,exit_code,expect_wake", [
+    ("concise", 0, True), ("all", 0, True), ("result", 0, True),
+    ("error", 0, False), ("error", 1, True), ("off", 0, False), ("bogus", 0, True),
+])
+def test_completion_modes_gate_the_turn_start(monkeypatch, mode, exit_code, expect_wake):
+    """``result`` always wakes and ``error`` only for a non-clean exit (#153198).
+
+    The gateway watcher has honoured both since the mode was introduced (``notify_mode == "error"
+    and session.exit_code not in {0, None}`` in ``gateway/run_notifications.py``); the CLI drain only
+    compared against ``off``, so a user who chose ``error`` still started a turn on every success.
+    An unrecognised value falls back to ``concise``, the same default the config loader applies.
+    """
+    assert bool(_drain(monkeypatch, [_event("proc_modes", exit_code)], mode)) is expect_wake
+
+
+@pytest.mark.parametrize("mode,expect_wake", [
+    ("concise", True), ("all", True), ("result", False), ("error", False), ("off", False),
+])
+def test_only_progress_modes_surface_a_heartbeat(monkeypatch, mode, expect_wake):
+    """A heartbeat is running progress, not the final result: the outcome-only modes (``result``,
+    ``error``) ask for the outcome and drop it, while ``concise``/``all`` keep the running update."""
+    beat = {**_event("proc_beat", None), "type": "heartbeat", "seq": 1, "elapsed": 30, "interval": 60,
+            "output": "still building"}
+    assert bool(_drain(monkeypatch, [beat], mode)) is expect_wake
+
+
+def test_error_mode_still_lands_a_subagent_result(monkeypatch):
+    """``error`` mutes process noise, never a ``delegate_task(background=true)`` result the user asked for."""
+    delegation = {"type": "async_delegation", "delegation_id": "d1", "session_key": "display-session",
+                  "results": [{"status": "completed", "summary": "done", "goal": "audit"}]}
+    queued = _drain(monkeypatch, [_event("proc_ok", 0), delegation], "error")
+    assert [q.display_kind for q in queued] == ["async_delegation_complete"]
+
+
+@pytest.mark.parametrize("event_type", ["watch_match", "watch_disabled"])
+def test_error_mode_keeps_explicit_watch_events(monkeypatch, event_type):
+    """A requested watch trigger or diagnostic is not a successful process exit."""
+    event = {
+        "type": event_type, "session_id": "proc_watched", "session_key": "display-session",
+        "command": "python worker.py", "pattern": "READY", "output": "READY",
+        "message": "watch patterns disabled",
+    }
+    assert len(_drain(monkeypatch, [event], "error")) == 1
+    assert _drain(monkeypatch, [event], "off") == []

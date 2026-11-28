@@ -309,10 +309,11 @@ def close_interrupted_tool_sequence(messages: list, final_response: Any = None, 
     if not isinstance(last, dict) or last.get("role") != "tool":
         return False
     text = final_response if isinstance(final_response, str) else ""
+    from agent.interrupt_control import is_bare_interrupt_text
     from agent.message_metadata import append_message
 
     stripped = text.strip()
-    if not stripped or stripped == _INTERRUPTED_PLACEHOLDER:
+    if is_bare_interrupt_text(stripped) or stripped == _INTERRUPTED_PLACEHOLDER:
         row = hidden_interrupt_placeholder_row()
     else:
         row = {"role": "assistant", "content": stripped}
@@ -972,7 +973,7 @@ def apply_reasoning_content_policy(
     else:
         api_msg.pop(R, None)
     if carriers is not None and RD not in carriers:
-        # Private ``*.native_assistant`` records (Gemini / profile-declared carriers) survive: the transport lifts
+        # Private ``*.native_assistant`` records (Gemini/Copilot carriers) survive: the transport lifts
         # them onto the route that reads them and filters them from every other wire.
         private = [d for d in api_msg.pop(RD, None) or () if isinstance(d, dict)
                    and str(d.get("type") or "").endswith(".native_assistant")]

@@ -17,6 +17,7 @@ import queue
 import threading
 import time
 from agent.i18n import t
+from agent.interrupt_control import queued_followup_stop_notice
 from agent.session_activity import format_iteration_progress
 from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE
 from contextlib import nullcontext, suppress
@@ -1648,9 +1649,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         source, session_id, session_key, run_generation = (
             turn_ctx.source, turn_ctx.session_id, turn_ctx.session_key, turn_ctx.run_generation,
         )
-        _interrupt_depth, history, _status_thread_metadata = (
-            turn_ctx._interrupt_depth, turn_ctx.history, turn_ctx._status_thread_metadata,
-        )
+        _interrupt_depth, history, _status_thread_metadata = (turn_ctx._interrupt_depth, turn_ctx.history, turn_ctx._status_thread_metadata)
         logger.debug("Processing pending message: '%s...'", pending[:40])
 
         # Clear the interrupt event so the recursive _run_agent isn't re-interrupted (infinite loop).
@@ -1658,23 +1657,21 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         if _active and session_key and session_key in _active:
             _active[session_key].clear()
 
-        # Cap recursion depth (user keeps sending while the agent keeps failing).
-        # (#816)
+        # Cap recursion depth (user keeps sending while the agent keeps failing; #816).
         if _interrupt_depth >= self._MAX_INTERRUPT_DEPTH:
-            logger.warning(
-                "Interrupt recursion depth %d reached for session %s — "
-                "queueing message instead of recursing.", _interrupt_depth, session_key,
-            )
+            logger.warning("Interrupt recursion depth %d reached for session %s — queueing instead of recursing.", _interrupt_depth, session_key)
             self._requeue_at_depth_cap(session_key, source, pending_event, pending)
             return turn_ctx.result_holder[0] or {"final_response": response, "messages": history}
 
-        # Interrupted: discard the response ("Operation interrupted." is noise).
+        # User steers have a queued reply; system stops surface their reason before the follow-up.
         if not result.get("interrupted"):
             # Register this turn's bubble cleanup BEFORE the first-response delivery pops and awaits
             # the post-delivery callback: the follow-up returns early, so the normal-path
             # registration after it would never run and the bubbles stayed up.
             register_bubble_cleanup(response, turn_ctx)
             await self._run_agent_deliver_first_response(turn_ctx, adapter, response, result, stream_task)
+        elif _interrupt_text := queued_followup_stop_notice(response, result):
+            await self._run_agent_deliver_first_response(turn_ctx, adapter, _interrupt_text, result, stream_task)
 
         updated_history = result.get("messages", history)
         next_source, next_message, next_session_key = source, pending, session_key

@@ -88,7 +88,7 @@ import {
 import { $sessionsWaitingOnCard, sessionNeedsInput } from './session-card-wait'
 import { secondaryProfileOwnerForEvent } from './session-event-provenance'
 import { $focusedStoredSessionId, TILE_PANE_PREFIX } from './session-focus'
-import { turnHasReply, withNoReplyNotice } from './session-no-reply'
+import { turnHasReply, withEndedTurnNotice } from './session-no-reply'
 import { assertSessionOwnerResolved } from './session-owner-resolution'
 import {
   isSessionOwnerRoute,
@@ -495,13 +495,13 @@ function settleEndedLiveTurn(runtimeId: string) {
   })
 }
 
-/** Stamp the retry card on an ended turn that has no reply, never an intentional
- *  interruption. A newer turn is either live (skipped) or has its own reply. */
+/** Stamp an ended turn with no reply: retry card for normal failures, non-retryable stop notice
+ *  for deliberate/empty interruptions so the chat is never blank. */
 function markTurnWithoutReply(runtimeId: string) {
   writeSessionState(runtimeId, state =>
-    state.interrupted || isLiveTurnAwaitingEvents(state) || turnHasReply(state.messages)
+    isLiveTurnAwaitingEvents(state) || turnHasReply(state.messages)
       ? state
-      : { ...state, messages: withNoReplyNotice(state.messages) }
+      : { ...state, messages: withEndedTurnNotice(state.messages, state.interrupted) }
   )
 }
 

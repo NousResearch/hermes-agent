@@ -646,6 +646,31 @@ def _mirror_turn_to_memory(
             )
 
 
+def _apply_terminal_result_status(
+    agent, result: dict, final_response: Any, _turn_exit_reason: Any,
+    failed: bool, interrupted: bool, _exit_failure: Any,
+) -> None:
+    """Stamp ``error`` / ``failure_reason`` onto ``result`` for persistence, loop, or interrupt exits."""
+    if failed and str(_turn_exit_reason) == "session_persistence_failed":
+        from hermes_constants import profile_cli_selector
+
+        # Never rebind final_response here: the memory sync and the background-review gate
+        # below must still see an empty response on a persistence-failed turn.
+        result["error"] = final_response or (
+            "session storage could not be written — check the state database "
+            f"health (`hermes {profile_cli_selector()}doctor`), then send your message again"
+        )
+        _cause = getattr(agent, "_last_persistence_error_cause", None)
+        result["failure_reason"] = "session_persistence_failed:" + (_cause or "unknown")
+    elif _exit_failure is not None:
+        if failed:
+            result["error"] = final_response or str(_turn_exit_reason)
+        stamp_failure(result, _exit_failure.reason, _exit_failure.retryable)
+    elif interrupted and final_response:
+        # Surfaces that only read ``error`` (API cancelled runs, some clients) still get the reason.
+        result["error"] = final_response
+
+
 def finalize_turn(
     agent, *, final_response, api_call_count, interrupted, failed, messages, conversation_history,
     effective_task_id, turn_id, user_message, original_user_message, _should_review_memory,
@@ -701,6 +726,16 @@ def finalize_turn(
                 "No reply: the turn stopped while a tool result was still pending. "
                 "Send `continue` to let the model summarize."
             )
+
+    # Interrupted turns always carry a reasoned user-visible line (never bare
+    # "Operation interrupted." / empty). Fill BEFORE transcript close / persist so
+    # history, CLI, gateway, API SSE, Desktop/WebUI, and Relay Android all see it.
+    if interrupted:
+        from agent.interrupt_control import ensure_interrupt_final_response
+
+        final_response = ensure_interrupt_final_response(
+            agent, final_response, turn_exit_reason=_turn_exit_reason,
+        )
 
     # Loop exits that are failures in their own right (outer-loop error cap, shutdown, context
     # that could not be shrunk) carry the verdict the UI descriptor needs; a bare
@@ -858,21 +893,9 @@ def finalize_turn(
     # Persistence failures already set failed=True; also stamp `error` so the gateway
     # surfaces status="error" (desktop can toast) instead of a quiet complete frame, plus
     # the machine-readable cause 'session_persistence_failed:<locked|compression|...>'.
-    if failed and str(_turn_exit_reason) == "session_persistence_failed":
-        from hermes_constants import profile_cli_selector
-
-        # Never rebind final_response here: the memory sync and the background-review gate
-        # below must still see an empty response on a persistence-failed turn.
-        result["error"] = final_response or (
-            "session storage could not be written — check the state database "
-            f"health (`hermes {profile_cli_selector()}doctor`), then send your message again"
-        )
-        _cause = getattr(agent, "_last_persistence_error_cause", None)
-        result["failure_reason"] = "session_persistence_failed:" + (_cause or "unknown")
-    elif _exit_failure is not None:
-        if failed:
-            result["error"] = final_response or str(_turn_exit_reason)
-        stamp_failure(result, _exit_failure.reason, _exit_failure.retryable)
+    _apply_terminal_result_status(
+        agent, result, final_response, _turn_exit_reason, failed, interrupted, _exit_failure,
+    )
     # Cleanup failures are surfaced, but the response is returned either way (#8049).
     if _cleanup_errors:
         result["cleanup_errors"] = _cleanup_errors

@@ -16,7 +16,7 @@ from session_rules.legacy_local import bindings_agree
 from session_rules.turns import typed_prompt_content
 
 from .._schema import TITLE_SOURCE_USER
-from ._runtime import _epoch, _json, _text, replay_mutation_receipt
+from ._runtime import _epoch, _json, _sqlite_text, _text, replay_mutation_receipt
 
 
 def authorize_write(conn, history, session_id, owner=None):
@@ -100,7 +100,7 @@ def mutate_runtime_session(holder, *, epoch: int, principal_id: str, session_id:
                   'execution_generation': updated['runtime_generation'] if updated else expected_generation,
                   'operation': operation, **projection}
         conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)',
-                     (key, _json({'digest': digest, 'result': result})))
+                     (key, _sqlite_text(_json({'digest': digest, 'result': result}))))
         return result, gone, False
     return holder._execute_write(write)
 

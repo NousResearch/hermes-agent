@@ -28,6 +28,8 @@ from ._runtime import (
     _row,
     _session,
     _text,
+    _sqlite_payload_json,
+    _sqlite_text,
     check_replaced_input,
     compact_result,
     encode_result,
@@ -69,12 +71,12 @@ def admit_session_input(holder, *, epoch: int, principal_id: str, session_id: st
         _text(value)
     if intent not in ('queue', 'steer', 'redirect'):
         raise AuthorityRefusal('invalid_params')
-    encoded = _json(payload)
+    stored_payload = _sqlite_payload_json(payload)
     retired = retry_terminal_admission(holder, epoch=epoch, principal_id=principal_id, session_id=session_id,
         request_id=request_id, payload=payload, intent=intent)
     if retired is not None:
         return retired, False
-    digest = admission_fingerprint(canonical_target=session_id, payload={'input': retry_input(json.loads(encoded)), 'intent': intent})
+    digest = admission_fingerprint(canonical_target=session_id, payload={'input': retry_input(json.loads(stored_payload)), 'intent': intent})
     def write(conn):
         _epoch(conn, epoch)
         _session(conn, session_id)
@@ -101,7 +103,7 @@ def admit_session_input(holder, *, epoch: int, principal_id: str, session_id: st
         conn.execute('''INSERT INTO session_admissions(admission_id,request_id,principal_id,
             target_session_id,lineage_json,payload_json,payload_digest,intent,status,owner_epoch)
             VALUES(?,?,?,?,?,?,?,?,'queued',?)''',
-            (admission_id, request_id, principal_id, session_id, json.dumps([session_id]), encoded, digest, intent, epoch))
+            (admission_id, request_id, principal_id, session_id, json.dumps([session_id]), stored_payload, digest, intent, epoch))
         return _row(_admission(conn, admission_id)), True
     return holder._execute_write(write)
 
@@ -242,7 +244,7 @@ def settle_session_input(holder, *, epoch: int, admission_id: str, generation: i
             encoded = _json(encode_result(compact_result(result, user_message=json.loads(row['payload_json']).get('text'))))
             conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?) '
                          'ON CONFLICT(key) DO UPDATE SET value=excluded.value',
-                         (RESULT_PREFIX + admission_id, encoded))
+                         (RESULT_PREFIX + admission_id, _sqlite_text(encoded)))
         conn.execute("UPDATE session_admissions SET status='terminal',outcome=? WHERE admission_id=?", (outcome, admission_id))
         settle_steer_transfers(conn, epoch=epoch, generation=generation, transfers=_transfers, outcome=outcome)
         conn.execute('UPDATE sessions SET runtime_revision=runtime_revision+1 WHERE id=?', (row['target_session_id'],))
@@ -321,11 +323,13 @@ def rehome_queued_inputs(holder, *, epoch: int, old_session_id: str, new_session
                             "AND substr(principal_id,1,?)=? ORDER BY seq",
                             (old_session_id, len(principal_prefix), principal_prefix)).fetchall()
         for row in rows:
+            payload = json.loads(row['payload_json'])
+            stored_payload = _sqlite_payload_json(payload)
             digest = admission_fingerprint(canonical_target=new_session_id, payload={
-                'input': retry_input(json.loads(row['payload_json'])), 'intent': row['intent']})
-            conn.execute("UPDATE session_admissions SET target_session_id=?,lineage_json=?,payload_digest=? "
+                'input': retry_input(json.loads(stored_payload)), 'intent': row['intent']})
+            conn.execute("UPDATE session_admissions SET target_session_id=?,lineage_json=?,payload_json=?,payload_digest=? "
                          "WHERE admission_id=? AND status='queued'",
-                         (new_session_id, json.dumps([new_session_id]), digest, row['admission_id']))
+                         (new_session_id, json.dumps([new_session_id]), stored_payload, digest, row['admission_id']))
         if rows:
             for sid in (old_session_id, new_session_id):
                 conn.execute('UPDATE sessions SET runtime_revision=runtime_revision+1 WHERE id=?', (sid,))
@@ -360,10 +364,11 @@ def retarget_local_automation(holder, *, epoch: int, session_id: str, principal_
             if not isinstance(descriptor, dict) or descriptor.get('target') not in old_targets:
                 continue
             descriptor['target'] = new_target
+            stored_payload = _sqlite_payload_json(payload)
             digest = admission_fingerprint(canonical_target=session_id, payload={
-                'input': retry_input(payload), 'intent': row['intent']})
+                'input': retry_input(json.loads(stored_payload)), 'intent': row['intent']})
             conn.execute("UPDATE session_admissions SET payload_json=?,payload_digest=? WHERE admission_id=? AND status='queued'",
-                         (_json(payload), digest, row['admission_id']))
+                         (stored_payload, digest, row['admission_id']))
             moved.append(row['admission_id'])
         if moved:
             conn.execute('UPDATE sessions SET runtime_revision=runtime_revision+1 WHERE id=?', (session_id,))
@@ -426,8 +431,8 @@ def resolve_unknown_session_input(holder, *, epoch: int, admission_id: str, gene
                 raise AuthorityRefusal('invalid_params')
             conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?) '
                          'ON CONFLICT(key) DO UPDATE SET value=excluded.value',
-                         (RESULT_PREFIX + admission_id, _json(encode_result(compact_result(
-                             stored, user_message=json.loads(row['payload_json']).get('text'))))))
+                         (RESULT_PREFIX + admission_id, _sqlite_text(_json(encode_result(compact_result(
+                             stored, user_message=json.loads(row['payload_json']).get('text')))))))
         # ``notice`` says the turn was interrupted: never beside a captured result this resolution commits.
         close_discarded_turn(holder, conn, row, None if (
             _captured is not None and row['owner_epoch'] == epoch) else notice)

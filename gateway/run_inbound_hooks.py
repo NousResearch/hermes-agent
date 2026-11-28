@@ -223,7 +223,11 @@ class GatewayInboundHooksMixin:
                 start_new_session=True,  # detached-spawn: ok — awaited; the timeout/cancel path kills its group
             )
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=_EXEC_QUICK_COMMAND_TIMEOUT)
-            output = (stdout or stderr).decode().strip()
+            # Lossy decode: the pipes are bytes and a quick command can print locale-encoded
+            # text (ls of a Latin-1 filename, git output on a non-UTF-8 host); strict UTF-8
+            # turned one stray byte into a codec error that discarded the whole output
+            # (#105582 class).
+            output = (stdout or stderr).decode(errors="replace").strip()
             if output:
                 from agent.redact import redact_sensitive_text
                 output = redact_sensitive_text(output)

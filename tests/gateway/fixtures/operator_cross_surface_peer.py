@@ -17,8 +17,8 @@ async def probe(peer, creator):
     from websockets.asyncio.client import connect
     from gateway.run import GatewayRunner
     from gateway.run_bootstrap import _start_gateway_start_control_socket
-    from gateway.run_runtime import (initialize_gateway_runtime, start_gateway_runtime_api,
-                                     publish_gateway_runtime_ready)
+    from gateway.run_runtime import initialize_gateway_runtime, publish_gateway_runtime_ready
+    from gateway.run_runtime_listener import start_gateway_runtime_api
     from gateway.runtime_ownership import process_ownership
     from hermes_cli import web_server
     from hermes_cli.dashboard_auth import register_provider, clear_providers
@@ -71,8 +71,10 @@ async def probe(peer, creator):
 
         async with httpx.AsyncClient(base_url=origin, trust_env=False) as client:
             assert (await client.post('/api/auth/ws-ticket')).status_code == 401
-            # Walk real login, PKCE callback, cookie verification, then ticket mint.
-            login = await client.get('/auth/login', params={'provider': 'stub'})
+            # Walk real login, PKCE callback, cookie verification, then ticket mint. The browser
+            # addressed the public host; the proxy routing it here forwards that host.
+            login = await client.get('/auth/login', params={'provider': 'stub'},
+                                     headers={'X-Forwarded-Host': 'gateway.example.test'})
             assert login.status_code == 302, login.text
             from urllib.parse import urlsplit
             callback_url = urlsplit(login.headers['location'])

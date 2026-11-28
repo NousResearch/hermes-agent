@@ -119,7 +119,12 @@ def test_a_canary_claim_keys_the_canary_pool(tmp_path):
     assert (out / key).is_file()
 
 
-@pytest.mark.parametrize("subdir,suite", [(CANARY_CLAIM, "hermes-stable"), ("rc.1-v0.21.5", "hermes-canary")])
+@pytest.mark.parametrize("subdir,suite", [
+    (CANARY_CLAIM, "hermes-stable"),
+    ("rc.1-v0.21.5", "hermes-canary"),
+    ("commit.20261026T180000Z-v0.21.5", "hermes-canary"),
+    ("commit.20261026T180000Z-v0.21.5", "hermes-commit"),
+])
 def test_a_claim_stages_only_its_own_suite(tmp_path, subdir, suite):
     pool = tmp_path / "pool-in"
     pool.mkdir()

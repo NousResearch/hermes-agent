@@ -2,6 +2,7 @@
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -167,10 +168,12 @@ def test_a_canary_runs_every_stable_job_with_every_lane_and_differs_only_in_publ
     assert upgrade == {"transitions-darwin-arm64", "transitions-win32",
                        "macos-packaged-arm64", "windows-packaged"}
     stable_all = lane_set.jobs_to_run(lane_set.NAMES, "stable")
-    assert {job for job in canary if canary[job] != stable_all[job]} == set(lane_set.POLICY_JOBS) | upgrade
+    policy_diff = {job for job, policies in lane_set.POLICY_JOBS.items()
+                   if ("canary" in policies) != ("stable" in policies)}
+    assert {job for job in canary if canary[job] != stable_all[job]} == policy_diff | upgrade
     # Every other build and test job runs: Termux and diagnostic Linux included, which a default claim
     # leaves out, and install-e2e, which updates released stable tags to the canary commit.
-    assert {job for job, runs in canary.items() if not runs} == {"publish-bundles"} | upgrade
+    assert {job for job, runs in canary.items() if not runs} == {"publish-bundles", "publish-commit"} | upgrade
     for opted_out in ("candidates-termux", "termux-checks", "candidates-linux-x64", "candidates-linux-arm64"):
         assert canary[opted_out] and not lane_set.jobs_to_run(lane_set.DEFAULT)[opted_out], opted_out
     with pytest.raises(ValueError, match="policy"):
@@ -182,7 +185,9 @@ def test_a_canary_runs_every_stable_job_with_every_lane_and_differs_only_in_publ
     assert rest == "${{ inputs.tag }}"
     assert evaluate(prefix, {"tag": "rc.1-v1.2.3"}, {}) == "Stable"
     assert evaluate(prefix, {"tag": "canary.20261021T064100Z-v1.2.3"}, {}) == "Canary"
+    assert evaluate(prefix, {"tag": "commit.20261021T064100Z-v1.2.3"}, {}) == "Commit"
     assert claim_run_title("rc.1-v1.2.3") == "Stable release rc.1-v1.2.3"
+    assert claim_run_title("commit.20261021T064100Z-v1.2.3") == "Commit release commit.20261021T064100Z-v1.2.3"
 
 
 def test_canary_publication_follows_its_claims_green_policy_and_never_touches_stable():
@@ -359,7 +364,8 @@ def test_claim_custody_and_final_payload_identity_reach_every_privileged_phase()
         assert call["claim-object"] == "${{ needs.admit.outputs.claim-object }}"
     desktop = workflow("desktop-bundled-release.yml")
     assert "release-epoch" in desktop["jobs"]["validate"]["outputs"]
-    assert "HERMES_RELEASE_EPOCH" not in desktop["jobs"]["termux-deb"]["env"]
+    for termux_job in ("termux-deb-release", "termux-deb-commit", "termux-deb"):
+        assert "HERMES_RELEASE_EPOCH" not in desktop["jobs"][termux_job]["env"]
     # B3: each build group stages its own receipt before its smoke, and the
     # receipt URL and digest cross the call boundary as workflow outputs.
     assert "manifest-url" not in desktop["on"]["workflow_call"]["outputs"]
@@ -534,9 +540,10 @@ def test_docker_recovery_refuses_to_replace_a_divergent_version_tag(tmp_path):
     marker = tmp_path / "create-called"
     bindir = tmp_path / "bin"
     bindir.mkdir()
-    docker = bindir / "docker"
-    docker.write_text(
-        "#!/usr/bin/env python3\n"
+    # The fake runs under this interpreter: a ``python3`` shebang finds no interpreter (or the
+    # Store stub) on Windows. Paths reach bash in POSIX form; it eats backslashes.
+    fake = bindir / "docker.py"
+    fake.write_text(
         "import json, os, pathlib, sys\n"
         "if 'create' in sys.argv:\n"
         "    pathlib.Path(os.environ['CREATE_MARKER']).write_text('called')\n"
@@ -544,11 +551,16 @@ def test_docker_recovery_refuses_to_replace_a_divergent_version_tag(tmp_path):
         "print(json.dumps({'manifests': [{'digest': 'sha256:' + 'c' * 64}]}))\n",
         encoding="utf-8",
     )
+    docker = bindir / "docker"
+    docker.write_text(f'#!/bin/sh\nexec "{Path(sys.executable).as_posix()}" "{fake.as_posix()}" "$@"\n',
+                      encoding="utf-8", newline="\n")
     docker.chmod(0o755)
     result = subprocess.run(
         ["bash", "-e", "-o", "pipefail", "-c",
-         step["run"].replace("/tmp/digests", str(digest_dir))], cwd=tmp_path,
-        env={**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
+         # Relative to cwd: the step's ``cd /tmp/digests`` is unquoted, so an absolute temp path
+         # with a space (a Windows profile like C:/Users/Jane Doe) would split.
+         step["run"].replace("/tmp/digests", "digests")], cwd=tmp_path,
+        env={**os.environ, "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
              "IMAGE_NAME": "owner/repo", "RELEASE_TAG": "0.21.5",
              "CREATE_MARKER": str(marker)},
         capture_output=True, text=True, encoding="utf-8",

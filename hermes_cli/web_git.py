@@ -19,6 +19,7 @@ from pathlib import Path
 
 from hermes_cli._subprocess_compat import (
     FILTER_DISCOVERY_FAILED,
+    _git_argv0_unusable,
     harden_git_argv,
     noninteractive_git_env,
     noninteractive_repo_git_env,
@@ -39,7 +40,10 @@ _TRUNK_BRANCHES = ("main", "master")
 def _run(argv: list[str], cwd: str, timeout: int, env: dict) -> subprocess.CompletedProcess | None:
     """Non-interactive subprocess (stdin nulled, prompts disabled): a credential prompt from
     ``fetch``/``push`` could never be answered from a REST request, so fail fast and surface
-    the real auth error in the toast. None when the process could not run at all."""
+    the real auth error in the toast. None when the process could not run at all, including a
+    git that is missing or is macOS's uninstalled CLT stub (launching it opens Apple's dialog)."""
+    if _git_argv0_unusable(argv, env, cwd=cwd):
+        return None
     try:
         return subprocess.run(
             argv, cwd=cwd, capture_output=True, text=True, encoding='utf-8',
@@ -374,6 +378,8 @@ def review_unstage(cwd: str, file_path: str | None) -> dict:
 
 def review_revert(cwd: str, file_path: str | None) -> dict:
     """Discard changes back to the committed state (restore tracked, remove untracked)."""
+    if _git_argv0_unusable(["git"], cwd=cwd):
+        raise RuntimeError("git is not available")
     target = ["--", file_path or "."]
     _git_write(cwd, ["checkout", "HEAD", *target])
     _git_write(cwd, ["clean", "-fd", *target])
@@ -443,6 +449,8 @@ def _review_push(cwd: str) -> None:
 
 
 def review_push(cwd: str) -> dict:
+    if _git_argv0_unusable(["git"], cwd=cwd):
+        raise RuntimeError("git is not available")
     _review_push(cwd)
     return {"ok": True}
 
@@ -507,8 +515,10 @@ def _gh_json(cwd: str, args: list[str]):
 
 
 def review_ship_info(cwd: str) -> dict:
-    """gh availability/auth + this branch's PR. ghReady false when gh missing/unauthed."""
-    if not _is_dir(cwd) or not _gh(cwd, ["auth", "status"])[0]:
+    """gh availability/auth + this branch's PR. ghReady false when gh missing/unauthed, or when git
+    is macOS's CLT stub: gh reads the branch and repo with git, so neither the PR lookup nor
+    Create PR (gated on ghReady) can run without launching it."""
+    if not _is_dir(cwd) or _git_argv0_unusable(["git"], cwd=cwd) or not _gh(cwd, ["auth", "status"])[0]:
         return {"ghReady": False, "pr": None}
     pr = _gh_json(cwd, ["pr", "view", "--json", "url,state,number"])
     if pr and pr.get("url"):
@@ -561,7 +571,7 @@ def review_pr_list(cwd: str, branches: list[str], numbers: list[int] | None = No
         return not_ready
     wanted = list(dict.fromkeys(str(b) for b in (branches or []) if b))[:_PR_QUERY_BRANCH_CAP]
     by_number = list(dict.fromkeys(int(n) for n in (numbers or []) if n))[:_PR_QUERY_BRANCH_CAP]
-    if not wanted and not by_number:
+    if (not wanted and not by_number) or _git_argv0_unusable(["git"], cwd=cwd):  # gh reads the repo from git
         return not_ready
     repo_ok, repo_out, _repo_err = _gh(cwd, ["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"])
     owner, _, name = repo_out.strip().partition("/")
@@ -586,6 +596,8 @@ def review_pr_list(cwd: str, branches: list[str], numbers: list[int] | None = No
 
 def review_create_pr(cwd: str) -> dict:
     """Create a PR for the current branch (push first), letting gh fill title/body."""
+    if _git_argv0_unusable(["git"], cwd=cwd):  # gh pr create --fill reads the branch and commits with git
+        raise RuntimeError("git is not available")
     try:
         _review_push(cwd)
     except RuntimeError:

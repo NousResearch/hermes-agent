@@ -216,9 +216,10 @@ def test_every_message_naming_a_hermes_command_follows_the_host_shell(team_root,
         p = plan.BackendPlan(home=str(home), powershell=powershell)
         state = {"kind": kind, "installed": False, "active": False, "running_pid": 77, "unit": None}
         host = SimpleNamespace(gateway_state=lambda state=state: state, linger=lambda: None,
-                               gateway_preflight=lambda: None)
-        plan._gateway(p, host)
-        texts[f"{kind} stray gateway"] = (" ".join(p.blockers), f"({pin} gateway stop)")
+                               gateway_preflight=lambda: None, legacy_unit_records=list,
+                               stray_gateway=lambda pid: {"pid": pid, "idle_exit": False, "chats": 0, "unit": None})
+        plan._gateway(p, host, False)
+        texts[f"{kind} stray gateway"] = (" ".join(p.blockers), f"(or stop it first: {pin} gateway stop)")
         texts[f"{kind} gateway line"] = (plan._gateway_line(p), f"({pin} gateway install;")
     owner = SimpleNamespace(home=home, gateway_owner=lambda: ("unknown", None),
                             os_family=lambda: "win32" if powershell else "linux")

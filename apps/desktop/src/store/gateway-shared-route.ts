@@ -1,3 +1,4 @@
+import type { HermesConnection } from '@/global'
 import { RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
 
 // True when `profile`'s backend route resolves to the SHARED primary backend
@@ -17,10 +18,15 @@ import { RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
 // same boot for another 20 s, then opened a second socket at the shared process
 // (#120005). Callers surface the rejection as the switch/request failure.
 export async function sharedPrimaryRoute(profile: string): Promise<boolean> {
+  return (await sharedPrimaryConnection(profile)) !== null
+}
+
+/** `profile`'s descriptor when it rides the shared primary backend, else null. */
+export async function sharedPrimaryConnection(profile: string): Promise<HermesConnection | null> {
   const desktop = window.hermesDesktop
 
   if (!desktop) {
-    return false
+    return null
   }
 
   // Unbounded IPC round-trip into main (#93454): bound it so a wedge rejects.
@@ -30,7 +36,7 @@ export async function sharedPrimaryRoute(profile: string): Promise<boolean> {
     `Timed out resolving the shared-primary route for profile "${profile}"`
   )
 
-  return conn?.sharedPrimary === true
+  return conn?.sharedPrimary === true ? conn : null
 }
 
 // Scopes whose last route resolution rode the primary socket (shared primary /

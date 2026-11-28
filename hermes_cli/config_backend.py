@@ -327,15 +327,19 @@ def _ensure_bootstrap_env() -> None:
         _bootstrap(None, None, once=True)
 
 
-def bootstrap_deployment(home: Optional[PathLike] = None, project_env: Optional[PathLike] = None) -> None:
+def bootstrap_deployment(home: Optional[PathLike] = None, project_env: Optional[PathLike] = None, *,
+                         home_elsewhere: Optional[bool] = None) -> None:
     """Publish the deployment from an explicit dotenv load's layers (``load_hermes_dotenv``: its
     home and project ``.env``) before that load's first config read. Runs even when the
-    once-per-process bootstrap already ran: an earlier one did not know this load's project file."""
+    once-per-process bootstrap already ran: an earlier one did not know this load's project file.
+    *home_elsewhere* is that load's answer to whether a plugin runs the home's profile elsewhere
+    (its ``.env`` is then no layer); None lets the bootstrap ask."""
     _bootstrap(Path(home) if home is not None else None,
-               Path(project_env) if project_env is not None else None, once=False)
+               Path(project_env) if project_env is not None else None, once=False, home_elsewhere=home_elsewhere)
 
 
-def _bootstrap(home: Optional[Path], project_env: Optional[Path], *, once: bool) -> None:
+def _bootstrap(home: Optional[Path], project_env: Optional[Path], *, once: bool,
+               home_elsewhere: Optional[bool] = None) -> None:
     global _BOOTSTRAPPED, _BOOTSTRAP_OWNER
     with _BOOTSTRAP_LOCK:  # another thread's bootstrap in progress: wait for it to publish
         if (once and _BOOTSTRAPPED) or _BOOTSTRAP_OWNER == threading.get_ident():
@@ -344,7 +348,7 @@ def _bootstrap(home: Optional[Path], project_env: Optional[Path], *, once: bool)
         try:
             from hermes_cli.env_loader import apply_config_bootstrap_env
             # names resolved only for the kind the .env layers select
-            apply_config_bootstrap_env(_bootstrap_names, home, project_env)
+            apply_config_bootstrap_env(_bootstrap_names, home, project_env, home_elsewhere=home_elsewhere)
         except ImportError:  # no usable python-dotenv (a bare installer interpreter): no .env loads either
             pass
         finally:

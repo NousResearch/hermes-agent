@@ -250,6 +250,79 @@ that profile keep their per-process meaning. Parking is the multiplex-native way
 to take one profile offline — it is what closes the "per-profile stop/restart"
 gap the [temporary shim](#temporary-gatewaystandalone-true) was kept open for.
 
+### Profiles a plugin runs elsewhere
+
+A plugin that runs a profile's whole backend somewhere other than this host (for
+example in a sandbox) marks the profile with
+`<hermes root>/profiles_run_elsewhere/<profile>.json`, containing
+`{"plugin": "<plugin name>", "since": "<ISO 8601 time>"}`. While that file
+exists, nothing on the host runs the profile, whether or not the plugin is
+running:
+
+- the host gateway does not serve it (platforms, cron, Kanban watchers,
+  `/p/<profile>/` routes), and the Desktop cron ticker skips it;
+- no agent is built for it, an agent built before the profile was marked runs
+  no further turn, and no cron ticker on the host (the gateway's, the
+  Desktop's, a cron provider's built-in fallback) runs its jobs;
+- `hermes -p <profile> chat`, `acp`, `cron run`, `cron tick`, `serve` and
+  `dashboard` exit with a message naming the plugin;
+- `hermes -p <profile> gateway run` exits 78, and `hermes gateway ensure`
+  refuses it (`profile_runs_elsewhere`);
+- the dashboard's cron, session, file and Webapp requests for it answer `409`,
+  and the Kanban dispatcher leaves cards assigned to it in `ready`
+  (`skipped_nonspawnable`).
+
+The default profile can be marked too. The host gateway runs as the default
+profile, so it then refuses to start; stop it before marking `default`. A
+running host gateway drops a newly marked named profile at its next rescan
+(30 seconds). A gateway or a `hermes serve` / `hermes dashboard` backend that
+was started as the marked profile itself is not stopped by the marker: it runs
+no further turn and no cron job for the profile, but it stays up until it is
+stopped, so stop it before marking. A marker that cannot be read still counts;
+only the plugin name is then unknown.
+
+While a profile is marked, host processes load no env file and no secret source
+from its home when they start: a `hermes -p <profile> …` command, and a plugin's
+own host process started under that home, read no `.env` or `.op.env` there and
+resolve none of its `secrets:` sources, and a host gateway or dashboard that
+serves the profile resolves none of them either. The marking plugin supplies
+what its own host process needs. A command that looks up one value later gets
+none from that `.env` either, so `hermes -p <profile> status` and `hermes -p
+<profile> config` show the profile's keys as not set, with one line saying why;
+a key saved through the plugin's host process is still written to the file.
+Host commands also start nothing the profile's own files name: `hermes -p
+<profile> hooks test` runs no shell hook, and `hermes -p <profile> mcp test`
+(or `mcp add`) refuses before it starts or calls an MCP server.
+
+The marker lives under the Hermes root, never in a profile home, so the
+profile's own backend cannot remove it. Host-side plugin code sets, reads and
+clears it with three functions of the
+[public plugin API](../developer-guide/plugins/public-api.md):
+
+```python
+from hermes_cli.profiles_run_elsewhere import (
+    clear_profile_run_elsewhere, mark_profile_run_elsewhere, run_elsewhere,
+)
+
+mark_profile_run_elsewhere("ops", "my-plugin")   # before the backend starts elsewhere
+entry = run_elsewhere("ops")                     # entry.plugin == "my-plugin"; None when unmarked
+clear_profile_run_elsewhere("ops", "my-plugin")  # once that backend has stopped
+```
+
+`mark_profile_run_elsewhere` and `clear_profile_run_elsewhere` raise
+`ValueError` for a marker another plugin owns. Other writers write the file
+under a name that starts with `.` in that folder and rename it over
+`<profile>.json`. Only a missing folder means that nothing is marked: if
+anything else is in its place, or it cannot be read, the host runs no profile
+until that is fixed. The one exception is a process that is denied the folder.
+The plugin keeps the folder out of the backend it runs, so such a process
+applies none of these refusals, and that backend keeps running its own
+profile. To run the profile on this host again,
+turn it off in the plugin. If the plugin is no longer installed or no longer
+loads, the refusal names the marker file: deleting that file lets Hermes run
+the profile on this host again. Do not delete it while the plugin still runs
+the profile.
+
 ### No new per-profile gateways
 
 By default, one host gateway serves every profile, and a named profile does

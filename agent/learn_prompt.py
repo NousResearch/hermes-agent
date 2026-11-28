@@ -7,7 +7,17 @@ so it works identically on local, Docker, and remote backends; every surface (CL
 
 from __future__ import annotations
 
-from agent.skill_utils import get_skill_desc_limit
+import importlib
+
+# v0.23.3 and earlier gateways cache agent.skill_utils at boot without get_skill_desc_limit.
+_skill_utils = importlib.import_module("agent.skill_utils")
+
+
+def _default_skill_desc_limit() -> int:
+    return getattr(_skill_utils, "SKILL_PROMPT_DESC_LIMIT", 60)
+
+
+get_skill_desc_limit = getattr(_skill_utils, "get_skill_desc_limit", _default_skill_desc_limit)
 
 # House-style rules from AGENTS.md "Skill authoring standards (HARDLINE)".
 _AUTHORING_STANDARDS = """\

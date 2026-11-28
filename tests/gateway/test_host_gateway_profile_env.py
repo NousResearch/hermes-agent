@@ -99,16 +99,15 @@ class TestProfileEnvIsNotThePrimaryClaim:
         )
         monkeypatch.setattr("hermes_cli.profiles.get_active_profile_name", lambda: "worker")
 
-        async def fake_start(profile_name, profile_home, claimed):
+        async def fake_start(profile_name, profile_home, claimed, batch):
             started.append(profile_name)
-            return 1
 
-        monkeypatch.setattr(runner, "_start_one_profile_adapters", fake_start)
+        monkeypatch.setattr(runner, "_prepare_one_profile_adapters", fake_start)
         monkeypatch.setattr(
             "gateway.run_profile_reconcile.profile_serve_signature", lambda _home: "signature",
         )
 
-        assert await runner._start_secondary_profile_adapters() == 1
+        assert await runner._start_secondary_profile_adapters() == 0
         assert started == ["worker"]
 
 

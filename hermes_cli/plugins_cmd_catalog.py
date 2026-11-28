@@ -89,9 +89,14 @@ def write_catalog_sidecar(target: Path, entry: PluginCatalogEntry, sha: Optional
 
 
 def _install_record(plugin_dir: Path) -> Optional[dict]:
-    """The installer-owned ``.install-metadata.json`` record for a dir under the plugins dir, else ``None``."""
+    """The installer-owned ``.install-metadata.json`` record for a dir under the plugins dir, else ``None``.
+    The parent is compared as a directory: discovery records a linked profile's plugins under its resolved
+    directory, while the plugins dir is spelled through the name the profile was opened by."""
     from hermes_cli.plugins_cmd import PluginOperationError, _plugins_dir, _read_install_metadata
-    if plugin_dir.parent != _plugins_dir():
+    plugins_dir = _plugins_dir()
+    # Canonical paths, not samefile: a filesystem that reports file id 0 (FAT) gives every directory one id.
+    if plugin_dir.parent != plugins_dir and (os.path.normcase(os.path.realpath(plugin_dir.parent))
+                                             != os.path.normcase(os.path.realpath(plugins_dir))):
         return None
     try:
         record = _read_install_metadata().get(plugin_dir.name)

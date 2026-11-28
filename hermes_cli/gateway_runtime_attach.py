@@ -100,8 +100,10 @@ def attach_gateway(home: str | Path, *, start: bool, recover: bool = False, time
     A failed mint (control socket I/O, a refused or changed grant) raises ``TicketUnavailable``.
     """
     from hermes_cli.gateway_runtime import (attachable, discover_gateway_endpoint, ensure_gateway_runtime,
-                                           gateway_profile_home)
+                                           gateway_profile_home, run_elsewhere_verdict)
 
+    if (refused := run_elsewhere_verdict(home)) is not None:  # as given: resolving may lead out of the root
+        return GatewayAttach(refused)
     home = gateway_profile_home(home)
     receipt = (ensure_gateway_runtime(home, timeout=timeout, idle_exit=True) if start
                else discover_gateway_endpoint(home, timeout=min(timeout, DISCOVER_TIMEOUT)))

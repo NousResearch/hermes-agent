@@ -18,8 +18,9 @@ if TYPE_CHECKING:
     from pm.environment import PythonEnvironment  # noqa: TID251
 
 from pm import paths
+from pm.filesystem import long_root
 from pm.package import InstallError
-from pm.plugin_declarations import read_python_declaration, manifest_version_error
+from pm.plugin_declarations import manifest_version_error, needs_workspace_member, read_python_declaration
 
 _MEMBER_EXCLUDE = frozenset({".git", ".venv", "venv", "node_modules", "__pycache__"})
 
@@ -52,11 +53,12 @@ def members_stamp(plugin_dirs) -> str:
             h.update(source.read_bytes())
             h.update(b"\0")
         if (entry / "pyproject.toml").is_file():
-            for directory, dirs, files in os.walk(entry):
+            walk_root = long_root(entry)
+            for directory, dirs, files in os.walk(walk_root):
                 dirs[:] = sorted(set(dirs) - set(_member_ignored(directory, dirs)))
                 for name in sorted(set(files) - set(_member_ignored(directory, files))):
                     path = Path(directory) / name
-                    h.update(path.relative_to(entry).as_posix().encode())
+                    h.update(path.relative_to(walk_root).as_posix().encode())
                     h.update(b"\0")
                     h.update(os.readlink(path).encode() if path.is_symlink() else path.read_bytes())
                     h.update(b"\0")
@@ -135,7 +137,7 @@ def _copy_core_inputs(source: Path, destination: Path) -> None:
                      or entry.name in _ROOT_DATA_DIRS
                      or any(fnmatch.fnmatchcase(entry.name, pattern) for pattern in package_roots))):
             target = destination / entry.name
-            shutil.copytree(entry, target, ignore=ignore)
+            shutil.copytree(long_root(entry), long_root(target), ignore=ignore)
     for name in files:
         entry = source / name
         if not entry.is_file() or entry.is_symlink():
@@ -150,19 +152,26 @@ def _copy_core_inputs(source: Path, destination: Path) -> None:
 def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Path, *, source: Path,
                         python: Path, extras: Iterable[str] = ()) -> None:
     """Snapshot core and plugin build inputs into a fresh generation for the *python* that installs it."""
-    source = source.resolve()
-    if root.resolve() == source or source.is_relative_to(root.resolve()):
+    core_source = source.resolve()
+    if root.resolve() == core_source or core_source.is_relative_to(root.resolve()):
         raise InstallError("venv", "workspace must not replace the core source")
     root.mkdir(parents=True)
 
-    core_pyproject = source / "pyproject.toml"
+    core_pyproject = core_source / "pyproject.toml"
     core_text = core_pyproject.read_text(encoding="utf-8-sig")
 
-    candidates = {identity: source for identity, source in member_sources(plugin_dirs).items()
-                  if _is_member_candidate(source)}
-    target = _target_environment(python) if candidates else {}
-    members = [_workspace_member(source, root, identity=identity, extras=extras, target=target)
-               .relative_to(root).as_posix() for identity, source in candidates.items()]
+    sources_map = member_sources(plugin_dirs)
+    declaring = {identity: entry for identity, entry in sources_map.items()
+                 if read_python_declaration(entry).installs_packages}
+    target = _target_environment(python) if declaring else {}
+    candidates = (
+        declaring
+        if any(_is_member_candidate(entry, project_root=core_source, target_env=target)
+               for entry in declaring.values())
+        else {}
+    )
+    members = [_workspace_member(entry, root, identity=identity, extras=extras, target=target)
+               .relative_to(root).as_posix() for identity, entry in candidates.items()]
 
     if members:
         import tomllib
@@ -184,10 +193,10 @@ def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Pat
     else:
         # A member-less generation syncs frozen against core's own lock.
         text = core_text.rstrip("\n") + "\n"
-    target = root / "pyproject.toml"
+    target_file = root / "pyproject.toml"
     text = _without_release_age(text)
-    _copy_core_inputs(source, root)
-    target.write_text(text, encoding="utf-8")
+    _copy_core_inputs(core_source, root)
+    target_file.write_text(text, encoding="utf-8")
 
 
 def _without_release_age(text: str) -> str:
@@ -255,8 +264,78 @@ def _solve_only_for(uv_policy: dict, target: Mapping[str, str]) -> None:
     uv_policy["environments"] = [f"({entry}) and {host}" for entry in uv_policy.get("environments") or []] or [host]
 
 
-def _is_member_candidate(plugin_dir: Path) -> bool:
-    return read_python_declaration(plugin_dir).installs_packages
+def _is_member_candidate(plugin_dir: Path, *, project_root: Path | None = None,
+                         target_env: Mapping[str, str] | None = None,
+                         allow_marker_skip: bool = True) -> bool:
+    return needs_workspace_member(
+        read_python_declaration(plugin_dir),
+        project_root=project_root,
+        target_env=target_env,
+        allow_marker_skip=allow_marker_skip,
+    )
+
+
+def _resolve_target_environment(
+    python: Path | None = None,
+    target_env: Mapping[str, str] | None = None,
+) -> tuple[Mapping[str, str] | None, bool]:
+    """Resolve the PEP 508 marker environment for the target managed Python.
+
+    Returns ``(env, target_known)``. When neither *target_env* nor *python* is passed,
+    probes PM's pinned installed interpreter read-only via ``pm._uv._toolchain(realize=False)``.
+    If no target interpreter can be determined, returns ``(None, False)`` so callers treat
+    marker-sensitive requirements conservatively instead of dropping them on the worker's Python.
+    """
+    if target_env is not None:
+        return target_env, True
+    if python is not None:
+        return _target_environment(python), True
+    import subprocess
+    from pm._uv import _toolchain  # noqa: TID251
+
+    try:
+        tools = _toolchain(realize=False)
+    except (InstallError, OSError, RuntimeError, ValueError, KeyError):
+        tools = None
+    if tools is not None:
+        try:
+            return _target_environment(tools[1]), True
+        except (OSError, subprocess.SubprocessError, ValueError):
+            pass
+    return None, False
+
+
+def select_workspace_members(
+    plugin_dirs: Iterable[Path],
+    *,
+    project_root: Path | None = None,
+    python: Path | None = None,
+    target_env: Mapping[str, str] | None = None,
+) -> list[Path]:
+    """Keep ALL package-declaring plugins if ANY needs a workspace solve, else ``[]``.
+
+    When no plugin needs a workspace member, returning ``[]`` skips venv rebuilds and
+    ``uv-cache`` seeding completely. When any plugin forces a shared ``uv`` solve, every
+    package-declaring plugin stays in the workspace so ``uv`` enforces all of their
+    constraints together (preventing an unsatisfied plugin from downgrading a package
+    pinned by a core-satisfied plugin).
+    """
+    declaring = [(path, decl) for path in plugin_dirs
+                 if (decl := read_python_declaration(path)).installs_packages]
+    if not declaring:
+        return []
+    resolved_env, target_known = _resolve_target_environment(python=python, target_env=target_env)
+    if not any(
+        needs_workspace_member(
+            decl,
+            project_root=project_root,
+            target_env=resolved_env,
+            allow_marker_skip=target_known,
+        )
+        for _path, decl in declaring
+    ):
+        return []
+    return [path for path, _decl in declaring]
 
 
 def enabled_plugin_entries(*, proposed_home=None, enabled=None, disabled=None,
@@ -304,7 +383,9 @@ def enabled_plugin_dirs(*, proposed_home=None, enabled=None, disabled=None,
     return list(dict.fromkeys(plugin_dir for _plugins_dir, _name, plugin_dir in entries))
 
 
-def enabled_member_dirs(*, proposed_home=None, enabled=None, disabled=None) -> list[Path]:
+def enabled_member_dirs(*, proposed_home=None, enabled=None, disabled=None,
+                        python: Path | None = None,
+                        target_env: Mapping[str, str] | None = None) -> list[Path]:
     """Keep every selected member or refuse an incompatible selection.
 
     A member that does not accept the running Hermes (``hermes_fit_error``) sits out instead:
@@ -315,7 +396,7 @@ def enabled_member_dirs(*, proposed_home=None, enabled=None, disabled=None) -> l
     """
     selected = enabled_plugin_dirs(proposed_home=proposed_home, enabled=enabled, disabled=disabled,
                                    skip_invalid_secondary=proposed_home is None)
-    members = []
+    valid: list[Path] = []
     for path in selected:
         declaration = read_python_declaration(path)
         if hermes_fit_error(declaration, ()):
@@ -323,9 +404,8 @@ def enabled_member_dirs(*, proposed_home=None, enabled=None, disabled=None) -> l
         reason = manifest_version_error(declaration.manifest, path.name)
         if reason:
             raise InstallError("venv", reason)
-        if declaration.installs_packages:
-            members.append(path)
-    return members
+        valid.append(path)
+    return select_workspace_members(valid, python=python, target_env=target_env)
 
 
 def build_member_dirs(extras: Iterable[str], python: Path | None = None) -> list[Path]:
@@ -333,10 +413,18 @@ def build_member_dirs(extras: Iterable[str], python: Path | None = None) -> list
     can add a ``hermes-agent`` requirement the running Hermes misses, which sits out too.
     A build passes its interpreter *python*, whose markers the generation (and so the loader)
     sees; PM itself may run under a bootstrap Python."""
-    extras, members = list(extras), enabled_member_dirs()
-    target = _target_environment(python) if members and python is not None else None
-    return [path for path in members
+    extras = list(extras)
+    target = None
+    if python is not None:
+        selected = enabled_plugin_dirs(skip_invalid_secondary=True)
+        if any(read_python_declaration(path).installs_packages for path in selected):
+            target = _target_environment(python)
+    members = enabled_member_dirs() if target is None else enabled_member_dirs(target_env=target)
+    kept = [path for path in members
             if not core_requirement_error(read_python_declaration(path), extras, target)]
+    if len(kept) == len(members):
+        return kept
+    return select_workspace_members(kept, python=python, target_env=target)
 
 
 def _member_key(identity: Path) -> str:
@@ -620,7 +708,7 @@ def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path, extras: I
     pyproject = declaration.pyproject
     if pyproject is not None:
         member = root / "plugin-sources" / key
-        shutil.copytree(plugin_dir, member, symlinks=True,
+        shutil.copytree(long_root(plugin_dir), long_root(member), symlinks=True,
                         ignore=_member_ignored)
         document = tomllib.loads(pyproject.read_text(encoding="utf-8-sig"))
         # uv identifies a workspace member by [project].name, so the same virtual
@@ -883,7 +971,7 @@ def lock_and_sync(
         # Sibling generations keep external relative paths at the same depth;
         # snapshotted members and their exact lock travel with the workspace.
         # Use the snapshot's exclusions: build/ may hold an in-tree backend.
-        shutil.copytree(replay, root, symlinks=True, ignore=_member_ignored)
+        shutil.copytree(long_root(replay), long_root(root), symlinks=True, ignore=_member_ignored)
         # A generation recorded before the cutoff left the user's machine still carries it.
         manifest = root / "pyproject.toml"
         manifest.write_text(_without_release_age(manifest.read_text(encoding="utf-8-sig")), encoding="utf-8")

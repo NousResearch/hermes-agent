@@ -403,13 +403,22 @@ class ChannelOverride:
     provider: Optional[str] = None
     system_prompt: Optional[str] = None
     allow_silence: Optional[bool] = None
+    # This channel's ``compression.idle_compact_after_seconds`` (0 turns it off here); None = the global value.
+    idle_compact_after_seconds: Optional[int] = None
 
     def to_dict(self) -> dict[str, Any]:
         return {k: v for k, v in asdict(self).items() if v is not None}
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ChannelOverride":
-        return cls(**{f.name: data.get(f.name) for f in fields(cls)}) if data else cls()
+        if not data:
+            return cls()
+        values = {f.name: data.get(f.name) for f in fields(cls)}
+        idle = values["idle_compact_after_seconds"]
+        # A malformed value is ignored (the global one applies); a negative one is 0 (off), as globally.
+        idle = None if isinstance(idle, bool) else _coerce_num(int, idle, None)
+        values["idle_compact_after_seconds"] = None if idle is None else max(0, idle)
+        return cls(**values)
 
 
 # Platforms whose primary credential is ``PlatformConfig.token`` → its env var (empty-token
@@ -676,6 +685,10 @@ class GatewayConfig:
     # Prune SessionEntry records older than this (a resumed chat gets a fresh session). 0 = off.
     session_store_max_age_days: int = 90
     profile_routes: list = field(default_factory=list)  # gateway/profile_routing.py
+    # Runtime-only, never serialized: True only when ``load_gateway_config()`` built this config from
+    # the profile home's config.yaml/.env. Explicit ``gateway --config <file>`` and programmatic configs
+    # leave it False so the home-file reconcile watcher never replaces their platforms.
+    loaded_from_home: bool = field(default=False, compare=False, repr=False)
 
     # Scalar fields serialized verbatim by ``to_dict`` (in output order).
     _SCALAR_DICT_FIELDS = (
@@ -867,6 +880,7 @@ def load_gateway_config(*, strict: bool = False) -> GatewayConfig:
         config = _load_gateway_config_layers(_home, gw_data, strict)
     for platform_config in config.platforms.values():
         platform_config.loaded_version = version
+    config.loaded_from_home = True
     return config
 
 

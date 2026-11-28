@@ -1,0 +1,21 @@
+name: creatorplaybooks
+repo: https://github.com/1nc0gn30/hermes-creatorplaybooks
+sha: 2c67c5c727a48ef384a22da7c86367661687f45a
+description: Unofficial community plugin for CreatorPlaybooks (creatorplaybooks.netlify.app). Read-only tools to list mentors, read a mentor's sourced playbook and post ideas, and build a dated 7/14/30/60/90-day goal plan
+maintainer: 1nc0gn30
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/1nc0gn30/hermes-creatorplaybooks#readme
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools:
+  - creatorplaybooks_mentors
+  - creatorplaybooks_mentor
+  - creatorplaybooks_playbook
+  - creatorplaybooks_ideas
+  - creatorplaybooks_goal_plan
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -137,11 +137,36 @@ def _redact_for_provider(*values: Any, urls: bool = True) -> Any:
     return scrubbed[0] if len(scrubbed) == 1 else tuple(scrubbed)
 
 
-def _redact_messages_for_egress(messages: Optional[list[Any]]) -> Optional[list[Any]]:
-    """Scrubbed copies of whole transcript rows for a provider; a ``pre_llm_call`` veto's typed text
-    (display-only metadata) never leaves the host."""
+def _without_provider_invisible_display_data(messages: Any) -> Any:
+    """Copies of transcript rows without display-only text that must stay on the host."""
     from agent.message_metadata import without_withheld_prompts
-    return None if messages is None else list(_redact_for_provider(without_withheld_prompts(messages)))
+
+    rows = without_withheld_prompts(messages)
+    if not isinstance(rows, list):
+        return rows
+    return [
+        {
+            **row,
+            "display_metadata": {
+                key: value
+                for key, value in row["display_metadata"].items()
+                if key not in {"display_text", "plugin_card"}
+            },
+        }
+        if (
+            isinstance(row, dict)
+            and isinstance(row.get("display_metadata"), dict)
+        )
+        else row
+        for row in rows
+    ]
+
+
+def _redact_messages_for_egress(messages: Optional[list[Any]]) -> Optional[list[Any]]:
+    """Scrubbed copies of whole transcript rows safe to hand to a memory provider."""
+    if messages is None:
+        return None
+    return list(_redact_for_provider(_without_provider_invisible_display_data(messages)))
 
 
 class _StuckCallGate:
@@ -735,9 +760,10 @@ class MemoryManager:
             return ""
         parts = []
         checkpoint_succeeded = False
-        from agent.message_metadata import without_withheld_prompts
         messages, evidence_messages = _redact_for_provider(
-            without_withheld_prompts(messages or []), without_withheld_prompts(evidence_messages))
+            _without_provider_invisible_display_data(messages or []),
+            _without_provider_invisible_display_data(evidence_messages),
+        )
         for provider in self._providers:
             version = self._checkpoint_api_version(provider)
             if version is None:

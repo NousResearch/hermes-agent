@@ -18,7 +18,8 @@ Your request
   → Pick key from pool (round_robin / least_used / fill_first / random)
   → Send to provider
   → 429 rate limit?
-      → Plan/usage limit reached (e.g. ChatGPT/Codex "usage limit reached")?
+      → Plan/usage limit reached (e.g. ChatGPT/Codex "usage limit reached", or a Claude plan
+        window the response marks `rejected`)?
           → Rotate to next pool key immediately (no retry — the cap won't clear on retry)
       → Generic / transient 429?
           → Retry same key once (transient blip)
@@ -132,14 +133,14 @@ credential_pool_strategies:
 
 | 错误 | 行为 | 冷却时间 |
 |-------|----------|----------|
-| **429 速率限制** | 对同一密钥重试一次（瞬时错误）。连续第二次 429 则轮换到下一个密钥 | 1 小时 |
+| **429 速率限制** | 对同一密钥重试一次（瞬时错误）。连续第二次 429 则轮换到下一个密钥；用量上限或被拒绝的 Claude 套餐窗口 429 会立即轮换（见下文） | 1 小时，或提供方给出的重置时间 |
 | **402 计费/配额** | 立即轮换到下一个密钥 | 24 小时 |
 | **401 认证过期** | 先尝试刷新 OAuth 令牌。仅在刷新失败时才轮换 | — |
 | **所有密钥耗尽** | 若已配置则转入 `fallback_model` | — |
 
 `has_retried_429` 标志在每次成功的 API 调用后重置，因此单次瞬时 429 不会触发轮换。
 
-**Anthropic 的 429 按模型计算。** Anthropic 按模型执行速率限制，因此某个 Claude 模型的通用 429 只会让该凭证对*该模型*冷却——同一密钥仍可继续服务其他 Claude 模型；计费（`402`、用量上限）和认证（`401`）失败仍会冷却整个凭证。
+**Anthropic 的 429 按模型计算。** Anthropic 按模型执行速率限制，因此某个 Claude 模型的通用 429 只会让该凭证对*该模型*冷却——同一密钥仍可继续服务其他 Claude 模型；计费（`402`、用量上限）和认证（`401`）失败仍会冷却整个凭证。若 Claude 订阅的 429 指明某个套餐窗口已用尽（`anthropic-ratelimit-unified-status: rejected`，窗口见 `anthropic-ratelimit-unified-representative-claim`），凭证池会在第一次此类 429 时就轮换，而不是重试已用尽的席位。账户级窗口（`five_hour`、`seven_day`）会对所有模型冷却整个凭证，直到该窗口的 `anthropic-ratelimit-unified-reset`；模型系列窗口（`seven_day_opus` 等）只冷却该模型。
 
 ## 自定义端点池
 

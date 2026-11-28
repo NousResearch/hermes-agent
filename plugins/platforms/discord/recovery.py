@@ -11,7 +11,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any, Callable
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, mkdir_under_hermes_home
 
 logger = logging.getLogger(__name__)
 
@@ -28,9 +28,7 @@ class DiscordRecoveryStore:
         self._hermes_home = Path(hermes_home or get_hermes_home())
 
     def path(self) -> Path:
-        directory = self._hermes_home / "gateway"
-        directory.mkdir(parents=True, exist_ok=True)
-        return directory / _DB_FILENAME
+        return mkdir_under_hermes_home(self._hermes_home / "gateway") / _DB_FILENAME
 
     def call(self, fn: Callable[[sqlite3.Connection], Any], default: Any = None) -> Any:
         try:

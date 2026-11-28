@@ -1165,6 +1165,7 @@ The backup uses SQLite's `backup()` API for safe copying, so it works correctly 
 - Browser profiles: `browser-profile/` (the real-profile snapshot — copied Cookies / Login Data), `browser-profiles/` (live CDP profiles) at any depth, and `browser_profiles/` (the Browser Use CLI backend's Chromium user-data dir, with its own Login Data / Cookies) at the root of `~/.hermes` and of each `profiles/<name>/`. Credential stores that must never enter an archive; all are regenerated on the next launch.
 - Regenerable entries of `cache/` at those same roots — model/plugin catalogs, stamps, browser profiles, tool-output spill. Durable artifacts stay in: `cache/images`, `cache/audio`, `cache/videos`, `cache/documents`, `cache/screenshots` (media delivered to or received from you) and `cache/citations` (the grounded-citations ledger). A deeper `cache/` (inside a skill) is kept whole.
 - Unix sockets, devices, and symlinks — a zip cannot hold them; before they were excluded, a stray `gateway.sock` made every full backup report `Backup incomplete`.
+- `portal-recovery/` and `lost+found/` at the root of `~/.hermes` — the host's own state (Hermes Cloud's recovery snapshots, often unreadable by the agent, and the volume's `lost+found/`). `hermes import` skips them in older archives that still carry them. Same-named folders in a skill or a named profile are kept.
 - The `hermes-agent` code itself (this is a user-data backup, not a repo snapshot).
 
 ### Examples
@@ -1869,14 +1870,16 @@ You can also generate a brand-new pet from a text description with the `/hatch` 
 ## `hermes sessions`
 
 ```bash
-hermes sessions <subcommand>
+hermes sessions [<subcommand>]
 ```
+
+With no subcommand on a terminal, `hermes sessions` opens the same picker as `browse`: pick a recent conversation with the arrow keys and Enter resumes it (`hermes --resume <id>`). Off a terminal it prints the `list` output.
 
 Subcommands:
 
 | Subcommand | Description |
 |------------|-------------|
-| `list` | List recent sessions. |
+| `list` | List recent conversations: one row per thread (a compressed thread shows its live continuation's id), ranked by last message. Subagent runs are left out; so are cron/webhook/push/kanban/tool/one-shot runs and empty sessions unless you pass `--all`. |
 | `browse` | Interactive session picker with search and resume. Each row shows a lifecycle status tag (`done` / `intr` / `err` / `empty`, derived from the session's final message) and its message count. Press `d` on a highlighted row (while the search filter is empty) to delete that session after a y/N confirmation; while a filter is active, `d` types into the search instead. |
 | `export <output> [--session-id ID]` | Export sessions to JSONL. |
 | `delete <session-id>` | Delete one session. |
@@ -2004,7 +2007,7 @@ Set or change the username and password the dashboard sign-in asks for, without 
 
 `-p <profile>` sets that profile's own sign-in. Dashboard sign-in belongs to the home a listener was started from, so it is used by `hermes -p <profile> dashboard --isolated` (or `serve --isolated`) and by a gateway that profile runs by itself. `hermes -p <profile> dashboard` without `--isolated` opens the machine dashboard, and a gateway that serves several profiles signs in with its own home's credentials: set those with `hermes -p default dashboard password`. When such a gateway serves the profile, the command names its home instead of a restart hint. Every command the output suggests names its home (`hermes -p default ...` for the default home, `hermes --profile <name> ...` for a profile), because after `hermes profile use <name>` a bare `hermes ...` would act on that sticky profile instead.
 
-The same sign-in works on `hermes dashboard` / `hermes serve` and on the gateway's Webapp. Each reads it when it starts, so restart a running one; the command says which one is running. A listener started with a new password ends every sign-in made with the old one. `HERMES_DASHBOARD_BASIC_AUTH_USERNAME`, `_PASSWORD` and `_PASSWORD_HASH` override `config.yaml`: the command removes them from this home's `.env` (it names them, never their values). It refuses, before changing anything, when your administrator pins one in the managed `.env`, when the managed `config.yaml` pins `dashboard.basic_auth.password_hash` or pins the username to another name, when the checkout's own `.env` (loaded after the home's on every start of a source checkout) would supply one (judged the way the loader applies it: `${...}` expanded, and only filling gaps when the home has its own `.env`, so an empty or unresolved value overrides nothing; the command never edits that shared file), or when `dashboard.basic_auth.username` is a `${...}` reference to a key it would remove (make the username literal first). On Windows, where environment names ignore case, it also refuses when this home's `.env` or the checkout's has one of those keys spelled in another case (such as `hermes_dashboard_basic_auth_password`): it names the file, line and key (never the value); delete or rename that line, then run it again. Lines are read one at a time, so a look-alike line inside a quoted multi-line value counts too. When the environment the command runs in sets one, it warns: a gateway or backend started from that environment still signs in with that value, so unset it there too.
+The same sign-in works on `hermes dashboard` / `hermes serve` and on the gateway's Webapp. Each reads it when it starts, so restart a running one; the command says which one is running. A listener started with a new password ends every sign-in made with the old one. `HERMES_DASHBOARD_BASIC_AUTH_USERNAME`, `_PASSWORD` and `_PASSWORD_HASH` override `config.yaml`: the command removes them from this home's `.env` (it names them, never their values). When that `.env` holds a quoted value over several lines (a PEM key), it removes whole assignments as the loader reads them, so a look-alike line inside another value stays and every other byte, line endings included, is written back as it was; such a file that is not UTF-8 is refused before anything is written when it has one of those keys to remove (with none, it is left alone). It refuses, before changing anything, when your administrator pins one in the managed `.env`, when the managed `config.yaml` pins `dashboard.basic_auth.password_hash` or pins the username to another name, when the checkout's own `.env` (loaded after the home's on every start of a source checkout) would supply one (judged the way the loader applies it: `${...}` expanded, and only filling gaps when the home has its own `.env`, so an empty or unresolved value overrides nothing; the command never edits that shared file), or when `dashboard.basic_auth.username` is a `${...}` reference to a key it would remove (make the username literal first). On Windows, where environment names ignore case, it also refuses when this home's `.env` or the checkout's has one of those keys spelled in another case (such as `hermes_dashboard_basic_auth_password`): it names the file, line and key (never the value); delete or rename that line, then run it again. Lines are read one at a time, so a look-alike line inside a quoted multi-line value counts too. When the environment the command runs in sets one, it warns: a gateway or backend started from that environment still signs in with that value, so unset it there too.
 
 | Option | Description |
 |--------|-------------|
@@ -2018,7 +2021,7 @@ hermes dashboard password --username admin --password-stdin < /run/secrets/dashb
 hermes gateway restart
 ```
 
-Exit codes: `0` stored, `2` refused (no password; an empty, overlong or non-UTF-8 one; `--password-stdin` on a terminal; prompts that don't match; a username with spaces; nothing is changed), `1` the prompt was cancelled, a refusal above (an administrator pin, the checkout's `.env`, a username reference; nothing is changed), `config.yaml` could not be written, an overriding key could not be removed from `.env` after `config.yaml` was updated (the message names the key and the file), or the install is managed (Nix or a package manager owns its configuration).
+Exit codes: `0` stored, `2` refused (no password; an empty, overlong or non-UTF-8 one; `--password-stdin` on a terminal; prompts that don't match; a username with spaces; nothing is changed), `1` the prompt was cancelled, a refusal above (an administrator pin, the checkout's `.env`, a username reference, a multi-line `.env` that is not UTF-8 and has a key to remove; nothing is changed), `config.yaml` could not be written, an overriding key could not be removed from `.env` after `config.yaml` was updated (the message names the key and the file), or the install is managed (Nix or a package manager owns its configuration).
 
 ### `hermes dashboard register`
 

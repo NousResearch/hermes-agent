@@ -10,12 +10,12 @@ from __future__ import annotations
 
 import json
 import logging
-import shutil
 from pathlib import Path
 from typing import Dict
 
 from agent.checkpoints import manager as cm
 from agent.checkpoints import maintenance
+from hermes_platform.resolver.git import resolve_usable_git
 
 # Pinned name: these lines stay under `hermes logs --component tools`.
 logger = logging.getLogger("tools.checkpoint_manager_profile_rename")
@@ -90,7 +90,7 @@ def migrate_profile_checkpoint_projects(old_profile_dir: Path, new_profile_dir: 
     result = {"scanned": 0, "migrated": 0, "errors": 0}
     if not cm._store_has_head(store):
         return result
-    if shutil.which("git") is None:
+    if resolve_usable_git() is None:
         # Without git the ref cannot move; rekeying only the metadata would orphan the history.
         logger.warning("Cannot migrate checkpoint projects after profile rename: git not found")
         result["errors"] = 1

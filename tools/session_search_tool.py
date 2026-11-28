@@ -4,23 +4,27 @@
 Single-shape tool; the mode is inferred from the args: DISCOVERY (``query``;
 FTS5 deduped by lineage, adaptive detail hydrates only the top result),
 SCROLL (``session_id`` + ``around_message_id``; ±window around the anchor),
-READ (``session_id`` alone; whole session or head/tail), BROWSE (no args).
+SEARCH-IN-SESSION (``query`` + ``session_id``; FTS5 scoped to that session's
+compression lineage, one result per matching message), READ (``session_id``
+alone; whole session or head/tail), BROWSE (no args).
 No LLM calls — every shape returns actual DB messages.
 """
 
+import heapq
 import json
 import logging
 import re
 import time
 from contextlib import ExitStack
+from itertools import islice, zip_longest
 from pathlib import Path
 from datetime import datetime, timezone, UTC
 from typing import Any, Dict, List, Optional, Union
 
 from agent.redact import redact_derived_text
 from hermes_time import safe_strftime
-from persistence import RowVisibility
-from persistence.conversation.messages import MessageRecord, MessageStorageState, TranscriptRow
+from persistence import MessageId, RowVisibility
+from persistence.conversation.messages import MessageRecord, MessageStorageState, TranscriptRead, TranscriptRow, TranscriptView
 from persistence.conversation.search import SearchHit, SearchSort
 from persistence.conversation.sessions import BOUNDARY_END_REASONS, RecentBrowseQuery, SessionRecord
 from persistence.sqlite._state.common import _PREVIEW_MAX_CHARS
@@ -45,6 +49,16 @@ _DEMOTED_SESSION_SOURCES = ("cron",)
 # Bounding message COUNT (head/tail) is not enough when content per message is
 # unbounded; the agent can scroll around a message for detail (#114344).
 _READ_MAX_CONTENT = 2000
+# Scroll caps (#147548): a window=10 scroll on a real 440K-message store ran p90 100K chars, half of
+# it tool output, and past the tool-result budget it spilled to a preview without the anchor.
+_SCROLL_TOOL_ROW_MAX, _SCROLL_TEXT_MAX = 1500, 8000
+# Stored tool-call arguments (whole file bodies, heredocs) are uncapped: one 8-result discovery
+# returned 152K chars, 118K of it tool_calls JSON. The anchor row keeps more of its own call.
+_TOOL_ARGS_PREVIEW, _ANCHOR_TOOL_ARGS_MAX = 200, 2000
+# Asked for "the resume command" in 7 of 81 recall requests; agents then queried state.db for the
+# compression children because nothing said a resume follows the lineage (resolve_resume_target).
+_RESUME_HINT = ("To resume one: `hermes --resume <session_id>`; it opens the latest continuation, "
+                "so any session_id from its lineage works.")
 # FTS rows scanned before dedup-by-lineage — well above the distinct sessions a query
 # returns, so interactive matches buried under cron hits survive the demotion pass.
 _DISCOVER_SCAN_LIMIT = 300
@@ -54,7 +68,7 @@ _EXCLUDE_SESSION_IDS_CAP = 20
 _RELATIVE_BOUND_RE = re.compile(r"^(\d+)\s*(h|d|w)$", re.IGNORECASE)
 _RELATIVE_UNIT_SECONDS = {"h": 3600, "d": 86400, "w": 604800}
 # Raw FTS rows are only a plan input; the response hydrates its own window/bookends.
-_DISCOVER_SEARCH_FIELDS = ("id", "session_id", "role", "snippet", "source", "model", "session_started")
+_DISCOVER_SEARCH_FIELDS = ("id", "session_id", "role", "snippet", "timestamp", "source", "model", "session_started")
 # Compaction handoff summaries (agent/context_compressor.py); excluded from bookends.
 _COMPACTION_PREFIXES = ("[CONTEXT COMPACTION", "[CONTEXT SUMMARY]:")
 # /new, /reset, idle/daily expiry and CLI /new ("new_session") end the predecessor WITHOUT
@@ -226,9 +240,53 @@ def _get_message_storage_state(persistence, message_id) -> Optional[MessageStora
                                   "message storage-state lookup failed for %s", message_id)) or None
 
 
+_RECALL_TOOL_NAMES = frozenset({"session_search", "tool_search"})
+
+
+def _json_or_value(value: Any) -> Any:
+    """``value`` decoded when it is a JSON string (tool-call arguments are stored either way)."""
+    return json.loads(value) if isinstance(value, str) else value
+
+
+def _is_recall_only_call(call: Any) -> bool:
+    """True for a ``session_search``/``tool_search`` call, or a ``tool_call`` bridge whose nested
+    calls are all such lookups. The bridge also runs real deferred work (``write_file``…), so any
+    other nested name keeps the row as history."""
+    fn = call.get("function") if isinstance(call, dict) else None
+    name = fn.get("name") if isinstance(fn, dict) else None
+    if not isinstance(name, str):  # malformed stored call: history, not an echo
+        return False
+    if name in _RECALL_TOOL_NAMES:
+        return True
+    if name != "tool_call":
+        return False
+    try:
+        args = _json_or_value(fn.get("arguments"))
+        nested = _json_or_value(args.get("calls")) if isinstance(args, dict) else None
+    except (TypeError, ValueError):
+        return False
+    return isinstance(nested, list) and bool(nested) and all(
+        isinstance(inner, dict) and isinstance(inner.get("name"), str) and inner["name"] in _RECALL_TOOL_NAMES
+        for inner in nested)
+
+
+def _is_search_echo(persistence, hit: SearchHit) -> bool:
+    """True for a text-less assistant row whose tool calls are only recall lookups: it holds the
+    query words because an earlier agent *searched* for them, not because it did the work."""
+    if hit.role != "assistant" or not hit.session_id or not hit.message_id:
+        return False
+    view = _quiet(lambda: persistence.messages.read_around(hit.session_id, hit.message_id, window=0), None,
+                  "search-echo lookup failed for %s", hit.message_id)
+    row = next((m for m in (view.window if view else ()) if m.id == hit.message_id), None)
+    if row is None or _content_text(row.content).strip() or not row.tool_calls:
+        return False
+    return all(_is_recall_only_call(call) for call in row.tool_calls)
+
+
 def _is_compacted_state(state: Optional[MessageStorageState]) -> bool:
-    """Compaction-archived rows only; rewound (rewind/undo) rows must stay hidden."""
-    return state is not None and state.visibility is RowVisibility.COMPACTION_ARCHIVED
+    """Rows compaction took out of live context: archived rows and superseded originals (a demoted tool
+    result's full text). Plain rewound (rewind/undo) rows must stay hidden."""
+    return state is not None and (state.visibility is RowVisibility.COMPACTION_ARCHIVED or state.superseded)
 
 
 def _is_compacted_message(persistence, message_id) -> bool:
@@ -274,8 +332,26 @@ def _content_text(content: Any) -> str:
     return "" if content is None else str(content)
 
 
+def _slim_tool_calls(tool_calls: Any, cap: int) -> Any:
+    """Each call's ``function.arguments`` cut to *cap* chars, keeping the stored call shape. Runs after
+    redaction, so a cut can never split a secret the redactor would otherwise have matched."""
+    if not isinstance(tool_calls, (list, tuple)):
+        return tool_calls
+    out = []
+    for call in tool_calls:
+        fn = call.get("function") if isinstance(call, dict) else None
+        args = fn.get("arguments") if isinstance(fn, dict) else None
+        if args is not None and not isinstance(args, str):
+            args = json.dumps(args, ensure_ascii=False)
+        if isinstance(fn, dict) and args is not None and len(args) > cap:
+            call = {**call, "function": {**fn, "arguments": args[:cap] + "…"}}
+        out.append(call)
+    return out
+
+
 def _shape_message(m: TranscriptRow | MessageRecord, anchor_id: Optional[int] = None,
-                   max_content_len: Optional[int] = None, derived: bool = False) -> dict[str, Any]:
+                   max_content_len: Optional[int] = None, derived: bool = False,
+                   anchor_args_max: Optional[int] = _ANCHOR_TOOL_ARGS_MAX) -> dict[str, Any]:
     """Slim a stored row; keeps ``content`` even when empty (tool-call-only turns).
 
     ``derived`` marks rows surfaced by a discovery query rather than an explicit
@@ -291,7 +367,12 @@ def _shape_message(m: TranscriptRow | MessageRecord, anchor_id: Optional[int] = 
     entry.update({k: getattr(m, k) for k in ("tool_name", "tool_calls", "tool_call_id") if getattr(m, k)})
     if derived and entry.get("tool_calls"):
         entry["tool_calls"] = _redact_tool_calls(entry["tool_calls"])
-    if anchor_id is not None and m.id == anchor_id:
+    is_anchor = anchor_id is not None and m.id == anchor_id
+    if entry.get("tool_calls"):
+        cap = anchor_args_max if is_anchor else _TOOL_ARGS_PREVIEW
+        if cap is not None:
+            entry["tool_calls"] = _slim_tool_calls(entry["tool_calls"], cap)
+    if is_anchor:
         entry["anchor"] = True
     if max_content_len and content and len(content) > max_content_len:
         entry.update(content=content[:max_content_len] + "…", content_truncated=True,
@@ -446,11 +527,33 @@ def _hydrate_hit(persistence, lineage_root: str, hit: SearchHit, result_detail: 
         detail=result_detail)
 
 
+def _search_rows(persistence, query: str, role_filter: Optional[list[str]], scan_limit: int, sort: Optional[str],
+                 after_ts: Optional[int], before_ts: Optional[int], **narrow) -> list[SearchHit]:
+    """The search every query shape runs: ``role_filter`` (default user/assistant), the discovery projection.
+
+    A tool role sends a search down the stored-row substring route, which can't read structured content (an image
+    turn's caption), so conversation roles search the word index separately. A date sort merges the two legs by
+    timestamp; relevance (no score shared across the two routes) interleaves them."""
+    roles = role_filter or ["user", "assistant"]
+    groups = [g for g in ([r for r in roles if r != "tool"], [r for r in roles if r == "tool"]) if g]
+    order = SearchSort(sort) if sort else SearchSort.RELEVANCE
+    legs = [persistence.search.search_messages(
+        query=query, role_filter=group, limit=scan_limit, offset=0, sort=order, fields=_DISCOVER_SEARCH_FIELDS,
+        after_ts=after_ts, before_ts=before_ts, **narrow) for group in groups]
+    if order is SearchSort.RELEVANCE:
+        merged = (hit for pair in zip_longest(*legs) for hit in pair if hit is not None)
+    else:
+        merged = heapq.merge(*legs, key=lambda hit: (hit.timestamp or 0.0, hit.message_id),
+                             reverse=order is SearchSort.NEWEST)
+    return list(islice(merged, scan_limit))
+
+
 def _discover(persistence, query: str, role_filter: Optional[list[str]], limit: int, sort: Optional[str],
               detail: str, current_session_id: str | None = None, link_profile: str | None = None,
               after_ts: Optional[int] = None, before_ts: Optional[int] = None,
-              exclude_session_ids: Optional[list[str]] = None) -> str:
-    """Discovery shape: FTS5 plus adaptive or full result hydration."""
+              exclude_session_ids: Optional[list[str]] = None, relaxed_from: Optional[str] = None) -> str:
+    """Discovery shape: FTS5 plus adaptive or full result hydration. ``relaxed_from`` is set on the
+    one any-term retry and names the query that matched only rows already in context."""
     current_lineage_root = _resolve_lineage(persistence, current_session_id) if current_session_id else None
     excluded_roots = _excluded_lineage_roots(persistence, exclude_session_ids or [])
     title_result = _title_match_result(persistence, query, current_lineage_root)
@@ -462,11 +565,9 @@ def _discover(persistence, query: str, role_filter: Optional[list[str]], limit: 
         title_started = _coerce_started_ts(title_meta.started_at if title_meta else None)
         if {title_sid, title_root} & excluded_roots or not _in_time_window(title_started, after_ts, before_ts):
             title_result = None
-    raw_results, err = _loud(lambda: persistence.search.search_messages(
-        query=query, role_filter=role_filter or ["user", "assistant"],
-        exclude_sources=list(_HIDDEN_SESSION_SOURCES), limit=_DISCOVER_SCAN_LIMIT, offset=0,
-        sort=SearchSort(sort) if sort else SearchSort.RELEVANCE,
-        fields=_DISCOVER_SEARCH_FIELDS, after_ts=after_ts, before_ts=before_ts), "FTS5 search failed: %s", "Search failed")
+    raw_results, err = _loud(lambda: _search_rows(
+        persistence, query, role_filter, _DISCOVER_SCAN_LIMIT, sort, after_ts, before_ts,
+        exclude_sources=list(_HIDDEN_SESSION_SOURCES)), "FTS5 search failed: %s", "Search failed")
     if err:
         return err
     # Demote cron rows below interactive ones BEFORE dedup so a high-volume cron corpus
@@ -478,7 +579,8 @@ def _discover(persistence, query: str, role_filter: Optional[list[str]], limit: 
         return _discover_payload(persistence, query, detail, [], message=(
             "No matching sessions found. FTS5 ANDs all terms by default — "
             "broaden with OR (`alpha OR beta`), exact-match with quoted "
-            "phrases, exclude with NOT, or prefix-match with `deploy*`."))
+            "phrases, exclude with NOT, or prefix-match with `deploy*`."),
+            **({"relaxed_from": relaxed_from} if relaxed_from is not None else {}))
     seen_sessions: dict[str, Optional[SearchHit]] = {}
     results = [title_result] if title_result else []
     if title_result and (title_lineage := title_result.pop("_lineage_root", None)):
@@ -516,7 +618,8 @@ def _discover(persistence, query: str, role_filter: Optional[list[str]], limit: 
             # concludes the conversation never existed (#103184). Disclose it; the
             # current session's own live rows are not counted — they are already in
             # context (the same-session skip below) and hiding them is expected.
-            if raw_sid != current_session_id:
+            # A predecessor row that only *searched* holds no evidence (same rule as below).
+            if raw_sid != current_session_id and not _is_search_echo(persistence, r):
                 hidden_rows += 1
                 if raw_sid not in hidden_sessions:
                     meta = _get_session_meta(persistence, raw_sid)
@@ -526,7 +629,19 @@ def _discover(persistence, query: str, role_filter: Optional[list[str]], limit: 
             continue
         if current_session_id and raw_sid == current_session_id and not is_compacted_hit:
             continue
+        if resolved_sid not in seen_sessions and _is_search_echo(persistence, r):
+            continue
         seen_sessions.setdefault(resolved_sid, r)
+    # The asking session's own rows (its prompt, the query it just wrote) and earlier recall
+    # calls often hold the only all-terms match. They are skipped above, but their presence kept
+    # the store's any-term fallback (which runs only on zero rows) from firing, so a fresh
+    # question found nothing. Retry once with an explicit OR query: the retry's query contains
+    # OR, so the store's any_term_query returns None for it and it cannot recurse again. A hidden-lineage
+    # disclosure is kept as the answer instead: those rows ARE the match.
+    if not seen_sessions and not title_result and not hidden_rows and relaxed_from is None and (
+            any_term := _quiet(lambda: persistence.search.any_term_query(query), None, "any-term rewrite failed")):
+        return _discover(persistence, any_term, role_filter, limit, sort, detail, current_session_id,
+                         link_profile, after_ts, before_ts, exclude_session_ids, relaxed_from=query)
     for lineage_root, hit in seen_sessions.items():
         if hit is None:
             continue
@@ -537,6 +652,9 @@ def _discover(persistence, query: str, role_filter: Optional[list[str]], limit: 
     for entry in results:
         entry["link"] = _session_link(entry["session_id"], link_profile)
     return _discover_payload(persistence, query, detail, results, sessions_searched=len(seen_sessions),
+        **({"relaxed_from": relaxed_from, "message": (
+            "No other session matched every term; showing sessions that match any term.")}
+           if relaxed_from is not None else {}),
         **({"hidden_same_lineage": {"count": hidden_rows, "sessions": list(hidden_sessions.values()),
             "note": f"{hidden_rows} matching message(s) in {len(hidden_sessions)} same-lineage session(s) "
             "were hidden because they are still treated as live context (unended). This can be a gateway "
@@ -547,7 +665,70 @@ def _discover(persistence, query: str, role_filter: Optional[list[str]], limit: 
         "verbatim inline mid-sentence (it renders as a titled link) — never "
         "as markdown, in backticks, on its own line, or next to the "
         "title/id/date. To read more around a compact result, scroll: "
-        "session_search(session_id=..., around_message_id=match_message_id)."))
+        "session_search(session_id=..., around_message_id=match_message_id). " + _RESUME_HINT))
+
+
+def _search_session(persistence, session_id: str, query: str, role_filter: Optional[list[str]], limit: int,
+                    sort: Optional[str], detail: str, current_session_id: str | None = None,
+                    profile: str | None = None, after_ts: Optional[int] = None,
+                    before_ts: Optional[int] = None) -> str:
+    """Search-in-session shape: message search scoped in SQL to ``session_id``'s compression lineage.
+
+    One result per matching message (no per-session dedup), each with a
+    ``match_message_id``. Inside the caller's own session only rows that left its live
+    transcript match (compaction-archived rows, and the superseded original of a tool
+    result demoted at compaction), selected in SQL so live rows can't fill the scan;
+    those lead, then the other lineage sessions under the scroll guard's live-context rule.
+    """
+    if not _get_session_meta(persistence, session_id):
+        return _read_scoped(persistence, session_id, profile)  # same not-found error + cross-profile hint
+    scope = list(_quiet(lambda: persistence.lineage.lineage(session_id), (),
+                        "compression lineage lookup failed for %s", session_id)) or [session_id]
+
+    def _search(scan_limit: int, **narrow):
+        return _search_rows(persistence, query, role_filter, scan_limit, sort, after_ts, before_ts, **narrow)
+    # The own leg needs no Python filtering, so `limit` rows suffice; the other leg over-fetches for the guard.
+    own_sid = current_session_id if current_session_id in scope else None
+    own, err = (_loud(lambda: _search(limit, compacted_in_session=own_sid), "FTS5 search failed: %s", "Search failed")
+                if own_sid else ((), None))
+    if err:
+        return err
+    others = [sid for sid in scope if sid != own_sid]
+    raw_results, err = (_loud(lambda: _search(_DISCOVER_SCAN_LIMIT, session_ids=others), "FTS5 search failed: %s",
+                              "Search failed") if others and len(own) < limit else ((), None))
+    if err:
+        return err
+    # The default visibility hides a demoted tool result's superseded original (its full text), so a
+    # compression continuation or another caller would lose it: add each other session's left-live rows.
+    seen_ids = {r.message_id for r in (*own, *raw_results)}
+    for sid in others if len(own) < limit else ():
+        archived = _quiet(lambda sid=sid: _search(limit, compacted_in_session=sid), (),
+                          "left-live search failed for %s", sid)
+        raw_results = (*raw_results, *(r for r in archived if r.message_id not in seen_ids))
+        seen_ids.update(r.message_id for r in archived)
+    if sort in ("newest", "oldest"):  # the added originals join the date order before `limit` applies
+        raw_results = sorted(raw_results, key=lambda hit: (hit.timestamp or 0.0, hit.message_id), reverse=sort == "newest")
+    hits, live_skipped = list(own), 0
+    for r in raw_results:
+        if len(hits) >= limit:
+            break
+        if current_session_id and _anchor_in_live_context(
+                persistence, _get_message_storage_state(persistence, r.message_id), r.session_id, current_session_id):
+            live_skipped += 1
+            continue
+        hits.append(r)
+    results = [entry for i, r in enumerate(hits) if (entry := _hydrate_hit(
+        persistence, scope[0], r, "full" if detail == "full" or i == 0 else "compact")) is not None]
+    for entry in results:
+        entry["link"] = _session_link(entry["session_id"], profile)
+    extra: dict[str, Any] = {"session_id": session_id}
+    if not results:
+        extra["message"] = ("Matches exist only in your active context; nothing earlier in this session matched."
+                            if live_skipped else "No matching messages in this session. FTS5 ANDs all terms by "
+                            "default — broaden with OR (`alpha OR beta`) or prefix-match with `deploy*`.")
+    return _discover_payload(persistence, query, detail, results, **extra, link_hint=(
+        "Results are matching messages inside this session. To read around one, scroll: "
+        "session_search(session_id=<result session_id>, around_message_id=match_message_id)."))
 
 
 def _cross_profile_reads_confined() -> bool:
@@ -661,7 +842,7 @@ def _list_recent_sessions(persistence, limit: int, current_session_id: str | Non
             for s in [x for x in sessions if x.session_id not in hidden][:limit]]
         return _ok(mode="browse", results=results, count=len(results), message=(
             f"Showing {len(results)} most recent sessions. Pass a query= to search, "
-            "or session_id+around_message_id to scroll."))
+            "or session_id+around_message_id to scroll. " + _RESUME_HINT))
 
     out, err = _loud(_browse, "Error listing recent sessions: %s", "Failed to list recent sessions")
     return err or out
@@ -683,6 +864,27 @@ def _anchor_in_live_context(persistence, anchor_state, anchor_sid: str, current_
     if not _same_lineage(persistence, anchor_sid, current_session_id) or _is_compacted_state(anchor_state):
         return False
     return (anchor_state is not None and anchor_state.visibility is not RowVisibility.ACTIVE) or not _session_left_live_context(persistence, anchor_sid)
+
+
+def _snap_to_nearest(persistence, session_id: str, anchor: int, window: int, current_session_id: str | None):
+    """``(nearest_id, view)`` for an anchor that is not in *session_id*, or None.
+
+    Message ids are global and increasing, so a guessed id between two of this session's ids (models
+    pick one to reach the middle of a truncated read) still names a position: scroll there instead of
+    failing and inviting another guess. The snapped row passes the same live-context guard."""
+    def _first(request):
+        rows = persistence.messages.read_transcript(session_id, request)
+        return rows[0].id if rows else None
+    nearest = _quiet(lambda: _first(TranscriptRead(view=TranscriptView.ALL, after_id=MessageId(anchor), limit=1)), None,
+                     "nearest-anchor lookup failed for %s", session_id) or _quiet(
+        lambda: _first(TranscriptRead(view=TranscriptView.ALL, latest=True, limit=1)), None,
+        "nearest-anchor lookup failed for %s", session_id)
+    if not nearest or (current_session_id and _anchor_in_live_context(
+            persistence, _get_message_storage_state(persistence, nearest), session_id, current_session_id)):
+        return None
+    view = _quiet(lambda: persistence.messages.read_around(session_id, nearest, window=window), None,
+                  "nearest-anchor get_messages_around failed for %s", session_id)
+    return (nearest, view) if view and view.window else None
 
 
 def _scroll(persistence, session_id: str, around_message_id: int, window: int = 5,
@@ -718,12 +920,24 @@ def _scroll(persistence, session_id: str, around_message_id: int, window: int = 
                                 f"(child of {session_id}); rebound transparently")
             view, messages, session_id = rebind_view, rebind_view.window, owning
             session_meta = _get_session_meta(persistence, owning) or session_meta
+    if not messages and (snapped := _snap_to_nearest(persistence, session_id, around_message_id, window, current_session_id)):
+        extra["warning"] = (f"around_message_id {around_message_id} is not in {session_id}; "
+                            f"scrolled to its nearest message, {snapped[0]}")
+        around_message_id, view = snapped
+        messages = view.window
     if not messages:
         return tool_error(f"around_message_id {around_message_id} not in session_id {session_id}", success=False)
     return _ok(
         mode="scroll", session_id=session_id, around_message_id=around_message_id,
         session_meta=_session_meta_block(session_meta), window=window,
-        messages=[_shape_message(m, anchor_id=around_message_id) for m in messages],
+        # Neighbours are bounded: tool output is most of a window and rarely the answer (1,500 chars),
+        # user/assistant text keeps 8,000 (that held every answer keyword on a real recall set, #147548).
+        # The anchor itself comes back whole, content and tool-call arguments: scroll is the one shape
+        # that retrieves a full message, and an oversized one spills to a file the model can read.
+        messages=[_shape_message(m, anchor_id=around_message_id, anchor_args_max=None,
+                                 max_content_len=None if m.id == around_message_id
+                                 else _SCROLL_TOOL_ROW_MAX if m.role == "tool" else _SCROLL_TEXT_MAX)
+                  for m in messages],
         messages_before=view.before, messages_after=view.after,
         hint=("Scroll forward: re-call with around_message_id = the LAST message's "
               "id; backward: the FIRST message's id (the boundary message repeats "
@@ -734,25 +948,31 @@ def _scroll(persistence, session_id: str, around_message_id: int, window: int = 
 def _dispatch(query, role_filter, limit, persistence, current_session_id, session_id,
               around_message_id, window, sort, profile, detail,
               after=None, before=None, exclude_session_ids=None) -> str:
-    """Mode dispatch (see module docstring); scroll wins when an anchor is set."""
-    if isinstance(session_id, str) and session_id.strip():
-        if around_message_id is not None:
-            return _scroll(persistence, session_id.strip(), around_message_id, window, current_session_id)
-        return _read_scoped(persistence, session_id.strip(), profile)
-    browse = not query or not isinstance(query, str) or not query.strip()
+    """Mode dispatch (see module docstring); scroll wins when an anchor is set, and a
+    query with a session_id searches inside that session instead of reading it whole."""
+    sid = session_id.strip() if isinstance(session_id, str) else ""
+    has_query = isinstance(query, str) and bool(query.strip())
+    if sid and around_message_id is not None:
+        return _scroll(persistence, sid, around_message_id, window, current_session_id)
+    if sid and not has_query:
+        return _read_scoped(persistence, sid, profile)
     # Browse lists enough recent sessions to pick from; discovery returns a few ranked hits.
-    limit = _clamp_int(limit, 10 if browse else 3, 1, 10)
-    if browse:
+    limit = _clamp_int(limit, 3 if has_query else 10, 1, 10)
+    if not has_query:
         return _list_recent_sessions(persistence, limit, current_session_id, link_profile=profile)
     sort_norm = sort.strip().lower() if isinstance(sort, str) else None
     try:
         after_ts, before_ts = _parse_iso_bound(after), _parse_iso_bound(before)
     except ValueError as e:
         return tool_error(str(e), success=False)
+    sort_norm = sort_norm if sort_norm in ("newest", "oldest") else None
+    roles = ([r.strip() for r in role_filter.split(",") if r.strip()] or None) if isinstance(role_filter, str) else None
+    detail = "full" if isinstance(detail, str) and detail.strip().lower() == "full" else "adaptive"
+    if sid:
+        return _search_session(persistence, sid, query.strip(), roles, limit, sort_norm, detail, current_session_id,
+                               profile, after_ts=after_ts, before_ts=before_ts)
     return _discover(
-        persistence=persistence, query=query.strip(), limit=limit, sort=sort_norm if sort_norm in ("newest", "oldest") else None,
-        role_filter=([r.strip() for r in role_filter.split(",") if r.strip()] or None) if isinstance(role_filter, str) else None,
-        detail="full" if isinstance(detail, str) and detail.strip().lower() == "full" else "adaptive",
+        persistence=persistence, query=query.strip(), limit=limit, sort=sort_norm, role_filter=roles, detail=detail,
         current_session_id=current_session_id, link_profile=profile, after_ts=after_ts, before_ts=before_ts,
         exclude_session_ids=_normalize_exclude_session_ids(exclude_session_ids))
 
@@ -819,9 +1039,11 @@ def check_session_search_requirements() -> bool:
 SESSION_SEARCH_SCHEMA = {
     "name": "session_search",
     "description": (
-        "Search or read past Hermes conversations (FTS5), or scroll inside one. Four shapes, picked by args: `query` = discovery "
+        "Search or read past Hermes conversations (FTS5), or scroll inside one. Five shapes, picked by args: `query` = discovery "
         "(top-N matching sessions, top result fully hydrated); `session_id` + "
         "`around_message_id` = scroll (window of messages around an anchor); "
+        "`query` + `session_id` = search inside that session's compression lineage (matching messages, "
+        "with ids to scroll around); "
         "`session_id` alone = read a whole session — how you resolve an "
         "`@session:<profile>/<id>` link (split on '/' into profile + id); no "
         "args = browse recent sessions. Results are actual DB messages, no LLM. "
@@ -839,7 +1061,8 @@ SESSION_SEARCH_SCHEMA = {
                 "type": "string",
                 "description": (
                     "Search query (discovery shape). Keywords, phrases, or boolean "
-                    "expressions to find in past sessions. Omit to browse recent "
+                    "expressions to find in past sessions. With session_id, searches "
+                    "inside that session's compression lineage. Omit to browse recent "
                     "sessions. Ignored when session_id + around_message_id are set "
                     "(scroll shape)."
                 ),
@@ -903,9 +1126,10 @@ SESSION_SEARCH_SCHEMA = {
             "session_id": {
                 "type": "string",
                 "description": (
-                    "Scroll shape. Session to read inside. Use the session_id returned "
-                    "from a prior discovery call. Must be paired with "
-                    "around_message_id."
+                    "Session to scroll, search, or read. Use the session_id returned "
+                    "from a prior discovery call. With around_message_id: scroll. "
+                    "With query: search its compression lineage; each hit's session_id is the one to scroll. "
+                    "Alone: read it whole."
                 ),
             },
             "around_message_id": {

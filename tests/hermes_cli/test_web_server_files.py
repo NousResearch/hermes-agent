@@ -2,9 +2,12 @@
 
 import asyncio
 import base64
+import contextlib
+import importlib
 import json
+import sys
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 from starlette.testclient import TestClient
@@ -1286,3 +1289,64 @@ def test_managed_writes_allow_a_plain_chain_of_exactly_the_hop_bound(forced_file
         previous = link
 
     assert _refused_writes(client, previous) == (200, 200)
+
+
+@contextlib.contextmanager
+def _without_files_router():
+    from hermes_cli import web_routers
+
+    saved_mod = sys.modules.pop("hermes_cli.web_routers.files", None)
+    had_attr = hasattr(web_routers, "files")
+    saved_attr = getattr(web_routers, "files", None)
+    if had_attr:
+        del web_routers.files
+    try:
+        yield
+    finally:
+        if saved_mod is not None:
+            sys.modules["hermes_cli.web_routers.files"] = saved_mod
+        else:
+            sys.modules.pop("hermes_cli.web_routers.files", None)
+        if had_attr:
+            web_routers.files = saved_attr
+        elif hasattr(web_routers, "files"):
+            del web_routers.files
+
+
+def test_files_router_loads_and_guards_migration_stores_against_n1_file_safety(tmp_path, monkeypatch):
+    import agent
+    import agent.file_safety as real_file_safety
+
+    home = tmp_path / ".hermes"
+    (home / "backend_migration").mkdir(parents=True)
+    backup = home / "backend_migration" / "config.yaml"
+    backup.write_text("backup\n", encoding="utf-8")
+    record = home / "backend_migration.json"
+    record.write_text('{"state": "done"}\n', encoding="utf-8")
+
+    project = tmp_path / "work" / "project"
+    (project / "backend_migration").mkdir(parents=True)
+    readme = project / "backend_migration" / "README.md"
+    readme.write_text("# docs\n", encoding="utf-8")
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    legacy_safety = ModuleType("agent.file_safety")
+    for attr, val in vars(real_file_safety).items():
+        if attr != "hermes_credential_homes":
+            setattr(legacy_safety, attr, val)
+    monkeypatch.setitem(sys.modules, "agent.file_safety", legacy_safety)
+    monkeypatch.setattr(agent, "file_safety", legacy_safety, raising=False)
+
+    with _without_files_router():
+        files_mod = importlib.import_module("hermes_cli.web_routers.files")
+        assert files_mod._is_local_sensitive_path(backup) is True
+        assert files_mod._is_local_sensitive_path(record) is True
+        assert files_mod._is_local_sensitive_path(readme) is False
+
+
+def test_files_router_does_not_swallow_missing_file_safety_module(monkeypatch):
+    monkeypatch.setitem(sys.modules, "agent.file_safety", None)
+    with _without_files_router(), pytest.raises(ModuleNotFoundError):
+        importlib.import_module("hermes_cli.web_routers.files")

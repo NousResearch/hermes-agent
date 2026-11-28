@@ -3,6 +3,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introZh } from './intro-zh'
+import { zhApproval } from './zh_approval'
 import { zhCatalog, zhSkillDeepLink } from './zh_catalog'
 import { zhClarify } from './zh_clarify'
 import { zhConnectorCard } from './zh_connector_card'
@@ -277,6 +278,14 @@ export const zhOverrides = {
       approvalTitleNamed: session => `需要批准 — ${session}`,
       approveAction: '批准',
       rejectAction: '拒绝',
+      accessTitle: '需要文件夹访问权限',
+      accessTitleNamed: session => `需要文件夹访问权限 — ${session}`,
+      accessReadBody: folder => `只读：${folder}`,
+      accessReadWriteBody: folder => `读写：${folder}`,
+      networkTitle: '需要网站访问权限',
+      networkTitleNamed: session => `需要网站访问权限 — ${session}`,
+      allowAction: '允许',
+      denyAction: '拒绝',
       inputTitle: '需要输入',
       inputTitleNamed: session => `需要输入 — ${session}`,
       inputBody: 'Hermes 正在等待你的回应。',
@@ -2445,6 +2454,20 @@ export const zhOverrides = {
   },
 
   messaging: {
+    catalog: {
+      sectionTitle: '可安装',
+      badges: { official: '官方', verified: '已验证' },
+      notInstalled: '未安装',
+      intro: (name: string) => `${name} 是 Hermes 目录中的插件。安装后即启用，然后可在此填写凭据。`,
+      disclosure: '披露：',
+      install: '安装',
+      installing: '正在安装…',
+      installed: (name: string) => `已安装 ${name}`,
+      installedDetail: '填写凭据以完成连接。',
+      installFailed: (name: string) => `无法安装 ${name}`,
+      lazyOff: '插件自动安装已关闭（security.allow_lazy_installs），因此 Hermes 不会在此安装。',
+      runCommand: '在终端中安装：',
+    },
     search: '搜索消息平台…',
     statusFilter: {
       all: '全部',
@@ -2776,6 +2799,8 @@ export const zhOverrides = {
     remoteOverride: {
       menuItem: '连接到远程主机…',
       badge: (host: string) => `运行于 ${host}`,
+      runHere: '在此电脑上运行…',
+      sandboxed: '已沙盒化',
       title: (profile: string) => `将 ${profile} 连接到远程主机`,
       description: '此配置档案中的会话将在你指定的远程 Hermes 上运行，而不是这台电脑。',
       urlLabel: '远程地址',
@@ -3982,6 +4007,8 @@ export const zhOverrides = {
       messagingPlatforms: '消息平台'
     },
     approvalMode: {
+      perProfile: '按配置档案设置',
+      perProfileDescription: '审批模式按配置档案单独设置。打开对应的机器人或配置档案以更改其模式。',
       title: '审批模式',
       ariaLabel: mode => `审批模式：${mode}`,
       manual: '手动',
@@ -4454,21 +4481,7 @@ export const zhOverrides = {
       sendEdited: '发送编辑后的消息',
       attachingFile: '正在附加…'
     },
-    approval: {
-      gatewayDisconnected: 'Hermes 网关未连接',
-      sendFailed: '无法发送审批响应',
-      run: '运行',
-      command: '命令',
-      moreOptions: '更多审批选项',
-      allowSession: '允许本会话',
-      alwaysAllowMenu: '始终允许…',
-      jumpToApproval: '需要审批',
-      reject: '拒绝',
-      alwaysTitle: '始终允许此命令？',
-      alwaysDescription: pattern =>
-        `这会将“${pattern}”模式加入永久允许列表 (~/.hermes/config.yaml)。Hermes 对类似命令将不再询问，包括当前会话和未来会话。`,
-      alwaysAllow: '始终允许'
-    },
+    approval: zhApproval,
     clarify: zhClarify,
     themePicker: zhThemePicker,
     catalogInstall: {

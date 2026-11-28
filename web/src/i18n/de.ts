@@ -798,4 +798,17 @@ export const de: Translations = {
     logTruncated: "(zeige die letzten 100 KB — vollständiges Log unter ",
     logAt: ")",
   },
+  channelsCatalog: {
+    title: "Zur Installation verfügbar",
+    hint: "Messaging-Plattformen aus dem Hermes-Plugin-Katalog. Bei der Installation wird das Plugin hinzugefügt und aktiviert, danach öffnet sich die Einrichtung.",
+    badgeOfficial: "Offiziell",
+    badgeVerified: "Verifiziert",
+    disclosure: "Offenlegung:",
+    lazyInstallsOff: "Automatische Plugin-Installationen sind aus (security.allow_lazy_installs).",
+    run: "Ausführen:",
+    install: "Installieren",
+    installing: "Wird installiert…",
+    installed: (title: string) => `${title} installiert. Gib die Zugangsdaten ein, um es zu verbinden.`,
+    installFailed: (title: string) => `${title} konnte nicht installiert werden`,
+  },
 };

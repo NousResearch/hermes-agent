@@ -277,6 +277,7 @@ def sync_plugin_provider_registry() -> int:
     except Exception:
         return 0
     added = 0
+    pending: list[Any] = []
     for pp in profiles:
         if pp.name in PROVIDER_REGISTRY:
             # Only rows core wrote (built-in or mirrored) — a row the plugin injected itself is its
@@ -288,8 +289,16 @@ def sync_plugin_provider_registry() -> int:
                     override_registry_row(row, pp)
                 mirror_aliases(row, pp)
             continue
-        register_plugin_provider(pp)
-        added += pp.name in PROVIDER_REGISTRY
+        pending.append(pp)
+    while pending:
+        # Rows whose ``registry_after`` anchor belongs to a still-pending profile wait for it so
+        # merged plugins keep the same registry order as separate directories.
+        pending_keys = {k for pp in pending for k in (pp.name, *pp.aliases)}
+        ready = [pp for pp in pending if not pp.registry_after or pp.registry_after not in pending_keys] or pending
+        for pp in ready:
+            register_plugin_provider(pp)
+            added += pp.name in PROVIDER_REGISTRY
+        pending = [pp for pp in pending if pp not in ready]
     return added
 
 

@@ -334,11 +334,15 @@ def _classify_running(pid: int, command: str, *, launchd_jobs, plists, ssh_pids,
 
 def _finish(item: BackendItem, own_home: str) -> BackendItem:
     from hermes_cli.dashboard_procs import _normalized_home_for_compare
+    from hermes_cli.profiles_run_elsewhere import run_elsewhere_for_home
     from hermes_cli.update_cmd_fleet import _is_serve_or_dashboard_unit
     item.not_applied = _NOT_APPLIED
     item.notes.append(_OWNERSHIP[item.supervisor])
     if item.hermes_home:
         item.this_home = _normalized_home_for_compare(item.hermes_home) == _normalized_home_for_compare(own_home)
+        if (elsewhere := run_elsewhere_for_home(item.hermes_home)) is not None:
+            # The backend a plugin runs for a profile can be a process of this machine, found like any other.
+            item.notes.append(elsewhere.backend_note())
     if item.supervisor in ("systemd", "nix-systemd") and item.unit and not _is_serve_or_dashboard_unit(item.unit):
         item.notes.append("`hermes update`'s systemd unit pass matches only hermes-gateway*/hermes-serve*/"
                           f"hermes-dashboard* names, so it does not list {item.unit}.")
@@ -352,6 +356,11 @@ def collect_backends() -> list[BackendItem]:
     from hermes_cli.dashboard_procs import _exclude_pids_from_env, _lock_owned_serve_pids
     from hermes_cli.main_dashboard import _loaded_launchd_backend_jobs
     from hermes_constants import get_hermes_home
+    if os_family().startswith("linux"):
+        # Without the user bus env (a headless shell) `systemctl --user` cannot prove a user unit owns
+        # its dashboard, which is then reported a second time as a manual backend.
+        from hermes_cli.gateway import _ensure_user_systemd_env
+        _ensure_user_systemd_env()
     own_home = str(get_hermes_home())
     launchd_jobs = _loaded_launchd_backend_jobs()  # empty off macOS
     # ``_launchd_plist_dirs`` returns its dirs on every OS, so only scan them, and only look
@@ -416,8 +425,11 @@ def format_report(items: list[BackendItem]) -> list[str]:
         lines.extend(f"    note:    {n}" for n in item.notes)
     if any(i.this_home and i.supervisor not in ("desktop-ssh", "desktop-local") for i in items):
         from hermes_cli.gateway_migrate_backends_plan import hermes_command
+        from hermes_cli.profiles_run_elsewhere import run_elsewhere_for_home
         from hermes_constants import get_hermes_home
-        lines += ["", NEXT_STEP.format(hermes=hermes_command(str(get_hermes_home()), powershell=os.name == "nt"))]
+        home = str(get_hermes_home())
+        if run_elsewhere_for_home(home) is None:  # a plugin runs this profile elsewhere: no move to offer
+            lines += ["", NEXT_STEP.format(hermes=hermes_command(home, powershell=os.name == "nt"))]
     return lines
 
 

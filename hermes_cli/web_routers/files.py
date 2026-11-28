@@ -9,6 +9,7 @@ import base64
 import binascii
 import contextlib
 import hashlib
+import importlib
 import logging
 import mimetypes
 import os
@@ -29,10 +30,11 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 
 from agent.file_safety import (
     HOME_CREDENTIAL_DIRS, HOME_CREDENTIAL_FILES, deny_key, deny_path_under, get_nt_namespace_error,
-    get_write_denied_error, hermes_credential_homes, is_write_approval_required, resolved_home_credential_stores,
+    get_write_denied_error, is_write_approval_required, resolved_home_credential_stores,
 )
 from hermes_cli import web_server_file_tickets as file_tickets
 from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_platform.resolver.git import resolve_usable_git
 from hermes_cli.home_data_layout import CREDENTIAL_STORE_DIRS, HOME_ENV_FILES, SECRET_CACHE_STORES
 from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
 from hermes_cli.staged_uploads import (
@@ -52,6 +54,10 @@ from hermes_cli.web_models import (
     ManagedFileUpload,
 )
 from utils import atomic_write_bytes, atomic_write_text
+
+# v0.23.3 and earlier gateways cache agent.file_safety at boot before hermes_credential_homes existed.
+_file_safety = importlib.import_module("agent.file_safety")
+hermes_credential_homes = getattr(_file_safety, "hermes_credential_homes", _file_safety._credential_store_dirs)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -406,6 +412,8 @@ def _fs_default_cwd(profile: Optional[str] = None) -> str:
 
 
 def _fs_git_branch(cwd: str) -> str:
+    if resolve_usable_git() is None:
+        return ""
     try:
         # git emits UTF-8 (branch names, localized "not a git repository" stderr); the locale codec
         # (cp936 on zh-CN Windows) raised inside communicate()'s reader threads on every poll (#83851).
@@ -432,6 +440,7 @@ def _fs_backend(profile: Optional[str] = None):
     from hermes_cli.ssh_workspace_fs import SshWorkspaceFsError, get_ssh_workspace_fs
     from tools.terminal_tool_config import coerce_ssh_remote_cwd
 
+    _fs_profile_home(profile)  # 409 for a profile a plugin runs elsewhere, before its config names a machine to dial
     with _profile_scope(profile):
         terminal = dict(load_config().get("terminal") or {})
         profile_env = load_env()

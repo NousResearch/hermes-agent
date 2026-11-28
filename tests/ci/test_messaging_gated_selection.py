@@ -17,7 +17,8 @@ _SDK_PROBE = re.compile(r"PathFinder\.find_spec\(\s*[\"'](discord|telegram|slack
 
 
 def test_every_messaging_gated_gateway_file_runs_in_the_messaging_job():
-    gated = sorted(str(path.relative_to(_REPO)) for path in (_REPO / "tests" / "gateway").glob("test_*.py")
+    # POSIX form: the workflow and classify_changes name files with "/" on every host.
+    gated = sorted(path.relative_to(_REPO).as_posix() for path in (_REPO / "tests" / "gateway").glob("test_*.py")
                    if _SDK_PROBE.search(path.read_text(encoding="utf-8")))
     assert gated, "no messaging-gated gateway file found; the probe pattern drifted"
     yaml = pytest.importorskip("hermes_yaml")

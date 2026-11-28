@@ -17,6 +17,9 @@ import { notify } from '@/store/notifications'
 export interface ProfileRemoteOverride {
   /** hostname[:port] parsed from the override URL — the display label. */
   host: string
+  /** Set when a desktop plugin's launcher runs this profile (a sandbox on this
+   *  computer) rather than a remote host the user connected. */
+  launcher?: { plugin: string }
   url: string
 }
 
@@ -79,7 +82,11 @@ export async function refreshProfileRemoteOverrides(names: string[]): Promise<vo
         const config = await getConnectionConfig(key)
 
         if ((config.mode === 'remote' || config.mode === 'cloud') && config.remoteUrl) {
-          next[key] = { host: remoteHostLabel(config.remoteUrl) || config.remoteUrl, url: config.remoteUrl }
+          next[key] = {
+            host: remoteHostLabel(config.remoteUrl) || config.remoteUrl,
+            ...(config.launcher ? { launcher: config.launcher } : {}),
+            url: config.remoteUrl
+          }
         }
       } catch {
         // Backend bridge hiccup — leave this profile unbadged until the next refresh.
@@ -107,7 +114,8 @@ export function notifyRemoteOverrideAuthFailure(profile: string, error: unknown)
   const key = String(profile || '').trim()
   const override = key ? $profileRemoteOverrides.get()[key] : undefined
 
-  if (!override) {
+  // A launcher's token belongs to its plugin, not to a field the user fills.
+  if (!override || override.launcher) {
     return false
   }
 

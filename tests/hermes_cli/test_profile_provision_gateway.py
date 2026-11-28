@@ -233,6 +233,18 @@ def test_a_windows_publish_onto_an_existing_profile_is_already_exists(root, held
     assert (dest / "config.yaml").read_text() == "model: {}\n"
 
 
+@pytest.mark.platforms("windows")
+def test_a_windows_publish_with_a_file_held_and_no_profile_stays_raw(root):
+    """WinError 5 with nothing at the destination is not a lost race (a scanner holding a staged file, say):
+    the error stays raw instead of naming a profile that does not exist."""
+    from hermes_cli.profiles_initialization import publish_staging
+    staging = root / "profiles" / ".racer.staging-1"
+    staging.mkdir(parents=True)
+    with open(staging / "held.txt", "w"), pytest.raises(PermissionError) as caught:
+        publish_staging(staging, root / "profiles" / "racer", lambda: profiles._profile_exists_error("racer"))
+    assert "already exists" not in str(caught.value)
+
+
 @pytest.mark.platforms("posix")
 def test_a_posix_publish_permission_error_stays_raw(root, monkeypatch):
     """Off Windows a PermissionError from the publish rename is a real failure, even with the destination

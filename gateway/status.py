@@ -376,6 +376,10 @@ def normalize_updated_at(value: Any) -> Optional[str]:
 WATCHDOG_EXIT_REASONS = frozenset({"loop_liveness_watchdog", "shutdown_watchdog"})
 
 
+def is_watchdog_exit_reason(reason: Any) -> bool:  # str check first: an unhashable one would raise
+    return isinstance(reason, str) and reason in WATCHDOG_EXIT_REASONS
+
+
 def retained_gateway_state(runtime: Any) -> str:
     """What a NOT-running gateway's retained ``gateway_state.json`` says about it now:
     ``"startup_failed"`` (or a watchdog-stamped ``"degraded"``) only while the operator still
@@ -1394,9 +1398,7 @@ def resolve_gateway_liveness(
         if alive:
             # Display-only PID: it belongs to the remote container.
             remote_pid = health_body.get("pid") if health_body else None
-            return GatewayLiveness(
-                running=True, pid=remote_pid, source="health", health_body=health_body
-            )
+            return GatewayLiveness(running=True, pid=remote_pid, source="health", health_body=health_body)
     if runtime is _UNSET:
         reader_kwargs = {"path": profile_dir / "gateway_state.json"} if scoped else {}
         runtime = guarded(_runtime_reader, **reader_kwargs)
@@ -1406,9 +1408,7 @@ def resolve_gateway_liveness(
     probe_kwargs = {"expected_home": profile_dir} if scoped else {}
     runtime_pid = guarded(_runtime_pid_probe, {} if (scoped and runtime is None) else runtime, **probe_kwargs)
     if runtime_pid is not None:
-        return GatewayLiveness(
-            running=True, pid=runtime_pid, source="runtime_status", health_body=health_body
-        )
+        return GatewayLiveness(running=True, pid=runtime_pid, source="runtime_status", health_body=health_body)
     # (4) A named profile served by the live default multiplexer: no identity files of its own, but
     # the multiplexer IS its gateway (mirrors `hermes -p X status` / `gateway list`). Unscoped, the
     # question is about the process's OWN home — which is a named profile inside a pooled

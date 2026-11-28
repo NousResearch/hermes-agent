@@ -65,6 +65,8 @@ def _assert_local_commit_parked(repo: Path, local_sha: str, output: str) -> None
     assert _git(repo, "log", "--format=%H", f"origin/main..{ref}").split() == [local_sha]
 
 
+# install.sh runs on Linux and macOS only; Windows installs through install.ps1, tested below.
+@pytest.mark.platforms("posix")
 @pytest.mark.live_system_guard_bypass
 @pytest.mark.skipif(
     shutil.which("git") is None or shutil.which("bash") is None,

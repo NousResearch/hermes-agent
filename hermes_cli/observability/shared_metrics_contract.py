@@ -20,6 +20,7 @@ from .shared_metrics_prepared_compaction import (
     PREPARED_COMPACTION_DIMENSIONS, PREPARED_COMPACTION_MARK, PREPARED_COMPACTION_METRIC,
     PREPARED_COMPACTION_SNAPSHOT_DIMENSIONS,
 )
+from .shared_metrics_group_chats import GROUP_CHAT_SNAPSHOT_FIELDS
 from .shared_metrics_busy import BUSY_ARRIVAL_DISPOSITIONS, BUSY_ARRIVAL_METRIC, BUSY_PEAK_FIELD, BUSY_WAIT_BUCKETS
 from .shared_metrics_desktop_frames import DESKTOP_LONG_FRAME_ROW_BUCKETS, DESKTOP_LONG_FRAMES_METRIC
 
@@ -357,6 +358,8 @@ RAM_BUCKETS = frozenset({
 })
 GPU_CLASSES = frozenset({"amd", "apple_silicon", "intel", "none", "nvidia", "unknown"})
 YES_NO = frozenset({"no", "yes"})
+# Who hosts the install, from HERMES_HOSTING (set by the hosting platform); anything else is self-hosted.
+HOSTINGS = frozenset({"nous_cloud", "self_hosted"})
 _INSTALL_V4_SNAPSHOT_DIMENSIONS = {
     "behind_bucket": BEHIND_BUCKETS, "gpu_class": GPU_CLASSES, "local_model_provider_used": YES_NO,
     "ram_bucket": RAM_BUCKETS, "release_channel": RELEASE_CHANNELS, "version_age_bucket": VERSION_AGE_BUCKETS,
@@ -914,6 +917,7 @@ _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
         "plugin_count_bucket": SIZE_BUCKETS, "profile_count_bucket": SIZE_BUCKETS,
         "skill_count_bucket": SIZE_BUCKETS, "terminal_backend": TERMINAL_BACKENDS,
         **_INSTALL_V4_SNAPSHOT_DIMENSIONS, **PREPARED_COMPACTION_SNAPSHOT_DIMENSIONS,
+        **dict.fromkeys(GROUP_CHAT_SNAPSHOT_FIELDS, SIZE_BUCKETS), "hosting": HOSTINGS,
     },
     SESSION_METRIC: {
         "active_duration_bucket": SESSION_DURATION_BUCKETS, "entrypoint": TASK_ENTRYPOINTS,
@@ -1154,6 +1158,11 @@ _LEGACY_METRIC_FIELDS: dict[str, tuple[frozenset[str], ...]] = {
         _METRIC_FIELDS[INSTALL_SNAPSHOT_METRIC] - set(PREPARED_COMPACTION_SNAPSHOT_DIMENSIONS),
     ),
 }
+# The group chat counts and hosting arrived together: every earlier shape lacks both, and an unreadable
+# room store leaves out only the group chat counts.
+_LEGACY_METRIC_FIELDS[INSTALL_SNAPSHOT_METRIC] = (*(s - {*GROUP_CHAT_SNAPSHOT_FIELDS, "hosting"} for s in (
+    *_LEGACY_METRIC_FIELDS[INSTALL_SNAPSHOT_METRIC], _METRIC_FIELDS[INSTALL_SNAPSHOT_METRIC])),
+    _METRIC_FIELDS[INSTALL_SNAPSHOT_METRIC] - set(GROUP_CHAT_SNAPSHOT_FIELDS))
 # ---- v5 engagement ----
 _LEGACY_METRIC_FIELDS[SESSION_METRIC] = (_METRIC_FIELDS[SESSION_METRIC] - set(SESSION_VOLUME_DIMENSIONS),)
 # ---- end v5 engagement ----
@@ -1291,6 +1300,8 @@ def _event_shape_matches(event: Any, **expected: Any) -> bool:
 def _bounded_dimensions(metric_name: str, data: Any) -> dict[str, str] | None:
     """Project ``data`` onto the metric's closed field set, or None when it does not fit."""
     expected_fields = _METRIC_FIELDS[metric_name]
+    if metric_name == INSTALL_SNAPSHOT_METRIC and isinstance(data, dict) and not set(data) & set(GROUP_CHAT_SNAPSHOT_FIELDS):
+        expected_fields -= set(GROUP_CHAT_SNAPSHOT_FIELDS)  # an unreadable room store leaves out only these
     if not isinstance(data, dict) or set(data) != expected_fields:
         return None
     dimensions = {field: data.get(field) for field in sorted(expected_fields)}
@@ -1954,32 +1965,6 @@ _SIZE_THRESHOLDS = (
 def size_bucket(count: int) -> str:
     """Bucket a non-negative install-scale count."""
     return _bucket(max(0, int(count)), _SIZE_THRESHOLDS, "gte_251")
-
-
-def install_snapshot_fields(
-    *, memory_provider: Any, mcp_servers: int, plugins: int, skills: int, cron_jobs: int,
-    profiles: int, messaging_platforms: int, install_age_bucket: str, main_provider: Any,
-    terminal_backend: Any, display_language: Any,
-) -> dict[str, str]:
-    """Bounded daily configuration snapshot: counts, closed enums and public names only."""
-    from .shared_metrics_catalog import display_language_metric_name, provider_metric_name
-
-    provider = _norm(memory_provider)
-    backend = _norm(terminal_backend) or "local"
-    return {
-        "cron_job_count_bucket": size_bucket(cron_jobs),
-        "display_language": display_language_metric_name(display_language),
-        "install_age_bucket": install_age_bucket if install_age_bucket in INSTALL_AGE_BUCKETS else "unknown",
-        "main_provider": provider_metric_name(main_provider) if main_provider else "none",
-        "mcp_server_count_bucket": size_bucket(mcp_servers),
-        "memory_provider": "builtin" if not provider
-        else provider if provider in MEMORY_PROVIDERS else "plugin",
-        "messaging_platform_count_bucket": size_bucket(messaging_platforms),
-        "plugin_count_bucket": size_bucket(plugins),
-        "profile_count_bucket": size_bucket(profiles),
-        "skill_count_bucket": size_bucket(skills),
-        "terminal_backend": backend if backend in TERMINAL_BACKENDS else "other",
-    }
 
 
 def _metric_identifier(value: Any, *, max_length: int) -> str:

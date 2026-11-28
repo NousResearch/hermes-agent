@@ -2,12 +2,12 @@
  "counts": {
   "http": {
    "keep-host-wide": 1,
-   "undecided": 353
+   "undecided": 355
   },
   "rpc": {
    "authority": 113,
    "keep-host-wide": 1,
-   "undecided": 180
+   "undecided": 181
   },
   "websocket": {
    "undecided": 10
@@ -134,6 +134,7 @@
   {"current_path": "hermes_cli.web_routers.memory_providers:get_memory_provider_config", "decision": "undecided", "handler": "GET /api/memory/providers/{name}/config", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.memory_oauth:memory_oauth_status", "decision": "undecided", "handler": "GET /api/memory/providers/{provider}/oauth/status", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.messaging:get_messaging_platforms", "decision": "undecided", "handler": "GET /api/messaging/platforms", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.messaging:get_messaging_platforms_signature", "decision": "undecided", "handler": "GET /api/messaging/platforms/signature", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.messaging_relay:get_relay_links", "decision": "undecided", "handler": "GET /api/messaging/relay", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.messaging_relay:get_relay_link_state", "decision": "undecided", "handler": "GET /api/messaging/relay/link/{code}", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.messaging:get_telegram_onboarding_status", "decision": "undecided", "handler": "GET /api/messaging/telegram/onboarding/{pairing_id}", "kind": "http", "ref": ""},
@@ -286,6 +287,7 @@
   {"current_path": "hermes_cli.web_routers.memory_providers:setup_memory_provider", "decision": "undecided", "handler": "POST /api/memory/providers/{name}/setup", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.memory_oauth:start_memory_oauth", "decision": "undecided", "handler": "POST /api/memory/providers/{provider}/oauth/start", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.ops:reset_memory", "decision": "undecided", "handler": "POST /api/memory/reset", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.messaging:install_messaging_catalog_platform", "decision": "undecided", "handler": "POST /api/messaging/catalog/{name}/install", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.messaging:test_messaging_platform", "decision": "undecided", "handler": "POST /api/messaging/platforms/{platform_id}/test", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.messaging_relay:request_relay_link", "decision": "undecided", "handler": "POST /api/messaging/relay/{platform}/link", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.messaging:start_telegram_onboarding", "decision": "undecided", "handler": "POST /api/messaging/telegram/onboarding/start", "kind": "http", "ref": ""},
@@ -408,6 +410,7 @@
   {"current_path": "authority; standalone: legacy server.dispatch", "decision": "authority", "handler": "clarify.lock", "kind": "rpc", "ref": ""},
   {"current_path": "authority; standalone: unknown method", "decision": "authority", "handler": "clarify.respond", "kind": "rpc", "ref": ""},
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "cli.exec", "kind": "rpc", "ref": "D3"},
+  {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "client.activity", "kind": "rpc", "ref": "D3"},
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "client.capabilities", "kind": "rpc", "ref": "D3"},
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "clipboard.paste", "kind": "rpc", "ref": "D3"},
   {"current_path": "authority; standalone: legacy server.dispatch", "decision": "authority", "handler": "command.dispatch", "kind": "rpc", "ref": ""},

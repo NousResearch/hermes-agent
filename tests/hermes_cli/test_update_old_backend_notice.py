@@ -260,6 +260,28 @@ def test_a_stopped_unit_a_migration_retired_is_not_named_but_a_running_backend_a
     assert "PID 7" in old_backend_notice(tmp_path)
 
 
+@pytest.mark.parametrize("marked", [False, True])
+def test_a_profile_a_plugin_runs_elsewhere_gets_no_notice_about_a_backend_of_its_home(tmp_path, monkeypatch,
+                                                                                      marked):
+    """The backend a plugin runs for a profile can be a ``serve`` process of this machine. The update that
+    saw it offers no move for it: that move is blocked for the profile, and the backend is not an old one."""
+    import hermes_cli.gateway_migrate_backends as backends
+    from hermes_cli import profiles_run_elsewhere as pre
+    from hermes_cli.gateway_migrate_backends import BackendItem
+    from hermes_cli.update_backend_notice import old_backend_notice
+    home = tmp_path / "hermes-home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    if marked:
+        pre.mark_profile_run_elsewhere("default", "sandbox-plugin", root=home)
+    monkeypatch.setattr(backends, "collect_backends", lambda: [
+        BackendItem("manual", True, pid=7, argv=["hermes", "serve", "--isolated", "--port", "47999"], this_home=True)])
+
+    notice = old_backend_notice(home)
+
+    assert notice is None if marked else ("PID 7" in notice and notice.endswith(PLAN)), notice
+
+
 def test_an_update_with_no_serve_or_dashboard_candidate_resolves_nothing_else(monkeypatch):
     """The gate answers from the update's own lists first: with no candidate it never asks which profile
     is active (nor anything else)."""

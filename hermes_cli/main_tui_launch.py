@@ -15,6 +15,8 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+from hermes_platform.resolver.git import resolve_usable_git
+
 # Log-record parity with the origin module.
 logger = logging.getLogger("hermes_cli.main")
 
@@ -77,7 +79,7 @@ def _restore_tui_workspace(tui_dir: Path) -> bool:
     than raising) when git is unavailable, this isn't a checkout, or the restore leaves the directory still
     missing — the caller then prints the manual-recovery message.
     """
-    git = shutil.which("git")
+    git = resolve_usable_git()
     if not git or not (tui_dir.parent / ".git").exists():
         return False
     try:
@@ -502,8 +504,24 @@ def _launch_tui(
     # `hermes --tui` try to resume a non-existent session; only forward the id
     # argparse resolved for this invocation.
     env.pop("HERMES_TUI_RESUME", None)
+    env.pop("HERMES_TUI_OWNER_PID", None)
+    env.pop("HERMES_TUI_RESUME_ARGV", None)
+    env.pop("HERMES_TUI_RESUME_SESSION_ONLY", None)
     if resume_session_id:
         env["HERMES_TUI_RESUME"] = resume_session_id
+
+    from hermes_cli.program_resume import bypass_flags, resume_argv_prefix
+    from hermes_cli.terminal_notify import osc7577_token
+    tui_flags = (*(("--tui-native",) if native_mode else ()), *(("--dev",) if tui_dev else ()))
+    # The Node TUI is the one child that reports for the pane, and only with a command to report.
+    token = osc7577_token()
+    env.pop("OSC7577_TOKEN", None)
+    if token and (resume_prefix := resume_argv_prefix("tui", *tui_flags)) is not None:
+        env["OSC7577_TOKEN"] = token
+        env["HERMES_TUI_OWNER_PID"] = str(os.getpid())
+        env["HERMES_TUI_RESUME_ARGV"] = json.dumps(list(resume_prefix))
+        if bypass_flags():  # program_resume.resume_argv: a bypass launch has no bare form
+            env["HERMES_TUI_RESUME_SESSION_ONLY"] = "1"
 
     notices: list[str] = []
     argv, cwd = _make_tui_argv(tui_dir, tui_dev, notices)

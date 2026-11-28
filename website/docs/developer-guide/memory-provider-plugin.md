@@ -210,7 +210,8 @@ The two profile hooks run on an uninitialized instance with that profile's home 
 secrets bound: its `.env` plus its configured secret sources (1Password and the like). A key it
 lacks reads as unset: the caller's environment is never used. An exception (`SystemExit` included) is logged and never fails the create or rename. They run inside the
 create/rename request on every surface, so do network work on a background thread. Under
-`plugins.isolation: host`, a plugin host started only for the hook is stopped when it returns.
+`plugins.isolation: host` they run in a plugin host of their own, separate from the profile's shared host
+and stopped when they return, so module-level state from the shared host's import isn't visible to them.
 
 For native `replace` and `remove`, `metadata["previous_content"]` contains the full
 entry selected under the native-store lock. Notifications are emitted only after
@@ -336,8 +337,10 @@ contract (success without a save) or kills the fork at its first compaction.
 
 What your provider receives depends on its declared API version. Version 1
 providers (the implicit default — every pre-existing provider) keep the
-historical contract: the raw message list, exactly as before. Version 2
-checkpoint providers receive normalized direct evidence instead:
+historical raw-message contract, after Hermes removes host-only display data
+such as a withheld prompt and a plugin card's text/directive. Version 2
+checkpoint providers receive normalized direct evidence instead, with the
+same host-only display data removed:
 user/assistant text rows only — tool results, system messages, the
 `tool_calls` payload of assistant messages (their prose is kept), and prior
 compaction summaries are filtered host-side. Prior summaries are recognized

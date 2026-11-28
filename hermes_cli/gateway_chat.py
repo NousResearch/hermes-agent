@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import logging
 import os
 from pathlib import Path
 import sys
@@ -11,6 +12,8 @@ import uuid
 
 from hermes_cli.gateway_client import RESUME_KEY_MISMATCH, GatewayClientError, connect_gateway
 from hermes_cli.gateway_connection import RESUME_REFUSALS
+
+logger = logging.getLogger(__name__)
 
 # These options change execution or require frontend facilities not yet exposed by
 # the authority. Reject them, rather than mutate process-wide gateway settings.
@@ -58,6 +61,26 @@ def shell_client_env() -> dict:
     from hermes_cli.config import get_config_path
     from hermes_cli.config_effective import load_user_config_effective
     return collect_client_env(config=load_user_config_effective(get_config_path()))
+
+
+def program_resume_enabled(args) -> bool:
+    """Whether this launch reports OSC 7577 Program Resume: a pane token and ``display.program_resume``
+    not false. A bypass launch reads no profile, so its setting is the default."""
+    from hermes_cli.terminal_notify import osc7577_token
+
+    if osc7577_token() is None:
+        return False
+    if bypass_launch(args):
+        return True
+    try:
+        from hermes_cli.config import get_config_path
+        from hermes_cli.config_effective import load_user_config_effective
+
+        display = (load_user_config_effective(get_config_path()) or {}).get("display") or {}
+    except Exception:
+        logger.debug("program resume: config unreadable, using the default", exc_info=True)
+        display = {}
+    return display.get("program_resume", True) is not False
 
 
 def client_env_policy(parameters) -> dict:
@@ -230,8 +253,11 @@ async def run_gateway_chat(args, emitter=None):
             await asyncio.to_thread(write_breadcrumb, snapshot["stored_session_id"])
         if emitter is not None:
             emitter.bind_session(snapshot["stored_session_id"])
+        from hermes_cli.program_resume import bypass_flags
         view = GatewayChatView(client, snapshot, quiet=quiet, emitter=emitter,
-                               usage_file=getattr(args, "usage_file", None))
+                               usage_file=getattr(args, "usage_file", None),
+                               resumed=bool(getattr(args, "resume", None) or title or latest),
+                               program_resume=program_resume_enabled(args), resume_flags=bypass_flags(args))
         view.launch_api_key = getattr(args, "api_key", None)  # /new keeps this launch's key
         view.unattended = isinstance(oneshot_prompt, str)
         view.resume_footer = oneshot and not quiet

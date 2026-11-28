@@ -1,0 +1,22 @@
+name: chinadoccheck
+title: ChinaDocCheck
+repo: https://github.com/AbigailDavised/chinadoccheck-mcp
+sha: f18c830e3a48dd99699258ad7151f1e0947fee8f
+version: "1.0.0"
+description: "16-country China Hague Apostille vs consular legalization authority router, 180-day FBI and police-clearance validity radar, U.S. Federal USDOS vs State SOS jurisdiction matcher, SAFEA translation and RON remote-notary auditor, Z-visa rejection risk diagnoser, and printable dossier checklist through ChinaDocCheck's official MCP server (Streamable HTTP at https://chinadoccheck.com/api/mcp, no sign-in, no keys in config). Bundles the chinadoccheck workflow skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure - hosted-only connector with no local runtime code, binaries, hooks, telemetry or self-updater; every tool call goes over HTTPS to chinadoccheck.com/api/mcp with only the country code, document type, issue date or state query arguments. All 8 tools are public, free, and annotated read-only (readOnlyHint: true, destructiveHint: false). The package marks the server untrusted (trust: untrusted), so Hermes asks before any tool not annotated read-only and refuses them in unattended runs. The remote tool inventory is served at runtime and is not covered by the pinned sha. Disclosure — hosted-only connector with no local runtime code, binaries, hooks, telemetry or self-updater; every tool call goes over HTTPS to chinadoccheck.com/api/mcp with only the country code, document type, issue date or state query arguments. All 8 tools are public, free, and annotated read-only (readOnlyHint: true, destructiveHint: false). The package marks the server untrusted (trust: untrusted), so Hermes asks before any tool not annotated read-only and refuses them in unattended runs. The remote tool inventory is served at runtime and is not covered by the pinned sha."
+maintainer: ChinaDocCheck
+tier: community
+category: tools
+docs_url: https://chinadoccheck.com
+requires_hermes: ">=0.21.6"
+image: https://raw.githubusercontent.com/AbigailDavised/chinadoccheck-mcp/f18c830e3a48dd99699258ad7151f1e0947fee8f/assets/cover.png
+screenshots:
+  - https://raw.githubusercontent.com/AbigailDavised/chinadoccheck-mcp/f18c830e3a48dd99699258ad7151f1e0947fee8f/assets/screenshot.png
+  - https://raw.githubusercontent.com/AbigailDavised/chinadoccheck-mcp/f18c830e3a48dd99699258ad7151f1e0947fee8f/assets/editorial.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -1,0 +1,18 @@
+name: slidedrift
+title: SlideDrift
+repo: https://github.com/SlideDrift/slidedrift-mcp
+sha: b8de998609b16daa0879a0cdd3b25e76a1b4289b
+version: "1.0.0"
+description: "Turn what you know into LinkedIn posts in your brand through SlideDrift's hosted MCP server (Streamable HTTP at https://slidedrift.com/mcp, OAuth sign-in, no keys in config): plan, create, edit, export and schedule LinkedIn carousels and posts from a link, notes or an idea, using the user's Brand Kits and templates. Bundles the slidedrift workflow skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure — every tool call goes to SlideDrift's hosted server (slidedrift.com) and acts only on the user's own SlideDrift work; the tool set is served by that server at runtime and is not covered by the pinned sha. Creating and exporting carousels spends SlideDrift credits after the server shows a quote and the user approves; scheduling publishes posts to the user's connected LinkedIn accounts and needs its own approval. Sign-in runs the pinned mcp-remote@0.16.7 through npx (Node.js and npm required), which opens a browser and a local callback port on first use and stores OAuth tokens under ~/.mcp-auth. The package marks the server untrusted, so Hermes asks before every tool the server does not mark read-only and refuses them in unattended runs."
+maintainer: SlideDrift
+tier: community
+category: tools
+docs_url: https://github.com/SlideDrift/slidedrift-mcp#readme
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

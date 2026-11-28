@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import contextlib
+import importlib
 import json
 from pathlib import Path
 import logging
@@ -61,8 +62,17 @@ from tools.tool_result_storage import (
     extract_persisted_path,
 )
 from tools.budget_config import BudgetConfig, DEFAULT_BUDGET, budget_for_context_window
-from tools.skills_tool_dedup import release_replaced_skill_view, release_replaced_skill_views
 from hermes_cli.observability.shared_metrics_efficiency import note_tool_result, record_tool_batch
+
+
+def _noop_release_skill_view(*_args: Any, **_kwargs: Any) -> None:
+    return None
+
+
+# v0.23.3 and earlier gateways cache tools.skills_tool_dedup at boot without these helpers.
+_skills_tool_dedup = importlib.import_module("tools.skills_tool_dedup")
+release_replaced_skill_view = getattr(_skills_tool_dedup, "release_replaced_skill_view", _noop_release_skill_view)
+release_replaced_skill_views = getattr(_skills_tool_dedup, "release_replaced_skill_views", _noop_release_skill_view)
 
 # A tool result this large (raw stdout, file dumps) is the biggest allocation a turn ever drops.
 # The commit only flags it: the string is still referenced by the publish frames here, so the

@@ -586,6 +586,53 @@ def test_pythonpath_descendants_are_not_owned():
     assert env["PYTHONPATH"].split(os.pathsep) == entries
 
 
+@pytest.mark.parametrize("selection", ["newer", "missing"])
+def test_pythonpath_strips_older_install_generation(tmp_path, monkeypatch, selection):
+    """An inherited generation stays owned after PM commits a newer one, or with no selection recorded."""
+    from pm.environments import runtime_facts_path, site_packages
+
+    state = tmp_path / "hermes/installs/this-install"
+    monkeypatch.setattr("pm.environments.install_state_dir", lambda repo: state)
+    if selection == "newer":
+        newer = state / "environments/newer/venv"
+        newer.mkdir(parents=True)
+        (newer / "pyvenv.cfg").write_text("version = 3.14\n", encoding="utf-8")
+        facts = runtime_facts_path(Path(__file__).resolve().parents[2])
+        facts.write_text(json.dumps({"packages": {"venv": {"environment": str(newer)}}}), encoding="utf-8")
+    # The older generation may already have been collected, including pyvenv.cfg.
+    owned = site_packages(state / "environments/older/venv")
+    user = tmp_path / "user-lib"
+    env = {"PYTHONPATH": os.pathsep.join(map(str, [owned, user]))}
+    pp._strip_hermes_owned_pythonpath(env)
+    assert env["PYTHONPATH"] == str(user)
+
+
+def test_pythonpath_keeps_other_install_and_generation_subdirectory(tmp_path, monkeypatch):
+    """Only this install's exact generation site-packages paths are owned."""
+    from pm.environments import site_packages
+
+    state = tmp_path / "hermes/installs/this-install"
+    monkeypatch.setattr("pm.environments.install_state_dir", lambda repo: state)
+    entries = [str(site_packages(state.parent / "other-install/environments/older/venv")),
+               str(state / "environments/older/workspace")]
+    env = {"HERMES_HOME": str(tmp_path / "hermes"), "PYTHONPATH": os.pathsep.join(entries)}
+    pp._strip_hermes_owned_pythonpath(env)
+    assert env["PYTHONPATH"].split(os.pathsep) == entries
+
+
+def test_pythonpath_keeps_dot_dot_escape_from_environments(tmp_path, monkeypatch):
+    """A lexical ``..`` spelling that leaves environments/ is not a generation path."""
+    from pm.environments import site_packages
+
+    state = tmp_path / "hermes/installs/this-install"
+    monkeypatch.setattr("pm.environments.install_state_dir", lambda repo: state)
+    escaped = site_packages(state / "environments" / ".." / "venv")
+    entries = [str(escaped)]
+    env = {"PYTHONPATH": os.pathsep.join(entries)}
+    pp._strip_hermes_owned_pythonpath(env)
+    assert env["PYTHONPATH"].split(os.pathsep) == entries
+
+
 @pytest.mark.platforms("linux", "macos", "windows")
 @pytest.mark.parametrize("link_at", ["home", "repo", "unrelated"])
 @pytest.mark.parametrize("profile", [False, True])
@@ -652,7 +699,9 @@ def test_runtime_provenance_is_independent_of_aliases_and_virtual_env(child_env,
     (user_venv / "pyvenv.cfg").write_text("version = 3.13\n", encoding="utf-8")
     base = {"VIRTUAL_ENV": str(user_venv), "PYTHONPATH": os.pathsep.join(map(str, [site, alias, user_site]))}
     result = local._sanitize_subprocess_env(base)
-    expected = [str(user_site)] if has_facts else [str(site), str(user_site)]
+    # A site-packages under this install's environments/<uuid>/venv is Hermes-owned by
+    # layout, recorded selection or not; VIRTUAL_ENV and aliases still confer nothing.
+    expected = [str(user_site)]
     assert result["PYTHONPATH"].split(os.pathsep) == expected
     assert "VIRTUAL_ENV" not in result
     assert base["VIRTUAL_ENV"] == str(user_venv)

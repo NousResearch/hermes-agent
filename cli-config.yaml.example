@@ -645,6 +645,15 @@ browser:
   # the terminal reaches); set false to refuse private URLs instead.
   # auto_local_for_private_urls: true
 
+  # Run every browser_exec CLI call under this command, with the harness command
+  # appended as its arguments (stdin and the environment pass through). Use it
+  # to queue calls or account for the tabs they open when several agents or
+  # cron jobs share one browser (browser.cdp_url). The wrapper must exec or run
+  # its arguments and return their exit code. A string is one executable path
+  # (no shell splitting); pass arguments as a list. An invalid value fails the
+  # call instead of running the harness unwrapped.
+  # harness_wrapper: ["/usr/bin/flock", "-w", "30", "/run/lock/browser.lock"]
+
 # =============================================================================
 # Tool Loop Guardrails
 # =============================================================================

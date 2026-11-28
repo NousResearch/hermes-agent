@@ -428,13 +428,12 @@ DEFAULT_CONFIG = {
         # Chromium binary for local sessions. "" = pm's chromium (`hermes pm install chromium`), the
         # Docker image's build, else a system chromium where pm builds none (Termux).
         "executable_path": "",
-        # Persistent Chromium profile directory shared by local sessions; "" = a fresh throwaway
-        # profile per session.
-        "user_data_dir": "",
+        "user_data_dir": "",  # persistent profile dir shared by local sessions; "" = throwaway per session
         "chromium_args": [],  # extra Chromium flags for local sessions, e.g. ["--lang=de"]
         # Cloud provider: LAN/localhost URLs open in a local Chromium (ignores allow_private_urls; False refuses)
         "auto_local_for_private_urls": True,
         "cdp_url": "",  # persistent CDP endpoint for attaching to an existing Chromium/Chrome
+        "harness_wrapper": [],  # command every browser_exec runs under, harness argv appended; [] = none
         # Consent to browse with the user's REAL logins locally: runs on a Hermes-managed SNAPSHOT
         # of the ACTIVE default-Chromium profile (Local State -> profile.last_used; cookies, logins,
         # prefs copied and re-synced per fresh session) driven by Hermes' packaged Chromium. The

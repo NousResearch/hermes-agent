@@ -57,7 +57,7 @@ def test_python_bionic_row_matches_supplier(lock):
 def test_node_bionic_row_matches_supplier(lock):
     """The node bionic row is an explicit pin of the termux-main nodejs .deb;
     the row and Nodejs.fetch_url(bionic arm) must agree."""
-    _assert_pinned_bionic_row(lock, "node", r"nodejs_(?P<ver>[0-9.]+)-1_aarch64\.deb$")
+    _assert_pinned_bionic_row(lock, "node", r"nodejs_(?P<ver>[0-9.]+(?:-[0-9]+)?)_aarch64\.deb$")
 def test_termux_docker_row_pins_digest(lock):
     row = lock["packages"]["termux-docker"]["artifacts"]["linux-arm64-bionic"]
     version = lock["packages"]["termux-docker"]["version"]

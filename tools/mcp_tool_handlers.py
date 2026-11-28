@@ -23,7 +23,8 @@ from tools.mcp_tool_content import (
     _render_mcp_dropped_block_notice, _render_mcp_resource_block, _strip_reserved_meta_keys,
     _truncate_mcp_text_result)
 from tools.mcp_tool_errors import (
-    _auth_error_detail, _is_auth_error, _is_session_expired_error, _mcp_call_failed_message)
+    _auth_error_detail, _is_auth_error, _is_session_expired_error, _mcp_call_failed_message,
+    _server_answered)
 
 logger = logging.getLogger("tools.mcp_tool")
 _MISSING = object()
@@ -928,7 +929,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, *,
             return _render_call_tool_result(result, server_name, image_paths, for_model=native_images)
 
         def _on_failure(exc):
-            _core._bump_server_error(server_name)
+            _core._bump_server_error(server_name, application=_server_answered(exc))
             logger.error("MCP tool %s/%s call failed: %s", server_name, tool_name, exc)
 
         failures: list = []  # each attempt's exception; the first tells whether the call ever reached the server

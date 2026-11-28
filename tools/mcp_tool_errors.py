@@ -171,6 +171,30 @@ def _auth_error_detail(exc: BaseException) -> str:
     return f" {_sanitize_error(text)}" if text else ""
 
 
+# JSON-RPC application errors. The MCP Python SDK also raises -32000 (connection
+# closed) and -32001 (request timeout) locally, with no tools/call error on the
+# wire. Those are transport failures, not a server answer.
+_JSONRPC_APPLICATION_CODES = frozenset({-32700, -32600, -32601, -32602, -32603})
+
+
+def _server_answered(exc: BaseException) -> bool:
+    """True when the server sent a JSON-RPC application error. The transport is fine.
+
+    A parameter rejection must not open the breaker as \"unreachable\". SDK
+    exception types arrive wrapped in an ExceptionGroup, so this reads the
+    unwrapped error code, not the class. -32000 and -32001 stay transport:
+    a closed connection or a timeout is not the server rejecting the call.
+    """
+    root = _unwrap_exception_group(exc)
+    code = getattr(getattr(root, "error", None), "code", None)
+    if code is None:
+        code = getattr(root, "code", None)
+    if isinstance(code, int):
+        return code in _JSONRPC_APPLICATION_CODES
+    text = str(root).lower()
+    return "invalid request parameters" in text or "invalid params" in text
+
+
 def _mcp_call_failed_message(exc: BaseException) -> str:
     """Generic tool-error text naming the group root cause: the transport's TaskGroup wrapper ``str()`` is
     "unhandled errors in a TaskGroup (1 sub-exception)", which tells the model nothing."""

@@ -439,22 +439,27 @@ class TestSignalRecipientResolution:
 
 class TestSignalSendVoice:
     @pytest.mark.asyncio
-    async def test_send_voice_sends_via_rpc(self, monkeypatch, tmp_path):
+    @pytest.mark.parametrize(("filename", "content", "is_voice"), [
+        ("reply.ogg", b"OggS" + b"\x00" * 100, True),  # conversion fails, send the original
+        ("music.m4a", b"\0\0\0 ftypM4A " + b"\x00" * 100, False),  # regular audio
+    ])
+    async def test_send_voice_sends_via_rpc(self, monkeypatch, tmp_path, filename, content, is_voice):
         """send_voice should send audio as attachment via signal-cli RPC."""
         adapter = _make_signal_adapter(monkeypatch)
         mock_rpc, captured = _stub_rpc({"timestamp": 1234567890})
         adapter._rpc = mock_rpc
         adapter._stop_typing_indicator = AsyncMock()
 
-        audio_path = tmp_path / "reply.ogg"
-        audio_path.write_bytes(b"OggS" + b"\x00" * 100)
+        audio_path = tmp_path / filename
+        audio_path.write_bytes(content)
 
-        result = await adapter.send_voice(chat_id="+155****4567", audio_path=str(audio_path))
+        result = await adapter.send_voice(chat_id="+155****4567", audio_path=str(audio_path), is_voice=is_voice)
 
         assert result.success is True
         assert captured[0]["method"] == "send"
         assert captured[0]["params"]["attachments"] == [str(audio_path)]
         assert captured[0]["params"]["message"] == ""  # caption=None → ""
+        assert "voiceNote" not in captured[0]["params"]
         adapter._stop_typing_indicator.assert_awaited_once_with("+155****4567")
         assert 1234567890 in adapter._recent_sent_timestamps
 
@@ -502,6 +507,7 @@ class TestSignalSendVideo:
         assert captured[0]["method"] == "send"
         assert captured[0]["params"]["attachments"] == [str(vid_path)]
         assert captured[0]["params"]["message"] == ""  # caption=None → ""
+        assert "voiceNote" not in captured[0]["params"]
         adapter._stop_typing_indicator.assert_awaited_once_with("+155****4567")
         assert 1234567890 in adapter._recent_sent_timestamps
 

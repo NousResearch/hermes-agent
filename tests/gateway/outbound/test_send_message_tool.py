@@ -1481,6 +1481,30 @@ class TestSendSignalChunking:
         # Only the existing file made it into the RPC
         params = fake.calls[0]["payload"]["params"]
         assert len(params["attachments"]) == 1
+        assert "voiceNote" not in params
+
+
+    @pytest.mark.parametrize(("voice_flags", "as_document", "native_note"), [
+        ([True], False, True),
+        ([True, False], False, False),
+        ([True], True, False),
+    ])
+    def test_signal_voice_note_respects_attachment_intent(self, tmp_path, monkeypatch, voice_flags,
+                                                         as_document, native_note):
+        # The same file may be attached twice with different intents. voiceNote is per message.
+        audio = tmp_path / "reply.m4a"
+        audio.write_bytes(b"\x00\x00\x00\x20ftypM4A " + b"\x00" * 16)
+        fake = _FakeSignalHttp([{"result": {"timestamp": 1}}])
+        _install_signal_http(monkeypatch, fake)
+        config = SimpleNamespace(enabled=True, token=None, extra={"account": "+15550100000"})
+        result = asyncio.run(_send_to_platform(
+            Platform.SIGNAL, config, "+15550100001", "reply",
+            media_files=[(str(audio), flag) for flag in voice_flags], force_document=as_document,
+        ))
+        assert result["success"]
+        params = fake.calls[0]["payload"]["params"]
+        assert params["attachments"] == [str(audio)] * len(voice_flags)
+        assert params.get("voiceNote", False) is native_note
 
 
 # ── _send_via_adapter standalone fallback ────────────────────────────────

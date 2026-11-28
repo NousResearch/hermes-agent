@@ -282,3 +282,18 @@ def test_device_flow_token_poll_carries_a_user_agent_on_the_wire(
     assert all(agents), seen  # nothing leaves Hermes header-less
     polls = [headers.get("user-agent") for path, headers in seen if path == "/token"]
     assert polls == [DEFAULT_AUTH_REQUEST_USER_AGENT] * len(polls)
+
+
+def test_refresh_names_the_grant_scope(tmp_path, monkeypatch):
+    """Entra v2 refuses a scope-less refresh_token grant (AADSTS90009) when the client is also the
+    resource; the refresh must re-send the stored grant's scope, and stay scope-less without one."""
+    from urllib.parse import parse_qs
+
+    provider = _build_provider_via(_manager_builder, monkeypatch, tmp_path, {})
+    _ready_for_token_requests(provider)
+    assert "scope" not in parse_qs(asyncio.run(provider._refresh_token()).content.decode())
+
+    provider.context.current_tokens.scope = "api://app-1/access_as_user offline_access"
+    form = parse_qs(asyncio.run(provider._refresh_token()).content.decode())
+    assert form["scope"] == ["api://app-1/access_as_user offline_access"]
+    assert form["grant_type"] == ["refresh_token"] and form["refresh_token"] == ["rt"]

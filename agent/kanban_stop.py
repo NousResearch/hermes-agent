@@ -8,7 +8,10 @@ instead of exiting.
 
 from __future__ import annotations
 
+import logging
 import os
+import sqlite3
+from contextlib import closing
 from typing import Any, Iterable, Optional
 
 from agent.delegation_context import owned_kanban_task
@@ -28,6 +31,8 @@ _TERMINAL_KANBAN_TOOLS = frozenset({
 })
 
 _DEFAULT_MAX_ATTEMPTS = 2
+
+logger = logging.getLogger(__name__)
 
 
 def kanban_stop_nudge_enabled() -> bool:
@@ -68,31 +73,50 @@ def build_kanban_stop_nudge(
     max_attempts: int = _DEFAULT_MAX_ATTEMPTS,
     task_id: Optional[str] = None,
 ) -> Optional[str]:
-    """Synthetic follow-up when a kanban worker exits without a terminal tool; ``None`` when
-    the guard should not fire (not a kanban worker, already completed/blocked, budget exhausted)."""
-    if (
-        not kanban_stop_nudge_enabled()
-        or attempts >= max_attempts
-        or session_called_kanban_terminal(messages)
-    ):
+    """Nudge an unfinished worker, not a handed-off or superseded run.
+
+    Dispatcher-pinned runs use durable lifecycle state, which survives context
+    compression and successor claims. Unpinned sessions keep the legacy tool scan.
+    """
+    if not kanban_stop_nudge_enabled() or attempts >= max_attempts:
         return None
 
-    tid = (task_id or os.environ.get("HERMES_KANBAN_TASK") or "").strip() or "this task"
-    # The transcript is the status source: this text is only reached when the session made no
-    # handoff call, so it never tells a worker to close a card it already sent to review.
+    tid = (task_id or owned_kanban_task() or "").strip() or "this task"
+    raw_run_id = (os.environ.get("HERMES_KANBAN_RUN_ID") or "").strip()
+    if raw_run_id:
+        from hermes_cli import kanban_db as kb
+        from hermes_cli.sqlite_safe_read import UntrackableConnectionError, connect_tracked
+
+        try:
+            run_id = int(raw_run_id)
+            # A stop check must not initialize/migrate a missing board. Reuse
+            # the goal loop's run-scoped lifecycle policy, not task.status alone.
+            uri = kb.kanban_db_path().resolve().as_uri() + "?mode=ro"
+            with closing(connect_tracked(uri, uri=True, timeout=1.0)) as conn:
+                conn.row_factory = sqlite3.Row
+                status = kb.goal_run_status(conn, tid, run_id)
+            if status in {"done", "blocked", "review", "changes_requested", "superseded"}:
+                return None
+        except (OSError, ValueError, OverflowError, sqlite3.Error, UntrackableConnectionError):
+            logger.debug("Cannot verify kanban worker run handoff", exc_info=True)
+        # Failed/foreign tool calls are not proof that this pinned run ended.
+    elif session_called_kanban_terminal(messages):
+        return None
+
     return (
         "[System: You are a Hermes kanban worker. A plain-text reply is NOT a "
         "terminal state for the board.\n\n"
-        f"Task `{tid}` has not been handed off: this session made no terminal board "
-        "call (`kanban_complete` / `kanban_request_review` / `kanban_block`). Ending now "
-        "causes a protocol violation (clean exit with the card still `running`).\n\n"
-        "Do this immediately in your next response — do not narrate intent:\n"
-        "1. Finish any remaining deliverable (write the required file(s) now).\n"
-        "2. Call `kanban_complete(summary=..., artifacts=[...])` if the work is done "
-        "and needs no review, `kanban_request_review(summary=...)` if it is a code "
-        "change that needs same-card review, OR `kanban_block(reason=...)` if you are "
-        "blocked. Reviewers approve with `kanban_complete` or send the card back with "
-        "`kanban_request_changes(reason=...)`.\n\n"
+        f"No finished run or lifecycle handoff was verified for task `{tid}`. "
+        "Exiting an active run without a handoff causes a protocol violation.\n\n"
+        "Do this in your next response — do not narrate intent:\n"
+        "1. Use `kanban_show` to verify your run still owns the work, especially "
+        "if a handoff was already attempted. Do not mutate a successor's run.\n"
+        "2. If you still own the work, finish any remaining deliverable and call "
+        "`kanban_complete(summary=..., artifacts=[...])` if the work "
+        "is done, `kanban_request_review(summary=...)` when handing work to review, "
+        "`kanban_request_changes(reason=...)` when returning a review to its implementer, "
+        "`kanban_schedule(resume_at=...)` for a timed wait, OR "
+        "`kanban_block(reason=...)` if you are genuinely blocked.\n\n"
         "Never end a turn with only a promise of future action. Repeated "
         "protocol violations will block this task and require manual intervention.]"
     )

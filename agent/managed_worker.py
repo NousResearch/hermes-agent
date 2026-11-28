@@ -201,6 +201,28 @@ ORPHAN_GRACE_SECONDS = 10
 # SIGKILLed with the process group. Give them a bounded drain to finish + persist a real terminal result
 # first; a killed one is otherwise recovered next boot only as "outcome unknown" (recover_abandoned_delegations).
 DELEGATION_DRAIN_SECONDS = 30
+# A worker's turn is finite and its agent is retired as soon as the turn returns, which would
+# kill the daemon background-review thread mid-write. When the review is enabled for workers
+# (``auxiliary.background_review.managed_workers``) the worker waits this long for it first.
+REVIEW_DRAIN_SECONDS = 120
+
+
+def _review_for_workers() -> bool:
+    """``auxiliary.background_review.managed_workers`` - should a card's worker review its turn?
+
+    Default off: a managed worker is a finite turn, and the upstream rule is that finite turns do
+    not review. Turning it on makes the worker behave like an interactive session - the review
+    lands its skill/memory writes, and ``REVIEW_DRAIN_SECONDS`` keeps the process alive long
+    enough for them. Unreadable config degrades to off with a warning, never to an exception.
+    """
+    try:
+        from agent.background_review import managed_worker_review_requested
+        return managed_worker_review_requested()
+    except Exception:
+        logger.warning(
+            "managed worker: the background-review setting is unreadable; the review stays off",
+            exc_info=True)
+        return False
 
 
 def _drain_background_delegations(budget):
@@ -448,7 +470,7 @@ def execute(frame, channel):
                 platform=policy.platform if policy.source in ('tool', 'oneshot') else policy.source,
                 gateway_session_key=frame['route'], user_id=frame['user_id'], chat_id=frame['chat_id'],
                 skip_context_files=policy.ignore_rules, load_soul_identity=not policy.ignore_rules,
-                skip_memory=policy.ignore_rules, skip_background_review=True, quiet_mode=True,
+                skip_memory=policy.ignore_rules, skip_background_review=not _review_for_workers(), quiet_mode=True,
                 pass_session_id=policy.pass_session_id,
                 **checkpoint_agent_kwargs(policy.config()), **construct,
                 **routing_agent_kwargs(policy.config(), policy.model, policy.provider, policy.base_url),
@@ -483,6 +505,19 @@ def execute(frame, channel):
             result = {'provider': getattr(agent, 'provider', None), 'model': getattr(agent, 'model', None),
                       **run_worker_turns(agent, frame, history)}
             turn_done.set()
+            # The review is a daemon thread and retiring the agent below would kill it mid-write;
+            # wait for it the way an interactive session's next turn would, bounded.
+            from agent.background_review import (
+                cancel_background_review_for_live_turn, wait_for_managed_worker_review)
+            if not wait_for_managed_worker_review(agent, timeout_s=REVIEW_DRAIN_SECONDS):
+                # Cancel rather than abandon: retire_agent releases the provider clients, and a
+                # review still calling them would race that teardown.
+                cancel_background_review_for_live_turn(
+                    agent, message="managed worker is retiring",
+                    tool_reason="managed worker retired")
+                logger.warning(
+                    "managed worker: background review still running after %ss; cancelled it "
+                    "before retiring the agent", REVIEW_DRAIN_SECONDS)
             result['_turn_input_tokens'] = max(0, (getattr(agent, 'session_prompt_tokens', 0) or 0) - before[0])
             result['_turn_output_tokens'] = max(0, (getattr(agent, 'session_completion_tokens', 0) or 0) - before[1])
             retire_agent(agent)

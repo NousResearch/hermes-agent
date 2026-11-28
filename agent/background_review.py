@@ -301,29 +301,112 @@ def _review_input_token_budget(
     return budget if budget > 0 else None
 
 
+def _review_requested_for_managed_worker(task: dict[str, Any]) -> bool:
+    """``auxiliary.background_review.managed_workers`` - opt-in, default off.
+
+    A managed worker (a kanban card's worker) is a finite turn, and finite turns are excluded
+    from the review because their exit takes the daemon thread with it. A worker is the one
+    finite turn that can wait for it, so the exclusion becomes a config choice rather than a
+    rule. Default False keeps the upstream behaviour for every board that has not asked.
+    """
+    try:
+        from utils import is_truthy_value
+        return is_truthy_value(task.get("managed_workers"), default=False)
+    except Exception:
+        logger.warning(
+            "Failed to read auxiliary.background_review.managed_workers; leaving the "
+            "managed-worker review off", exc_info=True)
+        return False
+
+
+def managed_worker_review_requested() -> bool:
+    """Config-only answer for the worker's construct flag (no turn-scope gate).
+
+    ``load_background_review_settings`` cannot answer this before the agent exists, because the
+    turn scope is bound inside the worker and reports a finite turn.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+        return _review_requested_for_managed_worker(_task_block(load_config_readonly()))
+    except Exception:
+        logger.warning(
+            "Failed to read the background-review config; leaving the managed-worker review off",
+            exc_info=True)
+        return False
+
+
+def wait_for_managed_worker_review(agent: Any, timeout_s: float = 120.0) -> bool:
+    """Wait (bounded) for this session's review to finish, so a worker is not killed mid-review.
+
+    Joins the review thread when the spawn left a handle: ``request_done`` is published the moment
+    the review's provider-capable phase returns (``finish_background_review_run``), while the
+    completion log, the summary and the publish callback are written *after* it - so waiting on the
+    thread is what makes "the review landed" true, and waiting on the signal alone is not. Falls
+    back to ``request_done`` when no thread handle exists (a review requeued rather than run in
+    place), and returns True when nothing is in flight, so the caller never blocks its own shutdown
+    on a review it never spawned.
+
+    Named for the managed worker rather than ``wait_for_background_review``: the generic name is
+    taken by the one-shot CLI shutdown helper, in this same module.
+    """
+    thread = getattr(agent, "_background_review_thread", None)
+    if thread is not None and thread.is_alive():
+        try:
+            thread.join(timeout_s)
+            return not thread.is_alive()
+        except Exception:
+            logger.debug("background review join raised", exc_info=True)
+            return True
+    run = getattr(agent, "_background_review_run", None)
+    if run is None:
+        # The run token is published just before the thread starts; give a spawn that is still in
+        # the turn's tail a moment to appear rather than reading "nothing in flight" too early.
+        deadline = time.monotonic() + 2.0
+        while run is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+            run = getattr(agent, "_background_review_run", None)
+    if run is None:
+        return True
+    try:
+        return bool(run.request_done.wait(timeout_s))
+    except Exception:
+        logger.debug("background review wait raised", exc_info=True)
+        return True
+
+
 def load_background_review_settings() -> tuple[bool, dict[str, Any]]:
     """Single config read -> ``(enabled, task_cfg)``. Fail-open (``enabled=True``) so a broken
     config never silently disables reviews — but WARN so the cost is visible."""
     from agent.safe_worker_policy import safe_worker_enabled
-    from gateway.session_finite import finite_turn_required
+    from gateway.session_finite import finite_turn_required, managed_worker_turn
 
-    # A finite gateway turn (`chat -q` / `-z`) is one-shot like the in-process run, whose exit
-    # takes the daemon review thread with it; the long-lived gateway would otherwise fork a
-    # ~30K-token review after the viewer has already gone.
-    if safe_worker_enabled() or finite_turn_required() is True:
+    # A safe/troubleshooting worker never self-modifies.
+    if safe_worker_enabled():
         return False, {}
+    finite = finite_turn_required() is True
     try:
         from hermes_cli.config import load_config_readonly
         from utils import is_truthy_value
         task = _task_block(load_config_readonly())
-        return is_truthy_value(task.get("enabled"), default=True), task
+        enabled = is_truthy_value(task.get("enabled"), default=True)
     except Exception:
         logger.warning(
             "Failed to read background_review.enabled; leaving automatic "
             "review enabled (fail-open)",
             exc_info=True,
         )
-        return True, {}
+        # Fail-open only where a review can outlive the turn: a finite turn still must not fork
+        # one, and the managed-worker opt-in is unreadable here, so it cannot apply.
+        return (not finite), {}
+
+    # A finite gateway turn (`chat -q` / `-z`) is one-shot like the in-process run, whose exit
+    # takes the daemon review thread with it; the long-lived gateway would otherwise fork a
+    # ~30K-token review after the viewer has already gone. A managed worker is the one finite
+    # turn that drains the review before retiring its agent, so it opts in by config.
+    if finite and not (
+            managed_worker_turn() and _review_requested_for_managed_worker(task)):
+        return False, {}
+    return enabled, task
 
 
 def _resolve_review_runtime(agent: Any, task_cfg: Optional[dict[str, Any]] = None) -> dict[str, Any]:
@@ -533,10 +616,18 @@ _SKILL_REVIEW_PROMPT = (
     "Review the conversation above and update the skill library. Be ACTIVE — most sessions produce "
     "at least one skill update, even if small. A pass that does nothing is a missed learning "
     "opportunity, not a neutral outcome.\n\n"
-    "Target shape of the library: CLASS-LEVEL skills, each with a SKILL.md of always-on rules and a "
-    "small `references/` set of topical depth. Not a flat list of narrow one-session skills, and "
+    "Target shape of the library: CLASS-LEVEL skills, each with a SKILL.md that is a MAP and a "
+    "`references/` tree holding the depth. Not a flat list of narrow one-session skills, and "
     "not an umbrella hoarding a references/ file per session. This shapes HOW you update, not "
-    "WHETHER you update.\n\n" + _LESSON_LAYER_BLOCK +
+    "WHETHER you update.\n\n"
+    "Shape of one SKILL.md (follow it for every skill you create or substantially rewrite): "
+    "frontmatter, `# <Title>`, a short `## When to Use` carrying the trigger, any rule that must be "
+    "in context on EVERY invocation, then `## Map` - one bullet per `references/<topic>.md` naming "
+    "the question that file answers. Procedure, decision tables, examples, pitfalls and "
+    "troubleshooting live in the references, never in SKILL.md; nest "
+    "(`references/<topic>/<sub>.md`) when a topic has sub-topics. Moving existing prose into a "
+    "reference is a MOVE, not a reduction: it goes verbatim, and the map line is the only new "
+    "text.\n\n" + _LESSON_LAYER_BLOCK +
     "Signals to look for (any one of these warrants action):\n"
     "  • User corrected your style, tone, format, legibility, or verbosity. Frustration signals "
     "like 'stop doing X', 'this is too verbose', 'don't format like this', 'why are you "
@@ -608,9 +699,17 @@ _COMBINED_REVIEW_PROMPT = (
     "**Skills**: how to do this class of task. Be ACTIVE — most sessions produce at least one "
     "skill update. A pass that does nothing is a missed learning opportunity, not a neutral "
     "outcome.\n\n"
-    "Target shape of the skill library: CLASS-LEVEL skills with a SKILL.md of always-on rules and a "
-    "small `references/` set of topical depth — not narrow one-session skills, and not an umbrella "
-    "hoarding a references/ file per session.\n\n" + _LESSON_LAYER_BLOCK +
+    "Target shape of the skill library: CLASS-LEVEL skills with a SKILL.md that is a MAP and a "
+    "`references/` tree holding the depth - not narrow one-session skills, and not an umbrella "
+    "hoarding a references/ file per session.\n\n"
+    "Shape of one SKILL.md (follow it for every skill you create or substantially rewrite): "
+    "frontmatter, `# <Title>`, a short `## When to Use` carrying the trigger, any rule that must be "
+    "in context on EVERY invocation, then `## Map` - one bullet per `references/<topic>.md` naming "
+    "the question that file answers. Procedure, decision tables, examples, pitfalls and "
+    "troubleshooting live in the references, never in SKILL.md; nest "
+    "(`references/<topic>/<sub>.md`) when a topic has sub-topics. Moving existing prose into a "
+    "reference is a MOVE, not a reduction: it goes verbatim, and the map line is the only new "
+    "text.\n\n" + _LESSON_LAYER_BLOCK +
     "Signals that warrant a skill update (any one is enough):\n"
     "  • User corrected your style, tone, format, legibility, verbosity, or approach. Frustration "
     "is a FIRST-CLASS skill signal, not just a memory signal. 'stop doing X', 'don't format like "

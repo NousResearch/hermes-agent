@@ -445,6 +445,26 @@ auxiliary:
 With `enabled: false`, automatic post-turn forks do not spawn; manual
 `/refine` still works, with or without focus text.
 
+### Reviewing a managed worker's turn (`managed_workers`)
+
+A managed worker (a kanban card's worker, an admission-owned child) runs a finite turn, and a
+finite turn does not fork a review: the turn's exit takes the daemon thread with it. A worker is
+the one finite turn that can wait for the fork, so it opts in per board:
+
+```yaml
+auxiliary:
+  background_review:
+    managed_workers: true   # false (default) = a worker's finite turn does not review
+```
+
+With the key set, a worker reviews its turn as an interactive session does. Before retiring its
+agent it waits up to 120 seconds for the review to land; one still running at that point is
+cancelled rather than left to race the agent's teardown. `chat -q` and `-z` turns stay off
+whatever the key says, because nothing drains their review, and a safe/troubleshooting worker
+never reviews. The review fires on the same nudge triggers as any other turn, so a card that runs
+several turns can pay several reviews, and its skill writes land in the worker's skill
+directories, including a repository's tracked `.hermes/skills`.
+
 ### Capping review cost (`max_input_tokens`)
 
 The review loop replays the conversation on every provider request it makes,

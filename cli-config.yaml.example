@@ -1027,6 +1027,9 @@ compression:
 #     enabled: true            # false = skip automatic forks (/refine still works)
 #     provider: "auto"         # or pin a cheaper model (see memory.md)
 #     model: ""
+#     managed_workers: false   # true = an admission-owned worker (a kanban card) reviews its
+#                              # own turn too, like an interactive session. The worker waits up
+#                              # to 120s for the review to land before it exits.
 
 # =============================================================================
 # Persistent Memory

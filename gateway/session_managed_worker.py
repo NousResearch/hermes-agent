@@ -130,7 +130,7 @@ def worker_turn_scope(frame):
     (execute_finite_admission, the route's YOLO, the committed surface), so ``chat -q``/``-z``
     never park a prompt, the session's current YOLO governs this child and a HUD / live-voice /
     voice turn reaches the model as it does in process. Frames without it bind nothing."""
-    from gateway.session_finite import finite_turn_scope
+    from gateway.session_finite import finite_turn_scope, managed_worker_turn_scope
     from gateway.session_display import display_turn_scope, restore_display
     from gateway.session_surface import restore_surface, surface_turn_scope
     turn = json.loads(frame['policy'].get('request_json') or '{}').get('turn_v1')
@@ -149,7 +149,8 @@ def worker_turn_scope(frame):
     if turn['yolo']:
         from tools.approval import enable_session_yolo
         enable_session_yolo(frame['route'])
-    with finite_turn_scope(turn['finite'], turn['unattended']), surface_turn_scope(surface), \
+    with finite_turn_scope(turn['finite'], turn['unattended']), managed_worker_turn_scope(True), \
+            surface_turn_scope(surface), \
             display_turn_scope(frame['scope']['execution_id'], display):
         yield
 

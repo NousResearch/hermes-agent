@@ -592,6 +592,54 @@ class TestMemoryBatch:
         assert result["success"] is False
         assert "legit fact" not in store.memory_entries
 
+    def test_batch_rejects_non_dict_element_before_any_store_write(self, store):
+        """A string element where an op object belonged is an actionable validation
+        error, not an AttributeError reported as an API failure (#157909)."""
+        result = json.loads(memory_tool(
+            target="memory",
+            operations=["some text"],
+            store=store,
+        ))
+        assert result["success"] is False
+        assert "operations must be a list of {action, content?, old_text?} objects." in result["error"]
+        assert store.memory_entries == []
+
+    def test_batch_rejects_mixed_dict_and_non_dict_elements(self, store):
+        """A malformed element anywhere in the list rejects the whole batch — the
+        valid op must not land while its sibling crashes the call (#157909)."""
+        result = json.loads(memory_tool(
+            target="memory",
+            operations=[
+                {"action": "add", "content": "legit fact"},
+                "oops, a bare string",
+            ],
+            store=store,
+        ))
+        assert result["success"] is False
+        assert "operations must be a list of {action, content?, old_text?} objects." in result["error"]
+        assert "legit fact" not in store.memory_entries
+
+    def test_malformed_op_renders_in_gate_display_without_raising(self, store):
+        """The approval gate formats each op for the prompt BEFORE the element
+        validation runs; the formatting helper must never raise AttributeError
+        on a non-mapping op (#157909)."""
+        from tools.memory_tool import _batch_op_line
+
+        rendered = _batch_op_line("some text")
+        assert isinstance(rendered, str)
+        assert "- ?:" in rendered  # coerced to an empty op: unknown action, empty content
+
+    def test_destructive_ops_skips_non_dict_elements(self, store):
+        """The background-delete gate's op filter must not crash on a string
+        element either (#157909)."""
+        from tools.memory_tool import destructive_ops
+
+        ops = destructive_ops({"action": "batch", "operations": [
+            {"action": "remove", "old_text": "x"},
+            "not an op",
+        ]})
+        assert ops == [{"action": "remove", "old_text": "x"}]
+
 
 # =========================================================================
 # External drift guard (#26045)

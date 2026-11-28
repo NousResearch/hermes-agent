@@ -47,6 +47,8 @@ def test_model_bound_context_is_shortened_with_a_note(tmp_path):
 
 def test_a_quiet_background_helper_does_not_leave_reader_threads_behind(tmp_path):
     import threading
+
+    from tests.waiting import wait_until
     helper = tmp_path / "helper.py"
     helper.write_text("import time\ntime.sleep(8)\n", encoding="utf-8")
     command = _script(tmp_path, f"import subprocess\nsubprocess.Popen([sys.executable, {str(helper)!r}])\n"
@@ -55,7 +57,5 @@ def test_a_quiet_background_helper_does_not_leave_reader_threads_behind(tmp_path
     started = time.monotonic()
     assert _evaluate_result(spec, _spawn(spec, "{}"))["context"] == "ok"
     assert time.monotonic() - started < 10
-    deadline = time.monotonic() + 3
-    while any(t.name.startswith("hook-std") for t in threading.enumerate()) and time.monotonic() < deadline:
-        time.sleep(0.05)
-    assert not [t.name for t in threading.enumerate() if t.name.startswith("hook-std")]
+    wait_until(lambda: not any(t.name.startswith("hook-std") for t in threading.enumerate()),
+               timeout=3, what="the hook's pipe readers to stop")

@@ -11,7 +11,7 @@ import json
 import logging
 import os
 import re
-import select
+import selectors
 import subprocess
 import sys
 import threading
@@ -571,19 +571,20 @@ def _communicate_until_exit(proc: subprocess.Popen, stdin_json: str, timeout: in
     stdin = proc.stdin
     assert stdin is not None  # Popen(stdin=PIPE)
 
-    def _readable(fd: int) -> bool:
-        """POSIX: wait briefly for data so a reader can notice ``stop`` while a quiet background helper
-        still holds the pipe. Windows pipes cannot be selected, so a read there blocks until EOF."""
-        if IS_WINDOWS:
-            return True
-        return bool(select.select([fd], [], [], 0.1)[0])
+    failures: list[str] = []
 
     def _drain(name: str) -> None:
         stream, size = getattr(proc, name), 0
-        with suppress(OSError, ValueError):
+        # POSIX: wait in short slices so a reader can notice ``stop`` while a quiet background helper
+        # still holds the pipe; selectors (epoll/poll) has no FD_SETSIZE limit, unlike select.select.
+        # Windows pipes cannot be selected, so a read there blocks until EOF.
+        selector = None if IS_WINDOWS else selectors.DefaultSelector()
+        try:
             fd = stream.fileno()
+            if selector is not None:
+                selector.register(fd, selectors.EVENT_READ)
             while not stop.is_set():
-                if not _readable(fd):
+                if selector is not None and not selector.select(timeout=0.1):
                     continue
                 if not (chunk := os.read(fd, 65536)):
                     return
@@ -593,6 +594,12 @@ def _communicate_until_exit(proc: subprocess.Popen, stdin_json: str, timeout: in
                     kill_process_tree(proc)  # ends proc.wait() below now, not at the timeout
                     return
                 chunks[name].append(chunk)
+        except (OSError, ValueError) as exc:
+            if not stop.is_set():  # a lost answer must not read as an empty, successful one
+                failures.append(f"{name}: {type(exc).__name__}: {exc}")
+        finally:
+            if selector is not None:
+                selector.close()
 
     def _feed() -> None:
         with suppress(OSError, ValueError):  # the hook may exit without reading stdin
@@ -618,6 +625,8 @@ def _communicate_until_exit(proc: subprocess.Popen, stdin_json: str, timeout: in
     if overflowed:  # checked after the drain: output that crossed the cap during the grace still counts
         raise _HookOutputOverflow(f"printed more than {_MAX_HOOK_STREAM_BYTES // (1 << 20)} MiB on "
                                   f"{overflowed[0]} and was stopped; a hook answers with one JSON object")
+    if failures:
+        raise OSError(f"could not read hook output ({failures[0]})")
     stdout, stderr = (b"".join(chunks[name]).decode("utf-8", errors="replace") for name in ("stdout", "stderr"))
     return stdout, stderr
 

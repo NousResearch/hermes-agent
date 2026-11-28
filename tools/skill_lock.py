@@ -46,6 +46,22 @@ _WRITEISH_CODE = re.compile(
     r"(?:write|append)File(?:Sync)?|(?:rm|unlink|rename|mkdir|copyFile|cp)Sync|"
     r"(?:^|[\s;|&])>{1,2}|\bsed\s+-i|\b(?:mv|rm|cp|tee|touch)\s", re.IGNORECASE)
 _SEPARATORS = frozenset({";", "&", "&&", "|", "||", "(", ")", "|&", ";;"})
+# A literal path opened read-only (read mode, Path.read_*, readFileSync) is a source, never a write
+# target, so naming a locked skill there does not make the code write to it.
+_LITERAL_READS = re.compile(
+    r"\bopen\s*\(\s*(['\"])[^'\"]+\1(?:\s*,\s*(?:mode\s*=\s*)?(['\"])[rbt]*\2)?"
+    r"(?:\s*,\s*encoding\s*=\s*(['\"])[\w-]+\3)?\s*\)|"
+    r"\bPath\s*\(\s*(['\"])[^'\"]+\4\s*\)\s*\.read_(?:text|bytes)\s*\(|"
+    r"\breadFileSync\s*\(\s*(['\"])[^'\"]+\5")
+# A literal that is, unchanged, the whole path argument of a write call. Only such a literal is
+# known to be the destination: one that is sliced, rewritten (.replace, re.sub), joined or bound
+# to a name first may end up inside the skill.
+_DIRECT_WRITE_PATH = re.compile(
+    r"\bopen\s*\(\s*(['\"])(?P<open>[^'\"]+)\1\s*,|"
+    r"\bPath\s*\(\s*(['\"])(?P<path>[^'\"]+)\3\s*\)\s*\.write_(?:text|bytes)\s*\(|"
+    r"\b(?:write|append)FileSync\s*\(\s*(['\"])(?P<fs>[^'\"]+)\5\s*,")
+_PATH_DELIMITERS = frozenset(" \t\r\n'\"`(),;=<>|&[]")
+_UNRESOLVED_PATH_CHARS = frozenset("$`{}*?%:" + ("" if os.sep == "\\" else "\\"))
 
 
 def _skill_usage():
@@ -404,9 +420,35 @@ def _argv_refusal(argv: list[str], cwd: str, locked, record, depth: int,
     return next((r for check in _ARGV_CHECKS if (r := check(verb, argv[1:], scope))), None)
 
 
+def _elsewhere(text: str, start: int, end: int, root: str, direct: set[tuple[int, int]]) -> bool:
+    """True when the mention ``text[start:end]`` sits in a plain absolute path that resolves
+    outside *root* and is, unchanged, the whole path of a write call (a span in *direct*).
+    Relative, variable, f-string, glob, concatenated or transformed paths still count."""
+    while start > 0 and text[start - 1] not in _PATH_DELIMITERS:
+        start -= 1
+    tail = end
+    while tail < len(text) and text[tail] not in _PATH_DELIMITERS:
+        tail += 1
+    token = text[start:tail]
+    if (start, tail) not in direct or not os.path.isabs(token):
+        return False
+    if _UNRESOLVED_PATH_CHARS & set(os.path.splitdrive(token)[1]):
+        return False
+    return not _inside(os.path.realpath(token), root)
+
+
+def _names_skill(text: str, root: str, needles: Iterable[str]) -> bool:
+    direct = {m.span(group) for m in _DIRECT_WRITE_PATH.finditer(text)
+              for group in ("open", "path", "fs") if m.group(group)}
+    return any(not _elsewhere(text, m.start(), m.end(), root, direct)
+               for needle in needles for m in re.finditer(re.escape(needle), text))
+
+
 def _code_refusal(code: str, locked, record, cwd: str = "") -> str | None:
     """Inline interpreter code that looks like it writes AND names a locked skill (or the record),
-    or runs with its working directory inside one (relative paths)."""
+    or runs with its working directory inside one (relative paths). A literal path that is only
+    read, or an absolute path outside the skill that merely shares its ``skills/<name>`` segment
+    (another checkout) and is written as is, does not name it."""
     from hermes_constants import get_hermes_home
     if not _WRITEISH_CODE.search(code):
         return None
@@ -417,9 +459,11 @@ def _code_refusal(code: str, locked, record, cwd: str = "") -> str | None:
     skills_root = os.path.realpath(_skill_usage()._skills_dir())
     if ".usage.json" in text:
         return RECORD_REFUSAL
+    text = _LITERAL_READS.sub(" ", text)
     for name, root in locked:
         rel = os.path.relpath(root, skills_root) if skills_root and _inside(root, skills_root) else ""
-        if root in text or (rel and f"skills/{rel}" in text) or f"skills/{os.path.basename(root)}" in text:
+        needles = [root, f"skills/{os.path.basename(root)}"] + ([f"skills/{rel}"] if rel else [])
+        if _names_skill(text, root, needles):
             return skill_refusal(name)
     return None
 

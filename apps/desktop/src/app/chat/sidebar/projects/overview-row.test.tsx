@@ -1,9 +1,10 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionInfo } from '@/hermes'
 import type * as ProjectsStore from '@/store/projects'
+import { $removedSessionIds, tombstoneSessions, untombstoneSessions } from '@/store/session-removal'
 
 import type * as Model from './model'
 import { ProjectOverviewRow } from './overview-row'
@@ -202,4 +203,51 @@ describe('ProjectOverviewRow', () => {
 
     expect(onNewSession).toHaveBeenCalledWith('/work/app')
   })
+})
+
+describe('expanded project archive lifecycle', () => {
+  it.each([false, true])(
+    'keeps committed archives hidden after prune, restores failed archives (rollback=%s)',
+    async rollback => {
+      workspaceOpen.value = true
+      const five = Array.from({ length: 5 }, (_, i) => session(`archive-${rollback}-${i}`, 500 - i))
+      const busy = { ...project, sessionCount: 5 } as SidebarProjectTree
+      projectsStore.fetchProjectSessions.mockResolvedValue({
+        ...busy,
+        repos: [{ groups: [{ sessions: five }] }]
+      } as unknown as SidebarProjectTree)
+
+      const renderProps = () => (
+        <ProjectOverviewRow
+          isSessionHidden={item => $removedSessionIds.get().has(item.id)}
+          previewSessions={five.slice(0, 3)}
+          project={busy}
+          renderRows={items => <div data-testid="rows">{items.map(item => item.id).join(',')}</div>}
+        />
+      )
+
+      const view = render(renderProps())
+      fireEvent.click(screen.getByRole('button', { name: 'Show all 5 sessions' }))
+      await waitFor(() => expect(screen.getByTestId('rows').textContent).toContain(five[4].id))
+      act(() => tombstoneSessions([five[4].id]))
+      view.rerender(renderProps())
+      expect(screen.getByTestId('rows').textContent).not.toContain(five[4].id)
+      act(() => {
+        if (rollback) {
+          untombstoneSessions([five[4].id])
+        } else {
+          $removedSessionIds.set(new Set())
+        } // projects.tree has acknowledged the archive
+      })
+      view.rerender(renderProps())
+      expect(screen.getByTestId('rows').textContent?.includes(five[4].id)).toBe(rollback)
+
+      if (!rollback) {
+        // A later explicit unarchive must re-admit this hydrated row even
+        // though projects.tree has already acknowledged and pruned its tombstone.
+        act(() => untombstoneSessions([five[4].id]))
+        expect(screen.getByTestId('rows').textContent).toContain(five[4].id)
+      }
+    }
+  )
 })

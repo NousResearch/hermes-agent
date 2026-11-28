@@ -34,7 +34,7 @@ let tombstoneGenerations: SessionTombstoneGenerationSnapshot = new Map()
 // for the renderer's whole lifetime, prune or not.
 let lastRemovalEdge: ReadonlyMap<string, boolean> = new Map()
 
-function setRemovedSessionIds(next: Set<string>): void {
+function setRemovedSessionIds(next: Set<string>, explicitReleases: string[] = []): void {
   const current = $removedSessionIds.get()
   const changed = new Set<string>()
 
@@ -46,6 +46,14 @@ function setRemovedSessionIds(next: Set<string>): void {
 
   for (const id of next) {
     if (!current.has(id)) {
+      changed.add(id)
+    }
+  }
+
+  // The tree may have already pruned an acknowledged archive. An explicit
+  // unarchive must still record a release edge for the older hydrated cache.
+  for (const id of explicitReleases) {
+    if (lastRemovalEdge.get(id) === true) {
       changed.add(id)
     }
   }
@@ -140,23 +148,19 @@ export function tombstoneSessions(ids: Array<null | string | undefined>): void {
 }
 
 export function untombstoneSessions(ids: Array<null | string | undefined>): void {
-  const current = $removedSessionIds.get()
-
-  if (!current.size) {
-    return
-  }
-
-  const next = new Set(current)
+  const next = new Set($removedSessionIds.get())
+  const explicitReleases: string[] = []
 
   for (const id of ids) {
     const trimmed = id?.trim()
 
     if (trimmed) {
       next.delete(trimmed)
+      explicitReleases.push(trimmed)
     }
   }
 
-  setRemovedSessionIds(next)
+  setRemovedSessionIds(next, explicitReleases)
 }
 
 // Ids whose delete/archive RPC is still in flight. Their tombstones are pinned

@@ -206,6 +206,7 @@ terminal(command="tmux new-session -d -s resumed 'hermes --resume 20260225_14305
 - **Prefer `delegate_task` for quick subtasks** — less overhead than spawning a full process
 - **Use `-w` (worktree mode)** when spawning agents that edit code — prevents git conflicts
 - **Set timeouts** for one-shot mode — complex tasks can take 5-10 minutes
+- **Wait on a PID or a result file, never on `pgrep -f`** — a follow-up step chained as `while pgrep -f "job-b" >/dev/null; do sleep 15; done; next-step` in a `terminal(background=true)` call matches its own shell, whose command line contains `job-b`. It waits forever and the completion notice never arrives. Wait with `while kill -0 <pid> 2>/dev/null; do sleep 15; done` (or `wait $pid` for a job started in the same shell), or poll for the job's output file, and after yielding check that the follow-up step's first output appears
 - **Use `hermes chat -q` for fire-and-forget** — no PTY needed
 - **Prefer tmux for interactive sessions when it is installed** — `capture-pane` reads the rendered screen; the PTY-background fallback only has the raw output log
 - **For scheduled tasks**, use the `cronjob` tool instead of spawning — handles delivery and retry

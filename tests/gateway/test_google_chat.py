@@ -749,6 +749,118 @@ class TestBuildMessageEvent:
         assert seen == [event.source.thread_id] == ["spaces/G/threads/T1"]
 
 
+QUOTED = "spaces/S/messages/Q.Q"
+OFFER = "I did not restart anything. Tell me if you want the SSH vector check, and I will run it."
+
+
+def _quote_reply(text="you can run it", quote_text=OFFER, sender="Ziggy", kind="REPLY", name=QUOTED):
+    """A message quote-replying another, as ``spaces.messages.list`` returns it."""
+    env = _make_chat_envelope(text=text)
+    msg = env["chat"]["messagePayload"]["message"]
+    q = {"name": name, "lastUpdateTime": "2026-11-25T22:28:10.123456Z", "quoteType": kind}
+    if quote_text is not None or sender is not None:
+        q["quotedMessageSnapshot"] = {k: v for k, v in (("sender", sender), ("text", quote_text)) if v is not None}
+    msg["quotedMessageMetadata"] = q
+    return msg, env
+
+
+class TestQuotedReply:
+    """Chat's "Quote in reply" fills the event's reply fields, so the gateway prepends its
+    ``[Replying to ...]`` pointer (as for Telegram and Discord replies)."""
+
+    @staticmethod
+    def _get(adapter):
+        return adapter._chat_api.spaces.return_value.messages.return_value.get
+
+    def _quoted_is(self, adapter, sender_id, display="Ziggy", text=OFFER):
+        adapter._bot_user_id = "users/app"
+        self._get(adapter).return_value.execute.return_value = {
+            "name": QUOTED, "text": text, "sender": {"name": sender_id, "displayName": display}}
+
+    @pytest.mark.asyncio
+    async def test_a_quote_of_our_message_fills_the_reply_fields(self, adapter):
+        self._quoted_is(adapter, "users/app")
+        msg, env = _quote_reply()
+        event = await adapter._build_message_event(msg, env)
+        assert event.text == "you can run it"
+        assert event.reply_to_message_id == QUOTED
+        assert event.reply_to_text == OFFER
+        assert event.reply_to_author_name == "Ziggy"
+        assert event.reply_to_author_id == "users/app"
+        assert event.reply_to_is_own_message is True
+        self._get(adapter).assert_called_once_with(name=QUOTED)
+
+    @pytest.mark.asyncio
+    async def test_a_learned_display_name_needs_no_second_fetch(self, adapter):
+        self._quoted_is(adapter, "users/app")
+        await adapter._build_message_event(*_quote_reply())
+        msg, env = _quote_reply("/approve", quote_text="Something else.", name="spaces/S/messages/R.R")
+        event = await adapter._build_message_event(msg, env)
+        assert event.reply_to_is_own_message is True
+        assert event.reply_to_text == "Something else."
+        assert self._get(adapter).call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_a_quote_of_someone_elses_message_is_not_ours(self, adapter):
+        self._quoted_is(adapter, "users/12345", display="User Name", text="turn the vent off")
+        event = await adapter._build_message_event(*_quote_reply("see above", "turn the vent off", "User Name"))
+        assert event.reply_to_is_own_message is False
+        assert event.reply_to_text == "turn the vent off"
+
+    @pytest.mark.asyncio
+    async def test_an_empty_snapshot_is_filled_from_the_message(self, adapter):
+        self._quoted_is(adapter, "users/app")
+        event = await adapter._build_message_event(*_quote_reply(quote_text="", sender=None))
+        assert (event.reply_to_text, event.reply_to_author_name) == (OFFER, "Ziggy")
+
+    @pytest.mark.asyncio
+    async def test_a_failed_fetch_keeps_the_snapshot_and_the_message(self, adapter):
+        self._get(adapter).return_value.execute.side_effect = RuntimeError("<HttpError 403>")
+        event = await adapter._build_message_event(*_quote_reply())
+        assert (event.text, event.reply_to_message_id, event.reply_to_text) == ("you can run it", QUOTED, OFFER)
+        assert event.reply_to_is_own_message is False
+
+    @pytest.mark.asyncio
+    async def test_a_slow_fetch_is_cut_short(self, adapter):
+        import threading
+        release = threading.Event()  # the fetch hangs until the test lets it go
+        self._get(adapter).return_value.execute.side_effect = lambda **_: release.wait(timeout=30)
+        adapter._QUOTE_FETCH_TIMEOUT = 0.1
+        try:
+            event = await asyncio.wait_for(adapter._build_message_event(*_quote_reply()), 5)
+        finally:
+            release.set()
+        assert event.reply_to_text == OFFER
+        assert event.reply_to_is_own_message is False
+
+    @pytest.mark.asyncio
+    async def test_a_forward_and_no_quote_are_left_alone(self, adapter):
+        event = await adapter._build_message_event(*_quote_reply(kind="FORWARD"))
+        assert event.reply_to_message_id is None
+        env = _make_chat_envelope(text="hello")
+        event = await adapter._build_message_event(env["chat"]["messagePayload"]["message"], env)
+        assert event.reply_to_message_id is None
+        assert event.reply_to_is_own_message is False
+        self._get(adapter).assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_malformed_metadata_is_ignored(self, adapter):
+        for q in ("spaces/x", {"name": ""}, {"name": "spaces/x"}):
+            msg, env = _quote_reply()
+            msg["quotedMessageMetadata"] = q
+            event = await adapter._build_message_event(msg, env)
+            assert event.reply_to_message_id is None
+            assert event.text == "you can run it"
+
+    @pytest.mark.asyncio
+    async def test_the_gateway_prepends_the_pointer(self, adapter):
+        from gateway.run_inbound import GatewayInboundMixin
+        self._quoted_is(adapter, "users/app")
+        event = await adapter._build_message_event(*_quote_reply())
+        text = GatewayInboundMixin._prepend_inbound_reply_context(event, event.source, event.text)
+        assert text == f'[Replying to your previous message: "{OFFER}"]\n\nyou can run it'
+
+
 # ===========================================================================
 # send() — text, patch-in-place, chunking, error handling
 # ===========================================================================

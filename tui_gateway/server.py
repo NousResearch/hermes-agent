@@ -1259,7 +1259,8 @@ def _restart_slash_worker(sid: str, session: dict):
         new_worker = _SlashWorker(session["session_key"], getattr(agent, "model", _resolve_model()),
                                   profile_home=session.get("profile_home"),
                                   provider=getattr(agent, "provider", None) or None,
-                                  base_url=getattr(agent, "base_url", None) or None)
+                                  base_url=getattr(agent, "base_url", None) or None,
+                                  cwd=_local_session_process_cwd(session))
     except Exception:
         session["slash_worker"] = None
         return

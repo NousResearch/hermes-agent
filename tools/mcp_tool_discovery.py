@@ -145,10 +145,12 @@ def _owner_secret_scope():
         reset_secret_scope(token)
 
 
-async def _connect_server(name: str, config: dict) -> _core.MCPServerTask:
+async def _connect_server(name: str, config: dict, *, scoped_cwd: str = "") -> _core.MCPServerTask:
     """Create an MCPServerTask, start it, return once ready (tear down with ``server.shutdown()``
-    on the same loop). Raises on bad config, missing HTTP support or connect failure."""
+    on the same loop). Raises on bad config, missing HTTP support or connect failure.
+    *scoped_cwd* marks a per-project clone (``tools.mcp_tool_project_scope``)."""
     server = _core.MCPServerTask(name)
+    server._scoped_cwd = scoped_cwd
     claim = _core._connect_server_claim.get()
     if claim is not None:
         claim(server)
@@ -308,25 +310,33 @@ def _ensure_lazy_server_connected(server_name: str) -> bool:
     return server is not None and server.session is not None
 
 
-def _get_connected_server_for_call(server_name: str) -> Optional[_core.MCPServerTask]:
+def _get_connected_server_for_call(server_name: str, *, scoped: bool = True) -> Optional[_core.MCPServerTask]:
     """Return a connected server; the single first-use connect point for lazy servers and
     the wake-up point for recycled stdio ones.
 
     Also the single first-use connect point for lazy (schema-cache registered) servers, so raw tool calls
     AND the resource/prompt utility handlers all trigger the deferred spawn (#56832).
+
+    The transport is picked here, per call, from the caller's session cwd: a session in another
+    project than the baseline child gets its own clone (``tools.mcp_tool_project_scope``), so a
+    session cwd change takes effect on the very next call without touching the tool list.
+    ``scoped=False`` skips the clone and always answers the baseline — for the handlers that
+    manage per-server state shared by every project (the events utilities).
     """
+    from tools import mcp_tool_project_scope as _project_scope
     with _core._lock:
         key = _resolve_server_key(server_name)
         server = _core._servers.get(key)
         is_lazy = key in _core._lazy_server_configs
     if is_lazy and (server is None or server.session is None):
         _ensure_lazy_server_connected(server_name)
-    elif server is not None and server.session is None and server._is_recycled_stdio():
+        with _core._lock:
+            server = _core._servers.get(key)
+    if scoped:
+        server = _project_scope._server_for_call(server_name, key, server)
+    if server is not None and server.session is None and server._is_recycled_stdio():
         _request_lazy_reconnect(server_name, server)
-    else:
-        return server
-    with _core._lock:
-        return _core._servers.get(key)
+    return server
 
 
 async def _discover_and_register_server(name: str, config: dict) -> list[str]:

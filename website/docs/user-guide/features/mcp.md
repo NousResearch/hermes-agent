@@ -490,7 +490,7 @@ Hermes reads MCP config from `~/.hermes/config.yaml` under `mcp_servers`.
 | `command` | string | Executable for a stdio MCP server |
 | `args` | list | Arguments for the stdio server |
 | `env` | mapping | Environment variables passed to the stdio server |
-| `cwd` | string | Working directory for the stdio server process. Default: the session working directory when one is pinned (ACP/gateway sessions, `terminal.cwd`), else the Hermes process directory |
+| `cwd` | string | Working directory for the stdio server process. Default: the session working directory when one is pinned (ACP/gateway sessions, `terminal.cwd`), else the Hermes process directory. Without `cwd`, a gateway or desktop backend runs one stdio process per project its sessions work in (up to 8 project clones plus the baseline child; the least recently used idle clone is closed first, with its breaker and cooldown state). A clone re-renders project references in the server's `command`/`args`/`env` (`${workspaceFolder}`, `${workspaceFolderBasename}`, `${PWD}`) for its own project and sets `PWD` in its env; other values keep the baseline's rendering. Setting `cwd` pins the server to that one directory for every session |
 | `url` | string | HTTP MCP endpoint |
 | `headers` | mapping | HTTP headers for remote servers |
 | `client_cert` | string \| list | Client certificate for mTLS — a combined PEM path, or `[cert, key]` / `[cert, key, password]` |

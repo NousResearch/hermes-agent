@@ -132,6 +132,8 @@ class MCPServerHealthMixin:
         notifications; after the list_tools ``await`` all mutations are synchronous — atomic on the event loop."""
         if getattr(self, '_editor_frozen_manifest', None) is not None:
             return  # Editor tool policy changes apply only to a new canonical session.
+        if self._scoped_cwd:
+            return  # a per-project clone republishing schemas would move the agent's tool list mid-turn
         if not self._advertises_tools():
             return  # tools/list would raise MCPError(-32601)
         async with self._refresh_lock:

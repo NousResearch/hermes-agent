@@ -153,9 +153,67 @@ def _reply(**fields) -> None:
     sys.stdout.flush()
 
 
+def _pin_session_cwd(session_cwd: str) -> None:
+    """Re-pin the session's project after the ``cli`` import (below). ``import cli`` runs
+    ``load_hermes_dotenv`` -> ``_reapply_terminal_config_bridge`` -> ``apply_terminal_config_to_env``,
+    which with an explicit ``terminal.cwd`` in config.yaml REWRITES ``TERMINAL_CWD`` — clobbering
+    the spawn pin this process was launched with, so the stdio MCP children it parents would
+    resolve every session to the configured cwd instead of the session's project (#151827 port,
+    review finding 7). Both halves are load-bearing: ``resolve_agent_cwd`` reads the session
+    ContextVar before ``TERMINAL_CWD`` on the worker's main thread (commands), while the MCP
+    loop/discovery threads cannot see ContextVars and read the restored env var.
+
+    The pin alone is not enough: the clobberers fire AGAIN after it — MCP discovery's dotenv
+    reload in ``_prepare_slash_worker_runtime``, and terminal_tool's once-per-process launcher
+    bridge — so the wrapper below guards the ONE seam they all funnel through."""
+    if not session_cwd:
+        return
+    global _PINNED_SESSION_CWD
+    os.environ["TERMINAL_CWD"] = session_cwd
+    _PINNED_SESSION_CWD = session_cwd
+    from agent.runtime_cwd import set_session_cwd
+    set_session_cwd(session_cwd)
+    _keep_pin_through_terminal_bridges()
+
+
+_PINNED_SESSION_CWD: str = ""
+
+
+def _keep_pin_through_terminal_bridges() -> None:
+    """Keep the session's ``TERMINAL_CWD`` pin alive across every later terminal-config bridge
+    call. ``apply_terminal_config_to_env`` is the single shared bridge — the dotenv reload's
+    re-assert, terminal_tool's launcher bridge and the TUI/dashboard launchers all funnel
+    through it, and all its consumers late-import the module attribute — so wrapping it here
+    re-asserts the pin after every one of them instead of chasing clobber sites. The bridge
+    still writes its other ``terminal.*`` keys; only ``cwd`` is re-asserted (this process was
+    explicitly launched for one session's project). The re-assert reads the module-level pin,
+    so a later ``_pin_session_cwd`` call (not a production shape: session cwd moves restart
+    this process) retargets the existing wrapper instead of leaving it re-asserting the old
+    project."""
+    import functools
+
+    import hermes_cli.config as config_mod
+    real_bridge = config_mod.apply_terminal_config_to_env
+    if getattr(real_bridge, "_keeps_session_cwd_pin", False):
+        return
+
+    @functools.wraps(real_bridge)
+    def _bridge_keeps_pin(*args, **kwargs):
+        try:
+            return real_bridge(*args, **kwargs)
+        finally:
+            # In a finally: a bridge that writes the env and then raises must not leak the clobber.
+            if _PINNED_SESSION_CWD and os.environ.get("TERMINAL_CWD") != _PINNED_SESSION_CWD:
+                os.environ["TERMINAL_CWD"] = _PINNED_SESSION_CWD
+
+    _bridge_keeps_pin._keeps_session_cwd_pin = True  # type: ignore[attr-defined]  # undeclared attr on the wrapped function
+    config_mod.apply_terminal_config_to_env = _bridge_keeps_pin
+
+
 def main():
     p = argparse.ArgumentParser(add_help=False)
     p.add_argument("--session-key", required=True)
+    p.add_argument("--session-cwd", default="")
     p.add_argument("--model", default="")
     p.add_argument("--provider", default="")
     p.add_argument("--base-url", default="")
@@ -167,8 +225,10 @@ def main():
     # Before the heavy cli import, so a legacy parent dying during startup is still noticed.
     _start_legacy_parent_watchdog(args.parent_pid)
     # Import cli ahead of MCP discovery: importing it loads ~/.hermes/.env and sets HERMES_QUIET,
-    # which MCP ``${VAR}`` interpolation in the runtime prep depends on.
+    # which MCP ``${VAR}`` interpolation in the runtime prep depends on. The import also re-applies
+    # the terminal config, so the session project must be re-pinned right after it.
     from cli import HermesCLI
+    _pin_session_cwd(args.session_cwd)
     _prepare_slash_worker_runtime()
 
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):

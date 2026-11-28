@@ -1021,7 +1021,7 @@ def _slash_worker_for(rid, sid: str, session: dict):
             worker = _SlashWorker(
                 session["session_key"], getattr(agent, "model", _resolve_model()),
                 profile_home=session.get("profile_home"), provider=getattr(agent, "provider", None) or None,
-                base_url=getattr(agent, "base_url", None) or None)
+                base_url=getattr(agent, "base_url", None) or None, cwd=_local_session_process_cwd(session))
             _attach_worker(sid, session, worker)
         except Exception as e:
             logger.warning("slash worker start failed for %s", sid, exc_info=True)

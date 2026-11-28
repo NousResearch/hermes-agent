@@ -309,9 +309,9 @@ def _ask_for_call(server_name: str, tool_name: str, charge, booked: Optional[lis
 
 def _check_circuit_breaker(server_name: str) -> Optional[str]:
     """Open-breaker error, or None when calls may proceed. After the cooldown the breaker is
-    half-open: the next call probes; success resets, failure re-bumps and re-arms the cooldown."""
-    from tools.mcp_tool_scope import _resolve_server_key
-    key = _resolve_server_key(server_name)
+    half-open: the next call probes; success resets, failure re-bumps and re-arms the cooldown.
+    Keyed like the strikes: the caller's project clone's breaker, never the baseline's."""
+    key = _core._breaker_key(server_name)
     failures = _core._server_error_counts.get(key, 0)
     age = time.monotonic() - _core._server_breaker_opened_at.get(key, 0.0)
     if failures < _core._CIRCUIT_BREAKER_THRESHOLD or age >= _core._CIRCUIT_BREAKER_COOLDOWN_SEC:
@@ -391,12 +391,28 @@ def _mcp_loop_running() -> bool:
     return _core._mcp_loop is not None and _core._mcp_loop.is_running()
 
 
-def _lookup_reconnectable_server(server_name: str, require_loop: bool = False):
-    """The registered server object when it can be signalled to reconnect, else None.
+def _lookup_reconnectable_server(server_name: str, require_loop: bool = False, *, used: Any = None):
+    """The server object the failed RPC ran on when it can be signalled to reconnect, else None.
+    *used* — the object ``_dispatch`` ran the call on — is the authority when given: the retry
+    re-runs the captured closure against that very object, so recovery must signal it, never a
+    re-resolution of the caller's project (a reload or eviction landing mid-call makes that
+    resolve to a different object, and the events utilities run on the BASELINE whatever project
+    the caller sits in). When *used* has left the registries (a teardown popped it between the
+    failure and the lookup) recovery deliberately declines — None instead of the baseline:
+    signalling an object the retry never uses cannot heal the call (T00015 contract). Without
+    *used*, the legacy caller-scoped resolution (the caller's project clone, else the baseline).
     With *require_loop*, also None unless the MCP loop is running (nothing to wait on)."""
-    from tools.mcp_tool_scope import _resolve_server_key
-    with _core._lock:
-        srv = _core._servers.get(_resolve_server_key(server_name))
+    from tools import mcp_tool_project_scope as _project_scope
+    if used is not None:
+        with _core._lock:
+            live = used in _core._servers.values() or used in _project_scope._scoped_servers.values()
+        srv = used if live else None
+    else:
+        from tools.mcp_tool_scope import _resolve_server_key
+        with _core._lock:
+            key = _resolve_server_key(server_name)
+            srv = _core._servers.get(key)
+        srv = _project_scope._server_for_call(server_name, key, srv, connect=False)
     ok = srv is not None and hasattr(srv, "_reconnect_event") and (_mcp_loop_running() or not require_loop)
     return srv if ok else None
 
@@ -413,7 +429,8 @@ def _retry_once(server_name: str, retry_call, op_description: str, what: str):
     return _record_call_outcome(server_name, result)
 
 
-def _handle_auth_error_and_retry(server_name: str, exc: BaseException, retry_call, op_description: str):
+def _handle_auth_error_and_retry(server_name: str, exc: BaseException, retry_call, op_description: str,
+                                 *, used: Any = None):
     """OAuth recovery + one retry; None when *exc* is not an auth error. ``handle_401`` decides
     viability; if viable, signal a reconnect (fresh credentials), wait ready, retry once. Any
     failure returns the structured ``needs_reauth`` error so the model stops refreshing."""
@@ -426,7 +443,7 @@ def _handle_auth_error_and_retry(server_name: str, exc: BaseException, retry_cal
         logger.warning("MCP OAuth '%s': recovery attempt failed: %s", server_name, rec_exc)
         recovered = False
     if recovered:
-        srv = _lookup_reconnectable_server(server_name)
+        srv = _lookup_reconnectable_server(server_name, used=used)
         # Recovery + reconnect is independent evidence of viability: close the breaker here, not only on
         # retry success (else a failing retry pins it open forever).
         if srv is not None and _loop._signal_reconnect_and_wait(
@@ -440,7 +457,7 @@ def _handle_auth_error_and_retry(server_name: str, exc: BaseException, retry_cal
 
 
 def _handle_session_expired_and_retry(server_name: str, exc: BaseException, retry_call, op_description: str,
-                                      *, call_may_have_side_effects: bool = False):
+                                      *, call_may_have_side_effects: bool = False, used: Any = None):
     """Transport reconnect + one retry on session expiry; None to fall through. Skips
     ``handle_401``: the token is valid, only the server-side session is stale.
 
@@ -458,7 +475,7 @@ def _handle_session_expired_and_retry(server_name: str, exc: BaseException, retr
     """
     if not _is_session_expired_error(exc):
         return None
-    srv = _lookup_reconnectable_server(server_name, require_loop=True)
+    srv = _lookup_reconnectable_server(server_name, require_loop=True, used=used)
     if call_may_have_side_effects:
         # Even without a signallable server the outcome is still uncertain: a generic "call failed"
         # would invite the model to re-invoke a write that may already have landed.
@@ -493,7 +510,8 @@ class _StdioChildExited(RuntimeError):
         self.in_flight = in_flight
 
 
-def _handle_stdio_child_exited_and_retry(server_name: str, exc: Exception, retry_call, op_description: str):
+def _handle_stdio_child_exited_and_retry(server_name: str, exc: Exception, retry_call, op_description: str,
+                                         *, used: Any = None):
     """Respawn a dead stdio child; retry once only when it was dead before dispatch.
 
     A mid-call exit is ambiguous: the server may have applied a side effect before its
@@ -510,7 +528,7 @@ def _handle_stdio_child_exited_and_retry(server_name: str, exc: Exception, retry
     if not isinstance(exc, _StdioChildExited):
         return None
     reconnected = False
-    srv = _lookup_reconnectable_server(server_name)
+    srv = _lookup_reconnectable_server(server_name, used=used)
     if srv is not None:
         action = "reconnecting without replay" if exc.in_flight else "respawning and retrying once"
         logger.info("MCP server '%s': %s found the stdio subprocess dead (%s); %s.",
@@ -567,7 +585,7 @@ def _dispatch(server_name: str, server: Any, op: str, call, tool_timeout: float,
         return tool_error("MCP call interrupted: user sent a new message")
     except Exception as exc:
         for recover in recoverers:
-            recovered = recover(server_name, exc, call_once, op)
+            recovered = recover(server_name, exc, call_once, op, used=server)
             if recovered is not None:
                 return recovered
         on_final_failure(exc)
@@ -953,7 +971,8 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, *,
                 charge.refund()
         # Off the MCP loop on purpose: image prep is CPU work (bounded vision pool) that must not stall other servers' I/O.
         return _mcp_result_with_native_images(text, image_paths) if native_images and not _result_is_error(text) else text
-    return _handler
+    from tools.mcp_tool_project_scope import leased_handler
+    return leased_handler(_handler)
 
 
 def _make_utility_handler(op: str, log_label: str, rpc, render, required: Optional[str] = None):
@@ -977,7 +996,8 @@ def _make_utility_handler(op: str, log_label: str, rpc, render, required: Option
                 server_name, server, op, _call, tool_timeout,
                 (_handle_auth_error_and_retry, _handle_session_expired_and_retry),
                 lambda exc: logger.error("MCP %s/%s failed: %s", server_name, log_label, exc))
-        return _handler
+        from tools.mcp_tool_project_scope import leased_handler
+        return leased_handler(_handler)
     return _factory
 
 

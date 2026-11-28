@@ -54,15 +54,17 @@ def test_slash_worker_argv_omits_empty_provider(monkeypatch):
     assert "--provider" not in argv
 
 
-def test_slash_exec_spawns_with_the_live_agent_provider(monkeypatch):
+def test_slash_exec_spawns_with_the_live_agent_provider(monkeypatch, tmp_path):
     """First-use spawn in ``slash.exec`` passes the session agent's resolved provider — the MoA
-    one-shot builds ``agent.provider == "moa"`` via ``_apply_model_switch`` before the worker runs."""
+    one-shot builds ``agent.provider == "moa"`` via ``_apply_model_switch`` before the worker runs —
+    AND the session project as ``cwd=`` (the worker parents the session's stdio MCP servers, which
+    read their project from its cwd; T00014 test gap: the stub used to accept and ignore it)."""
     worker_args = None
 
     class _RecordingWorker:
-        def __init__(self, session_key, model, profile_home=None, provider=None, base_url=None):
+        def __init__(self, session_key, model, profile_home=None, provider=None, base_url=None, cwd=None):
             nonlocal worker_args
-            worker_args = (session_key, model, profile_home, provider, base_url)
+            worker_args = (session_key, model, profile_home, provider, base_url, cwd)
             self.stderr_tail = []
 
         def run(self, command):
@@ -71,8 +73,10 @@ def test_slash_exec_spawns_with_the_live_agent_provider(monkeypatch):
         def close(self):
             pass
 
+    (tmp_path / "proj").mkdir()
     agent = SimpleNamespace(model="default", provider="moa", base_url="https://chatgpt.com/backend-api/codex")
-    session = {"session_key": "s-key", "agent": agent, "profile_home": None, "running": False}
+    session = {"session_key": "s-key", "agent": agent, "profile_home": None, "running": False,
+               "cwd": str(tmp_path / "proj")}
 
     monkeypatch.setattr(server, "_sessions", {"sid": session})
     monkeypatch.setattr(server, "_SlashWorker", _RecordingWorker)
@@ -81,12 +85,15 @@ def test_slash_exec_spawns_with_the_live_agent_provider(monkeypatch):
     monkeypatch.setattr(server, "_is_snapshot_restore", lambda *a, **k: False)
     monkeypatch.setattr(server, "_mirror_slash_side_effects", lambda *a, **k: None)
     monkeypatch.setattr(server, "_resolve_model", lambda: "fallback-model")
+    monkeypatch.setattr(server, "_effective_terminal_backend", lambda: "local")
 
     resp = server._methods["slash.exec"](1, {"session_id": "sid", "command": "/tools"})
 
     assert "error" not in resp, resp
     assert worker_args is not None
-    assert worker_args[3:] == ("moa", "https://chatgpt.com/backend-api/codex")
+    assert worker_args[3:5] == ("moa", "https://chatgpt.com/backend-api/codex")
+    assert worker_args[5] == str(tmp_path / "proj"), \
+        "the first-use spawn did not pass the session project as cwd="
 
 
 def test_slash_worker_child_forwards_provider_to_hermes_cli(monkeypatch):

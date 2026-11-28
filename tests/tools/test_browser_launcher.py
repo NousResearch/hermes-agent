@@ -523,3 +523,29 @@ def test_packaged_only_flags_never_reach_an_explicit_binary(monkeypatch):
     assert not set(launcher.CHROMIUM_SANDBOX_BYPASS_ARGS) & set(real)  # the user's own browser keeps its sandbox
     for argv in (packaged, dock, real):
         assert "--lang=de" in argv and argv[-1] == "about:blank"
+
+
+@pytest.mark.platforms("posix")
+def test_build_chromium_argv_disables_automation_controlled_and_deduplicates(monkeypatch):
+    """Every ``--remote-debugging-port=0`` launch includes ``--disable-blink-features=AutomationControlled``
+    so Chromium does not expose ``navigator.webdriver == true`` (#137774), without duplicating the flag
+    when the user already pinned it in ``browser.chromium_args`` or ``extra_args``."""
+    monkeypatch.setattr(launcher, "needs_chromium_sandbox_bypass", lambda: False)
+    monkeypatch.setattr("tools.browser_session_cloud.chromium_args", list)
+
+    flag = "--disable-blink-features=AutomationControlled"
+    for kwargs in (
+        {"packaged": True, "headed": False, "sandbox_bypass": True},
+        {"packaged": False, "headed": True, "sandbox_bypass": True},
+        {"packaged": False, "headed": True, "sandbox_bypass": False},
+    ):
+        argv = launcher.build_chromium_argv("/c", "/p", **kwargs)
+        assert argv.count(flag) == 1
+
+    monkeypatch.setattr("tools.browser_session_cloud.chromium_args", lambda: [flag])
+    assert launcher.build_chromium_argv("/c", "/p", packaged=False, headed=True, sandbox_bypass=False).count(flag) == 1
+
+    monkeypatch.setattr("tools.browser_session_cloud.chromium_args", list)
+    assert launcher.build_chromium_argv(
+        "/c", "/p", packaged=False, headed=True, sandbox_bypass=False, extra_args=(flag,)
+    ).count(flag) == 1

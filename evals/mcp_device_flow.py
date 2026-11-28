@@ -45,14 +45,22 @@ def oauth_fixture(mode="success"):
                     return self.reply(200, {"authenticated": True})
                 return self.reply(401, {}, {"WWW-Authenticate": f'Bearer resource_metadata="{base}/prm"'})
             if self.path == "/prm" or "oauth-protected-resource" in self.path:
-                return self.reply(200, {"resource": base + ("/wrong" if mode == "resource" else "/mcp"),
-                                        "authorization_servers": ([base + "/wrong", base]
-                                                                  if mode == "multi_issuer" else [base])})
+                prm = {"resource": base + ("/wrong" if mode == "resource" else "/mcp"),
+                       "authorization_servers": ([base + "/wrong", base] if mode == "multi_issuer" else [base])}
+                if mode == "offline_unscoped":
+                    prm["scopes_supported"] = ["mcp:read"]
+                return self.reply(200, prm)
             if "oauth-authorization-server" in self.path:
                 metadata = {"issuer": base + ("/wrong" if mode == "issuer" else ""),
                             "authorization_endpoint": base + "/authorize", "token_endpoint": base + "/token",
                             "response_types_supported": ["code"], "code_challenge_methods_supported": ["S256"],
                             "grant_types_supported": [DEVICE_GRANT, "refresh_token"]}
+                if mode in {"offline", "offline_unscoped", "offline_norefresh"}:
+                    # Refresh permission lives on the authorization server; the resource (below)
+                    # advertises only its tool scope.
+                    metadata["scopes_supported"] = ["offline_access"]
+                if mode == "offline_norefresh":
+                    metadata["grant_types_supported"] = [DEVICE_GRANT]
                 if mode != "unsupported":
                     metadata["device_authorization_endpoint"] = base + "/device"
                 if mode != "preregistered":
@@ -118,10 +126,14 @@ def run_cli(repo, mode):
     with tempfile.TemporaryDirectory(prefix="hermes-device-wire-") as directory, oauth_fixture(mode) as (base, wire):
         home = Path(directory)
         oauth = {"flow": "device", "cimd": False, "scope": "fixture.read", "timeout": 15}
+        if mode == "offline_unscoped":
+            # No user-configured scope: the request scope must still cover what
+            # the authorization server advertises.
+            oauth.pop("scope")
         if mode == "preregistered":
             oauth.update(client_id="fixture-client", client_secret="fixture-client-secret")
         config = {"mcp_servers": {"fixture": {"url": base + "/mcp", "auth": "oauth", "oauth": oauth}}}
-        (home / "config.yaml").write_text(json.dumps(config))
+        (home / "config.yaml").write_text(json.dumps(config), encoding="utf-8")
         previous = {}
         if mode == "persistence":
             token_dir = home / "mcp-tokens"
@@ -130,7 +142,7 @@ def run_cli(repo, mode):
                         "fixture.client.json": '{"client_id":"old-client"}',
                         "fixture.meta.json": '{"issuer":"https://old.example"}'}
             for filename, value in previous.items():
-                (token_dir / filename).write_text(value)
+                (token_dir / filename).write_text(value, encoding="utf-8")
         env = {key: value for key, value in os.environ.items()
                if not key.startswith("HERMES_") and not any(part in key for part in ("API_KEY", "TOKEN", "SECRET"))}
         env.update(HOME=str(home), HERMES_HOME=str(home), PYTHONPATH=str(repo), PYTHONDONTWRITEBYTECODE="1")
@@ -153,16 +165,19 @@ main()
                                 cwd=repo, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=40, check=False)
         token_path = home / "mcp-tokens" / "fixture.json"
         refresh_output = None
+        persisted_scope = None
         if token_path.exists() and not previous:
-            tokens = json.loads(token_path.read_text())
+            tokens = json.loads(token_path.read_text(encoding="utf-8-sig"))
+            persisted_scope = tokens.get("scope")
             tokens["expires_at"] = time.time() - 60
-            token_path.write_text(json.dumps(tokens))
+            token_path.write_text(json.dumps(tokens), encoding="utf-8")
             refreshed = subprocess.run([sys.executable, "-m", "hermes_cli.main", "mcp", "test", "fixture"],
                                        cwd=repo, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30, check=False)
             refresh_output = refreshed.stdout + refreshed.stderr
         return {"mode": mode, "returncode": result.returncode, "output": result.stdout + result.stderr,
                 "token_persisted": token_path.exists(), "refresh_output": refresh_output, "wire": wire,
-                "state_preserved": all((home / "mcp-tokens" / k).read_text() == v for k, v in previous.items())}
+                "persisted_scope": persisted_scope,
+                "state_preserved": all((home / "mcp-tokens" / k).read_text(encoding="utf-8-sig") == v for k, v in previous.items())}
 
 
 if __name__ == "__main__":

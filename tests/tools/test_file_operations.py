@@ -423,6 +423,48 @@ class TestSearchFilesIncludesDirectories:
         assert result.files == [str(newer_dir)]
         assert result.truncated is True
 
+    @pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep not installed")
+    @pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
+    def test_rg_target_files_excludes_gitignored_non_ascii_directory(self, tmp_path):
+        """git check-ignore quotes non-ASCII paths in its output; the filter must
+        still recognise them, or an ignored directory leaks (#159933)."""
+        root = tmp_path / "repo"
+        (root / "папка_dir").mkdir(parents=True)
+        (root / "visible_dir").mkdir()
+        (root / ".gitignore").write_text("папка_dir/\n", encoding="utf-8")
+        subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+
+        ops = ShellFileOperations(LocalEnvironment("/"))
+        result = ops.search("*dir", path=str(root), target="files")
+
+        assert result.error is None
+        names = {os.path.basename(entry) for entry in result.files}
+        assert "visible_dir" in names
+        assert "папка_dir" not in names
+
+    @pytest.mark.platforms("windows")
+    @pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep not installed")
+    @pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
+    def test_rg_target_files_lists_directories_as_native_windows_paths(self, tmp_path):
+        """Git Bash find prints /c/... paths; directory entries must come back as
+        native paths like the files, and .gitignore must apply to them (#159933)."""
+        root = tmp_path / "repo"
+        (root / "visible_dir").mkdir(parents=True)
+        (root / "ignored_dir").mkdir()
+        (root / "visible_dir_readme.txt").write_text("x")
+        (root / ".gitignore").write_text("ignored_dir/\n")
+        subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+
+        ops = ShellFileOperations(LocalEnvironment("/"))
+        result = ops.search("*dir*", path=str(root), target="files")
+
+        assert result.error is None
+        assert not [entry for entry in result.files if entry.startswith("/")]
+        assert {os.path.normcase(os.path.normpath(entry)) for entry in result.files} == {
+            os.path.normcase(str(root / "visible_dir")),
+            os.path.normcase(str(root / "visible_dir_readme.txt")),
+        }
+
     def test_find_target_files_includes_matching_empty_directory(self, tmp_path, monkeypatch):
         root = tmp_path / "repo"
         empty_dir = root / "vault"

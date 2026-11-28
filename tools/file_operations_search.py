@@ -119,6 +119,42 @@ def _search_stdout_and_limit(result: ExecuteResult) -> tuple[str, Optional[str]]
     return result.stdout, None
 
 
+_GIT_QUOTED_PATH_ESCAPES = {
+    "a": 0x07, "b": 0x08, "t": 0x09, "n": 0x0A, "v": 0x0B, "f": 0x0C, "r": 0x0D,
+    '"': 0x22, "\\": 0x5C,
+}
+_GIT_OCTAL_ESCAPE_RE = re.compile(r"[0-3][0-7]{2}")
+
+
+def _git_unquote_path(line: str) -> str:
+    """Undo git's C-style path quoting (core.quotePath).
+
+    git prints a path inside double quotes, with C escapes and octal bytes, when it
+    holds a backslash, a quote, a control character or a non-ASCII byte, so a
+    Windows path or a non-ASCII name never matched its own input line (#159933).
+    Lines git did not quote are returned unchanged.
+    """
+    if len(line) < 2 or line[0] != '"' or line[-1] != '"':
+        return line
+    body = line[1:-1]
+    out = bytearray()
+    i = 0
+    while i < len(body):
+        if body[i] == "\\" and i + 1 < len(body):
+            if _GIT_OCTAL_ESCAPE_RE.match(body, i + 1):
+                out.append(int(body[i + 1:i + 4], 8))
+                i += 4
+                continue
+            escaped = _GIT_QUOTED_PATH_ESCAPES.get(body[i + 1])
+            if escaped is not None:
+                out.append(escaped)
+                i += 2
+                continue
+        out += body[i].encode("utf-8", "surrogateescape")
+        i += 1
+    return out.decode("utf-8", "surrogateescape")
+
+
 def _bundled_rg() -> Optional[str]:
     """Hermes's pinned ripgrep, forward-slashed for the shell transports, or None."""
     import pm
@@ -1024,7 +1060,8 @@ class SearchMixin:
         if not paths:
             return paths
 
-        escaped_root = self._escape_shell_arg(root)
+        # git is a native binary: on Windows it cannot ``-C`` into a /c/... path (#159933).
+        escaped_root = self._escape_native_tool_arg(root)
         probe = self._exec(
             f"git -c core.fsmonitor=false -C {escaped_root} rev-parse --is-inside-work-tree >/dev/null 2>&1",
             timeout=10,
@@ -1037,7 +1074,7 @@ class SearchMixin:
             timeout=10,
             stdin_data="\n".join(paths),
         )
-        ignored = set(result.stdout.splitlines())
+        ignored = {_git_unquote_path(line) for line in result.stdout.splitlines()}
         return [item_path for item_path in paths if item_path not in ignored]
 
     def _sort_paths_by_mtime(self, paths: list[str]) -> list[str]:
@@ -1114,6 +1151,13 @@ class SearchMixin:
                 dirs.append(parts[1])
             else:
                 dirs.append(line)
+
+        from tools.environments.base import env_uses_host_filesystem
+        from tools.environments.local import _IS_WINDOWS, _msys_to_windows_path
+        if _IS_WINDOWS and env_uses_host_filesystem(self.env):
+            # Git Bash find prints /c/... paths. rg and the find lane return native
+            # ones, and the native git below cannot read /c/... from stdin (#159933).
+            dirs = [_msys_to_windows_path(directory) for directory in dirs]
 
         if dirs:
             # An explicitly selected hidden root keeps its (hidden) subtree;

@@ -55,6 +55,23 @@ def test_kitty_placeholders_on_kitty_and_ghostty(monkeypatch):
     assert terminal_image.supports_kitty_placeholders() is True
 
 
+def test_rex_is_placeholder_capable(monkeypatch):
+    # Rex (Superlogical, libghostty) reports TERM_PROGRAM=rex with a plain
+    # xterm-256color TERM but paints the kitty protocol and U+10EEEE
+    # placeholders. Without it in the list, auto silently fell back to
+    # half-blocks there while the same terminal family under a ghostty
+    # TERM_PROGRAM got full-resolution images.
+    _clear_graphics_env(monkeypatch)
+    monkeypatch.delenv("TMUX", raising=False)
+    monkeypatch.delenv("STY", raising=False)
+    monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.setenv("TERM_PROGRAM", "rex")
+
+    assert terminal_image.detect_terminal_graphics() == "kitty"
+    assert terminal_image.supports_kitty_placeholders() is True
+    assert resolve_inline_mode("auto") == "kitty"
+
+
 @pytest.mark.parametrize("multiplexer", ["TMUX", "STY"])
 def test_auto_stays_on_half_blocks_inside_a_multiplexer(monkeypatch, multiplexer):
     # tmux and GNU screen inherit KITTY_WINDOW_ID from the outer kitty yet swallow the transmit.

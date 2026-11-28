@@ -35,7 +35,8 @@ export const detectTerminalGraphics = (env: NodeJS.ProcessEnv = process.env): Te
     Boolean(env.KITTY_WINDOW_ID || env.GHOSTTY_RESOURCES_DIR) ||
     term.includes('kitty') ||
     term.includes('ghostty') ||
-    program === 'ghostty'
+    program === 'ghostty' ||
+    program === 'rex'
 
   return kitty ? 'kitty' : 'unicode'
 }

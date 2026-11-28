@@ -664,7 +664,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         """Answer the clarify tool's questions (clarify_tool's synchronous contract): one card per
         question, stop at the first the user never answers. The stream/typing re-arm waits for the
         last question — between two cards it only opens a bubble the next boundary closes."""
-        from gateway.run_turn_runner_clarify_delivery import UNDELIVERED, UNDELIVERED_DECLINED, UNDELIVERED_NO_SURFACE
+        from gateway.run_turn_runner_clarify_delivery import UNDELIVERED_NOTICES
         from tools.clarify_gateway import CANCELLED, SKIPPED
         if _finite_viewer_turn():
             # `chat -q` / `-z`: the viewer detaches on the first prompt, so nobody can answer.
@@ -694,8 +694,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 # The surface's own no-answer text ("could not be delivered", "did not respond
                 # within Nm") rides along as ``notice``: blank answers alone read as user
                 # inactivity, which is the misreport #112684 describes for an undelivered card.
-                undelivered = raw in (UNDELIVERED, UNDELIVERED_DECLINED, UNDELIVERED_NO_SURFACE)
-                reply.update(outcome="undelivered" if undelivered else "timed_out", notice=raw)
+                reply.update(outcome="undelivered" if raw in UNDELIVERED_NOTICES else "timed_out", notice=raw)
                 break
             answers[entry["qid"]] = None if raw == SKIPPED else raw
         return reply

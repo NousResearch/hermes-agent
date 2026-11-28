@@ -22,6 +22,10 @@ UNDELIVERED = "[clarify prompt could not be delivered]"
 UNDELIVERED_DECLINED = "[clarify prompt could not be delivered: destination refused]"
 # No status adapter (a run whose chat surface is gone).
 UNDELIVERED_NO_SURFACE = "[clarify prompt could not be delivered: no chat surface]"
+# The surface itself refused the question: nobody there can answer it (see ``UNANSWERABLE``).
+UNDELIVERED_NO_VIEWER = "[clarify prompt could not be delivered: no viewer can answer it]"
+# Every notice above: the wait ended because the question never reached anyone.
+UNDELIVERED_NOTICES = (UNDELIVERED, UNDELIVERED_DECLINED, UNDELIVERED_NO_SURFACE, UNDELIVERED_NO_VIEWER)
 
 # Seconds a scheduled card send may take before it is classified ``ambiguous`` (possibly posted).
 # Also the ONE budget the clarify card's explanation gets, shared by the agent thread and the card:
@@ -30,6 +34,11 @@ SEND_ACK_WINDOW = 15
 # ``raw_response`` marker of a card that was not posted because its question was withdrawn
 # (cancelled, answered elsewhere, session reset) while it waited for its explanation.
 WITHDRAWN = "clarify_withdrawn"
+# ``raw_response`` marker of a question the surface refused because nobody there can answer it (a
+# hosted room, a forwarded peer, a wake turn with no attached viewer holding ``session:respond``).
+# Definitive like a connector decline (release at once, no plain-text re-ask, which would only ACK
+# and wait out the timeout), but no connector refused anything, so it must not read as one.
+UNANSWERABLE = "clarify_unanswerable"
 
 
 def text_fallback_coro(adapter, **send_kwargs):
@@ -98,10 +107,13 @@ def _clarify_send_then_wait(fut, *, clarify_id: str, session_key: str, clarify_m
     from gateway.run import _approval_send_outcome
 
     outcome = _approval_send_outcome(fut, timeout=SEND_ACK_WINDOW)
-    if outcome == "failed" and _withdrawn(fut):
+    if outcome == "failed" and _marked(fut, WITHDRAWN):
         # Nothing was posted on purpose: no text fallback for a question nobody is waiting on.
         clarify_mod.wait_for_response(clarify_id, timeout=0.01)  # retire the withdrawn entry
         return clarify_mod.CANCELLED, False
+    if outcome == "failed" and _marked(fut, UNANSWERABLE):
+        clarify_mod.clear_session(session_key)
+        return UNDELIVERED_NO_VIEWER, False
     if outcome == "failed" and fallback is not None:
         # The text prompt is the last resort: a late failure of ITS send has nothing to retry.
         fut, fallback = fallback(), None
@@ -171,8 +183,11 @@ class _LateFailureWatch:
             # ``_abort_for_outcome`` — stay armed for the late button tap, never re-send, never
             # release; the bounded wait's own timeout covers a card that truly never arrived.
             return
-        if _withdrawn(fut):
+        if _marked(fut, WITHDRAWN):
             return  # withdrawn before posting; whoever withdrew it already woke the waiter
+        if _marked(fut, UNANSWERABLE):
+            self._release(UNDELIVERED_NO_VIEWER)
+            return
         if outcome == "declined":
             # Refused destination: no text retry (see ``_clarify_send_then_wait``), and the notice
             # says so rather than the generic delivery failure.
@@ -197,19 +212,26 @@ class _LateFailureWatch:
         self._clarify_mod.clear_session(self._session_key)
 
 
-def _withdrawn(fut) -> bool:
-    """True when the card send resolved as deliberately not posted (see ``WITHDRAWN``)."""
+def _marked(fut, marker: str) -> bool:
+    """True when the card send resolved as deliberately not posted for *marker*'s reason
+    (``WITHDRAWN`` or ``UNANSWERABLE``)."""
     done = getattr(fut, "done", None)
     if fut is None or not callable(done) or not done() or fut.cancelled() or fut.exception() is not None:
         return False
     raw = getattr(fut.result(), "raw_response", None)
-    return isinstance(raw, dict) and bool(raw.get(WITHDRAWN))
+    return isinstance(raw, dict) and bool(raw.get(marker))
 
 
 def withdrawn_result():
     from gateway.platforms.base import SendResult
     return SendResult(success=False, error="clarify prompt withdrawn before posting",
                       raw_response={WITHDRAWN: True})
+
+
+def unanswerable_result(error: str):
+    """The send result of a question the surface refuses because nobody there can answer it."""
+    from gateway.platforms.base import SendResult
+    return SendResult(success=False, error=error, raw_response={UNANSWERABLE: True, "error": error})
 
 
 def clarify_card_still_wanted(runner, entry) -> bool:

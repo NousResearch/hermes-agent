@@ -1,0 +1,41 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: beehiiv
+description: 'beehiiv newsletters: posts, subscribers, segments, and stats.'
+source: https://www.beehiiv.com/support/article/39255979546263
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Native OAuth 2.1 + Dynamic Client Registration
+# (verified live: 401 → RFC 9728 protected-resource metadata → AS metadata
+# with registration_endpoint; DCR accepts client_name "Hermes Agent" with a
+# loopback redirect and token_endpoint_auth_method none, PKCE S256).
+# beehiiv publishes capability categories but no tool reference table, so
+# this entry ships uncurated: every tool the server lists is enabled.
+
+transport:
+  type: http
+  url: https://mcp.beehiiv.com/mcp
+
+auth:
+  type: oauth
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - beehiiv
+  hosts:
+    - beehiiv.com
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with
+  beehiiv (or run `hermes mcp login beehiiv`). Approve access,
+  then restart the session so tools load.
+
+  The MCP sees what your workspace role sees in the beehiiv app,
+  including subscriber emails and custom fields. Free plans are
+  read-only; paid plans can create and edit drafts, segments, tags,
+  forms and automations, and Pro/Enterprise can schedule and send
+  posts. To connect a second workspace, add another entry whose URL
+  ends in a distinct query string (for example ?account=2).

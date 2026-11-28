@@ -10,9 +10,92 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, NamedTuple, Optional, Tuple
 
+from hermes_cli.fallback_config import fallback_entry_identity
 from utils import base_url_host_matches
 
 logger = logging.getLogger(__name__)
+
+
+class StartupPrimary(NamedTuple):
+    """The configured primary and the backup route selected at startup."""
+
+    model: str
+    resolve_kwargs: dict[str, Any]
+    overrides: dict[str, Any]
+    fallback_route: tuple[str, str, str]
+
+    def fallback_resume_index(self, chain: list[dict[str, Any]]) -> int:
+        """Resume after the active backup, or try the whole chain if it was removed."""
+        return next(
+            (index for index, entry in enumerate(chain, start=1)
+             if fallback_entry_identity(entry) == self.fallback_route),
+            0,
+        )
+
+
+def apply_persisted_runtime_overrides(model: str, runtime: dict, overrides: dict) -> None:
+    """Apply a session's saved route fields to a successfully resolved provider."""
+    # The local supervisor owns its current loopback endpoint.
+    if runtime.get("source") == "local-runtime":
+        overrides = {key: value for key, value in overrides.items() if key != "base_url"}
+    applied = {key: value for key, value in overrides.items() if value}
+    if not applied:
+        return
+    runtime.update(applied)
+    # A session row can carry the wire for a different model on a per-model provider (#96066).
+    from hermes_cli.model_switch import model_derived_api_mode
+    from hermes_cli.models import normalize_opencode_base_url
+    provider = str(runtime.get("requested_provider") or runtime.get("provider") or "")
+    if api_mode := model_derived_api_mode(provider, model):
+        runtime["api_mode"] = api_mode
+        runtime["base_url"] = normalize_opencode_base_url(provider, api_mode, runtime.get("base_url"))
+
+
+def restore_startup_primary(agent: Any, intent: StartupPrimary) -> bool:
+    """Retry the configured primary on the cached agent while its startup backup is usable."""
+    from agent.agent_runtime_helpers import switch_model
+    from agent.fallback_notice import announce_primary_restored
+    from hermes_cli.auth import AuthError
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    if not intent.model:
+        return False
+    previous_model, previous_provider = agent.model, agent.provider
+    try:
+        runtime = resolve_runtime_provider(**intent.resolve_kwargs)
+        pool = runtime.get("credential_pool")
+        if pool is not None and pool.has_credentials() and not pool.has_available(model=intent.model):
+            return False
+        apply_persisted_runtime_overrides(intent.model, runtime, intent.overrides)
+        provider = runtime.get("requested_provider") or runtime.get("provider")
+        if provider == "auto":
+            provider = runtime.get("provider")
+        if not provider:
+            return False
+        switch_model(
+            agent, intent.model, provider,
+            api_key=runtime.get("api_key") or "", base_url=runtime.get("base_url") or "",
+            api_mode=runtime.get("api_mode") or "", capabilities=runtime.get("capabilities"),
+            supersede_pre_agent_primary=False,
+        )
+    except AuthError:
+        return False
+    except Exception as exc:  # health: allow BLE001 -- a resolver or adapter failure must leave the working backup usable
+        logger.warning("Could not retry the startup primary (%s)", type(exc).__name__)
+        return False
+
+    agent._pre_agent_primary = None
+    agent._fallback_index = 0
+    agent._unavailable_fallback_keys = set()
+    agent._rate_limited_until = 0
+    agent._rate_limit_backoff_count = 0
+    agent._restore_wait_logged = False
+    logger.info("Pre-agent primary restored for new turn: %s (%s)", agent.model, agent.provider)
+    if getattr(agent, "_pending_fallback_notice", None):
+        agent._pending_fallback_notice = None  # Recovery before the startup switch was shown.
+    else:
+        announce_primary_restored(agent, previous_model, previous_provider)
+    return True
 
 
 class RouteEntryClient(NamedTuple):

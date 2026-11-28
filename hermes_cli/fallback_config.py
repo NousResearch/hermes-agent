@@ -128,7 +128,8 @@ def _iter_fallback_entries(raw: Any) -> list[dict[str, Any]]:
     return entries
 
 
-def _entry_identity(entry: dict[str, Any]) -> tuple[str, str, str]:
+def fallback_entry_identity(entry: dict[str, Any]) -> tuple[str, str, str]:
+    """Identify a configured fallback route independent of its position or credentials."""
     return (
         _normalize_provider_id(str(entry.get("provider") or "").strip()),
         str(entry.get("model") or "").strip().lower(),
@@ -149,7 +150,7 @@ def get_fallback_chain(config: dict[str, Any] | None) -> list[dict[str, Any]]:
     seen: set[tuple[str, str, str]] = set()
     for key in ("fallback_providers", "fallback_model"):
         for entry in _iter_fallback_entries(config.get(key)):
-            identity = _entry_identity(entry)
+            identity = fallback_entry_identity(entry)
             if identity not in seen:
                 seen.add(identity)
                 chain.append(entry)

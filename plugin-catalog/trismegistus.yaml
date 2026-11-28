@@ -1,17 +1,18 @@
 name: trismegistus
 title: Trismegistus
 repo: https://github.com/jrcruciani/trismegistus
-sha: 1fada7858b224a7bee91000982feeddfc100eabc
-version: "0.2.1"
+sha: f9719a59562ed43c6cf160edc1a6f82cf41f0e4c
+version: "0.3.3"
 maintainer: jrcruciani
 tier: community
 category: models
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/jrcruciani/trismegistus#readme
 readme: true
-description: "Precision & performance System-1 / System-2 cognitive router (Triage -> Modulation -> Call) powered by Microsoft-Decision-1.1 on Microsoft Foundry (or local/auxiliary System-1 endpoints) and wire-safe across GitHub Copilot models, with safe passthrough on other execution providers. Disclosure — When configured, sends force-redacted turn excerpts (up to 2,400 chars plus an 800-char tail digest), and optionally redacted tool arguments, changed file paths with the final response (verify gate), and delegate_task goal/context text (when delegation.backend is trismegistus), over HTTPS to your configured Microsoft Foundry or local inference endpoint (or through Hermes's auxiliary model slot when backend is hermes_aux); modulates outgoing LLM reasoning_effort / model on GitHub Copilot; and records non-content metrics in a local plugin-data SQLite ledger."
+description: "Precision & speed System-1 / System-2 cognitive router (Triage -> Modulation -> Call) powered by Microsoft-Decision-1.1 on Microsoft Foundry (or local/auxiliary System-1 endpoints) with empirical risk-aware threshold calibration, reactive closed-loop false-S1 guard, KV-cache telemetry, and provider adapters (GitHub Copilot, OpenAI/Azure, Anthropic, Gemini) plus safe passthrough on other providers. Disclosure — When configured, sends force-redacted head+tail turn excerpts (default 4,000 chars), optional bounded image attachments when multimodal_triage_enabled is true, and optionally redacted tool arguments, changed file paths with the final response (verify gate), and delegate_task goal/context text (when delegation.backend is trismegistus), over HTTPS to your configured Microsoft Foundry or local inference endpoint (or an explicitly configured secondary_systemone_endpoint such as OpenRouter/Vercel on failover, or through Hermes's auxiliary model slot when backend is hermes_aux); modulates outgoing LLM reasoning_effort / model on supported providers (and in active modes may inject a constant System-2 context note or run verify_gate decision calls); and records non-content telemetry metrics in plugin-data/trismegistus/ledger.db plus optional calibrated threshold profiles in plugin-data/trismegistus/calibration.json."
 known_issues:
-  - "Active effort modulation (xhigh/step-pacing), wire-compatible model swapping, and 4-lane specialty delegation presets are tuned for GitHub Copilot; non-Copilot execution providers default to safe passthrough unless explicit provider-matching models are configured."
+  - "Active effort modulation (xhigh/step-pacing), wire-compatible model swapping, and 4-lane specialty delegation presets are most thoroughly validated on GitHub Copilot; non-Copilot execution providers use provider adapters (OpenAI/Anthropic/Gemini) or safe passthrough unless explicit provider-matching models are configured."
+  - "On Microsoft Foundry, set Microsoft-Decision-1.1 deployment sku.capacity to at least 20-100 (GlobalStandard pay-as-you-go); capacity=1 limits the deployment to 1 RPM / 1K TPM and triggers HTTP 429 bursts."
 platforms: []
 capabilities:
   provides_tools:

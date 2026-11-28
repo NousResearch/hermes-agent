@@ -253,6 +253,56 @@ Import the area constants from the SDK; each area has its own `data` payload.
 | Appearance settings | `APPEARANCE_AREAS.extra` | `render` — controls appended to Settings → Appearance |
 | Tool media | `TOOL_MEDIA_RENDERER_AREA` (`'transcript.toolMedia'`) | `data: { tools, render }` — draw the `MEDIA:` files your package's own tools produced ([Tool media renderers](#tool-media-renderers)) |
 | Plugin settings page | `SETTINGS_PLUGINS_AREA` (`'settings.plugins'`) | Use `ctx.registerSettingsPage({ id, title, render, icon?, order?, children? })` — your own entry (with sub-pages) under Settings → Plugins |
+| Session source labels | `SESSION_SOURCE_LABELS_AREA` | `data: { source, label, profile?, sessionIdPrefix?, icon? }` |
+
+### Session source labels
+
+`SESSION_SOURCE_LABELS_AREA` changes messaging section labels without modifying
+stored sessions or their backend source. A rule can be restricted to an exact
+profile and to a session ID prefix. Prefix rules match the durable lineage root
+(`_lineage_root_id`, falling back to `id`), so compression keeps the section
+identity. Use a prefix only when the integration itself establishes that
+provenance; titles and message text are not reliable origin identifiers.
+
+```javascript
+import * as sdk from '@hermes/plugin-sdk'
+
+export default {
+  id: 'channel-labels',
+  name: 'Channel labels',
+  register(ctx) {
+    if (!sdk.SESSION_SOURCE_LABELS_AREA) {
+      throw new Error('This Hermes Desktop build does not support session source labels.')
+    }
+    ctx.register({
+      id: 'messages',
+      area: sdk.SESSION_SOURCE_LABELS_AREA,
+      data: { source: 'photon', label: 'iMessage', profile: 'default' }
+    })
+    ctx.register({
+      id: 'sensor-integration',
+      area: sdk.SESSION_SOURCE_LABELS_AREA,
+      data: { source: 'api_server', label: 'Sensor conversations', profile: 'default', sessionIdPrefix: 'sensor_' }
+    })
+  }
+}
+```
+
+`icon` names a platform whose icon the section wears (for example `'homeassistant'`); without it the section uses its backend source's icon.
+
+The first matching contribution in registry order wins. Omitting `profile`
+applies the rule across profiles; a session row without a profile belongs to
+`default`. Source-only helpers cannot apply a profile-restricted rule without
+session context. A profile or prefix restriction creates a separate display
+group, while unrelated rows retain their original label. Group pagination still fetches the original
+backend source. Split groups count loaded rows rather than claiming the entire
+source total as their own. Disabling or removing the plugin restores the normal
+grouping live.
+
+The plugin file lives outside the app bundle and survives app updates. A plugin
+that must run on older builds should feature-detect the area (as above) so an
+unsupported build reports a visible plugin load error instead of silently
+claiming the labels are active.
 
 ### Panes
 

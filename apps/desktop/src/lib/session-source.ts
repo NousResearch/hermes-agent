@@ -1,3 +1,5 @@
+import { resolveSessionSourceLabel, type SessionSourceLabelContext } from '@/contrib/session-sources'
+import type { Contribution } from '@/contrib/types'
 import { normalize } from '@/lib/text'
 
 const SOURCE_LABELS: Record<string, string> = {
@@ -121,14 +123,52 @@ export function handoffOriginSource(
   return id
 }
 
-export function sessionSourceLabel(source: null | string | undefined): string | null {
+export function sessionSourceLabel(
+  source: null | string | undefined,
+  context?: SessionSourceLabelContext,
+  contributions?: readonly Contribution[]
+): string | null {
   const id = normalizeSessionSource(source)
 
   if (!id) {
     return null
   }
 
-  return SOURCE_LABELS[id] || id.replace(/[_-]+/g, ' ').replace(/\b\w/g, char => char.toUpperCase())
+  return (
+    resolveSessionSourceLabel(id, context, contributions)?.label ||
+    SOURCE_LABELS[id] ||
+    id.replace(/[_-]+/g, ' ').replace(/\b\w/g, char => char.toUpperCase())
+  )
+}
+
+export interface SessionSourcePresentation {
+  sourceId: string
+  groupId: string
+  label: string
+  filtered: boolean
+  /** Platform id for the section icon: a rule's `icon`, else the source id. */
+  iconId: string
+}
+
+export function sessionSourcePresentation(
+  session: SessionSourceLabelContext & { source: null | string },
+  contributions?: readonly Contribution[]
+): SessionSourcePresentation | null {
+  const sourceId = normalizeSessionSource(session.source)
+
+  if (!sourceId) {
+    return null
+  }
+
+  const custom = resolveSessionSourceLabel(sourceId, session, contributions)
+
+  return {
+    sourceId,
+    groupId: custom?.groupId ?? sourceId,
+    label: custom?.label ?? sessionSourceLabel(sourceId, session, contributions)!,
+    filtered: custom?.filtered ?? false,
+    iconId: custom?.icon ?? sourceId
+  }
 }
 
 export function sessionSourceSearchTerms(source: null | string | undefined): string[] {

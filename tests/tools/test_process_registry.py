@@ -1487,14 +1487,12 @@ class TestTerminateHostPidPosix:
             def __init__(self, pid):
                 self.pid = pid
 
-            def children(self, recursive=False):
-                assert recursive is True
-                return [_FakeChild(101), _FakeChild(102), _FakeChild(103)]
-
             def terminate(self):
                 terminate_order.append(self.pid)
 
         monkeypatch.setattr(psutil, "Process", _FakeParent)
+        monkeypatch.setattr("tools.process_registry_termination._snapshot_descendants",
+                            lambda pid: [_FakeChild(101), _FakeChild(102), _FakeChild(103)])
         # A zero grace keeps this ordering probe deterministic while retaining
         # the configured no-SIGKILL behavior.
         monkeypatch.setattr(pr.ProcessRegistry, "_daemon_term_grace_seconds",

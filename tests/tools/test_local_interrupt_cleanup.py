@@ -92,7 +92,7 @@ def test_kill_process_uses_cached_pgid_if_wrapper_already_exited(monkeypatch):
             raise ProcessLookupError
 
     monkeypatch.setattr(os, "getpgid", fake_getpgid)
-    monkeypatch.setattr(os, "killpg", fake_killpg)
+    monkeypatch.setattr("tools.environments.local._killpg", fake_killpg)
 
     env._kill_process(proc)
 

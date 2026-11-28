@@ -141,7 +141,7 @@ def test_kill_process_survives_psutil_snapshot_failure(monkeypatch):
         raise RuntimeError("psutil exploded")
 
     monkeypatch.setattr(os, "getpgid", fake_getpgid)
-    monkeypatch.setattr(os, "killpg", fake_killpg)
+    monkeypatch.setattr("tools.environments.local._killpg", fake_killpg)
     monkeypatch.setattr(psutil, "Process", boom)
 
     env._kill_process(proc)  # must not raise
@@ -170,7 +170,7 @@ def test_kill_process_never_killpgs_the_callers_own_group(monkeypatch):
 
     monkeypatch.setattr(os, "getpgid", lambda _pid: 67890)
     monkeypatch.setattr(os, "getpgrp", lambda: 67890)
-    monkeypatch.setattr(os, "killpg", lambda pgid, sig: killpg_calls.append((pgid, sig)))
+    monkeypatch.setattr("tools.environments.local._killpg", lambda pgid, sig: killpg_calls.append((pgid, sig)))
 
     env._kill_process(proc)
 

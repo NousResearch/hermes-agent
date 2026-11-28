@@ -8,7 +8,6 @@ existing skills (bundled, hub, user) are modified in place. Layout:
 """
 
 import contextvars as _ctxvars
-import hashlib
 import json
 from contextlib import ExitStack, suppress
 import logging
@@ -32,6 +31,8 @@ from tools.skill_manager_guards import (
     _background_review_delete_guard, _background_review_preflight, _background_review_read_before_write_guard,
     _containing_skills_root, _curator_consolidation_delete_guard, _is_path_redirect, _pinned_guard,
     _validate_delete_target, _is_background_review, _refusal as _err)
+from tools.skill_manager_locks import (
+    _enter_skill_locks, _skill_lock_path, _skill_mutation_lock, _skill_mutation_locks)
 from tools.skill_manager_batch import (
     _PATCH_EITHER_OR, _PATCH_NEEDS_NEW_STRING, _PATCH_NEEDS_OLD_STRING, _op_shape_error, _skill_manage_batch)
 from tools.skill_manager_scan import (
@@ -77,30 +78,6 @@ def _security_scan_skill(skill_dir: Path, baseline: Optional[Counter] = None,
         logger.warning("Security scan failed for %s: %s", skill_dir, e, exc_info=True)
         return f"Security scan could not complete, so this skill was blocked: {e}"
     return None
-
-
-def _skill_lock_path(name: str) -> Path:
-    """Per-skill lock file under ``<skills>/.locks/`` (same idiom as the usage ledger's
-    ``.usage.json.lock``), never inside the skill dir so delete/recreate cannot unlink it under a
-    waiting writer. Keyed by a digest of the basename so ``foo`` and ``category/foo`` share one
-    lock and no name can hit a filesystem limit (callers validate the basename first)."""
-    digest = hashlib.sha256(Path(name).name.encode("utf-8", "surrogatepass")).hexdigest()
-    return _skills_dir() / ".locks" / f"{digest}.lock"
-
-
-def _skill_mutation_lock(name: str):
-    """Exclusive lock held across one skill's whole read-modify-write; thread-re-entrant."""
-    from tools.skill_usage import skill_file_lock
-    return skill_file_lock(_skill_lock_path(name))
-
-
-def _skill_mutation_locks(names):
-    """Every lock of an atomic batch, acquired in one stable path order (deadlock-free across batches)."""
-    from tools.skill_usage import skill_file_lock
-    stack = ExitStack()
-    for lock_path in sorted({_skill_lock_path(n) for n in names}):
-        stack.enter_context(skill_file_lock(lock_path))
-    return stack
 
 
 MAX_NAME_LENGTH = 64
@@ -217,6 +194,12 @@ def _resolve_skill_dir(name: str, category: str | None = None) -> Path:
     except Exception:
         logger.debug("skills.create_dir lookup failed", exc_info=True)
     return base / (category or "") / name
+
+
+def _create_lock_target(name: str, category: str | None) -> Optional[Path]:
+    """The folder a create will make, for its lock; None for an invalid category (the create itself
+    then refuses it; resolving it here would raise for a non-string category)."""
+    return None if _validate_category(category) else _resolve_skill_dir(name, category)
 
 
 def _iter_skill_dirs(root: Path):
@@ -816,7 +799,12 @@ def skill_manage(
     # A mutation is read-modify-write even when its action eventually delegates
     # to a helper: guards, ledger capture, patch matching, validation, rollback,
     # and the atomic replacement all belong to the same ownership window.
-    with _skill_mutation_lock(name):
+    with ExitStack() as held:
+        # A lock still busy after the bounded out-of-order wait refuses the call here, before it
+        # writes, as a result (a batch then rolls back) instead of raising past it.
+        target = _create_lock_target(name, category) if action == "create" else None
+        if (busy := _enter_skill_locks(held, [name], {name: target} if target is not None else None)) is not None:
+            return json.dumps(_err(busy), ensure_ascii=False)
         # Ledger pre-capture: telemetry, not a gate — failures must NEVER block the mutation. delete
         # destroys the whole package (consolidation may have re-homed support files first), so
         # complete it from the newest curator backup or a restore is hollow.

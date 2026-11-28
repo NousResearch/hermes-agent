@@ -258,6 +258,45 @@ def test_a_launchd_job_is_paused_through_launchd_and_restarted_through_it(tmp_pa
         subprocess.run(["launchctl", "bootout", f"{domain}/{label}"], capture_output=True, check=False)
 
 
+def _discover_probe_job(monkeypatch, tmp_path, plist_body: dict, pid: int) -> dict:
+    """``_discover_launchd`` over one job whose label, PID and plist are this test's."""
+    from hermes_cli import gateway, update_fleet_scope
+    from hermes_cli.update_cmd_posix_pause import _discover_launchd
+    label = "ai.hermes.gateway-p2probe"
+    (tmp_path / f"{label}.plist").write_bytes(plistlib.dumps({"Label": label, **plist_body}))
+    monkeypatch.setattr(gateway, "get_launchd_plist_path", lambda: tmp_path / "ai.hermes.gateway.plist")
+    monkeypatch.setattr(gateway, "launchd_gateway_labels_for_install", lambda: [label])
+    monkeypatch.setattr(gateway, "legacy_launchd_labels_for_install", lambda exclude=(): [])
+    monkeypatch.setattr(gateway, "_locate_launchd_gateway_service", lambda _label: ("gui/0", pid))
+    monkeypatch.setattr(update_fleet_scope, "launchd_label_skip_notice", lambda _label, scope=None: None)
+    jobs = _discover_launchd()
+    assert len(jobs) == 1
+    return jobs[0]
+
+
+@pytest.mark.platforms("macos")
+def test_a_profile_launchd_job_drains_on_the_home_its_plist_pins(monkeypatch, tmp_path):
+    """The job's PID is the ``osascript`` wrapper, whose environment macOS reads back empty, so the
+    PID alone cannot name the home: the drain request must go to the home the plist pins."""
+    pinned = str(tmp_path / "profiles" / "p2probe")
+    wrapper = subprocess.Popen(["/usr/bin/osascript", "-l", "JavaScript", "-e", "delay(600)"],
+                               env={**os.environ, "HERMES_HOME": pinned})
+    try:
+        job = _discover_probe_job(monkeypatch, tmp_path, {"EnvironmentVariables": {"HERMES_HOME": pinned}}, wrapper.pid)
+    finally:
+        wrapper.kill()
+        wrapper.wait()
+    assert job["home"] == pinned
+
+
+@pytest.mark.platforms("macos")
+def test_a_launchd_job_with_no_pinned_home_falls_back_to_its_process(monkeypatch, tmp_path):
+    """A hand-written plist may pin nothing: the running process is then the only evidence."""
+    from hermes_cli import update_fleet_scope
+    monkeypatch.setattr(update_fleet_scope, "gateway_pid_home", lambda pid: f"/homes/{pid}")
+    assert _discover_probe_job(monkeypatch, tmp_path, {}, 4242)["home"] == "/homes/4242"
+
+
 @pytest.mark.platforms("posix")
 def test_a_gateway_left_pending_by_the_pause_stays_pending_in_the_completion_process(tmp_path, monkeypatch, capsys):
     """The fleet restart runs in a fresh completion interpreter: the gateways the pause left running

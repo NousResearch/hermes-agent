@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import copy
 import os
+import plistlib
 import signal
 import subprocess
 import sys
@@ -183,8 +184,21 @@ def _discover_launchd() -> list[dict]:
             continue
         plist = get_launchd_plist_path().with_name(f"{label}.plist")
         jobs.append({"kind": "launchd", "label": label, "domain": domain, "plist": str(plist), "pid": int(pid),
-                     "home": _home_of(int(pid))})
+                     "home": _launchd_job_home(plist, int(pid))})
     return jobs
+
+
+def _launchd_job_home(plist: Path, pid: int) -> str | None:
+    """The Hermes home a launchd job serves: the ``HERMES_HOME`` its plist pins, else its PID's.
+
+    The PID cannot stand in for the pin: it is the ``osascript`` wrapper (#57812), whose environment
+    macOS reads back empty, so it resolves to the root or sticky-profile home. A drain request sent
+    there gets another gateway's ACK, burning the budget on a gateway that never heard it (#143930),
+    or no answer at all, degrading to a hard stop (#144522)."""
+    with suppress(Exception):
+        if pinned := plistlib.loads(plist.read_bytes())["EnvironmentVariables"]["HERMES_HOME"]:
+            return str(pinned)
+    return _home_of(pid)
 
 
 def _home_of(pid: int) -> str | None:

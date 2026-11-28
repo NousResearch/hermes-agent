@@ -7,6 +7,7 @@ agent knows what was sent.  Standalone: works from CLI, cron and gateway context
 
 import json
 import logging
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -146,4 +147,43 @@ def _append_to_sqlite(session_id: str, message: dict) -> None:
     from persistence_assembly import open_persistence, profile_scope
 
     with open_persistence(profile_scope()) as store:
+        before = _stored_message_count(store, session_id)
         store.messages.append(session_id, NewMessage(role=message.get("role", "assistant"), content=message.get("content")))
+        try:
+            _rebaseline_cached_agent(session_id, before, _stored_message_count(store, session_id))
+        except Exception as e:  # the row is written; a cache miss only costs one rebuild
+            logger.debug("Mirror: cached agent message_count not re-baselined for %s: %s", session_id, e)
+
+
+def _stored_message_count(store, session_id: str) -> Optional[int]:
+    """The session's stored ``message_count`` (what the gateway's agent-cache coherence guard compares), or None."""
+    try:
+        row = store.sessions.get(session_id)
+        return None if row is None else row.message_count
+    except Exception:
+        return None
+
+
+def _rebaseline_cached_agent(session_id: str, before: Optional[int], after: Optional[int]) -> None:
+    """Move an in-process cached agent's ``message_count`` snapshot past the row this mirror just wrote.
+
+    The gateway rebuilds a chat's cached agent when the stored count differs from its snapshot ("possible
+    cross-process write"), so an in-process mirror (cron delivery, send_message into another chat, a webhook
+    delivery) used to cost a full agent rebuild and a cold prompt cache on the chat's next message. Same idea as
+    ``GatewayRunner._refresh_agent_cache_message_count`` after a turn's own writes and after a completion note,
+    but conservative: only a live entry snapshotted for this exact session whose count still equals the count
+    just before the append moves; any other drift (a real cross-process write, a turn mid-way, a pending build)
+    is left for the guard. No gateway runner in this process (CLI, cron-only, tests): nothing to do.
+    """
+    if before is None or after is None or after == before:
+        return
+    run = sys.modules.get("gateway.run")  # never import the gateway just to look
+    runner = run._gateway_runner_ref() if run is not None else None
+    lock, cache = getattr(runner, "_agent_cache_lock", None), getattr(runner, "_agent_cache", None)
+    if runner is None or not lock or cache is None:
+        return
+    with lock:
+        for key, cached in list(cache.items()):
+            if (isinstance(cached, tuple) and len(cached) > 3 and cached[0] is not run._AGENT_PENDING_SENTINEL
+                    and cached[3] == session_id and cached[2] == before):
+                cache[key] = (cached[0], cached[1], after) + tuple(cached[3:])

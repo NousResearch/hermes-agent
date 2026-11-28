@@ -62,3 +62,14 @@ def test_edit_of_unpinned_route_without_signature_stays_unpinned(client):
     _mutate_subscriptions(lambda subs: subs.update({"legacy": {"secret": "s", "deliver": "log"}}))
     assert client.post("/api/webhooks", json={"name": "legacy", "deliver": "log"}).status_code == 200
     assert "signature" not in _stored("legacy")
+
+
+def test_create_works_and_repost_preserves_response_policy(client):
+    """Create must not trip the _MISSING_SUBSCRIPTION sentinel in the preserve lookup
+    (a bare object() is not iterable), and a re-POST keeps a hand-set policy."""
+    from hermes_cli.webhook import _mutate_subscriptions
+
+    assert client.post("/api/webhooks", json={"name": "pol", "deliver": "log"}).status_code == 200
+    _mutate_subscriptions(lambda subs: subs["pol"].update({"response_policy": "urgent_only"}))
+    assert client.post("/api/webhooks", json={"name": "pol", "prompt": "refreshed"}).status_code == 200
+    assert _stored("pol")["response_policy"] == "urgent_only"

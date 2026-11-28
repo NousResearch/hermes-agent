@@ -227,6 +227,12 @@ class GatewayTurnPersistenceMixin:
         stream gate that keeps reasoning above a streamed answer (one combined message)."""
         if source.platform == Platform.LOCAL and not _acp_launch(self, source):
             return False
+        if source.platform == Platform.WEBHOOK:
+            # Webhook finals keep the model body on line 0: ``response_policy: urgent_only``
+            # matches the escalation header there, and a prepended reasoning block (a fence)
+            # would suppress a real page with a successful admission. Reasoning stays in the
+            # transcript — same scratch-lane treatment as tool progress (#137027).
+            return False
         from gateway.run import _load_gateway_config, _platform_config_key, _resolve_gateway_display_bool
         try:
             return _resolve_gateway_display_bool(

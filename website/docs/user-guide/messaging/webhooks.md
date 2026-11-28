@@ -93,6 +93,7 @@ Routes define how different webhook sources are handled. Each route is a named e
 | `cron_job` | No | Fire an existing cron job (by ID or name) on each event instead of starting a fresh webhook agent session. The rendered `prompt` becomes transient per-run context; the job's own prompt, skills, model, and delivery settings apply. Mutually exclusive with `deliver_only`. See [Event-Triggered Cron Jobs](#event-triggered-cron-jobs). |
 | `coalesce` | No | Debounce rapid distinct events on the same logical entity into one agent run. Block with a required `key` (payload field or template identifying the entity, e.g. `pull_request.number`), optional `window_seconds` (quiet window, default 30) and `max_wait_seconds` (dispatch cap, default 300). See [Event Coalescing](#event-coalescing). Mutually exclusive with `deliver_only` and `cron_job`. |
 | `mirror_to_session` | No | Default `false`. When `true`, after a successful delivery to a chat platform the delivered message is also written into that chat's session transcript (as a labelled user turn, the same way continuable cron briefs are), so when you reply in that chat the agent knows what it just sent you. See [Replying to a delivery](#replying-to-a-delivery). |
+| `response_policy` | No | Response admission for agent-run routes: `all` (default — unchanged behavior) or `urgent_only` — only finals carrying an explicit escalation header **plus** an `Action required:` line are delivered; everything else is retained in the session transcript. See [Urgent-only Agent Responses](#urgent-only-agent-responses). |
 
 ### Full example
 
@@ -250,6 +251,61 @@ prompt: "PR #{pull_request.number} by {pull_request.user.login}: {__raw__}"
 If no `prompt` template is configured for a route, the entire payload is dumped as indented JSON (truncated at 4000 characters).
 
 The same dot-notation templates work in `deliver_extra` values.
+
+### Urgent-only Agent Responses
+
+Set `response_policy: urgent_only` on an agent-run route when routine reports must
+stay in the session transcript rather than interrupt the delivery channel. The
+default (unset or `all`) preserves normal delivery. Direct `deliver_only` alerts
+are unaffected.
+
+The urgent-only gate accepts only a first nonblank line starting with
+`[NEEDS-APPROVAL]`, `[UNRESOLVED]`, or `[SECURITY-INCIDENT]` followed by an incident
+summary, plus a separate `Action required:` line with a nonempty action:
+
+```yaml
+response_policy: urgent_only
+prompt: |
+  Investigate the incident. If immediate manual intervention is still needed,
+  respond in this format; otherwise record the outcome and respond [SILENT]:
+  [NEEDS-APPROVAL] <current unresolved incident>
+  Action required: <specific action the owner must take now>
+```
+
+An `Action required:` value such as `none` or `no action needed` is rejected.
+Approval and clarify prompts are always delivered, even on `urgent_only` routes: they
+request human input, and suppressing them would stall the run on an answer the owner
+never saw. Reasoning is never prepended to a webhook final (the escalation header must
+stay on line 0; the session transcript keeps the reasoning).
+The header and `Action required:` matching is case-insensitive and tolerates markdown
+emphasis (`**Action required:** …`); fenced code blocks are not scanned for the action
+line, so a quoted runbook snippet cannot decide urgency. Any `[SILENT]` token in the
+response body, or an interim-send metadata flag, suppresses urgent-only delivery. The
+gateway's crash/reconnect redelivery banners are the opposite case: they are stripped
+before the gate runs, so a recovered urgent alert still pages. One `[SILENT]` spelling
+is handled earlier in the pipeline: a marker standing alone on the final line is the
+model closing an otherwise-complete reply, and the gateway strips it before delivery —
+an escalation body that survives that removal is delivered.
+Suppressed responses return successful delivery admission
+without contacting the target; their existing session transcripts remain intact.
+The gate checks current route configuration on every send, including late
+background follow-ups from sessions created before the policy was changed; removing
+the key (or setting `all`) re-enables delivery immediately. Unknown policy values are
+configuration errors: a static route in `config.yaml` aborts startup, while an invalid
+entry in `webhook_subscriptions.json` is logged and the route skipped, like other
+malformed dynamic blocks.
+
+On `cron_job` routes `response_policy` is ignored — the job's own delivery settings
+apply (see [Event-Triggered Cron Jobs](#event-triggered-cron-jobs)).
+
+Because the escalation format is plain text, untrusted payload fields templated into
+the prompt (`{issue.body}`, `{pull_request.body}`) can prompt-inject it —
+[authenticated does not mean trusted](#authenticated-does-not-mean-trusted). Avoid
+combining public-source routes with `mirror_to_session: true`, which would write
+attacker-triggered escalations into your interactive chat history.
+
+This is an explicit output contract, not a semantic incident classifier: the
+prompt must still distinguish active emergencies from successful recovery.
 
 ### Forum Topic Delivery
 
@@ -490,7 +546,7 @@ The job reference is validated when you create the subscription, so typos surfac
 ### Notes
 
 - `cron_job` and `deliver_only` are mutually exclusive (the adapter refuses to start if a route sets both). A cron job handles its own delivery.
-- The route-level `deliver`, `deliver_extra`, and `skills` fields are ignored on `cron_job` routes — the job's own settings apply.
+- The route-level `deliver`, `deliver_extra`, `skills`, and `response_policy` fields are ignored on `cron_job` routes — the job's own settings apply.
 - Paused/disabled jobs are not fired; the event is logged and dropped.
 - The POST returns `202 Accepted` immediately; the job runs in the background.
 

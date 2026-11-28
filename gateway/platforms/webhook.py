@@ -45,6 +45,7 @@ from gateway.platforms.webhook_filters import DEFAULT_SCRIPT_TIMEOUT_SECONDS, We
 from gateway.platforms.webhook_mcp_events import (
     handle_mcp_event_control, mcp_event_delivery_id, render_mcp_event_prompt)
 from gateway.response_filters import is_autonomous_silence_response
+from gateway.platforms.webhook_response_policy import urgent_response_allowed, validate_response_policy
 from gateway.webhook_targets import is_dispatchable_target, is_known_platform as _is_known_platform
 
 logger = logging.getLogger(__name__)
@@ -224,6 +225,9 @@ class WebhookAdapter(BasePlatformAdapter):
         # Keyed by session chat_id; read by EVERY send() (interim status messages AND the final
         # response) so never pop on send(). TTL-pruned on each POST.
         self._delivery_info: dict[str, dict] = {}
+        # Route response_policy per admitted session, OUTSIDE _delivery_info: destination
+        # snapshots validate a strict key allowlist, so the policy must not ride that dict.
+        self._delivery_policies: dict[str, str | None] = {}
         self._delivery_info_created: dict[str, float] = {}
         self._delivery_info_order: deque[tuple[float, str]] = deque()
         self.gateway_runner = None  # set externally; needed for cross-platform delivery
@@ -252,6 +256,7 @@ class WebhookAdapter(BasePlatformAdapter):
 
     def _validate_route(self, name: str, route: dict) -> None:
         """Startup validation: secret required; INSECURE_NO_AUTH only on loopback (crash early on a public footgun)."""
+        validate_response_policy(route.get("response_policy"))
         secret = route.get("secret", self._global_secret)
         if not _is_usable_secret(secret):
             raise ValueError(f"[webhook] Route '{name}' HMAC secret is missing, blank, or not a string. Set 'secret' "
@@ -323,6 +328,26 @@ class WebhookAdapter(BasePlatformAdapter):
         if is_autonomous_silence_response(content):
             logger.info("[webhook] Response for %s is a silence marker — not delivering", chat_id)
             return SendResult(success=True)
+        # Replies from background gates reuse an older delivery_info entry. Read current
+        # route policy on EVERY send so a hot policy change also covers those continuations.
+        self._reload_dynamic_routes(wipe_missing=False)
+        # Canonical decoder: production chat ids are `webhook:v2:<token>`, so a raw
+        # `split(":")` yields "v2" as the route and silently drops the policy gate.
+        try:
+            route = self._routes.get(_WebhookDeliveryIdentity.route_from_chat_id(str(chat_id)))
+        except (ValueError, TypeError, IndexError):
+            route = None
+        # Current route config governs; the per-session cache only covers a route that
+        # is gone entirely (deleted while the session lives), never a hot key removal.
+        policy = route.get("response_policy") if isinstance(route, dict) else self._delivery_policies.get(chat_id)
+        try:
+            validate_response_policy(policy)
+        except ValueError as exc:
+            logger.error("[webhook] Response policy rejected for %s: %s", chat_id, exc)
+            return SendResult(success=False, error=str(exc))
+        if policy == "urgent_only" and not urgent_response_allowed(content, metadata):
+            logger.info("[webhook] Response for %s retained locally: urgent_only policy suppressed delivery", chat_id)
+            return SendResult(success=True)
         from gateway.platforms.webhook_delivery import retained_destination
         try:
             delivery = retained_destination(self, chat_id)
@@ -330,6 +355,14 @@ class WebhookAdapter(BasePlatformAdapter):
             logger.warning("[webhook] Destination unavailable for %s", chat_id, exc_info=True)
             return SendResult(success=False, error="Webhook destination unavailable or unauthorized")
         return await self._deliver_to(delivery, chat_id, content)
+
+    def _send_retry_is_final(self, result: SendResult) -> bool:
+        """A failed webhook delivery is structural (target platform refused or is down): this
+        adapter forwards already-rendered text, so a plain-text fallback banner cannot fix it
+        — and prepending one would push the escalation header off line 0, letting an
+        ``urgent_only`` route suppress a failed urgent alert while the ledger marks it
+        delivered. Return the failure as-is; the delivery ledger retries it later."""
+        return True
 
     async def _deliver_to(self, delivery: dict[str, Any], chat_id: str, content: str) -> SendResult:
         deliver_type = delivery["deliver"]
@@ -356,6 +389,7 @@ class WebhookAdapter(BasePlatformAdapter):
             created_at, key = order.popleft()
             if created.get(key) == created_at:
                 self._delivery_info.pop(key, None)
+                self._delivery_policies.pop(key, None)
                 created.pop(key, None)
 
     def _prune_seen_deliveries(self, now: float) -> None:
@@ -437,25 +471,35 @@ class WebhookAdapter(BasePlatformAdapter):
         try:
             # Hot-reloaded from the request handler: a malformed block must skip the route, not 500 the request.
             validate_coalesce_config(name, route)
+            validate_response_policy(route.get("response_policy"))
         except ValueError as e:
             logger.warning("[webhook] Dynamic route '%s' skipped: %s", name, e)
             return False
         return True
 
-    def _reload_dynamic_routes(self) -> None:
+    def _reload_dynamic_routes(self, wipe_missing: bool = True) -> None:
         """Reload agent-created subscriptions when the file's stat identity changes.
 
         Runs on every POST before auth, so it never takes the CLI writer lock: writers publish via
         atomic rename, which also gives the file a new inode, so a restored mtime cannot hide a change;
         ``file_cache_version`` also catches a same-tick same-size edit made in place (a hand edit).
+        ``wipe_missing=False`` (send path) keeps the last snapshot when the file is absent: under
+        ``multiplex_profiles`` a reply can execute inside the owning profile's home, where the
+        default gateway's subscriptions file does not exist — wiping there would drop every dynamic
+        route for the whole gateway mid-turn. Deletion is still picked up by the next POST.
         """
-        from hermes_constants import get_hermes_home
+        from hermes_constants import get_routing_process_hermes_home
         from utils import file_cache_version
-        subs_path = get_hermes_home() / _DYNAMIC_ROUTES_FILENAME
+        # The listener's launch home, NOT the ambient scope: under ``multiplex_profiles``
+        # a reply can execute inside the owning profile's home, where a same-named route
+        # in that home's subscriptions file (or a missing key there) would silently win
+        # the policy read — failing open. The listener read the launch home at admission;
+        # the send path must compare against the same table.
+        subs_path = get_routing_process_hermes_home() / _DYNAMIC_ROUTES_FILENAME
         try:
             stat_key = file_cache_version(subs_path)
         except FileNotFoundError:
-            if self._dynamic_routes:
+            if wipe_missing and self._dynamic_routes:
                 self._dynamic_routes, self._routes = {}, dict(self._static_routes)
                 logger.debug("[webhook] Dynamic subscriptions file removed, cleared dynamic routes")
             self._dynamic_routes_stat = None
@@ -817,6 +861,9 @@ class WebhookAdapter(BasePlatformAdapter):
             "deliver_extra": self._render_delivery_extra(route_config.get("deliver_extra", {}), payload),
             "route": route_name,
             "mirror": route_config.get("mirror_to_session") is True}
+        # response_policy lives beside (not inside) the destination dict: validate_destination
+        # enforces a strict key allowlist on _delivery_info entries and persisted envelopes.
+        self._delivery_policies[session_chat_id] = route_config.get("response_policy")
         self._delivery_info_created[session_chat_id] = now
         self._delivery_info_order.append((now, session_chat_id))
         self._prune_delivery_info(now)

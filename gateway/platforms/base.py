@@ -2818,6 +2818,10 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             mark_awaiting_text(clarify_id)
         else:
             text = t("gateway.clarify.question", question=question)
+        # Mark as clarify prompt: an urgent_only webhook route must not suppress the
+        # question with a successful admission — the run would block on an answer the
+        # owner never saw.
+        metadata = {**(metadata or {}), "is_clarify_prompt": True}
         return await self.send(chat_id=chat_id, content=text, metadata=metadata)
 
     async def send_private_notice(

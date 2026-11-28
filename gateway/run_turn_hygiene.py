@@ -39,6 +39,51 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 logger = logging.getLogger("gateway.run")
 
 
+# (hygiene_threshold, compression.threshold) pairs already warned about: the config is re-read every
+# turn, the conflict is reported once per distinct value pair.
+_HYGIENE_PREEMPT_WARNED: set[tuple[float, float]] = set()
+
+
+def _hygiene_threshold_ratio(raw: Any, current: float) -> float:
+    """``compression.hygiene_threshold`` as a ratio in (0, 1]; missing or invalid keeps ``current``."""
+    if raw is None or isinstance(raw, bool):
+        return current
+    try:
+        ratio = float(raw)
+    except (TypeError, ValueError):
+        logger.warning("Ignoring compression.hygiene_threshold=%r: not a number", raw)
+        return current
+    if not 0.0 < ratio <= 1.0:
+        logger.warning("Ignoring compression.hygiene_threshold=%r: must be in (0, 1]", raw)
+        return current
+    return ratio
+
+
+def _warn_if_hygiene_preempts_agent(hygiene_ratio: float, agent_raw: Any) -> None:
+    """Warn (once per value pair) when the hygiene net fires at or below the agent's own trigger.
+
+    Neither value is adjusted: the net then compresses before the agent's compressor gets to run,
+    and the user decides which one to move."""
+    if agent_raw is None or isinstance(agent_raw, bool):
+        return
+    try:
+        agent_ratio = float(agent_raw)
+    except (TypeError, ValueError):
+        return
+    if not 0.0 < agent_ratio < 1.0 or hygiene_ratio > agent_ratio:
+        return
+    key = (hygiene_ratio, agent_ratio)
+    if key in _HYGIENE_PREEMPT_WARNED:
+        return
+    _HYGIENE_PREEMPT_WARNED.add(key)
+    logger.warning(
+        "Session hygiene fires at %.0f%% of the context window, at or below compression.threshold "
+        "(%.0f%%): the gateway will compress before the agent's own compressor runs. Raise "
+        "compression.hygiene_threshold above compression.threshold.",
+        hygiene_ratio * 100, agent_ratio * 100,
+    )
+
+
 class GatewayTurnHygieneMixin:
     @dataclasses.dataclass
     class _HygienePlan:
@@ -81,6 +126,8 @@ class GatewayTurnHygieneMixin:
                 return current
             return parsed if (parsed >= 0 if allow_zero else parsed > 0) else current
 
+        hs.threshold_pct = _hygiene_threshold_ratio(_comp_cfg.get("hygiene_threshold"), hs.threshold_pct)
+        _warn_if_hygiene_preempts_agent(hs.threshold_pct, _comp_cfg.get("threshold"))
         hs.hard_msg_limit = _knob("hygiene_hard_message_limit", hs.hard_msg_limit, int)
         hs.timeout_seconds = _knob("hygiene_timeout_seconds", hs.timeout_seconds, float)
         hs.total_ceiling_seconds = _knob("hygiene_total_ceiling_seconds", hs.total_ceiling_seconds, float)
@@ -94,8 +141,8 @@ class GatewayTurnHygieneMixin:
     async def _hmwa_hygiene_settings(self, source, session_key):
         """Resolve model/provider/context-length + hygiene knobs (fail-soft: errors keep defaults).
 
-        The 0.85 threshold is deliberately HIGHER than the agent's compressor (0.50): a safety net
-        for sessions that grew between turns. ``max_turn_hold_seconds`` bounds the TURN wait
+        The default 0.85 threshold (``compression.hygiene_threshold``) is deliberately HIGHER than the
+        agent's compressor (0.50): a safety net for sessions that grew between turns. ``max_turn_hold_seconds`` bounds the TURN wait
         (compressor keeps running detached, commit fenced); kept below transport idle-timeouts."""
         from gateway.run import _load_gateway_config
         hs = self._HygieneSettings(

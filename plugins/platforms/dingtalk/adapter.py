@@ -230,6 +230,10 @@ class DingTalkAdapter(BasePlatformAdapter):
             if not ok:
                 logger.warning("[%s] " + problem, self.name)
                 return False
+        # One app's Stream connections share its callbacks: a second gateway on the same client ID
+        # would take part of every conversation.
+        if not self._acquire_platform_lock("dingtalk-client-id", self._client_id, "DingTalk app"):
+            return False
         try:
             from gateway.platforms._http_client_limits import platform_httpx_limits  # tighter keepalive: idle CLOSE_WAIT drains promptly
             self._http_client = httpx.AsyncClient(timeout=30.0, limits=platform_httpx_limits())
@@ -252,6 +256,7 @@ class DingTalkAdapter(BasePlatformAdapter):
             return True
         except Exception as e:
             logger.error("[%s] Failed to connect: %s", self.name, e)
+            self._release_platform_lock()
             return False
 
     async def _run_stream(self) -> None:
@@ -348,6 +353,7 @@ class DingTalkAdapter(BasePlatformAdapter):
         """Disconnect from DingTalk."""
         self._running = False
         self._mark_disconnected()
+        self._release_platform_lock()
         # Close the websocket first so the stream task sees the disconnect instead of awaiting frames that never arrive.
         websocket = getattr(self._stream_client, "websocket", None) if self._stream_client else None
         if websocket is not None:

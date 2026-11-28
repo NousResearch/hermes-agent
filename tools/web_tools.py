@@ -299,6 +299,26 @@ def _finish_debug(call_name: str, debug_call_data: dict, error_msg: Optional[str
     return None if error_msg is None else tool_error(error_msg)
 
 
+def _resolve_search_provider(backend: str):
+    """Resolve the search provider for *backend*; returns ``(provider, error_text)``.
+
+    A capable registered backend wins. An unregistered name with a stored web selection is a
+    strict-selection error (never a silent switch); otherwise fall through to the availability walk.
+    """
+    from agent.web_search_registry import get_active_search_provider, get_provider as _wsp_get_provider
+    provider = _wsp_get_provider(backend) if backend else None
+    if provider is not None and provider.supports_search():
+        return provider, None
+    if provider is None and backend and selection_exists("web"):
+        return None, _strict_selection_error("search", backend)
+    # Never-configured install: legacy availability-walked autodetect.
+    provider = get_active_search_provider()
+    if provider is None:
+        fallback = "No web search provider configured. Run `hermes tools` to set one up."
+        return None, _no_provider_error("search", fallback)
+    return provider, None
+
+
 def web_search_tool(query: str, limit: int = 5) -> str:
     """Search the web via the configured backend.
 
@@ -324,20 +344,10 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             return tool_error("Interrupted", success=False)
         # Sync only — every provider's search() is sync.
         _ensure_web_plugins_loaded()
-        from agent.web_search_registry import get_active_search_provider, get_provider as _wsp_get_provider
-        backend = _get_search_backend()
-        provider = _wsp_get_provider(backend) if backend else None
-        if provider is None or not provider.supports_search():
-            if provider is None and backend and selection_exists("web"):
-                error_text = debug_call_data["error"] = _strict_selection_error("search", backend)
-                _finish_debug("web_search_tool", debug_call_data)
-                return json.dumps({"success": False, "error": error_text}, indent=2, ensure_ascii=False)
-            # Never-configured install: legacy availability-walked autodetect.
-            provider = get_active_search_provider()
-
+        provider, error_text = _resolve_search_provider(_get_search_backend())
         if provider is None:
-            fallback = "No web search provider configured. Run `hermes tools` to set one up."
-            response_data = {"success": False, "error": _no_provider_error("search", fallback)}
+            debug_call_data["error"] = error_text
+            response_data = {"success": False, "error": error_text}
         else:
             logger.info("Web search via %s: '%s' (limit: %d)", provider.name, query, limit)
             response_data = _memoized_search(provider, query, limit)

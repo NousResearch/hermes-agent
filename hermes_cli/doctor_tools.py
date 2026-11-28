@@ -4,6 +4,7 @@ Split out of ``hermes_cli/doctor.py``, which re-exports every name so ``hermes_c
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import shutil
 import subprocess
@@ -115,24 +116,40 @@ def _doctor_tool_availability_detail(toolset: str) -> str:
 def _doctor_web_capability_rows() -> list[tuple[str, str, str]]:
     """Return ``(status, label, detail)`` rows (status ``ok``/``warn``) for web search/extract readiness.
 
-    Uses the same active-provider resolvers as the tools but reports ``is_available()``
-    readiness, so an explicitly selected but unconfigured backend does not look healthy.
+    Resolves through the dispatchers' own backend getters and provider resolvers, so a selection
+    the tool would refuse (a search-only backend used for extract, an unregistered name) warns with
+    the tool's error text, and reports ``is_available()`` readiness, so an explicitly selected but
+    unconfigured backend does not look healthy.
 
-    See #78412.
+    See #78412, #98618.
     """
     rows: list[tuple[str, str, str]] = []
     try:
-        from agent.web_search_registry import get_active_extract_provider, get_active_search_provider
-        from tools.web_tools import _ensure_web_plugins_loaded, _provider_is_ready
+        from tools.web_tools import (
+            _ensure_web_plugins_loaded, _get_extract_backend, _get_search_backend, _provider_is_ready,
+            _resolve_search_provider,
+        )
+        from tools.web_tools_extract import _resolve_extract_provider
         # Fresh process: bundled web providers only register during plugin discovery (idempotent, cheap).
         _ensure_web_plugins_loaded()
     except Exception:
         return rows
-    for capability, getter in (("web search", get_active_search_provider), ("web extract", get_active_extract_provider)):
+
+    def _extract_verdict(backend: str):
+        provider, error_json = _resolve_extract_provider(backend)
+        return provider, error_json and json.loads(error_json)["error"]
+
+    for capability, get_backend, resolve in (
+        ("web search", _get_search_backend, _resolve_search_provider),
+        ("web extract", _get_extract_backend, _extract_verdict),
+    ):
         try:
-            provider = getter()
+            provider, error = resolve(get_backend())
         except Exception:
-            provider = None
+            provider, error = None, None
+        if error:
+            rows.append(("warn", capability, f"({error})"))
+            continue
         if provider is None:
             rows.append(("warn", capability, "(no provider selected or registered)"))
             continue
@@ -518,8 +535,11 @@ def _check_tool_availability(should_fix: bool, f: Finding) -> None:
     # Only toolsets enabled for the CLI count toward the summary; default-off or
     # disabled toolsets may warn above but must not pollute it.
     api_disabled = _missing_api_key_toolsets_for_summary(unavailable)
-    if api_disabled or any(status != "ok" for status, _, _ in web_rows):
+    if api_disabled:
         f.issues.append("Run 'hermes setup' to configure missing API keys for full tool access")
+    elif any(status != "ok" for status, _, _ in web_rows):
+        # A refused web capability is not always a missing key (a search-only backend used for extract).
+        f.issues.append("Run 'hermes tools' to configure web search/extract (see the web rows above)")
     _warn_partially_stripped_toolsets(f)
 
 

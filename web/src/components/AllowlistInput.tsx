@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Plus, X } from 'lucide-react'
 import { Button } from '@nous-research/ui/ui/components/button'
 import { Input } from '@nous-research/ui/ui/components/input'
+import { isSubmitEnter } from '@/lib/ime'
 
 interface Row {
   id: number
@@ -88,7 +89,7 @@ export function AllowlistInput({
             value={row.value}
             onChange={e => change(row.id, e.target.value)}
             onKeyDown={e => {
-              if (e.key === 'Enter' && row.value.trim()) {
+              if (isSubmitEnter(e) && row.value.trim()) {
                 e.preventDefault()
                 add()
               }

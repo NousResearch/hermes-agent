@@ -72,6 +72,27 @@ def test_on_windows_an_override_spelled_in_another_case_is_refused_by_file_line_
     assert str(checkout_env) not in refusal
 
 
+@pytest.mark.parametrize("spelled", ["'hermes_dashboard_basic_auth_password'", "export 'Hermes_Dashboard_Basic_Auth_Username'"])
+def test_on_windows_a_quoted_name_in_another_case_is_refused_too(tmp_path, spelled):
+    """python-dotenv reads 'name'=value as name, so a quoted case variant overrides the sign-in on Windows too."""
+    from dotenv import dotenv_values
+
+    from hermes_cli.dashboard_password import _case_variant_refusal
+    home_env_file, checkout_env = _env_files(tmp_path, f"OTHER_KEY=a\n{spelled}=throwaway-secret-value\n")
+    name = spelled.removeprefix("export ").strip("'")
+    assert dotenv_values(home_env_file)[name] == "throwaway-secret-value"
+    refusal = _case_variant_refusal([home_env_file, checkout_env], is_windows=True)
+    assert refusal is not None
+    assert f"{home_env_file} line 2 ('{name}')" in refusal and name.upper() in refusal
+    assert "throwaway" not in refusal
+
+
+def test_a_quoted_exact_name_is_not_a_case_variant(tmp_path):
+    from hermes_cli.dashboard_password import _case_variant_refusal
+    home_env_file, checkout_env = _env_files(tmp_path, "'HERMES_DASHBOARD_BASIC_AUTH_PASSWORD'=x\n")
+    assert _case_variant_refusal([home_env_file, checkout_env], is_windows=True) is None
+
+
 def test_on_windows_the_checkouts_env_is_checked_too_and_every_line_is_named(tmp_path):
     from hermes_cli.dashboard_password import _case_variant_refusal
     home_env_file, checkout_env = _env_files(

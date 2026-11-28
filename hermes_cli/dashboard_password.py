@@ -163,6 +163,11 @@ def _checkout_refusal(project_env: Path, home: Optional[Path] = None) -> Optiona
             "after the home's) and overrides config.yaml: remove it there, then run this again")
 
 
+def _unquoted(key: str) -> str:
+    """*key* as python-dotenv (the loader) reads it: a name in single quotes (``'KEY'=value``) is ``KEY``."""
+    return key[1:-1] if len(key) > 1 and key[0] == key[-1] == "'" else key
+
+
 def _case_variant_refusal(env_files, *, is_windows: Optional[bool] = None) -> Optional[str]:
     """On Windows, why a line in one of *env_files* or in the administrator-managed ``.env`` (loaded last,
     with override) would still override the new sign-in, or None: its key is a :data:`SHADOWING_ENV` name in
@@ -185,10 +190,10 @@ def _case_variant_refusal(env_files, *, is_windows: Optional[bool] = None) -> Op
             except OSError:
                 continue
             hits = [(number, key) for number, line in enumerate(lines, 1) for key in _parse_env_text(line)
-                    if key.upper() in SHADOWING_ENV and key not in SHADOWING_ENV]
+                    if _unquoted(key).upper() in SHADOWING_ENV and _unquoted(key) not in SHADOWING_ENV]
             if hits:
                 found.append(f"{path} " + ", ".join(f"line {number} ({key})" for number, key in hits))
-                read_as += [key.upper() for _, key in hits]
+                read_as += [_unquoted(key).upper() for _, key in hits]
         return found, read_as
 
     def overrides(read_as) -> str:

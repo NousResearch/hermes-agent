@@ -1,5 +1,6 @@
 """``load_yaml_file_readonly`` re-parses only when the file signature changes."""
 import os
+from concurrent.futures import ThreadPoolExecutor
 
 
 from utils import load_yaml_file_readonly
@@ -45,3 +46,21 @@ def test_callers_do_not_mutate_the_shared_cached_object(tmp_path, monkeypatch):
     assert secrets == {"onepassword": {"enabled": False}}
     assert cached == snapshot
     assert load_yaml_file_readonly(path) is cached
+
+
+def test_concurrent_hits_share_one_parse_and_see_a_rewrite(tmp_path):
+    """The hit path reads the cache without the lock: concurrent readers must still share one parse of an
+    unchanged file, and a rewrite must reach every one of them rather than pinning a stale hit."""
+    path = tmp_path / "config.yaml"
+    path.write_text("k: one\n")
+    first = load_yaml_file_readonly(path)
+
+    def read(_):
+        return load_yaml_file_readonly(path)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        assert all(got is first for got in pool.map(read, range(64)))
+
+    path.write_text("k: two\n")  # same size: only the digest/ctime can catch it
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        assert {got["k"] for got in pool.map(read, range(64))} == {"two"}

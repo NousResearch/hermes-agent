@@ -185,6 +185,33 @@ def test_a_handle_closed_before_use_resolves_nothing(monkeypatch):
     assert calls == [] and _listing(home) == []
 
 
+def test_a_foreign_profile_config_is_parsed_once_and_reread_only_when_it_changes(monkeypatch):
+    """The change watcher asks every served home for its provider several times a second (#159451): an
+    unchanged config must not be re-parsed, and a rewritten one must still be picked up."""
+    from utils import files
+
+    home = profile_home("eta")
+    config = home / "config.yaml"
+    config.write_text("persistence:\n  provider: sqlite\n", encoding="utf-8")
+    parses: list[str] = []
+    real = files.fast_safe_load
+
+    def counting(stream):
+        parses.append("parse")
+        return real(stream)
+
+    monkeypatch.setattr(files, "fast_safe_load", counting)
+    assert persistence_assembly._provider_for_home(home) == "sqlite"
+    for _ in range(5):
+        assert persistence_assembly._provider_for_home(home) == "sqlite"
+    assert len(parses) == 1
+    # A rewritten config is a different signature (size here), so it is read again rather than cached.
+    config.write_text("persistence:\n  provider: bogus\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="unknown persistence provider 'bogus'"):
+        persistence_assembly._provider_for_home(home)
+    assert len(parses) == 2
+
+
 def test_an_unknown_provider_raises_at_first_use_and_at_ready(monkeypatch):
     unknown = "unknown persistence provider 'bogus'"
     home = profile_home("zeta")

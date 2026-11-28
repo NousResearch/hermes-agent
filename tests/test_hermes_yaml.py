@@ -1,6 +1,8 @@
 """Contracts for Hermes' shared YAML reader and writer."""
 
+import gc
 import io
+import weakref
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -105,3 +107,41 @@ def test_parallel_calls_do_not_share_parser_or_emitter_state():
     with pytest.raises(yaml.YAMLError):
         yaml.safe_dump(object())
     assert yaml.safe_load(yaml.safe_dump({"healthy": True})) == {"healthy": True}
+
+
+@pytest.mark.parametrize("pure", [False, True])
+def test_the_loader_graph_does_not_outlive_the_parse(monkeypatch, pure):
+    """A gateway re-reads profile configs hundreds of times a minute (#159451). ruamel parks the loader on
+    ``yaml._scanner`` and makes it reference itself, so refcounting alone never frees it: the loader, the
+    document text and its libyaml buffers would survive until the next gen-2 cyclic collection. GC stays off
+    here, so a loader that is still alive after ``_load`` returns is exactly the leak."""
+    loaders = []
+
+    class _Recording(yaml.YAML):
+        def load(self, stream):
+            try:
+                return super().load(stream)
+            finally:
+                loaders.append(weakref.ref(self._scanner))
+
+    monkeypatch.setattr(yaml, "YAML", _Recording)
+    gc.collect()
+    gc.disable()
+    try:
+        for _ in range(10):
+            loaders.clear()
+            assert yaml._load("key: value\n", pure=pure) == {"key": "value"}
+            assert len(loaders) == 1 and loaders[0]() is None, "the loader still pins the document text"
+    finally:
+        gc.enable()
+
+
+@pytest.mark.parametrize("pure", [False, True])
+def test_a_released_instance_can_load_again(pure):
+    """The release deletes the loader attributes rather than nulling them, so the lazy properties rebuild and a
+    caller that keeps its YAML instance keeps working."""
+    instance = yaml.YAML(typ="safe", pure=pure)
+    instance.version = (1, 1)
+    assert instance.load("one: 1\n") == {"one": 1}
+    yaml._release_loader(instance)
+    assert instance.load("two: 2\n") == {"two": 2}

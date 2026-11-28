@@ -1449,6 +1449,13 @@ def _iter_shell_command_starts(command: str):
         start = run_to
         if start >= len(command) or start in seen or _is_shell_comment_start(command, start):
             continue
+        raw_word = _read_shell_word(command, start)[2]
+        if raw_word[:1] in ("'", '"'):
+            before = start - 1
+            while before >= 0 and command[before].isspace():
+                before -= 1
+            if before >= 0 and command[before] in "([":
+                continue
         seen.add(start)
         yield start
         _, end, word = _read_shell_word(command, start)

@@ -601,6 +601,7 @@ terminal:
 #   approval:
 #     transport: builtin        # Or an explicitly enabled plugin transport name
 #     transport_fallback: deny  # Set builtin to opt into fallback on transport failure
+#     transport_timeout: null   # Integer seconds for the selected plugin transport; null inherits approvals.timeout
 #   # Agent writes to instruction files that steer the agent itself
 #   # (AGENTS.md, CLAUDE.md, SOUL.md, ...) always ask for human approval,
 #   # even under --yolo, and are refused when nobody can answer. Set false to

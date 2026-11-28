@@ -28,6 +28,16 @@ ApprovalChoice = Literal["once", "session", "always", "deny"]
 ApprovalPresentFn = Callable[["ApprovalRequest"], "ApprovalDecision | Awaitable[ApprovalDecision]"]
 
 
+class ApprovalTransportDeclined(Exception):
+    """Raised by a transport's ``present()`` BEFORE anything reaches a human.
+
+    It means "this transport does not handle this request; nothing was presented" (for example a
+    plugin that only serves particular workers). The host reports it as the distinct ``declined``
+    failure, which callers may treat as never-presented. Raising it after a request was sent
+    breaks the contract; any other exception is reported as ``error`` (possibly presented).
+    """
+
+
 @dataclass(frozen=True)
 class ApprovalDecision:
     """A transport response bound to one exact host-created request."""
@@ -127,6 +137,11 @@ def invoke_approval_transport(
             if inspect.isawaitable(value):
                 value = asyncio.run(_await_value(value))
             results.put_nowait(("result", value, time.monotonic()))
+        except ApprovalTransportDeclined as exc:
+            try:
+                results.put_nowait(("declined", exc, time.monotonic()))
+            except queue.Full:
+                pass
         except BaseException as exc:  # fail closed even for unusual callback exits
             try:
                 results.put_nowait(("error", exc, time.monotonic()))
@@ -170,6 +185,9 @@ def _validate_decision(kind, value, completed_at, deadline, request) -> str | No
     if completed_at > deadline:
         logger.warning("Approval transport timed out for request %s", rid)
         return "timeout"
+    if kind == "declined":
+        logger.info("Approval transport declined request %s without presenting it", rid)
+        return "declined"
     if kind == "error":
         logger.warning("Approval transport failed for request %s", rid)
         return "error"

@@ -4044,6 +4044,7 @@ export const deOverrides = {
     running: 'Läuft',
     stop: 'Stopp',
     dismiss: 'Verwerfen',
+    stopped: 'Gestoppt',
     exit: code => `exit ${code}`,
     control: {
       goalActiveTurns: (turn, maxTurns) => `Runde ${turn}/${maxTurns}`,

@@ -65,7 +65,14 @@ function leadingGlyph(item: ComposerStatusItem, s: Translations['statusStack'], 
   return (
     <span
       aria-hidden
-      className={cn('size-1.5 rounded-full', item.state === 'failed' ? 'bg-destructive/80' : 'bg-emerald-500/70')}
+      className={cn(
+        'size-1.5 rounded-full',
+        item.state === 'failed'
+          ? 'bg-destructive/80'
+          : item.state === 'stopped'
+            ? 'bg-muted-foreground/60'
+            : 'bg-emerald-500/70'
+      )}
     />
   )
 }
@@ -98,6 +105,7 @@ export const StatusItemRow = memo(function StatusItemRow({
   const { t } = useI18n()
   const s = t.statusStack
   const failed = item.state === 'failed'
+  const stopped = item.state === 'stopped'
   const running = item.state === 'running'
 
   const action =
@@ -151,6 +159,11 @@ export const StatusItemRow = memo(function StatusItemRow({
         {failed && typeof item.exitCode === 'number' && item.exitCode !== 0 && (
           <span className="shrink-0 rounded bg-destructive/15 px-1 text-[0.58rem] font-semibold text-destructive tabular-nums">
             {s.exit(item.exitCode)}
+          </span>
+        )}
+        {stopped && (
+          <span className="shrink-0 rounded bg-muted-foreground/15 px-1 text-[0.58rem] font-semibold text-muted-foreground">
+            {s.stopped}
           </span>
         )}
       </StatusRow>

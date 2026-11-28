@@ -783,6 +783,40 @@ def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> s
     return conn
 
 
+def _connect_existing_query_only(*, board: str) -> sqlite3.Connection:
+    """Open an existing board without schema initialization or logical writes.
+
+    ``mode=rw`` fails instead of creating a database if the board disappears
+    between validation and open. ``query_only`` refuses accidental SQL writes
+    while retaining normal SQLite WAL reads.
+    """
+    path = _kb.kanban_db_path(board=board)
+    if not path.is_file():
+        raise FileNotFoundError(f"kanban board database does not exist: {board}")
+
+    from hermes_cli.sqlite_safe_read import connect_tracked
+
+    busy_timeout_ms = _resolve_busy_timeout_ms()
+    conn = connect_tracked(
+        f"{path.resolve().as_uri()}?mode=rw", tracking_path=path,
+        connect_fn=sqlite3.connect, uri=True, isolation_level=None,
+        timeout=busy_timeout_ms / 1000.0,
+    )
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.text_factory = _kb._lossy_text
+        conn.execute(f"PRAGMA busy_timeout={busy_timeout_ms}")
+        conn.execute("PRAGMA query_only=ON")
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA cell_size_check=ON")
+        if not _schema_is_present(conn):
+            raise RuntimeError(f"kanban board schema is not materialized: {board}")
+        return conn
+    except BaseException:
+        conn.close()
+        raise
+
+
 @contextlib.contextmanager
 def connect_closing(db_path: Optional[Path] = None, *, board: Optional[str] = None):
     """Open a kanban DB connection and guarantee it is closed on exit. Use
@@ -1161,6 +1195,8 @@ def _rebuild_drifted_tables(conn: sqlite3.Connection) -> None:
             conn.execute(f"DROP TABLE {table}_legacy")
             for index_sql in index_sqls:
                 conn.execute(index_sql)
+        if "task_events" in drifted:
+            _kb._rotate_event_generation(conn)
         conn.execute("COMMIT")
     except Exception:
         with contextlib.suppress(sqlite3.OperationalError):

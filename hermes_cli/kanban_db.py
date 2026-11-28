@@ -114,6 +114,7 @@ VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 # Counts unblock recurrences, NOT dispatcher failures (``DEFAULT_FAILURE_LIMIT``).
 BLOCK_RECURRENCE_LIMIT = 2
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
+EVENT_GENERATION_KEY = "task_events_generation"
 
 
 def normalize_reasoning_effort(effort: Optional[str]) -> Optional[str]:
@@ -899,6 +900,14 @@ CREATE TABLE IF NOT EXISTS task_events (
     payload    TEXT,
     created_at INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS kanban_metadata (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+INSERT OR IGNORE INTO kanban_metadata (key, value)
+VALUES ('task_events_generation', lower(hex(randomblob(16))));
 
 -- Historical attempt record. Each time the dispatcher claims a task, a
 -- new row is created here; claim state, PID, heartbeat, runtime cap,
@@ -1852,6 +1861,27 @@ def _append_event(
         "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
         "VALUES (?, ?, ?, ?, ?)", (task_id, run_id, kind, _json_or_null(payload), int(time.time())),
     )
+
+
+def event_generation(conn: sqlite3.Connection) -> str:
+    """Return the generation that identifies the current event history."""
+    row = conn.execute(
+        "SELECT value FROM kanban_metadata WHERE key = ?", (EVENT_GENERATION_KEY,),
+    ).fetchone()
+    if row is None or not re.fullmatch(r"[0-9a-f]{32}", str(row["value"])):
+        raise RuntimeError("kanban event generation is not materialized")
+    return str(row["value"])
+
+
+def _rotate_event_generation(conn: sqlite3.Connection) -> str:
+    """Rotate event history identity inside the caller's write transaction."""
+    generation = secrets.token_hex(16)
+    conn.execute(
+        "INSERT INTO kanban_metadata (key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (EVENT_GENERATION_KEY, generation),
+    )
+    return generation
 
 
 def _end_run(
@@ -3848,6 +3878,8 @@ def delete_archived_task(conn: sqlite3.Connection, task_id: str) -> bool:
             return False
         _delete_task_relations(conn, task_id)
         cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+        if cur.rowcount == 1:
+            _rotate_event_generation(conn)
         return cur.rowcount == 1
 
 
@@ -3858,6 +3890,7 @@ def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
         if cur.rowcount != 1:
             return False
         _delete_task_relations(conn, task_id)
+        _rotate_event_generation(conn)
     recompute_ready(conn)
     return True
 
@@ -4022,6 +4055,8 @@ def gc_events(conn: sqlite3.Connection, *, older_than_seconds: int = 30 * 24 * 3
             "DELETE FROM task_events WHERE created_at < ? AND kind != 'decomposed' AND task_id IN "
             "(SELECT id FROM tasks WHERE status IN ('done', 'archived'))", (cutoff,),
         )
+        if cur.rowcount:
+            _rotate_event_generation(conn)
     return int(cur.rowcount or 0)
 
 

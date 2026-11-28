@@ -189,6 +189,8 @@
     "plugins/kanban/dashboard/plugin_api.py hermes_cli.projects_db": 3,
     "plugins/kanban/dashboard/plugin_api.py hermes_cli.web_read_coalescing.coalesced_read": 1,
     "plugins/kanban/dashboard/plugin_api.py hermes_cli.web_server_chat": 1,
+    "plugins/kanban/dashboard/signal_read_model.py hermes_cli.kanban_db": 1,
+    "plugins/kanban/dashboard/signal_read_model.py hermes_cli.kanban_db_connect": 1,
     "plugins/memory/byterover/__init__.py tools.environments.local.build_subprocess_env": 1,
     "plugins/memory/byterover/__init__.py tools.environments.local.strip_launch_profile_env": 1,
     "plugins/model-providers/actual/__init__.py agent.reasoning_effort.ACTUAL_RELAY_EFFORTS": 1,

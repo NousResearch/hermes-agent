@@ -28,6 +28,8 @@ from fastapi import (
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from plugins.kanban.dashboard import signal_read_model as signal_api
+
 from hermes_cli import kanban_db
 from hermes_cli import kanban_workflow
 from hermes_cli.web_read_coalescing import coalesced_read
@@ -1797,11 +1799,49 @@ class _EventTail:
             self._executor.shutdown(wait=True, cancel_futures=True)
 
 
+# ---------------------------------------------------------------------------
+# Sanitized, versioned read surface for observability-only dashboard plugins
+# ---------------------------------------------------------------------------
+
+# The public capability probe remains on the plugin entry point.
+supports_signal_view = signal_api.supports_signal_view
+router.include_router(signal_api.router)
+
 @router.websocket("/events")
 async def stream_events(ws: WebSocket):
     if not _ws_upgrade_authorized(ws):
         await ws.close(code=http_status.WS_1008_POLICY_VIOLATION)
         return
+
+    # ``view`` absent is the exact legacy protocol below. Signal mode is
+    # additive and strict: malformed, duplicated, or unknown parameters fail
+    # closed before the WebSocket is accepted.
+    if "view" in ws.query_params:
+        try:
+            signal_board, signal_cursor, signal_generation = signal_api._parse_signal_ws_query(ws)
+        except (ValueError, FileNotFoundError):
+            await ws.close(code=http_status.WS_1008_POLICY_VIOLATION)
+            return
+        # A ``hermes-gateway-ticket.`` subprotocol admission selects only the
+        # public gateway protocol; browsers drop an upgrade that selects none.
+        await ws.accept(subprotocol=getattr(ws, "_hermes_ws_subprotocol", None))
+        try:
+            await signal_api._stream_signal_events(
+                ws, signal_board, signal_cursor, signal_generation,
+                poll_seconds=_EVENT_POLL_SECONDS,
+            )
+        except (WebSocketDisconnect, asyncio.CancelledError):
+            return
+        except Exception as exc:
+            # 1008: the board is gone (archived/removed); 1011: its signal
+            # state is unavailable (legacy schema, unreadable database).
+            log.warning("Kanban signal event stream error: %s", exc)
+            try:
+                await ws.close(code=signal_api._signal_close_code(exc))
+            except Exception:
+                pass
+        return
+
     await ws.accept()
     # Board is pinned at the handshake; the UI opens a new WS on board change
     # rather than reconciling two cursors mid-stream.

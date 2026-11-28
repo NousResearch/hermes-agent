@@ -74,7 +74,7 @@ def daemon(tmp_path, model_peer, request):
     env.update(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home),
                PYTHONPATH=str(root), PYTHONUNBUFFERED="1",
                OPENAI_API_KEY="loopback-only", OPENAI_BASE_URL=model_url,
-               HERMES_ACP_SKIP_CONFIGURED_MCP="1")
+               HERMES_ACP_SKIP_CONFIGURED_MCP="1", HERMES_DISABLE_LAZY_INSTALLS="1")
     command = [sys.executable, "-m", "gateway.run"]
     if getattr(request, 'param', None) == 'proposed-acp-descriptor':
         # API-owner handoff only: execution/create/policy stay unmodified. This

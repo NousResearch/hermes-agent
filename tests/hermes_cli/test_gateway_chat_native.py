@@ -46,7 +46,8 @@ def test_native_classic_fresh_resume_and_oneshot(tmp_path, model_peer, request):
     env = {k: os.environ[k] for k in ("PATH", "LANG", "TZ") if k in os.environ}
     env.update(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home),
                PYTHONPATH=str(root), PYTHONUNBUFFERED="1",
-               OPENAI_API_KEY="loopback-only", OPENAI_BASE_URL=model_url)
+               OPENAI_API_KEY="loopback-only", OPENAI_BASE_URL=model_url,
+               HERMES_DISABLE_LAZY_INSTALLS="1")
     # Instrument constructor calls without replacing runtime predicates or behavior.
     wrapper = tmp_path / "client.py"
     witness = tmp_path / "client-owner.json"

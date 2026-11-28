@@ -432,7 +432,7 @@ def _multiplexing_daemon(tmp_path, names):
         (home / "profiles" / name / "config.yaml").write_text(json.dumps(model))
     env = {k: os.environ[k] for k in ("PATH", "LANG", "TZ", "TIRITH_ENABLED") if k in os.environ}
     env.update(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home), PYTHONPATH=str(REPO),
-               PYTHONUNBUFFERED="1")
+               PYTHONUNBUFFERED="1", HERMES_DISABLE_LAZY_INSTALLS="1")
     with (tmp_path / "gateway.log").open("w+") as log:
         process = subprocess.Popen([sys.executable, "-m", "gateway.run"], cwd=REPO, env=env,
                                    stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)

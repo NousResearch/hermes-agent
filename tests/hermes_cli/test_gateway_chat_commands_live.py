@@ -47,7 +47,8 @@ def classic_session(tmp_path):
         "telemetry": {"shared_metrics": {"enabled": False, "send": False, "offer_version": OFFER_VERSION}}}))
     env = {k: os.environ[k] for k in ("PATH", "LANG", "TZ") if k in os.environ}
     env.update(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home), PYTHONPATH=str(root),
-               PYTHONUNBUFFERED="1", OPENAI_API_KEY="loopback-only", OPENAI_BASE_URL=url)
+               PYTHONUNBUFFERED="1", OPENAI_API_KEY="loopback-only", OPENAI_BASE_URL=url,
+               HERMES_DISABLE_LAZY_INSTALLS="1")
     tmux_name = "hermes-cli-cmds-" + uuid.uuid4().hex
 
     def tmux(*args):

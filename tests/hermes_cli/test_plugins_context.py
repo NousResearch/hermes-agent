@@ -59,3 +59,24 @@ def test_ctx_reads_the_section_limit_from_the_facade(monkeypatch):
 def test_init_annotations_still_resolve():
     hints = typing.get_type_hints(PluginContext.__init__)
     assert hints == {"manifest": PluginManifest, "manager": PluginManager}
+
+
+def test_a_second_plugin_cannot_take_another_plugins_slash_command(caplog):
+    """Plugin B registering ``/demo`` after plugin A used to replace A's handler silently (#160166).
+    A keeps it and B gets a warning; A may still replace its own command, and once A's registration
+    is disposed B can take the name."""
+    mgr = PluginManager()
+    a = PluginContext(PluginManifest(name="plugin-a"), mgr)
+    b = PluginContext(PluginManifest(name="plugin-b"), mgr)
+    first = a.register_command("demo", lambda raw: "a")
+    with caplog.at_level(logging.WARNING):
+        assert b.register_command("demo", lambda raw: "b") is None
+    assert mgr._plugin_commands["demo"]["handler"]("") == "a"
+    assert "already registered" in caplog.text and "plugin-b" in caplog.text
+    second = a.register_command("demo", lambda raw: "a2")
+    assert mgr._plugin_commands["demo"]["handler"]("") == "a2"
+    second.dispose()
+    first.dispose()
+    assert "demo" not in mgr._plugin_commands
+    assert b.register_command("demo", lambda raw: "b") is not None
+    assert mgr._plugin_commands["demo"]["handler"]("") == "b"

@@ -181,6 +181,16 @@ class SQLiteAdmissionRepository:
         with refused():
             return _record(store.get_session_admission(self._store.holder(), admission_id=admission_id))
 
+    def history(self, *, session_id: str, after_seq: int, limit: int) -> list[AdmissionRecord]:
+        with refused():
+            rows = store.session_admission_history(self._store.holder(), session_id=session_id,
+                                                   after_seq=after_seq, limit=limit)
+        return [_record(row) for row in rows]
+
+    def last_seq(self, *, session_id: str) -> int:
+        with refused():
+            return store.last_session_admission_seq(self._store.holder(), session_id=session_id)
+
     def latest_admission(self, *, session_id: str, payload_marker: str) -> AdmissionRecord | None:
         with refused():
             return _record(store.latest_session_admission(self._store.holder(), session_id=session_id,

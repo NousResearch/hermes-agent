@@ -189,7 +189,6 @@ from plugins.platforms.telegram.telegram_intake import effective_update_message
 from plugins.platforms.telegram.telegram_live_gates import env_allowlist_decision, refresh_telegram_gates
 from plugins.platforms.telegram.telegram_media_group import (
     add_item_note, flush_media_group_event, inline_item_text, queue_media_group_event)
-from plugins.platforms.telegram.telegram_live_location import is_redundant_live_refresh
 from plugins.platforms.telegram.telegram_text_photo_pairing import (
     IMAGE_EXTENSIONS as _TELEGRAM_IMAGE_EXTENSIONS, absorb_claimed_text, claim_pending_text, is_image_document, tracking_media_items,
     wait_text_flush)
@@ -200,6 +199,9 @@ from plugins.platforms.telegram.telegram_media_fetch import (
     cache_replied_media, fetch_telegram_file, local_root, merged_typed_text, record_typed_text)
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id, parse_send_target, parse_telegram_message_id
 from plugins.platforms.telegram.telegram_resolved_prompt import edit_keeping_prompt
+from plugins.platforms.telegram.telegram_structured_inbound import (
+    TelegramStructuredInboundMixin, checklist_entity_sources, checklist_reply_text, checklist_text, checklist_update_filter,
+    with_checklists)
 from plugins.platforms.telegram.telegram_clarify_binding import ClarifyPrompt, tap_matches_prompt
 from plugins.platforms.telegram.telegram_clarify_multi import handle_multi_token, multi_prompt_extras, resolve_clarify_choice
 from plugins.platforms.telegram.telegram_topic_transfer import TopicTransferFn, apply_root_dm_topic_transfer
@@ -395,7 +397,8 @@ class _PollingStallError(RuntimeError):
     """
 
 
-class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramReplacementMixin, TelegramTopicRoutingMixin, TelegramPendingProbeMixin, TelegramMediaFloodMixin, TelegramSendPathRecoveryMixin, TelegramVaultCodeMixin, TelegramFloodCooldownMixin, BasePlatformAdapter):
+class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramReplacementMixin, TelegramTopicRoutingMixin, TelegramPendingProbeMixin, TelegramMediaFloodMixin, TelegramSendPathRecoveryMixin, TelegramVaultCodeMixin, TelegramFloodCooldownMixin,
+                      TelegramStructuredInboundMixin, BasePlatformAdapter):
     """Telegram bot adapter: users/groups, MarkdownV2 replies, forum topics, media."""
 
     # Bound for the per-(chat_id, status_key) status-message cache; FIFO half-trim on overflow.
@@ -2700,7 +2703,8 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         """Register every PTB handler on ``app`` (initial connect and the transient-init rebuild)."""
         table = getattr(app, "handlers", None)
         prior = {id(h) for hs in table.values() for h in hs} if isinstance(table, dict) else set()
-        app.add_handler(TelegramMessageHandler((filters.TEXT | rich_message_filter(filters)) & ~filters.COMMAND, self._handle_text_message))
+        app.add_handler(TelegramMessageHandler(
+            with_checklists((filters.TEXT | rich_message_filter(filters)) & ~filters.COMMAND, filters), self._handle_text_message))
         app.add_handler(TelegramMessageHandler(filters.COMMAND, self._handle_command))
         app.add_handler(TelegramMessageHandler(filters.LOCATION | getattr(filters, "VENUE", filters.LOCATION), self._handle_location_message))
         from plugins.platforms.telegram.telegram_dice import handle_dice_message  # #78719
@@ -2712,6 +2716,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         created_filter = getattr(getattr(filters, "StatusUpdate", None), "FORUM_TOPIC_CREATED", None)
         if created_filter is not None:
             app.add_handler(TelegramMessageHandler(created_filter, self._handle_forum_topic_created))
+        # Checklist task updates are service messages too: observed, never an agent turn.
+        if (checklist_updates := checklist_update_filter(filters)) is not None:
+            app.add_handler(TelegramMessageHandler(checklist_updates, self._handle_checklist_update))
         app.add_handler(CallbackQueryHandler(self._handle_callback_query))
         # Inline command picker; inert until the owner enables inline mode via BotFather /setinline.
         app.add_handler(InlineQueryHandler(self._handle_inline_query))
@@ -5382,7 +5389,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         reply_user = getattr(replied, "from_user", None)
         return bool(reply_user and getattr(reply_user, "id", None) == getattr(self._bot, "id", None))
 
-    _entity_sources = staticmethod(addressing_sources)  # telegram_entities.py: text, caption, or rich blocks
+    @staticmethod
+    def _entity_sources(message: Message) -> list:  # telegram_entities.py: text, caption, or rich blocks; plus a checklist's title and tasks
+        return [*addressing_sources(message), *checklist_entity_sources(message)]
 
     @staticmethod
     def _entity_type(entity) -> str:
@@ -5526,8 +5535,8 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
     def _message_matches_mention_patterns(self, message: Message) -> bool:
         if not self._mention_patterns:
             return False
-        text = addressing_text(message)
-        return bool(text) and any(pattern.search(text) for pattern in self._mention_patterns)
+        texts = [text for text in (addressing_text(message), *(text for text, _entities in checklist_entity_sources(message))) if text]
+        return any(pattern.search(text) for text in texts for pattern in self._mention_patterns)
 
     def _is_guest_mention(self, message: Message) -> bool:
         """Guest-mode bypass: explicit bot mention in a group (never a broadcast channel: anyone can post there)."""
@@ -5844,9 +5853,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         return self._apply_telegram_group_observe_attribution(event)
 
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle incoming text (or text-less ``rich_message`` blocks); buffers client-split chunks into one event."""
+        """Handle incoming text (text-less ``rich_message`` blocks, and checklists, rendered as text); buffers client-split chunks into one event."""
         msg = self._effective_update_message(update)
-        if not msg or not (msg.text or rich_message_text(msg)):
+        if not msg or not (msg.text or rich_message_text(msg) or checklist_text(msg)):
             return
         # Auth check first: blocked users must not reach batching, the observed transcript, or the agent.
         if not self._is_user_authorized_from_message(msg):
@@ -5878,39 +5887,6 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             self._enqueue_text_event(event)
             return
         await self.handle_message(event)
-
-    async def _handle_location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle incoming location/venue pin messages."""
-        msg = self._effective_update_message(update)
-        if not msg:
-            return
-        if not self._is_user_authorized_from_message(msg):
-            self._log_blocked_user(msg)
-            return
-        venue = getattr(msg, "venue", None)
-        location = getattr(venue, "location", None) if venue else getattr(msg, "location", None)
-        if not location:
-            return
-        lat, lon = getattr(location, "latitude", None), getattr(location, "longitude", None)
-        # Before the gate: a GPS tick in place is not new input, observed or not (#151333).
-        if lat is None or lon is None or is_redundant_live_refresh(self, msg, location, lat, lon):
-            return
-        if not self._gate_or_observe(msg, update, MessageType.LOCATION):
-            return
-        parts = ["[The user shared a location pin.]"]
-        if venue:
-            title = getattr(venue, "title", None)
-            address = getattr(venue, "address", None)
-            if title:
-                parts.append(f"Venue: {title}")
-            if address:
-                parts.append(f"Address: {address}")
-        parts += [
-            f"latitude: {lat}", f"longitude: {lon}", f"Map: https://www.google.com/maps/search/?api=1&query={lat},{lon}",
-            "Ask what they'd like to find nearby (restaurants, cafes, etc.) and any preferences."]
-        event = self._build_message_event(msg, MessageType.LOCATION, update_id=update.update_id)
-        event.text = "\n".join(parts)
-        await self.handle_message(self._apply_telegram_group_observe_attribution(event))
 
     # -- Text message aggregation (handles Telegram client-side splits) --
 
@@ -6371,7 +6347,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             return reply_to_id, quote_text
         reply_to_text = expand_link_entities(message.reply_to_message) or None
         if not reply_to_text:
-            reply_to_text = rich_message_text(message.reply_to_message) or None
+            reply_to_text = rich_message_text(message.reply_to_message) or checklist_reply_text(message) or None
         if not reply_to_text:
             try:
                 from gateway import rich_sent_store
@@ -6431,7 +6407,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         _chat_id_str = str(chat.id)
         channel_prompt = resolve_channel_prompt(self.config.extra, thread_id_str or _chat_id_str, _chat_id_str if thread_id_str else None)
         return MessageEvent(
-            text=expand_link_entities(message), message_type=msg_type, source=source, raw_message=message,
+            text=expand_link_entities(message) or checklist_text(message), message_type=msg_type, source=source, raw_message=message,
             message_id=str(message.message_id), platform_update_id=update_id,
             user_id=source.user_id, user_name=source.user_name,
             reply_to_message_id=reply_to_id, reply_to_text=reply_to_text, auto_skill=topic_skill,

@@ -33,9 +33,12 @@ def posix_launcher(name: str, entry: str, *, python: str, repo: str, site: str, 
     header = "#!/data/data/com.termux/files/usr/bin/sh" if bionic else "#!/usr/bin/env bash"
     extra = ""
     if bionic:
+        # No libpython folder here, neither the payload's nor $PREFIX/lib: this variable reaches
+        # every child, and LD_LIBRARY_PATH outranks RUNPATH, so either one hands a same-minor
+        # interpreter the wrong libpython. The staged interpreter finds its own (pm.packages.Python).
         extra = '''PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
 export PREFIX
-export LD_LIBRARY_PATH="$root/tools/python/data/data/com.termux/files/usr/lib:$root/tools/node/data/data/com.termux/files/usr/lib:$root/tools/ffmpeg/data/data/com.termux/files/usr/lib:$root/runtime-libs/lib:$PREFIX/lib"
+export LD_LIBRARY_PATH="$root/tools/node/data/data/com.termux/files/usr/lib:$root/tools/ffmpeg/data/data/com.termux/files/usr/lib:$root/runtime-libs/lib"
 export HERMES_PYTHON_SRC_ROOT="$REPO"
 export HERMES_PYTHON="$PYTHON"
 export HERMES_NODE="$root/tools/node/data/data/com.termux/files/usr/bin/node"

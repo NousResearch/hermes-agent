@@ -13,6 +13,7 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
+from pm.elf import ElfError, runpath, set_runpath
 from pm.filesystem import long_root, native, remove_tree, retry_held
 from pm.package import (
     DebPackage,
@@ -251,14 +252,26 @@ class Python(_BionicDebArm, BinaryPackage, DebPackage):
         "https://packages.termux.dev/apt/termux-main/pool/main/p/python/"
         "python_3.14.6-1_aarch64.deb"
     )
+    # Termux links its interpreter for the one place Termux installs it: the RUNPATH is
+    # $PREFIX/lib, where a phone keeps Termux's own libpython, often another patch release under
+    # the same file name. Staged with its own lib folder first, the interpreter loads the
+    # libpython it shipped with from wherever the tree sits, so no launcher has to name that
+    # folder in LD_LIBRARY_PATH, where every child process inherits it (#158261).
+    _BIONIC_RUNPATH = f"$ORIGIN/../lib:/{DebPackage.prefix_rel}/lib"
 
     def stage(self, store: Store, staged: Path, version: str, target: str) -> None:
         super().stage(store, staged, version, target)
         binary = self.binary(staged, target)
-        if binary is not None and sys.platform == "darwin":
+        if binary is not None and target.startswith("darwin"):
             from hermes_cli.macos_signing import sign_managed_python
 
             sign_managed_python(binary)
+        # A .deb without the interpreter is verify()'s finding, not this step's.
+        if target == "linux-arm64-bionic" and binary is not None and binary.is_file():
+            try:
+                set_runpath(binary, self._BIONIC_RUNPATH)
+            except ElfError as exc:
+                raise InstallError(self.name, f"{self.main_bin_rel} cannot be given its own lib folder: {exc}")
         # python-build-standalone ships the x64 VC runtime (vcruntime140_1.dll)
         # beside ARM64 Windows Python; it cannot load on ARM64 and would fail
         # the arch guard. Drop it HERE, before publish: the tree digest is
@@ -277,6 +290,13 @@ class Python(_BionicDebArm, BinaryPackage, DebPackage):
 
     def verify(self, entry: Path, target: str) -> str:
         reason = super().verify(entry, target)
+        if not reason and target == "linux-arm64-bionic":
+            # An entry staged before the RUNPATH was rewritten fails here and restages once.
+            try:
+                found = runpath(entry / self.prefix_rel / self.main_bin_rel)
+            except (OSError, ElfError) as exc:
+                return f"{self.main_bin_rel} has no readable RUNPATH: {exc}"
+            return "" if found == self._BIONIC_RUNPATH else f"{self.main_bin_rel} looks for libpython in {found}"
         if reason or not target.startswith("win32"):
             return reason
         # An entry staged before python3.exe existed fails here, so an explicit install

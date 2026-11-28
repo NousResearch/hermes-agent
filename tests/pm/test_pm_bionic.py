@@ -90,9 +90,10 @@ def test_registered_bionic_stage_preserves_host_facts(tmp_path, monkeypatch, loc
     from pm.package import InstallError
     from pm.registry import get_package
     from pm.store import Store
-    from tests.termux_fixtures import build_deb
+    from tests.termux_fixtures import build_deb, elf_with_runpath
 
     target = "linux-arm64-bionic"
+    payload = elf_with_runpath(get_package("python")._BIONIC_RUNPATH)
     monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "runtime"))
     monkeypatch.setattr(paths, "lockfile_path", lambda: tmp_path / "lock.json")
     facts = paths.facts_path()
@@ -122,16 +123,16 @@ def test_registered_bionic_stage_preserves_host_facts(tmp_path, monkeypatch, loc
         pytest.fail(f"cross-target staging executed foreign bytes: {args}")
 
     monkeypatch.setattr("pm.packages.subprocess.run", no_exec)
-    archive({relative: b"bionic-payload"})
+    archive({relative: payload})
     entry = stage_only(name, target)
-    assert (entry / relative).read_bytes() == b"bionic-payload"
+    assert (entry / relative).read_bytes() == payload
     assert package.binary(entry, target) == entry / relative
     assert package.env(entry, target).get("PATH") == ([str((entry / relative).parent)] if on_path else None)
     assert stage_only(name, target) == entry
     archive({"unrelated": b"not the main executable"})
     with pytest.raises(InstallError, match="missing"):
         stage_only(name, target)
-    assert (entry / relative).read_bytes() == b"bionic-payload"
+    assert (entry / relative).read_bytes() == payload
     assert facts.read_bytes() == before
 
 
@@ -146,3 +147,42 @@ def test_deb_rejects_traversal_before_touching_outside(tmp_path):
     with pytest.raises(InstallError, match="unsafe|escape|traversal"):
         DebPackage().unpack(deb, tmp_path / "staged", "linux-arm64-bionic")
     assert sentinel.read_bytes() == b"owned outside extraction"
+
+
+TERMUX_RUNPATH = "/data/data/com.termux/files/usr/lib:/data/data/com.termux/files/usr/lib"
+
+
+def test_bionic_python_is_staged_to_load_the_libpython_beside_it(tmp_path):
+    """Regression for #158261: the launcher had to put that folder on LD_LIBRARY_PATH for everyone."""
+    from pm.elf import runpath
+    from pm.registry import get_package
+    from tests.termux_fixtures import elf_with_runpath
+
+    target = "linux-arm64-bionic"
+    python = get_package("python")
+    interpreter = tmp_path / python.prefix_rel / python.main_rel(target)
+    interpreter.parent.mkdir(parents=True)
+    shipped = elf_with_runpath(TERMUX_RUNPATH)
+    interpreter.write_bytes(shipped)
+    assert "libpython" in python.verify(tmp_path, target)
+
+    python.stage(None, tmp_path, "1.0", target)
+
+    first, fallback = runpath(interpreter).split(":")
+    assert first == "$ORIGIN/../lib"
+    assert fallback in TERMUX_RUNPATH.split(":")
+    assert len(interpreter.read_bytes()) == len(shipped)
+    assert python.verify(tmp_path, target) == ""
+
+
+def test_bionic_python_without_a_runpath_is_refused(tmp_path):
+    from pm.package import InstallError
+    from pm.registry import get_package
+
+    target = "linux-arm64-bionic"
+    python = get_package("python")
+    interpreter = tmp_path / python.prefix_rel / python.main_rel(target)
+    interpreter.parent.mkdir(parents=True)
+    interpreter.write_bytes(b"not an interpreter")
+    with pytest.raises(InstallError, match="lib folder"):
+        python.stage(None, tmp_path, "1.0", target)

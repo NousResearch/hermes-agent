@@ -866,6 +866,16 @@ gateway:
     task_status_error: "ошибка"
     task_line: "- {title} — {status}"
     task_card_title: "Hermes работает"
+    thinking_card_title: "{name} думает"
+    task_card_earlier: "Ранее {count}: {trail}"
+    task_card_failed_one: "ошибка"
+    task_card_done: "Выполнено шагов: {count}"
+    task_card_done_one: "Выполнен 1 шаг"
+    task_card_failed_suffix: " · с ошибкой: {failed}"
+    task_card_stopped: "Остановлено · {steps}"
+    task_stopped: "остановлено"
+    reasoning_card_live: "Думает…"
+    reasoning_card_done: "Думал {seconds} с"
   pairing:
     validity_hour: "{hours} ч"
     validity_hours: "{hours} ч"
@@ -1371,6 +1381,7 @@ platform:
       still_working: "всё ещё работает… ({elapsed})"
     task_card:
       title: "Hermes работает"
+      continued: "Продолжение ниже ⤵"
     slash:
       reply_truncated: "\n\n_[Ответ обрезан: ещё {count} част(и/ей) превысили лимит эфемерных ответов Slack.]_"
       running: "Выполняю `/{command}`…"

@@ -67,6 +67,8 @@ try:  # sibling modules; support both package and flat plugin-dir import
     from .adapter_reactions_context import slack_reactions_marker
     from .adapter_socket_lifecycle import SlackSocketLifecycleMixin
     from .adapter_vault_code import SlackVaultCodeMixin
+    from .adapter_task_cards import SlackTaskCardMixin, _NativeTaskCardStream, _first_truthy, _slack_error_is
+    from .adapter_thinking_card import SlackThinkingCardMixin
     from .adapter_image_batch import collect_image_uploads
     from .adapter_forwarded import (
         append_forwards, files_with_forwarded, is_forward, own_bot_ids, shared_message_sections,
@@ -81,6 +83,9 @@ except ImportError:  # pragma: no cover - plugin loaded outside package context
     from adapter_reactions_context import slack_reactions_marker  # type: ignore
     from adapter_socket_lifecycle import SlackSocketLifecycleMixin  # type: ignore
     from adapter_vault_code import SlackVaultCodeMixin  # type: ignore
+    from adapter_task_cards import (  # type: ignore
+        SlackTaskCardMixin, _NativeTaskCardStream, _first_truthy, _slack_error_is)
+    from adapter_thinking_card import SlackThinkingCardMixin  # type: ignore
     from adapter_image_batch import collect_image_uploads  # type: ignore
 
 
@@ -326,18 +331,6 @@ def slack_deps_present() -> bool:
     return SLACK_AVAILABLE
 
 
-@dataclass
-class _NativeTaskCardStream:
-    """Serialized state for one workspace-scoped Slack progress stream."""
-
-    team_id: str
-    channel: str
-    thread_ts: str
-    stream_ts: str = ""
-    stopped: bool = False
-    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-
-
 def check_slack_requirements() -> bool:
     """Check if Slack dependencies are available.
 
@@ -439,28 +432,6 @@ def _int_or_zero(value: str) -> int:
         return int(value)
     except ValueError:
         return 0
-
-
-def _first_truthy(mapping: dict[str, Any], keys: tuple[str, ...]) -> Any:
-    """First truthy ``mapping[key]`` in ``keys`` order, else None."""
-    for key in keys:
-        value = mapping.get(key)
-        if value:
-            return value
-    return None
-
-
-def _slack_error_is(exc: BaseException, code: str) -> bool:
-    """True when a Slack API exception carries ``code`` as its structured ``error`` field.
-
-    Reads ``exc.response["error"]`` (slack_sdk's SlackApiError shape); never matches on the
-    message text, which embeds the whole response body and would match on unrelated codes.
-    """
-    response = getattr(exc, "response", None)
-    try:
-        return bool(response) and response.get("error") == code
-    except Exception:
-        return False
 
 
 def _slack_str_field(el: dict, name: str) -> str:
@@ -991,7 +962,9 @@ def _is_transient_transport_error(e: BaseException) -> bool:
         and not is_permanent_tls_error)
 
 
-class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformAdapter):
+class SlackAdapter(
+    SlackSocketLifecycleMixin, SlackVaultCodeMixin, SlackTaskCardMixin, SlackThinkingCardMixin, BasePlatformAdapter,
+):
     """Slack bot adapter (Socket Mode).
     Needs SLACK_BOT_TOKEN (xoxb-, API calls) and SLACK_APP_TOKEN (xapp-, Socket Mode). DMs +
     mention-gated channels, threads, attachments, slash commands, status text."""
@@ -1102,7 +1075,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         self._active_status_threads: dict[tuple[str, str, str], dict[str, Any]] = {}
         # Native progress streams; each owns a lock so concurrent start/append/stop
         # can't create duplicates or append after finalization.
-        self._native_task_card_streams: dict[tuple[str, str, str], _NativeTaskCardStream] = {}
+        self._native_task_card_streams: dict[tuple[str, ...], _NativeTaskCardStream] = {}
         # Guard: set the Slack AI thread title once per DM thread, not per reply.
         self._titled_assistant_threads: set = set()
         # Slash-command contexts so send() can route the first reply ephemerally. Keyed
@@ -2013,152 +1986,6 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         ignored = self._slack_ignored_channels()
         return "*" in ignored or str(channel_id).split(":", 1)[0] in ignored
 
-    @staticmethod
-    def _truthy_config(value: Any) -> bool:
-        if isinstance(value, str):
-            return value.strip().lower() in {"1", "true", "yes", "on"}
-        return bool(value)
-
-    def native_task_cards_enabled(self) -> bool:
-        """Return whether Slack-native tool progress is explicitly enabled."""
-        extra = self.config.extra if isinstance(self.config.extra, dict) else {}
-        streaming = extra.get("streaming")
-        progress = streaming.get("progress") if isinstance(streaming, dict) else None
-        for scope in (extra, progress if isinstance(progress, dict) else {}):
-            value = scope.get("native_task_cards", scope.get("nativeTaskCards"))
-            if value is not None:
-                return self._truthy_config(value)
-        return False
-
-    def _native_task_card_key(
-        self, chat_id: str, reply_to: Optional[str], metadata: Optional[dict[str, Any]]
-    ) -> Optional[tuple[str, str, str]]:
-        thread_ts = self._resolve_thread_ts(reply_to, metadata)
-        if not thread_ts:
-            return None
-        return self._workspace_thread_key(
-            self._metadata_team_id(metadata), chat_id, str(thread_ts))
-
-    def native_task_card_destination_supported(
-        self, chat_id: str, *, reply_to: Optional[str] = None,
-        metadata: Optional[dict[str, Any]] = None,
-    ) -> bool:
-        """Placement eligibility independent of connection/stream availability."""
-        return self._native_task_card_key(chat_id, reply_to, metadata) is not None
-
-    async def send_native_task_card_progress(
-        self, chat_id: str, tasks: list[dict[str, str]], *, title: Optional[str] = None,
-        reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None,
-        fallback_text: Optional[str] = None) -> SendResult:
-        """Start or update a Slack-native plan/task progress stream."""
-        title = title or t("platform.slack.task_card.title")
-        if not self._app:
-            return SendResult(success=False, error="Not connected")
-        if not tasks:
-            return SendResult(success=False, error="No tasks")
-        key = self._native_task_card_key(chat_id, reply_to, metadata)
-        if key is None:
-            return SendResult(success=False, error="No Slack thread target")
-        stream = self._native_task_card_streams.get(key)
-        if stream is None or stream.stopped:
-            stream = _NativeTaskCardStream(team_id=key[0], channel=chat_id, thread_ts=key[2])
-            # No await between lookup and assignment, so racers share this lock.
-            self._native_task_card_streams[key] = stream
-        async with stream.lock:
-            if stream.stopped:
-                return SendResult(success=False, error="Progress stream already stopped")
-            try:
-                client = self._get_client(chat_id, team_id=stream.team_id)
-                if not stream.stream_ts:
-                    await self._start_native_task_card_stream(client, stream, metadata)
-                chunks: list[dict[str, Any]] = [{"type": "plan_update", "title": str(title)[:256]}]
-                chunks.extend(self._task_update_chunk(task) for task in tasks)
-                # chunks-only: Slack rejects markdown_text alongside chunks
-                # (cannot_provide_both_markdown_text_and_chunks, #87743); the gateway owns
-                # the editable-text fallback rail that fallback_text feeds when this call fails.
-                try:
-                    await client.api_call(
-                        "chat.appendStream", json={"channel": chat_id, "ts": stream.stream_ts, "chunks": chunks})
-                except Exception as exc:
-                    if not _slack_error_is(exc, "message_not_in_streaming_state"):
-                        raise
-                    # Slack seals a native stream server-side after a few minutes of a long
-                    # turn (live-observed at ~5m20s, 2026-09-16; the lifetime is not
-                    # documented). The sealed message is a regular message now, so reopen a
-                    # fresh card in the same thread. Every frame already carries the FULL
-                    # visible projection, so nothing is lost; the user sees the card
-                    # continue instead of degrading to text bubbles. One reopen per update:
-                    # a second rejection is a real failure.
-                    logger.info(
-                        "[Slack] Native task-card stream %s expired (message_not_in_streaming_state); "
-                        "reopening a fresh card in thread %s", stream.stream_ts, stream.thread_ts)
-                    stream.stream_ts = ""
-                    await self._start_native_task_card_stream(client, stream, metadata)
-                    await client.api_call(
-                        "chat.appendStream", json={"channel": chat_id, "ts": stream.stream_ts, "chunks": chunks})
-                return SendResult(success=True, message_id=stream.stream_ts)
-            except Exception as exc:  # pragma: no cover - defensive logging
-                logger.error("[Slack] Native task-card progress error: %s", exc, exc_info=True)
-                return SendResult(success=False, error=str(exc), retryable=True)
-
-    @staticmethod
-    async def _start_native_task_card_stream(
-        client, stream: _NativeTaskCardStream, metadata: Optional[dict[str, Any]]
-    ) -> None:
-        """chat.startStream a plan-mode card in ``stream``'s thread; sets ``stream.stream_ts``."""
-        start_payload: dict[str, Any] = {
-            "channel": stream.channel, "thread_ts": stream.thread_ts,
-            "task_display_mode": "plan"}
-        md = metadata or {}
-        recipients = (
-            ("recipient_team_id", ("recipient_team_id", "team_id", "slack_team_id")),
-            ("recipient_user_id", ("recipient_user_id", "user_id")))
-        for key, sources in recipients:
-            value = _first_truthy(md, sources)
-            if value:
-                start_payload[key] = value
-        result = await client.api_call("chat.startStream", json=start_payload)
-        if hasattr(result, "get"):
-            stream.stream_ts = str(result.get("ts") or result.get("message_ts") or "")
-        if not stream.stream_ts:
-            raise RuntimeError("Slack startStream returned no stream timestamp")
-
-    @staticmethod
-    def _task_update_chunk(task: dict[str, str]) -> dict[str, Any]:
-        """One ``task_update`` stream chunk; unknown statuses coerce to ``in_progress``."""
-        status = str(task.get("status") or "in_progress")
-        status = status if status in {"in_progress", "complete", "error"} else "in_progress"
-        task_id = str(task.get("id") or task.get("task_id") or "task")
-        return {
-            "type": "task_update", "id": task_id, "title": str(task.get("title") or task_id)[:256],
-            "status": status}
-
-    async def _stop_native_task_card_stream(
-        self, key: tuple[str, str, str], stream: _NativeTaskCardStream) -> None:
-        async with stream.lock:
-            if stream.stopped:
-                return
-            stream.stopped = True
-            try:
-                if self._app and stream.stream_ts:
-                    await self._get_client(stream.channel, team_id=stream.team_id).api_call(
-                        "chat.stopStream", json={"channel": stream.channel, "ts": stream.stream_ts})
-            except Exception as exc:  # pragma: no cover - defensive logging
-                logger.debug("[Slack] Native task-card stopStream failed: %s", exc)
-            finally:
-                if self._native_task_card_streams.get(key) is stream:
-                    self._native_task_card_streams.pop(key, None)
-
-    async def stop_native_task_card_progress(
-        self, chat_id: str, *, reply_to: Optional[str] = None,
-        metadata: Optional[dict[str, Any]] = None) -> None:
-        """Finalize an active Slack-native progress stream exactly once."""
-        key = self._native_task_card_key(chat_id, reply_to, metadata)
-        if key is None:
-            return
-        stream = self._native_task_card_streams.get(key)
-        if stream is not None:
-            await self._stop_native_task_card_stream(key, stream)
 
     def _suppressed_ignored(self, chat_id: str, what: str, *, level: int = logging.WARNING) -> bool:
         """True (after logging) when ``chat_id`` is a configured ignored channel."""

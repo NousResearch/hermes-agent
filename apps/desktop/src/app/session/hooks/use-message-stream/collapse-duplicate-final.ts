@@ -1,5 +1,22 @@
 import { type ChatMessage, chatMessageText, withUniqueToolCallIdsWithinMessage } from '@/lib/chat-messages'
 
+/**
+ * The reply text without the media lines a delivery strips.
+ *
+ * An attachment travels as a `MEDIA:<path>` line in the streamed text, as a
+ * rendered `[File: …](#media:…)` link once the segment is sealed, and it is
+ * gone from the completion's text (`gateway/platforms/base.py` extracts the
+ * tags before sending: a 1337-char reply that carried a `MEDIA:` line arrives
+ * as 1255 chars). Comparing raw strings then reads two copies of ONE reply as
+ * two different replies, and the collapse below declines (#129993).
+ */
+export const comparableReplyText = (text: string): string =>
+  text
+    .replace(/\[[^\]]*\]\(#media:[^)]*\)/g, '')
+    .replace(/MEDIA:\S+/g, '')
+    .replace(/[ \t]+/g, ' ')
+    .trim()
+
 export interface DuplicateFinalCollapse {
   /** The surviving bubble replaces the removed stream id at completion. */
   keptId: string
@@ -27,9 +44,9 @@ export function collapseDuplicateFinalAfterToolInterim(
     return null
   }
 
-  const liveText = chatMessageText(live).trim()
+  const liveText = comparableReplyText(chatMessageText(live))
 
-  if (liveText && liveText !== options.finalText) {
+  if (liveText && liveText !== comparableReplyText(options.finalText)) {
     return null
   }
 
@@ -39,7 +56,11 @@ export function collapseDuplicateFinalAfterToolInterim(
 
   const prior = messages[priorIndex]
 
-  if (prior?.role !== 'assistant' || !prior.interim || chatMessageText(prior).trim() !== options.finalText) {
+  if (
+    prior?.role !== 'assistant' ||
+    !prior.interim ||
+    comparableReplyText(chatMessageText(prior)) !== comparableReplyText(options.finalText)
+  ) {
     return null
   }
 
@@ -122,7 +143,7 @@ export function identicalInterimSiblingIndex(
       return -1
     }
 
-    return chatMessageText(message).trim() === finalText ? index : -1
+    return comparableReplyText(chatMessageText(message)) === comparableReplyText(finalText) ? index : -1
   }
 
   return -1

@@ -22,13 +22,21 @@ def github(tmp_path, monkeypatch):
             if self.path == "/graphql":
                 value = {"data": {"repository": {"pullRequest": {
                     "headRefOid": sha, "baseRefName": "main", "state": "OPEN",
-                    "baseRef": {"branchProtectionRule": {"requiredStatusChecks": [
-                        {"context": "required", "app": {"databaseId": 1}}]}}}}}}
+                    "baseRef": {"branchProtectionRule": {
+                        "requiredStatusChecks": [] if state.get("no_protection_checks") else [
+                            {"context": "required", "app": {"databaseId": 1}}]}}}}}}
             elif "/rules/branches/" in self.path:
+                if state.get("rules_403"):
+                    self.send_response(403)
+                    self.end_headers()
+                    self.wfile.write(state["rules_body"].encode())
+                    if state.get("rules_stderr"):
+                        print(state["rules_stderr"], file=sys.stderr)
+                    return
                 value = [[]]
             elif "/check-runs" in self.path:
-                run = {"id": 42, "name": "required", "head_sha": sha,
-                       "app": {"id": 1}, "status": "in_progress" if state["conclusion"] == "pending" else "completed", "conclusion": state["conclusion"],
+                run = {"id": 42, "name": "required", "head_sha": state.get("run_head", sha),
+                       "app": {"id": 1}, "status": state.get("run_status", "in_progress" if state["conclusion"] == "pending" else "completed"), "conclusion": state["conclusion"],
                        "html_url": "https://github.com/acme/repo/actions/runs/42"}
                 if state.get("stale"):
                     run["head_sha"] = "b" * 40
@@ -62,7 +70,12 @@ def github(tmp_path, monkeypatch):
     gh = shim / "gh"
     gh.write_text(f"#!{sys.executable}\nimport sys,urllib.request\n"
                   f"u='http://127.0.0.1:{server.server_port}/'+sys.argv[2]\n"
-                  "print(urllib.request.urlopen(u).read().decode())\n")
+                  "try:\n"
+                  " print(urllib.request.urlopen(u).read().decode())\n"
+                  "except urllib.error.HTTPError as e:\n"
+                  " print(e.read().decode())\n"
+                  " print(f'HTTP {e.code}', file=sys.stderr)\n"
+                  " sys.exit(1)\n")
     gh.chmod(0o755)
     monkeypatch.setenv("PATH", str(shim) + os.pathsep + os.environ["PATH"])
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
@@ -75,8 +88,131 @@ def github(tmp_path, monkeypatch):
         thread.join()
 
 
+def test_configured_required_checks_are_exactly_repository_and_branch_scoped(monkeypatch):
+    from hermes_cli import config
+    from hermes_cli.kanban_pr_acceptance import _configured_required_checks
+
+    monkeypatch.setattr(config, "load_config", lambda: {"kanban": {"pr_required_checks": {
+        "acme/repo": {"main": ["Build", {"context": "Integration", "app_id": 42}]},
+        "other/repo": {"main": ["Other"]},
+    }}})
+    assert _configured_required_checks("acme/repo", "main") == {("Build", None), ("Integration", 42)}
+    assert _configured_required_checks("acme/repo", "release") is None
+    assert _configured_required_checks("other/repo", "main") == {("Other", None)}
+
+
 @pytest.mark.platforms("linux")
-def test_pr_completion_requires_current_required_evidence(github):
+def test_plan_gated_rules_endpoint_parser_is_scoped_and_exact():
+    from hermes_cli.kanban_pr_acceptance import _is_explicit_plan_unavailable, _is_rules_endpoint
+
+    exact = '{"message":"Upgrade to GitHub Pro or make this repository public to enable this feature."}'
+    assert _is_rules_endpoint("repos/OWNER/REPO/rules/branches/main?per_page=100")
+    assert not _is_rules_endpoint("repos/OWNER/REPO/check-runs")
+    assert _is_explicit_plan_unavailable(exact.replace("Pro", "PRO").replace("feature", "FEATURE"))
+    assert not _is_explicit_plan_unavailable('{"message":"Upgrade to GitHub Pro"}')
+    assert not _is_explicit_plan_unavailable(
+        '{"message":"Upgrade to GitHub Pro or make this repository public to enable this feature; Resource not accessible by integration"}')
+
+
+@pytest.mark.platforms("linux")
+def test_plan_unavailable_uses_only_admin_configured_checks(github, monkeypatch, tmp_path):
+    from hermes_cli import kanban_pr_acceptance as acceptance
+
+    monkeypatch.setattr(acceptance, "_configured_required_checks",
+                        lambda repo, branch: {("required", 1)} if repo == "acme/repo" and branch == "main" else None)
+    github.update(rules_403=True,
+                  rules_body='{"message":"Upgrade to GitHub Pro or make this repository public to enable this feature."}',
+                  no_protection_checks=True)
+    with connect() as conn:
+        tid = kb.create_task(conn, title="admin-config", completion_contract="acme/repo")
+        assert kb.complete_task(conn, tid, result="done",
+                                metadata={"published_pr": "https://github.com/acme/repo/pull/7"})
+        receipt = json.loads(conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchone()[0])
+    assert receipt["ok"] is True
+    assert receipt["required_source"] == "admin_config"
+    assert receipt["required"] == [{"context": "required", "app_id": 1}]
+    assert receipt["checks"][0]["head_sha"] == "a" * 40
+
+
+@pytest.mark.platforms("linux")
+def test_plan_unavailable_without_config_fails_closed(github, monkeypatch):
+    from hermes_cli import kanban_pr_acceptance as acceptance
+
+    monkeypatch.setattr(acceptance, "_configured_required_checks", lambda repo, branch: None)
+    github.update(rules_403=True,
+                  rules_body='{"message":"Upgrade to GitHub Pro or make this repository public to enable this feature."}',
+                  no_protection_checks=True)
+    with connect() as conn:
+        tid = kb.create_task(conn, title="no-config", completion_contract="acme/repo")
+        assert not kb.complete_task(conn, tid, result="done",
+                                    metadata={"published_pr": "https://github.com/acme/repo/pull/7"})
+        receipt = json.loads(conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchone()[0])
+    assert receipt["classification"] == "plan_unavailable"
+    assert "administrator-owned" in receipt["detail"]
+
+
+@pytest.mark.platforms("linux")
+def test_generic_or_partial_rules_403_stays_fail_closed(github, monkeypatch):
+    from hermes_cli import kanban_pr_acceptance as acceptance
+
+    monkeypatch.setattr(acceptance, "_configured_required_checks", lambda repo, branch: {("required", 1)})
+    for body, stderr in (
+        ('{"message":"Resource not accessible by integration"}', "HTTP 403"),
+        ('{"message":"Upgrade to GitHub Pro"}', "HTTP 403"),
+    ):
+        github.update(rules_403=True, rules_body=body, rules_stderr=stderr, no_protection_checks=True)
+        with connect() as conn:
+            tid = kb.create_task(conn, title="ambiguous-rules-denial", completion_contract="acme/repo")
+            assert not kb.complete_task(conn, tid, result="done",
+                                        metadata={"published_pr": "https://github.com/acme/repo/pull/7"})
+            receipt = json.loads(conn.execute(
+                "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchone()[0])
+        assert receipt["classification"] == "auth"
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.parametrize("conclusion,status,head,missing,expected", [
+    ("failure", "completed", "a" * 40, False, "failure"),
+    ("success", "in_progress", "a" * 40, False, "pending"),
+    ("success", "completed", "b" * 40, False, "stale"),
+    ("success", "completed", "a" * 40, True, "missing"),
+])
+def test_admin_checks_still_require_passed_exact_head_evidence(github, monkeypatch, conclusion, status, head, missing, expected):
+    from hermes_cli import kanban_pr_acceptance as acceptance
+
+    monkeypatch.setattr(acceptance, "_configured_required_checks", lambda repo, branch: {("required", 1)})
+    github.update(rules_403=True,
+                  rules_body='{"message":"Upgrade to GitHub Pro or make this repository public to enable this feature."}',
+                  no_protection_checks=True, conclusion=conclusion, run_status=status, run_head=head, missing=missing)
+    with connect() as conn:
+        tid = kb.create_task(conn, title="check-not-green", completion_contract="acme/repo")
+        assert not kb.complete_task(conn, tid, result="done",
+                                    metadata={"published_pr": "https://github.com/acme/repo/pull/7"})
+        receipt = json.loads(conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchone()[0])
+    assert receipt["classification"] == expected
+
+
+@pytest.mark.platforms("linux")
+def test_readable_protection_wins_even_when_rules_are_plan_gated(github, monkeypatch):
+    from hermes_cli import kanban_pr_acceptance as acceptance
+
+    monkeypatch.setattr(acceptance, "_configured_required_checks", lambda repo, branch: {("other", None)})
+    github.update(rules_403=True,
+                  rules_body='{"message":"Upgrade to GitHub Pro or make this repository public to enable this feature."}',
+                  no_protection_checks=False)
+    with connect() as conn:
+        tid = kb.create_task(conn, title="protection-wins", completion_contract="acme/repo")
+        assert kb.complete_task(conn, tid, result="done",
+                                metadata={"published_pr": "https://github.com/acme/repo/pull/7"})
+        receipt = json.loads(conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchone()[0])
+    assert receipt["required_source"] == "github"
+    assert receipt["required"] == [{"context": "required", "app_id": 1}]
+
+
     with connect() as conn:
         for conclusion in ("failure", "pending", "cancelled", "timed_out", "action_required", "neutral", "skipped", None, "success"):
             github.update(conclusion=conclusion, head="a" * 40)

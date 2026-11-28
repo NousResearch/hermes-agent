@@ -45,6 +45,9 @@ def _api(endpoint: str, *, query: str | None = None, paginate: bool = False,
         # code + endpoint, never gh's stderr (credentials/host details).
         denied = re.search(r"HTTP (40[134])", exc.stderr or "")
         if denied:
+            if (denied[1] == "403" and _is_rules_endpoint(endpoint)
+                    and _is_explicit_plan_unavailable(exc.stdout)):
+                raise _PlanUnavailableError(f"HTTP 403 on {endpoint.split('?')[0]}") from None
             raise _GateAuthError(f"HTTP {denied[1]} on {endpoint.split('?')[0]}") from None
         if exc.returncode == 4:  # gh's authentication-required exit: this profile has no login
             raise _GateAuthError(f"gh has no login for {endpoint.split('?')[0]}") from None
@@ -56,9 +59,53 @@ def _api(endpoint: str, *, query: str | None = None, paginate: bool = False,
 
 
 class _GateAuthError(RuntimeError):
-    """gh was refused at HTTP 401/403/404 (or GraphQL returned no repository):
-    this profile's login cannot see the repo — an identity problem to fix, not
-    an infrastructure blip to retry."""
+    """gh was refused at HTTP 401/403/404; GraphQL null handling is separate."""
+
+
+class _PlanUnavailableError(RuntimeError):
+    """GitHub explicitly denied a repository-rules read due to plan availability."""
+
+
+def _is_rules_endpoint(endpoint: str) -> bool:
+    return endpoint.startswith("repos/") and "/rules/branches/" in endpoint
+
+
+def _is_explicit_plan_unavailable(output: str | None) -> bool:
+    try:
+        body = json.loads(output or "")
+    except (json.JSONDecodeError, TypeError):
+        return False
+    message = body.get("message", "") if isinstance(body, dict) else ""
+    normalized = message.strip().casefold().removesuffix(".")
+    return normalized == "upgrade to github pro or make this repository public to enable this feature"
+
+
+def _configured_required_checks(repo: str, branch: str) -> set[tuple[str, int | None]] | None:
+    """Read operator-owned repo/branch policy; None means missing or malformed."""
+    from hermes_cli.config import load_config
+    config = load_config()
+    kanban = config.get("kanban", {}) if isinstance(config, dict) else {}
+    declarations = kanban.get("pr_required_checks", {}) if isinstance(kanban, dict) else {}
+    if not isinstance(declarations, dict):
+        return None
+    branches = declarations.get(repo)
+    if not isinstance(branches, dict) or branch not in branches:
+        return None
+    entries = branches[branch]
+    if not isinstance(entries, list) or not entries:
+        return None
+    required = set()
+    for entry in entries:
+        if isinstance(entry, str) and entry.strip():
+            required.add((entry.strip(), None))
+        elif isinstance(entry, dict) and isinstance(entry.get("context"), str) and entry["context"].strip():
+            app_id = entry.get("app_id")
+            if app_id is not None and (not isinstance(app_id, int) or isinstance(app_id, bool) or app_id < 0):
+                return None
+            required.add((entry["context"].strip(), app_id))
+        else:
+            return None
+    return required or None
 
 
 # Every key gh can read a login from, github.com and GitHub Enterprise alike. All of them are
@@ -164,13 +211,30 @@ def collect_acceptance(contract: str, published_pr: str | None,
             raise ValueError("PR is closed or current head is unavailable")
         protection = (pr.get("baseRef") or {}).get("branchProtectionRule") or {}
         required = {(r["context"], (r.get("app") or {}).get("databaseId")) for r in protection.get("requiredStatusChecks", [])}
-        rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100",
-                     paginate=True, profile_home=profile_home)
-        for page in rules:
-            for rule in page:
-                if rule["type"] == "required_status_checks":
-                    required.update((r["context"], r.get("integration_id"))
-                                    for r in rule["parameters"]["required_status_checks"])
+        try:
+            rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100",
+                         paginate=True, profile_home=profile_home)
+        except _PlanUnavailableError:
+            rules = None
+        if rules is not None:
+            for page in rules:
+                for rule in page:
+                    if rule["type"] == "required_status_checks":
+                        required.update((r["context"], r.get("integration_id"))
+                                        for r in rule["parameters"]["required_status_checks"])
+        if not required and rules is None:
+            try:
+                configured = _configured_required_checks(repo, branch)
+            except (OSError, ValueError, TypeError, KeyError):
+                configured = None
+            if not configured:
+                receipt.update(classification="plan_unavailable",
+                               detail="GitHub explicitly denied branch rules because the feature is unavailable on this plan; configure a nonempty administrator-owned kanban.pr_required_checks entry for this repository and branch before retrying.")
+                return receipt
+            required.update(configured)
+            receipt["required_source"] = "admin_config"
+        else:
+            receipt["required_source"] = "github"
         receipt["required"] = [{"context": c, "app_id": a} for c, a in sorted(required, key=str)]
         if not required:
             receipt["detail"] = "No repository-required checks are configured; explicitly use a local-only contract for non-CI tasks."

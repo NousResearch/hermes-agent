@@ -119,6 +119,39 @@ def test_client_direct_gate_forces_relay(voice_home, monkeypatch):
     assert "client_direct" in result["stt"]["reason"]
 
 
+@pytest.mark.parametrize("client_direct", [0, []])
+def test_client_direct_unrecognized_values_force_relay(voice_home, monkeypatch, client_direct):
+    """Regression for #140123: only explicit enabled values may expose direct credentials."""
+    voice_home({
+        "voice": {"client_direct": client_direct},
+        "stt": {"provider": "groq"},
+        "tts": {"provider": "openai"},
+    })
+    monkeypatch.setenv("GROQ_API_KEY", "gsk_env456")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk_test")
+    result = _resolve()
+    assert result["stt"]["mode"] == "relay"
+    assert result["tts"]["mode"] == "relay"
+
+
+def test_client_direct_config_read_failure_forces_relay(voice_home, monkeypatch):
+    voice_home({
+        "stt": {"provider": "groq"},
+        "tts": {"provider": "openai"},
+    })
+    monkeypatch.setenv("GROQ_API_KEY", "gsk_env456")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk_test")
+    from hermes_cli import config
+
+    def fail_load_config():
+        raise OSError("config unavailable")
+
+    monkeypatch.setattr(config, "load_config", fail_load_config)
+    result = _resolve()
+    assert result["stt"]["mode"] == "relay"
+    assert result["tts"]["mode"] == "relay"
+
+
 def test_stt_disabled_relays(voice_home, monkeypatch):
     voice_home({"stt": {"enabled": False, "provider": "groq"}})
     monkeypatch.setenv("GROQ_API_KEY", "gsk_env456")

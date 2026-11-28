@@ -19,6 +19,30 @@ def test_prompt_choice_escape_keeps_default_without_numbered_fallback(monkeypatc
 
     assert setup_mod.prompt_choice("Pick one", ["a", "b"], default=1) == 1
 
+
+def test_prompt_choice_explicit_default_selection_is_not_skipped(monkeypatch, capsys):
+    """Selecting the highlighted item with Enter is a real choice, not a cancel (#43598)."""
+    monkeypatch.setattr(
+        setup_mod,
+        "_curses_prompt_choice",
+        lambda question, choices, default=0, description=None: default,
+    )
+
+    assert setup_mod.prompt_choice("Pick one", ["a", "b"], default=1) == 1
+    assert "Skipped (keeping current)" not in capsys.readouterr().out
+
+
+def test_prompt_choice_cancel_maps_to_safe_index(monkeypatch, capsys):
+    """A caller whose default is a real option can map ESC/non-TTY cancel onto an exit index."""
+    monkeypatch.setattr(
+        setup_mod,
+        "_curses_prompt_choice",
+        lambda question, choices, default=0, description=None: -1,
+    )
+
+    assert setup_mod.prompt_choice("Pick one", ["a", "b", "Done"], default=0, cancel_returns=2) == 2
+    assert "Skipped (keeping current)" in capsys.readouterr().out
+
 def test_setup_navigation_escape_cancels_and_left_goes_back():
     state = setup_mod._SetupNavigationState(section_index=1)
     token = setup_mod._SETUP_NAVIGATION.set(state)

@@ -473,6 +473,22 @@ top-level `status` and `readiness.checks` fields.
 
 In addition to `/v1/chat/completions` and `/v1/responses`, the server exposes a **runs** API for long-form sessions where the client wants to subscribe to progress events instead of managing streaming themselves.
 
+### GET /v1/runs/meta
+
+Authenticated metadata for the adapter's approval-receipt lifetime:
+`server_generation` is an opaque UUID, `idempotency` is `"v1"`, and
+`idempotency_ttl_seconds` is 3600 (the completed approval receipt retention).
+
+Clients may send `X-Hermes-Expected-Generation` on run creation and approval
+requests. An empty, malformed, or over-64-character UUID returns HTTP 400;
+a different generation returns HTTP 409 `server_generation_mismatch` before
+admission or approval resolution. Authentication and current room permissions are
+checked first; a stale generation is then rejected even if the approval run has
+been forgotten or is unknown. Omitting the header preserves normal behavior.
+After a restart, fetch metadata again and reconcile run status before deciding
+whether to send a new approval. This generation protects volatile approval
+receipts; durable run creation keys retain their existing restart recovery.
+
 ### POST /v1/runs
 
 Create a new agent run. Returns a `run_id` that can be used to subscribe to progress events.
@@ -668,6 +684,29 @@ attached WebSocket viewers. Respond with the exact current identity:
 Canonical controls do not accept identityless or bulk responses. Stale generations,
 foreign prompt IDs, and settled runs return HTTP 409. Existing run authentication
 and hosted-room approval restrictions still apply.
+
+For retryable approvals, send `Idempotency-Key` (1–255 visible ASCII characters).
+An identical retry returns the original response with `Idempotency-Replayed: true`
+without answering another pending prompt. The key is scoped by the same
+API profile/credential or room identity as run creation. A different run URL or
+any changed JSON input (including `request_id`, `execution_generation`, and bulk
+flags) under that key returns 409 `idempotency_key_conflict`. Authentication,
+current room permissions, and run ownership are checked before replay.
+
+Approval receipts are process-local and bounded to 1024 per adapter. Successful
+receipts expire after 3600 seconds. Legacy validation refusals and authority 4xx
+refusals before response dispatch (including stale execution generations,
+malformed control bodies, and missing approval prompts) release their reservation,
+so a corrected request may reuse the key. Errors after dispatch, 5xx responses,
+cancellation, and exceptions remain ambiguous; these errors are not cached as
+completed responses.
+Pending or ambiguous resolutions stay reserved until the adapter is replaced,
+so retries cannot repeat an uncertain write.
+A retry during an unresolved operation returns 409 `approval_resolution_pending`;
+capacity exhaustion returns 503 `approval_receipts_full`. Use the generation
+header to detect receipt loss across restart. This does not change the durable
+run ledger or execution-generation fencing. Without a key, approvals retain
+existing behavior, including legacy once/session/always/deny choices.
 
 ### POST /v1/runs/\{run_id\}/clarify
 

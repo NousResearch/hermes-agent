@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import errno
+import logging
 import os
 import re
 import shutil
@@ -16,6 +17,8 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Mapping, NoReturn, Sequence
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "FILTER_DISCOVERY_FAILED",
@@ -29,6 +32,7 @@ __all__ = [
     "noninteractive_repo_git_env",
     "pid_exists_stdlib",
     "pid_is_hermes",
+    "popen_detached",
     "resolve_node_command",
     "restore_ambient_pythonpath",
     "selected_git_env",
@@ -274,6 +278,41 @@ def windows_detach_popen_kwargs() -> dict:
         return {"creationflags": windows_detach_flags()}
     # detached-spawn: ok — the detach helper itself; every call site is checked on its own
     return {"start_new_session": True}
+
+
+def popen_detached(args, *, is_windows: bool | None = None, **kwargs) -> subprocess.Popen:
+    """``Popen`` a child detached from the parent console/process group and job object.
+
+    POSIX: ``start_new_session=True``, the ``setsid`` detach.
+
+    Windows: :func:`windows_detach_flags`, breakaway included, so the child outlives an
+    Electron/Tauri parent. A parent job object that forbids breakaway (the Desktop app, a
+    Task Scheduler launcher, some Windows Terminal configs) refuses
+    ``CREATE_BREAKAWAY_FROM_JOB`` for the child with ``ERROR_ACCESS_DENIED`` (winerror 5), and
+    the caller loses the spawn entirely — so retry once without the bit. Only winerror 5 is
+    retried: one refused for another reason (an ACL or AV block) fails the retry identically
+    into the caller's own error path instead of being masked here.
+
+    ``is_windows`` is the platform as data, so the retry contract is testable on any host
+    (``tests/_fixtures/platform_gating.py``: a pure function that takes the platform as an
+    argument is not faking the host); call sites leave it unset. ``creationflags`` supplied in
+    ``kwargs`` are OR-ed onto both attempts.
+    """
+    windows = IS_WINDOWS if is_windows is None else is_windows
+    if not windows:
+        kwargs.setdefault("start_new_session", True)  # detached-spawn: ok — the detach helper itself
+        return subprocess.Popen(args, **kwargs)
+    extra = kwargs.pop("creationflags", 0)
+    try:
+        return subprocess.Popen(args, creationflags=windows_detach_flags() | extra, **kwargs)
+    except OSError as exc:
+        if getattr(exc, "winerror", None) != 5:
+            raise
+        logger.warning(
+            "detached spawn refused CREATE_BREAKAWAY_FROM_JOB (%s); retrying without it — the "
+            "child stays in the parent's job object", exc)
+        return subprocess.Popen(
+            args, creationflags=windows_detach_flags_without_breakaway() | extra, **kwargs)
 
 
 # Read-only probes must never lazy-fetch. In a partial (blobless/treeless) clone a missing object makes

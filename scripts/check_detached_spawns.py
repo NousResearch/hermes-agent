@@ -58,7 +58,7 @@ SCAN_ROOT_FILES = ("cli.py", "run_agent.py", "hermes_constants.py")
 SKIP_PARTS = {"tests", "__pycache__", "evals", "node_modules"}
 _DETACH_OS_ATTRS = {"setsid", "setpgid", "setpgrp"}
 # Helpers that return detaching Popen kwargs (``start_new_session=True`` on POSIX).
-_DETACH_HELPERS = {"windows_detach_popen_kwargs"}
+_DETACH_HELPERS = {"windows_detach_popen_kwargs", "popen_detached"}
 # Cheap text prefilter: only files mentioning one of these are parsed.
 _NEEDLES = ("start_new_session", "process_group", "setsid", "setpgid", "setpgrp", *_DETACH_HELPERS)
 

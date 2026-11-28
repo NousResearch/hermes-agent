@@ -8,6 +8,14 @@ from __future__ import annotations
 import argparse
 
 
+# Help text is built once and cached process-wide (the dashboard console memoizes parser
+# summaries), so it must stay profile-neutral: name the per-profile rule, never a resolved home.
+SCRIPTS_DIR_HELP = (
+    "the active profile's scripts/ dir ($HERMES_HOME/scripts/; -p <name> selects "
+    "the named profile's home instead of the default home)"
+)
+
+
 def add_accept_hooks_flag(parser: argparse.ArgumentParser) -> None:
     """Attach ``--accept-hooks`` (shared by every agent subparser so it works in any position)."""
     parser.add_argument(

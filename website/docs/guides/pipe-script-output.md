@@ -106,6 +106,19 @@ When stdin is a TTY (no pipe), Hermes does **not** wait for input — you'll
 get a clear usage error instead. This keeps scripts from hanging if they
 accidentally omit the body.
 
+## Session History
+
+By default, Hermes can also save the outgoing text to the target chat's
+Hermes session. Set `send.mirror_delivery` to `false` in `config.yaml`
+to keep script notifications out of that session's history:
+
+```yaml
+send:
+  mirror_delivery: false
+```
+
+Messages still reach the target chat.
+
 ---
 
 ## Real-World Examples

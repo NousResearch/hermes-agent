@@ -54,6 +54,61 @@ describe('transcript tail cache', () => {
     expect(loaded?.[7].id).toBe('h39')
   })
 
+  it('keeps the largest complete suffix when fewer than eight heavy messages fit', () => {
+    // The old fixed 8-message retry discarded this otherwise cacheable tail:
+    // 3 x 100KB is oversized, while the newest 2 messages fit under the cap.
+    const heavy = Array.from({ length: 3 }, (_, index) => msg(`short-heavy-${index}`, 100_000))
+    saveTranscriptTail('sess-short-heavy', heavy)
+
+    const loaded = loadTranscriptTail('sess-short-heavy')
+
+    expect(loaded).toHaveLength(2)
+    expect(loaded?.map(message => message.id)).toEqual(['short-heavy-1', 'short-heavy-2'])
+  })
+
+  it('retains an intermediate suffix larger than the old eight-message fallback', () => {
+    const heavy = Array.from({ length: 40 }, (_, index) => msg(`medium-${index}`, 20_000))
+    const scope = { connectionId: 'remote', profile: 'work' }
+    saveTranscriptTail('sess-medium', heavy, scope)
+
+    expect(loadTranscriptTail('sess-medium', scope)).toEqual(heavy.slice(-13))
+    expect(loadTranscriptTail('sess-medium', { ...scope, profile: 'default' })).toBeNull()
+  })
+
+  it('serializes each fitting message only once on the normal save path', () => {
+    const message = msg('fitting')
+    const toJSON = vi.fn(() => message)
+    const trackedMessage = { ...message, toJSON }
+    const prefix = Array.from({ length: 39 }, (_, index) => msg(`fitting-${index}`))
+
+    saveTranscriptTail('sess-fitting', [...prefix, trackedMessage])
+
+    expect(toJSON).toHaveBeenCalledTimes(1)
+    expect(loadTranscriptTail('sess-fitting')).toEqual([...prefix, message])
+  })
+
+  it('does not truncate an oversized newest message or replace an existing tail', () => {
+    saveTranscriptTail('sess-unfit', [msg('previous')])
+    const newest = msg('too-large', 300_000)
+
+    saveTranscriptTail('sess-unfit', [msg('small-older'), newest])
+    saveTranscriptTail('sess-new-unfit', [newest])
+
+    expect(loadTranscriptTail('sess-unfit')).toEqual([msg('previous')])
+    expect(loadTranscriptTail('sess-new-unfit')).toBeNull()
+  })
+
+  it('skips non-serializable messages without breaking resume', () => {
+    const toJSON = () => {
+      throw new Error('live handle')
+    }
+
+    const liveMessage = { ...msg('live'), toJSON }
+
+    expect(() => saveTranscriptTail('sess-live', [liveMessage])).not.toThrow()
+    expect(loadTranscriptTail('sess-live')).toBeNull()
+  })
+
   it('ignores empty saves and blank ids', () => {
     saveTranscriptTail('', [msg('1')])
     saveTranscriptTail('sess-empty', [])

@@ -8,6 +8,7 @@ media caches and every other path is read inside the sandbox via exec-read.
 
 import base64
 import importlib
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -349,6 +350,30 @@ class TestExecReadSafety:
                    return_value=SimpleNamespace(execute=fake_execute)):
             with pytest.raises(isrc.SourceTooLarge):
                 await isrc.resolve_image_source("/workspace/big.png", isrc.ResolveContext(task_id="t1"))
+
+    @pytest.mark.platforms("posix")
+    @pytest.mark.asyncio
+    async def test_exec_read_ignores_transport_text_ahead_of_the_payload(self, tmp_path, monkeypatch):
+        """The transport merges its own stderr into the reply: ssh logs two lines ahead of the
+        command's output when its ControlMaster refuses a session (sshd MaxSessions, hit by
+        parallel reads). A readable image must still decode."""
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "ssh")
+        shot = tmp_path / "sandbox" / "shot.png"
+        shot.parent.mkdir()
+        shot.write_bytes(PNG)
+        transport = ("mux_client_request_session: session request failed: Session open refused by peer\r\n"
+                     "ControlSocket /run/hermes-ssh/0123456789abcdef.sock already exists, disabling multiplexing\r\n")
+
+        def fake_execute(cmd, **kw):  # the sandbox's shell runs the command; the transport logs first
+            ran = subprocess.run(["sh", "-c", cmd], capture_output=True, text=True, timeout=30, check=False)
+            return {"returncode": ran.returncode, "output": transport + ran.stdout}
+
+        with patch("tools.image_source._get_active_env",
+                   return_value=SimpleNamespace(execute=fake_execute)):
+            res = await isrc.resolve_image_source(str(shot), isrc.ResolveContext(task_id="t1"))
+        assert res.origin == "container"
+        assert res.data == PNG
 
 
     @pytest.mark.asyncio

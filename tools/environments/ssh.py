@@ -4,6 +4,7 @@ import contextlib
 import hashlib
 import logging
 import os
+import re
 import shlex
 import shutil
 import stat
@@ -27,6 +28,16 @@ logger = logging.getLogger(__name__)
 # fail the connection outright ('getsockname failed: Not a socket'). Skip multiplexing there.
 # Skip multiplexing there; each command pays a fresh connection but the backend works. See #73927.
 _SSH_MULTIPLEX = os.name != "nt"
+
+# What the ssh CLIENT prints on stderr (merged into the command's output) when the ControlMaster
+# refuses a new session: sshd allows MaxSessions (default 10) per connection, and commands to one
+# host share a master. ssh then runs the command on a direct connection (exit status unaffected),
+# so these lines lead otherwise good output and break whatever parses it (base64 image reads, file
+# reads, RPC request files). Only these exact lines, CRLF-terminated as ssh logs to stderr, and
+# only at the start of the output.
+_MUX_FALLBACK_NOISE = re.compile(
+    r"(?:(?:mux_client_request_session: session request failed: [^\r\n]*"
+    r"|ControlSocket [^\r\n]* already exists, disabling multiplexing)\r\n)+")
 
 
 def _ensure_ssh_available() -> None:
@@ -331,6 +342,16 @@ class SSHEnvironment(BaseEnvironment):
     def _before_execute(self) -> None:
         if self._sync_manager is not None:
             self._sync_manager.sync()  # rate-limited internally
+
+    def execute(self, command: str, cwd: str = "", **kwargs) -> dict:
+        """:meth:`BaseEnvironment.execute`, minus the ssh client's ControlMaster-fallback lines
+        (``_MUX_FALLBACK_NOISE``) that would otherwise lead the command's output."""
+        result = super().execute(command, cwd, **kwargs)
+        noise = _MUX_FALLBACK_NOISE.match(result.get("output") or "")
+        if noise:
+            logger.debug("SSH: ControlMaster refused a session (sshd MaxSessions); command ran on a direct connection")
+            result["output"] = result["output"][noise.end():]
+        return result
 
     def _run_bash(self, cmd_string: str, *, login: bool = False, timeout: int = 120,
                   stdin_data: str | None = None) -> subprocess.Popen:

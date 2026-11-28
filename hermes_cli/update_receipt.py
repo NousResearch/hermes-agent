@@ -1115,6 +1115,33 @@ def row_is_external(row: Any) -> bool:
     return isinstance(row, dict) and row.get("state") == EXTERNAL_STATE
 
 
+def _served_profile_names(served_profiles: Any) -> list[str]:
+    """Profile NAMES a live gateway's ``served_profiles`` vouches for, in first-seen order.
+
+    The same roster is published in two shapes: bare names (``gateway_state.json``, which
+    ``_record_served_profiles`` writes as a name list) and ``{"profile_id", "home"}`` entries (the
+    unified runtime's ``identify``, from ``SessionAuthorities.served_profiles`` — #147868). Restart
+    obligations are keyed by profile NAME, so a dict entry is reduced through the resolver
+    ``gateway.host_attach._served_from_identity`` applies to the same field. An entry that cannot
+    name a profile home is dropped, never defaulted: crediting a profile the gateway does not serve
+    would discharge an obligation nobody met, so this may only ever narrow coverage.
+    """
+    if not isinstance(served_profiles, list):
+        return []
+    from hermes_constants import profile_name_for_home
+
+    names: list[str] = []
+    for entry in served_profiles:
+        if isinstance(entry, dict):
+            home = entry.get("home") or entry.get("profile_id")
+            name = profile_name_for_home(home) if isinstance(home, (str, Path)) else None
+        else:
+            name = entry if isinstance(entry, str) and entry else None
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
 def _fleet_row(
     profile: str, pid: int, code_sha: Any, code_version: Any, expected_sha: Any,
     state: str = "unknown", code_root: Optional[Path] = None,
@@ -1133,13 +1160,12 @@ def _fleet_row(
         "code_root": str(code_root) if code_root else None,
     }
     # A live, identity-verified multiplexer represents every profile in this
-    # list. Keep the field only when its shape is usable: callers use it to
-    # discharge per-profile restart obligations, so corrupt status must not
-    # widen coverage.
-    if isinstance(served_profiles, list) and served_profiles and all(
-        isinstance(name, str) and name for name in served_profiles
-    ):
-        row["served_profiles"] = list(dict.fromkeys(served_profiles))
+    # list. Keep the field only when it names at least one profile: callers use
+    # it to discharge per-profile restart obligations, so corrupt status must
+    # not widen coverage.
+    served = _served_profile_names(served_profiles)
+    if served:
+        row["served_profiles"] = served
     return row
 
 

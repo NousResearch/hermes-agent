@@ -1003,9 +1003,9 @@ def _job_is_stale_error_recurring(
     """
     if job.get("last_status") != "error":
         return False
-    from cron.quota_hold import hold_active
-    if hold_active(job, now):
-        return False  # deliberately parked past a provider usage window, not wedged (#89376)
+    from cron.quota_hold import blocks_stale_error_rearm
+    if blocks_stale_error_rearm(job, now):
+        return False  # held or restored to the next regular slot, not wedged (#89376)
     if _job_running_in_this_process(str(job.get("id") or "")):
         return False
     # A fresh fire_claim means the job is running in ANOTHER process sharing this

@@ -730,7 +730,7 @@ def _entry_is_rate_limit_exhausted(entry: dict[str, Any]) -> bool:
 # Throttle for the live Codex quota probe. It runs on the hot credential-selection path while the
 # pool is exhausted, so without a floor a busy gateway would hammer the usage endpoint per call.
 CODEX_QUOTA_PROBE_MIN_INTERVAL_SECONDS = 300  # 5 minutes
-_codex_quota_probe_cache: dict[str, tuple[float, Optional[bool]]] = {}
+_codex_quota_probe_cache: dict[str, dict[Optional[str], tuple[float, Optional[bool]]]] = {}
 _codex_quota_probe_lock = threading.Lock()
 
 
@@ -756,23 +756,28 @@ def _probe_codex_quota_restored(
     min_interval_seconds: float = CODEX_QUOTA_PROBE_MIN_INTERVAL_SECONDS) -> Optional[bool]:
     """Ask the Codex usage endpoint whether this account's quota is usable again.
 
-    Probes are throttled per access token (module-local cache) so the hot selection path can fire
-    this freely.
+    Probes are throttled per access token and only reuse a usage result for the same endpoint.
     """
-    from hermes_cli.auth import _codex_quota_probe_cache, _nonempty_str
+    from hermes_cli.auth import _codex_quota_probe_cache
     token = _stripped(access_token)
     # Real Codex access tokens are JWTs. Refusing to probe non-JWT tokens avoids pointless
     # network calls for corrupt/placeholder entries (and keeps hermetic test fixtures offline).
     if not token or not _decode_jwt_claims(token):
         return None
+    usage_url = _codex_usage_probe_url(base_url)
     cache_key = _codex_quota_probe_cache_key(token)
     now = time.monotonic()
+    reservation = (now, None)
     with _codex_quota_probe_lock:
-        cached = _codex_quota_probe_cache.get(cache_key)
+        observations = _codex_quota_probe_cache.setdefault(cache_key, {})
+        cached = observations.get(usage_url)
         if cached is not None and (now - cached[0]) < min_interval_seconds:
             return cached[1]
+        failed_refresh = observations.get(None)
+        if failed_refresh is not None and (now - failed_refresh[0]) < min_interval_seconds:
+            return None
         # Reserve the slot immediately so concurrent selectors don't stampede the endpoint.
-        _codex_quota_probe_cache[cache_key] = (now, None)
+        observations[usage_url] = reservation
     result: Optional[bool] = None
     try:
         # Account/residency headers from the JWT (required for some account shapes).
@@ -781,7 +786,7 @@ def _probe_codex_quota_restored(
             "Authorization": f"Bearer {token}", "Accept": "application/json",
             "User-Agent": "codex-cli", **codex_account_headers(token)}
         with _codex_http_client(timeout=10.0) as client:
-            response = client.get(_codex_usage_probe_url(base_url), headers=headers)
+            response = client.get(usage_url, headers=headers)
         if response.status_code == 200:
             payload = response.json() or {}
             # A model-scoped allowance (``additional_rate_limits``) at 100% still 429s that
@@ -792,11 +797,14 @@ def _probe_codex_quota_restored(
                 if isinstance(extra, dict)]
             worst_used: Optional[float] = None
             for rate_limit in windows:
+                if rate_limit.get("allowed") is False or rate_limit.get("limit_reached") is True:
+                    result = False
+                    break
                 for key in ("primary_window", "secondary_window"):
                     used = (rate_limit.get(key) or {}).get("used_percent")
-                    if isinstance(used, (int, float)):
+                    if isinstance(used, (int, float)) and not isinstance(used, bool) and used >= 0:
                         worst_used = max(worst_used or 0.0, float(used))
-            if worst_used is not None:
+            if result is None and worst_used is not None:
                 result = worst_used < 100.0
         elif response.status_code == 429:
             result = False
@@ -804,7 +812,8 @@ def _probe_codex_quota_restored(
         logger.debug("Codex quota probe failed", exc_info=True)
         result = None
     with _codex_quota_probe_lock:
-        _codex_quota_probe_cache[cache_key] = (now, result)
+        if observations.get(usage_url) is reservation:
+            observations[usage_url] = (now, result)
     return result
 
 
@@ -833,15 +842,15 @@ def _refresh_expired_codex_probe_token(
     cache_key = _codex_quota_probe_cache_key(token)
     now = time.monotonic()
     with _codex_quota_probe_lock:
-        cached = _codex_quota_probe_cache.get(cache_key)
-        if cached is not None and (now - cached[0]) < min_interval_seconds:
+        if any(now - observed[0] < min_interval_seconds
+               for observed in _codex_quota_probe_cache.get(cache_key, {}).values()):
             return None
     try:
         return refresh_codex_oauth_pure(token, refresh)
     except Exception:
         logger.debug("Codex pre-probe token refresh failed", exc_info=True)
         with _codex_quota_probe_lock:
-            _codex_quota_probe_cache[cache_key] = (now, None)
+            _codex_quota_probe_cache.setdefault(cache_key, {})[None] = (now, None)
         return None
 
 

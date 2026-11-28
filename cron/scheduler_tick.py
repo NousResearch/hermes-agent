@@ -137,6 +137,9 @@ def _tick_admitted(
         except Exception as _wt_exc:
             _sched.logger.debug("Worktree maintenance dispatch failed: %s", _wt_exc)
 
+        if not headless:
+            from cron.quota_recovery import reconcile
+            reconcile()
         due_jobs = _sched.get_due_jobs()
         _sched._sweep_stale_inflight_for_tick(due_jobs)
         if headless:

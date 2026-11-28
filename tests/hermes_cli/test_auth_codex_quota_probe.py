@@ -124,6 +124,20 @@ def test_probe_sends_chatgpt_account_id_from_jwt(monkeypatch):
     assert calls[0]["headers"].get("ChatGPT-Account-ID") == "acct-123"
 
 
+def test_quota_probe_cannot_reuse_another_endpoint_result(monkeypatch):
+    token = _jwt({"exp": time.time() + 3600})
+    calls = _patch_httpx(monkeypatch, _StubResponse(200, _usage_payload(5, 5)))
+    assert _probe_codex_quota_restored(token, base_url="https://first.invalid/backend-api/codex") is True
+
+    _patch_httpx(monkeypatch, _StubResponse(200, _usage_payload(100, 5)), calls)
+    assert _probe_codex_quota_restored(token, base_url="https://second.invalid/backend-api/codex") is False
+    assert _probe_codex_quota_restored(token, base_url="https://first.invalid/backend-api/codex") is True
+    assert [call["url"] for call in calls] == [
+        "https://first.invalid/backend-api/wham/usage",
+        "https://second.invalid/backend-api/wham/usage",
+    ]
+
+
 # ---------------------------------------------------------------------------
 # clear_codex_pool_quota_cooldowns
 # ---------------------------------------------------------------------------

@@ -9,6 +9,17 @@ from contextlib import contextmanager
 from hermes_cli import update_pause_record as _pause_record
 
 
+def _raise_if_update_interrupted(exc, root) -> None:
+    """Honor Ctrl-C while preserving the receipt's distinction between moved and untouched code."""
+    if not isinstance(exc, KeyboardInterrupt):
+        return
+    from hermes_cli import update_cmd_commit, update_receipt
+
+    if update_cmd_commit.run_checkout_moved(root):
+        update_receipt.finalize_interrupted_update_receipt("KeyboardInterrupt: interrupted after the code was updated")
+    raise SystemExit(130) from exc
+
+
 @contextmanager
 def _checkout_move(token, *targets, paths=(), revert=False):
     """Run one checkout-writing git step (switch, merge, reset, upstream sync, rollback, stash) with

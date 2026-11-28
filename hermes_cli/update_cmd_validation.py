@@ -1,9 +1,10 @@
 """Source import-integrity checks for update and stash restoration."""
 
 import json
-import subprocess
+import os
 from pathlib import Path
 from hermes_cli._launchers import runtime_command
+from hermes_cli._subprocess_compat import bounded_probe_run
 
 # Modules imported on every startup. Unlike _UPDATE_CRITICAL_FILES (only parsed) these are
 # *imported*, catching cross-module breakage (a name pulled from a sibling no longer exists).
@@ -11,13 +12,14 @@ _UPDATE_CRITICAL_MODULES = "hermes_cli.main", "run_agent", "model_tools", "tools
 
 
 def _critical_module_import_failures(
-    root, *, report_runtime_errors: bool = False) -> dict[str, tuple[str, str]]:
+    root, *, report_runtime_errors: bool = False) -> dict[str, tuple[str, str]] | None:
     """Import each ``_UPDATE_CRITICAL_MODULES`` entry in a subprocess; return failures in probe order.
 
     Syntax validation only *parses*: a partially-updated tree (Windows ZIP copy loop) parses yet
     dies with ``ImportError: cannot import name``. The boot-selected subprocess
     keeps import side effects out of the updater's ``sys.modules``.
     Generic import-time exceptions are tolerated unless ``report_runtime_errors=True``.
+    ``None`` means the probe could not verify health, not an import failure.
     """
     from hermes_cli.update_cmd import _UPDATE_CRITICAL_MODULES
     from hermes_constants import FIRST_PARTY_MODULE_ROOTS
@@ -47,15 +49,13 @@ def _critical_module_import_failures(
         "    except BaseException as exc:\n"
         "        failures.append((name, type(exc).__name__, str(exc)))\n"
         f"sys.stdout.write('\\n{marker}' + json.dumps(failures))\n")
-    try:
-        result = subprocess.run(
-            runtime_command(Path(root), code=probe), cwd=str(root), capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=120, check=False)
-    except subprocess.TimeoutExpired:
-        return _probe_failure("TimeoutExpired", "timed out before reporting import health")
-    except (OSError, subprocess.SubprocessError):
-        # Can't run the probe — don't block the update on our own tooling.
-        return {}
+    # The launcher imports bootstrap before executing the probe body. Suppress dependency
+    # completion there too: a stale source install must not rebuild inside this 120s check.
+    result = bounded_probe_run(
+        runtime_command(Path(root), code=probe), cwd=str(root), timeout=120,
+        env={**os.environ, "HERMES_DISABLE_LAZY_INSTALLS": "1"})
+    if result is None:
+        return None
     output = result.stdout or ""
     if marker not in output:
         return _probe_failure(
@@ -85,4 +85,3 @@ def _validate_critical_modules_import(
         module = next(iter(failures))
         return False, module, failures[module][1]
     return True, None, None
-

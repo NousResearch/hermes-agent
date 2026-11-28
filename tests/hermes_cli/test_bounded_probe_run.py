@@ -52,6 +52,29 @@ def test_spawn_failure_returns_none():
     assert result is None
 
 
+def test_interrupt_cleans_up_before_propagating(monkeypatch):
+    from hermes_cli import _subprocess_compat as compat
+    from hermes_cli.local_runtime import processes
+
+    calls = []
+
+    class Probe:
+        def communicate(self, **kwargs):
+            raise KeyboardInterrupt
+
+    class Job:
+        def close(self):
+            calls.append("closed")
+
+    probe = Probe()
+    monkeypatch.setattr(processes, "spawn_server", lambda *a, **kw: (probe, Job()))
+    monkeypatch.setattr(compat, "kill_and_drain", lambda proc, seconds: calls.append((proc, seconds)))
+    with pytest.raises(KeyboardInterrupt):
+        bounded_probe_run([_PY, "-c", "pass"], timeout=30)
+
+    assert calls == ["closed", (probe, 1)]
+
+
 def test_timeout_returns_none_within_bounded_time():
     """A child that sleeps past the timeout must produce ``None`` promptly —
     timeout + tree-kill + 1s bounded drain, not an unbounded join."""

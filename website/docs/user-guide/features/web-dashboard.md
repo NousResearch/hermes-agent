@@ -794,7 +794,44 @@ The response also carries two advisory resource blocks (they never affect the
 
 Both collectors are fail-safe: any sampling error degrades the block to
 `{"pressure": "unknown"}` instead of failing the status endpoint. The numbers
-are coarse (whole MB, whole-percent) since `/api/status` is public.
+are coarse (whole MB, whole-percent) since `/api/status` is public by default.
+
+`/api/status` answers without credentials even when the dashboard authentication
+gate is enabled: Nous Portal uses it as a cookie-less liveness probe. Private
+reverse-proxy deployments can opt in to `dashboard.require_auth_for_status`:
+
+```bash
+hermes config set dashboard.require_auth_for_status true
+```
+
+Restart the dashboard after changing this setting. Requests to `/api/status`
+then use the existing authentication mode: a valid session cookie or bearer from
+a registered dashboard provider on a gated listener, or the dashboard session
+token on a local-only loopback listener. Missing or invalid credentials return
+`401`; no separate status credential is introduced. Only the exact path changes:
+`GET /api/health` remains public in either mode, and it still returns the
+`version`, `displayVersion` and `commit` this process runs, plus
+`auth_required`. Opting in hides the status body, not the running version.
+
+The default is `false`. Keep it disabled for Nous Portal deployments and clients
+that use an unauthenticated status probe (including Desktop sign-in discovery),
+or they may report the backend as unavailable. To restore the public probe:
+
+```bash
+hermes config set dashboard.require_auth_for_status false
+```
+
+`hermes gateway migrate --backends --apply` is one of those clients: after it
+starts the gateway it checks every new address with an anonymous
+`GET /api/status` (see
+[Moving a dashboard backend to the gateway](#moving-a-dashboard-backend-to-the-gateway)).
+With `dashboard.require_auth_for_status: true` that check gets `401`, so the
+verification fails after 90 seconds and the run rolls back. Set the option to
+`false` for the move and turn it back on afterwards.
+
+The setting also applies to `/api/status` on the gateway's Webapp, which shares
+the dashboard auth gates; restart that listener's gateway after changing it.
+It does not change either listener's Host/Origin checks or its auth providers.
 
 ### GET /api/chat/workspaces
 

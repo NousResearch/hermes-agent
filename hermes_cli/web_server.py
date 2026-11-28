@@ -296,7 +296,7 @@ app.add_middleware(ChatFileUploadLimitMiddleware)
 # Endpoints that do NOT require the session token; everything else under /api/
 # is gated below. Shared with the OAuth gate so the two allowlists cannot
 # drift (/api/status once 401'd under the OAuth gate, breaking the portal probe).
-from hermes_cli.dashboard_auth.public_paths import PUBLIC_API_PATHS as _PUBLIC_API_PATHS
+from hermes_cli.dashboard_auth.public_paths import is_public_api_path as _is_public_api_path
 
 
 def _has_valid_session_token(request: Request) -> bool:
@@ -473,7 +473,12 @@ async def auth_middleware(request: Request, call_next):
         and not getattr(request.state, "native_http_principal", None)
         and not getattr(request.app.state, "auth_required", False)
         and path.startswith("/api/")
-        and path not in _PUBLIC_API_PATHS
+        and not _is_public_api_path(
+            path,
+            status_auth_required=bool(
+                getattr(request.app.state, "status_auth_required", False)
+            ),
+        )
         and not path.startswith("/api/mcp/oauth/callback/")
         and not _has_valid_session_token(request)
         and not _has_valid_query_token(request, path)
@@ -989,6 +994,15 @@ def _configure_auth_gate(
     Fails closed (``SystemExit`` with an actionable message) when the gate
     engages but no dashboard auth provider is registered.
     """
+    from hermes_cli.dashboard_auth.prefix import _load_dashboard_section
+    from utils import is_truthy_value
+
+    # dashboard.require_auth_for_status (opt-in) drops /api/status from the
+    # public allowlist on this listener. Read like dashboard.public_url: a
+    # malformed or unloadable config keeps the documented public default, and
+    # a quoted YAML "false" stays false.
+    app.state.status_auth_required = is_truthy_value(
+        _load_dashboard_section().get("require_auth_for_status"), default=False)
     # dashboard.public_url is also the exact Host/Origin trust declaration for
     # reverse-proxy deployments; resolved once so middleware never reloads
     # config. A non-loopback public hostname engages the gate even on a loopback

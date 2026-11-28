@@ -30,7 +30,7 @@ from hermes_cli.dashboard_auth.cookies import (
     read_session_provider, read_sso_attempt_cookie, set_session_cookies,
     set_session_provider_cookie, set_sso_attempt_cookie)
 from hermes_cli.dashboard_auth.prefix import prefix_from_request
-from hermes_cli.dashboard_auth.public_paths import PUBLIC_API_PATHS
+from hermes_cli.dashboard_auth.public_paths import is_public_api_path
 from hermes_cli.dashboard_auth.refresh_singleflight import refresh_session_coalesced
 from hermes_cli.dashboard_auth.request_utils import (
     access_token_max_age as _expires_in_seconds, client_ip as _client_ip,
@@ -55,11 +55,13 @@ _GATE_PUBLIC_PREFIXES: tuple[str, ...] = (
 _GATE_PUBLIC_ICONS: frozenset[str] = frozenset({"/apple-touch-icon.png"})
 
 
-def _path_is_public(path: str) -> bool:
-    """:data:`PUBLIC_API_PATHS` (shared with the legacy middleware) and :data:`_GATE_PUBLIC_ICONS`
-    matched exactly so ``/api/status`` never exposes ``/api/status/extension``;
-    :data:`_GATE_PUBLIC_PREFIXES` prefix-matched."""
-    return path in PUBLIC_API_PATHS or path in _GATE_PUBLIC_ICONS or any(
+def _path_is_public(path: str, *, status_auth_required: bool = False) -> bool:
+    """:func:`is_public_api_path` (shared with the legacy middleware; ``/api/status`` drops out when
+    ``status_auth_required``) and :data:`_GATE_PUBLIC_ICONS` matched exactly so ``/api/status`` never
+    exposes ``/api/status/extension``; :data:`_GATE_PUBLIC_PREFIXES` prefix-matched."""
+    return is_public_api_path(
+        path, status_auth_required=status_auth_required,
+    ) or path in _GATE_PUBLIC_ICONS or any(
         path == p or path.startswith(p) for p in _GATE_PUBLIC_PREFIXES)
 
 
@@ -295,7 +297,10 @@ async def gated_auth_middleware(
     own_origin = _own_origin_writes(request)
     other_page = not own_origin and _browser_says_other_page(request)
     cookie_logout = (own_origin or other_page) and request.url.path == "/auth/logout"
-    if _path_is_public(request.url.path) and not cookie_logout:
+    if _path_is_public(
+        request.url.path,
+        status_auth_required=bool(getattr(request.app.state, "status_auth_required", False)),
+    ) and not cookie_logout:
         return await call_next(request)
     # RFC 8252 native-app bearer path: the same provider-minted access token the cookie flow
     # stores, verified with the same provider stack, no cookie read or set. A presented-but-

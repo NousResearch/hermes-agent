@@ -492,10 +492,12 @@ def _emit_skill_lifecycle(skill_name: str, action: str, *, record: Optional[dict
 
 
 def _mutate_and_emit(skill_name: str, action: str, mutator: Callable[[dict[str, Any]], dict[str, Any]],
-                     **hook_kwargs: Any) -> None:
-    """``_mutate`` then emit *action* with the mutator's facts as the record — only if the write landed."""
+                     **hook_kwargs: Any) -> bool:
+    """``_mutate`` then emit *action* with the mutator's facts as the record — only if the write landed (True)."""
     if isinstance(facts := _mutate(skill_name, mutator), dict):
         _emit_skill_lifecycle(skill_name, action, record=facts, **hook_kwargs)
+        return True
+    return False
 
 
 # --- Counter bumps — telemetry for ALL skills regardless of provenance (observability only) ---
@@ -529,8 +531,9 @@ def bump_patch(skill_name: str, *, action: str = "patch", task_id: Optional[str]
 
 
 def record_created(skill_name: str, *, agent_created: bool, task_id: Optional[str] = None,
-                   session_id: Optional[str] = None) -> None:
+                   session_id: Optional[str] = None) -> bool:
     """Persist creation provenance and emit a create fact; the record is reset (a create is a new logical skill).
+    True when the record was saved.
 
     Foreground creates (``agent_created=False`` — e.g. ``/learn`` at the user's request) are stamped
     ``created_by="learn"``: a learning-signal marker, NOT the curator-management opt-in (``"agent"``),
@@ -540,7 +543,7 @@ def record_created(skill_name: str, *, agent_created: bool, task_id: Optional[st
         rec.clear()
         rec.update(_empty_record(), created_by="agent" if agent_created else "learn")
         return {"created_by": rec["created_by"]}
-    _mutate_and_emit(skill_name, "created", _apply, task_id=task_id, session_id=session_id)
+    return _mutate_and_emit(skill_name, "created", _apply, task_id=task_id, session_id=session_id)
 
 
 def record_installed(skill_name: str) -> None:

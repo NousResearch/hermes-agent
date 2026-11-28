@@ -241,6 +241,17 @@ def _skill_manage_batch(operations, default_name: str | None = None, task_id: st
     names, err = _validate_batch_ops(operations, default_name, tool_error)
     if err is not None:
         return err
+    # One cap check for the batch's total creates, its lock held through commit or rollback.
+    from tools.skill_manager_guards import agent_created_cap
+    with agent_created_cap(sum(op["action"] == "create" for op in operations)) as cap_refusal:
+        if cap_refusal is not None:
+            return json.dumps(cap_refusal, ensure_ascii=False)
+        return _apply_validated_batch(operations, names, task_id, session_id)
+
+
+def _apply_validated_batch(operations, names, task_id, session_id) -> str:
+    from tools import skill_manager_tool as _smt
+    from tools.registry import tool_error
     if not _smt._skill_gate_bypass.get():
         # Approval gate for the WHOLE batch as one pending write.
         def _staging(wa):
@@ -271,7 +282,7 @@ def _skill_manage_batch(operations, default_name: str | None = None, task_id: st
                                               task_id=task_id, session_id=session_id)
                 try:
                     parsed = json.loads(raw)
-                except Exception:
+                except (TypeError, ValueError):  # json.JSONDecodeError is a ValueError
                     parsed = {"success": False, "error": "unparseable op result"}
                 if not parsed.get("success"):
                     note, rollback_failed = _rollback(snapshots, _smt._find_skill, results)

@@ -6,9 +6,9 @@ so test patches keep working."""
 import contextvars as _ctxvars
 import logging
 import threading
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterator, Optional
 
 logger = logging.getLogger("tools.skill_manager_tool")
 
@@ -252,6 +252,81 @@ def _locked_guard(name: str, action: str) -> Optional[dict[str, Any]]:
         from tools.skill_lock import skill_refusal
         return _refusal(f"Refusing {action}: {skill_refusal(locked)}", _locked=True)
     return None
+
+
+# Set (token-scoped) by the curator consolidation pass: its umbrella creates skip the cap (they absorb
+# and shrink the library); once created they count like any other curator-managed skill.
+_cap_exempt: _ctxvars.ContextVar[bool] = _ctxvars.ContextVar("agent_created_cap_exempt", default=False)
+_cap_held: _ctxvars.ContextVar[bool] = _ctxvars.ContextVar("agent_created_cap_held", default=False)
+
+
+def _count_agent_created() -> int:
+    """One rule: a curator-managed record takes a slot for the skill ``_find_skill`` (the resolver every
+    skill_manage call uses, catalog precedence, ambiguous names refused) addresses with it, each skill
+    directory once. A record naming the directory itself (what ``record_created`` writes) counts in any
+    state, since the skill is on disk (a ``curator rollback`` restore leaves it marked archived). A record
+    reaching the skill only through its frontmatter name (what ``curator adopt <display name>`` writes)
+    counts while it is not archived, so a stale record never hands its slot to an unrelated user skill
+    that later took the same display name. Strict read: raises on a damaged sidecar."""
+    from tools import skill_manager_tool as _smt
+    from tools import skill_usage
+    usage, bundled = skill_usage._load_usage_strict(), skill_usage._read_bundled_names()
+    owned = set()
+    for name, rec in usage.items():
+        if not skill_usage._is_curator_managed_record(rec) or name in bundled or not (found := _smt._find_skill(name)):
+            continue
+        if found["path"].name == name or rec.get("state") != skill_usage.STATE_ARCHIVED:
+            owned.add(found["path"].resolve())
+    return len(owned)
+
+
+@contextmanager
+def agent_created_cap(creates: int) -> Iterator[Optional[dict[str, Any]]]:
+    """``curator.max_agent_created`` for a background-review write adding *creates* skills: yields a refusal,
+    or None while holding one profile-wide lock the caller keeps across the write AND its creation record,
+    so two reviews cannot share a last slot (thread re-entrant: a batch's per-op calls pass straight
+    through). Updates stay allowed at the cap, so the fork must improve or retire a skill before adding
+    one: every auto-written skill rides each session's prompt index. A no-op (None, no lock) for
+    foreground writes, the consolidation pass, non-creates and cap 0. Fails closed on an unreadable
+    sidecar. Inspired by Perplexity Brain's per-user cap on automatically created skills."""
+    try:
+        from agent.curator import get_max_agent_created
+        cap = get_max_agent_created() if creates and _is_background_review() and not _cap_exempt.get() else 0
+    except Exception:
+        logger.debug("curator.max_agent_created read failed; treating as unset", exc_info=True)
+        cap = 0
+    if cap <= 0:
+        yield None
+        return
+    from tools import skill_manager_tool as _smt
+    from tools import skill_usage
+    with skill_usage.skill_file_lock(_smt._skills_dir() / ".locks" / "agent-created-cap.lock"):
+        if _cap_held.get():
+            yield None  # an outer call (the batch) already checked the total under this lock
+            return
+        try:
+            have = _count_agent_created()
+        except Exception:
+            logger.warning("agent-created skill count unreadable; refusing the background create", exc_info=True)
+            yield _refusal("Refusing background create: skills/.usage.json is unreadable, so "
+                           "curator.max_agent_created cannot be checked. Patch an existing skill instead.",
+                           _cap_reached=True)
+            return
+        if have + creates > cap:
+            # Never steer the review toward deleting: retirement belongs to the curator, which also
+            # rewrites cron references to an archived skill.
+            yield _refusal(
+                f"Refusing background create: {have} agent-created skills already exist and "
+                f"curator.max_agent_created is {cap}. Put the lesson into the closest existing skill "
+                f"(skill_view, then patch). If no skill fits, do not delete anything: stop and reply "
+                f"'Nothing to save.'", _cap_reached=True)
+            return
+        token = _cap_held.set(True)
+        try:
+            yield None
+        finally:
+            _cap_held.reset(token)
+
 
 def _background_review_preflight(action: str, name: str) -> Optional[dict[str, Any]]:
     """Guards that run on the bare action/name before any handler, for the single-op AND the

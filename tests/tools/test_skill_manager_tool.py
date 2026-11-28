@@ -6,6 +6,7 @@ import sys
 import threading
 from contextlib import contextmanager
 from contextvars import copy_context
+from contextlib import suppress as contextlib_suppress
 from pathlib import Path
 from unittest.mock import patch
 
@@ -1574,3 +1575,129 @@ def test_index_desc_limit_sets_the_skill_manage_description_budget(tmp_path, mon
     created = json.loads(skill_manage(action="create", name="market-data", content=content))
     assert created["success"] is True, created
     assert "max 160 chars" in schema_desc()
+
+
+def test_max_agent_created_caps_review_creates_but_not_updates_or_user_creates(tmp_path, monkeypatch):
+    """At curator.max_agent_created the unattended review cannot add a skill (single op or batch, or
+    while the count is unreadable) but can still patch one it has read; a user create is never capped."""
+    from tools.skill_manager_guards import _reset_background_review_read_marks, mark_background_review_skill_read
+    from tools.skill_provenance import BACKGROUND_REVIEW, reset_current_write_origin, set_current_write_origin
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    # create_dir + a frontmatter name unlike the tool name: the count must still see skill "one".
+    (tmp_path / "config.yaml").write_text(
+        "curator:\n  max_agent_created: 1\nskills:\n  create_dir: team-skills\n", encoding="utf-8")
+
+    def skill(name):
+        return f"---\nname: {name}-display\ndescription: Use when testing the cap.\n---\n\nStep one.\n"
+
+    token = set_current_write_origin(BACKGROUND_REVIEW)
+    try:
+        _reset_background_review_read_marks()
+        first = json.loads(skill_manage(action="create", name="one", content=skill("one")))
+        second = json.loads(skill_manage(action="create", name="two", content=skill("two")))
+        batch = json.loads(skill_manage(action="", name="", operations=[
+            {"action": "create", "name": "three", "content": skill("three")}]))
+        # One free slot, two creates in one batch: refused whole, before either is written.
+        (tmp_path / "config.yaml").write_text(
+            "curator:\n  max_agent_created: 2\nskills:\n  create_dir: team-skills\n", encoding="utf-8")
+        batch_two = json.loads(skill_manage(action="", name="", operations=[
+            {"action": "create", "name": "b-one", "content": skill("b-one")},
+            {"action": "create", "name": "b-two", "content": skill("b-two")}]))
+        (tmp_path / "config.yaml").write_text(
+            "curator:\n  max_agent_created: 1\nskills:\n  create_dir: team-skills\n", encoding="utf-8")
+        mark_background_review_skill_read(tmp_path / "team-skills" / "one" / "SKILL.md")
+        patched = json.loads(skill_manage(action="patch", name="one", old_string="Step one.",
+                                          new_string="Step one, then two."))
+        # A second record keyed by the frontmatter name (an adopt) must not make "one" fill two slots.
+        usage_path = tmp_path / "skills" / ".usage.json"
+        usage = json.loads(usage_path.read_text(encoding="utf-8"))
+        usage["one-display"] = {"created_by": "agent", "state": "active"}
+        usage_path.write_text(json.dumps(usage), encoding="utf-8")
+        (tmp_path / "config.yaml").write_text(
+            "curator:\n  max_agent_created: 2\nskills:\n  create_dir: team-skills\n", encoding="utf-8")
+        counted_once = json.loads(skill_manage(action="create", name="five", content=skill("five")))
+        (tmp_path / "config.yaml").write_text(
+            "curator:\n  max_agent_created: 10\nskills:\n  create_dir: team-skills\n", encoding="utf-8")
+        # A create whose record cannot be saved is undone, or its slot would stay free.
+        real_record = __import__("tools.skill_usage", fromlist=["x"]).record_created
+
+        def record_fails_after_a_sibling_write(n, **kw):  # another writer drops a file in first
+            (tmp_path / "team-skills" / n / "notes.md").write_text("theirs", encoding="utf-8")
+            with patch("tools.skill_usage.save_usage", return_value=False):
+                return real_record(n, **kw)
+        with patch("tools.skill_usage.record_created", record_fails_after_a_sibling_write):
+            unrecorded = json.loads(skill_manage(action="create", name="six", content=skill("six")))
+        # A user skill sharing a managed skill's display name never borrows that record's slot.
+        reset_current_write_origin(token)
+        user_twin = skill("x").replace("x-display", "five")  # display name == managed skill "five"'s record key
+        assert json.loads(skill_manage(action="create", name="weekly", content=user_twin))["success"]
+        token = set_current_write_origin(BACKGROUND_REVIEW)
+        (tmp_path / "config.yaml").write_text(
+            "curator:\n  max_agent_created: 3\nskills:\n  create_dir: team-skills\n", encoding="utf-8")
+        borrowed = json.loads(skill_manage(action="create", name="seven", content=skill("seven")))
+        # ...nor from an ARCHIVED managed record ("ghost") that resolves to it by display name.
+        usage = json.loads(usage_path.read_text(encoding="utf-8"))
+        usage["ghost"] = {"created_by": "agent", "state": "archived"}
+        usage_path.write_text(json.dumps(usage), encoding="utf-8")
+        reset_current_write_origin(token)
+        ghost_twin = skill("x").replace("x-display", "ghost")
+        assert json.loads(skill_manage(action="create", name="mine-too", content=ghost_twin))["success"]
+        token = set_current_write_origin(BACKGROUND_REVIEW)
+        (tmp_path / "config.yaml").write_text(
+            "curator:\n  max_agent_created: 4\nskills:\n  create_dir: team-skills\n", encoding="utf-8")
+        not_ghosted = json.loads(skill_manage(action="create", name="eight", content=skill("eight")))
+        usage_path.write_text("{not json", encoding="utf-8")
+        damaged = json.loads(skill_manage(action="create", name="four", content=skill("four")))
+    finally:
+        reset_current_write_origin(token)
+    user = json.loads(skill_manage(action="create", name="mine", content=skill("mine")))
+
+    assert first["success"] is True, first
+    assert second["success"] is False and second.get("_cap_reached") is True, second
+    assert batch["success"] is False and batch.get("_cap_reached") is True, batch
+    assert batch_two.get("_cap_reached") is True and not any(
+        (tmp_path / "team-skills" / n).exists() for n in ("b-one", "b-two")), batch_two
+    assert not (tmp_path / "team-skills" / "two").exists() and not (tmp_path / "team-skills" / "three").exists()
+    assert patched["success"] is True, patched
+    assert counted_once["success"] is True, counted_once
+    six = tmp_path / "team-skills" / "six"
+    assert unrecorded["success"] is False and not (six / "SKILL.md").exists(), unrecorded
+    assert (six / "notes.md").read_text(encoding="utf-8") == "theirs"  # undo removes only what create wrote
+    assert borrowed["success"] is True, borrowed  # one, five, seven = 3; "weekly" (learn) takes no slot
+    assert not_ghosted["success"] is True, not_ghosted  # one, five, seven, eight = 4; "mine-too" takes none
+    assert damaged["success"] is False and not (tmp_path / "team-skills" / "four").exists(), damaged  # fail closed
+    assert user["success"] is True, user
+
+
+def test_max_agent_created_two_concurrent_reviews_cannot_share_the_last_slot(tmp_path, monkeypatch):
+    """A user skill adopted by its display name (real `curator adopt`) takes one of two slots; two review
+    forks then race for the last one: exactly one create lands."""
+    from tools.skill_provenance import BACKGROUND_REVIEW, set_current_write_origin
+    from tools.skill_usage import adopt_skill
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text("curator:\n  max_agent_created: 2\n", encoding="utf-8")
+    report = "---\nname: weekly-report\ndescription: Use when testing the cap.\n---\n\nStep.\n"
+    assert json.loads(skill_manage(action="create", name="weekly", content=report))["success"]
+    assert adopt_skill("weekly-report")[0]
+    import tools.skill_manager_tool as smt
+    real_create, gate = smt._create_skill, threading.Barrier(2, timeout=2)
+
+    def slow_create(*a, **kw):  # widen the count-to-record window the lock must cover
+        with contextlib_suppress(threading.BrokenBarrierError):
+            gate.wait()
+        return real_create(*a, **kw)
+
+    monkeypatch.setattr(smt, "_create_skill", slow_create)
+    results = []
+
+    def review(name):
+        set_current_write_origin(BACKGROUND_REVIEW)
+        body = f"---\nname: {name}\ndescription: Use when testing the cap.\n---\n\nStep.\n"
+        results.append(json.loads(skill_manage(action="create", name=name, content=body)))
+
+    threads = [threading.Thread(target=copy_context().run, args=(review, n)) for n in ("race-a", "race-b")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(10)
+    assert sorted(r["success"] for r in results) == [False, True], results

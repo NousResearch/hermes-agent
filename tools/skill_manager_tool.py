@@ -31,7 +31,7 @@ from agent.skill_utils import (
 from tools.skill_manager_guards import (
     _background_review_delete_guard, _background_review_preflight, _background_review_read_before_write_guard,
     _containing_skills_root, _curator_consolidation_delete_guard, _is_path_redirect, _pinned_guard,
-    _validate_delete_target, _is_background_review, _refusal as _err)
+    _validate_delete_target, _is_background_review, _refusal as _err, agent_created_cap)
 from tools.skill_manager_batch import (
     _PATCH_EITHER_OR, _PATCH_NEEDS_NEW_STRING, _PATCH_NEEDS_OLD_STRING, _op_shape_error, _skill_manage_batch)
 from tools.skill_manager_scan import (
@@ -798,6 +798,18 @@ def skill_manage(
     if operations is not None:
         return _skill_manage_batch(
             operations, default_name=name or None, task_id=task_id, session_id=session_id)
+    # The cap's lock spans the check, the write and the creation record (see agent_created_cap).
+    with agent_created_cap(int(action == "create")) as cap_refusal:
+        if cap_refusal is not None:
+            return json.dumps(cap_refusal, ensure_ascii=False)
+        return _skill_manage_single(action, name, content=content, category=category, file_path=file_path,
+                                    file_content=file_content, old_string=old_string, new_string=new_string,
+                                    replace_all=replace_all, absorbed_into=absorbed_into, task_id=task_id,
+                                    session_id=session_id)
+
+
+def _skill_manage_single(action: str, name: str, *, content, category, file_path, file_content, old_string,
+                         new_string, replace_all, absorbed_into, task_id, session_id) -> str:
     if (preflight := _background_review_preflight(action, name)) is not None:
         return json.dumps(preflight, ensure_ascii=False)
     # Approval gate: skills are too large to review inline, so they always stage regardless
@@ -837,7 +849,34 @@ def skill_manage(
             _record_success(
                 action, name, result, file_path=file_path, absorbed_into=absorbed_into,
                 task_id=task_id, session_id=session_id, ledger_before=_ledger_before)
+            if action == "create" and _cap_record_missing(name):
+                result = _undo_uncounted_create(name)
     return json.dumps(result, ensure_ascii=False)
+
+
+def _cap_record_missing(name: str) -> bool:
+    """Under a held agent-created cap, True when the create's ``created_by: agent`` record did not land:
+    an unrecorded skill would leave its slot free for the next review."""
+    from tools.skill_manager_guards import _cap_held
+    if not _cap_held.get():
+        return False
+    try:
+        from tools.skill_usage import _is_curator_managed_record, _load_usage_strict
+        return not _is_curator_managed_record(_load_usage_strict().get(name))
+    except (OSError, ValueError):  # unreadable sidecar: the record cannot be shown to exist
+        logger.warning("creation record unreadable for %s; undoing the capped create", name, exc_info=True)
+        return True
+
+
+def _undo_uncounted_create(name: str) -> dict[str, Any]:
+    """Remove exactly what the create wrote (SKILL.md), then the dir only if nothing else landed in it."""
+    if found := _find_skill(name):
+        with suppress(OSError):
+            (found["path"] / "SKILL.md").unlink()
+        with suppress(OSError):
+            found["path"].rmdir()
+    return _err(f"Skill '{name}' was not kept: its creation record could not be saved to skills/.usage.json, "
+                "so it would not count toward curator.max_agent_created. Patch an existing skill instead.")
 
 
 # --- OpenAI Function-Calling Schema -------------------------------------------

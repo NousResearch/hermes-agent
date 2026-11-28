@@ -59,9 +59,16 @@ curator:
   archive_after_days: 30
   consolidate: false           # LLM umbrella-building pass — opt-in (prune-only by default)
   prune_builtins: false        # opt in to archiving unused bundled built-in skills too (hub skills always exempt)
+  max_agent_created: 0         # cap on skills the background review may create; 0 = no cap
 ```
 
 To disable entirely, set `curator.enabled: false`. To keep the always-on pruning but opt into LLM consolidation, set `curator.consolidate: true`.
+
+### Capping the auto-written library (`max_agent_created`)
+
+Every skill the background review writes adds a line to the skill index in every session's system prompt. A long-lived agent that creates a skill for each new workflow ends up with an index so long that the useful entries get harder to find. Set `curator.max_agent_created: N` to keep it small. Once N agent-created skills exist, a `skill_manage create` from the background review is refused. The refusal tells the review to put the lesson into the closest existing skill instead, or, if none fits, to stop without saving it. It is never told to delete: retiring skills stays with the curator, which also rewrites cron jobs that referenced an archived skill. Patches, edits and support files are never capped. Skills you create in a normal conversation (including `/learn`) are not counted and are never refused.
+
+What takes a slot: every curator-managed skill that is on disk where the agent can address it by its record name, i.e. skills the background review created (wherever `skills.create_dir` put them) and skills you opted in with `hermes curator adopt`; each skill directory counts once. Umbrellas the curator's consolidation pass creates skip the check when they are made, so a merge can always run, and count like any other managed skill afterwards. With `skills.write_approval` on, a staged create you approve counts as user-directed and takes no slot. If `skills/.usage.json` cannot be read, background creates are refused until it is repaired, so a damaged sidecar never lifts the cap. `hermes curator status` shows the cap. A cap of about 10 to 20 keeps the auto-written part of the index short.
 
 ### Running the review on a cheaper aux model
 

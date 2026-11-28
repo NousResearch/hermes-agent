@@ -1458,9 +1458,9 @@ DEFAULT_CONFIG = {
         # `skills_list` because nobody loaded them for 30 days surprised people (57 gone in one
         # startup tick). true = built-ins age out like agent-created skills.
         "prune_builtins": False,
-        # TTL purge of skills/.archive/: 0 = never; > 0 lets the explicit `hermes curator purge`
-        # delete older archived skills (never automatic; logged in the ledger).
+        # TTL purge of skills/.archive/: 0 = never; > 0 lets `hermes curator purge` delete older ones (ledgered).
         "archive_ttl_days": 0,
+        "max_agent_created": 0,  # cap on background-review skill creates (0 = none); see curator docs
         # Before a consolidation pass (the only one that rewrites skill content in place), snapshot
         # ~/.hermes/skills/ to ~/.hermes/skills/.curator_backups/<utc-iso>/skills.tar.gz (`hermes curator
         # rollback`). The prune-only pass just moves directories into .archive/ and takes none.

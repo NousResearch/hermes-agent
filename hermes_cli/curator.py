@@ -95,6 +95,8 @@ def _print_curator_config(curator) -> None:
     print(f"  interval:       every {f'{ih // 24}d' if ih % 24 == 0 and ih >= 24 else f'{ih}h'}")
     print(f"  stale after:    {curator.get_stale_after_days()}d unused")
     print(f"  archive after:  {curator.get_archive_after_days()}d unused")
+    cap = curator.get_max_agent_created()
+    print(f"  create cap:     {cap or 'none'}{' agent-created skills (review creates refused past it)' if cap else ''}")
     consolidate = curator.get_consolidate()
     print(
         f"  consolidate:    {'on' if consolidate else 'off'}"

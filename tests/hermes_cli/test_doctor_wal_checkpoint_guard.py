@@ -62,7 +62,7 @@ def test_session_count_reads_a_home_with_uri_reserved_characters(tmp_path):
     import sqlite3
 
     from hermes_cli.doctor_state import _session_count
-    from hermes_state_holders import read_only_db_uri
+    from sqlite_support import read_only_db_uri
 
     assert "%3Fblue%23x" in read_only_db_uri(tmp_path / "profile?blue#x" / "state.db")
     home = tmp_path / "profile#x"

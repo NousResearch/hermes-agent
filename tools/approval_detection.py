@@ -527,7 +527,11 @@ DANGEROUS_PATTERNS = [
     # to the rm rules. The span runs to the OUTER quote, so a nested `'C:\\work dir'` cannot end it.
     (_PS_EXE_AT_COMMAND_POSITION + r'(?:\s+-\S+)*\s+(?:"[^"\n]*|\'[^\'\n]*)[|;{(]\s*' + _PS_DELETE_VERB + r'(?![\w-])',
      "Windows PowerShell destructive delete (later in the script)"),
-    (r'\b(?:powershell|pwsh)(?:\.exe)?\b.*\s-(?:encodedcommand|enc|e)\b', "PowerShell encoded command execution"),
+    # `-e` is not a PowerShell inline-script switch (`-Command`/`-c` are). The old
+    # loose `\s-e\b` alternative matched flags in nested payloads such as `grep -E`,
+    # causing benign inspection commands to require approval. Keep the real
+    # `-EncodedCommand` and documented `-enc` forms.
+    (r'\b(?:powershell|pwsh)(?:\.exe)?\b.*\s-(?:encodedcommand|enc)\b', "PowerShell encoded command execution"),
     # ── Windows destructive tier: native Windows EXEs/cmdlets reachable from ANY backend on a
     # Windows host (incl. git-bash). Input is lowercased by the variant loop, so patterns are
     # lowercase. Each requires the destructive flag/verb so benign usage (`taskkill /IM app.exe`,

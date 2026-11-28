@@ -1093,3 +1093,125 @@ class TestLightpandaPostSetup:
         # Not in the forced-setup gate: a missing binary must not nag every
         # user who toggles the browser toolset.
         assert "lightpanda" not in _POST_SETUP_INSTALLED
+
+
+@pytest.fixture
+def platform_configuration(monkeypatch):
+    """Use real platform resolution/writes with deterministic interactive boundaries."""
+    from copy import deepcopy
+    from hermes_cli import tools_config
+
+    saved = []
+    monkeypatch.setattr(tools_config, "_get_plugin_toolset_keys", lambda: set())
+    monkeypatch.setattr(tools_config, "_toolsets_needing_setup", lambda *_args: [])
+    monkeypatch.setattr(
+        tools_config, "save_config", lambda config: saved.append(deepcopy(config))
+    )
+    return tools_config, saved
+
+
+def test_configure_platform_no_change_preserves_config(
+    platform_configuration, monkeypatch
+):
+    """Returning without selection/setup changes must not rewrite either platform."""
+    from copy import deepcopy
+
+    tools_config, saved = platform_configuration
+    config = {
+        "platform_toolsets": {"cli": ["terminal"], "telegram": ["file"]},
+        "agent": {"disabled_toolsets": []},
+        "model": {"default": "unchanged"},
+    }
+    before = deepcopy(config)
+    monkeypatch.setattr(
+        tools_config,
+        "_prompt_toolset_checklist",
+        lambda *_args, **_kwargs: {"terminal"},
+    )
+
+    assert tools_config._configure_platforms(config, ["cli"]) is False
+    assert config == before
+    assert saved == []
+
+
+def test_configure_platform_saves_changed_selection(
+    platform_configuration, monkeypatch
+):
+    tools_config, saved = platform_configuration
+    config = {
+        "platform_toolsets": {"cli": ["terminal"], "telegram": ["web"]},
+        "agent": {"disabled_toolsets": []},
+        "model": {"default": "unchanged"},
+    }
+    monkeypatch.setattr(
+        tools_config,
+        "_prompt_toolset_checklist",
+        lambda *_args, **_kwargs: {"terminal", "file"},
+    )
+
+    assert tools_config._configure_platforms(config, ["cli"]) is True
+    assert set(config["platform_toolsets"]["cli"]) == {"terminal", "file"}
+    assert config["platform_toolsets"]["telegram"] == ["web"]
+    assert config["model"] == {"default": "unchanged"}
+    assert saved and saved[-1] == config
+
+
+def test_configure_platform_saves_setup_without_selection_change(
+    platform_configuration, monkeypatch
+):
+    tools_config, saved = platform_configuration
+    config = {
+        "platform_toolsets": {"cli": ["web"], "telegram": ["terminal"]},
+        "agent": {"disabled_toolsets": []},
+    }
+    monkeypatch.setattr(
+        tools_config, "_prompt_toolset_checklist", lambda *_args, **_kwargs: {"web"}
+    )
+    monkeypatch.setattr(
+        tools_config,
+        "_toolsets_needing_setup",
+        lambda keys, _config: sorted(set(keys) & {"web"}),
+    )
+
+    def configure_web(key, updated):
+        assert key == "web"
+        updated["web"] = {"search_backend": "brave-free"}
+
+    monkeypatch.setattr(tools_config, "_configure_toolset", configure_web)
+
+    assert tools_config._configure_platforms(config, ["cli"]) is True
+    assert config["web"] == {"search_backend": "brave-free"}
+    assert config["platform_toolsets"]["telegram"] == ["terminal"]
+    assert saved and saved[-1] == config
+
+
+def test_configure_all_platforms_rereads_after_disabled_reconciliation(
+    platform_configuration, monkeypatch, capsys
+):
+    """Enabling web for CLI also lifts the shared suppression on Telegram's saved web row."""
+    tools_config, saved = platform_configuration
+    config = {
+        "platform_toolsets": {"cli": ["terminal"], "telegram": ["terminal", "web"]},
+        "agent": {"disabled_toolsets": ["web"]},
+        "model": {"default": "unchanged"},
+    }
+    monkeypatch.setattr(
+        tools_config,
+        "_prompt_toolset_checklist",
+        lambda *_args, **_kwargs: {"terminal", "web"},
+    )
+
+    assert (
+        tools_config._configure_platforms(
+            config, ["cli", "telegram"], all_platforms=True
+        )
+        is True
+    )
+    assert set(config["platform_toolsets"]["cli"]) == {"terminal", "web"}
+    assert set(config["platform_toolsets"]["telegram"]) == {"terminal", "web"}
+    assert config["agent"]["disabled_toolsets"] == []
+    assert config["model"] == {"default": "unchanged"}
+    assert saved and saved[-1] == config
+    output = capsys.readouterr().out
+    assert output.count(tools_config._toolset_label("web")) == 1
+    assert tools_config.PLATFORMS["telegram"]["label"] not in output

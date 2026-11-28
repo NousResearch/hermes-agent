@@ -10,6 +10,7 @@ import {
   menuMotionClass,
   menuSurfaceClass
 } from '@/components/ui/menu'
+import { isTouchInteraction } from '@/lib/touch-interaction'
 import { cn } from '@/lib/utils'
 
 // Shared class tokens for edge-to-edge menus (use with `p-0` content): rows go
@@ -169,16 +170,106 @@ function useRowSearchHover(props: RowPointerHandlers) {
   return useSearchSafeHover(props, { enter: () => hoverSubmenus?.enterRow() })
 }
 
-function DropdownMenu({ ...props }: React.ComponentProps<typeof DropdownMenuPrimitive.Root>) {
-  return <DropdownMenuPrimitive.Root data-slot="dropdown-menu" {...props} />
+const DropdownMenuToggleContext = React.createContext<(() => void) | null>(null)
+
+function DropdownMenu({
+  open: controlledOpen,
+  defaultOpen = false,
+  onOpenChange,
+  ...props
+}: React.ComponentProps<typeof DropdownMenuPrimitive.Root>) {
+  const [uncontrolledOpen, setUncontrolledOpen] = React.useState(defaultOpen)
+  const open = controlledOpen ?? uncontrolledOpen
+
+  const changeOpen = (next: boolean) => {
+    if (controlledOpen === undefined) {
+      setUncontrolledOpen(next)
+    }
+
+    onOpenChange?.(next)
+  }
+
+  return (
+    <DropdownMenuToggleContext.Provider value={() => changeOpen(!open)}>
+      <DropdownMenuPrimitive.Root data-slot="dropdown-menu" {...props} onOpenChange={changeOpen} open={open} />
+    </DropdownMenuToggleContext.Provider>
+  )
 }
 
 function DropdownMenuPortal({ ...props }: React.ComponentProps<typeof DropdownMenuPrimitive.Portal>) {
   return <DropdownMenuPrimitive.Portal data-slot="dropdown-menu-portal" {...props} />
 }
 
-function DropdownMenuTrigger({ ...props }: React.ComponentProps<typeof DropdownMenuPrimitive.Trigger>) {
-  return <DropdownMenuPrimitive.Trigger data-slot="dropdown-menu-trigger" {...props} />
+function DropdownMenuTrigger({
+  onKeyDown,
+  onPointerCancel,
+  onPointerDown,
+  onPointerMove,
+  onPointerUp,
+  ...props
+}: React.ComponentProps<typeof DropdownMenuPrimitive.Trigger>) {
+  const toggle = React.useContext(DropdownMenuToggleContext)
+  const touchPress = React.useRef<{ id: number; x: number; y: number } | null>(null)
+
+  const cancelDrag = (event: React.PointerEvent<HTMLButtonElement>) => {
+    const start = touchPress.current
+
+    if (start && Math.hypot(event.clientX - start.x, event.clientY - start.y) > 10) {
+      touchPress.current = null
+    }
+  }
+
+  return (
+    <DropdownMenuPrimitive.Trigger
+      data-slot="dropdown-menu-trigger"
+      {...props}
+      onKeyDown={event => {
+        touchPress.current = null
+        onKeyDown?.(event)
+      }}
+      onPointerCancel={event => {
+        touchPress.current = null
+        onPointerCancel?.(event)
+      }}
+      onPointerDown={event => {
+        touchPress.current = null
+        onPointerDown?.(event)
+
+        if (!event.defaultPrevented && isTouchInteraction(event.nativeEvent)) {
+          event.preventDefault()
+
+          if (event.button !== 0 || event.ctrlKey || props.disabled || event.currentTarget.matches(':disabled')) {
+            return
+          }
+
+          // Radix opens on pointerdown, before iOS can claim an upward swipe.
+          // WebKit suppresses the click after a canceled pointerdown; complete
+          // a stationary press on pointerup instead, never on pointercancel.
+          touchPress.current = { id: event.pointerId, x: event.clientX, y: event.clientY }
+        }
+      }}
+      onPointerMove={event => {
+        cancelDrag(event)
+        onPointerMove?.(event)
+      }}
+      onPointerUp={event => {
+        cancelDrag(event)
+        onPointerUp?.(event)
+        const tap = touchPress.current
+        touchPress.current = null
+
+        if (
+          tap &&
+          tap.id === event.pointerId &&
+          !event.defaultPrevented &&
+          !props.disabled &&
+          !event.currentTarget.matches(':disabled')
+        ) {
+          toggle?.()
+        }
+      }}
+    />
+  )
 }
 
 /**

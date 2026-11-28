@@ -3552,3 +3552,29 @@ class TestChannelCursorPersistence:
         saved = json.loads(self._cursor_file(tmp_path).read_text(encoding="utf-8"))
         assert saved["channels"][CHANNEL]["last_ts"] == 200
         assert saved["channels"][CHANNEL]["seen"] == ["e1", "e2"]
+
+
+# ── Connect diagnostics: a missing profile is not a membership problem ─────
+
+class TestMissingProfileDiagnostic:
+    """`users get` answers [] for an identity that never published a profile.
+
+    That is the normal state of a freshly minted key on a new relay, and the adapter used to
+    report it as a possible membership failure — a wrong cause, which sends the reader after the
+    wrong fix. The message must name what is actually missing and the command that resolves it.
+    """
+
+    @pytest.mark.asyncio
+    async def test_empty_profile_names_the_real_cause_and_the_fix(self, monkeypatch):
+        adapter = _make_adapter()
+        adapter.cli_path = "/fake/buzz"
+        monkeypatch.setattr(_buzz_mod, "_resolve_private_key", lambda extra=None: "nsec1test")
+        cli = _ScriptedCli()
+        cli.script("users", "get", [])
+        adapter._run_cli = cli
+
+        assert await adapter.connect() is False
+        message = adapter._fatal_error_message or ""
+        assert "set-profile" in message, message
+        assert "https://test.relay" in message, message
+        assert "member of this community" not in message, message

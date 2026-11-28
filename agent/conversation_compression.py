@@ -2124,27 +2124,21 @@ def _steer_markers() -> tuple[str, str]:
         return _STEER_FALLBACK_OPEN, _STEER_FALLBACK_CLOSE
 
 
-def _message_contains_busy_steer(message: Any) -> bool:
-    """Return whether *message* carries a busy-steer marker.
-    Steer follow-ups are now their own ``role=user`` rows (caught by ``_is_real_user_message``); in
-    transcripts persisted before that they ride inside ``role=tool`` results, so those still count."""
-    text = _message_text(message)
-    if not text:
-        return False
-    open_marker, close_marker = _steer_markers()
-    return open_marker in text and close_marker in text
+def _live_steer_span(text: str) -> Optional[tuple[int, int]]:
+    """``(start, end)`` of the steer text in a live steer block, or ``None``.
 
-
-def _extract_steer_text_from_message(message: Any) -> Optional[str]:
-    """Extract the inner user text from a steer marker, or None."""
-    text = _message_text(message)
-    if not text:
-        return None
+    A live steer is appended to the tool result as top-level text, so the
+    marker block closes the content. Marker text nested inside other content —
+    a ``session_search`` result quoting a stored transcript, a file read of a
+    persisted tool result — is quoted data, not a new delivery (#161043). The
+    last block wins: an older quoted block must not shadow a live steer
+    appended after it.
+    """
     open_marker, close_marker = _steer_markers()
-    start = text.find(open_marker)
+    start = text.rfind(open_marker)
     if start == -1:
         # Fallback: marker wording may evolve; look for the stable prefix, then skip to the end of the opening line.
-        start = text.find(_STEER_FALLBACK_OPEN)
+        start = text.rfind(_STEER_FALLBACK_OPEN)
         if start == -1:
             return None
         nl = text.find("\n", start)
@@ -2152,10 +2146,37 @@ def _extract_steer_text_from_message(message: Any) -> Optional[str]:
     else:
         start += len(open_marker)
     end = text.find(close_marker, start)
+    close_len = len(close_marker)
     if end == -1:
         end = text.find(_STEER_FALLBACK_CLOSE, start)
+        close_len = len(_STEER_FALLBACK_CLOSE)
         if end == -1:
             return None
+    if text[end + close_len:].strip():
+        return None
+    return (start, end)
+
+
+def _message_contains_busy_steer(message: Any) -> bool:
+    """Return whether *message* carries a busy-steer marker.
+    Steer follow-ups are now their own ``role=user`` rows (caught by ``_is_real_user_message``); in
+    transcripts persisted before that they ride inside ``role=tool`` results, so those still count.
+    Marker text merely quoted inside a tool result does not count (#161043)."""
+    text = _message_text(message)
+    if not text:
+        return False
+    return _live_steer_span(text) is not None
+
+
+def _extract_steer_text_from_message(message: Any) -> Optional[str]:
+    """Extract the inner user text from a steer marker, or None."""
+    text = _message_text(message)
+    if not text:
+        return None
+    span = _live_steer_span(text)
+    if span is None:
+        return None
+    start, end = span
     return text[start:end].strip() or None
 
 

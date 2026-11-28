@@ -159,6 +159,59 @@ def test_api_server_image_replays_with_its_position_and_detail(tmp_path, parts):
     assert _rebuilt_request(tmp_path, [live])[0]["content"] == live["content"]
 
 
+@pytest.mark.parametrize("replay_backend", ["ssh", "local", "docker"])
+def test_ssh_spelled_hint_replays_and_still_checks_the_host_digest(tmp_path, monkeypatch, replay_backend):
+    """An SSH session's hint names the synced copy (``~/.hermes/cache/…``); the rebuilt row maps it
+    back to the host store under any backend active at replay time, and a file whose bytes no longer
+    match their digest is still never replayed."""
+    _config(replay_recent_images=3)
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
+    live, path = _live_turn(tmp_path, "label.png", "What is on this label?")
+    changed, changed_path = _live_turn(tmp_path, "changed.png", "second photo", data=_PNG + b"\x00")
+    assert live["content"][0]["text"].endswith(
+        f"[Image attached at: ~/.hermes/cache/documents/native-inputs/{path.parent.name}/label.png]")
+    changed_path.write_bytes(b"tampered")
+    monkeypatch.setenv("TERMINAL_ENV", replay_backend)
+
+    users = _rebuilt_request(tmp_path, [live, changed])
+
+    assert users[0]["content"] == live["content"]
+    assert users[1]["content"].endswith("\n[screenshot]")
+
+
+def test_synced_spelling_outside_the_retained_store_is_not_replayed(tmp_path, monkeypatch):
+    """The ``~/.hermes`` mapping does not widen what replays: only this profile's ``native-inputs``."""
+    import hashlib
+
+    from agent.image_replay import _retained_data_url
+    from hermes_constants import get_hermes_home
+
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
+    sha = hashlib.sha256(_PNG).hexdigest()
+    elsewhere = get_hermes_home() / "cache" / "images" / sha / "x.png"
+    elsewhere.parent.mkdir(parents=True)
+    elsewhere.write_bytes(_PNG)
+
+    assert _retained_data_url(f"~/.hermes/cache/images/{sha}/x.png") is None
+    assert _retained_data_url(f"~/.hermes/cache/documents/native-inputs/{sha}/missing.png") is None
+
+
+@pytest.mark.platforms("posix")
+def test_synced_spelling_replays_under_a_symlinked_home(tmp_path, monkeypatch):
+    """The cache mounts keep a symlinked home's configured spelling while the store root is resolved
+    (macOS ``/var`` -> ``/private/var``, a dotfiles-linked home); the mapped hint still replays."""
+    from agent.image_replay import _retained_data_url
+
+    (tmp_path / "real-home").mkdir()
+    (tmp_path / "linked-home").symlink_to(tmp_path / "real-home")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "linked-home"))
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
+    live, _ = _live_turn(tmp_path, "label.png", "What is on this label?")
+    hint = live["content"][0]["text"].rsplit("[Image attached at: ", 1)[1][:-1]
+
+    assert hint.startswith("~/.hermes/") and _retained_data_url(hint) == live["content"][1]["image_url"]["url"]
+
+
 def test_growing_session_drops_replayed_images_in_sticky_batches(tmp_path):
     """Ten single-image turns, keep=3, one request per turn through ``build_api_messages``: earlier
     rows change at most once per batch of ``keep`` new images, and a dropped image never returns."""

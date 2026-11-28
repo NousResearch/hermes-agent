@@ -7,7 +7,9 @@ showed the model that placeholder instead of the photo the user asked about one 
 The bytes are not gone: the session-authority attach paths (CLI, the shared-gateway TUI, messaging
 gateway, API server) commit them under the profile's content-addressed ``native-inputs/<sha256>/<name>``
 and name that path in the same row (``[Image attached at: <path>]``,
-written by ``image_routing.build_native_content_parts`` / ``session_api_media.restore_api_images``).
+written by ``image_routing.build_native_content_parts`` / ``session_api_media.restore_api_images``;
+under a remote or container terminal backend the path is spelled where the agent reaches the copy,
+e.g. ``~/.hermes/cache/…``, and is mapped back to the host store before any check).
 
 On the WIRE COPY only, when this turn sends images natively, the ``vision.replay_recent_images``
 newest images (default 3, 0 = off) go back as ``image_url`` parts; older ones drop in whole
@@ -78,14 +80,19 @@ def _retained_data_url(ref: str) -> Optional[str]:
         return None
     from agent.image_routing import _file_to_data_url
     from gateway.session_ingress_media import native_inputs_root
+    from tools.credential_files import from_any_agent_visible_cache_path
 
-    path = Path(ref)
+    root = native_inputs_root()
+    # The hint names the copy the agent's backend reached, whatever backend is active now.
+    path = Path(from_any_agent_visible_cache_path(ref))
     try:
-        if path.parent.parent != native_inputs_root() or path.is_symlink() or not path.is_file():
+        if path != Path(ref) and path.parent.parent != root and path.parent.parent.resolve() == root:
+            path = root / path.parent.name / path.name  # cache mounts keep a symlinked home's spelling
+        if path.parent.parent != root or path.is_symlink() or not path.is_file():
             return None
         if hashlib.sha256(path.read_bytes()).hexdigest() != path.parent.name:
             return None
-    except OSError:
+    except (OSError, RuntimeError):  # RuntimeError: a symlink loop under resolve() before 3.13
         return None
     return _file_to_data_url(path)
 

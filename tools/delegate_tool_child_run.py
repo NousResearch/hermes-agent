@@ -789,10 +789,11 @@ def _build_child_goal_message(goal: str, images: list[str], child) -> Any:
             return parts if any(p.get("type") == "image_url" for p in parts) else goal
         if data_urls:
             logger.warning("delegate_task: %d inline data-URL image(s) dropped for a non-vision subagent", len(data_urls))
+        from agent.context_references import _agent_visible_path
         hints: list[str] = []
         for p in paths:
             if os.path.isfile(p):
-                hints.append(f"[Image attached at: {p}]")
+                hints.append(f"[Image attached at: {_agent_visible_path(p)}]")
             else:
                 logger.warning("delegate_task: image path not found, not forwarded: %s", p)
         hints.extend(f"[Image attached: {u}]" for u in urls)

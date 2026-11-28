@@ -207,6 +207,24 @@ class TestNonLocalBackendConfinement:
     the media caches; every other path is read inside the sandbox."""
 
     @pytest.mark.asyncio
+    async def test_ssh_synced_cache_spelling_host_reads_the_profile_cache(self, tmp_path, monkeypatch):
+        """An ssh-family sandbox names its synced cache copy ``~/.hermes/cache/…`` (image attachment
+        hints, ``to_agent_visible_cache_path``). Expanding that ``~`` on the host named the gateway
+        user's home instead of this profile's cache, so the read went to the sandbox with a host path."""
+        home = tmp_path / "profiles" / "worker"
+        isrc = _reload(monkeypatch, home)
+        monkeypatch.setenv("HOME", str(tmp_path / "gateway-user"))
+        monkeypatch.setenv("TERMINAL_ENV", "ssh")
+        cached = home / "cache" / "images" / "inbound.png"
+        cached.parent.mkdir(parents=True)
+        cached.write_bytes(PNG)
+        with patch("tools.image_source._get_active_env",
+                   side_effect=AssertionError("a synced cache path must not be read in the sandbox")):
+            res = await isrc.resolve_image_source("~/.hermes/cache/images/inbound.png", isrc.ResolveContext())
+        assert res.data == PNG
+        assert res.origin == "file"
+
+    @pytest.mark.asyncio
     async def test_media_cache_path_host_read(self, tmp_path, monkeypatch):
         home = tmp_path / "hermes"
         isrc = _reload(monkeypatch, home)

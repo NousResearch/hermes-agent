@@ -683,11 +683,12 @@ def _iter_visible_entries(path: Path, cwd: Path, limit: int) -> list[Path]:
     return output
 
 
-def _agent_visible_path(path: Path) -> str:
+def _agent_visible_path(path: str | Path) -> str:
     # Under a container backend the host path dangles inside the sandbox: translate staged
     # files to their auto-mounted cache path; fall back to the host path (local backend /
     # translation failure). Run the idempotent TERMINAL_ENV bridge first so in-process
-    # gateways that never bridged terminal.* config still see the active backend.
+    # gateways that never bridged terminal.* config still see the active backend. Image
+    # attachment hints and notes use the same translation.
     try:
         from tools.terminal_tool import _ensure_terminal_env_bridged
         _ensure_terminal_env_bridged()

@@ -36,10 +36,13 @@ def _build_image_ref_message(user_text: str, image_paths: list[str]) -> str:
     with failures silently swallowed and an interrupt during the window killing the turn with zero API calls
     (#83291). It also prepended the vision description to the first user message, poisoning session
     auto-titles (#82339). The CLI never gates turn dispatch on vision like this, which is why the same
-    message was seconds there and minutes on desktop.
+    message was seconds there and minutes on desktop. The path is named where the agent's terminal
+    backend reaches it.
     """
+    from agent.context_references import _agent_visible_path
     prefix = "\n\n".join(
-        f"[The user attached an image: {p.name}]\n[Examine it with the vision_analyze tool using image_url: {p}]"
+        f"[The user attached an image: {p.name}]\n"
+        f"[Examine it with the vision_analyze tool using image_url: {_agent_visible_path(p)}]"
         for p in map(Path, image_paths) if p.exists()
     )
     text = user_text or ""
@@ -167,6 +170,8 @@ def _user_image_display_text(content: Any) -> str | None:
         paths = [match[1] for match in matches]
         if placeholders not in (0, len(paths)):
             return None
+        from tools.credential_files import from_any_agent_visible_cache_path
+        paths = [from_any_agent_visible_cache_path(p) for p in paths]  # a sandbox spelling shows the host file
         projected = caption + "\n\n" + "\n".join(f"@image:{format_reference_value(p)}" for p in paths)
     else:
         body, placeholders = _strip_trailing_screenshot_placeholders(text)

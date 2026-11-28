@@ -570,16 +570,21 @@ def build_native_content_parts(
     When any image attaches, one text part combines the caption (or a neutral
     default) with a ``[Image attached at: <path>]`` / ``[Image attached: <url>]``
     hint per image — a string handle for tools taking an image path/URL, mirroring
-    ``Runner._enrich_message_with_vision``. Returns ``(content_parts, skipped)``;
-    ``skipped`` holds unreadable local paths (URLs are never skipped).
+    ``Runner._enrich_message_with_vision``. The bytes are read from the host path; the
+    hint names the copy the agent's terminal backend reaches (``~/.hermes/cache/…``
+    over ssh, ``/root/.hermes/cache/…`` in docker), since a remote worker cannot open
+    the gateway host's cache. Returns ``(content_parts, skipped)``; ``skipped`` holds
+    unreadable local paths (URLs are never skipped).
     """
+    from agent.context_references import _agent_visible_path
+
     skipped: list[str] = []
     attached: list[tuple[str, str]] = []  # (url, hint)
     for raw_path in image_paths:
         p = Path(raw_path)
         data_url = _file_to_data_url(p) if p.exists() and p.is_file() else None
         if data_url:
-            attached.append((data_url, f"[Image attached at: {raw_path}]"))
+            attached.append((data_url, f"[Image attached at: {_agent_visible_path(raw_path)}]"))
         else:
             skipped.append(str(raw_path))
     attached += [(u, f"[Image attached: {u}]") for u in ((u or "").strip() for u in image_urls or []) if u]

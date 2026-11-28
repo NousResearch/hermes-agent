@@ -633,7 +633,9 @@ class CLIStreamMixin:
     def _preprocess_images_with_vision(self, text: str, images: list, *, announce: bool = True) -> str:
         """Describe attached images via the auxiliary vision model and prepend the descriptions
         to the user's text (works with non-vision models; same approach as the gateway). The
-        local path is included so the agent can re-examine via ``vision_analyze``."""
+        local path is included so the agent can re-examine via ``vision_analyze``, named where the
+        agent's terminal backend reaches it."""
+        from agent.context_references import _agent_visible_path
         from cli import _DIM, _RST, _cprint
         import asyncio as _asyncio
         from gateway.warning_notifications import render_notification
@@ -647,6 +649,7 @@ class CLIStreamMixin:
             if not img_path.exists():
                 continue
             size_kb = img_path.stat().st_size // 1024
+            shown = _agent_visible_path(img_path)
             if announce:
                 _cprint(f"  {_DIM}{t('cli.stream.vision_analyzing', name=img_path.name, size_kb=size_kb)}{_RST}")
             try:
@@ -658,14 +661,14 @@ class CLIStreamMixin:
                     enriched_parts.append(
                         f"[The user attached an image. Here's what it contains:\n{description}]\n"
                         f"[If you need a closer look, use vision_analyze with "
-                        f"image_url: {img_path}]")
+                        f"image_url: {shown}]")
                     if announce:
                         _cprint(f"  {_DIM}{t('cli.stream.vision_analyzed')}{_RST}")
                 else:
                     enriched_parts.append(
                         f"[The user attached an image but it couldn't be analyzed. "
                         f"You can try examining it with vision_analyze using "
-                        f"image_url: {img_path}]")
+                        f"image_url: {shown}]")
                     if announce:
                         render_notification(lambda: _cprint(f"  {_DIM}{t('cli.stream.vision_failed')}{_RST}"),
                                             platform="cli", user_config=getattr(getattr(self, "agent", None), "_notification_config", None))
@@ -673,7 +676,7 @@ class CLIStreamMixin:
                 enriched_parts.append(
                     f"[The user attached an image but analysis failed ({e}). "
                     f"You can try examining it with vision_analyze using "
-                    f"image_url: {img_path}]")
+                    f"image_url: {shown}]")
                 if announce:
                     render_notification(lambda: _cprint(f"  {_DIM}{t('cli.stream.vision_error')}{_RST}"),
                                         platform="cli", user_config=getattr(getattr(self, "agent", None), "_notification_config", None))

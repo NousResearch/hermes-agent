@@ -576,9 +576,8 @@ function revealNarrowPane(id: string, mode: 'close' | 'open' | 'toggle'): boolea
   return true
 }
 
-// An edge belongs to the pane that sits on it: the flip (⌘\ / a mirrored
-// layout) puts the sessions sidebar on the right, and ⌘B keeps meaning the
-// sidebar, ⌘J the file tree — never "whatever is on the left".
+// Pane-owned visibility follows the flip (⌘\ / a mirrored layout).
+// Positional keyboard/titlebar toggles resolve their target separately.
 export const sidebarSide = (): TreeSide => ($panesFlipped.get() ? 'right' : 'left')
 export const fileBrowserSide = (): TreeSide => ($panesFlipped.get() ? 'left' : 'right')
 
@@ -602,14 +601,9 @@ export function toggleSidebarOpen() {
   }
 }
 
-// POSITIONAL left-side toggle — the mirror of toggleRightSide below. ⌘B and the
-// left titlebar button mean "the sessions sidebar" (pane-bound, above) — but
-// the titlebar's POSITIONAL contract (see titlebar-controls.tsx) says the left
-// button folds everything physically left of main. After ⌘\ the sidebar sits
-// right and the file tree left, so the pane-bound button folds the wrong
-// column; resolve the target from the TREE instead, exactly like the right
-// side: the outermost root-row column left of main, then fold/unfold it
-// through the tree's zone minimize (round-trips like the zone chevron).
+// POSITIONAL left-side toggle: ⌘B and the left titlebar button share the
+// outermost root-row column left of main, even after a flip or drag.
+// Fold/unfold through zone minimize so it round-trips like the zone chevron.
 export function toggleLeftSide() {
   if (revealNarrowPane(CHAT_SIDEBAR_PANE_ID, 'toggle')) {
     return

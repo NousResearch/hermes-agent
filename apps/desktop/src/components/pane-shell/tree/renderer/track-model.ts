@@ -337,11 +337,11 @@ export function subtreeGone(node: LayoutNode, ctx: TrackContext): boolean {
 }
 
 /**
- * Which chrome toggle owns a root-row child — SEMANTIC, not positional:
- * ⌘B is the sessions/nav column (any `placement: 'left'` pane) wherever a
- * flip or drag puts it; ⌘J is every other side column. `null` = contains
- * the main zone, never side-collapsed. This is what keeps the titlebar
- * toggles and reveals 100% main-compatible through ⌘\ flips.
+ * Which pane-owned visibility branch owns a root-row child: SEMANTIC, not
+ * positional. Sessions/nav (`placement: 'left'`) stays sidebar-owned through
+ * flips and drags; other side columns are files-owned. `null` means the main
+ * zone, never side-collapsed. Keyboard/titlebar toggles resolve physical
+ * columns separately.
  */
 export function rootChildSide(
   child: LayoutNode,

@@ -1,0 +1,26 @@
+name: asinccontext
+repo: https://github.com/e30goodman/hermes-async-context
+sha: af38d72d477f5bd8e7fe1c13565e15c451613fb2
+description: >-
+  Background (non-blocking) context compression. A drop-in ContextEngine
+  (context.engine: asinc-context) that summarizes long sessions in a separate worker
+  process instead of inside the turn, then applies the result on a later turn; the last
+  two user turns stay verbatim, a model chain with warm-up and fallback picks the summary
+  model. Disclosure — starts short-lived background processes (one worker per compression
+  job, an occasional warm-up probe); sends the transcript text being summarized to the
+  summary endpoints the user configures in auxiliary.compression (same data the built-in
+  compressor sends); writes only inside its own plugin directory and
+  $HERMES_HOME/logs/asinccontext.log; transcript snapshots are deleted right after use;
+  keys come through agent.secret_scope; no telemetry, no self-update.
+maintainer: e30goodman
+tier: community
+category: general
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/e30goodman/hermes-async-context#readme
+version: "1.1.0"
+platforms: [linux]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -1,4 +1,4 @@
-import { hermesApi, sessionFileOwnerScope } from '@/api/client'
+import { ambientOwnerConnectionId, hermesApi, type OwnerScope, sessionFileOwnerScope } from '@/api/client'
 import type {
   HermesConnection,
   HermesReadDirResult,
@@ -58,6 +58,9 @@ export function desktopFsProfile(): string | undefined {
  *  sandbox, so a gateway read names it; a local (native) read has no use for it. */
 export interface DesktopFsSessionScope {
   sessionId?: null | string
+  /** Explicit backend reference, not a native project file. */
+  backendOwned?: boolean
+  owner?: OwnerScope
 }
 
 interface FsRoute {
@@ -70,9 +73,29 @@ interface FsRoute {
  *  no known owner the request names no session and goes to the window's profile. */
 function fsRoute(scope?: DesktopFsSessionScope): FsRoute {
   const sessionId = scope?.sessionId || undefined
-  const owner = sessionId ? sessionFileOwnerScope(sessionId) : null
+  const owner = sessionId ? sessionFileOwnerScope(sessionId, scope?.owner) : null
 
-  return owner ? { owner, sessionId } : { owner: { profile: desktopFsProfile() } }
+  const explicit = {
+    ...(scope?.owner?.connectionId ? { connectionId: scope.owner.connectionId } : {}),
+    ...(scope?.owner?.profile ? { profile: scope.owner.profile } : {})
+  }
+
+  // A captured route outlives the resolver's foreground session selection.
+  if (explicit.connectionId && explicit.profile) {
+    return { owner: explicit, sessionId }
+  }
+
+  if (explicit.connectionId) {
+    const ownerConnection = owner?.connectionId ?? ambientOwnerConnectionId()
+
+    return owner && ownerConnection === explicit.connectionId
+      ? { owner: { ...owner, ...explicit }, sessionId }
+      : { owner: explicit }
+  }
+
+  return owner
+    ? { owner: { ...explicit, ...owner }, sessionId }
+    : { owner: { profile: desktopFsProfile(), ...explicit }, ...(explicit.profile ? { sessionId } : {}) }
 }
 
 function fsPath(endpoint: string, filePath: string, sessionId?: string) {
@@ -135,7 +158,7 @@ export async function readDesktopFileText(
   path: string,
   scope?: DesktopFsSessionScope
 ): Promise<HermesReadFileTextResult> {
-  if (!isDesktopFsRemoteMode()) {
+  if (!isDesktopFsRemoteMode() && !scope?.backendOwned) {
     const result = await bridge().readFileText(path)
 
     if (isReadFileErrorResult(result)) {
@@ -162,7 +185,7 @@ export async function writeDesktopFileText(
 ): Promise<{ path: string }> {
   const desktop = bridge()
 
-  if (!isDesktopFsRemoteMode()) {
+  if (!isDesktopFsRemoteMode() && !scope?.backendOwned) {
     if (!desktop.writeTextFile) {
       throw new Error('Saving is not available')
     }
@@ -190,7 +213,7 @@ export async function createRemoteDir(path: string): Promise<string> {
 }
 
 export async function readDesktopFileDataUrl(path: string, scope?: DesktopFsSessionScope): Promise<string> {
-  if (!isDesktopFsRemoteMode()) {
+  if (!isDesktopFsRemoteMode() && !scope?.backendOwned) {
     const result = await bridge().readFileDataUrl(path)
 
     if (isReadFileErrorResult(result)) {

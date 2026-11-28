@@ -104,7 +104,7 @@ def _clear_file_ops_cache(task_id: str) -> None:
         pass
 
 
-def _unregister_env(task_id: str):
+def _unregister_env(task_id: str, *, retain_file_handle: bool = False):
     """Pop *task_id* from the env cache, activity map and creation locks; return
     the env (or None). Callers run the (slow) teardown OUTSIDE the lock —
     Modal/Docker teardown can block 10-15s and would stall every concurrent
@@ -114,7 +114,12 @@ def _unregister_env(task_id: str):
         _last_activity,
     )
     with _env_lock:
+        from tools.terminal_file_handles import discard
+        discard(task_id)
         env = _active_environments.pop(task_id, None)
+        if retain_file_handle and env is not None:
+            from tools.terminal_file_handles import retain
+            retain(task_id, env)
         _last_activity.pop(task_id, None)
     with _creation_locks_lock:
         _creation_locks.pop(task_id, None)
@@ -177,7 +182,9 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
         stale = [t for t, last in list(_last_activity.items())
                  if current_time - last > lifetime_seconds and t not in _calls_in_flight]
         envs_to_stop = [(t, _active_environments.pop(t, None)) for t in stale]
+        from tools.terminal_file_handles import discard
         for t in stale:
+            discard(t)
             _last_activity.pop(t, None)
         with _creation_locks_lock:
             for t in stale:
@@ -328,7 +335,7 @@ def cleanup_all_environments():
     return cleaned
 
 
-def cleanup_vm(task_id: str, *, force_remove: bool = False):
+def cleanup_vm(task_id: str, *, force_remove: bool = False, retain_file_handle: bool = False):
     """Manually clean up a specific environment by task_id.
 
     *force_remove* is forwarded to backends that accept it (currently only
@@ -349,10 +356,20 @@ def cleanup_vm(task_id: str, *, force_remove: bool = False):
         if not force_remove:
             return
         task_id = sandbox
-    env = _unregister_env(task_id)
+    if not retain_file_handle or force_remove:
+        from tools import terminal_tool
+        from tools.terminal_file_handles import discard
+        with terminal_tool._env_lock:
+            # Session close may use the durable id while a turn uses session:<id>.
+            # Qualify both in the bound profile; never inspect another home's keys.
+            for key in (terminal_tool._qualify_task_key(task_id),
+                        terminal_tool._qualify_task_key(f"session:{task_id}")):
+                discard(key)
+    env = _unregister_env(task_id, retain_file_handle=retain_file_handle and not force_remove)
     _clear_file_ops_cache(task_id)
     if env is None:
         return
+
     _teardown_env(
         env, task_id, force_remove=force_remove,
         done_msg="Manually cleaned up environment for task: %s",
@@ -371,7 +388,9 @@ def _evict_environment_for_task(task_id: Optional[str]) -> None:
         keys.add(task_id)
     evicted = []
     with _env_lock:
+        from tools.terminal_file_handles import discard
         for key in keys:
+            discard(key)
             env = _active_environments.pop(key, None)
             _last_activity.pop(key, None)
             if env is not None:

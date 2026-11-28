@@ -1,7 +1,9 @@
 import { useStore } from '@nanostores/react'
 import { type CSSProperties, useEffect, useMemo, useRef, useState } from 'react'
 
+import { sessionFileOwnerScope } from '@/api/client'
 import { useComposerScope } from '@/app/chat/composer/scope'
+import { useSessionView } from '@/app/chat/session-view'
 import {
   gatewayImageProxyDataUrl,
   getMediaImageDimensions,
@@ -31,16 +33,30 @@ export function useMediaImage(
 ) {
   const connection = useStore($connection)
   const scope = useComposerScope()
+  const view = useSessionView()
+  const storedId = useStore(view.$storedId)
+  const runtimeId = useStore(view.$runtimeId)
+  const sessionId = storedId || runtimeId || undefined
   const connectionId = scope.connectionId || connection?.connectionId
   const profile = scope.profile ?? connection?.profile
 
   const owner = useMemo(
-    () => (scope.connectionId || scope.profile ? { connectionId, profile } : undefined),
-    [scope.connectionId, scope.profile, connectionId, profile]
+    () =>
+      sessionId
+        ? {
+            connectionId,
+            profile,
+            ...sessionFileOwnerScope(sessionId, {
+              connectionId: scope.connectionId || undefined,
+              profile: scope.profile || undefined
+            })
+          }
+        : scope.connectionId || scope.profile ? { connectionId, profile } : undefined,
+    [scope.connectionId, scope.profile, connectionId, profile, sessionId]
   )
 
-  const key = mediaImageKey(path, connection, owner)
-  const ownerKey = mediaImageKey('', connection, owner)
+  const key = JSON.stringify([mediaImageKey(path, connection, owner), sessionId])
+  const ownerKey = JSON.stringify([mediaImageKey('', connection, owner), sessionId])
 
   const initialState = () => {
     const dimensions = intrinsic ?? getMediaImageDimensions(key)
@@ -111,7 +127,7 @@ export function useMediaImage(
     let cancelled = false
 
     if (path && !isInlineMediaSrc(path)) {
-      void resolveMediaDisplaySrc(path, owner).then(
+      void resolveMediaDisplaySrc(path, owner, sessionId).then(
         src => {
           if (!cancelled) {
             if (!src) {
@@ -133,7 +149,7 @@ export function useMediaImage(
     return () => {
       cancelled = true
     }
-  }, [key, path, owner])
+  }, [key, path, owner, sessionId])
 
   const onLoad = (image: HTMLImageElement) => {
     rememberMediaImageDimensions(key, image.naturalWidth, image.naturalHeight)

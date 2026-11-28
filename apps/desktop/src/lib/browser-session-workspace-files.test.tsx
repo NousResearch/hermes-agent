@@ -66,6 +66,7 @@ beforeEach(() => {
 
       const answers: Record<string, unknown> = {
         '/api/files/ticket': { ticket: 'stream-ticket' },
+        '/api/fs/read-data-url': { dataUrl: 'data:image/png;base64,dGVybWluYWw=' },
         '/api/fs/read-text': { path: '/workspace/note.txt', text: 'session note' },
         '/api/fs/write-text': { ok: true, path: '/workspace/note.txt' }
       }
@@ -95,6 +96,24 @@ afterEach(() => {
 })
 
 describe('media in a session sandbox', () => {
+  it('reads a transcript image through the real browser bridge with the session owner profile', async () => {
+    const view = { $runtimeId: atom<null | string>(null), $storedId: atom<null | string>('ops-session') }
+    render(
+      <SessionViewProvider value={view as never}>
+        <MarkdownImage alt="terminal image" src="/workspace/result.png" />
+      </SessionViewProvider>
+    )
+
+    const image = await screen.findByRole('img', { name: 'terminal image' })
+    expect(image.getAttribute('src')).toBe('data:image/png;base64,dGVybWluYWw=')
+    const read = requests.find(request => request.url.pathname === '/api/fs/read-data-url')!
+    expect([profileOf(read), sessionOf(read), read.url.searchParams.get('path')]).toEqual([
+      'ops',
+      'ops-session',
+      '/workspace/result.png'
+    ])
+  })
+
   it('tickets a clip for the session it belongs to', async () => {
     const src = new URL(await resolveMediaPlaybackSrc(CLIP, OWNER, 'sess-1'))
     const [ticket] = requests
@@ -154,7 +173,14 @@ describe('text previews in a session sandbox', () => {
       {
         id: 'file:note',
         sessionId: 'stored-1',
-        target: { kind: 'file', label: 'note.txt', path: NOTE, previewKind: 'text', source: NOTE, url: `file://${NOTE}` }
+        target: {
+          kind: 'file',
+          label: 'note.txt',
+          path: NOTE,
+          previewKind: 'text',
+          source: NOTE,
+          url: `file://${NOTE}`
+        }
       }
     ])
 
@@ -191,7 +217,14 @@ describe('Save in a session sandbox', () => {
         <LocalFilePreview
           reloadKey={0}
           sessionId="stored-1"
-          target={{ kind: 'file', label: 'note.txt', path: NOTE, previewKind: 'text', source: NOTE, url: `file://${NOTE}` }}
+          target={{
+            kind: 'file',
+            label: 'note.txt',
+            path: NOTE,
+            previewKind: 'text',
+            source: NOTE,
+            url: `file://${NOTE}`
+          }}
         />
       )
 
@@ -240,7 +273,7 @@ describe('a session owned by another profile than the window', () => {
   })
 
   it('tickets its clip with the profile that owns it', async () => {
-    const src = new URL(await resolveMediaPlaybackSrc(CLIP, OWNER, OPS))
+    const src = new URL(await resolveMediaPlaybackSrc(CLIP, undefined, OPS))
 
     expect(requests[0].body).toEqual({ path: CLIP, profile: 'ops', route: 'stream', session_id: OPS })
     expect(Object.fromEntries(src.searchParams)).toMatchObject({ profile: 'ops', session_id: OPS })
@@ -257,7 +290,7 @@ describe('a session owned by another profile than the window', () => {
   it('names no session when its owner is unknown, as a sessionless read does', async () => {
     await readDesktopFileText(NOTE, { sessionId: 'unknown-session' })
     await writeDesktopFileText(NOTE, 'edited', { sessionId: 'unknown-session' })
-    await resolveMediaPlaybackSrc(CLIP, OWNER, 'unknown-session')
+    await resolveMediaPlaybackSrc(CLIP, undefined, 'unknown-session')
 
     expect(requests.map(request => [request.url.pathname, profileOf(request), sessionOf(request)])).toEqual([
       ['/api/fs/read-text', 'default', null],

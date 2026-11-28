@@ -32,7 +32,7 @@ from agent.thinking_timeout_guidance import build_thinking_timeout_guidance, is_
 from agent.vision_message_prep import _provider_model_key
 from agent.turn_failure_copy import (
     CONTENT_POLICY_NEXT_STEPS, content_policy_copy, exhausted_copy, limit_reset_copy, nonretryable_copy,
-    provider_label_for, site_copy, stamp_failure,
+    provider_context_line, provider_label_for, site_copy, stamp_failure,
 )
 from agent.route_verdicts import route_visit
 from agent.turn_retry_state import TurnRetryState
@@ -1175,7 +1175,7 @@ def nonretryable_client_error_result(
         _final_response = nonretryable_copy(
             classified, provider=provider, model=model, summary=_nonretryable_summary,
             prefix_suggestion=_prefix_suggestion,
-        )
+        ) + "\n" + provider_context_line(provider, model, base_url)
     # Same verdict fields as the max-retries path: without them the UI descriptor
     # (agent/error_surface.py) reads a rejected OAuth token as a retryable
     # "Provider error" and offers Retry instead of a re-login.
@@ -1286,6 +1286,8 @@ def max_retries_exhausted_result(
     _billing_block = None
     _billing_unverified = False
     _free_tier_kind = ""
+    # Appended after the guidance blocks below, so the strip's end anchor can find it.
+    _append_provider_context = False
     if _is_billing:
         _billing_unverified = classified.billing_unverified
         _final_response = _billing_terminal_label(_final_summary, _billing_unverified)
@@ -1308,6 +1310,8 @@ def max_retries_exhausted_result(
             _free_tier_kind = _welcome_surface_kind(classified)
         elif _outage := _welcome_outage_copy(agent, base_url, classified):
             _final_response, _free_tier_kind = _outage, "outage"
+        else:
+            _append_provider_context = True
     if _is_thinking_timeout:
         # Thinking-timeout guidance overrides stream-drop guidance, which would wrongly
         # suggest splitting large file writes.
@@ -1318,6 +1322,8 @@ def max_retries_exhausted_result(
             "happens when it writes a very large file in one go. Ask me to write the file in "
             "smaller sections (or via execute_code with Python's open())."
         )
+    if _append_provider_context:
+        _final_response += "\n" + provider_context_line(provider, model, base_url)
     result = _failed_turn_result(_final_response, messages, api_call_count, _final_summary)
     result.update({
         # Classified reason so callers (kanban worker in cli.py) can tell a quota wall

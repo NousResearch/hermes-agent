@@ -1150,7 +1150,7 @@ platform:
         description: "Yeni veya kaldırılmış skill'ler için ~/.hermes/skills/ dizinini yeniden tara"
       voice:
         description: "Sesli yanıt modunu aç/kapat"
-        arg_mode: "Ses modu: join, channel, leave, on, tts, off veya status"
+        arg_mode: "Ses modu: join, channel, leave, on, tts, off veya status veya media"
         choice_join: "join — ses kanalınıza katıl"
         choice_channel: "channel — ses kanalınıza katıl (takma ad)"
         choice_leave: "leave — ses kanalından ayrıl"
@@ -1158,6 +1158,7 @@ platform:
         choice_tts: "tts — tüm mesajlara sesli yanıt ver"
         choice_mode_off: "off — yalnızca metin"
         choice_status: "status — geçerli modu göster"
+        choice_media: "media — play audio in the voice channel (Discord)"
       update:
         followup: "Güncelleme başlatıldı~"
       restart:

@@ -147,7 +147,7 @@ _NATIVE_SLASH_COMMAND_SPECS: tuple = (
        (("platform.discord.command.voice.choice_join", "join"), ("platform.discord.command.voice.choice_channel", "channel"),
         ("platform.discord.command.voice.choice_leave", "leave"), ("platform.discord.command.voice.choice_mode_on", "on"),
         ("platform.discord.command.voice.choice_tts", "tts"), ("platform.discord.command.voice.choice_mode_off", "off"),
-        ("platform.discord.command.voice.choice_status", "status"))),),
+        ("platform.discord.command.voice.choice_status", "status"), ("platform.discord.command.voice.choice_media", "media"))),),
      "/voice {mode}", None),
     ("update", "slash.update.description", (), "/update", "platform.discord.command.update.followup"),
     ("restart", "platform.discord.command.restart.description", (), "/restart", "platform.discord.command.restart.followup"),
@@ -3331,12 +3331,44 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordCommandSyncMixin, DiscordAuth
 
     async def play_tts(self, chat_id: str, audio_path: str, **kwargs) -> SendResult:
         """Play auto-TTS audio: in the guild's VC if joined, else as a file attachment."""
+        gid = self.resolve_voice_playback_guild_by_chat(chat_id)
+        if gid is not None:
+            logger.info("[%s] Playing TTS in voice channel (guild=%d)", self.name, gid)
+            success = await self.play_in_voice_channel(gid, audio_path)
+            return SendResult(success=success)
+        return await self.send_voice(chat_id=chat_id, audio_path=audio_path, **kwargs)
+
+    # --- Voice-channel MEDIA playback (see gateway/voice_media.py) ---
+
+    def resolve_voice_playback_guild_by_chat(self, chat_id: Any) -> Optional[int]:
+        """Guild whose bound text channel IS this chat AND where we hold a live VC connection —
+        the same membership proof ``play_tts`` uses. None = no voice playback for this chat."""
         for gid, text_ch_id in self._voice_text_channels.items():
             if str(text_ch_id) == str(chat_id) and self.is_in_voice_channel(gid):
-                logger.info("[%s] Playing TTS in voice channel (guild=%d)", self.name, gid)
-                success = await self.play_in_voice_channel(gid, audio_path)
-                return SendResult(success=success)
-        return await self.send_voice(chat_id=chat_id, audio_path=audio_path, **kwargs)
+                return gid
+        return None
+
+    def resolve_voice_playback_guild(self, event: Any) -> Optional[int]:
+        """Opt-in hook consumed by ``gateway.voice_media.route_media_attachments``: the guild to
+        play MEDIA audio in for this turn's event, or None to keep attachment behavior."""
+        chat_id = getattr(getattr(event, "source", None), "chat_id", None)
+        if chat_id is None:
+            return None
+        return self.resolve_voice_playback_guild_by_chat(chat_id)
+
+    async def play_voice_media(self, guild_id: int, audio_path: str) -> bool:
+        """Adapter seam for the per-guild MEDIA queue: decode + play through the VC mixer."""
+        return await self.play_in_voice_channel(guild_id, audio_path)
+
+    def stop_voice_playback(self, guild_id: int) -> None:
+        """Cut the in-flight VC clip (mixer path, else legacy VoiceClient playback)."""
+        mixer = (getattr(self, "_voice_mixers", None) or {}).get(guild_id)
+        if mixer is not None:
+            mixer.stop_speech()
+            return
+        vc = self._voice_clients.get(guild_id)
+        if vc is not None and vc.is_playing():
+            vc.stop()
 
 
     # --- Voice channel methods (join / leave / play) ---

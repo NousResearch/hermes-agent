@@ -284,6 +284,12 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
 
             image_paths = [p for p, v in media_files if _is_photo(p, v)]
             non_image_media = [(p, v) for p, v in media_files if not _is_photo(p, v)]
+            # Voice-channel playback seam (same contract as _deliver_attachments): a MEDIA audio
+            # tag in an already-streamed reply plays through the live voice channel instead of
+            # re-attaching to the text channel. Fail-open — kept entries ride the path below.
+            from gateway.voice_media import route_media_attachments
+
+            non_image_media = route_media_attachments(adapter, event, non_image_media)
             # Local images and URL images go out in one batch so a platform that bundles native
             # multi-attachment sends (Signal) still gets a single call. ``[[as_document]]`` only
             # applies to local files: a URL has no file to hand to send_document.

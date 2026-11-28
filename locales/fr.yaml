@@ -1349,7 +1349,7 @@ platform:
         description: "Réanalyser ~/.hermes/skills/ pour détecter les skills ajoutées ou supprimées"
       voice:
         description: "Basculer le mode de réponse vocale"
-        arg_mode: "Mode vocal : join, channel, leave, on, tts, off ou status"
+        arg_mode: "Mode vocal : join, channel, leave, on, tts, off, status ou media"
         choice_join: "join — rejoindre votre canal vocal"
         choice_channel: "channel — rejoindre votre canal vocal (alias)"
         choice_leave: "leave — quitter le canal vocal"
@@ -1357,6 +1357,7 @@ platform:
         choice_tts: "tts — réponse vocale à tous les messages"
         choice_mode_off: "off — texte uniquement"
         choice_status: "status — afficher le mode actuel"
+        choice_media: "media — lire un audio dans le canal vocal (Discord)"
       update:
         followup: "Mise à jour lancée~"
       restart:

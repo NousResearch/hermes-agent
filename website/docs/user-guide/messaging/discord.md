@@ -387,6 +387,7 @@ discord:
     max_dispatches: 10            # Recovery dispatch cap per reconnect
     max_attempts: 3               # Lifetime re-dispatch cap per message
   channel_prompts: {}             # Per-channel ephemeral system prompts
+  voice_media_playback: true      # MEDIA audio replies play in the linked voice channel instead of attaching to text (default: true)
   voice_channel_inactivity_timeout_seconds: 300  # Set 0 to stay in VC until explicit /voice leave
   voice_playback_timeout_seconds: 120             # Minimum playback watchdog; long clips get duration+padding
   allow_mentions:                 # What the bot is allowed to ping (safe defaults)
@@ -834,6 +835,7 @@ Hermes Agent supports Discord voice messages:
 - **Incoming voice messages** are automatically transcribed using the configured STT provider: local `faster-whisper` (no key), Groq Whisper (`GROQ_API_KEY`), or OpenAI Whisper (`VOICE_TOOLS_OPENAI_KEY`).
 - **Text-to-speech**: Use `/voice tts` to have the bot send spoken audio responses alongside text replies.
 - **Discord voice channels**: Hermes can also join a voice channel, listen to users speaking, and talk back in the channel.
+- **Audio files in the voice channel**: While the bot is connected in your voice channel, any reply that attaches audio (`MEDIA:` tags — music, generated clips, TTS files) plays directly in the voice channel instead of landing as a file attachment in the text channel. Files queue one after another; control it with `/voice media on|off|stop` (gate: `discord.voice_media_playback`, default on).
 
 For the full setup and operational guide, see:
 - [Voice Mode](../features/voice-mode.md)

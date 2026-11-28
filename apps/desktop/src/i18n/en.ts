@@ -966,6 +966,10 @@ export const en: Translations = {
       system: { label: 'System', description: 'Follow OS appearance' }
     },
     appearance: {
+      chatLayoutTitle: "Chat Layout",
+      chatLayoutDesc: "Right-align your messages as bubbles, with agent replies on the left.",
+      chatLayoutStacked: "Stacked",
+      chatLayoutBubbles: "Bubbles",
       chatTextScaleTitle: 'Chat Text Size',
       chatTextScaleDesc:
         'Scales conversation text and the message editor relative to UI Scale. Sidebars and controls stay the same size.',

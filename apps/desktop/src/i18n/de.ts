@@ -995,6 +995,10 @@ export const deOverrides = {
       }
     },
     appearance: {
+      chatLayoutTitle: "Chat-Layout",
+      chatLayoutDesc: "Deine Nachrichten erscheinen rechts als Sprechblasen, die Antworten des Agenten links.",
+      chatLayoutStacked: "Gestapelt",
+      chatLayoutBubbles: "Sprechblasen",
       chatTextScaleTitle: 'Chat-Textgröße',
       chatTextScaleDesc:
         'Skaliert Unterhaltungstext und Nachrichteneingabe relativ zur UI-Skalierung. Seitenleisten und Bedienelemente behalten ihre Größe.',

@@ -730,6 +730,10 @@ export const zhOverrides = {
       system: { label: '跟随系统', description: '跟随系统外观' }
     },
     appearance: {
+      chatLayoutTitle: "聊天布局",
+      chatLayoutDesc: "你的消息以气泡靠右显示，助手回复在左侧。",
+      chatLayoutStacked: "堆叠",
+      chatLayoutBubbles: "气泡",
       chatTextScaleTitle: '聊天文字大小',
       chatTextScaleDesc: '相对于界面缩放调整对话文字和消息输入框的字号。侧边栏和控件大小保持不变。',
       title: '外观',

@@ -1,6 +1,7 @@
 import type { ReadableAtom } from 'nanostores'
 
 import { $backdrop, setBackdrop } from '@/store/backdrop'
+import { $chatLayout, type ChatLayout, setChatLayout } from '@/store/chat-layout'
 import { $chatTextScale, CHAT_TEXT_SCALE_PRESETS, type ChatTextScale, setChatTextScale } from '@/store/chat-text-scale'
 import { $composerPopoutGesturesEnabled, setComposerPopoutGesturesEnabled } from '@/store/composer-popout'
 import { $introSplash, setIntroSplash } from '@/store/intro-splash'
@@ -10,8 +11,9 @@ import { $tabStripDefault, setTabStripDefault, type TabStripDefault } from '@/st
 
 export interface DesktopSettingValues {
   'backdrop.v1': boolean
-  chatTextScale: ChatTextScale
+  chatLayout: ChatLayout
   'composerPopout.gesturesEnabled': boolean
+  chatTextScale: ChatTextScale
   'intro-splash.v1': boolean
   'reasoning.collapsedByDefault': boolean
   sessionListDensity: SessionListDensity
@@ -42,6 +44,9 @@ const isBoolean = (value: unknown): value is boolean => typeof value === 'boolea
 
 // Exact presets only: the store snaps an off-preset number to the default,
 // which would turn a plugin's typo into a silent reset of the user's size.
+const isChatLayout = (value: unknown): value is ChatLayout =>
+  value === 'stacked' || value === 'bubbles'
+
 const isChatTextScale = (value: unknown): value is ChatTextScale =>
   CHAT_TEXT_SCALE_PRESETS.some(preset => preset === value)
 
@@ -52,6 +57,7 @@ const isTabStripDefault = (value: unknown): value is TabStripDefault =>
   value === 'auto' || value === 'always' || value === 'never'
 
 const settingBindings = {
+  chatLayout: bindSetting($chatLayout, setChatLayout, isChatLayout),
   'backdrop.v1': bindSetting($backdrop, setBackdrop, isBoolean),
   chatTextScale: bindSetting($chatTextScale, setChatTextScale, isChatTextScale),
   'composerPopout.gesturesEnabled': bindSetting(

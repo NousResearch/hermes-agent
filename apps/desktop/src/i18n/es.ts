@@ -998,6 +998,10 @@ export const esOverrides = {
       }
     },
     appearance: {
+      chatLayoutTitle: "Diseño del chat",
+      chatLayoutDesc: "Tus mensajes se alinean a la derecha como burbujas, con las respuestas del agente a la izquierda.",
+      chatLayoutStacked: "Apilado",
+      chatLayoutBubbles: "Burbujas",
       chatTextScaleTitle: 'Tamaño del texto del chat',
       chatTextScaleDesc:
         'Ajusta el texto de la conversación y del editor respecto a la escala de la interfaz. Las barras laterales y los controles mantienen su tamaño.',

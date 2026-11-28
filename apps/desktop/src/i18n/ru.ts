@@ -486,6 +486,10 @@ export const ruOverrides = {
       system: { label: 'Системная', description: 'Следовать настройкам ОС' }
     },
     appearance: {
+      chatLayoutTitle: "Макет чата",
+      chatLayoutDesc: "Ваши сообщения выравниваются вправо в виде пузырей, ответы агента — слева.",
+      chatLayoutStacked: "Потоком",
+      chatLayoutBubbles: "Пузыри",
       chatTextScaleTitle: 'Размер текста чата',
       chatTextScaleDesc:
         'Масштабирует текст беседы и поле ввода относительно масштаба интерфейса. Размер боковых панелей и элементов управления не меняется.',

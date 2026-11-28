@@ -301,6 +301,10 @@ export const zhHantSettings = {
       system: { label: '跟隨系統', description: '跟隨作業系統外觀' }
     },
     appearance: {
+      chatLayoutTitle: "聊天版面",
+      chatLayoutDesc: "你的訊息以氣泡靠右顯示，助手回覆在左側。",
+      chatLayoutStacked: "堆疊",
+      chatLayoutBubbles: "氣泡",
       chatTextScaleTitle: '聊天文字大小',
       chatTextScaleDesc: '相對於介面縮放調整對話文字和訊息輸入框的字級。側邊欄與控制項大小保持不變。',
       title: '外觀',

@@ -4301,3 +4301,19 @@ html[data-hermes-desktop-host='browser'] [data-slot='sidebar-container'] {
   background: none;
   color: var(--err-ink);
 }
+
+/* ── Bubble chat layout (opt-in: Settings → Appearance → Chat layout) ──
+   Human prompts right-align as WhatsApp-style bubbles; assistant replies and
+   injected notices (process notifications, inter-agent cards — they carry no
+   data-human-message) keep the stacked left flow. */
+html.chat-layout-bubbles [data-human-message='true'] .composer-human-message {
+  width: fit-content;
+  max-width: min(75%, 48rem);
+  margin-left: auto;
+  border-radius: 1.25rem 0.35rem 1.25rem 1.25rem;
+}
+/* Keep every non-bubble row (reactions, timestamp, branch picker) flush with
+   the right-aligned bubble. */
+html.chat-layout-bubbles [data-human-message='true'] {
+  align-items: flex-end;
+}

@@ -997,6 +997,10 @@ export const frOverrides = {
       }
     },
     appearance: {
+      chatLayoutTitle: "Disposition du chat",
+      chatLayoutDesc: 'Vos messages s’alignent à droite en bulles, avec les réponses de l’agent à gauche.',
+      chatLayoutStacked: "Empilé",
+      chatLayoutBubbles: "Bulles",
       chatTextScaleTitle: 'Taille du texte du chat',
       chatTextScaleDesc:
         'Ajuste le texte des conversations et de la saisie par rapport à l’échelle de l’interface. Les barres latérales et les contrôles gardent leur taille.',

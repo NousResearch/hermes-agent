@@ -507,6 +507,10 @@ export const jaOverrides = {
       system: { label: 'システム', description: 'OS の外観に合わせる' }
     },
     appearance: {
+      chatLayoutTitle: "チャットレイアウト",
+      chatLayoutDesc: "あなたのメッセージは右寄せの吹き出しで表示され、エージェントの返信は左側に表示されます。",
+      chatLayoutStacked: "標準",
+      chatLayoutBubbles: "吹き出し",
       chatTextScaleTitle: 'チャットの文字サイズ',
       chatTextScaleDesc:
         'UI スケールを基準に、会話とメッセージ入力欄の文字を拡大縮小します。サイドバーや操作ボタンのサイズは変わりません。',

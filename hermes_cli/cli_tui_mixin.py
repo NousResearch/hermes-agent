@@ -2175,13 +2175,22 @@ class CLITuiMixin:
         self._tui_set_base_style()
         return layout, PTStyle.from_dict(self._build_tui_style_dict())
 
+    def _tui_input_is_masked(self) -> bool:
+        """True while the composer holds a sudo password, a secret or a secret connection field."""
+        sudo = self._sudo_state
+        return ((bool(sudo) and (sudo.get("vault_save") or {}).get("step") != "identifier"
+                 and not sudo.get("vault_code"))
+                or bool(self._secret_state)
+                or (bool(self._connection_state) and self._connection_active_field_is_secret()))
+
     def _tui_build_input_area(self):
         """Multi-line prompt TextArea with slash completion, paste-collapse tracking and
         placeholder/password processors."""
         from cli import _estimate_tui_input_height
-        from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
+        from prompt_toolkit.auto_suggest import AutoSuggestFromHistory, ConditionalAutoSuggest
         from prompt_toolkit.completion import ThreadedCompleter
         cli_ref = self
+        input_is_masked = Condition(lambda: cli_ref._tui_input_is_masked())
 
         def get_prompt():
             return cli_ref._get_tui_prompt_fragments()
@@ -2200,7 +2209,11 @@ class CLITuiMixin:
             # loop per keystroke (WSL2/slow FS). ThreadedCompleter moves it off the UI event loop.
             completer=ThreadedCompleter(_completer),
             complete_while_typing=True,
-            auto_suggest=SlashCommandAutoSuggest(history_suggest=AutoSuggestFromHistory(), completer=_completer),
+            # The composer doubles as the sudo/secret prompt, so a history suggestion there would let
+            # Tab or Right/Ctrl+E/Ctrl+F put an old chat line into the hidden value.
+            auto_suggest=ConditionalAutoSuggest(
+                SlashCommandAutoSuggest(history_suggest=AutoSuggestFromHistory(), completer=_completer),
+                ~input_is_masked),
         )
         # Keep prompt_toolkit on its simple tempfile path: buffer.tempfile = "prompt.md" takes
         # the complex-tempfile branch that re-mkdir()s the mkdtemp() dir and raises EEXIST.
@@ -2228,14 +2241,7 @@ class CLITuiMixin:
         self._skip_paste_collapse = False
         input_area.buffer.on_text_changed += self._tui_on_text_changed
         # Mask input with '*' while a sudo/secret prompt is active.
-        input_area.control.input_processors.append(ConditionalProcessor(
-            PasswordProcessor(),
-            filter=Condition(lambda: (bool(cli_ref._sudo_state)
-                                      and (cli_ref._sudo_state.get("vault_save") or {}).get("step") != "identifier"
-                                      and not cli_ref._sudo_state.get("vault_code"))
-                             or bool(cli_ref._secret_state)
-                             or (bool(cli_ref._connection_state)
-                                 and cli_ref._connection_active_field_is_secret()))))
+        input_area.control.input_processors.append(ConditionalProcessor(PasswordProcessor(), filter=input_is_masked))
 
         class _PlaceholderProcessor(Processor):
             """Render grayed-out placeholder text inside the input when empty."""

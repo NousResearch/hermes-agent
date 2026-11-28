@@ -546,6 +546,12 @@ async def _start_gateway_shutdown_tail(
         except Exception:
             logger.debug("Control socket stop failed (non-fatal)", exc_info=True)
 
+    # The background MCP discovery task (see _start_gateway_run_runner) outlives one gateway life if
+    # left running; cancel it here instead of leaving it dangling across the loop it was scheduled on.
+    _mcp_discovery_task = getattr(runner, "_mcp_discovery_task", None)
+    if _mcp_discovery_task is not None and not _mcp_discovery_task.done():
+        _mcp_discovery_task.cancel()
+
     def _stop_keepalive() -> None:
         from hermes_cli.nous_auth_keepalive import stop_nous_auth_keepalive
         stop_nous_auth_keepalive()
@@ -791,19 +797,23 @@ async def _start_gateway_listener_and_runner(
 
 
 async def _start_gateway_run_runner(runner, _signal_initiated_shutdown: list) -> Optional[bool]:
-    """MCP discovery, then ``runner.start()``. Returns the exit verdict when the process must end
-    before running mode (start failed, clean exit, aborted startup); None to continue into cron."""
-    from gateway.run import (_discover_gateway_mcp_tools, _resolve_gateway_exit_verdict,
+    """Kick off MCP discovery in the background, then ``runner.start()``. Returns the exit verdict
+    when the process must end before running mode (start failed, clean exit, aborted startup); None
+    to continue into cron."""
+    from gateway.run import (asyncio, _discover_gateway_mcp_tools, _resolve_gateway_exit_verdict,
                              _shutdown_gateway_health_export, _shutdown_mcp_servers_nonblocking)
-    # discover_mcp_tools() blocks up to 120s; on the loop thread it would freeze platform heartbeats.
-    try:
-        # MCP tool discovery — run in an executor so the asyncio event loop stays responsive even when a
-        # configured MCP server is slow or unreachable.  discover_mcp_tools() uses a blocking 120s wait
-        # internally; calling it from the loop thread would freeze platform heartbeats (Discord shard,
-        # Telegram polling) until it returned. See #16856.
-        await _discover_gateway_mcp_tools(runner.config)
-    except Exception:
-        logger.debug("MCP tool discovery failed (non-fatal)", exc_info=True)
+
+    def _log_mcp_discovery_failure(task) -> None:
+        if not task.cancelled() and task.exception() is not None:
+            logger.debug("MCP tool discovery failed (non-fatal)", exc_info=task.exception())
+
+    # discover_mcp_tools() blocks up to 120s per served profile (serial under multiplex), and the
+    # tools it finds are only needed once a session calls one — not to bring platforms up or publish
+    # READY. Awaiting it here held the whole boot (banner, platforms, READY) behind it. Run it as a
+    # background task instead so startup never waits on it; _start_gateway_shutdown_tail cancels it
+    # if the gateway stops before it finishes.
+    runner._mcp_discovery_task = asyncio.create_task(_discover_gateway_mcp_tools(runner.config))
+    runner._mcp_discovery_task.add_done_callback(_log_mcp_discovery_failure)
 
     try:
         success = await runner.start()

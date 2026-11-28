@@ -31,6 +31,7 @@ from hermes_cli.kanban_output import (
 from hermes_cli.kanban_boards import _dispatch_boards
 from hermes_cli.kanban_ops import (
     _cmd_daemon, _kanban_config, _cmd_dispatch, _cmd_gc, _cmd_repair, _cmd_tail, _cmd_watch,
+    _board_wide, _implicit_board_guard,
 )
 from hermes_cli.kanban_parser import build_parser
 
@@ -177,6 +178,12 @@ def kanban_command(args: argparse.Namespace) -> int:
         board_scope = kb.scoped_current_board(normed)
 
     with board_scope:
+        if _board_wide(action, args):
+            message, refused = _implicit_board_guard()
+            if message:
+                print(message, file=sys.stderr)
+            if refused:
+                return 2
         # `repair` dispatches BEFORE auto-init: on a corrupt DB init_db() itself raises
         # KanbanDbCorruptError, which would turn every repair into "could not initialize database".
         if action == "repair":

@@ -140,6 +140,50 @@ class TestCollectKanbanNotifications:
         assert len(rows) == 1
         assert rows[0]["last_event_id"] > pre_cursor
 
+    def test_failure_only_tui_subscription_suppresses_clean_completion(self):
+        """Automatic default-board TUI routes must not turn completion into noise."""
+        conn = kbc.connect()
+        try:
+            tid = kb.create_task(conn, title="failure-only tui", assignee="worker")
+            kbn.add_notify_sub(
+                conn,
+                task_id=tid,
+                platform="tui",
+                chat_id=SESSION_KEY,
+                event_kinds=kbn.FAILURE_ALERT_EVENT_KINDS,
+            )
+            assert kb.complete_task(conn, tid, summary="quiet success")
+        finally:
+            conn.close()
+
+        assert _collect_kanban_notifications(_session()) == []
+        assert _sub_rows(tid)[0]["last_event_id"] > 0
+        assert _collect_kanban_notifications(_session()) == []
+
+    def test_failure_only_tui_subscription_coalesces_retry_crash_into_gave_up(self):
+        """A retried crash is lifecycle noise; only the terminal breaker trip alerts."""
+        conn = kbc.connect()
+        try:
+            tid = kb.create_task(conn, title="crash retry tui", assignee="worker")
+            kbn.add_notify_sub(
+                conn,
+                task_id=tid,
+                platform="tui",
+                chat_id=SESSION_KEY,
+                event_kinds=kbn.FAILURE_ALERT_EVENT_KINDS,
+            )
+            kb._append_event(conn, tid, "crashed", {"retry_status": "ready"})
+            kb._append_event(conn, tid, "gave_up", {"failures": 3})
+        finally:
+            conn.close()
+
+        texts = _collect_kanban_notifications(_session())
+
+        assert len(texts) == 1
+        assert "gave up" in texts[0]
+        assert "worker crashed" not in texts[0]
+        assert _collect_kanban_notifications(_session()) == []
+
     def test_non_tui_subscription_does_not_open_board_writable(self):
         tid = _create_subscribed_task(platform="telegram", chat_id="chat-1")
         # New subs start caught up at creation time (issue #29905); record the

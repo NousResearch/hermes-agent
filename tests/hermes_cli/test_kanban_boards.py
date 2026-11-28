@@ -430,3 +430,76 @@ class TestBoardResurrection:
         assert meta["name"] == "My Board"
         assert "keepname" in [b["slug"] for b in kb.list_boards(include_archived=True)]
         assert "keepname" not in [b["slug"] for b in kb.list_boards(include_archived=False)]
+
+    def test_connect_refuses_archived_board_with_zero_byte_stub(self, fresh_home):
+        """A 0-byte kanban.db beside an archived board must not bypass the
+        archived check in _refuse_dead_board_resurrection (#159636).
+
+        Before the fix, ``path.exists()`` returned True for the stub and the
+        function returned early, skipping the archived/deleted refusals.  After
+        the fix the guard treats a 0-byte file like a missing one and raises.
+        """
+        kb.create_board("zarch")
+        kb.remove_board("zarch", archive=True)
+        db_path = kb.board_dir("zarch") / "kanban.db"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        db_path.write_bytes(b"")  # ensure truncation to a true 0-byte stub
+        assert db_path.stat().st_size == 0
+
+        with pytest.raises(ValueError, match="archived"):
+            kbc.connect(board="zarch")
+
+        # The stub must remain 0 bytes — no schema written, no init lock created.
+        assert db_path.stat().st_size == 0
+        assert not db_path.with_name("kanban.db.init.lock").exists()
+
+    def test_connect_refuses_deleted_board_with_zero_byte_stub(self, fresh_home):
+        """A 0-byte kanban.db stub beside a hard-deleted board (no board.json)
+        must trigger the missing-board refusal, not silently recreate the board
+        (#159636)."""
+        kb.create_board("zdel")
+        kb.remove_board("zdel", archive=False)
+        # Manually recreate the directory + stub so the slug is otherwise
+        # navigable but has no board.json.
+        db_path = kb.board_dir("zdel") / "kanban.db"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        db_path.write_bytes(b"")  # ensure truncation to a true 0-byte stub
+        assert db_path.stat().st_size == 0
+
+        with pytest.raises(ValueError, match="does not exist"):
+            kbc.connect(board="zdel")
+
+        assert db_path.stat().st_size == 0
+
+    def test_connect_still_initializes_live_board_with_zero_byte_stub(self, fresh_home):
+        """A 0-byte kanban.db on a live (non-archived) board must still
+        self-initialize normally (#159636 regression guard: live boards must
+        not be accidentally refused)."""
+        kb.create_board("zlive")
+        db_path = kb.board_dir("zlive") / "kanban.db"
+        db_path.write_bytes(b"")  # ensure truncation to a true 0-byte stub
+        assert db_path.stat().st_size == 0
+
+        with kbc.connect_closing(board="zlive") as conn:
+            conn.execute("SELECT 1").fetchone()
+
+        # Schema was written — the file is no longer 0 bytes.
+        assert db_path.stat().st_size > 0
+
+    def test_connect_archived_board_with_real_db_still_opens(self, fresh_home):
+        """An archived board with a real (non-empty) kanban.db must still open
+        normally — the fix must not break the real-DB fast path (#159636)."""
+        kb.create_board("areal")
+        # Initialize the DB first so it has a full schema.
+        with kbc.connect_closing(board="areal") as conn:
+            conn.execute("SELECT 1").fetchone()
+        db_path = kb.board_dir("areal") / "kanban.db"
+        assert db_path.stat().st_size > 0
+
+        kb.remove_board("areal", archive=True)
+
+        # Must open without raising — the board.json exists and is archived,
+        # but the DB itself is real, so _refuse_dead_board_resurrection returns
+        # early at the size > 0 check.
+        with kbc.connect_closing(board="areal") as conn:
+            conn.execute("SELECT 1").fetchone()

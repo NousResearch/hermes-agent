@@ -1,0 +1,24 @@
+name: offline-mail
+title: Offline Mail
+repo: https://github.com/nftpoetrist/hermes-offline-mail
+sha: 18ae0b9423c4266e55c9ed33f8b69c3b3a695702
+description: "Lets the agent search and read mail archives on this machine without signing in to any mail account: mbox files (Thunderbird's folders, a Google Takeout export of Gmail, mailing-list archives) and Maildir folders (mutt, mbsync, OfflineIMAP, Dovecot). mail_folders lists the folders found under plugins.entries.offline-mail.settings.paths, mail_search finds messages by the words of their subject, names, addresses or text (case and accents ignored) with folder, sender, recipient, date and Message-ID filters, newest first, and mail_read returns a message's headers, text (the plain-text part, or the HTML part as text) and attachment list, in parts. Standard library only. Disclosure — reads only the mail files under the paths you configure, and what the agent reads goes to your model provider like the rest of the conversation; opens files read-only and never sends, moves, deletes or marks mail (a Maildir message is not renamed to seen); makes no network calls, needs no credentials and runs no commands. Message text is returned as its senders wrote it, with HTML scripts and styles removed."
+maintainer: nftpoetrist
+tier: community
+category: tools
+requires_hermes: ">=0.23.4"
+version: "0.1.0"
+docs_url: https://github.com/nftpoetrist/hermes-offline-mail#readme
+readme: true
+known_issues:
+  - "Nothing is indexed: each search reads the folders it covers in full (about 2,000 messages a second) and stops after 60 seconds, saying how far it got."
+  - "Attachments are listed (name, type, size) but not read, and encrypted (PGP/MIME, S/MIME) mail is not decrypted."
+  - "Apple Mail .emlx, Outlook .pst/.ost and MMDF mailboxes are not read."
+capabilities:
+  provides_tools:
+    - mail_folders
+    - mail_search
+    - mail_read
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

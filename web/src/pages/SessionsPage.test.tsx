@@ -56,15 +56,17 @@ function click(el: Element | null) {
 
 const button = (label: string) => document.querySelector(`button[aria-label="${label}"]`);
 
-async function renderSessionsPage(rows: Record<string, unknown>[]) {
-  // Page list uses limit 20; the overview tab's recent-cards fetch uses 50 —
-  // keep the overview empty so the list view (with row actions) renders.
-  apiMocks.getSessions.mockImplementation(async (limit: number) => ({
-    sessions: limit >= 50 ? [] : rows,
-    total: limit >= 50 ? 0 : rows.length,
-    limit,
-    offset: 0,
-  }));
+async function renderSessionsPage(rows: Record<string, unknown>[], overviewRows: Record<string, unknown>[] = []) {
+  // Page list uses limit 20; the overview tab's recent-cards fetch uses 50.
+  apiMocks.getSessions.mockImplementation(async (limit: number) => {
+    const page = limit >= 50 ? overviewRows : rows;
+    return {
+      sessions: page,
+      total: page.length,
+      limit,
+      offset: 0,
+    };
+  });
   const [{ default: SessionsPage }, { I18nProvider }, { SystemActionsProvider }, { ProfileProvider }, { PageHeaderProvider }] =
     await Promise.all([
       import("./SessionsPage"),
@@ -187,6 +189,33 @@ describe("SessionsPage per-row profile routing (#99387)", () => {
     await act(async () => click(confirm ?? null));
 
     expect(apiMocks.deleteSession).toHaveBeenCalledWith("sid-worker", "worker");
+  });
+});
+
+describe("Overview delete (#156056)", () => {
+  const recentRow = {
+    id: "sid-overview", profile: "guanli", source: "cli", model: null, title: "Recent card",
+    started_at: 1, ended_at: null, last_active: 1, is_active: false, message_count: 2,
+    tool_call_count: 0, input_tokens: 1, output_tokens: 1, preview: "hi",
+  };
+
+  it("evicts the deleted card immediately, keeping the row's profile and title", async () => {
+    await renderSessionsPage([], [recentRow]);
+    expect(document.body.textContent).toContain("Recent card");
+
+    await act(async () => click(button("Delete session")));
+    await waitFor(() => Boolean(document.querySelector('[role="alertdialog"]')));
+    // pendingSession must resolve overview-only rows, or the confirm is anonymous.
+    expect(document.querySelector('[role="alertdialog"]')!.textContent).toContain("Recent card");
+
+    const confirm = Array.from(document.querySelectorAll('[role="alertdialog"] button')).find(
+      (b) => b.textContent?.trim() === "Delete",
+    );
+    await act(async () => click(confirm ?? null));
+
+    expect(apiMocks.deleteSession).toHaveBeenCalledWith("sid-overview", "guanli");
+    // Gone on the success path — not after the overview's 5s poll.
+    await waitFor(() => document.body.textContent?.includes("Recent card") === false);
   });
 });
 

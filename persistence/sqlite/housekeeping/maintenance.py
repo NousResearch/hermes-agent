@@ -37,6 +37,9 @@ __all__ = ["SQLiteSessionMaintenance"]
 _LAST_ACTIVE_SQL = _sql_session_last_active("s")
 _TOKENS_SQL = "(COALESCE(s.input_tokens, 0) + COALESCE(s.output_tokens, 0))"
 _COST_SQL = "COALESCE(s.actual_cost_usd, s.estimated_cost_usd, 0)"
+# A prune deletes every ``messages`` row of the session, active or not (rewind and compression keep
+# their deactivated rows), so the message bounds count them all; ``message_count`` alone misses them.
+_MESSAGES_SQL = "MAX(COALESCE(s.message_count, 0), (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id))"
 
 # Ids per ``IN (?,...)`` list: SQLite caps bound parameters at SQLITE_MAX_VARIABLE_NUMBER (999 on builds
 # < 3.32, 32766 after), and a bulk prune of a cron-heavy store binds tens of thousands of ids.
@@ -88,8 +91,8 @@ _PRUNE_FILTERS = (
     ("title_like", "truthy", _one("LOWER(COALESCE(s.title, '')) LIKE ? ESCAPE '\\'", _like)),
     ("end_reason", "truthy", _one("s.end_reason = ?")),
     ("cwd_prefix", "truthy", _cwd_prefix_filter),
-    ("min_messages", "notnone", _one("s.message_count >= ?")),
-    ("max_messages", "notnone", _one("s.message_count <= ?")),
+    ("min_messages", "notnone", _one(_MESSAGES_SQL + " >= ?")),
+    ("max_messages", "notnone", _one(_MESSAGES_SQL + " <= ?")),
     ("model_like", "truthy", _one("LOWER(COALESCE(s.model, '')) LIKE ? ESCAPE '\\'", _like)),
     ("provider", "truthy", _one("LOWER(COALESCE(s.billing_provider, '')) = ?", str.lower)),
     ("user_id", "truthy", _one("s.user_id = ?")),

@@ -188,6 +188,20 @@ class MemoryProvider(ABC):
         notice) can come through, and so can the notes on an image turn an older Hermes stored or that repair or
         compaction later merged with another turn."""
 
+    def capture_turn(
+        self, user_content: str, assistant_content: str, *,
+        session_id: str = "", messages: Optional[list[dict[str, Any]]] = None,
+        turn_author: Optional[dict[str, Any]] = None,
+    ) -> None:
+        """Durably record a completed turn INLINE, before :meth:`sync_turn` is queued.
+
+        ``sync_turn`` runs on a background worker, so a process that exits right after the reply
+        (gateway restart, CLI quit, crash) can drop the turn before the provider sees it. A provider
+        that must not lose turns appends them to a local journal here and drains it from ``sync_turn``
+        or on next start. Same arguments as ``sync_turn`` (already secret-scrubbed). This runs on the
+        turn-completion path, so it must be fast and local: no network calls. An exception is logged
+        and never stops ``sync_turn``."""
+
     def identity_signature(self) -> dict[str, Any]:
         """Identity-mapping values that must bust a cached gateway agent when they change (writer identity, alias
         tables, session-name prefixing). Provider-namespaced keys, JSON-serializable values. The gateway calls this

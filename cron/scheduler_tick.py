@@ -67,6 +67,14 @@ def _acquire_tick_lock_or_degrade(_sched):
         return None
 
 
+def _drain_started(_sched, can_dispatch) -> bool:
+    """True once the gateway drain gate has closed since the top-of-tick check."""
+    if can_dispatch is None or can_dispatch():
+        return False
+    _sched.logger.info("Cron dispatch stopped mid-tick: gateway began draining")
+    return True
+
+
 def _advance_or_drop_recurring(_sched, due_jobs: list) -> list:
     """Persist the recurring jobs' advance before any runs; when the store refuses it, drop them
     (no durable advance -> a crash mid-run would re-fire them, so skipping is the at-most-once
@@ -164,6 +172,13 @@ def _tick_admitted(
 
         if verbose:
             _sched.logger.info("%s - %s job(s) due", _sched._hermes_now().strftime('%H:%M:%S'), len(due_jobs))
+
+        # Re-check the drain gate: collecting due jobs and the housekeeping above can take seconds on a
+        # loaded host, and a shutdown that began meanwhile has already taken its cron drain snapshot, so
+        # anything dispatched now is killed mid-run by final-cleanup. Checking before the advance keeps
+        # the job due for the next gateway.
+        if _drain_started(_sched, can_dispatch):
+            return 0
 
         # Advance next_run_at for recurring jobs FIRST, under the lock, before any execution
         # (at-most-once). Re-advancing running jobs keeps the grace window alive; mark_job_run

@@ -37,12 +37,16 @@ Specify currency, all-in vs pre-tax price, maximum price, availability/stock rul
 
 ### 3. Establish a live baseline, then schedule
 
-Fetch a bounded live result with `web_extract` or `browser_exec` and record retrieval time, source price, fees/taxes, availability, and terms. Do not schedule until one foreground fetch works. Write the watch contract (item, condition, baseline observation) to a state file under `~/.hermes/price-watches/<watch-slug>.json`, then create the job:
+Fetch a bounded live result with `web_extract` or `browser_exec` and record retrieval time, source price, fees/taxes, availability, and terms. Do not schedule until one foreground fetch works.
+
+Resolve the owning profile's absolute Hermes home before writing state. Code running in that profile's Hermes context uses `hermes_constants.get_hermes_home().resolve()`; do not infer the owner from the process environment in a multiplexed gateway. A separate terminal process does not inherit Python's profile context: pass it the already-resolved owner path, or confirm an explicit absolute state directory for that owner before proceeding. If the owner path is unknown, stop setup rather than fall back to the default profile.
+
+Write the watch contract (item, condition, baseline observation) to `<resolved-owner-home>/price-watches/<watch-slug>.json`. Substitute the **same concrete absolute file path** for `<absolute-watch-file>` below before creating the job; neither a placeholder nor a literal `$HERMES_HOME` or `~` belongs in the saved prompt.
 
 ```
 cronjob(action="create",
         schedule="every 6h",
-        prompt="Load the product-price-monitor skill and run the tick for the watch contract at ~/.hermes/price-watches/<watch-slug>.json.",
+        prompt="Load the product-price-monitor skill and run the tick for the watch contract at <absolute-watch-file>.",
         deliver=<user's destination>)
 ```
 
@@ -51,6 +55,8 @@ Pick a cadence that respects rate limits and site terms. Done when the baseline 
 ## Procedure — Tick (each scheduled run)
 
 ### 4. Fetch and normalize
+
+Use the absolute watch-contract path supplied by the job. If it is missing or unavailable, report that failure; do not create a replacement in another profile or silently reset the baseline.
 
 Re-fetch the source. Convert currency only with a timestamped rate and retain the source currency. Separate base price, mandatory fees, shipping/taxes, total, and availability. Exclude volatile page metadata. A failed fetch means unknown state: report or skip, but never overwrite the last good observation with an error page. Done when the observation is comparable to the baseline or explicitly marked failed.
 
@@ -69,11 +75,13 @@ When a condition is met, the alert includes: exact item/variant, observed all-in
 - Overwriting a last-known-good value with an error page.
 - Polling aggressively enough to trigger blocking or violate site terms.
 - Scheduling before a single foreground fetch has succeeded.
+- Sharing watch state between profiles because the default home was assumed.
 
 ## Verification
 
 - [ ] The watch contract pins the item so two variants cannot be confused.
 - [ ] One foreground fetch succeeded before any job was created.
+- [ ] The saved job names the exact absolute file written for its owner; two profiles using the same watch slug keep separate state.
 - [ ] Alert decisions replay deterministically from the state file; duplicates suppressed.
 - [ ] Failed fetches never replaced last-known-good state.
 - [ ] Alerts carry all-in price, source currency, timestamp, and source link.

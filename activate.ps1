@@ -33,7 +33,12 @@ foreach ($candidate in @("$repo\.venv\Scripts\python.exe", "$repo\venv\Scripts\p
 }
 if (-not $py) {
     $roots = @($env:HERMES_RUNTIME_DIR, "$repo\..\tools")
-    $homeRoot = if ($env:HERMES_HOME) { $env:HERMES_HOME } else { "$env:LOCALAPPDATA\hermes" }
+    $homeRoot = if ($env:HERMES_HOME) { $env:HERMES_HOME.TrimEnd('\', '/') } else { "$env:LOCALAPPDATA\hermes" }
+    # The store belongs to the root (pm.environments.store_root ->
+    # get_default_hermes_root); a profile home <root>\profiles\<name> has none.
+    if ((Split-Path -Leaf (Split-Path -Parent $homeRoot)) -eq 'profiles') {
+        $homeRoot = Split-Path -Parent (Split-Path -Parent $homeRoot)
+    }
     $roots += (Join-Path $homeRoot 'tools')
     foreach ($root in $roots) {
         if (-not $root) { continue }
@@ -50,7 +55,8 @@ $priorHome = $env:PYTHONHOME
 try {
     $env:PYTHONPATH = $repo
     Remove-Item env:PYTHONHOME -ErrorAction SilentlyContinue
-    $json = (& $py -m pm.environments) -join "`n"
+    # -P: `python -m` puts the CWD ahead of PYTHONPATH; another checkout's pm must not answer.
+    $json = (& $py -P -m pm.environments) -join "`n"
     if ($LASTEXITCODE -ne 0) { throw 'activate: could not read the installed environment' }
     $composed = $json | ConvertFrom-Json
 } finally {

@@ -717,6 +717,15 @@ def _for_each_served_profile(runner, body) -> None:
             logger.debug("Housekeeping for profile %s skipped: %s", profile_name, exc)
 
 
+def profile_reconciliation_chores(runner, loop):
+    """The per-tick reconciliation callbacks, composed away from the gateway facade."""
+    from gateway.webhooks.reconcile import schedule_reconciliation
+    return [
+        (1, "MCP config reconcile", _mcp_config_reconciler(runner)),
+        (1, "Webhook Bot Chat receipts", lambda: schedule_reconciliation(runner, loop)),
+    ]
+
+
 def profile_scoped_chore(runner, chore):
     """Wrap a zero-arg housekeeping chore that reads the profile's home, config or credentials so it
     runs once per served profile under that profile's scope (see ``_for_each_served_profile``)."""

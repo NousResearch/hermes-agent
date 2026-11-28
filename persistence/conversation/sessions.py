@@ -1274,8 +1274,10 @@ class SessionRepository(Protocol):
         """This user's Telegram sessions of one profile bound to no topic, most recently active first. ``profile_name`` names the profile, stripped, blank reading as ``default``; ``None`` takes the store's own profile (:meth:`store_owner`, ``default`` when it has none). A row's owner is compared with spaces trimmed, an unset or blank owner reading as ``default``. Before the topic tables exist (``prepare_topic_storage`` never ran) the query is unscoped: every Telegram row of the user, any owner."""
         ...
 
-    def distinct_session_cwds(self, *, include_archived: bool = False) -> tuple[SessionCwdUsage, ...]:
-        """Every non-blank cwd with its row count and newest stamp."""
+    def distinct_session_cwds(
+        self, *, include_archived: bool = False, count_exclude_sources: Sequence[str] = ()
+    ) -> tuple[SessionCwdUsage, ...]:
+        """Every non-blank cwd with its row count and newest stamp. ``count_exclude_sources`` only takes those sources out of the row count: a cwd whose rows all come from them is still listed (count 0) and keeps its newest stamp."""
         ...
 
     def live_listing_facts(self, session_ids: Sequence[SessionId]) -> LiveListingFacts:

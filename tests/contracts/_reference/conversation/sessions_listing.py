@@ -695,8 +695,12 @@ class SessionListingMixin:
             for last_active, row in self._recency(scope, rows)[: max(limit, 0)]
         )
 
-    def distinct_session_cwds(self, *, include_archived: bool = False) -> tuple[SessionCwdUsage, ...]:
+    def distinct_session_cwds(
+        self, *, include_archived: bool = False, count_exclude_sources: Sequence[str] = ()
+    ) -> tuple[SessionCwdUsage, ...]:
         scope = self._backend.scope
+        excluded = set(count_exclude_sources)
+        counted: dict[str, int] = {}
         groups: dict[str, list[float]] = {}
         for row in self._table(scope).values():
             cwd = row["cwd"]
@@ -705,7 +709,8 @@ class SessionListingMixin:
                 continue
             stamp = row["ended_at"] if row["ended_at"] is not None else row["started_at"]
             groups.setdefault(str(cwd), []).append(stamp.timestamp())
-        return tuple(SessionCwdUsage(cwd=cwd, sessions=len(stamps), last_active=max(stamps)) for cwd, stamps in sorted(groups.items()))
+            counted[str(cwd)] = counted.get(str(cwd), 0) + (0 if row["source"] in excluded else 1)
+        return tuple(SessionCwdUsage(cwd=cwd, sessions=counted[cwd], last_active=max(stamps)) for cwd, stamps in sorted(groups.items()))
 
     def live_listing_facts(self, session_ids: Sequence[SessionId]) -> LiveListingFacts:
         scope = self._backend.scope

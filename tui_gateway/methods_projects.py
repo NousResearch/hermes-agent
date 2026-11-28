@@ -264,7 +264,8 @@ def _scan_discovered_repos_remote(conn, policy: dict) -> bool:
 
 
 def _discover_repos_payload(
-    db, *, conn=None, backfill: bool = True, include_cached: bool = True, persistence=None) -> list[dict]:
+    db, *, conn=None, backfill: bool = True, include_cached: bool = True, persistence=None,
+    count_exclude_sources: tuple[str, ...] | list[str] = ()) -> list[dict]:
     """Merge cached filesystem-scanned repos with session-derived roots, junk-filtered, with
     session totals. ``backfill`` persists resolved roots onto session rows — kept OFF the
     per-turn tree path and done only on explicit refresh."""
@@ -276,7 +277,10 @@ def _discover_repos_payload(
     with contextlib.nullcontext(persistence) if persistence is not None else _persistence_for(db) as persistence:
         # No handle for a profile whose session store was never initialized (read-only foreign
         # handles never bootstrap it): the scan cache in projects.db is still authoritative.
-        cwd_rows = list(persistence.sessions.distinct_session_cwds()) if persistence is not None else []
+        cwd_rows = (
+            list(persistence.sessions.distinct_session_cwds(count_exclude_sources=tuple(count_exclude_sources)))
+            if persistence is not None else []
+        )
         # Parallel-warm the per-cwd git probes so a cold first paint doesn't serialize them.
         git_probe.warm_roots(str(r.cwd or "") for r in cwd_rows)
         cwd_to_root: dict[str, str] = {}
@@ -329,7 +333,11 @@ _MESSAGING_SESSION_SOURCES = (
     "photon", "homeassistant", "email", "sms", "webhook", "api_server", "weixin", "wecom", "qqbot",
     "yuanbao", "dingtalk", "feishu",
 )
-_PROJECT_TREE_EXCLUDED_SOURCES = ["cron", "kanban", "oneshot", *_MESSAGING_SESSION_SOURCES]
+# Automation sources are not user conversations, even without a parent session. Keep these
+# exclusions alongside messaging sources so projects.tree matches the desktop's sidebar sections.
+_PROJECT_TREE_EXCLUDED_SOURCES = [
+    "acp", "cron", "kanban", "oneshot", "subagent", "tool", *_MESSAGING_SESSION_SOURCES,
+]
 
 
 def _project_tree_row(entry) -> dict:
@@ -377,7 +385,8 @@ def _project_tree_inputs(
         discovered = []
         if include_discovered:
             discovered = _discover_repos_payload(
-                None, conn=conn, backfill=False, include_cached=policy["enabled"], persistence=persistence)
+                None, conn=conn, backfill=False, include_cached=policy["enabled"], persistence=persistence,
+                count_exclude_sources=_PROJECT_TREE_EXCLUDED_SOURCES)
     return sessions, projects, discovered, active_id
 
 

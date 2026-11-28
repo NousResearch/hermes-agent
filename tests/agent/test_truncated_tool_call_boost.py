@@ -67,5 +67,8 @@ def test_boost_clamped_to_known_model_output_limit(site):
     assert at_limit == [64000] * 4
 
 
-def test_small_explicit_max_tokens_ladder_still_capped_at_floor():
-    assert _tool_call_budgets(_agent(4096, None)) == [8192, 16384, 32768, 32768]
+def test_small_explicit_max_tokens_ladder_reaches_64k_floor():
+    # A small cap is the reasoning-model trap: thinking burns the whole budget
+    # before any visible content, so the ladder must be able to out-climb 32K
+    # or every rung re-truncates identically (#90393).
+    assert _tool_call_budgets(_agent(4096, None)) == [8192, 16384, 32768, 65536]

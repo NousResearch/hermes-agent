@@ -646,6 +646,22 @@ def _mirror_turn_to_memory(
             )
 
 
+def _take_leftover_notifications(agent) -> list:
+    """Drain the mid-turn notification queue and CLOSE it, atomically.
+
+    A notice accepted after this point would sit on an agent the finalizer has already drained and
+    left behind — silently lost, since a background completion has no user to retry it. Closing
+    under the same lock the queue is written with makes it empty-or-refused from here, and the
+    writer's ``False`` sends the notice down the admit-as-its-own-turn path instead.
+    """
+    close = getattr(agent, "_close_notification_queue", None)
+    if callable(close):
+        return list(close() or ())
+    if hasattr(agent, "_drain_pending_notifications"):
+        return list(agent._drain_pending_notifications() or ())
+    return []
+
+
 def finalize_turn(
     agent, *, final_response, api_call_count, interrupted, failed, messages, conversation_history,
     effective_task_id, turn_id, user_message, original_user_message, _should_review_memory,
@@ -882,6 +898,12 @@ def finalize_turn(
     _leftover_steer = (getattr(agent, "_drain_leftover_steer", None) or agent._drain_pending_steer)()
     if _leftover_steer:
         result["pending_steer"] = _leftover_steer
+    # A background notice that arrived after the last tool batch has no boundary left to land on:
+    # hand it back so the surface runs it as its own turn (today's behavior) instead of dropping it.
+    # The drain also CLOSES the queue: a notice accepted after this point would sit on an agent the
+    # finalizer has already drained and left behind. An empty list is a no-op for the consumer
+    # (``result.get("pending_notifications") or []``).
+    result["pending_notifications"] = _take_leftover_notifications(agent)
     agent._response_was_previewed = False
     agent._reused_response_text = None
     if interrupted and agent._interrupt_message:

@@ -389,15 +389,22 @@ class GatewayGoalsMixin:
         # folder is gone) is no evidence either (the TUI's hook skips it the same way): the tick is
         # released with no text, so a --until judge never grades it.
         failed = self._turn_failed()
+        interrupted = self._turn_interrupted()
+        # A turn the user stopped is no evidence: its partial text is not an answer, so judging it
+        # re-admits the continuation the user just cancelled — stop → "[Continuing toward your
+        # standing goal]" → model starts → stop, an unbreakable loop from the composer.
+        no_evidence = failed or interrupted
+        if interrupted:
+            logger.debug("post-turn hooks: turn interrupted — goal judge skipped, loop tick released with no text")
         hooks = [("loop completion", self._post_turn_loop_completion)]
-        if final_text.strip() and not failed:
+        if final_text.strip() and not no_evidence:
             hooks.insert(0, ("goal continuation", self._post_turn_goal_continuation))
         for label, hook in hooks:
             try:
                 # Both hooks may defer a notice into this turn's post-delivery slot: each needs
                 # the turn's generation or the chained bubble cleanup loses it.
                 await hook(session_entry=session_entry, source=source,
-                           final_response="" if failed else final_text,
+                           final_response="" if no_evidence else final_text,
                            run_generation=turn_run_generation(event))
             except Exception as exc:
                 logger.debug("%s hook failed: %s", label, exc)
@@ -420,6 +427,24 @@ class GatewayGoalsMixin:
         captured = execution_result.get() or {}
         result = captured.get('terminal_result', captured.get('result'))
         return isinstance(result, dict) and bool(result.get('failed'))
+
+    @staticmethod
+    def _turn_interrupted() -> bool:
+        """Whether this turn was stopped rather than answered.
+
+        Mirrors ``_turn_failed``, including its limits: this reads the owner's captured result, which
+        is set only inside the ingress authority drain (``gateway/session_ingress.py``), so a turn that
+        never ran under that drain — a classic/internal admit (a ``/loop`` tick whose
+        ``admit_route_wake`` declines, a heartbeat, an authority-less deployment) — captures nothing
+        and reads ``False`` here, exactly as ``_turn_failed`` does. The served-gateway Stop paths all
+        do capture ``interrupted`` (``run_turn_runner`` finishes an interrupt with
+        ``{interrupted: True, completed: False}``). Without this check the goal judge graded the
+        interruption text and re-admitted a continuation, so Stop could never stop a ``/goal`` loop.
+        """
+        from gateway.session_results import execution_result
+        captured = execution_result.get() or {}
+        result = captured.get('terminal_result', captured.get('result'))
+        return isinstance(result, dict) and bool(result.get('interrupted'))
 
     @staticmethod
     def _final_text_for_post_turn_hooks(agent_result, event=None) -> str:

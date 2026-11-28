@@ -1,6 +1,9 @@
+# health: allow FILE_LINES -- +3 lines to hand a leftover background notice to the post-turn drain, beside the existing leftover-steer handoff it mirrors
 """Agent-turn execution for GatewayRunner: _handle_message_with_agent, _run_agent*, proxy path,
 MCP reload. Bound onto ``GatewayRunner`` via the MRO; ``gateway.run`` internals
 are imported lazily inside method bodies (import cycle) so ``patch("gateway.run.X")`` still works.
+
+# beside the existing leftover-steer handoff it mirrors; splitting this module is a separate change.
 """
 
 from __future__ import annotations
@@ -1535,6 +1538,9 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
 
         # Leftover /steer (arrived after the last tool batch): deliver as the next user turn.
         pending_event, pending = self._merge_leftover_steer(result, adapter, source, session_key, pending_event, pending)
+        # Same for a background notice that missed the final tool boundary (the first becomes the
+        # next turn when nothing else is pending; the rest queue behind pending work).
+        pending_event, pending = self._requeue_leftover_notifications(result, adapter, source, session_key, pending_event, pending)
 
         # Safety net: a pending slash command is never passed to the agent as user input.
         if pending and pending.strip().startswith("/"):

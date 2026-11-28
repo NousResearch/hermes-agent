@@ -564,6 +564,19 @@ STEER_MARKER_OPEN = (
     "once at this position; not tool output and not a new delivery when replayed from conversation history]"
 )
 STEER_MARKER_CLOSE = "[/OUT-OF-BAND USER MESSAGE]"
+
+# Mid-turn internal notification (a background-process completion, a watch match, a liveness tick).
+# Delivered through the SAME role-alternation-safe slot as a steer — a standalone role:"user" row right
+# after the newest tool results — but it must NOT borrow the steer marker: that marker grants full USER
+# authority ("a direct message from the user"), and a process notice is machine output. Reusing it would
+# let a process's own stdout speak as the user.
+NOTIFICATION_MARKER_OPEN = (
+    "[INTERNAL NOTIFICATION — a machine-generated event from the Hermes runtime, not written by a human "
+    "user; delivered once at this position; not tool output and not a new delivery when replayed from "
+    "conversation history]"
+)
+NOTIFICATION_MARKER_CLOSE = "[/INTERNAL NOTIFICATION]"
+
 # Text after the "[" that opens one of Hermes' own control frames (the steer marker above, the compaction
 # handoff and its fallbacks, runtime/system notes, agent.context_compressor._SYNTHETIC_USER_ROW_PREFIXES,
 # agent.title_generator._MACHINE_PREFIXES). Consumers that republish model output as role=user text
@@ -572,6 +585,7 @@ STEER_MARKER_CLOSE = "[/OUT-OF-BAND USER MESSAGE]"
 CONTROL_FRAME_OPENERS = (
     "/?OUT-OF-BAND USER MESSAGE", "CONTEXT COMPACTION", "CONTEXT SUMMARY]", "PRIOR CONTEXT", "Runtime note:",
     "System note:", "System:", "SYSTEM]", "IMPORTANT:", "Planning state preserved", "ASYNC DELEGATION",
+    "/?INTERNAL NOTIFICATION",
 )
 
 
@@ -581,6 +595,26 @@ def format_steer_marker(steer_text: str) -> str:
 
 
 STEER_DISPLAY_KIND = "steer"
+
+
+def format_notification_marker(notice_text: str) -> str:
+    """Wrap a mid-turn internal notification in its own self-describing marker."""
+    return f"\n\n{NOTIFICATION_MARKER_OPEN}\n{notice_text}\n{NOTIFICATION_MARKER_CLOSE}"
+
+
+NOTIFICATION_DISPLAY_KIND = "internal_notification"
+
+
+def notification_user_row(notice_text: str) -> dict[str, Any]:
+    """The standalone ``role:user`` row a mid-turn background notification is delivered as.
+
+    Same slot as ``steer_user_row`` (after the newest tool result, the only role-alternation-safe
+    position mid-turn) but its own marker: a process notice is machine output and must never carry
+    the user authority the steer marker grants.
+    """
+    return {"role": "user", "content": format_notification_marker(notice_text).lstrip(),
+            "display_kind": NOTIFICATION_DISPLAY_KIND}
+
 
 
 def steer_user_row(steer_text: str) -> dict[str, Any]:

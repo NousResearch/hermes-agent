@@ -27,6 +27,7 @@ from gateway.run_profile_home import completion_event_scope_or_refuse
 from gateway.run_shutdown import _delivery_target_key, _log_suppressed, _notice_target_key, _send_error, _send_failed
 from gateway.run_notifications_update import GatewayUpdateNotificationsMixin
 from gateway.run_notifications_ownership import GatewayNotificationOwnershipMixin, _local_completion_card
+from gateway.run_notifications_midturn import GatewayMidturnNotificationMixin
 from gateway.run_notifications_restart import GatewayRestartNoticeMixin
 
 # Log-record parity with the origin module.
@@ -179,7 +180,7 @@ def _watch_notification_metadata(evt: dict, source) -> dict[str, Any]:
     return metadata
 
 
-class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotificationOwnershipMixin, GatewayRestartNoticeMixin):
+class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotificationOwnershipMixin, GatewayMidturnNotificationMixin, GatewayRestartNoticeMixin):
     """Process/completion/update notifications, media delivery and async-delegation delivery for GatewayRunner."""
 
     # Coalescing keys: process completions (short-window fan-in) and async delegations (+ parent session).
@@ -941,6 +942,15 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             raw_sid = str(evt.get("origin_session_id") or "").strip() or str(source.chat_id or "")
             return await self._self_post_api_server(adapter, synth_text, raw_sid, evt)
         try:
+            # A process notice that lands while this session's turn is still running reaches the
+            # model at the running turn's next tool-call boundary instead of queueing a turn that
+            # waits for the whole turn to finish (and, for a long agentic turn, until the user's
+            # next message). Idle sessions keep the admit-as-its-own-turn path below. The RAW text
+            # rides mid-turn: the agent's notification row wraps its own provenance marker
+            # (``notification_user_row``), so the gateway footer would stack inside it. The
+            # admit-as-a-turn path still gets the footer.
+            if self._deliver_notice_mid_turn(evt, synth_text, source):
+                return True
             synth_text = _mark_internal_notification(synth_text)
             metadata = _watch_notification_metadata(evt, source)
             # The queued event's ``message_id`` is the message that STARTED the process, and the

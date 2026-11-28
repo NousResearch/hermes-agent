@@ -304,6 +304,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         # no drafts, edits, native stream or commentary bubbles; the rewrite goes out as one plain
         # final while the typing indicator runs (the agent also withholds every delta).
         held = stream_held()
+        native_cot = getattr(ctx, "native_cot", None) is not None
         # show_reasoning keeps the 💭 block ABOVE the answer by sending them as one message: suppress
         # the final answer's live deltas so the normal combined send fires (reasoning prepended) rather
         # than streaming the answer and trailing the reasoning after it. Interim tool-progress
@@ -311,14 +312,14 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         # stream, never the projected block). getattr: a partial test runner has no resolver → stream.
         _resolve_reasoning = getattr(self._runner, "_show_reasoning_for_source", None)
         _reasoning_leads = bool(_resolve_reasoning(ctx.source)) if callable(_resolve_reasoning) else False
-        want_stream_deltas = (not held and not ctx.scheduled_heartbeat and not _reasoning_leads
+        want_stream_deltas = (not native_cot and not held and not ctx.scheduled_heartbeat and not _reasoning_leads
                               and scfg.enabled_for(plat_streaming))
         # A finite (`-z`, `chat -q`) viewer prints only the terminal reply, like the classic quiet
         # CLI that never wired commentary. Commentary it cannot see must not be recorded as a
         # delivery, or a final that arrives as commentary (codex app-server) suppresses the reply.
-        want_interim_messages = (bool(ctx.interim_assistant_messages_enabled) and not ctx.scheduled_heartbeat
+        want_interim_messages = ((bool(ctx.interim_assistant_messages_enabled) or native_cot) and not ctx.scheduled_heartbeat
                                  and not held and not _finite_viewer_turn())
-        if want_stream_deltas or want_interim_messages:
+        if not native_cot and (want_stream_deltas or want_interim_messages):
             try:
                 from gateway.stream_consumer import GatewayStreamConsumer
                 adapter = self._runner._delivery_adapter_for(ctx.source)
@@ -398,6 +399,10 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 if not already_streamed:
                     stts.on_delta(text)
                     stts.on_delta(None)
+            if native_cot:
+                if not already_streamed:
+                    self.native_cot_commentary(text)
+                return
             if unseen:
                 return
             if stream_consumer is not None:
@@ -531,6 +536,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         """Per-message state (callbacks, reasoning, voice route) — never baked into the cached agent."""
         ctx = self._ctx
         runner = self._runner
+        native_cot = getattr(ctx, "native_cot", None)
         agent._notification_config = ctx.user_config
         agent._notification_platform = ctx.source.platform
         # ALWAYS attached (never gated to None): its body gates each event class, and subagent-
@@ -540,13 +546,13 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         # callback, so neither infers identity from tool names.
         agent.tool_start_callback = (
             (ctx.native_tool_start_callback or ctx.voice_ack_callback)
-            if (ctx._voice_ack_guild[0] is not None or ctx._native_slack_task_cards) else None
+            if (ctx._voice_ack_guild[0] is not None or ctx._native_slack_task_cards or native_cot is not None) else None
         )
-        agent.tool_complete_callback = ctx.native_tool_complete_callback if ctx._native_slack_task_cards else None
+        agent.tool_complete_callback = ctx.native_tool_complete_callback if (ctx._native_slack_task_cards or native_cot is not None) else None
         if self._approval_owner is not None:
             agent.tool_start_callback = self.combined_tool_start_callback
             agent.tool_complete_callback = self.combined_tool_complete_callback
-        agent.step_callback = ctx._step_callback_sync if (ctx._hooks_ref.loaded_hooks or self._approval_owner is not None) else None
+        agent.step_callback = ctx._step_callback_sync if (ctx._hooks_ref.loaded_hooks or self._approval_owner is not None or native_cot is not None) else None
         agent.stream_delta_callback = stream_delta_cb
         agent.interim_assistant_callback = interim_assistant_cb if want_interim_messages else None
         from gateway.run_turn_progress import local_viewer_turn

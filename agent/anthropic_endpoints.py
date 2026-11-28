@@ -8,6 +8,7 @@ predicates live together here as pure functions (no I/O, SDK or credentials) tha
 cycle.
 """
 
+import re
 from urllib.parse import urlparse
 
 from utils import base_url_host_matches, base_url_hostname
@@ -58,6 +59,18 @@ def _model_name_is_kimi_family(model: str | None) -> bool:
         return False
     m = model.strip().lower().rsplit("/", 1)[-1]  # ``moonshotai/kimi-k2.5`` -> ``kimi-k2.5``
     return bool(m) and (m in _KIMI_FAMILY_EXACT_SLUGS or m.startswith(_KIMI_FAMILY_MODEL_PREFIXES))
+
+
+# Qwen3.8 family: ``qwen3.8``, ``qwen3.8-max``, vendor-prefixed and relay spellings
+# (``qwen-3.8-max``, ``qwen3.8p2``); not older generations or lookalikes (``qwen3-max``,
+# ``qwen3.85``, ``qwen2.5``, ``qwq``). Matched after stripping any ``vendor/`` prefix.
+_QWEN3_8_FAMILY_RE = re.compile(r"^qwen-?3\.8(?:[.\-_p]|$)")
+
+
+def _model_name_is_qwen3_8_family(model: str | None) -> bool:
+    if not isinstance(model, str):
+        return False
+    return bool(_QWEN3_8_FAMILY_RE.match(model.strip().lower().rsplit("/", 1)[-1]))
 
 
 def _is_kimi_family_endpoint(base_url: str | None, model: str | None = None) -> bool:

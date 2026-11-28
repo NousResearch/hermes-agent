@@ -1518,7 +1518,7 @@ BEDROCK_CONTEXT_LENGTHS: dict[str, int] = {
     **dict.fromkeys(("mistral.devstral-2", "mistral.mistral-large-3"), 256_000),
     **dict.fromkeys(("moonshotai.kimi-k2.5", "moonshot.kimi-k2-thinking", "moonshotai.kimi-k2-thinking"), 256_000),
     "moonshotai.kimi-k3": 1_000_000, "qwen.qwen3-coder": 256_000,
-    "zai.glm-4.7": 203_000, "zai.glm-5": 200_000, "zai.glm-5.3": 1_000_000,
+    "zai.glm-4.7": 203_000, "zai.glm-5": 200_000, "zai.glm-5.3": 1_000_000, "zai.glm-5.4": 1_000_000,
     # OpenAI on Bedrock: docs.aws.amazon.com/bedrock/latest/userguide/model-cards-openai.html. GPT-6.1 Sol's
     # card states "1M tokens"; the other cards state 1,050,000. 272K is the long-context PRICING tier
     # boundary on these cards, not the window. Each entry stays <= model_metadata.DEFAULT_CONTEXT_LENGTHS.

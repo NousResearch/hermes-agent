@@ -36,7 +36,7 @@ def _resolve_kimi_base_url(api_key: str, default_url: str, env_override: str) ->
 # Z.AI bills general/coding plans and global/China endpoints separately ("Insufficient balance" on
 # the wrong one), so probe once and cache. Candidate models are tried in order: newer coding-plan
 # accounts may only have recent GLM slugs, older ones still glm-4.7.
-_ZAI_CODING_PROBE_MODELS = ["glm-5.3", "glm-5.3-flash", "glm-5.2", "glm-5.1", "glm-5v-turbo", "glm-4.7"]
+_ZAI_CODING_PROBE_MODELS = ["glm-5.4", "glm-5.3", "glm-5.3-flash", "glm-5.2", "glm-5.1", "glm-5v-turbo", "glm-4.7"]
 ZAI_ENDPOINTS = [
     # (id, base_url, probe_models, label)
     ("global",        "https://api.z.ai/api/paas/v4",        ["glm-5"],   "Global"),

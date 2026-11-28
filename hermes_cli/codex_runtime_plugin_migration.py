@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from agent.transports.hermes_tools_mcp_server import HERMES_TOOLS_MCP_SERVER_NAME
+from hermes_cli.codex_runtime_switch import get_configured_codex_home
 
 logger = logging.getLogger(__name__)
 
@@ -435,7 +436,8 @@ def migrate(
     server so the codex subprocess can call back for tools it lacks.
     """
     report = MigrationReport(dry_run=dry_run)
-    codex_home = codex_home or Path(
+    profile_home = get_configured_codex_home(hermes_config)
+    codex_home = codex_home or (Path(profile_home) if profile_home else None) or Path(
         os.getenv("CODEX_HOME", "").strip() or str(Path.home() / ".codex")).expanduser()
     target = codex_home / "config.toml"
     report.target_path = target

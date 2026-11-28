@@ -373,16 +373,25 @@ This is the same migration `/codex-runtime codex_app_server` runs; it is idempot
 
 By default, Hermes points the codex subprocess at `~/.codex/` regardless of which Hermes profile is active. This means `hermes -p work` and `hermes -p personal` share the same Codex auth, plugins, and config. For most users this is the right behavior — it matches what running `codex` CLI directly would do.
 
-If you want per-profile Codex isolation (separate auth, separate installed plugins, separate config), set `CODEX_HOME` explicitly per profile. The cleanest way is to point at a directory under your `HERMES_HOME`:
+If you want per-profile Codex isolation (separate auth, separate installed plugins, separate `config.toml`), set `model.codex_home_scope: profile` in that profile's `config.yaml`:
 
-```bash
-# Inside the work profile, you might wrap hermes:
-CODEX_HOME=~/.hermes/profiles/work/codex hermes chat
+```yaml
+model:
+  openai_runtime: codex_app_server
+  codex_home_scope: profile   # default: shared (inherited CODEX_HOME, else ~/.codex)
 ```
 
-You'll need to re-run `codex login` once with that `CODEX_HOME` set so the OAuth tokens land in the profile-scoped location. After that, `hermes -p work` will operate on isolated Codex state.
+With `profile`, every codex app-server Hermes starts for that profile runs with `CODEX_HOME=<HERMES_HOME>/codex-home` (for a named profile, `~/.hermes/profiles/<name>/codex-home`; Hermes creates the directory). `hermes codex-runtime migrate` and `/codex-runtime on` write their managed MCP/plugin block into that home's `config.toml` too. Because it is read from the profile's own config, it holds for every process that serves the profile — CLI, gateway, cron and Kanban workers spawned by a long-lived gateway — even when the parent process exported a global `CODEX_HOME`.
 
-We don't auto-scope this because moving an existing user's `~/.codex/` would silently invalidate their Codex CLI auth — anyone who already ran `codex login` would have to re-authenticate. Opt-in feels safer than surprising users.
+A fresh profile home has no login. Sign in once with that home selected so the ChatGPT tokens land there:
+
+```bash
+CODEX_HOME=~/.hermes/profiles/work/codex-home codex login
+```
+
+A profile home's `config.toml` may also set `default_permissions = ":danger-full-access"`; Kanban workers on that profile then keep that permission instead of Hermes' default workspace-write sandbox (with a shared home, Kanban workers always get the workspace-write sandbox plus the board directory).
+
+The default stays `shared` because moving an existing user's `~/.codex/` would silently invalidate their Codex CLI auth — anyone who already ran `codex login` would have to re-authenticate. Opt-in is safer than surprising users. Exporting `CODEX_HOME` yourself before launching Hermes still works in `shared` mode.
 
 ## HOME environment variable passthrough
 

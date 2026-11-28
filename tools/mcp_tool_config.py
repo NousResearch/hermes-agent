@@ -196,6 +196,33 @@ class _RenderedStr(str):
         return rendered
 
 
+def _config_text(value: Any) -> Any:
+    """A YAML scalar as the text the user wrote. YAML types an unquoted ``2022-06-28`` as a date,
+    ``8080`` as an int and ``true`` as a bool, but header values and argv are text to httpx and
+    to the SDK. Strings (rendered ``${VAR}`` values included), bytes and None pass through."""
+    if value is None or isinstance(value, (str, bytes)):
+        return value
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value)
+
+
+def _configured_headers(config: dict) -> dict:
+    """``config['headers']`` as text (see :func:`_config_text`). An empty value (None) sends no
+    header, as ``normalize_extra_headers`` does for provider headers."""
+    return {key: text for key, value in (config.get("headers") or {}).items()
+            if (text := _config_text(value)) is not None}
+
+
+def _configured_args(config: dict) -> Any:
+    """``config['args']`` with each entry as text (see :func:`_config_text`); a non-list is
+    returned unchanged."""
+    args = config.get("args", [])
+    return [_config_text(arg) for arg in args] if isinstance(args, list) else args
+
+
 def _build_safe_env(user_env: Optional[dict]) -> dict:
     """Filtered env for stdio subprocesses so API keys/tokens don't leak: the safe baseline
     keys, ``XDG_*``, vars injected by an external secret source (users configured that backend

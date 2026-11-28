@@ -1836,8 +1836,10 @@ def _plugins_update(rid, params):
     if not name:
         return _err(rid, 4019, "plugins.update requires a 'name'")
     _ensure_plugin_activation_listener()
-    result = _tools_mod("hermes_cli.plugins_cmd").dashboard_update_user_plugin(
-        name, accept_capabilities=bool(params.get("accept_capabilities")), force=bool(params.get("force")))
+    # A retry after a client timeout joins the running update rather than racing it.
+    result = _tools_mod("tui_gateway.plugin_updates").join_update(
+        name, lambda: _tools_mod("hermes_cli.plugins_cmd").dashboard_update_user_plugin(
+            name, accept_capabilities=bool(params.get("accept_capabilities")), force=bool(params.get("force"))))
     if result.get("consent_required") or result.get("scan_blocked"):
         keys = ("ok", "name", "sha", "error", "consent_required", "delta", "delta_lines",
                 "scan_blocked", "scan_verdict", "scan_findings")

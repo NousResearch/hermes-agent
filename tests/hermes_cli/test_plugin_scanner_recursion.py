@@ -145,6 +145,7 @@ class TestForeignHarnessManifestDirs:
             ".cursor-plugin",
             ".devin-plugin",
             ".kimi-plugin",
+            ".muse-plugin",
         ):
             harness_dir = sp / harness
             harness_dir.mkdir(parents=True)

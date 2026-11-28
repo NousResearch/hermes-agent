@@ -125,6 +125,13 @@ async def edit_preview_to_final(adapter: Any, chat_id: str, message_id: str, con
     return result
 
 
+def may_show_whole(result: Any, content: str) -> bool:
+    """A split edit that sent all of *content*, one part of it unconfirmed: sending the reply again
+    would repeat the parts on screen, so the delivery ledger's marked redelivery owns it."""
+    raw = getattr(result, "raw_response", None)
+    return isinstance(raw, dict) and bool(raw.get("delivery_uncertain")) and raw.get("delivered_prefix") == content
+
+
 async def edit_streamed_message(consumer: Any, source: Any, response: dict, content: str, *, sk: str,
                                 ok: tuple, fail_result: str, fail_exc: str) -> None:
     """Edit the consumer's message in place with ``content``; on success mark
@@ -140,6 +147,9 @@ async def edit_streamed_message(consumer: Any, source: Any, response: dict, cont
         return
     if result is TURN_REPLACED:
         return  # its stale-run discard owns what happens next
+    if may_show_whole(result, content):
+        response["already_sent"] = response["delivery_uncertain"] = True
+        return
     if not getattr(result, "success", True):
         logger.warning(fail_result, sk, getattr(result, "error", None))
         return

@@ -350,7 +350,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                     and not getattr(stream_consumer, "_turn_split_delivery", False)
                 ):
                     try:
-                        from gateway.run_turn_final_reconcile import TURN_REPLACED, edit_preview_to_final
+                        from gateway.run_turn_final_reconcile import TURN_REPLACED, edit_preview_to_final, may_show_whole
                         _edit_res = await edit_preview_to_final(
                             adapter, source.chat_id, _sc_msg_id, text_content, metadata,
                             still_current=getattr(stream_consumer, "_run_still_current", None))
@@ -364,6 +364,11 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                                 "Queued-lane final reconciled by editing message %s in place (no duplicate send).",
                                 _sc_msg_id,
                             )
+                        elif session_key and may_show_whole(_edit_res, text_content):
+                            _reconciled = True
+                            await self._ledger_uncertain_streamed_final(
+                                MessageEvent(text="", source=source, ledger_message_id=inbound_message_id),
+                                session_key, response, adapter)
                         else:
                             # P5(b): a DECLINE is not "editing unavailable". The
                             # send below re-delivers the whole response to the

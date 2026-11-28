@@ -365,12 +365,18 @@ export function usePromptActions({
 
           return { ...state, messages: [...state.messages, message] }
         },
-        storedSessionId ?? selectedStoredSessionIdRef.current
+        // The selected stored id names the MAIN pane's conversation. Only the
+        // main runtime may fall back to it: a notice for a tile runtime (a
+        // slash command typed in a split tile) carrying the main chat's id
+        // reads as a stored-id rotation and re-keys the tile onto the main
+        // chat — the tile's tab is retitled and the split layout rebuilt.
+        // `undefined` leaves the tile's own stored id untouched.
+        storedSessionId ?? (sessionId === activeSessionIdRef.current ? selectedStoredSessionIdRef.current : undefined)
       )
 
       return messageId
     },
-    [selectedStoredSessionIdRef, updateSessionState]
+    [activeSessionIdRef, selectedStoredSessionIdRef, updateSessionState]
   )
 
   // In-flight drop-time eager uploads, keyed by attachment id. Submit joins

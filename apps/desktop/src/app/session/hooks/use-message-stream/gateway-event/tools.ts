@@ -173,7 +173,14 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
       const pendingProduction =
         !event.replayed && Boolean(toolCallOwnerMessageId(state?.messages ?? [], payload, 'complete'))
 
-      upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'complete', event.type, occurredAt)
+      upsertToolCall(
+        sessionId,
+        toTodoPayload(payload) ?? payload,
+        'complete',
+        event.type,
+        occurredAt,
+        ctx.completionKey
+      )
 
       noteToolOutcome(ctx, sessionId, state?.cwd ?? '', pendingProduction)
 

@@ -52,6 +52,9 @@ def _create_session_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/v1/capabilities", adapter._handle_capabilities)
     app.router.add_get("/api/sessions", adapter._handle_list_sessions)
     app.router.add_post("/api/sessions", adapter._handle_create_session)
+    # Registered ahead of the {session_id} entry to keep the table grouped; aiohttp 3.14
+    # resolves the most explicit path first, so the order is not load-bearing here.
+    app.router.add_get("/api/sessions/search", adapter._handle_search_sessions)
     app.router.add_get("/api/sessions/{session_id}", adapter._handle_get_session)
     app.router.add_patch("/api/sessions/{session_id}", adapter._handle_patch_session)
     app.router.add_delete("/api/sessions/{session_id}", adapter._handle_delete_session)
@@ -81,6 +84,7 @@ async def test_capabilities_advertises_session_control_surface(adapter):
         "method": "POST",
         "path": "/api/sessions/{session_id}/chat/stream",
     }
+    assert data["endpoints"]["session_search"] == {"method": "GET", "path": "/api/sessions/search"}
     assert data["endpoints"]["run_steer"] == {
         "method": "POST",
         "path": "/v1/runs/{run_id}/steer",
@@ -1453,3 +1457,79 @@ async def test_interim_commentary_reaches_session_sse_and_responses_stream(adapt
     monkeypatch.setattr("run_agent.AIAgent", CapturingAgent)
     adapter._create_agent(session_id="gated", interim_assistant_callback=lambda *_a, **_k: None)
     assert captured["interim_assistant_callback"] is None
+
+
+# -- GET /api/sessions/search (#159741) ---------------------------------------
+# Without the route, a search fell through to /api/sessions/{session_id}, 404'd
+# on the literal id "search", and the desktop client swallowed the error —
+# silently degrading desktop session search to the sidebar's local window.
+
+
+@pytest.mark.asyncio
+async def test_route_table_registers_search_before_the_session_id_pattern(adapter):
+    """Pin the route table's placement: the static /api/sessions/search entry sits before
+    the dynamic /api/sessions/{session_id} entry. aiohttp 3.14 resolves the most explicit
+    path first regardless of registration order (verified: dynamic-first registration
+    still routes /api/sessions/search to the static handler), so this is a placement/
+    intent pin, not a shadowing guard — the pre-fix 404 in #159741 came from the route
+    being absent entirely."""
+    entries = [(method, path) for method, path, _ in adapter._http_route_table()]
+    assert ("GET", "/api/sessions/search") in entries
+    assert entries.index(("GET", "/api/sessions/search")) < entries.index(
+        ("GET", "/api/sessions/{session_id}"))
+
+
+@pytest.mark.asyncio
+async def test_search_sessions_returns_fts_content_matches(adapter, session_db):
+    seed_session(session_db, "srch-content", "desktop", title="Kernel planning")
+    seed_session(session_db, "srch-other", "desktop", title="Unrelated")
+    seed_messages(session_db, "srch-content", {
+        "role": "user", "content": "the turboquant primer lives in the vault"})
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.get("/api/sessions/search?q=turboquant")
+        assert resp.status == 200
+        data = await resp.json()
+    hits = [r for r in data["results"] if r["session_id"] == "srch-content"]
+    assert hits, data
+    row = hits[0]
+    assert row["role"] == "user"
+    assert isinstance(row.get("snippet"), str) and row["snippet"]
+    assert isinstance(row.get("profile"), str) and row["profile"]
+    assert "srch-other" not in [r["session_id"] for r in data["results"]]
+
+
+@pytest.mark.asyncio
+async def test_search_sessions_matches_session_ids_directly(adapter, session_db):
+    seed_session(session_db, "srch-idlane", "desktop", title="Cost review")
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.get("/api/sessions/search?q=srch-idlane")
+        assert resp.status == 200
+        data = await resp.json()
+    hits = [r for r in data["results"] if r["session_id"] == "srch-idlane"]
+    assert hits, data
+    assert hits[0]["title"] == "Cost review"
+    assert hits[0]["last_active"] is not None
+
+
+@pytest.mark.asyncio
+async def test_search_sessions_title_lane_finds_unindexed_titles(adapter, session_db):
+    """A term that lives only in sessions.title (no message content) must match via the
+    title-supplement lane — the FTS index covers message text only."""
+    seed_session(session_db, "srch-title", "desktop", title="Zanzibar retro review")
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.get("/api/sessions/search?q=Zanzibar")
+        assert resp.status == 200
+        data = await resp.json()
+    assert "srch-title" in [r["session_id"] for r in data["results"]], data
+
+
+@pytest.mark.asyncio
+async def test_search_sessions_blank_query_returns_empty_results(adapter, session_db):
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.get("/api/sessions/search?q=")
+        assert resp.status == 200
+        assert (await resp.json())["results"] == []

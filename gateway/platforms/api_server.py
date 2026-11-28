@@ -70,6 +70,7 @@ _CAPABILITY_ENDPOINTS = (
     ("run_stop", ("POST", "/v1/runs/{run_id}/stop")), ("skills", ("GET", "/v1/skills")),
     ("toolsets", ("GET", "/v1/toolsets")), ("sessions", ("GET", "/api/sessions")),
     ("session_create", ("POST", "/api/sessions")),
+    ("session_search", ("GET", "/api/sessions/search")),
     ("session", ("GET", "/api/sessions/{session_id}")),
     ("session_update", ("PATCH", "/api/sessions/{session_id}")),
     ("session_delete", ("DELETE", "/api/sessions/{session_id}")),
@@ -1576,6 +1577,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             ("GET", "/v1/toolsets", self._handle_toolsets),
             ("GET", "/api/sessions", self._handle_list_sessions),
             ("POST", "/api/sessions", self._handle_create_session),
+            ("GET", "/api/sessions/search", self._handle_search_sessions),
             ("GET", "/api/sessions/{session_id}", self._handle_get_session),
             ("PATCH", "/api/sessions/{session_id}", self._handle_patch_session),
             ("DELETE", "/api/sessions/{session_id}", self._handle_delete_session),
@@ -2573,6 +2575,41 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         return web.json_response({
             "object": "list", "data": [self._session_response(s) for s in sessions],
             "limit": limit, "offset": offset, "has_more": windowed >= limit})
+
+    @_require_auth
+    async def _handle_search_sessions(self, request: web.Request) -> web.Response:
+        """GET /api/sessions/search — id, FTS-content and title lanes over the profile-scoped store.
+
+        Shares the dashboard's three-lane search core (``search_sessions_core`` in
+        hermes_cli/web_routers/sessions.py) so both surfaces dedup compression
+        lineages identically. Without this route a request fell through to
+        ``/api/sessions/{session_id}``, 404'd on the literal id "search", and the
+        desktop client swallowed the error — silently degrading desktop session
+        search to the locally-loaded sidebar window (#159741).
+        """
+        q = request.query.get("q") or ""
+        if not q.strip():
+            return web.json_response({"results": []})
+        store = self._store_beside(await self._ensure_store_async())
+        if store is None:
+            return self._session_db_unavailable()
+        limit = self._parse_nonnegative_int(request.query.get("limit"), default=20, maximum=100)
+        from hermes_cli.web_routers.sessions import search_sessions_core
+        from persistence.core.errors import SearchIndexCorrupt
+        try:
+            payload = await asyncio.to_thread(
+                search_sessions_core, store,
+                q=q, limit=limit, profile=_api_request_profile.get(),
+                source=request.query.get("source") or None,
+                sources=request.query.get("sources") or None,
+                exclude_sources=request.query.get("exclude_sources") or None)
+        except SearchIndexCorrupt as exc:
+            logger.error("GET /api/sessions/search: search index corrupt: %s", exc)
+            return self._session_db_unavailable()
+        except Exception:
+            logger.exception("GET /api/sessions/search failed")
+            return _error_response("Search failed", 500)
+        return web.json_response(payload)
 
     @_require_auth
     async def _handle_create_session(self, request: web.Request) -> web.Response:

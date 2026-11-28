@@ -77,6 +77,69 @@ describe('App held CR under an event-loop stall', () => {
     expect(submitted).toEqual([])
   })
 
+  it('submits a held CR one window after the hold even when a report was read since', () => {
+    const stdin = makeStdin()
+    const app = makeApp(stdin)
+
+    stdin.queue.push('/help\r')
+    ;(app as any).handleReadable()
+    vi.advanceTimersByTime(200)
+    stdin.queue.push('\x1b[I')
+    ;(app as any).handleReadable()
+    expect((app as any).keyParseState.pendingReturn).toBe(true)
+
+    vi.advanceTimersByTime(60)
+
+    expect(submitted).toEqual(['\r'])
+  })
+
+  it('gives an escape read late in the hold window the normal escape timeout', () => {
+    const stdin = makeStdin()
+    const app = makeApp(stdin)
+    const names: string[] = []
+
+    vi.mocked(reconciler.discreteUpdates).mockImplementation(((_fn: unknown, _app: unknown, keys: any[]) => {
+      for (const key of keys) {
+        if (key.kind === 'key' && key.name) {
+          names.push(key.name)
+        }
+      }
+    }) as any)
+
+    stdin.queue.push('/help\r')
+    ;(app as any).handleReadable()
+    vi.advanceTimersByTime(240)
+    stdin.queue.push('\x1b')
+    ;(app as any).handleReadable()
+    vi.advanceTimersByTime(20)
+    stdin.queue.push('[A')
+    ;(app as any).handleReadable()
+    vi.runAllTimers()
+
+    expect(names).toEqual(['return', 'up'])
+  })
+
+  it('re-arms an expired hold at the normal timeout while bytes wait unread', () => {
+    // Raw mode off detaches the readable listener but keeps the timer; with
+    // bytes buffered the timer re-arms instead of flushing. Once the hold has
+    // expired it must not re-arm at 0 ms and spin.
+    const stdin = makeStdin()
+    const app = makeApp(stdin)
+
+    stdin.queue.push('/help\r')
+    ;(app as any).handleReadable()
+    stdin.readableLength = 1
+
+    const armed = vi.spyOn(globalThis, 'setTimeout')
+
+    vi.advanceTimersToNextTimer() // hold timer fires, schedules the check-phase flush
+    vi.advanceTimersToNextTimer() // check phase: bytes waiting, re-arm
+
+    expect(armed).toHaveBeenCalledTimes(1)
+    expect(armed.mock.calls[0]?.[1]).toBeGreaterThanOrEqual((app as any).NORMAL_TIMEOUT)
+    expect(submitted).toEqual([])
+  })
+
   it('still submits a held CR when nothing arrives', () => {
     const stdin = makeStdin()
     const app = makeApp(stdin)

@@ -340,7 +340,7 @@ def _prepare(request: dict, request_path: Path, result_path: Path) -> int:
         if refused is not None:
             raise RuntimeError("could not join the update's checkout lock "
                                f"({refused.reason or f'held by process {refused.pid}'})")
-    from hermes_cli.venv_sync import arm_completion, collect_superseded_generations
+    from hermes_cli.venv_sync import arm_completion, collect_superseded_generations, record_failed_sync
 
     # The foreign-owned-venv refusal runs in the parent BEFORE the swap (update_cmd_commit
     # .preflight_refusal); the tail was armed there too, so this re-arm is an idempotent backstop.
@@ -357,6 +357,11 @@ def _prepare(request: dict, request_path: Path, result_path: Path) -> int:
             pm.sync_venv(first_generation_selection(root), explicit=True, project_root=root,
                          evict_incompatible_plugins=True)
             collect_superseded_generations(root)
+        except Exception:
+            # As a launch's failed sync does: the previous generation stays selected, and the
+            # paused gateways resume on it instead of waiting for a retry (#145470).
+            record_failed_sync(root)
+            raise
         finally:
             request["pm_receipt"] = receipt.last_for_update(update_id)
             _write_json(request_path, request)

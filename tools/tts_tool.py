@@ -40,8 +40,8 @@ from tools.tts_command_provider import (
     _get_command_tts_output_format, _is_command_tts_voice_compatible, _resolve_command_provider_config)
 from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER
 from tools.tts_tool_delivery import (
-    _resolve_max_text_length, _build_audio_delivery_files, _convert_to_opus, _remove_quietly,
-    _repair_ogg_container, _resolve_audio_delivery_profile, _split_text_for_tts)
+    _resolve_max_text_length, _build_audio_delivery_files, _convert_to_opus, _normalize_loudness,
+    _remove_quietly, _repair_ogg_container, _resolve_audio_delivery_profile, _split_text_for_tts)
 from tools.tts_tool_providers import (
     _generate_edge_tts, _generate_elevenlabs, _generate_gemini_tts, _generate_minimax_tts,
     _generate_mistral_tts, _generate_xai_tts, _resolve_minimax_tts_runtime)
@@ -408,6 +408,7 @@ def _text_to_speech_single(
 
         # Sniff once for every provider: MP3/WAV bytes in a .ogg path render as 0-second bubbles.
         file_str = _repair_ogg_container(file_str)
+        file_str = _normalize_loudness(file_str, tts_config)  # opt-in: tts.normalize_loudness
         file_str, voice_compatible = _finalize_voice_delivery(
             file_str, provider, command_provider_config, want_opus)
         logger.info("TTS audio saved: %s (%s bytes, provider: %s)", file_str, f"{os.path.getsize(file_str):,}", provider)

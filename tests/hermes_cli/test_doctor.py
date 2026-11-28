@@ -18,7 +18,6 @@ import hermes_constants
 from hermes_cli import config as config_mod
 import hermes_cli.gateway as gateway_cli
 from hermes_cli import doctor as doctor_mod
-from hermes_cli.doctor_config import _has_provider_env_config
 from hermes_cli.doctor_report import Finding
 import shutil
 from hermes_cli import doctor_tools
@@ -111,17 +110,6 @@ class TestDoctorPlatformHints:
         assert guidance in hint
         assert f"run `{guidance}`" not in hint
         assert "hermes update" not in hint
-
-
-class TestProviderEnvDetection:
-    def test_detects_openai_api_key(self):
-        content = "OPENAI_BASE_URL=http://localhost:1234/v1\nOPENAI_API_KEY=***"
-        assert _has_provider_env_config(content)
-
-
-    def test_returns_false_when_no_provider_settings(self):
-        content = "TERMINAL_ENV=local\n"
-        assert not _has_provider_env_config(content)
 
 
 class TestDoctorToolAvailabilitySummary:
@@ -959,7 +947,7 @@ def test_run_doctor_kimi_cn_env_is_detected_and_probe_is_null_safe(monkeypatch, 
         doctor_mod.run_doctor(Namespace(fix=False))
     out = buf.getvalue()
 
-    assert "API key or custom endpoint configured" in out
+    assert "Inference provider configured" in out
     assert "Kimi / Moonshot (China)" in out
     assert "str expected, not NoneType" not in out
     assert any(url == "https://api.moonshot.cn/v1/models" for url, _, _ in calls)

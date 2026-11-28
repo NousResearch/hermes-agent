@@ -10,12 +10,6 @@ from hermes_cli.doctor_report import (
 )
 
 
-def _has_provider_env_config(content: str) -> bool:
-    """Return True when ~/.hermes/.env contains provider auth/base URL settings."""
-    from hermes_cli.doctor import _PROVIDER_ENV_HINTS
-    return any(key in content for key in _PROVIDER_ENV_HINTS)
-
-
 # Legacy config keys still read for back-compat: warn-only with the modern replacement, never auto-migrated
 # (migrations live in config.py). (section, key, replacement)
 _DEPRECATED_CONFIG_KEYS: tuple[tuple[str, str, str], ...] = (
@@ -175,13 +169,6 @@ def _check_env_file(should_fix: bool, f: Finding) -> None:
     env_path = HERMES_HOME / '.env'
     if env_path.exists():
         check_ok(f"{_DHH}/.env file exists")
-        # UTF-8 first; latin-1 fallback for Windows Notepad/cp1252 files (matches env_loader._load_dotenv_with_fallback).
-        try:
-            content = env_path.read_text(encoding="utf-8-sig")
-        except UnicodeDecodeError:
-            content = env_path.read_text(encoding="latin-1")
-        if not check_bool(_has_provider_env_config(content), "API key or custom endpoint configured", f"No API key found in {_DHH}/.env"):
-            f.issues.append("Run 'hermes setup' to configure API keys")
     elif (PROJECT_ROOT / '.env').exists():  # project root as fallback
         check_ok(".env file exists (in project directory)")
     else:
@@ -198,6 +185,20 @@ def _check_env_file(should_fix: bool, f: Finding) -> None:
         else:
             check_info("Run 'hermes setup' to create one")
             f.issues.append("Run 'hermes setup' to create .env")
+    _check_inference_provider(f)
+
+
+def _check_inference_provider(f: Finding) -> None:
+    """Ask the resolver a chat turn uses, so doctor reports "not connected" exactly when a turn would."""
+    from hermes_cli.auth import format_auth_error, resolve_provider
+    from hermes_cli.auth_constants import AuthError
+
+    try:
+        provider = resolve_provider("auto")
+    except AuthError as exc:
+        _fail_and_issue("No usable inference provider", "(chat turns will fail)", format_auth_error(exc), f.issues)
+        return
+    check_ok("Inference provider configured", f"({provider})")
 
 
 def _known_provider_ids(cfg: dict) -> tuple[set, list, object, object, object]:

@@ -77,6 +77,9 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         self._event_task = None
         self._terminals = {}
         self._streamed = {}
+        # Admission -> streamed text already forwarded to the editor. A bare silence marker is
+        # held back (deltas not forwarded), so the gateway-replaced warning is shown alone.
+        self._forwarded = {}
         # Admission -> closed reply segments already shown (interim commentary, pre-tool deltas).
         self._segments = {}
         self._changed = asyncio.Condition()
@@ -255,6 +258,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         # never gets its ``message.complete`` (re-attach starts at the owner's current sequence), so its
         # ``messageId`` closes too: the next reply must not reuse it.
         self._streamed.clear()
+        self._forwarded.clear()
         self._segments.clear()
         self._message_ids.clear()
         self._cut.clear()
@@ -679,6 +683,11 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         submit = {'text': text}
         if attachments:
             submit['attachments'] = attachments
+        # A bot dispatcher's ACP server carries HERMES_TURN_AUTHOR (like ``peer dm``):
+        # forward it so the gateway can honour a bot author's silence verdict.
+        from agent.turn_author import turn_author_from_env
+        if (turn_author := turn_author_from_env()) is not None:
+            submit['turn_author'] = turn_author
         self._submitting.add(session_id)
         try:
             # Inside the try: a failed reconnect is as ambiguous for a retained identity as a lost ack.
@@ -826,7 +835,11 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         if status in ("queued", "unknown") or {admission_id} & (
                 self._terminals.keys() | self._settling | self._receipted.keys()):
             return
-        self._cut.setdefault(admission_id, self._streamed.pop(admission_id, ""))
+        # ``_cut`` is text already painted: a held-back marker was never shown, so the cut is
+        # the forwarded prefix, not the whole streamed buffer (else the final re-slices).
+        if admission_id not in self._cut:
+            self._cut[admission_id] = self._forwarded.pop(admission_id, "")
+        self._streamed.pop(admission_id, None)
         if status:
             return
         try:
@@ -996,8 +1009,17 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         if kind == "message.delta":
             text = _text(payload)
             self._streamed[aid] = self._streamed.get(aid, "") + text
-            if text and self._conn:
-                await self._conn.session_update(session_id=editor_id, update=self._chunk(sid, text))
+            # A bare silence marker is held back: the gateway may replace it with the
+            # "needed a reply" warning, and forwarding it first would show both.
+            from gateway.response_filters import is_partial_silence_marker
+            if is_partial_silence_marker(self._streamed[aid]):
+                return
+            if self._conn:
+                forwarded = self._forwarded.get(aid, "")
+                suffix = self._streamed[aid][len(forwarded):]
+                if suffix:
+                    await self._conn.session_update(session_id=editor_id, update=self._chunk(sid, suffix))
+                    self._forwarded[aid] = self._streamed[aid]
         elif kind == "message.interim":
             # Commentary the owner could not stream (``already_streamed`` false) reaches viewers
             # only here; streamed commentary is already on screen. Either way it is its own segment.
@@ -1013,6 +1035,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             if aid in self._settling or aid in self._receipted:
                 # A retry's terminal receipt claimed this reply; it is shown once, from there.
                 self._streamed.pop(aid, None)
+                self._forwarded.pop(aid, None)
                 self._segments.pop(aid, None)
                 return
             self._settling.add(aid)

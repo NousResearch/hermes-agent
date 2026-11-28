@@ -684,6 +684,27 @@ async def _finalize_managed_refusal(authority, session_id, accepted):
             session_id, None, accepted.get('refused_turn_boundary_row_id'))
 
 
+def _shape_managed_silence(authority, ref, row, policy, accepted):
+    """The owner-side silence verdict a managed turn skips in-process.
+
+    The worker child runs the agent without the in-process shaper, so a bare marker
+    would reach the editor held back and then vanish (final == streamed, no fallback).
+    A trusted bot author keeps its silence; any other bare marker becomes the visible
+    ``_unexpected_silence_reply``, exactly as ``_hmwa_shape_agent_response`` does."""
+    from gateway.response_filters import is_intentional_silence_response
+    final = accepted.get('final_response') or ''
+    if not is_intentional_silence_response(final):
+        return accepted
+    from gateway.session_ingress import row_turn_author, trusted_bot_author
+    expected = False if trusted_bot_author(policy, row, row_turn_author(policy, row)) else None
+    live = authority.sessions[ref.session_id]
+    kind = (row['payload'].get('display_v1') or {}).get('kind')
+    if authority.runner._silence_allowed_for_source(live.source, kind, expected, accepted):
+        return accepted
+    from gateway.run_turn import _unexpected_silence_reply
+    return {**accepted, 'final_response': _unexpected_silence_reply()}
+
+
 async def execute_managed(authority, ref, row, policy):
     from gateway.run_turn_progress import publish_worker_tool_event
     # This route never passes the inbound prepare step, so the worker would read ``@`` tokens as typed.
@@ -761,6 +782,7 @@ async def execute_managed(authority, ref, row, policy):
                     await asyncio.to_thread(process.wait, 10)
                 accepted = _with_stop_cause(accepted, worker)
                 await _finalize_managed_refusal(authority, scope['session_id'], accepted)
+                accepted = _shape_managed_silence(authority, ref, row, policy, accepted)
                 # Like in-process execution, settlement belongs to the drain's stream lock.
                 authority.pending_results[row['admission_id']] = {
                     'result': {**accepted, 'local_viewer': True}, 'usage': usage,

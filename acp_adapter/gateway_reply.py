@@ -94,6 +94,7 @@ class GatewayReplyMixin:
 
     def _close_segment(self, aid):
         streamed = self._streamed.pop(aid, "")
+        getattr(self, "_forwarded", {}).pop(aid, None)
         if streamed.strip():
             self._segments.setdefault(aid, []).append(streamed)
 
@@ -103,6 +104,10 @@ class GatewayReplyMixin:
 
         text = _text(payload)
         streamed = self._streamed.pop(aid, "")
+        # What the editor actually saw: a held-back silence marker never reached it, so the
+        # streamed buffer overstates the shown prefix. Remainder math divides by this, not by
+        # ``streamed`` -- otherwise a held ``NO`` silently eats the head of a legit ``NOT``.
+        forwarded = getattr(self, "_forwarded", {}).pop(aid, "")
         shown = self._segments.pop(aid, [])
         cut = self._cut.pop(aid, None)
         # Local interrupt status is metadata; ACP carries it in stop_reason.
@@ -120,12 +125,22 @@ class GatewayReplyMixin:
             from hermes_cli.gateway_replay_gap import owed_reply
             # An interim after the gap closed the cut segment and may already have shown the whole reply.
             return "" if not cut and text.strip() in segments else owed_reply(cut, text)
-        if text.startswith(streamed):
-            remainder = text[len(streamed):]
-            # An unstreamed final the owner already published as an interim segment.
-            return "" if not streamed and text.strip() in {s.strip() for s in shown} else remainder
-        if text.strip() == streamed.strip():
+        from gateway.response_filters import (
+            is_intentional_silence_response, is_partial_silence_marker)
+        # A held marker as the whole final stays silent: nothing was shown, nothing is owed.
+        if is_intentional_silence_response(text) and is_partial_silence_marker(streamed):
             return ""
+        if forwarded and text.startswith(forwarded):
+            return text[len(forwarded):]
+        if not forwarded:
+            # Nothing reached the editor. A held marker's replacement (the gateway warning)
+            # stands alone, as does a final that merely begins with a held prefix without a
+            # separator implying the held text was shown first.
+            if text.strip() in segments:
+                return ""
+            if is_partial_silence_marker(streamed) or is_intentional_silence_response(streamed):
+                return text
+            return text if not streamed else "\n\n" + text
         return "\n\n" + text
 
     async def _close_card(self, editor_id, tool_call, options, response):

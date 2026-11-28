@@ -3646,7 +3646,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         ``session_history_delivery`` declares #98619 session-id provenance and default-denies: only audited
         producers whose client can address the id again pass "1" (see
         ``_bind_api_server_session``).
-        ``turn_author`` only labels the turn for memory attribution. It grants nothing.
+        ``turn_author`` labels the turn for memory attribution; a trusted bot author
+        additionally grants the silence verdict (``reply_expected=False``, see
+        ``gateway.session_ingress.trusted_bot_author``).
         ``resume_unanswered_turn`` marks a policy-gated re-run of a turn whose user row the failed attempt
         already persisted: the transcript's unanswered tail row is adopted from ``conversation_history``
         as THIS turn's user message instead of being appended a second time

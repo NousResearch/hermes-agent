@@ -587,7 +587,7 @@ class _RunLaunch:
     session_history_delivery: bool
     agent_kwargs: dict  # ``_create_agent`` keyword arguments (prompt, model overrides, route, room policy)
     request_profile: Any
-    turn_author: Optional[dict[str, Any]] = None  # memory-attribution label only; grants nothing
+    turn_author: Optional[dict[str, Any]] = None  # memory-attribution label; a trusted bot author grants silence
     admission: Any = None
     walked_from: Optional[str] = None  # the swept stored session the chain moved past (``bind_api_steps``)
 

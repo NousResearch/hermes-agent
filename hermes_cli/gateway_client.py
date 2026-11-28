@@ -337,6 +337,7 @@ async def connect_gateway(endpoint=None, subject=None, *, max_size=8 * 1024 * 10
     ``draining`` (``restart_wait``) instead of attached, and the ticket carries that policy so the
     owner also refuses the socket when the wait opens between discovery and the dial."""
     from websockets.asyncio.client import connect
+    from agent.proxy_bypass import is_loopback_host
     from hermes_constants import get_hermes_home
     from hermes_cli.gateway_runtime import (attachable, ensure_gateway_runtime, gateway_profile_home,
                                            run_elsewhere_verdict)
@@ -379,12 +380,15 @@ async def connect_gateway(endpoint=None, subject=None, *, max_size=8 * 1024 * 10
             raise GatewayUnavailableError(f"Gateway inaccessible: {exc.reason}" + (f" ({detail})" if detail else ""),
                                           "inaccessible", exc.reason) from exc
         url, protocols = gateway_ws_target(endpoint, ticket)
+    # A busy local owner can starve pongs; explicit URLs may be remote tunnels (#154910).
+    keepalive: dict = ({"ping_interval": None, "ping_timeout": None}
+                 if not remote and is_loopback_host((urlsplit(url).hostname or "").rstrip(".")) else {})
     try:
         # The gateway is a loopback (or explicitly named) peer, never something to route through the
         # user's HTTP(S) proxy; websockets>=14 reads HTTP_PROXY/HTTPS_PROXY by default and a proxy that
         # cannot reach 127.0.0.1 turns every launch into a 10 s open timeout.
         async with connect(url, subprotocols=protocols, open_timeout=10, max_size=max_size,
-                           proxy=None) as ws:
+                           proxy=None, **keepalive) as ws:
             if protocols and ws.subprotocol != GATEWAY_WS_PROTOCOL:
                 raise GatewayClientError("Gateway protocol mismatch; update/restart required")
             async with GatewayClient(ws) as client:

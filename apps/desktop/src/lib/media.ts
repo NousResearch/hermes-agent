@@ -452,7 +452,16 @@ export async function downloadGatewayMediaFile(
   }
 
   const conn = $connection.get()
-  const owner = origin.owner ?? { connectionId: conn?.connectionId, profile: origin.profile ?? conn?.profile }
+  // A chat card's session id must travel with the profile that owns the chat: the gateway looks it
+  // up there, so the window's profile answered 404 "Session not found" for a chat opened from
+  // another profile. An unknown owner (a runtime session not stored yet) keeps the window's.
+  const session = origin.sessionId && !origin.owner && !origin.profile ? sessionFileOwnerScope(origin.sessionId) : null
+
+  const owner =
+    origin.owner ??
+    (session
+      ? { connectionId: session.connectionId ?? conn?.connectionId, profile: session.profile }
+      : { connectionId: conn?.connectionId, profile: origin.profile ?? conn?.profile })
 
   return window.hermesDesktop.saveGatewayFile({
     ...(owner.connectionId ? { connectionId: owner.connectionId } : {}),

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { setSessionOwnerResolver } from '@/api/client'
 import { $connection } from '@/store/session'
 
 import {
@@ -400,5 +401,53 @@ describe('downloadGatewayMediaFile', () => {
     await expect(downloadGatewayMediaFile('/Users/me/project/report.md')).rejects.toThrow(
       'Desktop file download bridge'
     )
+  })
+
+  describe('a chat file card (session id, no pinned profile)', () => {
+    afterEach(() => setSessionOwnerResolver(null))
+
+    it("sends the session id with the profile that owns the chat, not the window's", async () => {
+      // A chat opened from another profile's sidebar: the gateway looks the id up in the
+      // profile the request names, so the window's profile answered 404 "Session not found".
+      setSessionOwnerResolver(id => (id === 'sess-other' ? 'research' : null))
+
+      await downloadGatewayMediaFile('/srv/out/report.zip', { sessionId: 'sess-other' })
+
+      expect(saveGatewayFile).toHaveBeenCalledWith({
+        connectionId: 'work-ssh',
+        path: '/srv/out/report.zip',
+        profile: 'research',
+        sessionId: 'sess-other',
+        suggestedName: 'report.zip'
+      })
+    })
+
+    it("keeps the window's profile when the chat's owner is unknown (a runtime session not stored yet)", async () => {
+      setSessionOwnerResolver(() => null)
+
+      await downloadGatewayMediaFile('/srv/out/report.zip', { sessionId: 'runtime-1' })
+
+      expect(saveGatewayFile).toHaveBeenCalledWith({
+        connectionId: 'work-ssh',
+        path: '/srv/out/report.zip',
+        profile: 'docker-gw',
+        sessionId: 'runtime-1',
+        suggestedName: 'report.zip'
+      })
+    })
+
+    it('keeps a caller-pinned profile with its session id', async () => {
+      setSessionOwnerResolver(() => 'research')
+
+      await downloadGatewayMediaFile('/srv/out/report.zip', { profile: 'artifacts', sessionId: 'sess-a' })
+
+      expect(saveGatewayFile).toHaveBeenCalledWith({
+        connectionId: 'work-ssh',
+        path: '/srv/out/report.zip',
+        profile: 'artifacts',
+        sessionId: 'sess-a',
+        suggestedName: 'report.zip'
+      })
+    })
   })
 })

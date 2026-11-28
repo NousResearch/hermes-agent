@@ -1,0 +1,34 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: agentstatus
+description: Live public MCP Index. Search, recommend, and call healthy MCP servers.
+source: https://github.com/Carmel-Labs-Inc/agentstatus-mcp-index
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). No authentication required (verified live:
+# initialize succeeds anonymously).
+
+transport:
+  type: http
+  url: https://index.mcp.agentstatus.dev/mcp
+
+auth:
+  type: none
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - agentstatus
+    - mcp index
+  hosts:
+    - agentstatus.dev
+
+post_install: |
+  No account or credentials needed. Tools are available as soon as the
+  session restarts.
+
+  Search or recommend a server first, then call one of its published tools
+  with call_indexed_tool. This connection lists six Index tools, not the
+  catalog.

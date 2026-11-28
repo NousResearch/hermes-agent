@@ -1,0 +1,20 @@
+name: hermes-xmpp-plugin
+title: XMPP/Jabber
+repo: https://github.com/fastfinge/hermes-xmpp-plugin
+sha: 3fd0e84f0e5b193e87b8afdf8faee250ede886e9
+description: "XMPP/Jabber gateway platform: 1:1 DMs, MUC rooms, typing indicators, reactions, threaded replies, XEP-0004 data forms, ad-hoc commands, XEP-0363 file upload, voice notes and optional Jingle audio calls, with mandatory STARTTLS and OMEMO end-to-end encryption on by default. Disclosure — talks only to the XMPP server you configure (STARTTLS required; SRV or XMPP_HOST/XMPP_PORT), plus media downloads from upload hosts on that server's domain for voice notes (SSRF-guarded; XMPP_VOICE_TRUSTED_HOSTS widens or narrows the host list) and the STT/TTS providers Hermes is already configured with for voice notes and calls; sends message text, attachments and call audio. Calls are off by default: enabling them installs about 230 MB of packages once into $HERMES_HOME/environments/hermes-xmpp-calls and runs that environment's Python to locate its site-packages (the only subprocess the plugin spawns). Stores the OMEMO device key file (XMPP_OMEMO_STORAGE_PATH, default $HERMES_HOME/xmpp_omemo.json, mode 600, atomic writes behind a lock) and cached synthesized call audio under $HERMES_HOME/cache/xmpp-calls/. Messages sent by the running gateway are OMEMO-encrypted; the one-shot sender behind `hermes send` and CLI cron delivery is TLS-only, because a second process advancing the double ratchets would break the live sessions. Only JIDs in XMPP_ALLOWED_USERS can DM the bot, and only XMPP_MUC_ALLOWED_USERS (default: the same list) can invoke it in rooms, with verified room identity required even when allow-all is on. The bot JID and password are read through Hermes's env/secret scope. No telemetry and no self-update."
+maintainer: fastfinge
+tier: community
+category: platform
+requires_hermes: ">=0.22.5"
+version: "0.6.3"
+docs_url: https://github.com/fastfinge/hermes-xmpp-plugin#readme
+capabilities:
+  provides_tools:
+  - xmpp_call
+  - xmpp_message
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - XMPP_JID
+  - XMPP_PASSWORD

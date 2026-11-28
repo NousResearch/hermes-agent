@@ -229,9 +229,10 @@ def run_preflight_compression(
 
 @dataclass
 class PostToolCompressionVerdict:
-    """``end_turn`` True → a reference-only compaction handoff would be the sole active
-    user turn: stop without another model call (``final_response`` /
-    ``turn_exit_reason`` set)."""
+    """``end_turn`` True → stop without another model call (``final_response`` /
+    ``turn_exit_reason`` set): a reference-only compaction handoff would be the sole active
+    user turn, or (``failed`` True) compression hit its host timeout under
+    ``compression.abort_on_summary_failure``."""
 
     end_turn: bool
     messages: list[dict[str, Any]]
@@ -241,6 +242,7 @@ class PostToolCompressionVerdict:
     final_response: Any
     turn_exit_reason: Any
     current_turn_user_idx: int
+    failed: bool = False
 
 
 def compress_after_tool_results(
@@ -256,17 +258,17 @@ def compress_after_tool_results(
     deterministic tool-result-only prune, committed only when the engine returns a NEW
     list (never rebuild ``conversation_history`` for it)."""
     from agent.conversation_loop import (
-        _HANDOFF_SKIP_FINAL_RESPONSE, _midturn_request_pressure_tokens,
+        _COMPRESSION_TIMEOUT_FINAL_RESPONSE, _HANDOFF_SKIP_FINAL_RESPONSE, _midturn_request_pressure_tokens,
         _should_skip_model_call_for_reference_handoff,
     )
     from agent.model_metadata import estimate_request_tokens_rough
 
-    def _verdict(end_turn: bool) -> PostToolCompressionVerdict:
+    def _verdict(end_turn: bool, failed: bool = False) -> PostToolCompressionVerdict:
         return PostToolCompressionVerdict(
             end_turn=end_turn, messages=messages, active_system_prompt=active_system_prompt,
             conversation_history=conversation_history, compression_attempts=compression_attempts,
             final_response=final_response, turn_exit_reason=turn_exit_reason,
-            current_turn_user_idx=current_turn_user_idx,
+            current_turn_user_idx=current_turn_user_idx, failed=failed,
         )
 
     _compressor = agent.context_compressor
@@ -317,6 +319,12 @@ def compress_after_tool_results(
         messages, active_system_prompt = agent._compress_context(
             messages, system_message, approx_tokens=_real_tokens, task_id=effective_task_id, trigger="post_tool",
         )
+        if context_compression_timed_out(agent) and getattr(_compressor, "abort_on_summary_failure", False) is True:
+            # The operator chose abort over degrade: stop here with the executed tool results kept,
+            # instead of sending the unchanged request. Not compression_exhausted (no auto-reset).
+            final_response = _COMPRESSION_TIMEOUT_FINAL_RESPONSE
+            turn_exit_reason = "context_compression_timeout"
+            return _verdict(True, failed=True)
         if messages is _post_tool_input and compression_skipped_due_to_lock(agent):
             # Lock-skip no-op is a temporary defer, not evidence about compressibility:
             # refund so a lock-loser loop doesn't burn the budget toward exhausted.

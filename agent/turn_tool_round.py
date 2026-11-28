@@ -225,6 +225,7 @@ def run_tool_round(
     final_response = _ptc.final_response
     _turn_exit_reason = _ptc.turn_exit_reason
     current_turn_user_idx = _ptc.current_turn_user_idx
+    failed = failed or _ptc.failed
     if _ptc.end_turn:
         return _verdict("break")
 

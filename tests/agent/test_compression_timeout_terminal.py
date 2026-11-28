@@ -175,3 +175,164 @@ def test_pre_api_compression_timeout_is_typed_terminal():
         assert result["failed"] is True
         assert result["compression_exhausted"] is True
         assert result["turn_exit_reason"] == "context_compression_timeout"
+
+
+def _post_tool_double(*, abort_on_summary_failure: bool):
+    class Compressor:
+        last_prompt_tokens = 100
+        threshold_tokens = 50
+
+        @staticmethod
+        def should_compress(_tokens):
+            return True
+
+    Compressor.abort_on_summary_failure = abort_on_summary_failure
+    return SimpleNamespace(
+        context_compressor=Compressor(),
+        compression_enabled=True,
+        _clear_context_overflow_warn=lambda: None,
+        _safe_print=lambda *_args: None,
+        # A host timeout hands the caller's own list back and leaves the timeout mark set.
+        _compress_context=lambda messages, *_args, **_kwargs: (messages, "system"),
+        _last_compression_timed_out=True,
+        _persist_user_message_idx=0,
+    )
+
+
+def _compress_after_tool_results(agent, messages):
+    from agent.turn_preflight import compress_after_tool_results
+
+    return compress_after_tool_results(
+        agent, messages=messages, system_message="system", user_message="current ask",
+        active_system_prompt="system", conversation_history=[], compression_attempts=0,
+        max_compression_attempts=3, effective_task_id="task", final_response="",
+        turn_exit_reason=None, current_turn_user_idx=0,
+    )
+
+
+def test_post_tool_compression_timeout_ends_turn_under_abort_on_summary_failure():
+    """Regression for #160484: with compression.abort_on_summary_failure the post-tool pass must
+    stop after a host timeout instead of sending the unchanged request, keeping the tool results."""
+    messages = [
+        {"role": "user", "content": "current ask"},
+        {"role": "assistant", "tool_calls": [{"id": "1"}]},
+        {"role": "tool", "content": "fresh result", "tool_call_id": "1"},
+    ]
+    before = list(messages)
+
+    verdict = _compress_after_tool_results(_post_tool_double(abort_on_summary_failure=True), messages)
+
+    assert verdict.end_turn is True
+    assert verdict.failed is True
+    assert verdict.turn_exit_reason == "context_compression_timeout"
+    assert "timed out" in verdict.final_response
+    assert verdict.messages is messages and messages == before
+
+
+def test_post_tool_compression_timeout_continues_without_abort_on_summary_failure(monkeypatch):
+    """Default config keeps the documented "continuing without compression" outcome."""
+    monkeypatch.setattr(
+        "agent.turn_preflight.conversation_history_after_compression",
+        lambda _agent, _messages, history: history,
+    )
+    monkeypatch.setattr(
+        "agent.conversation_loop._should_skip_model_call_for_reference_handoff",
+        lambda _messages, _user_message: False,
+    )
+    messages = [{"role": "user", "content": "current ask"}]
+
+    verdict = _compress_after_tool_results(_post_tool_double(abort_on_summary_failure=False), messages)
+
+    assert verdict.end_turn is False
+    assert verdict.failed is False
+    assert verdict.turn_exit_reason is None
+
+
+def test_post_tool_compression_timeout_fails_the_turn_after_one_tool_round():
+    """Regression for #160484 through the real loop: the tool runs once, its result is kept, the
+    turn reports the timeout, and no second provider request is sent."""
+    tool_def = {"type": "function", "function": {
+        "name": "web_search", "description": "s",
+        "parameters": {"type": "object", "properties": {"query": {"type": "string"}}},
+    }}
+    with (
+        patch("model_tools.get_tool_definitions", return_value=[tool_def]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
+        patch("agent.model_metadata.get_model_context_length", return_value=256_000),
+        patch("agent.context_compressor.get_model_context_length", return_value=256_000),
+    ):
+        agent = AIAgent(
+            api_key="test-key-1234567890", base_url="https://openrouter.ai/api/v1", model="test/model",
+            quiet_mode=True, skip_context_files=True, skip_memory=True, max_iterations=6,
+        )
+    tool_call = SimpleNamespace(
+        id="call_1", type="function",
+        function=SimpleNamespace(name="web_search", arguments='{"query": "x"}'),
+    )
+    tool_response = SimpleNamespace(
+        choices=[SimpleNamespace(
+            message=SimpleNamespace(content=None, reasoning_content=None, reasoning=None, tool_calls=[tool_call]),
+            finish_reason="tool_calls",
+        )],
+        model="test/model", usage=None,
+    )
+    agent.client = MagicMock()
+    agent.client.chat.completions.create.side_effect = [tool_response, _mock_response("must not be requested")]
+    agent._cached_system_prompt = "You are helpful."
+    agent._use_prompt_caching = False
+    agent._disable_streaming = True
+    agent.tool_delay = 0
+    agent.save_trajectories = False
+
+    compressor = MagicMock()
+    compressor.protect_first_n = 3
+    compressor.protect_last_n = 20
+    compressor.threshold_tokens = 100
+    compressor.context_length = 1_000
+    compressor.last_prompt_tokens = 500  # real usage over threshold: the post-tool gate owns the pass
+    compressor.abort_on_summary_failure = True
+    compressor._verify_compaction_cleared_threshold = False
+    compressor.awaiting_real_usage_after_compression = False
+    compressor.should_compress.side_effect = lambda tokens: tokens >= 100
+    compressor.should_compress_info.return_value = (False, None)
+    compressor.should_compress_preflight.return_value = False
+    compressor.should_defer_preflight_to_real_usage.return_value = False
+    compressor.get_active_compression_failure_cooldown.return_value = None
+    compressor.select_context.return_value = None
+    compressor.get_automatic_compaction_status_message.return_value = ""
+    agent.compression_enabled = True
+    agent.context_compressor = compressor
+
+    def _timed_out(messages, _system_message, **_kwargs):
+        from agent.conversation_compression import mark_context_compression_timed_out
+
+        mark_context_compression_timed_out(agent)
+        return messages, agent._cached_system_prompt
+
+    executions = []
+
+    def _execute(_assistant_message, messages, *_args):
+        executions.append(1)
+        messages.append({"role": "tool", "name": "web_search", "tool_call_id": "call_1", "content": "RESULT-1"})
+
+    with (
+        patch("agent.turn_context.estimate_request_tokens_rough", return_value=10),
+        patch("agent.model_metadata.estimate_messages_tokens_rough", return_value=10),
+        patch("agent.conversation_loop._estimate_tools_tokens_rough", return_value=0),
+        patch.object(agent, "_compress_context", side_effect=_timed_out) as compress,
+        patch.object(agent, "_execute_tool_calls", side_effect=_execute),
+        patch.object(agent, "_flush_messages_to_session_db", return_value=True),
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("do tool work", conversation_history=[])
+
+    assert compress.call_count == 1
+    assert compress.call_args.kwargs["trigger"] == "post_tool"
+    assert executions == [1]
+    assert agent.client.chat.completions.create.call_count == 1
+    assert result["failed"] is True
+    assert result["turn_exit_reason"] == "context_compression_timeout"
+    assert any(m.get("role") == "tool" and m.get("content") == "RESULT-1" for m in result["messages"])

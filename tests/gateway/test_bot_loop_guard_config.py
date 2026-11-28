@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from gateway.bot_loop_guard import BotLoopGuard, load_settings
+from gateway.bot_loop_guard import BotLoopGuard, BotLoopGuardSettings, load_settings
 
 
 @pytest.fixture
@@ -46,3 +46,22 @@ def test_max_hops_from_config_yaml_caps_bot_mode_sends(config_home, monkeypatch)
     reply = bot_chain.admit_send(agent, ["bot:alpha"], "answer")
     assert reply.refusal is None and reply.notify_only == {"bot:alpha"}  # bot_replies_expect_reply: false
     assert "limit of 2" in str(bot_chain.admit_send(agent, ["bot:gamma"], "next").refusal)
+
+
+def test_reset_all_on_human_defaults_false():
+    assert BotLoopGuardSettings().reset_all_on_human is False
+
+
+def test_reset_all_on_human_yes_parses_true(config_home):
+    config_home({"reset_all_on_human": "yes"})
+    assert load_settings().reset_all_on_human is True
+
+
+def test_reset_all_on_human_no_parses_false(config_home):
+    config_home({"reset_all_on_human": "no"})
+    assert load_settings().reset_all_on_human is False
+
+
+def test_reset_all_on_human_missing_is_false(config_home):
+    config_home({"enabled": True})
+    assert load_settings().reset_all_on_human is False

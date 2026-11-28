@@ -13,20 +13,27 @@ Desktop relay) is still capped. ``gateway.bot_loop_guard.enabled: false`` turns 
 
 Recipients are compared by the identity the receiving turn's author id carries (``bot:<profile>``,
 ``bot:<connection>/<profile>``), resolved by the caller with the same resolver delivery uses.
+When ``gateway.bot_loop_guard.reset_all_on_human`` is on, a newer epoch file drops every in-process chain
+before a turn or send is counted, so a process that missed the human message still starts fresh.
 """
 
 from __future__ import annotations
 
 import hashlib
+import logging
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Callable, Optional
+
+logger = logging.getLogger(__name__)
 
 # Keyed by session id, not held on the agent: a gateway may rebuild the agent between turns, and a
 # lost count would hand the chain a fresh budget. A session id change (compression rotation, turn-start
 # recovery, lease reload) moves the entry along (``carry_chain`` / ``_bound_key``).
 _CHAINS: dict[str, dict] = {}
+# Stamp this process last applied. A newer epoch file drops every chain above.
+_APPLIED_EPOCH = 0.0
 _LOCK = threading.Lock()
 
 
@@ -68,12 +75,39 @@ def carry_chain(old_session_id: str, new_session_id: str) -> None:
             _CHAINS.setdefault(str(new_session_id), state)
 
 
+def _apply_shared_epoch() -> None:
+    """Drop every in-process chain when the shared epoch file is newer than the stamp
+    this process last applied.
+
+    No-op unless ``reset_all_on_human`` is exactly True. A missing epoch is 0.0 and
+    does not clear (applied starts at 0.0). Caller must not hold ``_LOCK`` — it is a
+    ``Lock``, not an ``RLock``. The file read runs under the lock so the clear and
+    the stamp cannot race a chain read.
+    """
+    global _APPLIED_EPOCH
+    from gateway.bot_loop_reset import get_hermes_root, read_epoch, reset_all_on_human
+    if reset_all_on_human() is not True:
+        return
+    with _LOCK:
+        epoch = read_epoch(get_hermes_root())
+        if isinstance(epoch, float) and epoch > _APPLIED_EPOCH:
+            _CHAINS.clear()
+            _APPLIED_EPOCH = epoch
+
+
 def on_turn_start(agent: Any, turn_author: Optional[dict], display_kind: Optional[str],
-                  user_message: Any = None) -> None:
+                  user_message: Any = None, *,
+                  on_reset: Optional[Callable[[], None]] = None) -> None:
     """Set the hop this session's turn runs at. A bot-authored turn runs at the hop its envelope names
     (or one past this side's own count, whichever is higher); a completion wake after this bot sent a
     message carries the answer, which is one more hop; a person's message ends the chain. A fork
-    (background review, side question) shares the session id but is not the conversation: no change."""
+    (background review, side question) shares the session id but is not the conversation: no change.
+
+    A non-bot, non-machinery turn calls ``on_reset`` even when this session has no chain: that
+    callback is how other sessions' in-flight exchanges die. A raising callback is logged and
+    does not fail the turn. Bot authors, machinery wakes, forks, and a disabled guard do not call it.
+    """
+    _apply_shared_epoch()
     if getattr(agent, "_turn_origin", None):
         return
     settings = _settings()
@@ -82,6 +116,7 @@ def on_turn_start(agent: Any, turn_author: Optional[dict], display_kind: Optiona
     from gateway.response_filters import is_machinery_display_kind
     from tools.bot_mode_probe import NO_REPLY_MARKER
     now = time.monotonic()
+    person_reset = False
     with _LOCK:
         key = _bound_key(agent)
         for stale in [k for k, v in _CHAINS.items() if now - v["updated"] > settings.cooldown_seconds]:
@@ -94,15 +129,34 @@ def on_turn_start(agent: Any, turn_author: Optional[dict], display_kind: Optiona
             # The sender's notify-only marker, read from the text like gateway/session_bot_outcome.py
             # does, so it survives every transport (the Desktop relay rebuilds the author).
             state["no_reply_from"] = turn_author.get("id") if NO_REPLY_MARKER in str(user_message or "") else None
-        elif state is not None and is_machinery_display_kind(display_kind):
-            if state["sent"] > state["hops"]:
-                state["hops"] = state["sent"] = state["sent"] + 1
-            state["no_reply_from"] = None
-        elif state is not None:
-            del _CHAINS[key]  # a person spoke: a new chain starts with their message
-            return
+        elif is_machinery_display_kind(display_kind):
+            if state is not None:
+                if state["sent"] > state["hops"]:
+                    state["hops"] = state["sent"] = state["sent"] + 1
+                state["no_reply_from"] = None
+        else:
+            # A person spoke. Drop this session's chain if it has one, and always notify:
+            # a quiet session still has to be able to end other teams' exchanges.
+            if state is not None:
+                del _CHAINS[key]
+            state = None
+            person_reset = True
         if state is not None:
             state["updated"] = now
+    if person_reset:
+        _call_on_reset(on_reset)
+        # on_reset stays outside _LOCK. Apply the stamp it just wrote so other
+        # sessions in this process die with it.
+        _apply_shared_epoch()
+
+
+def _call_on_reset(on_reset: Optional[Callable[[], None]]) -> None:
+    if on_reset is None:
+        return
+    try:
+        on_reset()
+    except Exception:
+        logger.warning("bot-loop on_reset callback failed", exc_info=True)
 
 
 @dataclass
@@ -139,6 +193,7 @@ class Admission:
 def admit_send(agent: Any, recipients: list[str], body: str) -> Admission:
     """Check one ``message_agent`` call to ``recipients`` (resolved identities, see the module doc).
     Admitted recipients reserve their ask and the call's hop until ``Admission.release``."""
+    _apply_shared_epoch()
     settings = _settings()
     if not settings.enabled:
         return Admission()

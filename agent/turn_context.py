@@ -1234,8 +1234,13 @@ def build_turn_context(
     if recovered_history is not None:
         conversation_history = recovered_history
     # After recovery, so the bot-to-bot chain is keyed by the session id this turn's sends use.
+    # on_reset runs for a person's turn even when this session has no chain.
     from agent.bot_chain import on_turn_start as _bot_chain_turn_start
-    _bot_chain_turn_start(agent, turn_author, persist_user_display_kind, persist_user_message or user_message)
+    from gateway.bot_loop_reset import note_human_reset
+    _bot_chain_turn_start(
+        agent, turn_author, persist_user_display_kind, persist_user_message or user_message,
+        on_reset=lambda: note_human_reset(agent),
+    )
     # Set every turn so a cached agent never carries a wake turn's kind into the human turn after it.
     agent._turn_display_kind = persist_user_display_kind
 

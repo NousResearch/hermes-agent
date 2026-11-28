@@ -31,14 +31,14 @@ _MODELS: dict[str, dict[str, Any]] = {
         "strengths": "Typography/layout-aware; legible small text; strongest quality.",
     },
     "grok-imagine-image-quality": {
-        "display": "Grok Imagine Image (Quality)", "speed": "~10-20s",
-        "strengths": "Higher fidelity / detail; slower than the standard model.",
+        "display": "Grok Imagine Image (Quality, retired)", "speed": "~10-20s",
+        "strengths": "Retired Nov 2, 2026: xAI now serves it as 2.0 at low quality. Pick 2.0 instead.",
     },
 }
 
 DEFAULT_MODEL = "grok-imagine-image"
-# xAI documents the quality model as the edit-capable baseline.
-_EDIT_FALLBACK_MODEL = "grok-imagine-image-quality"
+# grok-imagine-image-2.0 is the documented edit-capable model after the Nov 2, 2026 quality retirement.
+_EDIT_FALLBACK_MODEL = "grok-imagine-image-2.0"
 
 # Live catalog cache ``(models, fetched_monotonic)``: ``/image-generation-models`` is the source of
 # truth (new models need no code change); ``_MODELS`` is the offline fallback + curated text.
@@ -157,7 +157,7 @@ def _resolve_model(caller_model: Optional[str] = None) -> tuple[str, dict[str, A
 
 
 def _resolve_edit_model(caller_model: Optional[str] = None) -> str:
-    """Edit model: an explicit selection that accepts image input, else the documented quality baseline."""
+    """Edit model: an explicit selection that accepts image input, else grok-imagine-image-2.0."""
     catalog = _catalog()
     explicit = caller_model or os.environ.get("XAI_IMAGE_MODEL") or _configured_model()
     if explicit and explicit in catalog and "image" in (catalog[explicit].get("input_modalities") or []):

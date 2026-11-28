@@ -162,7 +162,7 @@ hermes tools
 | 对话 | `grok-4.20-multi-agent-0309` | 多 agent 变体 |
 | 图像 | `grok-imagine-image` | 默认；约 5–10 秒 |
 | 图像 | `grok-imagine-image-2.0` | 版式/排版感知；最强画质；约 10–20 秒 |
-| 图像 | `grok-imagine-image-quality` | 更高保真度；约 10–20 秒 |
+| 图像 | `grok-imagine-image-quality` | 已于 2026-11-02 退役，xAI 以 2.0 低画质提供；`hermes migrate xai` 会改写 |
 | 视频 | `grok-imagine-video` | 文本转视频 |
 | 视频 | `grok-imagine-video-1.5-preview` | 图像转视频；日期别名 `grok-imagine-video-1.5-2026-05-30` |
 | TTS | （默认音色） | xAI `/v1/tts` 端点 |

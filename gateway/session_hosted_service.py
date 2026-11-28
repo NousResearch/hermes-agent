@@ -251,11 +251,13 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
         """Also settle a local member's deferred turn once its profile is no longer served here and
         nothing on this host can run it (``unserved_member_stopped``): its daemon never answers."""
         from gateway.session_hosted_member_homes import unsettled_legacy_homes, unserved_member_stopped
-        if super()._stop_deferred_peer(room_id, task):
-            return not unsettled_legacy_homes(self, room_id, task)
         from tui_gateway.hosted_room_service import task_member_id
-        return (not self._member_is_peer(room_id, task_member_id(task))
-                and unserved_member_stopped(self, room_id, task))
+        confirmed = super()._stop_deferred_peer(room_id, task)
+        if self._member_is_peer(room_id, task_member_id(task)):
+            return confirmed
+        if confirmed:
+            return not unsettled_legacy_homes(self, room_id, task)
+        return unserved_member_stopped(self, room_id, task)
 
     def check_admission(self, ref, row):
         """Reconstruct the private producer from durable task state before claim."""
@@ -292,7 +294,9 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
         return task
 
     def approve(self, *, session_id, request_id, choice):
-        rpc = next((r for r in self.member_rpcs.values() if r.ref.session_id == session_id), None)
+        # A cross-profile transport has no ref until its first create/resume/resolve_exact.
+        rpc = next((r for r in self.member_rpcs.values()
+                    if getattr(r, 'ref', None) is not None and r.ref.session_id == session_id), None)
         if rpc is None:
             raise AuthorityRefusal('permission_denied')
         return rpc.approve(session_id=session_id, request_id=request_id, choice=choice)

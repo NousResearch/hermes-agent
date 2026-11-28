@@ -26,7 +26,7 @@ from gateway.hosted_room_peer import (
     room_grant_needs_dispatch_refresh)
 from tui_gateway import hosted_room_prepare_stall as prepare_stall
 from tui_gateway import hosted_room_router_call as router_call
-from tui_gateway.hosted_room_driver import HostedRoomBinding, HostedRoomRuntime
+from tui_gateway.hosted_room_driver import HostedRoomBinding, HostedRoomRuntime, _TerminalReceipt, _receipt_from
 from tui_gateway.hosted_room_member_activity import (
     forget_task_progress, record_task_progress, task_is_active, task_progress)
 from tui_gateway.hosted_room_server_rpc import HostedRoomServerRPC
@@ -125,8 +125,9 @@ def _hosted_room_turn_timeout_seconds() -> float:
     try:
         agent_timeout = float(os.getenv("HERMES_AGENT_TIMEOUT", "1800"))
     except (TypeError, ValueError):
-        agent_timeout = 0.0
-    return (agent_timeout if agent_timeout > 0 else 1800.0) + _HOSTED_ROOM_TERMINAL_GRACE_SECONDS
+        agent_timeout = 1800.0
+    # As in the messaging gateway, a limit that is not positive (0, or nan) means no limit.
+    return agent_timeout + _HOSTED_ROOM_TERMINAL_GRACE_SECONDS if agent_timeout > 0 else float("inf")
 
 
 def _grant_revoke_is_terminal(exc: PeerRunsHTTPError) -> bool:
@@ -739,7 +740,8 @@ class HostedRoomService:
                 task_events = [event for event in task_events if event["kind"] != "message.user"
                                or int(event["seq"]) <= int(task["payload"]["source_event_seq"])]
             publication = discussion.plan_publication(
-                room, task_events, plan, status=status, result=task.get("result"),
+                room, task_events, plan, status=status,
+                result=task.get("result"),
                 execution_generation=execution_generation if status == "deferred" else None,
                 local_profiles=local_profiles)
             for event in publication.events:
@@ -1048,7 +1050,7 @@ class HostedRoomService:
             "target_install_id": route.target_install_id, "target_profile": route.target_profile,
             "task_id": task["identity"].task_id, "execution_generation": int(task["execution_generation"])})
 
-    def _stop_deferred_peer(self, room_id: str, task: Mapping[str, Any]) -> bool:
+    def _stop_deferred_peer(self, room_id: str, task: Mapping[str, Any]) -> bool | _TerminalReceipt:
         """Whether a deferred task may be cancelled here: for a member on this gateway, once the
         process serving it confirms (``deferred_stop_confirmed``). For a member on another
         gateway, only once that gateway answers that the exact run this home holds a receipt for
@@ -1076,6 +1078,13 @@ class HostedRoomService:
                 return True
             self.runtime._record_error(f"stop of deferred task {task['identity'].task_id} is unconfirmed: {exc}")
             return False
+        if (result and result.get("status") == "completed" and task["status"] == "indeterminate"
+                and task["payload"].get("lead_routing")):
+            if not isinstance(result.get("output"), str):
+                return False  # Completion without the routing output cannot authorize fallback.
+            return _receipt_from({"status": "settled", "text": result["output"],
+                                  "message_id": f"peer-run:{result['run_id']}"},
+                                 task["identity"], int(task["execution_generation"]))
         return result is not None and str(result.get("status") or "") in _PEER_RUN_ENDED
 
     def _close_missing_peer_run(self, room_id: str, task: Mapping[str, Any], client: Any) -> bool:

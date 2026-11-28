@@ -77,3 +77,27 @@ def test_an_older_home_restarted_mid_turn_settles_like_a_live_stop(homes):
     raw_holder(authority_persistence(homes.targets[homes.a]))._execute_write(lambda conn: conn.execute(
         "UPDATE session_admissions SET status='unknown' WHERE admission_id=?", (row['admission_id'],)))
     assert 'tombstone' in homes.disband()
+
+
+@pytest.mark.parametrize('legacy', [False, True], ids=['recorded-home', 'former-home'])
+def test_retry_keeps_attempt_when_older_home_cannot_confirm_exact_absence(homes, monkeypatch, legacy):
+    from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
+
+    if legacy:
+        _legacy_move(homes)
+    else:
+        homes.submit(homes.a)
+        homes.defer(homes.a)
+    homes.finish(homes.a, homes.claim(homes.a))
+    info = HostedRoomAuthorityRPC._info
+
+    async def old_info(rpc, params):
+        result = await info(rpc, params)
+        result.pop('exact_attempt_results', None)
+        return result
+
+    monkeypatch.setattr(HostedRoomAuthorityRPC, '_info', old_info)
+    with pytest.raises(AuthorityRefusal):
+        _retry(homes)
+    assert homes.task['status'] == 'deferred'
+    assert (homes.a, 'interrupt') not in {call[:2] for call in homes.calls}

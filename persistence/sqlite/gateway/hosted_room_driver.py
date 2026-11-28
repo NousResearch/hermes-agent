@@ -23,6 +23,7 @@ from persistence import JsonValue
 from persistence.gateway.hosted_rooms import (
     SHOWN_TASK_STATUSES,
     TERMINAL_STATUSES,
+    AuthorityChangedError,
     DriverLease,
     DriverStateError,
     DriverValidationError,
@@ -76,7 +77,8 @@ _GENERATION_FENCE = "execution_generation=? AND cancel_generation=?"
 _RUN_FENCE = "run_gateway_id=? AND run_process_generation=? AND run_lease_generation=?"
 _SETTLE_SET = "status=?, settlement_id=?, settlement_status=?, result_json=?, terminal_at=?, updated_at=?"
 _REQUEUE_SET = "status='queued', run_gateway_id=NULL, run_process_generation=NULL, run_lease_generation=NULL"
-_CANCEL_SET = "status='cancelled', cancel_generation=?, cancel_id=?, terminal_at=?, updated_at=?"
+_CANCEL_FIELDS = "cancel_generation=?, cancel_id=?, terminal_at=?, updated_at=?"
+_CANCEL_SET = f"status='cancelled', result_json=NULL, {_CANCEL_FIELDS}"
 
 
 def _task_update(set_clause: str, fence: str) -> str:
@@ -105,7 +107,7 @@ _INDETERMINATE_STALE = "indeterminate task generation changed"
 _GENERATION_TRANSITIONS = {
     "resolve": ("indeterminate", _SETTLE_SET, _INDETERMINATE_STALE, "indeterminate task changed during reconciliation"),
     "resolve_cancel": (
-        "indeterminate", _CANCEL_SET, "indeterminate cancellation proof is stale",
+        "indeterminate", f"status='cancelled', result_json=?, {_CANCEL_FIELDS}", "indeterminate cancellation proof is stale",
         "indeterminate cancellation proof lost its fence"),
     "requeue": (
         "indeterminate", f"{_REQUEUE_SET}, started_at=NULL, indeterminate_at=NULL, updated_at=?", _INDETERMINATE_STALE,
@@ -307,7 +309,7 @@ def _load_active_room(conn: sqlite3.Connection, room_id: str) -> Row:
 def _require_room_authority(conn: sqlite3.Connection, room_id: str, gateway_id: str, epoch: int) -> Row:
     room = _load_active_room(conn, room_id)
     if room["authority_gateway_id"] != gateway_id or int(room["authority_epoch"]) != epoch:
-        raise StaleLeaseError("hosted room authority changed")
+        raise AuthorityChangedError("hosted room authority changed")
     return room
 
 
@@ -600,6 +602,17 @@ class SQLiteHostedRoomDriverRepository:
             replay=replay, sql=_SETTLE_RUNNING_SQL, set_params=set_params, stale="task changed during settlement",
             allow_expired_lease=allow_expired_lease)
 
+    def settle_recovered_task(self, identity: HostedTaskIdentity, lease: DriverLease, *, placement: HostedPlacement,
+                             expected_execution_generation: int, expected_cancel_generation: int, settlement_id: str,
+                             status: TerminalStatus, result: JsonValue, now: float | None = None) -> Mapping[str, JsonValue]:
+        now = clock(now)
+        replay, set_params = _settlement(settlement_id, status, result, now)
+        return self._transition(
+            placement, identity, lease=lease, now=now, replay=replay,
+            sql=_task_update(_SETTLE_SET, f"status IN ('running', 'deferred') AND {_GENERATION_FENCE}"),
+            set_params=set_params, fence_params=(expected_execution_generation, expected_cancel_generation),
+            stale="late receipt belongs to a replaced or cancelled attempt")
+
     # Settles a stopping task; the replay check comes before the lease check.
     def settle_stopping_task(self, identity: HostedTaskIdentity, lease: DriverLease, *, placement: HostedPlacement,
                              expected_execution_generation: int, expected_cancel_generation: int, settlement_id: str,
@@ -626,11 +639,13 @@ class SQLiteHostedRoomDriverRepository:
     def resolve_indeterminate_cancellation(self, identity: HostedTaskIdentity, lease: DriverLease, *,
                                            placement: HostedPlacement, expected_execution_generation: int,
                                            expected_cancel_generation: int, cancel_id: str,
-                                           now: float | None = None) -> Mapping[str, JsonValue]:
+                                           reason: str | None = None, now: float | None = None) -> Mapping[str, JsonValue]:
         now = clock(now)
         return self._generation_transition(
             placement, identity, lease, "resolve_cancel", expected_execution_generation, expected_cancel_generation,
-            now=now, replay=_cancel_replay(cancel_id), set_params=(expected_cancel_generation + 1, cancel_id, now, now))
+            now=now, replay=_cancel_replay(cancel_id), set_params=(
+                compact_json({"reason": reason}) if reason is not None else None,
+                expected_cancel_generation + 1, cancel_id, now, now))
 
     # Returns an indeterminate task to the queue under the lease.
     def requeue_indeterminate_task(self, identity: HostedTaskIdentity, lease: DriverLease, *, placement: HostedPlacement,
@@ -699,6 +714,18 @@ class SQLiteHostedRoomDriverRepository:
             placement, attempt, guard_stale="not-admitted task attempt lost its fence",
             lease_generation=lambda value: int(value or 0), now=now, replay=replay, sql=_REQUEUE_RUNNING_SQL,
             set_params=(now,), stale="not-admitted task changed during requeue")
+
+    def cancel_deferred_task(self, identity: HostedTaskIdentity, *, placement: HostedPlacement, cancel_id: str,
+                             expected_execution_generation: int, expected_cancel_generation: int,
+                             now: float | None = None) -> Mapping[str, JsonValue]:
+        now = clock(now)
+        return self._transition(
+            placement, identity, now=now, sql=_task_update(_CANCEL_SET, f"status='deferred' AND {_GENERATION_FENCE}"),
+            set_params=(expected_cancel_generation + 1, cancel_id, now, now),
+            fence_params=(expected_execution_generation, expected_cancel_generation),
+            replay=lambda row: _cancel_replay(cancel_id)(row) if _generations_match(
+                row, "cancelled", expected_execution_generation, expected_cancel_generation + 1) else None,
+            stale="deferred cancellation belongs to a replaced attempt")
 
     # Cancels a queued or deferred task; running work goes through ``begin_task_cancel``.
     def cancel_task(self, identity: HostedTaskIdentity, *, placement: HostedPlacement, cancel_id: str,

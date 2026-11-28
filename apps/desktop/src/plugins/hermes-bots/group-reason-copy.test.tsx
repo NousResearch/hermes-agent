@@ -28,7 +28,8 @@ const knownReasons = [
   'runtime_offline', 'queued_expired', 'delivery_timeout', 'agent_blocked', 'cancelled',
   'provider_auth_or_access', 'provider_quota_limit', 'provider_rate_limit', 'provider_server_error',
   'context_overflow', 'missing_config', 'model_unavailable', 'target_scope_unresolved',
-  'prepare_failed', 'slot_wait_timeout', 'target_busy', 'rate_limited', 'member gateway restarted'
+  'prepare_failed', 'slot_wait_timeout', 'target_busy', 'rate_limited', 'member gateway restarted',
+  'lead_answers_itself'
 ]
 
 it.each([
@@ -113,4 +114,13 @@ it.each([
   ["es", "El turno de {name} no ha terminado. ¿Reintentar?"],
 ])('asks to retry a turn that has not finished, wherever it ran, in %s', (locale, template) => {
   expect(fill(CANONICAL_GROUP_LOCALES[locale as keyof typeof CANONICAL_GROUP_LOCALES].pendingRetry, { name: 'Helper' })).toBe(template.replace('{name}', 'Helper'))
+})
+
+it('says the lead takes the message when its routing turn is given up', () => {
+  selection.locale = 'en'
+  setPluginCtx({ i18n: { t: translateBotsIn('en') } } as never)
+  const labels = CANONICAL_GROUP_LOCALES.en
+  const events = [{ seq: 1, kind: 'turn.cancelled', payload: { reason: 'lead_answers_itself' } }]
+  const view = render(<CanonicalGroupHistory binding={binding} events={events} />)
+  expect(view.container.querySelector('[data-room-notice] p')?.textContent).toBe(`${labels.turnCancelled}: ${labels.reasonLeadAnswers}`)
 })

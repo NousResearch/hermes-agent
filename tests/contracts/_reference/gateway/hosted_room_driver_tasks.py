@@ -11,6 +11,7 @@ from typing import Any
 from persistence import JsonValue
 from persistence.gateway.hosted_rooms import (
     TERMINAL_STATUSES,
+    AuthorityChangedError,
     DriverLease,
     HostedPlacement,
     HostedTaskIdentity,
@@ -76,7 +77,7 @@ def require_room_authority(tables: HostedTables, room_id: str, gateway_id: str, 
     """The active room when its authority is ``(gateway_id, epoch)``, else ``StaleLeaseError``."""
     room = active_room(tables, room_id)
     if room["authority_gateway_id"] != gateway_id or int(room["authority_epoch"]) != epoch:
-        raise StaleLeaseError("hosted room authority changed")
+        raise AuthorityChangedError("hosted room authority changed")
     return room
 
 
@@ -259,14 +260,28 @@ class DriverTaskMixin:
 
         return self._transition(placement, identity, lease=lease, lease_first=False, now=now, replay=replay, fence=fence, changes=changes, stale="task completion lost the stop race")
 
+    def settle_recovered_task(self, identity: HostedTaskIdentity, lease: DriverLease, *, placement: HostedPlacement,
+                              expected_execution_generation: int, expected_cancel_generation: int, settlement_id: str,
+                              status: TerminalStatus, result: JsonValue, now: float | None = None) -> Mapping[str, JsonValue]:
+        now = rules.clock(now)
+        replay, changes = _settlement(settlement_id, status, result, now)
+
+        def fence(row: Row) -> bool:
+            return (row["status"] in {"running", "deferred"}
+                    and row["execution_generation"] == expected_execution_generation
+                    and row["cancel_generation"] == expected_cancel_generation)
+
+        return self._transition(placement, identity, lease=lease, now=now, replay=replay, fence=fence,
+                                changes=changes, stale="late receipt belongs to a replaced or cancelled attempt")
+
     def resolve_indeterminate_task(self, identity: HostedTaskIdentity, lease: DriverLease, *, placement: HostedPlacement, expected_execution_generation: int, expected_cancel_generation: int, settlement_id: str, status: TerminalStatus, result: JsonValue, now: float | None = None) -> Mapping[str, JsonValue]:
         now = rules.clock(now)
         replay, changes = _settlement(settlement_id, status, result, now)
         return self._generation_transition(placement, identity, lease, "resolve", expected_execution_generation, expected_cancel_generation, now=now, replay=replay, changes=changes)
 
-    def resolve_indeterminate_cancellation(self, identity: HostedTaskIdentity, lease: DriverLease, *, placement: HostedPlacement, expected_execution_generation: int, expected_cancel_generation: int, cancel_id: str, now: float | None = None) -> Mapping[str, JsonValue]:
+    def resolve_indeterminate_cancellation(self, identity: HostedTaskIdentity, lease: DriverLease, *, placement: HostedPlacement, expected_execution_generation: int, expected_cancel_generation: int, cancel_id: str, reason: str | None = None, now: float | None = None) -> Mapping[str, JsonValue]:
         now = rules.clock(now)
-        changes = {"status": "cancelled", "cancel_generation": expected_cancel_generation + 1, "cancel_id": cancel_id, "terminal_at": now, "updated_at": now}
+        changes = {"status": "cancelled", "result_json": compact_json({"reason": reason}) if reason is not None else None, "cancel_generation": expected_cancel_generation + 1, "cancel_id": cancel_id, "terminal_at": now, "updated_at": now}
         return self._generation_transition(placement, identity, lease, "resolve_cancel", expected_execution_generation, expected_cancel_generation, now=now, replay=_cancel_replay(cancel_id), changes=changes)
 
     def requeue_indeterminate_task(self, identity: HostedTaskIdentity, lease: DriverLease, *, placement: HostedPlacement, expected_execution_generation: int, expected_cancel_generation: int, now: float | None = None) -> Mapping[str, JsonValue]:
@@ -338,8 +353,23 @@ class DriverTaskMixin:
         def fence(row: Row) -> bool:
             return row["status"] in {"queued", "deferred"} and int(row["cancel_generation"]) == expected_cancel_generation
 
-        changes = {"status": "cancelled", "cancel_generation": expected_cancel_generation + 1, "cancel_id": cancel_id, "terminal_at": now, "updated_at": now}
+        changes = {"status": "cancelled", "result_json": None, "cancel_generation": expected_cancel_generation + 1, "cancel_id": cancel_id, "terminal_at": now, "updated_at": now}
         return self._transition(placement, identity, now=now, replay=_cancel_replay(cancel_id), guard=guard, fence=fence, changes=changes, stale="task changed during cancellation")
+
+    def cancel_deferred_task(self, identity: HostedTaskIdentity, *, placement: HostedPlacement, cancel_id: str,
+                             expected_execution_generation: int, expected_cancel_generation: int,
+                             now: float | None = None) -> Mapping[str, JsonValue]:
+        now = rules.clock(now)
+
+        def fence(row: Row) -> bool:
+            return _generations_match(row, "deferred", expected_execution_generation, expected_cancel_generation)
+
+        changes = {"status": "cancelled", "result_json": None, "cancel_generation": expected_cancel_generation + 1,
+                   "cancel_id": cancel_id, "terminal_at": now, "updated_at": now}
+        return self._transition(placement, identity, now=now, changes=changes, fence=fence,
+                                replay=lambda row: _cancel_replay(cancel_id)(row) if _generations_match(
+                                    row, "cancelled", expected_execution_generation, expected_cancel_generation + 1) else None,
+                                stale="deferred cancellation belongs to a replaced attempt")
 
     def begin_task_cancel(self, identity: HostedTaskIdentity, *, placement: HostedPlacement, cancel_id: str, expected_cancel_generation: int, now: float | None = None) -> Mapping[str, JsonValue]:
         now = rules.clock(now)

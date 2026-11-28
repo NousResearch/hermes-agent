@@ -127,7 +127,7 @@ def legacy_stop_homes(service, room_id, member_id, task_id=None):
     return {str(home) for home in _recorded_homes(store, room_id, member_id)}
 
 
-def _legacy_home_released(service, room_id, member, home, task):
+def _legacy_home_released(service, room_id, member, home, task, *, for_retry):
     """Ask one older home whether its room session holds nothing; one that holds this turn is sent
     its Stop, and the turn is kept until a later read finds it gone. Unreachable keeps it."""
     from gateway.session_hosted_transport import HostedRoomOwnerRPC
@@ -140,6 +140,9 @@ def _legacy_home_released(service, room_id, member, home, task):
         if rpc.resolve_exact(title=room_session_title(room_id), **kw) is None:
             return True
         info = rpc.info(session_id=rpc.ref.session_id, **kw)
+        if for_retry:
+            # Retry needs an exact reader. Never interrupt an older home's session to probe liveness.
+            return info.get('exact_attempt_results') is True and not info.get('active') and info.get('status') == 'idle'
         if not info.get('active'):
             # Nothing queued or running there. An input left 'unknown' by a restart reads inactive:
             # its agent died with the old process, the same rule as a live Stop's acknowledgement.
@@ -153,7 +156,7 @@ def _legacy_home_released(service, room_id, member, home, task):
         return False
 
 
-def unsettled_legacy_homes(service, room_id, task):
+def unsettled_legacy_homes(service, room_id, task, *, for_retry=False):
     """For a turn admitted before attempt homes were recorded, every other home its member was
     served from whose gateway is up and has not answered that it holds nothing for the room: the
     current home's answer says nothing about those. Empty when the turn has an attempt home."""
@@ -167,7 +170,7 @@ def unsettled_legacy_homes(service, room_id, task):
     return [home for home in _recorded_homes(store, room_id, member)
             if (served is None or home != Path(served))
             and discover_gateway_endpoint(home).state != 'absent'
-            and not _legacy_home_released(service, room_id, member, home, task)]
+            and not _legacy_home_released(service, room_id, member, home, task, for_retry=for_retry)]
 
 
 def unserved_member_stopped(service, room_id, task):

@@ -219,3 +219,15 @@ def test_a_turn_from_before_attempt_homes_is_stopped_at_a_live_older_home(homes)
     assert (homes.a, 'interrupt') in {call[:2] for call in homes.calls}
     row, = homes.rows(homes.a)
     assert row['status'] == 'terminal'
+
+
+def test_deferred_observer_resolves_unknown_at_admitting_home_after_move(homes):
+    from tests.gateway.test_hosted_room_lost_run import _restart
+
+    homes.submit(homes.a)
+    homes.defer(homes.a)
+    _restart(homes.targets[homes.a], homes.sids[homes.a])
+    homes.source.homes['other'] = str(homes.b)
+    assert homes.rows(homes.a)[0]['status'] == 'unknown'
+    homes.service.runtime._process_room(homes.binding)
+    assert homes.rows(homes.a)[0]['status'] == 'terminal'

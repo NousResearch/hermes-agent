@@ -145,6 +145,17 @@ def test_snapshot_watermarks_and_the_stop_fence(backend, scope_a):
     assert _snapshot(store, stop + 1).events == _logged(store, 1, 2, 3, 4, stop + 1)
 
 
+def test_a_late_reply_leaves_intervening_messages_unread(backend, scope_a):
+    store = backend.open(scope_a)
+    _room(store)
+    seen = _user(store, "u1")
+    _user(store, "u2")
+    _append(store, "m1", "message.member", {"thread_id": "t1", "discussion_event_id": "u1", "member_id": "m1"}, actor=MEMBER)
+    end = _append(store, "s1", "turn.settled", {"thread_id": "t1", "discussion_event_id": "u1", "member_id": "m1",
+                                               "task_id": "slow", "message_event_id": "m1", "seen_through_seq": seen})
+    assert _snapshot(store, end).watermarks[("t1", "m1")] == seen
+
+
 def test_snapshot_refuses_a_missing_room_a_stalled_cursor_and_an_overflowing_projection(backend, scope_a):
     store = backend.open(scope_a)
     with pytest.raises(RoomNotFoundError, match="^hosted room not found$"):

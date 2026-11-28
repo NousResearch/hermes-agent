@@ -158,6 +158,12 @@ API hooks describe provider attempts inside the agent loop:
 - sanitized response payload: `response`
 - compatibility object: `assistant_message`
 
+Within `response.assistant_message`, `role`, `content`, and `tool_calls` are always
+present. Provider-native `reasoning`, `reasoning_content`, and `reasoning_details`
+are included when the normalized assistant message supplies them. These optional
+fields pass through the same JSON conversion, credential scrubbing, and payload
+bounds as the rest of `response`; absent reasoning fields are omitted.
+
 `api_request_error` includes the same identity/runtime fields plus:
 
 - `api_duration`, `started_at`, `ended_at`

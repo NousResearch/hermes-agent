@@ -145,17 +145,28 @@ class ApiRequestHooksMixin:
         # Raw provider SDK tool_call objects are handed to the sanitizer on purpose; `_hook_jsonable` must
         # keep normalising them (model_dump / __dict__ / dataclass) or subscribers get str() blobs.
         tool_calls = getattr(assistant_message, "tool_calls", None) or []
+        assistant_payload = {
+            "role": getattr(assistant_message, "role", "assistant"),
+            "content": getattr(assistant_message, "content", None),
+            "tool_calls": tool_calls,
+        }
+        # Keep provider-native reasoning alongside the visible answer. Observer plugins need the same
+        # bounded, credential-scrubbed view as every other hook field; omitting it here made reasoning
+        # turns observationally blank. Absent fields stay absent to preserve the additive contract.
+        for field in ("reasoning", "reasoning_content", "reasoning_details"):
+            value = getattr(assistant_message, field, None)
+            if value is None and field == "reasoning_content":
+                extra = getattr(assistant_message, "model_extra", None)
+                value = extra.get(field) if isinstance(extra, dict) else None
+            if value is not None:
+                assistant_payload[field] = value
         return self._sanitize_hook_payload(
             {
                 "model": getattr(response, "model", None),
                 # Downstream that served the call (relays re-roll it per request; #90216).
                 "upstream_provider": getattr(response, "provider", None),
                 "finish_reason": finish_reason,
-                "assistant_message": {
-                    "role": getattr(assistant_message, "role", "assistant"),
-                    "content": getattr(assistant_message, "content", None),
-                    "tool_calls": tool_calls,
-                },
+                "assistant_message": assistant_payload,
                 "usage": self._usage_summary_for_api_request_hook(response),
             }
         )

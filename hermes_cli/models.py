@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextvars
 import copy
 import gzip
+import contextlib
 import json
 import logging
 import os
@@ -29,6 +30,8 @@ if TYPE_CHECKING:
 
 from agent.proxy_bypass import is_loopback_host
 from agent.bedrock_service_tiers import BEDROCK_ULTRAFAST_ROUTES, bedrock_fast_mode_overrides
+from hermes_cli.model_catalog import manifest_additions, merge_remote_models, provider_listing, recorded_listings, shipped_rows_only
+from hermes_cli.models_detect import relay_lists_live_only, served_rows, with_manifest_provenance
 from hermes_cli.route_identity import normalize_route_base_url
 from hermes_cli.urllib_security import open_credentialed_url
 from hermes_cli.version_info import hermes_user_agent
@@ -185,7 +188,7 @@ def _write_openrouter_catalog_disk(curated: list[tuple[str, str]]) -> None:
             {"fetched_at": time.time(), "curated": [list(c) for c in curated]})
     except Exception as exc:
         logger.debug("openrouter curated catalog disk write failed: %s", exc)
-_ai_gateway_catalog_cache: list[tuple[str, str]] | None = None
+_ai_gateway_catalog_cache: dict[str, bool] | None = None  # live id -> free, as the gateway last reported
 
 
 # ---------------------------------------------------------------------------
@@ -739,35 +742,30 @@ def fetch_ai_gateway_models(
     timeout: float = 8.0, *, force_refresh: bool = False) -> list[tuple[str, str]]:
     """Return the curated AI Gateway picker list, refreshed from the live catalog when possible."""
     global _ai_gateway_catalog_cache
+    # The rows the manifest adds belong to the active profile, so they join per call, after the
+    # shipped pairs (the "recommended" slot stays a shipped row). The process-wide cache holds only
+    # what the gateway itself reported.
+    shipped = [mid for mid, _ in VERCEL_AI_GATEWAY_MODELS]
+    fallback = [*VERCEL_AI_GATEWAY_MODELS, *((mid, "") for mid in manifest_additions("ai-gateway", shipped))]
+    if _ai_gateway_catalog_cache is None or force_refresh:
+        from hermes_constants import AI_GATEWAY_BASE_URL
 
-    if _ai_gateway_catalog_cache is not None and not force_refresh:
-        return list(_ai_gateway_catalog_cache)
-
-    from hermes_constants import AI_GATEWAY_BASE_URL
-
-    fallback = list(VERCEL_AI_GATEWAY_MODELS)
-    live = _fetch_live_catalog_index(f"{AI_GATEWAY_BASE_URL.rstrip('/')}/models", timeout, _urlopen_model_catalog_request)
-    if live is None:
-        return list(_ai_gateway_catalog_cache or fallback)
-    _, live_by_id = live
-
-    curated = [
-        (pid, "free" if _ai_gateway_model_is_free(live_by_id[pid].get("pricing")) else "")
-        for pid, _ in fallback if pid in live_by_id]
-    if not curated:
-        return list(_ai_gateway_catalog_cache or fallback)
+        live = _fetch_live_catalog_index(f"{AI_GATEWAY_BASE_URL.rstrip('/')}/models", timeout, _urlopen_model_catalog_request)
+        if live is not None:
+            _ai_gateway_catalog_cache = {mid: _ai_gateway_model_is_free(item.get("pricing")) for mid, item in live[1].items()}
+    if (free := _ai_gateway_catalog_cache) is None:
+        return fallback  # never reached the gateway: shipped plus added
+    curated = [(pid, "free" if free[pid] else "") for pid, _ in fallback if pid in free]
+    if not any(pid in shipped for pid, _ in curated):  # an index matching no shipped row: no promotion
+        return curated or list(VERCEL_AI_GATEWAY_MODELS)
 
     # A free Moonshot model in the live catalog is auto-promoted to #1 as "recommended".
-    free_moonshot = next(
-        (mid for mid, item in live_by_id.items()
-         if mid.startswith("moonshotai/") and _ai_gateway_model_is_free(item.get("pricing"))),
-        None)
+    free_moonshot = next((mid for mid, is_free in free.items() if mid.startswith("moonshotai/") and is_free), None)
     if free_moonshot:
-        curated = [(free_moonshot, "recommended")] + [(mid, desc) for mid, desc in curated if mid != free_moonshot]
-    else:
+        return [(free_moonshot, "recommended")] + [(mid, desc) for mid, desc in curated if mid != free_moonshot]
+    if curated[0][0] in shipped:  # a published row never takes the recommended slot
         curated[0] = (curated[0][0], "recommended")
-    _ai_gateway_catalog_cache = curated
-    return list(curated)
+    return curated
 
 
 def ai_gateway_model_ids(*, force_refresh: bool = False) -> list[str]:
@@ -959,8 +957,7 @@ def curated_models_for_provider(
         return [(m, "") for m in live]
 
     # Fallback to static catalog
-    models = static_catalog(normalized)
-    return [(m, "") for m in models]
+    return [(m, "") for m in merge_remote_models(normalized, static_catalog(normalized))]
 
 
 def _provider_keys(provider: str) -> set[str]:
@@ -1304,7 +1301,7 @@ def _merge_with_models_dev(provider: str, curated: list[str]) -> list[str]:
     while preserving curated casing. Curated unchanged when models.dev is unreachable/empty."""
     try:
         from agent.models_dev import list_agentic_models
-        mdev = list_agentic_models(provider)
+        mdev = provider_listing(lambda: list_agentic_models(provider))
     except Exception:
         mdev = []
     if not mdev:
@@ -1402,10 +1399,10 @@ def _stepfun_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]
     (no credentials / failure) ``None`` falls through to the generic profile path, whose
     ``merge_profile_catalog`` already serves the curated floor as a placeholder.
     """
-    live = _api_key_provider_live(normalized, force_refresh)
+    live = provider_listing(lambda: _api_key_provider_live(normalized, force_refresh))
     if not live:
         return live
-    curated = list(static_catalog(normalized))
+    curated = merge_remote_models(normalized, static_catalog(normalized), live=live)
     return _merge_unique(live, curated, key=_model_dedup_key) if curated else live
 
 
@@ -1415,8 +1412,8 @@ def _anthropic_catalog(normalized: str, force_refresh: bool) -> list[str]:
     if normalize_provider(str(model_cfg.get("provider", "") or "")) == "anthropic":
         cfg_base_url = str(model_cfg.get("base_url", "") or "").strip()
         cfg_api_key = str(model_cfg.get("api_key", "") or "").strip()
-    live = _fetch_anthropic_models(base_url=cfg_base_url or None, api_key=cfg_api_key or None)
-    curated = list(_PROVIDER_MODELS.get("anthropic", []))
+    live = provider_listing(lambda: _fetch_anthropic_models(base_url=cfg_base_url or None, api_key=cfg_api_key or None))
+    curated = merge_remote_models("anthropic", _PROVIDER_MODELS.get("anthropic", []), live=live)
     if not live:
         # A placeholder for the outage, not this account/proxy's catalog: the disk cache must
         # never pin it over a same-credentials live row (#107391).
@@ -1443,7 +1440,7 @@ def _openai_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]
     from hermes_cli.providers import is_official_openai_host
 
     try:
-        live = fetch_api_models(api_key, base)
+        live = provider_listing(lambda: fetch_api_models(api_key, base))
     except Exception:
         live = None
     if not live:
@@ -1451,14 +1448,14 @@ def _openai_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]
     if not is_official_openai_host(base):
         return live
     live_lower = {m.lower() for m in live}
-    curated = list(static_catalog(normalized))
+    curated = merge_remote_models(normalized, static_catalog(normalized), gated=True)  # the intersection keeps them
     # Curated order, only models the account has access to; an account serving none of them (rare)
     # falls back to curated so the picker still offers sane defaults.
     discovered = [m for m in curated if m.lower() in live_lower]
     # Astra is intentionally absent from offline/static catalogs: the official API's
     # account-scoped /models response is the only source that may advertise it.
     discovered.extend(m for m in live if is_astra_model(m))
-    return discovered or curated or live
+    return discovered or list(static_catalog(normalized)) or live
 
 
 def _custom_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:
@@ -1571,7 +1568,7 @@ def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
     # static _PROVIDER_MODELS row), exactly as api_key plugins do below.
     if profile.auth_type == "external_process":
         try:
-            live = profile.fetch_models()
+            live = provider_listing(lambda: profile.fetch_models())
         except Exception as exc:  # a failed subprocess launch degrades to the curated list, like api_key below
             logger.debug("external_process catalog fetch failed for %s: %s", normalized, exc)
             live = None
@@ -1590,10 +1587,12 @@ def probe_profile_catalog(normalized: str, profile, api_key: Optional[str], base
     live = None
     if api_key:
         try:
-            live = profile.fetch_models(api_key=api_key, base_url=base_url)
+            live = provider_listing(lambda: profile.fetch_models(api_key=api_key, base_url=base_url))
         except Exception:
             live = None
-    return merge_profile_catalog(normalized, profile, live)
+    # A relay (set by env var as well as by config) lists its own ids alone: no manifest rows.
+    with shipped_rows_only() if relay_lists_live_only(normalized, base_url or "") else contextlib.nullcontext():
+        return merge_profile_catalog(normalized, profile, live)
 
 
 def merge_profile_catalog(normalized: str, profile, live: Optional[list[str]]) -> Optional[list[str]]:
@@ -1603,7 +1602,7 @@ def merge_profile_catalog(normalized: str, profile, live: Optional[list[str]]) -
     if not live:
         rows = CuratedFallbackModels(profile.fallback_models) if profile.fallback_models else None
     else:
-        curated = list(static_catalog(normalized)) or list(profile.fallback_models or ())
+        curated = merge_remote_models(normalized, static_catalog(normalized), live=live) or list(profile.fallback_models or ())
         if not curated:
             rows = live
         else:
@@ -1714,7 +1713,7 @@ def _static_catalog(normalized: str, fetcher: Any) -> list[str]:
     # model, flux-*, ahead of its chat models).
     # A provider with a live fetcher that declined is serving a placeholder; one without any live
     # source is serving its authoritative catalog.
-    curated_static = (CuratedFallbackModels if fetcher is not None else list)(static_catalog(normalized))
+    curated_static = (CuratedFallbackModels if fetcher is not None else list)(merge_remote_models(normalized, static_catalog(normalized)))
     if normalized not in _MODELS_DEV_PREFERRED:
         return _chat_catalog_rows(_drop_delisted_opencode_models(normalized, curated_static))
     # models.dev keeps listing retired Zen ids too: filter after the merge, not before.
@@ -1737,7 +1736,7 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
     # deliberately routed away from, recreating the bug on the failure path.
     relay = _configured_relay_base_url(provider or "")
     if relay and normalized not in _RELAY_AWARE_CATALOG_FETCHERS:
-        relayed = _relay_model_catalog(normalized, relay)
+        relayed = provider_listing(lambda: _relay_model_catalog(normalized, relay))
         if relayed:
             return _chat_catalog_rows(relayed)
         return _static_catalog(normalized, _catalog_fetcher(normalized))
@@ -1819,10 +1818,12 @@ def _spawn_swr_refresh(cache_key: str, refresh_fn=None) -> None:
         _swr_refresh_inflight.add(inflight_key)
 
     def _default_refresh():
-        live = provider_model_ids(cache_key, force_refresh=True)
+        with recorded_listings() as listings:
+            live = provider_model_ids(cache_key, force_refresh=True)
         if live or (cache_key == "ollama" and _ollama_native_probe_reachable()):
             fp = _credential_fingerprint(cache_key)
-            return _live_result_entry(fp, live or [], _load_provider_models_cache().get(cache_key))
+            previous = _load_provider_models_cache().get(cache_key)
+            return with_manifest_provenance(cache_key, _live_result_entry(fp, live or [], previous), listings)
         return None
 
     def _refresh() -> None:
@@ -1982,10 +1983,8 @@ def _normalized_cache_slug(provider: Optional[str]) -> str:
 
 
 def _model_requires_account_discovery(provider: Optional[str], model: str) -> bool:
-    from hermes_cli.codex_models import codex_model_requires_account_discovery
-    slug = _normalized_cache_slug(provider)
-    return codex_model_requires_account_discovery(model) if slug == "openai-codex" else (
-        slug in {"openai", "openai-api"} and is_astra_model(model))
+    from hermes_cli.codex_models import model_requires_account_discovery
+    return model_requires_account_discovery(_normalized_cache_slug(provider), model)
 
 
 def cached_provider_model_ids(
@@ -2012,24 +2011,25 @@ def cached_provider_model_ids(
             if tier == "stale":
                 _spawn_swr_refresh(normalized)
             verified = tier == "fresh" and not entry.get("fallback")
-            return _chat_catalog_rows([m for m in entry["models"] if verified or not _model_requires_account_discovery(normalized, m)])
+            return _chat_catalog_rows([m for m in served_rows(normalized, entry) if verified or not _model_requires_account_discovery(normalized, m)])
 
     if non_blocking and not force_refresh:
         # Serve same-credential hints past the SWR window while the daemon warms the next open.
         _spawn_swr_refresh(normalized)
         if _cache_entry_valid(entry, fp, allow_empty=is_ollama):
             return _chat_catalog_rows([
-                model for model in entry["models"]
+                model for model in served_rows(normalized, entry)
                 if not _model_requires_account_discovery(normalized, model)])
         return []
 
-    live = provider_model_ids(normalized, force_refresh=force_refresh)
+    with recorded_listings() as listings:
+        live = provider_model_ids(normalized, force_refresh=force_refresh)
     if live:
         fresh = _live_result_entry(fp, live, entry, now)
         if fresh is None:
             # The live fetch degraded to the curated list; the account's real catalog is on disk.
-            return _chat_catalog_rows([model for model in entry["models"] if not _model_requires_account_discovery(normalized, model)])
-        _store_cache_entry(normalized, fresh)
+            return _chat_catalog_rows([model for model in served_rows(normalized, entry) if not _model_requires_account_discovery(normalized, model)])
+        _store_cache_entry(normalized, with_manifest_provenance(normalized, fresh, listings))
         return _chat_catalog_rows(list(live))
 
     if is_ollama:
@@ -2047,7 +2047,7 @@ def cached_provider_model_ids(
     # models, which only a successful discovery may advertise (the entry itself is untouched, so the
     # next successful fetch restores them).
     if _cache_entry_valid(entry, fp):
-        return _chat_catalog_rows([model for model in entry["models"] if not _model_requires_account_discovery(normalized, model)])
+        return _chat_catalog_rows([model for model in served_rows(normalized, entry) if not _model_requires_account_discovery(normalized, model)])
     return []
 
 

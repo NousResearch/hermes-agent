@@ -7,6 +7,7 @@ Prompt strings and config write order are behavior.
 
 from __future__ import annotations
 
+from hermes_cli.model_catalog import merge_remote_models
 from hermes_cli.model_setup_flows_common import (
     _ask, _ensure_dict_section, _finish_model, _note_setup_failure, _pick_model_or_prompt, _say)
 
@@ -73,7 +74,7 @@ def _model_flow_bedrock_api_key(config, region, current_model=""):
     print()
 
     # Static list — mantle doesn't need boto3 for discovery
-    model_list = _PROVIDER_MODELS.get("bedrock", [])
+    model_list = merge_remote_models("bedrock", _PROVIDER_MODELS.get("bedrock", []))
     print(f"  Showing {len(model_list)} curated models")
     selected = _pick_model_or_prompt(
         model_list, "  Model ID: ", current_model=current_model, confirm_provider="custom",
@@ -190,7 +191,7 @@ def _model_flow_bedrock(config, current_model=""):
         model_list = _bedrock_text_model_ids(live_models, region)
         print(f"  Found {len(model_list)} text model(s) (filtered from {len(live_models)} total)")
     else:
-        model_list = _PROVIDER_MODELS.get("bedrock", [])
+        model_list = merge_remote_models("bedrock", _PROVIDER_MODELS.get("bedrock", []))
         if not model_list:
             print("  No models found. Check IAM permissions for bedrock:ListFoundationModels.")
             _note_setup_failure("no_models")

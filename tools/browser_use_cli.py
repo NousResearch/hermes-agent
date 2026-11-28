@@ -618,7 +618,12 @@ _OWN_DURING_CALL_S = 0.5
 # Harness daemons this process drove: each latches BU_CDP_* at start and outlives every call, so a backend
 # swap (/browser connect|disconnect) leaves later calls in the old browser until these are stopped.
 _driven_daemons: dict[tuple[str, ...], str] = {}  # daemon identity -> home
+# daemon identity -> when a browser_exec last started on it (time.time()); drives stop_idle_harness_daemons.
+_driven_daemon_last_used: dict[tuple[str, ...], float] = {}
 _driven_daemons_lock = threading.Lock()
+# A daemon nothing has driven for this long is stopped by the janitor. Above _MAX_TIMEOUT_S so a call that
+# is still running can never look idle.
+HARNESS_DAEMON_IDLE_TIMEOUT_S = int(os.environ.get("BROWSER_HARNESS_IDLE_TIMEOUT", "3600") or 3600)
 _live_generation = functools.partial(_lazy_call, "tools.browser_session_cdp", "live_cdp_generation", 0,
                                      "live CDP generation lookup failed")  # this profile's publish count
 # Route cache key -> whether its last browser_exec ran on the hybrid local sidecar.
@@ -636,7 +641,26 @@ def stop_harness_daemons(home_key: Optional[str] = None) -> None:
         daemons = sorted(key for key, home in _driven_daemons.items() if home_key in (None, home))
         for key in daemons:
             _driven_daemons.pop(key, None)
+            _driven_daemon_last_used.pop(key, None)
     _reload_daemons(daemons)
+
+
+def stop_idle_harness_daemons(idle_s: float = HARNESS_DAEMON_IDLE_TIMEOUT_S, now: Optional[float] = None) -> list:
+    """Stop harness daemons this process drove that no browser_exec has started for ``idle_s`` seconds.
+
+    Each daemon keeps its own Chromium alive between calls, and per-session cleanup does not stop it, so a daemon
+    whose session went quiet would otherwise run (with its tabs and renderers) until the gateway exits. Returns
+    the identities stopped; the next browser_exec respawns one."""
+    now = time.time() if now is None else now
+    with _driven_daemons_lock:
+        idle = sorted(key for key in _driven_daemons if now - _driven_daemon_last_used.get(key, 0.0) >= idle_s)
+        for key in idle:
+            _driven_daemons.pop(key, None)
+            _driven_daemon_last_used.pop(key, None)
+    if idle:
+        logger.info("Stopping %d idle harness daemon(s) unused for %ss", len(idle), idle_s)
+    _reload_daemons(idle)
+    return idle
 
 
 def _published_daemon_pid(env: dict) -> Optional[int]:
@@ -849,6 +873,7 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
         with _driven_daemons_lock:
             daemon = daemon_identity(env)
             _driven_daemons[daemon] = hermes_home_key()
+            _driven_daemon_last_used[daemon] = time.time()
         # The first call starts the daemon and may run long (navigation, user code): own it as soon as
         # it publishes its pid, so a Hermes killed mid-call takes it along (the call's end owns it too).
         from agent.periodic_scheduler import schedule

@@ -341,10 +341,17 @@ def _janitor() -> None:
             _best_effort("Orphan reap", reap_orphaned_browser_sessions)
         cycle += 1
         _best_effort("Inactive browser cleanup", cleanup_inactive_sessions)
+        _best_effort("Idle harness daemon cleanup", _stop_idle_harness_daemons)
         for _ in range(30):  # 1 s granularity so stop is quick
             if not bs._cleanup_running:
                 break
             time.sleep(1)
+
+
+def _stop_idle_harness_daemons() -> None:
+    """Janitor step: stop the harness daemons (and their Chromium) that no browser_exec has used for an hour."""
+    from tools.browser_use_cli import stop_idle_harness_daemons
+    stop_idle_harness_daemons()
 
 
 def start_cleanup_thread() -> None:

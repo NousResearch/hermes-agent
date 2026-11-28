@@ -29,7 +29,9 @@ from functools import partial
 _NOTED_PRODUCERS = frozenset({'async_delegation', 'completion', 'watch_match', 'watch_disabled'})
 # A cron result for a local chat (``session_cron.deliver_to_local_chat``) is finished text: a note
 # with or without a viewer, since a turn over it would only spend a model call (#143547 CRON-11).
-_ALWAYS_NOTED = frozenset({'cron'})
+# A plugin card (``gateway/plugin_cards.py``) is never a turn either, on a local or a messaging route.
+_ALWAYS_NOTED = frozenset({'cron', 'plugin-card'})
+_NATIVE_NOTED = frozenset({'plugin-card'})
 # Failed-delegation wakes one session may run in a row with nobody watching. A woken parent that
 # re-dispatches into the same failure (billing, a usage limit) would otherwise wake itself forever; past
 # the limit the failure is a note again until a viewer attaches or the user sends something.
@@ -43,11 +45,19 @@ def _producer(identity):
         return None
 
 
+def _noted_descriptor(row):
+    payload = (row or {}).get('payload', {})
+    local = payload.get('local_automation_v1')
+    if local is not None:
+        return local if _producer(local['identity']) in _NOTED_PRODUCERS | _ALWAYS_NOTED else None
+    native = (payload.get('native_text_v1') or {}).get('automation')
+    return native if native is not None and _producer(native['identity']) in _NATIVE_NOTED else None
+
+
 def noted_completion(row):
-    """*row* is a local completion admission: a note when it runs with no viewer attached (unless it
-    wakes its parent, which ``note_if_unviewed`` decides when it runs)."""
-    descriptor = (row or {}).get('payload', {}).get('local_automation_v1')
-    return descriptor is not None and _producer(descriptor['identity']) in _NOTED_PRODUCERS | _ALWAYS_NOTED
+    """*row* is a local completion admission (or a plugin card): a note when it runs with no viewer
+    attached (unless it wakes its parent, which ``note_if_unviewed`` decides when it runs)."""
+    return _noted_descriptor(row) is not None
 
 
 def _closed_by_user(authority, session_id):
@@ -104,13 +114,13 @@ async def note_if_unviewed(authority, ref, row):
     """The claimed *row*'s response when it was written as a note instead of running, else None.
     It is the FIFO head, so the note lands after every input committed before it and before every
     input committed after; the viewer check and the decision share one loop step."""
+    descriptor = _noted_descriptor(row)
     live = authority.sessions.get(ref.session_id)
-    if live is not None and (live.subscribers or 'local_automation_v1' not in row['payload']):
+    if live is not None and (live.subscribers or (descriptor is None and 'local_automation_v1' not in row['payload'])):
         live.unattended_wakes = 0  # someone is watching, or the user sent this: recoveries count afresh
-    if not noted_completion(row):
+    if descriptor is None:
         return None
     from gateway.session_runtime_workers import tracked_write
-    descriptor = row['payload']['local_automation_v1']
     if (live is None or (live.subscribers and _producer(descriptor['identity']) not in _ALWAYS_NOTED)
             or _wakes_unviewed_parent(authority, ref.session_id, live, descriptor)):
         # The claim left a closed row closed for a note; the turn reopens it as any first turn does.
@@ -119,7 +129,8 @@ async def note_if_unviewed(authority, ref, row):
     from gateway.session_persistence import authority_persistence
     from gateway.session_viewer_close import _physical_target
     metadata = {'completion_note': sorted(set(descriptor.get('identities') or ()) | {descriptor['identity']})}
-    metadata.update({key: descriptor[key] for key in ('display_text', 'notification_category') if key in descriptor})
+    metadata.update({key: descriptor[key] for key in ('display_text', 'notification_category', 'plugin_card')
+                     if key in descriptor})
     target = _physical_target(authority, ref.session_id)
     # Keyed by its admission: a claim is never replayed, and this keeps a write retry exact.
     await tracked_write(authority, partial(
@@ -128,5 +139,8 @@ async def note_if_unviewed(authority, ref, row):
     refresh = getattr(authority.runner, '_refresh_agent_cache_message_count', None)
     if refresh is not None:  # the owner's own row: a cached agent stays, as after a turn's writes
         await refresh(live.route, target)
+    if 'plugin_card' in descriptor:  # viewers attached now paint it; a later one hydrates the row
+        card = {**descriptor['plugin_card'], 'text': descriptor['display_text']}
+        live.event_stream.publish(ref.session_id, card, event_type='plugin.card')
     authority.pending_results[row['admission_id']] = {'result': {'final_response': '', 'messages': []}, 'usage': {}}
     return ''

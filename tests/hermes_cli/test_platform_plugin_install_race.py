@@ -338,3 +338,37 @@ def test_a_gateway_start_waits_one_bounded_budget_for_another_installer(standin,
     assert result == [False] and calls == []
     notices = lcm.claim_kept_notices()
     assert any("another Hermes process is still installing plugins" in n for n in notices), notices
+
+
+@pytest.mark.parametrize("gate", ["env", "config"])
+def test_catalog_platforms_makes_no_network_fetch_when_lazy_installs_off(tmp_path, monkeypatch, gate):
+    """Gateway start runs ``catalog_platforms.recover_in`` on every profile: when lazy installs are
+    disabled (``HERMES_DISABLE_LAZY_INSTALLS=1`` or ``security.allow_lazy_installs: false``), neither
+    ``pending_entries`` nor ``recover_in`` may fetch the live catalog over the network."""
+    import hermes_cli.plugin_catalog as catalog
+    from hermes_cli import catalog_platforms
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".env").write_text("FLUXER_BOT_TOKEN=tok\n", encoding="utf-8")
+    monkeypatch.delenv("FLUXER_BOT_TOKEN", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    if gate == "env":
+        monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "1")
+    else:
+        monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+        (home / "config.yaml").write_text("security:\n  allow_lazy_installs: false\n", encoding="utf-8")
+    catalog_platforms._attempted.clear()
+
+    def _forbid_fetch(**kwargs):
+        raise AssertionError("fetch_live_catalog must not be called when lazy installs are off")
+
+    monkeypatch.setattr(catalog, "fetch_live_catalog", _forbid_fetch)
+
+    pending = [entry.name for entry in catalog_platforms.pending_entries(home)]
+    assert "fluxer-platform" in pending
+
+    notices: list[str] = []
+    installed = catalog_platforms.recover_in(home, report=notices.append)
+    assert installed == []
+    assert any("fluxer-platform" in msg and "hermes plugins install" in msg for msg in notices), notices

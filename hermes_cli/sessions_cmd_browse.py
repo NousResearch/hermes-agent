@@ -3,6 +3,7 @@ delete-with-confirmation; numbered-list fallback when curses is unavailable (Win
 
 from typing import Optional
 
+from hermes_cli.curses_ui import read_key
 from hermes_cli.timefmt import relative_time as _relative_time
 from persistence.core.errors import SessionWriteGuarded
 
@@ -215,7 +216,7 @@ class _CursesBrowser:
                 return
             self._draw(stdscr, max_y, max_x)
             stdscr.refresh()
-            if self._handle_key(stdscr.getch()):
+            if self._handle_key(read_key(stdscr)):
                 return
 
 

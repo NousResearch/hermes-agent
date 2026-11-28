@@ -15,7 +15,7 @@ import uuid
 from datetime import datetime, timezone, UTC
 from typing import Any, Dict, List, Optional, Tuple
 
-from hermes_platform.resolver.git import resolve_usable_git
+from hermes_platform.resolver.git import inspect_git
 
 logger = logging.getLogger(__name__)
 
@@ -111,7 +111,7 @@ def _tool_calls_to_blocks(tool_calls: Any, redact: bool) -> list[dict[str, Any]]
 
 
 def _git_branch(cwd: str) -> str:
-    if not cwd or resolve_usable_git() is None:
+    if not cwd or not inspect_git(cwd=cwd).usable:
         return ""
     try:
         import subprocess

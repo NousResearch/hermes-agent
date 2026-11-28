@@ -117,6 +117,8 @@ ACTUAL_LOCAL_NOAUTH_PLACEHOLDER = "dummy-actual-local-api-key"
 # Upstream rate-limit / usage-quota exhaustion (HTTP 429): transient, re-authenticating cannot resolve
 # it, so it must stay distinct from missing/expired-credential errors.
 CODEX_RATE_LIMITED_CODE = "codex_rate_limited"
+# The same for an Anthropic key the credential pool benched after a 429 (one model, or the whole seat).
+MODEL_RATE_LIMITED_CODE = "model_rate_limited"
 
 
 class AuthError(RuntimeError):

@@ -668,8 +668,10 @@ fi
 # volume, selected by $HERMES_HOME/installs/*/facts.json. An image upgrade
 # replaces uv.lock under that durable selection, so re-resolve it here, before
 # any supervised service boots onto a generation built for the previous image.
-# On failure (e.g. offline) PM falls back to the image's own environment and
-# keeps the extras recorded for the next boot or install. Then collect the
+# A selection the image's own environment already is boots that environment
+# instead of a rebuilt copy on the volume. On failure (e.g. offline) or when the
+# volume has no room for the rebuild, PM falls back to the image's own
+# environment and keeps the extras recorded for the next boot or install. Then collect the
 # generations nothing selects any more: no service holds a lease yet, and
 # collect_generations keeps anything younger than a day.
 s6-setuidgid hermes "$INSTALL_DIR/.venv/bin/python" -c '
@@ -683,6 +685,19 @@ print("[stage2] dependency environment:", refresh_dependencies(root))
 removed = collect_generations(root) + collect_runtime_generations(install_state_dir(root) / "pm-runtime")
 print("[stage2] collected", len(removed), "unused dependency generations")
 ' || echo "[stage2] Warning: dependency refresh failed; continuing"
+
+# --- Ensure default catalog plugins are installed before services start ---
+# Runs a bounded foreground pass as the hermes user so default plugins (and
+# their Python dependency generations) are live for the very first session.
+# Skipped when HERMES_CONFIG_BACKEND=remote (same gate as config migration
+# above); any non-zero exit logs a warning and continues so boot never stalls.
+if [ "$_config_backend" = "remote" ]; then
+    echo "[stage2] HERMES_CONFIG_BACKEND=remote: skipping default plugins preflight"
+else
+    s6-setuidgid hermes "$INSTALL_DIR/.venv/bin/python" -m hermes_cli.default_plugins ensure \
+        --json --timeout 300 \
+        || echo "[stage2] Warning: default plugins not settled; continuing"
+fi
 
 # auth.json: bootstrap from env on first boot only. Same semantics as the
 # pre-s6 entrypoint — the [ ! -f ] guard is critical to avoid clobbering

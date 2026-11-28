@@ -95,3 +95,131 @@ export function withTimeout<T>(
     )
   })
 }
+
+/** Like `withTimeout`, but suspends the countdown while `isPaused()` is true.
+ * Used for the initial backend boot wait so bounded main-process preflight
+ * stages (such as `backend.default-plugins`) do not consume the renderer's
+ * connect budget while they run; once the stage completes, the remaining budget
+ * resumes so a subsequent hang still times out cleanly. */
+export function withPausableTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  message: string,
+  watchPause: (onChange: () => void) => () => void,
+  isPaused: () => boolean,
+  onTimeout?: (error: TimeoutError) => void,
+  signal?: AbortSignal
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason ?? new Error('Aborted'))
+
+      return
+    }
+
+    let settled = false
+    let remainingMs = ms
+    let armedAt: number | null = null
+    let timer: ReturnType<typeof setTimeout> | null = null
+    let unsubscribe: () => void = () => undefined
+
+    const onAbort = () => {
+      if (settled) {
+        return
+      }
+
+      settled = true
+      cleanup()
+      reject(signal?.reason ?? new Error('Aborted'))
+    }
+
+    const cleanup = () => {
+      if (timer !== null) {
+        clearTimeout(timer)
+        timer = null
+      }
+
+      armedAt = null
+      unsubscribe()
+      signal?.removeEventListener('abort', onAbort)
+    }
+
+    const arm = () => {
+      if (settled || timer !== null) {
+        return
+      }
+
+      armedAt = Date.now()
+      timer = setTimeout(() => {
+        if (settled) {
+          return
+        }
+
+        settled = true
+        cleanup()
+        const error = new TimeoutError(message)
+
+        try {
+          onTimeout?.(error)
+        } catch (onTimeoutError) {
+          reject(onTimeoutError)
+
+          return
+        }
+
+        reject(error)
+      }, Math.max(1, remainingMs))
+    }
+
+    const pause = () => {
+      if (timer === null) {
+        return
+      }
+
+      clearTimeout(timer)
+      timer = null
+
+      if (armedAt !== null) {
+        remainingMs = Math.max(1, remainingMs - (Date.now() - armedAt))
+        armedAt = null
+      }
+    }
+
+    const sync = () => {
+      if (settled) {
+        return
+      }
+
+      if (isPaused()) {
+        pause()
+      } else {
+        arm()
+      }
+    }
+
+    signal?.addEventListener('abort', onAbort, { once: true })
+    unsubscribe = watchPause(sync)
+    sync()
+
+    Promise.resolve(promise).then(
+      value => {
+        if (settled) {
+          return
+        }
+
+        settled = true
+        cleanup()
+        resolve(value)
+      },
+      err => {
+        if (settled) {
+          return
+        }
+
+        settled = true
+        cleanup()
+        reject(err)
+      }
+    )
+  })
+}

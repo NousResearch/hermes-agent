@@ -251,8 +251,20 @@ def provision_profile(request: ProfileCreateRequest) -> ProvisionResult:
             path, quiet=request.quiet, problems=problems))
         if request.quiet:  # nothing printed them: the caller (a gateway's client) shows them
             result.warnings.extend(line.strip().removeprefix("⚠ ") for line in problems if line.strip())
-        from hermes_cli.default_plugins import spawn_install
-        step("default plugins", lambda: spawn_install(path))  # detached: a create never waits on git
+        from hermes_cli import default_plugins
+
+        def _ensure_profile_defaults() -> None:
+            timeout = default_plugins.PROFILE_CREATE_ENSURE_TIMEOUT
+            code, payload = default_plugins.ensure_defaults(homes=[path], timeout=timeout, say=logger.info)
+            if code == default_plugins.ENSURE_EXIT_TIMEOUT:
+                result.warnings.append(
+                    f"default plugins: timed out after {int(timeout)}s; continuing in background")
+            elif code == default_plugins.ENSURE_EXIT_OWED:
+                owed = ", ".join(str(x) for x in payload.get("owed") or ())
+                result.warnings.append(
+                    f"default plugins: could not install ({owed or 'unknown'}); will retry on next start")
+
+        step("default plugins", _ensure_profile_defaults)
     if request.alias:
         result.alias_path, result.alias_collision = step(
             "alias wrapper", lambda: write_alias(request.name), default=(None, None))

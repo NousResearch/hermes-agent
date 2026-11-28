@@ -113,6 +113,7 @@ Every `ctx.*` API below is available inside a plugin's `register(ctx)` function.
 | Add CLI commands | `ctx.register_cli_command(name, help, setup_fn, handler_fn)` — adds `hermes <plugin> <subcommand>` |
 | Inject messages | `ctx.inject_message(content, role="user", session_key=... \| origin=...)` - see [Injecting Messages](#injecting-messages) |
 | Post and edit a status message | `handle = ctx.post_message(text)`, then `handle.edit(text)` — see [Posting a live message](#posting-a-live-message) |
+| Post a card with no model turn | `ctx.post_card({"text": ..., "directive": ...}, session_key=...)` — see [Posting a card](#posting-a-card) |
 | Ship data files | `Path(__file__).parent / "data" / "file.yaml"` |
 | Bundle skills | `ctx.register_skill(name, path)` — namespaced as `plugin:skill`, loaded via `skill_view("plugin:skill")` |
 | Gate on env vars | `requires_env: [API_KEY]` in plugin.yaml — prompted during `hermes plugins install` |
@@ -650,11 +651,13 @@ working but are **deprecated** in favor of the consent flow:
 | `llm.profile_override` | `llm.allow_profile_override` |
 | `llm.task_override` | `llm.allow_task_override` |
 | `gateway.platform_actions` | `allow_platform_actions` |
+| `llm.side_question` | — |
+| `conversation.cards` | — |
 
 A gate is open when *either* the capability is granted *or* the legacy key is
 set — existing configs keep working unchanged.
-`llm.side_question` and `llm.session_fork` have no legacy key: each is open
-only when declared and granted through the consent flow.
+`llm.side_question`, `llm.session_fork` and `conversation.cards` have no legacy key: each is
+open only when declared and granted through the consent flow.
 
 :::warning Not a sandbox
 Capabilities are a **consent and audit layer**, not isolation. Plugins run as
@@ -1065,6 +1068,90 @@ adapter may render its own formatting, but the plugin should not depend on it. N
 because the message can only reach the conversation that already invoked the plugin.
 `ctx.post_message` is not available to plugins running in the out-of-process plugin host
 (`plugins.isolation: host`): the handle is bound to the gateway's event loop and live adapter.
+
+## Posting a card
+
+:::caution Experimental
+`ctx.post_card` is experimental, like [`ctx.fork_session`](../../developer-guide/plugin-llm-access.md#forking-the-sessions-own-agent-ctxfork_session):
+the card shape and the result codes may change in a later release. Keep the call inside one small
+function of your plugin that returns plain data. Treat a definite refusal as "no card", but never
+fall back on an uncertain result as described below.
+Under `plugins.isolation: host` a third-party plugin's `ctx.post_card` and `ctx.apost_card` exist but
+raise `PluginHostUnsupported` (a `RuntimeError`), as `post_message` and `fork_session` do: the card is
+admitted on the gateway's event loop into a session the Hermes process owns.
+:::
+
+A plugin can put a card into a conversation from anywhere, including a timer or its own background
+thread, without starting a model turn. The card is saved in the session's history, so it is still there
+after a reload. A card is display-only: people see it, and the model is told only that the plugin posted
+a card with a core-derived opaque reference (one line, `[<plugin id> posted a card <opaque id>]`).
+The reference is stable for that plugin and card id and saved in the row's content beside its display
+metadata, so clients can match them. The plugin-chosen `id` stays in display metadata for rendering and
+deduplication, never in model-facing content. A card saved by a Hermes version that wrote the plugin's
+own id in that line keeps its row as it is, and an unchanged retry of it is still a `duplicate`. The model never reads the card's
+text, directive or attrs. Hermes also strips those fields before handing transcript rows to memory
+providers through `on_session_end()` or `on_pre_compress()`:
+
+```python
+result = ctx.post_card(
+    {
+        "id": "sugg_8f2c1a",
+        "text": "Hermes thinks deploy-checklist could help your team.",
+        "directive": {"name": "wisdom-share", "attrs": {"id": "sugg_8f2c1a"}},
+    },
+    session_key=session_key,
+)
+```
+
+**Signature:** `ctx.post_card(card: dict, *, session_key: str | None = None, origin: Mapping | None = None) -> dict`,
+and `await ctx.apost_card(...)` on the gateway's event loop. It never raises.
+
+- `text` (1 to 2,000 characters) is required. It is what every surface without the plugin's card shows.
+  It is never shown to the model.
+- `directive` is optional. It names a [transcript directive](../../developer-guide/desktop-plugin-sdk.md) that
+  the plugin's Desktop half registers in `transcript.directives`. Desktop renders that component with
+  `attrs` (string values, at most 16 keys, 2,048 characters in all). If no plugin claims the name, the text
+  is shown. The model never sees `attrs` either.
+- `id` is optional. Posting the same `id` again with the same card does nothing (`status: "duplicate"`).
+  Posting it with a different card is refused (`card_conflict`). A card is never edited: the plugin's
+  component shows the current state for its `id`.
+
+**Which conversation.** `session_key` names an existing session, and `origin` resolves an existing private-chat
+session of the plugin's own profile. Unlike [`inject_message`](#injecting-messages), a card does not create a
+new messaging session: there is no committed conversation to record it in yet. Without either target, the
+session bound in the calling context is used. With no bound session either, the call is refused with
+`no_conversation`. Group chats are refused (`group_not_allowed`).
+
+**When it appears.** The card waits its place in the session's queue. An idle session shows it at once. A
+running turn finishes first, and a message the person sent before the card runs before it. Posting a card
+does not stop the session's background review or plugin forks, because no turn starts.
+
+| Surface | What it shows |
+|---|---|
+| Desktop | the plugin's directive component inline in the transcript, or the text as a system row |
+| Ink TUI, Web dashboard chat, and classic CLI | the text as a system line |
+| Messaging platforms | nothing from core: the card is recorded in the session's history and the plugin sends its own native card through its adapter |
+
+Result: `{"ok": True, "card_id", "status": "queued" | "duplicate"}`, or `{"ok": False, "error"}`.
+`cancelled`, `post_failed` and `timeout` are **UNCERTAIN** and include `"certain": false`: the card
+**may have landed**, even though no receipt reached the caller. Do not inject a fallback turn for
+these results. Retry the same `id` and unchanged card to recover the durable duplicate receipt
+without posting twice.
+Expected refusals are `consent_required`, `invalid_target`, `no_conversation`, `group_not_allowed`,
+`invalid_card`, `card_conflict`, `rate_limited` (more than 6 cards in 60 seconds for one session),
+`gateway_unavailable` (no live gateway, or its loop closed while the card was on its way) and `on_event_loop`.
+`cancelled` (the gateway stopped before answering), `post_failed` and `timeout` are uncertain as described
+above. An internal admission refusal is reported as `refused`, not raised into the plugin. `refused` is certain:
+nothing was queued, and the same card can be posted again. One expected case is a chat whose conversation moved
+(for example a `/resume`) while the card was being admitted: the retry lands on the conversation the chat now has.
+Like `inject_message`, the card is admitted from
+the gateway's own context, never the caller's: a card posted from a session fork's tool handler or from a
+hook inside a turn hands none of that turn's scopes to the session queue.
+
+Cards need the `conversation.cards` capability. Declare it in `plugin.yaml` and grant it on the consent
+screen. It is separate from `allow_gateway_injection` because a card runs no model and no tools, sends
+nothing to a platform, and puts no plugin-authored text in front of the model or a memory provider: the
+model is told a card was posted, never its text.
 
 ## Injecting Messages
 

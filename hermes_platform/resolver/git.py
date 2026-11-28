@@ -119,6 +119,25 @@ def _lookup_context_for_env(env: Mapping[str, str] | None) -> LookupContext:
     return LookupContext(path=ABSENT if os.name == "nt" else os.defpath, pathext=pathext_val)
 
 
+def _locate_git(env: Mapping[str, str] | None, cwd: str | os.PathLike[str] | None) -> str | None:
+    ctx = _lookup_context_for_env(env)
+    if cwd is None or os.name == "nt":
+        res = locate_command("git", ctx)
+        return res.command[0] if res.found else None
+    path = ctx.effective_path()
+    path = os.environ.get("PATH", os.defpath) if path is None else path
+    if not path:
+        return None
+    # POSIX subprocess tries each PATH entry after chdir(cwd), so a relative entry names a directory under
+    # cwd (an absolute one replaces it in the join). Test each entry on its own: a PATH string rebuilt from
+    # cwd-joined entries would split a cwd that contains os.pathsep.
+    for entry in path.split(os.pathsep):
+        candidate = os.path.join(os.fspath(cwd), entry, "git")
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
 def _effective_developer_dir(env: Mapping[str, str] | None) -> str:
     source = os.environ if env is None else env
     return (source.get("DEVELOPER_DIR") or "").strip()
@@ -161,7 +180,17 @@ def _probe_xcode_select_developer_dir(
     return (proc.stdout or "").strip()
 
 
-def is_git_command(argv0: str | os.PathLike[str] | None) -> bool:
+def _resolve_argv0_for_cwd(raw: str, cwd: str | os.PathLike[str] | None) -> str:
+    if cwd is None or os.name == "nt" or os.path.isabs(raw):
+        return raw
+    return os.path.join(os.fspath(cwd), raw)
+
+
+def is_git_command(
+    argv0: str | os.PathLike[str] | None,
+    *,
+    cwd: str | os.PathLike[str] | None = None,
+) -> bool:
     """True when *argv0* names ``git`` (bare or path-qualified, or a macOS symlink to ``/usr/bin/git``)."""
     if not argv0:
         return False
@@ -174,7 +203,7 @@ def is_git_command(argv0: str | os.PathLike[str] | None) -> bool:
     if base == "git":
         return True
     if sys.platform == "darwin" and (os.sep in raw or (os.altsep and os.altsep in raw)):
-        return os.path.realpath(raw) == os.path.realpath(APPLE_GIT_STUB)
+        return os.path.realpath(_resolve_argv0_for_cwd(raw, cwd)) == os.path.realpath(APPLE_GIT_STUB)
     return False
 
 
@@ -208,6 +237,7 @@ def is_usable_git_executable(
 def inspect_git(
     env: Mapping[str, str] | None = None,
     *,
+    cwd: str | os.PathLike[str] | None = None,
     cached: bool = True,
     platform: str | None = None,
     apple_stub_path: str = APPLE_GIT_STUB,
@@ -216,10 +246,9 @@ def inspect_git(
     now_fn: Callable[[], float] = time.monotonic,
 ) -> GitResolution:
     """Resolve ``git`` from *env*'s effective PATH and report whether it is usable or a macOS CLT stub."""
-    res = locate_command("git", _lookup_context_for_env(env))
-    if not res.found:
+    hit = _locate_git(env, cwd)
+    if hit is None:
         return GitResolution(None, "missing", None)
-    hit = res.command[0]
     if is_usable_git_executable(
         hit,
         env,
@@ -260,6 +289,7 @@ def is_usable_git_command(
     argv0: str | os.PathLike[str] | None,
     env: Mapping[str, str] | None = None,
     *,
+    cwd: str | os.PathLike[str] | None = None,
     cached: bool = True,
 ) -> bool:
     """True when *argv0* (bare ``git`` or an explicit executable path) can run without hitting the macOS CLT stub.
@@ -273,5 +303,5 @@ def is_usable_git_command(
     if not raw:
         return False
     if os.sep in raw or (os.altsep and os.altsep in raw):
-        return is_usable_git_executable(raw, env, cached=cached)
-    return inspect_git(env, cached=cached).status != "clt_stub"
+        return is_usable_git_executable(_resolve_argv0_for_cwd(raw, cwd), env, cached=cached)
+    return inspect_git(env, cwd=cwd, cached=cached).status != "clt_stub"

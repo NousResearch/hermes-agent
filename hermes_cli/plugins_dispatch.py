@@ -61,6 +61,9 @@ _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS: set[str] = {"pre_tool_call"}
 # Documented parent-thread serialization contract — never run on a timeout worker (hooks.md).
 _HOOK_CALLER_THREAD_HOOKS: set[str] = {"subagent_stop"}
 # After a timeout, suppress the same callback this long so a hung hook cannot pile up threads.
+# Fail-open hooks only: for a fail-closed hook a skipped callback is a veto, so a window keyed on
+# the callback would deny every tool call of every session in the process. Those rely on the
+# per-call running gate and the abandoned-worker cap below instead.
 _HOOK_TIMEOUT_SUPPRESSION_SECONDS = 60.0
 # Live workers a hung callback may accumulate before it is skipped outright (#105223 / #98382).
 _HOOK_MAX_ABANDONED_WORKERS = 3
@@ -359,6 +362,8 @@ class PluginDispatchMixin:
         # so that key stays coarse. The gate must instead tell CONCURRENT CALLS apart.
         suppression_key = (hook_name, id(cb))
         gate_key = (*suppression_key, _hook_call_identity(kwargs, hook_name))
+        # A fail-closed hook vetoes the call it skips: no callback-wide window, only this call.
+        suppressible = hook_name not in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
         token = object()
         with self._hook_timeout_lock:
             suppressed_until = self._hook_timeout_suppressed_until.get(suppression_key)
@@ -369,7 +374,7 @@ class PluginDispatchMixin:
                     "timeout or while still running", hook_name, callback_name)
                 return _HOOK_SKIPPED
             # Workers abandoned on timeout still hold threads. Once the suppression window has
-            # passed, a fresh call id may start a new worker (a hung guard must not fail every
+            # passed (at once for fail-closed hooks), a fresh call id may start a new worker (a hung guard must not fail every
             # later tool call closed until restart, #105223), but only up to a small cap per
             # callback — expiring the bookkeeping while the hung worker lives must not leak a
             # thread per call (#98382). At the cap the callback keeps being skipped (fail-closed
@@ -420,9 +425,9 @@ class PluginDispatchMixin:
             return _HOOK_SKIPPED
         if not done.wait(timeout=timeout):  # do not join — that would reintroduce the hang
             with self._hook_timeout_lock:
-                # See #6622.
-                self._hook_timeout_suppressed_until[suppression_key] = (
-                    time.monotonic() + self._hook_timeout_suppression_seconds)
+                if suppressible:  # See #6622.
+                    self._hook_timeout_suppressed_until[suppression_key] = (
+                        time.monotonic() + self._hook_timeout_suppression_seconds)
                 # The worker may have finished (and released its token) between the wait
                 # expiring and this lock; recording it as abandoned then would block the
                 # callback for that call id until reload with no thread behind it.

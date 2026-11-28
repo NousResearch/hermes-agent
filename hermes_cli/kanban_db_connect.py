@@ -1066,6 +1066,7 @@ _REBUILD_SPECS = {
         " payload TEXT, created_at INTEGER NOT NULL)",
         (
             "CREATE INDEX idx_events_task ON task_events(task_id, created_at)",
+            "CREATE INDEX idx_events_task_kind ON task_events(task_id, kind)",
             "CREATE INDEX idx_events_run ON task_events(run_id, id)",
         ),
     ),

@@ -33,6 +33,12 @@ from hermes_cli.kanban_specify import _profile_author as _specify_author
 
 logger = logging.getLogger(__name__)
 
+# Author stamp used by the gateway dispatcher's auto-decompose tick
+# (gateway/kanban_watchers_dispatcher.py). decompose_task uses it to distinguish
+# the automated path (which must never re-specify a block-loop-escalated card)
+# from an explicit operator call (which is the human-in-the-loop decision).
+AUTO_DECOMPOSER_AUTHOR = "auto-decomposer"
+
 
 _SYSTEM_PROMPT = """You are the Kanban decomposer for the Hermes Agent board.
 
@@ -313,6 +319,26 @@ def decompose_task(
     if task is None:
         return DecomposeOutcome(task_id, False, reason)
 
+    recover_after = False
+    with kbc.connect_closing() as conn:
+        if kb.is_block_loop_escalated(conn, task_id):
+            if author == AUTO_DECOMPOSER_AUTHOR:
+                # Block-loop escalations are waiting on a human decision; the
+                # breaker exists precisely to stop automated unblock<->re-block
+                # loops, so re-specifying one from the dispatcher would undo
+                # the human-in-the-loop gate (#79738, #79728).
+                return DecomposeOutcome(
+                    task_id, False,
+                    "task escalated to triage after repeated blocks; "
+                    "waiting on human input — refusing to re-specify",
+                )
+            # Explicit manual decomposition IS the operator's human-in-the-loop
+            # decision, but the escalation is acknowledged (audited) only when
+            # the decomposition actually succeeds. A failed attempt must leave
+            # the card escalated and out of the auto-decompose feed, otherwise
+            # the next dispatcher tick would re-specify it (#81353 review).
+            recover_after = True
+
     routing = _load_routing(root_assignee=task.assignee)
     raw, reason = _call_aux(
         "decompose", task_id, aux_task="kanban_decomposer", system=_SYSTEM_PROMPT,
@@ -331,13 +357,34 @@ def decompose_task(
         return DecomposeOutcome(task_id, False, "LLM returned malformed JSON")
 
     audit_author = author or _profile_author()
-    if not parsed.get("fanout"):
-        return _apply_single(task, parsed, routing, audit_author)
-    return _apply_fanout(task_id, parsed, routing, audit_author)
+    outcome = (
+        _apply_single(task, parsed, routing, audit_author)
+        if not parsed.get("fanout")
+        else _apply_fanout(task_id, parsed, routing, audit_author)
+    )
+    if outcome.ok and recover_after:
+        with kbc.connect_closing() as conn:
+            kb.recover_escalated_triage_task(conn, task_id)
+    return outcome
 
 
 def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:
-    """Return task ids currently in the triage column."""
+    """Return auto-decomposable task ids currently in the triage column.
+
+    Excludes block-loop-escalated cards (reached triage via the unblock-loop
+    breaker — ``block_loop_detected`` event without a newer operator
+    recovery). Those are waiting on a human decision and must not be
+    re-specified by the auto-decomposer (#79738, #79728).
+    """
+    query = (
+        "SELECT id FROM tasks "
+        "WHERE status = 'triage' AND NOT " + kb._BLOCK_LOOP_ESCALATED_SQL
+    )
+    params: list[str] = []
+    if tenant is not None:
+        query += " AND tenant = ?"
+        params.append(tenant)
+    query += " ORDER BY priority DESC, created_at ASC LIMIT 1000"
     with kbc.connect_closing() as conn:
-        rows = kb.list_tasks(conn, status="triage", tenant=tenant, limit=1000)
-    return [row.id for row in rows]
+        rows = conn.execute(query, params).fetchall()
+    return [row["id"] for row in rows]

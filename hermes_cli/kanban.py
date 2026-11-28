@@ -1025,11 +1025,22 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
         return rc
     reason = _stripped_or_none(getattr(args, "reason", None))
     author = _profile_author() if reason else None
+    recover = bool(getattr(args, "recover_escalated", False))
     suffix = f": {reason}" if reason else ""
     with kbc.connect_closing() as conn:
-        op = _commented(conn, reason, author, "UNBLOCK", lambda tid: kb.unblock_task(conn, tid))
+        op = _commented(
+            conn,
+            reason,
+            author,
+            "UNBLOCK",
+            lambda tid: (
+                kb.recover_escalated_triage_task(conn, tid)
+                if recover
+                else kb.unblock_task(conn, tid)
+            ),
+        )
         return _bulk_apply(ids, op, lambda tid: f"Unblocked {tid}{suffix}",
-                           lambda tid: f"cannot unblock {tid} (not blocked/scheduled?)")
+                           lambda tid: f"cannot unblock {tid} (not blocked/scheduled or escalated triage?)")
 
 
 def _cmd_request_review(args: argparse.Namespace) -> int:

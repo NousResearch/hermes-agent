@@ -22,6 +22,24 @@ _SHA_PLACEHOLDER = "__SHA256_PLACEHOLDER__"
 _VERIFICATION_HEADING = "## Export verification"
 
 
+def _sha_line(value: str) -> str:
+    return f"- SHA256 of exported body: `{value}`"
+
+
+def _rewrite_marker_line(text: str, find: str, replacement: str) -> str:
+    """Rewrite the SHA256 line whose value is *find*, touching only the last such line.
+
+    A session can quote the exporter itself — its source, or an earlier export — so the same line
+    shape also appears inside the messages. A whole-body replacement rewrote those copies too, and
+    `verify_export_file()` could no longer reproduce the digest; the footer is always the last line.
+    """
+    marker = _sha_line(find)
+    index = text.rfind(marker)
+    if index < 0:
+        raise ValueError(f"export body is missing its {marker!r} line")
+    return text[:index] + _sha_line(replacement) + text[index + len(marker):]
+
+
 def _iso_timestamp(value: Any) -> str:
     if value is None or value == "":
         return ""
@@ -114,7 +132,7 @@ def _export_body_without_hash(session: dict[str, Any], *, fmt: str, exported_at:
         f"- Exported messages: `{message_count}`",
         f"- Source DB message count at export: `{session.get('message_count', message_count)}`",
         f"- Exported at: `{exported_iso}`",
-        f"- SHA256 of exported body: `{_SHA_PLACEHOLDER}`",
+        _sha_line(_SHA_PLACEHOLDER),
     ]
     return "\n".join(parts).rstrip() + "\n"
 
@@ -133,8 +151,8 @@ def render_session_markdown(
     if not include_verification:
         return body.split(f"\n{_VERIFICATION_HEADING}\n", 1)[0].rstrip() + "\n"
     # The digest covers the body with the SHA line set to `pending`, which is what verify recomputes.
-    digest_body = body.replace(f"`{_SHA_PLACEHOLDER}`", "`pending`")
-    return body.replace(_SHA_PLACEHOLDER, hashlib.sha256(digest_body.encode("utf-8")).hexdigest())
+    digest_body = _rewrite_marker_line(body, _SHA_PLACEHOLDER, "pending")
+    return _rewrite_marker_line(body, _SHA_PLACEHOLDER, hashlib.sha256(digest_body.encode("utf-8")).hexdigest())
 
 
 def safe_session_filename(session: dict[str, Any], *, fmt: str = "md") -> str:
@@ -153,11 +171,13 @@ def verify_export_file(path: Path | str, session: dict[str, Any]) -> tuple[bool,
     if not Path(path).exists():
         return False, "file missing"
     text = Path(path).read_text(encoding="utf-8-sig")
-    match = _SHA_LINE_RE.search(text)
-    if not match:
+    markers = list(_SHA_LINE_RE.finditer(text))
+    if not markers:
         return False, "sha256 marker missing"
-    digest_body = _SHA_LINE_RE.sub("- SHA256 of exported body: `pending`", text)
-    if hashlib.sha256(digest_body.encode("utf-8")).hexdigest() != match.group(1):
+    # The footer is the last marker line; an earlier one is the session quoting an export.
+    footer = markers[-1]
+    digest_body = f"{text[:footer.start()]}{_sha_line('pending')}{text[footer.end():]}"
+    if hashlib.sha256(digest_body.encode("utf-8")).hexdigest() != footer.group(1):
         return False, "sha256 mismatch"
     if f"- Exported messages: `{_message_count(session)}`" not in text:
         return False, "message count mismatch"

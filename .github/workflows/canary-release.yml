@@ -46,7 +46,7 @@ jobs:
     # A dispatch from a feature branch would tag unmerged code as the canary.
     if: github.ref_name == github.event.repository.default_branch
     steps:
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: useblacksmith/checkout@75c49b6ed30ce59336e9252425796cfcfac155f8  # v1
         with:
           # The changelog walks commits since the previous canary tag
           fetch-depth: 0
@@ -83,7 +83,7 @@ jobs:
       CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
       CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
     steps:
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: useblacksmith/checkout@75c49b6ed30ce59336e9252425796cfcfac155f8  # v1
         with:
           fetch-depth: 0
           fetch-tags: true

@@ -61,7 +61,7 @@ jobs:
       shards: ${{ steps.plan.outputs.shards }}
     steps:
       - name: Checkout code
-        uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+        uses: useblacksmith/checkout@75c49b6ed30ce59336e9252425796cfcfac155f8  # v1
         with:
           ref: ${{ inputs.commit }}
           # The clean-worktree step below loads its action from the checkout.
@@ -100,7 +100,7 @@ jobs:
         shard: ${{ fromJSON(needs.plan.outputs.shards) }}
     steps:
       - name: Checkout code
-        uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+        uses: useblacksmith/checkout@75c49b6ed30ce59336e9252425796cfcfac155f8  # v1
         with:
           ref: ${{ inputs.commit }}
           # serve.git is a bare clone of this checkout: the installer's treeless clone and

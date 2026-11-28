@@ -24,8 +24,8 @@ from tools.tool_search_catalog import (
     CatalogEntry, _fn, _listing_group_label, _registry_entry, _registry_toolset,
     build_catalog, build_catalog_listing_with_form, search_catalog)
 from tools.tool_search_validation import (
-    local_batch_error, normalize_tool_call_entries, not_deferrable_error, session_unavailable_error,
-    unavailable_in_session_reason, validate_deferred_call_args)
+    local_batch_error, normalize_tool_call_entries, not_deferrable_error, resolve_oauth_tool_alias,
+    session_unavailable_error, unavailable_in_session_reason, validate_deferred_call_args)
 from tools.connectors import CONNECTOR_BATCH_SENTINEL, is_connector_name
 from tools.connectors.search import (
     connections_in_scope, connector_entries_by_group, connectors_unavailable, remote_schemas_for)
@@ -515,7 +515,8 @@ def dispatch_tool_describe(args: dict[str, Any], *, current_tool_defs: list[dict
     errors: dict[str, str] = {}
     session_names = session_tool_names(current_tool_defs)
     for name in names:
-        fn = by_name.get(name)
+        canonical = resolve_oauth_tool_alias(name)
+        fn = by_name.get(canonical)
         remote_fn = remote_schemas.get(name)
         if fn is not None:
             tools[name] = {"description": fn.get("description", ""),
@@ -528,8 +529,8 @@ def dispatch_tool_describe(args: dict[str, Any], *, current_tool_defs: list[dict
         elif unavailable := session_unavailable_error(name, session_names):
             # A core tool absent here, deferred or not: tool_search cannot surface it.
             errors[name] = unavailable
-        elif _registry_entry(name) is not None and not is_deferrable_tool_name(
-            name, load_config_readonly().effective_defer_tools):
+        elif _registry_entry(canonical) is not None and not is_deferrable_tool_name(
+            canonical, load_config_readonly().effective_defer_tools):
             # Registered but bridge/core/GUI-surface: a real name, wrong door.
             errors[name] = not_deferrable_error(name, session_names)
         else:
@@ -609,13 +610,14 @@ def resolve_underlying_call(args: dict[str, Any], session_tool_names: Optional[I
     if is_connector_name(entries[0]["name"]):
         return CONNECTOR_BATCH_SENTINEL, {"calls": entries}, None
 
-    name = entries[0]["name"]
+    raw_name = entries[0]["name"]
+    name = resolve_oauth_tool_alias(raw_name)
     raw_args = entries[0]["arguments"]
-    unavailable = session_unavailable_error(name, session_tool_names)
+    unavailable = session_unavailable_error(raw_name, session_tool_names)
     if unavailable:
         return None, {}, unavailable
     if not is_deferrable_tool_name(name, load_config_readonly().effective_defer_tools):
-        return None, {}, not_deferrable_error(name, session_tool_names)
+        return None, {}, not_deferrable_error(raw_name, session_tool_names)
     return name, raw_args, None
 
 

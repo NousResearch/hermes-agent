@@ -1263,6 +1263,14 @@ an interrupted turn stays open until you Discard it. A viewer that reconnects
 within the grace keeps the session open. Ending is non-destructive: the session
 stays resumable, and its next message reopens it on the same id.
 
+**Background subagents when a TUI or Desktop viewer goes away.** The classic CLI's `/exit` and
+`/new` end the session's background subagents (`delegate_task`) at once. The TUI and Desktop
+send their own close (`tui_close`/`tui_shutdown`) for `/quit` and `/new`, but also when their
+connection fails and they tear themselves down, which the gateway cannot tell apart. For those
+the subagents are interrupted `sessions.viewer_close_delegation_grace_s` seconds later (default
+`300`; `0` ends them at once), and any viewer that attaches to the session first keeps them
+running. The session itself is closed without the delay.
+
 ### Oversized-Transcript Guards
 
 Two limits stop a runaway transcript from being loaded into memory all at once

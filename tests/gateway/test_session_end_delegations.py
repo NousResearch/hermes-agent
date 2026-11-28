@@ -78,9 +78,10 @@ def _running(stopped, delegation_id, *, parent='', route=''):
         'session_key': route, 'interrupt_fn': lambda: stopped.append(delegation_id)}
 
 
-# Classic CLI exit and /new; Ink /new (or a resume switch) and exit.
+# Classic CLI exit and /new. The Ink TUI's tui_close/tui_shutdown also end them, but after a grace a
+# returning viewer cancels (tests/gateway/test_viewer_close_keeps_delegations.py).
 @pytest.mark.asyncio
-@pytest.mark.parametrize('reason', ['cli_close', 'new_session', 'tui_close', 'tui_shutdown'])
+@pytest.mark.parametrize('reason', ['cli_close', 'new_session'])
 async def test_exit_and_new_cancel_only_that_sessions_delegations(tmp_path, monkeypatch, reason):
     db, authority = await _owner(tmp_path, monkeypatch)
     viewer, subscription = await _open(db, authority, tmp_path, 'chat')

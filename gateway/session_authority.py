@@ -203,6 +203,7 @@ class SessionAuthority:
         # (gateway/session_viewer_close); a viewer attaching again cancels it.
         self.pending_closes = {}
         self.orphan_closes = {}  # session id -> grace timer of a session left with no viewer, never closed
+        self.delegation_ends = {}  # session id -> grace timer of a TUI close that has yet to end its delegations
         # Logical owner rotated away by the exhaustion auto-reset -> its session key: an admission
         # that reserved it before the rotation commits on that key's current route instead.
         self.rotated_owners = {}
@@ -400,6 +401,8 @@ class SessionAuthority:
             self.pending_closes.pop(ref.session_id, None)
             from gateway.session_viewer_close import cancel_orphan_close
             cancel_orphan_close(self, ref.session_id)
+            from gateway.session_viewer_close_delegations import cancel_deferred_delegation_end
+            cancel_deferred_delegation_end(self, ref.session_id)
             from tools.async_delegation import allow_for_session
             allow_for_session((self.profile_id, ref.session_id))  # a closed session's work may start again
             transport = self.events.get(actor.transport_id)

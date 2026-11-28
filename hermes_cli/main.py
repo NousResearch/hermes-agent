@@ -438,13 +438,12 @@ def _apply_profile_override() -> None:
     profile_name, consume, profile_index = scan_profile_flag(argv)
     from_sticky_profile = False
 
-    # HERMES_HOME already set with no explicit flag: trust it only when it
-    # points at a specific profile dir ("profiles" as immediate parent). If it
-    # points at the hermes root (systemd hardcodes HERMES_HOME=/root/.hermes)
-    # we must still read active_profile — the user may have run
-    # `hermes profile use` and the gateway should honour it (#22502).
-    hermes_home_env = os.environ.get("HERMES_HOME", "")
-    if profile_name is None and hermes_home_env and Path(hermes_home_env).parent.name == "profiles":
+    # Scoped profile home (``.../profiles/<name>``) or an active session's
+    # ``HERMES_SESSION_PROFILE`` keeps the child on that profile; a bare root
+    # ``HERMES_HOME`` outside a session still falls through to ``active_profile`` (#22502, #159008).
+    from hermes_cli.main_profile_recovery import session_or_scoped_home_override
+    profile_name, keep_current_home = session_or_scoped_home_override(profile_name, os.environ)
+    if keep_current_home:
         return
 
     if (profile_name is None and not _under_gateway_supervisor(argv)
@@ -496,10 +495,10 @@ def _apply_profile_override() -> None:
     os.environ["HERMES_HOME"] = hermes_home
     if consume > 0:
         _explicit_cli_profile = profile_name
-    # Strip the flag from argv so argparse doesn't choke
-    if consume > 0 and profile_index is not None:
-        start = profile_index + 1  # +1 because argv is sys.argv[1:]
-        sys.argv = sys.argv[:start] + sys.argv[start + consume :]
+        # Strip the flag from argv so argparse doesn't choke
+        if profile_index is not None:
+            start = profile_index + 1  # +1 because argv is sys.argv[1:]
+            sys.argv = sys.argv[:start] + sys.argv[start + consume :]
 
 
 if __name__ == "__main__" and getattr(sys.modules.get("__main__"), "__file__", None) == __file__:

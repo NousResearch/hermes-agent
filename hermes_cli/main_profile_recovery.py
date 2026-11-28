@@ -8,8 +8,45 @@ state. The commands here are the way out of that state, so they must still reach
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping
 import contextlib
 import io
+from pathlib import Path
+
+
+def session_or_scoped_home_override(
+    profile_name: str | None, environ: Mapping[str, str],
+) -> tuple[str | None, bool]:
+    """Resolve an active session or scoped ``HERMES_HOME`` before sticky ``active_profile``.
+
+    Returns ``(profile_name, keep_current_home)``:
+    - Explicit ``-p``/``--profile`` (*profile_name* already set) always wins.
+    - ``HERMES_HOME`` pointing at ``.../profiles/<name>`` is already profile-scoped
+      (including a profile-routed subagent targeting a named profile) and is kept as-is.
+    - A delegated/worker descendant (``HERMES_DELEGATED_CHILD_CONTEXT``) with an explicit
+      ``HERMES_HOME`` (e.g. a subagent routed back to ``default`` while the parent chat's
+      ``HERMES_SESSION_PROFILE`` names another profile) keeps that ``HERMES_HOME`` without
+      consulting ``HERMES_SESSION_PROFILE`` or the sticky ``active_profile``.
+    - Otherwise a non-empty ``HERMES_SESSION_PROFILE`` pins bare CLI invocations inside a
+      session to that session's profile (``"custom"`` keeps the custom ``HERMES_HOME``;
+      ``"default"`` or a named profile resolves via ``resolve_profile_env``), preventing
+      ``active_profile`` from re-homing mutating commands into another profile (#159008).
+    """
+    if profile_name is not None:
+        return profile_name, False
+    hermes_home_env = environ.get("HERMES_HOME", "")
+    if hermes_home_env != "" and Path(hermes_home_env).parent.name == "profiles":
+        return None, True
+    from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER
+
+    if environ.get(DELEGATED_CHILD_ENV_MARKER, "") != "" and hermes_home_env != "":
+        return None, True
+    session_profile = environ.get("HERMES_SESSION_PROFILE", "").strip()
+    if session_profile == "":
+        return None, False
+    if session_profile == "custom":
+        return None, True
+    return session_profile, False
 
 
 def _uninstall_keeps_data(args: list[str]) -> bool:

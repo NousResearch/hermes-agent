@@ -1,0 +1,44 @@
+name: house-style
+repo: https://github.com/Sahil-SS9/house-style
+sha: c6dea6f1e3d0e0ac7305bfc40bbd857e5ceca4b5
+version: "0.3.1"
+description: >-
+  Learns a project's house style from how you correct the agent's edits. Every
+  write_file and patch records the block it introduced (including every hunk of a
+  multi-file V4A patch and every occurrence of a replace_all edit); later the plugin
+  checks whether you kept it, rewrote it or took it out again, and /house-style learn
+  distils a bounded batch of those before/after pairs into short numbered rules, which
+  /house-style learn confirm writes into the project context file Hermes already reads —
+  .hermes.md/HERMES.md, else AGENTS.md, else CLAUDE.md, else .cursorrules, else a new
+  AGENTS.md — inside a marked block you own, so the rules reach the model through normal
+  context loading and Claude Code reads the same file. /house-style status shows the
+  capture state, the context file in use, counts and the newest edited pairs; scan
+  re-checks the recorded edits; reset clears signals and learned rules while keeping
+  anything you wrote; off/on stop or resume recording for one project; export prints the
+  rules. Disclosure — registers post_tool_call (for write_file and patch only) and
+  on_session_start; reads those tools' arguments and reads back the files they just
+  wrote, from the host filesystem or, on a remote backend, through the read_file tool in
+  the task that wrote them, inside a git repository only, skipping files over 256 KB, binary
+  files, secret-like names (.env, *.pem, id_rsa*, credentials*) and .git internals;
+  stores redacted before/after pairs (repository-relative path, hash, up to 200 lines
+  per block, up to 400 rows and 512 KB per repository) in plugin-data/house-style; writes
+  one marked section of the project context file, only after /house-style learn
+  confirm, and never through a symlinked context file; calls your configured model once per /house-style learn and nothing else; on a
+  remote backend asks that task's terminal tool for `pwd` once per task; no telemetry, no
+  subprocesses, no network beyond that model call. Needs ctx.redact_text()
+  (NousResearch/hermes-agent#150220); on a build without it the plugin records nothing and
+  says so in /house-style status. On a chat platform the commands act on the profile's
+  terminal.cwd.
+maintainer: Sahil-SS9
+tier: community
+category: tools
+requires_hermes: ">=0.23.2"
+docs_url: https://github.com/Sahil-SS9/house-style#readme
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - post_tool_call
+    - on_session_start
+  provides_middleware: []
+  requires_env: []

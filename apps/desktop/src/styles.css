@@ -2636,6 +2636,21 @@ button[data-slot='aui_msg-reactions'] svg {
   --thread-last-message-clearance: calc(var(--composer-measured-height) + 2rem);
 }
 
+/* A touch scroller must end above the whole dock: otherwise a control scrolled
+   into view at its bottom is still covered by the input or status card. Resolve
+   the height here, against this pane's measurement, rather than inheriting the
+   :root estimate. The small gap covers the measurement's 8px rounding buckets;
+   a detached composer publishes zero and gives the thread its full height. */
+@media (hover: none), (pointer: coarse) {
+  html[data-hermes-desktop-host='browser'] [data-chat-surface] {
+    --thread-viewport-height: max(
+      0rem,
+      calc(100% - var(--composer-measured-height) - min(0.5rem, var(--composer-measured-height)))
+    );
+    --thread-last-message-clearance: 2rem;
+  }
+}
+
 /* A live tool run, shown as one line. `ToolRunTicker` stacks the run's rows
    into a reel and offsets it by the newest row's index, so each new action
    slides the one before it up and out of a single-line window — the run reads

@@ -60,7 +60,7 @@ export function CanonicalGroupHeader({ binding, methods, onChanged, onReplaced, 
         {canDisband && action(labels.disband, 'trash', () => setEnding(true), busy || !room)}
       </>}
       working={working}>
-      <CanonicalGroupRoster label={labels.members} labels={labels} members={room?.members} peerBadges={peerBadges} statuses={statuses} />
+      <CanonicalGroupRoster connectionId={binding.connectionId} label={labels.members} labels={labels} members={room?.members} peerBadges={peerBadges} statuses={statuses} />
       <CanonicalGroupAttention driver={driver} labels={labels} />
     </RoomHeader>
     <CanonicalPeerJoinRows binding={binding} methods={methods} onChanged={onChanged} onReplaced={onReplaced}

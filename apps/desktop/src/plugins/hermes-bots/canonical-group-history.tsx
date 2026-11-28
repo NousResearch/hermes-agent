@@ -34,7 +34,7 @@ interface CanonicalGroupHistoryProps {
   /** Hover Reply on a member's message: address the composer to that member. */
   onReply?: (member: CanonicalRoomMember | undefined, text: string, thread: string | undefined, author: string) => void
   /** A member's face; the workspace passes the Bot Mode avatar. */
-  avatarFor?: (name: string, size: number) => ReactNode
+  avatarFor?: (name: string, size: number, member?: CanonicalRoomMember) => ReactNode
   /** Continue/Stop for a paused discussion; absent `maxContinues` (older runtime) keeps the plain limit notice. */
   pause?: Pick<CanonicalGroupPausedRowProps, 'busy' | 'stopping' | 'onContinue' | 'onStop'> & { maxContinues?: number }
 }
@@ -235,7 +235,7 @@ function HistoryRow({ avatarFor, binding, disabled, event, notices, onReply, ros
   const member = roster.get(memberId ?? '')
 
   if (notice) {
-    return <RoomNoticeRow avatar={member && avatarFor?.(member.profile || member.handle, 16)} kind={event.kind}>
+    return <RoomNoticeRow avatar={member && avatarFor?.(member.profile || member.handle, 16, member)} kind={event.kind}>
       {author && <span className="shrink-0 font-medium text-(--ui-text-secondary)">{author}</span>}
       <EventBody event={event} labels={labels} notice={notice} />
     </RoomNoticeRow>
@@ -253,7 +253,7 @@ function MessageRow({ author, avatarFor, binding, disabled, event, member, membe
   const isUser = event.actor?.kind !== 'member'
   const text = event.payload.text || event.payload.content || ''
   const canReply = !!onReply && !!text && (!!member || typeof event.payload.thread_id === 'string')
-  const face = isUser ? undefined : avatarFor?.(member?.profile || member?.handle || memberId || author || 'bot', ROOM_AVATAR_SIZE)
+  const face = isUser ? undefined : avatarFor?.(member?.profile || member?.handle || memberId || author || 'bot', ROOM_AVATAR_SIZE, member)
 
   const badge = isScheduledPost(event)
     ? <span className="shrink-0 rounded bg-(--ui-surface-2) px-1 text-[0.625rem] text-(--ui-text-secondary)">{labels.scheduledPost}</span>

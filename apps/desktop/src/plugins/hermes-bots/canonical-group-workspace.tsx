@@ -637,7 +637,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
   const { cycle, statuses, working } = useCanonicalRoomLive(events, driver, members, reply?.thread)
   const mentionMembers = members.map(member => ({ name: member.handle, handle: member.handle, display_name: member.display_name }))
   const memberById = new Map(members.map(member => [member.member_id, member]))
-  const avatarFor = (name: string, size: number) => <RoomBotAvatar name={name} size={size} />
+  const avatarFor = (name: string, size: number, member?: CanonicalRoomMember) => <RoomBotAvatar connectionId={binding.connectionId} member={member} name={name} size={size} />
 
   // The Bots list row reads this room's live state while it is open, and forgets it once it closes.
   useEffect(() => holdCanonicalRoomLive(binding), [binding])
@@ -689,12 +689,12 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
         <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col justify-end gap-0.5 py-4">
           <CanonicalGroupHistory avatarFor={avatarFor} binding={binding} disabled={!visible} downloads={offersGroupMethod(methods, 'groups.attachment.download')} events={events} members={members} onReply={replyTo}
             pause={{ busy, maxContinues: driver?.max_continues, onContinue: continueDiscussion, onStop: stop, stopping }} />
-          <CanonicalGroupTyping labels={labels} members={members} statuses={statuses} />
+          <CanonicalGroupTyping connectionId={binding.connectionId} labels={labels} members={members} statuses={statuses} />
           {(driver?.pending_actions || []).map(action => {
             const member = memberById.get(action.member_id)
             const name = member ? canonicalMemberName(member) : action.member_id
 
-            return <CanonicalPendingCard action={action} avatar={avatarFor(member?.profile || action.member_id, 24)} busy={busy}
+            return <CanonicalPendingCard action={action} avatar={avatarFor(member?.profile || action.member_id, 24, member)} busy={busy}
               key={`${action.kind}:${action.task_id}:${action.execution_generation}`} labels={labels} methods={methods} name={name}
               onAct={act} onDiscard={() => setDiscard({ ...action })}
               onRefresh={() => void refresh().catch(e => setReadError(readFailure(e)))} />

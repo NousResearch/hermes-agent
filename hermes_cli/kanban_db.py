@@ -1641,6 +1641,19 @@ def child_ids(conn: sqlite3.Connection, task_id: str) -> list[str]:
     return _linked_ids(conn, "child_id", "parent_id", task_id)
 
 
+def created_todo_children(conn: sqlite3.Connection, task_id: str) -> list[str]:
+    """``todo`` children gated by *task_id* that *task_id* itself created.
+    Blocking the creator strands them until a human unlinks the edge."""
+    rows = conn.execute(
+        "SELECT t.id FROM task_links l JOIN tasks t ON t.id = l.child_id "
+        "WHERE l.parent_id = ? AND t.status = 'todo' AND EXISTS ("
+        " SELECT 1 FROM task_events e WHERE e.task_id = t.id AND e.kind = 'created'"
+        " AND json_extract(e.payload, '$.creator_task_id') = l.parent_id) ORDER BY t.id",
+        (task_id,),
+    ).fetchall()
+    return [r["id"] for r in rows]
+
+
 def task_graph_contexts(conn: sqlite3.Connection, task_ids: Iterable[str]) -> dict[str, dict]:
     """Bulk-load compact direct graph state for graph-aware diagnostics."""
     ordered_ids = list(dict.fromkeys(str(task_id) for task_id in task_ids if task_id))

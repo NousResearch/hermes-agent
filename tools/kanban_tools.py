@@ -488,7 +488,8 @@ _GOAL_GATE_MESSAGES = {
         "continue": (
             "Goal completion rejected by judge: {reason}. To proceed, either: (1) provide "
             "explicit acceptance evidence in your summary matching the task's criteria, or (2) "
-            "create continuation tasks with parents=[{tid}] and keep this task alive.")},
+            "create continuation tasks WITHOUT parents (reference {tid} in their body) and keep "
+            "this task alive.")},
     "kanban_request_review": {
         "blocked": (
             "Goal review handoff rejected: judge ruled the goal unachievable — {reason}. "
@@ -864,6 +865,14 @@ def _handle_block(args: dict, **kw) -> str:
                 "so this was recorded as needs_input (sticky until a human unblocks) "
                 "instead of parking in todo where the dispatcher would respawn it."
             )
+        stranded = kb.created_todo_children(conn, tid)
+        if stranded:
+            extra["stranded_children"] = stranded
+            extra["warning"] = (
+                f"{len(stranded)} task(s) you created still list {tid} as a parent and will "
+                "stay in todo while it is blocked: " + ", ".join(stranded) + ". To let them run "
+                f"sooner, a human must `hermes kanban unlink {tid} <child>`; say so in a "
+                "kanban_comment.")
         return _ok_landed(kb, conn, tid, "blocked", **extra)
 
 

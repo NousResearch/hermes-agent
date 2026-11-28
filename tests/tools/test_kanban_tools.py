@@ -409,7 +409,9 @@ def test_complete_goal_mode_rejected_by_judge(monkeypatch, tmp_path):
     assert "error" in d
     assert "Goal completion rejected by judge" in d["error"]
     assert "missing verification evidence" in d["error"]
-    assert f"parents=[{goal_task_id}]" in d["error"]
+    # A parent edge to a task that may later block would strand the continuation.
+    assert f"parents=[{goal_task_id}]" not in d["error"]
+    assert "WITHOUT parents" in d["error"] and goal_task_id in d["error"]
 
     # Verify the task is NOT completed in the DB
     conn2 = kbc.connect()
@@ -432,6 +434,35 @@ def test_block_happy_path(worker_env):
         assert kb.get_task(conn, worker_env).status == "blocked"
     finally:
         conn.close()
+
+
+def test_block_warns_about_todo_children_it_created(worker_env):
+    """A continuation this task created with parents=[this task] stays in todo
+    while the task is blocked; the block result must name it."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    conn = kbc.connect()
+    try:
+        own = kb.create_task(conn, title="continuation", assignee="worker",
+                             parents=[worker_env], creator_task_id=worker_env)
+        # Gated by the same parent, but not created by it: not this worker's doing.
+        kb.create_task(conn, title="foreign", assignee="worker", parents=[worker_env])
+    finally:
+        conn.close()
+    d = json.loads(kt._handle_block({"reason": "budget reached"}))
+    assert (d["ok"], d["status"]) == (True, "blocked")
+    assert d["stranded_children"] == [own]
+    assert own in d["warning"]
+
+
+def test_block_without_created_children_has_no_warning(worker_env):
+    from tools import kanban_tools as kt
+
+    d = json.loads(kt._handle_block({"reason": "need clarification"}))
+    assert d["ok"] is True
+    assert "warning" not in d and "stranded_children" not in d
 
 
 def test_schedule_parks_current_worker_with_reason(worker_env):

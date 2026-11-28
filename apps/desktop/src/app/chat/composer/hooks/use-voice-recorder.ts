@@ -17,6 +17,9 @@ interface VoiceRecorderOptions {
   maxRecordingSeconds: number
   onTranscribeAudio?: (audio: Blob, owner?: ResolvedOwner) => Promise<string>
   focusInput: () => void
+  /** This take's composer is gone (the user switched chat/bot mid-transcription):
+   *  park the text instead of dropping it. */
+  onSalvaged?: (text: string) => void
   onTranscript: (text: string) => void
 }
 
@@ -37,6 +40,7 @@ export function useVoiceRecorder({
   maxRecordingSeconds,
   onTranscribeAudio,
   focusInput,
+  onSalvaged,
   onTranscript
 }: VoiceRecorderOptions) {
   const { t } = useI18n()
@@ -59,6 +63,10 @@ export function useVoiceRecorder({
   // unmount clears it, so a warm-up or transcript settling afterwards cannot
   // transcribe, insert text or move focus.
   const dictationRef = useRef<Dictation | null>(null)
+  // The salvage callback has to outlive the component too: the transcript it
+  // handles settles after this hook is gone, so read it through a ref.
+  const onSalvagedRef = useRef(onSalvaged)
+  onSalvagedRef.current = onSalvaged
 
   const clearTimers = () => {
     if (intervalRef.current) {
@@ -92,8 +100,8 @@ export function useVoiceRecorder({
     const result = await handle.stop()
     const live = () => dictation !== null && dictationRef.current === dictation
 
-    if (!dictation || !live()) {
-      return // unmounted (or never started) while the recorder stopped
+    if (!dictation) {
+      return // never started
     }
 
     if (!result || !onTranscribeAudio) {
@@ -110,16 +118,23 @@ export function useVoiceRecorder({
       // clip to transcription, so a cold model load no longer runs inside the
       // transcription request's timeout (#105955). syncSttLease never rejects,
       // and its budget is the lease request's own 180 s timeout.
+      //
+      // No `live()` bail here on purpose: an unmount (chat switched while the
+      // take was still settling) must not cancel the transcription — the text
+      // is salvaged below instead of thrown away (#149000).
       await dictation.warmup
-
-      if (!live()) {
-        return
-      }
 
       const transcript =
         (await liveTranscript(dictation)) ?? (await onTranscribeAudio(result.audio, dictation.owner)).trim()
 
       if (!live()) {
+        // This composer is gone: the user switched chat or bot mid-transcription.
+        // Park the text in the chat it was dictated into rather than dropping it
+        // silently — no toast is shown, because the draft is the visible trace.
+        if (transcript) {
+          onSalvagedRef.current?.(transcript)
+        }
+
         return
       }
 

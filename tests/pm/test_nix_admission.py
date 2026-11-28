@@ -32,11 +32,11 @@ def _nix_package(tmp_path, monkeypatch, isolated_python) -> Path:
                           capture_output=True, text=True, check=True).stdout.strip()
     runtime = tmp_path / "pm-runtime"
     runtime.mkdir()
-    (runtime / "pm-runtime.json").write_text(json.dumps({"python": str(isolated_python), "sitePackages": site}))
+    (runtime / "pm-runtime.json").write_text(json.dumps({"python": str(isolated_python), "sitePackages": site}), encoding="utf-8")
     share = tmp_path / "share" / "hermes-agent"
     share.mkdir(parents=True)
     (share / "install-stamp.json").write_text(json.dumps(
-        {"distribution": "nix", "baseVersion": "1.2.3", "pmRuntime": str(runtime)}))
+        {"distribution": "nix", "baseVersion": "1.2.3", "pmRuntime": str(runtime)}), encoding="utf-8")
     monkeypatch.setenv("HERMES_INSTALL_ROOT", str(share))
     executing = Path(paths.__file__).resolve().parent.parent
     assert paths.repo_root() == executing and not (executing / "install-stamp.json").exists()
@@ -50,8 +50,8 @@ def _home(tmp_path, plugins: dict[str, list[str]], enabled=()):
         directory = home / "plugins" / name
         directory.mkdir(parents=True)
         (directory / "plugin.yaml").write_text(
-            f"name: {name}\n" + (f"python_dependencies: {json.dumps(requirements)}\n" if requirements else ""))
-    (home / "config.yaml").write_text(f"# keep my comment\nplugins:\n  enabled: {json.dumps(list(enabled))}\n")
+            f"name: {name}\n" + (f"python_dependencies: {json.dumps(requirements)}\n" if requirements else ""), encoding="utf-8")
+    (home / "config.yaml").write_text(f"# keep my comment\nplugins:\n  enabled: {json.dumps(list(enabled))}\n", encoding="utf-8")
     return home
 
 
@@ -64,7 +64,7 @@ def _select(client, home, enabled, disabled=()):
 def _enabled(home):
     from utils import fast_safe_load
 
-    return fast_safe_load((home / "config.yaml").read_text())["plugins"]["enabled"]
+    return fast_safe_load((home / "config.yaml").read_text(encoding="utf-8-sig"))["plugins"]["enabled"]
 
 
 def _built_nothing(repo):
@@ -80,7 +80,7 @@ def test_a_selection_is_published_without_building(client, tmp_path, monkeypatch
     home = _home(tmp_path, {"plain": []})
     _select(client, home, ["plain"])
     assert _enabled(home) == ["plain"]
-    assert "# keep my comment" in (home / "config.yaml").read_text()
+    assert "# keep my comment" in (home / "config.yaml").read_text(encoding="utf-8-sig")
     assert _built_nothing(repo)
 
 
@@ -130,11 +130,11 @@ def test_a_plugin_update_follows_the_same_rule(client, tmp_path, monkeypatch, is
     repo = _nix_package(tmp_path, monkeypatch, isolated_python)
     home = _home(tmp_path, {"example": []}, enabled=["example"] if active else [])
     target = home / "plugins" / "example"
-    (target / "code.py").write_text("old code")
+    (target / "code.py").write_text("old code", encoding="utf-8")
     staged = tmp_path / "staged"
     staged.mkdir()
-    (staged / "plugin.yaml").write_text(f"name: example\npython_dependencies: {json.dumps(requirements)}\n")
-    (staged / "code.py").write_text("new code")
+    (staged / "plugin.yaml").write_text(f"name: example\npython_dependencies: {json.dumps(requirements)}\n", encoding="utf-8")
+    (staged / "code.py").write_text("new code", encoding="utf-8")
     update = StagedUpdate({"staged": str(staged), "target": str(target), "target_digest": tree_digest(target),
                            "old_metadata": {}, "new_metadata": {"example": {"revision": "new"}}})
     if published:
@@ -142,7 +142,7 @@ def test_a_plugin_update_follows_the_same_rule(client, tmp_path, monkeypatch, is
     else:
         with pytest.raises(InstallError, match="plugin 'example'"):
             client.sync_venv(explicit=True, plugins=update)
-    assert (target / "code.py").read_text() == ("new code" if published else "old code")
+    assert (target / "code.py").read_text(encoding="utf-8-sig") == ("new code" if published else "old code")
     assert not list(target.parent.glob(".previous-*"))
     assert _built_nothing(repo)
 
@@ -176,7 +176,7 @@ def _distribution(site: Path, name: str, version: str, lines=()):
     info = site / f"{name.replace('-', '_')}-{version}.dist-info"
     info.mkdir(parents=True)
     (info / "METADATA").write_text("\n".join(
-        ["Metadata-Version: 2.3", f"Name: {name}", f"Version: {version}", *lines]) + "\n")
+        ["Metadata-Version: 2.3", f"Name: {name}", f"Version: {version}", *lines]) + "\n", encoding="utf-8")
 
 
 def test_missing_reports_extras_against_the_installed_core(tmp_path, monkeypatch):
@@ -200,7 +200,7 @@ def test_missing_reports_extras_against_the_installed_core(tmp_path, monkeypatch
     assert nix_admission.missing(["unknown"]) == ["extra 'unknown' (not built into this package)"]
     plugin = tmp_path / "plugin"
     plugin.mkdir()
-    (plugin / "plugin.yaml").write_text('name: plugin\npython_dependencies: ["odd-dist>=1", "present-dist>=2"]\n')
+    (plugin / "plugin.yaml").write_text('name: plugin\npython_dependencies: ["odd-dist>=1", "present-dist>=2"]\n', encoding="utf-8")
     # A version no specifier can be compared with is present, not provably wrong.
     assert nix_admission.missing((), [plugin]) == ["present-dist>=2 (found 1.5) (plugin 'plugin')"]
 
@@ -219,7 +219,7 @@ def test_a_requested_extra_of_a_present_distribution_needs_its_own_requirements(
     monkeypatch.setenv(nix_admission.APPLICATION_PATH_ENV, str(site))
     plugin = tmp_path / "plugin"
     plugin.mkdir()
-    (plugin / "plugin.yaml").write_text('name: plugin\npython_dependencies: ["nix-transport[socks]>=1"]\n')
+    (plugin / "plugin.yaml").write_text('name: plugin\npython_dependencies: ["nix-transport[socks]>=1"]\n', encoding="utf-8")
 
     # Present without the feature's requirement: refused, and only for the feature that was asked for.
     assert nix_admission.missing((), [plugin]) == ["nix-socks-helper>=2 (plugin 'plugin')"]
@@ -230,7 +230,7 @@ def test_a_requested_extra_of_a_present_distribution_needs_its_own_requirements(
     assert nix_admission.missing((), [plugin]) == []
 
     # The plain distribution keeps being admitted whatever its extras would need.
-    (plugin / "plugin.yaml").write_text('name: plugin\npython_dependencies: ["nix-transport>=1"]\n')
+    (plugin / "plugin.yaml").write_text('name: plugin\npython_dependencies: ["nix-transport>=1"]\n', encoding="utf-8")
     assert nix_admission.missing((), [plugin]) == []
 
 
@@ -240,9 +240,9 @@ def test_a_member_that_excludes_the_running_python_is_reported(tmp_path, monkeyp
     monkeypatch.setenv(nix_admission.APPLICATION_PATH_ENV, str(tmp_path))
     plugin = tmp_path / "strict"
     plugin.mkdir()
-    (plugin / "plugin.yaml").write_text("name: strict\n")
+    (plugin / "plugin.yaml").write_text("name: strict\n", encoding="utf-8")
     (plugin / "pyproject.toml").write_text(
-        '[project]\nname = "strict"\nversion = "1"\nrequires-python = ">=3.99"\ndependencies = ["packaging"]\n')
+        '[project]\nname = "strict"\nversion = "1"\nrequires-python = ">=3.99"\ndependencies = ["packaging"]\n', encoding="utf-8")
     assert any("plugin 'strict' requires Python >=3.99" in entry for entry in nix_admission.missing((), [plugin]))
 
 
@@ -252,10 +252,10 @@ def test_nothing_is_admitted_unchecked_when_the_applications_path_is_unknown(tmp
     monkeypatch.delenv(nix_admission.APPLICATION_PATH_ENV, raising=False)
     plugin = tmp_path / "needy"
     plugin.mkdir()
-    (plugin / "plugin.yaml").write_text(f'name: needy\npython_dependencies: ["{ABSENT}"]\n')
+    (plugin / "plugin.yaml").write_text(f'name: needy\npython_dependencies: ["{ABSENT}"]\n', encoding="utf-8")
     plain = tmp_path / "plain"
     plain.mkdir()
-    (plain / "plugin.yaml").write_text("name: plain\n")
+    (plain / "plugin.yaml").write_text("name: plain\n", encoding="utf-8")
     assert nix_admission.missing((), [plain]) == []
     assert nix_admission.missing(["voice"], [plugin, plain]) == [
         "extra 'voice' (cannot be checked: the application's import path is unknown)",
@@ -269,12 +269,12 @@ def test_only_the_executing_nix_tree_is_a_nix_package(tmp_path, monkeypatch):
 
     share = tmp_path / "share"
     share.mkdir()
-    (share / "install-stamp.json").write_text(json.dumps({"distribution": "nix"}))
+    (share / "install-stamp.json").write_text(json.dumps({"distribution": "nix"}), encoding="utf-8")
     monkeypatch.setenv("HERMES_INSTALL_ROOT", str(share))
     assert nix_admission.is_nix_package() is True
     checkout = tmp_path / "checkout"
     checkout.mkdir()
     monkeypatch.setattr(paths, "repo_root", lambda: checkout)
     assert nix_admission.is_nix_package() is False
-    (checkout / "install-stamp.json").write_text(json.dumps({"distribution": "docker"}))
+    (checkout / "install-stamp.json").write_text(json.dumps({"distribution": "docker"}), encoding="utf-8")
     assert nix_admission.is_nix_package() is False

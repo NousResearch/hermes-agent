@@ -42,7 +42,7 @@ from cron.jobs_normalize import (
 )
 from cron import jobs_time
 from cron.scheduler_ownership import _claim_owner_is_dead
-from cron import extra_fire, jobs_error_text, store_health
+from cron import extra_fire, jobs_error_text, jobs_read, store_health
 from typing import Optional, Dict, List, Any, Callable, Set, Tuple, Union, Collection
 
 logger = logging.getLogger(__name__)
@@ -1368,14 +1368,9 @@ def get_ticker_last_error() -> Optional[str]:
 
 def _parse_jobs_file(jobs_file: Path) -> tuple[Any, bool]:
     """Tolerant jobs.json parse -> ``(data, used_strict_fallback)``: utf-8-sig absorbs a BOM, strict
-    failure retries with ``strict=False``. IO/fallback errors propagate (caller decides repair vs
-    bail)."""
-    with open(jobs_file, "r", encoding="utf-8-sig") as f:
-        raw = f.read()
-    try:
-        return json.loads(raw), False
-    except json.JSONDecodeError:
-        return json.loads(raw, strict=False), True
+    failure retries with ``strict=False``, and a transient sharing conflict retries the read
+    (``cron.jobs_read``). IO/fallback errors propagate (caller decides repair vs. bail)."""
+    return jobs_read.parse_jobs_file(jobs_file)
 
 
 def load_jobs() -> list[dict[str, Any]]:

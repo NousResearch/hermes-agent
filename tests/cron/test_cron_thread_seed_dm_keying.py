@@ -15,9 +15,17 @@ user's in-thread reply will build. Asserting on build_session_key output —
 not on SessionSource field shapes — pins the end-to-end contract.
 """
 
-from unittest.mock import MagicMock, patch
+import asyncio
+from concurrent.futures import Future
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from cron.scheduler_delivery import _seed_cron_channel_session, _seed_cron_thread_session
+import pytest
+
+from cron.scheduler_delivery import (
+    _deliver_result,
+    _seed_cron_channel_session,
+    _seed_cron_thread_session,
+)
 from gateway.config import Platform
 from gateway.session import SessionSource, build_session_key
 
@@ -25,6 +33,45 @@ from gateway.session import SessionSource, build_session_key
 def _seeded_source(store):
     store.get_or_create_session.assert_called_once()
     return store.get_or_create_session.call_args[0][0]
+
+
+def _deliver_with_topic(job, topic_id, platform=Platform.TELEGRAM, extra=None, scope=None):
+    store = MagicMock()
+    adapter = AsyncMock()
+    adapter._session_store = store
+    if scope is not None:
+        adapter.scope_id_for_chat = MagicMock(return_value=scope)
+    adapter.create_handoff_thread = AsyncMock(return_value=topic_id)
+    adapter.send.return_value = MagicMock(
+        success=True, message_id="msg_1", raw_response=None,
+    )
+
+    pconfig = MagicMock()
+    pconfig.enabled = True
+    pconfig.extra = dict(extra or {})
+    mock_cfg = MagicMock()
+    mock_cfg.platforms = {platform: pconfig}
+
+    loop = MagicMock()
+    loop.is_running.return_value = True
+
+    def fake_run_coro(coro, _loop):
+        future = Future()
+        try:
+            future.set_result(asyncio.run(coro))
+        except BaseException as exc:
+            future.set_exception(exc)
+        return future
+
+    with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+         patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+         patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro), \
+         patch("gateway.mirror.mirror_to_session", return_value=True):
+        delivery_err = _deliver_result(
+            job, "Three bullets", adapters={platform: adapter}, loop=loop,
+        )
+
+    return delivery_err, adapter, store
 
 
 def test_dm_thread_seed_key_matches_dm_reply_key():
@@ -145,6 +192,93 @@ def test_telegram_forum_topic_seed_key_matches_topic_reply_key():
     assert build_session_key(_seeded_source(store)) == "agent:main:telegram:group:-1001234567:77"
 
 
+def test_originless_telegram_dm_topic_delivery_seeds_dm_key():
+    """A job with no captured origin, defined from a manifest and delivering to an explicit
+    ``telegram:<chat>`` with ``attach_to_session``, opens a topic in a private chat; the seed must
+    land on the ``dm`` row the Telegram adapter types a private-chat topic reply with — the pre-fix
+    shape read DM only from the origin or a Slack "D" id and seeded ``group``."""
+    job = {
+        "id": "j9",
+        "name": "watch",
+        "deliver": "telegram:1234567",
+        "attach_to_session": True,
+    }
+
+    delivery_err, adapter, store = _deliver_with_topic(job, "88")
+
+    assert delivery_err is None
+    adapter.create_handoff_thread.assert_awaited_once()
+    assert adapter.create_handoff_thread.await_args.args[0] == "1234567"
+
+    reply_source = SessionSource(
+        platform=Platform.TELEGRAM, chat_id="1234567", chat_type="dm", user_id="1234567",
+        thread_id="88",
+    )
+    seeded_key = build_session_key(_seeded_source(store))
+    assert seeded_key == build_session_key(reply_source)
+    assert seeded_key == "agent:main:telegram:dm:1234567:88"
+
+
+def test_dm_origin_delivering_to_supergroup_seeds_group_key():
+    """A job created in a Telegram DM that delivers to a different chat (a supergroup forum) must
+    seed the topic under the target's ``group`` shape the topic reply resolves to; reading the
+    origin's ``dm`` for a target that is not the origin's chat seeded ``dm``."""
+    job = {
+        "id": "j10",
+        "name": "watch",
+        "origin": {
+            "platform": "telegram", "chat_id": "1234567", "chat_type": "dm",
+            "user_id": "1234567",
+        },
+        "deliver": "telegram:-1001234567",
+        "attach_to_session": True,
+    }
+
+    delivery_err, adapter, store = _deliver_with_topic(job, "77")
+
+    assert delivery_err is None
+    adapter.create_handoff_thread.assert_awaited_once()
+    assert adapter.create_handoff_thread.await_args.args[0] == "-1001234567"
+
+    reply_source = SessionSource(
+        platform=Platform.TELEGRAM, chat_id="-1001234567", chat_type="group", user_id="42",
+        thread_id="77",
+    )
+    seeded_key = build_session_key(_seeded_source(store))
+    assert seeded_key == build_session_key(reply_source)
+    assert seeded_key == "agent:main:telegram:group:-1001234567:77"
+
+
+@pytest.mark.parametrize(
+    "origin, platform, chat_id, expected",
+    [
+        ({"platform": "slack", "chat_id": "C0AAAAAAAA", "chat_type": "dm"},
+         "slack", "C0AAAAAAAA", True),                           # the origin decides for its own chat
+        ({"platform": "telegram", "chat_id": "1234567", "chat_type": "group"},
+         "telegram", "1234567", False),
+        ({"platform": "telegram", "chat_id": "1234567", "chat_type": "dm"},
+         "telegram", "-1001234567", False),                      # dm origin, other chat: read the target
+        ({"platform": "telegram", "chat_id": "-1001234567", "chat_type": "group"},
+         "telegram", "7654321", True),                           # group origin, private-chat target
+        ({"platform": "discord", "chat_id": "1234567", "chat_type": "group"},
+         "telegram", "1234567", True),                           # same id, other platform
+        ({"platform": "telegram", "chat_id": "1234567", "chat_type": "dm", "thread_id": "5"},
+         "telegram", "1234567", True),                           # another thread keeps the origin's type
+        ({}, "slack", "D0BJTDCSR7C", True),                      # Slack DM id
+        ({}, "slack", "C0AAAAAAAA", False),
+        ({}, "telegram", "1234567", True),                        # Telegram private chat
+        ({}, "telegram", "-1001234567", False),                   # supergroup / forum
+        ({}, "telegram", "-4567", False),                         # basic group
+        ({}, "discord", "1234567", False),                        # positive ids mean nothing elsewhere
+        ({}, "telegram", "@channel", False),
+    ],
+)
+def test_target_is_dm(origin, platform, chat_id, expected):
+    from cron.scheduler_delivery_origin import target_is_dm
+
+    assert target_is_dm(origin, platform, chat_id) is expected
+
+
 def test_scoped_dm_thread_seed_key_matches_scoped_reply_key():
     """Slack keys embed the workspace scope_id (build_session_key puts the
     team segment in every Slack dm/group/thread key). A seed built without
@@ -249,3 +383,53 @@ def test_seeds_do_not_collide_across_workspaces():
         "identical chat ids in different workspaces seeded the SAME session "
         "key — cross-workspace transcript bleed"
     )
+
+
+@pytest.mark.parametrize(
+    "deliver, reply_chat, chat_type, topic",
+    [
+        ("telegram:-1001234567:77", "-1001234567", "group", "77"),   # supergroup forum topic
+        ("telegram:1234567:88", "1234567", "dm", "88"),              # private-chat topic
+    ],
+)
+def test_explicit_topic_target_without_session_is_seeded(deliver, reply_chat, chat_type, topic):
+    """An explicit ``platform:chat:topic`` target with ``attach_to_session`` whose topic has no
+    session yet (first automatic message, #157965): the append-only mirror found nothing, so the
+    reply started blank. The delivery must create the row the topic reply keys to, and never
+    open a new thread over the named one."""
+    job = {"id": "j11", "name": "kitchen", "deliver": deliver, "attach_to_session": True}
+
+    delivery_err, adapter, store = _deliver_with_topic(job, "999")
+
+    assert delivery_err is None
+    adapter.create_handoff_thread.assert_not_awaited()
+    reply_source = SessionSource(
+        platform=Platform.TELEGRAM, chat_id=reply_chat, chat_type=chat_type, user_id=reply_chat,
+        thread_id=topic,
+    )
+    assert build_session_key(_seeded_source(store)) == build_session_key(reply_source)
+
+
+@pytest.mark.parametrize(
+    "job, platform, extra, scope, reply",
+    [
+        # thread_sessions_per_user: the topic reply keys on the replier, so seed the scheduler's key
+        ({"id": "j12", "deliver": "telegram:-1001234567:77", "attach_to_session": True,
+          "origin": {"platform": "telegram", "chat_id": "-1001234567", "user_id": "4242",
+                     "chat_type": "group"}},
+         Platform.TELEGRAM, {"thread_sessions_per_user": True}, None,
+         dict(platform=Platform.TELEGRAM, chat_id="-1001234567", chat_type="group",
+              user_id="4242", thread_id="77")),
+        # origin-less Slack thread target: the reply key carries the workspace id
+        ({"id": "j13", "deliver": "slack:C0AAAAAAAA:1700000000.000100", "attach_to_session": True},
+         Platform.SLACK, {}, "T0WORKSPACE",
+         dict(platform=Platform.SLACK, chat_id="C0AAAAAAAA", chat_type="group", user_id="U1",
+              thread_id="1700000000.000100", scope_id="T0WORKSPACE")),
+    ],
+)
+def test_named_thread_seed_keys_like_its_reply(job, platform, extra, scope, reply):
+    _, _, store = _deliver_with_topic(job, "999", platform=platform, extra=extra, scope=scope)
+
+    kwargs = dict(thread_sessions_per_user=bool(extra.get("thread_sessions_per_user")))
+    assert build_session_key(_seeded_source(store), **kwargs) == build_session_key(
+        SessionSource(**reply), **kwargs)

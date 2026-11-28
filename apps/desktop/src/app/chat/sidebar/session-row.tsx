@@ -34,6 +34,7 @@ import { sessionPinId } from '@/store/session'
 import { $sessionDotStateById, hasLiveTurn, showsRunningArc } from '@/store/session-dot-state'
 import { $sessionListDensity } from '@/store/session-list-density'
 import { $openStoredSessionIds } from '@/store/session-states'
+import { newMessagesSinceSeen, $sessionSeenCounts } from '@/store/session-unread'
 import { sessionCostUsd } from '@/store/sidebar-archive'
 import { $todoProgressBySession } from '@/store/todos'
 
@@ -203,6 +204,12 @@ function SidebarSessionRowImpl({
   // switched on, and a PR keeps its place (and its click) unless it IS the last
   // thing. Chips used to render in the body instead, which left them stranded
   // to the left of the kebab's own column: never flush right, never swapping.
+  // Per-chat "new" count: messages added since this row was last acknowledged.
+  // Rows without an ack watermark read 0 (see newMessagesSinceSeen), so a fresh
+  // install never paints history as new.
+  const seenCounts = useStore($sessionSeenCounts)
+  const newCount = newMessagesSinceSeen(session, seenCounts)
+
   const trailing: { key: string; node: React.ReactNode }[] = []
 
   if ((showProfile || pinnedProfile) && hasProfileTag) {
@@ -211,6 +218,26 @@ function SidebarSessionRowImpl({
 
   if (pr) {
     trailing.push({ key: 'pr', node: <PrTag pr={pr} /> })
+  }
+
+  // The count sits with the other trailing chips (profile · PR · N · age): a
+  // small pill in the unread dot's ink, only for chats that actually have
+  // something new. aria/tooltip reuse the existing "N messages" copy.
+  if (newCount > 0) {
+    trailing.push({
+      key: 'new',
+      node: (
+        <Tip label={r.messageCount(newCount)}>
+          <span
+            aria-label={r.messageCount(newCount)}
+            className="pointer-events-none shrink-0 rounded-full bg-(--ui-control-active-background) px-1.5 text-[0.625rem] font-medium leading-4 tabular-nums text-(--ui-success)"
+            data-testid="session-new-count"
+          >
+            {newCount}
+          </span>
+        </Tip>
+      )
+    })
   }
 
   const showAge = pinnedAge || card

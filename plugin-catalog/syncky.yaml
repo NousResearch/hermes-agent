@@ -1,0 +1,20 @@
+name: syncky
+title: Syncky Health
+repo: https://github.com/syncky/syncky-open
+sha: "8af15660c55ff0018d710cd1f016c9d3cb5f955b"
+subdir: plugins/syncky
+description: "Two-way Apple Health for your own agent: Hermes reads the Apple Health types you choose on your iPhone and can write entries back for the types you allow for writing, through the Syncky Health iPhone app. Health data is end-to-end encrypted between the iPhone and the local Syncky agent; no account and no public URL. Portable Agent Plugins v1 package with one stdio MCP server (five tools: syncky_status, syncky_inbox, syncky_skill, syncky_send, syncky_ack) and one setup and operating skill. Disclosure — runs the pinned `@syncky/agent@0.2.3` npm package locally through `npx` (Node.js 22.15 or newer; npx can download it from npm on first use) and connects out over HTTPS to Syncky Relay (relay.syncky.app), which queues sealed messages and sees delivery metadata but no health values; keeps keys and received records in ~/.syncky-agent, where the receiver deletes records older than 30 days when it runs; the skill runs `npx @syncky/agent` shell commands and, if you choose continuous receive, installs the receiver locally and configures it to start at login and restart after a failure; Health data you choose appears in tool results, so the model your Hermes session uses sees it; the skill instructs Hermes to send a Health write only when you ask for that entry or approve a standing rule, and the iPhone, which does not prompt for each entry, applies writes only for types you allowed for writing. By default, the receiver reports its agent version and operating-system family to Syncky Relay once a day; turn this off with SYNCKY_HEARTBEAT=off; the report contains no health values."
+maintainer: syncky
+tier: community
+category: tools
+requires_hermes: ">=0.23.2"
+docs_url: https://syncky.app/guides/hermes
+version: "0.2.3"
+platforms: [linux, macos]
+known_issues:
+  - "The MCP server and the skill share the agent home ~/.syncky-agent. Where Hermes gives its terminal and MCP servers different home directories (some container setups), use the manual MCP setup with an explicit SYNCKY_AGENT_HOME from https://syncky.app/guides/hermes."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

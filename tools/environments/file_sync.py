@@ -152,6 +152,50 @@ def _resolve_host_path_str(host_path: str) -> str:
         return str(Path(host_path).expanduser())
 
 
+class _SyncBackPathIndex:
+    """Host-path lookups for one sync-back pass, built once from the file mapping.
+
+    ``_resolve_host_path`` and ``_infer_host_path`` scan the whole mapping for every staged file,
+    and the inference resolves each mapped host path (``Path.resolve``, several syscalls) on every
+    scan to skip upload-only credentials. A remote ``.hermes`` holding thousands of files the host
+    never pushed (old backups, run logs) therefore cost staged x mapped filesystem resolves: tens of
+    minutes against a large skills tree, all while holding the profile-wide sync lock. The index
+    gives the same answers with one resolve per mapping entry and one dict probe per path segment.
+    """
+
+    def __init__(self, file_mapping: list[tuple[str, str]], upload_only_host_paths: set[str]) -> None:
+        self._exact: dict[str, str] = {}
+        self._dirs: dict[str, tuple[int, str]] = {}
+        for position, (host, remote) in enumerate(file_mapping):
+            self._exact.setdefault(remote, host)  # first entry wins, like the linear scan
+            remote_dir = posixpath.dirname(remote)  # remote paths are POSIX even on a Windows host
+            if remote_dir in self._dirs:
+                continue  # an earlier usable entry already claims this directory
+            if FileSyncManager._is_upload_only_host_path(host, upload_only_host_paths):
+                continue
+            self._dirs[remote_dir] = (position, host)
+
+    def resolve(self, remote_path: str) -> str | None:
+        """Same answer as :meth:`FileSyncManager._resolve_host_path`."""
+        return self._exact.get(remote_path)
+
+    def infer(self, remote_path: str) -> str | None:
+        """Same answer as :meth:`FileSyncManager._infer_host_path`: the earliest mapping entry
+        whose remote directory ``D`` satisfies ``remote_path.startswith(D + "/")``. Those ``D`` are
+        exactly the prefixes of *remote_path* that end right before a ``/``."""
+        best: tuple[int, int, str] | None = None
+        cut = remote_path.find("/")
+        while cut != -1:
+            entry = self._dirs.get(remote_path[:cut])
+            if entry is not None and (best is None or entry[0] < best[0]):
+                best = (entry[0], cut, entry[1])
+            cut = remote_path.find("/", cut + 1)
+        if best is None:
+            return None
+        _position, cut, host = best
+        return str(Path(host).parent / remote_path[cut + 1:])
+
+
 def _credential_host_paths() -> set[str]:
     """Return credential files that are upload-only for remote sandboxes."""
     try:
@@ -394,6 +438,7 @@ class FileSyncManager:
         if self._bulk_download_fn is None:
             raise RuntimeError("_sync_back_impl called without bulk_download_fn")
 
+        started = time.monotonic()
         # Cache file mapping once to avoid O(n*m) from repeated iteration
         try:
             file_mapping = list(self._get_files_fn())
@@ -428,16 +473,19 @@ class FileSyncManager:
                     tar.extractall(staging, filter="data")
 
                 upload_only = self._upload_only_host_paths | _credential_host_paths()
+                index = _SyncBackPathIndex(file_mapping, upload_only)
                 applied = 0
                 for dirpath, _dirnames, filenames in os.walk(staging):
                     for fname in filenames:
                         staged_file = os.path.join(dirpath, fname)
                         # Remote keys are POSIX; relpath uses host separators (backslashes on Windows).
                         remote_path = "/" + Path(os.path.relpath(staged_file, staging)).as_posix()
-                        applied += self._apply_staged_file(staged_file, remote_path, file_mapping, upload_only)
+                        applied += self._apply_staged_file(
+                            staged_file, remote_path, file_mapping, upload_only, index=index)
 
                 if applied:
-                    logger.info("sync_back: applied %d changed file(s)", applied)
+                    logger.info("sync_back: applied %d changed file(s) in %.1fs",
+                                applied, time.monotonic() - started)
                 else:
                     logger.debug("sync_back: no remote changes detected")
         finally:
@@ -448,6 +496,7 @@ class FileSyncManager:
 
     def _apply_staged_file(
         self, staged_file: str, remote_path: str, file_mapping: list[tuple[str, str]], upload_only_host_paths: set[str],
+        *, index: _SyncBackPathIndex | None = None,
     ) -> int:
         """Copy one extracted remote file onto the host if it changed since push. Returns 1 if
         applied, 0 if skipped (unchanged, unmapped, or an upload-only credential). A host file
@@ -456,9 +505,16 @@ class FileSyncManager:
         if pushed_hash is not None and _sha256_file(staged_file) == pushed_hash:
             return 0  # unchanged from push
 
-        host_path = self._resolve_host_path(remote_path, file_mapping)
+        if index is not None:  # per-pass lookup tables (see _SyncBackPathIndex)
+            host_path = index.resolve(remote_path)
+        else:
+            host_path = self._resolve_host_path(remote_path, file_mapping)
         if host_path is None:
-            host_path = self._infer_host_path(remote_path, file_mapping, upload_only_host_paths=upload_only_host_paths)
+            if index is not None:
+                host_path = index.infer(remote_path)
+            else:
+                host_path = self._infer_host_path(
+                    remote_path, file_mapping, upload_only_host_paths=upload_only_host_paths)
             if host_path is None:
                 logger.debug("sync_back: skipping %s (no host mapping)", remote_path)
                 return 0

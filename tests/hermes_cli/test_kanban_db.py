@@ -483,6 +483,15 @@ def test_respawn_guard_defers_rate_limited_within_cooldown(
         ("authentication error from provider", "blocker_auth"),
         ("still authorizing the request", "blocker_auth"),
         ("still authorising the request", "blocker_auth"),
+        # Bare HTTP-status digits that only tail a non-HTTP compound token —
+        # a reclaim stamp's host:port lock name, a file:line reference, a
+        # workspace slug digit (#142853) — must NOT trip the guard.
+        ("stale_lock=cantaloup:403", None),
+        ("worker died at hermes/agent.py:403 pre-import", None),
+        ("workspace/ticket-403-refund/ checkout failed", None),
+        # Real HTTP statuses keep tripping the guard.
+        ("HTTP 403 Forbidden", "blocker_auth"),
+        ("Error code: 429 - rate limit exceeded", "blocker_auth"),
     ],
 )
 def test_respawn_guard_blocker_auth_curated_not_open_stem(

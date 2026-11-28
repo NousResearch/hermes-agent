@@ -122,6 +122,7 @@ import {
 import { sessionsHost } from './sessions'
 import { desktopSettings } from './settings'
 import { spellcheckHost } from './spellcheck'
+import { hostWindow } from './window'
 import { $viewport, type ViewportRect } from './viewport'
 
 /** Pane, status bar and titlebar slots; see `./areas` for the mount rules. */
@@ -607,6 +608,16 @@ export const host = {
 
   /** Read, update, and observe the allowlisted Desktop appearance preferences. */
   settings: desktopSettings,
+
+  /**
+   * Window-level appearance: zoom, translucency and minimize-to-tray.
+   *
+   * Separate from `settings` because these are not renderer preferences —
+   * zoom is per window, translucency is a renderer book mirrored to the main
+   * process, and the tray is a machine-level preference. Each method wraps the
+   * channel the native Appearance page already uses.
+   */
+  window: hostWindow,
 
   /** Toast into the app's notification stack. */
   notify,
@@ -1537,6 +1548,7 @@ export type { DesktopSettingKey, DesktopSettingValues } from './settings'
 // -- ui: the design language --------------------------------------------------
 
 export type { ViewportRect } from './viewport'
+export type { PluginTrayStatus, PluginZoomState } from './window'
 /** THE whole Capabilities surface (Skills / Tools / MCP tabs, installed
  *  lists, full-skill detail pane, embedded hub picker with one-click
  *  installs). For plugin dialogs pass `embedded` (tab state stays local —

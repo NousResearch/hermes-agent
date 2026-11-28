@@ -296,6 +296,7 @@ def _on_compute_host_turn_done(rid: str, sid: str, session: dict, frame: dict) -
     with session["history_lock"]:
         _compute_host_adopt_frame_meta(session, frame)
         session["running"] = False
+        _release_hosted_room_turn_slot(session)
         session["last_active"] = time.time()
         _clear_inflight_turn(session)
         session.pop("_compute_host_open_request", None)
@@ -320,6 +321,9 @@ def _submit_prompt_to_compute_host(
     rid: str, sid: str, session: dict, text: Any, image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None, display_kind: str | None = None,
     display_metadata: dict | None = None) -> dict:
+    with session["history_lock"]:
+        if (refusal := _activate_active_session_slot(session)) is not None:
+            return _slot_refusal(rid, sid, session, text, {}, refusal, internal_hosted_submit=True)
     cfg = _load_dashboard_process_isolation_config()
     frame = _compute_host_turn_frame(rid, sid, session, text, image_paths=image_paths,
                                      queued_prompt_generation=queued_prompt_generation,

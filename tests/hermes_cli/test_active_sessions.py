@@ -490,6 +490,14 @@ def test_unknown_sibling_liveness_only_fences_its_own_session(tmp_path, monkeypa
         "lease_id": "stale-sibling", "session_id": "old-chat", "surface": "desktop",
         "pid": 1, "process_start_time": 1234.5, "track_liveness": True,
     }])
+    import gateway.status
+
+    # PID 1 is synthetic here and does not necessarily exist on Windows.
+    original_exists = gateway.status._pid_exists
+    monkeypatch.setattr(
+        gateway.status, "_pid_exists",
+        lambda pid: True if int(pid) == 1 else original_exists(pid),
+    )
     original_start = active_sessions._process_start_time
     monkeypatch.setattr(
         active_sessions, "_process_start_time",
@@ -524,6 +532,14 @@ def test_unknown_sibling_does_not_block_guarded_release_or_orphan_sweep(tmp_path
         "lease_id": "stale-sibling", "session_id": "old-chat", "surface": "desktop",
         "pid": 1, "process_start_time": 1234.5, "track_liveness": True,
     }])
+    import gateway.status
+
+    # PID 1 is synthetic here and does not necessarily exist on Windows.
+    original_exists = gateway.status._pid_exists
+    monkeypatch.setattr(
+        gateway.status, "_pid_exists",
+        lambda pid: True if int(pid) == 1 else original_exists(pid),
+    )
     original_start = active_sessions._process_start_time
     monkeypatch.setattr(
         active_sessions, "_process_start_time",

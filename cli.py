@@ -914,7 +914,7 @@ class HermesCLI(CLIBacktrackMixin, CLIInitMixin, CLITuiRuntimeMixin, CLIProcessN
 
 
     def _claim_active_session(self, surface: str = "cli", *, stderr: bool = False) -> bool:
-        """Claim a global active-session slot for this CLI process."""
+        """Keep CLI ownership exclusive; the gateway accounts for running turns."""
         if self._active_session_lease is not None:
             return True
         try:
@@ -924,13 +924,27 @@ class HermesCLI(CLIBacktrackMixin, CLIInitMixin, CLITuiRuntimeMixin, CLIProcessN
                 session_id=self.session_id,
                 surface=surface,
                 config=self.config,
+                # This process is a GatewayAgent proxy, including -q/-Q; only
+                # the gateway's executing turn should consume running capacity.
+                capacity_active=False,
                 # Writer identity: a re-claim by this process replaces its own entry.
                 # See #94595.
                 metadata={"live_session_id": str(self.session_id)},
             )
         except Exception as exc:
-            logger.warning("Failed to claim active session slot: %s", exc)
-            return True
+            # Ownership is a correctness boundary even with no capacity cap. Keep
+            # this path independent of active_sessions imports (they may be what
+            # failed), and never expose storage paths or exception text to users.
+            logger.warning("Failed to claim active session slot (%s)", type(exc).__name__)
+            message = (
+                "Hermes could not coordinate session ownership. "
+                "No work was started; please try again."
+            )
+            if stderr:
+                print(f"hermes-refusal-reason: SESSION_COORDINATION_UNAVAILABLE\n{message}", file=sys.stderr)
+            else:
+                self._console_print(f"[bold red]{message}[/]")
+            return False
         if message:
             print(format_refusal_stderr(message), file=sys.stderr) if stderr else self._console_print(f"[bold red]{message}[/]")
             return False

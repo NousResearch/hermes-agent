@@ -120,7 +120,7 @@ def test_restart_between_drains_retires_only_the_later_prompt(monkeypatch, tmp_p
             server._clear_inflight_turn(session)
         from tests.tui_gateway.test_queued_prompt_persistence import _run_turn
         monkeypatch.setattr(server, "_run_prompt_submit",
-                            lambda rid, s, sess, text, **kw: _run_turn(sess, db, key, text, "reply B"))
+                            lambda rid, s, sess, text, **kw: _run_turn(sess, db, key, text, "reply B", kw["on_admitted"]))
         assert server._drain_queued_prompt("r3", sid, session) is True  # drains B only
         # The restart: queue gone; C never drained. The cold reopen retires C's row, not B's turn.
         session["queued_prompt"] = None

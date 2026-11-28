@@ -705,12 +705,14 @@ def _run_after_agent_ready(
         with session["history_lock"]:
             session["running"] = False
             session["last_active"] = time.time()
+            _release_hosted_room_turn_slot(session)
         _emit("session.info", sid, _session_info(session.get("agent"), session))
         return
     with session["history_lock"]:
         if session.get("_turn_cancel_requested") or not session.get("running"):
             session["running"] = False
             _clear_inflight_turn(session)
+            _release_hosted_room_turn_slot(session)
             # Without this emit the turn vanishes silently after {"status": "streaming"}.
             _emit("error", sid, {"message": (
                 "Turn cancelled before the agent was ready"
@@ -799,7 +801,8 @@ def _lock_in_submit_turn(
     rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind):
     """Under ``history_lock``: refuse watch-child races / malformed truncation / lost ownership, apply
     the cut, mark the turn running + in flight.  Returns ``(err, survivor_fields)``; ``err`` is the
-    ownership refusal itself (a str) when an idle-released lease cannot be re-claimed."""
+    ownership or capacity refusal itself (a str) when an idle-released lease cannot be re-claimed or the
+    profile has no running capacity left."""
     fields = {}
     with _session_turn_admission(session) as admitted:
         if not admitted:
@@ -821,10 +824,17 @@ def _lock_in_submit_turn(
                 rid, 4004,
                 "confirm_truncate requires truncate_before_user_ordinal, truncate_before_message_id, or truncate_before_row_id",
             ), fields
+        if (refusal := _activate_active_session_slot(session)) is not None:
+            return refusal, fields  # answered by _claim_submit_turn, outside history_lock
         if has_truncation:
-            err, fields = _truncate_history_for_submit(
-                rid, sid, session, params, requested_rebind_ids)
+            try:
+                err, fields = _truncate_history_for_submit(
+                    rid, sid, session, params, requested_rebind_ids)
+            except Exception:
+                _release_hosted_room_turn_slot(session)
+                raise
             if err is not None:
+                _release_hosted_room_turn_slot(session)
                 return err, {}
         session["running"] = True
         session.pop("_notif_turn_claim", None)  # a stale dispatcher claim never releases this turn
@@ -843,7 +853,7 @@ def _claim_submit_turn(
     the ledger-owner forward and image unstaging take it)."""
     err, fields = _lock_in_submit_turn(
         rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind)
-    if isinstance(err, str):  # the idle reaper released the lease after the precheck; nothing was written
+    if isinstance(err, str):  # lease lost to the idle reaper, or no running capacity left; nothing was written
         return _slot_refusal(rid, sid, session, text, params, err, internal_hosted_submit), {}
     return err, fields
 
@@ -929,7 +939,7 @@ def _(rid, params: dict) -> dict:
     # prompt in a queue whose drain already ran.
     while True:
         with session["history_lock"]:
-            if not session.get("running"):
+            if not _session_prompt_busy(session):
                 break
             if internal_hosted_submit:
                 return _err(rid, 4091, "hosted room member session is busy")

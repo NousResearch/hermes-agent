@@ -75,7 +75,9 @@ def _session(agent) -> dict:
         "agent": agent, "session_key": "s1-key", "history": [], "history_lock": threading.Lock(),
         "history_version": 0, "running": False, "attached_images": [], "image_counter": 0,
         "cols": 80, "slash_worker": None, "show_reasoning": False, "tool_progress_mode": "all",
-        "inflight_turn": None, "active_session_lease": object(),
+        "inflight_turn": None,
+        "active_session_lease": types.SimpleNamespace(
+            set_capacity_active=lambda *a, **k: None, release=lambda: None),
     }
 
 

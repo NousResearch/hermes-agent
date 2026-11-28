@@ -117,7 +117,8 @@ def _register(server, history, *, profile_home=None):
         "cols": 120,
         # The cap slot is claimed on the first real turn; pre-claim it so the
         # test exercises the transcript path rather than the lease allocator.
-        "active_session_lease": object(),
+        # Admission toggles running capacity on the held lease; it always fits here.
+        "active_session_lease": types.SimpleNamespace(set_capacity_active=lambda active, **kw: None),
     }
     if profile_home is not None:
         session["profile_home"] = str(profile_home)

@@ -290,3 +290,118 @@ def test_missing_slot_stays_an_error_outside_the_repair_case(
     assert mgr.registered == []
     assert mgr.calls == []
     assert "no such gateway 'coder'" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# Named-profile `gateway start --force` and refusal guidance under s6 (#147912)
+# ---------------------------------------------------------------------------
+
+
+def _setup_s6_named_profile(monkeypatch, tmp_path, profile: str = "alpha"):
+    import argparse
+    import subprocess
+    import hermes_constants
+    from hermes_cli import gateway as gw
+    from hermes_cli import service_manager as sm
+
+    root = tmp_path / "data"
+    profile_dir = root / "profiles" / profile
+    profile_dir.mkdir(parents=True)
+    (root / "config.yaml").write_text("model:\n  default: x\n", encoding="utf-8")
+    (profile_dir / "config.yaml").write_text("{}\n", encoding="utf-8")
+    (profile_dir / "SOUL.md").write_text("# soul\n", encoding="utf-8")
+
+    scandir = tmp_path / "run-service"
+    scandir.mkdir(parents=True)
+    s6_calls: list[tuple[str, ...]] = []
+
+    def fake_s6_run(cmd: str, *args: str, timeout: float = 5, check: bool = False):
+        s6_calls.append((cmd, *args))
+        return subprocess.CompletedProcess([cmd, *args], 0, stdout="", stderr="")
+
+    monkeypatch.setattr(sm, "_s6_run", fake_s6_run)
+    monkeypatch.setattr(sm, "_chown_hermes", lambda path: None)
+    monkeypatch.setattr(sm, "_seed_supervise_skeleton", lambda svc_dir: None)
+    monkeypatch.setattr(sm, "detect_service_manager", lambda: "s6")
+    mgr = sm.S6ServiceManager(scandir=scandir)
+    monkeypatch.setattr(sm, "get_service_manager", lambda: mgr)
+    monkeypatch.setattr(
+        sm.S6ServiceManager,
+        "__init__",
+        lambda self, scandir=scandir: setattr(self, "scandir", scandir),
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+    monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None)
+    monkeypatch.setattr(gw, "_served_by_another_host_gateway", lambda name=None: None)
+    monkeypatch.setattr(gw, "named_profile_served_by_running_multiplexer", lambda name=None: False)
+    monkeypatch.setattr(gw, "_service_backend", lambda *a, **k: None)
+    monkeypatch.setattr(gw, "is_container", lambda: True)
+    monkeypatch.setattr(gw, "is_managed", lambda: False)
+    monkeypatch.setattr(gw, "is_termux", lambda: False)
+
+    return gw, mgr, scandir, s6_calls, argparse
+
+
+def test_s6_named_profile_refusal_points_to_start_force_and_start_force_stamps_run_script(
+    monkeypatch, tmp_path, capsys
+):
+    """Issue #147912: under s6, refusing a named profile's gateway must advise ``gateway start
+    --force`` (not ``install --force``), and ``gateway start --force`` must stamp ``--force`` onto
+    the slot's ``run`` script before ``s6-svc -u`` so the supervised ``gateway run --replace
+    --force`` child does not exit 78."""
+    from hermes_cli.web_server_gateway import multiplexed_profile_refusal
+
+    gw, mgr, scandir, s6_calls, argparse = _setup_s6_named_profile(monkeypatch, tmp_path, "alpha")
+    mgr.register_profile_gateway("alpha", start_now=False)
+    run_file = scandir / "gateway-alpha" / "run"
+    assert "hermes -p alpha gateway run --replace\n" in run_file.read_text(encoding="utf-8")
+    assert "--force" not in run_file.read_text(encoding="utf-8")
+
+    # Without --force, `gateway start` refuses with exit 78 and points to `start --force`, not `install --force`.
+    with pytest.raises(SystemExit) as excinfo:
+        gw._cmd_start(argparse.Namespace(system=False, all=False, force=False))
+    assert excinfo.value.code == gw.GATEWAY_FATAL_CONFIG_EXIT_CODE
+    out = capsys.readouterr().out
+    assert "Profile 'alpha' does not get a gateway of its own." in out
+    assert "hermes -p alpha gateway start --force" in out
+    assert "gateway install --force" not in out
+    assert "gateway.standalone: true" in out
+
+    web_refusal = multiplexed_profile_refusal("alpha", "start")
+    assert web_refusal is not None
+    assert "hermes -p alpha gateway start --force" in web_refusal
+    assert "gateway install --force" not in web_refusal
+
+    # `gateway start --force` updates `/run/service/gateway-alpha/run` with `--force` and starts the slot.
+    s6_calls.clear()
+    gw._cmd_start(argparse.Namespace(system=False, all=False, force=True))
+    run_text = run_file.read_text(encoding="utf-8")
+    assert run_text.splitlines()[-1] == "exec s6-setuidgid hermes hermes -p alpha gateway run --replace --force"
+    assert '[ "$(id -u)" = 0 ] || exec hermes -p alpha gateway run --replace --force' in run_text
+    assert ("s6-svc", "-u", str(scandir / "gateway-alpha")) in s6_calls
+
+    # Once stamped with `--force`, the supervised child and subsequent plain `gateway start` are allowed.
+    gw._attach_to_host_gateway_or_guard(force=True, replace=True)
+    s6_calls.clear()
+    gw._cmd_start(argparse.Namespace(system=False, all=False, force=False))
+    assert ("s6-svc", "-u", str(scandir / "gateway-alpha")) in s6_calls
+    assert multiplexed_profile_refusal("alpha", "start") is None
+
+
+def test_s6_install_force_stamps_slot_so_subsequent_start_succeeds(monkeypatch, tmp_path, capsys):
+    """If an operator runs ``hermes -p alpha gateway install --force`` followed by ``hermes -p alpha
+    gateway start`` under s6, ``install --force`` stamps ``--force`` onto the slot so the subsequent
+    ``start`` brings it up with ``--force``."""
+    gw, mgr, scandir, s6_calls, argparse = _setup_s6_named_profile(monkeypatch, tmp_path, "alpha")
+    mgr.register_profile_gateway("alpha", start_now=False)
+    run_file = scandir / "gateway-alpha" / "run"
+
+    gw._cmd_install(argparse.Namespace(system=False, all=False, run_as_user=None, force=True))
+    assert "Per-profile gateways are auto-registered" in capsys.readouterr().out
+    assert run_file.read_text(encoding="utf-8").splitlines()[-1].endswith("gateway run --replace --force")
+
+    s6_calls.clear()
+    gw._cmd_start(argparse.Namespace(system=False, all=False, force=False))
+    assert ("s6-svc", "-u", str(scandir / "gateway-alpha")) in s6_calls
+

@@ -68,6 +68,16 @@
         # The CLI reads this value and names it when it refuses a
         # configuration change.
         managedSystem = "home-manager";
+        inherit (cfg) configMode;
+      };
+
+      # This state has one user. No group needs access to it.
+      stateModes = {
+        config = "0600";
+        env = "0600";
+        managed = "0600";
+        auth = "0600";
+        document = "0600";
       };
       unitPath = lib.makeBinPath (common.processPath { inherit pkgs cfg; });
 
@@ -379,6 +389,19 @@
               home.packages = cfg.extraPackages;
             })
 
+            # The imperative configMode: re-apply the Nix base without a
+            # switch, for example after `hermes config unset`.
+            (lib.mkIf (cfgPrograms.enable && cfg.configMode == "imperative") {
+              home.packages = [
+                (common.mkSyncCommand {
+                  inherit pkgs cfg;
+                  inherit (cfg) hermesHome;
+                  configWorkingDirectory = cfg.workingDirectory;
+                  modes = stateModes;
+                })
+              ];
+            })
+
             # ── Activation: directories, config, secrets, documents ────────
             {
               # The activation runs after writeBoundary, when the home.file
@@ -398,14 +421,7 @@
                       run = "$DRY_RUN_CMD ";
                       stateDirs = common.stateSubdirs;
                       managedSystem = "home-manager";
-                      # This state has one user. No group needs access to it.
-                      modes = {
-                        config = "0600";
-                        env = "0600";
-                        managed = "0600";
-                        auth = "0600";
-                        document = "0600";
-                      };
+                      modes = stateModes;
                     }
                   );
             }

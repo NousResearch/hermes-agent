@@ -351,6 +351,61 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
               ''
           );
 
+        # ── The imperative configMode on Home Manager ────────────────────
+        # Hermes owns config.yaml and .env in this mode. Thus the activation
+        # merges the base with the three-way script, writes no .managed
+        # marker, and the processes carry HERMES_MANAGED=false. A person who
+        # has the CLI also gets `hermes-nix-sync`.
+        home-manager-imperative =
+          let
+            cfg =
+              (evalHomeSplit {
+                programs.enable = true;
+                services = {
+                  enable = true;
+                  gateway.enable = true;
+                  configMode = "imperative";
+                  settings.model.default = "test/model";
+                  environment.HERMES_TEST = "1";
+                  environmentFiles = [ "/run/secrets/hermes-env" ];
+                };
+              }).config;
+            activation = cfg.home.activation.hermesAgentSetup.data;
+            env =
+              if pkgs.stdenv.hostPlatform.isDarwin then
+                lib.mapAttrsToList (k: v: "${k}=${toString v}")
+                  cfg.launchd.agents.hermes-agent.config.EnvironmentVariables
+              else
+                cfg.systemd.user.services.hermes-agent.Service.Environment;
+            packageNames = map (p: p.name or "") cfg.home.packages;
+
+            failures =
+              lib.optional (!lib.hasInfix "hermes-config-layer" activation)
+                "imperative activation must run the three-way merge"
+              ++ lib.optional (lib.hasInfix "hermes-config-merge" activation)
+                "imperative activation must not run the overwrite-style merge"
+              ++ lib.optional (lib.hasInfix "hermes-managed" activation)
+                "imperative activation must not write a .managed marker"
+              ++ lib.optional (!lib.hasInfix "rm -f /home/hermes-check/.hermes/.managed" activation)
+                "imperative activation must remove a .managed marker left by the declarative mode"
+              ++ lib.optional (!lib.hasInfix "/run/secrets/hermes-env" activation)
+                "environmentFiles must reach the .env merge"
+              ++ lib.optional (!lib.elem "HERMES_MANAGED=false" env)
+                "processes must carry HERMES_MANAGED=false, got: ${toString env}"
+              ++ lib.optional (!lib.elem "hermes-nix-sync" packageNames)
+                "programs.enable must install hermes-nix-sync in the imperative mode";
+          in
+          pkgs.runCommand "hermes-home-manager-imperative" { } (
+            if failures != [ ] then
+              throw "Home Manager imperative check failed:\n${lib.concatMapStringsSep "\n" (f: "  - ${f}") failures}"
+            else
+              ''
+                echo "PASS: the imperative configMode merges, and lifts the managed lock"
+                mkdir -p $out
+                echo "ok" > $out/result
+              ''
+          );
+
         # ── Workspace files need a chosen directory ──────────────────────
         # `documents` goes into workingDirectory. The default of that option
         # is bad, and it is different on each module, so the modules refuse
@@ -1336,6 +1391,204 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           check_blocked "config edit" ${hermes-agent}/bin/hermes config edit
 
           echo "=== All guard checks passed ==="
+          mkdir -p $out
+          echo "ok" > $out/result
+        '';
+
+        # ── The imperative configMode on NixOS ───────────────────────────
+        # The same properties as home-manager-imperative, plus the group
+        # sharing of addToSystemPackages: the managed lock no longer skips
+        # Hermes's owner-only chmod, so HERMES_SKIP_CHMOD must reach the
+        # units and the interactive shells.
+        nixos-module-imperative =
+          let
+            cfg =
+              (evalNixosModule {
+                enable = true;
+                addToSystemPackages = true;
+                configMode = "imperative";
+                settings.model.default = "test/model";
+                environmentFiles = [ "/run/secrets/hermes-env" ];
+              }).config;
+            activation = cfg.system.activationScripts."hermes-agent-setup".text;
+            unitEnv = cfg.systemd.services.hermes-agent.environment;
+            packageNames = map (p: p.name or "") cfg.environment.systemPackages;
+            sync = lib.findFirst (p: (p.name or "") == "hermes-nix-sync") null cfg.environment.systemPackages;
+
+            failures =
+              lib.optional (!lib.hasInfix "hermes-config-layer" activation)
+                "imperative activation must run the three-way merge"
+              ++ lib.optional (lib.hasInfix "hermes-managed" activation)
+                "imperative activation must not write a .managed marker"
+              ++ lib.optional (!lib.hasInfix "chown -R hermes:hermes /var/lib/hermes/.hermes/.nix-base" activation)
+                "the merge record must belong to the service user, or hermes-nix-sync cannot run as that user"
+              ++ lib.optional ((unitEnv.HERMES_MANAGED or null) != "false")
+                "the units must carry HERMES_MANAGED=false"
+              ++ lib.optional ((unitEnv.HERMES_SKIP_CHMOD or null) != "1")
+                "the units must carry HERMES_SKIP_CHMOD=1 to keep the group modes"
+              ++ lib.optional ((cfg.environment.variables.HERMES_SKIP_CHMOD or null) != "1")
+                "interactive shells must carry HERMES_SKIP_CHMOD=1 to keep the group modes"
+              ++ lib.optional (!lib.elem "hermes-nix-sync" packageNames)
+                "addToSystemPackages must install hermes-nix-sync in the imperative mode";
+          in
+          pkgs.runCommand "hermes-nixos-module-imperative" { } (
+            if failures != [ ] then
+              throw "NixOS imperative check failed:\n${lib.concatMapStringsSep "\n" (f: "  - ${f}") failures}"
+            else
+              ''
+                echo "PASS: the imperative configMode merges, and keeps the group modes"
+
+                # The build user is neither root nor the service user. The
+                # state is 0700 to the service user, so the command must stop
+                # with the command to run, and touch nothing.
+                if OUTPUT=$(${sync}/bin/hermes-nix-sync 2>&1); then
+                  echo "FAIL: hermes-nix-sync ran as a user that cannot own the state"; exit 1
+                fi
+                echo "$OUTPUT" | grep -q "sudo hermes-nix-sync" \
+                  || (echo "FAIL: hermes-nix-sync must name the command to run"; echo "$OUTPUT"; exit 1)
+                echo "PASS: hermes-nix-sync refuses a foreign user with the command to run"
+
+                mkdir -p $out
+                echo "ok" > $out/result
+              ''
+          );
+
+        # ── The three-way merge of the imperative configMode ─────────────
+        # This check runs the real script over the generations of one home:
+        # a bootstrap from a declarative file, imperative edits, a new base,
+        # and a repeat. Hermes then reads the result through load_config.
+        config-layer =
+          let
+            layer = (import ./moduleCommon.nix { inherit lib; }).mkLayerScript pkgs;
+            python = pkgs.python3.withPackages (ps: [ ps.ruamel-yaml ]);
+            gen1 = pkgs.writeText "gen1.json" (builtins.toJSON {
+              model = { default = "nix/a"; provider = "openrouter"; };
+              display.skin = "slate";
+              agent.max_turns = 50;
+              plugins.enabled = [ "p-nix-1" "p-nix-2" ];
+            });
+            gen2 = pkgs.writeText "gen2.json" (builtins.toJSON {
+              model.default = "nix/b";
+              display.skin = "ares";
+              agent.max_turns = 60;
+              plugins.enabled = [ "p-nix-1" "p-nix-2" "p-nix-3" ];
+            });
+            declarative = pkgs.writeText "declarative.yaml" ''
+              # a comment that must survive
+              model:
+                default: nix/a
+                provider: openrouter
+              display:
+                skin: slate
+              agent:
+                max_turns: 50
+              plugins:
+                enabled: [p-nix-1, p-nix-2]
+              streaming:
+                enabled: yes
+            '';
+            userEdits = pkgs.writeText "user-edits.py" ''
+              import sys
+              from ruamel.yaml import YAML
+              yaml = YAML()
+              with open(sys.argv[1]) as f:
+                  doc = yaml.load(f)
+              doc["display"]["skin"] = "mono"                    # hermes config set
+              del doc["agent"]["max_turns"]                      # hermes config unset
+              doc["plugins"]["enabled"] = ["p-nix-1", "p-user"]  # hermes plugins enable/disable
+              doc["plugins"]["disabled"] = ["p-nix-2"]
+              with open(sys.argv[1], "w") as f:
+                  yaml.dump(doc, f)
+            '';
+            env1 = pkgs.writeText "env1" "HERMES_TEST=1\nNIX_ONLY=a\nNOTED=1\n";
+            env2 = pkgs.writeText "env2" "HERMES_TEST=2\nNEW_NIX=x y\nNOTED=2\n";
+            env3 = pkgs.writeText "env3" "HERMES_TEST=3\nNEW_NIX=x y\nNOTED=2\n";
+            secrets = pkgs.writeText "secrets" "SECRET_KEY=\"s3 cret\"\n";
+          in
+          pkgs.runCommand "hermes-config-layer" { nativeBuildInputs = [ pkgs.jq pkgs.util-linux ]; } ''
+            set -eu
+            export HOME=$(mktemp -d)
+            H=$(mktemp -d)
+            fail() { echo "FAIL: $1"; cat "$H/config.yaml" "$H/.env" 2>/dev/null || true; exit 1; }
+
+            install -m 0600 ${declarative} "$H/config.yaml"
+            ${layer} config "$H/.nix-base" "$H/config.yaml" 0600 ${gen1}
+            ${python}/bin/python3 ${userEdits} "$H/config.yaml"
+            ${layer} config "$H/.nix-base" "$H/config.yaml" 0600 ${gen2}
+            cp "$H/config.yaml" "$H/after-gen2"
+            ${layer} config "$H/.nix-base" "$H/config.yaml" 0600 ${gen2}
+            cmp -s "$H/after-gen2" "$H/config.yaml" || fail "a repeated activation changed config.yaml"
+            grep -q "a comment that must survive" "$H/config.yaml" || fail "the merge lost a comment"
+
+            CONFIG=$(HERMES_HOME="$H" ${hermesVenv}/bin/python3 -c '
+            import json, sys
+            from hermes_cli.config import load_config
+            json.dump(load_config(), sys.stdout, default=str)
+            ')
+            check() { echo "$CONFIG" | jq -e "$1" > /dev/null || fail "$2"; }
+            check '.display.skin == "mono"' "a user override must survive a new Nix value"
+            check '.model.default == "nix/b"' "an untouched key must follow the new Nix value"
+            check '(.model.provider // "unset") != "openrouter"' "a key that Nix dropped must go"
+            check '.agent.max_turns == 60' "an unset key must come back from Nix"
+            check '.streaming.enabled == true' "a key that only the user set must stay"
+            check '(.plugins.enabled | sort) == ["p-nix-1", "p-nix-3", "p-user"]' "the plugin set merge is wrong"
+            check '.plugins.disabled == ["p-nix-2"]' "a plugin the user disabled must stay disabled"
+            echo "PASS: config.yaml"
+
+            printf '# my header\nHERMES_TEST=1\nNIX_ONLY=a\nexport NOTED=1 # keep this note\nSECRET_KEY="s3 cret"\n' > "$H/.env"
+            ${layer} env "$H/.nix-base" "$H/.env" 0600 ${env1} ${secrets}
+            sed -i 's/^HERMES_TEST=1$/HERMES_TEST=user/; /^SECRET_KEY=/d' "$H/.env"
+            echo "OPENAI_API_KEY=sk-user" >> "$H/.env"
+            ${layer} env "$H/.nix-base" "$H/.env" 0600 ${env2} ${secrets}
+            grep -qx "# my header" "$H/.env" || fail ".env lost a comment of the user"
+            grep -qx "HERMES_TEST=user" "$H/.env" || fail ".env lost a user override"
+            grep -qx "OPENAI_API_KEY=sk-user" "$H/.env" || fail ".env lost a key of the user"
+            grep -q "^NIX_ONLY=" "$H/.env" && fail ".env kept a key that Nix dropped"
+            grep -qx 'NEW_NIX="x y"' "$H/.env" || fail ".env did not get a new Nix key"
+            grep -qx 'SECRET_KEY="s3 cret"' "$H/.env" || fail "an unset secret must come back"
+            [ "$(stat -c %a "$H/.nix-base/env.json")" = 600 ] || fail "the env record holds secrets and must be 0600"
+
+            ${layer} env "$H/.nix-base" "$H/.env" 0600 ${env2} /nonexistent/secrets
+            grep -qx 'SECRET_KEY="s3 cret"' "$H/.env" || fail "an unreadable secret file must not drop its keys"
+            grep -qx 'export NOTED=2 # keep this note' "$H/.env" \
+              || fail "a Nix update must keep the export prefix and inline comment of the line"
+
+            # Hermes's .env writers hold an flock on .env.lock for the whole
+            # read-modify-write. The merge must wait for it, or a Hermes save
+            # that runs alongside it is lost.
+            flock "$H/.env.lock" sleep 2 &
+            HOLDER=$!
+            sleep 0.3
+            START=$(date +%s%N)
+            ${layer} env "$H/.nix-base" "$H/.env" 0600 ${env3} ${secrets}
+            WAITED=$(( ($(date +%s%N) - START) / 1000000 ))
+            wait $HOLDER
+            [ "$WAITED" -ge 1000 ] || fail "the .env merge did not wait for .env.lock (waited ''${WAITED}ms)"
+            grep -qx 'HERMES_TEST=user' "$H/.env" || fail ".env lost a user override under the lock"
+            echo "PASS: .env"
+
+            mkdir -p $out
+            echo "ok" > $out/result
+          '';
+
+        # The imperative configMode lifts the managed lock (HERMES_MANAGED=false
+        # and no marker). Configuration commands must then work, and the
+        # package must still refuse `hermes update`.
+        imperative-guard = pkgs.runCommand "hermes-imperative-guard" { } ''
+          set -e
+          export HOME=$(mktemp -d)
+          export HERMES_HOME=$(mktemp -d)
+          export HERMES_MANAGED=false
+
+          ${hermes-agent}/bin/hermes config set display.skin mono
+          grep -q "skin: mono" "$HERMES_HOME/config.yaml" \
+            || (echo "FAIL: config set did not write"; cat "$HERMES_HOME/config.yaml"; exit 1)
+          echo "PASS: config set works in the imperative mode"
+
+          OUTPUT=$(${hermes-agent}/bin/hermes update 2>&1 || true)
+          echo "$OUTPUT" | grep -qi "nix store" || (echo "FAIL: hermes update not refused"; echo "$OUTPUT"; exit 1)
+          echo "PASS: hermes update stays refused"
+
           mkdir -p $out
           echo "ok" > $out/result
         '';

@@ -58,6 +58,30 @@
       # (.env) stay 0640 regardless.
       configYamlMode = if cfg.addToSystemPackages then "0660" else "0640";
 
+      stateModes = {
+        config = configYamlMode;
+        env = "0640";
+        managed = "0644";
+        auth = "0600";
+        document = "0640";
+      };
+
+      # The imperative configMode lifts the managed lock, and with it the skip
+      # of Hermes's owner-only chmod on each save. A save by an interactive
+      # user in the group would then cut the service off from config.yaml.
+      # HERMES_SKIP_CHMOD keeps the group modes above. The setgid state
+      # directory keeps the group.
+      imperativeEnvironment = lib.optionalAttrs (cfg.configMode == "imperative") {
+        HERMES_SKIP_CHMOD = "1";
+      };
+
+      syncCommand = common.mkSyncCommand {
+        inherit pkgs cfg hermesHome;
+        configWorkingDirectory = effectiveWorkDir;
+        modes = stateModes;
+        owner = "${cfg.user}:${cfg.group}";
+      };
+
       containerName = "hermes-agent";
       containerDataDir = "/data"; # stateDir mount point inside container
       containerHomeDir = "/home/hermes";
@@ -236,8 +260,12 @@
       commonUnitEnvironment = {
         HOME = cfg.stateDir;
       }
-      // common.processEnvironment { inherit hermesHome; }
-      // common.backendSessionEnvironment { inherit cfg; };
+      // common.processEnvironment {
+        inherit hermesHome;
+        inherit (cfg) configMode;
+      }
+      // common.backendSessionEnvironment { inherit cfg; }
+      // imperativeEnvironment;
 
       unitPath = common.processPath { inherit pkgs cfg; };
 
@@ -376,8 +404,14 @@
           # so interactive shells share state (sessions, skills, cron) with the
           # gateway service instead of creating a separate ~/.hermes/.
           (lib.mkIf cfg.addToSystemPackages {
-            environment.systemPackages = [ effectivePackage ];
-            environment.variables.HERMES_HOME = hermesHome;
+            environment.systemPackages = [
+              effectivePackage
+            ]
+            ++ lib.optional (cfg.configMode == "imperative") syncCommand;
+            environment.variables = {
+              HERMES_HOME = hermesHome;
+            }
+            // imperativeEnvironment;
           })
 
           # ── Host user group membership ─────────────────────────────────────
@@ -487,13 +521,7 @@
                     configWorkingDirectory = effectiveWorkDir;
                     owner = "${cfg.user}:${cfg.group}";
                     stateDirs = common.stateSubdirs;
-                    modes = {
-                      config = configYamlMode;
-                      env = "0640";
-                      managed = "0644";
-                      auth = "0600";
-                      document = "0640";
-                    };
+                    modes = stateModes;
                   }}
 
                   chown -h ${cfg.user}:${cfg.group} ${hermesHome}/plugins/nix-managed-* 2>/dev/null || true
@@ -684,7 +712,7 @@
                     --env HERMES_UID="$HERMES_UID" \
                     --env HERMES_GID="$HERMES_GID" \
                     --env HERMES_HOME=${containerDataDir}/.hermes \
-                    --env HERMES_MANAGED=true \
+                    --env HERMES_MANAGED=${commonUnitEnvironment.HERMES_MANAGED} \
                     --env HOME=${containerHomeDir} \
                     ${lib.concatStringsSep " " cfg.container.extraOptions} \
                     ${cfg.container.image} \

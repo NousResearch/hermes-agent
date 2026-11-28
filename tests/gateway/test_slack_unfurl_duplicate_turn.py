@@ -303,3 +303,82 @@ class TestClaimReleasedOnFailure:
 
         asyncio.run(scenario())
         assert len(delivered) == 1
+
+
+def _reply_metadata_change_event():
+    """Slack's reply-count update for a thread root: ``message_changed`` with no ``edited``
+    and usually ``hidden: True`` — never the user speaking (#131688)."""
+    return {
+        "type": "message",
+        "subtype": "message_changed",
+        "hidden": True,
+        "channel": CHANNEL,
+        "channel_type": "channel",
+        "team": TEAM,
+        "ts": "1787365999.000100",
+        "event_ts": "1787365999.000100",
+        "message": {
+            "type": "message",
+            "user": USER,
+            "text": "<@U0BCLP7DB7B> run the deploy",
+            "ts": ORIGINAL_TS,
+            "thread_ts": ORIGINAL_TS,
+            "reply_count": 3,
+            "latest_reply": "1787365998.000200",
+        },
+    }
+
+
+class TestMetadataChangeAfterRestart:
+    """A ``message_changed`` without ``edited`` must never become a user turn.
+
+    Reproduction (2026-10-02): after a gateway restart the in-memory
+    ``_processed_message_ts`` map starts empty, so the first reply in an
+    existing thread made Slack's reply-count update re-route the hours-old
+    thread root as a brand-new user message. The ``edited`` marker — present
+    on real user edits, absent on Slack's own metadata updates — is the only
+    guard that survives a restart.
+    """
+
+    def test_reply_metadata_change_on_a_fresh_adapter_is_not_a_turn(self):
+        """The bug: a restarted process must not re-route the thread root."""
+        delivered = []
+        adapter = _make_adapter(delivered)
+        adapter._resolve_user_name = AsyncMock(return_value="richard")
+        # Fresh adapter == restarted process: no memory of the routed root.
+        assert adapter._processed_message_ts == {}
+
+        async def scenario():
+            await adapter._handle_slack_message(_reply_metadata_change_event(), _body())
+
+        asyncio.run(scenario())
+        assert delivered == []
+
+    def test_unfurl_without_edited_on_a_fresh_adapter_is_not_a_turn(self):
+        """A link unfurl has no ``edited`` marker either: same restart window."""
+        delivered = []
+        adapter = _make_adapter(delivered)
+        adapter._resolve_user_name = AsyncMock(return_value="richard")
+
+        async def scenario():
+            await adapter._handle_slack_message(_unfurl_event(), _body())
+
+        asyncio.run(scenario())
+        assert delivered == []
+
+    def test_genuine_edit_on_a_fresh_adapter_still_routes(self):
+        """A real user edit carries ``edited`` and must still summon the bot,
+        even when this process never saw the original (restart, released claim)."""
+        delivered = []
+        adapter = _make_adapter(delivered)
+        adapter._resolve_user_name = AsyncMock(return_value="richard")
+
+        edit = _unfurl_event()
+        edit["message"]["text"] = "<@U0BCLP7DB7B> edited text"
+        edit["message"]["edited"] = {"user": USER, "ts": "1787365412.000000"}
+
+        async def scenario():
+            await adapter._handle_slack_message(edit, _body())
+
+        asyncio.run(scenario())
+        assert len(delivered) == 1

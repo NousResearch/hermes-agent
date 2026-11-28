@@ -190,7 +190,29 @@ def test_pending_response_records_kanban_timeout(monkeypatch):
         release_claim=True,
         end_run=True,
         event_payload_extra={"budget_used": 60, "budget_max": 60},
+        expected_run_id=None,
     )
+
+
+def test_budget_exhaustion_pins_failure_to_own_run(monkeypatch):
+    """The worker's HERMES_KANBAN_RUN_ID scopes the timeout to its own run, so a
+    wrap-up exhaustion after kanban_complete cannot fail a closed/successor run."""
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "task-123")
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "2884")
+    record = MagicMock(name="record_task_failure")
+    conn = SimpleNamespace(close=lambda: None)
+    monkeypatch.setattr("hermes_cli.kanban_db_connect.connect", lambda: conn)
+    monkeypatch.setattr("hermes_cli.kanban_db_dispatch._record_task_failure", record)
+
+    _finalize(
+        _LimitAgent(),
+        final_response=None,
+        exit_reason="unknown",
+        pending_verification_response="composed report",
+    )
+
+    assert record.call_args.kwargs["expected_run_id"] == 2884
 
 
 def test_published_pending_candidate_is_not_duplicated_by_finalizer(monkeypatch):

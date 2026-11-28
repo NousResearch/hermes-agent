@@ -1,56 +1,84 @@
-"""Tests for trajectory_compressor AsyncOpenAI event loop binding.
-
-The AsyncOpenAI client was created once at __init__ time and stored as an
-instance attribute. When process_directory() calls asyncio.run() — which
-creates and closes a fresh event loop — the client's internal httpx
-transport remains bound to the now-closed loop. A second call to
-process_directory() would fail with "Event loop is closed".
-
-The fix creates the AsyncOpenAI client lazily via _get_async_client() so
-each asyncio.run() gets a client bound to the current loop.
-"""
+"""Tests for custom-endpoint async client lifecycle in trajectory_compressor."""
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 
-class TestAsyncClientLazyCreation:
-    """trajectory_compressor.py — _get_async_client()"""
+def _make_custom_compressor(monkeypatch):
+    from trajectory_compressor import CompressionConfig, TrajectoryCompressor
+
+    monkeypatch.setenv("TRAJECTORY_COMPRESSOR_TEST_API_KEY", "test-key")
+    config = CompressionConfig(
+        base_url="https://custom.example/v1",
+        api_key_env="TRAJECTORY_COMPRESSOR_TEST_API_KEY",
+        max_retries=2,
+        retry_delay=0,
+    )
+    with patch.object(TrajectoryCompressor, "_init_tokenizer"), patch("openai.OpenAI"):
+        return TrajectoryCompressor(config)
 
 
+def test_directory_runs_share_one_async_client_and_close_between_event_loops(monkeypatch, tmp_path):
+    from trajectory_compressor import TrajectoryMetrics
 
-    def test_get_async_client_creates_fresh_each_call(self):
-        """Each call to _get_async_client() creates a NEW client instance,
-        so it binds to the current event loop."""
-        from trajectory_compressor import TrajectoryCompressor
+    compressor = _make_custom_compressor(monkeypatch)
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="[CONTEXT SUMMARY]: summary"))]
+    )
+    clients = []
 
-        comp = TrajectoryCompressor.__new__(TrajectoryCompressor)
-        comp.config = MagicMock()
-        comp.config.base_url = "https://api.example.com/v1"
-        comp._async_client_api_key = "test-key"
-        comp.async_client = None
+    def make_client(**_kwargs):
+        client = MagicMock()
+        if not clients:
+            client.chat.completions.create = AsyncMock(
+                side_effect=[RuntimeError("transient"), response, response, response]
+            )
+        else:
+            client.chat.completions.create = AsyncMock(return_value=response)
+        client.close = AsyncMock()
+        clients.append(client)
+        return client
 
-        call_count = 0
-        instances = []
+    async def process_entries(_input_dir, _output_dir):
+        for _ in range(3):
+            summary = await compressor._generate_summary_async("turns", TrajectoryMetrics())
+            assert summary == "[CONTEXT SUMMARY]: summary"
 
-        def mock_constructor(**kwargs):
-            nonlocal call_count
-            call_count += 1
-            instance = MagicMock()
-            instances.append(instance)
-            return instance
+    with patch("openai.AsyncOpenAI", side_effect=make_client) as constructor, \
+            patch.object(compressor, "_process_directory_async", new=process_entries), \
+            patch("trajectory_compressor.jittered_backoff", return_value=0):
+        compressor.process_directory(tmp_path / "input", tmp_path / "output")
+        compressor.process_directory(tmp_path / "input", tmp_path / "output")
 
-        with patch("openai.AsyncOpenAI", side_effect=mock_constructor):
-            comp._get_async_client()
-            comp._get_async_client()
+    assert len(clients) == 2
+    assert constructor.call_count == 2
+    for call in constructor.call_args_list:
+        assert call.kwargs == {"api_key": "test-key", "base_url": "https://custom.example/v1"}
+    assert clients[0].chat.completions.create.await_count == 4
+    assert clients[1].chat.completions.create.await_count == 3
+    for client in clients:
+        client.close.assert_awaited_once()
+    assert compressor.async_client is None
 
-        # Should have created two separate instances
-        assert call_count == 2
-        assert instances[0] is not instances[1]
 
+def test_directory_error_closes_async_client_exactly_once(monkeypatch, tmp_path):
+    compressor = _make_custom_compressor(monkeypatch)
+    client = MagicMock()
+    client.close = AsyncMock()
 
+    async def fail_directory(_input_dir, _output_dir):
+        compressor._get_async_client()
+        raise RuntimeError("directory failed")
+
+    with patch("openai.AsyncOpenAI", return_value=client), \
+            patch.object(compressor, "_process_directory_async", new=fail_directory):
+        with pytest.raises(RuntimeError, match="directory failed"):
+            compressor.process_directory(tmp_path / "input", tmp_path / "output")
+
+    client.close.assert_awaited_once()
+    assert compressor.async_client is None
 
 
 @pytest.mark.asyncio

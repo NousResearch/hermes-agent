@@ -321,20 +321,25 @@ class TrajectoryCompressor:
             from openai import OpenAI
             from agent.auxiliary_client import _to_openai_base_url
             self.client = OpenAI(api_key=api_key, base_url=_to_openai_base_url(self.config.base_url))
-            # AsyncOpenAI is created lazily in _get_async_client() so it binds to the current event
-            # loop — each process_directory() runs its own asyncio.run(); a shared client would hit
-            # "Event loop is closed".
+            # Each process_directory() event loop gets one lazy client, closed when that run ends.
             self.async_client = None
             self._async_client_api_key = api_key
         print(f"✅ Initialized summarizer client: {self.config.summarization_model}")
         print(f"   Max concurrent requests: {self.config.max_concurrent_requests}")
 
     def _get_async_client(self):
-        """Return a fresh AsyncOpenAI client bound to the running event loop."""
-        from openai import AsyncOpenAI
-        from agent.auxiliary_client import _to_openai_base_url
-        self.async_client = AsyncOpenAI(api_key=self._async_client_api_key, base_url=_to_openai_base_url(self.config.base_url))
+        """Return the current run's AsyncOpenAI client, creating it on first use."""
+        if self.async_client is None:
+            from openai import AsyncOpenAI
+            from agent.auxiliary_client import _to_openai_base_url
+            self.async_client = AsyncOpenAI(api_key=self._async_client_api_key, base_url=_to_openai_base_url(self.config.base_url))
         return self.async_client
+
+    async def _close_async_client(self):
+        client = self.async_client
+        self.async_client = None
+        if client is not None:
+            await client.close()
 
     def _detect_provider(self) -> str:
         """Provider name for the configured base_url, or ``""`` when unknown."""
@@ -582,7 +587,13 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
 
     def process_directory(self, input_dir: Path, output_dir: Path):
         """Compress every ``*.jsonl`` in ``input_dir`` into ``output_dir`` (async, parallel API calls)."""
-        asyncio.run(self._process_directory_async(input_dir, output_dir))
+        async def run_with_cleanup():
+            try:
+                await self._process_directory_async(input_dir, output_dir)
+            finally:
+                await self._close_async_client()
+
+        asyncio.run(run_with_cleanup())
 
     async def _process_one(self, run: _RunProgress, file_path: Path, entry_idx: int, entry: dict) -> Optional[tuple[dict[str, Any], TrajectoryMetrics]]:
         """Process one entry under the semaphore/timeout; None means dropped (timed out)."""

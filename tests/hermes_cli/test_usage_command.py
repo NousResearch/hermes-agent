@@ -6,7 +6,7 @@ Drives the real ``hermes`` argparse entrypoint; only the network fetch is replac
 
 import json
 import sys
-from datetime import datetime, timezone, UTC
+from datetime import datetime, UTC
 from unittest.mock import patch
 
 from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
@@ -53,6 +53,34 @@ def test_hermes_usage_json_is_one_stable_document(capsys):
     ]
     assert doc["details"] == ["You have 1 reset banked - use /usage reset to activate"]
     assert set(doc) == {"provider", "source", "title", "plan", "fetched_at", "windows", "details", "unavailable_reason"}
+
+
+def test_hermes_usage_json_reads_nous_account_without_generic_provider_hook(capsys):
+    nous_snapshot = AccountUsageSnapshot(
+        provider="nous", source="portal-account", fetched_at=datetime(2026, 11, 28, 3, 0, tzinfo=UTC),
+        plan="Hermes Super",
+        windows=(AccountUsageWindow(
+            label="This month", used_percent=42.5,
+            reset_at=datetime(2026, 12, 28, 0, 0, tzinfo=UTC),
+        ),),
+        details=("Keep going on credits: off. Nous sessions wait for the reset.",),
+        usage_window=True,
+    )
+
+    with patch(
+        "agent.account_usage_nous.fetch_nous_account_usage", return_value=nous_snapshot,
+    ) as fetch_nous:
+        assert _run(["usage", "--json", "--provider", "nous"], lambda *_a, **_kw: None) == 0
+
+    out, err = capsys.readouterr()
+    doc = json.loads(out)
+    assert err == ""
+    fetch_nous.assert_called_once_with()
+    assert doc["provider"] == "nous" and doc["plan"] == "Hermes Super"
+    assert doc["windows"] == [{
+        "label": "This month", "used_percent": 42.5,
+        "resets_at": "2026-12-28T00:00:00+00:00", "detail": None,
+    }]
 
 
 def test_hermes_usage_without_credential_exits_nonzero_with_one_stderr_line(capsys):

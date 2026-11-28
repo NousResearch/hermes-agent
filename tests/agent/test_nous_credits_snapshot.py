@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from unittest.mock import Mock
+
+from agent import account_usage_nous
+from agent.account_usage_cache import has_account_usage
 from agent.account_usage_nous import build_nous_credits_snapshot
 from hermes_cli.nous_account import (
     NousPaidServiceAccessInfo,
@@ -57,3 +61,25 @@ def test_logged_out():
         ),
     )
     assert build_nous_credits_snapshot(info) is None
+
+
+def test_cli_fetch_reuses_portal_snapshot_without_interactive_topup_cta(monkeypatch):
+    info = _account(
+        paid_service_access=True,
+        paid_service_access_info=NousPaidServiceAccessInfo(
+            subscription_credits_remaining=18.0,
+            purchased_credits_remaining=12.0,
+            total_usable_credits=30.0,
+        ),
+        subscription=NousPortalSubscriptionInfo(plan="Pro", current_period_end="2026-07-01"),
+    )
+    monkeypatch.setattr(account_usage_nous, "_nous_logged_in", lambda: True)
+    fetch_portal = Mock(return_value=info)
+    monkeypatch.setattr(account_usage_nous, "_fetch_portal_account", fetch_portal)
+
+    snapshot = account_usage_nous.fetch_nous_account_usage()
+
+    assert snapshot is not None and snapshot.provider == "nous"
+    fetch_portal.assert_called_once_with(10.0, stored_token_only=True)
+    assert not any(line.startswith(("Top up:", "Top up via", "(or run")) for line in snapshot.details)
+    assert not has_account_usage("nous")  # Keep interactive rendering and model-picker polling unchanged.

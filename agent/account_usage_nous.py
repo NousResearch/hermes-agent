@@ -212,6 +212,23 @@ def _fetch_portal_account(timeout: float, *, stored_token_only: bool = False):
         pool.shutdown(wait=False)
 
 
+def fetch_nous_account_usage(*, timeout: float = 10.0) -> Optional[AccountUsageSnapshot]:
+    """Fetch the Nous Portal snapshot for the scriptable ``hermes usage`` command.
+
+    This stays separate from the provider-usage registry: interactive ``/usage`` already
+    renders the Nous credits block, and registering it there would also enable background
+    model-picker polling.
+    """
+    if not _nous_logged_in():
+        return None
+    try:
+        account = _fetch_portal_account(timeout, stored_token_only=True)
+        return build_nous_credits_snapshot(account, cta=False)
+    except Exception:
+        logger.debug("Nous account usage fetch failed", exc_info=True)
+        return None
+
+
 def _header_gauge_percent(bp: Any) -> Optional[float]:
     if isinstance(bp, bool) or not isinstance(bp, int):
         return None

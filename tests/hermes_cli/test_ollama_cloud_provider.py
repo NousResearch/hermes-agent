@@ -4,7 +4,7 @@ import pytest
 from unittest.mock import patch
 
 from hermes_cli.auth import resolve_provider, resolve_api_key_provider_credentials
-from agent.models_dev import list_agentic_models
+from agent.models_dev import list_agentic_models, list_provider_models, list_deprecated_model_ids
 
 
 # ── Provider Aliases ──
@@ -137,20 +137,20 @@ class TestOllamaCloudMergedDiscovery:
             "ollama-cloud": {
                 "models": {
                     "glm-5": {"tool_call": True},
-                    "kimi-k2.5": {"tool_call": True},
+                    "mdev-extra": {"tool_call": True},
                     "nemotron-3-super": {"tool_call": True},
                 }
             }
         }
-        with patch("hermes_cli.models.fetch_api_models", return_value=["qwen3.5:397b", "glm-5"]), \
+        with patch("hermes_cli.models.fetch_api_models", return_value=["clef:27b", "glm-5"]), \
              patch("agent.models_dev.fetch_models_dev", return_value=mock_mdev):
             result = fetch_ollama_cloud_models(force_refresh=True)
 
         # Live models first, then models.dev additions (deduped)
-        assert result[0] == "qwen3.5:397b"  # from live API
-        assert result[1] == "glm-5"          # from live API (also in models.dev)
-        assert "kimi-k2.5" in result         # from models.dev only
-        assert "nemotron-3-super" in result  # from models.dev only
+        assert result[0] == "clef:27b"        # from live API
+        assert result[1] == "glm-5"           # from live API (also in models.dev)
+        assert "mdev-extra" in result         # from models.dev only
+        assert "nemotron-3-super" in result   # from models.dev only
         assert result.count("glm-5") == 1    # no duplicates
 
     def test_falls_back_to_models_dev_without_api_key(self, tmp_path, monkeypatch):
@@ -208,19 +208,150 @@ class TestOllamaCloudModelsDev:
         mock_data = {
             "ollama-cloud": {
                 "models": {
-                    "qwen3.5:397b": {"tool_call": True},
+                    "gpt-oss:120b": {"tool_call": True},
                     "glm-5": {"tool_call": True},
                     "nemotron-3-nano:30b": {"tool_call": True},
                     "some-embedding:latest": {"tool_call": False},
+                    # Ollama 410-retires deprecated ids; must not surface via the catalog.
+                    "glm-5.1": {"tool_call": True, "status": "deprecated"},
                 }
             }
         }
         with patch("agent.models_dev.fetch_models_dev", return_value=mock_data):
             result = list_agentic_models("ollama-cloud")
-        assert "qwen3.5:397b" in result
+        assert "gpt-oss:120b" in result
         assert "glm-5" in result
         assert "nemotron-3-nano:30b" in result
         assert "some-embedding:latest" not in result  # no tool_call
+        assert "glm-5.1" not in result                # status=deprecated
+
+
+# ── Retirement Filtering (models.dev status="deprecated") ──
+
+class TestOllamaCloudRetirementFilter:
+    """Ollama Cloud 410-retires whole models; models.dev keeps listing them (tool_call=True,
+    status the only flag). Every picker surface that trusts models.dev additions must hide them,
+    scoped to the RESOLVED models.dev id (custom ``catalog_provider`` aliases resolve there too).
+    Live-verified 2026-10-22: glm-5.1 / minimax-m2.5 / kimi-k2.5 / deepseek-v4-flash(:0731) /
+    qwen3.5:397b all HTTP 410 from ollama.com; deepseek-v4-pro (mdev-only bare alias) still 200s,
+    so no hard ``live ∩ models.dev`` intersection — status is the filter."""
+
+    def test_deprecated_hidden_but_bare_alias_kept_in_merged_discovery(self, tmp_path, monkeypatch):
+        """Merged list drops status=deprecated ids even with tool_call=True; unsuffixed mdev-only
+        aliases the live endpoint omits (but still serves) stay in the picker."""
+        from hermes_cli.models import fetch_ollama_cloud_models
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("OLLAMA_API_KEY", "test-key")
+
+        mock_mdev = {
+            "ollama-cloud": {
+                "models": {
+                    "shared": {"tool_call": True},
+                    "glm-5.1": {"tool_call": True, "status": "deprecated"},
+                    "deepseek-v4-pro": {"tool_call": True},
+                }
+            }
+        }
+        with patch("hermes_cli.models.fetch_api_models", return_value=["clef:27b", "shared"]), \
+             patch("agent.models_dev.fetch_models_dev", return_value=mock_mdev):
+            result = fetch_ollama_cloud_models(force_refresh=True)
+
+        assert result == ["clef:27b", "shared", "deepseek-v4-pro"]
+
+    def test_stale_cache_serve_is_filtered(self, tmp_path, monkeypatch):
+        """The stale-serve fallback (unbounded age) must not re-offer retired ids from a cache
+        written before the retirement was known."""
+        import json
+        import time
+        from hermes_cli.models_local import _load_ollama_cloud_cache
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        cache = tmp_path / "ollama_cloud_models_cache.json"
+        models = ["good-id", "glm-5.1", "deepseek-v4-pro"]
+
+        mock_mdev = {
+            "ollama-cloud": {
+                "models": {
+                    "good-id": {"tool_call": True},
+                    "glm-5.1": {"tool_call": True, "status": "deprecated"},
+                    "glm-5.1:cloud": {"tool_call": True, "status": "deprecated"},
+                }
+            }
+        }
+        with patch("agent.models_dev.fetch_models_dev", return_value=mock_mdev):
+            # stale read (unbounded age — the reservoir case)
+            cache.write_text(json.dumps({"models": models, "cached_at": time.time() - 7200}))
+            assert (_load_ollama_cloud_cache(ignore_ttl=True) or {})["models"] == ["good-id", "deepseek-v4-pro"]
+            # fresh read (within the 1h TTL)
+            cache.write_text(json.dumps({"models": models, "cached_at": time.time()}))
+            assert (_load_ollama_cloud_cache() or {})["models"] == ["good-id", "deepseek-v4-pro"]
+
+    def test_stale_cache_serve_degrades_without_models_dev_data(self, tmp_path, monkeypatch):
+        """No models.dev data available → return the cache unchanged, not a blanked list."""
+        import json
+        import time
+        from hermes_cli.models_local import _load_ollama_cloud_cache
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        cache = tmp_path / "ollama_cloud_models_cache.json"
+        cache.write_text(json.dumps({"models": ["good-id", "glm-5.1"], "cached_at": time.time()}))
+
+        with patch("agent.models_dev.fetch_models_dev", return_value={}):
+            assert (_load_ollama_cloud_cache(ignore_ttl=True) or {})["models"] == ["good-id", "glm-5.1"]
+
+    def test_other_providers_keep_deprecated_entries(self):
+        """Scoping: a provider that serves its deprecated ids (zai) is NOT affected."""
+        mock_data = {
+            "zai": {"models": {"served-deprecated": {"tool_call": True, "status": "deprecated"}}},
+        }
+        with patch("agent.models_dev.fetch_models_dev", return_value=mock_data):
+            assert list_agentic_models("zai") == ["served-deprecated"]
+            assert list_provider_models("zai") == ["served-deprecated"]
+
+    def test_custom_catalog_provider_alias_also_filtered(self, tmp_path, monkeypatch):
+        """A custom provider cataloging ollama-cloud rows resolves through _models_dev_id, so the
+        same retirement filter applies — keyed on the resolved id, not the caller's slug."""
+        from agent import models_dev
+        from hermes_cli import config as config_module
+
+        home = tmp_path / "hermes"
+        home.mkdir()
+        (home / "config.yaml").write_text(
+            "providers:\n  my-ollama:\n    catalog_provider: ollama-cloud\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        config_module._LOAD_CONFIG_CACHE.clear()
+        config_module._RAW_CONFIG_CACHE.clear()
+
+        mock_mdev = {
+            "ollama-cloud": {
+                "models": {
+                    "glm-5": {"tool_call": True},
+                    "glm-5.1": {"tool_call": True, "status": "deprecated"},
+                }
+            }
+        }
+        with patch("agent.models_dev.fetch_models_dev", return_value=mock_mdev):
+            assert list_agentic_models("my-ollama") == ["glm-5"]
+            assert models_dev.list_deprecated_model_ids("ollama-cloud") == {"glm-5.1"}
+
+    def test_list_deprecated_model_ids_normalizes_status(self, tmp_path, monkeypatch):
+        """Status casing/whitespace is not guaranteed upstream; non-dict entries are ignored."""
+        mock_data = {
+            "ollama-cloud": {
+                "models": {
+                    "a": {"tool_call": True, "status": "Deprecated "},
+                    "b": {"tool_call": True, "status": None},
+                    "c": {"tool_call": True},
+                    "d": "not-a-dict",
+                }
+            }
+        }
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        with patch("agent.models_dev.fetch_models_dev", return_value=mock_data):
+            assert list_deprecated_model_ids("ollama-cloud") == {"a"}
 
 
 # ── providers.py New System ──

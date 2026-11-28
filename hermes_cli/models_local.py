@@ -632,19 +632,41 @@ def _ollama_cloud_cache_path() -> Path:
 
 
 def _load_ollama_cloud_cache(*, ignore_ttl: bool = False) -> Optional[dict]:
-    """Load cached Ollama Cloud models from disk (None when missing, empty, or stale)."""
+    """Load cached Ollama Cloud models from disk (None when missing, empty, or stale). Retired ids
+    (models.dev ``status="deprecated"``, see :func:`_retired_ollama_cloud_ids`) are filtered out of
+    BOTH the fresh and the stale read — the stale-serve path (unbounded age) must not re-offer 410s.
+    Unavailable models.dev data degrades to returning the cache unchanged."""
     from hermes_cli.models import _read_json_cache
 
     try:
         data = _read_json_cache(_ollama_cloud_cache_path())
         models = data.get("models") if data is not None else None
-        if not (isinstance(models, list) and models):
+        if data is None or not (isinstance(models, list) and models):
             return None
         if not ignore_ttl and (time.time() - data.get("cached_at", 0)) > _OLLAMA_CLOUD_CACHE_TTL:
             return None  # stale
+        retired = _retired_ollama_cloud_ids()
+        if retired:
+            models = [m for m in models if m not in retired]
+            if not models:
+                return None  # everything retired: a miss, so callers probe live
+            data["models"] = models  # fresh JSON-load object; mutating it is process-local
         return data
     except Exception:
         return None
+
+
+def _retired_ollama_cloud_ids() -> frozenset[str]:
+    """Ids models.dev flags ``status="deprecated"`` for ollama-cloud (Ollama 410-retires whole
+    models and models.dev keeps listing them — the merge trusts models.dev additions, so the
+    disk cache must filter them too). Empty when the catalog is unavailable: degrade to serving
+    the cache unchanged rather than blanking it."""
+    try:
+        from agent.models_dev import list_deprecated_model_ids
+        retired = list_deprecated_model_ids("ollama-cloud")
+    except Exception:
+        return frozenset()
+    return frozenset({*retired, *(_strip_ollama_cloud_suffix(m) for m in retired)})
 
 
 def _save_ollama_cloud_cache(models: list[str]) -> None:

@@ -948,6 +948,7 @@ same auth gate as the rest of `/api/`.
 | `PUT /api/memory/provider` | Select a provider (empty = built-in only) |
 | `POST /api/memory/reset` | Reset built-in memory. Body: `{target: all\|memory\|user}` |
 | `POST /api/gateway/start` · `/stop` · `/restart` | Gateway lifecycle (backgrounded) |
+| `PUT /api/gateway/lifecycle?profile=<name>&desired=running\|retired` | Start or retire a named profile that runs its own gateway under s6 |
 | `POST /api/ops/doctor` · `/security-audit` · `/backup` · `/import` | Diagnostics & maintenance (backgrounded; tail via `/api/actions/{name}/status`) |
 | `GET /api/ops/hooks` | Configured shell hooks + allowlist status |
 | `GET /api/ops/checkpoints` · `POST .../prune` | Inspect / prune the `/rollback` store |
@@ -966,6 +967,17 @@ same auth gate as the rest of `/api/`.
 | `GET /api/sessions/{id}/export` | Export a session (metadata + messages) as JSON |
 | `POST /api/sessions/prune` | Delete ended sessions older than N days |
 | `PUT /api/cron/jobs/{id}` | Edit a cron job's prompt / schedule / name / deliver |
+
+The lifecycle endpoint uses the same sign-in as other Dashboard actions. The
+response includes `profile`, `desired`, and `settled`. If `settled` is
+`false`, s6 has yet to reach the requested state. Send the same request again
+to check.
+
+After retirement, the endpoint returns HTTP `409` for start requests. The
+gateway stays stopped when the container restarts. Hermes keeps the profile
+files. To recover the profile, set fresh credentials and start it explicitly
+from the Dashboard or CLI. Keep the retirement record so the lifecycle
+endpoint continues to reject start requests.
 
 ## Authentication (gated mode)
 

@@ -302,12 +302,12 @@ def register_unregistered_profile_gateway(mgr: ServiceManager, profile: str) -> 
 _S6_BIN_DIR = "/command"
 
 
-def _s6_run(cmd: str, *args: str, timeout: float = 5, check: bool = False):
+def _s6_run(cmd: str, *args: str, timeout: float = 5, check: bool = False, pass_fds: tuple[int, ...] = ()):
     """Run an s6 binary by absolute path with the shared capture/decode settings."""
     return subprocess.run(
         [f"{_S6_BIN_DIR}/{cmd}", *args],
         check=check, capture_output=True, text=True, encoding='utf-8', errors='replace',
-        timeout=timeout,
+        timeout=timeout, **({'pass_fds': pass_fds} if pass_fds else {}),
     )
 
 
@@ -472,7 +472,7 @@ class S6ServiceManager:
         self.scandir = scandir
 
     @staticmethod
-    def _s6(cmd: str, *args: str, timeout: float = 5, check: bool = False):
+    def _s6(cmd: str, *args: str, timeout: float = 5, check: bool = False, **kwargs):
         """Run an s6 tool against the hermes-owned tree, as hermes when called as root.
 
         s6-svc/s6-svscanctl/s6-svwait open FIFOs and fifodirs inside that tree; as root they would
@@ -480,8 +480,8 @@ class S6ServiceManager:
         """
         if _root_hermes_account() is not None:
             return _s6_run("s6-setuidgid", "hermes", f"{_S6_BIN_DIR}/{cmd}", *args,
-                           timeout=timeout, check=check)
-        return _s6_run(cmd, *args, timeout=timeout, check=check)
+                           timeout=timeout, check=check, **kwargs)
+        return _s6_run(cmd, *args, timeout=timeout, check=check, **kwargs)
 
     def _service_dir(self, profile: str) -> Path:
         validate_profile_name(profile)
@@ -601,21 +601,24 @@ class S6ServiceManager:
 
     # -- lifecycle ---------------------------------------------------------
 
-    def _run_svc(self, action_flag: str, action_label: str, name: str) -> None:
+    def _run_svc(self, action_flag: str, action_label: str, name: str, *, lock_fd: int | None = None) -> None:
         """``s6-svc <action_flag>``; a missing service dir raises ``GatewayNotRegisteredError``
         (instead of s6-svc's opaque failure) and any other failure ``S6CommandError``."""
         service_dir = self.scandir / name
         if not service_dir.is_dir():
             raise GatewayNotRegisteredError(_profile_from_service(name))
         try:
-            self._s6("s6-svc", action_flag, str(service_dir), check=True)
+            # A child that outlives the dashboard still holds the lifecycle lock
+            # until it can no longer enqueue a command on the supervisor FIFO.
+            inherited_lock = {"pass_fds": (lock_fd,)} if lock_fd is not None else {}
+            self._s6("s6-svc", action_flag, str(service_dir), check=True, **inherited_lock)
         except subprocess.CalledProcessError as exc:
             raise S6CommandError(
                 service=name, action=action_label, returncode=exc.returncode, stderr=exc.stderr or ""
             ) from exc
 
-    def start(self, name: str) -> None:
-        self._run_svc("-u", "start", name)
+    def start(self, name: str, *, lock_fd: int | None = None) -> None:
+        self._run_svc("-u", "start", name, lock_fd=lock_fd)
         _write_gateway_desired_state(name, "running")
 
     def _svstat_fields(self, name: str, *fields: str) -> list[str] | None:
@@ -630,6 +633,18 @@ class S6ServiceManager:
         values = result.stdout.split()
         return values if len(values) == len(fields) else None
 
+    def gateway_supervisor_state(self, name: str) -> tuple[bool, bool] | None:
+        """Return the up and wanted-up flags from one supervisor sample."""
+        fields = self._svstat_fields(name, "up", "wantedup")
+        if fields is None or any(field not in ("true", "false") for field in fields):
+            return None
+        up, wanted_up = fields
+        return up == "true", wanted_up == "true"
+
+    def gateway_fully_down(self, name: str) -> bool:
+        """Confirm the process and any finish script are both down."""
+        return self._s6("s6-svwait", "-D", "-t", "150", str(self.scandir / name)).returncode == 0
+
     def _supervised_pid(self, name: str) -> int | None:
         """PID of the supervised gateway per ``s6-svstat -o pid`` (``-1`` when down), or None on any
         failure."""
@@ -640,10 +655,10 @@ class S6ServiceManager:
             return None
         return pid if pid > 0 else None
 
-    def stop(self, name: str) -> None:
-        """``s6-svc -d``, after writing a planned-stop marker for the supervised PID so the gateway's
-        shutdown handler classifies this SIGTERM as operator-initiated and persists
-        ``gateway_state=stopped``."""
+    def stop(self, name: str, *, persistent: bool = False, lock_fd: int | None = None) -> None:
+        """Stop the gateway and record the operator's intent. Persistent stops
+        also leave S6's down file so a restarted supervisor cannot autostart it."""
+
         pid = self._supervised_pid(name)
         if pid is not None:
             try:
@@ -651,7 +666,7 @@ class S6ServiceManager:
                 write_planned_stop_marker(pid)
             except Exception:
                 pass
-        self._run_svc("-d", "stop", name)
+        self._run_svc("-D" if persistent else "-d", "stop", name, lock_fd=lock_fd)
         _write_gateway_desired_state(name, "stopped")
 
     def restart(self, name: str) -> None:

@@ -15,7 +15,7 @@ import time
 import zipfile
 from datetime import datetime, timezone, UTC
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
@@ -334,6 +334,33 @@ async def stop_gateway(profile: Optional[str] = None, interrupt: bool = False):
     with http_failure("Failed to spawn gateway stop", 500, "Failed to stop gateway"):
         proc = _spawn_hermes_action(_gateway_subcommand(profile, "stop") + ["--interrupt"] * interrupt, "gateway-stop")
     return {"ok": True, "pid": proc.pid, "name": "gateway-stop"}
+
+
+@router.put("/api/gateway/lifecycle")
+async def reconcile_gateway_lifecycle(profile: str, desired: Literal["running", "retired"]):
+    """Start or retire a named profile's gateway under s6."""
+    from hermes_cli.profiles import profile_is_standalone
+    from hermes_cli.service_manager import S6ServiceManager, get_service_manager
+    from hermes_cli.s6_profile_lifecycle import GatewayRetiredError, reconcile_profile_gateway
+    from hermes_cli.web_server_gateway import multiplexed_profile_refusal
+
+    if profile == "default":
+        raise HTTPException(status_code=400, detail="A named gateway profile is required")
+    profile_dir = await asyncio.to_thread(_resolve_profile_dir, profile)
+    if not await asyncio.to_thread(profile_is_standalone, profile_dir):
+        raise HTTPException(status_code=409, detail="Profile lifecycle requires a standalone gateway")
+    refusal = await asyncio.to_thread(multiplexed_profile_refusal, profile, "start")
+    if refusal:
+        raise HTTPException(status_code=409, detail=refusal)
+    manager = await asyncio.to_thread(get_service_manager)
+    if not isinstance(manager, S6ServiceManager):
+        raise HTTPException(status_code=409, detail="Profile lifecycle requires S6 supervision")
+    with http_failure("Failed to reconcile gateway lifecycle", 503, "Gateway lifecycle still pending"):
+        try:
+            settled = await asyncio.to_thread(reconcile_profile_gateway, manager, profile, profile_dir, desired)
+        except GatewayRetiredError as error:
+            raise HTTPException(status_code=409, detail="Profile gateway is retired") from error
+    return {"profile": profile, "desired": desired, "settled": settled}
 
 
 # --- Credential pool (auth.json -> credential_pool.<provider>[]): secrets are

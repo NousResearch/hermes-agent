@@ -17,6 +17,11 @@ describe('shortCwd', () => {
     expect(shortCwd('/Users/bb/proj/repo')).toBe('~/proj/repo')
   })
 
+  it('does not collapse a sibling directory sharing the HOME prefix', () => {
+    expect(shortCwd('/Users/bbx/repo')).toBe('/Users/bbx/repo')
+    expect(shortCwd('/Users/bb')).toBe('~')
+  })
+
   it('leaves non-HOME paths alone', () => {
     expect(shortCwd('/tmp/work')).toBe('/tmp/work')
   })

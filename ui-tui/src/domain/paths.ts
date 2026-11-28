@@ -1,6 +1,7 @@
 export const shortCwd = (cwd: string, max = 28) => {
-  const h = process.env.HOME
-  const p = h && cwd.startsWith(h) ? `~${cwd.slice(h.length)}` : cwd
+  const h = process.env.HOME?.replace(/[\\/]+$/, '')
+  // Match on a path-segment boundary: HOME=/home/al must not turn /home/alice into ~ice.
+  const p = h && (cwd === h || cwd.startsWith(`${h}/`) || cwd.startsWith(`${h}\\`)) ? `~${cwd.slice(h.length)}` : cwd
 
   return p.length <= max ? p : `…${p.slice(-(max - 1))}`
 }

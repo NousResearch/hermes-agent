@@ -111,6 +111,18 @@ def _over_budget(adapter: Any, chat_id: Any) -> Optional[SendResult]:
     return SendResult(success=True, message_id=None, raw_response={"skipped": True}, retry_after=delay)
 
 
+def _draft_stop_extra(adapter: Any) -> dict[str, Any]:
+    """Bot API 10.3 Stop-button fields when the adapter opts in (``rich_draft_stop``).
+
+    ``{}`` when disabled keeps the draft payload byte-identical to pre-10.3 behaviour.
+    The ``callable``/``isinstance`` guards keep mock adapters (auto-attributes) from
+    accidentally flipping the transport.
+    """
+    getter = getattr(adapter, "_draft_stop_kwargs", None)
+    extra = getter() if callable(getter) else None
+    return dict(extra) if isinstance(extra, dict) else {}
+
+
 async def send_draft(adapter: Any, chat_id: str, draft_id: int, content: str, metadata: Optional[dict[str, Any]]) -> SendResult:
     """``TelegramAdapter.send_draft`` body: rich draft, else MarkdownV2 then plain ``sendMessageDraft``."""
     from plugins.platforms.telegram.adapter import (
@@ -148,6 +160,17 @@ async def send_draft(adapter: Any, chat_id: str, draft_id: int, content: str, me
         and adapter._needs_rich_rendering(text))
     draft_thread_kwargs = adapter._thread_kwargs_for_draft(chat_id, metadata)
     plain_preview = plain_rich_preview or plain_drafts
+    stop_extra = _draft_stop_extra(adapter)
+
+    def _draft_frame(frame_kwargs: dict[str, Any]):
+        if stop_extra:
+            # The installed PTB's typed send_message_draft predates Bot API 10.3
+            # (no can_stop field) — send the frame raw, like the rich path does for
+            # sendRichMessage/sendRichMessageDraft.
+            return adapter._bot.do_api_request(
+                "sendMessageDraft", api_kwargs={**frame_kwargs, **stop_extra})
+        return adapter._bot.send_message_draft(**frame_kwargs)
+
     for use_markdown in ((False,) if plain_preview else (True, False)):
         kwargs: dict[str, Any] = {
             "chat_id": normalize_telegram_chat_id(chat_id), "draft_id": int(draft_id),
@@ -159,7 +182,7 @@ async def send_draft(adapter: Any, chat_id: str, draft_id: int, content: str, me
             return over
         try:
             if await _await_with_thread_deadline(
-                adapter._bot.send_message_draft(**kwargs), timeout=_TEXT_SEND_DEADLINE, label="telegram-send", dump_on_blocked_loop=False):
+                _draft_frame(kwargs), timeout=_TEXT_SEND_DEADLINE, label="telegram-send", dump_on_blocked_loop=False):
                 return SendResult(success=True, message_id=None)
             return SendResult(success=False, error="draft_rejected")
         except Exception as e:  # health: allow BLE001 -- draft boundary (moved from adapter.py): any failure falls back to edit streaming

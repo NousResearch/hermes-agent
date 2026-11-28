@@ -570,7 +570,21 @@ class MCPServerRunMixin:
 
     async def start(self, config: dict):
         """Create the background Task and wait until ready (or failed)."""
-        self._task = asyncio.ensure_future(self.run(config))
+        # The serve task outlives every turn, and a Task copies the context it was created in. A
+        # lazy server's first connection happens INSIDE a user's turn, so without this the task
+        # would inherit that turn's access token for the life of the connection: keepalive pings,
+        # dynamic tool refreshes and every later reconnect would then carry a credential
+        # belonging to whoever happened to trigger the connect — after they signed out, persistently
+        # so. Its own work is not done on anyone's behalf (see tools.mcp_credential_router), so the
+        # task is created turn-less; a tool call still carries the caller's context, because it is
+        # scheduled onto the MCP loop from the caller's thread.
+        from agent.turn_token import bind_turn_token, reset_turn_token
+
+        credential = bind_turn_token(None)
+        try:
+            self._task = asyncio.ensure_future(self.run(config))
+        finally:
+            reset_turn_token(credential)
         try:
             await self._ready.wait()
         except asyncio.CancelledError:

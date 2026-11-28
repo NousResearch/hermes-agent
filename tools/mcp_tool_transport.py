@@ -17,6 +17,7 @@ from tools.mcp_tool_lifecycle import _filter_mcp_children, _leader_start_time, _
 from hermes_cli.process_identity import own_process_groups, register_child, release_process_groups
 from tools.mcp_tool_common import _core
 from tools.mcp_tool_node_abi import node_abi_error
+from tools import mcp_credential_router as _credentials
 from tools import mcp_tool_config as _config
 from tools import mcp_tool_events as _events
 from tools import mcp_tool_lifecycle as _lifecycle
@@ -379,6 +380,12 @@ class MCPServerTransportMixin:
         if config.get("identity_header") is not None:  # copy-pasted HTTP block: warn, don't mislead
             logger.warning("MCP server '%s': identity_header is only supported on "
                            "HTTP/SSE transports — ignored for stdio servers", self.name)
+        # Same trap for the credential keys: they are injected as request headers, which a stdio
+        # child has none of, so a copy-pasted config would look configured and silently do nothing.
+        for key in ("auth_scope", "service_credentials"):
+            if config.get(key) is not None:
+                logger.warning("MCP server '%s': %s is only supported on HTTP/SSE transports "
+                               "— ignored for stdio servers", self.name, key)
         if not _core._ensure_mcp_sdk():
             raise _sdk_unavailable_error(self.name)
         command = config.get("command")
@@ -610,6 +617,14 @@ class MCPServerTransportMixin:
                     yield streams
         return _owned_client_streams()
 
+    def _request_auth(self, oauth_auth):
+        """The connection's single ``auth=``: ``auth: oauth`` owns the slot outright (httpx accepts
+        one hook, and two would each write ``Authorization``); otherwise the credential router
+        decides per request."""
+        if oauth_auth is not None:
+            return oauth_auth
+        return _credentials.credential_router(self.name, self._config)
+
     async def _run_http(self, config: dict):
         """Run the server using HTTP/StreamableHTTP (or SSE) transport."""
         if not _core._ensure_mcp_sdk():
@@ -634,8 +649,11 @@ class MCPServerTransportMixin:
         if not any(key.lower() == "mcp-protocol-version" for key in headers):
             headers["mcp-protocol-version"] = _core.LATEST_HANDSHAKE_VERSION
         connect_timeout = config.get("connect_timeout", _core._DEFAULT_CONNECT_TIMEOUT)
+        # Resolved once here so all four transport paths (SSE, legacy HTTP, owned HTTP, SSE
+        # fallback) share one hook: an OAuth provider wins the slot, else the credential router.
+        request_auth = self._request_auth(self._build_oauth_auth(url, config))
         common = (url, headers, connect_timeout, config.get("ssl_verify", True), _resolve_client_cert(self.name, config),
-                  self._build_oauth_auth(url, config), bool(config.get("strict_redirect_headers")))
+                  request_auth, bool(config.get("strict_redirect_headers")))
         if config.get("transport") == "sse":
             return await self._serve_transport(self._sse_transport(*common), "SSE", float(connect_timeout))
         if self._sse_fallback:

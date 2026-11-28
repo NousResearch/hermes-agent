@@ -2398,6 +2398,36 @@ updates:
 #       # in ~/.hermes/.env over putting it here in config.yaml.
 #       #   client_secret: ""
 
+# -----------------------------------------------------------------------------
+# Keycloak dashboard auth (OpenID Connect — authorization-code + PKCE). A
+# Keycloak-flavoured specialisation of the generic self-hosted OIDC provider
+# above: it adds kc_idp_hint (skip the realm IdP chooser) and prompt control.
+# Use this INSTEAD of the nous block when gating the dashboard with your own
+# Keycloak. A provider activates when its issuer + client_id are set, so to
+# pick Keycloak configure this block and leave the nous client_id unset (or
+# disable the nous plugin via plugins.disabled: [dashboard_auth/nous]).
+# Each setting can be overridden by an environment variable:
+#
+#   dashboard.oauth.keycloak.issuer         <-  HERMES_DASHBOARD_KEYCLOAK_ISSUER
+#   dashboard.oauth.keycloak.client_id      <-  HERMES_DASHBOARD_KEYCLOAK_CLIENT_ID
+#   dashboard.oauth.keycloak.scopes         <-  HERMES_DASHBOARD_KEYCLOAK_SCOPES
+#   (idp_hint, prompt and id_token_leeway are config.yaml-only.)
+#
+# dashboard:
+#   oauth:
+#     keycloak:
+#       # The realm URL; Hermes reads {issuer}/.well-known/openid-configuration.
+#       issuer: "https://idp.example.com/realms/myrealm"            # required
+#       client_id: "hermes-dashboard"                              # required
+#       scopes: "openid profile email"                            # optional
+#       # Public client only (PKCE, no client secret): register the Keycloak
+#       # client with "Client authentication: Off". There is deliberately no
+#       # client_secret knob here — the generic self_hosted block above keeps
+#       # confidential-client support for other IDPs.
+#       # OPTIONAL — Keycloak extras on the authorize URL.
+#       #   idp_hint: "google"   # skip the realm IdP chooser, go straight here
+#       #   prompt: "login"      # login | consent | select_account
+
 # =============================================================================
 # External secret sources
 # =============================================================================

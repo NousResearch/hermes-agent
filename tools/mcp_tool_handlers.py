@@ -865,6 +865,14 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, *,
     op = f"tools/call {tool_name}"
 
     def _handler(args: dict, **kwargs) -> Any:
+        # A user-scoped server must never be called without the asker's own token, and this must be
+        # answered BEFORE the approval prompt: asking a user to authorise a write they cannot run
+        # spends their attention on a call that is then refused. It also must not connect a lazy
+        # server -- ``refusal_for`` reads the ledger without side effects.
+        from tools.mcp_credential_router import policy as _credential_policy
+        refusal = _credential_policy.refusal_for(server_name)
+        if refusal is not None:
+            return tool_error(refusal, error_type="needs_reauth", server=server_name)
         # Security boundary: untrusted-server write tools need approval before ANY transport work (incl. lazy spawn).
         booked: list = []  # a costed call's charge; refunded when the call never reaches the server
         cached_read_only = _tool_is_read_only(server_name, tool_name)
@@ -962,6 +970,13 @@ def _make_utility_handler(op: str, log_label: str, rpc, render, required: Option
     payload, ``required`` validated before any transport work."""
     def _factory(server_name: str, tool_timeout: float):
         def _handler(args: dict, **kwargs) -> str:
+            # Same credential rule as tools/call: a user-scoped server must not serve a
+            # resources/read or prompts/get on the service account either. It runs BEFORE the
+            # connect below, so a refusal never spawns a lazy server.
+            from tools.mcp_credential_router import policy as _credential_policy
+            refusal = _credential_policy.refusal_for(server_name)
+            if refusal is not None:
+                return tool_error(refusal, error_type="needs_reauth", server=server_name)
             from tools import mcp_tool_discovery as _discovery  # lazy: import cycle
             server = _discovery._get_connected_server_for_call(server_name)
             if not server or not server.session:

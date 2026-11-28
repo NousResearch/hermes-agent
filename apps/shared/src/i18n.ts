@@ -203,4 +203,26 @@ export function applyDocumentLocale(locale: string, rtl: boolean = RTL_LOCALES.h
 
   document.documentElement.lang = locale
   document.documentElement.dir = rtl ? 'rtl' : 'ltr'
+  persistBootLocale(locale)
+}
+
+/**
+ * Remember the active locale for the NEXT launch's boot splash.
+ *
+ * `apps/desktop/index.html` renders its splash before any module executes, so it cannot ask this
+ * module for the locale — it reads `hermes-boot-locale` from localStorage, the same durable
+ * pre-bundle channel the splash already uses for the theme (`hermes-boot-background`). Writing it
+ * here, at the one point every locale change funnels through, is what makes a configured
+ * `display.language` beat the browser's own locale on the next launch: a zh deployment opened in an
+ * en-locale browser still starts up in Chinese.
+ *
+ * A desktop-only action (`localStorage` exists in the browser and Electron, not in the CLIs), so a
+ * missing or blocked storage is silently ignored rather than failing the locale change.
+ */
+function persistBootLocale(locale: string): void {
+  try {
+    window.localStorage.setItem('hermes-boot-locale', locale)
+  } catch {
+    // Storage disabled (private mode, quota): the splash falls back to the browser's locale.
+  }
 }

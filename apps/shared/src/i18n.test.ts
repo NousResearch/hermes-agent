@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import {
   adaptStringOverrides,
@@ -119,5 +119,43 @@ describe('applyDocumentLocale', () => {
   it('is a no-op without a document', () => {
     expect(typeof document).toBe('undefined')
     expect(() => applyDocumentLocale('ar')).not.toThrow()
+  })
+
+  it('remembers the locale for the next launch boot splash', () => {
+    // The invariant: whatever `display.language` resolved to must reach the pre-bundle channel
+    // `apps/desktop/index.html` reads, else a configured language loses to the browser's locale on
+    // the next start.
+    const store = new Map<string, string>()
+
+    vi.stubGlobal('document', { documentElement: {} })
+
+    vi.stubGlobal('window', {
+      localStorage: { setItem: (k: string, v: string) => void store.set(k, v) }
+    })
+
+    try {
+      applyDocumentLocale('zh-Hans', false)
+      expect(store.get('hermes-boot-locale')).toBe('zh-Hans')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('still applies the locale when localStorage is blocked', () => {
+    // Private mode / quota exceeded must not break the visible locale change.
+    vi.stubGlobal('document', { documentElement: {} })
+
+    vi.stubGlobal('window', {
+      get localStorage(): Storage {
+        throw new Error('blocked')
+      }
+    })
+
+    try {
+      expect(() => applyDocumentLocale('ja', false)).not.toThrow()
+      expect((document.documentElement as { lang?: string }).lang).toBe('ja')
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 })

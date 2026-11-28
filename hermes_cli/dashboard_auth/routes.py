@@ -49,6 +49,7 @@ from hermes_cli.dashboard_auth.refresh_singleflight import forget as forget_refr
 from hermes_cli.dashboard_auth.request_utils import (
     access_token_max_age, client_ip as _client_ip, is_safe_next_path, is_same_origin_path)
 from hermes_cli.web_server_surface import private_launch
+from agent.turn_token import forget_token, remember
 
 _log = logging.getLogger(__name__)
 
@@ -181,6 +182,11 @@ def _set_session(resp, request: Request, session: Session) -> None:
         access_token_expires_in=access_token_max_age(session), use_https=detect_https(request),
         prefix=_prefix(request), provider=session.provider, gateway=webapp_sign_in.cookie_gateway(request))
     webapp_sign_in.bind(resp, request)
+    # Feed the per-turn store a downstream resource server (an MCP server) authorises the user's
+    # own calls with (``agent.turn_token``). Login is one of only three paths that mint a token;
+    # the other two are the refresh paths below. Missing this write makes the next turn's
+    # user-scoped MCP call fail closed.
+    remember(session)
 
 
 def _bearer_payload(session: Session) -> dict[str, Any]:
@@ -606,6 +612,11 @@ async def auth_logout(request: Request):
         # After the revoke: a refresh that starts later is refused by the provider, an earlier one
         # in flight is barred from caching, and a cached rotation of this login is dropped.
         forget_refresh(rt)
+    if at:
+        # Signing out ends this process's copy of the access token too: the provider cannot
+        # revoke a signed JWT, so without this a turn that outlives the sign-out keeps a usable
+        # bearer until the token's own expiry.
+        forget_token(at)
     sess = getattr(request.state, "session", None)
     _audit(request, AuditEvent.LOGOUT, provider=(sess.provider if sess else "unknown"),
            user_id=(sess.user_id if sess else ""))
@@ -690,6 +701,10 @@ async def auth_native_token(request: Request, body: _NativeTokenBody):
         _audit(request, AuditEvent.NATIVE_TOKEN_FAILURE, reason="invalid_code_or_pkce")
         raise _http(400, "Invalid or expired authorization code.")
     webapp_sign_in.gave_native_app(request, session)
+    # A Desktop sign-in IS a login: store its access token for the same reason the cookie path
+    # does. Without this the desktop path only fed the store from the FIRST refresh, so every
+    # user-scoped MCP call between signing in and the access token's expiry failed closed.
+    remember(session)
     _audit(request, AuditEvent.NATIVE_TOKEN_SUCCESS, provider=session.provider,
            user_id=session.user_id)
     return _bearer_payload(session)
@@ -723,6 +738,8 @@ async def auth_native_refresh(request: Request, body: _NativeRefreshBody):
         raise _http(503, f"Auth provider {str(e)!r} unreachable")
     if refreshed is not None:
         session = refreshed[0]
+        # A rotated token must replace the stored one, or the next turn forwards the dead AT.
+        remember(session)
         webapp_sign_in.gave_native_app(request, session)
         _audit(request, AuditEvent.REFRESH_SUCCESS, provider=session.provider,
                user_id=session.user_id)

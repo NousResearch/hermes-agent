@@ -1,0 +1,18 @@
+name: ori-notebook
+title: Ori Notebook
+repo: https://github.com/orinotebook/ori-plugins
+sha: 7650d5684c84e0c6aad4de5c4e5db95b292cc7f4
+subdir: plugins/ori-notebook
+version: "1.139.3"
+description: "Ori Notebook's skill: save, find and read pages in Ori Notebook, the local-first Markdown notebook. Agent Plugins v1 package (plugin.json + skills/), instructions only: no code, MCP servers, hooks or background processes. Disclosure: the skill runs the ori command, which the Ori Notebook app installs; it reads and writes the person's notebooks on their own computer, and every change an agent makes is marked in Ori and undone in one press."
+maintainer: Ori Notebook
+tier: community
+category: tools
+docs_url: https://github.com/orinotebook/ori-plugins
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

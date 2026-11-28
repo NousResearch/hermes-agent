@@ -1,4 +1,3 @@
-import { resolveSessionRpcOwner } from '@/app/contrib/wiring-routing'
 import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
 import { getSession } from '@/hermes'
 import { concatPartsByToolCall, spliceOlderPreservedRows } from '@/lib/chat-messages'
@@ -25,9 +24,6 @@ import {
   $messagingSessions,
   $sessions,
   commitWorkspaceCwdForSelectedSession,
-  getSessionOwnerHint,
-  knownSessionOwner,
-  ownerLookupSessionRows,
   releaseWorkspaceCwdOwner,
   sessionMatchesStoredId,
   setCronSessions,
@@ -55,7 +51,6 @@ import {
   tombstoneLifecycleChanged
 } from '@/store/session-removal'
 import type { SessionProfileRoute } from '@/store/session-request-router'
-import { runtimeSessionOwner, sessionTileOwnerRoute } from '@/store/session-states'
 
 // Re-exported for the many session-actions/tile call sites that already import
 // it from here; the canonical definition lives in @/store/session.
@@ -72,6 +67,7 @@ import {
   livePlaceOnCommittedPage,
   replyAfterLastTool
 } from './committed-reply'
+import { knownExactOwnerRoute, knownSessionRpcOwner } from './known-session-owner'
 import { chatMessageArraysEquivalent, chatMessagesEquivalent } from './message-equivalence'
 import {
   isLiveTailRow,
@@ -1935,8 +1931,10 @@ export async function resolveStoredSession(
  *  ids that live on a profile not yet listed (#125678). */
 export async function probeStoredSession(
   storedSessionId: string,
-  ownerRoute?: SessionProfileRoute
+  explicitOwnerRoute?: SessionProfileRoute
 ): Promise<StoredSessionProbe> {
+  // No owner named: the exact one the store already knows (see knownExactOwnerRoute).
+  const ownerRoute = explicitOwnerRoute ?? knownExactOwnerRoute(storedSessionId)
   let allGone = true
 
   const recordFailure = (error: unknown) => {
@@ -2080,13 +2078,7 @@ export async function resolveSessionOwner(storedSessionId: null | string): Promi
     return undefined
   }
 
-  const owner = resolveSessionRpcOwner({
-    routingSessionId: storedSessionId,
-    tileOwnerRoute: sessionTileOwnerRoute,
-    sessionOwnerHint: getSessionOwnerHint,
-    sessionRowOwner: id => knownSessionOwner(ownerLookupSessionRows(), id),
-    eventOwner: runtimeSessionOwner
-  })
+  const owner = knownSessionRpcOwner(storedSessionId)
 
   if (owner) {
     return owner

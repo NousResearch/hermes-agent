@@ -70,7 +70,7 @@ def test_default_local_launch_argv_is_headless(monkeypatch, tmp_path):
         return _Proc()
 
     monkeypatch.setattr(launcher, "_spawn", capture_spawn)
-    monkeypatch.setattr(launcher, "_start_time", lambda pid: None)
+    monkeypatch.setattr(launcher, "_start_time", lambda pid: 1)
     monkeypatch.setattr(launcher, "_terminate", lambda pid, start_time, proc: None)
     browser, err = launcher.launch_chromium("win-headless", executable="chrome.exe",
                                             user_data_dir=str(tmp_path / "udd"), env=dict(_WITH_DISPLAY),

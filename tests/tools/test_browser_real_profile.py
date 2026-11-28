@@ -272,7 +272,7 @@ class TestRealProfileCdpLaunch:
         records = tmp_path / "records"
         records.mkdir()
         monkeypatch.setattr(launcher, "_records_dir", lambda _home: records)
-        monkeypatch.setattr(launcher, "_start_time", lambda pid: None)
+        monkeypatch.setattr(launcher, "_start_time", lambda pid: 1 if pid == 2147483000 else None)
         monkeypatch.setattr("tools.browser_session_cloud.chromium_args", list)
         monkeypatch.setattr(launcher, "needs_chromium_sandbox_bypass", lambda: True)
         captured = {}

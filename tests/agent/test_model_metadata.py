@@ -1985,6 +1985,35 @@ class TestFallbackWarning:
         ]
         assert len(fallback_warnings) == 0
 
+    def test_version_prefix_sibling_match_warns_and_marks_defaulted(self, caplog):
+        """New versioned model ids that match an older sibling row (e.g. glm-5.4 matching
+        glm-5) return the row's context window but warn and mark context defaulted."""
+        import logging
+
+        with self._patch_all_lookups():
+            with caplog.at_level(logging.WARNING, logger="agent.model_metadata"):
+                result = get_model_context_length("glm-5.4", provider="zai")
+
+        assert result == 204_800
+        warning_msgs = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("glm-5.4" in m and "via 'glm-5' row" in m for m in warning_msgs)
+        assert any("model.context_length" in m for m in warning_msgs)
+
+    def test_exact_row_match_does_not_warn_or_mark_defaulted(self, caplog):
+        """Known catalog entries (e.g. glm-5.3) do not emit fallback warnings."""
+        import logging
+
+        with self._patch_all_lookups():
+            with caplog.at_level(logging.WARNING, logger="agent.model_metadata"):
+                result = get_model_context_length("glm-5.3", provider="zai")
+
+        assert result == 1_048_576
+        fallback_warnings = [
+            r for r in caplog.records
+            if r.levelno == logging.WARNING and "falling back" in r.getMessage()
+        ]
+        assert len(fallback_warnings) == 0
+
 
 # =========================================================================
 # get_model_context_length — OpenRouter routing-variant suffixes

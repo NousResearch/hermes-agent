@@ -266,15 +266,38 @@ DEFAULT_FALLBACK_CONTEXT = CONTEXT_PROBE_TIERS[0]
 _FALLBACK_WARNED: set = set()  # the fallback is never cached, so dedupe its warning per (model, base_url)
 
 
-def _warn_context_length_fallback(model: str, base_url: str) -> None:
-    """Warn once per model+endpoint that detection failed and the hard default is used,
+def _is_version_prefix_match(key: str, model_lower: str) -> bool:
+    """True when key is a strict version prefix in model_lower (followed by . and a digit),
+    e.g. key 'glm-5' matching 'glm-5.4'."""
+    return bool(re.search(re.escape(key) + r"\.\d", model_lower))
+
+
+def _warn_context_length_fallback(
+    model: str,
+    base_url: str,
+    *,
+    borrowed_row: str | None = None,
+    tokens: int | None = None,
+) -> None:
+    """Warn once per model+endpoint that detection failed and a fallback or borrowed context is used,
     so small-context models (8K, 32K) don't silently get 256K and fail at the API."""
     mark_context_defaulted()  # the "fallback" label reads this, not a re-derivation (agent.context_default_record)
     key = (model, base_url or "")
     if key not in _FALLBACK_WARNED:
         _FALLBACK_WARNED.add(key)
-        logger.warning("Could not determine context length for model %r (base_url=%s) — falling back to %s tokens. "
-                       "Set model.context_length in config.yaml to override.", model, base_url or "default", f"{DEFAULT_FALLBACK_CONTEXT:,}")
+        val = tokens if tokens is not None else DEFAULT_FALLBACK_CONTEXT
+        if borrowed_row:
+            logger.warning(
+                "Could not determine context length for model %r (base_url=%s) - falling back to %s tokens via %r row. "
+                "Set model.context_length in config.yaml to override.",
+                model, base_url or "default", f"{val:,}", borrowed_row,
+            )
+        else:
+            logger.warning(
+                "Could not determine context length for model %r (base_url=%s) - falling back to %s tokens. "
+                "Set model.context_length in config.yaml to override.",
+                model, base_url or "default", f"{val:,}",
+            )
 
 
 # Sessions, model switches and cron jobs reject models below this (too little working memory).
@@ -2071,6 +2094,8 @@ def _resolve_custom_endpoint_context_length(model: str, base_url: str, api_key: 
     # but its model name still matches DEFAULT_CONTEXT_LENGTHS.
     hit = _longest_key_match(DEFAULT_CONTEXT_LENGTHS, model.lower())
     if hit:
+        if _is_version_prefix_match(hit[0], model.lower()):
+            _warn_context_length_fallback(model, base_url, borrowed_row=hit[0], tokens=hit[1])
         logger.info("Using hardcoded context length %s for model %r (custom endpoint, catalog match on %r)", f"{hit[1]:,}", model, hit[0])
         return hit[1]
     # Same silent-256K bug class as the step-9 fallback — warn here too.
@@ -2316,6 +2341,8 @@ def get_model_context_length(
     # 8. Hardcoded defaults: `key in model` only — the reverse would let "claude-sonnet-4" match "claude-sonnet-4-6" and return 1M.
     hit = _longest_key_match(DEFAULT_CONTEXT_LENGTHS, model.lower())
     if hit:
+        if _is_version_prefix_match(hit[0], model.lower()):
+            _warn_context_length_fallback(model, base_url, borrowed_row=hit[0], tokens=hit[1])
         return hit[1]
     # 9. Default fallback — warn (deduped) so small-context models don't silently get 256K.
     _warn_context_length_fallback(model, base_url)

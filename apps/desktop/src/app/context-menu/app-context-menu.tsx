@@ -772,7 +772,14 @@ export function AppContextMenu() {
       }
 
       claimContextMenuGesture(event)
-      openDomContextMenu(event.clientX, event.clientY, target)
+      // Open on the next task. Chromium hit-tests for its own context-menu
+      // params (isEditable, misspelledWord, dictionarySuggestions) after this
+      // listener returns; opening the modal menu synchronously sets
+      // `pointer-events: none` on <body> first, so Chromium reported <html>
+      // and the spell-check forward never fired. The facts may now arrive
+      // before the menu exists; the store buffers them (augmentSpellcheck).
+      const { clientX, clientY } = event
+      window.setTimeout(() => openDomContextMenu(clientX, clientY, target), 0)
     }
 
     window.addEventListener('contextmenu', onContextMenu, true)

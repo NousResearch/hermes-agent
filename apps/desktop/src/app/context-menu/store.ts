@@ -95,8 +95,17 @@ function probeClipboard(opened: Extract<OpenContextMenu, { kind: 'terminal' }>):
     .catch(() => undefined)
 }
 
+/** Spell-check facts that arrived before the (deferred) DOM menu opened. Only
+ *  the very next open may take them, and only within SPELLCHECK_EARLY_MS. */
+const SPELLCHECK_EARLY_MS = 1000
+let earlySpellcheck: { at: number; payload: SpellcheckContext } | null = null
+
 export function openDomContextMenu(x: number, y: number, target: ContextMenuDomTarget): void {
-  $contextMenu.set({ kind: 'dom', x, y, target, spellcheck: null })
+  const early =
+    earlySpellcheck && Date.now() - earlySpellcheck.at < SPELLCHECK_EARLY_MS ? earlySpellcheck.payload : null
+
+  earlySpellcheck = null
+  $contextMenu.set({ kind: 'dom', x, y, target, spellcheck: target.editable ? early : null })
 }
 
 export function openGuestContextMenu(x: number, y: number, params: GuestMenuParams, guest: GuestMenuHandle): void {
@@ -117,11 +126,18 @@ export function closeContextMenu(): void {
   $contextMenu.set(null)
 }
 
-/** Attach late-arriving spell-check facts to the open editable menu. Ignored
- *  when the menu already closed or the click was not in an editable — the
+/** Attach spell-check facts to the open editable menu. Chromium may report
+ *  them before the deferred menu opens; then they wait for that open (see
+ *  openDomContextMenu). Ignored when the click was not in an editable — the
  *  forward always belongs to the gesture that opened the current menu. */
 export function augmentSpellcheck(payload: SpellcheckContext): void {
   const open = $contextMenu.get()
+
+  if (!open && payload.misspelledWord) {
+    earlySpellcheck = { at: Date.now(), payload }
+
+    return
+  }
 
   if (!open || open.kind !== 'dom' || !open.target.editable || !payload.misspelledWord) {
     return

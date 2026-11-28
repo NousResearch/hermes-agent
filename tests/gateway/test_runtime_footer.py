@@ -279,3 +279,50 @@ def test_format_footer_served_model_is_opt_in_and_skips_same_model():
     assert format_runtime_footer(
         model="gpt-5.4", context_tokens=0, context_length=None, cwd="/x",
         served_model=None, fields=["served_model"]) == ""
+
+
+@pytest.mark.parametrize("platform", ["feishu", "telegram", "discord", "slack"])
+def test_turn_token_footer_opts_in_per_platform(monkeypatch, platform):
+    from types import SimpleNamespace
+
+    from gateway.run_turn_runner import TurnRunner
+    from gateway.run_turn_persistence import GatewayTurnPersistenceMixin
+    from gateway.session import Platform, SessionSource
+    from gateway.turn_context import TurnContext
+
+    def run(_message, **_kwargs):
+        agent.session_prompt_tokens += 1350
+        agent.session_completion_tokens += 84
+        return {"final_response": "Hello"}
+
+    agent = SimpleNamespace(run_conversation=run, session_prompt_tokens=20_000,
+                            session_completion_tokens=3000)
+    runner = SimpleNamespace(session_authority=None, _consume_pending_native_image_paths=lambda key: [])
+    source = SessionSource(platform=Platform(platform), chat_id="chat", user_id="user")
+    turn = TurnRunner(runner, TurnContext(message="Hello", session_id="s", session_key="s", source=source))
+    result = turn._run_conversation_with_approval(agent, [], None, None, None)
+    result["model"] = "vendor/model"
+    config = {"display": {"platforms": {platform: {
+        "runtime_footer": {"enabled": True, "fields": ["model", "tokens"]},
+    }}}}
+    monkeypatch.setattr("gateway.run._load_gateway_config", lambda: config)
+    renderer = GatewayTurnPersistenceMixin()
+
+    assert renderer._hmwa_runtime_footer_line(result, source, 1.0) == (
+        "model · 1,350 in / 84 out / 1,434 total tokens"
+    )
+    config["display"]["platforms"].clear()
+    assert renderer._hmwa_runtime_footer_line(result, source, 1.0) == ""
+    config["display"]["runtime_footer"] = {"enabled": True, "fields": ["model"]}
+    assert renderer._hmwa_runtime_footer_line(result, source, 1.0) == "model"
+
+
+@pytest.mark.parametrize(("usage", "expected"), [
+    (None, "model"),
+    ({"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}, "model"),
+    ({"input_tokens": 200, "output_tokens": 0, "total_tokens": 200},
+     "model · 200 in / 0 out / 200 total tokens"),
+])
+def test_token_footer_skips_unreported_usage(usage, expected):
+    assert format_runtime_footer(model="vendor/model", context_tokens=0, context_length=None,
+                                 turn_token_usage=usage, fields=["model", "tokens"]) == expected

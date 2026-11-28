@@ -171,7 +171,7 @@ def offer_consent_before_chat(args: Any) -> None:
     from hermes_cli.config import is_managed
     from hermes_cli.setup import is_noninteractive
 
-    if any(getattr(args, name, None) for name in ("query", "query_file", "oneshot", "oneshot_exit")):
+    if any(getattr(args, name, None) for name in ("query", "query_file", "oneshot", "oneshot_query_file", "oneshot_exit")):
         return
     if getattr(args, "safe_mode", False) or getattr(args, "ignore_user_config", False):
         return

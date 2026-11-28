@@ -21,7 +21,8 @@ PRE_ARGPARSE_INHERITED_FLAGS: list[tuple[str, bool]] = [("--profile", True), ("-
 # test_top_level_value_flags_parity.py fails CI if the parser grows a value-taking flag this
 # snapshot lacks AND derivation regresses.
 _VALUE_FLAGS_FALLBACK: frozenset[str] = frozenset({
-    "-z", "--oneshot", "-m", "--model", "--provider", "--reasoning", "-t", "--toolsets",
+    "-z", "--oneshot", "-Q", "--query-file", "--prompt-file",
+    "-m", "--model", "--provider", "--reasoning", "-t", "--toolsets",
     "-r", "--resume", "-s", "--skills", "--usage-file", "--in", "--cpu-profile",
 })
 _OPTIONAL_VALUE_FLAGS_FALLBACK: frozenset[str] = frozenset({"-c", "--continue"})
@@ -147,12 +148,18 @@ def _add_top_level_flags(parser: argparse.ArgumentParser) -> None:
     """Top-level (pre-subcommand) flags; ``-m/--provider`` pair with ``-z`` without ``chat``."""
     add, inherited = parser.add_argument, _inherited_flag
     add("--version", "-V", action="store_true", help="Show version and exit")
-    add("-z", "--oneshot", metavar="PROMPT", default=None, help=(
+    _oneshot_group = parser.add_mutually_exclusive_group()
+    _oneshot_group.add_argument("-z", "--oneshot", metavar="PROMPT", default=None, help=(
         "One-shot mode: send a single prompt and print ONLY the final "
-        "response text to stdout. No banner, no spinner, no tool "
-        "previews, no session_id line. Tools, memory, rules, and "
-        "AGENTS.md in the CWD are loaded as normal; approvals are "
-        "auto-bypassed. Intended for scripts / pipes."))
+        "response text to stdout ('-' reads prompt from stdin). No banner, "
+        "no spinner, no tool previews, no session_id line. Tools, memory, "
+        "rules, and AGENTS.md in the CWD are loaded as normal; approvals "
+        "are auto-bypassed. Intended for scripts / pipes."))
+    _oneshot_group.add_argument("-Q", "--query-file", "--prompt-file", dest="oneshot_query_file",
+                                metavar="PATH", default=None, help=(
+        "One-shot mode from file: read the single prompt from PATH ('-' "
+        "reads stdin) and run the same unattended one-shot flow as "
+        "-z/--oneshot without exposing prompt text on process argv."))
     add("--usage-file", metavar="PATH", default=None, help=(
         "One-shot mode only: after the run, write a JSON usage report "
         "(estimated cost, token counts, model, api_calls) to PATH. "

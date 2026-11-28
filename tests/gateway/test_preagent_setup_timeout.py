@@ -92,7 +92,7 @@ async def test_pending_followup_acks_after_stall_timeout(monkeypatch):
     runner = _bare_runner()
     runner._draining = False
     runner._hm_busy_slash_or_photo = AsyncMock(return_value=(False, None))
-    runner._effective_busy_input_mode = lambda _source: "interrupt"
+    runner._effective_busy_input_mode = lambda _source, _event=None: "interrupt"
     runner._hm_busy_telegram_grace_queue = lambda *_args, **_kwargs: False
     runner._hm_merge_pending_for_source = lambda *_args, **_kwargs: None
     runner._peek_session_state = lambda _key: SimpleNamespace(
@@ -121,7 +121,7 @@ async def test_fresh_pending_followup_stays_silent(monkeypatch):
     runner = _bare_runner()
     runner._draining = False
     runner._hm_busy_slash_or_photo = AsyncMock(return_value=(False, None))
-    runner._effective_busy_input_mode = lambda _source: "interrupt"
+    runner._effective_busy_input_mode = lambda _source, _event=None: "interrupt"
     runner._hm_busy_telegram_grace_queue = lambda *_args, **_kwargs: False
     merged = []
     runner._hm_merge_pending_for_source = lambda *_args, **_kwargs: merged.append(True)

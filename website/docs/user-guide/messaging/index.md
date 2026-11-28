@@ -529,10 +529,11 @@ Send a message while the agent is working to correct the active turn:
 
 ### Queue vs interrupt vs steer (busy-input mode)
 
-By default, messaging a busy agent redirects its active turn (a running foreground terminal command is moved to the background rather than killed, so your message is read immediately). Two other modes are available:
+By default, messaging a busy agent redirects its active turn (a running foreground terminal command is moved to the background rather than killed, so your message is read immediately). Three other modes are available:
 
 - `queue` — follow-up messages wait and run as the next turn after the current task finishes. Each follow-up (text, voice note, video, document) gets its own turn in arrival order; only a rapid photo burst is merged into one album turn.
 - `steer` — follow-up messages are injected into the current run via `/steer`, arriving at the agent after the next tool call. No interrupt, no new turn. Falls back to `queue` behavior if the agent hasn't started yet.
+- `adaptive`: decides per message and never interrupts. A reply that quotes a message sent before the running turn started is a comment on earlier output, so it is queued for the next turn; everything else, including plain messages and replies to the turn's own messages, is steered into the current run. This needs the adapter to report when the quoted message was sent. Telegram does; on other platforms `adaptive` behaves as `steer`.
 
 A steer carries text only, so a message with an attachment (a photo, file or video, including one captioned `/steer ...`) is queued with its attachment as the next turn instead. With no agent running, `/queue` or `/steer` as an attachment's caption (bare, or with text) sends the attachment as a normal message.
 
@@ -542,7 +543,7 @@ Gateway steers (including explicit `/steer`) and active-turn redirects carry the
 
 ```yaml
 display:
-  busy_input_mode: steer   # or queue, or interrupt (default)
+  busy_input_mode: steer   # or queue, adaptive, or interrupt (default)
   busy_ack_enabled: true   # set to false to suppress the ⚡/⏳/⏩ chat reply entirely
   busy_text_debounce_seconds: 0.35   # quiet window before merged busy text is delivered
   busy_text_hard_cap_seconds: 1.0    # never hold merged busy text longer than this

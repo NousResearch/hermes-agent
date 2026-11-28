@@ -27,6 +27,7 @@ def _connection(source, display):
     ('cli', None, 'interrupt'),
     ('gui', {}, 'interrupt'),
     ('cli', {'busy_input_mode': 'queue'}, 'queue'),
+    ('tui', {'busy_input_mode': 'adaptive'}, 'steer'),  # no quoted replies on a local surface
 ])
 async def test_busy_default_follows_the_surface(monkeypatch, source, display, expected):
     from gateway import session_policy

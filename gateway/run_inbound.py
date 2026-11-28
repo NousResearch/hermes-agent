@@ -829,7 +829,7 @@ class GatewayInboundMixin(
         a demotion, or an interrupt — the ended turn lets the FIFO run the follow-up next)."""
         from gateway.run import _AGENT_PENDING_SENTINEL
         superseded = self._clarify_takeover(event, _quick_key)
-        mode = "interrupt" if superseded else self._effective_busy_input_mode(source)
+        mode = "interrupt" if superseded else self._effective_busy_input_mode(source, event)
         if (mode == "interrupt" and not superseded and not getattr(event, "internal", False)
                 and not event.get_command() and (self._hm_text_only(event) or event.message_type == MessageType.VOICE)
                 and self._hm_in_telegram_grace(event, source, _quick_key)):
@@ -864,7 +864,7 @@ class GatewayInboundMixin(
             return _result
 
         effective_busy_input_mode = ("interrupt" if self._clarify_takeover(event, _quick_key)
-                                     else self._effective_busy_input_mode(source))
+                                     else self._effective_busy_input_mode(source, event))
         if self._hm_busy_telegram_grace_queue(event, source, _quick_key, effective_busy_input_mode):
             return None
 

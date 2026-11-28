@@ -107,6 +107,7 @@ class MessageEvent:
     reply_to_author_id: Optional[str] = None
     reply_to_author_name: Optional[str] = None
     reply_to_is_own_message: bool = False  # True when the user replied to this bot/assistant's message
+    reply_to_timestamp: Optional[float] = None  # Epoch seconds the replied-to message was sent
     # Structured interactive-prompt reply (relay only): {prompt_id, option_id, label?,
     # prompt_message_id?}; routed to the approval/slash-confirm/clarify resolvers BEFORE dispatch.
     prompt_response: Optional[dict[str, Any]] = None

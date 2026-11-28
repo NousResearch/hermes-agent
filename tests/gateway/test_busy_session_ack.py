@@ -311,6 +311,30 @@ class TestBusySessionAck:
         assert "Steered" not in content
 
     @pytest.mark.asyncio
+    async def test_adaptive_mode_ack_says_a_reply_to_earlier_output_was_queued(self):
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "adaptive"
+        adapter = _make_adapter()
+
+        event = _make_event(text="about that earlier answer")
+        event.source.platform = Platform.TELEGRAM
+        event.reply_to_message_id = "m-old"
+        event.reply_to_timestamp = time.time() - 600
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = MagicMock()
+        runner._running_agents[sk] = agent
+        runner._session_state(sk).turn.started_ts = time.time() - 60
+
+        await runner._handle_active_session_busy_message(event, sk)
+
+        agent.steer.assert_not_called()
+        assert adapter._pending_messages.get(sk) is event
+        content = adapter._send_with_retry.call_args.kwargs.get("content")
+        assert "Queued (reply to an earlier message) for the next turn" in content
+
+    @pytest.mark.asyncio
     async def test_steer_mode_falls_back_to_queue_when_agent_pending(self):
         """If agent is still starting (sentinel), steer mode falls back to queue."""
         runner, sentinel = _make_runner()

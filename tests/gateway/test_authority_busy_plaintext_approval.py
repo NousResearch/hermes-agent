@@ -41,7 +41,7 @@ async def test_busy_plaintext_yes_resolves_blocking_approval_not_interrupt_or_qu
         return SendResult(success=True, message_id='s')
 
     monkeypatch.setattr(adapter, 'send', send)
-    monkeypatch.setattr(runner, '_effective_busy_input_mode', lambda source: mode)
+    monkeypatch.setattr(runner, '_effective_busy_input_mode', lambda source, event=None: mode)
     source = adapter.build_source(chat_id=CHAT, user_id=CHAT, chat_type='dm')
     key = runner._session_key_for_source(source)
     agent = _RunningAgent()

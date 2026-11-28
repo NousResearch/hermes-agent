@@ -2062,8 +2062,11 @@ display:
   #              after the next tool call — no interrupt, no role violation.
   #              Falls back to 'queue' if the agent isn't running yet or if
   #              images are attached (steer only carries text).
+  #   adaptive:  Messaging only: a reply quoting a message sent before the
+  #              running turn queues; everything else steers. Acts as steer
+  #              in the CLI and on platforms that don't report reply dates.
   # Ctrl+C (or /stop in gateway) always interrupts regardless of this setting.
-  # Toggle at runtime with /busy <interrupt|queue|steer>.
+  # Toggle at runtime with /busy <interrupt|queue|steer|adaptive>.
   busy_input_mode: interrupt
 
   # Background process notifications (gateway/messaging only).

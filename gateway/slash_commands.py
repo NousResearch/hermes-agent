@@ -47,6 +47,7 @@ _BUSY_MODE_BEHAVIOR = {
     "queue": ("gateway.busy.behavior_queue_short", "gateway.busy.behavior_queue_long"),
     "steer": ("gateway.busy.behavior_steer_short", "gateway.busy.behavior_steer_long"),
     "interrupt": ("gateway.busy.behavior_interrupt_short", "gateway.busy.behavior_interrupt_long"),
+    "adaptive": ("gateway.busy.behavior_adaptive_short", "gateway.busy.behavior_adaptive_long"),
 }
 
 # /diff argument -> diff mode (unknown args leave the mode unchanged).

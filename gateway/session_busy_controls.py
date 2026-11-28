@@ -3,6 +3,7 @@ import asyncio
 from functools import partial
 from pathlib import Path
 
+from gateway.session_setting_commands import local_busy_mode
 from persistence.core.errors import AuthorityRefusal
 
 
@@ -52,7 +53,7 @@ async def busy_config(connection, ref, params, *, write=False):
         # UI negotiation is not a settings write and must not rebuild frozen
         # launch policy, toolsets, history, or the retained AIAgent.
         live.busy_input_mode = params['value']
-    value = getattr(live, 'busy_input_mode', None)
+    value = local_busy_mode(getattr(live, 'busy_input_mode', None))
     if value is None:
         from gateway.session_policy import policy_for_source
         policy = policy_for_source(authority.runner, live.source)
@@ -62,8 +63,8 @@ async def busy_config(connection, ref, params, *, write=False):
         # surface keeps the framework default ``interrupt``.
         fallback = 'queue' if policy is not None and getattr(policy, 'source', None) == 'tui' else 'interrupt'
         display = (policy.config().get('display') or {}) if policy else {}
-        value = (display.get('busy_input_mode') or fallback if policy else
-                 authority.runner._effective_busy_input_mode(live.source))
+        value = local_busy_mode(display.get('busy_input_mode') or fallback if policy else
+                                authority.runner._effective_busy_input_mode(live.source))
         if value not in ('interrupt', 'steer', 'queue'):
             value = fallback
     return {'key': 'busy', 'value': value, 'scope': 'session'}

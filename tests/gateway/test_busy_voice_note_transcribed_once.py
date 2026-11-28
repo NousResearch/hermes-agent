@@ -47,7 +47,7 @@ async def _busy_rig(tmp_path, monkeypatch):
         return SendResult(success=True, message_id='s')
 
     monkeypatch.setattr(adapter, 'send', send)
-    monkeypatch.setattr(runner, '_effective_busy_input_mode', lambda source: 'interrupt')
+    monkeypatch.setattr(runner, '_effective_busy_input_mode', lambda source, event=None: 'interrupt')
     monkeypatch.setattr(runner, '_should_echo_stt_transcripts', lambda: True)
     monkeypatch.setattr(runner, '_handle_message_with_agent', lambda *a, **k: None)
     source = adapter.build_source(chat_id=CHAT, user_id=CHAT, chat_type='dm')

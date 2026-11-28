@@ -47,6 +47,7 @@ import {
   type ArtifactFilter,
   artifactImageSrc,
   type ArtifactRecord,
+  artifactSessionScope,
   loadArtifactsForSessions
 } from './artifact-utils'
 
@@ -139,7 +140,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       const sessions = (await listAllProfileSessions(30, 1)).sessions
 
       const { artifacts: nextArtifacts, failures } = await loadArtifactsForSessions(sessions, (session, page) =>
-        getSessionMessages(session.id, session.profile, {
+        getSessionMessages(session.id, artifactSessionScope(session), {
           ...page,
           includeCompacted: true,
           order: 'oldest'
@@ -151,21 +152,44 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
           String(error instanceof Error ? error.message : error).includes('safe-load limit')
         ).length
 
-        const otherFailures = failures.length - safeLimitFailures
+        const collectFailures = failures.filter(({ phase }) => phase === 'collect')
+        const otherFailures = failures.length - safeLimitFailures - collectFailures.length
 
         const detail = [
           safeLimitFailures ? `${safeLimitFailures} exceeded the safe transcript load limit.` : '',
-          otherFailures ? `${otherFailures} could not be read.` : ''
+          otherFailures ? `${otherFailures} could not be read.` : '',
+          collectFailures.length ? `${collectFailures.length} could not be scanned for artifacts.` : ''
         ]
           .filter(Boolean)
           .join(' ')
+
+        // Name the ACTUAL failure. The counts alone ("11 could not be read")
+        // cannot be acted on: the error objects carry the transport status,
+        // the auth verdict, or the parse message, and each points at a
+        // different fix. Without them a user can only guess.
+        const reasons = failures
+          .map(({ error }) => {
+            const message = error instanceof Error ? error.message : String(error)
+
+            return message ? message.replace(/\s+/g, ' ').trim() : ''
+          })
+          .filter(Boolean)
+
+        const uniqueReasons = Array.from(new Set(reasons))
 
         notify({
           id: 'artifacts-partial-load',
           kind: 'warning',
           title: a.failedLoad,
           message: `Skipped ${failures.length} of ${sessions.length} recent sessions while indexing artifacts.`,
-          detail,
+          detail: [
+            detail,
+            uniqueReasons.length
+              ? `Cause: ${uniqueReasons.slice(0, 3).join(' | ')}${uniqueReasons.length > 3 ? ` (+${uniqueReasons.length - 3} more)` : ''}`
+              : ''
+          ]
+            .filter(Boolean)
+            .join('\n'),
           durationMs: 10_000
         })
       }

@@ -9,6 +9,7 @@ module, and every origin-module symbol is read through ``_cc()`` at call time so
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 from typing import Any, Optional
@@ -62,6 +63,95 @@ def stub_arguments(args: dict) -> str:
         if len(result) >= 120:
             return result[:120]
     return result
+
+
+# Dynamic MCP names (``mcp__<server>__<tool>`` and the older ``mcp_<server>_<tool>``) never have a
+# row in the exact-name summarizer table, so they used to fall through to a char-count line and
+# the payload was gone once the row left the protected tail (#88042). Same prefix the spillover
+# budget uses (``tools.budget_config.MCP_TOOL_PREFIX``).
+_MCP_RESULT_PREFIX = "mcp_"
+# ``_is_summary_stub`` only keeps a ``[tool] ... (N chars result)`` line from being summarised
+# again when it is shorter than 400 characters. Past that, the next pass replaces this stub and
+# the hash just written is lost.
+_MCP_STUB_MAX_CHARS = 399
+_MCP_HASH_LEN = 12
+# Keys ``tools.tool_result_storage`` treats as an MCP handler envelope. A payload whose keys stay
+# inside this set unwraps to ``result`` so the hash identifies the document, not the wrapper.
+_MCP_ENVELOPE_KEYS = frozenset({"result", "structuredContent", "_meta"})
+_UNTRUSTED_OPEN = "<untrusted_tool_result"
+_UNTRUSTED_CLOSE = "</untrusted_tool_result>"
+_UNTRUSTED_BOILERPLATE_LEAD = "The following content was retrieved from an external source."
+
+
+def fallback_tool_result_stub(tool_name: str, args: dict, content: str, content_len: int) -> str:
+    """Prune stub for a tool with no dedicated summarizer.
+
+    ``mcp_*`` results keep a payload hash and a line count inside the summary-stub ceiling.
+    The body itself stays out of the stub: MCP text is attacker-controlled and was wrapped as
+    untrusted data, and copying it here would promote that text into a trusted line.
+    """
+    if tool_name.startswith(_MCP_RESULT_PREFIX):
+        return _mcp_tool_result_stub(tool_name, args, content, content_len)
+    return (
+        f"[{tool_name}]{stub_arguments(args)} ({content_len:,} chars result)"
+        + _cc()._result_failure_suffix(content)
+    )
+
+
+def _mcp_tool_result_stub(tool_name: str, args: dict, content: str, content_len: int) -> str:
+    """One-line MCP stub: arguments, payload hash, line count, stored size, outcome."""
+    text, failure = _mcp_stub_parts(content)
+    digest = hashlib.md5(text.encode("utf-8", errors="replace")).hexdigest()[:_MCP_HASH_LEN]
+    lines = text.count("\n") + 1 if text.strip() else 0
+    tail = f" hash={digest} lines={lines} ({content_len:,} chars result){failure}"
+    if len(tail) >= _MCP_STUB_MAX_CHARS:
+        # A pathological failure string must not push the char-count marker past the ceiling.
+        tail = f" hash={digest} lines={lines} ({content_len:,} chars result)"
+    head = f"[{tool_name}]{stub_arguments(args)}"
+    room = _MCP_STUB_MAX_CHARS - len(tail)
+    if len(head) > room:
+        head = head[:room]
+    return head + tail
+
+
+def _mcp_stub_parts(content: str) -> tuple[str, str]:
+    """``(payload text, failure suffix)`` for an MCP result, wrapper removed.
+
+    The hash and the line count use the document (an envelope's ``result`` string when that is
+    the whole payload) so a repeat fetch of the same body matches whether or not the untrusted
+    wrapper was applied. The failure suffix is read from the JSON object, which is where
+    ``tool_error`` records it — the wrapper otherwise hides ``{"error": ...}`` from the generic
+    probe.
+    """
+    text = _strip_untrusted_block(content)
+    payload = _cc()._json_dict(text)
+    if not payload:
+        return text, ""
+    failure = _cc()._payload_failure_suffix(payload)
+    result = payload.get("result") if set(payload) <= _MCP_ENVELOPE_KEYS else None
+    if isinstance(result, str):
+        return result, failure
+    return text, failure
+
+
+def _strip_untrusted_block(content: str) -> str:
+    """Return the payload inside one ``<untrusted_tool_result>`` block, else *content*.
+
+    The opening tag and the fixed instruction paragraph are ours; everything after the blank
+    line that follows them is the tool's own text. A missing or inverted pair is left as-is.
+    """
+    start = content.find(_UNTRUSTED_OPEN)
+    end = content.rfind(_UNTRUSTED_CLOSE)
+    if start < 0 or end <= start:
+        return content
+    body = content[start:end]
+    newline = body.find("\n")
+    body = body[newline + 1:] if newline >= 0 else ""
+    if body.startswith(_UNTRUSTED_BOILERPLATE_LEAD):
+        split = body.find("\n\n")
+        if split >= 0:
+            body = body[split + 2:]
+    return body.strip()
 
 
 def _changed_rows(messages: list[dict[str, Any]], pruned: list[dict[str, Any]]) -> int:

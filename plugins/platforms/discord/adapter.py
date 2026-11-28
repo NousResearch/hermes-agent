@@ -3624,13 +3624,13 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordCommandSyncMixin, DiscordAuth
                 pcm = await asyncio.to_thread(decode_to_pcm, audio_path)
                 if pcm:
                     speech_gain = float(self._voice_fx_cfg.get("speech_gain", 1.0))
-                    mixer.play_speech(self._lead_silence_bytes() + pcm, gain=speech_gain)
+                    speech = mixer.play_speech(self._lead_silence_bytes() + pcm, gain=speech_gain)
                     # Block until speech drains so callers serialise replies; ambient keeps playing.
                     wait_start = time.monotonic()
                     while mixer.speech_active:
                         if time.monotonic() - wait_start > playback_timeout:
                             logger.warning("Mixer speech playback timed out after %.1fs", playback_timeout)
-                            mixer.stop_speech()
+                            mixer.stop_speech(speech)
                             break
                         await asyncio.sleep(0.05)
                     return True

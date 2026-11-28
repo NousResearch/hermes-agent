@@ -97,7 +97,12 @@ async def test_waiting_context_reads_keep_reader_backpressure(rig):
     assert await settle(lambda: sock.inbound.empty())
     sock.inbound.put_nowait(None)
     await asyncio.wait_for(task, 30)
-    assert len(sock.sent) == burst + 1  # gateway.ready + one reply per read
+    reply_ids = [frame['id'] for frame in sock.sent if 'id' in frame]
+    assert len(reply_ids) == burst
+    assert sorted(reply_ids) == list(range(burst))  # every read reply exactly once
+    ready_events = [frame for frame in sock.sent
+                    if frame.get('params', {}).get('type') == 'gateway.ready']
+    assert len(ready_events) == 1  # unrelated global notifications may interleave on a live WS
 
 
 @pytest.mark.asyncio

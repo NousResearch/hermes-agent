@@ -8,7 +8,7 @@ import pytest
 from tests.gateway.test_managed_turn_contract import assignment
 
 
-def _execute(tmp_path, monkeypatch, events, *, start_error=None, close_error=None):
+def _execute(tmp_path, monkeypatch, events, *, start_error=None, close_error=None, controls_close_error=None):
     from agent import managed_worker as worker
 
     class RPC:
@@ -38,6 +38,10 @@ def _execute(tmp_path, monkeypatch, events, *, start_error=None, close_error=Non
         def __init__(self, *args):
             self.stopped, self.finish = threading.Event(), threading.Event()
             self.finish.set()
+        def close(self):
+            events.append('controls.close')
+            if controls_close_error is not None:
+                raise controls_close_error
         def approval(self, data): pass
         def clarify(self, questions): pass
 
@@ -57,14 +61,22 @@ def _execute(tmp_path, monkeypatch, events, *, start_error=None, close_error=Non
 def test_execute_closes_the_rpc_after_the_store_on_success(tmp_path, monkeypatch):
     events = []
     _execute(tmp_path, monkeypatch, events)
-    assert events[-3:] == ['finished', 'store.close', 'rpc.close']
+    assert events[-4:] == ['finished', 'controls.close', 'store.close', 'rpc.close']
 
 
 def test_execute_closes_the_rpc_after_the_store_on_a_start_failure(tmp_path, monkeypatch):
     events = []
     with pytest.raises(RuntimeError, match='construct_failed'):
         _execute(tmp_path, monkeypatch, events, start_error=RuntimeError('construct_failed'))
-    assert events == ['store.close', 'rpc.close']
+    assert events == ['controls.close', 'store.close', 'rpc.close']
+
+
+def test_control_reader_cleanup_does_not_replace_the_original_construction_error(tmp_path, monkeypatch):
+    events = []
+    with pytest.raises(RuntimeError, match='construct_failed'):
+        _execute(tmp_path, monkeypatch, events, start_error=RuntimeError('construct_failed'),
+                 controls_close_error=OSError('reader_close'))
+    assert events == ['controls.close', 'store.close', 'rpc.close']
 
 
 @pytest.mark.parametrize('start_error', [None, RuntimeError('construct_failed')])
@@ -72,8 +84,8 @@ def test_a_failing_rpc_close_never_masks_the_turns_outcome(tmp_path, monkeypatch
     events = []
     if start_error is None:
         _execute(tmp_path, monkeypatch, events, close_error=OSError('close'))
-        assert events[-3:] == ['finished', 'store.close', 'rpc.close']
+        assert events[-4:] == ['finished', 'controls.close', 'store.close', 'rpc.close']
     else:
         with pytest.raises(RuntimeError, match='construct_failed'):
             _execute(tmp_path, monkeypatch, events, start_error=start_error, close_error=OSError('close'))
-        assert events[-1] == 'rpc.close'
+        assert events[-3:] == ['controls.close', 'store.close', 'rpc.close']

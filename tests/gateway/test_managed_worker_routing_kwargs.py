@@ -43,6 +43,7 @@ def test_managed_worker_agent_gets_the_session_provider_routing(tmp_path, monkey
         def __init__(self, *args):
             self.stopped, self.finish = threading.Event(), threading.Event()
             self.finish.set()
+        def close(self): pass
         def approval(self, data): pass
         def clarify(self, questions): pass
 

@@ -151,7 +151,7 @@ Gateway unreachable from hop 1 (scale-to-zero wake still booting, restart
 window, api_server disabled) → the dashboard returns **503** and NAS retries
 (non-2xx = retryable, below); the store CAS de-dupes the eventual double fire.
 There is deliberately no in-dashboard execution fallback. The verifier is
-`plugins/cron/chronos/verify.py`.
+`plugins/cron_providers/chronos/verify.py`.
 
 - **Auth:** `Authorization: Bearer <NAS-minted JWT>`. The agent verifies:
   - signature against the NAS JWKS (`cron.chronos.nas_jwks_url`),

@@ -1,0 +1,5 @@
+name: hermes-shadow-clone
+description: "Parallel Gemini shadow-clone swarm & second-opinion arena with automatic quota failover, adversarial claim verification, and optional Telegram live battle reports (calls Google Gemini API via GEMINI_API_KEY and optional Telegram Bot API)."
+repo: https://github.com/NotSusOk/gemini-agent
+sha: d2a0516bb1e49f70a1e79f38ec7f875ad81b52f5
+tier: community

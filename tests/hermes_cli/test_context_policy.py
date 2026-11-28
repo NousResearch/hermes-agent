@@ -21,6 +21,7 @@ from hermes_cli.local_runtime.context_policy import (
     initial_window,
     ladder,
     launch_args,
+    plan_launch,
     recurrent_spill_blocks,
     spill_overrides,
     ub_logits_bytes,
@@ -385,6 +386,21 @@ def test_launch_args_contract():
 
     d = launch_args(p, spilled, flash_attention=False, mtp_capable=False)
     assert "q8_0" not in d                        # f16 on non-FA fallback
+
+
+def test_spilled_mtp_keeps_prefill_posture_when_windows_match():
+    """A model larger than VRAM spills in both MTP postures, so lean cannot save context."""
+    profile = moe(weights_gib=22, native=128 * KIB)
+    plan = plan_launch(profile, card(8), mtp_capable=True)
+
+    assert plan.decision.window == FLOOR
+    assert plan.decision.spilled
+    assert plan.mtp_prefill is True
+
+    args = launch_args(profile, plan.decision, mtp_capable=True,
+                       mtp_prefill=plan.mtp_prefill)
+    assert args[args.index("-b") + 1] == "4096"
+    assert args[args.index("-ub") + 1] == "2048"
 
 
 def test_launch_args_uma_never_pins_tensors():

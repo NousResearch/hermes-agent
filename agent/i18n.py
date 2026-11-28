@@ -164,11 +164,6 @@ def _load_bundled(lang: str) -> dict[str, str]:
         return {}
 
 
-def _flatten_into(node: Any, prefix: str, out: dict[str, str]) -> None:
-    """Flatten a nested mapping into ``out`` (text leaves only)."""
-    i18n_layers.flatten(node, prefix, out)
-
-
 def _load_catalog(lang: str, home: str | None = None) -> dict[str, str]:
     """Merged catalog for ``lang`` in ``home`` (packs > overlay > bundled); cached per (home, lang)."""
     home = home or _current_home()

@@ -9,6 +9,7 @@ from contextlib import nullcontext
 
 from typing import Any, Dict, List, Optional, Tuple
 
+from agent.turn_facade_lease import LEASE_TTL_SECONDS
 from agent.context_compressor import (
     COMPRESSED_SUMMARY_METADATA_KEY, _DB_PERSISTED_MARKER, ContextCompressor, _newest_checkpoint_carrier,
     _strip_persistence_markers, drop_shadowed_checkpoints,
@@ -248,7 +249,7 @@ def sync_rewritten_tool_rows(agent, batch: list[dict], contents_before: list[Any
             for msg, before in changed]
     from persistence.core.errors import PruneRowUnresolved, TurnLeaseLost
     lease = dict(turn_lease_holder=getattr(agent, "_active_session_turn_lease_holder", None),
-                 turn_lease_ttl_seconds=getattr(agent, "_active_session_turn_lease_ttl_seconds", 300.0) or 300.0)
+                 turn_lease_ttl_seconds=getattr(agent, "_active_session_turn_lease_ttl_seconds", LEASE_TTL_SECONDS) or LEASE_TTL_SECONDS)
     try:
         with _persist_lock(agent):
             if store is not None:
@@ -353,7 +354,7 @@ def _db_flush_write(agent, batch_rows: list[dict[str, Any]], batch_msgs: list[di
     from agent.agent_init_session import agent_interface
     guards = {
         "turn_lease_holder": getattr(agent, "_active_session_turn_lease_holder", None),
-        "turn_lease_ttl_seconds": getattr(agent, "_active_session_turn_lease_ttl_seconds", 300.0) or 300.0,
+        "turn_lease_ttl_seconds": getattr(agent, "_active_session_turn_lease_ttl_seconds", LEASE_TTL_SECONDS) or LEASE_TTL_SECONDS,
     }
     if (store := agent_interface(agent)) is not None:
         result = store.messages.append_batch(agent.session_id, [_new_message(row) for row in batch_rows], **guards)

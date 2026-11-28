@@ -386,6 +386,11 @@ gateway:
     more_untracked: "\n... y {count} más"
     untracked_label: "**Sin seguimiento:**"
     truncated_note: "\n... (truncado — {lines} líneas en total; usa /diff --stat para ver un resumen)"
+  mute:
+    unmuted: "🔊 Chat reactivado — vuelvo a escuchar."
+    usage: "Uso: `/mute [duration]` — p. ej. `/mute`, `/mute 30m`, `/mute 2h`."
+    muted_timed: "🔇 Silenciado durante {remaining}. Ignoraré los mensajes de este chat hasta entonces — los comandos con barra siguen funcionando, `/mute` lo quita antes."
+    muted_indefinite: "🔇 Silenciado. Ignoraré los mensajes de este chat hasta que envíes `/mute` — los comandos con barra siguen funcionando."
   set_home:
     save_failed: "No se pudo guardar el canal principal: {error}"
     success: "✅ Canal principal establecido en **{name}** (ID: {chat_id}).\nLas tareas cron y los mensajes entre plataformas se entregarán aquí."

@@ -386,6 +386,11 @@ gateway:
     more_untracked: "\n... und {count} weitere"
     untracked_label: "**Nicht versioniert:**"
     truncated_note: "\n... (gekürzt — insgesamt {lines} Zeilen; verwenden Sie /diff --stat für eine Zusammenfassung)"
+  mute:
+    unmuted: "🔊 Stummschaltung aufgehoben — ich höre wieder zu."
+    usage: "Verwendung: `/mute [duration]` — z. B. `/mute`, `/mute 30m`, `/mute 2h`."
+    muted_timed: "🔇 Stummgeschaltet für {remaining}. Bis dahin ignoriere ich Nachrichten in diesem Chat — Slash-Befehle funktionieren weiter, `/mute` hebt es vorzeitig auf."
+    muted_indefinite: "🔇 Stummgeschaltet. Ich ignoriere Nachrichten in diesem Chat, bis du `/mute` sendest — Slash-Befehle funktionieren weiter."
   set_home:
     save_failed: "Home-Kanal konnte nicht gespeichert werden: {error}"
     success: "✅ Home-Kanal auf **{name}** (ID: {chat_id}) gesetzt.\nCron-Jobs und plattformübergreifende Nachrichten werden hierher geliefert."

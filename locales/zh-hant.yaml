@@ -386,6 +386,11 @@ gateway:
     more_untracked: "\n... 還有 {count} 個"
     untracked_label: "**未追蹤：**"
     truncated_note: "\n...（已截斷 — 共 {lines} 行；使用 /diff --stat 查看摘要）"
+  mute:
+    unmuted: "🔊 已取消靜音 — 我又在聽了。"
+    usage: "用法：`/mute [duration]` — 例如 `/mute`, `/mute 30m`, `/mute 2h`。"
+    muted_timed: "🔇 已靜音 {remaining}。在此之前我會忽略此聊天中的訊息 — 斜線指令仍可使用，`/mute` 可提前解除。"
+    muted_indefinite: "🔇 已靜音。在你傳送 `/mute` 之前，我會忽略此聊天中的訊息 — 斜線指令仍可使用。"
   set_home:
     save_failed: "無法儲存主頻道：{error}"
     success: "✅ 主頻道已設定為 **{name}**（ID：{chat_id}）。\n排程任務和跨平台訊息將傳送至此處。"

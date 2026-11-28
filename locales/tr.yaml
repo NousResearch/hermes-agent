@@ -386,6 +386,11 @@ gateway:
     more_untracked: "\n... ve {count} tane daha"
     untracked_label: "**İzlenmeyen:**"
     truncated_note: "\n... (kesildi — toplam {lines} satır; özet için /diff --stat kullanın)"
+  mute:
+    unmuted: "🔊 Sohbetin sesi açıldı — yeniden dinliyorum."
+    usage: "Kullanım: `/mute [duration]` — ör. `/mute`, `/mute 30m`, `/mute 2h`."
+    muted_timed: "🔇 {remaining} boyunca sessize alındı. O zamana kadar bu sohbetteki mesajları yok sayacağım — eğik çizgi komutları çalışmaya devam eder, `/mute` erken kaldırır."
+    muted_indefinite: "🔇 Sessize alındı. `/mute` gönderene kadar bu sohbetteki mesajları yok sayacağım — eğik çizgi komutları çalışmaya devam eder."
   set_home:
     save_failed: "Ana kanal kaydedilemedi: {error}"
     success: "✅ Ana kanal **{name}** (ID: {chat_id}) olarak ayarlandı.\nCron işleri ve platformlar arası mesajlar buraya iletilecek."

@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Optional, Union
 
 from agent.i18n import t
+from gateway.chat_mute import clear_chat_mute, event_muted, format_remaining, parse_mute_duration, set_chat_mute
 from gateway.config import HomeChannel, Platform, PlatformConfig, persist_home_channel
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent
@@ -687,6 +688,39 @@ class GatewaySlashCommandsMixin(
         platform_config = self.config.platforms.setdefault(source.platform, PlatformConfig(enabled=not via_relay))
         platform_config.home_channel = home
         return t("gateway.set_home.success", name=chat_name, chat_id=chat_id)
+
+    async def _handle_mute_command(self, event: MessageEvent) -> str:
+        """Handle /mute — a harness-level toggle that silences this chat.
+
+        While muted, the gateway drops this chat's inbound conversational messages
+        deterministically (no agent turn, no tokens, no reply); slash commands always
+        pierce it. A bare ``/mute`` toggles; ``/mute 30m|2h|1d`` (bare number =
+        minutes) mutes for that long, replacing any current mute.
+        """
+        key, arrived = self._voice_key_for_source(event.source), event._received_at
+        arg = event.get_command_args().strip().lower()
+
+        if not arg and clear_chat_mute(key, at=arrived):
+            return t("gateway.mute.unmuted")
+
+        ok, duration_seconds = parse_mute_duration(arg)
+        if not ok:
+            return t("gateway.mute.usage")
+
+        entry = set_chat_mute(key, duration_seconds, at=arrived)
+        if duration_seconds is not None:
+            return t("gateway.mute.muted_timed", remaining=format_remaining(entry))
+        return t("gateway.mute.muted_indefinite")
+
+    def _mute_drops(self, event: MessageEvent) -> bool:
+        """True when ``/mute`` silences *event*: a person's ordinary message that arrived while its
+        (bot, chat) pair was muted. A turn the session FIFO admitted is never re-judged: it passed
+        this gate when offered (or a slash command produced it)."""
+        from gateway.session_ingress import executing_admission
+        if executing_admission.get():
+            return False
+        # The voice-mode key: mute, like voice, belongs to the bot that received the chat.
+        return event_muted(event, self._voice_key_for_source(event.source))
 
     async def _handle_voice_command(self, event: MessageEvent) -> str:
         """Handle /voice [on|off|tts|channel|leave|status] command."""

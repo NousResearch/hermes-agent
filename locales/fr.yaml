@@ -426,6 +426,11 @@ gateway:
     truncated_note: |2-
 
       ... (tronqué — {lines} lignes au total ; utilisez /diff --stat pour un résumé)
+  mute:
+    unmuted: "🔊 Chat réactivé — je vous écoute à nouveau."
+    usage: "Utilisation : `/mute [duration]` — p. ex. `/mute`, `/mute 30m`, `/mute 2h`."
+    muted_timed: "🔇 En sourdine pendant {remaining}. J'ignorerai les messages de ce chat jusque-là — les commandes slash fonctionnent toujours, `/mute` la lève plus tôt."
+    muted_indefinite: "🔇 En sourdine. J'ignorerai les messages de ce chat jusqu'à ce que vous envoyiez `/mute` — les commandes slash fonctionnent toujours."
   set_home:
     save_failed: "Impossible d'enregistrer le canal principal : {error}"
     success: "✅ Canal principal défini sur **{name}** (ID : {chat_id}).\nLes tâches cron et les messages multi-plateformes seront livrés ici."

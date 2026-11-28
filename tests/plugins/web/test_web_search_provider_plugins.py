@@ -254,6 +254,43 @@ class TestRegistryResolution:
 # ---------------------------------------------------------------------------
 
 
+class TestFirecrawlNoResponseError:
+    """The SDK raises AttributeError("'NoneType' object has no attribute 'status_code'") when no HTTP
+    response arrived (API restarting); the failure text must say Firecrawl was unreachable."""
+
+    _SDK_ERR = AttributeError("'NoneType' object has no attribute 'status_code'")
+
+    def _provider(self, monkeypatch, fake_client):
+        from plugins.web.firecrawl import provider as firecrawl_provider
+        monkeypatch.setenv("FIRECRAWL_API_KEY", "test-key")  # direct path, not the keyless ring
+        monkeypatch.setattr(firecrawl_provider, "_get_firecrawl_client", lambda capability=None: fake_client)
+        monkeypatch.setattr(firecrawl_provider, "check_website_access", lambda url: None)
+        return firecrawl_provider.FirecrawlWebSearchProvider()
+
+    def test_search_maps_no_response(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from unittest.mock import MagicMock
+        client = MagicMock()
+        client.search.side_effect = self._SDK_ERR
+        out = self._provider(monkeypatch, client).search("q", 5)
+        assert out["success"] is False
+        assert "unreachable (no HTTP response" in out["error"]
+        assert "NoneType" not in out["error"]
+
+    def test_extract_maps_no_response(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from unittest.mock import MagicMock
+        client = MagicMock()
+        client.scrape.side_effect = self._SDK_ERR
+        out = asyncio.run(self._provider(monkeypatch, client).extract(["https://example.com"]))
+        assert "unreachable (no HTTP response" in out[0]["error"]
+
+    def test_other_attribute_errors_pass_through(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from unittest.mock import MagicMock
+        client = MagicMock()
+        client.search.side_effect = AttributeError("'dict' object has no attribute 'web'")
+        out = self._provider(monkeypatch, client).search("q", 5)
+        assert "'dict' object has no attribute 'web'" in out["error"]
+
+
 class TestFirecrawlScrapeTimeout:
     """Verify the server-side scrape timeout matches the asyncio deadline."""
 

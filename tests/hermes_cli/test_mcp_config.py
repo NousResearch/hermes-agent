@@ -274,6 +274,51 @@ class TestMcpAdd:
 
 
 # ---------------------------------------------------------------------------
+# Tests: cmd_mcp_configure
+# ---------------------------------------------------------------------------
+
+class TestMcpConfigure:
+    """The checklist rewrites ``tools.include``/``tools.exclude`` and nothing else in the block."""
+
+    _TOOLS = [("search_tasks", "read"), ("get_task", "read"), ("create_task", "write")]
+
+    def _configure(self, tmp_path, monkeypatch, tools_cfg: dict, chosen: set) -> dict:
+        _seed_config(tmp_path, {"demo": {"command": "/bin/true", "tools": tools_cfg}})
+        _set_interactive_stdin(monkeypatch)
+        monkeypatch.setattr("hermes_cli.mcp_config._probe_single_server", lambda name, cfg: self._TOOLS)
+        monkeypatch.setattr("hermes_cli.curses_ui.curses_checklist", lambda title, labels, pre: chosen)
+        from hermes_cli.config import read_raw_config
+        from hermes_cli.mcp_config import cmd_mcp_configure
+
+        cmd_mcp_configure(_make_args(name="demo"))
+        return read_raw_config()["mcp_servers"]["demo"]
+
+    def test_all_checked_keeps_prompts_and_resources(self, tmp_path, monkeypatch):
+        entry = self._configure(
+            tmp_path, monkeypatch,
+            {"include": ["search_tasks", "get_task"], "prompts": False, "resources": False},
+            {0, 1, 2},
+        )
+        assert entry["tools"] == {"prompts": False, "resources": False}
+
+    def test_all_checked_drops_an_empty_block(self, tmp_path, monkeypatch):
+        entry = self._configure(tmp_path, monkeypatch, {"include": ["search_tasks"]}, {0, 1, 2})
+        assert "tools" not in entry
+
+    def test_include_mode_keeps_resources_switch(self, tmp_path, monkeypatch):
+        entry = self._configure(
+            tmp_path, monkeypatch, {"include": ["search_tasks", "get_task"], "resources": False}, {0},
+        )
+        assert entry["tools"] == {"include": ["search_tasks"], "resources": False}
+
+    def test_exclude_mode_keeps_prompts_switch(self, tmp_path, monkeypatch):
+        entry = self._configure(
+            tmp_path, monkeypatch, {"exclude": ["create_task"], "prompts": False}, {0, 1, 2},
+        )
+        assert entry["tools"] == {"prompts": False}
+
+
+# ---------------------------------------------------------------------------
 # Tests: cmd_mcp_test
 # ---------------------------------------------------------------------------
 

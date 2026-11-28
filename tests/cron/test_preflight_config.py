@@ -356,6 +356,31 @@ class TestDeliveryPlatform:
         assert error is not None and "[blocked_config]" in error
         assert "notaplatform" in f"{error} {output}"
 
+    @pytest.mark.parametrize("lane", ["deliver", "failure_deliver"])
+    def test_explicit_local_chat_delivery_passes_preflight(self, tmp_path, lane):
+        job = _job(**{lane: "local:local-target"})
+        with cron_jobs.use_cron_store(tmp_path):
+            cron_jobs.save_jobs([job])
+            with patch("gateway.config.load_gateway_config") as load_gateway_config:
+                success, _output, response, error, agent_constructed = _run_job_patched(job, tmp_path)
+
+        assert error is None
+        assert success is True
+        assert response == "ok"
+        assert agent_constructed is True
+        load_gateway_config.assert_not_called()
+
+    @pytest.mark.parametrize("target", ["local:", "local: local-target"])
+    def test_malformed_local_chat_delivery_blocks_preflight(self, tmp_path, target):
+        job = _job(deliver=target)
+        with cron_jobs.use_cron_store(tmp_path):
+            cron_jobs.save_jobs([job])
+            success, _output, _response, error, agent_constructed = _run_job_patched(job, tmp_path)
+
+        assert success is False
+        assert error is not None and "[blocked_config]" in error
+        assert agent_constructed is False
+
     def test_local_delivery_never_touches_gateway_config(self, tmp_path):
         """deliver=local jobs must not load gateway config in preflight."""
         job = _job(deliver="local")

@@ -321,8 +321,9 @@ def has_credential_platform(adapters, owned=None) -> bool:
 
 def _preflight_check_delivery(job: dict) -> Optional[str]:
     """Check delivery targets resolve to configured platforms. ``local``/``origin``/``all`` are
-    never checked (no gateway-config load). Unknown platform always blocks; known platform blocks
-    only if the gateway config loads AND reports it unconnected; config load failures fail OPEN.
+    never checked (no gateway-config load), including explicit ``local:<chat_id>`` targets.
+    Unknown platforms always block. Known platforms block only when gateway config loads and
+    reports them unconnected. Config load failures fail open.
     ``failure_deliver`` gets the same rules — a typo'd failure platform would otherwise only
     surface when a failure occurs (NS-788)."""
     deliver_value = _delivery._normalize_deliver_value(job.get("deliver", "local"))
@@ -342,7 +343,10 @@ def _preflight_check_delivery(job: dict) -> Optional[str]:
                 continue
             if _delivery.parse_room_deliver_token(part) is not None:
                 continue  # Group Chat posts write the room store directly; no adapter needed.
-            platform_parts.append(part.split(":", 1)[0].strip())
+            platform_name, _, address = part.partition(":")
+            if platform_name == "local" and address and address == address.lstrip():
+                continue  # Explicit local chats deliver through the session owner without credentials.
+            platform_parts.append(platform_name.strip())
     if not platform_parts:
         return None
 

@@ -3267,6 +3267,25 @@ class TestBuzzAdapterEdit:
         assert len(cli.calls) == 1
 
     @pytest.mark.asyncio
+    async def test_back_to_back_edits_get_strictly_later_created_at(self):
+        """Regression for #126080: Buzz clients render the edit with the greatest whole-second
+        created_at, so a streamed final sent right after its cursor frame must land in a later second."""
+        import time as _time
+
+        adapter = _make_adapter()
+        adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
+        signed_at = []
+
+        async def fake_cli(args, *, input_text=None):
+            signed_at.append(int(_time.time()))  # the CLI signs with the current whole second
+            return 0, json.dumps({"accepted": True, "event_id": f"edit{len(signed_at)}"}), ""
+
+        adapter._run_cli = fake_cli
+        await adapter.edit_message(CHANNEL, "orig1", "partial ▉")
+        await adapter.edit_message(CHANNEL, "orig1", "partial answer", finalize=True)
+        assert signed_at[1] > signed_at[0]
+
+    @pytest.mark.asyncio
     async def test_edit_without_a_message_id_never_calls_the_cli(self):
         adapter = _make_adapter()
         cli = _ScriptedCli()

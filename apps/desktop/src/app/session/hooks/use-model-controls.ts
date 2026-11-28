@@ -290,12 +290,14 @@ export function useModelControls({
       const composerScope = getComposerSelectionScope()
       const liveGatewayProfile = cacheProfile || $activeGatewayProfile.get()
 
-      // The primary live session's slice must be painted too, not just the
+      // The one write to the live session's slice, for a tile and the primary
+      // session alike. The primary's slice must be painted too, not just the
       // composer globals: the collapsed pill reads the LIVE session state
       // (state.model) and prefers it over the draft atom, so a globals-only
       // paint leaves the pill on the old name while the expanded menu — fed by
       // the optimistic options cache — already shows the new one. session.info
-      // confirms (and re-stamps the wire) when the switch lands.
+      // confirms (and re-stamps the wire) when the switch lands. Handing back
+      // the same state on a no-op lets the session cache skip the publish.
       const paintLiveSession = (model: string, provider: string, reasoningEffortWire: string) => {
         if (!liveSessionId) {
           return
@@ -319,19 +321,11 @@ export function useModelControls({
           setCurrentModel(selection.model)
           setCurrentProvider(selection.provider)
           markComposerSelectionManual()
-          // The wire stamp belongs to the old route, so it is withdrawn until
-          // session.info re-stamps it.
-          paintLiveSession(selection.model, selection.provider, '')
-        } else if (liveSessionId) {
-          // Optimistic tile paint — session.info will confirm; rollback on error. The wire stamp
-          // belongs to the old route, so it is withdrawn until session.info re-stamps it.
-          sessionTileDelegate()?.updateSession(liveSessionId, state => ({
-            ...state,
-            model: selection.model,
-            provider: selection.provider,
-            reasoningEffortWire: ''
-          }))
         }
+
+        // Optimistic — session.info confirms; a failed pick rolls back. The wire stamp belongs to
+        // the old route, so it is withdrawn until session.info re-stamps it.
+        paintLiveSession(selection.model, selection.provider, '')
       }
 
       const cacheSelection = (provider: string, model: string) => {
@@ -339,32 +333,23 @@ export function useModelControls({
       }
 
       const restoreSnapshot = (snapshot: ModelPickSnapshot, repaintUi = true) => {
-        if (touchesPrimary) {
-          // The composer globals are what the UI currently shows, so they are
-          // only repainted while the user is still looking at this session.
-          if (repaintUi) {
-            setCurrentModel(snapshot.composerSelection.model)
-            setCurrentProvider(snapshot.composerSelection.provider)
-            setCurrentModelSource(snapshot.composerSelection.source)
-            // Restore runtime paint/stamp separately; neither is sticky launch intent.
-            setCurrentModelTransient(snapshot.model)
-            setCurrentProviderTransient(snapshot.provider)
-            setCurrentReasoningEffortWire(snapshot.reasoningEffortWire)
-          }
-
-          // The session's OWN slice is never UI: it describes which model that
-          // session runs, so a failed pick must clear its optimistic paint even
-          // after the user switched away — otherwise the stale paint survives
-          // until the next session.info and shows a model the gateway rejected.
-          paintLiveSession(snapshot.model, snapshot.provider, snapshot.reasoningEffortWire)
-        } else if (liveSessionId) {
-          sessionTileDelegate()?.updateSession(liveSessionId, state => ({
-            ...state,
-            model: snapshot.model,
-            provider: snapshot.provider,
-            reasoningEffortWire: snapshot.reasoningEffortWire
-          }))
+        // The composer globals are what the UI currently shows, so they are
+        // only repainted while the user is still looking at this session.
+        if (touchesPrimary && repaintUi) {
+          setCurrentModel(snapshot.composerSelection.model)
+          setCurrentProvider(snapshot.composerSelection.provider)
+          setCurrentModelSource(snapshot.composerSelection.source)
+          // Restore runtime paint/stamp separately; neither is sticky launch intent.
+          setCurrentModelTransient(snapshot.model)
+          setCurrentProviderTransient(snapshot.provider)
+          setCurrentReasoningEffortWire(snapshot.reasoningEffortWire)
         }
+
+        // The session's OWN slice is never UI: it describes which model that
+        // session runs, so a failed pick must clear its optimistic paint even
+        // after the user switched away — otherwise the stale paint survives
+        // until the next session.info and shows a model the gateway rejected.
+        paintLiveSession(snapshot.model, snapshot.provider, snapshot.reasoningEffortWire)
 
         if (repaintUi) {
           cacheSelection(snapshot.provider, snapshot.model)

@@ -89,6 +89,28 @@ function Harness({
   return null
 }
 
+// Mirrors useSessionStateCache.updateSessionState: an updater that hands back the same state is a
+// no-op, so the slice is not published again. Returns the ids of the slices it did publish.
+function sliceBackedTileDelegate() {
+  const published: string[] = []
+
+  tile.delegate = {
+    updateSession: (id: string, update: (state: ClientSessionState) => ClientSessionState) => {
+      const states = SessionStates.$sessionStates.get()
+      const next = update(states[id])
+
+      if (next !== states[id]) {
+        published.push(id)
+        SessionStates.$sessionStates.set({ ...states, [id]: next })
+      }
+
+      return next
+    }
+  }
+
+  return published
+}
+
 describe('useModelControls', () => {
   beforeEach(() => {
     confirmMock.mockReset()
@@ -763,6 +785,53 @@ describe('useModelControls', () => {
 
     // Until session.info re-stamps it, the tile pill must not present the old route's clamp.
     expect(tileState).toMatchObject({ model: 'gpt-6.1-luna', reasoningEffortWire: '' })
+  })
+
+  it("leaves a tile's slice alone when the pick re-selects the model it already runs", async () => {
+    const running = { model: 'gpt-6.1-luna', provider: 'openai-codex', reasoningEffortWire: '' }
+    $activeSessionId.set('runtime-a')
+    SessionStates.$sessionStates.set({ 'runtime-b': running } as never)
+    const published = sliceBackedTileDelegate()
+    const requestGateway = vi.fn(async () => ({ key: 'model', value: running.model }) as never)
+    const { result } = renderHook(() => useModelControls({ queryClient: new QueryClient(), requestGateway }))
+
+    try {
+      await expect(
+        result.current.selectModel({ model: running.model, provider: running.provider, sessionId: 'runtime-b' })
+      ).resolves.toBe(true)
+    } finally {
+      tile.delegate = null
+    }
+
+    expect(published).toEqual([])
+    expect(SessionStates.$sessionStates.get()['runtime-b']).toBe(running)
+  })
+
+  it("leaves a tile's slice alone when a failed pick rolls back onto what session.info already restored", async () => {
+    const running = { model: 'gpt-6.1-sol', provider: 'openai-codex', reasoningEffortWire: 'max' }
+    $activeSessionId.set('runtime-a')
+    SessionStates.$sessionStates.set({ 'runtime-b': running } as never)
+    const published = sliceBackedTileDelegate()
+
+    const requestGateway = vi.fn(async () => {
+      // A session.info heartbeat lands while config.set is in flight and repaints what the tile runs.
+      SessionStates.$sessionStates.set({ ...SessionStates.$sessionStates.get(), 'runtime-b': running } as never)
+      throw new Error('no such model')
+    })
+
+    const { result } = renderHook(() => useModelControls({ queryClient: new QueryClient(), requestGateway }))
+
+    try {
+      await expect(
+        result.current.selectModel({ model: 'gpt-6.1-luna', provider: 'openai-codex', sessionId: 'runtime-b' })
+      ).resolves.toBe(false)
+    } finally {
+      tile.delegate = null
+    }
+
+    // Only the optimistic paint is published; the rollback has nothing left to change.
+    expect(published).toEqual(['runtime-b'])
+    expect(SessionStates.$sessionStates.get()['runtime-b']).toBe(running)
   })
 
   it('repaints the primary live session slice so the collapsed pill follows the pick', async () => {

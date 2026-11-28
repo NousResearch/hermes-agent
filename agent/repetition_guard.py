@@ -28,6 +28,11 @@ _DOMINANCE_RATIO = 0.5
 # to know the reply degenerated and was cut off.
 REPETITION_LOOP_INTERRUPTED = "[the reply degenerated into a repetition loop and was interrupted]"
 
+# Server-side loop detectors end the request with their own finish_reason: vLLM's
+# ``repetition_detection`` and tabbyAPI send ``repetition``, Kimi-family chat endpoints ``repeat``.
+# The reply is the loop, so it gets the same verdict as a client-side stream cut.
+PROVIDER_REPETITION_FINISH_REASONS = frozenset({"repetition", "repeat"})
+
 # Sampling bounds keep the general path linear in output size with a small,
 # fixed multiplier. A dominant contiguous run necessarily crosses many of
 # these evenly spaced anchors.

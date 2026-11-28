@@ -50,7 +50,7 @@ from agent.message_sanitization import (
 from agent.reasoning_summaries import (append_streamed_reasoning_detail, redact_reasoning_fields,
     separate_glued_reasoning_blocks, streamed_reasoning_detail_text)
 from agent.local_prompt_progress import prompt_progress, with_prompt_progress
-from agent.repetition_guard import RunawayStreamWatch, is_repetition_dominated
+from agent.repetition_guard import PROVIDER_REPETITION_FINISH_REASONS, RunawayStreamWatch, is_repetition_dominated
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 from tools.terminal_tool_lifecycle import is_persistent_env
 from utils import base_url_host_matches, base_url_hostname, env_float, env_int
@@ -3147,8 +3147,8 @@ class _StreamingCall(StreamingWaitMonitor):
             response_id=response_id, upstream_provider=upstream_provider, reasoning_details=reasoning_details,
             refusal_parts=refusal_parts)
         carriers.apply(response)
-        if runaway:
-            # Cut, not finished: the length path ends the turn on this mark instead of continuing.
+        if runaway or finish_reason in PROVIDER_REPETITION_FINISH_REASONS:
+            # Cut, not finished (a provider loop stop too: truncated args turn it into "length" above).
             response._runaway_repetition = True
         return response
 

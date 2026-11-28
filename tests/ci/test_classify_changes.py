@@ -705,6 +705,29 @@ def test_windows_venv_e2e_runs_only_test_files_that_exist():
     assert [p for p in paths if "::" in p or not (_REPO / p).is_file()] == []
 
 
+def test_every_file_the_lint_job_reads_rearms_the_lane_that_gates_it():
+    """Every hadolint input must re-arm the lane that gates the lint step.
+
+    ``repo-guards.yml`` runs hadolint only when ``docker_meta`` is true, and
+    ``all-checks-pass`` counts a skipped job as success. A rules-file-only edit
+    must therefore reach the lint step rather than pass silently.
+    """
+    steps = _yaml(".github/workflows/repo-guards.yml")["jobs"]["guards"]["steps"]
+    lint = next(step for step in steps if step.get("name") == "Lint Dockerfiles (hadolint)")
+    assert "inputs.docker_meta" in lint["if"]
+    assert lint["run"] == "scripts/ci/lint_docker.sh hadolint"
+    for path in (
+        "scripts/ci/lint_docker.sh",
+        ".hadolint.yaml",
+        "Dockerfile",
+        "docker/sandbox-desktop.Dockerfile",
+    ):
+        assert (_REPO / path).is_file(), f"hadolint input is gone: {path}"
+        assert classify([path])["docker_meta"] is True, (
+            f"{path} is consumed by the hadolint step but does not re-arm the docker_meta lane"
+        )
+
+
 def _write_event(tmp_path, number: int | None = 88442) -> Path:
     payload = {"pull_request": {"number": number}} if number is not None else {}
     path = tmp_path / "event.json"

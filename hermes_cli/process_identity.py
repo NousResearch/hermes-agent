@@ -247,6 +247,9 @@ class LedgerEntry:
     port: Optional[int] = None
     profile: str = ""
     hermes_home: str = ""
+    # The code this long-lived backend loaded at launch, before an updater can move checkout HEAD.
+    code_sha: Optional[str] = None
+    code_version: Optional[str] = None
     # `serve --isolated`: opted out of the host singleton (Desktop's SSH backend for another
     # machine). Attach-first readers must never adopt it; argv is truncated, so this is canonical.
     isolated: bool = False
@@ -361,6 +364,12 @@ def register_self(purpose: str, *, project_root: Optional[Path] = None, detail: 
     entry = _new_entry(os.getpid(), _process_create_time(), purpose, project_root, spawner_pid, spawner_create)
     entry.spawner_boot = _verified_boot_start(spawner_pid, spawner_create)
     entry.hermes_home = hermes_home_key()
+    if purpose in ("serve", "dashboard"):
+        from hermes_cli.version_info import get_code_identity
+
+        identity = get_code_identity()
+        entry.code_sha = identity.get("sha")
+        entry.code_version = identity.get("version")
     if detail:
         try:
             entry.host = str(detail.get("host") or "")

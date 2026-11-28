@@ -323,7 +323,8 @@ def _collect_ledger_runtimes(plan: UpdatePlan, seen: set[int]) -> None:
             else:
                 supervisor = "manual-serve"
             plan.runtimes.append(_runtime(
-                str(purpose), str(entry.get("profile") or "default"), pid, supervisor, detail=detail,
+                str(purpose), str(entry.get("profile") or "default"), pid, supervisor,
+                entry.get("code_sha"), entry.get("code_version"), detail=detail,
             ))
 
 

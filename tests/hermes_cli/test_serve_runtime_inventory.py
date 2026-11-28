@@ -15,6 +15,7 @@ from unittest.mock import patch
 
 from hermes_cli import update_inventory
 from hermes_cli import main_dashboard
+from hermes_cli import update_cmd_fleet
 
 def _ledger_entry(**over):
     entry = {
@@ -66,6 +67,24 @@ def test_register_self_records_isolated_marker(tmp_path, monkeypatch):
     assert pi._read_ledger(tmp_path / "ledger.json")[-1]["isolated"] is True
 
 
+def test_backend_registration_stamps_running_code(tmp_path, monkeypatch):
+    """The updater needs the backend's launch identity, not a later read of checkout HEAD."""
+    from hermes_cli import process_identity as pi
+    from hermes_cli import version_info
+
+    sha = "a" * 40
+    monkeypatch.setattr(pi, "_ledger_path", lambda: tmp_path / "ledger.json")
+    monkeypatch.setattr(pi, "install_id", lambda *a, **k: "inst")
+    monkeypatch.setattr(version_info, "get_code_identity", lambda: {"sha": sha, "version": "0.23.1"})
+
+    for purpose in ("serve", "dashboard"):
+        assert pi.register_self(purpose, detail={"host": "127.0.0.1", "port": 9119})
+        entry = pi._read_ledger(tmp_path / "ledger.json")[-1]
+        assert entry["purpose"] == purpose
+        assert entry["code_sha"] == sha
+        assert entry["code_version"] == "0.23.1"
+
+
 def test_register_self_without_detail_stays_backward_compatible(
     tmp_path, monkeypatch
 ):
@@ -97,6 +116,32 @@ def test_inventory_includes_manual_serve_from_ledger(monkeypatch):
     assert row.restart_via == "respawn-argv"
     assert row.detail["host"] == "100.94.65.93"
     assert row.detail["port"] == 9119
+
+
+def test_noop_restart_skips_only_a_backend_with_current_stamped_code(tmp_path, monkeypatch):
+    """A current dashboard permits the no-op shortcut; stale or unstamped rows retain restart."""
+    from hermes_cli import process_identity as pi
+    from hermes_cli import update_host_obligation
+    from hermes_cli import version_info
+
+    sha = "a" * 40
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(update_host_obligation, "host_restart_already_completed", lambda _sha: False)
+    monkeypatch.setattr(update_cmd_fleet, "_restart_identity_sha", lambda: sha)
+    monkeypatch.setattr(update_cmd_fleet, "_live_fleet_current_rows", lambda: [{"code_sha": sha, "state": "current"}])
+
+    for backend_sha, should_skip in ((sha, True), ("b" * 40, False), (None, False)):
+        monkeypatch.setattr(version_info, "get_code_identity", lambda: {"sha": backend_sha, "version": "0.23.1"})
+        assert pi.register_self("dashboard")
+        plan = update_inventory.UpdatePlan(runtimes=[
+            update_inventory.RuntimeRecord("gateway", "default", code_sha=sha),
+        ])
+        update_inventory._collect_ledger_runtimes(plan, seen=set())
+        dashboard = next(row for row in plan.runtimes if row.kind == "dashboard")
+        assert dashboard.code_sha == backend_sha
+        assert bool(update_cmd_fleet._fleet_restart_skip_reason(plan)) is should_skip
 
 def test_inventory_classifies_desktop_owned_serve(monkeypatch):
     entry = _ledger_entry(spawner_pid=999, spawner_create=1.0)

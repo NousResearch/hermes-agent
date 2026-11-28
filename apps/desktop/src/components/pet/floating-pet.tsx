@@ -2,27 +2,33 @@ import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
-import { useOnProfileSwitch } from '@/app/hooks/use-on-profile-switch'
 import { useRouteOverlayActive } from '@/app/hooks/use-route-overlay-active'
 import { PetHeartField } from '@/components/chat/vibe-hearts'
 import { PetBubble } from '@/components/pet/pet-bubble'
+import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { persistString, storedString } from '@/lib/storage'
+import { activeGatewayConnectionId } from '@/store/gateway'
 import { $changeEventsAvailable, $petChange } from '@/store/live-sync'
 import {
   $petAtRest,
   $petInfo,
+  $petOwnerKey,
   $petRoam,
   $petRoamDir,
+  capturePetOwner,
   clearPetUnread,
   hasPetSpriteForMeta,
+  isCurrentPetOwner,
+  isPetOwnerChangedError,
   mergePetInfoMeta,
   type PetInfo,
   type PetInfoMeta,
-  petProfile,
+  requestPet,
   setPetInfo
 } from '@/store/pet'
-import { resetPetGallery, setPetScale } from '@/store/pet-gallery'
+import { setPetScale } from '@/store/pet-gallery'
 import { $petOverlayActive, initPetOverlayBridge, popOutPet, restorePetOverlay } from '@/store/pet-overlay'
+import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { $gatewayState } from '@/store/session'
 import { isSecondaryWindow } from '@/store/windows'
 import { useTheme } from '@/themes/context'
@@ -137,6 +143,7 @@ export function FloatingPet() {
   // Fetch pet.info on connect. pet.changed re-runs this effect when the
   // signature moves; a slow backstop covers silent seed + cold-start races.
   // Older backends (no change_events) keep the legacy fast-while-inactive poll.
+  const ownerKey = useStore($petOwnerKey)
   const active = info.enabled && Boolean(info.spritesheetBase64)
   useEffect(() => {
     if (gatewayState !== 'open') {
@@ -145,11 +152,15 @@ export function FloatingPet() {
 
     let cancelled = false
 
-    // pet.changed already carries the meta payload — an enabled=false
-    // broadcast clears the mascot with zero round-trips, and an unchanged
-    // revision (scale-only move still changes the sig) short-circuits below
-    // via hasPetSpriteForMeta + mergePetInfoMeta.
-    if (changeEventsAvailable && petChange.tick > 0 && petChange.meta?.enabled === false) {
+    // Broadcast metadata belongs only to the active gateway. Preserve immediate
+    // disable there, but never clear a different bot's pet from that broadcast.
+    const scope = capturePetOwner()
+
+    const ownsChange =
+      scope.profile === normalizeProfileKey($activeGatewayProfile.get()) &&
+      (typeof scope.owner === 'string' || scope.owner?.connectionId === activeGatewayConnectionId())
+
+    if (ownsChange && changeEventsAvailable && petChange.tick > 0 && petChange.meta?.enabled === false) {
       setPetInfo({ enabled: false })
 
       return
@@ -159,9 +170,9 @@ export function FloatingPet() {
       try {
         if (active) {
           try {
-            const meta = await requestGateway<PetInfoMeta>('pet.info.meta', { profile: petProfile() })
+            const meta = await requestPet<PetInfoMeta>(requestGateway, 'pet.info.meta', {}, scope)
 
-            if (cancelled || !meta) {
+            if (cancelled || !isCurrentPetOwner(scope) || !meta) {
               return
             }
 
@@ -182,8 +193,15 @@ export function FloatingPet() {
 
               return
             }
-          } catch {
-            // Older gateways may not have pet.info.meta yet; fall back to pet.info.
+          } catch (error) {
+            if (cancelled || isPetOwnerChangedError(error)) {
+              return
+            }
+
+            if (!isMissingRpcMethod(error)) {
+              throw error
+            }
+            // Only an older gateway missing metadata needs the full payload.
           }
         }
 
@@ -193,12 +211,16 @@ export function FloatingPet() {
         const held = $petInfo.get()
         const knownRevision = held.enabled && held.spritesheetBase64 ? held.spritesheetRevision : undefined
 
-        const next = await requestGateway<PetInfo & { spritesheetUnchanged?: boolean }>('pet.info', {
-          knownRevision,
-          profile: petProfile()
-        })
+        const next = await requestPet<PetInfo & { spritesheetUnchanged?: boolean }>(
+          requestGateway,
+          'pet.info',
+          {
+            knownRevision
+          },
+          scope
+        )
 
-        if (!cancelled && next) {
+        if (!cancelled && isCurrentPetOwner(scope) && next) {
           const current = $petInfo.get()
 
           if (next.enabled && next.spritesheetUnchanged && !next.spritesheetBase64) {
@@ -267,15 +289,7 @@ export function FloatingPet() {
 
       window.clearInterval(timer)
     }
-  }, [gatewayState, active, changeEventsAvailable, petChange, requestGateway])
-
-  // Pets are per-profile. When the active profile changes, drop the previous
-  // profile's mascot + gallery cache so the poll above refetches the new
-  // profile's pet (its config + pets dir resolve per-profile on the backend).
-  useOnProfileSwitch(() => {
-    setPetInfo({ enabled: false })
-    resetPetGallery()
-  })
+  }, [gatewayState, active, changeEventsAvailable, petChange, requestGateway, ownerKey])
 
   // Wire the overlay control channel once, only in the primary window — the
   // pop-out overlay belongs to it (main.ts positions it against the main

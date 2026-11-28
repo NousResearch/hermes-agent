@@ -1,0 +1,357 @@
+"""Deterministic Sonos FM schedules backed by Hermes cron jobs.
+
+Schedules are local, no-agent jobs. Each generated wrapper invokes the existing
+idle-safe Sonos FM command; no LLM call is involved when a schedule fires.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import shlex
+import subprocess
+import sys
+import uuid
+from pathlib import Path
+from typing import Any
+from hermes_constants import get_hermes_home
+
+SCHEDULE_PREFIX = "Sonos FM"
+SCRIPTS_DIR: Path | None = None
+SCHEDULE_DIR: Path | None = None
+MANIFEST_PATH: Path | None = None
+SONOS_SCRIPT: Path | None = None
+
+
+def _scripts_dir() -> Path:
+    return Path(SCRIPTS_DIR) if SCRIPTS_DIR is not None else get_hermes_home() / "scripts"
+
+
+def _schedule_dir() -> Path:
+    return Path(SCHEDULE_DIR) if SCHEDULE_DIR is not None else _scripts_dir() / "sonos-fm-schedules"
+
+
+def _manifest_path() -> Path:
+    return Path(MANIFEST_PATH) if MANIFEST_PATH is not None else _schedule_dir() / "schedules.json"
+
+
+def _sonos_script() -> Path:
+    return Path(SONOS_SCRIPT) if SONOS_SCRIPT is not None else get_hermes_home() / "sonos-brain" / "sonos_brain.py"
+
+_TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+_DURATION_RE = re.compile(r"^(\d+(?:\.\d+)?)(m|min|minutes|h|hr|hours)$", re.IGNORECASE)
+_DAY_NUMBERS = {"sun": "0", "mon": "1", "tue": "2", "wed": "3", "thu": "4", "fri": "5", "sat": "6"}
+_DAY_NAMES = tuple(_DAY_NUMBERS)
+_DAY_ALIASES = {"monday": "mon", "tuesday": "tue", "wednesday": "wed", "thursday": "thu", "friday": "fri", "saturday": "sat", "sunday": "sun"}
+
+
+def _ensure_storage() -> None:
+    _schedule_dir().mkdir(parents=True, exist_ok=True)
+    _schedule_dir().chmod(0o700)
+    if not _manifest_path().exists():
+        _write_manifest([])
+
+
+def _read_manifest() -> list[dict[str, Any]]:
+    try:
+        payload = json.loads(_manifest_path().read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, ValueError, json.JSONDecodeError):
+        return []
+    return [item for item in payload if isinstance(item, dict)] if isinstance(payload, list) else []
+
+
+def _write_manifest(records: list[dict[str, Any]]) -> None:
+    _schedule_dir().mkdir(parents=True, exist_ok=True)
+    _schedule_dir().chmod(0o700)
+    temporary = _manifest_path().with_suffix(".tmp")
+    temporary.write_text(json.dumps(records, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temporary.chmod(0o600)
+    temporary.replace(_manifest_path())
+    _manifest_path().chmod(0o600)
+
+
+def _canonical_duration(value: str) -> str:
+    match = _DURATION_RE.fullmatch(value.strip())
+    if not match:
+        raise ValueError("duration must look like 30m, 1h, or 1.5h")
+    amount = float(match.group(1))
+    unit = match.group(2).lower()
+    minutes = amount * (60 if unit in {"h", "hr", "hours"} else 1)
+    if minutes < 15 or minutes > 480:
+        raise ValueError("FM duration must be between 15m and 8h")
+    if minutes.is_integer():
+        return f"{int(minutes)}m"
+    return f"{amount:g}h" if unit in {"h", "hr", "hours"} else f"{amount:g}m"
+
+
+def _canonical_days(value: str) -> tuple[str, str]:
+    token = value.strip().lower()
+    if token in {"daily", "everyday", "every-day"}:
+        return "daily", "*"
+    if token in {"weekdays", "weekday", "workdays"}:
+        return "weekdays", "1-5"
+    if token in {"weekends", "weekend"}:
+        return "weekends", "0,6"
+    names = []
+    for raw_name in token.split(","):
+        name = _DAY_ALIASES.get(raw_name.strip(), raw_name.strip()[:3])
+        if name not in _DAY_NAMES:
+            raise ValueError("days must be daily, weekdays, weekends, or names such as mon,wed,fri")
+        if name not in names:
+            names.append(name)
+    if not names:
+        raise ValueError("days cannot be empty")
+    names.sort(key=lambda item: int(_DAY_NUMBERS[item]))
+    return ",".join(names), ",".join(_DAY_NUMBERS[item] for item in names)
+
+
+def parse_schedule_spec(text: str) -> dict[str, str]:
+    """Validate the compact Telegram form: ``HH:MM duration days``."""
+    try:
+        parts = shlex.split(text.strip())
+    except ValueError as exc:
+        raise ValueError("use HH:MM duration days, for example: 08:00 1h weekdays") from exc
+    if len(parts) not in {2, 3}:
+        raise ValueError("use HH:MM duration days, for example: 08:00 1h weekdays")
+    clock, duration = parts[:2]
+    if not _TIME_RE.fullmatch(clock):
+        raise ValueError("time must use 24-hour HH:MM format")
+    canonical_duration = _canonical_duration(duration)
+    days, cron_days = _canonical_days(parts[2] if len(parts) == 3 else "daily")
+    hour, minute = clock.split(":")
+    return {
+        "time": clock,
+        "duration": canonical_duration,
+        "days": days,
+        "cron": f"{int(minute)} {int(hour)} * * {cron_days}",
+    }
+
+
+def _wrapper_text(duration: str) -> str:
+    duration_literal = repr(duration)
+    sonos_literal = repr(str(_sonos_script()))
+    return f'''"""Generated by Hermes for one Sonos FM schedule."""
+import subprocess
+import sys
+
+SONOS_SCRIPT = {sonos_literal}
+DURATION = {duration_literal}
+result = subprocess.run(
+    [sys.executable, SONOS_SCRIPT, "fm", "--duration", DURATION, "--only-if-idle", "--no-wait"],
+    capture_output=True,
+    text=True,
+    check=False,
+)
+if result.returncode != 0:
+    print(f"Sonos FM schedule failed (exit {{result.returncode}}).")
+'''
+
+
+def _write_wrapper(schedule_id: str, duration: str) -> Path:
+    _ensure_storage()
+    path = _schedule_dir() / f"sonos-fm-{schedule_id}.py"
+    path.write_text(_wrapper_text(duration), encoding="utf-8")
+    path.chmod(0o700)
+    return path
+
+
+def _wrapper_path(record: dict[str, Any]) -> Path:
+    """Derive wrapper paths from the validated ID, never from manifest path text."""
+    schedule_id = str(record.get("id", ""))
+    if not re.fullmatch(r"[a-f0-9]{8}", schedule_id):
+        raise ValueError("invalid FM schedule ID")
+    directory = _schedule_dir().resolve()
+    candidate = _schedule_dir() / f"sonos-fm-{schedule_id}.py"
+    if not candidate.resolve().is_relative_to(directory):
+        raise ValueError("FM schedule wrapper escaped its managed directory")
+    return candidate
+
+
+def _cron_call(action: str, **kwargs: Any) -> dict[str, Any]:
+    from tools.cronjob_tools import cronjob
+
+    raw = cronjob(action=action, **kwargs)
+    try:
+        result = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {"success": False, "error": "scheduler returned an invalid response"}
+    return result if isinstance(result, dict) else {"success": False, "error": "scheduler returned an invalid response"}
+
+
+def _job_id_from_create(result: dict[str, Any]) -> str:
+    job = result.get("job")
+    if isinstance(job, dict):
+        return str(job.get("job_id") or job.get("id") or "")
+    return str(result.get("job_id") or "")
+
+
+def _cleanup_created_job_without_id(script: str) -> bool:
+    """Remove a malformed successful create response by its unique wrapper path."""
+    listed = _cron_call("list", include_disabled=True)
+    jobs = listed.get("jobs")
+    if not listed.get("success") or not isinstance(jobs, list):
+        return False
+    matches = [job for job in jobs if isinstance(job, dict) and str(job.get("script") or "") == script]
+    for job in matches:
+        job_id = str(job.get("job_id") or job.get("id") or "")
+        if not job_id or not _cron_call("remove", job_id=job_id).get("success"):
+            return False
+    return True
+
+
+def create_fm_schedule(spec_text: str) -> dict[str, Any]:
+    spec = parse_schedule_spec(spec_text)
+    schedule_id = uuid.uuid4().hex[:8]
+    wrapper = _write_wrapper(schedule_id, spec["duration"])
+    name = f"{SCHEDULE_PREFIX} · {spec['time']} · {spec['duration']} · {spec['days']}"
+    result = _cron_call(
+        "create",
+        schedule=spec["cron"],
+        name=name,
+        prompt=None,
+        script=str(wrapper.relative_to(_scripts_dir())),
+        no_agent=True,
+        deliver="local",
+    )
+    if not result.get("success"):
+        wrapper.unlink(missing_ok=True)
+        return result
+    job_id = _job_id_from_create(result)
+    if not job_id:
+        script = str(wrapper.relative_to(_scripts_dir()))
+        if _cleanup_created_job_without_id(script):
+            wrapper.unlink(missing_ok=True)
+            return {"success": False, "error": "scheduler created a job without an ID; cleanup was completed"}
+        return {"success": False,
+                "error": "scheduler created a job without an ID; cleanup could not be confirmed and the wrapper was retained"}
+    _ensure_storage()
+    records = _read_manifest()
+    records.append({
+        "id": schedule_id,
+        "job_id": job_id,
+        "time": spec["time"],
+        "duration": spec["duration"],
+        "days": spec["days"],
+        "cron": spec["cron"],
+        "script": str(wrapper.relative_to(_scripts_dir())),
+        "enabled": True,
+    })
+    _write_manifest(records)
+    return {"success": True, "schedule": records[-1]}
+
+
+def _find(schedule_id: str) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    records = _read_manifest()
+    return records, next((item for item in records if item.get("id") == schedule_id), None)
+
+
+def list_fm_schedules() -> dict[str, Any]:
+    records = _read_manifest()
+    result = _cron_call("list", include_disabled=True)
+    if not result.get("success"):
+        return result
+    jobs = result.get("jobs")
+    if not isinstance(jobs, list):
+        return {"success": False, "error": "scheduler returned an invalid job list"}
+    by_job_id = {
+        str(item.get("job_id") or item.get("id")): item
+        for item in jobs
+        if isinstance(item, dict)
+    }
+    if any(str(record.get("job_id")) not in by_job_id for record in records):
+        return {"success": False, "error": "scheduler is missing one or more recorded FM jobs"}
+    schedules = []
+    for record in records:
+        item = dict(record)
+        job = by_job_id.get(str(record.get("job_id")))
+        if job:
+            state = str(job.get("state") or "").lower()
+            item["enabled"] = state not in {"paused", "disabled", "cancelled"}
+            item["next_run_at"] = job.get("next_run_at")
+        schedules.append(item)
+    return {"success": True, "schedules": schedules}
+
+
+def get_fm_schedule(schedule_id: str) -> dict[str, Any]:
+    _, record = _find(schedule_id)
+    if record is None:
+        return {"success": False, "error": "FM schedule not found"}
+    listed = list_fm_schedules()
+    if not listed.get("success"):
+        return listed
+    schedules = listed.get("schedules")
+    if not isinstance(schedules, list):
+        return {"success": False, "error": "scheduler returned an invalid schedule list"}
+    current = next((item for item in schedules if item.get("id") == schedule_id), record)
+    return {"success": True, "schedule": current}
+
+
+def run_fm_schedule(schedule_id: str) -> dict[str, Any]:
+    if not re.fullmatch(r"[a-fA-F0-9]{8}", str(schedule_id)):
+        return {"success": False, "error": "FM schedule not found"}
+    _, record = _find(schedule_id)
+    if record is None:
+        return {"success": False, "error": "FM schedule not found"}
+    return _cron_call("run", job_id=str(record["job_id"]))
+
+
+def pause_fm_schedule(schedule_id: str) -> dict[str, Any]:
+    records, record = _find(schedule_id)
+    if record is None:
+        return {"success": False, "error": "FM schedule not found"}
+    result = _cron_call("pause", job_id=str(record["job_id"]), reason="Paused from Sonos FM panel")
+    if result.get("success"):
+        record["enabled"] = False
+        _write_manifest(records)
+        return {"success": True, "schedule": record}
+    return result
+
+
+def resume_fm_schedule(schedule_id: str) -> dict[str, Any]:
+    records, record = _find(schedule_id)
+    if record is None:
+        return {"success": False, "error": "FM schedule not found"}
+    result = _cron_call("resume", job_id=str(record["job_id"]))
+    if result.get("success"):
+        record["enabled"] = True
+        _write_manifest(records)
+        return {"success": True, "schedule": record}
+    return result
+
+
+def update_fm_schedule(schedule_id: str, spec_text: str) -> dict[str, Any]:
+    spec = parse_schedule_spec(spec_text)
+    records, record = _find(schedule_id)
+    if record is None:
+        return {"success": False, "error": "FM schedule not found"}
+    wrapper = _wrapper_path(record)
+    old_wrapper = wrapper.read_text(encoding="utf-8") if wrapper.exists() else ""
+    wrapper.write_text(_wrapper_text(spec["duration"]), encoding="utf-8")
+    wrapper.chmod(0o700)
+    result = _cron_call(
+        "update",
+        job_id=str(record["job_id"]),
+        schedule=spec["cron"],
+        name=f"{SCHEDULE_PREFIX} · {spec['time']} · {spec['duration']} · {spec['days']}",
+    )
+    if not result.get("success"):
+        if old_wrapper:
+            wrapper.write_text(old_wrapper, encoding="utf-8")
+        return result
+    record.update({"time": spec["time"], "duration": spec["duration"], "days": spec["days"], "cron": spec["cron"]})
+    _write_manifest(records)
+    return {"success": True, "schedule": record}
+
+
+def remove_fm_schedule(schedule_id: str) -> dict[str, Any]:
+    records, record = _find(schedule_id)
+    if record is None:
+        return {"success": False, "error": "FM schedule not found"}
+    result = _cron_call("remove", job_id=str(record["job_id"]))
+    if not result.get("success"):
+        return result
+    records = [item for item in records if item.get("id") != schedule_id]
+    _write_manifest(records)
+    script = _wrapper_path(record)
+    script.unlink(missing_ok=True)
+    return {"success": True, "removed": {"id": schedule_id}}

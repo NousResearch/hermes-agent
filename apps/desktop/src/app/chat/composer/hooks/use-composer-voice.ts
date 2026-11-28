@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { computed } from 'nanostores'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
+import { $apiRequestScope, type ResolvedOwner, resolveOwnerNow } from '@/api/client'
 import { useI18n } from '@/i18n'
 import { chatMessageText, collectUnspokenTurnSpeech, lastTextPartText } from '@/lib/chat-messages'
 import { triggerHaptic } from '@/lib/haptics'
@@ -12,14 +13,14 @@ import {
   resolveSpokenReply
 } from '@/lib/spoken-reply'
 import { CONVERSATION_LEASE, READ_ALOUD_LEASE, syncTtsLease } from '@/lib/tts-lease'
-import { toLiveHistory } from '@/lib/voice-live'
+import { resolveVoiceConversationStart, toLiveHistory, type VoiceLiveAuth } from '@/lib/voice-live'
 import { clearWakeIndicator, syncWakeIndicatorWithVoice } from '@/lib/wake-indicator'
 import { $voiceConversationStartRequest, takeVoiceConversationStart } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
 import { recordFeatureUse } from '@/store/desktop-metrics'
 import { $gateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
-import { $voiceLiveStatus, refreshVoiceLiveStatus, selectedVoiceChatMode } from '@/store/voice-live'
+import { refreshVoiceLiveStatus } from '@/store/voice-live'
 import { $autoSpeakReplies, $voiceStopPhrase, setAutoSpeakReplies } from '@/store/voice-prefs'
 import { retainVoiceStreamPaint } from '@/store/voice-stream-paint'
 import { resumeWakeAfterVoice } from '@/store/wake-word'
@@ -74,7 +75,7 @@ export function useComposerVoice({
 }: UseComposerVoiceArgs) {
   const { t } = useI18n()
   // A tile's composer speaks ITS transcript, not the primary chat's.
-  const { $messages } = useComposerScope()
+  const { $messages, connectionId: ownerConnectionId, profile: ownerProfile } = useComposerScope()
 
   // Wake the voice loop once when a pending reply first becomes speakable,
   // without re-rendering the composer for every streamed token. The live
@@ -97,6 +98,17 @@ export function useComposerVoice({
   // Engine selection is latched at conversation START (a Settings change
   // applies to the next conversation, never mid-call).
   const [liveEngineActive, setLiveEngineActive] = useState(false)
+  const ambient = useStore($apiRequestScope)
+  const connectionId = ownerConnectionId || ambient.connectionId
+  const profile = ownerProfile || ambient.profile
+  const [liveOwner, setLiveOwner] = useState<ResolvedOwner>()
+  const activation = useRef(0)
+  useLayoutEffect(() => {
+    setVoiceConversationActive(false)
+
+    return () => { activation.current++ }
+  }, [connectionId, profile, target])
+  const [liveExpectedAuth, setLiveExpectedAuth] = useState<null | VoiceLiveAuth>(null)
   // Barge-in can retain a submit callback from a render where the interrupted
   // turn was still busy. Read the current gate when its transcript arrives so
   // that stale closure does not silently drop the next voice turn.
@@ -246,6 +258,8 @@ export function useComposerVoice({
     busy,
     consumePendingResponse,
     enabled: voiceConversationActive && liveEngineActive,
+    expectedAuth: liveExpectedAuth,
+    owner: liveOwner,
     onFatalError: () => setVoiceConversationActive(false),
     onInterrupt,
     onStopWord: () => setVoiceConversationActive(false),
@@ -259,27 +273,34 @@ export function useComposerVoice({
   /** Turn the conversation on with the engine `voice.voice_chat_mode` selects,
    *  decided in the same state batch so the other engine never sees a frame of
    *  `enabled`. gpt-live selected but not startable (no OpenAI key on the
-   *  gateway) falls back to chained with a notice rather than a dead button. */
-  const activateConversation = useCallback(() => {
-    const status = $voiceLiveStatus.get()
-    let live = false
+   *  gateway) falls back to chained with a notice only for API mode. Explicit
+   *  subscription mode refuses to activate a different billed engine. */
+  const activateConversation = useCallback(async () => {
+    const epoch = ++activation.current
+    const owner = resolveOwnerNow({ connectionId, profile })
 
-    if (selectedVoiceChatMode(status) === 'gpt-live') {
-      if (status?.available) {
-        live = true
-      } else {
+    try {
+      const { auth, mode, fallbackReason } = await resolveVoiceConversationStart(owner)
+
+      if (activation.current !== epoch) {return}
+      setLiveOwner(owner)
+
+      if (fallbackReason) {
         notify({
           id: 'voice-live-unavailable',
           kind: 'warning',
-          message: t.notifications.voice.liveUnavailable(status?.reason ?? 'not configured')
+          message: t.notifications.voice.liveUnavailable(fallbackReason)
         })
       }
-    }
 
-    setLiveEngineActive(live)
-    setVoiceConversationActive(true)
-    recordFeatureUse('voice_conversation')
-  }, [t])
+      setLiveEngineActive(mode === 'gpt-live')
+      setLiveExpectedAuth(mode === 'gpt-live' ? auth : null)
+      setVoiceConversationActive(true)
+      recordFeatureUse('voice_conversation')
+    } catch (error) {
+      if (activation.current === epoch) {notifyError(error, t.notifications.voice.couldNotStartSession)}
+    }
+  }, [connectionId, profile, t])
 
   useEffect(() => {
     if (!voiceConversationActive) {
@@ -429,6 +450,7 @@ export function useComposerVoice({
   const startConversation = activateConversation
 
   const endConversation = useCallback(() => {
+    activation.current++
     setVoiceConversationActive(false)
     void conversation.end()
   }, [conversation])

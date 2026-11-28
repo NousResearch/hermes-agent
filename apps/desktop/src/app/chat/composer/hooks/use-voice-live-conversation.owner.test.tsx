@@ -51,6 +51,7 @@ function mountLive(wrapper?: ({ children }: { children: ReactNode }) => ReactNod
         busy: false,
         consumePendingResponse: vi.fn(),
         enabled: true,
+        owner: { connectionId: 'gw-bots', profile: 'bot-adam' },
         onSubmit: vi.fn(),
         pendingResponse: () => null,
         seedHistory: () => []
@@ -60,10 +61,10 @@ function mountLive(wrapper?: ({ children }: { children: ReactNode }) => ReactNod
 }
 
 describe('useVoiceLiveConversation — owner-routed session', () => {
-  it('constructs the session with the composer scope owner (connection, profile)', async () => {
+  it('constructs the session with the preflight owner, not the current composer scope', async () => {
     const wrapper = ({ children }: { children: ReactNode }) => (
       <ComposerScopeProvider
-        value={{ ...MAIN_COMPOSER_SCOPE, connectionId: 'gw-bots', profile: 'bot-adam', target: 'tile:bot' }}
+        value={{ ...MAIN_COMPOSER_SCOPE, connectionId: 'gw-new', profile: 'other', target: 'tile:bot' }}
       >
         {children}
       </ComposerScopeProvider>

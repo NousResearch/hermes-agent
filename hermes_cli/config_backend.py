@@ -209,12 +209,21 @@ class FileBackend:
     def read_path(path: Path) -> Any:
         from utils import fast_safe_load
         with open(path, encoding="utf-8-sig") as f:
-            return fast_safe_load(f)
+            text = f.read()
+        data = fast_safe_load(text)
+        if data is None:
+            # An empty document is defaults; an explicit null is an invalid root.
+            from ruamel.yaml import YAML
+            node = YAML(typ="safe").compose(text)
+            if node is not None and node.value:
+                raise TypeError("top-level YAML value must be a mapping, got explicit null")
+        return data
 
     @staticmethod
     def read_path_readonly(path: Path) -> Any:
         from utils import load_yaml_file_readonly
-        return load_yaml_file_readonly(path)
+        data = load_yaml_file_readonly(path)
+        return FileBackend.read_path(path) if data is None else data
 
     @staticmethod
     def write_path(path: Path, changes: Changes) -> None:
@@ -433,6 +442,15 @@ def read_config_doc(config_path: PathLike) -> Any:
     """Parsed root of a config file (None when empty); raises like ``open`` + ``fast_safe_load``."""
     backend, home = _route(config_path)
     return backend.read_user_doc(home)
+
+
+def config_mapping(data: Any) -> dict[str, Any]:
+    """Accept an empty document, but never interpret a non-mapping as defaults."""
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise TypeError(f"top-level YAML value must be a mapping, got {type(data).__name__}")
+    return data
 
 
 def read_config_doc_readonly(config_path: PathLike) -> Any:

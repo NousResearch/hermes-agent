@@ -1,13 +1,17 @@
 import { atom, type WritableAtom } from 'nanostores'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
+import type { ResolvedOwner } from '@/api/client'
 import { useI18n } from '@/i18n'
 import { sanitizeTextForSpeech } from '@/lib/speech-text'
-import { type LiveHistoryMessage, type LiveTranscriptFragment, VoiceLiveSession } from '@/lib/voice-live'
+import {
+  type LiveHistoryMessage,
+  type LiveTranscriptFragment,
+  type VoiceLiveAuth,
+  VoiceLiveSession
+} from '@/lib/voice-live'
 import { isVoiceStopCommand } from '@/lib/voice-stop-word'
 import { notify, notifyError } from '@/store/notifications'
-
-import { useComposerScope } from '../scope'
 
 import { micError } from './use-mic-recorder'
 import type { ConversationStatus } from './use-voice-conversation'
@@ -27,6 +31,8 @@ interface PendingVoiceResponse {
 interface VoiceLiveConversationOptions {
   busy: boolean
   enabled: boolean
+  owner?: ResolvedOwner
+  expectedAuth?: null | VoiceLiveAuth
   onFatalError?: () => void
   /** Interrupt the in-flight Hermes turn (Stop-button seam). Fired when a new
    *  delegation supersedes one still running. */
@@ -53,7 +59,7 @@ export function delegationPrompt(context: LiveTranscriptFragment[]): { context: 
   for (const fragment of context) {
     const last = turns.at(-1)
 
-    if (last && last.speaker === fragment.speaker) {
+    if (!fragment.startsTurn && last && last.speaker === fragment.speaker) {
       last.text += fragment.text
     } else {
       turns.push({ speaker: fragment.speaker, text: fragment.text })
@@ -61,10 +67,10 @@ export function delegationPrompt(context: LiveTranscriptFragment[]): { context: 
   }
 
   const lastUser = [...turns].reverse().find(turn => turn.speaker === 'user')
-  const prompt = (lastUser?.text ?? '').replace(/\s+/g, ' ').trim()
+  const prompt = (lastUser?.text ?? '').trim()
 
   const transcript = turns
-    .map(turn => `${turn.speaker === 'user' ? 'User' : 'Voice assistant'}: ${turn.text.replace(/\s+/g, ' ').trim()}`)
+    .map(turn => `${turn.speaker === 'user' ? 'User' : 'Voice assistant'}: ${turn.text.trim()}`)
     .filter(line => !line.endsWith(': '))
     .join('\n')
 
@@ -105,6 +111,8 @@ export function liveEndedMessage(
 export function useVoiceLiveConversation({
   busy,
   enabled,
+  owner,
+  expectedAuth,
   onFatalError,
   onInterrupt,
   onStopWord,
@@ -131,12 +139,6 @@ export function useVoiceLiveConversation({
   // restart the feed loop, and a ref write alone does not re-render.
   const [activeDelegation, setActiveDelegation] = useState<null | string>(null)
   const sessionRef = useRef<null | VoiceLiveSession>(null)
-  // The scope's session owner (a Bot's own connection + profile) picks the
-  // GPT-Live backend and voice; a ref keeps the long-lived start closures
-  // reading the current value.
-  const { connectionId: ownerConnectionId, profile: ownerProfile } = useComposerScope()
-  const ownerRef = useRef({ connectionId: ownerConnectionId, profile: ownerProfile })
-  ownerRef.current = { connectionId: ownerConnectionId, profile: ownerProfile }
   // Bumped by every start/end so an in-flight start() that lost the race
   // (StrictMode double-effect, quick toggle) closes its session instead of
   // leaving a second billed one running.
@@ -344,7 +346,8 @@ export function useVoiceLiveConversation({
           refreshStatus()
         }
       },
-      ownerRef.current
+      owner,
+      expectedAuth ?? null
     )
 
     sessionRef.current = session
@@ -380,7 +383,7 @@ export function useVoiceLiveConversation({
       setStatus('idle')
       latest.current.onFatalError?.()
     }
-  }, [end, levelStore, refreshStatus, setDelegation, voiceCopy])
+  }, [end, expectedAuth, owner, levelStore, refreshStatus, setDelegation, voiceCopy])
 
   // Drive the reply back into the voice: stream commentary as Hermes writes
   // it (sentence-chunked), quiet tool progress as thinking appends, and clear

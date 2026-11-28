@@ -16,7 +16,8 @@ import {
   sectionFieldEntries,
   setConfigField,
   setNested,
-  stripToolsetLabel
+  stripToolsetLabel,
+  voiceFieldVisible
 } from './helpers'
 
 describe('settings helpers', () => {
@@ -136,6 +137,24 @@ describe('settings helpers', () => {
     }
 
     expect(configFieldValue({ display: { show_reasoning: 'false' } }, 'display.show_reasoning')).toBe(false)
+  })
+
+  it('shows only the GPT-Live voice picker for the selected auth route', () => {
+    const subscription = { voice: { gpt_live: { auth: 'subscription' } } }
+    const api = { voice: { gpt_live: { auth: 'api' } } }
+
+    expect(voiceFieldVisible('voice.gpt_live.subscription_voice', subscription)).toBe(false)
+    expect(voiceFieldVisible('voice.gpt_live.voice', subscription)).toBe(false)
+    expect(voiceFieldVisible('voice.gpt_live.subscription_voice', api)).toBe(false)
+    expect(voiceFieldVisible('voice.gpt_live.voice', api)).toBe(true)
+  })
+
+  it('excludes the obsolete subscription voice in the curated Voice settings surface', () => {
+    const config = { voice: { gpt_live: { subscription_voice: 'cove' } } }
+    const schema = { 'voice.gpt_live.subscription_voice': { type: 'string' as const } }
+    const voiceKeys = (sectionFieldEntries(schema, config).get('voice') ?? []).map(([key]) => key)
+
+    expect(voiceKeys).not.toContain('voice.gpt_live.subscription_voice')
   })
 
   it('rejects prototype-polluting config paths', () => {

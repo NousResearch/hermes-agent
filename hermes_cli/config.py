@@ -50,7 +50,7 @@ from hermes_cli.config_credential_values import (
     _check_non_ascii_credential, refuse_redacted_config_credentials, refuse_redacted_env_value)
 from hermes_cli.config_backend import (
     ConfigWriteError, config_cache_version, config_destination, config_exists, config_version,
-    get_config_backend, probe_config_readable, read_config_doc, supports_file_tooling,
+    config_mapping, get_config_backend, probe_config_readable, read_config_doc, supports_file_tooling,
     write_config_document)
 from hermes_cli.config_read_errors import (
     _CONFIG_PARSE_FAILURES, _FIX_PERMS, _FIX_YAML, FailedConfigRead, _backups_dir_display,
@@ -448,15 +448,13 @@ def require_parseable_user_config(*, ignore_user_config: bool = False) -> None:
 
     config_path = get_config_path()
     try:
-        data = read_config_doc(config_path)
+        config_mapping(read_config_doc(config_path))
     except FileNotFoundError:
         return
     except Exception as exc:
         parse_error = exc
     else:
-        if data is None or isinstance(data, dict):
-            return
-        parse_error = TypeError(f"top-level YAML value must be a mapping, got {type(data).__name__}")
+        return
 
     from hermes_cli.config_backups import backup_config
     backup_path = backup_config(config_path, "corrupt")
@@ -2145,7 +2143,7 @@ def _load_config_impl(*, want_deepcopy: bool) -> dict[str, Any]:
 
         if user_sig is not None:
             try:
-                user_config = read_config_doc(config_path) or {}
+                user_config = config_mapping(read_config_doc(config_path))
                 _CONFIG_PARSE_FAILURES.pop(path_key, None)  # the file reads now (a transient error left the record)
 
                 if "max_turns" in user_config:

@@ -21,6 +21,14 @@ def home(tmp_path, monkeypatch):
 
 class TestRouting:
 
+    @pytest.mark.parametrize("document", ["", "# comment only\n", "---\n"])
+    def test_empty_file_needs_only_declared_yaml_parser(self, home, monkeypatch, document):
+        monkeypatch.setitem(sys.modules, "yaml", None)
+        path = home / "config.yaml"
+        path.write_text(document, encoding="utf-8")
+        assert cb.FileBackend.read_path(path) is None
+        assert cb.FileBackend.read_path_readonly(path) is None
+
     def test_default_is_file(self, home):
         assert cb.get_config_backend().name == "file"
         assert cb.supports_file_tooling() is True

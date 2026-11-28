@@ -1815,6 +1815,9 @@ def cmd_gui(args: argparse.Namespace):
             print("  Expected an unpacked Electron app for the current OS.")
             sys.exit(1)
         else:
+            # The updater launches this artifact directly, bypassing the launch-path repair.
+            # Keep the same best-effort fixup; inability to elevate remains a reported limitation.
+            _desktop_linux_sandbox_fixup(packaged_executable)
             print(f"✓ Desktop packaged app ready: {packaged_executable} (not launching; --build-only)")
         if build_lock is not None:
             build_lock.release()

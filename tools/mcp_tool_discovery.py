@@ -49,7 +49,12 @@ def _record_connect_failure(server_name: str) -> None:
     key = _server_key(server_name)
     n = _core._server_connect_failures.get(key, 0) + 1
     _core._server_connect_failures[key] = n
-    backoff = min(_core._CONNECT_RETRY_BASE_BACKOFF_SEC * (2 ** (n - 1)), _core._CONNECT_RETRY_MAX_BACKOFF_SEC)
+    # Clamp the exponent before the float multiply: once a server has failed 1025+ times in a
+    # row, 2 ** (n - 1) no longer converts to float (OverflowError: int too large to convert to
+    # float), and the exception escaped discovery instead of just extending this cooldown. The
+    # 600s cap is already reached at n=6, so the clamp never changes a backoff the cap allowed.
+    exponent = min(n - 1, 32)
+    backoff = min(_core._CONNECT_RETRY_BASE_BACKOFF_SEC * (2 ** exponent), _core._CONNECT_RETRY_MAX_BACKOFF_SEC)
     _core._server_connect_retry_after[key] = time.monotonic() + backoff
 
 

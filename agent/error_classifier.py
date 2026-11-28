@@ -1261,6 +1261,11 @@ def _status_404(c: _Ctx) -> Verdict:
 
 
 def _status_429(c: _Ctx) -> Verdict:
+    # DashScope's per-minute token throttle. Its OpenAI-compatible mode stamps it
+    # ``insufficient_quota`` (natively ``Throttling.AllocationQuota``), so it must be
+    # read before the billing code: the balance is fine and a retry succeeds (#159948).
+    if "allocated quota exceeded" in c.msg:
+        return _V_RATE_LIMIT
     # A structured billing code is decisive: LiteLLM stamps
     # ``terminal_quota_exhausted`` (a hard cap, not throttling) on 429s, and
     # this handler always returns, so _by_error_code never sees the code.

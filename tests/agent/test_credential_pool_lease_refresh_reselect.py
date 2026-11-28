@@ -53,7 +53,7 @@ def _wire_deferred_refresh(pool, *, refresh_succeeds: bool = True):
         if refresh_succeeds:
             state["needs_refresh"] = False
 
-    def fake_available(clear_expired=False, refresh=False):
+    def fake_available(clear_expired=False, refresh=False, model=None):
         if state["needs_refresh"]:
             # Pending a refresh -> not yet available.
             pending = [(e.id, "tok") for e in pool._entries] if refresh else []

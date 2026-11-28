@@ -2247,26 +2247,26 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
 
     # ---- leases ------------------------------------------------------------
 
-    def acquire_lease(self, credential_id: Optional[str] = None) -> Optional[str]:
+    def acquire_lease(self, credential_id: Optional[str] = None, *, model: Optional[str] = None) -> Optional[str]:
         """Acquire a soft lease on a credential.
 
         With *credential_id*, lease that entry directly. Otherwise prefer the
-        least-leased available credential (priority as tie-breaker); when
-        every credential is at the soft cap, still return the least-leased
-        one instead of blocking.
+        least-leased credential available for *model* (none = any model cooldown
+        excludes the entry), priority as tie-breaker; when every credential is at
+        the soft cap, still return the least-leased one instead of blocking.
         """
-        chosen_id, pending_refresh = self._acquire_lease_under_lock(credential_id)
+        chosen_id, pending_refresh = self._acquire_lease_under_lock(credential_id, model=model)
         if pending_refresh:
             self._refresh_pending_entries(pending_refresh)
             # Mirror select(): a pool whose entries all needed a deferred
             # refresh must retry once they are back in rotation, or the caller
             # sees "no credentials available" after a successful refresh.
             if chosen_id is None:
-                chosen_id, _ = self._acquire_lease_under_lock(credential_id)
+                chosen_id, _ = self._acquire_lease_under_lock(credential_id, model=model)
         return chosen_id
 
     def _acquire_lease_under_lock(
-        self, credential_id: Optional[str],
+        self, credential_id: Optional[str], *, model: Optional[str] = None,
     ) -> tuple[Optional[str], list[PooledCredential]]:
         with self._lock:
             if credential_id:
@@ -2274,7 +2274,7 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
                 self._current_id = credential_id
                 return credential_id, []
 
-            available, pending_refresh = self._available_entries(clear_expired=True, refresh=True)
+            available, pending_refresh = self._available_entries(clear_expired=True, refresh=True, model=model)
             if not available:
                 return None, pending_refresh
 

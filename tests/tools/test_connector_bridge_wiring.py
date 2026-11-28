@@ -155,6 +155,25 @@ def test_normalize_rejects_malformed_batches(bad, expected_fragment):
     assert expected_fragment in (err or "")
 
 
+@pytest.mark.parametrize(
+    "bad,echo_fragment,shape",
+    [
+        ({"calls": '{"name": "session_search", "arguments": {"query": "q"}'}, '{"name"', "a JSON array"),
+        ({"calls": [{"name": "session_search", "arguments": '{"query": "q"'}]}, '{"query"', "a JSON object"),
+    ],
+)
+def test_normalize_malformed_json_error_echoes_input_and_directs_recovery(bad, echo_fragment, shape):
+    # A malformed model-emitted JSON string must name the parse failure AND echo the
+    # caller's own (truncated) input with a directive to re-emit the native shape, so a
+    # cheap model self-corrects instead of re-sending the same broken string.
+    entries, err = normalize_tool_call_entries(bad)
+    assert entries == []
+    assert "not valid JSON" in err
+    assert "re-emit" in err
+    assert shape in err
+    assert echo_fragment in err
+
+
 # ---------------------------------------------------------------------------
 # dispatch_tool_search: remote merge
 # ---------------------------------------------------------------------------

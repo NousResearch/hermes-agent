@@ -23,6 +23,7 @@ from tools.skill_manager_tool import (
     _write_file,
     _remove_file,
     _find_skill,
+    _iter_skill_dirs,
     _skill_lock_path,
     skill_manage,
 )
@@ -933,6 +934,163 @@ def _write_external_skill(external_dir: Path, name: str = "ext-skill") -> Path:
         "# External\n\nBody with OLD_MARKER here.\n"
     )
     return skill_dir
+
+
+_SYMLINK_DEMO_SKILL = (
+    "---\nname: demo\ndescription: Symlinked external skill.\n---\n\nOLD_MARKER\n"
+)
+
+
+@pytest.fixture
+def symlink_external_home(tmp_path, monkeypatch):
+    """HERMES_HOME with skills.external_dirs pointing at a symlink view tree."""
+    import hermes_constants
+    from agent import skill_utils
+
+    home = tmp_path / ".hermes"
+    (home / "skills").mkdir(parents=True)
+    shared = tmp_path / "shared"
+    view = tmp_path / "view"
+    real = shared / "demo"
+    real.mkdir(parents=True)
+    (real / "SKILL.md").write_text(_SYMLINK_DEMO_SKILL, encoding="utf-8")
+    view.mkdir()
+    (view / "demo").symlink_to(real, target_is_directory=True)
+    (home / "config.yaml").write_text(
+        f"skills:\n  external_dirs:\n    - {view}\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(hermes_constants, "_hermes_home_cache", None, raising=False)
+    skill_utils._raw_config_cache_clear()
+    skill_utils._external_dirs_cache_clear()
+    yield home, view, real
+    skill_utils._external_dirs_cache_clear()
+
+
+@pytest.mark.require_symlinks
+class TestSymlinkedExternalSkillDirs:
+    """Regression for #155776: directory symlinks under skills.external_dirs must be discoverable.
+
+    Python 3.13+ ``Path.rglob`` does not traverse directory symlinks; ``skill_manage`` used rglob
+    while skill_view uses ``os.walk(..., followlinks=True)``, so patch failed and create shadowed.
+    """
+
+    def test_find_skill_through_external_dir_symlink(self, symlink_external_home):
+        found = _find_skill("demo")
+        assert found is not None, "symlinked external skill must resolve"
+        assert found["path"].name == "demo"
+
+    def test_find_skill_nested_behind_category_symlink(self, tmp_path, monkeypatch):
+        import hermes_constants
+        from agent import skill_utils
+
+        home = tmp_path / ".hermes"
+        (home / "skills").mkdir(parents=True)
+        shared = tmp_path / "shared"
+        subtree = shared / "category" / "nested-skill"
+        subtree.mkdir(parents=True)
+        (subtree / "SKILL.md").write_text(
+            "---\nname: nested-skill\ndescription: Nested.\n---\n\nBody.\n",
+            encoding="utf-8",
+        )
+        view = tmp_path / "view"
+        view.mkdir()
+        (view / "category").symlink_to(shared / "category", target_is_directory=True)
+        (home / "config.yaml").write_text(
+            f"skills:\n  external_dirs:\n    - {view}\n", encoding="utf-8"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setattr(hermes_constants, "_hermes_home_cache", None, raising=False)
+        skill_utils._raw_config_cache_clear()
+        skill_utils._external_dirs_cache_clear()
+
+        found = _find_skill("nested-skill")
+        assert found is not None
+        assert found["path"].name == "nested-skill"
+        assert "NEW" not in (shared / "category" / "nested-skill" / "SKILL.md").read_text()
+
+    def test_patch_symlinked_external_writes_real_file_not_local_copy(
+        self, symlink_external_home
+    ):
+        home, _view, real = symlink_external_home
+        result = _patch_skill("demo", "OLD_MARKER", "NEW_MARKER")
+        assert result["success"] is True, result
+        assert "NEW_MARKER" in (real / "SKILL.md").read_text(encoding="utf-8")
+        assert not (home / "skills" / "demo").exists()
+
+        shadow = _create_skill("demo", VALID_SKILL_CONTENT)
+        assert shadow["success"] is False
+        assert "already exists" in shadow["error"]
+
+    def test_excluded_alias_visited_first_does_not_hide_valid_skill(
+        self, symlink_external_home, monkeypatch
+    ):
+        """Regression: excluded .archive symlink must not poison seen before demo is walked."""
+        _home, view, real = symlink_external_home
+        (view / ".archive").symlink_to(real, target_is_directory=True)
+
+        _orig_walk = os.walk
+
+        def _walk_archive_first(top, *args, **kwargs):
+            for dirpath, dirnames, files in _orig_walk(top, *args, **kwargs):
+                dirnames.sort(key=lambda d: (0 if d == ".archive" else 1, d))
+                yield dirpath, dirnames, files
+
+        monkeypatch.setattr("tools.skill_manager_tool.os.walk", _walk_archive_first)
+
+        found = _find_skill("demo")
+        assert found is not None, (
+            "valid symlink alias must resolve when excluded alias shares realpath"
+        )
+        assert found["path"].name == "demo"
+
+        raw = skill_manage(
+            action="patch",
+            name="demo",
+            old_string="OLD_MARKER",
+            new_string="NEW_MARKER",
+        )
+        result = json.loads(raw)
+        assert result["success"] is True, result
+        assert "NEW_MARKER" in (real / "SKILL.md").read_text(encoding="utf-8")
+
+    def test_symlink_loop_does_not_hang_or_duplicate(self, symlink_external_home):
+        _home, view, _real = symlink_external_home
+        (view / "loop").symlink_to(view, target_is_directory=True)
+        collected: list = []
+        error: list[BaseException] = []
+
+        def _collect():
+            try:
+                collected.extend(list(_iter_skill_dirs(view)))
+            except BaseException as exc:  # pragma: no cover — timeout guard
+                error.append(exc)
+
+        worker = threading.Thread(target=_collect, daemon=True)
+        worker.start()
+        worker.join(timeout=2.0)
+        assert not worker.is_alive(), "symlink loop must not hang _iter_skill_dirs"
+        assert not error, error
+        demo_dirs = [p for p in collected if p.name == "demo"]
+        assert len(demo_dirs) == 1
+
+    def test_iter_skill_dirs_plain_tree_matches_rglob_order(self, tmp_path):
+        """Non-symlink trees must keep the same discovery sequence as rglob."""
+        from agent.skill_utils import is_excluded_skill_path
+
+        (tmp_path / "alpha").mkdir()
+        (tmp_path / "alpha" / "SKILL.md").write_text(VALID_SKILL_CONTENT, encoding="utf-8")
+        (tmp_path / "bravo" / "charlie").mkdir(parents=True)
+        (tmp_path / "bravo" / "charlie" / "SKILL.md").write_text(
+            "---\nname: charlie\ndescription: Nested.\n---\n\nBody.\n", encoding="utf-8"
+        )
+        walk_names = [d.name for d in _iter_skill_dirs(tmp_path)]
+        rglob_names = [
+            p.parent.name
+            for p in tmp_path.rglob("SKILL.md")
+            if not is_excluded_skill_path(p)
+        ]
+        assert walk_names == rglob_names
 
 
 class TestExternalSkillMutations:

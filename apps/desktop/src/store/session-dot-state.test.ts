@@ -18,6 +18,7 @@ import {
   $sessionDotStateById,
   $unreadSessionCount,
   hasLiveTurn,
+  nextAttentionSessionId,
   showsRunningArc,
   unreadSessionCount
 } from './session-dot-state'
@@ -181,6 +182,21 @@ describe('unreadSessionCount', () => {
 
   it('does not count alias keys that are not listed rows', () => {
     expect(unreadSessionCount({ tip: 'unread', root: 'unread' }, [{ id: 'tip' }])).toBe(1)
+  })
+})
+
+describe('nextAttentionSessionId', () => {
+  const states = { blocked: 'needs-input', done: 'unread', busy: 'working', old: 'unread' } as const
+  const rows = [{ id: 'done' }, { id: 'busy' }, { id: 'blocked' }, { archived: true, id: 'old' }]
+
+  it('opens a blocked prompt before an unread finish, then walks the rest and wraps', () => {
+    expect(nextAttentionSessionId(states, null, rows)).toBe('blocked')
+    expect(nextAttentionSessionId(states, 'blocked', rows)).toBe('done')
+    expect(nextAttentionSessionId(states, 'done', rows)).toBe('blocked')
+  })
+
+  it('finds nothing when no listed, unarchived session is waiting', () => {
+    expect(nextAttentionSessionId(states, null, [{ id: 'busy' }, { archived: true, id: 'old' }])).toBeNull()
   })
 })
 

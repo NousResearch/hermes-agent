@@ -92,8 +92,10 @@ function dragTo(source: HTMLElement, x: number, y: number) {
     pointerId: 1
   } as unknown as ReactPointerEvent<HTMLElement>)
 
-  window.dispatchEvent(new MouseEvent('pointermove', { bubbles: true, clientX: x, clientY: y }))
-  window.dispatchEvent(new MouseEvent('pointerup', { bubbles: true, clientX: x, clientY: y }))
+  window.dispatchEvent(
+    new PointerEvent('pointermove', { bubbles: true, buttons: 1, clientX: x, clientY: y, pointerId: 1 })
+  )
+  window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientX: x, clientY: y, pointerId: 1 }))
 }
 
 beforeEach(() => {
@@ -110,6 +112,37 @@ afterEach(() => {
 })
 
 describe('session drop targeting across stacked tabs', () => {
+  it('never links a stale tab gesture and allows the next plain tap to activate', async () => {
+    const row = mountStackedTabs()
+    const onTap = vi.fn()
+
+    const press = {
+      button: 0,
+      buttons: 1,
+      clientX: 0,
+      clientY: 0,
+      currentTarget: row,
+      pointerId: 1
+    } as unknown as ReactPointerEvent<HTMLElement>
+
+    startSessionDrag({ id: 'dragged', profile: 'default', title: 'Dragged chat' }, press, { onTap })
+    window.dispatchEvent(new Event('blur'))
+    window.dispatchEvent(
+      new PointerEvent('pointermove', { bubbles: true, buttons: 0, clientX: 500, clientY: 740, pointerId: 1 })
+    )
+    await new Promise(resolve => requestAnimationFrame(resolve))
+    window.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1 }))
+
+    expect(requestComposerInsertRefs).not.toHaveBeenCalled()
+    expect(onTap).not.toHaveBeenCalled()
+    expect(document.body.classList.contains('guest-pointer-lock')).toBe(false)
+
+    startSessionDrag({ id: 'dragged', profile: 'default', title: 'Dragged chat' }, press, { onTap })
+    window.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1 }))
+    expect(onTap).toHaveBeenCalledTimes(1)
+    expect(requestComposerInsertRefs).not.toHaveBeenCalled()
+  })
+
   it('links into the visible tab’s composer, not the tab kept alive behind it', () => {
     const row = mountStackedTabs()
 
@@ -272,11 +305,13 @@ describe('session drop targeting onto the Pinned section', () => {
       currentTarget: row,
       pointerId: 1
     } as unknown as ReactPointerEvent<HTMLElement>)
-    window.dispatchEvent(new MouseEvent('pointermove', { bubbles: true, clientX: 100, clientY: 20 }))
+    window.dispatchEvent(
+      new PointerEvent('pointermove', { bubbles: true, buttons: 1, clientX: 100, clientY: 20, pointerId: 1 })
+    )
     await new Promise(resolve => requestAnimationFrame(resolve))
     expect(section.getAttribute('data-session-drop-hover')).toBe('true')
 
-    window.dispatchEvent(new MouseEvent('pointerup', { bubbles: true, clientX: 100, clientY: 20 }))
+    window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientX: 100, clientY: 20, pointerId: 1 }))
     expect(section.hasAttribute('data-session-drop-hover')).toBe(false)
   })
 

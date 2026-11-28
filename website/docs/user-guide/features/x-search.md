@@ -77,6 +77,15 @@ x_search:
   # Number of automatic retries on 5xx / ReadTimeout / ConnectionError.
   # Each retry backs off (1.5x attempt seconds, capped at 5s).
   retries: 2
+
+  # Optional, explicit self-hosted OpenAI-compatible Responses gateway.
+  # When set, x_search uses ONLY the named environment key; xAI OAuth/API
+  # credentials are never sent to this host. HTTPS is required except for
+  # loopback development endpoints.
+  # gateway:
+  #   base_url: https://search-gateway.example/v1
+  #   key_env: X_SEARCH_GATEWAY_KEY
+  #   model: your-search-enabled-model
 ```
 
 `reasoning_effort` is sent to the xAI Responses API as

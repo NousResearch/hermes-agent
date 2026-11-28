@@ -15,7 +15,9 @@ import json
 import logging
 import time
 from datetime import date, datetime, timezone, UTC
+from ipaddress import ip_address
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 import requests
 
@@ -39,6 +41,47 @@ def _load_x_search_config() -> dict[str, Any]:
         return {}
 
 
+def _x_search_gateway_config() -> dict[str, str] | None:
+    raw = _load_x_search_config().get("gateway")
+    if raw is None or raw == {}:
+        return None
+    if not isinstance(raw, dict):
+        # Fail closed: a gateway the user tried to configure must never silently
+        # fall back to xAI credentials (and xAI billing).
+        raise ValueError("x_search.gateway must be a mapping with base_url, key_env, and model")
+    base_url = str(raw.get("base_url") or "").strip().rstrip("/")
+    key_env = str(raw.get("key_env") or "").strip()
+    model = str(raw.get("model") or "").strip()
+    if not base_url or not key_env or not model:
+        raise ValueError("x_search.gateway requires base_url, key_env, and model")
+    parsed = urlparse(base_url)
+    if parsed.scheme not in {"https", "http"} or not parsed.netloc:
+        raise ValueError("x_search.gateway.base_url must be an absolute HTTPS URL")
+    host = (parsed.hostname or "").strip("[]").lower()
+    loopback = host == "localhost"
+    if not loopback:
+        try:
+            loopback = ip_address(host).is_loopback
+        except ValueError:
+            loopback = False
+    if parsed.scheme != "https" and not loopback:
+        raise ValueError("x_search.gateway.base_url must use HTTPS unless it targets loopback")
+    return {"base_url": base_url, "key_env": key_env, "model": model}
+
+
+def _resolve_x_search_gateway() -> tuple[str, str, str] | None:
+    gateway = _x_search_gateway_config()
+    if gateway is None:
+        return None
+    from hermes_cli.config import get_env_value
+
+    # Same scope-aware reader as other Hermes secrets (profile scope, ~/.hermes/.env).
+    key = str(get_env_value(gateway["key_env"]) or "").strip()
+    if not key:
+        raise RuntimeError(f"x_search gateway key is missing from {gateway['key_env']}")
+    return key, gateway["base_url"], gateway["model"]
+
+
 def _get_x_search_reasoning_effort() -> Optional[str]:
     raw_value = _load_x_search_config().get("reasoning_effort")
     effort = str(raw_value).strip().lower() if raw_value is not None else ""
@@ -56,15 +99,11 @@ def _get_x_search_int(key: str, default: int, floor: int) -> int:
 
 
 def _resolve_xai_bearer() -> tuple[str, str, str]:
-    """Return ``(api_key, base_url, source)``; ``source`` is ``"xai-oauth"`` or ``"xai"``. Raises RuntimeError
-    when no credential is usable (expiry between registration and call -> clean tool error, not a 401).
-
-    x_search is API-index access: when a subscription OAuth credential is configured alongside a paid
-    ``XAI_API_KEY``, the OAuth path authorizes but answers ``/v1/responses`` in a degraded Grok explanatory
-    mode with no citations, while the API key returns real posts (#88040). Pass ``prefer_api_key=True`` so
-    the shared resolver checks the explicit API key first — same root cause as the TTS fix for #87045
-    (#87081) — keeping OAuth as the fallback when no API key is configured.
-    """
+    """Return ``(api_key, base_url, source)`` for the configured transport."""
+    gateway = _resolve_x_search_gateway()
+    if gateway is not None:
+        key, base_url, _model = gateway
+        return key, base_url, "gateway"
     creds = resolve_xai_http_credentials(prefer_api_key=True)
     api_key = str(creds.get("api_key") or "").strip()
     if not api_key:
@@ -77,8 +116,14 @@ def _resolve_xai_bearer() -> tuple[str, str, str]:
 
 
 def check_x_search_requirements() -> bool:
-    """True when xAI credentials resolve to a non-empty bearer (OAuth auto-refreshed)."""
-    return bool(str(resolve_xai_http_credentials().get("api_key") or "").strip())
+    """True when the configured xAI or dedicated gateway credential is usable."""
+    try:
+        gateway = _resolve_x_search_gateway()
+        if gateway is not None:
+            return True
+        return bool(str(resolve_xai_http_credentials().get("api_key") or "").strip())
+    except (RuntimeError, ValueError):
+        return False
 
 
 def _normalize_handles(handles: Optional[list[str]], field_name: str) -> list[str]:
@@ -224,7 +269,7 @@ def x_search_tool(
         return tool_error("query is required for x_search")
     try:
         api_key, base_url, source = _resolve_xai_bearer()
-    except RuntimeError as exc:
+    except (RuntimeError, ValueError) as exc:
         return tool_error(str(exc))
     try:
         tool_def, active_filters = _build_x_search_tool_def(
@@ -236,8 +281,13 @@ def x_search_tool(
         return tool_error(str(exc))
 
     try:
+        gateway_config = _x_search_gateway_config()
         payload = {
-            "model": str(_load_x_search_config().get("model") or "").strip() or DEFAULT_X_SEARCH_MODEL,
+            "model": (
+                gateway_config["model"]
+                if gateway_config is not None
+                else str(_load_x_search_config().get("model") or "").strip() or DEFAULT_X_SEARCH_MODEL
+            ),
             "input": [{"role": "user", "content": query.strip()}],
             "tools": [tool_def],
             "store": False,

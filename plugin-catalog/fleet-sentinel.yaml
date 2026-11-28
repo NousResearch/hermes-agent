@@ -1,0 +1,17 @@
+name: fleet-sentinel
+title: Fleet Sentinel
+repo: https://github.com/imperator-clawdius/hermes-fleet-sentinel
+sha: c78fe683225f6eb898c2076073992727075e0caa
+description: "Out-of-band health monitoring for remote Hermes gateway hosts: corroborated up/deaf/down verdicts, escalating alerts, and gateway recovery. Cross-checks four independent signals (TCP reachability, SSH, the host's systemd unit state, and the messaging platform API reached from the host itself) so a broken gateway can still report on itself, then re-pages on a timer. Ships three tools (fleet_status, fleet_probe, fleet_recover) plus a tick script for a no_agent cron job, so alerting never depends on the agent whose gateway is down. Disclosure - opens SSH sessions to every configured host with BatchMode key auth and runs commands there (systemctl show, journalctl tail of the unit, a platform-API reachability probe, tailscale status); with auto_heal enabled, or on an explicit fleet_recover call, it runs systemctl restart on the configured unit. It does not read the remote .env, auth.json, session store or headers, sends no message content anywhere, contacts no third-party service, and stores no credentials: host addresses come from the user's own ssh config. No telemetry."
+maintainer: imperator-clawdius
+tier: community
+category: automation
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/imperator-clawdius/hermes-fleet-sentinel#readme
+version: "1.0.0"
+platforms: [linux, macos]
+capabilities:
+  provides_tools: [fleet_status, fleet_probe, fleet_recover]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

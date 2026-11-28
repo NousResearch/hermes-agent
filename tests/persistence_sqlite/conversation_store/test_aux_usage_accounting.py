@@ -221,6 +221,23 @@ class TestAmbientAccountingContext:
         assert rows[0]["input_tokens"] == 100
         assert rows[0]["output_tokens"] == 20
 
+    def test_record_aux_usage_reports_provider_total_to_turn_budget(self, db):
+        from agent.aux_accounting import (
+            record_aux_usage,
+            reset_accounting_context,
+            set_accounting_context,
+        )
+
+        create_session(db, "s1", source="cli")
+        processed = []
+        token = set_accounting_context(db, "s1", on_usage=processed.append)
+        try:
+            record_aux_usage(_mk_response(), "compression")
+        finally:
+            reset_accounting_context(token)
+
+        assert processed == [120]
+
 
     def test_writer_handle_records_the_row_the_store_records(self, db, tmp_path, monkeypatch):
         """A writer handle beside the store carries the write and the store is never called; the row

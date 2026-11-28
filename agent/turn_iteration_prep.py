@@ -185,6 +185,9 @@ def prepare_iteration(
     if getattr(agent, "run_budget_seconds", None):
         _maybe_inject_run_budget_wrapup(agent, messages)
 
+    from agent.processed_token_budget import maybe_inject_processed_token_warning
+    maybe_inject_processed_token_warning(agent, messages)
+
     # Appended to the newest tool result; never a synthetic user/system row.
     _maybe_inject_iteration_budget_warning(agent, messages)
 
@@ -340,7 +343,7 @@ def announce_api_call(
 @dataclass
 class IterationStart:
     """``action``: ``"fallthrough"`` (run the iteration) or ``"break"`` (turn ends: interrupt,
-    review input budget or iteration budget exhausted — ``_turn_exit_reason`` set)."""
+    review input, processed-token, or iteration budget exhausted — ``_turn_exit_reason`` set)."""
 
     action: str
     original_user_message: Any
@@ -358,6 +361,10 @@ def begin_iteration(
     incremented here (the grace call consumes its flag instead of the budget)."""
     from agent.conversation_loop import (
         _apply_active_turn_redirect, _review_input_budget_exhausted
+    )
+    from agent.processed_token_budget import (
+        processed_token_budget_exhausted, processed_token_budget_exit_reason,
+        turn_processed_tokens,
     )
 
     def _verdict(action: str) -> IterationStart:
@@ -396,6 +403,21 @@ def begin_iteration(
                 f"\n⏹️  Review input budget exhausted "
                 f"({int(agent.session_input_tokens):,} tokens) — stopping "
                 f"the review tool loop before the next provider call.", diagnostic=True,
+            )
+        return _verdict("break")
+
+    if processed_token_budget_exhausted(agent):
+        _turn_exit_reason = processed_token_budget_exit_reason(agent)
+        maximum = int(agent.max_processed_tokens_per_turn)
+        used = turn_processed_tokens(agent)
+        agent._emit_diagnostic_status(
+            f"⏹️ Processed-token budget exhausted ({used:,}/{maximum:,}) — "
+            "stopping before the next provider call"
+        )
+        if not agent.quiet_mode:
+            agent._safe_print(
+                f"\n⏹️  Processed-token budget exhausted ({used:,}/{maximum:,}) — "
+                "stopping before the next provider call.", diagnostic=True,
             )
         return _verdict("break")
 

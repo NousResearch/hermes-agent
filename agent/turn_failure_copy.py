@@ -185,10 +185,12 @@ def exit_reason_failure(turn_exit_reason: Any) -> Optional[ExitFailure]:
 
 
 def is_max_iteration_handoff(result: Any) -> bool:
-    """A non-failed, non-interrupted ``max_iterations_reached(N/N)`` result that still carries a
-    summary. ``completed`` is False because the work did not finish in that turn, but the turn
-    itself is a resumable boundary — not a failure — so cron delivers the summary and an active
-    ``/goal`` may judge it (#102213). Provider/API failures never match (cf. #63180)."""
+    """A non-failed, non-interrupted budget handoff with a resumable checkpoint.
+
+    ``completed`` is False because the work did not finish in that turn, but iteration and
+    processed-token boundaries are intentional rather than provider/API failures, so cron
+    delivers the checkpoint and an active ``/goal`` may continue it (#102213).
+    """
     if not isinstance(result, dict):
         return False
     if result.get("failed") is True or result.get("interrupted") is True:
@@ -196,7 +198,12 @@ def is_max_iteration_handoff(result: Any) -> bool:
     if result.get("completed") is not False:
         return False
     reason = result.get("turn_exit_reason")
-    if not (isinstance(reason, str) and reason.startswith("max_iterations_reached(")):
+    if not (
+        isinstance(reason, str)
+        and reason.startswith((
+            "max_iterations_reached(", "processed_token_budget_exhausted(",
+        ))
+    ):
         return False
     return bool(str(result.get("final_response") or "").strip())
 

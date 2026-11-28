@@ -27,6 +27,7 @@ from agent.agent_init_fallback import _fallback_entries, _init_fallback_chain, r
 from agent.agent_init_params import _CALLBACK_PARAMS, _GATEWAY_IDENTITY_PARAMS, _PASSTHROUGH_PARAMS
 from agent.agent_runtime_helpers import _ra
 from agent.iteration_budget import IterationBudget, normalize_budget_warning_ratio
+from agent.processed_token_budget import normalize_processed_token_budget
 from agent.memory_context import StreamingContextScrubber
 from agent.memory_provider import is_core_memory_provider
 from agent.session_activity import ActivityProvenance
@@ -453,6 +454,10 @@ _CONTROL_STATE: dict[str, Any] = {
     "_background_review_agent": None,
     "_background_review_run": None,
     "_background_review_lock": threading.Lock,
+    # Auxiliary model calls may finish on worker threads. A scoped callback adds their
+    # provider-confirmed usage to the active turn without leaking into the next turn.
+    "_processed_token_budget_lock": threading.Lock,
+    "_processed_token_budget_scope": None,
 }
 
 # Per-turn bookkeeping: budgets, activity tracking, rate-limit/credits telemetry.
@@ -464,6 +469,9 @@ _TURN_STATE: dict[str, Any] = {
     "_budget_grace_call": False,
     "_run_budget_started_at": None,  # set by turn_context.prepare_turn when a budget is active
     "_run_budget_wrapup_injected": False,  # one-shot latch for the 80% wrap-up notice
+    "_turn_processed_tokens_start": 0,
+    "_turn_aux_processed_tokens": 0,
+    "_processed_token_budget_warning_injected": False,
     # Activity tracking (API call / tool / stream chunk) for the gateway timeout handler and
     # "still working" notifications. Named provenances are stamped only by compression writers.
     "_last_activity_ts": lambda: time.time(),
@@ -1223,6 +1231,12 @@ def _apply_agent_section(agent, _agent_cfg):
     _agent_section = _cfg_dict(_agent_cfg, "agent")
     agent.budget_warning_ratio = normalize_budget_warning_ratio(
         _agent_section.get("budget_warning_ratio")
+    )
+    agent.max_processed_tokens_per_turn = normalize_processed_token_budget(
+        _agent_section.get("max_processed_tokens_per_turn")
+    )
+    agent.processed_token_warning_ratio = normalize_budget_warning_ratio(
+        _agent_section.get("processed_token_warning_ratio")
     )
     # Both: "auto" (model-list match), true, false, or list of model substrings; independent
     # of each other (gates in agent/system_prompt.py).

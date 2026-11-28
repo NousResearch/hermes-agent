@@ -97,7 +97,7 @@ class TurnFacadeMixin:
         relay_lease = relay_turn = lease = None
         # Scope tokens start None: early returns leave the try before the set_*() calls and
         # the finally resets each one unconditionally.
-        token = affinity_token = acct_token = None
+        token = affinity_token = acct_token = budget_scope = None
         task_started = task_finished = False
         relay_outcome = "failed"
 
@@ -159,9 +159,17 @@ class TurnFacadeMixin:
             # Publish the session accounting handles the same way so auxiliary calls record their token
             # usage into session_model_usage (task dimension) — the fix for aux spend being invisible in
             # analytics (issue #23270).
+            from agent.processed_token_budget import note_aux_processed_tokens
+            budget_scope = object()
+            self._processed_token_budget_scope = budget_scope
+
+            def _count_aux_usage(tokens):
+                note_aux_processed_tokens(self, tokens, scope=budget_scope)
+
             acct_token = set_accounting_context(
                 getattr(self, "_session_db", None), getattr(self, "session_id", None),
                 persistence=agent_interface(self),
+                on_usage=_count_aux_usage,
             )
 
             # Use the builder's turn label, not skill/memory write provenance. An ordinary turn
@@ -235,6 +243,8 @@ class TurnFacadeMixin:
                         self._relay_pending_turn_id = None
                     if acct_token is not None:
                         reset_accounting_context(acct_token)
+                    if getattr(self, "_processed_token_budget_scope", None) is budget_scope:
+                        self._processed_token_budget_scope = None
                     if token is not None:
                         reset_conversation_context(token)
                     if affinity_token is not None:

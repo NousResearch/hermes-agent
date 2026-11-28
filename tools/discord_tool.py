@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent.secret_scope import get_secret
+from tools.discord_voice_actions import voice_action, voice_available
 from tools.registry import registry, tool_error
 
 logger = logging.getLogger(__name__)
@@ -414,6 +415,20 @@ _remove_role = _mutation(
     "Role {role_id} removed from user {user_id}.")
 
 
+# Voice actions act on the live gateway adapter (in this process), not on the REST API, so they
+# ignore ``token``. ``_get_dynamic_schema`` only offers them while a Discord gateway is running.
+def _voice_join(token: str = "", **_kwargs: Any) -> str:
+    return voice_action("join")
+
+
+def _voice_leave(token: str = "", **_kwargs: Any) -> str:
+    return voice_action("leave")
+
+
+def _voice_status(token: str = "", **_kwargs: Any) -> str:
+    return voice_action("status")
+
+
 # ── action dispatch + metadata ───────────────────────────────────────────────
 # Single source of truth: (action, handler, required-param signature, description). Order is
 # the schema/enum order; the signature drives runtime required-param validation.
@@ -433,6 +448,9 @@ _ACTION_MANIFEST = [
     ("create_thread", _create_thread, "(channel_id, name)", "create a public thread; optional message_id anchor"),
     ("add_role", _add_role, "(guild_id, user_id, role_id)", "assign a role"),
     ("remove_role", _remove_role, "(guild_id, user_id, role_id)", "remove a role"),
+    ("voice_join", _voice_join, "()", "join the voice channel the requesting user is in; binds it to this text chat (a DM uses the home channel)"),
+    ("voice_leave", _voice_leave, "()", "ask the voice client to disconnect, turn voice replies off and stop listening"),
+    ("voice_status", _voice_status, "()", "whether you are in voice, where, and who is there"),
 ]
 _ACTIONS = {name: fn for name, fn, _sig, _desc in _ACTION_MANIFEST}
 _REQUIRED_PARAMS: dict[str, list[str]] = {
@@ -441,7 +459,8 @@ _REQUIRED_PARAMS: dict[str, list[str]] = {
 
 # Two tools share one action table: ``discord`` (core, the participation trio every bot
 # user wants) and ``discord_admin`` (everything else).
-_CORE_ACTION_NAMES = frozenset({"fetch_messages", "search_members", "create_thread"})
+_VOICE_ACTION_NAMES = frozenset({"voice_join", "voice_leave", "voice_status"})
+_CORE_ACTION_NAMES = frozenset({"fetch_messages", "search_members", "create_thread"}) | _VOICE_ACTION_NAMES
 _CORE_ACTIONS = {k: v for k, v in _ACTIONS.items() if k in _CORE_ACTION_NAMES}
 _ADMIN_ACTIONS = {k: v for k, v in _ACTIONS.items() if k not in _CORE_ACTION_NAMES}
 
@@ -478,9 +497,12 @@ def _load_allowed_actions_config() -> Optional[list[str]]:
 def _available_actions(caps: dict[str, Any], allowlist: Optional[list[str]]) -> list[str]:
     """Visible actions from intents + config allowlist, in :data:`_ACTIONS` order."""
     members_ok = caps.get("has_members_intent", True)
+    voice_ok = voice_available()  # voice needs a live Discord gateway in this process
     return [
         name for name in _ACTIONS
-        if (members_ok or name not in _INTENT_GATED_MEMBERS) and (allowlist is None or name in allowlist)]
+        if (members_ok or name not in _INTENT_GATED_MEMBERS)
+        and (voice_ok or name not in _VOICE_ACTION_NAMES)
+        and (allowlist is None or name in allowlist)]
 
 
 # ── schema construction ──────────────────────────────────────────────────────
@@ -494,7 +516,9 @@ _TOOL_DESCRIPTIONS = {
     "discord": (
         "Read and participate in a Discord server.",
         "Use the channel_id from the current conversation context. "
-        "Use search_members to look up user IDs by name prefix.",
+        "Use search_members to look up user IDs by name prefix. "
+        "voice_join / voice_leave / voice_status take no parameters, run the same code as "
+        "/voice join and /voice leave, and work only in a Discord chat turn from an allowed user.",
     ),
 }
 

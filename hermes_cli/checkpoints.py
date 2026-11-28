@@ -113,6 +113,9 @@ def cmd_prune(args: argparse.Namespace) -> int:
     print(f"Deleted orphan:  {result['deleted_orphan']}")
     print(f"Deleted stale:   {result['deleted_stale']}")
     print(f"Errors:          {result['errors']}")
+    if result.get("cap_not_met"):
+        # A cap every project's last checkpoint keeps out of reach: history was kept, not lost.
+        print(f"Cap not met:     {result['cap_not_met']} (history retained)")
     print(f"Bytes reclaimed: {_fmt_bytes(result['bytes_freed'])}")
     return 0
 

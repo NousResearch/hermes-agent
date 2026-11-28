@@ -86,6 +86,18 @@ A manager item that lists several websites (say `amazon.co.uk`,
 `www.amazon.co.uk` and `eu.account.amazon.com`) fills on each of those exact
 origins; nothing is inferred beyond the URLs saved on the item.
 
+**Bitwarden with Touch ID / Windows Hello.** Where a human is present, Hermes first asks
+the `bw` CLI to unlock through the Bitwarden desktop app, the same desktop integration
+the browser extension uses, so your fingerprint approves the unlock and no master
+password is typed at all. That path needs Bitwarden Desktop 2026.9.0 or newer running
+with *Unlock with Touch ID* (or the Windows Hello / polkit equivalent) enabled for the
+same account, a `bw` CLI 2026.10.0 or newer, and Bitwarden's `biometrics-sdk-ipc`
+feature flag enabled (the CLI reads it; with the flag off the CLI asks for the
+master password itself). When any of that is missing, the masked
+master-password prompt appears exactly as before. Headless sessions (cron, webhooks, the
+API server) never raise an approval prompt. Turn the attempt off with
+`vault.bitwarden.desktop_biometric: false`.
+
 Prefer not to use a detected manager? `hermes vault sources --disable bitwarden`,
 or the switch in **Settings → Passwords & Logins**.
 

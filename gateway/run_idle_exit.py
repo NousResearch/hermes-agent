@@ -122,11 +122,29 @@ def _kanban_busy() -> str | None:
     return None
 
 
-def _ledger_busy(runner) -> str | None:
+def _retired_homes(runner) -> set[Path]:
+    """Homes whose state.db was deleted or replaced under this gateway (a client removed its throwaway
+    home). Their store refuses every write for good, so this process can serve nothing there, and a
+    fresh probe of them is refused too, which the store gates would read as work forever."""
+    from gateway.session_authorities import all_authorities
+    from gateway.session_persistence import authority_persistence
+    from persistence.core.errors import DeletedWalGeneration, StoreReplaced
+    replaced = {StoreReplaced.__name__, DeletedWalGeneration.__name__}
+    retired = set()
+    for authority in all_authorities(runner):
+        store = authority_persistence(authority)
+        if store is not None and store.health.probe().detail in replaced:
+            retired.add(Path(authority.profile_id))
+    return retired
+
+
+def _ledger_busy(runner, retired=frozenset()) -> str | None:
     from gateway.session_authorities import all_authorities
     from gateway.session_persistence import authority_persistence
     from persistence.core.errors import StoreUnavailable
     for authority in all_authorities(runner):
+        if Path(authority.profile_id) in retired:
+            continue
         if (store := authority_persistence(authority)) is None:
             raise StoreUnavailable(f"no storage handle for {authority.profile_id}")
         if store.admissions.has_pending(statuses=frozenset({"queued", "started"})):
@@ -197,8 +215,9 @@ def busy_reason(runner, *, window: float, count_clients: bool = True) -> str | N
             return "agent work in flight"
         if runner._scale_to_zero_has_live_background_work():
             return "background work in flight"
-        homes = _served_homes(runner)
-        return (_messaging_busy(runner) or _ledger_busy(runner) or _profile_start_busy(runner)
+        retired = _retired_homes(runner)
+        homes = [home for home in _served_homes(runner) if home not in retired]
+        return (_messaging_busy(runner) or _ledger_busy(runner, retired) or _profile_start_busy(runner)
                 or _cron_busy(homes) or _kanban_busy() or _store_gates_busy(homes))
     except Exception as exc:
         from storage_user_copy import error_type_name

@@ -128,7 +128,7 @@ from gateway.readiness import collect_runtime_readiness
 
 from gateway.parked_route_refusal import ParkedRouteRefused
 from gateway.platforms._shared import coerce_port as _coerce_port, get_scoped_secret as _get_scoped_secret
-from gateway.platforms._shared import secrets_match
+from gateway.platforms import api_server_key_scopes as _key_scopes
 from gateway.platforms.tcp_site import start_tcp_site
 from persistence import RetiredSessionError, SessionWriteGuarded
 from persistence.conversation.messages import NewMessage, ReplaceMode, TranscriptRead, TranscriptView
@@ -1072,6 +1072,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         extra = config.extra or {}
         self._host, self._port = listen_address(extra)
         self._api_key: str = extra.get("key", _get_scoped_secret("API_SERVER_KEY", ""))
+        self._scoped_keys = _key_scopes.load_scoped_keys(extra.get("keys"), legacy_key=self._api_key)
         self._cors_origins: tuple[str, ...] = self._parse_cors_origins(
             extra.get("cors_origins", os.getenv("API_SERVER_CORS_ORIGINS", "")))
         self._model_name: str = self._resolve_model_name(
@@ -1440,13 +1441,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 "API_SERVER_KEY is configured; %s",
                 profile, self._request_audit_log_suffix(request))
             return self._auth_failed_response()
-        auth_header = request.headers.get("Authorization", "")
-        if auth_header.startswith("Bearer "):
-            token = auth_header[7:].strip()
-            if secrets_match(token, expected_key):
-                return None
-        logger.warning("API server rejected invalid API key: %s", self._request_audit_log_suffix(request))
-        return self._auth_failed_response()
+        # Scoped ``keys`` belong to this listener's own profile; /p/<profile>/ takes that profile's key.
+        return _key_scopes.check_bearer(self, request, expected_key, scoped=not profile or profile == "default")
 
     @staticmethod
     def _normalize_callback_platform(value: str) -> str:

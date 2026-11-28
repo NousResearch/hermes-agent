@@ -36,7 +36,7 @@ def _build_full_manifest(
     bot_scopes = [
         "app_mentions:read", "channels:history", "channels:read", "chat:write", "commands",
         "files:read", "files:write", "groups:history", "groups:read", "im:history", "im:read",
-        "im:write", "mpim:history", "mpim:read", "reactions:read", "users:read"]
+        "im:write", "mpim:history", "mpim:read", "reactions:read", "reactions:write", "users:read"]
     bot_events = [
         "app_mention", "message.channels", "message.groups", "message.im", "message.mpim",
         "reaction_added", "reaction_removed"]

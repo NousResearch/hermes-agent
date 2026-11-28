@@ -8,6 +8,8 @@ conservative: originals are kept whenever a repair is not unambiguous.
 
 import json
 import logging
+import math
+from decimal import Decimal, InvalidOperation
 from typing import Any, Dict
 
 from tools.registry import registry
@@ -216,13 +218,29 @@ def _coerce_json(value: str, expected_python_type: type):
 
 def _coerce_number(value: str, integer_only: bool = False):
     """Parse *value* as a number; original string on failure, inf/nan, or decimals when integer_only."""
+    # Try exact int() before float() so >2**53 integer IDs (e.g. 64-bit snowflakes)
+    # are not silently rounded through IEEE-754 float64.
+    try:
+        return int(value)
+    except ValueError:
+        pass
     try:
         f = float(value)
     except (ValueError, OverflowError):
         return value
-    if f != f or f in (float("inf"), float("-inf")):
+    if not math.isfinite(f):
         return value  # not JSON-serializable
-    return int(f) if f == int(f) else value if integer_only else f
+    if f.is_integer():
+        if abs(f) >= (1 << 53):
+            try:
+                d = Decimal(value)
+            except InvalidOperation:
+                return value
+            if d == d.to_integral_value():
+                return int(d)
+            return value if integer_only else f
+        return int(f)
+    return value if integer_only else f
 
 
 def _coerce_boolean(value: str):

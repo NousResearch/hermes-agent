@@ -41,6 +41,25 @@ class TestCoerceNumber:
         assert result == "3.14"
         assert isinstance(result, str)
 
+    def test_large_64bit_integer_preserves_exact_precision(self):
+        """Integers above 2**53 (e.g. 64-bit IDs) must not lose precision via float."""
+        for raw, expected in (
+            ("9007199254740993", 9007199254740993),
+            ("-9007199254740993", -9007199254740993),
+            ("1234567890123456789", 1234567890123456789),
+            ("9007199254740993.0", 9007199254740993),
+        ):
+            for integer_only in (True, False):
+                result = _coerce_number(raw, integer_only=integer_only)
+                assert result == expected
+                assert isinstance(result, int)
+
+    def test_large_fractional_not_coerced_to_integer_when_integer_only(self):
+        """A >2**53 decimal rounding to a whole float must stay string under integer_only."""
+        result = _coerce_number("9007199254740993.5", integer_only=True)
+        assert result == "9007199254740993.5"
+        assert isinstance(result, str)
+
 
 
 

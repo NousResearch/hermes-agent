@@ -21,7 +21,7 @@ export interface SimplifiedAgentsCopy {
   chatCountAtLeast: (count: number) => string
   /** Under an agent's most recent chats: reveal the rest ("Show all (15)") or fold them back. */
   showAllChats: (count: number) => string
-  showMoreChats: (step: number, remaining: number) => string
+  showMoreChats: string
   showFewerChats: string
   feedbackTitle: string
   feedbackPlaceholder: string
@@ -52,7 +52,7 @@ export const simplifiedAgentsCopy: Record<BundledLocale, SimplifiedAgentsCopy> =
     chatCount: n => (n === 1 ? '1 chat' : `${n} chats`),
     chatCountAtLeast: n => `${n}+ chats`,
     showAllChats: n => `Show all (${n})`,
-    showMoreChats: (step, remaining) => `Show ${step} more (${remaining})`,
+    showMoreChats: 'Show more',
     showFewerChats: 'Show less',
     feedbackTitle: 'Why switch back? (optional)',
     feedbackPlaceholder: 'Choose a reason',
@@ -82,7 +82,7 @@ export const simplifiedAgentsCopy: Record<BundledLocale, SimplifiedAgentsCopy> =
     chatCount: n => (n === 1 ? '1 discussion' : `${n} discussions`),
     chatCountAtLeast: n => `${n}+ discussions`,
     showAllChats: n => `Tout afficher (${n})`,
-    showMoreChats: (step, remaining) => `Afficher ${step} de plus (${remaining})`,
+    showMoreChats: 'Afficher plus',
     showFewerChats: 'Afficher moins',
     feedbackTitle: 'Pourquoi revenir en arrière ? (facultatif)',
     feedbackPlaceholder: 'Choisir une raison',
@@ -112,7 +112,7 @@ export const simplifiedAgentsCopy: Record<BundledLocale, SimplifiedAgentsCopy> =
     chatCount: n => (n === 1 ? '1 Chat' : `${n} Chats`),
     chatCountAtLeast: n => `${n}+ Chats`,
     showAllChats: n => `Alle anzeigen (${n})`,
-    showMoreChats: (step, remaining) => `${step} weitere anzeigen (${remaining})`,
+    showMoreChats: 'Mehr anzeigen',
     showFewerChats: 'Weniger anzeigen',
     feedbackTitle: 'Warum zurückwechseln? (optional)',
     feedbackPlaceholder: 'Grund auswählen',
@@ -142,7 +142,7 @@ export const simplifiedAgentsCopy: Record<BundledLocale, SimplifiedAgentsCopy> =
     chatCount: n => (n === 1 ? '1 chat' : `${n} chats`),
     chatCountAtLeast: n => `${n}+ chats`,
     showAllChats: n => `Mostrar todo (${n})`,
-    showMoreChats: (step, remaining) => `Mostrar ${step} más (${remaining})`,
+    showMoreChats: 'Mostrar más',
     showFewerChats: 'Mostrar menos',
     feedbackTitle: '¿Por qué volver? (opcional)',
     feedbackPlaceholder: 'Elige un motivo',
@@ -172,7 +172,7 @@ export const simplifiedAgentsCopy: Record<BundledLocale, SimplifiedAgentsCopy> =
     chatCount: n => `${n} 件のチャット`,
     chatCountAtLeast: n => `${n} 件以上のチャット`,
     showAllChats: n => `すべて表示 (${n})`,
-    showMoreChats: (step, remaining) => `さらに${step}件表示 (${remaining})`,
+    showMoreChats: 'さらに表示',
     showFewerChats: '表示を減らす',
     feedbackTitle: '元に戻した理由は？（任意）',
     feedbackPlaceholder: '理由を選択',
@@ -201,7 +201,7 @@ export const simplifiedAgentsCopy: Record<BundledLocale, SimplifiedAgentsCopy> =
     chatCount: n => `${n} 个对话`,
     chatCountAtLeast: n => `${n}+ 个对话`,
     showAllChats: n => `显示全部 (${n})`,
-    showMoreChats: (step, remaining) => `再显示 ${step} 条 (${remaining})`,
+    showMoreChats: '显示更多',
     showFewerChats: '收起',
     feedbackTitle: '为什么切换回来？（可选）',
     feedbackPlaceholder: '选择原因',
@@ -230,7 +230,7 @@ export const simplifiedAgentsCopy: Record<BundledLocale, SimplifiedAgentsCopy> =
     chatCount: n => `${n} 個對話`,
     chatCountAtLeast: n => `${n}+ 個對話`,
     showAllChats: n => `顯示全部 (${n})`,
-    showMoreChats: (step, remaining) => `再顯示 ${step} 則 (${remaining})`,
+    showMoreChats: '顯示更多',
     showFewerChats: '收合',
     feedbackTitle: '為什麼切換回來？（選填）',
     feedbackPlaceholder: '選擇原因',
@@ -259,7 +259,7 @@ export const simplifiedAgentsCopy: Record<BundledLocale, SimplifiedAgentsCopy> =
     chatCount: n => `${n} ${RU_NOUN(n, 'чат', 'чата', 'чатов')}`,
     chatCountAtLeast: n => `${n}+ чатов`,
     showAllChats: n => `Показать все (${n})`,
-    showMoreChats: (step, remaining) => `Показать ещё ${step} (${remaining})`,
+    showMoreChats: 'Показать больше',
     showFewerChats: 'Показать меньше',
     feedbackTitle: 'Почему вернулись? (необязательно)',
     feedbackPlaceholder: 'Выберите причину',
@@ -288,7 +288,7 @@ export const simplifiedAgentsCopy: Record<BundledLocale, SimplifiedAgentsCopy> =
     chatCount: n => (n === 1 ? 'محادثة واحدة' : `${n} محادثات`),
     chatCountAtLeast: n => `أكثر من ${n} محادثة`,
     showAllChats: n => `عرض الكل (${n})`,
-    showMoreChats: (step, remaining) => `عرض ${step} إضافية (${remaining})`,
+    showMoreChats: 'عرض المزيد',
     showFewerChats: 'عرض أقل',
     feedbackTitle: 'لماذا عدت للوضع السابق؟ (اختياري)',
     feedbackPlaceholder: 'اختر سببًا',

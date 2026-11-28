@@ -1019,7 +1019,7 @@ describe('Portal sidebar', () => {
     expect(resume).toHaveBeenCalledWith('saved-8', expect.objectContaining({ profile: 'research' }))
     searchFor('')
     expect(agent.getAllByText(/^Saved /)).toHaveLength(3)
-    fireEvent.click(agent.getByRole('button', { name: 'Show all (9)' }))
+    fireEvent.click(agent.getByRole('button', { name: 'Show more' }))
     expect(agent.getAllByText(/^Saved /)).toHaveLength(9)
     fireEvent.click(agent.getByRole('button', { name: 'Show less' }))
     expect(agent.getAllByText(/^Saved /)).toHaveLength(3)
@@ -1040,7 +1040,7 @@ describe('Portal sidebar', () => {
     const titles = () => agent.getAllByText(/^(Newest|Pinned newer|Pinned older|Oldest)$/).map(row => row.textContent)
     // Pinned chats lead, so the card's cap keeps them in view.
     expect(titles()).toEqual(['Pinned newer', 'Pinned older', 'Newest'])
-    fireEvent.click(agent.getByRole('button', { name: 'Show all (4)' }))
+    fireEvent.click(agent.getByRole('button', { name: 'Show more' }))
     expect(titles()).toEqual(['Pinned newer', 'Pinned older', 'Newest', 'Oldest'])
     expect(agent.getAllByRole('img', { name: 'Pinned' })).toHaveLength(2)
     const pins = within(screen.getByRole('region', { name: 'Pinned' }))

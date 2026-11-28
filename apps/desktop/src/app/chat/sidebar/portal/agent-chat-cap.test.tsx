@@ -169,11 +169,11 @@ describe('computeAgentChatLimits', () => {
 })
 
 describe("an agent card's chats", () => {
-  it('shows the three most recent, then Show all with the full count, then Show less', () => {
+  it('shows the three most recent, then Show more, then Show less', () => {
     render(<AgentChats />)
     expect(titles()).toEqual(['Chat 0', 'Chat 1', 'Chat 2'])
 
-    fireEvent.click(screen.getByRole('button', { name: en.simplifiedAgents.showAllChats(6) }))
+    fireEvent.click(screen.getByRole('button', { name: en.simplifiedAgents.showMoreChats }))
     expect(titles()).toHaveLength(6)
 
     fireEvent.click(screen.getByRole('button', { name: en.simplifiedAgents.showFewerChats }))
@@ -190,23 +190,23 @@ describe("an agent card's chats", () => {
     expect(titles()).toContain('Chat 4')
   })
 
-  it('lists every match while searching, with no Show all row', () => {
+  it('lists every match while searching, with no Show more row', () => {
     render(<AgentChats searching />)
     expect(titles()).toHaveLength(6)
-    expect(screen.queryByRole('button', { name: en.simplifiedAgents.showAllChats(6) })).toBeNull()
+    expect(screen.queryByRole('button', { name: en.simplifiedAgents.showMoreChats })).toBeNull()
   })
 
-  it('offers no Show all row when the chats it keeps in reach are already every chat', () => {
+  it('offers no Show more row when the chats it keeps in reach are already every chat', () => {
     const rows = chats.slice(0, 4).map((row, index) => (index === 3 ? { ...row, unread: true } : row))
 
     render(<AgentChats sessions={rows} />)
     expect(titles()).toHaveLength(4)
-    expect(screen.queryByRole('button', { name: /Show all/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Show more/ })).toBeNull()
   })
 
-  it('offers no Show all row when everything fits', () => {
+  it('offers no Show more row when everything fits', () => {
     render(<AgentChats sessions={chats.slice(0, 3)} />)
-    expect(screen.queryByRole('button', { name: /Show all/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Show more/ })).toBeNull()
   })
 
   it('steps +10 chats at a time with paired Show less and snaps to all when <= 12 remain', () => {
@@ -257,15 +257,14 @@ describe("an agent card's chats", () => {
     expect(screen.queryByRole('button', { name: en.simplifiedAgents.showFewerChats })).toBeNull()
 
     // Step 1: 3 -> 13 (21 hidden -> > 12 -> stepped "+10")
-    fireEvent.click(screen.getByRole('button', { name: en.simplifiedAgents.showMoreChats(10, 21) }))
+    fireEvent.click(screen.getByRole('button', { name: en.simplifiedAgents.showMoreChats }))
     expect(screen.queryAllByText(/^Chat \d+$/)).toHaveLength(13)
     // Paired Show less is immediately available without dumping all 24 chats
     expect(screen.getByRole('button', { name: en.simplifiedAgents.showFewerChats })).toBeTruthy()
 
-    // Step 2: 11 remain (<= 12) -> snaps straight to Show all (24)
-    fireEvent.click(screen.getByRole('button', { name: en.simplifiedAgents.showAllChats(24) }))
+    // Step 2: 11 remain (<= 12) -> snaps straight to all 24
+    fireEvent.click(screen.getByRole('button', { name: en.simplifiedAgents.showMoreChats }))
     expect(screen.queryAllByText(/^Chat \d+$/)).toHaveLength(24)
-
     // Show less collapses cleanly back to 3
     fireEvent.click(screen.getByRole('button', { name: en.simplifiedAgents.showFewerChats }))
     expect(screen.queryAllByText(/^Chat \d+$/)).toHaveLength(3)

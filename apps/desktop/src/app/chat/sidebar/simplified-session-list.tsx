@@ -33,12 +33,7 @@ import { PIN_DROP_SELECTOR, startSessionDrag, UNPIN_DROP_SELECTOR } from '../ses
 import { SessionStatusDot } from '../session-status-dot'
 
 import { mergeVisibleReorder } from './order'
-import {
-  AGENT_CHAT_SNAP_REMAINING,
-  AGENT_CHAT_STEP,
-  capAgentChats,
-  MAX_FOLDED_UNREAD_KEEP
-} from './portal/agent-chat-cap'
+import { capAgentChats, MAX_FOLDED_UNREAD_KEEP } from './portal/agent-chat-cap'
 import { type OutsideDrop, ReorderableList, shellOwnsPress, useSortableBindings } from './reorderable-list'
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
 import { SessionRowSlot } from './session-row-slots'
@@ -89,20 +84,8 @@ function resolveSessionFold(
   return { foldable, hiddenCount, isExpanded, shown }
 }
 
-function SessionFoldBar({
-  cap,
-  fold,
-  totalCount
-}: {
-  cap: SessionListCap
-  fold: SessionFoldState
-  totalCount: number
-}) {
+function SessionFoldBar({ cap, fold }: { cap: SessionListCap; fold: SessionFoldState }) {
   const { t } = useI18n()
-  const showMoreLabel =
-    cap.onShowMore && fold.hiddenCount > AGENT_CHAT_SNAP_REMAINING
-      ? t.simplifiedAgents.showMoreChats(AGENT_CHAT_STEP, fold.hiddenCount)
-      : t.simplifiedAgents.showAllChats(totalCount)
 
   return (
     <div
@@ -116,7 +99,7 @@ function SessionFoldBar({
           className="portal-session-more"
           onClick={cap.onShowMore ?? cap.onToggle}
         >
-          {showMoreLabel}
+          {t.simplifiedAgents.showMoreChats}
         </RowButton>
       )}
       {fold.isExpanded && (
@@ -618,7 +601,7 @@ export function SimplifiedSessionList({
   return (
     <div className="portal-session-list">
       {lists}
-      {fold.foldable && cap && <SessionFoldBar cap={cap} fold={fold} totalCount={ordered.length} />}
+      {fold.foldable && cap && <SessionFoldBar cap={cap} fold={fold} />}
     </div>
   )
 }

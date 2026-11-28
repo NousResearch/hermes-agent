@@ -408,6 +408,18 @@ AMBIGUOUS_SKILL_PREFIX = "Ambiguous skill name "
 # (shadowed path, *sorted higher-tier paths) already judged: the identity check (it hashes both
 # SKILL.md files) and its one-time warning run once per pairing, not on every catalog resolve.
 _SHADOW_CHECKED: set[tuple[str, ...]] = set()
+# Skill names become /commands and prompt-index entries, so a name that hides or reorders text
+# (bidi, zero-width, tag chars), carries terminal controls, markup brackets, or letters that render
+# blank (Bamum, Hangul fillers, braille blank) is refused instead of shown as something else.
+_HIDDEN_NAME_CHARS = re.compile("[<>\u115f\u1160\u2800\u3164\ua6a0-\ua6ff\uffa0]")
+_UNSAFE_NAME_WARNED: set[str] = set()
+
+
+def is_unsafe_skill_name(name: str) -> bool:
+    """True when *name* holds a control/format char (Cc/Cf: C0/C1, bidi, zero-width, tags) or a
+    char from :data:`_HIDDEN_NAME_CHARS`."""
+    import unicodedata
+    return bool(_HIDDEN_NAME_CHARS.search(name)) or any(unicodedata.category(c) in ("Cc", "Cf") for c in name)
 
 
 def get_skill_search_roots(local: Optional[Path] = None, *, include_project: bool = True) -> list[tuple[int, Path]]:
@@ -476,7 +488,16 @@ def resolve_skill_catalog(entries: list[dict[str, Any]]) -> list[dict[str, Any]]
     relative to the root) and :func:`pick_skill_candidate`. Adds ``relative_path`` and ``status``:
     ``unique`` (``load_name`` = name), ``ambiguous`` (``load_name`` = the exact relative path, or None
     when even that is shared) or ``shadowed`` (a higher tier owns the name: hidden, warned once)."""
-    out = [dict(e) for e in entries]
+    out = []
+    for e in entries:
+        label = f"{e['name']}/{Path(e['path']).parent.name}"
+        if is_unsafe_skill_name(label):
+            if str(e["path"]) not in _UNSAFE_NAME_WARNED:
+                _UNSAFE_NAME_WARNED.add(str(e["path"]))
+                logger.warning("Skill at %s refused: its name %a holds hidden, control or blank-rendering "
+                               "characters", e["path"], label)
+            continue
+        out.append(dict(e))
     owners: dict[str, list[int]] = {}
     for i, e in enumerate(out):
         skill_dir = Path(e["path"]).parent

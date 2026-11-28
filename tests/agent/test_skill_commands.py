@@ -488,6 +488,25 @@ class TestScanSkillCommands:
             assert result["/小说拆条"]["name"] == "小说+拆条"
             assert resolve_skill_command_key("小说拆条") == "/小说拆条"
 
+    def test_hidden_or_blank_rendering_names_are_refused(self, tmp_path, caplog):
+        """A name (frontmatter or directory) with bidi/zero-width/tag/control chars, ``<``/``>`` or
+        blank-rendering letters never becomes a /command or a skills_list entry, and is logged."""
+        names = {"bidi": "evil\u202eexe", "zw": "a\u200bb", "tag": "t\U000E0041x", "esc": "ok\x1b[2J",
+                 "lt": "x<b>", "bamum": "\ua6a0\ua6a1", "filler": "\u3164", "braille": "\u2800x", "ok": "good-one"}
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            for d, name in names.items():
+                (tmp_path / d).mkdir()
+                (tmp_path / d / "SKILL.md").write_text(
+                    f'---\nname: "{name.encode("unicode_escape").decode()}"\ndescription: d\n---\nBody.\n', encoding="utf-8")
+            (tmp_path / "dir\u202eRTL").mkdir()
+            (tmp_path / "dir\u202eRTL" / "SKILL.md").write_text("---\ndescription: d\n---\nBody.\n", encoding="utf-8")
+            with caplog.at_level("WARNING", logger="agent.skill_utils"):
+                result = scan_skill_commands()
+            listed = [s["name"] for s in skills_tool_module.find_all_skills()]
+        assert sorted(result) == ["/good-one"]
+        assert listed == ["good-one"]
+        assert caplog.text.count("refused") == 9
+
 
 class TestResolveSkillCommandKey:
     """Telegram bot-command names disallow hyphens, so the menu registers

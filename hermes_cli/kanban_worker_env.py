@@ -53,6 +53,23 @@ _HOST_NAMES = frozenset({
 _HOST_PREFIXES = ("LC_",)
 
 
+def worker_spawn_env(env: Mapping[str, str], assignee_home: str | Path | None, *, routed: bool) -> dict[str, str]:
+    """Finalize profile policy before the dispatcher adds task-owned workspace/runtime pins."""
+    result = dict(env)
+    if assignee_home:
+        # A cold-started routed gateway may take host plumbing, never launch-profile policy.
+        if routed:
+            result = worker_client_env(result, assignee_home)
+        result["HERMES_HOME"] = str(assignee_home)
+        return result
+    # Deferred resolution must not inherit terminal policy; instance-managed dotenv wins.
+    from hermes_cli.config import TERMINAL_CONFIG_ENV_MAP
+    from hermes_cli.env_loader import managed_dotenv_keys
+    managed_names = {key.upper() for key in managed_dotenv_keys()}
+    terminal_names = {key.upper() for key in TERMINAL_CONFIG_ENV_MAP.values()} - managed_names
+    return {key: value for key, value in result.items() if key.upper() not in terminal_names}
+
+
 def worker_client_env(env: Mapping[str, str], assignee_home: str | Path) -> dict[str, str]:
     """*env* reduced to what the worker client for *assignee_home*, and a gateway it starts, may take
     from the host. The launch profile's ``.env`` / source residue goes first: an allowlisted name it

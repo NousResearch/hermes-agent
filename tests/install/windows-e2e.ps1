@@ -621,28 +621,6 @@ function Invoke-ManualCardUpdate([string]$ReceiptPath, [string]$TargetSha) {
 }
 
 function Clear-HistoricalInstallerChurn {
-    # The GUI driver refuses a dirty source tree. v2026.7.1's installer leaves
-    # its own state there: `npm install` rewrites package-lock.json on Windows
-    # (later installers use `npm ci`, #112378) and v2026.6.19-era installers
-    # write an unignored .install_method. Installers through v2026.9.24 also
-    # clone under Git for Windows' system core.autocrlf=true and pin false only
-    # afterwards, leaving CRLF copies of every text file .gitattributes does not
-    # pin to LF (*.mdx, LICENSE, ...). The stat cache hides them except the few
-    # written in the index's racy timestamp window, which read as modified with
-    # identical index/HEAD blobs. Undo only that installer-generated state in
-    # this disposable clone; any other change still fails, listed.
-    # porcelain=v2: Invoke-Git trims output, which would eat v1's leading " M".
-    $lines = @((Invoke-Git @("-C", $InstallDir, "-c", "core.quotepath=false", "status", "--porcelain=v2", "--untracked-files=all")) -split "\r?\n" |
-        Where-Object { $_ })
-    if ($lines.Count -eq 0) { return }
-    Write-Host "  source status before GUI update:"
-    $lines | ForEach-Object { Write-Host "    $_" }
-    # --numstat honours --ignore-cr-at-eol (--name-only does not): a modified
-    # path with no record and an unchanged mode differs from its index blob
-    # only by CRs.
-    $content = @{}
-    (Invoke-Git @("-C", $InstallDir, "-c", "core.quotepath=false", "diff", "--numstat", "--ignore-cr-at-eol")) -split "\r?\n" |
-        Where-Object { $_ } | ForEach-Object { $content[($_ -split "`t", 3)[2]] = $true }
     # Installers before 679e9cd2943d ("stage hermes launchers in the managed
     # binary dir, not the git checkout") copied the hermes/hermes-acp
     # launchers into the checkout's bin\, untracked and unignored. That
@@ -656,34 +634,10 @@ function Clear-HistoricalInstallerChurn {
     $ErrorActionPreference = $prevEap
     Assert-True ($ancestorExit -in 0, 1) "git merge-base --is-ancestor answered for the launcher-layout commit (exit $ancestorExit)"
     $legacyLaunchers = if ($ancestorExit -eq 1) { @("? bin/hermes.exe", "? bin/hermes-acp.exe") } else { @() }
-    $locks = @(); $other = @()
-    foreach ($line in $lines) {
-        $fields = $line -split " ", 9
-        if ($fields[0] -eq "1" -and $fields[1] -eq ".M" -and $fields.Count -eq 9 -and
-            ($fields[8] -eq "package-lock.json" -or $fields[8] -like "*/package-lock.json" -or
-             ($fields[4] -eq $fields[5] -and -not $content.ContainsKey($fields[8])))) {
-            $locks += $fields[8]
-        } elseif ($line -eq "? .install_method") {
-            Add-Content -LiteralPath (Join-Path $InstallDir ".git\info\exclude") -Value "/.install_method"
-        } elseif ($line -cin $legacyLaunchers) {
-            Add-Content -LiteralPath (Join-Path $InstallDir ".git\info\exclude") -Value ("/" + $line.Substring(2))
-        } else {
-            $other += $line
-        }
-    }
-    Assert-True ($other.Count -eq 0) "installed source has only installer-generated changes (other: $($other -join '; '))"
-    if ($locks.Count) {
-        # From a file: a v2026.7.1 clone churns hundreds of paths, and passing
-        # them as arguments overflows the Windows command line ("The filename
-        # or extension is too long"). NUL-separated, literal: no quoting or
-        # glob magic applies to a path.
-        $pathspecs = Join-Path $WorkRoot "installer-churn.pathspec"
-        [System.IO.File]::WriteAllText($pathspecs, (($locks -join "`0") + "`0"), (New-Object System.Text.UTF8Encoding $false))
-        Invoke-Git @("--literal-pathspecs", "-C", $InstallDir, "checkout", "--pathspec-from-file=$pathspecs", "--pathspec-file-nul") | Out-Null
-    }
-    $left = @((Invoke-Git @("-C", $InstallDir, "status", "--porcelain", "--untracked-files=all")) -split "\r?\n" |
-        Where-Object { $_ })
-    Assert-True ($left.Count -eq 0) "undid only installer-generated source churn before the GUI update"
+    Clear-SourceInstallerChurn `
+        -InstallDir $InstallDir -WorkRoot $WorkRoot `
+        -RealGitExe $script:RealGitExe -DriverNode $DriverNode -AssetsDir $AssetsDir `
+        -LegacyLaunchers $legacyLaunchers
 }
 
 function Invoke-HermesDesktopAppUpdate([string]$TargetSha) {

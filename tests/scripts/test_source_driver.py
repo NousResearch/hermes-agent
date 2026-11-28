@@ -72,6 +72,146 @@ def test_installer_marker_is_the_only_dirty_state_a_driver_accepts(tmp_path):
     assert refused.returncode != 0 and "M tracked" in refused.stderr
 
 
+def _init_case_collision_repo(root: Path, *, ignore_case: bool = True) -> list[str]:
+    root.mkdir(parents=True, exist_ok=True)
+    git = ["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]
+    subprocess.run([*git, "init", "-q"], check=True)
+    subprocess.run([*git, "config", "core.autocrlf", "false"], check=True)
+    subprocess.run([*git, "config", "core.ignorecase", "true" if ignore_case else "false"], check=True)
+    blobs = {}
+    for name, body in (
+        ("tracked", b"v1\n"),
+        ("package-lock.json", b'{"lockfileVersion": 3}\n'),
+        ("contributors/emails/agent@Agents-Mac-mini.local", b"skip-agent\n"),
+        ("contributors/emails/agent@agents-Mac-mini.local", b"momomojo\n"),
+    ):
+        oid = subprocess.run(
+            [*git, "hash-object", "-w", "--stdin"],
+            input=body, capture_output=True, check=True,
+        ).stdout.decode("ascii").strip()
+        blobs[name] = oid
+        subprocess.run([*git, "update-index", "--add", "--cacheinfo", f"100644,{oid},{name}"], check=True)
+    subprocess.run([*git, "commit", "-qm", "base with case collision"], check=True)
+    subprocess.run([*git, "checkout", "--force", "HEAD"], check=True)
+    (root / "contributors/emails/agent@Agents-Mac-mini.local").write_bytes(b"momomojo\n")
+    return git
+
+
+@pytest.mark.platforms("posix")
+def test_accept_installer_marker_tolerates_only_head_case_collisions(tmp_path):
+    root = tmp_path / "installed source"
+    git = _init_case_collision_repo(root, ignore_case=True)
+    env = dict(os.environ, INSTALL_DIR=str(root), ASSETS=str(ASSETS), HOME=str(tmp_path))
+
+    def accept():
+        return subprocess.run(
+            ["bash", "-euc", 'source "$ASSETS/source-driver.sh"; accept_installer_marker "$INSTALL_DIR"'],
+            env=env, capture_output=True, text=True, timeout=30, check=False,
+        )
+
+    assert accept().returncode == 0
+    ls_v = subprocess.run([*git, "ls-files", "-v", "contributors/emails"], capture_output=True, text=True, check=True).stdout
+    assert all(line.startswith("H ") for line in ls_v.splitlines())
+
+    (root / ".install_method").write_text("git\n", encoding="utf-8")
+    assert accept().returncode == 0
+    assert (root / ".install_method").read_text(encoding="utf-8") == "git\n"
+
+    (root / "contributors/emails/agent@Agents-Mac-mini.local").write_bytes(b"momomojo\r\n")
+    assert accept().returncode == 0
+
+    (root / "contributors/emails/agent@Agents-Mac-mini.local").write_bytes(b"edited\n")
+    refused = accept()
+    assert refused.returncode != 0 and "agent@Agents-Mac-mini.local" in refused.stderr
+
+    (root / "contributors/emails/agent@Agents-Mac-mini.local").write_bytes(b"momomojo\n")
+    (root / "tracked").write_text("edited\n", encoding="utf-8")
+    refused = accept()
+    assert refused.returncode != 0 and "M tracked" in refused.stderr
+    (root / "tracked").write_text("v1\n", encoding="utf-8")
+
+    (root / "contributors/emails/agent@Agents-Mac-mini.local").chmod(0o755)
+    assert accept().returncode != 0
+    (root / "contributors/emails/agent@Agents-Mac-mini.local").chmod(0o644)
+
+    subprocess.run([*git, "-c", "core.ignorecase=false", "add", "contributors/emails/agent@Agents-Mac-mini.local"], check=True)
+    assert accept().returncode != 0
+    subprocess.run([*git, "reset", "-q", "HEAD"], check=True)
+
+    subprocess.run([*git, "config", "core.ignorecase", "false"], check=True)
+    assert accept().returncode != 0
+
+
+@pytest.mark.platforms("windows", "posix")
+def test_powershell_clears_installer_churn_while_tolerating_only_head_case_collisions(tmp_path):
+    path = os.pathsep.join(p for p in os.get_exec_path() if ".hermes" not in Path(p).parts)
+    pwsh = shutil.which("pwsh", path=path) or shutil.which("powershell", path=path)
+    if not pwsh:
+        if os.name == "nt":
+            pytest.fail("native Windows acceptance requires PowerShell")
+        pytest.skip("PowerShell is not available on this host")
+    node = shutil.which("node", path=path) or shutil.which("node")
+    git_exe = shutil.which("git", path=path) or shutil.which("git")
+    assert node and git_exe
+
+    root = tmp_path / "installed source"
+    work = tmp_path / "work"
+    work.mkdir()
+    _init_case_collision_repo(root, ignore_case=True)
+    (root / "contributors/emails/agent@Agents-Mac-mini.local").write_bytes(b"momomojo\r\n")
+    (root / "package-lock.json").write_text('{"lockfileVersion": 3, "churn": true}\n', encoding="utf-8")
+    (root / ".install_method").write_text("git\n", encoding="utf-8")
+    (root / "bin").mkdir()
+    (root / "bin/hermes.exe").write_bytes(b"MZ")
+
+    harness = tmp_path / "churn-probe.ps1"
+    harness.write_text('''$ErrorActionPreference = 'Stop'
+. (Join-Path $env:ASSETS 'source-driver.ps1')
+Clear-SourceInstallerChurn `
+    -InstallDir $env:INSTALL_DIR -WorkRoot $env:WORK_ROOT `
+    -RealGitExe $env:GIT_EXE -DriverNode $env:NODE_EXE -AssetsDir $env:ASSETS `
+    -LegacyLaunchers @('? bin/hermes.exe', '? bin/hermes-acp.exe')
+if ((Get-Content -LiteralPath (Join-Path $env:INSTALL_DIR 'package-lock.json') -Raw) -match 'churn') {
+    throw 'package-lock.json churn was not restored'
+}
+$colliding = Join-Path $env:INSTALL_DIR 'contributors/emails/agent@Agents-Mac-mini.local'
+[System.IO.File]::WriteAllText($colliding, "edited`n", (New-Object System.Text.UTF8Encoding $false))
+$refused = $false
+try {
+    Clear-SourceInstallerChurn `
+        -InstallDir $env:INSTALL_DIR -WorkRoot $env:WORK_ROOT `
+        -RealGitExe $env:GIT_EXE -DriverNode $env:NODE_EXE -AssetsDir $env:ASSETS
+} catch { $refused = $true }
+if (-not $refused) { throw 'arbitrary edit to colliding path was accepted' }
+[System.IO.File]::WriteAllText($colliding, "momomojo`n", (New-Object System.Text.UTF8Encoding $false))
+$otherSibling = Join-Path $env:INSTALL_DIR 'contributors/emails/agent@agents-Mac-mini.local'
+[System.IO.File]::WriteAllText($otherSibling, "edited`n", (New-Object System.Text.UTF8Encoding $false))
+$refused = $false
+try {
+    Clear-SourceInstallerChurn `
+        -InstallDir $env:INSTALL_DIR -WorkRoot $env:WORK_ROOT `
+        -RealGitExe $env:GIT_EXE -DriverNode $env:NODE_EXE -AssetsDir $env:ASSETS
+} catch { $refused = $true }
+if (-not $refused) { throw 'edit to sibling path was accepted' }
+Write-Output 'churn verified'
+''', encoding="utf-8")
+    env = dict(
+        os.environ,
+        INSTALL_DIR=str(root),
+        WORK_ROOT=str(work),
+        ASSETS=str(ASSETS),
+        GIT_EXE=git_exe,
+        NODE_EXE=node,
+        HOME=str(tmp_path),
+    )
+    result = subprocess.run(
+        [pwsh, "-NoProfile", "-NonInteractive", "-File", str(harness)],
+        env=env, cwd=tmp_path, capture_output=True, text=True, timeout=60, check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "churn verified"
+
+
 @pytest.mark.platforms("windows", "posix")
 def test_powershell_selects_exact_exe_or_cmd_and_legacy_fallback(tmp_path):
     # These are file-selection rules, not Windows execution emulation. Run

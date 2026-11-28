@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { JSDOM } from 'jsdom'
 import { afterEach, expect, test, vi } from 'vitest'
 import updateUi from '../tests/install/e2e-assets/update-ui.cjs'
+import caseCollision from '../tests/install/e2e-assets/case-collision.cjs'
 import sourceBranchProbe from '../tests/install/e2e-assets/source-branch-probe.cjs'
 
 const windows = []
@@ -278,4 +279,168 @@ test('does not turn a completed check without an update into success', async () 
   expect(f.clicks).toEqual(['Check now'])
   expect(f.log).toHaveBeenCalledWith('[update-status] {"supported":true,"behind":0}')
   expect(f.shot).toHaveBeenCalledWith(f.page, 'ERROR-no-update-now')
+})
+
+function initCaseCollisionRepo(root, entries, { ignoreCase = true } = {}) {
+  const git = process.env.HERMES_E2E_REAL_GIT || 'git'
+  const run = (args, opts = {}) => execFileSync(git, ['-C', root, ...args], {
+    encoding: 'utf8',
+    ...opts,
+  }).trim()
+  fs.mkdirSync(root, { recursive: true })
+  run(['init', '-b', 'main'])
+  run(['config', 'core.autocrlf', 'false'])
+  run(['config', 'core.ignorecase', ignoreCase ? 'true' : 'false'])
+  for (const { mode = '100644', content, path: relPath } of entries) {
+    const oid = execFileSync(git, ['-C', root, 'hash-object', '-w', '--stdin'], {
+      input: Buffer.isBuffer(content) ? content : Buffer.from(content),
+      encoding: 'utf8',
+    }).trim()
+    run(['update-index', '--add', '--cacheinfo', `${mode},${oid},${relPath}`])
+  }
+  run(['-c', 'user.name=Fixture', '-c', 'user.email=e2e@example.invalid', '-c', 'commit.gpgsign=false', 'commit', '-m', 'base'])
+  run(['checkout', '--force', 'HEAD'])
+  return { git, run }
+}
+
+test('assertStagedBranch tolerates dirty=true only when repoDir has verified HEAD case collisions', async () => {
+  const sha = 'a'.repeat(40)
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'desktop-case-collision-'))
+  try {
+    const upper = 'contributors/emails/agent@Agents-Mac-mini.local'
+    const lower = 'contributors/emails/agent@agents-Mac-mini.local'
+    const { git, run } = initCaseCollisionRepo(dir, [
+      { path: 'tracked.txt', content: 'v1\n' },
+      { path: upper, content: 'skip-agent\n' },
+      { path: lower, content: 'momomojo\n' },
+    ])
+    fs.writeFileSync(path.join(dir, upper), 'momomojo\n')
+
+    const dirtyStatus = {
+      supported: true, branch: 'main', currentSha: 'b'.repeat(40),
+      targetSha: sha, behind: 1, dirty: true,
+    }
+    const ok = fixture({ statusOverride: dirtyStatus })
+    await updateUi.assertStagedBranch(ok.page, sha, ok.log, { repoDir: dir, gitExe: git })
+    expect(ok.log).toHaveBeenCalledWith(expect.stringContaining('tolerating dirty=true'))
+
+    fs.writeFileSync(path.join(dir, upper), 'momomojo\r\n')
+    const crlf = fixture({ statusOverride: dirtyStatus })
+    await updateUi.assertStagedBranch(crlf.page, sha, crlf.log, { repoDir: dir, gitExe: git })
+
+    const wrongTarget = fixture({ statusOverride: { ...dirtyStatus, targetSha: 'c'.repeat(40) } })
+    await expect(updateUi.assertStagedBranch(wrongTarget.page, sha, wrongTarget.log, { repoDir: dir, gitExe: git }))
+      .rejects.toThrow(/refusing to click/)
+
+    fs.writeFileSync(path.join(dir, upper), 'tampered\n')
+    const tampered = fixture({ statusOverride: dirtyStatus })
+    await expect(updateUi.assertStagedBranch(tampered.page, sha, tampered.log, { repoDir: dir, gitExe: git }))
+      .rejects.toThrow(/refusing to click/)
+
+    fs.writeFileSync(path.join(dir, upper), 'momomojo\n')
+    fs.writeFileSync(path.join(dir, 'tracked.txt'), 'edited\n')
+    const extraDirty = fixture({ statusOverride: dirtyStatus })
+    await expect(updateUi.assertStagedBranch(extraDirty.page, sha, extraDirty.log, { repoDir: dir, gitExe: git }))
+      .rejects.toThrow(/refusing to click/)
+    fs.writeFileSync(path.join(dir, 'tracked.txt'), 'v1\n')
+
+    fs.writeFileSync(path.join(dir, 'stray.txt'), 'untracked\n')
+    const untracked = fixture({ statusOverride: dirtyStatus })
+    await expect(updateUi.assertStagedBranch(untracked.page, sha, untracked.log, { repoDir: dir, gitExe: git }))
+      .rejects.toThrow(/refusing to click/)
+    fs.unlinkSync(path.join(dir, 'stray.txt'))
+
+    run(['-c', 'core.ignorecase=false', 'add', upper])
+    const staged = fixture({ statusOverride: dirtyStatus })
+    await expect(updateUi.assertStagedBranch(staged.page, sha, staged.log, { repoDir: dir, gitExe: git }))
+      .rejects.toThrow(/refusing to click/)
+    run(['reset', '-q', 'HEAD'])
+
+    run(['config', 'core.ignorecase', 'false'])
+    const caseSensitive = fixture({ statusOverride: dirtyStatus })
+    await expect(updateUi.assertStagedBranch(caseSensitive.page, sha, caseSensitive.log, { repoDir: dir, gitExe: git }))
+      .rejects.toThrow(/refusing to click/)
+
+    const cleanDir = fs.mkdtempSync(path.join(os.tmpdir(), 'desktop-clean-'))
+    try {
+      const clean = initCaseCollisionRepo(cleanDir, [{ path: 'a.txt', content: 'ok\n' }])
+      const mismatch = fixture({ statusOverride: dirtyStatus })
+      await expect(updateUi.assertStagedBranch(mismatch.page, sha, mismatch.log, { repoDir: cleanDir, gitExe: clean.git }))
+        .rejects.toThrow(/refusing to click/)
+    } finally {
+      fs.rmSync(cleanDir, { recursive: true, force: true })
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('case-collision helper handles spaces, renames, binary blobs, and CLI modes', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'case-collision-edge-'))
+  try {
+    const cli = fileURLToPath(new URL('../tests/install/e2e-assets/case-collision.cjs', import.meta.url))
+    const upperSpace = 'dir with spaces/File Name.txt'
+    const lowerSpace = 'dir with spaces/file name.txt'
+    const upperBin = 'bin/Data.bin'
+    const lowerBin = 'bin/data.bin'
+    const { git, run } = initCaseCollisionRepo(dir, [
+      { path: upperSpace, content: 'alpha\n' },
+      { path: lowerSpace, content: 'beta\n' },
+      { path: upperBin, content: Buffer.from([0x00, 0x01, 0x0a]) },
+      { path: lowerBin, content: Buffer.from([0x00, 0x02, 0x0a]) },
+      { path: 'rename-src.txt', content: 'moved\n' },
+    ])
+
+    fs.writeFileSync(path.join(dir, upperSpace), 'beta\n')
+    fs.writeFileSync(path.join(dir, upperBin), Buffer.from([0x00, 0x02, 0x0a]))
+    expect(caseCollision.inspectCaseCollisionDirty(dir, git)).toEqual({
+      ignoreCase: true,
+      collisions: expect.arrayContaining([upperSpace, upperBin]),
+      other: [],
+    })
+    const onlyOk = spawnSync(process.execPath, [cli, '--only-collisions', dir, '--git', git], { encoding: 'utf8' })
+    expect(onlyOk.status, onlyOk.stderr).toBe(0)
+    const listed = spawnSync(process.execPath, [cli, '--list', dir, '--git', git], { encoding: 'utf8' })
+    expect(listed.status, listed.stderr).toBe(0)
+    expect(JSON.parse(listed.stdout).other).toEqual([])
+
+    fs.writeFileSync(path.join(dir, upperBin), Buffer.from([0x00, 0x02, 0x0d, 0x0a]))
+    const binBad = caseCollision.inspectCaseCollisionDirty(dir, git)
+    expect(binBad.other.length).toBe(1)
+    expect(spawnSync(process.execPath, [cli, '--only-collisions', dir, '--git', git]).status).toBe(1)
+    fs.writeFileSync(path.join(dir, upperBin), Buffer.from([0x00, 0x02, 0x0a]))
+
+    run(['mv', 'rename-src.txt', 'rename-dst.txt'])
+    const renamed = caseCollision.inspectCaseCollisionDirty(dir, git)
+    expect(renamed.other.length).toBe(1)
+    expect(renamed.other[0]).toContain('rename-dst.txt')
+    expect(renamed.other[0]).toContain('rename-src.txt')
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test.skipIf(process.platform === 'win32')('case-collision helper never follows a symlink for a regular-file sibling', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'case-collision-symlink-'))
+  try {
+    const upper = 'docs/Note.txt'
+    const lower = 'docs/note.txt'
+    const { git } = initCaseCollisionRepo(dir, [
+      { path: upper, content: 'one\n' },
+      { path: lower, content: 'two\n' },
+    ])
+    const external = path.join(dir, '..', `external-${path.basename(dir)}.txt`)
+    fs.writeFileSync(external, 'two\n')
+    try {
+      fs.unlinkSync(path.join(dir, upper))
+      fs.symlinkSync(external, path.join(dir, upper))
+      const res = caseCollision.inspectCaseCollisionDirty(dir, git)
+      expect(res.collisions).toEqual([])
+      expect(res.other.length).toBe(1)
+    } finally {
+      fs.rmSync(external, { force: true })
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
 })

@@ -649,7 +649,13 @@ def test_launch_external_worker_pins_the_gateways_tree_on_pythonpath(
     entries = spawned[0][1]["env"]["PYTHONPATH"].split(os.pathsep)
     assert entries[0] == str(repo_root)
     assert str(tmp_path / "user-libs") in entries
-    assert spawned[0][1]["cwd"] == str(repo_root)
+    # Terminal-tool calls with no TERMINAL_CWD inherit os.getcwd(), which a Docker backend
+    # bind-mounts as /workspace: the worker must start in an empty per-profile directory,
+    # never the checkout and never HERMES_HOME itself (secrets).
+    worker_cwd = Path(spawned[0][1]["cwd"])
+    assert worker_cwd == tmp_path.resolve() / "cron" / "workspace"
+    assert worker_cwd.is_dir()
+    assert list(worker_cwd.iterdir()) == []
 
 
 def test_launch_external_worker_pin_extends_the_sanitized_env_not_os_environ(

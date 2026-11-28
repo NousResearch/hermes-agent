@@ -157,6 +157,11 @@ def _strip_yaml_frontmatter(content: str) -> str:
     return (content[end + 4:].lstrip("\n") or content) if end != -1 else content
 
 
+# Org woven into the identity fallback and the Hermes help block via
+# ``agent.attribution``. Empty omits those clauses only. Licensing and safety
+# notices are not built from this string.
+DEFAULT_ATTRIBUTION = "Nous Research"
+
 DEFAULT_AGENT_IDENTITY = (
     # A behavior spec (sizing rule, named prohibitions, earned-depth escape hatch), not a trait list — trait
     # lists change nothing. Maintainer rule: models UNDER-explore by default; never re-add an exploration-thrift line.
@@ -189,6 +194,49 @@ HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS = (
     "authoritative reference and always holds the latest, most up-to-date information. Point the user there "
     "(or read it yourself if you have a way to fetch web content)."
 )
+
+
+def _clean_attribution(attribution: object) -> str:
+    """Strip an org name. Non-strings and blanks mean the clause is omitted."""
+    if not isinstance(attribution, str):
+        return ""
+    return attribution.strip()
+
+
+def build_agent_identity(attribution: str = DEFAULT_ATTRIBUTION) -> str:
+    """Fallback identity. Empty attribution drops only the "built by ..." clause.
+
+    The default returns ``DEFAULT_AGENT_IDENTITY`` unchanged so existing
+    importers stay byte-identical.
+    """
+    label = _clean_attribution(attribution)
+    if label == DEFAULT_ATTRIBUTION:
+        return DEFAULT_AGENT_IDENTITY
+    if not label:
+        return DEFAULT_AGENT_IDENTITY.replace(f", built by {DEFAULT_ATTRIBUTION}", "", 1)
+    return DEFAULT_AGENT_IDENTITY.replace(
+        f"built by {DEFAULT_ATTRIBUTION}", f"built by {label}", 1,
+    )
+
+
+def _rebrand_help(text: str, attribution: object) -> str:
+    """Swap or drop the ``(by <org>)`` clause. The docs/skill pointer stays."""
+    label = _clean_attribution(attribution)
+    if label == DEFAULT_ATTRIBUTION:
+        return text
+    if not label:
+        return text.replace(f" (by {DEFAULT_ATTRIBUTION})", "", 1)
+    return text.replace(f"(by {DEFAULT_ATTRIBUTION})", f"(by {label})", 1)
+
+
+def build_help_guidance(attribution: str = DEFAULT_ATTRIBUTION) -> str:
+    """Hermes self-help block that points at the hermes-agent skill."""
+    return _rebrand_help(HERMES_AGENT_HELP_GUIDANCE, attribution)
+
+
+def build_help_guidance_no_skills(attribution: str = DEFAULT_ATTRIBUTION) -> str:
+    """Hermes self-help block for sessions that cannot call skill_view."""
+    return _rebrand_help(HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS, attribution)
 
 
 # Keep the every-session memory scope even when task knowledge cannot be saved as a skill.

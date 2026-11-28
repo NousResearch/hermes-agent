@@ -195,7 +195,7 @@ class TestCollectKanbanNotifications:
 
     def test_profile_scoped_session_reads_the_shared_board(self, tmp_path):
         """The kanban board is shared across profiles BY DESIGN (see the
-        hermes_cli/kanban_db.py module docstring): ``kanban_home()`` anchors on
+        hermes_cli/kanban_db/__init__.py module docstring): ``kanban_home()`` anchors on
         ``get_default_hermes_root()``, which resolves the process env and
         ignores context-local profile overrides. A Desktop session bound to a
         non-launch profile (``session["profile_home"]``) must therefore still

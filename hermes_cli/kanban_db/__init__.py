@@ -614,7 +614,7 @@ class Task:
     project_id: Optional[str] = None
     result: Optional[str] = None
     idempotency_key: Optional[str] = None
-    # Column semantics: see SCHEMA_SQL.
+    # Column semantics: see kanban_db.schema.SCHEMA_SQL.
     consecutive_failures: int = 0
     worker_pid: Optional[int] = None
     last_failure_error: Optional[str] = None
@@ -638,6 +638,7 @@ class Task:
     block_kind: Optional[str] = None
     block_recurrences: int = 0               # unblock-loop counter, see BLOCK_RECURRENCE_LIMIT
     completion_contract: Optional[str] = None
+    acceptance: Optional[str] = None  # canonical JSON machine-acceptance spec
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> Task:
@@ -670,6 +671,7 @@ _TASK_OPTIONAL_COLUMNS = (
     "branch_name", "project_id", "tenant", "result", "idempotency_key", "worker_pid",
     "max_runtime_seconds", "current_run_id", "workflow_template_id",
     "current_step_key", "max_retries", "session_id", "completion_contract",
+    "acceptance",
 )
 # Text columns where "" is stored/read as "not set".
 _TASK_EMPTY_IS_NULL_COLUMNS = (
@@ -769,218 +771,6 @@ class Event:
             payload=_json_or(_lossy_text(row["payload"])), created_at=_to_epoch(row["created_at"]) or 0,
             run_id=_opt_int(run_id),
         )
-
-
-# --- Schema ---
-
-SCHEMA_SQL = """
-CREATE TABLE IF NOT EXISTS tasks (
-    id                   TEXT PRIMARY KEY,
-    title                TEXT NOT NULL,
-    body                 TEXT,
-    assignee             TEXT,
-    status               TEXT NOT NULL,
-    priority             INTEGER DEFAULT 0,
-    created_by           TEXT,
-    created_at           INTEGER NOT NULL,
-    started_at           INTEGER,
-    completed_at         INTEGER,
-    workspace_kind       TEXT NOT NULL DEFAULT 'scratch',
-    workspace_path       TEXT,
-    branch_name          TEXT,
-    -- Optional link to a first-class Project (hermes_cli/projects_db). When set,
-    -- the task's worktree is anchored under the project's primary repo with a
-    -- deterministic branch name instead of a random wt/<task-id> fallback.
-    project_id           TEXT,
-    claim_lock           TEXT,
-    claim_expires        INTEGER,
-    tenant               TEXT,
-    result               TEXT,
-    idempotency_key      TEXT,
-    -- Unified consecutive-failure counter. Incremented on spawn
-    -- failure, timeout, or crash; reset only on successful completion.
-    -- The circuit breaker in _record_task_failure trips when this
-    -- exceeds DEFAULT_FAILURE_LIMIT consecutive non-successes.
-    consecutive_failures INTEGER NOT NULL DEFAULT 0,
-    worker_pid           INTEGER,
-    -- Restart-stable fingerprint of worker_pid ("<boot/instantiation epoch>|<start time>",
-    -- kanban_db_dispatch._process_fingerprint) recorded at spawn: liveness and kills require pid
-    -- AND fingerprint to agree, so a PID recycled after a reboot is never read as our worker or
-    -- signalled. NULL = legacy row (pre-fingerprint spawn); 'unverified' = capture failed at
-    -- spawn (held while live, never signalled). Column keeps its INTEGER affinity for the
-    -- start-time-only integer values older rows carry.
-    worker_started_at    INTEGER,
-    -- Short excerpt of the most recent failure's error text.
-    last_failure_error   TEXT,
-    max_runtime_seconds  INTEGER,
-    last_heartbeat_at    INTEGER,
-    -- Pointer into task_runs for the currently-active run (NULL if no
-    -- run is in-flight). Denormalised for cheap reads.
-    current_run_id       INTEGER,
-    -- Forward-compat for v2 workflow routing. In v1 the kernel writes
-    -- these when the task is opted into a template but otherwise ignores
-    -- them; the dispatcher doesn't consult them for routing yet.
-    workflow_template_id TEXT,
-    current_step_key     TEXT,
-    -- Force-loaded skills for the worker on this task, stored as JSON.
-    -- Passed to the worker via `--skills`. NULL or empty array = no extras.
-    skills               TEXT,
-    -- Per-task model override. When set, the dispatcher passes -m <model>
-    -- to the worker, overriding the profile's default model. NULL = use
-    -- the profile default.
-    model_override       TEXT,
-    -- Provider the model override belongs to. When set (alongside
-    -- model_override), the dispatcher passes --provider <name> so the
-    -- worker resolves the model against the right backend instead of the
-    -- profile's configured provider. NULL = profile provider.
-    provider_override    TEXT,
-    -- Per-task reasoning effort for the worker (minimal|low|medium|high|
-    -- xhigh|max|ultra, or 'none' for thinking off). When set, the dispatcher
-    -- passes --reasoning <level> so the worker runs at that depth regardless
-    -- of the profile's agent.reasoning_effort. NULL = profile setting.
-    reasoning_effort     TEXT,
-    -- Per-task override for the consecutive-failure circuit breaker.
-    -- The value is the failure count at which the breaker trips — e.g.
-    -- ``max_retries=1`` blocks on the first failure. NULL (the common
-    -- case) falls through to the dispatcher-level ``kanban.failure_limit``
-    -- config and then ``DEFAULT_FAILURE_LIMIT``.
-    max_retries          INTEGER,
-    -- When 1, the dispatched worker runs in a Ralph-style goal loop: an
-    -- auxiliary judge re-evaluates the worker's response against the
-    -- card title/body after each turn and feeds a continuation prompt
-    -- back into the SAME session until the judge agrees the work is done
-    -- or ``goal_max_turns`` is exhausted. NULL/0 = classic single-shot
-    -- worker (the default).
-    goal_mode            INTEGER NOT NULL DEFAULT 0,
-    -- Goal-loop turn budget for ``goal_mode`` workers. NULL = use the
-    -- goals-engine default.
-    goal_max_turns       INTEGER,
-    -- Originating chat/agent session id when the task was created from
-    -- inside an agent loop that propagated ``HERMES_SESSION_ID``. NULL
-    -- for tasks created from the CLI, dashboard, or any path that doesn't
-    -- set the env var, and for an id with no ``sessions`` row in this
-    -- profile's state.db (kanban_create verifies before stamping). Indexed
-    -- so per-session list queries stay cheap on larger boards.
-    session_id           TEXT,
-    -- Typed block reason set by ``block_task`` (one of VALID_BLOCK_KINDS, or
-    -- NULL for legacy/un-typed blocks). Drives routing: ``dependency`` never
-    -- sits in ``blocked`` (goes to ``todo`` for parent-gating); the others go
-    -- to ``blocked`` for a human. Preserved across unblock so a re-block for
-    -- the SAME kind can be recognised as a loop.
-    block_kind           TEXT,
-    -- Unblock-loop counter. Incremented each time a task is re-blocked for the
-    -- same truly-blocked reason after having been unblocked. When it reaches
-    -- BLOCK_RECURRENCE_LIMIT the task is routed to ``triage`` instead of
-    -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
-    -- successful completion — NOT on unblock (resetting on unblock is exactly
-    -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
-);
-
-CREATE TABLE IF NOT EXISTS task_links (
-    parent_id  TEXT NOT NULL,
-    child_id   TEXT NOT NULL,
-    PRIMARY KEY (parent_id, child_id)
-);
-
-CREATE TABLE IF NOT EXISTS task_comments (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    task_id    TEXT NOT NULL,
-    author     TEXT NOT NULL,
-    body       TEXT NOT NULL,
-    created_at INTEGER NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS task_events (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    task_id    TEXT NOT NULL,
-    run_id     INTEGER,
-    kind       TEXT NOT NULL,
-    payload    TEXT,
-    created_at INTEGER NOT NULL
-);
-
--- Historical attempt record. Each time the dispatcher claims a task, a
--- new row is created here; claim state, PID, heartbeat, runtime cap,
--- and structured summary all live on the run, not the task. Multiple
--- rows per task id when the task was retried after crash/timeout/block.
--- v2 of the kanban schema will use ``step_key`` to drive per-stage
--- workflow routing; in v1 the column is nullable and unused (kernel
--- ignores it).
-CREATE TABLE IF NOT EXISTS task_runs (
-    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-    task_id             TEXT NOT NULL,
-    profile             TEXT,
-    step_key            TEXT,
-    status              TEXT NOT NULL,
-    -- status: running | done | blocked | crashed | timed_out | failed | released
-    claim_lock          TEXT,
-    claim_expires       INTEGER,
-    worker_pid          INTEGER,
-    -- Spawn-time start fingerprint of worker_pid (see tasks.worker_started_at). Retained with
-    -- worker_pid after the run ends so a worker that outlives its terminal transition can
-    -- still be found and reaped; NULL = legacy row, never signalled.
-    worker_started_at   INTEGER,
-    max_runtime_seconds INTEGER,
-    last_heartbeat_at   INTEGER,
-    started_at          INTEGER NOT NULL,
-    ended_at            INTEGER,
-    outcome             TEXT,
-    -- outcome: completed | blocked | crashed | timed_out | spawn_failed |
-    --          gave_up | reclaimed | (null while still running)
-    summary             TEXT,
-    metadata            TEXT,
-    error               TEXT
-);
-
--- Files attached to a task (PDFs, images, source documents). The blob
--- lives on disk under ``attachments_root(board)/<task_id>/<stored_name>``;
--- this row carries metadata + the absolute ``stored_path`` so the
--- dashboard can list/download and ``build_worker_context`` can surface
--- the absolute path to the worker (which has full file-tool access). See
--- #35338.
-CREATE TABLE IF NOT EXISTS task_attachments (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    task_id      TEXT NOT NULL,
-    filename     TEXT NOT NULL,
-    stored_path  TEXT NOT NULL,
-    content_type TEXT,
-    size         INTEGER NOT NULL DEFAULT 0,
-    uploaded_by  TEXT,
-    created_at   INTEGER NOT NULL
-);
-
--- Subscription from a gateway source (platform + chat + thread) to a
--- task. The gateway's kanban-notifier watcher tails task_events and
--- pushes ``completed`` / ``blocked`` / ``spawn_auto_blocked`` events to
--- the original requester so human-in-the-loop workflows close the loop.
-CREATE TABLE IF NOT EXISTS kanban_notify_subs (
-    task_id       TEXT NOT NULL,
-    platform      TEXT NOT NULL,
-    chat_id       TEXT NOT NULL,
-    thread_id     TEXT NOT NULL DEFAULT '',
-    user_id       TEXT,
-    user_id_alt   TEXT,
-    chat_type     TEXT,
-    notifier_profile TEXT,
-    delivery_mode TEXT NOT NULL DEFAULT 'notify',
-    delivery_metadata TEXT,
-    created_at    INTEGER NOT NULL,
-    last_event_id INTEGER NOT NULL DEFAULT 0,
-    last_ping_event_id INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (task_id, platform, chat_id, thread_id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_tasks_status          ON tasks(status);
-CREATE INDEX IF NOT EXISTS idx_links_child           ON task_links(child_id);
-CREATE INDEX IF NOT EXISTS idx_links_parent          ON task_links(parent_id);
-CREATE INDEX IF NOT EXISTS idx_comments_task         ON task_comments(task_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_events_task           ON task_events(task_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, started_at);
-CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
-CREATE INDEX IF NOT EXISTS idx_attachments_task      ON task_attachments(task_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_id);
-"""
 
 
 # --- ID generation ---
@@ -1168,6 +958,7 @@ def create_task(
     project_source_task_id: Optional[str] = None,
     creator_task_id: Optional[str] = None,
     completion_contract: Optional[str] = None,
+    acceptance: Optional[dict] = None,
 ) -> str:
     """Create a task (optionally under ``parents``); returns its id.
 
@@ -1183,11 +974,15 @@ def create_task(
     in the active profile's projects.db — see ``_resolve_project_link``.
     ``workspace_kind=None`` (omitted) inherits a project-scoped board's project;
     an explicit ``"scratch"`` or ``project_id=""`` is a request for no project.
+    ``acceptance``: one machine-acceptance object (``kanban_acceptance.validate_acceptance``);
+    a malformed one raises ``ValueError`` instead of creating an unchecked card.
     """
     from hermes_cli.kanban_db_graph import initial_task_state, inherit_creator_origin
     from hermes_cli.kanban_pr_acceptance import validate_contract
+    from hermes_cli.kanban_acceptance import validate_acceptance
 
     completion_contract = validate_contract(completion_contract)
+    acceptance = validate_acceptance(acceptance)
     model_override, provider_override = _validate_model_override(model_override, provider_override)
     reasoning_effort = normalize_reasoning_effort(reasoning_effort)
     assignee = _canonical_assignee(assignee)
@@ -1267,8 +1062,9 @@ def create_task(
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
-                        goal_mode, goal_max_turns, session_id, completion_contract
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, session_id, completion_contract,
+                        acceptance
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id, title.strip(), body, assignee, task_status, priority,
@@ -1278,6 +1074,7 @@ def create_task(
                         json.dumps(skills_list) if skills_list is not None else None,
                         _opt_int(max_retries), model_override, provider_override, reasoning_effort,
                         1 if goal_mode else 0, _opt_int(goal_max_turns), session_id, completion_contract,
+                        acceptance,
                     ),
                 )
                 for pid in parents:
@@ -1300,6 +1097,7 @@ def create_task(
                         "goal_mode": bool(goal_mode) or None,
                         "model_override": model_override,
                         "provider_override": provider_override,
+                        **({"acceptance": json.loads(acceptance)} if acceptance else {}),
                     },
                 )
                 if task_status == "blocked":
@@ -1466,6 +1264,9 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
                 f"cannot reassign {task_id}: currently running (claimed). "
                 "Wait for completion or reclaim the stale lock first."
             )
+        # A reassigned machine wait goes to its new owner.
+        from hermes_cli.kanban_db_acceptance import leave_machine_wait
+        leave_machine_wait(conn, task_id, "reassigned", keep_assignee=True)
         if row["assignee"] != profile:
             # The failure streak is per task/profile; a new profile starts fresh.
             conn.execute(
@@ -2214,6 +2015,10 @@ def claim_review_task(
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
+        # A machine wait is the evaluator's, never a reviewer's.
+        from hermes_cli.kanban_db_acceptance import is_machine_wait
+        if is_machine_wait(conn, task_id):
+            return None
         if not _parents_satisfied(conn, task_id):
             demoted = conn.execute(
                 "UPDATE tasks SET status = 'todo' "
@@ -2255,6 +2060,8 @@ _RUN_OUTCOME_TERMINAL_STATUS = {
     "changes_requested": "changes_requested",
     "blocked": "blocked",
     "dependency_wait": "blocked",
+    # A yielded terminal phase, not done.
+    "acceptance_submitted": "acceptance_submitted",
 }
 
 
@@ -2671,6 +2478,14 @@ def complete_task(
         conn, task_id, metadata, summary=summary, result=result,
     )
     handoff_summary = summary if summary is not None else result
+    # A declared acceptance turns completion into a
+    # submission the dispatcher evaluates; the legacy path below is unchanged without one.
+    from hermes_cli import kanban_db_acceptance as _kba
+    if _kba.task_acceptance(conn, task_id):
+        return _kba.submit_completion(
+            conn, task_id, result=result, summary=summary, handoff_summary=handoff_summary,
+            metadata=metadata, verified_cards=verified_cards, expected_run_id=expected_run_id, force=force,
+        )
     acceptance = prepare_acceptance(conn, task_id, expected_run_id, metadata)
     if acceptance is False:
         return False
@@ -2679,6 +2494,10 @@ def complete_task(
         # reopened while this task waited.
         if not _parents_satisfied(conn, task_id):
             return False
+        if _kba.task_acceptance(conn, task_id):
+            raise AcceptanceSubmissionError(
+                "an acceptance check was declared on the card while completing; nothing changed — "
+                "retry the completion to submit it for machine acceptance")
         if acceptance is not None and not record_acceptance(conn, task_id, acceptance):
             return False
         trow = conn.execute(
@@ -3610,9 +3429,15 @@ def reopen_review_task(conn: sqlite3.Connection, task_id: str) -> bool:
             note="invariant recovery on review reopen",
         )
         new_status = _landing_status_after_parents(conn, task_id)
-        review_event = _latest_event(conn, task_id, "review_requested")
-        handoff = _json_dict(_row_get(review_event, "payload"))
-        implementer = _nonblank_str(handoff.get("implementer"))
+        # A machine wait goes back to ITS implementer
+        # (read before the status change's trigger cancels the submission), never a historical one.
+        from hermes_cli.kanban_db_acceptance import is_machine_wait, open_submission
+        if is_machine_wait(conn, task_id):
+            implementer = _nonblank_str(open_submission(conn, task_id)["implementer"])
+        else:
+            review_event = _latest_event(conn, task_id, "review_requested")
+            handoff = _json_dict(_row_get(review_event, "payload"))
+            implementer = _nonblank_str(handoff.get("implementer"))
         params: tuple[Any, ...] = (new_status, *((implementer,) if implementer else ()), task_id)
         cur = conn.execute(
             # consecutive_failures deliberately PRESERVED: review reopen is not
@@ -3680,7 +3505,13 @@ def invalidate_descendants_for_parent_reopen(
                 continue
             resume_status = "ready"
             run_id = None
-            if previous_status == "review":
+            # A machine wait's receipt is void once an
+            # ancestor reopens: cancel it and send the card back to its implementer, not to review.
+            from hermes_cli.kanban_db_acceptance import cancel_open_submission
+            cancelled = cancel_open_submission(conn, row["id"], "ancestor_reopened")
+            if cancelled is not None and cancelled["implementer"]:
+                conn.execute("UPDATE tasks SET assignee = ? WHERE id = ?", (cancelled["implementer"], row["id"]))
+            if previous_status == "review" and cancelled is None:
                 resume_status = "review"
             elif previous_status == "running":
                 resume_status = _retry_status_for_run(conn, row["id"], row["current_run_id"])
@@ -3836,7 +3667,8 @@ def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> b
 def _delete_task_relations(conn: sqlite3.Connection, task_id: str) -> None:
     """Delete every row referencing ``task_id`` (schema has no ON DELETE CASCADE)."""
     conn.execute("DELETE FROM task_links WHERE parent_id = ? OR child_id = ?", (task_id, task_id))
-    for table in ("task_comments", "task_events", "task_runs", "kanban_notify_subs"):
+    for table in ("task_comments", "task_events", "task_runs", "kanban_notify_subs",
+                  "task_acceptance_submissions"):
         conn.execute(f"DELETE FROM {table} WHERE task_id = ?", (task_id,))
 
 
@@ -4216,6 +4048,7 @@ from hermes_cli.kanban_db_workspace import (
     _managed_scratch_path_info,
     _scratch_workspace,
 )
+from hermes_cli.kanban_db_acceptance import AcceptanceSubmissionError
 from hermes_cli.kanban_db_dispatch import (
     DEFAULT_FAILURE_LIMIT,
     DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS,

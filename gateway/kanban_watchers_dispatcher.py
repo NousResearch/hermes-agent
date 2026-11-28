@@ -192,7 +192,15 @@ class _KanbanDispatcher:
             from hermes_cli import kanban_db as _kb
             with _kb.pin_first_board_resolution():
                 conn = _kbc().connect(board=slug)
-                return _kbd().dispatch_once(conn, board=slug, **kwargs)
+                result = _kbd().dispatch_once(conn, board=slug, **kwargs)
+                # After the tick lock is released and
+                # regardless of spawn capacity; the caller only ticks while estop allows dispatch.
+                from hermes_cli.kanban_acceptance import run_acceptance_pass
+                try:
+                    run_acceptance_pass(conn, board=slug, failure_limit=kwargs.get("failure_limit"))
+                except Exception:  # health: allow BLE001 -- one board's acceptance failure must not stop the dispatch tick; traceback logged
+                    logger.exception("kanban acceptance: pass failed on board %s", slug)
+                return result
         except Exception as exc:
             if self.is_corrupt_board_db_error(exc):
                 self.disabled_corrupt_boards[slug] = (fingerprint, time.monotonic())

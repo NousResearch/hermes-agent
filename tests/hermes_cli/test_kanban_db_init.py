@@ -14,7 +14,7 @@ def _make_legacy_db(path: Path) -> None:
     additive-column migration runs cleanly on top.
     """
     conn = sqlite3.connect(str(path))
-    conn.executescript(kb.SCHEMA_SQL)
+    conn.executescript(kb.schema.SCHEMA_SQL)
     conn.executescript(
         """
         DROP TABLE task_events;

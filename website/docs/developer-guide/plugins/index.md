@@ -1832,14 +1832,14 @@ Every name in `hermes_cli.plugins.VALID_HOOKS` has at least one core fire site. 
 | `on_session_prompt` / `on_session_prompt_settled` | `gateway/session_prompt_hooks.py`, called from `gateway/session_authority.py` `SessionAuthority.register_approval` / `register_clarify`, `gateway/session_pending_controls.py` (a prompt leaving `PendingControls.pending`) and `gateway/session_server_requests.py` `_ask` |
 | `on_room_member_activity` | `tui_gateway/hosted_room_member_activity.py` `emit_room_member_activity` |
 | `pre_transcription` | `tools/transcription_command.py` `_apply_pre_transcription_hook` |
-| `kanban_task_claimed` | `hermes_cli/kanban_db.py` `claim_task` (through `_fire_task_hook`) |
-| `kanban_task_completed` | `hermes_cli/kanban_db.py` `complete_task` (through `_fire_task_hook`); `hermes_cli/kanban_swarm.py` `create_swarm` |
-| `kanban_task_blocked` | `hermes_cli/kanban_db.py` `block_task` (through `_fire_task_hook`) |
-| `on_kanban_worker_spawned` | `hermes_cli/kanban_db.py` `_fire_worker_spawned_hook` |
-| `on_kanban_worker_exited` | `hermes_cli/kanban_db_dispatch.py` `detect_crashed_workers` |
-| `on_kanban_worker_stale_claim` | `hermes_cli/kanban_db.py` `release_stale_claims` |
-| `on_kanban_task_updated` | `hermes_cli/kanban_db.py` `notify_task_updated` |
-| `on_kanban_dispatch_tick` | `hermes_cli/kanban_db.py` `_fire_dispatch_tick_hook` |
+| `kanban_task_claimed` | `hermes_cli/kanban_db/__init__.py` `claim_task` (through `_fire_task_hook`) |
+| `kanban_task_completed` | `hermes_cli/kanban_db/__init__.py` `complete_task` (through `_fire_task_hook`); `hermes_cli/kanban_swarm.py` `create_swarm` |
+| `kanban_task_blocked` | `hermes_cli/kanban_db/__init__.py` `block_task` (through `_fire_task_hook`) |
+| `on_kanban_worker_spawned` | `hermes_cli/kanban_db/__init__.py` `_fire_worker_spawned_hook` |
+| `on_kanban_worker_exited` | `hermes_cli/kanban_db_dispatch/__init__.py` `detect_crashed_workers` |
+| `on_kanban_worker_stale_claim` | `hermes_cli/kanban_db/__init__.py` `release_stale_claims` |
+| `on_kanban_task_updated` | `hermes_cli/kanban_db/__init__.py` `notify_task_updated` |
+| `on_kanban_dispatch_tick` | `hermes_cli/kanban_db/__init__.py` `_fire_dispatch_tick_hook` |
 | `gateway_platform_event` | `gateway/run_adapters.py` `GatewayAdapterLifecycleMixin._handle_gateway_platform_event` (events come from the Telegram and Discord adapters) |
 | `pre_command` | `hermes_cli/plugins.py` `fire_pre_command_hook`, called from `cli.py` `HermesCLI.process_command`, `gateway/run_inbound_hooks.py` `GatewayInboundHooksMixin._hm_command_hooks` and `gateway/session_commands.py` |
 | `post_compaction` | `agent/compaction_events.py` `fire_post_compaction` |

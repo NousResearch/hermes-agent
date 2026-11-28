@@ -436,7 +436,7 @@ def _opt_int(value: Any, default: Optional[int] = None) -> Optional[int]:
 _TASK_FIELDS = tuple(
     "id title body assignee status tenant priority workspace_kind workspace_path created_by "
     "created_at started_at completed_at result current_run_id model_override "
-    "provider_override completion_contract last_failure_error".split())
+    "provider_override completion_contract acceptance last_failure_error".split())
 _TASK_SUMMARY_FIELDS = tuple(
     "id title assignee status priority tenant workspace_kind workspace_path project_id created_by "
     "created_at started_at completed_at current_run_id model_override provider_override".split())
@@ -451,6 +451,16 @@ _CREATED_FIELDS = ("status", "workspace_kind", "workspace_path", "project_id")
 def _fields(obj: Any, names: tuple[str, ...]) -> dict[str, Any]:
     """``{name: getattr(obj, name)}``; every value None when ``obj`` is None."""
     return {n: getattr(obj, n) if obj is not None else None for n in names}
+
+
+def _machine_wait(conn, tid: str) -> bool:
+    from hermes_cli.kanban_db_acceptance import is_machine_wait
+    return is_machine_wait(conn, tid)
+
+
+def _acceptance_submission(conn, tid: str):
+    from hermes_cli.kanban_db_acceptance import submission_summary
+    return submission_summary(conn, tid)
 
 
 def _task_summary_dict(kb, conn, task) -> dict[str, Any]:
@@ -707,6 +717,7 @@ def _handle_show(args: dict, **kw) -> str:
             # Capped; full log via CLI.
             "events": [_fields(e, _EVENT_FIELDS) for e in kb.list_events(conn, tid)[-50:]],
             "runs": [_fields(r, _RUN_FIELDS) for r in kb.list_runs(conn, tid)],
+            "acceptance_submission": _acceptance_submission(conn, tid),
             # Same string build_worker_context hands the dispatcher at spawn time.
             "worker_context": kb.build_worker_context(conn, tid)})
 
@@ -763,7 +774,9 @@ def _handle_complete(args: dict, **kw) -> str:
         # judge by calling kanban_complete before acceptance criteria are met. Only enforce when a judge is
         # actually reachable — see _goal_judge_available for why an unavailable judge fails open.
         task = kb.get_task(conn, tid)
-        _goal_gate("kanban_complete", task, tid, (summary or result or "").strip())
+        # A declared acceptance replaces the LLM judge.
+        if not getattr(task, "acceptance", None):
+            _goal_gate("kanban_complete", task, tid, (summary or result or "").strip())
         try:
             ok = kb.complete_task(
                 conn, tid, result=result, summary=summary, metadata=metadata,
@@ -813,9 +826,21 @@ def _handle_complete(args: dict, **kw) -> str:
                 raise _Reject(
                     f"could not complete {tid}: unsatisfied parent dependencies: "
                     f"{detail}; complete the parents first (done or archived)")
+            if _machine_wait(conn, tid):
+                raise _Reject(
+                    f"could not complete {tid}: it is already submitted and waiting for machine "
+                    f"acceptance. Nothing changed; the dispatcher decides it (pass -> done, fail -> "
+                    f"back to the implementer).")
             _check(False, (task.last_failure_error if task else None) or
                    f"could not complete {tid} (unknown id, stale run, or already terminal)")
         run = kb.latest_run(conn, tid)
+        if task is not None and task.status == "review" and _machine_wait(conn, tid):
+            return _ok(task_id=tid, run_id=run.id if run else None, status="review",
+                       acceptance="submitted",
+                       message=("Submitted for machine acceptance (not done yet). After you exit, the "
+                                "dispatcher checks the card's acceptance: pass -> done; fail -> it "
+                                "returns to the implementer with the failure in its context."),
+                       attachments=[_fields(a, _ATTACHMENT_FIELDS) for a in kb.list_attachments(conn, tid)])
         # Artifact staging is atomic with the completion write, so a worker that
         # read `kanban_attachments` before completing saw an empty list and has
         # no way to observe what its completion just registered (#117360).
@@ -1163,6 +1188,7 @@ def _handle_create(args: dict, **kw) -> str:
             model_override=model_override, provider_override=provider_override,
             goal_mode=goal_mode, goal_max_turns=_opt_int(args.get("goal_max_turns")),
             completion_contract=args.get("completion_contract"),
+            acceptance=args.get("acceptance"),
             initial_status=str(args.get("initial_status") or "running"),
             created_by=_persisted_identity(), session_id=session_id)
         landed = _fields(kb.get_task(conn, new_tid), _CREATED_FIELDS)

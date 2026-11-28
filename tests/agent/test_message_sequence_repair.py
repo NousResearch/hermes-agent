@@ -101,8 +101,13 @@ def test_repair_marker_user_merge_keeps_plain_row_addressable():
     assert merged["role"] == "user"
     assert not merged.get("display_kind")
     assert merged["_row_id"] == 12135
-    assert "the user's real prompt" in merged["content"]
-    assert "[System:" in merged["content"]
+    # The plain row survives as typed (display projections show it, a compaction copies it as that
+    # row); the notice leads the wire sidecar every request sends in place of content.
+    assert merged["content"] == "the user's real prompt"
+    assert merged["api_content"] == (
+        "[System: The active model for this chat has changed to ds4.]\n\nthe user's real prompt"
+    )
+    assert merged["_absorbed_row_ids"] == [12134]
 
 
 def test_repair_plain_user_then_marker_stays_addressable():

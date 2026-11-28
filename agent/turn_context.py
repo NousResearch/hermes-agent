@@ -1105,10 +1105,14 @@ def _stamp_api_content_sidecar(
     live_content = _turn_user_msg.get("content")
     from agent.session_persistence import _persist_lock, durable_user_row_content
     # Match the row the flush wrote (persist override = clean transcript), not the live bytes.
-    durable_content, _api_content = durable_user_row_content(
-        agent, _turn_user_msg, live_content,
-        compose_user_api_content(live_content or "", ext_prefetch_cache, plugin_user_context),
-    )
+    composed = compose_user_api_content(live_content or "", ext_prefetch_cache, plugin_user_context)
+    from session_rules.turns import folded_display_notices
+    # A display notice the alternation repair folded into this turn's wire leads its sidecar: it stays ahead of
+    # injected context, and with nothing injected the folded sidecar is itself the bytes the wire sends.
+    existing = _turn_user_msg.get("api_content")
+    if notices := folded_display_notices(existing, live_content):
+        composed = existing if composed is None else f"{notices}\n\n{composed}"
+    durable_content, _api_content = durable_user_row_content(agent, _turn_user_msg, live_content, composed)
     if _api_content is None or _api_content == durable_content:
         return
     _turn_user_msg["api_content"] = _api_content

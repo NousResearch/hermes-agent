@@ -582,6 +582,8 @@ def _recover_welcome_tier(agent: Any, classified: Any, _retry: TurnRetryState) -
             try:
                 agent.model = target
                 agent._nous_model_switch = (requested, target)
+                from agent.route_binding import _publish_consuming_model
+                _publish_consuming_model(agent)
             except Exception:
                 return False
             _vlines(agent, f"↪️  {requested} isn't available without signing in; using {target} for now. Retrying...")

@@ -359,8 +359,14 @@ class TestEnforceTurnBudget:
                  "content": [{"type": "text", "text": "x" * 60_000}, {"type": "text", "text": "scale note"}, img]}
                 for i in range(6)]
         enforce_turn_budget(msgs, env=None, config=BudgetConfig(turn_budget=200_000))
-        assert sum(PERSISTED_OUTPUT_TAG in m["content"][0]["text"] for m in msgs) >= 2
-        assert all(m["content"][1]["text"] == "scale note" and m["content"][2] == img for m in msgs)
+        persisted_count = 0
+        for message in msgs:
+            parts = message["content"]
+            assert isinstance(parts, list)
+            persisted_count += PERSISTED_OUTPUT_TAG in parts[0]["text"]
+            assert parts[1]["text"] == "scale note"
+            assert parts[2] == img
+        assert persisted_count >= 2
 
 # ── Per-tool threshold integration ────────────────────────────────────
 
@@ -852,3 +858,118 @@ class TestMcpEnvelopeSpillover:
         assert "could not be saved" in result
         assert "chars elided" in result and "error: LAST_LINE" in result
         assert "spillover" not in result
+
+# ── _resolve_storage_dir edge cases ───────────────────────────────────
+
+class TestResolveStorageDirEdgeCases:
+    def test_env_get_temp_dir_raises(self):
+        """When env.get_temp_dir() raises, falls back to STORAGE_DIR."""
+        env = MagicMock()
+        env.get_temp_dir.side_effect = OSError("permission denied")
+        assert _resolve_storage_dir(env) == STORAGE_DIR
+
+    def test_env_get_temp_dir_returns_empty(self):
+        """When env.get_temp_dir() returns empty string, falls back to STORAGE_DIR."""
+        env = MagicMock()
+        env.get_temp_dir.return_value = ""
+        assert _resolve_storage_dir(env) == STORAGE_DIR
+
+    def test_env_get_temp_dir_returns_none(self):
+        """When env.get_temp_dir() returns None, falls back to STORAGE_DIR."""
+        env = MagicMock()
+        env.get_temp_dir.return_value = None
+        assert _resolve_storage_dir(env) == STORAGE_DIR
+
+    def test_env_has_no_get_temp_dir(self):
+        """When env has no get_temp_dir attribute, falls back to STORAGE_DIR."""
+        env = MagicMock()
+        del env.get_temp_dir
+        assert _resolve_storage_dir(env) == STORAGE_DIR
+
+    def test_env_temp_dir_trailing_slash_stripped(self):
+        """Trailing slashes are stripped from the temp dir."""
+        env = MagicMock()
+        env.get_temp_dir.return_value = "/var/tmp///"
+        result = _resolve_storage_dir(env)
+        assert result == "/var/tmp/hermes-results"
+
+    def test_env_temp_dir_root_only(self):
+        """When temp dir is just '/', the rstrip-or-slash fallback yields
+        a double-slash path — cosmetic, not a bug."""
+        env = MagicMock()
+        env.get_temp_dir.return_value = "/"
+        result = _resolve_storage_dir(env)
+        assert result.endswith("/hermes-results")
+
+
+# ── enforce_turn_budget edge cases ─────────────────────────────────────
+
+class TestEnforceTurnBudgetEdgeCases:
+    def test_missing_tool_call_id_uses_budget_prefix(self):
+        """Messages without tool_call_id get a budget_ prefix."""
+        env = MagicMock()
+        env.execute.return_value = {"output": "", "returncode": 0}
+        msgs = [
+            {"role": "tool", "content": "x" * 250_000},
+        ]
+        enforce_turn_budget(msgs, env=env, config=BudgetConfig(turn_budget=200_000))
+        # Should be persisted with a budget_ prefix filename
+        assert PERSISTED_OUTPUT_TAG in msgs[0]["content"]
+        assert "budget_0" in msgs[0]["content"]
+
+    def test_no_content_key_uses_empty_string(self):
+        """Messages without content key are treated as empty."""
+        msgs = [{"role": "tool", "tool_call_id": "t1"}]
+        result = enforce_turn_budget(msgs, env=None, config=BudgetConfig(turn_budget=200_000))
+        assert result is msgs
+
+    def test_missing_content_key_over_budget_does_not_crash(self):
+        """The persisted preview still exceeds the budget, so the loop reaches the empty message."""
+        config = BudgetConfig(turn_budget=100)
+        content = "x" * 250_000
+        missing = {"role": "tool", "tool_call_id": "tc_budget_missing"}
+        msgs = [
+            {"role": "tool", "tool_call_id": "tc_budget_full", "content": content},
+            missing,
+        ]
+        result = enforce_turn_budget(msgs, config=config)
+        assert result is msgs
+        assert PERSISTED_OUTPUT_TAG in result[0]["content"]
+        assert len(result[0]["content"]) > config.turn_budget
+        assert (get_spillover_dir() / "tc_budget_full.txt").read_text(encoding="utf-8") == content
+        assert result[1] == {"role": "tool", "tool_call_id": "tc_budget_missing"}
+
+    def test_all_already_persisted(self):
+        """Already persisted results stay unchanged even above the turn budget."""
+        content = (
+            f"{PERSISTED_OUTPUT_TAG}\n"
+            + "already done\n" * 20
+            + PERSISTED_OUTPUT_CLOSING_TAG
+        )
+        config = BudgetConfig(turn_budget=100)
+        assert len(content) > config.turn_budget
+        msgs = [
+            {"role": "tool", "tool_call_id": "t1",
+             "content": content},
+        ]
+        result = enforce_turn_budget(msgs, env=None, config=config)
+        assert result is msgs
+        assert result[0]["content"] == content
+
+    def test_budget_enforcement_logs_persisted(self):
+        """The budget-enforcement log line itself must fire.
+
+        maybe_persist_tool_result already logs on the persist path, so a bare
+        ``logger.info.called`` cannot distinguish the enforcement call from the
+        ordinary persist call; assert the exact enforcement call instead."""
+        env = MagicMock()
+        env.execute.return_value = {"output": "", "returncode": 0}
+        msgs = [
+            {"role": "tool", "tool_call_id": "t1", "content": "x" * 250_000},
+        ]
+        with patch("tools.tool_result_storage.logger") as mock_logger:
+            enforce_turn_budget(msgs, env=env, config=BudgetConfig(turn_budget=200_000))
+            mock_logger.info.assert_any_call(
+                "Budget enforcement: persisted tool result %s (%d chars)",
+                "t1", 250_000,
+            )

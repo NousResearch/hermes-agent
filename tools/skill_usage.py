@@ -594,6 +594,21 @@ def set_locked(skill_name: str, locked: bool) -> bool:
     return bool(_mutate(skill_name, lambda rec: rec.update({"locked": bool(locked)}) or True))
 
 
+def carry_pin(old_name: str, new_name: str) -> None:
+    """Pin *new_name* when *old_name* is pinned: a skill whose frontmatter ``name:`` was rewritten keeps the pin
+    its old name held. Additive (two skills may share the old name, so a rename never unpins anything) and not
+    curation-gated, since it preserves a user's pin rather than creating one."""
+    if not old_name or not new_name or old_name == new_name:
+        return
+
+    def _carry(data):
+        if not (data.get(old_name) or {}).get("pinned") or (rec := data.setdefault(new_name, _empty_record())).get("pinned"):
+            return None, False
+        rec["pinned"] = True
+        return None, True
+    _locked_update(new_name, _carry, "skill_usage.carry_pin(%s) failed: %s")
+
+
 def is_locked(skill_name: str) -> bool:
     """``locked`` flag of *skill_name*. Strict on purpose: a corrupt or unreadable sidecar RAISES
     instead of reading as "unlocked" (``load_usage`` returns {} there), so the write guard can fail

@@ -407,12 +407,16 @@ def _guarded_write(name: str, skill_dir: Path, target: Path, action: str, label:
                    content: str) -> Optional[dict[str, Any]]:
     """Read-before-write guard (existing targets only), the description budget for the root SKILL.md
     (whichever action and file_path reach it), atomic write, then the security scan; a blocked scan
-    restores the original (or unlinks a new file). Error dict or None."""
-    original = None
+    restores the original (or unlinks a new file). Error dict or None. A landed rewrite of the
+    frontmatter ``name:`` carries the skill's pin to its new name."""
+    from tools import skill_usage
+    original = renamed_from = None
     if target.exists():
         if read_guard := _background_review_read_before_write_guard(name, target, action, label):
             return read_guard
         original = target.read_text(encoding="utf-8-sig")
+        if target == skill_dir / "SKILL.md":
+            renamed_from = skill_usage.read_skill_name(target, fallback=skill_dir.name)
     if target == skill_dir / "SKILL.md" and (err := _description_budget_error(content, before=original)):
         return _err(err)
     scope, baseline, scan_error = _scan_baseline(skill_dir, target)
@@ -423,6 +427,8 @@ def _guarded_write(name: str, skill_dir: Path, target: Path, action: str, label:
     atomic_write_text(target, content, preserve_mode=True, create_mode=0o644)
     scan_error = _security_scan_skill(skill_dir, baseline, scope)
     if not scan_error:
+        if renamed_from:
+            skill_usage.carry_pin(renamed_from, skill_usage.read_skill_name(target, fallback=skill_dir.name))
         return None
     if original is not None:
         atomic_write_text(target, original, preserve_mode=True)
@@ -583,7 +589,9 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> dict[str, A
     skill_dir, guard = _locate_for_write(name, "delete")
     if guard := guard or _curator_consolidation_delete_guard(name, absorbed_into):
         return guard
-    if pinned_err := _pinned_guard(name):
+    # Pins and ESSENTIAL_SKILLS are keyed by the skill's frontmatter `name:`, but _find_skill
+    # resolves by directory (bare or categorized, `mlops/axolotl`), and the two can differ.
+    if pinned_err := _pinned_guard(skill_dir.name, skill_dir):
         return _err(pinned_err)
     absorbed_target = absorbed_into.strip() if isinstance(absorbed_into, str) else ""
     if absorbed_target:

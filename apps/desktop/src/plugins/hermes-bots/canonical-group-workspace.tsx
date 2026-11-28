@@ -1,5 +1,5 @@
 import { Button, host, LruCache, randomUuid } from '@hermes/plugin-sdk'
-import { type ClipboardEvent, type DragEvent, useEffect, useRef, useState } from 'react'
+import { type ClipboardEvent, type ComponentProps, type DragEvent, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { type CanonicalDriverStatus, CanonicalGroupCycle, CanonicalGroupNotices, CanonicalGroupTyping, canonicalMemberName, useCanonicalRoomLive, useSameValue } from './canonical-group-activity'
 import { CanonicalGroupAttachments, type CanonicalGroupUploader } from './canonical-group-attachments'
@@ -20,6 +20,14 @@ import { focusComposerEnd, GroupMentionInput } from './group-chat-parts'
 import { RoomBotAvatar } from './group-room-avatar'
 import { fill, ROOM_COMPOSER_INPUT_CLASS, RoomComposer, RoomReplyChip } from './group-room-ui'
 import { retainRouteSocket } from './route-lease'
+
+/** The transcript is the expensive part of the room, and the composer draft lives in the workspace:
+ *  every typed character re-renders it. This memoized shell keeps the message log out of that
+ *  re-render — it only re-renders when the log, the roster or the driver's pause state change. */
+const GroupTranscript = memo(function GroupTranscript(props: ComponentProps<typeof CanonicalGroupHistory>) {
+  return <CanonicalGroupHistory {...props} />
+})
+
 
 type RoomEvent = CanonicalGroupEvent
 interface Attachment { attachment_id?: string; event_id?: string; kind: string; name: string; mime: string; size?: number }
@@ -637,7 +645,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
   const { cycle, statuses, working } = useCanonicalRoomLive(events, driver, members, reply?.thread)
   const mentionMembers = members.map(member => ({ name: member.handle, handle: member.handle, display_name: member.display_name }))
   const memberById = new Map(members.map(member => [member.member_id, member]))
-  const avatarFor = (name: string, size: number) => <RoomBotAvatar name={name} size={size} />
+  const avatarFor = useCallback((name: string, size: number) => <RoomBotAvatar name={name} size={size} />, [])
 
   // The Bots list row reads this room's live state while it is open, and forgets it once it closes.
   useEffect(() => holdCanonicalRoomLive(binding), [binding])
@@ -651,7 +659,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
   })
 
   // Hover Reply: continue that message's thread, addressed to the member who wrote it.
-  const replyTo = (member: CanonicalRoomMember | undefined, text: string, thread: string | undefined, author: string) => {
+  const replyTo = useCallback((member: CanonicalRoomMember | undefined, text: string, thread: string | undefined, author: string) => {
     setReply({ member, name: member ? canonicalMemberName(member) : author, quote: text.split('\n').map(line => line.trim()).find(Boolean) ?? '', thread })
 
     if (member) {
@@ -660,7 +668,16 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
     }
 
     focusComposerEnd(composerInput)
-  }
+  }, [])
+
+  // The transcript is memoized below, so its pause descriptor must not be a fresh object per render:
+  // the handlers stay current through refs while the object only changes when its own state does.
+  const pauseHandlers = useRef({ continueDiscussion, stop })
+  pauseHandlers.current = { continueDiscussion, stop }
+
+  const pause = useMemo(() => ({ busy, maxContinues: driver?.max_continues, stopping,
+    onContinue: (eventId: string) => pauseHandlers.current.continueDiscussion(eventId),
+    onStop: () => pauseHandlers.current.stop() }), [busy, driver?.max_continues, stopping])
 
   // Text pastes stay in the composer; only files go through the picker's upload.
   const attachTransfer = (event: ClipboardEvent | DragEvent, data: DataTransfer | null) => {
@@ -687,8 +704,8 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4" ref={scroller} role="log">
         {/* Anchored to the composer like a chat thread: a short room sits at the bottom, not the top. */}
         <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col justify-end gap-0.5 py-4">
-          <CanonicalGroupHistory avatarFor={avatarFor} binding={binding} disabled={!visible} downloads={offersGroupMethod(methods, 'groups.attachment.download')} events={events} members={members} onReply={replyTo}
-            pause={{ busy, maxContinues: driver?.max_continues, onContinue: continueDiscussion, onStop: stop, stopping }} />
+          <GroupTranscript avatarFor={avatarFor} binding={binding} disabled={!visible} downloads={offersGroupMethod(methods, 'groups.attachment.download')} events={events} members={members} onReply={replyTo}
+            pause={pause} />
           <CanonicalGroupTyping labels={labels} members={members} statuses={statuses} />
           {(driver?.pending_actions || []).map(action => {
             const member = memberById.get(action.member_id)

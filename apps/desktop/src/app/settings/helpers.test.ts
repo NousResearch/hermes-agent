@@ -371,6 +371,21 @@ describe('settings helpers', () => {
   })
 
   describe('sectionFieldEntries', () => {
+    it('surfaces display.busy_input_mode in Chat settings as the backend select', () => {
+      // The key is served by /api/config/schema but `sectionFieldEntries` only
+      // renders keys named in SECTIONS, so a missing entry hides the setting
+      // even though the backend and the composer honour it (#125963).
+      const schema = {
+        'display.busy_input_mode': { type: 'select' as const, options: ['interrupt', 'queue', 'steer'] }
+      }
+
+      const config: HermesConfigRecord = { display: { busy_input_mode: 'queue' } }
+
+      const fields = new Map(sectionFieldEntries(schema, config).get('chat') ?? [])
+
+      expect(fields.get('display.busy_input_mode')).toEqual(schema['display.busy_input_mode'])
+    })
+
     it('renders memory.provider from config even when the backend schema omits it', () => {
       const schema = { 'memory.memory_enabled': { type: 'boolean' as const } }
       const config: HermesConfigRecord = { memory: { memory_enabled: true, provider: '' } }

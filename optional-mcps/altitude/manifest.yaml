@@ -1,0 +1,78 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: altitude
+description: 'Altitude: balances and transactions; reviewed read tools enabled by default.'
+source: https://docs.altitude.xyz/mcp/setup
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Native OAuth 2.1 + Dynamic Client Registration
+# through a WorkOS AuthKit tenant (verified live 2026-11-22: the RFC 9728
+# protected-resource metadata names the AuthKit issuer exactly as its RFC 8414
+# metadata does, with registration_endpoint and S256 PKCE).
+#
+# Altitude's tool reference (https://docs.altitude.xyz/mcp/tool-reference)
+# lists read tools and one action, generate_exports, which prepares a PDF/CSV
+# statement for the signed-in user (no email is sent); it and download_export
+# are excluded by default below. Read tools outside the reviewed set
+# (list_cards, list_members, list_tasks, download_receipt) also stay off until
+# enabled. The server cannot create, approve or submit payments, change
+# Workspace settings, or move funds, and connecting does not change the
+# account's permissions.
+
+transport:
+  type: http
+  url: https://mcp.altitude.xyz/mcp
+
+auth:
+  type: oauth
+
+# Preselect the reviewed read surface for fresh installs. Existing selections
+# survive reinstalls; the CLI can clear filters on empty discovery or when all
+# advertised tools are selected. This is a default, not a runtime capability cap.
+# Export generation and download, and the other unreviewed tools, remain
+# available through explicit configuration.
+tools:
+  default_enabled:
+    - whoami
+    - list_workspaces
+    - list_accounts
+    - search_transactions
+    - get_bill_settings
+    - get_receipt_settings
+    - list_export_options
+    - get_export_status
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - altitude
+    - business banking
+  hosts:
+    - altitude.xyz
+
+post_install: |
+  Before using the connection, disable server-requested model sampling and
+  use untrusted-server approval handling in the active Hermes profile:
+    hermes config set mcp_servers.altitude.sampling.enabled false
+    hermes config set mcp_servers.altitude.trust untrusted
+  The catalog cannot currently set these policies automatically, and the
+  installer may already have probed the server before showing this guidance.
+  Restart the session after changing them. Untrusted-server handling is
+  additional approval protection, not a guarantee that all tools are read-only.
+  Read results can still contain sensitive financial data and untrusted text.
+
+  On first connection Hermes opens a browser to sign in to
+  Altitude (or run `hermes mcp login altitude`). Approve access,
+  then restart the session so tools load.
+
+  Statement generation and download, and the card, member, inbox-task and
+  receipt tools, are not preselected; enable them with
+  `hermes mcp configure altitude`. Existing selections survive
+  reinstalls. Empty discovery or selecting every advertised tool can clear
+  the CLI's filter; review the resulting selection before using financial tools.
+
+  Results follow your existing Altitude Workspace permissions.
+  Review or disconnect clients under Settings → My account →
+  MCP connections in the Altitude app.

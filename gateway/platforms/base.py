@@ -443,7 +443,7 @@ from gateway.platforms.base_delivery_ledger import (
 from gateway.platforms.base_exec_approval import (
     approval_timeout_seconds, ea_action_labels, ea_default_reason_text, ea_header_text,
     ea_reason_label_text, ea_smart_deny_line_text, exec_approval_cmd_budget, format_approval_deadline_line,
-    card_shows_whole_command, render_exec_approval)
+    card_shows_whole_command, render_exec_approval, ApprovalCardOutcome, ApprovalCardState, approval_card_notice, render_decided_card)
 from gateway.platforms.base_streaming_tts import (
     AudioFormat, StreamingTTSHandle, streaming_tts_should_skip_whole_file, streaming_tts_turn_key)
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome

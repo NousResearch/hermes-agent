@@ -260,21 +260,62 @@ export async function skipClarifyRequest(sessionId: string | null | undefined): 
   return true
 }
 
-/** Answer the clarify parked on `sessionId` with composer text: the answer to its first question not yet locked. */
+/** The question a next typed answer belongs to: the first one not yet locked. */
+function nextQuestion(request: ClarifyRequest): ClarifyQuestion | undefined {
+  return request.questions.find(entry => request.lockedAnswers?.[entry.qid] === undefined)
+}
+
+/**
+ * Whether composer text can be an answer to `question`: free text when the question offers no
+ * choices, else the words that name one of them. Anything else is the user's message — it closes
+ * the card and runs as the next turn instead of being locked as an answer (a directive such as
+ * "forget that, do X instead" must never become the answer to a multiple-choice question).
+ */
+function answersAsText(question: ClarifyQuestion, text: string): boolean {
+  if (!question.choices?.length) {
+    return true
+  }
+
+  const typed = text.trim().toLowerCase()
+
+  return question.choices.some(choice => bareChoice(choice).toLowerCase() === typed)
+}
+
+/** Answer the clarify parked on `sessionId` with composer text: the answer to its first question
+ *  not yet locked, when that question takes the text — else null, so the message closes the card. */
 function answerClarifyText(sessionId: string, text: string): null | Promise<boolean> {
   const request = $clarifyRequests.get()[keyFor(sessionId)]
+  const question = request ? nextQuestion(request) : undefined
 
-  if (!request) {
+  if (!request || !question || !answersAsText(question, text)) {
     return null
   }
 
   return lockTypedAnswer(request, text)
 }
 
+/**
+ * Close a parked clarify unanswered because the user sent a message instead: the message is their
+ * next turn, never a steer behind a batch that is blocked on this card. Same wire shape as Skip
+ * (a response with no answers is the cancel-all), so the turn resumes and the message follows it.
+ */
+export function yieldClarifyToMessage(sessionId: string): boolean {
+  const request = $clarifyRequests.get()[keyFor(sessionId)]
+
+  if (!request) {
+    return false
+  }
+
+  skipClarify(request)
+
+  return true
+}
+
 registerParkedCardAnswer('clarify', {
   $requests: $clarifyRequests,
   answer: answerClarifyText,
-  waiting: hasClarifyRequest
+  waiting: hasClarifyRequest,
+  yieldToMessage: yieldClarifyToMessage
 })
 
 /** The choice typed text names (any case, as the messaging path matches labels), else the words themselves. */

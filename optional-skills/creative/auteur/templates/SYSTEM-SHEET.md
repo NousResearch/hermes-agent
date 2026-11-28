@@ -96,7 +96,7 @@ screen that can be empty, write the actual words:
 ## Density
 
 - **Tables:** rows per screen · sticky header? · sort affordance · `tabular-nums` on numerals
-- **Charts:** route to the `dataviz` skill — do not improvise a series palette here
+- **Charts:** get a dedicated charting pass — do not improvise a series palette here
 - **What gets truncated, and how the full value is reachable:**
 
 ## Gate checklist

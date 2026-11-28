@@ -74,8 +74,7 @@ reasoning check (e.g. "What is 17 * 23?") since GLM-5.2 is a reasoning model.
 
 ## Why no reasoning_effort trap here
 
-The Actual relay rejects `reasoning_effort: xhigh` with an HTTP 400 (see the
-`hermes-custom-providers` skill, pitfall 2). Hermes hits this because it forwards
+The Actual relay rejects `reasoning_effort: xhigh` with an HTTP 400. Hermes hits this because it forwards
 its global `agent.reasoning_effort`. OpenCode's ai-sdk does NOT send that param,
 so Actual + OpenCode works with zero reasoning config. No `reasoning_overrides`
 equivalent needed.

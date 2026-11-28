@@ -39,7 +39,7 @@ system, shadows, responsive behavior, and practical agent prompts with exact CSS
 1. Pick a design from the catalog below
 2. Load it: `skill_view(name="popular-web-designs", file_path="templates/<site>.md")`
 3. Use the design tokens and component specs when generating HTML
-4. Pair with the `generative-widgets` skill to serve the result via cloudflared tunnel
+4. Serve the result locally or over a `cloudflared tunnel --url` quick tunnel to share it
 
 Each template includes a **Hermes Implementation Notes** block at the top with:
 - CDN font substitute and Google Fonts `<link>` tag (ready to paste)
@@ -82,7 +82,7 @@ Each template includes a **Hermes Implementation Notes** block at the top with:
 </html>
 ```
 
-Write the file with `write_file`, serve with the `generative-widgets` workflow (cloudflared tunnel),
+Write the file with `write_file`, serve it locally or over a `cloudflared tunnel --url` quick tunnel,
 and verify the result with `browser_exec`: open the page, `capture_screenshot()`, and inspect the image to confirm visual accuracy.
 
 ## Font Substitution Reference

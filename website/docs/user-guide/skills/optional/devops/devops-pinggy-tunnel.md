@@ -41,7 +41,7 @@ Free tier: 60-minute tunnels, random subdomain, no signup. Pro tier ($3/mo) is a
 - Sharing a one-off HTTP demo (MCP server, Ollama/vLLM endpoint, dashboard) with a remote party
 - The host has SSH but no `cloudflared` / `ngrok` binary, and installing one would be overkill
 
-If the host already has `cloudflared` configured, prefer the `cloudflared-quick-tunnel` skill — Cloudflare quick tunnels don't expire after 60 minutes.
+If the host already has `cloudflared` configured, prefer a Cloudflare quick tunnel (`cloudflared tunnel --url`) — Cloudflare quick tunnels don't expire after 60 minutes.
 
 ## Prerequisites
 

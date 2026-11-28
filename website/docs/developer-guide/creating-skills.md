@@ -34,7 +34,7 @@ skills/
 │       └── scripts/              # Optional: helper scripts
 │           └── search_arxiv.py
 ├── productivity/
-│   └── ocr-and-documents/
+│   └── pdf/
 │       ├── SKILL.md
 │       ├── scripts/
 │       └── references/

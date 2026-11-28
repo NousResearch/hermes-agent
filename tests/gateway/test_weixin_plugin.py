@@ -876,11 +876,15 @@ def test_register_declares_weixin_platform_entry():
         def register_platform(self, **kwargs):
             captured.update(kwargs)
 
+        def register_cli_command(self, **kwargs):
+            captured["cli_command"] = kwargs
+
     weixin.register(_Ctx())
     assert captured["name"] == "weixin" and captured["label"] == "Weixin / WeChat" and captured["emoji"] == "💬"
     assert captured["adapter_factory"] is WeixinAdapter
     assert captured["check_fn"] is weixin.check_weixin_requirements
     assert captured["setup_fn"] is weixin.interactive_setup
+    assert captured["cli_command"]["name"] == "weixin"
     assert captured["standalone_sender_fn"] is weixin._standalone_send
     assert captured["required_env"] == ["WEIXIN_ACCOUNT_ID", "WEIXIN_TOKEN"]
     assert (captured["allowed_users_env"], captured["allow_all_env"], captured["cron_deliver_env_var"]) == (

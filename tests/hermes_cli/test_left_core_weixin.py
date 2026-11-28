@@ -259,3 +259,64 @@ def test_a_send_that_outwaits_its_budget_names_the_install_in_progress(tmp_path,
     assert "still installing" in capsys.readouterr().err
     assert "being installed by another Hermes process" in error and "retry" in error, error
 
+
+# A saved ``hermes-weixin`` pick (a platform_toolsets row, a cron job, a delegation parent) resolved to core tools
+# on main, Weixin plugin or not: the bundle carried core tools only. It stays out of every listing.
+def test_a_mixed_list_naming_hermes_weixin_keeps_its_core_tools_and_an_unchecked_one_stays_off():
+    from hermes_cli import tools_config
+    config = {"platform_toolsets": {"telegram": ["hermes-weixin", "file"]}}
+    enabled = tools_config._get_platform_tools(config, "telegram")
+    assert enabled >= {"file", "terminal", "web"}
+    tools_config._save_platform_tools(config, "telegram", enabled - {"terminal"})
+    assert "hermes-weixin" not in config["platform_toolsets"]["telegram"]
+    assert "terminal" not in tools_config._get_platform_tools(config, "telegram")
+
+
+def test_a_bare_hermes_weixin_row_reads_as_its_core_tools_without_the_plugin():
+    from hermes_cli import tools_config
+    from toolsets import TOOLSETS, get_toolset_names
+    config = {"platform_toolsets": {"telegram": ["hermes-weixin"]}}
+    enabled = tools_config._get_platform_tools(config, "telegram")
+    assert enabled >= {"file", "terminal", "web"}
+    tools_config._save_platform_tools(config, "telegram", enabled)
+    assert tools_config._get_platform_tools(config, "telegram") >= {"file", "terminal", "web"}
+    assert "hermes-weixin" not in get_toolset_names()
+    assert "hermes-weixin" not in TOOLSETS["hermes-gateway"]["includes"]
+
+
+def test_an_mcp_server_named_hermes_weixin_does_not_shadow_the_old_preset(monkeypatch):
+    import toolsets
+    from hermes_cli import tools_config
+    real = toolsets.resolve_toolset
+    monkeypatch.setattr(toolsets, "resolve_toolset",
+                        lambda name, *a, **k: ["mcp_tool"] if name == "hermes-weixin" else real(name, *a, **k))
+    config = {"platform_toolsets": {"telegram": ["hermes-weixin", "file"]}}
+    assert tools_config._get_platform_tools(config, "telegram") >= {"file", "terminal", "web"}
+
+
+@pytest.mark.parametrize("collision", [False, True])
+def test_saved_weixin_preset_still_selects_core_tools_at_runtime(monkeypatch, collision):
+    from cron.scheduler import _resolve_cron_enabled_toolsets
+    from model_tools import _select_tool_names
+    from tools.registry import ToolRegistry
+    from toolsets import _resolve_toolset_memo
+
+    registry = ToolRegistry()
+    monkeypatch.setattr("tools.registry.registry", registry)
+    _resolve_toolset_memo.clear()
+    if collision:
+        registry.register("mcp_fixture_echo", "mcp-hermes-weixin", {"name": "mcp_fixture_echo"}, lambda *_: "")
+        registry.register_toolset_alias("hermes-weixin", "mcp-hermes-weixin")
+
+    picks = _resolve_cron_enabled_toolsets({"enabled_toolsets": ["hermes-weixin", "file"]}, {})
+    tools = _select_tool_names(picks, None, quiet_mode=True)
+    assert {"terminal", "web_search"} <= tools
+    assert ("mcp_fixture_echo" in tools) is collision
+
+
+def test_a_retired_hermes_weixin_parent_still_grants_its_core_toolsets_to_a_child():
+    from types import SimpleNamespace
+    from tools.delegate_tool_toolsets import _resolve_child_toolsets
+    parent = SimpleNamespace(enabled_toolsets=["hermes-weixin"], disabled_toolsets=[])
+    child, _disabled = _resolve_child_toolsets(parent, ["terminal", "web"], "leaf")
+    assert child == ["terminal", "web"]

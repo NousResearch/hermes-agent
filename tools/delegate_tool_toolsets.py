@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import List, Optional
 
-from toolsets import TOOLSETS, resolve_toolset
+from toolsets import TOOLSETS, get_toolset, resolve_toolset
 from tools.delegate_tool_config import _get_inherit_mcp_toolsets
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
@@ -41,10 +41,16 @@ def _expand_parent_toolsets(parent_toolsets: set) -> set:
     must still let a child request ``web``/``terminal``; bare name intersection would reject them. Both sides use
     the RESOLVED static surface: a composite's ``includes`` (``debugging`` -> ``web``/``file``, ``safe``) are tools
     the parent genuinely holds, and the child never gains a tool the parent lacks."""
+    # A ``hermes-<platform>`` bundle of a platform that left core is in no listing but still resolves for a saved
+    # selection (``get_toolset``, read once so a plugin reload cannot drop it mid-way): the parent holds its tools
+    # and its ``includes``. An MCP alias named ``hermes-*`` is not one and never counts toward a built-in toolset.
+    left_core = [spec for name in parent_toolsets if name not in TOOLSETS and name.startswith("hermes-")
+                 and not _is_mcp_toolset_name(name) and (spec := get_toolset(name)) is not None]
     parent_tool_names = {
         t for ts_name in parent_toolsets if ts_name in TOOLSETS for t in resolve_toolset(ts_name, include_registry=False)
-    }
-    expanded = set(parent_toolsets)
+    } | {t for spec in left_core for t in spec["tools"]} | {
+        t for spec in left_core for part in spec["includes"] for t in resolve_toolset(part)}
+    expanded = set(parent_toolsets) | {part for spec in left_core for part in spec["includes"]}
     if parent_tool_names:
         expanded.update(
             ts_name for ts_name in TOOLSETS

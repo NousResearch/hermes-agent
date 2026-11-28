@@ -75,6 +75,24 @@ class TestDeveloperRoleParity:
         )
         assert kw["messages"][0]["role"] == "developer"
 
+    @pytest.mark.parametrize("provider,base_url,expected", [
+        ("custom", "http://127.0.0.1:8000/v1", "system"),          # vLLM/Ollama/LiteLLM 400 on it (#41125)
+        ("opencode-go", None, "system"),                           # relay silently drops it (#81278)
+        ("custom", "https://api.openai.com/v1", "developer"),
+        ("custom", "https://acme.openai.azure.com/openai/v1", "developer"),
+        ("nous", None, "developer"),
+    ])
+    def test_swap_only_on_hosts_that_honour_developer(self, transport, provider, base_url, expected):
+        profile = get_provider_profile(provider)
+        msgs = [{"role": "system", "content": "Be helpful"}, {"role": "user", "content": "hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-5.6-luna", messages=msgs, tools=None, provider_profile=profile,
+            base_url=base_url or profile.base_url,
+        )
+        assert kw["messages"][0]["role"] == expected
+        legacy = transport.build_kwargs(model="gpt-5.6-luna", messages=msgs, tools=None, base_url=base_url or profile.base_url)
+        assert legacy["messages"][0]["role"] == expected
+
 
 
 class TestRequestOverridesParity:

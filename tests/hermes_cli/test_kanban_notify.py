@@ -771,12 +771,14 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
     # companion test for the full explanation.
     monkeypatch.setenv("HERMES_MEDIA_ALLOW_DIRS", str(tmp_path))
 
-    real_pdf = tmp_path / "real.pdf"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    real_pdf = workspace / "real.pdf"
     real_pdf.write_bytes(b"%PDF-fake")
 
     conn = kbc.connect()
     try:
-        tid = kb.create_task(conn, title="t", assignee="worker1")
+        tid = kb.create_task(conn, title="t", assignee="worker1", workspace_kind="dir", workspace_path=str(workspace))
         kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat1")
         # A dispatcher-spawned worker completes a card it holds a run on: bind the
         # run id like the dispatcher does, or the ownership CAS refuses (#116239).
@@ -791,10 +793,20 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
     try:
         kt._handle_complete({
             "summary": "one real, one ghost",
-            "artifacts": [str(real_pdf), "/tmp/definitely-does-not-exist.pdf"],
+            "artifacts": [str(real_pdf)],
         })
     finally:
         os.environ.pop("HERMES_KANBAN_TASK", None)
+
+    # A file may vanish after staging, even though new declarations must exist.
+    import json
+    with kbc.connect() as conn:
+        event = [e for e in kb.list_events(conn, tid) if e.kind == "completed"][-1]
+        assert isinstance(event.payload, dict)
+        payload = dict(event.payload)
+        payload["artifacts"].append(str(kb.task_attachments_dir(tid) / "vanished.pdf"))
+        with kb.write_txn(conn):
+            conn.execute("UPDATE task_events SET payload = ? WHERE id = ?", (json.dumps(payload), event.id))
 
     runner = object.__new__(GatewayRunner)
     runner._owns_kanban_dispatcher_lock = lambda: True

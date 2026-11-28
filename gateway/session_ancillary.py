@@ -57,7 +57,7 @@ async def subagent_control(connection, ref, params, *, steer):
     with registry._active_subagents_lock:  # linearized with the child's final steer drain
         record = registry._active_subagents.get(sub)
         queued = bool(child is not None and record and record.get('agent') is child and record.get('accepting_steer')
-                      and child.steer(params['text']))
+                      and child.steer(params['text'], origin={"platform": "gateway-subagent"}))
     return {'status': 'queued' if queued else 'rejected', 'subagent_id': sub, 'text': params['text']}
 
 

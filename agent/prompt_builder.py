@@ -575,20 +575,45 @@ CONTROL_FRAME_OPENERS = (
 )
 
 
-def format_steer_marker(steer_text: str) -> str:
+def steer_origin_tag(origin: dict[str, Any] | None) -> str:
+    """Compact provenance tag appended to a steer so the model sees which channel sent it.
+
+    Parity with gateway/run_busy._steer_text_with_origin: origin lives in the injection body (never
+    in the cached system prompt), is JSON-serialized and bracket-escaped so the tag itself can never
+    reassemble a control frame. Absent/potentially-empty tags vanish (backward compatible).
+    """
+    if not origin:
+        return ""
+    slim = {k: v for k, v in origin.items() if v not in (None, "")}
+    if not slim:
+        return ""
+    try:
+        import json
+        encoded = json.dumps(slim, ensure_ascii=True, sort_keys=True)
+    except Exception:
+        return ""
+    encoded = encoded.replace("[", chr(92) + "u005b").replace("]", chr(92) + "u005d")
+    return f"\n[steer-origin {encoded}]"
+
+
+def format_steer_marker(steer_text: str, origin: dict[str, Any] | None = None) -> str:
     """Wrap a mid-turn steer in the self-describing marker (see note above)."""
-    return f"\n\n{STEER_MARKER_OPEN}\n{steer_text}\n{STEER_MARKER_CLOSE}"
+    return f"\n\n{STEER_MARKER_OPEN}\n{steer_text}{steer_origin_tag(origin)}\n{STEER_MARKER_CLOSE}"
 
 
 STEER_DISPLAY_KIND = "steer"
 
 
-def steer_user_row(steer_text: str) -> dict[str, Any]:
+def steer_user_row(steer_text: str, origin: dict[str, Any] | None = None) -> dict[str, Any]:
     """The standalone ``role:user`` row a mid-turn /steer is delivered as (after the newest tool
     result). Its own row — never smeared onto the already-persisted tool row, which append-only
     persistence would leave divergent from the live request — and typed so the alternation repair
-    never merges the next real prompt into it and history renderers can label it."""
-    return {"role": "user", "content": format_steer_marker(steer_text).lstrip(),
+    never merges the next real prompt into it and history renderers can label it.
+
+    ``origin`` (optional) carries the delivery channel for model-facing provenance — the gateway
+    stamps it; the CLI paths now do too so no steer ships without a source.
+    """
+    return {"role": "user", "content": format_steer_marker(steer_text, origin).lstrip(),
             "display_kind": STEER_DISPLAY_KIND}
 
 

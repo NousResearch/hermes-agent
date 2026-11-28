@@ -88,18 +88,19 @@ def _ic_slot(agent, lock_attr: str, slot: str):
 
 
 def _steer_parts(agent) -> list:
-    """The buffered steers as ``(ticket, text)`` pairs; ``_pending_steer`` is their newline join. A ticket
-    names one submission (a gateway transfer). A buffer another writer set directly is one ticketless part."""
+    """The buffered steers as ``(ticket, text, origin)`` triples; ``_pending_steer`` is their newline join.
+    A ticket names one submission (a gateway transfer) and ``origin`` records the channel that queued it.
+    A buffer another writer set directly is one ticketless part with unknown origin."""
     pending = _ic_slot(agent, "_pending_steer_lock", "_pending_steer")
     parts = vars(agent).get("_pending_steer_parts") or []
-    if "\n".join(text for _, text in parts) != (pending or ""):
-        return [(None, pending)] if pending else []
+    if "\n".join(text for _, text, _ in parts) != (pending or ""):
+        return [(None, pending, None)] if pending else []
     return list(parts)
 
 
 def _set_steer_parts(agent, parts: list) -> None:
     agent._pending_steer_parts = parts
-    agent._pending_steer = "\n".join(text for _, text in parts) or None
+    agent._pending_steer = "\n".join(text for _, text, _ in parts) or None
 
 
 def _steer_fates(agent) -> dict:
@@ -114,8 +115,8 @@ def requeue_drained_steer(agent, steer_text: str) -> None:
     with _ic_lock(agent, "_pending_steer_lock"):
         drained, parts = vars(agent).pop("_steer_last_drain", (None, None))
         if drained != steer_text or not parts:
-            parts = [(None, steer_text)]
-        for ticket, _ in parts:
+            parts = [(None, steer_text, None)]
+        for ticket, _, _ in parts:
             _steer_fates(agent).pop(ticket, None)
         _set_steer_parts(agent, _steer_parts(agent) + parts)
 
@@ -301,21 +302,24 @@ class InterruptControlMixin:
             # claimed a hard interrupt supersedes the steer — but nothing gated this wipe on
             # hard_cancel, so a soft clear dropped a live user message with no trace.
             with _ic_lock(self, "_pending_steer_lock"):
-                for ticket, _ in _steer_parts(self):
+                for ticket, _, _ in _steer_parts(self):
                     if ticket is not None:
                         _steer_fates(self)[ticket] = False
                 _set_steer_parts(self, [])
         return True
 
-    def steer(self, text: str, *, ticket=None) -> bool:
+    def steer(self, text: str, *, ticket=None, origin=None) -> bool:
         """Queue user text for delivery as its own user row after the current tool batch finishes (no
         interrupt); multiple calls concatenate with newlines. Returns False for empty text. ``ticket``
-        names the submission, so ``withdraw_steer`` can settle exactly it, whatever text others carry."""
+        names the submission, so ``withdraw_steer`` can settle exactly it, whatever text others carry.
+        ``origin`` is the calling channel's provenance dict, rendered by steer_user_row as the
+        model-facing [steer-origin {...}] tag; None ships untagged (gateway steers whose bodies
+        already carry their gateway origin prefix)."""
         if not text or not text.strip():
             return False
         cleaned = text.strip()
         with _ic_lock(self, "_pending_steer_lock"):
-            _set_steer_parts(self, _steer_parts(self) + [(ticket, cleaned)])
+            _set_steer_parts(self, _steer_parts(self) + [(ticket, cleaned, origin)])
         # The turn no longer ran on its own (first-task-done detection reads this off the result).
         self._turn_user_intervened = True
         return True
@@ -395,17 +399,23 @@ class InterruptControlMixin:
             self._pending_redirect = None
         return text
 
-    def _drain_pending_steer(self) -> Optional[str]:
-        """Return the pending steer text (if any) and clear the slot; None when nothing is pending."""
+    def _drain_steer_parts(self) -> list:
+        """Origins-aware drain: return ``(text, origin)`` pairs (empty when nothing pending) and clear
+        the slot. The sole drain implementation; ``_drain_pending_steer`` is its joined-text wrapper
+        (legacy callers / turn finalizer), so requeue logic lives in exactly one place."""
         with _ic_lock(self, "_pending_steer_lock"):
             text = _ic_slot(self, "_pending_steer_lock", "_pending_steer")
             parts = _steer_parts(self)
             _set_steer_parts(self, [])
-            for ticket, _ in parts:
+            for ticket, _, _ in parts:
                 if ticket is not None:
                     _steer_fates(self)[ticket] = True
-            self._steer_last_drain = (text, parts)  # requeue_drained_steer restores its tickets
-        return text
+            self._steer_last_drain = (text, parts)  # requeue_drained_steer restores triples
+        return [(part[1], part[2]) for part in parts]
+
+    def _drain_pending_steer(self) -> Optional[str]:
+        """Joint-text drain wrapper over ``_drain_steer_parts`` (legacy callers)."""
+        return "\n".join(text for text, _origin in self._drain_steer_parts()) or None
 
     def _drain_leftover_steer(self) -> Optional[str]:
         """The turn finalizer's drain: return and clear the ticketless steers (they become the next user
@@ -414,7 +424,7 @@ class InterruptControlMixin:
         with _ic_lock(self, "_pending_steer_lock"):
             parts = _steer_parts(self)
             _set_steer_parts(self, [part for part in parts if part[0] is not None])
-        return "\n".join(text for ticket, text in parts if ticket is None) or None
+        return "\n".join(part[1] for part in parts if part[0] is None) or None
 
     def withdraw_steer(self, ticket) -> bool:
         """Settle one ``steer(text, ticket=...)`` by identity (the gateway's transfer of a queued prompt):

@@ -1488,7 +1488,7 @@ class CLITuiMixin:
                 accepted = False
                 try:
                     if self.agent is not None and hasattr(self.agent, "steer"):
-                        accepted = self.agent.steer(text)
+                        accepted = self.agent.steer(text, origin={"platform": "cli"})
                 except Exception as exc:
                     _cprint(f"  {_DIM}{t('cli.tui.steer_failed_queued', error=exc)}{_RST}")
                     accepted = False

@@ -491,7 +491,7 @@ Additional webhook protections:
 
 ## WebSocket Tuning
 
-When using `websocket` mode, you can customize reconnect and ping behavior:
+When using `websocket` mode, you can customize reconnect, ping, and timeout behavior:
 
 ```yaml
 platforms:
@@ -499,12 +499,23 @@ platforms:
     extra:
       ws_reconnect_interval: 120   # Seconds between reconnect attempts (default: 120)
       ws_ping_interval: 30         # Seconds between WebSocket pings (optional; SDK default if unset)
+      ws_read_timeout: 300         # Max seconds a receive may stall before the link is recycled (default: auto)
+      ws_open_timeout: 10          # Seconds allowed for the handshake and the endpoint bootstrap POST (default: 10)
 ```
 
 | Setting | Config key | Default | Description |
 |---------|-----------|---------|-------------|
 | Reconnect interval | `ws_reconnect_interval` | 120s | How long to wait between reconnection attempts |
 | Ping interval | `ws_ping_interval` | _(SDK default)_ | Frequency of WebSocket keepalive pings |
+| Read timeout | `ws_read_timeout` | _(auto: max(300s, 3× live ping interval))_ | How long a single receive may stall before the connection is treated as half-dead and torn down for reconnect. Set `0` to disable the budget entirely. |
+| Open timeout | `ws_open_timeout` | 10s | Budget for opening the WebSocket. The same value also bounds the *connect* phase of the endpoint-resolution POST that precedes it (its stalled-read phase is capped at 30s). Set to `null` to omit the override and use the library defaults. |
+
+The read timeout exists because the lark-oapi SDK places no bound on its receive loop: on a
+half-dead TCP connection (for example after a VPN tunnel flap) the socket stays ESTABLISHED but
+`SSL_read` never returns, so the SDK's own reconnect ladder is never reached and the gateway
+silently stops receiving messages. When the budget expires, the stalled transport is aborted and
+the SDK's normal disconnect/reconnect path takes over. The default auto budget is derived from the
+live ping interval so a healthy heartbeat cadence never trips it.
 
 ## Per-Group Access Control
 

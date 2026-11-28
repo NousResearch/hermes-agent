@@ -233,3 +233,37 @@ def test_cli_sigterm_after_watcher_consumed_the_marker_stays_planned(tmp_path, m
     bare, bare_flag = _handler()
     bare(signal.SIGTERM)
     assert bare_flag[0] is True
+
+
+def test_watcher_shutdown_passes_accepted_marker_provenance_to_forensics(tmp_path, monkeypatch):
+    """The accepted request survives consumption long enough for shutdown diagnostics."""
+    from types import SimpleNamespace
+
+    import gateway.run as run_mod
+    import gateway.shutdown_forensics as forensics
+
+    marker = tmp_path / ".gateway-planned-stop.json"
+    monkeypatch.setattr(status_mod, "_get_planned_stop_marker_path", lambda: marker)
+    monkeypatch.setattr(status_mod, "consume_takeover_marker_for_self", lambda: False)
+    monkeypatch.setattr(run_mod.asyncio, "create_task", lambda coro: coro.close())
+    captured = {}
+
+    def snapshot(received_signal, *, accepted_planned_stop=None):
+        captured["accepted"] = accepted_planned_stop
+        return {"signal": "UNKNOWN"}
+
+    monkeypatch.setattr(forensics, "snapshot_shutdown_context", snapshot)
+    monkeypatch.setattr(forensics, "format_context_for_log", lambda ctx: "context")
+    monkeypatch.setattr(forensics, "spawn_async_diagnostic", lambda *args, **kwargs: None)
+    runner = SimpleNamespace(_signal_initiated_shutdown=False, stop=lambda: asyncio.sleep(0))
+
+    _write_self_marker(marker)
+    run_mod._start_gateway_make_shutdown_signal_handler(runner, [False])(None)
+
+    accepted = captured["accepted"]
+    assert accepted == {
+        "target_pid": os.getpid(),
+        "target_start_time": status_mod._get_process_start_time(os.getpid()),
+        "stopper_pid": os.getpid(),
+        "written_at": accepted["written_at"],
+    }

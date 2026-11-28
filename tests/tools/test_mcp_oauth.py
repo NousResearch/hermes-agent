@@ -680,6 +680,29 @@ class TestInvalidateTokensOnClientChange:
         info = json.loads((d / "chg-server.client.json").read_text())
         assert info["client_id"] == "client-b"
 
+    def test_numeric_config_client_id_matches_stored_string(self, tmp_path, monkeypatch):
+        """YAML / ``hermes config set`` turn an all-digit client_id into an int; client.json stores the
+        string. The same id must keep its tokens and pre-register as a valid (string) client_id."""
+        pytest.importorskip("mcp")
+        from tools.mcp_oauth import _build_client_metadata, _maybe_preregister_client
+        storage, d = self._seed(tmp_path, monkeypatch, client_id="1435160201445150")
+        tokens_before = (d / "chg-server.json").read_bytes()
+        cfg = {"client_id": 1435160201445150, "_resolved_port": 8421, "redirect_host": "localhost"}
+        _maybe_preregister_client(storage, cfg, _build_client_metadata(dict(cfg)))
+        assert (d / "chg-server.json").read_bytes() == tokens_before
+        assert (d / "chg-server.meta.json").exists()
+        info = json.loads((d / "chg-server.client.json").read_text())
+        assert info["client_id"] == "1435160201445150"
+
+    def test_numeric_config_client_id_change_still_drops_tokens(self, tmp_path, monkeypatch):
+        pytest.importorskip("mcp")
+        from tools.mcp_oauth import _build_client_metadata, _maybe_preregister_client
+        storage, d = self._seed(tmp_path, monkeypatch, client_id="1435160201445150")
+        cfg = {"client_id": 999, "_resolved_port": 8421}
+        _maybe_preregister_client(storage, cfg, _build_client_metadata(dict(cfg)))
+        assert not (d / "chg-server.json").exists()
+        assert json.loads((d / "chg-server.client.json").read_text())["client_id"] == "999"
+
 
 
 # ---------------------------------------------------------------------------

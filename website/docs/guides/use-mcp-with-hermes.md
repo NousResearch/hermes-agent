@@ -452,7 +452,18 @@ mcp_servers:
     command: "npx"
     args: ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/project"]
 ```
-
+{
+  "mcpServers": {
+    "lightpanda-cloud": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "https://euwest.cloud.lightpanda.io/mcp?token=TOKEN"
+      ]
+    }
+  }
+}
 Now Hermes can combine them:
 
 ```text
@@ -545,6 +556,7 @@ Not-great first servers:
 
 ## Related docs
 
-- [MCP (Model Context Protocol)](../user-guide/features/mcp.md)
-- [FAQ](../reference/faq.md)
-- [Slash Commands](../reference/slash-commands.md)
+- [MCP (Model Context Protocol)](/docs/user-guide/features/mcp)
+- [Tutorial: Use Lightpanda with Hermes](/docs/guides/lightpanda-with-hermes)
+- [FAQ](/docs/reference/faq)
+- [Slash Commands](/docs/reference/slash-commands)

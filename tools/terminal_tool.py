@@ -1521,7 +1521,8 @@ def _pre_exec_block(
     """Raise :class:`_Rejected` with the blocked-result JSON when the command must not run.
 
     Order matters: gateway lifecycle first (protects the running gateway),
-    then the dangerous-workdir check, then the self-repo guard (local only).
+    then the dangerous-workdir check, then the self-repo and broad-root walk
+    guards (local only).
     """
     blocked = gateway_lifecycle_block(
         command=command, env=env, env_type=env_type, cwd=cwd, workdir=workdir, session_key=session_key,
@@ -1540,6 +1541,11 @@ def _pre_exec_block(
                    or locked_skill_block(command=command, cwd=cwd, workdir=workdir, session_key=session_key))
         if blocked:
             raise _Rejected(blocked)
+        from tools.terminal_broad_walk_guard import broad_walk_error
+        walk_error = broad_walk_error(command)
+        if walk_error:
+            logger.warning("Blocked broad-root walk (command: %s)", _safe_command_preview(command))
+            raise _Rejected(_error_json(walk_error, status="blocked"))
 
 
 _PTY_DISABLED_REASON = (

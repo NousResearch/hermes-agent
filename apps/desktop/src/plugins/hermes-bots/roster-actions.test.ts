@@ -18,15 +18,28 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { RosterRow } from './types'
 
-const { hostMock, markUnreadMock, storageMock } = vi.hoisted(() => ({
-  hostMock: {
-    notify: vi.fn(),
-    request: vi.fn(),
-    state: { connectionId: { get: () => 'local' }, focusedSessionOwner: null, profile: { get: () => 'default' } }
-  },
-  markUnreadMock: vi.fn(),
-  storageMock: { get: vi.fn(), set: vi.fn() }
-}))
+const { hostMock, markUnreadMock, storageMock } = vi.hoisted(() => {
+  let focused = ''
+
+  return {
+    hostMock: {
+      notify: vi.fn(),
+      request: vi.fn(),
+      setFocused: (id: string) => {
+        focused = id
+      },
+      state: {
+        busy: { get: () => false },
+        connectionId: { get: () => 'local' },
+        focusedSessionOwner: null,
+        focusedStoredSessionId: { get: () => focused },
+        profile: { get: () => 'default' }
+      }
+    },
+    markUnreadMock: vi.fn(),
+    storageMock: { get: vi.fn(), set: vi.fn() }
+  }
+})
 
 vi.mock('@hermes/plugin-sdk', async () => {
   const { atom } = await import('nanostores')
@@ -55,7 +68,7 @@ vi.mock('./shared', () => ({
 vi.mock('./canonical-chat', () => ({
   CANONICAL_CHAT_TITLE: 'Bot Chat',
   notifyBotOpenFailure: vi.fn(),
-  openBotCanonicalChat: vi.fn(),
+  openBotCanonicalChat: vi.fn(() => Promise.resolve()),
   prepareBotSource: vi.fn()
 }))
 vi.mock('./group-chat', async () => {
@@ -86,6 +99,7 @@ async function loadActions() {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  hostMock.setFocused('')
 })
 
 describe('the first poll only seeds watermarks', () => {
@@ -136,12 +150,135 @@ describe('new activity after the seed', () => {
     expect(hostMock.notify.mock.calls[1][0].title).toMatch(/has new activity/)
   })
 
-  it('never badges the bot the user is currently looking at', async () => {
+  it('never badges the bot whose Bot Chat is the focused session', async () => {
+    const { trackInboundActivity } = await loadActions()
+
+    trackInboundActivity([chatting('researcher', 5000)])
+    hostMock.setFocused('researcher-chat')
+    trackInboundActivity([chatting('researcher', 6000)])
+
+    expect(markUnreadMock).not.toHaveBeenCalled()
+  })
+
+  it('badges and toasts the selected bot while another session is focused', async () => {
+    // $selectedBot follows the live profile and roster clicks, so the primary
+    // bot is "selected" from the first paint — that says nothing about what is
+    // on screen (#155197).
+    const { $activityToasts, $selectedBot, trackInboundActivity } = await loadActions()
+
+    $activityToasts.set(true)
+    trackInboundActivity([chatting('default', 5000)])
+    $selectedBot.set('default')
+    hostMock.setFocused('a-regular-session')
+    trackInboundActivity([chatting('default', 6000, 'build finished')])
+
+    expect(markUnreadMock).toHaveBeenCalledWith('default-chat', 'default')
+    expect(hostMock.notify).toHaveBeenCalledTimes(1)
+  })
+
+  it('badges a bot the user selected earlier once they have left its chat', async () => {
     const { $selectedBot, trackInboundActivity } = await loadActions()
 
     trackInboundActivity([chatting('researcher', 5000)])
     $selectedBot.set('researcher')
+    hostMock.setFocused('a-regular-session')
     trackInboundActivity([chatting('researcher', 6000)])
+
+    expect(markUnreadMock).toHaveBeenCalledWith('researcher-chat', 'researcher')
+  })
+
+  it('recognises the focused Bot Chat by its resolved id too', async () => {
+    const { trackInboundActivity } = await loadActions()
+
+    const resolved = (lastActive: number) =>
+      ({
+        canonical_session: { id: 'stale-id', last_active: lastActive, resolved_id: 'live-id' },
+        name: 'researcher'
+      }) as RosterRow
+
+    trackInboundActivity([resolved(5000)])
+    hostMock.setFocused('live-id')
+    trackInboundActivity([resolved(6000)])
+
+    expect(markUnreadMock).not.toHaveBeenCalled()
+  })
+
+  describe('a regular session of the bot’s profile is the freshest activity', () => {
+    // botActivitySession follows whichever of canonical_session / last_session
+    // is newer, so the user's own turns in the focused regular session advance
+    // the watermark too — they are on screen, not a delivery to the Bot Chat.
+    const withRegular = (regularActive: number, canonicalActive = 1000, canonical = true): RosterRow =>
+      ({
+        ...(canonical
+          ? { canonical_session: { id: 'default-chat', last_active: canonicalActive, preview: 'old' } }
+          : {}),
+        last_session: { id: 'regular-1', last_active: regularActive, preview: `reply ${regularActive}` },
+        name: 'default'
+      }) as RosterRow
+
+    it('stays quiet while that regular session is the focused one', async () => {
+      const { $activityToasts, trackInboundActivity } = await loadActions()
+
+      $activityToasts.set(true)
+      trackInboundActivity([withRegular(5000)])
+      hostMock.setFocused('regular-1')
+      trackInboundActivity([withRegular(6000)])
+
+      expect(markUnreadMock).not.toHaveBeenCalled()
+      expect(hostMock.notify).not.toHaveBeenCalled()
+    })
+
+    it('stays quiet for a bot with no Bot Chat yet', async () => {
+      const { $activityToasts, trackInboundActivity } = await loadActions()
+
+      $activityToasts.set(true)
+      trackInboundActivity([withRegular(5000, 0, false)])
+      hostMock.setFocused('regular-1')
+      trackInboundActivity([withRegular(6000, 0, false)])
+
+      expect(hostMock.notify).not.toHaveBeenCalled()
+    })
+
+    it('matches the focused session by the activity’s resolved id too', async () => {
+      const { trackInboundActivity } = await loadActions()
+
+      const compacted = (lastActive: number) =>
+        ({
+          canonical_session: { id: 'default-chat', last_active: 1000 },
+          last_session: { id: 'regular-root', last_active: lastActive, resolved_id: 'regular-tip' },
+          name: 'default'
+        }) as RosterRow
+
+      trackInboundActivity([compacted(5000)])
+      hostMock.setFocused('regular-tip')
+      trackInboundActivity([compacted(6000)])
+
+      expect(markUnreadMock).not.toHaveBeenCalled()
+    })
+
+    it('still badges a Bot Chat delivery that lands while that session is focused', async () => {
+      const { trackInboundActivity } = await loadActions()
+
+      trackInboundActivity([withRegular(5000)])
+      hostMock.setFocused('regular-1')
+      trackInboundActivity([withRegular(5000, 7000)])
+
+      expect(markUnreadMock).toHaveBeenCalledWith('default-chat', 'default')
+    })
+  })
+
+  it('recognises the focused Bot Chat by its durable id when the live tip differs', async () => {
+    const { trackInboundActivity } = await loadActions()
+
+    const compacted = (lastActive: number) =>
+      ({
+        canonical_session: { id: 'root-id', last_active: lastActive, resolved_id: 'tip-id' },
+        name: 'researcher'
+      }) as RosterRow
+
+    trackInboundActivity([compacted(5000)])
+    hostMock.setFocused('root-id')
+    trackInboundActivity([compacted(6000)])
 
     expect(markUnreadMock).not.toHaveBeenCalled()
   })

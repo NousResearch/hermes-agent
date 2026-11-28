@@ -216,3 +216,44 @@ def test_default_budget_admits_a_wide_benign_wrapper_graph(tmp_path):
     evil.write_text("hermes gateway restart\n", encoding="utf-8")
     hub.write_text(hub.read_text() + f"bash {shlex.quote(str(evil))}\n", encoding="utf-8")
     assert guard(f"bash {shlex.quote(str(hub))}") is True
+
+
+# --- Python helpers are scanned, not walked as shell -----------------------
+
+
+def test_python_helper_data_paths_do_not_exhaust_the_walk(tmp_path):
+    """A Python helper naming data files (even binary ones) must not have its
+    string literals walked as shell scripts.
+
+    Regression: the walk read a named JPEG, recurred into its decoded bytes, and
+    spent the whole remote-read budget on the resulting bogus candidates —
+    failing closed on an innocent command ("the scan budget was exhausted
+    (remote reads at depth 1)"). The shebang, not a ``.py`` suffix, is what
+    marks such a helper as Python.
+    """
+    image = tmp_path / "live.jpg"
+    image.write_bytes(b"\xff\xd8\xff\xe0" + bytes(range(256)) * 4)
+    helper = tmp_path / "helper"  # suffixless on purpose
+    lines = ["#!/usr/bin/env python3", "import cv2", f'LIVE = "{image}"']
+    lines += [f'P{i} = "{tmp_path}/missing-{i}"' for i in range(120)]
+    helper.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    reads: list[str] = []
+    unsafe, refusal = lifecycle_guard.scan_gateway_lifecycle(
+        str(helper), cwd=str(tmp_path), read_remote_script=lambda p: reads.append(p) or None
+    )
+
+    assert (unsafe, refusal) == (False, None)
+    assert reads == []
+
+
+def test_python_helper_literal_lifecycle_command_still_blocked(tmp_path):
+    """The Python exemption keeps the direct regex scan: a literal lifecycle
+    command in the source is still refused."""
+    script = tmp_path / "bad.py"
+    script.write_text(
+        'import os\nos.system("hermes gateway ' + 'restart")\n', encoding="utf-8"
+    )
+
+    assert guard(str(script)) is True
+

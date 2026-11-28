@@ -145,3 +145,101 @@ it('clips only visible covered siblings, follows resize, and releases styles and
   expect(visible.reply.style.getPropertyValue('--sticky-prompt-clip')).toBe('')
   expect(disconnect).toHaveBeenCalledTimes(2)
 })
+
+it('divides the clip inset by the document zoom (Webapp CSS zoom ≠ 100%)', () => {
+  const viewport = window.document.createElement('div')
+  const content = window.document.createElement('div')
+  viewport.append(content)
+  vi.spyOn(viewport, 'getBoundingClientRect').mockReturnValue(rect(0, 500))
+
+  const group = window.document.createElement('div')
+  group.dataset.slot = 'aui_message-group'
+  const editor = window.document.createElement('div')
+  editor.style.display = 'contents'
+  const prompt = window.document.createElement('div')
+  prompt.dataset.slot = 'aui_user-message-root'
+  prompt.style.top = '5px'
+  const reply = window.document.createElement('div')
+  group.append(editor, reply)
+  editor.append(prompt)
+  content.append(group)
+  vi.spyOn(group, 'getBoundingClientRect').mockReturnValue(rect(0, 900))
+  vi.spyOn(prompt, 'getBoundingClientRect').mockReturnValue(rect(5, 60))
+  vi.spyOn(reply, 'getBoundingClientRect').mockReturnValue(rect(-10, 900))
+
+  // The Webapp scales the document with CSS `zoom`; rect values are rendered
+  // pixels but the clip inset is a layout length, so 75 rendered px must be
+  // written as 60 layout px at zoom 1.25.
+  const realGetComputedStyle = window.getComputedStyle.bind(window)
+  vi.spyOn(window, 'getComputedStyle').mockImplementation((element, pseudo) => {
+    const style = realGetComputedStyle(element, pseudo)
+
+    return element === document.documentElement
+      ? (new Proxy(style, {
+          get: (target, key) => (key === 'zoom' ? '1.25' : Reflect.get(target, key, target))
+        }) as CSSStyleDeclaration)
+      : style
+  })
+
+  let intersection: IntersectionObserverCallback
+  let frame: FrameRequestCallback | undefined
+  vi.stubGlobal(
+    'IntersectionObserver',
+    class {
+      constructor(callback: IntersectionObserverCallback) {
+        intersection = callback
+      }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    }
+  )
+  vi.stubGlobal(
+    'ResizeObserver',
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    }
+  )
+  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+    frame = callback
+
+    return 1
+  })
+  vi.stubGlobal('cancelAnimationFrame', () => {
+    frame = undefined
+  })
+
+  renderHook(() =>
+    useStickyPromptClip({
+      scrollRef: { current: viewport },
+      contentRef: { current: content },
+      paneVisible: true,
+      rows: 'initial'
+    })
+  )
+  act(() =>
+    intersection(
+      [
+        {
+          target: group,
+          isIntersecting: true,
+          intersectionRatio: 1,
+          boundingClientRect: rect(0, 900),
+          intersectionRect: rect(0, 500),
+          rootBounds: rect(0, 500),
+          time: 0
+        }
+      ],
+      {} as IntersectionObserver
+    )
+  )
+  act(() => {
+    const run = frame
+    frame = undefined
+    run?.(0)
+  })
+
+  expect(reply.style.getPropertyValue('--sticky-prompt-clip')).toBe('60px')
+})

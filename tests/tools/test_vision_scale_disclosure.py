@@ -13,6 +13,7 @@ scale factor / crop offset so coordinates can be mapped back deterministically:
 The scale math is verified deterministically with Pillow — no LLM needed.
 """
 
+import base64
 import io
 import json
 import os
@@ -232,6 +233,48 @@ class TestVisionAnalyzeScaleDisclosure:
         assert "(300, 100)" in note
         assert "relative" in note
         assert result["analysis"].startswith(f"[{note}]")
+
+    @pytest.mark.asyncio
+    async def test_tall_image_under_byte_cap_is_downscaled_to_dimension_cap(self, tmp_path):
+        """A tall-but-light screenshot must be downscaled on the pixel cap alone.
+
+        Providers cap the long edge independently of bytes (Anthropic rejects a long
+        edge over 8000 px with a 400), so a full-page capture can sit far under
+        ``_MAX_BASE64_BYTES`` and still be rejected. Flat colour keeps this PNG tiny
+        (well under the byte cap) while exceeding the pixel cap, so it only passes
+        when the dimension check fires.
+        """
+        img_path = tmp_path / "tall_flat.png"
+        Image.new("RGB", (900, 9000), (17, 23, 29)).save(img_path, format="PNG")
+
+        sent_urls = []
+
+        async def _capture(**kwargs):
+            for part in kwargs["messages"][0]["content"]:
+                if part.get("type") == "image_url":
+                    sent_urls.append(part["image_url"]["url"])
+            return _mock_llm_response()
+
+        with patch("tools.vision_tools.async_call_llm", new=AsyncMock(side_effect=_capture)):
+            result = json.loads(
+                await vision_analyze_tool(str(img_path), "describe", "test/model")
+            )
+
+        assert result["success"] is True
+        # The pre-flight resize fired even though the image was under the byte cap.
+        note = result["scale_note"]
+        m = re.search(r"downscaled from (\d+)x(\d+) to (\d+)x(\d+)", note)
+        assert m, f"expected a downscale disclosure, got {note!r}"
+        ow, oh, nw, nh = (int(v) for v in m.groups())
+        assert (ow, oh) == (900, 9000)
+        # The long edge now respects the provider cap.
+        assert max(nw, nh) <= 8000, f"long edge {max(nw, nh)} still over the 8000 px cap"
+
+        # And the bytes actually put on the wire match those dimensions.
+        assert sent_urls, "no image was sent to the model"
+        payload = sent_urls[-1].split(",", 1)[1]
+        sent = Image.open(io.BytesIO(base64.b64decode(payload)))
+        assert max(sent.size) <= 8000
 
     @pytest.mark.asyncio
     async def test_region_only_discloses_offset(self, tmp_path):

@@ -1105,6 +1105,12 @@ export const esOverrides = {
       embedsAlways: 'Siempre',
       embedsOff: 'Desactivado',
       embedsReset: count => `Restablecer ${count} ${count === 1 ? 'servicio permitido' : 'servicios permitidos'}`,
+      remoteMediaTitle: 'Imágenes remotas',
+      remoteMediaDesc:
+        'Las imágenes, el audio y el vídeo de otros sitios se cargan en cuanto aparece la respuesta, lo que le indica a ese sitio que la leíste. Preguntar muestra un marcador hasta que hagas clic y solo obtiene títulos de los enlaces que abras.',
+      remoteMediaAsk: 'Preguntar',
+      remoteMediaAlways: 'Siempre',
+      remoteMediaLoad: host => `Cargar desde ${host}`,
       resumeLastSessionTitle: 'Reabrir el último chat al iniciar',
       resumeLastSessionDesc:
         'Si está activado, la app reabre tu chat más reciente al iniciarse en frío. Desactívalo para empezar siempre con un chat nuevo.',

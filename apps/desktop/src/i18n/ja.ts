@@ -612,6 +612,12 @@ export const jaOverrides = {
       embedsAlways: '常に',
       embedsOff: 'オフ',
       embedsReset: (count: number) => `許可した${count}件のサービスをリセット`,
+      remoteMediaTitle: 'リモート画像',
+      remoteMediaDesc:
+        '他サイトの画像・音声・動画は返信が表示された時点で読み込まれ、そのサイトに閲覧が伝わります。「確認」ではクリックするまでプレースホルダーを表示し、開いたリンクのタイトルだけを取得します。',
+      remoteMediaAsk: '確認',
+      remoteMediaAlways: '常に',
+      remoteMediaLoad: host => `${host} から読み込む`,
       resumeLastSessionTitle: '起動時に前回のチャットを再開',
       resumeLastSessionDesc:
         'オンの場合、コールドスタート時に直近のチャットを再び開きます。オフにすると常に新しいチャットから始まります。',

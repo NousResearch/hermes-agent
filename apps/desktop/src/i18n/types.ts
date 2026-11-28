@@ -879,6 +879,11 @@ export interface Translations extends NoticeTranslations {
       embedsAlways: string
       embedsOff: string
       embedsReset: (count: number) => string
+      remoteMediaTitle: string
+      remoteMediaDesc: string
+      remoteMediaAsk: string
+      remoteMediaAlways: string
+      remoteMediaLoad: (host: string) => string
       resumeLastSessionTitle: string
       resumeLastSessionDesc: string
       product: string

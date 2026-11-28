@@ -1068,6 +1068,12 @@ export const en: Translations = {
       embedsAlways: 'Always',
       embedsOff: 'Off',
       embedsReset: (count: number) => `Reset ${count} allowed ${count === 1 ? 'service' : 'services'}`,
+      remoteMediaTitle: 'Remote Images',
+      remoteMediaDesc:
+        'Images, audio and video a reply links from other sites load as soon as it shows, which tells that site you read it. Ask shows a placeholder until you click, and fetches link titles only for links you open.',
+      remoteMediaAsk: 'Ask',
+      remoteMediaAlways: 'Always',
+      remoteMediaLoad: host => `Load from ${host}`,
       resumeLastSessionTitle: 'Reopen Last Chat on Launch',
       resumeLastSessionDesc:
         'When enabled, the app reopens your most recent chat on cold start. Turn off to always start with a fresh new chat.',

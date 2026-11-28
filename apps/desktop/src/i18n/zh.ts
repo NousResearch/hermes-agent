@@ -824,6 +824,12 @@ export const zhOverrides = {
       embedsAlways: '总是',
       embedsOff: '关闭',
       embedsReset: (count: number) => `重置 ${count} 个已允许的服务`,
+      remoteMediaTitle: '远程图片',
+      remoteMediaDesc:
+        '回复中来自其他网站的图片、音频和视频会在显示时立即加载，从而让该网站知道你已阅读。“询问”会在你点击前显示占位符，并且只为你打开的链接获取标题。',
+      remoteMediaAsk: '询问',
+      remoteMediaAlways: '始终',
+      remoteMediaLoad: host => `从 ${host} 加载`,
       resumeLastSessionTitle: '启动时恢复上次会话',
       resumeLastSessionDesc: '开启后，应用冷启动时重新打开最近的聊天。关闭则始终从空白新会话开始。',
       product: '产品',

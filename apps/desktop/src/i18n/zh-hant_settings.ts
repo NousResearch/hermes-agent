@@ -395,6 +395,12 @@ export const zhHantSettings = {
       embedsAlways: '一律',
       embedsOff: '關閉',
       embedsReset: (count: number) => `重設 ${count} 個已允許的服務`,
+      remoteMediaTitle: '遠端圖片',
+      remoteMediaDesc:
+        '回覆中來自其他網站的圖片、音訊和影片會在顯示時立即載入，讓該網站知道你已閱讀。「詢問」會在你點擊前顯示預留位置，且只為你開啟的連結取得標題。',
+      remoteMediaAsk: '詢問',
+      remoteMediaAlways: '一律',
+      remoteMediaLoad: host => `從 ${host} 載入`,
       resumeLastSessionTitle: '啟動時恢復上次會話',
       resumeLastSessionDesc: '開啟後，應用冷啟動時重新打開最近的聊天。關閉則始終從空白新會話開始。',
       product: '產品',

@@ -403,6 +403,12 @@ export const arSettings = {
       embedsAlways: 'دائما',
       embedsOff: 'إيقاف',
       embedsReset: count => `إعادة تعيين ${count} ${count === 1 ? 'خدمة مسموح بها' : 'خدمة مسموح بها'}`,
+      remoteMediaTitle: 'الصور البعيدة',
+      remoteMediaDesc:
+        'تُحمَّل الصور والصوت والفيديو من مواقع أخرى بمجرد ظهور الرد، فيعرف ذلك الموقع أنك قرأته. «اسأل» يعرض عنصرًا نائبًا حتى تنقر، ولا يجلب عناوين الروابط إلا لما تفتحه.',
+      remoteMediaAsk: 'اسأل',
+      remoteMediaAlways: 'دائما',
+      remoteMediaLoad: host => `تحميل من ${host}`,
       resumeLastSessionTitle: 'إعادة فتح آخر محادثة عند التشغيل',
       resumeLastSessionDesc: 'متابعة من حيث توقفت عند بدء التطبيق. أوقفه للبدء دائمًا بمحادثة جديدة.',
       product: 'مبسط',

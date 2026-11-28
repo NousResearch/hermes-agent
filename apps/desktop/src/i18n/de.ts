@@ -1103,6 +1103,12 @@ export const deOverrides = {
       embedsAlways: 'Immer',
       embedsOff: 'Aus',
       embedsReset: (count: number) => `${count} erlaubte ${count === 1 ? 'Aktivität' : 'Aktivitäten'} zurücksetzen`,
+      remoteMediaTitle: 'Externe Bilder',
+      remoteMediaDesc:
+        'Bilder, Audio und Video von anderen Websites werden geladen, sobald eine Antwort erscheint, und verraten dieser Website, dass Sie sie lesen. „Fragen“ zeigt einen Platzhalter bis zum Klick und lädt Linktitel nur für geöffnete Links.',
+      remoteMediaAsk: 'Fragen',
+      remoteMediaAlways: 'Immer',
+      remoteMediaLoad: host => `Von ${host} laden`,
       resumeLastSessionTitle: 'Letzten Chat beim Start wieder öffnen',
       resumeLastSessionDesc:
         'Wenn aktiviert, öffnet die App beim Kaltstart Ihren letzten Chat wieder. Schalten Sie es aus, um immer mit einem frischen Chat zu starten.',

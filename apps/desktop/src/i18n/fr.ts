@@ -1109,6 +1109,12 @@ export const frOverrides = {
       embedsOff: 'Désactivé',
       embedsReset: (count: number) =>
         `Réinitialiser ${count} ${count === 1 ? 'service autorisé' : 'services autorisés'}`,
+      remoteMediaTitle: 'Images distantes',
+      remoteMediaDesc:
+        'Les images, l’audio et la vidéo d’autres sites se chargent dès qu’une réponse s’affiche, ce qui indique à ce site que vous l’avez lue. Demander affiche un espace réservé jusqu’à votre clic et ne récupère le titre que des liens que vous ouvrez.',
+      remoteMediaAsk: 'Demander',
+      remoteMediaAlways: 'Toujours',
+      remoteMediaLoad: host => `Charger depuis ${host}`,
       resumeLastSessionTitle: 'Rouvrir la dernière conversation au lancement',
       resumeLastSessionDesc:
         "Lorsque cette option est activée, l'application rouvre votre conversation la plus récente après un démarrage à froid. Désactivez-la pour toujours commencer par une nouvelle conversation.",

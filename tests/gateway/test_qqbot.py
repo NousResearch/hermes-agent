@@ -165,43 +165,119 @@ class TestVoiceAttachmentTempCleanup:
 # ---------------------------------------------------------------------------
 
 class TestQQWebSocketProxy:
-    @pytest.mark.asyncio
-    async def test_open_ws_honors_proxy_env(self, monkeypatch):
-        from plugins.platforms.qqbot.adapter import QQAdapter
-
+    @pytest.fixture(autouse=True)
+    def clean_proxy_env(self, monkeypatch):
         for key in (
-            "WSS_PROXY",
-            "wss_proxy",
-            "HTTPS_PROXY",
-            "https_proxy",
-            "ALL_PROXY",
-            "all_proxy",
+            "WSS_PROXY", "wss_proxy", "HTTPS_PROXY", "https_proxy",
+            "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy",
         ):
             monkeypatch.delenv(key, raising=False)
-        monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7897")
+
+    @staticmethod
+    async def _capture_open_ws(url):
+        import aiohttp
+        from plugins.platforms.qqbot.adapter import QQAdapter
 
         adapter = QQAdapter(_make_config(app_id="a", client_secret="b"))
+        seen = []
 
-        seen_session_kwargs = {}
-        seen_ws_kwargs = {}
+        class StopBeforeDial(Exception):
+            pass
 
-        class FakeSession:
-            def __init__(self, **kwargs):
-                seen_session_kwargs.update(kwargs)
-                self.closed = False
+        async def capture(req, **kwargs):
+            seen.append((req.session.trust_env, str(req.proxy) if req.proxy else None))
+            raise StopBeforeDial
 
-            async def close(self):
-                self.closed = True
+        try:
+            with mock.patch.object(aiohttp.TCPConnector, "connect", side_effect=capture):
+                with pytest.raises(StopBeforeDial):
+                    await adapter._open_ws(url)
+        finally:
+            await adapter._close_ws()
+        return seen[0]
 
-            async def ws_connect(self, *args, **kwargs):
-                seen_ws_kwargs.update(kwargs)
-                return mock.AsyncMock(closed=False)
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("proxy_env", ["HTTPS_PROXY", "ALL_PROXY", "wss_proxy"])
+    async def test_open_ws_honors_proxy_env(self, monkeypatch, proxy_env):
+        monkeypatch.setenv(proxy_env, "http://proxy.example:8080")
+        monkeypatch.setenv("NO_PROXY", "example.com")
 
-        with mock.patch("plugins.platforms.qqbot.adapter.aiohttp.ClientSession", side_effect=FakeSession):
-            await adapter._open_ws("wss://api.sgroup.qq.com/websocket")
+        trust_env, proxy = await self._capture_open_ws("wss://api.sgroup.qq.com/websocket")
 
-        assert seen_session_kwargs.get("trust_env") is True
-        assert seen_ws_kwargs.get("proxy") == "http://127.0.0.1:7897"
+        assert trust_env is True
+        assert proxy == "http://proxy.example:8080"
+
+    @pytest.mark.asyncio
+    async def test_open_ws_prefers_wss_proxy_to_https_proxy(self, monkeypatch):
+        monkeypatch.setenv("WSS_PROXY", "http://ws-proxy.example:8080")
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:8080")
+
+        _, proxy = await self._capture_open_ws("wss://api.sgroup.qq.com/websocket")
+
+        assert proxy == "http://ws-proxy.example:8080"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("proxy_env", "no_proxy_env", "entry", "url"), [
+        ("HTTPS_PROXY", "NO_PROXY", ".qq.com", "wss://api.sgroup.qq.com/websocket"),
+        ("WSS_PROXY", "no_proxy", "*.qq.com", "wss://api.sgroup.qq.com/websocket"),
+        ("WSS_PROXY", "NO_PROXY", "api.sgroup.qq.com:8443", "wss://api.sgroup.qq.com:8443/websocket"),
+        ("WSS_PROXY", "NO_PROXY", "api.sgroup.qq.com:443", "wss://api.sgroup.qq.com/websocket"),
+        ("WSS_PROXY", "NO_PROXY", "192.0.2.0/24", "wss://192.0.2.42/websocket"),
+    ])
+    async def test_open_ws_does_not_proxy_excluded_host(self, monkeypatch, proxy_env, no_proxy_env, entry, url):
+        """Regression for #142866: don't reapply a proxy after NO_PROXY matches."""
+        monkeypatch.setenv(proxy_env, "http://proxy.example:8080")
+        monkeypatch.setenv(no_proxy_env, entry)
+
+        trust_env, proxy = await self._capture_open_ws(url)
+
+        assert proxy is None
+        assert trust_env is True
+
+    @pytest.mark.asyncio
+    async def test_open_ws_rechecks_no_proxy_after_redirect(self, monkeypatch, tmp_path):
+        """Use real aiohttp redirect/auth logic; stop before dialing the second hop."""
+        import aiohttp
+        from aiohttp import web
+        from plugins.platforms.qqbot.adapter import QQAdapter
+
+        netrc_file = tmp_path / "netrc"
+        netrc_file.write_text("machine 127.0.0.1 login fixture password test-only\n", encoding="utf-8")
+        monkeypatch.setenv("NETRC", str(netrc_file))
+        monkeypatch.setenv("WSS_PROXY", "http://proxy.example:8080")
+        monkeypatch.setenv("NO_PROXY", "127.0.0.0/24")
+        seen = []
+
+        async def redirect(_request):
+            raise web.HTTPFound("http://not-excluded.example/next")
+
+        runner = web.ServerRunner(web.Server(redirect))
+        await runner.setup()
+        adapter = QQAdapter(_make_config(app_id="a", client_secret="b"))
+        connect = aiohttp.TCPConnector.connect
+
+        class StopBeforeRedirectDial(Exception):
+            pass
+
+        async def capture(connector, req, **kwargs):
+            seen.append((req.url.host, str(req.proxy) if req.proxy else None, req.headers.get("Authorization")))
+            if len(seen) == 2:
+                raise StopBeforeRedirectDial
+            return await connect(connector, req, **kwargs)
+
+        try:
+            await web.TCPSite(runner, "127.0.0.1", 0).start()
+            port = runner.addresses[0][1]
+            with mock.patch.object(aiohttp.TCPConnector, "connect", capture):
+                with pytest.raises(StopBeforeRedirectDial):
+                    await adapter._open_ws(f"ws://127.0.0.1:{port}/")
+        finally:
+            await adapter._close_ws()
+            await runner.cleanup()
+        assert seen == [
+            ("127.0.0.1", None, aiohttp.BasicAuth("fixture", "test-only").encode()),
+            ("not-excluded.example", "http://proxy.example:8080", None),
+        ]
 
 # ---------------------------------------------------------------------------
 # _strip_at_mention

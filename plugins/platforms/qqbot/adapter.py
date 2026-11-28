@@ -42,6 +42,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt, SendResult,
     cache_document_from_bytes_async, cache_image_from_bytes_async,
+    should_bypass_proxy,
 )
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.helpers import strip_markdown
@@ -83,6 +84,15 @@ def check_qq_requirements() -> bool:
 
 def _ws_proxy() -> str | None:  # the WebSocket honours proxy env vars (WSL setups need this)
     return next((v for v in map(os.getenv, ("WSS_PROXY", "wss_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy")) if v), None)
+
+
+async def _apply_ws_no_proxy(req: aiohttp.ClientRequest, handler: aiohttp.ClientHandlerType) -> aiohttp.ClientResponse:
+    # Apply the gateway's matcher to each hop, after aiohttp has resolved the
+    # proxy. This keeps trust_env (including netrc) and the fallback order intact.
+    target = req.url.with_port(req.url.port).raw_authority
+    if req.proxy is not None and should_bypass_proxy(target):
+        req.update_proxy(None, None, None)
+    return await handler(req)
 
 
 _VOICE_EXTENSIONS = (".silk", ".amr", ".mp3", ".wav", ".ogg", ".m4a", ".aac", ".speex", ".flac")
@@ -310,9 +320,11 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
 
     async def _open_ws(self, gateway_url: str) -> None:
         await self._close_ws()
-        self._session = aiohttp.ClientSession(trust_env=gateway_trust_env())
+        self._session = aiohttp.ClientSession(trust_env=gateway_trust_env(), middlewares=(_apply_ws_no_proxy,))
         self._ws = await self._session.ws_connect(
-            gateway_url, headers={"User-Agent": build_user_agent()}, timeout=CONNECT_TIMEOUT_SECONDS, proxy=_ws_proxy())
+            gateway_url, headers={"User-Agent": build_user_agent()}, timeout=CONNECT_TIMEOUT_SECONDS,
+            proxy=_ws_proxy(),
+        )
         logger.info("[%s] WebSocket connected to %s", self._log_tag, gateway_url)
 
     async def _listen_loop(self) -> None:

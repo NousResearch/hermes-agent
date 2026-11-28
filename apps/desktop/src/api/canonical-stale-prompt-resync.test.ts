@@ -83,6 +83,38 @@ test('a stale answer is sent once more when the owner still holds that prompt at
   client.close()
 })
 
+test('a stale answer is not reported resolved when the re-read snapshot carries no prompt list', async () => {
+  const owner: Owner = { generation: 2, prompts: [approval('p1', 2)] }
+  const { client, sent, settled } = await attachedViewer(owner)
+
+  // The owner's next turn fenced p1 out of the cache; its resume says nothing about open prompts.
+  Object.assign(owner, { generation: 3, prompts: undefined })
+  nextTurn(client, 3)
+
+  await expect(client.request('approval.respond', { session_id: 's', request_id: 'p1', choice: 'once' }))
+    .rejects.toThrow('Prompt is stale or unavailable')
+  expect(sent('approval.respond')).toEqual([])
+  expect(sent('session.resume')).toHaveLength(2)
+  expect(settled).toEqual([])
+  client.close()
+})
+
+test('a stale answer is not reported resolved while the snapshot still lists that prompt behind a fence', async () => {
+  const owner: Owner = { generation: 2, prompts: [approval('p1', 2)] }
+  const { client, sent, settled } = await attachedViewer(owner)
+
+  // The owner still lists p1, but only at the generation the session has left: listed, not answerable.
+  Object.assign(owner, { generation: 3 })
+  nextTurn(client, 3)
+
+  await expect(client.request('approval.respond', { session_id: 's', request_id: 'p1', choice: 'once' }))
+    .rejects.toThrow('Prompt is stale or unavailable')
+  expect(sent('approval.respond')).toEqual([])
+  expect(sent('session.resume')).toHaveLength(2)
+  expect(settled).toEqual([])
+  client.close()
+})
+
 test('a page coming back re-reads its open prompts and takes down a card the owner settled meanwhile', async () => {
   const owner = { generation: 2, prompts: [approval('p1', 2)] }
   const { client, sent, settled } = await attachedViewer(owner)

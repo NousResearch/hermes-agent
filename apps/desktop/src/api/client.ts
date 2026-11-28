@@ -567,14 +567,20 @@ export class HermesGateway extends JsonRpcGatewayClient {
   // A card can outlive this socket's prompt cache: a page asleep (a phone's backgrounded tab) misses the
   // settle, a newer request or the turn's generation change, and every answer was refused until a
   // reload. Re-read the owner's open prompts once. The same prompt still open at the snapshot's
-  // generation takes the user's answer; otherwise null, and the snapshot has replaced the cards.
+  // generation takes the user's answer. Null only when the owner's complete prompt list leaves it out:
+  // a snapshot with no list, or one still listing a prompt this cache cannot answer, proves no settle,
+  // so the stale refusal stands (no send) and the snapshot has refreshed the cards for a fresh answer.
   private async preparePromptAfterResync(method: string, params: Record<string, unknown>, deadline: number, signal?: AbortSignal): Promise<Record<string, unknown> | null> {
-    await this.reattach(String(params.session_id), params.profile, remainingRequestBudget(deadline, signal), signal)
+    const snapshot = await this.reattach(String(params.session_id), params.profile, remainingRequestBudget(deadline, signal), signal) as { prompts?: unknown } | undefined
 
     try {
       return this.protocol.prepare(method, params)
     } catch (error) {
-      if (error instanceof StalePromptError) { return null }
+      if (!(error instanceof StalePromptError)) { throw error }
+      const id = params.prompt_id ?? params.request_id
+      const listed = Array.isArray(snapshot?.prompts) ? snapshot.prompts as Array<Record<string, unknown> | null> : null
+
+      if (listed && !listed.some(prompt => prompt?.prompt_id === id)) { return null }
       throw error
     }
   }

@@ -8,7 +8,7 @@ closed for them without mutating the process-global environment.
 from __future__ import annotations
 
 import os
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar, Token
 from typing import Iterator, Mapping, MutableMapping, overload
 
@@ -26,15 +26,18 @@ KANBAN_ENV_KEYS: tuple[str, ...] = (
 
 
 @contextmanager
-def delegated_child_context(session_id: str | None = None) -> Iterator[None]:
+def delegated_child_context(session_id: str | None = None, *, parent_session_id: str | None = None) -> Iterator[None]:
     """Mark child execution and isolate its task-local session identity. Even a context
     entered without an id must restore the parent's session ContextVar (child
-    construction calls ``set_current_session_id``)."""
+    construction calls ``set_current_session_id``). With an id (the child's run), also bind
+    the session that dispatched it (``HERMES_SESSION_PARENT_ID``; unknown hides an enclosing run's)."""
     token = _DELEGATED_CHILD_CONTEXT.set(True)
     try:
-        from gateway.session_context import scoped_current_session_id  # lazy: it calls is_delegated_child_context()
+        # lazy: session_context calls is_delegated_child_context()
+        from gateway.session_context import scoped_current_session_id, scoped_session_parent_id
 
-        with scoped_current_session_id(session_id):
+        with scoped_current_session_id(session_id), (
+                nullcontext() if session_id is None else scoped_session_parent_id(parent_session_id or "")):
             yield
     finally:
         _DELEGATED_CHILD_CONTEXT.reset(token)

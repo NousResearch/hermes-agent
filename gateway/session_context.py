@@ -69,11 +69,18 @@ _CRON_AUTO_DELIVER_PLATFORM = ContextVar("HERMES_CRON_AUTO_DELIVER_PLATFORM", de
 _CRON_AUTO_DELIVER_CHAT_ID = ContextVar("HERMES_CRON_AUTO_DELIVER_CHAT_ID", default=_UNSET)
 _CRON_AUTO_DELIVER_THREAD_ID = ContextVar("HERMES_CRON_AUTO_DELIVER_THREAD_ID", default=_UNSET)
 
+# The session whose delegate_task call started this subagent run (its direct dispatcher), bound only
+# by ``delegated_child_context`` around the child's turn. Context-only: no ``os.environ`` fallback, and
+# the subprocess bridge never passes an inherited value on (a ``hermes`` started from a subagent's
+# shell inherits one, but it is not that process's dispatcher).
+_SESSION_PARENT_ID = ContextVar("HERMES_SESSION_PARENT_ID", default=_UNSET)
+CONTEXT_ONLY_VAR_NAMES = frozenset({_SESSION_PARENT_ID.name})
+
 # Legacy env-var name -> ContextVar for get_session_env (_SESSION_ASYNC_DELIVERY deliberately
 # absent: it is a bool capability, read via async_delivery_supported).
 _VAR_MAP = {var.name: var for var in (
     *_SESSION_VARS, _CRON_AUTO_DELIVER_PLATFORM, _CRON_AUTO_DELIVER_CHAT_ID,
-    _CRON_AUTO_DELIVER_THREAD_ID,
+    _CRON_AUTO_DELIVER_THREAD_ID, _SESSION_PARENT_ID,
 )}
 
 
@@ -111,6 +118,17 @@ def scoped_current_session_id(session_id: str | None = None) -> Iterator[None]:
         yield
     finally:
         _SESSION_ID.set(previous)
+
+
+@contextmanager
+def scoped_session_parent_id(parent_session_id: str) -> Iterator[None]:
+    """Bind this run's dispatcher (``""``: unknown, which also hides an enclosing run's) and restore
+    the prior value on exit; never touches ``os.environ``."""
+    token = _SESSION_PARENT_ID.set(parent_session_id)
+    try:
+        yield
+    finally:
+        _SESSION_PARENT_ID.reset(token)
 
 
 @contextmanager
@@ -243,10 +261,11 @@ def bound_session_env(name: str) -> str:
 
 def get_session_env(name: str, default: str = "") -> str:
     """Read a session var by legacy ``HERMES_SESSION_*`` name; drop-in for os.getenv.  The
-    ContextVar wins if ever set here (even to ``""``); else ``os.environ``; else *default*."""
+    ContextVar wins if ever set here (even to ``""``); else ``os.environ`` (never for
+    ``CONTEXT_ONLY_VAR_NAMES``); else *default*."""
     if (value := _bound_session_value(name)) is not _UNSET:
         return value
-    return os.getenv(name, default)
+    return default if name in CONTEXT_ONLY_VAR_NAMES else os.getenv(name, default)
 
 
 # Surfaces that are not a human chat channel (gateway binds HERMES_SESSION_PLATFORM, CLI/TUI/

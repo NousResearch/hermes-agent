@@ -13,6 +13,7 @@ from tools.delegation_redaction import redact_child_result, redact_child_text
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from typing import Any, Dict, List, Optional
 from agent.compression_marker import elide
+from agent.delegation_context import delegated_child_context
 from agent.interrupt_compat import request_hard_interrupt
 from dataclasses import dataclass, field
 from tools import file_state
@@ -123,6 +124,16 @@ def _append_missed_steer(entry: dict[str, Any], late_steer: Optional[str]) -> No
     if late_steer:
         entry["missed_steer"] = late_steer
         entry["error"] += (" [steer did not land before the subagent stopped: " f"{late_steer}]")
+
+
+def _child_run_context(child: Any):
+    """``delegated_child_context`` for one of the child's turns: its own session id, and the session that
+    dispatched it. ``_parent_session_id`` is the dispatching agent's ``session_id``, which ``_build_child_agent``
+    passes to the child's constructor; compression gives the child a new session id (and its new row a parent
+    pointer to the previous segment) but leaves this attribute as it was."""
+    return delegated_child_context(str(getattr(child, "session_id", "") or ""),
+                                   parent_session_id=str(getattr(child, "_parent_session_id", "") or ""))
+
 
 def _close_child(child: Any, log_message: str) -> None:
     """Best-effort ``child.close()`` (tool sandboxes, browser daemons, httpx clients)."""
@@ -578,9 +589,8 @@ def _validate_child_output_schema(
     try:
         # Same identity as the main child turn: this runs on the parent worker's thread, and an
         # unmarked turn is misread as the dispatcher-owned worker by every HERMES_KANBAN_* gate.
-        from agent.delegation_context import delegated_child_context
         from tools.delegate_tool_routes import child_profile_scope
-        with child_profile_scope(child), delegated_child_context(str(getattr(child, "session_id", "") or "")):
+        with child_profile_scope(child), _child_run_context(child):
             _retry_result = child.run_conversation(
                 user_message=append_output_contract(build_retry_message(_schema_errors), _output_schema),
                 task_id=child_task_id,
@@ -1010,10 +1020,9 @@ class _ChildRun:
 
         def _run_with_thread_capture():
             worker_thread_holder["t"] = threading.current_thread()
-            from agent.delegation_context import delegated_child_context
             from tools.delegate_tool_routes import child_profile_scope
             # A profile-routed child converses as that profile (config, secrets, skills, terminal policy).
-            with child_profile_scope(child), delegated_child_context(str(getattr(child, "session_id", "") or "")):
+            with child_profile_scope(child), _child_run_context(child):
                 return child.run_conversation(
                     user_message=user_message, task_id=self.child_task_id, stream_callback=self.relay_text, **resume,
                 )

@@ -9,6 +9,7 @@ from typing import Any
 
 from agent.agent_init_params import _GATEWAY_IDENTITY_PARAMS
 from agent.agent_init_session import agent_interface
+from agent.runtime_cwd import scoped_session_cwd
 from hermes_constants import get_hermes_home
 
 logger = logging.getLogger("run_agent")
@@ -146,8 +147,12 @@ def _memory_provider_init_kwargs(agent, platform) -> dict[str, Any]:
         _val = getattr(agent, f"_{_ident}")
         if _val:
             kwargs[_ident] = _val
-    if agent.session_cwd:
-        kwargs["cwd"] = agent.session_cwd
+    # Gateway/ACP sessions pin the workspace in the _SESSION_CWD contextvar instead of setting
+    # ``agent.session_cwd``. Providers that scope by directory (e.g. a repository .hindsight
+    # config under trusted_project_dirs) would otherwise miss the session's workspace.
+    session_cwd = agent.session_cwd or scoped_session_cwd()
+    if session_cwd:
+        kwargs["cwd"] = session_cwd
     # Profile identity for per-profile provider scoping
     with suppress(Exception):
         from hermes_cli.profiles import get_active_profile_name

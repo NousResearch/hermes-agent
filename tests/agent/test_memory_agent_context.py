@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from agent.agent_init import _GATEWAY_IDENTITY_PARAMS, _memory_provider_init_kwargs
+from agent.runtime_cwd import reset_session_cwd, set_session_cwd
 
 
 def _fake_agent():
@@ -59,3 +60,35 @@ def test_initialize_is_told_whether_it_continues_a_stored_session(rows, answered
 def test_no_session_store_reads_as_a_new_session():
     kwargs = _memory_provider_init_kwargs(_fake_agent(), "cli")
     assert (kwargs["resumed"], kwargs["message_count"]) == (False, 0)
+
+
+@pytest.fixture
+def empty_session_cwd_scope():
+    """Run with the session-cwd contextvar cleared, restoring the caller's value afterwards."""
+    token = set_session_cwd(None)
+    try:
+        yield
+    finally:
+        reset_session_cwd(token)
+
+
+def test_gateway_scoped_cwd_reaches_the_memory_provider(empty_session_cwd_scope):
+    """ACP/gateway agents carry their workspace in the session-scope contextvar, not on the agent."""
+    assert "cwd" not in _memory_provider_init_kwargs(_fake_agent(), "telegram")
+    token = set_session_cwd("/srv/agents/a")
+    try:
+        kwargs = _memory_provider_init_kwargs(_fake_agent(), "telegram")
+    finally:
+        reset_session_cwd(token)
+    assert kwargs["cwd"] == "/srv/agents/a"
+
+
+def test_agent_session_cwd_still_wins_over_the_scope():
+    agent = _fake_agent()
+    agent.session_cwd = "/workspace/explicit"
+    token = set_session_cwd("/srv/agents/a")
+    try:
+        kwargs = _memory_provider_init_kwargs(agent, "telegram")
+    finally:
+        reset_session_cwd(token)
+    assert kwargs["cwd"] == "/workspace/explicit"

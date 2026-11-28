@@ -192,6 +192,11 @@ def preset_for_model(gguf: Path, budget: HardwareBudget,
     entry = entry_for_model(model_id)
     companions = _companions(entry)
     is_mtp = _runs_mtp(entry, companions) if entry is not None else model_id in mtp_capable
+    if is_mtp:
+        from hermes_cli.config import load_config
+
+        preference = load_config().get("local_runtime", {}).get("speculative", "auto")
+        is_mtp = preference != "off"
 
     fixed_overhead = RUNTIME_OVERHEAD_BYTES + companions.nbytes
     requested = load_window_overrides().get(model_id) if requested_window is None else requested_window

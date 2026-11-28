@@ -1039,6 +1039,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                     logger.debug("Could not emit ACP provenance update after rotation for %s", session_id, exc_info=True)
 
             final_response = result.get("final_response") or ""  # None on an interrupted turn
+            failed = bool(result.get("failed"))
             cancelled = bool(state.cancel_event and state.cancel_event.is_set())
             # The local "waiting for model" interrupt status is metadata, not prose; stop_reason carries it.
             from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
@@ -1046,7 +1047,10 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             interrupted = bool(result.get("interrupted")) or cancelled
             suppress = interrupted and final_response.startswith(INTERRUPT_WAITING_FOR_MODEL_PREFIX)
             # Send the final text unless already streamed — or if a plugin hook transformed it after.
-            if final_response and conn and not suppress and (not streamed_message or result.get("response_transformed")):
+            # A failed turn must still emit its terminal diagnostic even after a partial stream.
+            if final_response and conn and not suppress and (
+                failed or not streamed_message or result.get("response_transformed")
+            ):
                 update = acp.update_agent_message_text(final_response)
                 if state.message_ids is not None:
                     # A plugin-rewritten reply replaces the streamed bubble (same id); an
@@ -1073,7 +1077,8 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                 cached_read_tokens=result.get("cache_read_tokens"),
             )
         await self._send_usage_update(state)
-        return PromptResponse(stop_reason="cancelled" if cancelled else "end_turn", usage=usage)
+        stop_reason = "cancelled" if cancelled else "refusal" if failed else "end_turn"
+        return PromptResponse(stop_reason=stop_reason, usage=usage)
 
     async def _drain_queued_prompts(self, state: SessionState, session_id: str, conn: Any) -> None:
         """Run queued prompts while the session is idle. Reached from ``_finish_turn`` and

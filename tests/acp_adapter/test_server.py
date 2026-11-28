@@ -19,6 +19,7 @@ from acp.schema import (
     SetSessionConfigOptionResponse,
     SessionInfo,
     TextContentBlock,
+    AgentMessageChunk,
     ToolCallProgress,
     ToolCallStart,
     UsageUpdate,
@@ -363,6 +364,82 @@ class TestPrompt:
         resp = await agent.prompt(prompt=prompt, session_id="nonexistent")
         assert isinstance(resp, PromptResponse)
         assert resp.stop_reason == "refusal"
+
+    @pytest.mark.asyncio
+    async def test_failed_turn_surfaces_error_after_partial_stream_and_refuses(self, agent, mock_manager):
+        """A failed turn must not look successful to the ACP client.
+
+        If any content already streamed, _finish_turn used to suppress the
+        terminal diagnostic and return end_turn, so result["failed"] looked
+        like a normal completion. Always emit the diagnostic and return
+        refusal. Ported from coldcrippy's fix in #105456.
+        """
+        resp = await agent.new_session(cwd=".")
+        state = mock_manager.get_session(resp.session_id)
+        state.agent.model = "test-model"
+        state.agent.provider = "openai-codex"
+        result = {
+            "final_response": "Authentication expired; renew this account and retry.",
+            "messages": [],
+            "failed": True,
+            "failure_reason": "auth",
+        }
+        state.agent.run_conversation.return_value = result
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        response = await agent._finish_turn(
+            state, resp.session_id, mock_conn, result,
+            state.agent.session_id, streamed_message=True,
+        )
+
+        assert response.stop_reason == "refusal"
+        updates = [
+            call.kwargs.get("update", call.args[1] if len(call.args) > 1 else None)
+            for call in mock_conn.session_update.await_args_list
+        ]
+        assert any(
+            isinstance(update, AgentMessageChunk)
+            and update.content.text == "Authentication expired; renew this account and retry."
+            for update in updates
+        )
+
+    @pytest.mark.asyncio
+    async def test_failed_turn_preserves_cancelled_precedence(self, agent, mock_manager):
+        """cancelled still wins over refusal when the session was cancelled."""
+        resp = await agent.new_session(cwd=".")
+        state = mock_manager.get_session(resp.session_id)
+        state.agent.model = "test-model"
+        state.agent.provider = "openrouter"
+        state.cancel_event.set()
+        result = {
+            "final_response": "Provider said: HTTP 404: model: big-pickle",
+            "messages": [],
+            "failed": True,
+            "failure_reason": "server_error",
+        }
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        response = await agent._finish_turn(
+            state, resp.session_id, mock_conn, result,
+            state.agent.session_id, streamed_message=True,
+        )
+
+        assert response.stop_reason == "cancelled"
+        updates = [
+            call.kwargs.get("update", call.args[1] if len(call.args) > 1 else None)
+            for call in mock_conn.session_update.await_args_list
+        ]
+        assert any(
+            isinstance(update, AgentMessageChunk)
+            and update.content.text == "Provider said: HTTP 404: model: big-pickle"
+            for update in updates
+        )
 
     @pytest.mark.asyncio
     async def test_prompt_binds_session_id_into_subprocess_env(self, agent, mock_manager):

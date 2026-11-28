@@ -31,6 +31,33 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 logger = logging.getLogger("gateway.run")
 
 
+_tool_call_logger_lock = threading.Lock()
+
+
+def _tool_call_logger() -> logging.Logger:
+    """Process-wide ``hermes.tool_calls`` Logger + one RotatingFileHandler on logs/tool_calls.log.
+    Named Loggers live in ``logging.Logger.manager.loggerDict`` forever, so the former per-turn name
+    (``hermes.tool_calls.<id(log_queue)>``) leaked one Logger per logged turn (#62950); a single
+    shared handler also keeps concurrent turns from double-writing lines."""
+    tool_logger = logging.getLogger("hermes.tool_calls")
+    with _tool_call_logger_lock:
+        if not tool_logger.handlers:
+            from logging.handlers import RotatingFileHandler
+            from agent.redact import RedactingFormatter
+            from gateway.run import _hermes_home
+
+            log_dir = _hermes_home / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            handler = RotatingFileHandler(
+                log_dir / "tool_calls.log", maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8",
+            )
+            handler.setFormatter(RedactingFormatter("%(message)s"))
+            tool_logger.setLevel(logging.INFO)
+            tool_logger.propagate = False
+            tool_logger.addHandler(handler)
+    return tool_logger
+
+
 def _append_progress_repeat_count(message: str, occurrences: int) -> str:
     """Put a repeat counter after a closing code fence on its own line: ```` ``` (×N) ```` is not a
     valid closing fence, so Telegram/Markdown renderers would leave the block open."""
@@ -219,6 +246,8 @@ class GatewayTurnProgressMixin:
             ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             preview_str = f' "{preview}"' if preview else ""
             ctx.log_queue.put(f"{ts}  {tool_name}:{preview_str}".rstrip())
+        if ctx.feishu_progress_card_enabled and event_type in {"tool.started", "tool.completed"}:
+            return  # The ID-bearing lifecycle callbacks handle Feishu cards.
         if not ctx.progress_queue or not ctx._run_still_current():
             return
         if event_type == "tool.completed" and not ctx.long_tool_hint_fired[0]:
@@ -943,6 +972,9 @@ class GatewayTurnProgressMixin:
         adapter = self._runner._delivery_adapter_for(ctx.source) if ctx.progress_queue else None
         if not adapter:
             return
+        if ctx.feishu_progress_card_enabled and getattr(adapter, "supports_turn_progress_card", False):
+            await self._send_feishu_progress_card(adapter)
+            return
         if ctx._native_slack_task_cards and hasattr(adapter, "send_native_task_card_progress"):
             await self._send_native_task_card_progress(adapter)
             return
@@ -996,6 +1028,83 @@ class GatewayTurnProgressMixin:
                 logger.error("Progress message error: %s", e)
                 await asyncio.sleep(1)
 
+    @staticmethod
+    def _build_feishu_progress_card(current, history, elapsed, final=False, outcome=None):
+        outcome = outcome or ("success" if final else "running")
+        titles = {"success": "Hermes finished", "failed": "Hermes failed",
+                  "interrupted": "Hermes interrupted", "running": "Hermes is working"}
+        templates = {"success": "green", "failed": "red", "interrupted": "orange", "running": "wathet"}
+        labels = {"success": "✅ Complete", "failed": "❌ Failed", "interrupted": "⏹️ Interrupted"}
+        title, template = titles.get(outcome, titles["running"]), templates.get(outcome, "wathet")
+        status = labels.get(outcome) or f"🔄 **Current operation**\n{current or 'Waiting for the next operation…'}"
+        elements = [{"tag": "markdown", "content": f"{status}\n\n⏱️ Elapsed: {elapsed}s"}]
+        if history:
+            operations = []
+            for entry in history[-40:]:
+                label, separator, detail = entry.partition(" — ")
+                operations.append({"tag": "collapsible_panel", "expanded": False,
+                                   "header": {"title": {"tag": "plain_text", "content": label}},
+                                   "elements": [{"tag": "markdown", "content": detail if separator else entry}]})
+            elements.append({"tag": "collapsible_panel", "expanded": False,
+                             "header": {"title": {"tag": "plain_text", "content": f"Completed operations ({len(history)})"}},
+                             "elements": operations})
+        return {"config": {"wide_screen_mode": True},
+                "header": {"title": {"tag": "plain_text", "content": title}, "template": template},
+                "elements": elements}
+
+    async def _send_feishu_progress_card(self, adapter):
+        ctx = self._ctx
+        started = time.monotonic()
+        current, history, message_id, last_publish = None, [], None, 0.0
+        pending = {}
+        heartbeat = max(1.0, float(__import__("os").environ.get("HERMES_FEISHU_PROGRESS_HEARTBEAT_SECONDS", "30")))
+
+        async def publish(force=False, outcome=None):
+            nonlocal message_id, last_publish
+            now = time.monotonic()
+            if not force and now - last_publish < 1.5:
+                return
+            card = self._build_feishu_progress_card(current, history, int(now - started), outcome=outcome)
+            try:
+                if message_id:
+                    result = await adapter.edit_turn_progress_card(ctx.source.chat_id, message_id, card, metadata=ctx._progress_metadata)
+                else:
+                    result = await adapter.send_turn_progress_card(ctx.source.chat_id, card, metadata=ctx._progress_metadata, reply_to=ctx._progress_reply_to)
+                if getattr(result, "success", False) and getattr(result, "message_id", None):
+                    message_id = str(result.message_id)
+                    self._track_progress_result(result)
+                if getattr(result, "success", False):
+                    last_publish = now
+                else:
+                    logger.warning("Feishu progress card publish failed: %s", getattr(result, "error", None))
+            except Exception as exc:
+                logger.warning("Feishu progress card publish failed: %s", exc, exc_info=True)
+
+        try:
+            while ctx._run_still_current():
+                try:
+                    event = ctx.progress_queue.get_nowait()
+                    if event.get("type") == "tool.started":
+                        current = event["tool_name"] + (f" — {event['preview']}" if event.get("preview") else "")
+                        if event.get("tool_call_id"):
+                            pending[event["tool_call_id"]] = (
+                                current, event["tool_name"] + (f" — {event['history_preview']}" if event.get("history_preview") else ""))
+                    elif event.get("type") == "tool.completed":
+                        _, description = pending.pop(event.get("tool_call_id"), (None, event["tool_name"]))
+                        history.append(f"{'❌' if event.get('is_error') else '✅'} {description}")
+                        current = next(reversed(pending.values()), (None, None))[0]
+                    await publish()
+                except queue.Empty:
+                    if time.monotonic() - last_publish >= heartbeat:
+                        await publish(force=True)
+                    await asyncio.sleep(0.3)
+        except asyncio.CancelledError:
+            status = getattr(ctx, "progress_final_status", None)
+            if status in {"success", "failed", "interrupted"}:
+                with suppress(Exception):
+                    await publish(force=True, outcome=status)
+            raise
+
     # ── ID-bearing lifecycle callbacks (agent thread) ───────────────────────────────────────
 
     def voice_ack_callback(self, call_id, tool_name, args):
@@ -1033,6 +1142,17 @@ class GatewayTurnProgressMixin:
             return
         from agent.display import build_tool_preview
         name = str(tool_name or "tool")
+        if self._ctx.feishu_progress_card_enabled:
+            from agent.redact import redact_sensitive_text
+            full_preview = (args.get("command") if name == "terminal" and isinstance(args, dict) else None)
+            if not isinstance(full_preview, str):
+                full_preview = build_tool_preview(name, args or {}, max_len=0) or ""
+            full_preview = redact_sensitive_text(full_preview, force=True).replace("`", "'")[:2000]
+            self._ctx.progress_queue.put({
+                "type": "tool.started", "tool_call_id": str(call_id or ""), "tool_name": name,
+                "preview": full_preview[:64], "history_preview": full_preview,
+            })
+            return
         self._ctx.progress_queue.put({
             "type": "tool.started", "tool_call_id": str(call_id or ""), "tool_name": name,
             "preview": build_tool_preview(name, args or {}, max_len=64) or "",
@@ -1058,7 +1178,7 @@ class GatewayTurnProgressMixin:
         self._publish_api_tool("tool.start", call_id, tool_name, args)
         if self._ctx._voice_ack_guild[0] is not None:
             self.voice_ack_callback(call_id, tool_name, args)
-        if self._ctx._native_slack_task_cards:
+        if self._ctx._native_slack_task_cards or self._ctx.feishu_progress_card_enabled:
             self.native_tool_start_callback(call_id, tool_name, args)
 
     def combined_tool_complete_callback(self, call_id, tool_name, args, result):
@@ -1080,7 +1200,7 @@ class GatewayTurnProgressMixin:
         if local_viewer_turn(self):
             from gateway import local_viewer_events
             local_viewer_events.publish_control_if_changed(self)
-        if self._ctx._native_slack_task_cards:
+        if self._ctx._native_slack_task_cards or self._ctx.feishu_progress_card_enabled:
             self.native_tool_complete_callback(call_id, tool_name, args, result)
 
     # ── hook / status bridges (agent thread → gateway loop) ────────────────────────────────

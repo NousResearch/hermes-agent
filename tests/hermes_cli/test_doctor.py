@@ -626,6 +626,8 @@ def test_run_doctor_flags_missing_credentials_for_active_openrouter_provider(mon
         ("kimi-coding", "kimi-k2"),
         ("nvidia", "qwen/qwen3.5-122b-a10b"),
         ("moa", "anthropic/claude-sonnet-4.6"),
+        ("commandcode", "deepseek/deepseek-v4-flash"),
+        ("gmi", "zai-org/GLM-5.1-FP8"),
     ],
 )
 def test_run_doctor_accepts_hermes_provider_ids_that_catalog_aliases(
@@ -665,7 +667,7 @@ def test_run_doctor_accepts_hermes_provider_ids_that_catalog_aliases(
     out = buf.getvalue()
     assert f"model.provider '{provider}' is not a recognised provider" not in out
     assert f"model.provider '{provider}' is unknown" not in out
-    if provider in {"ai-gateway", "opencode-zen", "kilocode", "nvidia"}:
+    if provider in {"ai-gateway", "opencode-zen", "kilocode", "nvidia", "commandcode", "gmi"}:
         assert (
             f"model.default '{default_model}' uses a vendor/model slug but provider is '{provider}'"
             not in out
@@ -770,6 +772,111 @@ def test_run_doctor_vendor_slug_policy_for_openai_api_endpoint(
     assert (warning in buf.getvalue()) is expects_warning
 
 
+
+
+def test_run_doctor_still_flags_vendor_slugs_for_direct_providers(monkeypatch, tmp_path):
+    """Widening the allowlist for aggregators must not silence the warning for direct providers."""
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        "model:\n"
+        "  provider: stepfun\n"
+        "  default: stepfun/stepfun-pro\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    (tmp_path / "project").mkdir(exist_ok=True)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    try:
+        from hermes_cli import auth as _auth_mod
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
+    except Exception:
+        pass
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+
+    out = buf.getvalue()
+    assert (
+        "model.default 'stepfun/stepfun-pro' uses a vendor/model slug but provider is 'stepfun'"
+        in out
+    )
+    assert "Either set model.provider to 'openrouter', or drop the vendor prefix." in out
+
+
+def _run_doctor_for_model_config(monkeypatch, tmp_path, provider: str, default_model: str) -> str:
+    """Run doctor against a one-provider model config and return stdout."""
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        "model:\n"
+        f"  provider: {provider}\n"
+        f"  default: {default_model}\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    (tmp_path / "project").mkdir(exist_ok=True)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    try:
+        from hermes_cli import auth as _auth_mod
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
+    except Exception:
+        pass
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+    return buf.getvalue()
+
+
+@pytest.mark.parametrize(
+    "provider,default_model,expect_warn",
+    [
+        # Slash-form chat lane: the vendor prefix is the valid form, so no warning.
+        ("commandcode", "deepseek/deepseek-v4-flash", False),
+        # Sibling lane over the same catalog filtered to bare claude-* ids: a prefixed
+        # Claude id can never resolve there, so the warning must still fire.
+        ("commandcode-anthropic", "anthropic/claude-sonnet-5", True),
+        # Direct provider: unchanged behaviour (the negative case pinned above).
+        ("stepfun", "stepfun/stepfun-pro", True),
+    ],
+)
+def test_vendor_slug_allowlist_boundary(monkeypatch, tmp_path, provider, default_model, expect_warn):
+    """Pin the allowlist boundary: widening it for one lane must not silence a sibling lane.
+
+    ``commandcode`` and ``commandcode-anthropic`` share a catalog but not a slug policy, so the
+    boundary is per-lane rather than per-family — a regression that adds the Anthropic lane (or
+    drops the chat lane) flips exactly one case here.
+    """
+    out = _run_doctor_for_model_config(monkeypatch, tmp_path, provider, default_model)
+    warning = f"model.default '{default_model}' uses a vendor/model slug but provider is '{provider}'"
+    told_how_to_fix = "Either set model.provider to 'openrouter', or drop the vendor prefix."
+
+    assert (warning in out) is expect_warn
+    assert (told_how_to_fix in out) is expect_warn
 
 
 def test_run_doctor_accepts_kimi_coding_cn_provider(monkeypatch, tmp_path):

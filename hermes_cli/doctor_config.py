@@ -228,9 +228,21 @@ def _known_provider_ids(cfg: dict) -> tuple[set, list, object, object, object]:
 
 # Vendor/model slugs are valid on aggregators and any custom provider; Fireworks' native IDs are slash-form
 # (accounts/fireworks/models/...) and DeepInfra's catalog is exclusively vendor/model.
+# CommandCode is an aggregator-style gateway over a *mixed* namespace: its live catalog
+# (GET /provider/v1/models: 105 ids — 79 slash-form such as deepseek/…, Qwen/…, zai-org/…, xiaomi/…
+# and 26 bare such as gpt-6.1-sol, claude-sonnet-4-6). Membership here only legalises the slash-form
+# half; bare ids never reach this warning and keep resolving through normal provider resolution, so
+# a bare model.default on this provider is valid and must not be "fixed" by adding a prefix.
+# GMI Cloud is a direct API whose shipped catalog is slash-form too (zai-org/GLM-5.1-FP8,
+# deepseek-ai/DeepSeek-V3.2, …).
+# ``agent/model_metadata.py`` already groups {"gmi", "commandcode", "commandcode-anthropic"} for its
+# /models-derived context lengths. The registry id is ``commandcode`` (no hyphen); ``command-code``
+# is not a known provider and never reaches this check. ``commandcode-anthropic`` is deliberately
+# excluded: that profile filters the same catalog to ``startswith("claude-")`` (i.e. bare ids only,
+# zero ``claude/…`` entries), so a vendor-prefixed default there is a genuine mistake we warn on.
 _VENDOR_SLUG_PROVIDERS = {
     "openrouter", "auto", "ai-gateway", "kilocode", "opencode-zen", "huggingface", "lmstudio", "nous", "nvidia",
-    "fireworks", "deepinfra",
+    "fireworks", "deepinfra", "commandcode", "gmi",
 }
 
 

@@ -820,11 +820,32 @@ class GatewayTurnPersistenceMixin:
             if response and adapter and agent_result.get("delivery_uncertain"):
                 await self._ledger_uncertain_streamed_final(event, session_key, response, adapter)
             # Streaming delivered the body, but the footer was held back (`not already_sent` gate).
+            # On the live-thinking path the final answer landed as a brand-new single post (not a
+            # chunk-split), recorded via `live_thinking_final_post_id` + `live_thinking_final_content`
+            # by `_run_agent_mark_streamed_delivery`. The footer must RIDE that reply post (one post
+            # end to end) rather than spawn a separate trailing message — edit-append it onto the
+            # final post, falling back to the separate trailing send only when the marker is absent
+            # (streamed multi-part / ordinary streaming) or the edit fails (footer must never be lost).
             if _footer_line and adapter and not _intentional_silence and not _footer_captioned:
-                try:
-                    await adapter.send(source.chat_id, _footer_line, metadata=self._event_thread_metadata(event, source))
-                except Exception as _e:
-                    logger.debug("trailing footer send failed: %s", _e)
+                _footer_rided_live_think = False
+                _lt_final_id = agent_result.get("live_thinking_final_post_id")
+                _lt_final_content = agent_result.get("live_thinking_final_content")
+                if _lt_final_id and _lt_final_content and callable(getattr(adapter, "edit_message", None)):
+                    try:
+                        _lt_footer_edit = await adapter.edit_message(
+                            source.chat_id,
+                            _lt_final_id,
+                            f"{_lt_final_content}\n\n{_footer_line}",
+                            finalize=True,
+                        )
+                        _footer_rided_live_think = bool(getattr(_lt_footer_edit, "success", False))
+                    except Exception as _e:
+                        logger.debug("live-thinking footer edit-append failed: %s", _e)
+                if not _footer_rided_live_think:
+                    try:
+                        await adapter.send(source.chat_id, _footer_line, metadata=self._event_thread_metadata(event, source))
+                    except Exception as _e:
+                        logger.debug("trailing footer send failed: %s", _e)
             # Return None so the body isn't sent twice; stash the delivered text on the event for the
             # /loop and /goal hooks that read the return value.
             with suppress(Exception):

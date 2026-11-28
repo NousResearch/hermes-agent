@@ -1159,12 +1159,16 @@ class GatewayTurnProgressMixin:
                 # Main's CLI repainted its status-bar title when the auto-title landed.
                 authority, canonical_id, _generation = self._approval_owner
 
-                def republish(title, title_source):
+                async def publish():
                     from gateway.session_contract import SessionRef
                     from gateway.session_local import publish_local_session_info
-                    ref = SessionRef(getattr(authority, "profile_id", ""), canonical_id)
-                    publish_local_session_info(authority, ref)
-                agent._on_session_title = republish
+                    publish_local_session_info(authority, SessionRef(getattr(authority, "profile_id", ""), canonical_id))
+
+                # Read and publish on the owner loop, like every other session.info publisher: read on
+                # the title thread, a snapshot from before a model pick could be stamped after it and
+                # land last, and viewers accept it (it names the current generation).
+                agent._on_session_title = lambda title, title_source: self._schedule(
+                    publish(), "Local session title republish failed to schedule")
                 return
             runner = self._runner
             source = runner._recover_discord_auto_thread_source(ctx.source, ctx.session_key)

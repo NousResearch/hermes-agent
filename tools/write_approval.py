@@ -187,7 +187,8 @@ def _slash_review_surface() -> bool:
     except Exception:
         pass
     platform = (_env("HERMES_SESSION_PLATFORM") or os.environ.get("HERMES_PLATFORM", "")).strip().lower()
-    return platform not in {"webhook", "msgraph_webhook", "api_server"}
+    from tools.approval_context import is_unattended_platform
+    return not is_unattended_platform(platform)
 
 
 def _staged(subsystem: str) -> GateDecision:

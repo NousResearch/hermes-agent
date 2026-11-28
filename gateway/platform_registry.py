@@ -119,6 +119,11 @@ class PlatformEntry:
     # credential (an event bus, not a person), so user allowlists and pairing do not apply. Never
     # set it for a chat platform: any sender would reach the agent. Consumer: Home Assistant.
     trusted_inbound: bool = False
+    # No human can answer interactive approval prompts on this platform (e.g. agent networks,
+    # bot bridges, programmatic event buses): approvals resolve via ``approvals.unattended_mode``
+    # instead of parking for the full timeout, and staged writes point to pending files rather
+    # than an unreachable slash command.
+    unattended: bool = False
     # Built-in display defaults tier ("high" | "medium" | "low" | "minimal", see
     # gateway/display_config.py) used below the user's display.* overrides; "" = global defaults.
     display_tier: str = ""
@@ -488,6 +493,16 @@ class PlatformRegistry:
         with self._lock:
             entries, _deferred = self._scope_maps(scope)
             return entries.get(name) or self._entries.get(name)
+
+    def is_unattended(self, name: str) -> bool:
+        """True when *name* is a loaded platform registered with ``unattended=True``."""
+        if not name:
+            return False
+        scope = self.current_scope_key()
+        with self._lock:
+            entries, _deferred = self._scope_maps(scope)
+            entry = entries.get(name) or self._entries.get(name)
+        return bool(entry is not None and entry.unattended)
 
     def all_entries(self) -> list[PlatformEntry]:
         """Return all registered platform entries."""

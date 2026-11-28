@@ -1191,7 +1191,7 @@ def _presence(approval_callback=None) -> tuple:
         is_cli = is_gateway = is_ask = False
     elif is_ask and _is_unattended_platform_approval_context() \
             and (_gateway_notify_cb(get_current_session_key()) is None
-                 or _get_session_platform() in approval_context._NOTIFIER_BLIND_APPROVAL_PLATFORMS):
+                 or approval_context._is_notifier_blind_approval_platform(_get_session_platform())):
         # start_gateway() sets HERMES_EXEC_ASK process-wide, so an api_server/webhook turn
         # inside that gateway still reads as "ask" here even though _is_gateway_approval_context()
         # already excluded the platform. /v1/runs and streaming chat register their notify

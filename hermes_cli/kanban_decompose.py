@@ -312,6 +312,9 @@ def decompose_task(
     task, reason = _load_triage_task(task_id)
     if task is None:
         return DecomposeOutcome(task_id, False, reason)
+    with kbc.connect_closing() as conn:
+        if conn.execute(_DECOMPOSED_EVENT_SQL, (task_id,)).fetchone():
+            return DecomposeOutcome(task_id, False, "task already decomposed")
 
     routing = _load_routing(root_assignee=task.assignee)
     raw, reason = _call_aux(
@@ -336,8 +339,26 @@ def decompose_task(
     return _apply_fanout(task_id, parsed, routing, audit_author)
 
 
+_DECOMPOSED_EVENT_SQL = "SELECT 1 FROM task_events WHERE task_id = ? AND kind = 'decomposed' LIMIT 1"
+TRIAGE_SCAN_LIMIT = 1000
+
+
 def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:
-    """Return task ids currently in the triage column."""
+    """Return task ids in the triage column that have not already been decomposed.
+
+    A re-triaged root keeps its ``decomposed`` event, and the graph layer refuses to decompose it
+    again, so offering it would spend a model call per sweep. The exclusion is part of the query,
+    ahead of the limit, so held cards cannot fill the scan window and starve eligible ones; the
+    order and tenant rules are ``kb.list_tasks``'s.
+    """
+    query = (
+        "SELECT id FROM tasks WHERE status = 'triage' AND NOT EXISTS "
+        "(SELECT 1 FROM task_events e WHERE e.task_id = tasks.id AND e.kind = 'decomposed')"
+    )
+    params: list[object] = []
+    if tenant is not None:
+        query += " AND tenant = ?"
+        params.append(tenant)
+    query += f" ORDER BY priority DESC, created_at ASC LIMIT {TRIAGE_SCAN_LIMIT}"
     with kbc.connect_closing() as conn:
-        rows = kb.list_tasks(conn, status="triage", tenant=tenant, limit=1000)
-    return [row.id for row in rows]
+        return [row[0] for row in conn.execute(query, params).fetchall()]

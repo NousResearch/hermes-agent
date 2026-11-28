@@ -502,9 +502,9 @@ def _publish_new(path: Path, payload: dict) -> bool:
             os.link(staged, path)
         except FileExistsError:
             return False
-        except OSError:
-            # No hard links on this filesystem (FAT, Android app storage): rename into place, which
-            # cannot tell two first writers apart.
+        except (OSError, AttributeError):
+            # No hard links on this filesystem (FAT, Android app storage) or no os.link at all
+            # (Termux's Python): rename into place, which cannot tell two first writers apart.
             atomic_json_write(path, payload, fsync_dir=True)
             return True
         fsync_directory(path.parent)

@@ -3251,7 +3251,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         """Refresh the typing indicator every ``interval`` seconds until cancelled (platform typing
         state expires after ~5s). Chats in ``_typing_paused`` are skipped (approval waits — Slack's
         setStatus disables the compose box). Each ``send_typing`` is bounded by a sub-interval timeout."""
-        _send_typing_timeout = max(0.25, min(1.5, interval - 0.25))
+        _send_typing_timeout = getattr(self, 'TYPING_SEND_TIMEOUT_SECONDS', max(0.25, min(1.5, interval - 0.25)))
         try:
             while True:
                 if stop_event is not None and stop_event.is_set():

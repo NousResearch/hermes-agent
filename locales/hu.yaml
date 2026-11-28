@@ -41,6 +41,12 @@ approval:
     minute_other: "{count} perc"
     second_one: "{count} másodperc"
     second_other: "{count} másodperc"
+
+delegation:
+  progress:
+    heartbeat: '⏳ Háttérfeladat „{goal}“ fut — {minutes} perc eltelt, {done}/{total} részfeladat kész, legutóbbi művelet: {detail}'
+    waiting: 'várakozás a modellre'
+
 gateway:
   approval_expired: "⚠️ A jóváhagyás lejárt (az ügynök már nem vár). Kérd meg az ügynököt, hogy próbálja újra."
   draining: "⏳ {count} aktív ügynök befejezésére várunk az újraindítás előtt..."

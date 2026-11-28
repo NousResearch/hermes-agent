@@ -225,6 +225,21 @@ The dispatch handle lists each unit (`units[].delegation_id`, `group`, `task_ind
 
 Synchronous single-task delegation from an orchestrator runs directly without thread pool overhead.
 
+### Progress reports (opt-in)
+
+A background delegation is silent until its result lands. Set `delegation.progress_report_interval` (seconds, or `HERMES_DELEGATION_PROGRESS_INTERVAL`) to have the originating chat receive a short line while the task runs:
+
+```yaml
+delegation:
+  progress_report_interval: 300
+```
+
+> ⏳ Background task "Audit the retry logic" — 6 min elapsed, 2/4 subtasks done. Latest: read_file
+
+- At most **one report per delegation per interval**; reports ride the 30 s stall-monitor tick, so the effective cadence is at least 30 s.
+- Delivered to the originating chat on messaging platforms. Reports are ephemeral: they never create a delivery row, never settle the delegation, and never start a parent turn — the completion result remains the only thing that does.
+- Default is `0` (off). Synchronous delegation already streams progress to the turn and ignores this setting.
+
 ### Durable background completions
 
 When a background delegation finishes, Hermes stores its completion event in

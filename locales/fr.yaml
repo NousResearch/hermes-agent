@@ -41,6 +41,12 @@ approval:
     minute_other: "{count} minutes"
     second_one: "{count} seconde"
     second_other: "{count} secondes"
+
+delegation:
+  progress:
+    heartbeat: '⏳ Tâche en arrière-plan « {goal} » en cours — {minutes} min écoulées, {done}/{total} sous-tâches terminées, dernière action : {detail}'
+    waiting: 'en attente du modèle'
+
 gateway:
   approval_expired: "⚠️ Approbation expirée (l'agent n'attend plus). Demandez à l'agent de réessayer."
   draining: "⏳ Vidage de {count} agent(s) actif(s) avant redémarrage..."

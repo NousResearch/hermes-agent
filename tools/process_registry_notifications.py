@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from contextlib import suppress
 
 from tools import delegate_tool_config
+from tools.async_delegation import DELEGATION_PROGRESS_EVENT
 
 _DONE = ("completed", "success")
 _REASON_STATUS = {"lost": "marked lost because the process backend disappeared"}
@@ -553,6 +554,11 @@ def format_process_notification(evt: dict) -> str | None:
     # phantom "process exited (exit code ?)".
     if evt_type in ("watch_disabled", "watch_overflow_tripped", "watch_overflow_released"):
         return f"[IMPORTANT: {evt.get('message', '')}]"
+    if evt_type == DELEGATION_PROGRESS_EVENT:
+        # Ephemeral progress line, delivered by the async-delegation watcher to the chat only.
+        # It must never fall through to the completion formatter (that renders a phantom
+        # "process exited (exit code ?)" notice and, on TUI, starts a parent turn).
+        return None
     if evt_type == "async_delegation":
         return _format_async_delegation(evt)
     _sid, _cmd = evt.get("session_id", "unknown"), evt.get("command", "unknown")

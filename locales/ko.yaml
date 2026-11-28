@@ -41,6 +41,12 @@ approval:
     minute_other: "{count}분"
     second_one: "{count}초"
     second_other: "{count}초"
+
+delegation:
+  progress:
+    heartbeat: '⏳ 백그라운드 작업 "{goal}" 실행 중 — {minutes}분 경과, 하위 작업 {done}/{total} 완료, 최근 동작: {detail}'
+    waiting: '모델 응답 대기 중'
+
 gateway:
   approval_expired: "⚠️ 승인이 만료되었습니다 (에이전트가 더 이상 대기하지 않습니다). 에이전트에게 다시 시도하도록 요청하세요."
   draining: "⏳ 재시작 전에 활성 에이전트 {count}명을 정리하는 중..."

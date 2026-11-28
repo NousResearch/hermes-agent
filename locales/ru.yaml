@@ -41,6 +41,12 @@ approval:
     minute_other: "{count} мин"
     second_one: "{count} секунда"
     second_other: "{count} сек"
+
+delegation:
+  progress:
+    heartbeat: '⏳ Фоновая задача «{goal}» выполняется — прошло {minutes} мин, выполнено {done}/{total} подзадач, последнее действие: {detail}'
+    waiting: 'ожидание ответа модели'
+
 gateway:
   approval_expired: "⚠️ Срок одобрения истёк (агент больше не ожидает). Попросите агента повторить попытку."
   draining: "⏳ Ожидание завершения {count} активных агент(ов) перед перезапуском..."

@@ -2,11 +2,16 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { enableRendererAccessibility, shouldEnableRendererAccessibility } from './renderer-accessibility'
+import {
+  bridgeRendererAccessibilityConfig,
+  enableRendererAccessibility,
+  shouldEnableRendererAccessibility
+} from './renderer-accessibility'
+import { readDesktopLaunchConfig } from './renderer-heap-flags'
 
-test('shouldEnableRendererAccessibility is on by default on the typed platforms', () => {
-  assert.equal(shouldEnableRendererAccessibility({}, 'darwin'), true)
-  assert.equal(shouldEnableRendererAccessibility({}, 'win32'), true)
+test('shouldEnableRendererAccessibility leaves automatic detection on the typed platforms', () => {
+  assert.equal(shouldEnableRendererAccessibility({}, 'darwin'), false)
+  assert.equal(shouldEnableRendererAccessibility({}, 'win32'), false)
 })
 
 test('shouldEnableRendererAccessibility never enables on platforms without the typed API', () => {
@@ -21,20 +26,56 @@ test('shouldEnableRendererAccessibility honors the opt-out env bridge', () => {
     assert.equal(shouldEnableRendererAccessibility({ HERMES_DESKTOP_RENDERER_ACCESSIBILITY: off }, 'win32'), false)
   }
 
-  // Absent, empty, or a positive value keeps the feature on.
-  assert.equal(shouldEnableRendererAccessibility({ HERMES_DESKTOP_RENDERER_ACCESSIBILITY: undefined }, 'darwin'), true)
-  assert.equal(shouldEnableRendererAccessibility({ HERMES_DESKTOP_RENDERER_ACCESSIBILITY: '' }, 'win32'), true)
+  // Only an explicit positive value forces the tree.
+  assert.equal(shouldEnableRendererAccessibility({ HERMES_DESKTOP_RENDERER_ACCESSIBILITY: undefined }, 'darwin'), false)
+  assert.equal(shouldEnableRendererAccessibility({ HERMES_DESKTOP_RENDERER_ACCESSIBILITY: '' }, 'win32'), false)
   assert.equal(shouldEnableRendererAccessibility({ HERMES_DESKTOP_RENDERER_ACCESSIBILITY: '1' }, 'darwin'), true)
+})
+
+test('unrecognized environment values never force accessibility', () => {
+  for (const platform of ['darwin', 'win32'] as const) {
+    for (const invalid of ['wibble', '2', '-1', 'auto']) {
+      assert.equal(
+        shouldEnableRendererAccessibility({ HERMES_DESKTOP_RENDERER_ACCESSIBILITY: invalid }, platform),
+        false,
+        `invalid value ${invalid} must not opt in on ${platform}`
+      )
+    }
+    for (const enabled of ['true', 'yes', 'ON', ' enabled ']) {
+      assert.equal(shouldEnableRendererAccessibility({ HERMES_DESKTOP_RENDERER_ACCESSIBILITY: enabled }, platform), true)
+    }
+  }
 })
 
 test('enableRendererAccessibility flips the injected Electron switch exactly when enabled', () => {
   const recorded: boolean[] = []
   const appApi = { setAccessibilitySupportEnabled: (enabled: boolean) => recorded.push(enabled) }
 
-  enableRendererAccessibility({ appApi, env: {}, platform: 'darwin' })
-  enableRendererAccessibility({ appApi, env: {}, platform: 'win32' })
+  enableRendererAccessibility({ appApi, env: { HERMES_DESKTOP_RENDERER_ACCESSIBILITY: '1' }, platform: 'darwin' })
+  enableRendererAccessibility({ appApi, env: { HERMES_DESKTOP_RENDERER_ACCESSIBILITY: '1' }, platform: 'win32' })
   enableRendererAccessibility({ appApi, env: { HERMES_DESKTOP_RENDERER_ACCESSIBILITY: '0' }, platform: 'darwin' })
   enableRendererAccessibility({ appApi, env: {}, platform: 'linux' })
 
+  enableRendererAccessibility({ appApi, env: {}, platform: 'darwin' })
+  enableRendererAccessibility({ appApi, env: {}, platform: 'win32' })
+
   assert.deepEqual(recorded, [true, true])
+})
+
+test('packaged config preserves dictation opt-ins and explicit environment overrides', () => {
+  for (const configured of [undefined, false, true]) {
+    const yaml = configured === undefined ? '' : `desktop:\n  renderer_accessibility: ${configured}\n`
+    const config = readDesktopLaunchConfig(yaml)
+    const env: { HERMES_DESKTOP_RENDERER_ACCESSIBILITY?: string } = {}
+    bridgeRendererAccessibilityConfig(config.rendererAccessibility, env)
+
+    assert.equal(shouldEnableRendererAccessibility(env, 'darwin'), configured === true)
+    assert.equal(shouldEnableRendererAccessibility(env, 'win32'), configured === true)
+
+    for (const override of ['0', '1', '']) {
+      const overridden = { HERMES_DESKTOP_RENDERER_ACCESSIBILITY: override }
+      bridgeRendererAccessibilityConfig(config.rendererAccessibility, overridden)
+      assert.equal(overridden.HERMES_DESKTOP_RENDERER_ACCESSIBILITY, override)
+    }
+  }
 })

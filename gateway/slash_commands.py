@@ -173,6 +173,17 @@ def _home_thread_from_source(source) -> Optional[str]:
     return None if synthetic else str(thread_id)
 
 
+
+def _local_audio_status_lines(source) -> list[str]:
+    """``/voice status`` from a local TUI/Desktop session: this host's microphone/speaker and the
+    PortAudio device list (``voice.input_device`` / ``voice.output_device``). Chat platforms never
+    get it: their users are not at this machine."""
+    if getattr(source, "platform", None) != Platform.LOCAL:
+        return []
+    from tools.voice_mode import _describe_audio_devices
+    devices = _describe_audio_devices()
+    return ["", *devices] if devices else []
+
 class GatewaySlashCommandsMixin(
     GatewayLoginCommandsMixin,
     GatewayModelCommandsMixin,
@@ -731,6 +742,7 @@ class GatewaySlashCommandsMixin(
                 for m in info["members"]:
                     status = t("gateway.voice.speaking") if m.get("is_speaking") else ""
                     lines.append(t("gateway.voice.status_member", name=m['display_name'], status=status))
+            lines += _local_audio_status_lines(event.source)
             return "\n".join(lines)
 
         # Toggle: off → on, on/all → off

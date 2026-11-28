@@ -181,8 +181,9 @@ class _StreamerPlayback:
 
     def _create_output_stream(self):
         sd = _origin()._import_sounddevice()
-        stream = sd.OutputStream(
-            samplerate=self.streamer.sample_rate, channels=self.streamer.channels, dtype="int16")
+        from tools.voice_mode import _output_device
+        stream = sd.OutputStream(device=_output_device(), samplerate=self.streamer.sample_rate,
+                                 channels=self.streamer.channels, dtype="int16")
         stream.start()
         return stream
 

@@ -125,10 +125,53 @@ def _rms(np, data) -> float:
     return float(np.sqrt(np.mean(data.astype(np.float64) ** 2)))
 
 
-def _default_input_samplerate(sd) -> int:
-    """Default input device rate, else the Whisper-friendly SAMPLE_RATE."""
+def _device_selector(key: str) -> int | str | None:
+    """``voice.<key>`` as a PortAudio selector: an index, a device-name substring, or None
+    (system default). Same shape as ``wake_word.input_device``."""
+    raw = _voice_config().get(key)
+    if isinstance(raw, bool) or raw is None:
+        return None
+    return raw if isinstance(raw, int) else (str(raw).strip() or None)
+
+
+def _input_device() -> int | str | None:
+    return _device_selector("input_device")
+
+
+def _output_device() -> int | str | None:
+    return _device_selector("output_device")
+
+
+def _describe_audio_devices() -> list[str]:
+    """``/voice status`` lines: the configured input/output device and every PortAudio device by
+    index, so ``voice.input_device`` / ``voice.output_device`` can be set from what is listed.
+    Empty when sounddevice/PortAudio is unavailable (the capture line already says why)."""
+    try:
+        sd, _ = _import_audio()
+    except (ImportError, OSError):
+        return []
+    try:
+        devices = list(sd.query_devices())
+    except sd.PortAudioError:
+        return []
+    lines = []
+    for kind, selector in (("input", _input_device()), ("output", _output_device())):
+        try:
+            name = sd.query_devices(selector, kind).get("name") or "?"
+        except (ValueError, sd.PortAudioError) as e:  # stale name/index: say so before record time
+            name = f"NOT FOUND ({e})"
+        source = f"voice.{kind}_device={selector!r}" if selector is not None else "system default"
+        lines.append(f"Audio {kind}: {name} [{source}]")
+    for i, d in enumerate(devices):
+        ins, outs = int(d.get("max_input_channels") or 0), int(d.get("max_output_channels") or 0)
+        lines.append(f"  [{i}] {d.get('name')} ({ins} in, {outs} out)")
+    return lines
+
+
+def _default_input_samplerate(sd, device: int | str | None = None) -> int:
+    """Native rate of *device* (None = system default input), else the Whisper-friendly SAMPLE_RATE."""
     with suppress(Exception):
-        info = sd.query_devices(None, "input")
+        info = sd.query_devices(device, "input")
         rate = info.get("default_samplerate") if isinstance(info, dict) else getattr(info, "default_samplerate", None)
         if isinstance(rate, (int, float)) and rate > 0:
             return round(rate)
@@ -370,7 +413,7 @@ def _get_beep_volume() -> float:
 def _sd_play_blocking(sd, audio, sample_rate: int, *, timeout: float, blocksize: int = 0) -> None:
     """``sd.play`` then poll until idle or *timeout* (``sd.wait()`` has no timeout and
     hangs forever if the device stalls)."""
-    sd.play(audio, samplerate=sample_rate, blocksize=blocksize)
+    sd.play(audio, samplerate=sample_rate, blocksize=blocksize, device=_output_device())
     from agent.deadline import poll_until
 
     poll_until(lambda: not (sd.get_stream() and sd.get_stream().active), timeout, 0.01)
@@ -482,7 +525,7 @@ def _thinking_sound_loop(stop: threading.Event, should_play) -> None:
             if should_play is None or should_play():
                 blip = blips[i % len(blips)]
                 i += 1
-                sd.play(blip, samplerate=SAMPLE_RATE)
+                sd.play(blip, samplerate=SAMPLE_RATE, device=_output_device())
                 stop.wait(len(blip) / SAMPLE_RATE + 0.02)
                 sd.stop()
         except Exception as e:
@@ -673,6 +716,8 @@ class AudioRecorder(_RecorderBase):
         self._stream: Any = None
         self._frames: list[Any] = []
         self._sample_rate: int = SAMPLE_RATE
+        self._device: int | str | None = None  # voice.input_device, re-read at each start()
+        self._stream_device: int | str | None = None  # the device self._stream was opened on
         self._on_silence_stop = None
         self._silence_threshold: int = SILENCE_RMS_THRESHOLD
         self._silence_duration: float = SILENCE_DURATION_SECONDS
@@ -789,6 +834,8 @@ class AudioRecorder(_RecorderBase):
         can still deactivate the stream when another input stream opens; in
         that case the dead object must be closed and rebuilt before capture.
         """
+        if self._stream is not None and self._stream_device != self._device:
+            self._close_stream_with_timeout()  # voice.input_device changed since the stream opened
         if self._stream is not None:
             try:
                 if self._stream.active:
@@ -809,8 +856,8 @@ class AudioRecorder(_RecorderBase):
         stream = None
         for attempt in range(2):
             try:  # may block on CoreAudio (first call only)
-                stream = sd.InputStream(samplerate=self._sample_rate, channels=CHANNELS, dtype=DTYPE,
-                                        callback=_callback)
+                stream = sd.InputStream(device=self._device, samplerate=self._sample_rate, channels=CHANNELS,
+                                        dtype=DTYPE, callback=_callback)
                 stream.start()
                 break
             except Exception as e:
@@ -826,7 +873,7 @@ class AudioRecorder(_RecorderBase):
                         f"Failed to open audio input stream: {e}. "
                         "Check that a microphone is connected and accessible.") from e
                 logger.info("Audio input stream start timed out; retrying once")
-        self._stream = stream
+        self._stream, self._stream_device = stream, self._device
 
     def start(self, on_silence_stop=None) -> None:
         """Start capturing; *on_silence_stop* is invoked (daemon thread, no args) when
@@ -846,7 +893,8 @@ class AudioRecorder(_RecorderBase):
             self._peak_rms = 0
             self._current_rms = 0
             self._on_silence_stop = on_silence_stop
-        self._sample_rate = _default_input_samplerate(sd)
+        self._device = _input_device()
+        self._sample_rate = _default_input_samplerate(sd, self._device)
         self._ensure_stream()
         self._open_live_session(self._sample_rate)
         with self._lock:
@@ -1175,7 +1223,11 @@ def listen_for_speech(
 
     from collections import deque
 
-    block = int(SAMPLE_RATE * 0.03)  # 30ms blocks
+    # Native device rate (some devices reject a bare 16 kHz stream, PaErrorCode -9997); the
+    # block is sized off it so every *_blocks count still spans 30 ms of wall clock.
+    device = _input_device()
+    capture_rate = _default_input_samplerate(sd, device)
+    block = int(capture_rate * 0.03)  # 30ms blocks
     calib_blocks = max(1, calibration_ms // 30)
     trip_blocks = max(1, sustained_ms // 30)
     endpoint_blocks = max(1, endpoint_silence_ms // 30)
@@ -1194,7 +1246,8 @@ def listen_for_speech(
     block_idx = 0  # block counter for diagnostic logging
 
     try:
-        with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="int16", blocksize=block) as stream:
+        with sd.InputStream(device=device, samplerate=capture_rate, channels=1, dtype="int16",
+                            blocksize=block) as stream:
             while not should_stop():
                 data, _ = stream.read(block)
                 rms = float(np.sqrt(np.mean(data.astype(np.float64) ** 2)))
@@ -1292,7 +1345,7 @@ def listen_for_speech(
                     quiet = quiet + 1 if rms < SILENCE_RMS_THRESHOLD else 0
                     if quiet >= endpoint_blocks:
                         break
-                return AudioRecorder._write_wav(np.concatenate(frames, axis=0))
+                return AudioRecorder._write_wav(np.concatenate(frames, axis=0), sample_rate=capture_rate)
     except Exception as e:
         logger.debug("Barge-in listener failed: %s", e)
     return None if capture else False
@@ -1318,7 +1371,8 @@ def _vad_log(msg: str) -> None:
             print(f"[voice-vad] {msg}", file=sys.stderr, flush=True)
 
 
-def _capture_until_quiet(stream, np, block: int, pre_roll, *, endpoint_blocks: int, max_blocks: int) -> str:
+def _capture_until_quiet(stream, np, block: int, pre_roll, *, endpoint_blocks: int, max_blocks: int,
+                         sample_rate: int) -> str:
     """After a trip, read until *endpoint_blocks* of quiet (or *max_blocks*) and write
     pre-roll + capture to a WAV. Playback was cut by the trigger, so silence endpointing works."""
     frames: list[Any] = list(pre_roll)
@@ -1329,7 +1383,7 @@ def _capture_until_quiet(stream, np, block: int, pre_roll, *, endpoint_blocks: i
         quiet = quiet + 1 if _rms(np, data) < SILENCE_RMS_THRESHOLD else 0
         if quiet >= endpoint_blocks:
             break
-    return AudioRecorder._write_wav(np.concatenate(frames, axis=0))
+    return AudioRecorder._write_wav(np.concatenate(frames, axis=0), sample_rate=sample_rate)
 
 
 class _BargeDetector:
@@ -1428,7 +1482,9 @@ def full_duplex_listen(
         sd, np = _import_audio()
     except (ImportError, OSError):
         return None
-    block = int(SAMPLE_RATE * 0.03)  # 30ms blocks
+    device = _input_device()
+    capture_rate = _default_input_samplerate(sd, device)  # see listen_for_speech
+    block = int(capture_rate * 0.03)  # 30ms blocks
     endpoint_blocks = max(1, endpoint_silence_ms // 30)
     detector = _BargeDetector(
         np, mult=float(multiplier) if multiplier else DEFAULT_BARGE_MULTIPLIER,
@@ -1436,7 +1492,8 @@ def full_duplex_listen(
         grace_blocks=max(0, grace_ms // 30))
     pre_roll: deque = deque(maxlen=max(1, pre_roll_ms // 30))
     try:
-        with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="int16", blocksize=block) as stream:
+        with sd.InputStream(device=device, samplerate=capture_rate, channels=1, dtype="int16",
+                            blocksize=block) as stream:
             while not should_stop():
                 data, _ = stream.read(block)
                 pre_roll.append(data.copy())
@@ -1450,7 +1507,7 @@ def full_duplex_listen(
                     except Exception as e:
                         logger.debug("full-duplex trigger callback failed: %s", e)
                 return _capture_until_quiet(stream, np, block, pre_roll, endpoint_blocks=endpoint_blocks,
-                                            max_blocks=max(1, max_utterance_ms // 30))
+                                            max_blocks=max(1, max_utterance_ms // 30), sample_rate=capture_rate)
     except Exception as e:
         logger.debug("Full-duplex listener failed: %s", e)
     return None
@@ -1497,9 +1554,10 @@ _NATIVE_STT_LABELS = {
 }
 
 
-def check_voice_requirements() -> dict[str, Any]:
+def check_voice_requirements(*, list_devices: bool = False) -> dict[str, Any]:
     """Check voice mode requirements: ``{available, audio_available, stt_available,
-    missing_packages, details, environment}``."""
+    missing_packages, details, environment}``. ``list_devices`` (``/voice status`` only, never the
+    record path) appends the configured input/output device and the PortAudio device list."""
     from tools.transcription_tools import (
         _get_provider, _load_stt_config, _resolve_command_stt_provider_config, is_stt_enabled)
     stt_config = _load_stt_config()
@@ -1528,6 +1586,8 @@ def check_voice_requirements() -> dict[str, Any]:
     ]
     details += [f"Environment: {w}" for w in env_check["warnings"]]
     details += [f"Environment: {n}" for n in env_check.get("notices", [])]
+    if list_devices and has_audio and not termux_capture:
+        details += _describe_audio_devices()
     return {
         "available": has_audio and stt_available and env_check["available"],
         "audio_available": has_audio,

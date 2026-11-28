@@ -165,6 +165,23 @@ class TestVoiceModeProfileIsolation:
         assert "123" in bot2_ad._auto_tts_disabled_chats
         assert "123" not in default_ad._auto_tts_disabled_chats
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("platform", [Platform.LOCAL, Platform.TELEGRAM])
+    async def test_voice_status_lists_host_audio_devices_only_for_local_sessions(self, tmp_path,
+                                                                                 monkeypatch, platform):
+        """The host's mic/speaker list answers a local TUI/Desktop ``/voice status``; a chat
+        platform's user is not at this machine and never sees it."""
+        from gateway.platforms.base import SessionSource
+        from gateway.platforms.event import MessageEvent, MessageType
+
+        monkeypatch.setattr("tools.voice_mode._describe_audio_devices", lambda: ["Audio input: USB Mic"])
+        runner = _make_runner()
+        runner._VOICE_MODE_PATH = tmp_path / "voice.json"
+        src = SessionSource(platform=platform, chat_id="c1", user_id="u1", chat_type="dm")
+        reply = await runner._handle_voice_command(
+            MessageEvent(text="/voice status", message_type=MessageType.TEXT, source=src))
+        assert ("Audio input: USB Mic" in reply) is (platform == Platform.LOCAL)
+
     def test_sync_restores_only_the_owning_profiles_chats(self):
         runner = _make_runner()
         runner._voice_mode = {"discord:1": "all", "bot2:discord:2": "all"}

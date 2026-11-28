@@ -1181,7 +1181,11 @@ class TestListenForSpeechCapture:
         written = {}
         monkeypatch.setattr(
             "tools.voice_mode.AudioRecorder._write_wav",
-            staticmethod(lambda audio: written.update(audio=audio) or "/tmp/barge.wav"),
+            staticmethod(
+                lambda audio, sample_rate=None: written.update(
+                    audio=audio, sample_rate=sample_rate
+                ) or "/tmp/barge.wav"
+            ),
         )
         from tools.voice_mode import listen_for_speech
         stops = iter([False] * 200 + [True] * 10_000)
@@ -1231,7 +1235,11 @@ class TestFullDuplexListen:
         written = {}
         monkeypatch.setattr(
             "tools.voice_mode.AudioRecorder._write_wav",
-            staticmethod(lambda audio: written.update(audio=audio) or "/tmp/fd.wav"),
+            staticmethod(
+                lambda audio, sample_rate=None: written.update(
+                    audio=audio, sample_rate=sample_rate
+                ) or "/tmp/fd.wav"
+            ),
         )
         from tools.voice_mode import full_duplex_listen
 
@@ -1385,6 +1393,36 @@ class TestDefaultInputSamplerate:
         assert wav_path is not None
         with wave.open(wav_path, "rb") as wf:
             assert wf.getframerate() == 48000
+
+    @pytest.mark.parametrize("path", ["recorder", "barge_in", "full_duplex"])
+    def test_every_capture_path_opens_configured_device_at_its_native_rate(self, mock_sd, monkeypatch,
+                                                                           temp_voice_dir, path):
+        """voice.input_device reaches each mic stream, opened (and its WAV written) at THAT
+        device's native rate, never the fixed 16 kHz constant (some devices reject it)."""
+        np = pytest.importorskip("numpy")
+        monkeypatch.setattr("tools.voice_mode._voice_config", lambda: {"input_device": "USB Mic"})
+        mock_sd.query_devices.side_effect = lambda dev=None, kind=None: {
+            "default_samplerate": 48000.0 if dev == "USB Mic" else 16000.0}
+        written = {}
+        monkeypatch.setattr("tools.voice_mode.AudioRecorder._write_wav", staticmethod(
+            lambda audio, sample_rate=None: written.update(sample_rate=sample_rate) or "barge.wav"))
+        import tools.voice_mode as vm
+
+        if path == "recorder":
+            mock_sd.InputStream.return_value = MagicMock()
+            vm.AudioRecorder().start()
+            written["sample_rate"] = 48000  # recorder WAV rate is covered by test_wav_written_at_capture_rate
+        else:
+            levels = [100] * 15 + [5000] * 30 + [0] * 500
+            mock_sd.InputStream.return_value = _FakeInputStream(np, levels)
+            stops = iter([False] * len(levels) + [True] * 10_000)
+            if path == "barge_in":
+                assert vm.listen_for_speech(lambda: next(stops), capture=True) == "barge.wav"
+            else:
+                assert vm.full_duplex_listen(lambda: next(stops), is_playing=lambda: False) == "barge.wav"
+
+        kwargs = mock_sd.InputStream.call_args.kwargs
+        assert (kwargs["device"], kwargs["samplerate"], written["sample_rate"]) == ("USB Mic", 48000, 48000)
 
 
 class TestWSL2PowerShellFallback:

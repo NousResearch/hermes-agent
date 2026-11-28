@@ -58,12 +58,13 @@ def test_root_uv_bootstrap_does_not_adopt_archive_owner(tmp_path: Path) -> None:
     archive = tmp_path / "uv.tar.gz"
     digest = _uv_archive(archive)
     store = tmp_path / "store"
-    # Source the real installer, swap only the network and the pin table for the fixture.
+    # Source the real installer, swap only the network and the pin table for the fixture. The curl
+    # stub writes only to stdout, as a confined (snap) curl must: `-o` fails with curl's exit 23.
     script = f"""
 source {shlex.quote(str(INSTALL_SH))} --manifest >/dev/null
 uv_bootstrap_target() {{ echo linux-x64; }}
 uv_bootstrap_pin() {{ UV_PIN_URL=fixture; UV_PIN_MIRROR=; UV_PIN_SHA256={digest}; }}
-curl() {{ while [ "$#" -gt 0 ]; do [ "$1" = -o ] && {{ cp {shlex.quote(str(archive))} "$2"; return; }}; shift; done; }}
+curl() {{ for a; do [ "$a" = -o ] && return 23; done; cat {shlex.quote(str(archive))}; }}
 ensure_uv
 stat -c '%u:%g' "$UV_CMD"
 """
@@ -91,7 +92,7 @@ def test_root_setup_hermes_uv_staging_does_not_adopt_archive_owner(tmp_path: Pat
     shims = tmp_path / "shims"
     shims.mkdir()
     curl = shims / "curl"
-    curl.write_text(f'#!/bin/sh\nwhile [ "$#" -gt 0 ]; do [ "$1" = -o ] && exec cp {shlex.quote(str(archive))} "$2"; shift; done\n',
+    curl.write_text(f'#!/bin/sh\nfor a; do [ "$a" = -o ] && exit 23; done\nexec cat {shlex.quote(str(archive))}\n',
                     encoding="utf-8")
     curl.chmod(0o755)
     store = tmp_path / "store"

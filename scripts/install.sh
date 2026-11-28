@@ -382,7 +382,9 @@ ensure_uv() {
         mkdir -p "$_tmp"
         local _fetched_from="$UV_PIN_URL"
         # Only network availability failures permit trying identical mirrored bytes.
-        if curl -LsSf "$UV_PIN_URL" -o "$_tmp/uv.tar.gz"; then
+        # The shell opens the output file, not curl: a confined curl (the snap Ubuntu
+        # suggests when curl is missing) has a private /tmp and cannot write `-o` paths.
+        if curl -LsSf "$UV_PIN_URL" > "$_tmp/uv.tar.gz"; then
             :
         else
             local _curl_status=$?
@@ -390,7 +392,7 @@ ensure_uv() {
                 5|6|7|18|22|28|52|55|56) ;;
                 *) rm -rf "$_tmp"; fail "failed to download pinned uv from $UV_PIN_URL (curl $_curl_status)" download_failed ;;
             esac
-            if [ -n "${UV_PIN_MIRROR:-}" ] && curl -LsSf "$UV_PIN_MIRROR" -o "$_tmp/uv.tar.gz"; then
+            if [ -n "${UV_PIN_MIRROR:-}" ] && curl -LsSf "$UV_PIN_MIRROR" > "$_tmp/uv.tar.gz"; then
                 _fetched_from="$UV_PIN_MIRROR"
             else
                 rm -rf "$_tmp"

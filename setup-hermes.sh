@@ -120,10 +120,11 @@ else
   tmp="$(mktemp -d "$store/.bootstrap-XXXXXX")"; trap 'rm -rf "$tmp"' EXIT
   archive="$tmp/${url##*/}"
   fetch_pinned() {
-    if curl -fsSL -o "$2" "$1"; then return 0; else _curl_status=$?; fi
+    # `>` not `-o`: a confined (snap) curl cannot write under hidden dirs like ~/.hermes.
+    if curl -fsSL "$1" > "$2"; then return 0; else _curl_status=$?; fi
     case "$_curl_status" in 5|6|7|18|22|28|52|55|56) ;; *) return "$_curl_status" ;; esac
     local mirror; mirror="$(mirror_url_for "$sha")" || return 1
-    curl -fsSL -o "$2" "$mirror" || return 1
+    curl -fsSL "$mirror" > "$2" || return 1
   }
   if ! fetch_pinned "$url" "$archive"; then
     _tried="$url"

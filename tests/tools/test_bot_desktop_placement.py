@@ -75,7 +75,7 @@ def test_sandbox_rfb_and_cua_ride_the_exec_prefix(monkeypatch):
     assert spawned[0][:6] == ["docker", "exec", "-i", "-u", "pn", "c0ffee"]
     assert "rfb.sock" in spawned[0][-1] and "python3" in spawned[0][-1]
 
-    command, args = sandbox_host.cua_mcp_invocation(env, "p1", {"DISPLAY": ":20"})
+    command, args = sandbox_host.cua_invocation(env, {"DISPLAY": ":20"}, ["cua-driver", "mcp", "--no-overlay"], interactive=True)
     assert command == "docker" and args[:5] == ["exec", "-i", "-u", "pn", "c0ffee"]
     assert "cua-driver mcp" in args[-1] and "export DISPLAY=:20" in args[-1]
     assert not isinstance(env, DockerEnvironment)  # the fake never touched a real daemon

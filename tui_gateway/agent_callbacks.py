@@ -235,6 +235,19 @@ def _wire_callbacks(sid: str):
     from gateway.run import _redact_approval_command
     from tools.skills_tool import set_secret_capture_callback
     from tools.project_tools import set_project_workspace_callback
+    from tools.secure_input_tool import set_secure_input_callback
+
+    def secure_input_cb(purpose, prompt, metadata=None):
+        from gateway.session_context import get_session_env
+        owner = get_session_env("HERMES_UI_SESSION_ID")
+        session = _sessions.get(owner) if owner and owner == sid else None
+        if session is None:
+            return ""
+        value = _ask("secret", owner, {"prompt": prompt, "env_var": purpose,
+                                      "metadata": metadata or {}}, timeout=120)
+        return value if _sessions.get(owner) is session else ""
+
+    set_secure_input_callback(secure_input_cb)
 
     def secret_cb(env_var, prompt, metadata=None):
         pl = {"prompt": prompt, "env_var": env_var, **({"metadata": metadata} if metadata else {})}

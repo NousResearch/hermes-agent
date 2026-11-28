@@ -37,7 +37,9 @@ class _BoundedOutputCollector:
     # Longest control line held back (a path); past it the prefix is plain output.
     _CONTROL_SCAN_CHARS = 4096
 
-    def __init__(self, max_chars: int, spill_path: Path | None = None, control_marker: str = ""):
+    def __init__(self, max_chars: int, spill_path: Path | None = None, control_marker: str = "", *,
+                 output_filter=None):
+        self._output_filter = output_filter
         self.max_chars = max(1, int(max_chars))
         # The ``\n<marker>value<marker>\n`` line the wrapper prints before the command runs (so it
         # leads the stream) is cut out here, before the head/tail window can truncate it.
@@ -125,6 +127,13 @@ class _BoundedOutputCollector:
             self._append_locked(held)
 
     def append(self, text: str) -> None:
+        self._append_filtered(self._output_filter.feed(text) if self._output_filter else text)
+
+    def finish(self) -> None:
+        if self._output_filter:
+            self._append_filtered(self._output_filter.feed('', final=True))
+
+    def _append_filtered(self, text: str) -> None:
         if not text:
             return
         with self._lock:
@@ -175,6 +184,9 @@ class _BoundedOutputCollector:
 
     def render(self, *, suffix: str = "") -> str:
         """Render within ``max_chars``, preserving a required status suffix."""
+        if self._output_filter and self._output_filter.expired:
+            from agent.secure_input_output import EXPIRED
+            return (EXPIRED + suffix)[-self.max_chars:]
         with self._lock:
             self._release_pending(final=True)
             if len(suffix) >= self.max_chars:
@@ -208,8 +220,10 @@ def _new_output_collector(proc, bounded_capture: bool, control_marker: str = "")
     spill file under ``$HERMES_HOME/cache/terminal-output`` (created only on actual overflow;
     spills older than 7 days are pruned opportunistically). Otherwise the collector is
     effectively unbounded so internal consumers keep full-fidelity output."""
+    from agent.secure_input_output import process_output_filter
+    output_filter = process_output_filter(proc)
     if not bounded_capture:
-        return _BoundedOutputCollector(_UNBOUNDED_CAPTURE_CHARS, control_marker=control_marker)
+        return _BoundedOutputCollector(_UNBOUNDED_CAPTURE_CHARS, control_marker=control_marker, output_filter=output_filter)
     try:
         from tools.tool_output_limits import get_max_bytes
         capture_limit = get_max_bytes()
@@ -232,7 +246,8 @@ def _new_output_collector(proc, bounded_capture: bool, control_marker: str = "")
                     pass
     except Exception:
         spill_path = None
-    return _BoundedOutputCollector(capture_limit, spill_path=spill_path, control_marker=control_marker)
+    return _BoundedOutputCollector(capture_limit, spill_path=spill_path, control_marker=control_marker,
+                                   output_filter=output_filter)
 
 
 def _finalize_wait_result(collector: _BoundedOutputCollector, rendered: str, returncode: int | None) -> dict:
@@ -431,6 +446,8 @@ def _drain_stdout(proc: ProcessHandle, output: _BoundedOutputCollector, stop: th
                 output.append(tail)
         except Exception:
             pass
+        if (stop is None or not stop.is_set()) and hasattr(output, 'finish'):
+            output.finish()
 
 
 def _drain_fd_select(proc, fd: int, output: _BoundedOutputCollector, decoder, stop=None) -> None:

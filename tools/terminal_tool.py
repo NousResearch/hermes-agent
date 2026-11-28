@@ -1425,6 +1425,8 @@ def _run_foreground(
     task_id: Optional[str], session_id: Optional[str], session_key: str, cwd_key: str,
     workdir: Optional[str], approval_note: Optional[str], clear_interrupt: bool,
     metered: bool = True,
+    stdin_secret_ref: Optional[str] = None,
+    env_secret_refs: Optional[dict[str, str]] = None,
 ) -> str:
     """Execute in the foreground with retry on transient errors, then finalize. ``metered``
     is False for Hermes' own control-plane commands (``_host_local``)."""
@@ -1441,6 +1443,8 @@ def _run_foreground(
         from tools.interrupt import clear_current_thread_interrupt
         clear_current_thread_interrupt()
 
+    from tools.terminal_tool_secure_input import consume_secret_refs
+    secret_kwargs = None
     for retry_count in range(max_retries + 1):
         try:
             command_cwd = _resolve_command_cwd(
@@ -1451,13 +1455,19 @@ def _run_foreground(
             # bounded_capture: model-facing output keeps a head/tail window
             # while streaming so a verbose command can't OOM the gateway;
             # internal env.execute() consumers stay unbounded.
+            if secret_kwargs is None:
+                secret_kwargs = consume_secret_refs(stdin_secret_ref, env_secret_refs)
             # Only the session's inherited cwd may fall back (the result tells the model); a
             # ``workdir`` the model named is refused, or a typo would run ``rm -f ./*`` a level up.
             result = env.execute(
                 command, timeout=effective_timeout, cwd=command_cwd, bounded_capture=True,
                 allow_cwd_fallback=not workdir,
-                **_yield_kwargs(command, env_type=env_type, cwd=command_cwd, effective_task_id=eff,
-                                task_id=task_id, session_key=session_key),
+                **secret_kwargs,
+                # A command holding a secure-input value stays in the foreground: yielding hands
+                # its pipe to the background registry, which has no secure-output path.
+                **({} if secret_kwargs else _yield_kwargs(
+                    command, env_type=env_type, cwd=command_cwd, effective_task_id=eff,
+                    task_id=task_id, session_key=session_key)),
             )
             break
         except Exception as e:
@@ -1586,6 +1596,8 @@ def terminal_tool(
     _completion_output_chars: int = 0,
     heartbeat: int = 0,
     persist_on_release: bool = False,
+    stdin_secret_ref: Optional[str] = None,
+    env_secret_refs: Optional[dict[str, str]] = None,
 ) -> str:
     """Execute *command* in the configured terminal environment; returns a JSON string.
 
@@ -1619,6 +1631,12 @@ def terminal_tool(
             # From here on this IS a background=true call for the stripped command: every guard
             # below (lifecycle, workdir, self-repo, dangerous-command approval) sees what runs.
             command, background = auto_bg, True
+        from tools.terminal_tool_secure_input import validate_secret_refs
+        try:
+            validate_secret_refs(stdin_secret_ref, env_secret_refs, env_type=plan.env_type,
+                                 background=background or plan.promoted_from_foreground_timeout is not None)
+        except ValueError as exc:
+            raise _Rejected(_error_json(str(exc), status="blocked")) from None
         env = _acquire_env(plan, task_id)
         # _lookup_active_env stamps whichever of the two keys holds the env.
         from tools.environments.base import shell_state_scope
@@ -1700,6 +1718,7 @@ def terminal_tool(
                 task_id=task_id, session_id=session_id, session_key=session_key, cwd_key=cwd_key,
                 workdir=workdir, approval_note=verdict.note, clear_interrupt=verdict.approved_run,
                 metered=not _host_local,
+                stdin_secret_ref=stdin_secret_ref, env_secret_refs=env_secret_refs,
             ))
     except _Rejected as r:
         return r.result_json
@@ -1767,7 +1786,9 @@ TERMINAL_SCHEMA = {
                 "type": "boolean",
                 "default": False,
                 "description": "With background=true: survive session end, /new, compression and other cleanup (not host exit). Only for jobs the user explicitly wants to outlive the conversation."
-            }
+            },
+            "stdin_secret_ref": {"type": "string", "description": "Ephemeral secure-input reference piped to foreground stdin; never put raw secrets in command."},
+            "env_secret_refs": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Environment names to ephemeral secure-input references; local/Docker foreground commands only."},
             # Legacy aliases (unadvertised, still accepted): notify_on_complete
             # (bool) and watch_patterns (list). notify=true|[...] maps onto
             # them in the dispatch wrapper; explicit notify wins on conflict.
@@ -1851,6 +1872,8 @@ def _handle_terminal(args, **kw):
         watch_patterns=watch_patterns,
         heartbeat=heartbeat,
         persist_on_release=persist_on_release,
+        stdin_secret_ref=args.get("stdin_secret_ref"),
+        env_secret_refs=args.get("env_secret_refs"),
     )
 
 

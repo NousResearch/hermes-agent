@@ -113,7 +113,10 @@ Safety guarantees (all modes, any age):
   `worktrees.archive_dirty: false` they are never deleted at all — commits that were
   rebase/squash-merged upstream are detected via `git cherry`
   patch-equivalence and count as merged, which is what lets the dominant
-  "merged PR, tree preserved forever" leak finally reclaim.
+  "merged PR, tree preserved forever" leak finally reclaim. A merged GitHub PR
+  on the tree's branch counts only when the tree's tip is that PR's head
+  commit or an ancestor of it: a branch name reused after a merge keeps its
+  new commits.
 - **Repositories without a remote** are judged against the local trunk
   (`main`/`master`, else the branch checked out in the main worktree): only
   trees and branches whose commits are reachable from — or patch-equivalent

@@ -8,6 +8,7 @@ import { modeBound } from '@/store/interface-mode'
 // pill appears once on update, and hiding it again persists here.
 const STATUSBAR_HIDDEN_STORAGE_KEY = 'hermes.desktop.statusbarHidden.v2'
 const LEGACY_HIDDEN_STORAGE_KEY = 'hermes.desktop.statusbarHidden'
+const STATUSBAR_ORDER_STORAGE_KEY = 'hermes.desktop.statusbarOrder.v1'
 // v1 (`hermes.desktop.statusbarVisible`) shipped a stretch where the bar was
 // opt-in, so many stores hold a `false` the user never chose. v2 is read fresh
 // and the v1 key is deliberately NOT seeded from: every existing install comes
@@ -78,6 +79,54 @@ export const $statusbarHiddenIds = persistentAtom<string[]>(
   Codecs.json<string[]>(sanitizeHiddenIds)
 )
 
+export interface StatusbarItemOrder {
+  left: string[]
+  right: string[]
+}
+
+const EMPTY_STATUSBAR_ITEM_ORDER: StatusbarItemOrder = { left: [], right: [] }
+
+const sanitizeOrderIds = (value: unknown): string[] =>
+  Array.isArray(value) ? [...new Set(value.filter((id): id is string => typeof id === 'string' && id.length > 0))] : []
+
+const sanitizeStatusbarItemOrder = (value: unknown): StatusbarItemOrder => {
+  if (!value || typeof value !== 'object') {
+    return EMPTY_STATUSBAR_ITEM_ORDER
+  }
+
+  const order = value as Record<string, unknown>
+
+  return { left: sanitizeOrderIds(order.left), right: sanitizeOrderIds(order.right) }
+}
+
+// Store an explicit order rather than a visible list. A later core or plugin
+// item is absent from this preference and therefore keeps its shipped position.
+export const $statusbarItemOrder = persistentAtom<StatusbarItemOrder>(
+  STATUSBAR_ORDER_STORAGE_KEY,
+  EMPTY_STATUSBAR_ITEM_ORDER,
+  Codecs.json<StatusbarItemOrder>(sanitizeStatusbarItemOrder)
+)
+
+export function orderStatusbarItems<T extends { id: string }>(items: readonly T[], orderedIds: readonly string[]): T[] {
+  const byId = new Map(items.map(item => [item.id, item]))
+
+  const ordered = [...new Set(orderedIds)].flatMap(id => {
+    const item = byId.get(id)
+
+    return item ? [item] : []
+  })
+
+  const orderedSet = new Set(ordered.map(item => item.id))
+  let next = 0
+
+  // Reorder only known slots. New and non-menu controls keep their shipped position.
+  return items.map(item => (orderedSet.has(item.id) ? (ordered[next++] ?? item) : item))
+}
+
+export function setStatusbarItemOrder(side: keyof StatusbarItemOrder, ids: readonly string[]) {
+  $statusbarItemOrder.set({ ...$statusbarItemOrder.get(), [side]: sanitizeOrderIds(ids) })
+}
+
 export function setStatusbarItemVisible(id: string, visible: boolean) {
   const hidden = $statusbarHiddenIds.get()
 
@@ -92,10 +141,18 @@ export function setStatusbarItemVisible(id: string, visible: boolean) {
  *  list it already subscribes to, rather than reading the atom out of band.
  *  Set-compared: order is incidental (items are appended as they're hidden) and
  *  a duplicated id shouldn't read as a customization. */
-export function isStatusbarLayoutDefault(hidden: readonly string[]) {
+export function isStatusbarLayoutDefault(
+  hidden: readonly string[],
+  order: StatusbarItemOrder = EMPTY_STATUSBAR_ITEM_ORDER
+) {
   const ids = new Set(hidden)
 
-  return ids.size === STATUSBAR_HIDDEN_BY_DEFAULT.length && STATUSBAR_HIDDEN_BY_DEFAULT.every(id => ids.has(id))
+  return (
+    ids.size === STATUSBAR_HIDDEN_BY_DEFAULT.length &&
+    STATUSBAR_HIDDEN_BY_DEFAULT.every(id => ids.has(id)) &&
+    order.left.length === 0 &&
+    order.right.length === 0
+  )
 }
 
 /** Put the show/hide set back to what ships. Only touches item layout — whole-bar
@@ -103,4 +160,5 @@ export function isStatusbarLayoutDefault(hidden: readonly string[]) {
  *  shouldn't make the bar the user is right-clicking disappear. */
 export function resetStatusbarLayout() {
   $statusbarHiddenIds.set([...STATUSBAR_HIDDEN_BY_DEFAULT])
+  $statusbarItemOrder.set(EMPTY_STATUSBAR_ITEM_ORDER)
 }

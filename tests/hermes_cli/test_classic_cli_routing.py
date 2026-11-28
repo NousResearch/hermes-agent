@@ -54,6 +54,18 @@ def test_query_runs_main_hermes_cli(routed):
     assert calls["cli_main"]["query"] == "hello" and "gateway" not in calls
 
 
+def test_tui_launch_gets_one_path_from_repeated_image_flag(routed, monkeypatch):
+    """The TUI hand-off is one path (HERMES_TUI_IMAGE): a repeated --image must not arrive there as a list."""
+    m, calls = routed
+    monkeypatch.setattr(m, "_resolve_use_tui", lambda args: True)
+    monkeypatch.setattr(m, "_refuse_unforwarded_tui_flags", lambda args: None)
+    monkeypatch.setattr(m, "_launch_tui", lambda *a, **k: calls.setdefault("tui", k))
+
+    m.cmd_chat(_args(image=["a.png", "b.png"]))
+
+    assert calls["tui"]["image"] == "a.png"
+
+
 def test_cli_main_does_not_hand_off_to_thin_client():
     import inspect
 

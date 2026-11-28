@@ -17,6 +17,26 @@ import sys
 import pytest
 
 
+class TestRepeatableImageFlag:
+    """``--image`` is repeatable: argv order is kept, one flag is a one-item list, absent stays None."""
+
+    def _parsers(self):
+        from hermes_cli._parser import build_top_level_parser
+        from hermes_cli.main import _light_chat_parser
+
+        return [build_top_level_parser()[0], _light_chat_parser()]
+
+    def test_repeated_flag_keeps_every_path_in_argv_order(self):
+        for parser in self._parsers():
+            args = parser.parse_args(["chat", "--image", "a.png", "--image", "b.png"])
+            assert args.image == ["a.png", "b.png"], parser.prog
+
+    def test_one_flag_is_a_one_item_list_and_absent_is_none(self):
+        for parser in self._parsers():
+            assert parser.parse_args(["chat", "--image", "a.png"]).image == ["a.png"], parser.prog
+            assert parser.parse_args(["chat"]).image is None, parser.prog
+
+
 class TestChatVerboseArg:
     """Verify chat --verbose preserves config fallback when absent."""
 

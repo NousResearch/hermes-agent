@@ -1680,7 +1680,7 @@ def main(
     query: str | None = None,
     q: str | None = None,
     oneshot: bool = False,
-    image: str | None = None,
+    image: str | list[str] | None = None,
     toolsets: str | None = None,
     skills: str | list[str] | tuple[str, ...] | None = None,
     model: str | None = None,
@@ -1715,7 +1715,7 @@ def main(
         q: Shorthand for --query
         oneshot: With -q: force the legacy answer-and-exit single-query mode
             even on a TTY.
-        image: Optional local image path to attach to a single query
+        image: Local image path(s) to attach (repeat --image for several)
         toolsets: Comma-separated list of toolsets to enable (e.g., "web,terminal")
         skills: Comma-separated or repeated list of skills to preload for the session
         model: Model to use (default: anthropic/claude-opus-4-20250514)
@@ -1737,7 +1737,7 @@ def main(
         python cli.py --toolsets web,terminal    # Use specific toolsets
         python cli.py --skills hermes-agent-dev,github-auth
         python cli.py -q "What is Python?"       # Single query mode
-        python cli.py -q "Describe this" --image ~/storage/shared/Pictures/cat.png
+        python cli.py -q "Describe these" --image ~/Pictures/a.png --image ~/Pictures/b.png
         python cli.py --list-tools               # List tools and exit
         python cli.py --resume 20260225_143052_a1b2c3  # Resume session
         python cli.py -w                         # Start in isolated git worktree

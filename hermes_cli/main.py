@@ -1539,6 +1539,9 @@ def cmd_chat(args):
 
     passthrough = {k: getattr(args, k, d) for k, d in _CHAT_PASSTHROUGH}
     if use_tui:
+        # The TUI hand-off carries one path (HERMES_TUI_IMAGE); repeated --image stays classic-CLI only.
+        images = passthrough["image"]
+        passthrough["image"] = images[0] if isinstance(images, (list, tuple)) else images
         _launch_tui(
             passthrough.pop("resume"),
             tui_dev=getattr(args, "tui_dev", False),

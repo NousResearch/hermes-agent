@@ -251,7 +251,8 @@ def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
         "With -q/--query-file: answer the query and exit (legacy "
         "single-query behavior) instead of seeding an interactive "
         "session. Implied on non-TTY stdio and by -Q/--quiet."))
-    add("--image", help="Optional local image path to attach to a single query")
+    add("--image", action="append",
+        help="Local image path to attach to the query; repeat the flag to attach several images")
     inherited(chat_parser, "-m", "--model", default=SUPPRESS,
               help="Model to use (e.g., anthropic/claude-sonnet-4)")
     add("-t", "--toolsets", default=SUPPRESS, help="Comma-separated toolsets to enable")

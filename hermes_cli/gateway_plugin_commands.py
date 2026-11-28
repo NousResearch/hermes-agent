@@ -174,9 +174,20 @@ def toolsets(cli):
         return [], set()
     rows = [(str(r.get("key")), str(r.get("label") or r.get("key")), str(r.get("description") or ""))
             for r in reply.get("toolsets") or [] if isinstance(r, dict) and isinstance(r.get("key"), str)]
+    scoped = {str(r["key"]): frozenset(map(str, r["default_platforms"])) for r in reply.get("toolsets") or []
+              if isinstance(r, dict) and isinstance(r.get("key"), str) and isinstance(r.get("default_platforms"), list)
+              and r["default_platforms"]}
     found = (rows, {str(n) for n in reply.get("portable_mcp_servers") or [] if isinstance(n, str)})
     cli._gateway_plugin_toolsets = (boundary, found)
+    cli._gateway_plugin_toolset_platforms = scoped
     return found
+
+
+def toolset_default_platforms(cli):
+    """``{toolset: platforms it defaults on for}`` from the same ``plugins.list`` read as :func:`toolsets`
+    (an older gateway or a failed read: none, so every plugin toolset defaults on everywhere)."""
+    toolsets(cli)
+    return getattr(cli, "_gateway_plugin_toolset_platforms", None) or {}
 
 
 def names(cli):

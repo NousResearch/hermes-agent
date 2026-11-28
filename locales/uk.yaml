@@ -1408,34 +1408,6 @@ platform:
     reaction:
       unauthorized: "Ці елементи керування доступні лише авторизованому користувачу Matrix."
       not_requester: "Ці елементи керування доступні лише користувачу, який запросив цю дію."
-  feishu:
-    clarify:
-      title: "Hermes потребує вашої відповіді"
-      other: "✏️ Інше (ввести відповідь)"
-      awaiting_typed: "Очікуємо текстову відповідь від {user}…"
-    picker:
-      apply_error: "Помилка застосування вибору: {error}"
-    approval:
-      action_session: "На сеанс"
-      action_always: "Завжди"
-      resolved_once: "Схвалено один раз"
-      resolved_session: "Схвалено на сеанс"
-      resolved_always: "Схвалено назавжди"
-      resolved_deny: "Відхилено"
-      resolved_fallback: "Вирішено"
-      resolved_by_user: "{icon} **{label}** — {user}"
-    update_prompt:
-      title: "☤ Оновлення потребує вашої відповіді"
-      default_hint: "\n\nЗа замовчуванням: `{default}`"
-      answer_yes: "✓ Так"
-      answer_no: "✗ Ні"
-      word_yes: "Так"
-      word_no: "Ні"
-      answered_title: "{icon} Відповідь на запит оновлення: {answer}"
-      answered_by: "Відповів(ла) **{user}**"
-    media:
-      gif_downgraded: "[GIF надіслано як файл]"
-      gif_downgraded_caption: "[GIF надіслано як файл]\n{caption}"
   google_chat:
     clarify:
       other_button: "Інше / ввести відповідь"

@@ -24,7 +24,6 @@ PLATFORMS: OrderedDict[str, PlatformInfo] = OrderedDict([
     ("mattermost",     PlatformInfo(label="💬 Mattermost",      default_toolset="hermes-mattermost")),
     ("matrix",         PlatformInfo(label="💬 Matrix",          default_toolset="hermes-matrix")),
     ("dingtalk",       PlatformInfo(label="💬 DingTalk",        default_toolset="hermes-dingtalk")),
-    ("feishu",         PlatformInfo(label="🪽 Feishu",          default_toolset="hermes-feishu")),
     ("wecom",          PlatformInfo(label="💬 WeCom",           default_toolset="hermes-wecom")),
     ("wecom_callback", PlatformInfo(label="💬 WeCom Callback",  default_toolset="hermes-wecom-callback")),
     ("weixin",         PlatformInfo(label="💬 Weixin",          default_toolset="hermes-weixin")),

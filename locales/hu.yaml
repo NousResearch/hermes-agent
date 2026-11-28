@@ -1425,34 +1425,6 @@ platform:
     reaction:
       unauthorized: "Ezeket a vezérlőket csak jogosult Matrix-felhasználó használhatja."
       not_requester: "Ezeket a vezérlőket csak az a felhasználó használhatja, aki a műveletet kérte."
-  feishu:
-    clarify:
-      title: "A Hermes a válaszodra vár"
-      other: "✏️ Egyéb (írd be a választ)"
-      awaiting_typed: "Várakozás {user} beírt válaszára…"
-    picker:
-      apply_error: "Hiba a választás alkalmazásakor: {error}"
-    approval:
-      action_session: "Munkamenet"
-      action_always: "Mindig"
-      resolved_once: "Egyszer jóváhagyva"
-      resolved_session: "Munkamenetre jóváhagyva"
-      resolved_always: "Véglegesen jóváhagyva"
-      resolved_deny: "Elutasítva"
-      resolved_fallback: "Elbírálva"
-      resolved_by_user: "{icon} **{label}** — {user}"
-    update_prompt:
-      title: "☤ A frissítéshez a válaszod kell"
-      default_hint: "\n\nAlapértelmezett: `{default}`"
-      answer_yes: "✓ Igen"
-      answer_no: "✗ Nem"
-      word_yes: "Igen"
-      word_no: "Nem"
-      answered_title: "{icon} Frissítési kérdés megválaszolva: {answer}"
-      answered_by: "Válaszolt: **{user}**"
-    media:
-      gif_downgraded: "[GIF fájlként elküldve]"
-      gif_downgraded_caption: "[GIF fájlként elküldve]\n{caption}"
   google_chat:
     clarify:
       other_button: "Egyéb / írd be a választ"

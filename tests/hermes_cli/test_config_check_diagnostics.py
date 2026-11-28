@@ -24,6 +24,7 @@ def _check(home: Path, monkeypatch, capsys) -> str:
 def test_config_check_and_migrate_agree_on_stale_platform_toolsets(tmp_path, monkeypatch, capsys):
     # Only a plugin MCP server named 'portable' exists; keep host-installed plugins out of the verdict.
     monkeypatch.setattr(plugins_mod, "get_plugin_toolset_keys_nowait", set)
+    monkeypatch.setattr(plugins_mod, "get_plugin_toolset_view_nowait", lambda: (set(), {}))
     monkeypatch.setattr(plugins_mod, "get_portable_mcp_server_names_nowait", lambda: {"portable"})
     stale = _write_home(
         tmp_path / "stale",

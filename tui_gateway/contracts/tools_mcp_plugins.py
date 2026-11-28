@@ -601,6 +601,8 @@ class PluginToolsetRow(Result):
     key: str
     label: str
     description: str
+    # Platforms the toolset defaults on for (``register_tool(default_platforms=...)``); empty = every platform.
+    default_platforms: list[str] | None = None
 
 
 class PluginsListResult(Result):

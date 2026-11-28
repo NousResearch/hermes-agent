@@ -70,7 +70,7 @@ Rules for tool code:
 ## Toolsets (`toolsets.py`)
 
 Single `TOOLSETS` dict. Keys today: `browser, clarify, code_execution, cronjob, debugging,
-delegation, discord, discord_admin, feishu_doc, feishu_drive, file, image_gen,
+delegation, discord, discord_admin, file, image_gen,
 kanban, memory, messaging, moa, rl, safe, search, session_search, skills, terminal, todo,
 tts, video, vision, web` (don't assert the list in tests). Per-platform enable/disable via
 `hermes tools` (curses) or `tools.<platform>.enabled/disabled` in config.yaml. `browser_exec` is the

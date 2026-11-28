@@ -21,21 +21,6 @@ pytest.importorskip("aiohttp")
 ENV_PROXY_VARS = ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy")
 
 
-def _feishu(monkeypatch):
-    requests = pytest.importorskip("requests")
-    from plugins.platforms.feishu import adapter as fs
-
-    def _create(request):  # the SDK's transport: a plain requests call that reads HTTPS_PROXY
-        requests.post("https://open.feishu.cn/open-apis/im/v1/messages", json={}, timeout=5)
-
-    client = SimpleNamespace(im=SimpleNamespace(v1=SimpleNamespace(message=SimpleNamespace(create=_create))))
-    monkeypatch.setattr(fs, "_load_lark_oapi", lambda: True)
-    monkeypatch.setattr(fs.FeishuAdapter, "_build_lark_client", lambda self, domain: client)
-    monkeypatch.setattr(fs.asyncio, "sleep", _no_sleep)  # the 3-attempt retry backoff
-    cfg = SimpleNamespace(token=None, api_key=None, enabled=True, extra={"app_id": "cli_x", "app_secret": "s"})
-    return fs._standalone_send(cfg, "oc_x", "hi")
-
-
 def _google_chat(monkeypatch):
     pytest.importorskip("google.auth.transport.requests")
     from plugins.platforms.google_chat import adapter as gc
@@ -103,7 +88,7 @@ async def _no_sleep(*_args, **_kwargs):
     return None
 
 
-SENDERS = {"feishu": _feishu, "google_chat": _google_chat, "teams": _teams, "weixin": _weixin, "line": _line,
+SENDERS = {"google_chat": _google_chat, "teams": _teams, "weixin": _weixin, "line": _line,
            "ntfy": _ntfy, "dingtalk": _dingtalk, "simplex": _simplex, "signal": _signal, "qqbot": _qqbot}
 CASES = [pytest.param(sender, shape.format(pw=pw), pw, id=f"{sender}|{pw}|{shape.split(':')[0]}")
          for sender in SENDERS for pw in PASSWORDS for shape in SHAPES]
@@ -246,33 +231,6 @@ def test_an_oddly_cased_no_proxy_alone_is_not_a_bypass(monkeypatch):
     assert env_proxy_for_redaction("https://chat.googleapis.com") == _SECRET
     monkeypatch.setenv("NO_PROXY", "*")
     assert env_proxy_for_redaction("https://chat.googleapis.com") is None
-
-
-def test_feishu_media_download_failure_log_carries_no_proxy_secret(monkeypatch, caplog):
-    from gateway.config import PlatformConfig
-    from gateway.platforms.base import SendResult as _SendResult
-    from plugins.platforms.feishu import adapter as fs
-
-    for name in (*ENV_PROXY_VARS, "NO_PROXY", "no_proxy"):
-        monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("HTTPS_PROXY", "http://bob:qzxqzxqzx#x@127.0.0.1:1")
-    monkeypatch.setenv("HTTP_PROXY", "http://bob:qzxqzxqzx#x@127.0.0.1:1")
-    monkeypatch.setattr("tools.url_safety.is_safe_url", lambda url: True)
-    adapter = fs.FeishuAdapter(PlatformConfig(enabled=True, extra={"app_id": "cli_x", "app_secret": "s"}))
-
-    async def _send(**_kwargs):
-        return _SendResult(success=True)
-
-    monkeypatch.setattr(adapter, "send", _send)
-    formatter = logging.Formatter("%(levelname)s %(name)s %(message)s")
-    for call in (lambda: adapter.send_image("oc_x", "https://example.com/a.png"),
-                 lambda: adapter.send_animation("oc_x", "https://example.com/a.gif")):
-        caplog.clear()
-        with caplog.at_level(logging.DEBUG):
-            asyncio.run(asyncio.wait_for(call(), 60))
-        logs = "\n".join(formatter.format(r) for r in caplog.records if "feishu" in r.name)
-        assert "Failed to download" in logs, logs
-        assert "qzx" not in logs and "qzx" not in unquote(logs), logs[-2000:]
 
 
 @pytest.mark.parametrize("scheme", ["ftp", "socks4"])

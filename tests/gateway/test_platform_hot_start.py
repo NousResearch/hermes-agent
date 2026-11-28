@@ -650,7 +650,7 @@ def test_racing_reconciles_report_each_change_to_exactly_one_ask(tmp_path, monke
     assert gw.settled_ask()["started"] == []  # taken: asked again about the same files, nothing is new
 
 
-_NAMED_FRESH = [p.value.upper() for p in (Platform.FEISHU, Platform.DINGTALK, Platform.WECOM, Platform.BLUEBUBBLES,
+_NAMED_FRESH = [p.value.upper() for p in (Platform.TELEGRAM, Platform.DINGTALK, Platform.WECOM, Platform.BLUEBUBBLES,
                                           Platform.QQBOT, Platform.WHATSAPP)]
 
 
@@ -721,7 +721,7 @@ def test_every_named_profile_change_is_reported_to_exactly_one_ask(tmp_path, mon
     _settle_both(gw, answers, running)
     _assert_reported_once(gw, answers)
     if script.startswith("edit_b ask_b secret_b rescan_b"):  # the restart the rescan applied, in the next answer
-        assert [answer["restarted"] for answer in answers[:3]] == [[], ["feishu"], []], answers
+        assert [answer["restarted"] for answer in answers[:3]] == [[], ["telegram"], []], answers
     assert {p.value for p in gw.runner._profile_adapters["b"]} == {
         n.lower() for n in gw._lines(".env", "START_", "b")} == set(gw.named_started)
 
@@ -761,14 +761,14 @@ def test_a_named_profile_its_apply_parks_answers_that_its_platforms_stopped(tmp_
     """A save the multiplexer refuses parks the profile and stops its bots: the answer says so, never the
     ``connected`` an earlier ask's apply left in the ledger."""
     gw = _FileDrivenPrimary(tmp_path, reconcile_loop, monkeypatch=monkeypatch)
-    gw.edit("START_FEISHU=1", "b")
+    gw.edit("START_TELEGRAM=1", "b")
     first = gw.settled_ask(gw.ask_named)
-    assert first["started"] == ["feishu"] and first["platforms"] == {"feishu": "connected"}, first
+    assert first["started"] == ["telegram"] and first["platforms"] == {"telegram": "connected"}, first
     gw.edit("OPEN_POLICY=1", "b")
     answer = gw.settled_ask(gw.ask_named)
     assert gw.parked == ["b"] and "b" not in gw.runner._served_profile_homes
     assert answer["applied"] is False and answer["reason"] == "not_served", answer
-    assert answer["platforms"] == {} and answer["stopped"] == ["feishu"], answer
+    assert answer["platforms"] == {} and answer["stopped"] == ["telegram"], answer
 
 
 def test_a_drained_change_comes_with_the_state_after_it(tmp_path, reconcile_loop):

@@ -1408,34 +1408,6 @@ platform:
     reaction:
       unauthorized: "Ní féidir ach le húsáideoir Matrix údaraithe na rialtáin seo a úsáid."
       not_requester: "Ní féidir ach leis an úsáideoir a d'iarr an gníomh seo na rialtáin seo a úsáid."
-  feishu:
-    clarify:
-      title: "Tá d'ionchur de dhíth ar Hermes"
-      other: "✏️ Eile (clóscríobh freagra)"
-      awaiting_typed: "Ag fanacht le freagra clóscríofa ó {user}…"
-    picker:
-      apply_error: "Earráid agus an rogha á cur i bhfeidhm: {error}"
-    approval:
-      action_session: "Seisiún"
-      action_always: "I gcónaí"
-      resolved_once: "Ceadaithe uair amháin"
-      resolved_session: "Ceadaithe don seisiún"
-      resolved_always: "Ceadaithe go buan"
-      resolved_deny: "Diúltaithe"
-      resolved_fallback: "Réitithe"
-      resolved_by_user: "{icon} **{label}** ag {user}"
-    update_prompt:
-      title: "☤ Tá d'Ionchur de Dhíth ar an Nuashonrú"
-      default_hint: "\n\nRéamhshocrú: `{default}`"
-      answer_yes: "✓ Tá"
-      answer_no: "✗ Níl"
-      word_yes: "Tá"
-      word_no: "Níl"
-      answered_title: "{icon} Leid nuashonraithe freagraithe: {answer}"
-      answered_by: "Freagraithe ag **{user}**"
-    media:
-      gif_downgraded: "[GIF íosghrádaithe go comhad]"
-      gif_downgraded_caption: "[GIF íosghrádaithe go comhad]\n{caption}"
   google_chat:
     clarify:
       other_button: "Eile / clóscríobh freagra"

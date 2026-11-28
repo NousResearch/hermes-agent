@@ -195,8 +195,6 @@ _EXTRA_ENV_KEYS = frozenset({
     "SIGNAL_ACCOUNT", "SIGNAL_HTTP_URL", "SIGNAL_ALLOWED_USERS", "SIGNAL_GROUP_ALLOWED_USERS",
     "SIGNAL_HOME_CHANNEL", "SIGNAL_HOME_CHANNEL_NAME", "SMS_HOME_CHANNEL", "SMS_HOME_CHANNEL_NAME",
     "DINGTALK_CLIENT_ID", "DINGTALK_CLIENT_SECRET", "DINGTALK_HOME_CHANNEL", "DINGTALK_HOME_CHANNEL_NAME",
-    "FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_ENCRYPT_KEY", "FEISHU_VERIFICATION_TOKEN",
-    "FEISHU_HOME_CHANNEL", "FEISHU_HOME_CHANNEL_NAME",
     "WECOM_BOT_ID", "WECOM_SECRET", "WECOM_CALLBACK_CORP_ID", "WECOM_CALLBACK_CORP_SECRET",
     "WECOM_CALLBACK_AGENT_ID", "WECOM_CALLBACK_TOKEN", "WECOM_CALLBACK_ENCODING_AES_KEY",
     "WECOM_CALLBACK_HOST", "WECOM_CALLBACK_PORT", "WECOM_HOME_CHANNEL", "WECOM_HOME_CHANNEL_NAME",
@@ -2655,8 +2653,8 @@ def save_env_value_secure(key: str, value: str) -> dict[str, Any]:
 
 
 def reload_env() -> int:
-    """Re-read ~/.hermes/.env into os.environ; returns count of vars changed. Removes deleted vars only when
-    known to Hermes (OPTIONAL_ENV_VARS and _EXTRA_ENV_KEYS), and none while the .env exists but is unreadable."""
+    """Re-read .env into os.environ (returns the change count); drop a removed var Hermes knows, unless unreadable."""
+    from hermes_cli.config_env_routing import loaded_plugin_env
     from hermes_cli.env_loader import dotenv_unreadable
     env_vars = load_env()
     count = 0
@@ -2664,9 +2662,9 @@ def reload_env() -> int:
         if not is_launch_only_env_key(key) and os.environ.get(key) != value:  # launch-only: never from .env (#135200)
             os.environ[key] = value
             count += 1
-    known = set() if dotenv_unreadable(get_env_path()) else set(OPTIONAL_ENV_VARS) | _EXTRA_ENV_KEYS
-    for key in known - set(env_vars):
-        if os.environ.pop(key, None) is not None:
+    known = set() if dotenv_unreadable(get_env_path()) else set(OPTIONAL_ENV_VARS) | _EXTRA_ENV_KEYS | loaded_plugin_env()
+    for key in known - set(env_vars):  # launch-only: never read from .env, so never dropped for its absence
+        if not is_launch_only_env_key(key) and os.environ.pop(key, None) is not None:
             count += 1
     return count
 
@@ -2795,7 +2793,7 @@ _OPEN_DICT_TOP_LEVEL_KEYS = frozenset({
 _SCHEMA_DEFINED_DICT_KEYS = frozenset({
     # Platform configs — PlatformConfig dataclass + dynamic extras
     "discord", "telegram", "slack", "whatsapp", "signal", "mattermost",
-    "matrix", "feishu", "wecom", "weixin", "bluebubbles", "qqbot",
+    "matrix", "wecom", "weixin", "bluebubbles", "qqbot",
     "email", "sms", "dingtalk",
     # MCP server template / dynamic auth dicts
     "sessions", "checkpoints",

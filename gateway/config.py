@@ -251,7 +251,6 @@ class Platform(Enum):
     API_SERVER = "api_server"
     WEBHOOK = "webhook"
     MSGRAPH_WEBHOOK = "msgraph_webhook"
-    FEISHU = "feishu"
     WECOM = "wecom"
     WECOM_CALLBACK = "wecom_callback"
     WEIXIN = "weixin"
@@ -280,6 +279,12 @@ class Platform(Enum):
             with contextlib.suppress(Exception):
                 from gateway.platform_registry import platform_registry
                 registered = platform_registry.is_registered(value)
+            if not registered:  # a left-core platform's old manifest key (``qqbot-platform``), as above
+                with contextlib.suppress(Exception):
+                    from hermes_cli.left_core_migration import legacy_platform_alias
+                    target = legacy_platform_alias(value)
+                    if target and target != value:
+                        return cls(target)
         return cls._add_pseudo_member(value) if registered else None
 
     @classmethod
@@ -333,7 +338,12 @@ def platform_value(key: Any) -> str:
     if value in Platform._value2member_map_:
         return Platform._value2member_map_[value].value
     names, aliases = Platform._bundled_plugin_platforms()
-    return value if value in names else aliases.get(value, value)
+    if value in names:
+        return value
+    if value in aliases:
+        return aliases[value]
+    from hermes_cli.left_core_migration import legacy_platform_alias  # a left-core platform's old manifest key
+    return legacy_platform_alias(value) or value
 
 
 # Built-in values snapshotted before any dynamic _missing_ lookup.
@@ -343,11 +353,9 @@ _BUILTIN_PLATFORM_VALUES = frozenset(m.value for m in Platform.__members__.value
 # profile's port-binder is built in shared-listener mode and served at /p/<profile>/<path> on the
 # default's listener (gateway/platforms/shared_ingress.py); api_server/webhook are mirrored there.
 PORT_BINDING_PLATFORM_VALUES = frozenset({
-    "webhook", "api_server", "msgraph_webhook", "feishu", "wecom_callback",
+    "webhook", "api_server", "msgraph_webhook", "wecom_callback",
     "bluebubbles", "sms", "whatsapp_cloud", "line", "teams",
 })
-# Platforms that only bind in one connection mode (Feishu's default websocket mode is outbound).
-PORT_BINDING_CONDITIONAL_MODES: dict[str, str] = {"feishu": "webhook"}
 # Port-binders whose /p/<profile>/ surface is a MIRROR served by the default's own adapter; a secondary
 # never gets an instance of these (api_server: /p/<profile>/v1/..., webhook: profile-bound routes).
 SHARED_LISTENER_MIRROR_PLATFORMS = frozenset({"api_server", "webhook"})
@@ -358,12 +366,21 @@ SERVED_PROFILE_MIRROR_PLATFORMS = SHARED_LISTENER_MIRROR_PLATFORMS | frozenset({
 SHARED_LISTENER_MIRROR_PATHS: dict[str, str] = {"api_server": "/v1", "webhook": "/webhooks/<route>"}
 
 
-def platform_binds_port(platform_value: str, extra: Optional[dict] = None) -> bool:
-    """True when *platform_value* actually binds a port for *extra* config."""
-    if platform_value not in PORT_BINDING_PLATFORM_VALUES:
+def platform_binds_port(platform_value: str, extra: Optional[dict] = None, *, home=None) -> bool:
+    """True when *platform_value* actually binds a port for *extra* config: a core port-binder, or a plugin
+    platform whose ``PlatformEntry.binds_port_fn`` says so (e.g. only in its webhook connection mode). *home*:
+    the profile whose adapter this is, read first (``registered_trait``) when the caller is outside its scope."""
+    if platform_value in PORT_BINDING_PLATFORM_VALUES:
+        return True
+    from gateway.platform_registry import registered_trait
+    binds = registered_trait(platform_value, "binds_port_fn", home=home)
+    if binds is None:
         return False
-    expected_mode = PORT_BINDING_CONDITIONAL_MODES.get(platform_value)
-    return expected_mode is None or str((extra or {}).get("connection_mode", "websocket")).strip().lower() == expected_mode
+    try:
+        return bool(binds(extra or {}))
+    except Exception:  # plugin code: a broken check must not stop the other adapters' startup
+        logger.warning("binds_port_fn for %s raised; treating it as not binding a port", platform_value, exc_info=True)
+        return False
 
 _DISCORD_CHANNEL_LINK_RE = re.compile(
     r"https://(?:(?:ptb|canary)\.)?discord(?:app)?\.com/channels/(?:[0-9]+|@me)/([0-9]+)/?")

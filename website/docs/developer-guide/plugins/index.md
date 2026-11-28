@@ -1053,7 +1053,7 @@ def register(ctx):
 
 **What `register()` does:**
 - Called exactly once at startup
-- `ctx.register_tool()` puts your tool in the registry — the model sees it immediately
+- `ctx.register_tool()` puts your tool in the registry — the model sees it immediately. A plugin toolset is on for every platform until the user saves a choice in `hermes tools`; pass `default_platforms=("feishu",)` for a tool that only works on some platforms, so its toolset defaults on there and off elsewhere (a user who enables it elsewhere keeps it). The default is per toolset: it is scoped only when every tool in it sets `default_platforms` (to their union); one tool without it keeps the toolset on everywhere
 - `ctx.register_hook()` subscribes to lifecycle events
 - `ctx.register_cli_command()` registers a CLI subcommand (e.g. `hermes my-plugin <subcommand>`)
 - `ctx.register_command()` registers an in-session slash command (e.g. `/myplugin <args>` inside CLI / gateway chat) — see [Register slash commands](#register-slash-commands) below

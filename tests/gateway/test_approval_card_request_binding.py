@@ -70,18 +70,6 @@ async def _press_slack_card(request_id):
     await adapter._handle_approval_action(AsyncMock(), body, {"action_id": "hermes_approve_once", "value": SESSION})
 
 
-async def _press_feishu_card(request_id):
-    from plugins.platforms.feishu.adapter import FeishuAdapter
-    adapter = FeishuAdapter(PlatformConfig(enabled=True))
-    adapter._client = MagicMock()
-    adapter.set_authorization_check(lambda *_a, **_k: True)
-    sent = SimpleNamespace(success=lambda: True, data=SimpleNamespace(message_id="m1"))
-    with patch.object(adapter, "_feishu_send_with_retry", new=AsyncMock(return_value=sent)), \
-            patch.object(adapter, "send", new=AsyncMock()):
-        await adapter.send_exec_approval(chat_id="oc_1", command="rm -rf build", session_key=SESSION, request_id=request_id)
-        await adapter._resolve_approval(next(iter(adapter._approval_state)), "once", "Alice", open_id="ou_1", chat_id="oc_1")
-
-
 async def _press_matrix_card(request_id):
     from plugins.platforms.matrix.adapter import MatrixAdapter
     adapter = MatrixAdapter(PlatformConfig(enabled=True, token="tok", extra={"homeserver": "https://matrix.example.org"}))
@@ -137,7 +125,7 @@ async def _press_relay_card(request_id):
         prompt_response={"prompt_id": stub.sent[-1]["prompt_id"], "option_id": "once"}))
 
 
-_PRESSES = [_press_telegram_card, _press_slack_card, _press_feishu_card, _press_matrix_card, _press_whatsapp_card,
+_PRESSES = [_press_telegram_card, _press_slack_card, _press_matrix_card, _press_whatsapp_card,
             _press_teams_card, _press_relay_card]
 
 

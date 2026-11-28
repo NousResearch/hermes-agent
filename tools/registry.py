@@ -241,6 +241,9 @@ class ToolEntry:
     # its own arguments and config. The executor floors its generic tool deadline by this so a
     # tool's own timeout is the one that fires — see get_deadline_floor.
     deadline_floor: Optional[Callable] = None
+    # Platforms a plugin tool's toolset defaults on for (empty: every platform). On the entry so the
+    # restore path brings it back with the handler it was registered with.
+    default_platforms: frozenset = frozenset()
 
 
 class _PluginOverridePolicy:
@@ -844,7 +847,7 @@ class ToolRegistry:
         dynamic_schema_overrides: Callable | None = None, override: bool = False,
         scope: Optional[str] = None, execution_timeout: float | None = None,
         compat_args: Iterable[str] = (), self_checked_args: Iterable[str] = (),
-        deadline_floor: Callable | None = None):
+        deadline_floor: Callable | None = None, default_platforms: Iterable[str] = ()):
         """Register a tool (called at import time by each tool file). ``override=True`` is an
         explicit opt-in for plugins replacing a built-in implementation (e.g. a headed-Chrome
         browser backend); without it, cross-toolset shadowing is rejected."""
@@ -911,7 +914,7 @@ class ToolRegistry:
                 max_result_size_chars=max_result_size_chars, execution_timeout=execution_timeout,
                 dynamic_schema_overrides=dynamic_schema_overrides, compat_args=frozenset(compat_args),
                 self_checked_args=frozenset(self_checked_args),
-                deadline_floor=deadline_floor)
+                deadline_floor=deadline_floor, default_platforms=frozenset(map(str, default_platforms)))
             self._generation += 1
 
     def deregister(self, name: str, *, scope: Optional[str] = None) -> None:

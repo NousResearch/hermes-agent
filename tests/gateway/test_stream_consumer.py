@@ -128,7 +128,6 @@ class TestEditMessageFinalizeSignature:
             ("plugins.platforms.slack.adapter", "SlackAdapter"),
             ("plugins.platforms.matrix.adapter", "MatrixAdapter"),
             ("plugins.platforms.mattermost.adapter", "MattermostAdapter"),
-            ("plugins.platforms.feishu.adapter", "FeishuAdapter"),
             ("plugins.platforms.whatsapp.adapter", "WhatsAppAdapter"),
             ("plugins.platforms.dingtalk.adapter", "DingTalkAdapter"),
         ],

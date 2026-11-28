@@ -1046,7 +1046,8 @@ class WebhookAdapter(BasePlatformAdapter):
         try:
             target_platform = Platform(platform_name)
         except ValueError:
-            return SendResult(success=False, error=f"Unknown platform: {platform_name}")
+            from hermes_cli.left_core_migration import platform_install_hint
+            return SendResult(success=False, error=f"Unknown platform: {platform_name}{platform_install_hint(platform_name)}")
         profile = delivery.get("profile")
         if not (adapter := self._find_adapter(target_platform, profile)):
             return SendResult(success=False, error=f"Platform {platform_name} not connected")

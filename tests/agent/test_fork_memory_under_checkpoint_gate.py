@@ -53,14 +53,6 @@ def _fork_site(site):
         return batch_runner, (lambda: batch_runner._process_single_prompt(
             0, {"prompt": "p"}, 0, {"model": "m", "max_iterations": 3, "distribution": {}},
         )), (patch.object(batch_runner, "sample_toolsets_from_distribution", return_value=["terminal"]),)
-    if site == "feishu_comment":
-        from plugins.platforms.feishu import feishu_comment
-        import run_agent
-
-        return run_agent, (lambda: feishu_comment._run_comment_agent("p", client=object(), session_key="")), (
-            patch.object(feishu_comment, "_resolve_model_and_runtime", return_value=("m", {})),
-            patch.object(feishu_comment, "_load_session_history", return_value=[]),
-        )
     raise AssertionError(f"unknown fork site: {site}")
 
 
@@ -86,7 +78,7 @@ def _capture_fork_kwargs(site, *, checkpoint_required):
     return captured
 
 
-_FORK_SITES = ("delegate", "curator", "batch_runner", "feishu_comment")
+_FORK_SITES = ("delegate", "curator", "batch_runner")
 
 
 @pytest.mark.parametrize("site", _FORK_SITES)

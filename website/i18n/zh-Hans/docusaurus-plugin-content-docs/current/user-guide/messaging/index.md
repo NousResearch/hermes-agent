@@ -26,7 +26,7 @@ description: "通过 Telegram、Discord、Slack、WhatsApp、Signal、SMS、Emai
 | Mattermost | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ |
 | Matrix | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | DingTalk | — | ✅ | ✅ | — | ✅ | — | ✅ |
-| Feishu/Lark | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Feishu/Lark（插件） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | WeCom | ✅ | ✅ | ✅ | — | — | — | — |
 | WeCom Callback | — | — | — | — | — | — | — |
 | Weixin | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
@@ -57,7 +57,7 @@ flowchart TB
             mm[Mattermost]
             mx[Matrix]
             dt[DingTalk]
-    fs[Feishu/Lark]
+    fs["Feishu/Lark（插件）"]
     wc[WeCom]
     wcb[WeCom Callback]
     wx[Weixin]
@@ -438,7 +438,7 @@ launchd plist 是静态的——如果你在配置网关后安装了新工具（
 | Mattermost | `hermes-mattermost` | 完整工具，包括终端 |
 | Matrix | `hermes-matrix` | 完整工具，包括终端 |
 | DingTalk | `hermes-dingtalk` | 完整工具，包括终端 |
-| Feishu/Lark | `hermes-feishu` | 完整工具，包括终端 |
+| Feishu/Lark（插件） | `hermes-feishu` | 完整工具 + 官方 `feishu` 插件提供的 `feishu_doc` / `feishu_drive` 文档评论工具 |
 | WeCom | `hermes-wecom` | 完整工具，包括终端 |
 | WeCom Callback | `hermes-wecom-callback` | 完整工具，包括终端 |
 | Weixin | `hermes-weixin` | 完整工具，包括终端 |
@@ -562,7 +562,7 @@ display:
 - [Mattermost 配置](mattermost.md)
 - [Matrix 配置](matrix.md)
 - [DingTalk 配置](dingtalk.md)
-- [Feishu/Lark 配置](feishu.md)
+- [Feishu/Lark](feishu.md)（官方插件）
 - [WeCom 配置](wecom.md)
 - [WeCom Callback 配置](wecom-callback.md)
 - [Weixin 配置（微信）](weixin.md)

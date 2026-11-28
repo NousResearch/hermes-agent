@@ -23,6 +23,7 @@ from contextlib import nullcontext, suppress
 from contextvars import copy_context
 from gateway.bot_peer_notices import automatic_notices_allowed
 from gateway.config import Platform
+from gateway.platform_registry import registered_trait
 from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome, describe_proxy_error, safe_proxy_url_for_log
 from gateway.platforms.event import MessageEvent
 from gateway.platforms.helpers import hash_for_log, typing_metadata_for_turn
@@ -1055,19 +1056,18 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
             if source.user_id:
                 _progress_metadata.setdefault("recipient_user_id", source.user_id)
         # Buzz has no native thread_id: thread via reply-to unless the user opted out.
+        _reply_anchored = registered_trait(source.platform, "thread_reply_anchor", False)
         _progress_reply_to = (
             event_message_id
-            if (source.platform in (Platform.FEISHU, Platform.MATTERMOST) and source.thread_id and event_message_id)
+            if ((_reply_anchored or source.platform == Platform.MATTERMOST) and source.thread_id and event_message_id)
             or (is_buzz and event_message_id and _progress_reply_in_thread)
             or _relay_prospective_thread_id
             else None
         )
-        if source.platform == Platform.FEISHU and source.thread_id and event_message_id:
-            _status_thread_metadata = {"thread_id": _progress_thread_id, "reply_to_message_id": event_message_id}
-        else:
-            _status_thread_metadata = self._thread_metadata_for_progress(
-                source, event_message_id, _progress_thread_id, _relay_prospective_thread_id,
-            )
+        _status_thread_metadata = (
+            {"thread_id": _progress_thread_id, "reply_to_message_id": event_message_id}
+            if _reply_anchored and source.thread_id and event_message_id else self._thread_metadata_for_progress(
+                source, event_message_id, _progress_thread_id, _relay_prospective_thread_id))
         return _progress_metadata, _progress_reply_to, _status_thread_metadata
 
     async def _run_agent_write_tool_log(self, log_queue: Any) -> None:

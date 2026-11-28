@@ -140,7 +140,15 @@ def _get_provider(tts_config: dict[str, Any]) -> str:
 
 
 # Platforms whose native voice-bubble delivery requires Ogg/Opus (MP3 renders broken there).
-OPUS_VOICE_PLATFORMS = frozenset({"telegram", "matrix", "feishu", "whatsapp", "signal"})
+OPUS_VOICE_PLATFORMS = frozenset({"telegram", "matrix", "whatsapp", "signal"})
+
+
+def wants_opus_voice(platform: str) -> bool:
+    """Native voice bubbles on *platform* need Ogg/Opus: core's set, or a plugin entry declaring ``opus_voice``."""
+    if platform in OPUS_VOICE_PLATFORMS:
+        return True
+    from gateway.platform_registry import registered_trait
+    return bool(registered_trait(platform, "opus_voice", False))
 
 # MEDIA:<path> is a line-level gateway protocol. A filename containing an anchored media
 # directive forges a second attachment whenever the path is echoed into the tool result
@@ -316,7 +324,7 @@ def _session_platform() -> tuple:
     """``(platform, wants_opus)`` — platforms delivering voice bubbles only as Ogg/Opus want Opus."""
     from gateway.session_context import get_session_env
     platform = get_session_env("HERMES_SESSION_PLATFORM", "").lower()
-    return platform, platform in OPUS_VOICE_PLATFORMS
+    return platform, wants_opus_voice(platform)
 
 
 def _resolve_output_base(

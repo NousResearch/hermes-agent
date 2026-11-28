@@ -69,30 +69,54 @@ def _probe_gateway_health() -> tuple[bool, dict | None]:
 # DEFAULT_WEBHOOK_PORT. Display-only data for the topology readout, not a bind source.
 _PORT_BINDING_PLATFORM_PORTS: dict[str, tuple[str, int]] = {
     "webhook": ("port", 8644), "api_server": ("port", 8642), "msgraph_webhook": ("port", 8646),
-    "feishu": ("webhook_port", 8765), "wecom_callback": ("port", 8645), "bluebubbles": ("webhook_port", 8645),
+    "wecom_callback": ("port", 8645), "bluebubbles": ("webhook_port", 8645),
     "sms": ("webhook_port", 8080), "whatsapp_cloud": ("webhook_port", 8090), "line": ("port", 8646),
     "teams": ("port", 3978),
 }
+
+
+def _port_spec(name: str) -> tuple:
+    """``(config port key, default port)`` for a port-binding platform: core's table, else the plugin
+    entry's ``listen_port``; () when the platform binds no port."""
+    if name in _PORT_BINDING_PLATFORM_PORTS:
+        return _PORT_BINDING_PLATFORM_PORTS[name]
+    from gateway.platform_registry import registered_trait
+    return tuple(registered_trait(name, "listen_port", ()) or ())
+
 
 # Platform states that mean the adapter is NOT serving its port right now.
 _PLATFORM_DEAD_STATES = frozenset({"fatal", "disconnected", "stopped"})
 
 
+def _stamped_port(state: dict) -> Optional[int]:
+    """The port an adapter really bound, from the ``listener_base`` it stamped into runtime status
+    (``BasePlatformAdapter._mark_connected``), else None (no bind, or a stamp with no port)."""
+    from urllib.parse import urlsplit
+    base = state.get("listener_base")
+    try:
+        return urlsplit(base).port if isinstance(base, str) and base else None
+    except ValueError:
+        return None
+
+
 def _profile_platform_ports(profile_home: Path, runtime: Optional[dict]) -> dict[str, int]:
     """Best-effort ``platform -> host TCP port`` for one profile's live gateway.
 
-    Ports come from the profile's own config.yaml (``gateway.platforms`` then top-level
-    ``platforms`` — later wins, matching load_gateway_config precedence), falling back to the
-    adapter default. Env-var overrides (e.g. WEBHOOK_PORT in that profile's .env) are not resolved.
+    A live adapter that stamped its real bind (``listener_base``) reports that port, so a plugin platform
+    the dashboard's own profile never loaded still shows; one that stamped None reports none. A record
+    without the field (an older gateway) takes ports from the profile's own
+    config.yaml (``gateway.platforms`` then top-level ``platforms`` — later wins, matching
+    load_gateway_config precedence), falling back to the adapter default. Env-var overrides (e.g.
+    WEBHOOK_PORT in that profile's .env) are not resolved on that path.
     """
     platforms = (runtime or {}).get("platforms") or {}
-    active = [
-        name for name, state in platforms.items()
-        if name in _PORT_BINDING_PLATFORM_PORTS
-        and isinstance(state, dict)
-        and state.get("state") not in _PLATFORM_DEAD_STATES]
+    live = {name: state for name, state in platforms.items()
+            if isinstance(state, dict) and state.get("state") not in _PLATFORM_DEAD_STATES}
+    ports: dict[str, int] = {name: port for name, state in live.items() if (port := _stamped_port(state))}
+    # A stamped None is "bound nothing"; only an older record without the field falls back to config.
+    active = [name for name, state in live.items() if "listener_base" not in state and _port_spec(name)]
     if not active:
-        return {}
+        return ports
 
     blocks: dict[str, dict] = {}
     try:
@@ -109,9 +133,8 @@ def _profile_platform_ports(profile_home: Path, runtime: Optional[dict]) -> dict
     except Exception:
         blocks = {}
 
-    ports: dict[str, int] = {}
     for name in active:
-        port_key, default_port = _PORT_BINDING_PLATFORM_PORTS[name]
+        port_key, default_port = _port_spec(name)
         block = blocks.get(name) or {}
         extra = block.get("extra") if isinstance(block.get("extra"), dict) else {}
         raw = block.get(port_key, (extra or {}).get(port_key, default_port))

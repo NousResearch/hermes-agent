@@ -1,14 +1,12 @@
 """Side-agent AIAgent instances must be closed on every exit path (#50197).
 
-Four long-lived surfaces build a one-shot ``AIAgent`` and, before this fix,
+Three long-lived surfaces build a one-shot ``AIAgent`` and, before this fix,
 never called ``close()`` — the owner boundary that releases memory-provider
 sessions, tool subprocesses and httpx clients:
 
 * ``batch_runner._process_single_prompt`` — one agent per prompt, N prompts
   per batch process: an unclosed agent leaked terminals/VMs/clients for the
   batch's whole run.
-* ``plugins.platforms/feishu/feishu_comment._run_comment_agent`` — one agent
-  per comment run in a long-lived gateway process.
 * ``tui_gateway/methods_prompt`` ``prompt.background`` — one side agent per
   background turn in the gateway process.
 * ``hermes_cli/cli_commands_mixin._handle_background_command`` — one agent
@@ -97,42 +95,6 @@ class TestBatchRunnerClosesAgent:
         result = batch_runner._process_single_prompt(0, {"prompt": "hi"}, 0, self.CONFIG)
 
         assert result["success"] is False
-        assert FailingAgent.instances[0].closed
-
-
-# ── feishu comment agent: one per comment run in the gateway ───────────────
-
-
-class TestFeishuCommentClosesAgent:
-    def _run(self, monkeypatch):
-        from plugins.platforms.feishu import feishu_comment
-
-        RecordingAgent.reset()
-        monkeypatch.setattr("run_agent.AIAgent", RecordingAgent)
-        monkeypatch.setattr(feishu_comment, "_resolve_model_and_runtime", lambda: ("m", {}))
-        # session_key="" keeps the cross-card history cache out of the test.
-        response = feishu_comment._run_comment_agent("hi", client=None, session_key="")
-        return response
-
-    def test_agent_closed_after_successful_comment(self, monkeypatch):
-        response = self._run(monkeypatch)
-        assert response == "ok"
-        assert len(RecordingAgent.instances) == 1
-        assert RecordingAgent.instances[0].closed
-
-    def test_agent_closed_when_run_fails(self, monkeypatch):
-        from plugins.platforms.feishu import feishu_comment
-
-        class FailingAgent(RecordingAgent):
-            def __init__(self, *args, **kwargs):
-                kwargs["_fail"] = True
-                super().__init__(*args, **kwargs)
-
-        FailingAgent.instances = []
-        monkeypatch.setattr("run_agent.AIAgent", FailingAgent)
-        monkeypatch.setattr(feishu_comment, "_resolve_model_and_runtime", lambda: ("m", {}))
-        response = feishu_comment._run_comment_agent("hi", client=None, session_key="")
-        assert response == ""
         assert FailingAgent.instances[0].closed
 
 

@@ -36,6 +36,35 @@ def installs(monkeypatch):
     return calls
 
 
+def test_a_tree_the_left_core_migrator_could_not_enable_is_owed_not_settled(tmp_path, installs):
+    """The left-core migrator placed a default plugin's tree but its enable was refused (its ``left-core.placed-*``
+    marker); nobody enabled or disabled it since. The default pass retries it instead of recording that tree as
+    an install the home already has, which would stop both installers retrying and leave the plugin off."""
+    home = tmp_path / "home"
+    (home / "plugins" / "accent-picker").mkdir(parents=True)
+    lcm._placed(home, "accent-picker").parent.mkdir(parents=True)
+    lcm._placed(home, "accent-picker").touch()
+
+    assert default_plugins.install_defaults(home, entries=[_entry("accent-picker")])["installed"] == ["accent-picker"]
+    assert installs == [(home, "accent-picker")]
+
+
+@pytest.mark.parametrize("listed", ["disabled", "enabled"])
+@pytest.mark.parametrize("name", ["platforms/feishu", "feishu-platform"])
+def test_a_core_era_choice_keeps_the_tree_the_left_core_migrator_could_not_enable(tmp_path, installs, name, listed):
+    """The same refused-enable tree, in a home whose ``plugins.disabled`` or ``plugins.enabled`` names Feishu by its
+    core-era key (the loader honours both): the user chose, so the default pass keeps that copy as it is (never
+    discards a working copy to retry a download that may fail)."""
+    home = tmp_path / "home"
+    (home / "plugins" / "feishu").mkdir(parents=True)
+    (home / "config.yaml").write_text(f"plugins:\n  {listed}: [{name}]\n", encoding="utf-8")
+    lcm._placed(home, "feishu").parent.mkdir(parents=True)
+    lcm._placed(home, "feishu").touch()
+
+    assert default_plugins.install_defaults(home, entries=[_entry("feishu")])["installed"] == []
+    assert installs == [] and (home / "plugins" / "feishu").is_dir()
+
+
 def test_default_is_installed_once_and_a_removal_sticks(tmp_path, installs):
     home = tmp_path / "home"
     home.mkdir()

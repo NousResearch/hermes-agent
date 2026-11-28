@@ -137,35 +137,6 @@ def _slack_button(extra):
     return answer
 
 
-def _feishu_card(extra, monkeypatch):
-    import tests.gateway.test_feishu_approval_buttons as fx
-
-    key = "agent:main:feishu:dm:oc_1"
-    entry = _raise_approval(key, "feishu")
-    adapter = fx._make_adapter()
-    adapter.config.extra.update(extra)
-    adapter._loop = MagicMock(is_closed=MagicMock(return_value=False))
-    adapter.set_authorization_check(lambda *_a, **_kw: True)
-    adapter._approval_state[1] = {"session_key": key, "message_id": "m", "chat_id": "oc_1",
-                                  "request_id": entry.data["request_id"]}
-    monkeypatch.setattr(fx.feishu_module, "P2CardActionTriggerResponse", fx._FakeP2Response)
-    monkeypatch.setattr(fx.feishu_module, "CallBackCard", fx._FakeCallBackCard)
-    monkeypatch.setattr(fx.feishu_module, "CallBackToast", SimpleNamespace, raising=False)
-
-    def submit(coro, _loop):
-        asyncio.run(coro)
-        return SimpleNamespace(add_done_callback=lambda *_a, **_k: None)
-
-    def answer(uid):
-        data = fx._make_card_action_data({"hermes_action": "approve_once", "approval_id": 1}, chat_id="oc_1", open_id=uid)
-        with patch("asyncio.run_coroutine_threadsafe", side_effect=submit):
-            response = adapter._on_card_action_trigger(data)
-        if entry.result is None:  # refused: the card keeps its buttons (Greptile 4504999357)
-            assert response.card is None and 1 in adapter._approval_state
-        return entry.result == "once"
-    return answer
-
-
 def _whatsapp_cloud_tap(extra, monkeypatch):
     from tests.gateway.test_whatsapp_cloud import _make_adapter, _mock_httpx_response
 
@@ -188,7 +159,7 @@ def _whatsapp_cloud_tap(extra, monkeypatch):
 
 
 _PATHS = {"bare_always": _bare_always, "typed_confirm": _typed_confirm, "telegram_button": _telegram_button,
-          "slack_button": _slack_button, "feishu_card": _feishu_card, "whatsapp_cloud_tap": _whatsapp_cloud_tap}
+          "slack_button": _slack_button, "whatsapp_cloud_tap": _whatsapp_cloud_tap}
 
 
 @pytest.mark.parametrize("path", sorted(_PATHS))

@@ -365,7 +365,7 @@ class TestSessionStoreSwitchSession:
         store._loaded = True
 
         source = SessionSource(
-            platform=Platform.FEISHU,
+            platform=Platform.MATTERMOST,
             chat_id="chat-1",
             chat_type="dm",
             user_id="user-1",
@@ -375,7 +375,7 @@ class TestSessionStoreSwitchSession:
         current_session_id = current_entry.session_id
 
         target_session_id = "old_session_abc"
-        seed_session(db, target_session_id, "feishu", user_id="user-1")
+        seed_session(db, target_session_id, "mattermost", user_id="user-1")
         db.sessions.end(target_session_id, "user_exit")
         assert session_row(db, target_session_id)["ended_at"] is not None
 
@@ -395,7 +395,7 @@ class TestSessionStoreSwitchSession:
         with patch("gateway.session.SessionStore._ensure_loaded"):
             store = SessionStore(sessions_dir=tmp_path / "sessions", config=GatewayConfig())
         store._loaded = True
-        source = SessionSource(platform=Platform.FEISHU, chat_id="chat-2", chat_type="dm", user_id="user-2")
+        source = SessionSource(platform=Platform.MATTERMOST, chat_id="chat-2", chat_type="dm", user_id="user-2")
         entry = store.get_or_create_session(source)
 
         assert store.switch_session(entry.session_key, "target", expected_session_id="someone-else") is None

@@ -559,7 +559,8 @@ def platform_serves_profile_prefix(platform_value: str) -> bool:
         from hermes_cli.plugins import discover_plugins
         discover_plugins()  # idempotent
         from gateway.platform_registry import platform_registry
-        entry = platform_registry.get(platform_value)
+        # A plugin installed only in a secondary registered in that profile's scope (its config read).
+        entry = platform_registry.get(platform_value) or platform_registry.loaded_entry_any_scope(platform_value)
         if entry is not None:
             factory = entry.adapter_factory
             if _declares(factory):
@@ -596,7 +597,8 @@ def _check_secondary_port_binders(plan: MigrationPlan, configs: dict[str, object
         if cfg is None:
             continue
         for platform, platform_config in cfg.platforms.items():
-            if not platform_config.enabled or not platform_binds_port(platform.value, platform_config.extra):
+            if not platform_config.enabled or not platform_binds_port(
+                    platform.value, platform_config.extra, home=profile.home):
                 continue
             if platform_serves_profile_prefix(platform.value):
                 plan.notices.append(

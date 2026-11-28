@@ -72,7 +72,7 @@ def _make_runner():
 
 def _make_source() -> SessionSource:
     return SessionSource(
-        platform=Platform.FEISHU,
+        platform=Platform.MATTERMOST,
         chat_id="ou_test",
         chat_type="dm",
         user_id="user-1",
@@ -190,7 +190,7 @@ async def test_run_agent_preserves_provider_request_overrides_on_gateway_path(mo
 
     runner = _make_runner()
     source = _make_source()
-    session_key = "agent:main:feishu:dm:ou_test"
+    session_key = "agent:main:mattermost:dm:ou_test"
 
     runner.session_store = SimpleNamespace(
         get_or_create_session=lambda _source: SimpleNamespace(session_id="session-1"),
@@ -245,7 +245,7 @@ async def test_reused_agent_turn_merges_request_overrides_not_overwrite(monkeypa
 
     runner = _make_runner()
     source = _make_source()
-    session_key = "agent:main:feishu:dm:ou_test"
+    session_key = "agent:main:mattermost:dm:ou_test"
 
     runner.session_store = SimpleNamespace(
         get_or_create_session=lambda _source: SimpleNamespace(session_id="session-1"),

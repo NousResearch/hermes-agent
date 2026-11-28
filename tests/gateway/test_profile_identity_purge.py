@@ -39,8 +39,8 @@ def _entry(session_key, chat_id, profile):
     now = _now()
     return SessionEntry(
         session_key=session_key, session_id=f"sid-{chat_id}",
-        platform=Platform.FEISHU, chat_type="dm", created_at=now, updated_at=now,
-        origin=SessionSource(platform=Platform.FEISHU, chat_id=chat_id, profile=profile),
+        platform=Platform.MATTERMOST, chat_type="dm", created_at=now, updated_at=now,
+        origin=SessionSource(platform=Platform.MATTERMOST, chat_id=chat_id, profile=profile),
     )
 
 
@@ -78,8 +78,8 @@ async def test_unserve_profile_keeps_identity_for_a_rename_to_rekey(tmp_path):
     from gateway.run_profile_reconcile import GatewayProfileReconcileMixin
     store = _make_store(tmp_path)
     with store._lock:
-        store._entries["agent:oldname:feishu:dm:chatA"] = _entry(
-            "agent:oldname:feishu:dm:chatA", "chatA", "oldname")
+        store._entries["agent:oldname:mattermost:dm:chatA"] = _entry(
+            "agent:oldname:mattermost:dm:chatA", "chatA", "oldname")
     db = _state_db()
     db.maintenance.register_backend_heartbeat(
         backend_id="be1", pid=1, started_at=time.time(), profile="oldname", host="h")
@@ -89,7 +89,7 @@ async def test_unserve_profile_keeps_identity_for_a_rename_to_rekey(tmp_path):
     home.mkdir()
     await GatewayProfileReconcileMixin._unserve_profile(_runner_stub(store), "oldname", home)
 
-    assert "agent:oldname:feishu:dm:chatA" in store._entries
+    assert "agent:oldname:mattermost:dm:chatA" in store._entries
     db = _state_db()
     try:
         assert raw_holder(db)._read_one(
@@ -104,10 +104,10 @@ def test_purge_verb_drops_routing_identity_and_reports_ok(tmp_path):
     from gateway.run_profile_reconcile import purge_profile_identity_verb
     store = _make_store(tmp_path)
     with store._lock:
-        store._entries["agent:gone:feishu:dm:chatA"] = _entry(
-            "agent:gone:feishu:dm:chatA", "chatA", "gone")
-        store._entries["agent:keepme:feishu:dm:chatB"] = _entry(
-            "agent:keepme:feishu:dm:chatB", "chatB", "keepme")
+        store._entries["agent:gone:mattermost:dm:chatA"] = _entry(
+            "agent:gone:mattermost:dm:chatA", "chatA", "gone")
+        store._entries["agent:keepme:mattermost:dm:chatB"] = _entry(
+            "agent:keepme:mattermost:dm:chatB", "chatB", "keepme")
     db = _state_db()
     db.maintenance.register_backend_heartbeat(
         backend_id="be1", pid=1, started_at=time.time(), profile="gone", host="h")
@@ -117,8 +117,8 @@ def test_purge_verb_drops_routing_identity_and_reports_ok(tmp_path):
 
     assert answer["ok"] is True
     assert answer["dropped"] == 1
-    assert "agent:gone:feishu:dm:chatA" not in store._entries
-    assert "agent:keepme:feishu:dm:chatB" in store._entries
+    assert "agent:gone:mattermost:dm:chatA" not in store._entries
+    assert "agent:keepme:mattermost:dm:chatB" in store._entries
     db = _state_db()
     try:
         assert raw_holder(db)._read_one(

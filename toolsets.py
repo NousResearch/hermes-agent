@@ -37,10 +37,6 @@ _HERMES_CORE_TOOLS = [
 
 # Webhook payloads are untrusted third-party content: no file/system execution.
 _HERMES_WEBHOOK_SAFE_TOOLS = ["web_search", "web_extract", "vision_analyze", "clarify"]
-_FEISHU_TOOLS = [
-    "feishu_doc_read", "feishu_drive_list_comments", "feishu_drive_list_comment_replies",
-    "feishu_drive_reply_comment", "feishu_drive_add_comment",
-]
 
 
 def _ts(description, tools=(), includes=(), **extra):
@@ -162,8 +158,6 @@ TOOLSETS = {
     ),
     "discord": _ts("Discord read and participate tools (fetch messages, search members, create threads)", ["discord"]),
     "discord_admin": _ts("Discord server management (list channels/roles, pin messages, assign roles)", ["discord_admin"]),
-    "feishu_doc": _ts("Read Feishu/Lark document content", ["feishu_doc_read"]),
-    "feishu_drive": _ts("Feishu/Lark document comment operations (list, reply, add)", _FEISHU_TOOLS[1:]),
 
     # Scenario-specific toolsets
     "debugging": _ts("Debugging and troubleshooting toolkit", ["terminal", "process_manage"], includes=["web", "file"]),
@@ -212,7 +206,6 @@ TOOLSETS = {
     "hermes-mattermost": _bundle("Mattermost bot toolset - self-hosted team messaging (full access)"),
     "hermes-matrix": _bundle("Matrix bot toolset - decentralized encrypted messaging (full access)"),
     "hermes-dingtalk": _bundle("DingTalk bot toolset - enterprise messaging platform (full access)"),
-    "hermes-feishu": _bundle("Feishu/Lark bot toolset - enterprise messaging via Feishu/Lark (full access)", _FEISHU_TOOLS),
     "hermes-weixin": _bundle("Weixin bot toolset - personal WeChat messaging via iLink (full access)"),
     "hermes-qqbot": _bundle("QQBot toolset - QQ messaging via Official Bot API v2 (full access)"),
     "hermes-wecom": _bundle("WeCom bot toolset - enterprise WeChat messaging (full access)"),
@@ -226,7 +219,7 @@ TOOLSETS = {
             "hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack",
             "hermes-signal", "hermes-bluebubbles", "hermes-email",
             "hermes-sms", "hermes-mattermost", "hermes-matrix", "hermes-dingtalk",
-            "hermes-feishu", "hermes-wecom", "hermes-wecom-callback", "hermes-weixin",
+            "hermes-wecom", "hermes-wecom-callback", "hermes-weixin",
             "hermes-qqbot", "hermes-webhook",
         ],
     ),
@@ -261,6 +254,18 @@ def _registry_call(method: str, default):
 def _registry_generation() -> tuple[int, int]:
     reg = _registry()
     return (id(reg), getattr(reg, "_generation", 0)) if reg is not None else (0, 0)
+
+
+def _left_core_bundle(name: str, registry: Any) -> Optional[dict[str, Any]]:
+    """Core's ``hermes-<platform>`` bundle for a platform that left core with tools (``hermes-feishu``: the core
+    tools plus feishu_doc + feishu_drive), so a saved explicit selection keeps resolving. Only in a profile where
+    the plugin registered every one of those toolsets; elsewhere the name stays unknown, as no bundled code is
+    left to back it."""
+    from hermes_cli.left_core_migration import legacy_bundle_toolsets
+    includes = legacy_bundle_toolsets(name)
+    if not includes or not all(registry.get_tool_names_for_toolset(part) for part in includes):
+        return None
+    return _ts(f"Platform bundle from before {name[len('hermes-'):]} left core", _HERMES_CORE_TOOLS, includes)
 
 
 def get_toolset(name: str, *, include_registry: bool = True) -> Optional[dict[str, Any]]:
@@ -302,7 +307,7 @@ def get_toolset(name: str, *, include_registry: bool = True) -> Optional[dict[st
     else:
         registry_toolset = registry.get_toolset_alias_target(name)
         if not registry_toolset:
-            return None
+            return _left_core_bundle(name, registry)
         description = f"MCP server '{name}' tools"
     return {"description": description, "tools": registry.get_tool_names_for_toolset(registry_toolset), "includes": []}
 
@@ -485,7 +490,8 @@ def agent_tool_surface(agent: Any, tools: list[dict[str, Any]]) -> list[dict[str
 
 def validate_toolset(name: str) -> bool:
     return (name in {"all", "*"} or name in TOOLSETS
-            or name in _get_plugin_toolset_names() or name in _get_registry_toolset_aliases())
+            or name in _get_plugin_toolset_names() or name in _get_registry_toolset_aliases()
+            or (name.startswith("hermes-") and get_toolset(name) is not None))
 
 
 def create_custom_toolset(name: str, description: str, tools: list[str] | None = None, includes: list[str] | None = None) -> None:

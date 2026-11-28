@@ -32,7 +32,8 @@ def _spy(module, name):
 
 
 for _name in ('discover_plugins', 'start_background_plugin_discovery', 'fire_pre_command_hook', 'invoke_hook',
-              'get_plugin_manager', 'get_plugin_toolset_keys_nowait', 'get_portable_mcp_server_names_nowait',
+              'get_plugin_manager', 'get_plugin_toolset_keys_nowait', 'get_plugin_toolset_view_nowait',
+              'get_portable_mcp_server_names_nowait',
               'get_plugin_toolsets', 'get_plugin_commands'):
     _spy(plugins, _name)
 _spy(skill_commands, 'get_plugin_skill_commands')

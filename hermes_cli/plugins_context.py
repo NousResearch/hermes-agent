@@ -283,8 +283,14 @@ class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
         self, name: str, toolset: str, schema: dict, handler: Callable,
         check_fn: Callable | None = None, requires_env: list | None = None, is_async: bool = False,
         description: str = "", emoji: str = "", override: bool = False,
+        default_platforms: tuple[str, ...] | list[str] = (),
     ) -> Optional[PluginRegistration]:
-        """Register a tool in the global registry and track it as plugin-provided. ``override=True``
+        """Register a tool in the global registry and track it as plugin-provided. ``default_platforms``
+        names the platforms the tool's toolset is on for until the user saves a choice in ``hermes tools``
+        (empty: every platform, which keeps the whole toolset on everywhere — a toolset is scoped only when
+        every tool in it names platforms, to their union); a tool that only works on one platform should not
+        ride along elsewhere.
+        ``override=True``
         replaces a same-named built-in (without it a name claimed by another toolset is rejected) and
         needs operator opt-in via ``plugins.entries.<plugin_id>.allow_tool_override: true`` — otherwise
         any enabled plugin could silently replace a privileged built-in like ``write_file`` (#23194)."""
@@ -304,7 +310,7 @@ class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
         registry.register(
             name=name, toolset=toolset, schema=schema, handler=handler, check_fn=check_fn,
             requires_env=requires_env, is_async=is_async, description=description, emoji=emoji,
-            override=override, scope=scope,
+            override=override, scope=scope, default_platforms=default_platforms,
         )
         registered = registry.snapshot_registration(name, scope=scope)
         handle = None

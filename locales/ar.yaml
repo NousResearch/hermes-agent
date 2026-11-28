@@ -1408,34 +1408,6 @@ platform:
     reaction:
       unauthorized: "لا يمكن استخدام عناصر التحكم هذه إلا لمستخدم Matrix مصرّح له."
       not_requester: "لا يمكن استخدام عناصر التحكم هذه إلا للمستخدم الذي طلب هذا الإجراء."
-  feishu:
-    clarify:
-      title: "Hermes يحتاج إلى ردّك"
-      other: "✏️ غير ذلك (اكتب الإجابة)"
-      awaiting_typed: "بانتظار رد مكتوب من {user}…"
-    picker:
-      apply_error: "خطأ في تطبيق الاختيار: {error}"
-    approval:
-      action_session: "الجلسة"
-      action_always: "دائمًا"
-      resolved_once: "تمت الموافقة مرة واحدة"
-      resolved_session: "تمت الموافقة للجلسة"
-      resolved_always: "تمت الموافقة بشكل دائم"
-      resolved_deny: "مرفوض"
-      resolved_fallback: "تم البتّ"
-      resolved_by_user: "{icon} **{label}** بواسطة {user}"
-    update_prompt:
-      title: "☤ التحديث يحتاج إلى ردّك"
-      default_hint: "\n\nالافتراضي: `{default}`"
-      answer_yes: "✓ نعم"
-      answer_no: "✗ لا"
-      word_yes: "نعم"
-      word_no: "لا"
-      answered_title: "{icon} تمت الإجابة على مطالبة التحديث: {answer}"
-      answered_by: "أجاب **{user}**"
-    media:
-      gif_downgraded: "[تم تحويل GIF إلى ملف]"
-      gif_downgraded_caption: "[تم تحويل GIF إلى ملف]\n{caption}"
   google_chat:
     clarify:
       other_button: "غير ذلك / اكتب إجابة"

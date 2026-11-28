@@ -270,6 +270,20 @@ def test_a_hung_up_connection_rereads_the_plugin_toolsets(monkeypatch):
     assert [m for m, _ in conn.calls].count("plugins.list") == 2
 
 
+def test_a_gateway_session_keeps_a_plugin_toolset_to_its_default_platforms(monkeypatch):
+    """A classic CLI on a gateway session resolves plugin toolsets from the gateway's ``plugins.list``,
+    including the platforms one defaults on for: off for the CLI, on for its own platform."""
+    from hermes_cli import gateway_plugin_commands, tools_config
+    conn = _Conn({}, reply={"toolsets": [{"key": "scoped-ts", "default_platforms": ["slack"]}, {"key": "any-ts"}]})
+    c = _cli(monkeypatch, conn)
+    monkeypatch.setattr(tools_config, "_gateway_plugin_toolsets", lambda: gateway_plugin_commands.toolsets(c))
+    monkeypatch.setattr(tools_config, "_gateway_plugin_toolset_platforms",
+                        lambda: gateway_plugin_commands.toolset_default_platforms(c))
+    cli_enabled = tools_config._get_platform_tools({}, "cli")
+    assert "any-ts" in cli_enabled and "scoped-ts" not in cli_enabled
+    assert "scoped-ts" in tools_config._get_platform_tools({}, "slack")
+
+
 def test_a_reply_that_is_no_plugin_run_is_reported(monkeypatch, capsys):
     """The gateway lost the plugin between lookup and ``slash.exec`` and answered for a same-named
     skill (``type: skill``): nothing ran, and the input must not vanish without a word."""
@@ -440,3 +454,27 @@ def test_the_open_sessions_catalog_is_read_and_an_older_gateway_is_asked_without
     assert gateway_plugin_commands.lookup(c, "mcp-status") is True
     assert [p for m, p in conn.calls if m == "commands.catalog"][-2:] == [{"session_id": "local-t"}, {}]
     assert local_plugin_reads == []
+
+
+def test_the_gateway_plugins_list_reply_carries_default_platforms_under_its_contract(monkeypatch, tmp_path):
+    """The gateway's real ``plugins.list`` handler sends each toolset's ``default_platforms``; the wire
+    contract (``extra="forbid"``) must accept that reply, or strict checks reject every listing."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from gateway.session_discovery import list_plugins
+    from hermes_cli import plugins as plugins_mod
+    from tui_gateway.contracts import METHODS
+
+    manager = SimpleNamespace(list_plugins=list, get_portable_mcp_servers=list)
+    monkeypatch.setattr(plugins_mod, "discover_plugins", lambda: None)
+    monkeypatch.setattr(plugins_mod, "get_plugin_manager", lambda: manager)
+    monkeypatch.setattr(plugins_mod, "get_plugin_toolsets", lambda: [("scoped-ts", "Scoped", "")])
+    monkeypatch.setattr(plugins_mod, "get_plugin_toolset_default_platforms", lambda: {"scoped-ts": {"slack"}})
+    home = tmp_path / "profile"
+    home.mkdir()
+    authority = SimpleNamespace(profile_id=str(home))
+    actor = SimpleNamespace(capabilities={"session:read"}, profile_id=str(home))
+    reply = asyncio.run(list_plugins(authority, actor, {}))
+    assert reply["toolsets"][0]["default_platforms"] == ["slack"]
+    METHODS["plugins.list"].result.model_validate(reply)

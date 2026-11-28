@@ -562,7 +562,11 @@ def _load_yaml_layer(home: Path, gw_data: dict) -> None:
     gateway_section = yaml_cfg.get("gateway")
     bridge_toplevel_keys(yaml_cfg, gateway_section, gw_data)
     gateway_platforms = gateway_section.get("platforms") if isinstance(gateway_section, dict) else None
-    platforms_data = merge_platform_sections(yaml_cfg, gateway_section, gw_data)
+    # A platform that left core is not a Platform() name before its plugin registers it below: its
+    # ``gateway.<name>`` shorthand counts by name, as in ``platform_blocks``.
+    from hermes_cli.left_core_migration import LEFT_CORE
+    moved = frozenset(f.platform for f in LEFT_CORE if f.platform)
+    platforms_data = merge_platform_sections(yaml_cfg, gateway_section, gw_data, also=moved)
 
     try:
         from hermes_cli.plugins import discover_plugins
@@ -587,7 +591,7 @@ def _load_yaml_layer(home: Path, gw_data: dict) -> None:
     targets = shared_loop_targets(registry, None if entries is None else [e for e in entries if e.source == "plugin"])
     # "Authored" is config.yaml only: a scratch merge leaves out the legacy gateway.json extra
     # already in ``platforms_data``, which stays the base layer every config.yaml key overrides.
-    authored = snapshot_authored_extra(merge_platform_sections(yaml_cfg, gateway_section, {}))
+    authored = snapshot_authored_extra(merge_platform_sections(yaml_cfg, gateway_section, {}, also=moved))
     from hermes_cli import managed_scope
     managed_extra = _apply_managed_extra(authored, managed_scope.apply_managed_overlay({}), platforms_data)
     warned: set = set()  # one warning per conflicting (platform, key) across both copy sites

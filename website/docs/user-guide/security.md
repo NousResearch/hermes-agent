@@ -332,6 +332,12 @@ Picker cards (`/model`, `/reasoning`, `/fast` and the usage-limit switch offer) 
 
 The setting is read when the approval is raised, so with multiplexed profiles each profile's own `config.yaml` decides. Host surfaces (CLI, TUI, Desktop, the API server) answer as the host and are not affected. Matrix keeps its own stricter `MATRIX_APPROVAL_REQUIRE_SENDER` (default on). QQBot already accepts clicks only from the session's own user.
 
+#### Approvals nobody can answer
+
+If a chat has no way to show the prompt to anyone allowed to answer it, Hermes doesn't wait for the timeout. The command is denied at once, and the agent is told why, so it can tell you instead of stalling. Saved session approvals and smart-approval verdicts don't apply there either. Which chats this covers is decided per platform.
+
+With admin-only approval buttons (`require_admin_for_exec_approval` under a platform's `extra`), this includes a non-admin's own DM: only they can see the prompt, and they aren't allowed to answer it. In group chats the prompt is still shown, since an admin may be there to answer it.
+
 ### Permanent Allowlist
 
 Commands approved with "always" are saved to `~/.hermes/config.yaml`:

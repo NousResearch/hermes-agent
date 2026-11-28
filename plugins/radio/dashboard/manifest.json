@@ -1,0 +1,8 @@
+{
+  "name": "radio",
+  "label": "Radio",
+  "description": "Directory, stream inspection and station log backend for the bundled Radio desktop player",
+  "version": "1.0.0",
+  "api": "plugin_api.py",
+  "tab": { "hidden": true }
+}

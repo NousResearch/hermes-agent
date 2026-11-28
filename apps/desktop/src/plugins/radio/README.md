@@ -12,16 +12,36 @@ website link. Next changes stations; live broadcasts do not support skipping
 songs. Pause releases the stream; playing again returns to live.
 
 Presets include Nightride FM, Radio Paradise, and EVE Radio (GamingNow).
-Search combines local stations with [Radio Browser](https://api.radio-browser.info/)
-results, accepts HTTPS non-HLS streams, and deduplicates by ID and URL.
-Pins, station, and volume use plugin-scoped local storage.
+The first launch copies that list into plugin storage. After that, the stored
+list is authoritative: you can add an http or https stream by address, edit a
+station's name and address in one form, and delete a stored station by clicking
+its delete control twice. Delete is intentionally deliberate so a stray click
+cannot remove a station. Restoring defaults adds back shipped stations that are
+missing; it does not overwrite names you changed or remove stations you added.
+Userinfo in stream URLs is rejected, and website links remain https only.
+
+Search has four sources. All mixes your stations with [Radio Browser](https://api.radio-browser.info/)
+name results; Popular uses its most-voted list; Shoutcast and TuneIn search their
+directories through the bundled backend. Every source pages as the list scrolls
+and stops when a page adds nothing new. Tags narrow a query: `country:uk` maps
+to GB, `genre:jazz` selects a tag, and a Cyrillic name is also searched in Latin
+spelling. Results deduplicate by ID and URL. HLS rows are left out and counted,
+because this build has no HLS media pipeline; the panel says how many were hidden.
+Pins, station, volume, the station list, and the launch preference use
+plugin-scoped local storage. A settings page under Plugins ▸ Radio has "Start the
+last station on launch" (off by default) and "Restore the default stations".
+Without the launch preference, enabling the plugin does not start audio.
 
 ## Plugin boundary
 
 `plugin.js` imports only `@hermes/plugin-sdk`, `react`, and
 `react/jsx-runtime`. Existing bundled discovery finds it automatically;
-`defaultEnabled: false` uses the ordinary live enable toggle. No shell,
-SDK, backend, dependency, or registry changes are needed.
+`defaultEnabled: false` uses the ordinary live enable toggle. The directory,
+stream inspection, track-title and station-log routes live in the bundled
+`plugins/radio/dashboard/` backend, mounted under `/api/plugins/radio/`; no new
+shell, SDK surface, dependency, or registry entry is needed. The renderer works
+without those routes: directory chips and the track line report that the backend
+is missing instead of failing silently.
 
 The same plain-ESM file can be loaded through the runtime plugin door at
 `$HERMES_HOME/desktop-plugins/radio/plugin.js` for development. Do not install
@@ -35,8 +55,10 @@ service. Other windows pause when a window starts playing.
 Both waveform sizes use real audio samples, with two dim previous traces.
 Silence stays flat; reduced motion freezes the display. Streams that cannot
 be analysed retry without CORS and show an activity indicator, not invented
-levels. Nightride and EVE Radio song metadata is fetched while the picker is
-open and playback is active. Artist names link directly to their profile, never
+levels. The track line reads ICY metadata from the playing stream through the
+backend, so a directory row or an address you added gets a title too. A stream
+that will not play shows the media error and its host in the panel. Artist names
+link directly to their profile, never
 search results or a song. Apple's public artist lookup resolves unambiguous exact
 names to Apple Music profiles. MusicBrainz is a fallback for Spotify, Bandcamp,
 or official artist homepages. Missing or ambiguous matches stay plain text, with
@@ -45,10 +67,17 @@ while the picker shows live metadata; results are cached for a day. MusicBrainz
 requests are paced across windows. No account or API key is needed.
 
 Audio connects directly to broadcasters. Searches send the typed station query
-to Radio Browser. There are no accounts, keys, analytics, recording, or
-rebroadcasting. Disabled plugins perform no work; enabling does not autoplay.
-Stream availability, regional restrictions, and metadata vary. Hermes is not
-endorsed by these broadcasters.
+to Radio Browser, or to Shoutcast and TuneIn through the local backend, which
+also reads ICY track titles and probes a stream address when you add one or when
+playback fails. Outbound addresses are checked against Hermes' URL-safety policy,
+including after redirects, so the routes cannot be used to scan a private network.
+Station failures use `console.error` and a backend log under the active Hermes
+home's `plugin-data/radio/station-log.jsonl`; the log records station name,
+address, reason, and time. TuneIn is reached through an undocumented endpoint;
+enable that source only when its terms are acceptable to you. There are no
+accounts, keys, analytics, recording, or rebroadcasting. Disabled plugins
+perform no work. Stream availability, regional restrictions, and metadata vary.
+Hermes is not endorsed by these broadcasters.
 
 ## References
 

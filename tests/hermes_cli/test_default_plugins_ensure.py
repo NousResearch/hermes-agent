@@ -393,7 +393,8 @@ def test_cli_subprocess_ensure_json_with_cached_catalog_and_fast_path(tmp_path):
     )
     repo = Path(__file__).resolve().parents[2]
     env = {k: v for k, v in os.environ.items() if not k.startswith("HERMES_")}
-    env.update(HERMES_HOME=str(home), HOME=str(tmp_path), PYTHONPATH=str(repo))
+    # The ensure must run (and settle), not skip under the suite's no-fetch rule.
+    env.update(HERMES_HOME=str(home), HOME=str(tmp_path), PYTHONPATH=str(repo), HERMES_DISABLE_LAZY_INSTALLS="0")
 
     # First run reads fresh local cache and writes settled marker.
     p1 = subprocess.run(

@@ -38,6 +38,10 @@ just test tests/agent/test_foo.py -k test_x             # same runner; refuses t
   wall-clock bounds ≥ 2s, event-based sync, no `assert not _wait_until(...)` races. A new
   non-zero `time.sleep`/`asyncio.sleep` in a test fails the ratchet (HX013): wait on an Event or
   poll with `tests.waiting.wait_until` / `async_wait_until`.
+- **No lazy installs, children included.** `HERMES_DISABLE_LAZY_INSTALLS=1` reaches every child,
+  even one whose `env=` was rebuilt or `HERMES_*`-scrubbed (`tests/_fixtures/child_lazy_install_fence.py`):
+  a real gateway/CLI in a fresh home otherwise spawns the detached default-plugins installer. A child
+  that must install for real passes `HERMES_DISABLE_LAZY_INSTALLS="0"`.
 - **Placement mirrors the source tree.** A test lives in `tests/<top-level source dir>/` (`tests/hermes_cli/`,
   `tests/agent/`, `tests/cron/`, `tests/gateway/relay/`, ...); installer/updater script tests
   under `tests/scripts/{install,desktop_update}/`. Only tests of root-level modules (`batch_runner`,

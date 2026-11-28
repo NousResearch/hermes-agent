@@ -103,7 +103,8 @@ def test_a_gateway_start_beside_the_default_pass_installs_once_and_reports_no_fa
     (home / "config.yaml").write_text("_config_version: 1\n", encoding="utf-8")
     repo = _plugin_repo(tmp_path)
     env = {k: v for k, v in os.environ.items() if not k.startswith(("HERMES_", "PYTHONPATH"))}
-    env.update(HOME=str(tmp_path), HERMES_HOME=str(home), PYTHONPATH=str(Path(lcm.__file__).parents[1]))
+    env.update(HOME=str(tmp_path), HERMES_HOME=str(home), PYTHONPATH=str(Path(lcm.__file__).parents[1]),
+               HERMES_DISABLE_LAZY_INSTALLS="0")  # both passes install for real (from a local repo)
     args = [str(repo), str(signals)]
     default_pass = subprocess.Popen([sys.executable, "-c", _DEFAULT_PASS, "a", *args], env=env,
                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)

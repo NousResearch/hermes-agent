@@ -5,6 +5,7 @@ desktop UI wiring, HUD surface note. Bodies are rebound onto server.py's globals
 from __future__ import annotations
 
 import contextlib
+import sys
 
 from .method_ctx import bind_module
 
@@ -46,6 +47,35 @@ def _notif_resolve_event_key(evt_key: str, session: dict | None = None) -> str:
         return evt_key
 
 
+_GATEWAY_QUEUE_EVENT_TYPES = frozenset({
+    "async_delegation", "heartbeat", "watch_match", "watch_disabled",
+    "watch_overflow_tripped", "watch_overflow_released",
+})
+
+
+def _notif_gateway_owns_event(evt: dict, evt_key: str = "") -> bool:
+    """True when a live in-process GatewayRunner drains ``evt`` from ``completion_queue``.
+
+    A gateway hosting embedded TUI/workstream sessions shares ``process_registry.completion_queue``
+    with their pollers; without this check a TUI poller treats a gateway-routed event as unowned,
+    parks it out of ``_async_delegation_watcher``'s reach until TTL expiry, and drops every later
+    orphan-sweep replay. Only event types drained by ``_async_delegation_watcher`` /
+    ``_drain_gateway_watch_events`` qualify (process ``completion`` uses per-process watchers).
+    """
+    if evt.get("type", "completion") not in _GATEWAY_QUEUE_EVENT_TYPES:
+        return False
+    runner_mod = sys.modules.get("gateway.run")
+    runner_ref = getattr(runner_mod, "_gateway_runner_ref", None)
+    runner = runner_ref() if callable(runner_ref) else None
+    loop = getattr(runner, "_gateway_loop", None) if runner is not None else None
+    if not getattr(runner, "_running", False) or loop is None or not loop.is_running():
+        return False
+    key = evt_key or str(evt.get("session_key") or "")
+    if key.startswith("agent:"):
+        return True
+    return bool(evt.get("origin_session_id")) or str(evt.get("platform") or "").strip().lower() == "api_server"
+
+
 def _notification_event_belongs_elsewhere(sid: str, session: dict, evt: dict) -> bool:
     """True if ``evt`` is owned by a *different* live session. Background completions carry the ``session_key`` of the
     session that started the work; async delegation completions also carry ``origin_ui_session_id`` (the live TUI tab)."""
@@ -58,6 +88,8 @@ def _notification_event_belongs_elsewhere(sid: str, session: dict, evt: dict) ->
         # Exact UI tab gone: fall through to durable session_key routing so a resumed continuation with the same
         # key/lineage can still claim it.
     evt_key = str(evt.get("session_key") or "")
+    if not evt_ui_sid and _notif_gateway_owns_event(evt, evt_key):
+        return True
     if not evt_key:
         return False
     current_keys = _notif_current_keys(sid, session)
@@ -105,9 +137,12 @@ def _session_owns_notification_event(sid: str, session: dict, evt: dict) -> bool
             and not (_session_has_live_transport(session)
                      or (_stdio_is_rpc_channel and session.get("transport") is _stdio_transport))):
         return False
-    if str(evt.get("origin_ui_session_id") or "") == str(sid or ""):
+    evt_ui_sid = str(evt.get("origin_ui_session_id") or "")
+    if evt_ui_sid == str(sid or ""):
         return True
     evt_key = str(evt.get("session_key") or "")
+    if not evt_ui_sid and _notif_gateway_owns_event(evt, evt_key):
+        return False
     current_keys = _notif_current_keys(sid, session)
     return bool(evt_key) and (evt_key in current_keys or _notif_resolve_event_key(evt_key, session) in current_keys)
 

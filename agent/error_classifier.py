@@ -441,16 +441,33 @@ _ACCOUNT_POLICY_BLOCK_PATTERNS = ("blocked for a previous policy violation",)
 # fallback immediately. Each phrase is verbatim from one provider (Codex cyber
 # flags #18028, OpenAI moderation, Anthropic safety, Azure token, MiniMax
 # #32421, CommandCode gateway moderation #115218, Alibaba Model Studio
-# guardrail `data_inspection_failed`, input and output side) — never a generic
+# guardrail `data_inspection_failed`, input and output side, z-ai content filter,
+# and the bodies opencode's provider-error corpus pins: OpenAI `invalid_prompt`
+# usage-policy and images safety-system rejections, Anthropic blocked output,
+# Gemini terms-of-use 403, Z.ai 1301, Google safety violations) — never a generic
 # word like "policy" that collides with billing/auth.
-# "content_filter" deliberately excludes the space variant seen in echoed config.
+# "content_filter" deliberately excludes the space variant seen in echoed config;
+# the z-ai "Request blocked by content filter" 403 (2026-09-12, 61 misrouted
+# retries as auth-fallback) is caught by its full sentence instead.
 _CONTENT_POLICY_BLOCKED_PATTERNS = (
     "flagged for possible cybersecurity risk", "trusted access for cyber",
     "violates our usage policies", "violates openai's usage policies", "your request was flagged by",
     "prompt was flagged by our safety", "responses cannot be generated due to safety",
     "content_filter", "responsibleaipolicyviolation", "new_sensitive",
     "content exists risk", "data may contain inappropriate content", "data_inspection_failed",
+    "request blocked by content filter",
+    "potentially violating our usage policy", "blocked by content filtering policy",
+    "rejected by the safety system", "rejected as a result of our safety system",
+    "rejected in accordance with our terms of use", "detected potentially unsafe or sensitive content",
+    "blocked due to safety violations", "claude refused to respond",
 )
+# Structured refusal codes (``error.code`` / ``error.type`` / OpenRouter ``metadata.error_type`` /
+# Anthropic-skin ``error.error_type``): OpenAI's cyber safeguard as a 400 or a mid-stream frame,
+# OpenRouter typed policy errors, OpenAI image moderation, Alibaba's CamelCase guardrail code.
+_CONTENT_POLICY_CODES = frozenset({
+    "cyber_policy", "content_policy_violation", "image_content_policy_violation", "moderation_blocked",
+    "datainspectionfailed", "refusal",
+})
 
 # Aggregator prompt-injection guardrails (OpenRouter Guardrails' regex detector): the platform
 # scanned the request payload and rejected it before any model was contacted. These scan all
@@ -965,6 +982,16 @@ def _is_gemini_prompt_block(error: Exception) -> bool:
     return _from_cause_chain(error, _gemini_prompt_block_marker, False)
 
 
+def _has_content_policy_code(c: _Ctx) -> bool:
+    """A structured refusal code: ``error.code``/``type`` (``c.code``), OpenRouter's
+    ``error.metadata.error_type``, or the ``error.error_type`` its Anthropic skin sends."""
+    err = _error_obj(c.body)
+    meta = err.get("metadata")
+    typed = (err.get("error_type"), meta.get("error_type") if isinstance(meta, dict) else None)
+    return c.code in _CONTENT_POLICY_CODES or any(
+        isinstance(t, str) and t.strip().lower() in _CONTENT_POLICY_CODES for t in typed)
+
+
 def _gemini_prompt_block_marker(exc: Any) -> Optional[bool]:
     is_block = type(exc).__name__ == "GeminiAPIError" and getattr(exc, "code", None) == "gemini_prompt_blocked"
     return True if is_block else None
@@ -981,7 +1008,9 @@ def _provider_special_cases(c: _Ctx) -> Optional[Verdict]:
         return welcome
     # Safety refusal before status classification so a 400 block isn't downgraded
     # to format_error and a status-less block isn't left retryable (#18028).
-    if any(p in msg for p in _CONTENT_POLICY_BLOCKED_PATTERNS) or _is_gemini_prompt_block(c.error):
+    if any(p in msg for p in _CONTENT_POLICY_BLOCKED_PATTERNS) or _is_gemini_prompt_block(c.error) or (
+        _has_content_policy_code(c)
+    ):
         return _V_CONTENT_BLOCKED
     # A prompt-injection guardrail block (OpenRouter Guardrails) before status classification:
     # its "Request blocked: …" body would otherwise be swallowed by the generic "request

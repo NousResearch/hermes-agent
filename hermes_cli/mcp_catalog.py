@@ -52,7 +52,7 @@ class AuthSpec:
 
 
 # ``auth.oauth`` keys a manifest may pin; everything else is a user-side tuning knob.
-_MANIFEST_OAUTH_KEYS = frozenset({"client_id", "client_secret", "redirect_host", "redirect_port", "scope"})
+_MANIFEST_OAUTH_KEYS = frozenset({"client_id", "client_secret", "redirect_host", "redirect_port", "scope", "flow"})
 _ENV_REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 
@@ -221,6 +221,8 @@ def _parse_auth(path: Path, raw: Any, name: str, http: bool) -> AuthSpec:
             f"{path}: auth.oauth allows string/int values for {sorted(_MANIFEST_OAUTH_KEYS)} only"
             + (f" (unknown: {unknown})" if unknown else "")
         )
+    if "flow" in oauth and oauth["flow"] not in {"browser", "device"}:
+        raise CatalogError(f"{path}: auth.oauth.flow must be browser or device")
     # Same contract as api_key headers: install_entry persists only DECLARED env vars, so an
     # undeclared ``${VAR}`` would reach the OAuth flow as a literal placeholder (invalid_client).
     declared = {spec.name for spec in env_list}
@@ -810,10 +812,16 @@ def _install_entry(entry: CatalogEntry, *, enable: bool, preloaded_env: Optional
             Colors.YELLOW)
     elif entry.auth.type == "oauth":
         client = "your pre-registered OAuth client" if entry.auth.oauth.get("client_id") else "native OAuth 2.1"
-        _say(
-            f"  This MCP uses {client}; tokens will be acquired "
-            "on first connection (browser flow).",
-            Colors.DIM)
+        if entry.auth.oauth.get("flow") == "device":
+            _say(
+                f"  This MCP uses {client}; run `hermes mcp login {entry.name} --flow device` "
+                "to authorize. Device login is never started by a background connection.",
+                Colors.DIM)
+        else:
+            _say(
+                f"  This MCP uses {client}; tokens will be acquired "
+                "on first connection (browser flow).",
+                Colors.DIM)
 
     # Read prior user selection BEFORE overwriting the entry so a reinstall preserves it.
     prior_selection = _read_prior_tool_list(entry.name, "include")

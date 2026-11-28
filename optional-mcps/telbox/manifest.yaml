@@ -1,0 +1,48 @@
+manifest_version: 1
+name: telbox
+description: Propose a research finding for owner approval in Telbox Notes to Self.
+source: https://developers.telbox.ai/integrations/#hermes
+transport:
+  type: http
+  url: https://api.telbox.ai/mcp
+auth:
+  type: oauth
+  env:
+    - name: TELBOX_HERMES_CLIENT_ID
+      prompt: Approved Telbox public OAuth client ID (not an API key)
+      secret: false
+  oauth:
+    client_id: "${TELBOX_HERMES_CLIENT_ID}"
+    scope: messages:write
+    flow: device
+tools:
+  default_enabled:
+    - get_my_inbox
+    - send_message
+    - get_message_status
+suggest:
+  keywords:
+    - telbox
+  hosts:
+    - telbox.ai
+post_install: |
+  Requires a Telbox account with Notes to Self and an approved public OAuth client
+  supporting device-code authorization and refresh. Request approval in the Telbox
+  developer portal before installing; registration alone does not grant approval.
+  No client secret, API key, or browser callback is needed for this device flow.
+
+  Run `hermes mcp login telbox --flow device`, then open the displayed verification
+  URL and review the code, account and messages:write permission before approving.
+  Run `hermes mcp test telbox` and restart or /reload-mcp your session to load tools.
+  Device login must be initiated explicitly; the install probe cannot authorize it.
+
+  Ask Hermes to use get_my_inbox, then send_message with a stable client_message_id.
+  This creates an owner-approval proposal, not an immediately delivered message.
+  Approve the matching proposal in Telbox, then use get_message_status with its
+  draft_id. Executed status and device acknowledgement are separate from seeing
+  readable text on your phone. Keep the same logical key when reconciling an
+  uncertain result; changed text or destination under that key conflicts.
+
+  To disconnect, revoke the grant in Telbox and run `hermes mcp remove telbox`.
+  Removing local configuration alone does not revoke server-side access.
+  This entry covers text proposals only, not incoming replies, calls, video or TTS.

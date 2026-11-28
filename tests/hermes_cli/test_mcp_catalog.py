@@ -626,6 +626,53 @@ class TestInstall:
             mcp_catalog._parse_manifest(path)
 
 
+    @pytest.mark.parametrize("flow", ["browser", "device"])
+    def test_install_oauth_flow_preserves_profile_and_client_id(
+        self, catalog_dir, monkeypatch, capsys, flow
+    ):
+        """Catalog installs retain the selected runtime login flow without adding secrets."""
+        from hermes_cli import mcp_catalog
+        from hermes_cli.config import get_env_value, load_config, save_config
+
+        original = load_config()
+        other_server = {"url": "https://other.example/mcp", "enabled": False}
+        original["mcp_servers"] = {"other": other_server}
+        save_config(original)
+        _write_manifest(catalog_dir, "demo", _basic_manifest(
+            transport={"type": "http", "url": "https://mcp.example.com/mcp"},
+            auth={
+                "type": "oauth",
+                "env": [{"name": "DEMO_CLIENT_ID", "prompt": "id", "secret": False}],
+                "oauth": {"client_id": "${DEMO_CLIENT_ID}", "scope": "messages:write", "flow": flow},
+            },
+        ))
+        monkeypatch.setattr(mcp_catalog, "_prompt_input", lambda prompt, **kw: "public-client")
+        mcp_catalog.install_entry(_entry("demo"), enable=True)
+        installed = load_config()["mcp_servers"]
+        assert installed["other"] == other_server
+        assert installed["demo"]["oauth"] == {
+            "client_id": "public-client", "scope": "messages:write", "flow": flow,
+        }
+        assert get_env_value("DEMO_CLIENT_ID") is None
+        output = capsys.readouterr().out
+        if flow == "device":
+            assert "hermes mcp login demo --flow device" in output
+            assert "on first connection (browser flow)" not in output
+        else:
+            assert "on first connection (browser flow)" in output
+
+    @pytest.mark.parametrize("flow", ["automatic", "DEVICE", "${DEMO_FLOW}", 1, True])
+    def test_manifest_rejects_unsupported_oauth_flow(self, catalog_dir, flow):
+        from hermes_cli.mcp_catalog import CatalogError, _parse_manifest
+
+        path = _write_manifest(catalog_dir, "demo", _basic_manifest(
+            transport={"type": "http", "url": "https://mcp.example.com/mcp"},
+            auth={"type": "oauth", "oauth": {"flow": flow}},
+        ))
+        with pytest.raises(CatalogError, match="auth.oauth"):
+            _parse_manifest(path)
+
+
 # ---------------------------------------------------------------------------
 # Uninstall
 # ---------------------------------------------------------------------------

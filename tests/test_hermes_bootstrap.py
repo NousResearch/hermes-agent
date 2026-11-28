@@ -2,7 +2,7 @@
 
 The bootstrap module is imported at the top of every Hermes entry point
 (hermes, hermes-agent, hermes-acp, gateway, batch_runner, cli.py).  It
-fixes Python's Windows UTF-8 defaults so print("café") doesn't crash and
+fixes Python's Windows UTF-8 defaults so print("✓") doesn't crash and
 subprocess children inherit UTF-8 mode.
 
 Key invariants covered by these tests:

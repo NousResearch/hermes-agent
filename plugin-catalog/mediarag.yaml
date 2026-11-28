@@ -1,6 +1,6 @@
 name: mediarag
 repo: https://github.com/dyiapanis/mediarag
-sha: 8b2423d52d3ef1e8da9e0418fd7218c8b899f05c
+sha: a95ae9ff79d40ecaac7dd46fa45afd89eacee616
 description: 'Local, offline semantic search across your documents, notes, images, audio and subtitles: one index you query by meaning from Hermes or any MCP client, with snippets, timestamps and thumbnails from PDFs, Office files, photos and recordings.
 
 
@@ -22,8 +22,8 @@ maintainer: dyiapanis
 tier: community
 category: tools
 docs_url: https://github.com/dyiapanis/mediarag#readme
-version: 0.1.22
-image: https://raw.githubusercontent.com/dyiapanis/mediarag/8b2423d52d3ef1e8da9e0418fd7218c8b899f05c/assets/banner.jpg
+version: 0.1.24
+image: https://raw.githubusercontent.com/dyiapanis/mediarag/a95ae9ff79d40ecaac7dd46fa45afd89eacee616/assets/banner.jpg
 readme: true
 platforms:
 - linux

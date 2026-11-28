@@ -12,7 +12,7 @@ import re
 from typing import Callable, Optional
 
 _INDICATOR_RE = re.compile(r" \((\d+)/(\d+)\)$")
-_CHUNK_INDICATOR_ON_FENCE_RE = re.compile(r'(?m)^``` (?P<indicator>(?:\\)?\(\d+/\d+(?:\\)?\))$')
+_CHUNK_INDICATOR_ON_FENCE_RE = re.compile(r'(?m)^(?P<fence>`{3,}) (?P<indicator>(?:\\)?\(\d+/\d+(?:\\)?\))$')
 _MDV2_LINK_RE = re.compile(r"\[(?:\\.|`(?:\\.|[^`\\])*`|[^\]\\`])*\]\((?:\\.|[^)\\])*\)")
 _QUOTE_MARKER_RE = re.compile(r"(?:\*\*)?>+")
 _MDV2_MARKS = ("||", "__", "*", "_", "~")
@@ -26,7 +26,7 @@ ENTITY_CARRY_RESERVE = 20
 def separate_chunk_indicator_from_fence(text: str) -> str:
     """Move a ``(N/M)`` chunk marker that ``truncate_message()`` appended to a synthesized closing
     fence onto its own line — Telegram rejects ````` \\(1/2\\)`` as a fence."""
-    return _CHUNK_INDICATOR_ON_FENCE_RE.sub(r'```\n\g<indicator>', text)
+    return _CHUNK_INDICATOR_ON_FENCE_RE.sub(r'\g<fence>\n\g<indicator>', text)
 
 
 def _code_span_end(text: str, i: int) -> Optional[int]:

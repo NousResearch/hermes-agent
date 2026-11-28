@@ -736,24 +736,28 @@ Subcommands: `add`, `list`, `remove`, `reset`, `priority`, `refresh`, `status`, 
 ## `hermes usage`
 
 The account-limits block of the `/usage` slash command — Codex 5-hour / weekly windows, plan and banked
-resets; Anthropic OAuth windows; OpenRouter credits — without starting a session, so shell scripts and cron
-jobs can read it.
+resets; Anthropic OAuth windows; OpenRouter credits; Nous Portal allowance windows and credits — without
+starting a session, so shell scripts and cron jobs can read it.
 
 ```bash
 hermes usage                          # configured model provider, human-readable block
 hermes usage --provider openai-codex  # a specific provider
+hermes usage --provider nous --json   # script-readable Nous Portal usage
 hermes usage --json                   # one JSON document on stdout
 ```
 
 | Option | Description |
 |--------|-------------|
-| `--provider NAME` | Provider to query (default: the configured `model.provider`). Supported: `openai-codex`, `anthropic`, `openrouter`. |
+| `--provider NAME` | Provider to query (default: the configured `model.provider`). Supported: `openai-codex`, `anthropic`, `openrouter`, `nous`. |
 | `--json` | Print one JSON document instead of the human-readable block. |
 
 Credentials resolve exactly as they do for `/usage` in a session with no live agent (the auth store, then
 the credential pool); the command never adds or refreshes a credential it would not use for chat. Exit code
 `0` on success; `1` with a single stderr line when no credential is configured for the provider, the provider
 has no usage endpoint, or the fetch fails (stdout stays empty).
+
+For Nous, the command reads with the stored access token and never refreshes or persists OAuth state. Its
+usage values match `/usage`, but the scriptable output omits interactive top-up links.
 
 `--json` schema (keys are stable; new keys may be added):
 

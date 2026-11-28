@@ -1,6 +1,6 @@
 """``hermes usage`` — the account-limits block of the REPL ``/usage`` without starting a session.
 
-Script-friendly Codex / Anthropic / OpenRouter quota view (issue #33094): same fetch and renderer as
+Script-friendly Codex / Anthropic / OpenRouter / Nous quota view (issue #33094): same fetch and renderer as
 ``/usage`` (``agent.account_usage``), same credential resolution as a session with no live agent, plus
 ``--json`` for cron jobs and shell loops. Slim redo of #81819 (@himanusia).
 """
@@ -10,6 +10,19 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from agent.account_usage import AccountUsageSnapshot
+
+
+def _fetch_nous_usage(_provider: str) -> AccountUsageSnapshot | None:
+    from agent.account_usage_nous import fetch_nous_account_usage
+
+    return fetch_nous_account_usage()
+
+
+_COMMAND_USAGE_FETCHERS = {"nous": _fetch_nous_usage}
 
 
 def usage_snapshot_document(snapshot) -> dict:
@@ -43,7 +56,8 @@ def cmd_usage(args: argparse.Namespace) -> int:
     provider = resolve_requested_provider(getattr(args, "provider", None))
     # No explicit key: the fetcher resolves the credential exactly as a session without a live agent
     # would (singleton store, then credential pool) — it never adopts or refreshes anything else.
-    snapshot = fetch_account_usage(provider)
+    fetcher = _COMMAND_USAGE_FETCHERS.get(provider, fetch_account_usage)
+    snapshot = fetcher(provider)
     if snapshot is None:
         print(
             f"No account usage available for provider '{provider}': no credential is configured for it, "
@@ -63,8 +77,9 @@ def build_usage_parser(subparsers) -> None:
     usage_parser = subparsers.add_parser(
         "usage", help="Show account rate-limit windows (the /usage block) without starting a session",
         description="Fetch the configured provider's account limits (Codex 5h/weekly windows, plan, banked "
-                    "resets; Anthropic OAuth windows; OpenRouter credits) — the same block the /usage slash "
-                    "command prints — and exit. Exit code 1 when no credential is configured or the fetch fails.",
+                    "resets; Anthropic OAuth windows; OpenRouter credits; Nous Portal allowance windows) — "
+                    "the same account data the /usage slash command prints — and exit. Exit code 1 when no "
+                    "credential is configured or the fetch fails.",
     )
     usage_parser.add_argument(
         "--provider", default=None, help="Provider to query (default: the configured model provider)")

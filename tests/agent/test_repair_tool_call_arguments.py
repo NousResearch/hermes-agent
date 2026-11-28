@@ -76,6 +76,47 @@ class TestRepairToolCallArguments:
     def test_misnested_closer_is_inserted_before_the_misplaced_one(self, raw, expected):
         assert json.loads(_repair_tool_call_arguments(raw, "t")) == expected
 
+    # -- Adjacent pieces: a model that means two calls but flattens each call's two pieces into
+    # separate array items, dropping the "}" that closes every {"arguments": ...} item (glm-5.3,
+    # 2026-11-25; both lookups silently never ran). Bracket rebalancing cannot see
+    # it — the "," + "{" where a key belongs fails at the same byte — so the batch became "{}".
+    # Only an unambiguous pairing is merged: every piece is a lone name or a lone arguments, and
+    # each arguments piece sits next to exactly one name piece. --
+
+    @pytest.mark.parametrize("raw", [
+        # Observed: each {"arguments": ...} item is missing its own "}".
+        '{"calls": [{"arguments": {"query": "first lookup: the open orders for one account"}, '
+        '{"name": "memory_lookup"}, '
+        '{"arguments": {"query": "second lookup: the shipping status for this week"}, '
+        '{"name": "memory_lookup"}]}',
+        # The same pieces as well-formed items (valid JSON: never a bracket repair).
+        '{"calls": [{"arguments": {"query": "first lookup: the open orders for one account"}}, '
+        '{"name": "memory_lookup"}, '
+        '{"arguments": {"query": "second lookup: the shipping status for this week"}}, '
+        '{"name": "memory_lookup"}]}',
+    ], ids=["dropped-braces", "well-formed-pieces"])
+    def test_adjacent_call_pieces_merge_into_two_complete_calls(self, raw):
+        result = _repair_tool_call_arguments(raw, "tool_call")
+        assert json.loads(result) == {
+            "calls": [
+                {"name": "memory_lookup",
+                 "arguments": {"query": "first lookup: the open orders for one account"}},
+                {"name": "memory_lookup",
+                 "arguments": {"query": "second lookup: the shipping status for this week"}},
+            ]
+        }
+
+    @pytest.mark.parametrize("raw, expected", [
+        # Two argument pieces then one name: which query is the call's is a guess.
+        ('{"calls": [{"arguments": {"query": "a"}, {"arguments": {"query": "b"}, {"name": "f"}]}', "{}"),
+        # A lone piece: no name to pair it with, so none is invented (the bracket repair's result stands).
+        ('{"calls": [{"arguments": {"query": "a"}]}', '{"calls": [{"arguments": {"query": "a"}}]}'),
+        # A key the batch shape does not have is not a call piece.
+        ('{"calls": [{"arguments": {"query": "a"}, {"other": 1}, {"name": "f"}]}', "{}"),
+    ], ids=["unpaired", "lone", "foreign-key"])
+    def test_ambiguous_call_pieces_keep_the_existing_repairs(self, raw, expected):
+        assert json.loads(_repair_tool_call_arguments(raw, "tool_call")) == json.loads(expected)
+
     # -- Valid JSON passthrough (this path is via except, but still works) --
 
 

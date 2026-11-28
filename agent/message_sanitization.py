@@ -229,9 +229,150 @@ def _rebalance_json_closers(raw: str) -> str | None:
     return "".join(out) + "".join(_JSON_CLOSERS[ch] for ch in reversed(stack))
 
 
+# Adjacent call pieces. A model that means ``tool_call {"calls": [{name, arguments}, ...]}`` but
+# flattens each call's two pieces into separate array items AND drops the ``}`` closing every
+# ``{"arguments": ...}`` item (glm-5.3 via zai, 2026-11-25)::
+#
+#     {"calls": [{"arguments": {"query": "a"}, {"name": "f"}, {"arguments": {"query": "b"}, {"name": "f"}]}
+#
+# Bracket rebalancing cannot see it — the comma-then-brace where a key belongs fails at the same
+# byte — so the batch became "{}" and both lookups silently never ran. The pieces are re-paired
+# only when every item is a lone ``name`` or a lone ``arguments`` and each one's neighbour holds
+# the other key; anything else is ``None`` and the existing repairs stand.
+_CALLS_BATCH_PREFIX_RE = re.compile(r'\A\s*\{\s*"calls"\s*:\s*\[')
+_CALL_PIECE_KEYS = frozenset({"name", "arguments"})
+_JSON_WHITESPACE = " \t\r\n"
+
+
+def _skip_json_whitespace(raw: str, i: int) -> int:
+    while i < len(raw) and raw[i] in _JSON_WHITESPACE:
+        i += 1
+    return i
+
+
+def _decode_piece_pair(raw: str, i: int, decoder: json.JSONDecoder) -> tuple[str, Any, int] | None:
+    """``"key": value`` starting at *i* (a key position) as ``(key, value, end)``; ``None`` when
+    the text there is not one (truncated, missing colon, undecodable value)."""
+    try:
+        key, i = decoder.raw_decode(raw, i)
+    except ValueError:
+        return None
+    i = _skip_json_whitespace(raw, i)
+    if i >= len(raw) or raw[i] != ":":
+        return None
+    i = _skip_json_whitespace(raw, i + 1)
+    try:
+        value, i = decoder.raw_decode(raw, i)
+    except ValueError:
+        return None
+    return key, value, i
+
+
+def _read_call_piece(raw: str, i: int, decoder: json.JSONDecoder) -> tuple[dict, int] | None:
+    """One ``calls`` item's body from *i* (just after its ``{``): its ``"key": value`` pairs up to
+    the item's ``}`` (index just past it) — or up to a value followed by ``, {`` / ``]``, the
+    dropped-``}`` shape (index at that ``,`` / ``]``). Both continuations are syntax errors in a
+    well-formed item, so no valid item is ever split. ``None`` when the text is not that shape:
+    truncated, a key other than name/arguments, a duplicate key."""
+    item: dict = {}
+    while True:
+        i = _skip_json_whitespace(raw, i)
+        if i >= len(raw):
+            return None
+        if raw[i] != '"':
+            return None
+        pair = _decode_piece_pair(raw, i, decoder)
+        if pair is None:
+            return None
+        key, value, i = pair
+        if key not in _CALL_PIECE_KEYS or key in item:
+            return None
+        item[key] = value
+        i = _skip_json_whitespace(raw, i)
+        if i >= len(raw):
+            return None
+        if raw[i] == "}":
+            return item, i + 1
+        if raw[i] == "]":
+            return item, i
+        if raw[i] != ",":
+            return None
+        i = _skip_json_whitespace(raw, i + 1)
+        if i >= len(raw):
+            return None
+        if raw[i] in "{]":
+            return item, i
+
+
+def _scan_call_pieces(raw: str, start: int) -> tuple[list[dict], int] | None:
+    """The ``calls`` array body opening at *start* (just after ``[``) as ``(items, index just past
+    the closing bracket)``; ``None`` when the array is truncated or an item is not an object."""
+    decoder = json.JSONDecoder(strict=False)
+    items: list[dict] = []
+    i = _skip_json_whitespace(raw, start)
+    while i < len(raw) and raw[i] != "]":
+        if raw[i] == ",":
+            i = _skip_json_whitespace(raw, i + 1)
+            continue
+        if raw[i] != "{":
+            return None
+        piece = _read_call_piece(raw, i + 1, decoder)
+        if piece is None:
+            return None
+        items.append(piece[0])
+        i = piece[1]
+    return (items, i + 1) if i < len(raw) else None
+
+
+def _pair_call_pieces(items: list[dict]) -> list[dict] | None:
+    """Complete calls from scanned items: a two-key item stands as it is; a one-key piece joins
+    the ONE item after it when that holds the other key. A lone piece or a same-key neighbour is
+    a guess, so ``None``. ``None`` too when nothing was paired (not the piece shape)."""
+    calls: list[dict] = []
+    paired = False
+    i = 0
+    while i < len(items):
+        item = items[i]
+        if len(item) == 2:
+            calls.append(item)
+            i += 1
+            continue
+        neighbour = items[i + 1] if i + 1 < len(items) else None
+        if neighbour is None or len(neighbour) != 1 or set(neighbour) == set(item):
+            return None
+        calls.append({**item, **neighbour})
+        paired = True
+        i += 2
+    return calls if paired else None
+
+
+def _merge_adjacent_call_pieces(raw: str) -> str | None:
+    """``tool_call`` batch whose calls arrived as adjacent pieces, re-serialised as complete
+    calls — each carrying exactly the model's own name and arguments. ``None`` when *raw* is not
+    the ``{"calls": [...]}`` envelope, or the pairing is ambiguous; the caller's repairs then
+    stand. The outer ``}`` may be missing (truncation at the very end); nothing else may follow
+    the array."""
+    match = _CALLS_BATCH_PREFIX_RE.match(raw)
+    if match is None:
+        return None
+    scanned = _scan_call_pieces(raw, match.end())
+    if scanned is None:
+        return None
+    items, end = scanned
+    if raw[_skip_json_whitespace(raw, end):] not in ("}", ""):
+        return None
+    calls = _pair_call_pieces(items)
+    if calls is None:
+        return None
+    if any(not isinstance(call["name"], str) or not call["name"].strip() for call in calls):
+        return None
+    return json.dumps({"calls": calls}, separators=(",", ":"))
+
+
 def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     """Repair malformed tool_call argument JSON (truncation, trailing commas, Python ``None``,
-    control chars); ``"{}"`` if unrepairable so the request succeeds. Repairs log at WARNING."""
+    control chars, adjacent call pieces); ``"{}"`` if unrepairable so the request succeeds.
+    Repairs log at WARNING."""
     raw_stripped = raw_args.strip() if isinstance(raw_args, str) else ""
 
     if not raw_stripped:
@@ -241,6 +382,14 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     if raw_stripped == "None":
         logger.warning("Sanitized Python-None tool_call arguments for %s", tool_name)
         return "{}"
+
+    # Adjacent call pieces go first: the well-formed variant is valid JSON that Pass 0 would
+    # pass through as four nameless calls, and the dropped-brace variant is beyond every
+    # bracket repair below.
+    merged = _merge_adjacent_call_pieces(raw_stripped)
+    if merged is not None:
+        logger.warning("Merged adjacent tool_call pieces for %s: %s → %s", tool_name, raw_stripped[:80], merged[:80])
+        return merged
 
     # Pass 0: strict=False accepts literal control chars inside strings (the most common
     # local-model case) and re-serialises to wire-valid JSON.

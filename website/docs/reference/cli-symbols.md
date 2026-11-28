@@ -32,7 +32,7 @@ What you see in the conversation flow while the agent works.
 
 ## Status-bar symbols
 
-The single line at the bottom of the TUI. Segments appear only when relevant and drop off first on narrow terminals.
+The single line at the bottom of the TUI. Segments appear only when relevant and drop off first on narrow terminals. In the classic CLI, `/statusbar legend` lists every status-bar glyph and what it means.
 
 | Symbol | Meaning |
 |--------|---------|
@@ -44,7 +44,7 @@ The single line at the bottom of the TUI. Segments appear only when relevant and
 | `cmp N` | The session has been auto-compressed N times. |
 | `▶ N` | N `/bg` tasks currently running. |
 | `⚠ YOLO` | YOLO mode is on (auto-approval). Also shown in the startup banner. |
-| `⛓ N` | N subagents currently active. |
+| `⛓ N` | N subagents currently active (hidden in the classic CLI while the live-work footer lists them). |
 | `↩ resumes when subagent finishes` | Reassurance shown while you are idle but delegated work is still in flight — the result returns on its own. |
 | `● REC` | Voice mode is recording. |
 | `◉ STT` | Voice recording stopped; speech-to-text is transcribing. |

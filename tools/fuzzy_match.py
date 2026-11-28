@@ -196,6 +196,19 @@ def _strategy_whitespace_normalized(content: str, pattern: str) -> list[Span]:
     return _map_normalized_positions(content, content_normalized, matches_in_normalized)
 
 
+def _strategy_whitespace_collapsed(content: str, pattern: str) -> list[Span]:
+    """Match hard-wrapped text exactly after collapsing whitespace, with lossless spans."""
+    normalized = []
+    positions: list[Span] = []
+    for match in re.finditer(r'\s+|\S', content):
+        normalized.append(' ' if match.group().isspace() else match.group())
+        positions.append(match.span())
+    matches = _strategy_exact(''.join(normalized), re.sub(r'\s+', ' ', pattern))
+    # Each normalized character owns exactly its original character or whitespace
+    # run. Adjacent indentation/separators belong to the match only if requested.
+    return [(positions[start][0], positions[end - 1][1]) for start, end in matches]
+
+
 def _strategy_indentation_flexible(content: str, pattern: str) -> list[Span]:
     """Strategy 4: ignore leading indentation entirely."""
     return _match_transformed_lines(content, pattern, lambda ls: [l.lstrip() for l in ls])
@@ -294,6 +307,7 @@ STRATEGIES: list[tuple[str, Callable[[str, str], list[Span]]]] = [
     ("escape_normalized", _strategy_escape_normalized),
     ("trimmed_boundary", _strategy_trimmed_boundary),
     ("unicode_normalized", _strategy_unicode_normalized),
+    ("whitespace_collapsed", _strategy_whitespace_collapsed),
     ("block_anchor", _strategy_block_anchor),
     ("context_aware", _strategy_context_aware)]
 

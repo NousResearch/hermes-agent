@@ -69,14 +69,16 @@ def _git_stdout(git_cmd, args, cwd, **kw) -> Optional[str]:
 
 
 def _prune_orphan_rescue_refs(
-    git_cmd, cwd, branch, keep=_ORPHAN_RESCUE_REFS_TO_KEEP, max_age_days=_ORPHAN_RESCUE_REF_MAX_AGE_DAYS
+    git_cmd, cwd, branch, keep=_ORPHAN_RESCUE_REFS_TO_KEEP,
+    max_age_days=_ORPHAN_RESCUE_REF_MAX_AGE_DAYS, *, protect_ref: str | None = None,
 ) -> None:
     """Expire old rescue refs (``refs/hermes-update-backups/<kind>-<branch>-<ts>-<sha>``).
 
     ``<kind>`` is ``orphan`` (no common ancestor), ``diverged`` (local commits on the target
     branch) or ``detached`` (commits made on a detached HEAD the update moved off). All are written
     before the update moves HEAD and all pin objects, so they expire on the same terms; each kind
-    keeps its own ``keep`` newest.
+    keeps its own ``keep`` newest. ``protect_ref`` is retained even when same-second refname ordering
+    would otherwise place the just-created recovery ref in the deletion set.
 
     Each ref pins a possibly multi-GB snapshot against ``git gc``, so a repeatedly corrupted install would
     grow ``.git`` unbounded. Keep the ``keep`` newest AND drop any older than ``max_age_days`` by the
@@ -97,10 +99,12 @@ def _prune_orphan_rescue_refs(
             if list_result.returncode != 0:
                 continue
             refs = [line.strip() for line in list_result.stdout.splitlines() if line.strip()]
-            stale |= set(refs[:-keep] if keep > 0 else refs)
+            protected = {protect_ref} if protect_ref in refs else set()
+            candidates = [ref for ref in refs if ref not in protected]
+            stale |= set(candidates[:-keep] if keep > 0 else candidates)
             if max_age_days > 0:
                 cutoff = datetime.now(UTC) - timedelta(days=max_age_days)
-                for ref in refs:
+                for ref in candidates:
                     with suppress(ValueError):
                         stamp = datetime.strptime(ref[len(prefix):][:15], "%Y%m%d-%H%M%S")
                         if stamp.replace(tzinfo=UTC) < cutoff:
@@ -144,7 +148,7 @@ def _park_detached_head(git_cmd, cwd, branch) -> None:
     print(f"  ⚠ {count or 'Some'} commit(s) made on the detached HEAD are on no branch — backed up to "
           f"{rescue_ref} before moving HEAD. This backup expires after {_ORPHAN_RESCUE_REF_MAX_AGE_DAYS} days.")
     print(f"    List them with: git log {rescue_ref} --not --branches --tags --remotes")
-    _prune_orphan_rescue_refs(git_cmd, cwd, branch)
+    _prune_orphan_rescue_refs(git_cmd, cwd, branch, protect_ref=rescue_ref)
 
 
 def _branch_head_label(git_cmd=None, cwd=None) -> str | None:
@@ -176,23 +180,18 @@ def _branch_head_suffix(git_cmd=None, cwd=None) -> str:
 
 
 def _assess_parked_branch_switch(git_cmd: list[str], cwd: Path, current_branch: str, target_branch: str) -> tuple[bool, str]:
-    """Decide whether a parked feature branch may be auto-switched back to the update target.
+    """Assess whether a parked branch is safe to update in place.
 
-    - (True, "") — tree clean and every parked commit is in ``origin/<target>`` (no ``git cherry +``).
-    - (True, "unmerged:<n>") — tree clean but commits not in target; switching is safe (checkout keeps
-      committed work) but caller must print a LOUD notice. Non-interactive callers (desktop, gateway
-      /update, cron) can't resolve a skip, so a clean checkout must reach target.
-    - (False, "disabled"|"dirty"|"unverifiable") — caller must NOT touch the branch. Dirty is the
-      genuinely unsafe case: uncommitted work riding an autostash across branches.
-    A config read failure must not disable the safety checks: fall through with the default."""
+    - (True, "") — tree clean and every parked commit is in ``origin/<target>``.
+    - (True, "unmerged:<n>") — tree clean but commits are not in target; the caller
+      must merge the target into this branch and retain the local commits.
+    - (False, "dirty"|"unverifiable") — do not touch the branch. Dirty is the
+      genuinely unsafe case: uncommitted work must be handled by the user first.
+
+    The old ``auto_switch_parked_branch`` opt-out is intentionally ignored: the
+    updater no longer switches away from local code, and future upgrades must
+    reconcile the checked-out branch rather than silently leave it stale."""
     from hermes_cli.update_cmd_git import _git_run
-    try:
-        from hermes_cli.config import load_config
-        _update_cfg = (load_config() or {}).get("updates", {})
-        if isinstance(_update_cfg, dict) and not bool(_update_cfg.get("auto_switch_parked_branch", True)):
-            return False, "disabled"
-    except Exception as exc:
-        logger.debug("Could not read updates.auto_switch_parked_branch: %s", exc)
     status = _git_run(git_cmd, ["status", "--porcelain"], cwd)
     if status.returncode != 0:
         return False, "unverifiable"
@@ -232,7 +231,6 @@ def _assess_parked_branch_switch(git_cmd: list[str], cwd: Path, current_branch: 
 
 _PARKED_SKIP_WHY = {
     "dirty": "the working tree has uncommitted changes",
-    "disabled": "updates.auto_switch_parked_branch is set to false in config.yaml",
 }
 
 

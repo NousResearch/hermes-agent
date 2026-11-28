@@ -55,3 +55,21 @@ def test_existing_binary_resolves_runnable_cmd_over_posix_shim(tmp_path: Path, m
     out = subprocess.run([str(resolved)], capture_output=True, text=True, encoding="utf-8", errors="replace",
                          check=True, stdin=subprocess.DEVNULL)
     assert "wrapper-ran" in out.stdout
+
+
+def test_staged_posix_shim_never_outranks_a_cmd_wrapper_in_npm_bin(tmp_path: Path, monkeypatch):
+    """`lsp/bin/<name>` is a SYMLINK to npm's bare shim, so it is present while `<name>.cmd` lives one
+    directory over. Checking the staging base first returned the shim and pyright died on every lint
+    with `OSError: [WinError 193]` — the wrapper must win across bases, not just within one."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    npm_bin = tmp_path / "node_modules" / ".bin"
+    cmd = _npm_shim_pair(npm_bin, "tool")
+    staged = bin_dir / "tool"
+    try:
+        staged.symlink_to(npm_bin / "tool")  # exactly what _link_into_bin leaves behind
+    except (OSError, NotImplementedError):
+        staged.write_text("#!/bin/sh\nexec node \"$0.js\" \"$@\"\n", encoding="utf-8")
+    monkeypatch.setattr(install, "hermes_lsp_bin_dir", lambda: bin_dir)
+
+    assert install._existing_binary("tool", is_windows=True) == str(cmd)

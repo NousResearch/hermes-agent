@@ -129,7 +129,14 @@ def _existing_binary(name: str, *, is_windows: Optional[bool] = None) -> Optiona
     """
     win = _is_windows() if is_windows is None else is_windows
     bases = [hermes_lsp_bin_dir() / name] + ([_npm_bin_dir() / name] if win else [])
-    for staged in (c for base in bases for c in _native_binary_candidates(base, is_windows=win)):
+    cands = [c for base in bases for c in _native_binary_candidates(base, is_windows=win)]
+    # Base order must not outrank wrapper order: `lsp/bin/<name>` is a symlink to npm's POSIX shim, so
+    # checking that base first returned the unrunnable script (WinError 193) while `<name>.cmd` sat one
+    # directory over. Every wrapper now precedes every bare name; the sort is stable, so the staging dir
+    # still wins within a group.
+    if win:
+        cands.sort(key=lambda c: 0 if c.suffix.lower() in _WINDOWS_WRAPPER_SUFFIXES else 1)
+    for staged in cands:
         if staged.exists() and os.access(staged, os.X_OK):
             return str(staged)
     if any(r.get("strategy") == "pip" and r.get("bin") == name for r in INSTALL_RECIPES.values()):

@@ -78,9 +78,9 @@ def _image_key(image_url: str) -> str:
     loop alternated full loads and crops of the same files, and both re-embed the image."""
     if image_url.startswith("data:"):
         return "data:" + hashlib.sha256(image_url.encode("utf-8", "ignore")).hexdigest()[:32]
-    stripped = image_url.split("#", 1)[0].removeprefix("file://")
+    stripped = image_url[len("file://"):] if image_url.lower().startswith("file://") else image_url
     if "://" in stripped:
-        return "url:" + stripped
+        return "url:" + stripped.split("#", 1)[0]
     return "file:" + str(Path(os.path.expanduser(stripped)).resolve())
 
 

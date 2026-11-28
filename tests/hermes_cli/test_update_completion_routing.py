@@ -78,7 +78,8 @@ def test_every_route_hands_off_once(route, tmp_path, monkeypatch):
             completion_request=request)
     elif route == "current":
         update_cmd._finish_already_up_to_date(
-            ["git"], "main", "main", plan, gw_input_fn=None, completion_request=request)
+            ["git"], "main", "main", plan, gw_input_fn=None, completion_request=request,
+            discard_local_changes=False, keep_stash=False)
     else:
         assert update_cmd_zip._update_via_zip(SimpleNamespace(), completion_request=request) is True
         swap.assert_called_once()

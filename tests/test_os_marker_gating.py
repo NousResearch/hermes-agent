@@ -7,6 +7,12 @@ import sys
 import pytest
 
 
+def test_openbsd_alias_matches_versioned_platform():
+    from tests._fixtures.platform_gating import _host_matches_platforms
+    ok, _reason = _host_matches_platforms(["openbsd"])
+    assert ok is sys.platform.startswith("openbsd")
+
+
 _INVALID_MARKERS = {
     "stacked": "@pytest.mark.platforms('any')",
     "keyword": "@pytest.mark.platforms('any', bogus=True)",
@@ -19,7 +25,10 @@ _INVALID_MARKERS = {
                                                ("typo", "unknown spec")])
 def test_native_collection_witnesses(tmp_path, invalid, message):
     root = Path(__file__).resolve().parents[1]
-    host = {"linux": "linux", "darwin": "macos", "win32": "windows"}[sys.platform]
+    if sys.platform.startswith("openbsd"):
+        host = "openbsd"
+    else:
+        host = {"linux": "linux", "darwin": "macos", "win32": "windows"}[sys.platform]
     (tmp_path / "conftest.py").write_text(
         f"import sys; sys.path.insert(0, {str(root)!r})\n"
         "from tests.conftest import pytest_configure, pytest_collection_modifyitems\n", encoding="utf-8")

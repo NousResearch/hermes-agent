@@ -118,6 +118,10 @@ _BILLING_PATTERNS = (
     "billing hard limit", "exceeded your current quota", "account is deactivated", "plan does not include",
     "out of extra usage", "out of funds", "run out of funds", "balance_depleted", "insufficient funds",
     "can only afford",
+    # Anthropic Console monthly spend cap: HTTP 400 invalid_request_error "You have
+    # reached your specified API usage limits. You will regain access on <date>" (#80553);
+    # a workspace-level cap says "specified workspace API usage limits".
+    "specified api usage limits", "specified workspace api usage limits",
     # OpenRouter org-level monthly cap arrives as 403 "Budget limit exceeded (monthly limit)" (#107166):
     # account exhaustion, not a credential problem.
     "budget limit exceeded",

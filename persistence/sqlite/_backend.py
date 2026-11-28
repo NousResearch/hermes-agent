@@ -29,6 +29,7 @@ from persistence.sqlite._state.errors import (
     classify_persistence_error, is_malformed_schema_error,
 )
 from persistence import (
+    IsolationUnsupported, ScopePinRefused,
     AwaitableStore, CorruptStoreError, DeletedWalGeneration, DiskFull, MalformedSchema,
     PermanentStoreError, PersistenceCapabilities, PersistenceError, ProfileScope, SearchIndexCorrupt, StoreContention,
     StoreQuarantined, StoreReplaced, StoreUnavailable, TransientStoreError,
@@ -36,7 +37,9 @@ from persistence import (
 from storage_errors import is_disk_full_error, is_fts_scoped_corruption_error, is_sqlite_lock_error
 
 from . import _registry
+from . import _holder as _holder_module
 from ._holder import StoreHolder
+from ._turn_fence import serve_fence_key
 
 if TYPE_CHECKING:
     from .admin import SQLiteProfileRepairAdmin, SQLiteStoreAdmin
@@ -88,6 +91,7 @@ _BASE_CAPABILITIES = PersistenceCapabilities(
     durable_admissions=False,
     receipted_writes=False,
     physical_admin=True,
+    scope_pinning=False,
 )
 
 RepositoryFactory = Callable[["SQLiteStore"], Any]
@@ -215,7 +219,10 @@ class SQLiteBackend:
 
     def open(self, scope: ProfileScope) -> SQLiteStore:
         """A handle bound to ``scope``'s store; opening touches no file. A profile this backend holds no store for is
-        refused with ``ValueError``."""
+        refused with ``ValueError``. A pinned (hosted) scope is refused with ``ScopePinRefused``: a local per-profile
+        file is not a tenant-isolating store."""
+        if scope.pin is not None:
+            raise ScopePinRefused("the SQLite backend serves local profiles only; it cannot serve a pinned scope")
         path = self._stores.get(scope.hermes_home_key)
         if path is None:
             raise ValueError(f"this SQLite backend holds no store for {scope.profile_dir}")
@@ -302,6 +309,10 @@ class SQLiteBackend:
 
         return SQLiteProfileRepairAdmin(self._admin_file(scope), read_only=read_only)
 
+    def assert_isolating(self) -> None:
+        """Always refuses: a per-profile SQLite file is a single-tenant store with no row-level isolation."""
+        raise IsolationUnsupported("the SQLite backend is a local single-tenant store; it does not isolate tenants")
+
     def reopen(self) -> None:
         """Drop every held reference; the next touch acquires the store again."""
         self._release_holders()
@@ -332,8 +343,13 @@ class SQLiteStore:
 
     def holder(self, *, reacquire: bool = True) -> StoreHolder:
         """The open holder for this profile's store, acquired on first touch. ``reacquire=False`` keeps the holder a
-        registry sweep closed, so a read through it with ``reopen=False`` refuses instead of opening the store again."""
+        registry sweep closed, so a read through it with ``reopen=False`` refuses instead of opening the store again.
+        Every verb of every repository fetches the holder here, so while a hosted scope is bound each one refuses
+        (``ScopePinRefused``, ``_holder.refuse_hosted_activity``) before it reads or writes: a repository or ``aio``
+        view kept from this handle serves no hosted activity."""
+        _holder_module.refuse_hosted_activity()
         self._held = self._backend._holder(self.scope.hermes_home_key, reacquire=reacquire, held=self._held)
+        serve_fence_key(self._held, self.scope.store_key)  # a turn this store issued fences its writes
         return self._held
 
     def ready(self) -> None:
@@ -345,5 +361,9 @@ class SQLiteStore:
         return isinstance(other, SQLiteStore) and self.holder() is other.holder()
 
     def require_open(self) -> None:
-        """Raise ``RuntimeError`` once the backend has closed, as a verb through ``holder`` does; touches no file."""
+        """Raise ``RuntimeError`` once the backend has closed, as a verb through ``holder`` does; touches no file. A
+        verb that opens its own connection instead of the holder's (the ``'shared'`` hosted-room file, the resumable
+        subagent probes) calls this first, so it refuses (``ScopePinRefused``) while a hosted scope is bound as
+        ``holder`` does."""
+        _holder_module.refuse_hosted_activity()
         self._backend._require_open()

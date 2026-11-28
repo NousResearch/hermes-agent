@@ -13,6 +13,7 @@ from persistence.sqlite._state.health import STORAGE_CORRUPT, note_storage_error
 
 from persistence import StorageProbe, StorageState
 
+from . import _holder as _holder_module
 from ._backend import register_repository
 
 __all__ = ["SQLiteStorageHealth", "probe_state_db"]
@@ -44,16 +45,20 @@ def probe_state_db(path: Path) -> StorageProbe:
 
 
 class SQLiteStorageHealth:
-    """``StorageHealth`` over the process-wide latch, bound to one ``state.db``."""
+    """``StorageHealth`` over the process-wide latch, bound to one ``state.db``. Both answers are a local store's: while
+    a hosted scope is bound each refuses (``ScopePinRefused``) before touching the file, however the service was kept
+    (a handle's ``health`` or ``persistence_assembly.storage_health`` taken before the scope was bound)."""
 
     def __init__(self, path: Path) -> None:
         self._path = path
 
     def storage_state(self) -> StorageState:
+        _holder_module.refuse_hosted_activity()
         corrupt = storage_state(self._path) == STORAGE_CORRUPT
         return StorageState.CORRUPT if corrupt else StorageState.OK
 
     def probe(self) -> StorageProbe:
+        _holder_module.refuse_hosted_activity()
         return probe_state_db(self._path)
 
 

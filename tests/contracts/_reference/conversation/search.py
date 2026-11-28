@@ -468,7 +468,7 @@ class InMemorySessionSearch:
     def _rebuild_authority(self, scope: ProfileScope) -> threading.Lock:
         """The per-store rebuild authority; kept off the scope store (the authority reference deep-copies those tables)."""
         with self._authorities_guard:
-            return self._authorities.setdefault(scope.hermes_home_key, threading.Lock())
+            return self._authorities.setdefault(scope.store_key, threading.Lock())
 
     def _left_live(self, scope: ProfileScope, session_id: str) -> set[int]:
         """Ids of the session's rows that left its live transcript: compaction-archived and superseded originals."""

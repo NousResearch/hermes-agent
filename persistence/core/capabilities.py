@@ -29,3 +29,8 @@ class PersistenceCapabilities:
     """Composite mutations commit their retry receipt in the same atomic transition as the domain write (worker sequenced writes, atomic bindings); an exact duplicate replays its stored result instead of re-executing."""
     physical_admin: bool
     """The assembly offers this backend's physical admin capability (doctor, journal mode, schema repair, index optimize, VACUUM, physical backup and restore); a backend without it answers the admin doors with an unsupported result."""
+    scope_pinning: bool
+    """The backend serves pinned scopes (``ProfileScope.pin``): every repository of a pinned handle reads and writes only
+    that ``(tenant, agent)``'s rows, a foreign row is indistinguishable from a missing one, and ``assert_isolating``
+    answers for the live connection. A backend without it refuses a pinned scope at ``open`` with ``ScopePinRefused``.
+    Hosted mode requires it."""

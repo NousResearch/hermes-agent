@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from .core.artifacts import SessionArtifacts
 from .core.capabilities import PersistenceCapabilities
-from .core.context import ProfileScope
+from .core.context import ProfileScope, StorePin
 from .core.conventions import RowVisibility, ensure_utc
 from .core.aio import AwaitableRepository, AwaitableStore
 from .core.errors import (
@@ -30,6 +30,7 @@ from .core.errors import (
     ExportTooLarge,
     FenceStale,
     HeldRowRewritten,
+    IsolationUnsupported,
     MUTATION_GUARD_REFUSALS,
     MalformedSchema,
     NotFound,
@@ -43,6 +44,7 @@ from .core.errors import (
     RewindRefusalReason,
     RewindRefused,
     STORE_FAILURES,
+    ScopePinRefused,
     SearchIndexCorrupt,
     SessionLedgered,
     SessionRowMissing,
@@ -53,11 +55,12 @@ from .core.errors import (
     StoreReplaced,
     StoreUnavailable,
     TransientStoreError,
+    TurnFenceSuperseded,
     TurnLeaseLost,
     UnknownExecution,
     busy_refusal,
 )
-from .core.fences import AuthorityEpoch, ExecutionGeneration, SessionRevision
+from .core.fences import AuthorityEpoch, ExecutionGeneration, SessionRevision, TurnFence, current_turn_fence
 from .core.health import StorageHealth, StorageProbe, StorageState
 from .core.identity import (
     ClaimToken,
@@ -98,6 +101,7 @@ __all__ = [
     "ExportTooLarge",
     "FenceStale",
     "HeldRowRewritten",
+    "IsolationUnsupported",
     "JsonValue",
     "MalformedSchema",
     "MessageId",
@@ -116,6 +120,7 @@ __all__ = [
     "RewindRefusalReason",
     "RewindRefused",
     "RowVisibility",
+    "ScopePinRefused",
     "SearchIndexCorrupt",
     "SessionArtifacts",
     "SessionId",
@@ -128,13 +133,17 @@ __all__ = [
     "StorageProbe",
     "StorageState",
     "StoreContention",
+    "StorePin",
     "StoreQuarantined",
     "StoreReplaced",
     "StoreUnavailable",
     "TopicAlreadyLinked",
     "TransientStoreError",
+    "TurnFence",
+    "TurnFenceSuperseded",
     "TurnLeaseLost",
     "UnknownExecution",
     "busy_refusal",
+    "current_turn_fence",
     "ensure_utc",
 ]

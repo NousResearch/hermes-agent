@@ -1,0 +1,21 @@
+# Catalog entry for NousResearch/hermes-agent/plugin-catalog/
+# Pin: the v0.7.1 release commit of the public plugin repo
+# (https://github.com/Blackleets/hermes-gazette).
+name: hermes-gazette
+repo: https://github.com/Blackleets/hermes-gazette
+sha: cb5fc013d4d5efd859e815c2b13d312eaa69f88e
+description: "The Hermes Gazette — a daily newspaper for the Nous Research / Hermes ecosystem. Fetches RSS/Atom/JSON feeds with a stdlib-only engine, prints only stories with a verified publication date, and renders a mobile-first newsprint edition (HTML + Markdown + JSON) readable in the dashboard, Hermes Desktop, or delivered to a phone via the gateway."
+maintainer: Blackleets
+tier: community
+category: tools
+version: "0.7.1"
+requires_hermes: ">=0.21.5"
+platforms: [linux, macos, windows]
+docs_url: https://github.com/Blackleets/hermes-gazette
+capabilities:
+  tools:
+    - gazette_generate
+    - gazette_latest
+  hooks: []
+  middleware: []
+  env: []

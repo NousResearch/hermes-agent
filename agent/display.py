@@ -759,11 +759,22 @@ def _emit_inline_diff(diff_text: str, print_fn) -> bool:
 _DIFF_LINE_COLORS = (("@@", "hunk"), ("-", "minus"), ("+", "plus"), (" ", "dim"))
 
 
+# C0 controls (tab kept), DEL and C1: in a preview they would clear the screen, retitle the
+# terminal or ring the bell. Shown as Control Pictures (ESC -> ␛) / ``\x9b``; display copy only.
+_DIFF_CONTROL_RE = re.compile(r"[\x00-\x08\x0a-\x1f\x7f-\x9f]")
+
+
+def _visible_control(match: re.Match) -> str:
+    code = ord(match.group())
+    return chr(0x2400 + code) if code < 0x20 else "\u2421" if code == 0x7F else f"\\x{code:02x}"
+
+
 def _render_inline_unified_diff(diff: str) -> list[str]:
     """Render unified diff lines in Hermes' inline transcript style."""
     rendered: list[str] = []
     from_file = to_file = None
     for raw_line in diff.splitlines():
+        raw_line = _DIFF_CONTROL_RE.sub(_visible_control, raw_line)
         if raw_line.startswith("--- "):
             from_file = raw_line[4:].strip()
             continue

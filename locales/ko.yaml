@@ -817,6 +817,9 @@ gateway:
   plan:
     ack_task: "계획 중: {task}"
     ack_conversation: "이 대화의 컨텍스트로 계획을 세우고 있어요…"
+  implement:
+    ack_plan: "계획 구현 중: {plan}"
+    ack_locate: "가장 최근에 저장된 계획을 찾는 중…"
   init:
     start_failed: "/init을 시작할 수 없었어요 — 다시 시도해 주세요."
     ack_update: "프로젝트 스캔 결과로 AGENTS.md를 업데이트하고 있어요…"
@@ -1620,6 +1623,8 @@ slash:
     description: "이 세션에서 프롬프트를 일정 간격으로 반복 실행"
   plan:
     description: "실행 없이 마크다운 구현 계획을 .hermes/plans/에 작성"
+  implement:
+    description: "저장된 /plan 파일(기본값: 최신)을 다음 턴으로 실행"
   moa:
     description: "기본 Mixture of Agents 프리셋으로 프롬프트 하나를 실행한 뒤 원래 모델 복원"
   subgoal:
@@ -3036,6 +3041,9 @@ cli:
     plan:
       planning: "📋 계획 수립 중: {task}"
       from_conversation: "📋 이 대화의 컨텍스트로 계획을 세우는 중..."
+    implement:
+      running: "⚙ 계획 구현 중: {plan}"
+      locating: "⚙ 가장 최근에 저장된 계획을 찾는 중..."
     init:
       updating: "⚡ 프로젝트 스캔 결과로 AGENTS.md를 업데이트하는 중..."
       generating: "⚡ 프로젝트 스캔 결과로 AGENTS.md를 생성하는 중..."

@@ -3890,6 +3890,7 @@ export const esOverrides = {
         'Lanzar un subagente independiente para revisar el trabajo que se acaba de comentar (PR, código, docs)',
       '/loop': 'Volver a ejecutar un prompt a intervalos regulares en esta sesión',
       '/plan': 'Escribir un plan de implementación en markdown en .hermes/plans/ sin ejecutar nada',
+      '/implement': 'Ejecutar un archivo de /plan guardado (el más reciente por defecto) como el siguiente turno',
       '/moa': 'Ejecutar un prompt con el preajuste predeterminado de Mixture of Agents y luego restaurar tu modelo',
       '/subgoal': 'Añadir o gestionar criterios adicionales del objetivo activo',
       '/status': 'Mostrar el estado de la sesión actual',

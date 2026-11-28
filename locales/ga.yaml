@@ -817,6 +817,9 @@ gateway:
   plan:
     ack_task: "Ag pleanáil: {task}"
     ack_conversation: "Ag pleanáil ó chomhthéacs an chomhrá seo…"
+  implement:
+    ack_plan: "Plean á chur i bhfeidhm: {plan}"
+    ack_locate: "Do phlean sábháilte is déanaí á lorg…"
   init:
     start_failed: "Níorbh fhéidir /init a thosú — bain triail eile as le do thoil."
     ack_update: "Ag nuashonrú AGENTS.md ó scanadh tionscadail…"
@@ -1620,6 +1623,8 @@ slash:
     description: "Athrith leid ar eatramh athfhillteach sa seisiún seo"
   plan:
     description: "Scríobh plean cur i bhfeidhm markdown go .hermes/plans/ gan aon rud a rith"
+  implement:
+    description: "Rith comhad /plan sábháilte (an ceann is déanaí de réir réamhshocraithe) mar an chéad seal eile"
   moa:
     description: "Rith leid amháin tríd an réamhshocrú Mixture of Agents, ansin aischuir do shamhail"
   subgoal:
@@ -3036,6 +3041,9 @@ cli:
     plan:
       planning: "📋 Ag pleanáil: {task}"
       from_conversation: "📋 Ag pleanáil ó chomhthéacs an chomhrá seo..."
+    implement:
+      running: "⚙ Plean á chur i bhfeidhm: {plan}"
+      locating: "⚙ Do phlean sábháilte is déanaí á lorg..."
     init:
       updating: "⚡ Ag nuashonrú AGENTS.md ó scanadh tionscadail..."
       generating: "⚡ Ag giniúint AGENTS.md ó scanadh tionscadail..."

@@ -2422,6 +2422,7 @@ export const jaOverrides = {
       '/review': '独立したサブエージェントに作業のレビューを依頼',
       '/loop': 'このセッションで一定間隔でプロンプトを繰り返す',
       '/plan': '実行せずに .hermes/plans/ に Markdown の実装計画を作成',
+      '/implement': '保存済みの /plan ファイル（既定では最新）を次のターンとして実行する',
       '/moa': 'Mixture of Agents のプリセットで実行し、元のモデルに戻す',
       '/subgoal': '進行中の目標の追加条件を管理',
       '/status': '現在のセッション状態を表示',

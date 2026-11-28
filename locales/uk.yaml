@@ -817,6 +817,9 @@ gateway:
   plan:
     ack_task: "Планування: {task}"
     ack_conversation: "Планую на основі контексту цієї розмови…"
+  implement:
+    ack_plan: "Реалізація плану: {plan}"
+    ack_locate: "Шукаю останній збережений план…"
   init:
     start_failed: "Не вдалося запустити /init — спробуйте ще раз."
     ack_update: "Оновлюю AGENTS.md за результатами сканування проєкту…"
@@ -1620,6 +1623,8 @@ slash:
     description: "Повторно виконувати запит із заданим інтервалом у цьому сеансі"
   plan:
     description: "Записати план реалізації в markdown до .hermes/plans/, нічого не виконуючи"
+  implement:
+    description: "Виконати збережений файл /plan (типово найновіший) наступним ходом"
   moa:
     description: "Виконати один запит через типовий пресет Mixture of Agents, потім повернути вашу модель"
   subgoal:
@@ -3036,6 +3041,9 @@ cli:
     plan:
       planning: "📋 Планування: {task}"
       from_conversation: "📋 Планування на основі контексту цієї розмови..."
+    implement:
+      running: "⚙ Реалізація плану: {plan}"
+      locating: "⚙ Шукаю останній збережений план..."
     init:
       updating: "⚡ Оновлення AGENTS.md за результатами сканування проєкту..."
       generating: "⚡ Генерація AGENTS.md за результатами сканування проєкту..."

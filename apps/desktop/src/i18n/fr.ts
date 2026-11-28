@@ -3908,6 +3908,7 @@ export const frOverrides = {
       '/review': 'Lancer un sous-agent indépendant pour relire le travail qui vient d’être discuté (PR, code, docs)',
       '/loop': 'Relancer un prompt à intervalle régulier dans cette session',
       '/plan': 'Écrire un plan d’implémentation markdown dans .hermes/plans/ sans rien exécuter',
+      '/implement': 'Exécuter un fichier /plan enregistré (le plus récent par défaut) comme tour suivant',
       '/moa': 'Exécuter un prompt avec le préréglage Mixture of Agents par défaut, puis restaurer votre modèle',
       '/subgoal': 'Ajouter ou gérer des critères supplémentaires sur l’objectif actif',
       '/status': 'Afficher l’état de la session actuelle',

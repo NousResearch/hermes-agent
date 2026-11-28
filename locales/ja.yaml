@@ -817,6 +817,9 @@ gateway:
   plan:
     ack_task: "計画中: {task}"
     ack_conversation: "この会話のコンテキストから計画を作成しています…"
+  implement:
+    ack_plan: "計画を実装中: {plan}"
+    ack_locate: "最新の保存済み計画を探しています…"
   init:
     start_failed: "/init を開始できませんでした — もう一度お試しください。"
     ack_update: "プロジェクトスキャンから AGENTS.md を更新しています…"
@@ -1620,6 +1623,8 @@ slash:
     description: "このセッションでプロンプトを一定間隔で繰り返し実行"
   plan:
     description: "何も実行せずに markdown の実装計画を .hermes/plans/ に書き出す"
+  implement:
+    description: "保存済みの /plan ファイル（既定では最新）を次のターンとして実行する"
   moa:
     description: "デフォルトの Mixture of Agents プリセットでプロンプトを 1 回実行し、元のモデルに戻す"
   subgoal:
@@ -3036,6 +3041,9 @@ cli:
     plan:
       planning: "📋 計画中: {task}"
       from_conversation: "📋 この会話のコンテキストから計画を作成しています..."
+    implement:
+      running: "⚙ 計画を実装中: {plan}"
+      locating: "⚙ 最新の保存済み計画を探しています..."
     init:
       updating: "⚡ プロジェクトのスキャン結果から AGENTS.md を更新しています..."
       generating: "⚡ プロジェクトのスキャン結果から AGENTS.md を生成しています..."

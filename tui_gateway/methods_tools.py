@@ -655,6 +655,16 @@ _cmd_learn = _prompt_builtin("agent.learn_prompt", "build_learn_prompt")
 _cmd_plan = _prompt_builtin("agent.plan_prompt", "build_plan_prompt")
 
 
+def _cmd_implement(rid, params, session, name, arg):
+    """/implement: the saved plan resolves in the SESSION's directory (the /init ladder)."""
+    from agent.implement_prompt import build_implement_prompt_for_session
+
+    skey = session.get("session_key") if session else None
+    msg, label = build_implement_prompt_for_session(
+        arg, cwd=_session_cwd(session) if session else None, session_key=skey)
+    return _ok(rid, {"type": "send", "message": msg, "display": f"/implement {label}".strip()})
+
+
 def _cmd_init(rid, params, session, name, arg):
     """/init: build the AGENTS.md prompt against the SESSION's active directory, then submit it
     as a normal turn (the live agent does the scan and the write). The desktop app launches the
@@ -980,6 +990,7 @@ def _cmd_skills(rid, params, session, name, arg):
 
 _SLASH_BUILTINS = {
     "queue": _cmd_queue, "q": _cmd_queue, "learn": _cmd_learn, "plan": _cmd_plan, "init": _cmd_init,
+    "implement": _cmd_implement,
     "moa": _cmd_moa, "focus": _cmd_focus, "retry": _cmd_retry, "steer": _cmd_steer, "goal": _cmd_goal,
     "loop": _cmd_loop, "undo": _cmd_undo, "snapshot": _cmd_snapshot, "snap": _cmd_snapshot,
     "compress": _cmd_compress, "compact": _cmd_compress,

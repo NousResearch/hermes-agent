@@ -817,6 +817,9 @@ gateway:
   plan:
     ack_task: "Pianificazione: {task}"
     ack_conversation: "Pianificazione dal contesto di questa conversazione…"
+  implement:
+    ack_plan: "Implementazione del piano: {plan}"
+    ack_locate: "Cerco il tuo piano salvato più recente…"
   init:
     start_failed: "Impossibile avviare /init — riprova."
     ack_update: "Aggiornamento di AGENTS.md da una scansione del progetto…"
@@ -1620,6 +1623,8 @@ slash:
     description: "Riesegui un prompt a intervalli ricorrenti in questa sessione"
   plan:
     description: "Scrivi un piano di implementazione in markdown in .hermes/plans/ senza eseguire nulla"
+  implement:
+    description: "Esegui un file /plan salvato (il più recente per impostazione predefinita) come turno successivo"
   moa:
     description: "Esegui un prompt con il preset Mixture of Agents predefinito, poi ripristina il tuo modello"
   subgoal:
@@ -3036,6 +3041,9 @@ cli:
     plan:
       planning: "📋 Pianificazione: {task}"
       from_conversation: "📋 Pianificazione dal contesto di questa conversazione..."
+    implement:
+      running: "⚙ Implementazione del piano: {plan}"
+      locating: "⚙ Cerco il tuo piano salvato più recente..."
     init:
       updating: "⚡ Aggiornamento di AGENTS.md da una scansione del progetto..."
       generating: "⚡ Generazione di AGENTS.md da una scansione del progetto..."

@@ -97,6 +97,7 @@ export const zhHantChat = {
       '/review': '產生獨立子代理，審查剛才討論的工作（PR、程式碼、文件）',
       '/loop': '在此工作階段以固定間隔重新執行提示詞',
       '/plan': '將 Markdown 實作計畫寫入 .hermes/plans/，不執行任何操作',
+      '/implement': '將已儲存的 /plan 檔案（預設最新）作為下一輪執行',
       '/moa': '使用預設的 Mixture of Agents 組合執行提示詞，完成後還原模型',
       '/subgoal': '新增或管理作用中目標的額外條件',
       '/status': '顯示目前工作階段狀態',

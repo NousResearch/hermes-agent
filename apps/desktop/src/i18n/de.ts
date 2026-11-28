@@ -3900,6 +3900,7 @@ export const deOverrides = {
       '/review': 'Einen unabhängigen Subagent starten, der die gerade besprochene Arbeit prüft (PR, Code, Doku)',
       '/loop': 'Einen Prompt in dieser Session in regelmäßigen Abständen erneut ausführen',
       '/plan': 'Einen Markdown-Umsetzungsplan in .hermes/plans/ schreiben, ohne etwas auszuführen',
+      '/implement': 'Eine gespeicherte /plan-Datei (standardmäßig die neueste) als nächsten Zug ausführen',
       '/moa': 'Einen Prompt mit der Standard-Mixture-of-Agents-Vorlage ausführen und dann Ihr Modell wiederherstellen',
       '/subgoal': 'Zusätzliche Kriterien zum aktiven Ziel hinzufügen oder verwalten',
       '/status': 'Status der aktuellen Session anzeigen',

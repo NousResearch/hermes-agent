@@ -3460,6 +3460,7 @@ export const en: Translations = {
       '/review': 'Spawn an independent subagent to review the work just discussed (PR, code, docs)',
       '/loop': 'Re-run a prompt on a recurring interval in this session',
       '/plan': 'Write a markdown implementation plan to .hermes/plans/ without executing anything',
+      '/implement': 'Execute a saved /plan file (newest by default) as the next turn',
       '/moa': 'Run one prompt through the default Mixture of Agents preset, then restore your model',
       '/subgoal': 'Add or manage extra criteria on the active goal',
       '/status': 'Show current session status',

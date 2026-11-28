@@ -965,6 +965,7 @@
     "composer.commandDescs./hatch",
     "composer.commandDescs./heartbeat",
     "composer.commandDescs./help",
+    "composer.commandDescs./implement",
     "composer.commandDescs./import",
     "composer.commandDescs./init",
     "composer.commandDescs./journey",

@@ -3355,6 +3355,7 @@ export const zhOverrides = {
       '/review': '生成独立子代理，审查刚才讨论的工作（PR、代码、文档）',
       '/loop': '在此会话中以固定间隔重新运行提示词',
       '/plan': '将 Markdown 实施计划写入 .hermes/plans/，不执行任何操作',
+      '/implement': '将已保存的 /plan 文件（默认最新）作为下一轮执行',
       '/moa': '使用默认的 Mixture of Agents 组合运行提示词，完成后还原模型',
       '/subgoal': '添加或管理活跃目标的额外条件',
       '/status': '显示当前会话状态',

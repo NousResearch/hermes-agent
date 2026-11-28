@@ -817,6 +817,9 @@ gateway:
   plan:
     ack_task: "Plane: {task}"
     ack_conversation: "Plane anhand des Kontexts dieser Konversation…"
+  implement:
+    ack_plan: "Plan wird umgesetzt: {plan}"
+    ack_locate: "Suche nach dem neuesten gespeicherten Plan…"
   init:
     start_failed: "/init konnte nicht gestartet werden — bitte versuchen Sie es erneut."
     ack_update: "Aktualisiere AGENTS.md anhand eines Projekt-Scans…"
@@ -1620,6 +1623,8 @@ slash:
     description: "Einen Prompt in dieser Sitzung in einem wiederkehrenden Intervall erneut ausführen"
   plan:
     description: "Einen Markdown-Umsetzungsplan nach .hermes/plans/ schreiben, ohne etwas auszuführen"
+  implement:
+    description: "Eine gespeicherte /plan-Datei (standardmäßig die neueste) als nächsten Zug ausführen"
   moa:
     description: "Einen Prompt durch das Standard-Mixture-of-Agents-Preset laufen lassen und dann Ihr Modell wiederherstellen"
   subgoal:
@@ -3036,6 +3041,9 @@ cli:
     plan:
       planning: "📋 Planung: {task}"
       from_conversation: "📋 Planung aus dem Kontext dieser Konversation..."
+    implement:
+      running: "⚙ Plan wird umgesetzt: {plan}"
+      locating: "⚙ Suche nach dem neuesten gespeicherten Plan..."
     init:
       updating: "⚡ Aktualisiere AGENTS.md anhand eines Projekt-Scans..."
       generating: "⚡ Erzeuge AGENTS.md anhand eines Projekt-Scans..."

@@ -817,6 +817,9 @@ gateway:
   plan:
     ack_task: "Planejando: {task}"
     ack_conversation: "Planejando a partir do contexto desta conversa…"
+  implement:
+    ack_plan: "Implementando o plano: {plan}"
+    ack_locate: "Procurando seu plano salvo mais recente…"
   init:
     start_failed: "Não foi possível iniciar /init — tente novamente."
     ack_update: "Atualizando AGENTS.md a partir de uma varredura do projeto…"
@@ -1620,6 +1623,8 @@ slash:
     description: "Reexecutar um prompt em intervalo recorrente nesta sessão"
   plan:
     description: "Escrever um plano de implementação em markdown em .hermes/plans/ sem executar nada"
+  implement:
+    description: "Executar um arquivo /plan salvo (o mais recente por padrão) como o próximo turno"
   moa:
     description: "Executar um prompt com a predefinição padrão de Mixture of Agents e depois restaurar seu modelo"
   subgoal:
@@ -3036,6 +3041,9 @@ cli:
     plan:
       planning: "📋 Planejando: {task}"
       from_conversation: "📋 Planejando a partir do contexto desta conversa..."
+    implement:
+      running: "⚙ Implementando o plano: {plan}"
+      locating: "⚙ Procurando seu plano salvo mais recente..."
     init:
       updating: "⚡ Atualizando AGENTS.md a partir de uma varredura do projeto..."
       generating: "⚡ Gerando AGENTS.md a partir de uma varredura do projeto..."

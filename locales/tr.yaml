@@ -817,6 +817,9 @@ gateway:
   plan:
     ack_task: "Planlanıyor: {task}"
     ack_conversation: "Bu konuşmanın bağlamından plan yapılıyor…"
+  implement:
+    ack_plan: "Plan uygulanıyor: {plan}"
+    ack_locate: "En son kaydedilen planınız aranıyor…"
   init:
     start_failed: "/init başlatılamadı — lütfen yeniden deneyin."
     ack_update: "AGENTS.md proje taramasıyla güncelleniyor…"
@@ -1620,6 +1623,8 @@ slash:
     description: "Bir istemi bu oturumda yinelenen aralıklarla yeniden çalıştır"
   plan:
     description: ".hermes/plans/ altına hiçbir şey çalıştırmadan markdown uygulama planı yaz"
+  implement:
+    description: "Kaydedilmiş bir /plan dosyasını (varsayılan olarak en yenisi) sonraki tur olarak çalıştır"
   moa:
     description: "Bir istemi varsayılan Mixture of Agents ön ayarıyla çalıştır, sonra modelinize geri dön"
   subgoal:
@@ -3036,6 +3041,9 @@ cli:
     plan:
       planning: "📋 Planlanıyor: {task}"
       from_conversation: "📋 Bu konuşmanın bağlamından planlanıyor..."
+    implement:
+      running: "⚙ Plan uygulanıyor: {plan}"
+      locating: "⚙ En son kaydedilen planınız aranıyor..."
     init:
       updating: "⚡ AGENTS.md proje taramasından güncelleniyor..."
       generating: "⚡ AGENTS.md proje taramasından oluşturuluyor..."

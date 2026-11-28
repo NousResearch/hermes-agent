@@ -827,6 +827,9 @@ gateway:
   plan:
     ack_task: "Tervezés: {task}"
     ack_conversation: "Tervezés a beszélgetés kontextusa alapján…"
+  implement:
+    ack_plan: "Terv megvalósítása: {plan}"
+    ack_locate: "A legutóbb mentett terv keresése…"
   init:
     start_failed: "Az /init nem indult el — próbáld újra."
     ack_update: "AGENTS.md frissítése a projekt átvizsgálása alapján…"
@@ -1637,6 +1640,8 @@ slash:
     description: "Prompt ismételt futtatása adott időközönként ebben a munkamenetben"
   plan:
     description: "Markdown megvalósítási terv írása a .hermes/plans/ mappába, végrehajtás nélkül"
+  implement:
+    description: "Egy mentett /plan fájl (alapértelmezés szerint a legújabb) végrehajtása következő körként"
   moa:
     description: "Egy prompt futtatása az alapértelmezett Mixture of Agents előbeállítással, majd a modelled visszaállítása"
   subgoal:
@@ -3053,6 +3058,9 @@ cli:
     plan:
       planning: "📋 Tervezés: {task}"
       from_conversation: "📋 Tervezés a beszélgetés kontextusa alapján..."
+    implement:
+      running: "⚙ Terv megvalósítása: {plan}"
+      locating: "⚙ A legutóbb mentett terv keresése..."
     init:
       updating: "⚡ AGENTS.md frissítése a projekt átvizsgálása alapján..."
       generating: "⚡ AGENTS.md létrehozása a projekt átvizsgálása alapján..."

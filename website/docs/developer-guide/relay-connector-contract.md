@@ -749,6 +749,11 @@ Body (`gateway/relay/__init__.py` `relay_relevance_policy()` → `send_relay_pol
 | `freeResponseScopes` | string[] | `free_response_channels` | scope (channel) ids where `requireAddress` is waived. Same scope vocabulary as §7.1's scope grants. |
 | `allowOtherBots` | bool | `{PLATFORM}_ALLOW_BOTS ∈ {mentions, all}` | admit bot-authored messages (default off). |
 
+The Discord per-thread keys `free_response_thread_mode` and `free_response_overrides`
+are **native-adapter-only**: they are not projected, so the connector's relevance
+gate only sees `free_response_channels`. The gateway logs a one-time warning at boot
+when relay is active and either key is set.
+
 Auth is the per-gateway upgrade token (§6.1), so the connector attaches the
 policy to the authenticated instance. The gateway is the **source of truth** and
 re-declares **every boot** (a full replace, mirroring the `routeKeys` upsert at

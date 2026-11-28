@@ -556,6 +556,7 @@ def _clean_discord_id(entry: str) -> str:
 _GATE_ENV_KEYS = (
     "DISCORD_ALLOWED_USERS", "DISCORD_ALLOWED_ROLES", "DISCORD_ALLOWED_CHANNELS",
     "DISCORD_IGNORED_CHANNELS", "DISCORD_NO_THREAD_CHANNELS", "DISCORD_FREE_RESPONSE_CHANNELS",
+    "DISCORD_FREE_RESPONSE_THREAD_MODE", "DISCORD_FREE_RESPONSE_OVERRIDES",
     "DISCORD_MISSED_MESSAGE_BACKFILL_CHANNELS", "DISCORD_ALLOW_ALL_USERS", "DISCORD_ALLOW_BOTS",
     "GATEWAY_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS",
 )
@@ -1175,6 +1176,9 @@ from plugins.platforms.discord.adapter_opus import load_opus_codec
 from plugins.platforms.discord.adapter_authorization import DiscordAuthorizationMixin, is_automated_message
 from plugins.platforms.discord.adapter_slash_auth import DiscordSlashAuthMixin
 from plugins.platforms.discord.adapter_live_gates import DiscordLiveGatesMixin
+from plugins.platforms.discord.free_response import (
+    FreeResponse, own_channel_keys, parent_channel_keys, resolve_free_response, seed_overrides_from_yaml,
+)
 from plugins.platforms.discord.adapter_command_sync import DiscordCommandSyncMixin, app_command_scopes
 from plugins.platforms.discord.adapter_thread_titles import DiscordThreadTitlesMixin, SemanticThreadRenames
 from plugins.platforms.discord.adapter_voice_info import DiscordVoiceInfoMixin
@@ -1698,9 +1702,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordCommandSyncMixin, DiscordAuth
                     parent_id = None
                     if hasattr(message.channel, "parent_id") and message.channel.parent_id:
                         parent_id = str(message.channel.parent_id)
-                    free_channels = self._discord_free_response_channels()
-                    channel_keys = self._discord_channel_keys(message, parent_id)
-                    if "*" not in free_channels and not (channel_keys & free_channels):
+                    if self._discord_free_response(message, parent_id) is not FreeResponse.FREE:
                         # Every other silent return in this function is at least guessable from
                         # the outside; this one is not, and an operator seeing no log line cannot
                         # tell it apart from the gateway never receiving the event.
@@ -2523,24 +2525,23 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordCommandSyncMixin, DiscordAuth
             logger.warning("[%s] Missed-message backfill failed: %s", self.name, exc, exc_info=True)
 
     def _in_bot_thread(self, message: Any) -> bool:
-        """Thread the bot already joined skips the mention check — unless
-        thread_require_mention (multi-bot threads) gates threads like channels."""
+        """Thread the bot already joined skips the mention check — unless thread_require_mention
+        (multi-bot threads) gates threads like channels, or the operator opted this thread out."""
         return (
             isinstance(message.channel, discord.Thread)
             and str(message.channel.id) in self._threads
             and not self._discord_thread_require_mention()
+            and self._discord_free_response(message, self._get_parent_channel_id(message.channel))
+            is not FreeResponse.OPTED_OUT
         )
 
     async def _dispatch_recovered_message(self, message: Any) -> bool:
         """Run one recovered message through the live Discord ingress gates."""
         if not isinstance(message.channel, discord.DMChannel):
             parent_id = self._get_parent_channel_id(message.channel)
-            channel_keys = self._discord_channel_keys(message, parent_id)
-            free_channels = self._discord_free_response_channels()
             if (
                 self._discord_require_mention()
-                and "*" not in free_channels
-                and not (channel_keys & free_channels)
+                and self._discord_free_response(message, parent_id) is not FreeResponse.FREE
                 and not self._in_bot_thread(message)
                 and not self._self_is_explicitly_mentioned(message)
             ):
@@ -4858,6 +4859,17 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordCommandSyncMixin, DiscordAuth
             raw = self._gate_env("DISCORD_FREE_RESPONSE_CHANNELS")
         return self._gate_csv_set(raw)
 
+    def _discord_free_response(self, message: Any, parent_channel_id: Optional[str] = None) -> FreeResponse:
+        """A server message under free_response_channels / _threads / _overrides (``free_response.py``)."""
+        user = getattr(self._client, "user", None)
+        settings = self._free_response_settings()
+        return resolve_free_response(
+            getattr(message, "channel", None), parent_channel_id,
+            free_channels=self._discord_free_response_channels(),
+            threads_mode=settings.thread_mode, overrides=settings.overrides,
+            thread_cls=discord.Thread, self_id=str(user.id) if user else None,
+        )
+
     def _raw_mentioned_user_ids(self, message: Any) -> set:
         """Extract user-mention IDs (``<@ID>`` and legacy ``<@!ID>``) from raw content,
         since ``message.mentions`` isn't always populated (mobile/edited/relayed)."""
@@ -4911,23 +4923,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordCommandSyncMixin, DiscordAuth
         self, channel: Any, parent_channel_id: Optional[str] = None
     ) -> set[str]:
         """Same keys as :meth:`_discord_channel_keys` but from a channel object (slash-command path)."""
-        keys: set[str] = set()
-        channel_id = getattr(channel, "id", None)
-        if channel_id is not None:
-            keys.add(str(channel_id))
-        channel_name = str(getattr(channel, "name", "")).strip()
-        if channel_name:
-            keys.add(channel_name)
-            keys.add(f"#{channel_name}")
-        parent_id = parent_channel_id or getattr(channel, "parent_id", None)
-        if parent_id:
-            keys.add(str(parent_id))
-        parent_channel = getattr(channel, "parent", None)
-        parent_name = str(getattr(parent_channel, "name", "")).strip() if parent_channel else ""
-        if parent_name:
-            keys.add(parent_name)
-            keys.add(f"#{parent_name}")
-        return keys
+        return set(own_channel_keys(channel)) | set(parent_channel_keys(channel, parent_channel_id))
 
     def _discord_thread_require_mention(self) -> bool:
         """Whether threads still require @mention after the bot has participated (default False).
@@ -5913,15 +5909,13 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordCommandSyncMixin, DiscordAuth
             if "*" in ignored_channels or (channel_keys & ignored_channels):
                 logger.debug("[%s] Ignoring message in ignored channel: %s", self.name, channel_keys)
                 return False
-            free_channels = self._discord_free_response_channels()
             require_mention = self._discord_require_mention()
             # Voice-linked text channel is free-response while voice is active (exact channel only).
             voice_linked_ids = {str(ch_id) for ch_id in self._voice_text_channels.values()}
             current_channel_id = str(message.channel.id)
             is_voice_linked_channel = current_channel_id in voice_linked_ids
             is_free_channel = (
-                "*" in free_channels
-                or bool(channel_keys & free_channels)
+                self._discord_free_response(message, parent_channel_id) is FreeResponse.FREE
                 or is_voice_linked_channel
             )
             in_bot_thread = self._in_bot_thread(message)
@@ -7004,6 +6998,8 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
         seeded_extra["approval_mentions"] = approval_mentions_cfg
         _env_default("DISCORD_APPROVAL_MENTIONS", str(approval_mentions_cfg).lower())
     _gate("free_response_channels", "DISCORD_FREE_RESPONSE_CHANNELS", from_platform_extra=False)
+    _gate("free_response_thread_mode", "DISCORD_FREE_RESPONSE_THREAD_MODE", from_platform_extra=False, lower=True)
+    seed_overrides_from_yaml(discord_cfg, seeded_extra, _env_default)
     for key, env_key in (
         ("auto_thread", "DISCORD_AUTO_THREAD"),
         ("free_response_auto_thread", "DISCORD_FREE_RESPONSE_AUTO_THREAD"),

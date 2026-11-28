@@ -136,3 +136,33 @@ def test_send_fail_soft_on_transport_error(monkeypatch):
     assert relay.send_relay_policy() is False
 
 
+
+
+def test_per_thread_free_response_keys_are_not_projected_and_warn_once(monkeypatch, caplog):
+    """The relay projection carries only free_response_channels; the native-only keys warn once."""
+    monkeypatch.setattr(relay, "_native_only_warned", False)
+    monkeypatch.setattr(relay, "relay_platform_identity", lambda: ("discord", "bot"))
+    monkeypatch.setattr(
+        relay, "_load_cfg",
+        lambda: {"discord": {"require_mention": True, "free_response_channels": ["c1"],
+                             "free_response_thread_mode": "never", "free_response_overrides": {"t1": False}}},
+    )
+    with caplog.at_level("WARNING", logger="gateway.relay"):
+        first = relay.relay_relevance_policy()
+        second = relay.relay_relevance_policy()
+    assert first == second == {
+        "platform": "discord", "requireAddress": True, "freeResponseScopes": ["c1"], "allowOtherBots": False,
+    }
+    warnings = [r.getMessage() for r in caplog.records if "native-adapter-only" in r.getMessage()]
+    assert len(warnings) == 1
+    assert "free_response_thread_mode" in warnings[0] and "free_response_overrides" in warnings[0]
+
+
+def test_no_relay_warning_when_per_thread_keys_are_defaults(monkeypatch, caplog):
+    monkeypatch.setattr(relay, "_native_only_warned", False)
+    monkeypatch.setattr(relay, "relay_platform_identity", lambda: ("discord", "bot"))
+    monkeypatch.setattr(relay, "_load_cfg", lambda: {"discord": {
+        "require_mention": True, "free_response_thread_mode": "inherit", "free_response_overrides": {}}})
+    with caplog.at_level("WARNING", logger="gateway.relay"):
+        relay.relay_relevance_policy()
+    assert not [r for r in caplog.records if "native-adapter-only" in r.getMessage()]

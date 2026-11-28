@@ -450,7 +450,13 @@ def execute_job_for_event(
 
 def _latest_job_output_excerpt(job_id: str, max_chars: int = 2000) -> Optional[str]:
     """Excerpt of the job's most recent saved output file for the background completion
-    block (parent sees what the job produced). Never raises."""
+    block (parent sees what the job produced). Never raises.
+
+    The archive opens with the run's own prompt — the job's prompt plus any skill loaded into
+    it, tens of thousands of characters — so the excerpt is the run's ANSWER, extracted the
+    same way the delivery lane extracts it. The prompt half is noise: the parent already has
+    it, and it buries the result the block exists to report.
+    """
     try:
         from cron.jobs import get_cron_output_dir
 
@@ -458,9 +464,20 @@ def _latest_job_output_excerpt(job_id: str, max_chars: int = 2000) -> Optional[s
         files = sorted(out_dir.glob("*.md"))
         if not files:
             return None
-        text = files[-1].read_text(encoding="utf-8-sig", errors="replace").strip()
+        raw = files[-1].read_text(encoding="utf-8-sig", errors="replace")
+        text = raw.strip()
         if not text:
             return None
+        try:  # the framed archive's answer; unframed (script-only) archives stay whole
+            from cron.scheduler_prompt import _archive_answer
+
+            # Unstripped: the reader validates the writer's trailing newline, so a stripped
+            # document reads as a truncated frame and yields None.
+            answer = _archive_answer(raw)
+        except Exception:
+            answer = None
+        if answer:
+            text = answer.strip()
         if len(text) > max_chars:
             text = text[:max_chars] + f"\n… (truncated; full output: {files[-1]})"
         return text

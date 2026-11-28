@@ -1204,6 +1204,8 @@ export interface HermesActiveWork {
   titles: string[]
   /** Speech output still consumes the frame-published transcript while streaming. */
   voiceActive?: boolean
+  /** File names with unsaved Files-pane edits; the main process asks before discarding them. */
+  unsavedFiles?: string[]
 }
 
 export interface HermesWindowState {

@@ -151,3 +151,24 @@ test('an idle cache does not resurrect finished work', () => {
 
   assert.equal(merged.count, 0)
 })
+
+// -- unsaved Files-pane edits (Cowork v7.37095.0 parity) ----------------------
+
+test('unsaved edits alone make quitting and closing the last window ask, naming the files', () => {
+  const work = mergeActiveWork([
+    normalizeActiveWork({ count: 0, titles: [], unsavedFiles: ['notes.md', ' '] }),
+    normalizeActiveWork({ count: 0, titles: [], unsavedFiles: ['notes.md', 'plan.txt'] })
+  ])
+
+  assert.deepEqual(work.unsavedFiles, ['notes.md', 'plan.txt'])
+
+  // The local gateway is attached, so turns alone would not ask; unsaved edits do.
+  const prompt = quitPromptFor(work, false, false)
+
+  assert.ok(prompt)
+  assert.equal(prompt.message, 'You have unsaved changes in 2 files.')
+  assert.ok(prompt.detail.includes('• notes.md') && prompt.detail.includes('• plan.txt'))
+  assert.deepEqual(prompt.buttons, ['Cancel', 'Quit Without Saving'])
+  assert.equal(quitPromptFor(work, true), null, 'an update hand-off is asked before it starts, never here')
+  assert.equal(shouldGuardWindowClose(work, false, false, false), true)
+})

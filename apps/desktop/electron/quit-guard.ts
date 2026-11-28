@@ -17,6 +17,25 @@ export interface ActiveWork {
   titles: string[]
   /** Running turns, including untitled ones — always >= titles.length. */
   count: number
+  /** Names of files with unsaved Files-pane edits. Absent when there are none. */
+  unsavedFiles?: string[]
+}
+
+const MAX_UNSAVED_FILES = 50
+
+function cleanStrings(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value
+        .filter((item): item is string => typeof item === 'string')
+        .map(item => item.trim())
+        .filter(Boolean)
+    : []
+}
+
+function withUnsaved(work: ActiveWork, files: Iterable<string>): ActiveWork {
+  const unique = [...new Set(files)].slice(0, MAX_UNSAVED_FILES)
+
+  return unique.length > 0 ? { ...work, unsavedFiles: unique } : work
 }
 
 export const NO_ACTIVE_WORK: ActiveWork = { count: 0, titles: [] }
@@ -27,23 +46,26 @@ export function normalizeActiveWork(payload: unknown): ActiveWork {
     return NO_ACTIVE_WORK
   }
 
-  const raw = payload as { count?: unknown; titles?: unknown }
-
-  const titles = Array.isArray(raw.titles)
-    ? raw.titles
-        .filter((title): title is string => typeof title === 'string')
-        .map(title => title.trim())
-        .filter(Boolean)
-    : []
-
+  const raw = payload as { count?: unknown; titles?: unknown; unsavedFiles?: unknown }
+  const titles = cleanStrings(raw.titles)
   const count = typeof raw.count === 'number' && Number.isFinite(raw.count) ? Math.max(0, Math.floor(raw.count)) : 0
 
-  return { count: Math.max(count, titles.length), titles }
+  return withUnsaved({ count: Math.max(count, titles.length), titles }, cleanStrings(raw.unsavedFiles))
+}
+
+/**
+ * The part of a report main's last-seen cache may keep. Turns fall back to it
+ * (a webContents can reload mid-turn), but a closed window's unsaved files are
+ * gone with the window and must not make a later quit ask about them.
+ */
+export function turnsOnly(work: ActiveWork): ActiveWork {
+  return { count: work.count, titles: work.titles }
 }
 
 /** Merge every window's report into one. Windows can show the same session. */
 export function mergeActiveWork(reports: Iterable<ActiveWork>): ActiveWork {
   const titles: string[] = []
+  const unsaved: string[] = []
   let count = 0
 
   for (const report of reports) {
@@ -54,9 +76,67 @@ export function mergeActiveWork(reports: Iterable<ActiveWork>): ActiveWork {
         titles.push(title)
       }
     }
+
+    unsaved.push(...(report.unsavedFiles ?? []))
   }
 
-  return { count: Math.max(count, titles.length), titles }
+  return withUnsaved({ count: Math.max(count, titles.length), titles }, unsaved)
+}
+
+function bulletList(items: readonly string[], total: number = items.length): string[] {
+  const listed = items.slice(0, MAX_LISTED)
+  const remaining = total - listed.length
+  const lines = listed.map(item => `• ${item}`)
+
+  if (remaining > 0) {
+    lines.push(remaining === 1 ? '• 1 more' : `• ${remaining} more`)
+  }
+
+  return lines
+}
+
+function unsavedMessage(files: readonly string[]): string {
+  return files.length === 1
+    ? 'You have unsaved changes in 1 file.'
+    : `You have unsaved changes in ${files.length || 'some'} files.`
+}
+
+export type UnsavedEditsAction = 'leave' | 'update'
+
+// Inspired by Claude Cowork (desktop changelog v7.37095.0, 2026-11-24): an
+// edit in the Files pane must not vanish without a warning when the window
+// closes or reloads, or the app relaunches to update. Leaving a window is
+// answered from its own will-prevent-unload; quitting rides quitPromptFor.
+export function unsavedEditsPrompt(files: readonly string[], action: UnsavedEditsAction): QuitPrompt {
+  const consequence =
+    action === 'update'
+      ? 'Restarting to update discards these edits. Save them first if you want to keep them.'
+      : 'Leaving discards these edits. Save them first if you want to keep them.'
+
+  return {
+    buttons: action === 'update' ? ['Cancel', 'Discard and Update'] : ['Keep Editing', 'Discard Changes'],
+    detail: [...bulletList(files), files.length > 0 ? '' : null, consequence]
+      .filter(line => line !== null)
+      .join('\n')
+      .trim(),
+    message: unsavedMessage(files)
+  }
+}
+
+function unsavedQuitPrompt(work: ActiveWork, files: readonly string[], backendOwned: boolean): QuitPrompt {
+  const running =
+    work.count < 1
+      ? null
+      : `Hermes is also still working on ${work.count === 1 ? '1 chat' : `${work.count} chats`}. ` +
+        (backendOwned ? 'Quitting stops the agent mid-turn.' : 'The agent keeps running on the gateway.')
+
+  return {
+    buttons: ['Cancel', 'Quit Without Saving'],
+    detail: [...bulletList(files), '', 'Quitting discards these edits.', running]
+      .filter(line => line !== null)
+      .join('\n'),
+    message: unsavedMessage(files)
+  }
 }
 
 export interface QuitPrompt {
@@ -101,17 +181,17 @@ export function quitPromptFor(
   quittingForHandoff: boolean,
   backendOwned: boolean = true
 ): null | QuitPrompt {
-  if (quittingForHandoff || work.count < 1) {
+  const unsaved = work.unsavedFiles ?? []
+
+  if (quittingForHandoff || (work.count < 1 && unsaved.length < 1)) {
     return null
   }
 
-  const listed = work.titles.slice(0, MAX_LISTED)
-  const remaining = work.count - listed.length
-  const lines = listed.map(title => `• ${title}`)
-
-  if (remaining > 0) {
-    lines.push(remaining === 1 ? '• 1 more' : `• ${remaining} more`)
+  if (unsaved.length > 0) {
+    return unsavedQuitPrompt(work, unsaved, backendOwned)
   }
+
+  const lines = bulletList(work.titles, work.count)
 
   return {
     buttons: backendOwned ? ['Keep Running', 'Quit Anyway'] : ['Cancel', 'Quit'],
@@ -143,6 +223,8 @@ export function quitPromptFor(
  * "window stays in Dock" gesture, not a quit, and prompting on it would
  * block a normal workflow. Chat windows other than the final one are also
  * excluded because closing them does not stop the application or its work.
+ * Unsaved Files-pane edits count as work here: closing the last window quits.
+ * Every other window close asks from its own will-prevent-unload instead.
  */
 export function shouldGuardWindowClose(
   work: ActiveWork,
@@ -150,7 +232,7 @@ export function shouldGuardWindowClose(
   isMac: boolean,
   hasOtherChatWindows: boolean
 ): boolean {
-  if (isMac || quittingForHandoff || hasOtherChatWindows || work.count < 1) {
+  if (isMac || quittingForHandoff || hasOtherChatWindows || (work.count < 1 && !work.unsavedFiles?.length)) {
     return false
   }
 

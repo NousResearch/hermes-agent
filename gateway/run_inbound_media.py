@@ -56,3 +56,21 @@ def rehome_inbound_media(event: MessageEvent) -> None:
         if pending and old_agent_path in pending:
             event._gateway_pending_stt_text = pending.replace(old_agent_path, agent_path)
     event.media_urls = rewritten
+
+
+def with_attachment_notes(runner_cls, event: MessageEvent, text: str) -> str:
+    """*text* with the path note a normal turn gives each attachment, for a reply consumed outside a
+    turn (a clarify answer). STT voice is excluded: the caller already transcribed it into *text*.
+    Images get a path note, not pre-analysis: the answer must not wait on a vision call."""
+    rehome_inbound_media(event)
+    if not event.media_urls:
+        return text
+    image_paths, _stt, audio_files, videos = runner_cls._classify_inbound_media(event, True)
+    names = runner_cls._inbound_original_names(event)
+    text = runner_cls._prepend_inbound_media_file_notes(text, audio_files, videos, names)
+    text = runner_cls._prepend_inbound_document_notes(event, text)
+    for path in reversed(image_paths):
+        _display, agent_path = runner_cls._inbound_attachment_display_name(path, names.get(path, ""))
+        text = (f"[The user sent an image. It is saved at: {agent_path}. Look at it with vision_analyze "
+                f"(image_url: {agent_path}) when the answer depends on it.]\n\n{text}")
+    return text.strip()

@@ -823,7 +823,7 @@ def _cmd_undo(rid, params, session, name, arg):
         return _err(rid, 4001, "no active session to undo")
     if busy := _busy_error(rid, session, "undo"):
         return busy
-    if not (session_key := session.get("session_key", "")):
+    if not session.get("session_key", ""):
         return _err(rid, 4001, "no session key for undo")
     arg_str = (arg or "").strip()
     try:
@@ -840,14 +840,12 @@ def _cmd_undo(rid, params, session, name, arg):
             return err
         active, live_view, rewound_count = rewound
         target_text = _tools_mod("session_rules.turns").flatten_message_text(live_view.get("content"))
-    # Notify memory providers (same hook /branch fires) with rewound=True so cached per-turn state invalidates.
+    # The rewind already notified memory providers with rewound=True (see session_workdir's
+    # _notify_memory_providers_rewound, #6672 + #21910); refresh the cached prompt and db mark for the
+    # truncated transcript here.
     agent = session.get("agent")
     if agent is not None:
-        # See #6672 + #21910.
-        mm = getattr(agent, "_memory_manager", None)
         for step in (
-            lambda: mm is not None and mm.on_session_switch(
-                session_key, parent_session_id="", reset=False, rewound=True),
             lambda: hasattr(agent, "_invalidate_system_prompt") and agent._invalidate_system_prompt(),
             lambda: hasattr(agent, "_last_flushed_db_idx") and setattr(agent, "_last_flushed_db_idx", len(active)),
         ):

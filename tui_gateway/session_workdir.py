@@ -948,7 +948,27 @@ def _rewind_active_session_history(
             agent._last_flushed_db_idx = len(installed) if session_key else 0
         if hasattr(agent, "_db_flush_scan_prefix"):
             agent._db_flush_scan_prefix = installed[:] if session_key else None
+    _notify_memory_providers_rewound(session, session_key)
     return installed, live_view, rewound_count
+
+
+def _notify_memory_providers_rewound(session: dict, session_key: str) -> None:
+    """Tell memory providers the transcript was truncated (``rewound=True``, #6672 / #21910).
+
+    Every rewind surface — ``/undo``, the ``session.undo`` RPC the Desktop undo button calls, ``/retry``
+    and a whole-tree ``rollback.restore`` — reaches the transcript through this module, so the hook lives
+    with the rewind instead of at each call site: a provider keeping per-turn state must not keep
+    answering from the turns the user just removed. Silent for the warm-history-only lane (no durable
+    row) and for a session whose agent is not built yet.
+    """
+    agent = session.get("agent")
+    manager = getattr(agent, "_memory_manager", None) if agent is not None else None
+    if manager is None or not session_key:
+        return
+    # The session's profile scope: a multiplexed manager refuses a hook naming no profile (#140058).
+    with contextlib.suppress(Exception), _session_profile_runtime_scope(session):
+        manager.on_session_switch(session_key, parent_session_id="", reset=False, rewound=True)
+
 
 
 def _history_without_ephemeral_scaffolding(history: list[dict]) -> list[dict]:

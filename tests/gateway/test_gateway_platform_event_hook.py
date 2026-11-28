@@ -118,7 +118,7 @@ class TestRunnerDispatch:
     def test_authorized_event_routes_normalized_envelope(self):
         runner = object.__new__(GatewayRunner)
         runner._is_user_authorized = lambda source: source.user_id == "777"
-        invoke = MagicMock()
+        invoke = AsyncMock()
         source = _adapter()._source_from_reaction_for_auth(
             _auth_reaction_update(user_id=777)
         )
@@ -128,37 +128,37 @@ class TestRunnerDispatch:
             "payload": {"chat_id": "123", "message_id": "456", "emojis": ["x"]},
         }
 
-        with patch("hermes_cli.lifecycle.invoke_hook", invoke):
+        with patch("hermes_cli.lifecycle.ainvoke_hook", invoke):
             asyncio.run(runner._handle_gateway_platform_event(event, source))
 
-        invoke.assert_called_once_with("gateway_platform_event", **event)
+        invoke.assert_awaited_once_with("gateway_platform_event", **event)
 
     def test_unauthorized_event_never_reaches_hooks(self):
         runner = object.__new__(GatewayRunner)
         runner._is_user_authorized = lambda source: False
-        invoke = MagicMock()
+        invoke = AsyncMock()
         source = _adapter()._source_from_reaction_for_auth(
             _auth_reaction_update(user_id=777)
         )
 
-        with patch("hermes_cli.lifecycle.invoke_hook", invoke):
+        with patch("hermes_cli.lifecycle.ainvoke_hook", invoke):
             asyncio.run(runner._handle_gateway_platform_event(
                 {"platform": "telegram", "event_type": "reaction", "payload": {}},
                 source,
             ))
 
-        invoke.assert_not_called()
+        invoke.assert_not_awaited()
 
 
     def test_plugin_layer_error_is_isolated(self):
         runner = object.__new__(GatewayRunner)
         runner._is_user_authorized = lambda source: True
-        invoke = MagicMock(side_effect=RuntimeError("plugin boom"))
+        invoke = AsyncMock(side_effect=RuntimeError("plugin boom"))
         source = _adapter()._source_from_reaction_for_auth(
             _auth_reaction_update(user_id=777)
         )
 
-        with patch("hermes_cli.lifecycle.invoke_hook", invoke):
+        with patch("hermes_cli.lifecycle.ainvoke_hook", invoke):
             asyncio.run(runner._handle_gateway_platform_event(
                 {"platform": "telegram", "event_type": "reaction", "payload": {}},
                 source,
@@ -563,6 +563,69 @@ class TestProfileScopedPlatformEventHandler:
 
 
 class TestFixturePluginObservationPath:
+    def test_hung_async_callback_is_cancelled_and_later_observers_still_run(self, monkeypatch):
+        manager = PluginManager()
+        context = PluginContext(
+            PluginManifest(name="hung-event-fixture", source="user"), manager,
+        )
+        runner = object.__new__(GatewayRunner)
+        runner._is_user_authorized = lambda source: source.user_id == "777"
+        source = _adapter()._source_from_reaction_for_auth(_auth_reaction_update(user_id=777))
+        cancelled = []
+        seen = []
+
+        async def hung(**_event):
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.append(True)
+
+        context.register_hook("gateway_platform_event", hung)
+        context.register_hook("gateway_platform_event", lambda **event: seen.append(event))
+        monkeypatch.setattr("hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 2.0)
+        event = {"platform": "telegram", "event_type": "reaction", "payload": {}}
+
+        async def dispatch():
+            with patch("hermes_cli.plugins.get_plugin_manager", return_value=manager):
+                await asyncio.wait_for(runner._handle_gateway_platform_event(event, source), timeout=5)
+
+        asyncio.run(dispatch())
+        assert cancelled == [True]
+        assert seen == [event]
+
+    def test_async_callback_runs_on_gateway_loop_without_blocking_it(self):
+        """A platform action may await the adapter's loop-bound client from its hook."""
+        manager = PluginManager()
+        context = PluginContext(
+            PluginManifest(name="async-event-fixture", source="user"), manager,
+        )
+        runner = object.__new__(GatewayRunner)
+        runner._is_user_authorized = lambda source: source.user_id == "777"
+        adapter = _adapter()
+        adapter.set_platform_event_handler(runner._handle_gateway_platform_event)
+        seen = []
+
+        async def dispatch():
+            gateway_loop = asyncio.get_running_loop()
+            released = asyncio.Event()
+
+            async def observe(**event):
+                callback_loop = asyncio.get_running_loop()
+                seen.append(callback_loop)
+                if callback_loop is gateway_loop:
+                    gateway_loop.call_soon(released.set)
+                    await asyncio.wait_for(released.wait(), timeout=5)
+                    seen.append(event["event_type"])
+
+            context.register_hook("gateway_platform_event", observe)
+            with patch("hermes_cli.plugins.get_plugin_manager", return_value=manager):
+                await adapter._on_platform_update(
+                    _auth_reaction_update(user_id=777), context=MagicMock(),
+                )
+            assert seen == [gateway_loop, "reaction"]
+
+        asyncio.run(dispatch())
+
     def test_reaction_reaches_real_registered_plugin_callback(self):
         """Adapter -> normalized source/envelope -> runner auth -> real plugin bus."""
         manager = PluginManager()

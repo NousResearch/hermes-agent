@@ -32,7 +32,12 @@ def test_setup_refreshes_stale_dependencies_but_keeps_matching_install(
         present["resolved"] = "https://mirror.example.test/new.tgz"
     actual = {"packages": {dependency: present}}
     (tmp_path / "package-lock.json").write_text(json.dumps(desired), encoding="utf-8")
+    (tmp_path / "package.json").write_text(
+        json.dumps(desired["packages"][""]), encoding="utf-8"
+    )
     (tmp_path / "node_modules" / ".package-lock.json").write_text(json.dumps(actual), encoding="utf-8")
+    from gateway.platforms.whatsapp_common import record_whatsapp_bridge_dependency_fingerprint
+    assert record_whatsapp_bridge_dependency_fingerprint(tmp_path)
     calls = []
 
     def install(command, **kwargs):

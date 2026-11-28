@@ -34,6 +34,10 @@
             scheme = dark ? 'dark' : 'light'
           }
           document.documentElement.style.backgroundColor = bg
+          // <body> paints over <html>, so the canvas colour alone does not
+          // hold: publish the same colour for the rule below.
+          document.documentElement.style.setProperty('--hermes-boot-background', bg)
+          document.documentElement.dataset.hermesBootPaint = ''
           if (scheme === 'dark' || scheme === 'light') {
             document.documentElement.style.colorScheme = scheme
           }
@@ -42,6 +46,26 @@
         // localStorage unavailable — keep UA defaults.
       }
     </script>
+    <style>
+      /* Companion to the boot script: <body> paints over the <html> canvas, and
+         styles.css gives it `background: var(--ui-chat-surface-background)`,
+         which resolves from the LIGHT `:root` seeds until applyTheme() sets the
+         dark class and the inline seeds. That is the white flash — rgb(248,249,254),
+         the full window, for as long as the module graph takes to execute.
+
+         UNLAYERED ON PURPOSE: styles.css declares that body rule inside
+         `@layer base`, and any unlayered rule outranks a layered one whatever
+         the selectors or the source order, so this needs no !important and no
+         specificity games.
+
+         It retires itself the moment the real theme lands (applyTheme() sets
+         data-hermes-mode in the same synchronous block as the seeds), and it
+         never applies under window glass, whose <body> IS the single translucent
+         painter. */
+      html[data-hermes-boot-paint]:not([data-hermes-mode]):not([data-hermes-glass]) body {
+        background: var(--hermes-boot-background);
+      }
+    </style>
   </head>
   <body>
     <div id="root" class="scrollbar-dt"></div>

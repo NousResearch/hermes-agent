@@ -1,0 +1,20 @@
+{
+  "type": "object",
+  "properties": {
+    "subtree_index": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "path": { "type": "string" },
+          "summary": { "type": "string" },
+          "interface": { "type": "array", "items": { "type": "string" } },
+          "invariants": { "type": "array", "items": { "type": "string" } },
+          "side_effects": { "type": "array", "items": { "type": "string" } }
+        },
+        "required": ["path", "summary"]
+      }
+    }
+  },
+  "required": ["subtree_index"]
+}

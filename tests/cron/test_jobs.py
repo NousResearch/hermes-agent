@@ -106,6 +106,12 @@ class TestParseSchedule:
         assert result["kind"] == "interval"
         assert result["minutes"] == 120
 
+    def test_uppercase_duration_not_mistaken_for_timestamp(self):
+        """The 'T' in 'MINUTES' must not route a duration into the ISO-timestamp branch."""
+        assert parse_schedule("30 MINUTES")["minutes"] == 30
+        assert parse_schedule("in 5 MINUTES")["kind"] == "once"
+        assert parse_schedule("2026-02-03T14:00:00")["kind"] == "once"
+
 
     # ---- Natural-language weekday/daily phrases → cron (issue: documented
     # "every monday 9am" format was rejected because the "every" branch only

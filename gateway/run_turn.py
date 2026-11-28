@@ -79,31 +79,13 @@ def _tool_call_logger() -> logging.Logger:
 
 
 
-_CONTEXT_OVERFLOW_ERROR_PHRASES = (
-    "context length", "context size", "context window",
-    "maximum context", "token limit", "too many tokens",
-    "reduce the length", "exceeds the limit",
-    "request entity too large", "prompt is too long",
-    "payload too large", "input is too long",
-)
-
 def _unexpected_silence_reply() -> str:
     """Reply when the model returned only a silence marker for a message that needed an answer."""
     return t("gateway.errors.unexpected_silence")
 
 
-def is_context_overflow_failure_result(agent_result: dict, history_len: int) -> bool:
-    """One verdict for "this failed turn is a context overflow", shared by transcript persistence
-    (#1630 skip) and the user-facing reply so the two can never disagree.
-
-    Multi-word phrases (not bare "exceed"/"token") avoid matching "rate limit exceeded" or
-    "invalid authentication token"; a bare 400 only counts on a long session."""
-    if not agent_result.get("failed"):
-        return False
-    if agent_result.get("compression_exhausted"):
-        return True
-    err = str(agent_result.get("error") or "").lower()
-    return any(p in err for p in _CONTEXT_OVERFLOW_ERROR_PHRASES) or ("400" in err and history_len > 50)
+# Moved to a sibling to keep this file under its line cap; re-exported for gateway.run / run_turn_persistence / tests.
+from gateway.run_turn_overflow import is_context_overflow_failure_result
 
 
 # Setup/prefix rows rather than conversation: the agent rebuilds its own system prompt, and a
@@ -386,9 +368,21 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
             f"{context_length / 1_000_000:.1f}M" if context_length >= 1_000_000
             else f"{context_length // 1_000}K" if context_length >= 1_000 else str(context_length)
         )
+        # Named custom endpoints resolve to the bare adapter id "custom" at runtime (the entry
+        # name is dropped, see runtime_provider_custom.py). Reverse-look the endpoint back to
+        # its durable ``custom:<name>`` identity so the banner tells multi-endpoint users which
+        # saved provider actually serves this session. No match keeps the plain "custom".
+        provider_display = resolved.provider or "openrouter"
+        if provider_display == "custom" and resolved.base_url:
+            from hermes_cli.runtime_provider_custom import find_custom_provider_identity
+            try:
+                provider_display = find_custom_provider_identity(resolved.base_url) or provider_display
+            except Exception:
+                logger.debug("Gateway session banner could not map base_url back to a named "
+                             "custom provider; showing the bare adapter id", exc_info=True)
         lines = [
             t("gateway.session.info_model", model=resolved.model),
-            t("gateway.session.info_provider", provider=resolved.provider or "openrouter"),
+            t("gateway.session.info_provider", provider=provider_display),
             t("gateway.session.info_context", tokens=ctx_display, source=ctx_source),
         ]
         if (resolved.provider or "") == "moa":

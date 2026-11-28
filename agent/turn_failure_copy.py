@@ -367,7 +367,7 @@ _ONE_OFF_COPY: dict[str, str] = {
         "your settings (compression.enabled). Run /compress to shrink it now, /new to start "
         "fresh, or pick a model with a bigger context window."
     ),
-    # Wording deliberately avoids the overflow phrases gateway/run_turn.py matches on
+    # Wording deliberately avoids the overflow phrases gateway/run_turn_overflow.py matches on
     # (``_CONTEXT_OVERFLOW_ERROR_PHRASES``): this failure is transient, so the user's
     # message must stay in the transcript and the session must not be auto-reset.
     "server_context_rejection": (

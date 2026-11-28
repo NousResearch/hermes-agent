@@ -3445,25 +3445,6 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             raw_response={
                 "message_ids": list(delivered), "requested_thread_id": requested_thread_id, "thread_fallback": used_thread_fallback})
 
-    @staticmethod
-    def _with_partial_send(
-        result: SendResult, undelivered: list[str], delivered: list[str], *, tail_certain: bool = True) -> SendResult:
-        """Mark a split-send failure after earlier chunks landed with the ``partial_overflow`` contract (the key
-        ``_edit_overflow_split`` sets and the stream consumer reads), so no caller re-sends the visible head;
-        ``undelivered`` (for :meth:`_resume_partial_send`) is attached only when ``tail_certain``. An uncertain
-        failure reports ``unattempted_chunks``: the messages after the one in flight, which never left."""
-        raw = dict(result.raw_response) if isinstance(result.raw_response, dict) else {}
-        if not tail_certain and len(undelivered) > 1:
-            raw["unattempted_chunks"] = tuple(undelivered[1:])
-        if delivered:
-            raw.update({
-                "partial_overflow": True, "delivered_chunks": len(delivered), "total_chunks": len(delivered) + len(undelivered),
-                "last_message_id": delivered[-1], "continuation_message_ids": tuple(delivered[1:])})
-            if tail_certain and undelivered:
-                raw["undelivered_chunks"], raw["delivered_message_ids"] = tuple(undelivered), tuple(delivered)
-        result.raw_response = raw or result.raw_response
-        return result
-
     async def _resume_partial_send(
         self, chat_id: str, result: SendResult, *, reply_to: Optional[str], metadata: Optional[dict[str, Any]]) -> Optional[SendResult]:
         """Send only the chunks a partial ``send()`` could not deliver (``undelivered_chunks``, or the never-attempted

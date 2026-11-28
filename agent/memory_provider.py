@@ -188,6 +188,26 @@ class MemoryProvider(ABC):
         notice) can come through, and so can the notes on an image turn an older Hermes stored or that repair or
         compaction later merged with another turn."""
 
+    def feature_capabilities(self) -> dict[str, Any]:
+        """Optional default-on feature bundle advertised to the host."""
+        return {}
+
+    def on_turn_timing_start(self, turn_number: int, **kwargs) -> None:
+        """Open privacy-safe timing before normal turn setup."""
+
+    def on_turn_progress(self, turn_number: int, **kwargs) -> None:
+        """Observe a privacy-safe active/wait/rework phase transition."""
+
+    def on_turn_finish(self, turn_number: int, **kwargs) -> None:
+        """Close timing with a completed/failed/interrupted/incomplete outcome."""
+
+    def estimate_turn(self, **kwargs) -> dict[str, Any] | None:
+        """Return a structured aggregate estimate, or ``None`` when unavailable."""
+        return None
+
+    def abort_open_turns(self) -> None:
+        """Best-effort close of timing state during shutdown/session rotation."""
+
     def identity_signature(self) -> dict[str, Any]:
         """Identity-mapping values that must bust a cached gateway agent when they change (writer identity, alias
         tables, session-name prefixing). Provider-namespaced keys, JSON-serializable values. The gateway calls this

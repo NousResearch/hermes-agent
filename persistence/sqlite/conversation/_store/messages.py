@@ -76,7 +76,10 @@ def _encode_content(content: Any) -> Any:
 
 def _decode_content(content: Any) -> Any:
     """Reverse :meth:`_encode_content`; returns scalars unchanged. Fail closed: a reserved-prefix
-    string that isn't valid JSON (a legacy/malformed marker row) returns the raw string."""
+    string that isn't valid JSON (a legacy/malformed marker row) returns the raw string.
+    Legacy BLOB cells are UTF-8 text, decoded before interpreting the reserved prefix."""
+    if isinstance(content, bytes):
+        content = content.decode("utf-8", errors="replace")
     if isinstance(content, str) and content.startswith(_CONTENT_JSON_PREFIX):
         return _json_or(content[len(_CONTENT_JSON_PREFIX):], content,
             "Failed to decode JSON-encoded message content; returning raw string")

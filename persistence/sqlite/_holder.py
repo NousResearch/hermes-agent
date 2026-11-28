@@ -272,6 +272,9 @@ class StoreHolder:
     def _store_system_prompt(conn, system_prompt: Optional[str]) -> Optional[str]:
         if system_prompt is None:
             return None
+        # Legacy writers bound UTF-8 bytes even in TEXT columns.
+        if isinstance(system_prompt, bytes):
+            system_prompt = system_prompt.decode("utf-8", errors="replace")
         prompt_hash = hashlib.sha256(system_prompt.encode("utf-8")).hexdigest()
         conn.execute(
             "INSERT OR IGNORE INTO system_prompts (hash, prompt) VALUES (?, ?)",

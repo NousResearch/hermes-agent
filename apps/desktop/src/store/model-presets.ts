@@ -2,6 +2,11 @@ import { atom } from 'nanostores'
 
 import { persistString, storedString } from '@/lib/storage'
 
+import {
+  $composerReasoningEffort,
+  getComposerReasoningScope,
+  setComposerReasoningEffort
+} from './composer-reasoning-effort'
 import { notifyError } from './notifications'
 import {
   $activeSessionId,
@@ -17,6 +22,7 @@ import { $sessionStates, sessionTileDelegate } from './session-states'
 const STORAGE_KEY = 'hermes.desktop.model-presets'
 const pendingWrites = new Map<string, Promise<unknown>>()
 const confirmedValues = new Map<string, string>()
+const confirmedPicks = new Map<string, string>()
 
 /** Per-model reasoning/fast preset, remembered globally across sessions and
  *  re-applied to the session whenever that model is selected. Unset dimensions
@@ -75,6 +81,14 @@ export function setModelPreset(provider: string, model: string, patch: ModelPres
   persistString(STORAGE_KEY, JSON.stringify(next))
 }
 
+function confirmPresetWrite(key: string, dimension: 'effort' | 'speed', value: string, pick: string): void {
+  confirmedValues.set(key, value)
+
+  if (dimension === 'effort') {
+    confirmedPicks.set(key, pick)
+  }
+}
+
 /** Apply a model's preset to the composer, then push it to a live session.
  *  `undefined` skips that dimension; values are capability-gated upstream.
  *  Without a session the local draft still needs the preset, but must not call
@@ -88,6 +102,7 @@ export async function applyModelPreset(
   ctx: {
     failMessage: string
     primary?: boolean
+    inheritEffort?: boolean
     request: RequestGateway
     sessionId: null | string
     isCurrent?: (dimension: 'effort' | 'speed') => boolean
@@ -101,6 +116,9 @@ export async function applyModelPreset(
   const primary = ctx.primary ?? true
   const oldOwner = $activeSessionId.get()
   const slice = $sessionStates.get()[ctx.sessionId ?? '']
+  const previousPick = $composerReasoningEffort.get()
+  const pickScope = getComposerReasoningScope()
+  const ownsComposer = () => primary && $activeSessionId.get() === oldOwner && getComposerReasoningScope() === pickScope
 
   const previous =
     primary && !slice
@@ -115,6 +133,7 @@ export async function applyModelPreset(
 
   if (primary) {
     if (effort !== undefined) {
+      setComposerReasoningEffort(ctx.inheritEffort ? '' : effort)
       setCurrentReasoningEffort(effort)
     }
 
@@ -155,11 +174,13 @@ export async function applyModelPreset(
       const preceding = pendingWrites.get(key)
 
       if (!preceding) {
-        confirmedValues.set(
+        confirmPresetWrite(
           key,
+          dimension,
           dimension === 'effort'
             ? (previous.effort ?? '')
-            : previous.serviceTier || (previous.fast ? 'priority' : 'normal')
+            : previous.serviceTier || (previous.fast ? 'priority' : 'normal'),
+          previousPick
         )
       }
 
@@ -174,7 +195,7 @@ export async function applyModelPreset(
               session_id: ctx.sessionId,
               value: dimension === 'speed' && value === 'priority' ? 'fast' : value
             })
-            confirmedValues.set(key, value)
+            confirmPresetWrite(key, dimension, value, ctx.inheritEffort ? '' : value)
           })
 
         pendingWrites.set(key, write)
@@ -191,8 +212,9 @@ export async function applyModelPreset(
         ctx.onFailure?.(dimension, confirmed)
 
         if (ctx.isCurrent?.(dimension) ?? true) {
-          if (primary && $activeSessionId.get() === oldOwner) {
+          if (ownsComposer()) {
             if (dimension === 'effort' && $currentReasoningEffort.get() === effort) {
+              setComposerReasoningEffort(confirmedPicks.get(key) ?? '')
               setCurrentReasoningEffort(confirmed.effort ?? '')
             } else if (dimension === 'speed' && $currentServiceTier.get() === tier) {
               setCurrentFastMode(confirmed.fast ?? false)
@@ -222,6 +244,7 @@ export async function applyModelPreset(
         if (pendingWrites.get(key) === write) {
           pendingWrites.delete(key)
           confirmedValues.delete(key)
+          confirmedPicks.delete(key)
         }
       }
     })

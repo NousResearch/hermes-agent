@@ -41,6 +41,7 @@ import { readJson, writeJson } from '@/lib/storage'
 import type { SessionInfo } from '@/types/hermes'
 
 import { dropQueuedLaunchPicksForProfile, migrateQueuedLaunchPicksForProfile } from './composer-queued-pick'
+import { dropComposerReasoningForProfile, migrateComposerReasoningForProfile } from './composer-reasoning-effort'
 import { dropStatusDrawersForProfile, migrateStatusDrawersForProfile } from './composer-status-drawer'
 import { registryConnectionKind } from './connection-registry-state'
 import { dropDesktopMetricsForProfile, migrateDesktopMetricsForProfile, recordDislike } from './desktop-metrics'
@@ -2675,6 +2676,7 @@ export function dropTilesForProfile(
   const name = normalizeProfileKey(profile)
   dropPreviewArtifactsForProfile(name, route)
   dropStatusDrawersForProfile(name, route)
+  dropComposerReasoningForProfile(name, route)
   // Route fields go through the SAME canonicalization as `name` below — a
   // source-scoped delete must not be defeated by stray whitespace around a
   // profile name that a non-route delete trims away.
@@ -2700,15 +2702,11 @@ export function dropTilesForProfile(
     if (routeProfile) {
       // Source-scoped delete: the route's desktop profile name, backend target,
       // and connection must all agree with the tile's owner route.
-      if (ownerProfile !== routeProfile) {
-        return false
-      }
-
-      if (routeTarget && ownerTarget !== routeTarget) {
-        return false
-      }
-
-      return !routeConnection || ownerConnection === routeConnection
+      return (
+        ownerProfile === routeProfile &&
+        (!routeTarget || ownerTarget === routeTarget) &&
+        (!routeConnection || ownerConnection === routeConnection)
+      )
     }
 
     // Ambient delete: only the active connection owns this profile. Legacy
@@ -2814,6 +2812,7 @@ export async function migrateTilesForProfile(oldProfile: string, newProfile: str
   migrateSessionOwnerHintsForProfile(from, to)
   migratePreviewArtifactsForProfile(from, to)
   migrateStatusDrawersForProfile(from, to)
+  migrateComposerReasoningForProfile(from, to)
   // Sibling family: the rail's profile-keyed buckets move with the rename, or
   // the renamed profile opens with an empty rail and the old name keeps them.
   migratePreviewTabsForProfile(from, to)

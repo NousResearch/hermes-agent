@@ -15,7 +15,6 @@ import {
 } from '@/components/pane-shell/tree/store'
 import { setWorkspaceScope } from '@/components/pane-shell/workspace-scope'
 import { onReleaseTypingFocus } from '@/components/ui/keyboard-first'
-import { translateNow } from '@/i18n/runtime'
 import { findBarClaimsCombo } from '@/lib/find-in-page'
 import {
   contributedKeybindHandler,
@@ -29,7 +28,6 @@ import { actionAllowedInInput, comboFromEvent, IS_MAC, isEditableTarget, isFocus
 import { composerFocusKeysAllowed, isComposerFocusSoftCombo, typeToFocusChar } from '@/lib/keybinds/composer-focus-keys'
 import { markKeybindHandled } from '@/lib/keybinds/handled-keys'
 import { registerBuiltinActionRunner } from '@/lib/keybinds/plugin-actions'
-import { stepReasoningEffort, writeSessionReasoningEffort } from '@/lib/reasoning-step'
 import { openWorktreeDialog } from '@/store/coding-status'
 import { $commandPaletteOpen, openCommandPalettePage, toggleCommandPalette } from '@/store/command-palette'
 import { recordAction, recordDislike } from '@/store/desktop-metrics'
@@ -51,7 +49,6 @@ import {
   toggleRightSide,
   toggleSidebarOpen
 } from '@/store/layout'
-import { notifyError } from '@/store/notifications'
 import { toggleBrowserTab } from '@/store/preview'
 import {
   $newChatProfile,
@@ -64,15 +61,7 @@ import {
 import { toggleProfileRailVisible } from '@/store/profile-rail-prefs'
 import { openFolderAsProject } from '@/store/projects'
 import { toggleReview } from '@/store/review'
-import {
-  $activeSessionId,
-  $currentReasoningEffort,
-  $defaultReasoningEffort,
-  $selectedStoredSessionId,
-  markComposerSelectionManual,
-  setCurrentReasoningEffort,
-  setModelPickerOpen
-} from '@/store/session'
+import { $selectedStoredSessionId, setModelPickerOpen } from '@/store/session'
 import { $focusedStoredSessionId } from '@/store/session-focus'
 import { reopenLastClosedTile } from '@/store/session-states'
 import {
@@ -114,6 +103,8 @@ import {
   sessionRoute,
   SETTINGS_ROUTE
 } from '../routes'
+
+import { useReasoningKeybind } from './use-reasoning-keybind'
 
 export interface KeybindRuntimeDeps {
   /** Gateway RPC requester for session-scoped model controls (reasoning). */
@@ -235,50 +226,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     setTerminalTakeover(false)
   }
 
-  // Reasoning level up/down (#71627): step the ACTIVE session one notch
-  // through off → minimal → … → xhigh (clamped; max/ultra stay behind the
-  // menu). Optimistic store write with rollback, and a monotonic sequence so
-  // a slow earlier response can't revert a newer press.
-  const reasoningRequestSeqRef = useRef(0)
-
-  const stepSessionReasoning = (direction: 1 | -1) => {
-    const sessionId = $activeSessionId.get()
-
-    // No live session: the draft's pick still steps (it ships on the next
-    // session.create); no `config.set` — without a session the RPC falls
-    // back to the persistent profile config and would rewrite the default.
-    const rollback = $currentReasoningEffort.get()
-    const fallback = $defaultReasoningEffort.get() || undefined
-    const next = stepReasoningEffort(rollback, direction, fallback)
-
-    if (next === rollback.trim().toLowerCase()) {
-      return
-    }
-
-    markComposerSelectionManual()
-    setCurrentReasoningEffort(next)
-
-    if (!sessionId) {
-      return
-    }
-
-    const requestSeq = reasoningRequestSeqRef.current + 1
-
-    reasoningRequestSeqRef.current = requestSeq
-
-    void writeSessionReasoningEffort(deps.requestGateway, sessionId, next)
-      .then(value => {
-        if (reasoningRequestSeqRef.current === requestSeq) {
-          setCurrentReasoningEffort(value)
-        }
-      })
-      .catch(error => {
-        if (reasoningRequestSeqRef.current === requestSeq) {
-          setCurrentReasoningEffort(rollback)
-          notifyError(error, translateNow('shell.modelOptions.updateFailed'))
-        }
-      })
-  }
+  const stepSessionReasoning = useReasoningKeybind(deps.requestGateway)
 
   handlersRef.current = {
     'keybinds.openPanel': () => navigate(`${SETTINGS_ROUTE}?tab=keybinds`),

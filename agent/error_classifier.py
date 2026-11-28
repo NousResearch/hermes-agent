@@ -348,13 +348,21 @@ _ROUTE_MODEL_REJECTION_PATTERNS = (
 )
 
 _MODEL_NOT_FOUND_PATTERNS = (
-    "is not a valid model", "invalid model", "model not found", "model_not_found", "does not exist",
+    "is not a valid model", "invalid model", "model not found", "model is not found",
+    "model_not_found", "does not exist",
     "no such model", "unknown model", "unsupported model", "no endpoints found that support tool use",
     "openrouter catalog",
     # Nous 404 when the provider retires a :free route — the slug is dead for every
     # credential, so fall back instead of burning retries (#123180). Unlike the free-tier
     # billing wording, the account's balance/tier is not what rejected the call.
     "is no longer free",
+    # HTTP 410 Gone: model was permanently retired by the provider. The slug
+    # is dead for every credential, so fall back instead of burning retries.
+    "was retired",
+    # Gemini 404 for a retired id ("models/gemini-1.0-pro is not found for API version v1main, or is not
+    # supported for generateContent") and xAI 404 ("The model grok-beta was deprecated on 2025-09-15 and is
+    # no longer accessible via the API"): both name the dead model, so a retry can never succeed.
+    "is not found for api version", "no longer accessible via the api",
 )
 
 # Qwen/vLLM chat-template "No user query found". Shared by the invalid-body
@@ -1254,6 +1262,13 @@ def _status_404(c: _Ctx) -> Verdict:
     verdict = _first_match(c.msg, _404_RULES)
     if verdict is not None:
         return verdict
+    # Anthropic names an unknown model by echoing the id we sent ("model: <id>"), which
+    # matches no _MODEL_NOT_FOUND_PATTERNS entry. Keyed on the echoed id, never on the
+    # not_found_error type: a wrong endpoint path answers "Not found" with no id and
+    # keeps the retryable generic verdict below (#14013).
+    # Match the whole echoed ID: a different model can share the requested prefix.
+    if c.model_slug and re.search(rf"(?<![\w.-])model: {re.escape(c.model_slug)}(?=$|[\s\"',)\]])", c.msg):
+        return _V_MODEL_NOT_FOUND
     # Bare id the catalogue only knows prefixed → malformed id (NVIDIA NIM "404
     # page not found", #78796). A generic 404 (wrong path, proxy glitch) stays
     # unknown so the real error surfaces instead of a silent misreported fallback.
@@ -1479,6 +1494,9 @@ _STATUS_HANDLERS: dict[int, Callable[[_Ctx], Verdict]] = {
     429: _status_429, 500: _status_5xx, 502: _status_5xx,
     503: lambda c: _first_match(c.msg, _OVERFLOW_AS_5XX_RULES) or _V_OVERLOADED,
     529: lambda c: _first_match(c.msg, _OVERFLOW_AS_5XX_RULES) or _V_OVERLOADED,
+    # 410 Gone: model permanently retired by provider -> model_not_found
+    # (fallback, not retry) instead of the generic 4xx format_error default.
+    410: lambda c: _V_MODEL_NOT_FOUND if any(p in c.msg for p in _MODEL_NOT_FOUND_PATTERNS) else _V_FORMAT_ERROR,
 }
 
 

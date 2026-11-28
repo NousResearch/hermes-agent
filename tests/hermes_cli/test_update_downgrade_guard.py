@@ -122,8 +122,15 @@ def test_check_holds_a_release_that_update_would_refuse(repo, tmp_path, monkeypa
     monkeypatch.setattr(source_releases, "resolve_source_target", lambda *a, **k: target)
 
     update_cmd_check.channel_compare_branch("stable", ["git"], repo)
-    # No runtime history yet: a real update, or a real rollback.
-    assert ("Selected release available" if divergent else "moves it back") in capsys.readouterr().out
+    #  A diverged release is held, not advertised —
+    # moving onto it silently drops the checkout's newer commits. An in-history target
+    # (release is an ancestor of HEAD) keeps the moves-it-back report: nothing can drop.
+    out = capsys.readouterr().out
+    if divergent:
+        assert "Held" in out and "does not contain" in out
+        assert "Selected release available" not in out
+    else:
+        assert "moves it back" in out
 
     _ledgered_store(home)
     update_cmd_check.channel_compare_branch("stable", ["git"], repo)

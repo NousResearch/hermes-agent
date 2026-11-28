@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from hermes_cli import config as _config
+from hermes_cli import config_includes
 from hermes_cli import managed_scope
 from hermes_cli.config_backend import read_config_doc
 from hermes_cli.config_read_errors import _warn_config_parse_failure
@@ -29,6 +30,8 @@ _LAST_GOOD_USER_RAW: dict[str, dict[str, Any]] = {}
 # path -> (*user_signature, *managed_signature, effective, env_snapshot, root_is_mapping);
 # see utils.file_signature.
 _EFFECTIVE_CACHE: dict[str, tuple[Any, ...]] = {}
+_INCLUDE_SIGNATURES: dict[str, tuple[tuple[Any, ...], ...]] = {}
+_LAST_GOOD_INCLUDED: dict[str, dict[str, Any]] = {}
 
 
 def _effective(raw: dict[str, Any]) -> dict[str, Any]:
@@ -48,6 +51,24 @@ def _recover_user_raw(config_path: Path, path_key: str, exc: Exception) -> dict[
         fallback = "last-known-good-backup"
     _warn_config_parse_failure(config_path, exc, fallback=fallback if raw is not None else "defaults")
     return copy.deepcopy(raw) if raw is not None else {}
+
+
+def _merge_user_includes(
+    config_path: Path, raw: dict[str, Any], *, recovered: bool, fail_closed: bool,
+) -> tuple[dict[str, Any], bool]:
+    """Merge includes, retaining the last complete user layer for non-strict recovery."""
+    path_key = str(config_path)
+    try:
+        merged, signatures = config_includes.merge_config_includes(config_path, raw)
+    except Exception as exc:
+        if fail_closed or path_key not in _LAST_GOOD_INCLUDED:
+            raise
+        _warn_config_parse_failure(config_path, exc, fallback="last-known-good")
+        return copy.deepcopy(_LAST_GOOD_INCLUDED[path_key]), True
+    _INCLUDE_SIGNATURES[path_key] = signatures
+    if not recovered:
+        _LAST_GOOD_INCLUDED[path_key] = copy.deepcopy(merged)
+    return merged, recovered
 
 
 def load_user_config_effective(config_path: Optional[Path] = None, *, fail_closed: bool = False) -> dict[str, Any]:
@@ -77,7 +98,8 @@ def load_user_config_effective(config_path: Optional[Path] = None, *, fail_close
         cached = _EFFECTIVE_CACHE.get(path_key)
         n = len(cache_sig) if cache_sig is not None else 0
         if cached is not None and cache_sig is not None and cached[:n] == cache_sig:
-            if all(_config._env_ref_lookup(k) == v for k, v in cached[n + 1].items()):
+            if (config_includes.config_includes_unchanged(path_key, _INCLUDE_SIGNATURES.get(path_key, ()))
+                    and all(_config._env_ref_lookup(k) == v for k, v in cached[n + 1].items())):
                 if fail_closed and cached[n + 2] is not True:
                     # A previous non-strict read may have erased an invalid YAML root.
                     loaded = read_config_doc(config_path)
@@ -121,6 +143,7 @@ def load_user_config_effective(config_path: Optional[Path] = None, *, fail_close
                 raise TypeError("config.yaml root is not a mapping")
             root_is_mapping = True
 
+        raw, recovered = _merge_user_includes(config_path, raw, recovered=recovered, fail_closed=fail_closed)
         env_snapshot = _config._env_ref_snapshot(raw)
         managed = managed_scope.load_managed_config()
         if managed:

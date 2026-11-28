@@ -28,6 +28,7 @@ class FooterSplit(HSplit):
     def _divide_heights(self, write_position) -> list[int] | None:
         sizes = super()._divide_heights(write_position)
         if sizes is not None:
+            self._overflow_size = None
             return sizes
         budget = write_position.height
         clipped: list[int] = []
@@ -35,5 +36,8 @@ class FooterSplit(HSplit):
             rows = min(child.preferred_height(write_position.width, budget).min, budget)
             budget -= rows
             clipped.append(rows)
-        get_app().invalidate()
+        overflow_size = (write_position.width, write_position.height)
+        if getattr(self, "_overflow_size", None) != overflow_size:
+            self._overflow_size = overflow_size
+            get_app().invalidate()
         return clipped[::-1]

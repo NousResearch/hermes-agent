@@ -602,6 +602,56 @@ def test_idle_sweep_busy_after_probe_failure_still_resets_clock(
     assert handler.unloaded == []
 
 
+def test_idle_sweeper_survives_a_router_restart(monkeypatch):
+    """A crashed router does not end the supervisor's idle sweep; stopping it does."""
+    from hermes_cli.local_runtime import bootstrap
+
+    class _Proc:
+        def __init__(self, rc):
+            self.rc = rc
+
+        def poll(self):
+            return self.rc
+
+    class _Sup:
+        def __init__(self):
+            self._stop_event = threading.Event()
+            self.proc = _Proc(None)
+            self.sweeps = 0
+
+        def sweep_idle(self):
+            phase = self.sweeps
+            self.sweeps += 1
+            if phase < len(entered):
+                entered[phase].set()
+                released[phase].wait(timeout=10)
+
+    entered = [threading.Event() for _ in range(3)]
+    released = [threading.Event() for _ in range(3)]
+    monkeypatch.setattr(bootstrap, "_REFIT_EVERY_S", 0.01)
+    monkeypatch.setattr(bootstrap, "_SWEEP_EVERY_S", 0)
+    monkeypatch.setattr(bootstrap, "refit_idle_presets", lambda sup: False)
+    sup = _Sup()
+    bootstrap._start_idle_sweeper(sup)
+    sweeper = next(t for t in threading.enumerate() if t.name == "local-runtime-idle-sweep")
+
+    try:
+        assert entered[0].wait(timeout=5), "initial router was not swept"
+        sup.proc = _Proc(-9)
+        released[0].set()
+        assert entered[1].wait(timeout=5), "sweeper exited with the crashed router"
+        sup.proc = _Proc(None)
+        released[1].set()
+        assert entered[2].wait(timeout=5), "replacement router was not swept"
+        assert sweeper.is_alive()
+    finally:
+        sup._stop_event.set()
+        for release in released:
+            release.set()
+        sweeper.join(timeout=5)
+    assert not sweeper.is_alive()
+
+
 def test_staged_models_requires_every_split_part(tmp_path, monkeypatch):
     """A split GGUF mid-download must NOT count as staged: the picker, the
     catalog's 'downloaded' flag, and the router's model list all read

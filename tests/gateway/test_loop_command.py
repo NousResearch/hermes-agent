@@ -245,6 +245,29 @@ async def test_failed_turn_with_text_never_drives_goal_or_until_judge(loop_env, 
 
 
 @pytest.mark.asyncio
+async def test_failed_turn_pauses_active_goal_with_reason(loop_env, monkeypatch):
+    """Retries already ran and the turn failed: the goal pauses and the chat is told why, instead of
+    the goal staying active with nothing queued."""
+    from gateway.session_results import execution_result
+
+    goals.GoalManager(session_id="sid-gateway-loop").set("ship the release")
+    monkeypatch.setattr(goals, "judge_goal", lambda *a, **k: pytest.fail("judge must not grade a failed turn"))
+    runner = _make_runner()
+    notices = []
+    runner._defer_goal_status_notice_after_delivery = AsyncMock(side_effect=lambda src, msg: notices.append(msg))
+    token = execution_result.set({"result": {"final_response": "", "failed": True, "failure_reason": "server_error"}})
+    try:
+        await GatewayRunner._run_post_turn_hooks(
+            runner, agent_result={"final_response": ""}, source=_make_event("go").source, is_internal=True)
+    finally:
+        execution_result.reset(token)
+
+    state = goals.GoalManager(session_id="sid-gateway-loop").state
+    assert state is not None and (state.status, state.paused_reason) == ("paused", "turn failed (server_error)")
+    assert len(notices) == 1 and "server_error" in notices[0] and "/goal resume" in notices[0]
+
+
+@pytest.mark.asyncio
 async def test_goal_hook_failure_does_not_block_loop_completion(loop_env, caplog):
     runner = _make_runner()
     await GatewayRunner._handle_loop_command(runner, _make_event("/loop 5m poll CI"))

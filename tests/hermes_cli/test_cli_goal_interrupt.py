@@ -120,3 +120,19 @@ class TestHealthyTurnStillRuns:
 
         assert cli._pending_input.empty()
         assert mgr.state.status == "done"
+
+
+class TestFailedTurnPausesGoal:
+    def test_failed_turn_pauses_goal_with_reason_without_judging(self, hermes_home, capsys):
+        """Retries already ran and failed: the goal pauses and says why, rather than staying active with
+        nothing queued (and the judge never grades the previous turn's reply)."""
+        cli, mgr = _make_cli_with_goal(f"sid-failed-{uuid.uuid4().hex}")
+        cli.conversation_history = [{"role": "assistant", "content": "Cycle 3 done. Next: cycle 4."}]
+        cli._last_turn_failed = True
+        cli._last_turn_result = {"failed": True, "completed": False, "failure_reason": "server_error"}
+        with patch("hermes_cli.goals.judge_goal") as judge:
+            cli._maybe_continue_goal_after_turn()
+        judge.assert_not_called()
+        assert cli._pending_input.empty()
+        assert (mgr.state.status, mgr.state.paused_reason) == ("paused", "turn failed (server_error)")
+        assert "server_error" in capsys.readouterr().out

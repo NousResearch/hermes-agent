@@ -329,7 +329,10 @@ const ThinkingDisclosure: FC<{
 
   return (
     <div
-      className="text-[length:var(--conversation-tool-font-size)] text-(--ui-text-tertiary)"
+      // Match the model's prose size so reasoning glyphs keep the answer
+      // block's height (x-height), not the dwarfed tool line height. The body
+      // has no stricter rule of its own, so the wrapper's size is what wins.
+      className="text-[length:var(--conversation-text-font-size)] text-(--ui-text-tertiary)"
       data-conversation-scaffold=""
       data-slot="aui_thinking-disclosure"
       ref={enterRef}
@@ -457,7 +460,10 @@ const ReasoningTextPart: ReasoningMessagePartComponent = () => {
 
   return (
     <MarkdownTextContent
-      containerClassName="text-xs leading-snug text-muted-foreground/85"
+      // Match the model's prose size and line-height so reasoning doesn't read
+      // as a smaller, tighter, optically-stretched block (it inherits both from
+      // the assistant-message-content container). Dimmity is kept on purpose.
+      containerClassName="text-muted-foreground/85"
       containerProps={{ 'data-slot': 'aui_reasoning-text' } as ComponentProps<'div'>}
       isRunning={status.type === 'running' || messageRunning}
       scratchpad

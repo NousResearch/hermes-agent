@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from datetime import timedelta
+from datetime import timedelta, UTC
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -14,6 +14,13 @@ from cron import incidents
 import cron.jobs as cron_jobs
 import cron.scheduler as sched
 from hermes_time import now as _hermes_now
+
+# Import the patch target at collection time: a FIRST import of run_agent inside a guarded
+# test re-runs hermes_bootstrap's boot probes, and on a default-install layout (checkout
+# inside ~/.hermes) its <checkout>/../manifest.json probe is a real-home read the per-test
+# home-IO guard refuses. Collection runs before the guard installs, so importing here keeps
+# ``patch("run_agent.AIAgent")`` in _tick_failing on an already-imported module.
+import run_agent
 
 
 def _point_db(monkeypatch, tmp_path):
@@ -142,6 +149,89 @@ def test_error_change_mints_new_incident(monkeypatch, tmp_path):
 
     assert id1 != id2
     assert new2 is True
+    assert inc.count_incidents() == 2
+
+
+def _round_failure(stamp: str) -> str:
+    """The real no_agent failure shape: only the per-round directory stamp moves."""
+    return (
+        "Script exited with code 5\nstdout:\n"
+        '{"exit": 5, "reason": "apply failed; see '
+        f"/home/user/.erp-sync/rounds/{stamp}/apply-output.txt\"}}"
+    )
+
+
+def test_round_stamp_only_change_dedups_same_incident(monkeypatch, tmp_path):
+    """A per-round directory stamp (20261010T010034Z) changes every run for the same failure;
+    signing it verbatim minted one incident per round (2026-10-10 erp-sync outage: 9 rounds,
+    9 signatures, alert-once gate bypassed). Only the stamp may differ — one incident."""
+    from datetime import datetime
+
+    inc = _point_db(monkeypatch, tmp_path)
+    t1 = datetime(2026, 10, 10, 1, 0, 34, tzinfo=UTC)
+    t2 = datetime(2026, 10, 10, 5, 0, 34, tzinfo=UTC)
+
+    monkeypatch.setattr(inc, "_hermes_now", lambda: t1)
+    id1, is_new1 = inc.upsert_incident("job-1", _round_failure("20261010T010034Z"))
+    monkeypatch.setattr(inc, "_hermes_now", lambda: t2)
+    id2, is_new2 = inc.upsert_incident("job-1", _round_failure("20261011T050034Z"))
+
+    assert id1 == id2, "a moved round stamp must not mint a second incident"
+    assert is_new1 is True
+    assert is_new2 is False
+    assert inc.count_incidents() == 1
+    row = inc.get_incident(id1)
+    assert row is not None
+    assert row["first_seen_at"] == t1.isoformat()
+    assert row["last_seen_at"] == t2.isoformat()
+
+
+def test_log_timestamp_only_change_dedups_same_incident(monkeypatch, tmp_path):
+    """A log clock value (date+time, with or without fraction/zone) differs run to run for the
+    same failure; both shapes must sign identically and refresh one incident."""
+    from datetime import datetime
+
+    inc = _point_db(monkeypatch, tmp_path)
+    t1 = datetime(2026, 10, 10, 1, 0, 0, tzinfo=UTC)
+    t2 = datetime(2026, 10, 10, 5, 0, 0, tzinfo=UTC)
+    fmt = "Script exited with code 1\nstdout:\n[{}] ERROR: external drive not mounted"
+
+    monkeypatch.setattr(inc, "_hermes_now", lambda: t1)
+    id1, is_new1 = inc.upsert_incident("job-1", fmt.format("2026-10-10 01:00:34"))
+    monkeypatch.setattr(inc, "_hermes_now", lambda: t2)
+    id2, is_new2 = inc.upsert_incident("job-1", fmt.format("2026-10-10T05:00:34.512Z"))
+
+    assert id1 == id2, "a moved log timestamp must not mint a second incident"
+    assert is_new1 is True
+    assert is_new2 is False
+    assert inc.count_incidents() == 1
+    row = inc.get_incident(id1)
+    assert row is not None
+    assert row["last_seen_at"] == t2.isoformat()
+
+
+def test_substantive_error_change_with_round_paths_still_mints_new_incident(monkeypatch, tmp_path):
+    """The volatile masks must not over-merge: a genuinely different failure that also carries
+    round paths is still its own incident."""
+    inc = _point_db(monkeypatch, tmp_path)
+    id1, _ = inc.upsert_incident("job-1", _round_failure("20261010T010034Z"))
+    other = _round_failure("20261010T010034Z").replace("apply failed", "plan failed")
+    id2, is_new2 = inc.upsert_incident("job-1", other)
+
+    assert id1 != id2, "a changed reason must still mint a new incident"
+    assert is_new2 is True
+    assert inc.count_incidents() == 2
+
+
+def test_bare_date_still_distinguishes_incidents(monkeypatch, tmp_path):
+    """Only date+TIME is masked as a log clock value. A bare date can name which backup set or
+    billing period failed, so `2026-09-06` vs `2026-10-06` stays two incidents."""
+    inc = _point_db(monkeypatch, tmp_path)
+    id1, _ = inc.upsert_incident("job-1", "certificate expired on 2026-09-06")
+    id2, is_new2 = inc.upsert_incident("job-1", "certificate expired on 2026-10-06")
+
+    assert id1 != id2
+    assert is_new2 is True
     assert inc.count_incidents() == 2
 
 

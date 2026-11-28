@@ -1,0 +1,72 @@
+manifest_version: 1
+
+name: fairvalid
+description: >-
+  Verify email addresses, follow verification jobs, read results, and check
+  FairValid workspace credits. Discover business leads with FairMatch, quote
+  selections, and unlock verified work emails after explicit credit-limit approval.
+source: https://github.com/moonlitnayeem/fairvalid-ai/tree/40cac2883dc74f50f7bc8562b380782c4c6a4379
+
+transport:
+  type: http
+  url: https://mcp.fairvalid.com/mcp
+
+auth:
+  type: oauth
+
+tools:
+  default_enabled:
+    - fairvalid_get_balance
+    - fairvalid_get_job
+    - fairvalid_get_results
+    - fairvalid_verify_email
+    - fairvalid_get_lead_filters
+    - fairvalid_search_leads
+    - fairvalid_quote_leads
+    - fairvalid_unlock_leads
+    - fairvalid_get_lead_batch
+    - fairvalid_get_leads
+
+suggest:
+  keywords:
+    - fairvalid
+    - fairmatch
+  hosts:
+    - fairvalid.com
+
+post_install: |
+  Connect the server and sign in at https://fairvalid.com. Review the workspace
+  and permissions, then choose Allow connection. FairValid prepares access to
+  the existing workspace balance automatically and uses available free credits first.
+  Never paste credentials or authorization codes into chat.
+  The ten default tools include one-address verification, the three verification
+  reads and all six FairMatch tools. Submit a single address only at the user's
+  request. Searching and quoting leads does not approve an unlock. Keep normal
+  per-use tool approval prompts. Bulk submission and cancellation remain opt-in.
+  Use `hermes mcp configure fairvalid` to review the tools for this client.
+  Existing grants keep their permissions. Reconnect and approve additional
+  permissions when needed for FairMatch or verification.
+  Discover filters, search, then quote 1-50 distinct returned selection IDs.
+  A quote reserves no credits. Obtain explicit approval of that exact selection
+  and a numerical maximum credit spend before fairvalid_unlock_leads. Pass
+  integer maximumCredits from 0-200, confirm: true and one stable idempotency_key.
+  Each newly acquired verified work email costs four credits; already-owned and
+  unavailable contacts cost zero. Do not infer unlock approval from installation,
+  connection, searching or quoting, or split batches to evade the approved cap.
+  Retain the returned batch_id and poll fairvalid_get_lead_batch with retry_after
+  and 5-30 second backoff. Report completed leads and settled charged_credits;
+  use fairvalid_get_leads for owned contacts, preserving next_cursor unchanged.
+  Retry an uncertain unlock only with the original API-key identity, exact ordered
+  ids, maximumCredits and idempotency_key. Do not replace selections on a retry.
+  FairMatch sends no outreach and does not grant permission to contact a person.
+  For an authorized connection check, read the balance; this uses no verification
+  credits. Do not submit customer addresses or cancel customer jobs as a test.
+  Live Valid and Invalid checks cost one credit each. Genuine Unknown,
+  unresolved catch-all, technical failures, and unprocessed items have no net
+  verification charge. Retry uncertain submissions only with the same selected
+  API-key identity, idempotency key, and unchanged input.
+  OAuth connects to the live workspace. Sandbox checks need a separate direct Test-key connection
+  and documented synthetic fixtures. Never unlock real leads as a connection test.
+  FairMatch contracts and fixtures: https://github.com/moonlitnayeem/fairvalid-ai/blob/40cac2883dc74f50f7bc8562b380782c4c6a4379/docs/fairmatch.md
+  Documentation: https://fairvalid.com/help/mcp
+  Support: nayeem@fairvalid.com

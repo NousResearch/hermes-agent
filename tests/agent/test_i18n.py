@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
@@ -176,3 +177,104 @@ def test_locales_dir_env_override_ignored_when_missing(tmp_path, monkeypatch):
     assert result.name == "locales"
 
 
+# ---------------------------------------------------------------------------
+# A transient bundled-load failure must not poison the catalog cache (#149931).
+# `_load_bundled` answers {} for an absent file and None for a present file it
+# could not read, so only the first is cacheable: a short-on-memory startup
+# used to memoise the empty merge and every `t()` answered a bare key until
+# the gateway restarted.
+# ---------------------------------------------------------------------------
+
+
+def _fake_locales(tmp_path: Path, *, write_en: bool = True) -> Path:
+    fake = tmp_path / "locales"
+    fake.mkdir(exist_ok=True)
+    if write_en:
+        (fake / "en.yaml").write_text("foo: English Foo\n", encoding="utf-8")
+    return fake
+
+
+def test_transient_bundled_load_failure_heals_on_the_next_lookup(tmp_path, monkeypatch):
+    """One failed load must not pin bare keys for the process lifetime."""
+    monkeypatch.setattr(i18n, "_locales_dir", lambda: _fake_locales(tmp_path))
+    i18n.reset_language_cache()
+    real_parse = i18n.i18n_layers.parse_locale_file
+    calls: list[Path] = []
+
+    def flaky_parse(path):
+        calls.append(path)
+        if len(calls) == 1:
+            raise MemoryError()  # its str() is empty — the log line must still name it
+        return real_parse(path)
+
+    monkeypatch.setattr(i18n.i18n_layers, "parse_locale_file", flaky_parse)
+    try:
+        assert i18n.t("foo", lang="en") == "foo"  # this lookup failed: bare key, no crash
+        assert i18n.t("foo", lang="en") == "English Foo"  # retried, not served from a poisoned cache
+    finally:
+        i18n.reset_language_cache()
+
+
+def test_absent_bundled_catalog_is_still_negatively_cached(tmp_path, monkeypatch):
+    """An absent file stays cacheable; only a FAILED load skips the cache."""
+    monkeypatch.setattr(i18n, "_locales_dir", lambda: _fake_locales(tmp_path, write_en=False))
+    i18n.reset_language_cache()
+    try:
+        assert i18n._load_catalog("en", home=str(tmp_path / "home")) == {}
+        assert (str(tmp_path / "home"), "en") in i18n._catalog_cache
+    finally:
+        i18n.reset_language_cache()
+
+
+def test_bundled_load_failure_warning_names_the_exception_type(tmp_path, monkeypatch, caplog):
+    """`Failed to load ... : %s` printed an empty tail for MemoryError."""
+    monkeypatch.setattr(i18n, "_locales_dir", lambda: _fake_locales(tmp_path))
+
+    def boom(path):
+        raise MemoryError()
+
+    monkeypatch.setattr(i18n.i18n_layers, "parse_locale_file", boom)
+    with caplog.at_level(logging.WARNING, logger="agent.i18n"):
+        assert i18n._load_bundled("en") is None
+    assert "MemoryError" in caplog.text
+
+
+def test_repeated_bundled_load_failure_warns_once_but_keeps_retrying(tmp_path, monkeypatch, caplog):
+    """Retrying on every lookup must not turn one broken file into a warning per translated string."""
+    monkeypatch.setattr(i18n, "_locales_dir", lambda: _fake_locales(tmp_path))
+    i18n.reset_language_cache()
+    calls: list[Path] = []
+
+    def always_fails(path):
+        calls.append(path)
+        raise MemoryError()
+
+    monkeypatch.setattr(i18n.i18n_layers, "parse_locale_file", always_fails)
+    try:
+        with caplog.at_level(logging.WARNING, logger="agent.i18n"):
+            i18n.t("foo", lang="en")
+            i18n.t("foo", lang="en")
+        assert len(calls) == 2  # still retried: the failure is not cached
+        assert caplog.text.count("Failed to load i18n catalog") == 1
+    finally:
+        i18n.reset_language_cache()
+
+
+def test_surface_catalog_survives_a_failed_bundled_surface_load(tmp_path, monkeypatch):
+    """A None from the failed load must not reach `dict.update` (TypeError)."""
+    fake = _fake_locales(tmp_path)
+    (fake / "zh.tui.yaml").write_text("foo: 你好\n", encoding="utf-8")
+    monkeypatch.setattr(i18n, "_locales_dir", lambda: fake)
+    real_parse = i18n.i18n_layers.parse_locale_file
+
+    def flaky_parse(path):
+        if str(path).endswith("zh.tui.yaml"):
+            raise ValueError("transient")
+        return real_parse(path)
+
+    monkeypatch.setattr(i18n.i18n_layers, "parse_locale_file", flaky_parse)
+    i18n.reset_language_cache()
+    try:
+        assert isinstance(i18n.surface_catalog("zh", "tui"), dict)
+    finally:
+        i18n.reset_language_cache()

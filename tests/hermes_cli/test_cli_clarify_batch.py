@@ -176,6 +176,47 @@ class TestClarifyBatchPanel:
         assert isinstance(answer, str)
         assert json.loads(answer) == ["ham", "basil"]
 
+    def test_multi_select_enter_selects_highlighted_option_before_committing(self):
+        cli = _make_cli_stub()
+        questions = [
+            _q(0, "Toppings?", ["ham", "olives", "basil"], multi_select=True),
+        ]
+        thread, result = _start_batch(cli, questions)
+        state = cli._clarify_state
+        state["selected"] = 1
+
+        cli._clarify_batch_enter(state)
+
+        assert state["selected_indices"] == {1}
+        assert state["answers"] == {}
+
+        cli._clarify_batch_enter(state)
+        thread.join(timeout=2)
+
+        assert result["value"] == {
+            "answers": {"q0": json.dumps(["olives"], ensure_ascii=False)},
+            "outcome": "submitted",
+        }
+
+    def test_multi_select_other_remains_active_after_cursor_moves(self):
+        cli = _make_cli_stub()
+        questions = [
+            _q(0, "Toppings?", ["ham", "olives", "basil"], multi_select=True),
+        ]
+        thread, _result = _start_batch(cli, questions)
+        state = cli._clarify_state
+        state["selected_indices"].update({0, len(state["choices"])})
+        state["selected"] = 1
+
+        cli._clarify_batch_enter(state)
+
+        assert cli._clarify_freetext is True
+        assert cli._clarify_multi_base == ["ham"]
+        assert state["answers"] == {}
+
+        state["response_queue"].put(None)
+        thread.join(timeout=2)
+
     def test_open_ended_question_locks_typed_answer(self):
         cli = _make_cli_stub()
         questions = [

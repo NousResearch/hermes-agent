@@ -974,11 +974,15 @@ class CLIModalMixin:
         if state.get("multi_select"):
             sorted_idx = sorted(state.get("selected_indices") or set())
             selected_choices = [choices[i] for i in sorted_idx if i < len(choices)]
-            if len(choices) in sorted_idx:
+            if selected == len(choices) or len(choices) in sorted_idx:
                 # Stash the checked real choices so the freetext submit appends the typed answer.
                 self._clarify_multi_base = selected_choices
                 self._clarify_freetext = True
                 self._clarify_prefill = meta.get("other_text") or ""
+                return
+            if not selected_choices and selected < len(choices):
+                state.setdefault("selected_indices", set()).add(selected)
+                self._paint_now()
                 return
             self._clarify_batch_lock(
                 state,

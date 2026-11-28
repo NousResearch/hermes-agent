@@ -226,6 +226,15 @@ def skill_search_dirs() -> tuple[list[tuple[int, Path]], Path]:
     return roots, active_skills_dir
 
 
+def skills_scan_signature(*, skip_disabled: bool = False) -> tuple:
+    """The change signature :func:`_skill_catalog` validates its cache with: stat-based over every directory
+    the catalog walks (~1 ms), plus the disabled set and platform. In-place SKILL.md edits are invisible
+    to it, so a caller caching on it alone must bound the entry's age."""
+    disabled = set() if skip_disabled else _get_disabled_skill_names()
+    roots, _ = skill_search_dirs()
+    return _skills_scan_signature([d for _t, d in roots], disabled)
+
+
 def _skill_catalog(*, skip_disabled: bool = False, include_hidden: bool = False) -> list[dict[str, Any]]:
     """Every scanned skill resolved by ``agent.skill_utils.resolve_skill_catalog`` (status /
     load_name / tier / path), visible ones only unless *include_hidden*; cached per session.

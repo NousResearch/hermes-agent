@@ -1390,7 +1390,7 @@ def _warn_retired_xai_models() -> None:
         pass
 
 
-def _start_chat_background_prefetch() -> None:
+def _start_chat_background_prefetch(args) -> None:
     """Kick off the update-check/banner prefetch and the bundled-skills sync.
 
     Update check is opt-in on Termux (it imports rich/prompt_toolkit in the
@@ -1402,6 +1402,8 @@ def _start_chat_background_prefetch() -> None:
     on the very first launch), so the first run syncs in the foreground and
     drops the banner's skills cache.
     """
+    from hermes_cli.startup_idle import arm_for, defer_thread
+    arm_for(args)  # an interactive prompt will paint: hold the maintenance below until its first frame
     if _termux_should_prefetch_update_check():
         try:
             from hermes_cli.banner import prefetch_banner_data, prefetch_update_check
@@ -1436,9 +1438,7 @@ def _start_chat_background_prefetch() -> None:
         except Exception:
             pass
     else:
-        threading.Thread(
-            target=_skills_sync_bg, name="bundled-skills-sync", daemon=True
-        ).start()
+        defer_thread(_skills_sync_bg, name="bundled-skills-sync")  # nothing on the first screen reads it
 
 
 def _first_run_setup_guard(args) -> None:
@@ -1509,7 +1509,7 @@ def cmd_chat(args):
         _first_run_setup_guard(args)
         return
 
-    _start_chat_background_prefetch()
+    _start_chat_background_prefetch(args)
 
     # --yolo: bypass all dangerous command approvals. main() also sets this
     # before _prepare_agent_startup() — the authoritative site, since it runs

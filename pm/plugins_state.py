@@ -92,6 +92,79 @@ def read_home_selection(home: Path) -> Optional[dict[str, Any]]:
     return config
 
 
+_SELECTION_KEYS = ("plugins", "memory")  # the only sections ``enabled_plugins_ordered`` reads
+_SELECTION_CACHE_VERSION = 1
+
+
+def _selection_cache_path() -> Path:
+    from pm.environments import dependency_home_root
+
+    return dependency_home_root() / "cache" / "plugin-selection.json"
+
+
+def _load_selection_cache() -> dict[str, Any]:
+    import json
+
+    try:
+        data = json.loads(_selection_cache_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    homes = data.get("homes") if isinstance(data, dict) and data.get("version") == _SELECTION_CACHE_VERSION else None
+    return homes if isinstance(homes, dict) else {}
+
+
+def _store_selection_cache(homes: dict[str, Any]) -> None:
+    import json
+    import os
+    import tempfile
+
+    path = _selection_cache_path()
+    try:
+        payload = json.dumps({"version": _SELECTION_CACHE_VERSION, "homes": homes})
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(payload)
+            os.replace(tmp, path)
+        except BaseException:
+            os.unlink(tmp)
+            raise
+    except (OSError, TypeError, ValueError):
+        pass  # an unwritable or non-JSON selection just costs the parse next time
+
+
+def _read_selection_cached(home: Path) -> Optional[dict[str, Any]]:
+    """``read_home_selection(home)``, without the YAML parse when config.yaml is byte-for-byte the file
+    a previous launch already parsed.
+
+    Every launch checks the venv against EVERY profile's selection, and PM's runtime parses YAML in pure
+    Python (~30 ms per config), so nine profiles cost a quarter of a second each time. The file signature
+    is ``config_backend.config_version`` (mtime, size, inode and ctime: an in-place rewrite that keeps
+    mtime and size still changes it). Only a successful read is stored, trimmed to the sections
+    this module reads; a remote config backend, an unreadable signature or any cache problem takes the
+    full read, which is also what raises for a broken config."""
+    import os
+
+    from hermes_cli import config_backend
+
+    if os.environ.get(config_backend.BACKEND_ENV, "").strip().lower() not in ("", "file"):
+        return read_home_selection(home)
+    try:
+        signature = list(config_backend.config_version(home / "config.yaml"))
+    except OSError:
+        return read_home_selection(home)  # no config.yaml, or a stat error that read_home_selection reports
+    homes = _load_selection_cache()
+    entry = homes.get(str(home))
+    if isinstance(entry, dict) and entry.get("signature") == signature and isinstance(entry.get("selection"), dict):
+        return entry["selection"]
+    config = read_home_selection(home)
+    if config is not None:
+        homes[str(home)] = {"signature": signature, "selection": {k: config[k] for k in _SELECTION_KEYS if k in config}}
+        _store_selection_cache(homes)
+    return config
+
+
 def _enabled_from_config(config: dict[str, Any]) -> list[str]:
     """plugins.enabled from an already-parsed config, ORDER-PRESERVING."""
     plugins_cfg = config.get("plugins")
@@ -162,7 +235,7 @@ def enabled_plugins_ordered(*, proposed_home=None, enabled=None, disabled=None,
     for home in homes:
         # ONE parse per home feeds both queries (enabled + provider).
         try:
-            config = read_home_selection(home)
+            config = _read_selection_cached(home)
         except ValueError as exc:
             if not skip_invalid_secondary or home == homes[0]:
                 raise

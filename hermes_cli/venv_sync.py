@@ -48,6 +48,12 @@ def _is_sealed(project_root: Path) -> bool:
     return True
 
 
+# project root -> whether this process's ``prepare_launch`` found the venv current. The probe is the
+# slowest step of a launch (a worker process plus a lock and plugin-state read), and ``check_runtime``
+# would ask the same question of the same install a moment later.
+_launch_venv_verdicts: dict[Path, bool] = {}
+
+
 def check_runtime(project_root: Path) -> str | None:
     """One passive startup verdict; callers only choose stderr or logging."""
     import pm
@@ -56,7 +62,9 @@ def check_runtime(project_root: Path) -> str | None:
     if (Path(project_root) / ".git").exists() and read_install_stamp(project_root).get("updateMechanism") != "self":
         return None  # A developer's checkout does not owe managed products.
 
-    problems = pm.activate()
+    # A launch that just found the venv current need not probe it again; any other outcome (stale,
+    # unknown, no launch probe in this process) keeps the full check and its warning.
+    problems = pm.activate(allow_incomplete=_launch_venv_verdicts.get(Path(project_root).resolve()) is True)
     if not problems:
         return None
     steward = sealed_steward(Path(project_root))
@@ -478,6 +486,7 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     from hermes_cli.update_lock import UpdateLock, read_live_update
 
     current = pm.venv_is_current(project_root=root)
+    _launch_venv_verdicts[root] = current  # check_runtime reuses a "current" verdict; see there
     from pm.environments import owning_home_root
 
     owner = owning_home_root(root)

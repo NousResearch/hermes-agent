@@ -1427,6 +1427,8 @@ class HermesCLI(CLIBacktrackMixin, CLIInitMixin, CLITuiRuntimeMixin, CLIProcessN
         app.after_render += self._pet_flush_kitty_frame
         from hermes_cli.observability.shared_metrics_startup import cli_prompt_ready_handler
         app.after_render += cli_prompt_ready_handler()
+        from hermes_cli.startup_idle import release as _release_startup_idle
+        app.after_render += _release_startup_idle  # maintenance held back for the first frame starts now
         self._app = app
 
         # Ghost status-bar lines on resize: pt's renderer scrolls the terminal after each

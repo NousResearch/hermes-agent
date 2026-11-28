@@ -10,6 +10,11 @@ export function localCreationOptions(env = process.env): Record<string, unknown>
 
   const options: Record<string, unknown> = Object.fromEntries(Object.entries(fields).filter(([, value]) => value))
 
+  // HERMES_CWD is the process launch directory on every backend, including ssh.
+  // It is not a workspace pick: the launcher only exports HERMES_TUI_CWD for a
+  // local shell or dashboard, and useSessionLifecycle marks that one explicit so
+  // a named profile's terminal.cwd still wins on a remote backend (#84015, #52589).
+
   if (env.HERMES_TUI_TOOLSETS) { options.toolsets = env.HERMES_TUI_TOOLSETS.split(',') }
 
   // `hermes --tui -s a,b`: the owner renders these into the session's frozen prompt.

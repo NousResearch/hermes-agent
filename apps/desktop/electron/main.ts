@@ -3362,9 +3362,20 @@ const DESKTOP_ZOOM_STATE_PATH = path.join(app.getPath('userData'), 'zoom-state.j
 function readZoomState() {
   try {
     const raw = JSON.parse(fs.readFileSync(DESKTOP_ZOOM_STATE_PATH, 'utf8'))
-    const level = Number(raw?.zoomLevel)
+    const normalized = normalizePersistedZoom(raw)
 
-    return Number.isFinite(level) ? level : null
+    if (!normalized) {
+      return null
+    }
+
+    // One-time migration of the retired 90% default: persist the corrected,
+    // versioned value so the JSON we re-assert on every lifecycle event is
+    // stable and the legacy value can never come back from a stale read.
+    if (normalized.migrated) {
+      writeZoomState(normalized.level)
+    }
+
+    return normalized.level
   } catch {
     return null
   }
@@ -3373,7 +3384,10 @@ function readZoomState() {
 function writeZoomState(zoomLevel) {
   try {
     fs.mkdirSync(path.dirname(DESKTOP_ZOOM_STATE_PATH), { recursive: true })
-    writeFileAtomic(DESKTOP_ZOOM_STATE_PATH, JSON.stringify({ zoomLevel }, null, 2))
+    writeFileAtomic(
+      DESKTOP_ZOOM_STATE_PATH,
+      JSON.stringify({ zoomLevel, zoomStateVersion: ZOOM_STATE_VERSION }, null, 2)
+    )
   } catch (error) {
     rememberLog(`[zoom] json persist failed: ${error?.message || error}`)
   }
@@ -6549,7 +6563,9 @@ import {
   DEFAULT_ZOOM_LEVEL,
   installZoomReassertOnNavigation,
   installZoomReassertOnWindowEvents,
+  normalizePersistedZoom,
   percentToZoomLevel,
+  ZOOM_STATE_VERSION,
   ZOOM_STEP,
   ZOOM_STORAGE_KEY,
   zoomLevelToPercent,
@@ -6627,7 +6643,10 @@ function restorePersistedZoomLevel(window) {
         return
       }
 
-      const level = stored == null ? DEFAULT_ZOOM_LEVEL : Number(stored)
+      // Pre-JSON installs store only the level string. Normalize it the same
+      // way as JSON so the retired 90% default is not resurrected here either.
+      const normalized = stored == null ? null : normalizePersistedZoom({ zoomLevel: stored })
+      const level = normalized?.level ?? DEFAULT_ZOOM_LEVEL
       const applied = applyZoomLevel(window.webContents, level)
       writeZoomState(applied)
       applyTitleBarOverlay(window, getTitleBarOverlayOptions(window))

@@ -39,6 +39,40 @@ export function percentToZoomLevel(percent) {
 }
 
 /**
+ * The old UI Scale default from 31c0bea35f (2026-09-30), retired by 75dfe26cea
+ * (2026-10-07). Installs that saved it kept a 90% window zoom — and therefore
+ * upscaled, soft text — long after the shipped default moved back to 100%.
+ */
+export const LEGACY_DEFAULT_ZOOM_LEVEL = Math.log(0.9) / Math.log(ZOOM_FACTOR_BASE)
+
+/** Bumped whenever the persisted zoom-state shape changes. */
+export const ZOOM_STATE_VERSION = 1
+
+const LEGACY_DEFAULT_EPSILON = 1e-9
+
+/**
+ * Normalize a persisted zoom record before it is applied.
+ *
+ * Returns null when there is no usable level, so callers keep their existing
+ * fallback path. An *unversioned* record holding exactly the retired 90%
+ * default is migrated once to the shipped default. Every other level — and
+ * every already-versioned record, including a deliberately chosen 90% — is
+ * preserved verbatim.
+ */
+export function normalizePersistedZoom(raw) {
+  const level = Number(raw?.zoomLevel)
+
+  if (!Number.isFinite(level)) {
+    return null
+  }
+
+  const isLegacyDefault =
+    raw?.zoomStateVersion !== ZOOM_STATE_VERSION && Math.abs(level - LEGACY_DEFAULT_ZOOM_LEVEL) < LEGACY_DEFAULT_EPSILON
+
+  return isLegacyDefault ? { level: DEFAULT_ZOOM_LEVEL, migrated: true } : { level, migrated: false }
+}
+
+/**
  * Apply a clamped zoom level to a webContents AND notify the renderer, in that
  * order. Every path that changes zoom (user action, restore-on-load, lifecycle
  * re-assert) funnels through here so the settings UI Scale control can never

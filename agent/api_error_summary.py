@@ -74,6 +74,22 @@ def _http_prefix(error: Exception) -> str:
     return f"HTTP {status_code}: " if status_code else ""
 
 
+def _fallback_error_text(error: Exception, raw: str) -> str:
+    """Identify empty-message exceptions after provider payload recovery is exhausted."""
+    if raw.strip():
+        return raw
+    tb = error.__traceback__
+    if tb is None:
+        return f"{type(error).__name__} (no message, no traceback)"
+    while tb.tb_next is not None:
+        tb = tb.tb_next
+    code = tb.tb_frame.f_code
+    # Source lines and frame locals may contain secrets; the location is enough to diagnose.
+    return redact_sensitive_text(
+        f"{type(error).__name__} at {code.co_filename}:{tb.tb_lineno} in {code.co_name}()"
+    )
+
+
 class _BindsAgentProvider:
     """Static-style method that also receives ``provider=<agent.provider>`` when called on an agent.
 
@@ -245,6 +261,7 @@ class ApiErrorSummaryMixin:
                 return redact_sensitive_text(f"{prefix}{snippet[:300]}")
 
         # Fallback: truncate the raw string but give more room than 200 chars
+        raw = _fallback_error_text(error, raw)
         return ApiErrorSummaryMixin._decorate_xai_entitlement_error(f"{prefix}{raw[:500]}")
 
     def _mask_api_key_for_logs(self, key: Any) -> Optional[str]:

@@ -20,6 +20,7 @@ down:
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 import json
 import os
 from pathlib import Path
@@ -43,6 +44,16 @@ def kanban_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()
     return home
+
+
+@pytest.fixture(autouse=True)
+def _pin_pr_state_open(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """These tests pin handoff/window semantics around a PR comment, not PR
+    state: answer OPEN locally so no test shells out to ``gh``."""
+    kbd._respawn_guard_pr_state_cache.clear()
+    monkeypatch.setattr(kbd, "_lookup_pr_state", lambda owner, repo, number: "OPEN")
+    yield
+    kbd._respawn_guard_pr_state_cache.clear()
 
 
 def _row(conn, tid):

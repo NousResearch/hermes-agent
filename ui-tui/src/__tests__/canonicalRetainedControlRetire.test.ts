@@ -53,4 +53,36 @@ describe('retained canonical controls', () => {
     await mutateCanonical(gw, 's', 'model', { model: 'A' })
     expect(gw.mutations[1].request_id).toBe(gw.mutations[0].request_id)
   })
+
+  // Another viewer's write between the fence read and the write: a value pick is re-sent at the new
+  // revision (setting the same value again is harmless); a CAS edit of shared metadata is not.
+  it.each<['model' | 'rename', Record<string, unknown>, number]>([
+    ['model', { model: 'A' }, 2],
+    ['rename', { title: 'mine' }, 1]
+  ])('a %s %o refused at a moved fence is sent %i time(s)', async (operation, payload, sends) => {
+    let revision = 7
+    const mutations: Array<Record<string, unknown>> = []
+
+    const gw = {
+      request: async (method: string, params?: Record<string, unknown>) => {
+        if (method === 'session.resume') {
+          return { revision, execution_generation: 3 }
+        }
+
+        mutations.push(params!)
+
+        if (mutations.length === 1) {
+          revision = 8 // someone else's write landed first
+
+          throw Object.assign(new Error('revision_conflict'), { data: { reason: 'revision_conflict', revision } })
+        }
+
+        return { revision: revision + 1, execution_generation: 3 }
+      }
+    }
+
+    const outcome = mutateCanonical(gw, 's', operation, payload)
+    await (sends === 2 ? expect(outcome).resolves.toBeTruthy() : expect(outcome).rejects.toThrow('revision_conflict'))
+    expect(mutations.map(m => m.expected_revision)).toEqual(sends === 2 ? [7, 8] : [7])
+  })
 })

@@ -95,12 +95,40 @@ export function retireCanonicalControls(gw: MutationGateway, sid: string, keep?:
   }
 }
 
+// A model / reasoning pick refused at a moved fence wrote nothing, and re-applying the same value is
+// harmless (unlike a CAS edit of shared metadata): re-read the fences and send it again, as Desktop's
+// `retryableFence` and the gateway's setting commands do. Same budget as the classic PreparedMutations.
+const VALUE_PICKS = new Set<CanonicalOperation>(['model', 'reasoning'])
+const FENCE_REFUSALS = new Set(['revision_conflict', 'stale_generation'])
+const FENCE_ATTEMPTS = 3
+
 export async function mutateCanonical(
   gw: MutationGateway,
   sid: string,
   operation: CanonicalOperation,
   payload: Record<string, unknown> | ((snapshot: MutationSnapshot) => null | Record<string, unknown>),
   stale: () => boolean = () => false,
+  onRead?: (snapshot: MutationSnapshot) => void
+) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await mutateCanonicalOnce(gw, sid, operation, payload, stale, onRead)
+    } catch (error) {
+      const reason = (error as { data?: { reason?: string } })?.data?.reason
+
+      if (!VALUE_PICKS.has(operation) || !FENCE_REFUSALS.has(reason ?? '') || attempt >= FENCE_ATTEMPTS || stale()) {
+        throw error
+      }
+    }
+  }
+}
+
+async function mutateCanonicalOnce(
+  gw: MutationGateway,
+  sid: string,
+  operation: CanonicalOperation,
+  payload: Record<string, unknown> | ((snapshot: MutationSnapshot) => null | Record<string, unknown>),
+  stale: () => boolean,
   onRead?: (snapshot: MutationSnapshot) => void
 ) {
   let requests = pending.get(gw)

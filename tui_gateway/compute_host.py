@@ -336,6 +336,8 @@ class ComputeHost:
             session = self._build_server_session(server, frame, sid)
         if isinstance(frame.get("attached_images"), list):
             session["attached_images"] = list(frame.get("attached_images") or [])
+        if isinstance(frame.get("attached_documents"), list):
+            session["attached_documents"] = list(frame.get("attached_documents") or [])
         # A model switch queued on the host side while this session was busy rides
         # the turn frame; adopt it here so the child's turn thread applies it via
         # _apply_pending_model_switch — in the child the live agent exists.
@@ -410,7 +412,7 @@ class ComputeHost:
                 "history_lock": threading.Lock(),
                 "history_version": int(frame.get("history_version") or 0), "inflight_turn": None,
                 "created_at": time.time(), "last_active": time.time(), "running": False,
-                "attached_images": [], "image_counter": 0,
+                "attached_images": [], "attached_documents": [], "image_counter": 0,
                 "cwd": str(frame.get("cwd") or os.getcwd()), "cols": int(frame.get("cols") or 80),
                 "explicit_cwd": bool(frame.get("explicit_cwd")),
                 "slash_worker": None, "show_reasoning": server._load_show_reasoning(),

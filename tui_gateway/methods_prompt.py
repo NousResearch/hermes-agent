@@ -790,8 +790,9 @@ def _unstage_refused_images(session) -> int:
     behind an image the composer may no longer show. The refusal names the removal, so the user re-attaches
     it knowingly instead of losing it silently."""
     with session["history_lock"]:
-        dropped = len(session.get("attached_images") or ())
+        dropped = len(session.get("attached_images") or ()) + len(session.get("attached_documents") or ())
         session["attached_images"] = []
+        session["attached_documents"] = []
     return dropped
 
 
@@ -1093,27 +1094,115 @@ def _(rid, params: dict) -> dict:
         remainder="", text=f"[User attached image: {img_path.name}]", bytes=len(img_bytes)))
 
 
+def _session_supports_native_pdf(session: dict) -> bool:
+    """True when the session's active agent/model+route accepts native PDF document parts.
+
+    Handles both built agents and lazy/compute-host sessions (``agent is None``) by reading
+    pending switch, metadata mirror, session ``model_override``, or profile-scoped ``config.yaml``.
+    """
+    try:
+        from agent.image_routing import decide_pdf_input_mode, supports_pdf_in_user_turns
+        from hermes_cli.config import load_config as _tui_load_config
+        cfg = _tui_load_config()
+        agent = session.get("agent")
+        if agent is not None:
+            provider = str(getattr(agent, "provider", "") or "").strip()
+            model = str(getattr(agent, "model", "") or "").strip()
+            base_url = str(getattr(agent, "base_url", "") or "").strip()
+            requested_provider = str(getattr(agent, "requested_provider", "") or "").strip()
+            api_mode = str(getattr(agent, "api_mode", "") or "").strip()
+        else:
+            pending = session.get("pending_model_switch") if isinstance(session.get("pending_model_switch"), dict) else {}
+            mirror = _metadata_mirror(session)
+            override = session.get("model_override") if isinstance(session.get("model_override"), dict) else {}
+            model_cfg = cfg.get("model") if isinstance(cfg, dict) and isinstance(cfg.get("model"), dict) else {}
+            model = str(
+                pending.get("display_model") or pending.get("model")
+                or mirror.get("model")
+                or override.get("model")
+                or model_cfg.get("default") or model_cfg.get("model")
+                or ""
+            ).strip()
+            provider = str(
+                pending.get("display_provider") or pending.get("provider")
+                or mirror.get("provider")
+                or override.get("provider")
+                or model_cfg.get("provider")
+                or ""
+            ).strip()
+            base_url = str(
+                pending.get("base_url") or mirror.get("base_url")
+                or override.get("base_url") or model_cfg.get("base_url") or ""
+            ).strip()
+            requested_provider = str(override.get("provider") or provider).strip()
+            api_mode = str(
+                pending.get("api_mode") or mirror.get("api_mode") or override.get("api_mode") or ""
+            ).strip()
+        if not provider and not model:
+            return False
+        return (
+            supports_pdf_in_user_turns(provider, model, cfg, base_url=base_url, api_mode=api_mode)
+            and decide_pdf_input_mode(
+                provider, model, cfg, requested_provider=requested_provider, allow_network=False, base_url=base_url,
+            ) == "native"
+        )
+    except (AttributeError, ImportError, KeyError, OSError, RuntimeError, TypeError, ValueError):
+        return False
+
+
 @method("pdf.attach")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
-    """Attach a PDF by rendering each page to PNG (``pdftoppm``; 5028 if missing) and
-    queuing the pages as images.  Host ``path`` or base64 ``content_base64``."""
+    """Attach a PDF natively as a document part when supported by the active model/route,
+    or fall back to rendering each page to PNG (``pdftoppm``; 5028 if missing)."""
+    import base64 as _b64
     import shutil
     import subprocess
     import tempfile
+    from tools.media_io import MAX_NATIVE_MEDIA_RAW_BYTES, is_valid_pdf_bytes, read_file_bounded_nofollow
     session, err = _sess_building(params, rid)
     if err:
         return err
-    if shutil.which("pdftoppm") is None:
-        return _err(rid, 5028, "pdftoppm not installed (poppler-utils package required)")
     raw_path = str(params.get("path", "") or "").strip()
     raw_b64 = str(params.get("content_base64") or params.get("data") or "").strip()
     if not raw_path and not raw_b64:
         return _err(rid, 4015, "path or content_base64 required")
+    explicit_page_range = params.get("first_page") is not None or params.get("last_page") is not None
     with tempfile.TemporaryDirectory(prefix="pdf_attach_") as td:
         td_path = Path(td)
         pdf_path, display_name, err = _pdf_attach_source(rid, params, td_path, raw_path, raw_b64)
         if err is not None:
             return err
+        if not explicit_page_range and _session_supports_native_pdf(session):
+            pdf_bytes = read_file_bounded_nofollow(str(pdf_path), max_bytes=MAX_NATIVE_MEDIA_RAW_BYTES)
+            if pdf_bytes is not None and is_valid_pdf_bytes(pdf_bytes):
+                data_url = f"data:application/pdf;base64,{_b64.b64encode(pdf_bytes).decode('ascii')}"
+                try:
+                    stored_path, _ = _stage_session_file_attachment(
+                        session, raw_path="", data_url=data_url, name=display_name,
+                    )
+                except (OSError, ValueError, OverflowError, RuntimeError) as exc:
+                    return _err(rid, 5028, str(exc))
+                with session["history_lock"]:
+                    docs = session.setdefault("attached_documents", [])
+                    docs.append({
+                        "path": str(stored_path),
+                        "filename": display_name,
+                        "mime_type": "application/pdf",
+                    })
+                    total_count = len(session.get("attached_images", [])) + len(docs)
+                return _ok(rid, {
+                    "attached": True,
+                    "native_document": True,
+                    "path": str(stored_path),
+                    "filename": display_name,
+                    "pages_attached": 0,
+                    "pages": [],
+                    "count": total_count,
+                    "text": f"[User attached PDF natively: {display_name}]",
+                })
+        if shutil.which("pdftoppm") is None:
+            return _err(rid, 5028, "pdftoppm not installed (poppler-utils package required)")
         first_page, last_page, err = _pdf_page_range(rid, params)
         if err is not None:
             return err
@@ -1147,7 +1236,7 @@ def _(rid, params: dict) -> dict:
             attached_pages.append({"path": str(dst), "page": page_int, **_image_meta(dst)})
         return _ok(rid, {
             "attached": True, "filename": display_name, "pages_attached": len(attached_pages),
-            "pages": attached_pages, "count": len(session["attached_images"]),
+            "pages": attached_pages, "count": len(session["attached_images"]) + len(session.get("attached_documents", [])),
             "text": f"[User attached PDF: {display_name} ({len(attached_pages)} page(s))]"})
 
 
@@ -1182,11 +1271,18 @@ def _(rid, params: dict) -> dict:
     raw = str(params.get("path", "") or "").strip()
     if not raw:
         return _err(rid, 4015, "path required")
-    before = len(images := session.setdefault("attached_images", []))
-    session["attached_images"] = [path for path in images if path != raw]
+    with session["history_lock"]:
+        images = session.setdefault("attached_images", [])
+        docs = session.setdefault("attached_documents", [])
+        before = len(images) + len(docs)
+        session["attached_images"] = [path for path in images if path != raw]
+        session["attached_documents"] = [
+            d for d in docs if not (isinstance(d, dict) and d.get("path") == raw)
+        ]
+        after = len(session["attached_images"]) + len(session["attached_documents"])
     return _ok(rid, {
-        "detached": len(session["attached_images"]) != before,
-        "count": len(session["attached_images"])})
+        "detached": after != before,
+        "count": after})
 
 
 @method("input.detect_drop")
@@ -1204,7 +1300,7 @@ def _(rid, params: dict) -> dict:
             session.setdefault("attached_images", []).append(str(drop_path))
             return _ok(rid, {
                 "matched": True, "is_image": True, "path": str(drop_path),
-                "count": len(session["attached_images"]),
+                "count": len(session["attached_images"]) + len(session.get("attached_documents", [])),
                 "text": remainder or f"[User attached image: {drop_path.name}]",
                 **_image_meta(drop_path)})
         text = f"[User attached file: {drop_path}]" + (f"\n{remainder}" if remainder else "")
@@ -1388,7 +1484,8 @@ def _(rid, params: dict) -> dict:
 def _attached_image_result(session, image_path, **extra) -> dict:
     """Common ``{attached, path, count, ...meta}`` reply after queuing an image."""
     return {
-        "attached": True, "path": str(image_path), "count": len(session["attached_images"]),
+        "attached": True, "path": str(image_path),
+        "count": len(session["attached_images"]) + len(session.get("attached_documents", [])),
         **extra, **_image_meta(image_path)}
 
 

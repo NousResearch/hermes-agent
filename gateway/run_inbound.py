@@ -1644,7 +1644,9 @@ class GatewayInboundMixin(
         return message_text
 
     @classmethod
-    def _prepend_inbound_document_notes(cls, event: MessageEvent, message_text: str) -> str:
+    def _prepend_inbound_document_notes(
+        cls, event: MessageEvent, message_text: str, *, skip_paths: Optional[set[str]] = None,
+    ) -> str:
         """Prepend a context note per non-media attachment (anything not routed as image/audio/video)."""
         from gateway.run import (
             _build_document_context_note, _event_media_is_audio, _event_media_is_image,
@@ -1657,7 +1659,10 @@ class GatewayInboundMixin(
         _TEXT_EXTENSIONS = {".txt", ".md", ".csv", ".log", ".json", ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg"}
         inline_flags = getattr(event, "media_text_inlined", None) or []
         names = getattr(event, "media_filenames", None) or []
+        skipped = skip_paths or set()
         for i, path in enumerate(event.media_urls):
+            if path in skipped:
+                continue
             # A document mixed into a PHOTO/VOICE message (message-level type != DOCUMENT) still
             # reaches the agent; only genuine non-media files get a note.
             if any(f(event, i) for f in (_event_media_is_image, _event_media_is_audio, _event_media_is_video)):
@@ -1794,6 +1799,7 @@ class GatewayInboundMixin(
         session_key = session_key or self._session_key_for_source(source)
         # Reset only this session's per-call buffer; other sessions may be concurrently preparing.
         self._consume_pending_native_image_paths(session_key)
+        self._consume_pending_native_media_attachments(session_key)
 
         message_text = self._prefix_inbound_sender_context(event, source, message_text)
         image_paths, audio_paths, audio_file_paths, video_paths = self._classify_inbound_media(event, _pending_stt_prepared)
@@ -1801,9 +1807,14 @@ class GatewayInboundMixin(
             message_text = await self._enrich_inbound_images(source, session_key, message_text, image_paths)
         if audio_paths:
             message_text = await self._enrich_inbound_voice(event, source, message_text, audio_paths)
+        from gateway.run_inbound_native_media import prepare_inbound_native_media_async
+        audio_file_paths, native_pdf_paths, queued_native_media = await prepare_inbound_native_media_async(
+            self, event, source, session_key, audio_file_paths)
+        if queued_native_media:
+            self._session_state(session_key).persistent.native_media_attachments = queued_native_media
         message_text = self._prepend_inbound_media_file_notes(
             message_text, audio_file_paths, video_paths, self._inbound_original_names(event))
-        message_text = self._prepend_inbound_document_notes(event, message_text)
+        message_text = self._prepend_inbound_document_notes(event, message_text, skip_paths=native_pdf_paths)
         from gateway.session_context_refs import turn_references
         message_text = await turn_references(self, event, source, session_key, message_text)
         if message_text is None:
@@ -1833,6 +1844,20 @@ class GatewayInboundMixin(
             return (event.text or "").strip()
         _, successful_transcripts = await self._transcribe_pending_audio_event_once(event, "")
         return "\n\n".join(t.strip() for t in successful_transcripts if t.strip())
+
+    def _consume_pending_native_media_attachments(self, session_key: str) -> list[dict[str, str]]:
+        """Consume one-shot native audio/document attachments queued for *session_key*."""
+        state = self._peek_session_state(session_key)
+        items = list(state.persistent.native_media_attachments or []) if state is not None else []
+        if state is not None:
+            state.persistent.native_media_attachments = []
+        return items
+
+    def _route_inbound_native_audio_and_pdfs(
+        self, event: MessageEvent, source: SessionSource, session_key: str, audio_file_paths: list[str],
+    ) -> tuple[list[str], set[str]]:
+        from gateway.run_inbound_native_media import route_inbound_native_audio_and_pdfs
+        return route_inbound_native_audio_and_pdfs(self, event, source, session_key, audio_file_paths)
 
     def _consume_pending_native_image_paths(self, session_key: str) -> list[str]:
         state = self._peek_session_state(session_key)

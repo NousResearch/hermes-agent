@@ -310,7 +310,7 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
     now = time.time()
     with _sessions_lock:
         _sessions[sid] = {
-            "agent": None, "agent_error": None, "agent_ready": threading.Event(), "attached_images": [],
+            "agent": None, "agent_error": None, "agent_ready": threading.Event(), "attached_images": [], "attached_documents": [],
             "close_on_disconnect": _flag(params, "close_on_disconnect"),
             "active_session_lease": None,  # claimed lazily on the first turn (_ensure_active_session_slot)
             "cols": int(params.get("cols", 80)), "created_at": now, "edit_snapshots": {},

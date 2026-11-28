@@ -3000,6 +3000,8 @@ export interface PdfAttachResult {
   pages: PdfPage[]
   count: number
   text: string
+  native_document?: boolean | null
+  path?: string | null
 }
 export interface PdfPage {
   name?: string | null

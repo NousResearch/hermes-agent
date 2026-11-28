@@ -62,18 +62,22 @@ def _build_persist_message_with_image_refs(user_text: str, image_paths: list[str
 
 def _build_persist_user_message(user_text: str, image_paths: list[str], run_message: Any) -> Any:
     """Shape the persisted user turn like the model payload: ``_flush_messages_to_session_db`` ignores a
-    plain-string override for a list (native-vision) payload, so swap only the text part for the
-    ``@image:`` form, keep image parts, drop API-only text parts (barge-in note)."""
+    plain-string override for a list (native-vision/document) payload, so swap only the text part for the
+    ``@image:`` form, keep media parts, drop API-only text parts (barge-in note)."""
     persist_text = _build_persist_message_with_image_refs(user_text, image_paths)
     if not isinstance(run_message, list):
         return persist_text
-    image_parts = [p for p in run_message if not (isinstance(p, dict) and p.get("type") == "text")]
-    return [{"type": "text", "text": persist_text}, *image_parts]
+    media_parts = [p for p in run_message if not (isinstance(p, dict) and p.get("type") == "text")]
+    if not persist_text and media_parts:
+        return media_parts
+    return [{"type": "text", "text": persist_text}, *media_parts]
 
 
 _HISTORY_TEXT_KINDS = frozenset({"text", "input_text", "output_text"})
 _HISTORY_IMAGE_KINDS = frozenset({"image_url", "input_image", "image"})
-_HISTORY_AUDIO_KINDS = frozenset({"input_audio", "audio"})
+_HISTORY_VIDEO_KINDS = frozenset({"video_url", "input_video", "video"})
+_HISTORY_AUDIO_KINDS = frozenset({"input_audio", "audio", "audio_url"})
+_HISTORY_DOCUMENT_KINDS = frozenset({"document", "document_url", "file", "input_file"})
 
 
 def _history_part_image_url(part: dict) -> str:
@@ -91,8 +95,14 @@ def _history_dict_text(content: dict, *, image_urls: bool) -> str:
         return str(content.get("text") or content.get("content") or "")
     if kind in _HISTORY_IMAGE_KINDS:
         return (_history_part_image_url(content) if image_urls else "") or "[image]"
+    if kind in _HISTORY_VIDEO_KINDS:
+        return "[video]"
     if kind in _HISTORY_AUDIO_KINDS:
         return "[audio]"
+    if kind in _HISTORY_DOCUMENT_KINDS:
+        name = content.get("filename") or content.get("title") or ""
+        clean = str(name).strip() if isinstance(name, str) else ""
+        return f"[document: {clean}]" if clean else "[document]"
     if kind:
         return f"[{kind}]"
     if "text" in content:
@@ -117,11 +127,13 @@ def _coerce_message_text(content: Any, *, image_urls: bool = True) -> str:
     if isinstance(content, list):
         chunks: list[str] = []
         for part in content:
-            if isinstance(part, str) or (isinstance(part, dict) and isinstance(part.get("text"), str)):
-                chunks.append(part if isinstance(part, str) else part["text"])
+            if isinstance(part, str):
+                chunks.append(part)
             elif isinstance(part, dict) and part.get("type"):
                 rendered = _history_dict_text(part, image_urls=image_urls)
                 chunks.append(rendered if part["type"] in _HISTORY_TEXT_KINDS else f"\n{rendered}")
+            elif isinstance(part, dict) and isinstance(part.get("text"), str):
+                chunks.append(part["text"])
         return "".join(chunks)
     if isinstance(content, dict):
         return _history_dict_text(content, image_urls=image_urls)
@@ -145,6 +157,33 @@ def _strip_trailing_screenshot_placeholders(text: str) -> tuple[str, int]:
         lines.pop()
         count += 1
     return "\n".join(lines), count
+
+
+def _project_user_image_tail(tail: list) -> list[str] | None:
+    """Validate optional non-image media parts (plus an optional trailing empty memory block) after
+    verified image parts in a user message; returns display labels or None on any unknown part."""
+    if not tail:
+        return []
+    from session_rules.turns import sanitize_context
+    non_image_media = _HISTORY_DOCUMENT_KINDS | _HISTORY_AUDIO_KINDS | _HISTORY_VIDEO_KINDS
+    labels: list[str] = []
+    saw_memory = False
+    for part in tail:
+        if not isinstance(part, dict):
+            return None
+        ptype = part.get("type")
+        if ptype in non_image_media and not saw_memory:
+            labels.append(_history_dict_text(part, image_urls=False))
+        elif (
+            not saw_memory
+            and ptype == "text"
+            and isinstance(part.get("text"), str)
+            and not sanitize_context(part["text"]).strip()
+        ):
+            saw_memory = True
+        else:
+            return None
+    return labels
 
 
 def _user_image_display_text(content: Any) -> str | None:
@@ -189,13 +228,11 @@ def _user_image_display_text(content: Any) -> str | None:
     from hermes_cli.web_routers.files import _fs_regular_file
     from hermes_cli.web_server import _FS_DATA_URL_MAX_BYTES
     image_parts = content[1:1 + len(paths)]
-    if len(image_parts) != len(paths) or len(content) not in (1 + len(paths), 2 + len(paths)):
+    if len(image_parts) != len(paths):
         return None
-    if len(content) > 1 + len(paths):
-        from session_rules.turns import sanitize_context
-        memory = content[-1]
-        if not isinstance(memory, dict) or memory.get("type") != "text" or not isinstance(memory.get("text"), str) or sanitize_context(memory["text"]).strip():
-            return None
+    extra_media_labels = _project_user_image_tail(content[1 + len(paths):])
+    if extra_media_labels is None:
+        return None
     for path, part in zip(paths, image_parts):
         if not Path(path).is_absolute() or not isinstance(part, dict) or part.get("type") != "image_url":
             return None
@@ -208,6 +245,8 @@ def _user_image_display_text(content: Any) -> str | None:
                 return None
         except (OSError, ValueError, binascii.Error, HTTPException):
             return None
+    if extra_media_labels:
+        return projected + "\n" + "\n".join(extra_media_labels)
     return projected
 
 

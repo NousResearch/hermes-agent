@@ -146,26 +146,30 @@ def _ac_inflight_original(session: dict) -> str:
 
 
 def _enqueue_prompt(session: dict, text: Any, transport: Any, image_paths: list[str] | None = None,
-                    turn_author: dict | None = None) -> dict | None:
+                    turn_author: dict | None = None,
+                    attached_documents: list[dict] | None = None) -> dict | None:
     """Queue a message for the next turn. Text-only arrivals share a slot and merge losslessly (like the
     consecutive-user merge in ``repair_message_sequence``); image-bearing and authored ones stay separate
     envelopes so attachment chronology and the sender survive. ``transport`` is pinned so the drained turn
     streams to its sender. Returns the envelope dict the text landed in (the merged head on a merge)
     so the caller can attach durable state to it; None when the text was dropped as a duplicate."""
     image_paths = list(image_paths or [])
+    attached_documents = list(attached_documents or [])
     # Scrub live-turn self-duplicates first so the text merge below can't glue "{original}\n\n{later}" and re-fire the
     # original after a correction settles.
     # See #84417.
     _drop_queued_duplicates_of_inflight_user(session)
-    text_only = not image_paths and isinstance(text, str)
+    text_only = not image_paths and not attached_documents and isinstance(text, str)
     # A text-only self-copy of the live prompt would restart it on drain; an authored copy is another sender's message.
     if text_only and not turn_author and text.strip() == _ac_inflight_original(session) != "":
         return None
     queued = {"text": text, "transport": transport, **({"image_paths": image_paths} if image_paths else {}),
+              **({"attached_documents": attached_documents} if attached_documents else {}),
               **({"turn_author": turn_author} if turn_author else {})}
     existing = session.get("queued_prompt")
     if (existing and text_only and not turn_author and isinstance(existing.get("text"), str)
-            and not existing.get("image_paths") and not existing.get("turn_author")
+            and not existing.get("image_paths") and not existing.get("attached_documents")
+            and not existing.get("turn_author")
             and not session.get("queued_prompts")):
         prev = existing["text"]
         existing["text"] = f"{prev}\n\n{text}" if prev and text else (prev or text)
@@ -189,7 +193,7 @@ def _sanitize_queued_entry_vs_inflight_user(entry: Any, original: str) -> dict |
     if not isinstance(entry, dict):
         return None
     text = entry.get("text")
-    if not original or entry.get("image_paths") or entry.get("turn_author") or not isinstance(text, str):
+    if not original or entry.get("image_paths") or entry.get("attached_documents") or entry.get("turn_author") or not isinstance(text, str):
         return entry
     # A lossless text-merge may have glued the live original onto a later follow-up: keep the remainder.
     rest = next((text[len(original + sep):] for sep in ("\n\n", "\n") if text.startswith(original + sep)), text).strip()
@@ -416,9 +420,12 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
         # Typed while the turn ran, in any busy mode: the running turn no longer counts as unattended.
         session["_turn_user_input"] = True
         image_paths = list(session.get("attached_images", []))
+        doc_items = list(session.get("attached_documents", []))
         if image_paths:
             session["attached_images"] = []  # claim now so a later paste isn't consumed when the turn yields
-    plain_text = _coerce_message_text(text).strip() if not image_paths and _is_text_only_busy_payload(text) else ""
+        if doc_items:
+            session["attached_documents"] = []
+    plain_text = _coerce_message_text(text).strip() if not image_paths and not doc_items and _is_text_only_busy_payload(text) else ""
     # Text-only corrections steer/redirect in place when supported; media payloads and older agents fall through to
     # the proven interrupt + queue path.
     if plain_text and agent is not None:
@@ -435,8 +442,11 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
         if not session.get("running"):
             if image_paths:
                 session["attached_images"] = image_paths + list(session.get("attached_images", []))
+            if doc_items:
+                session["attached_documents"] = doc_items + list(session.get("attached_documents", []))
             return None
-        envelope = _enqueue_prompt(session, text, transport, image_paths=image_paths, turn_author=turn_author)
+        envelope = _enqueue_prompt(session, text, transport, image_paths=image_paths, turn_author=turn_author,
+                                   attached_documents=doc_items)
         # Durable AT ACCEPT (not when the turn runs): a cold resume sees the queued message and a
         # backend restart cannot lose it. Lives on the envelope, never the shared session slot.
         if envelope is not None:
@@ -449,7 +459,7 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
     # ``AIAgent._pending_steer``) and fall-through queue envelopes (payload not steerable, ``steer()``
     # rejected/raised). A hard interrupt here kills the live turn AND ``AIAgent.interrupt()`` drops the
     # pending steer buffer — silently destroying the earlier messages of the burst. See #86134.
-    if mode == "interrupt" and not image_paths:
+    if mode == "interrupt" and not image_paths and not doc_items:
         _interrupt_busy_session(sid, session, agent)
     return _ok(rid, {"status": "queued"})
 
@@ -484,6 +494,8 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
     kwargs: dict = {"queued_prompt_generation": queue_generation}
     if queued.get("image_paths"):
         kwargs["image_paths"] = queued["image_paths"]
+    if queued.get("attached_documents"):
+        kwargs["attached_documents"] = queued["attached_documents"]
     # Re-place the accept-time rows (if any) at the transcript END before the turn's rows follow
     # them, and slot the dispatching envelope's fresh row for adoption. EVERY queued envelope is
     # re-placed in acceptance order: a later-accepted prompt's row must never sit behind while an

@@ -3,6 +3,8 @@ Schema, validation and a thin dispatcher; the UI lives in a platform-provided
 callback (cli.py, gateway/run.py, tui_gateway)."""
 
 import json
+import threading
+import time
 from typing import Callable, Dict, List, Optional
 
 MAX_CHOICES = 4  # the UI always appends an "Other (type your answer)" row
@@ -14,6 +16,19 @@ MAX_CHOICE_CHARS = 8000
 RECOMMENDED_LABEL = "(Recommended)"
 _UNAVAILABLE = "Clarify tool is not available in this execution context."
 _SHAPE = "Pass questions=[{question, choices?, multi_select?}]; a single question is a one-entry array."
+# Filler guard. After compaction a weak model can imitate the transcript's tool-call density and burst
+# placeholder cards ("state", "x") seconds apart; a terse free-text question right behind another clarify
+# call is that echo, not a decision. Rejecting it with a corrective error re-anchors the model.
+FILLER_GUARD_WINDOW_SECONDS = 30
+FILLER_MAX_WORDS = 3
+_FILLER_STATE_TTL_SECONDS = 300  # prune horizon; anything older can no longer gate a call
+_FILLER_GLOBAL_KEY = "\0global"  # no resolvable session: one shared key, so the guard still applies (coarsely)
+_FILLER_ECHO = (f"Rejected: this call contains a filler free-text question (at most {FILLER_MAX_WORDS} "
+                "words, no choices) fired seconds after a previous clarify call. Resend any real "
+                "questions substantively (more words, or with choices) in one call, or skip them and "
+                "continue working and reply in prose.")
+_last_clarify_at: Dict[str, float] = {}  # session key -> time.monotonic() of its latest validated call
+_last_clarify_lock = threading.Lock()
 
 
 def mark_recommended(choices: list[str]) -> list[str]:
@@ -112,12 +127,47 @@ def _result(normalized: list[dict], reply: dict, shown: list[dict] | None = None
     return json.dumps(result, ensure_ascii=False)
 
 
+def _filler_session_key() -> str:
+    # Same identity seam as tools/human_input_hooks.py; lazy, since approval_context pulls in hermes_cli config.
+    # Exception-safe: a guard must never break a legitimate clarify, so any import/lookup failure
+    # (config load, missing module in a headless context) falls back to the shared global key.
+    try:
+        from gateway.session_context import get_session_env
+        from tools import approval_context
+        return (approval_context._approval_session_id.get() or get_session_env("HERMES_SESSION_ID")
+                or _FILLER_GLOBAL_KEY)
+    except Exception:
+        return _FILLER_GLOBAL_KEY
+
+
+def _is_filler_echo(normalized: list[dict]) -> bool:
+    """Record this call for its session, then say whether ANY question carries the filler shape
+    (terse free-text — the echo shape, alone or inside a batch) fired within
+    FILLER_GUARD_WINDOW_SECONDS of the session's previous call. The whole call bounces with the
+    corrective error so no placeholder entry can render during a degeneration burst. Rejected
+    calls record too, so a continuing burst stays blocked."""
+    terse = any(not q["choices"] and len(q["question"].split()) <= FILLER_MAX_WORDS
+                for q in normalized)
+    key = _filler_session_key()
+    with _last_clarify_lock:
+        # Clock sampled INSIDE the lock and the record never moves backward: a caller that read
+        # time earlier and is only now acquiring the lock must not rewind a later call's timestamp.
+        now = time.monotonic()
+        previous = _last_clarify_at.get(key)
+        for stale in [k for k, at in _last_clarify_at.items() if now - at > _FILLER_STATE_TTL_SECONDS]:
+            del _last_clarify_at[stale]
+        _last_clarify_at[key] = now if previous is None else max(now, previous)
+    return terse and previous is not None and (now - previous) < FILLER_GUARD_WINDOW_SECONDS
+
+
 def clarify_tool(questions, callback: Optional[Callable] = None) -> str:
     """Ask 1-5 questions in one call. ``callback(questions) -> {"answers", "outcome", "notice"?}``
     is platform injected (cli.py / gateway / tui_gateway) and receives the normalized list."""
     normalized, error = _normalize_questions(questions)
     if error:
         return tool_error(error)
+    if _is_filler_echo(normalized):
+        return tool_error(_FILLER_ECHO)
     if callback is None:
         return tool_error(_UNAVAILABLE)
     from agent.redact import redact_approval_display

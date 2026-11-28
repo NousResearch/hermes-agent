@@ -843,6 +843,8 @@ class GatewayInboundMixin(
             return False
         outcome = await self._resolve_busy_steer_or_redirect(event, _quick_key, mode, running_agent)
         note_busy_outcome(event, outcome)
+        if outcome.effective_mode == "interrupt" and getattr(event, "_ingress_claims", None):
+            event._retain_ingress_claims()  # interrupt may take effect before admission
         await self._busy_interrupt_and_ack(event, _quick_key, adapter, state, running_agent, outcome)
         return bool(outcome.steered or outcome.redirected)
 

@@ -96,6 +96,7 @@ from gateway.platforms.helpers import caption_is_command, prompt_id_counter, sen
 from .cards import map_chat_type, pop_validated_prompt_state, resolve_source_chat_type, validate_card_action
 from .adapter_choice_cards import FeishuChoiceCardsMixin
 from .adapter_synthetic_events import FeishuSyntheticEventsMixin
+from .dedup import FeishuDedupMixin, _acquire_after_app_finalizers, _register_app_finalizer, _wait_app_finalizers
 from gateway.status import acquire_scoped_lock
 from gateway.status_scoped_locks import release_scoped_lock
 from hermes_constants import get_hermes_home
@@ -159,7 +160,6 @@ _DEFAULT_WEBHOOK_HOST = "127.0.0.1"
 _DEFAULT_WEBHOOK_PORT = 8765
 _DEFAULT_WEBHOOK_PATH = "/feishu/webhook"
 # --- TTL, rate-limit and webhook security constants ---
-_FEISHU_DEDUP_TTL_SECONDS = 24 * 60 * 60          # 24 hours — matches openclaw
 _FEISHU_SENDER_NAME_TTL_SECONDS = 10 * 60          # 10 minutes sender-name cache
 _FEISHU_WEBHOOK_MAX_BODY_BYTES = 1 * 1024 * 1024   # 1 MB body limit
 _FEISHU_WEBHOOK_RATE_WINDOW_SECONDS = 60            # sliding window for rate limiter
@@ -1288,7 +1288,7 @@ def _sdk_build(request_cls: Any, **fields: Any) -> Any:
     return builder.build()
 
 
-class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlatformAdapter):
+class FeishuAdapter(FeishuDedupMixin, FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlatformAdapter):
     """Feishu/Lark bot adapter."""
     # Answers /p/<profile>/... on the default listener for a served secondary (shared_ingress).
     serves_profile_prefix: bool = True
@@ -1499,6 +1499,16 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to Feishu/Lark."""
+        if not await _wait_app_finalizers(self._app_id):
+            logger.error("[Feishu] Cannot reconnect after a failed prior disconnect")
+            return False
+        while pending := tuple(self.__dict__.get("_feishu_disconnect_finalizers", ())):
+            outcomes = await asyncio.shield(asyncio.gather(*pending, return_exceptions=True))
+            if any(isinstance(outcome, BaseException) for outcome in outcomes):
+                logger.error("[Feishu] Cannot reconnect after a failed prior disconnect")
+                return False
+        self._ingress_closing = False
+        self._dedup_persistence_retired = False
         self._sdk_executor_closing = False  # re-arm the SDK executor after a prior disconnect
         if not self._app_id or not self._app_secret:
             logger.error("[Feishu] FEISHU_APP_ID or FEISHU_APP_SECRET not set")
@@ -1517,10 +1527,14 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
             return False
 
         try:
-            self._app_lock_identity = self._app_id
-            acquired, existing = acquire_scoped_lock(
-                _FEISHU_APP_LOCK_SCOPE, self._app_lock_identity, metadata={"platform": self.platform.value},
+            result = await _acquire_after_app_finalizers(
+                self._app_id, lambda: acquire_scoped_lock(
+                    _FEISHU_APP_LOCK_SCOPE, self._app_id, metadata={"platform": self.platform.value}),
             )
+            if result is None:
+                logger.error("[Feishu] Cannot reconnect after a failed prior disconnect")
+                return False
+            acquired, existing = result
             if not acquired:
                 owner_pid = existing.get("pid") if isinstance(existing, dict) else None
                 message = (
@@ -1531,6 +1545,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
                 logger.error("[Feishu] %s", message)
                 self._set_fatal_error("feishu_app_lock", message, retryable=False)
                 return False
+            self._app_lock_identity = self._app_id
 
             self._loop = asyncio.get_running_loop()
             await self._connect_with_retry()
@@ -1551,13 +1566,28 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
 
     async def disconnect(self) -> None:
         """Disconnect from Feishu/Lark."""
+        previous = self.__dict__.get("_feishu_disconnect_task")
+        if previous is not None and not previous.done():
+            await asyncio.shield(previous)
+            return
         self._running = False
+        self._ingress_closing = True
         if self._ws_supervisor is not None:
             self._ws_supervisor.cancel()
             self._ws_supervisor = None
-        await self._cancel_pending_tasks(self._pending_text_batch_tasks)
-        await self._cancel_pending_tasks(self._pending_media_batch_tasks)
-        self._reset_batch_buffers()
+        ingress_cleanup = self._begin_buffered_ingress_cleanup()
+        finalizers = self.__dict__.setdefault("_feishu_disconnect_finalizers", set())
+        task = self._feishu_disconnect_task = asyncio.create_task(self._finish_disconnect(ingress_cleanup))
+        finalizers.add(task)
+        _register_app_finalizer(self._app_lock_identity, task)
+
+        def settle(done):
+            if not done.cancelled() and done.exception() is None:
+                finalizers.discard(done)
+        task.add_done_callback(settle)
+        await asyncio.shield(task)
+
+    async def _finish_disconnect(self, ingress_cleanup) -> None:
         # ``_disable_websocket_auto_reconnect()`` nils ``_ws_client`` — capture first.
         # Send a WebSocket CLOSE frame to Feishu BEFORE tearing down the thread loop. Without this, Feishu's
         # server never learns the connection is dead and continues routing messages to the stale endpoint —
@@ -1566,16 +1596,41 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
         ws_client = self._ws_client
         ws_thread_loop = self._ws_thread_loop
         self._disable_websocket_auto_reconnect()
-        await self._stop_webhook_server()
-        await self._teardown_ws_thread(ws_client, ws_thread_loop)
+        failure = None
+        for name, operation in (
+            ("text timers", lambda: self._cancel_pending_tasks(self._pending_text_batch_tasks)),
+            ("media timers", lambda: self._cancel_pending_tasks(self._pending_media_batch_tasks)),
+            ("webhook", self._stop_webhook_server),
+            ("websocket", lambda: self._teardown_ws_thread(ws_client, ws_thread_loop)),
+        ):
+            try:
+                await operation()
+            except Exception as exc:
+                logger.warning("[Feishu] Disconnect failed while closing %s", name, exc_info=True)
+                failure = failure or exc
         self._ws_future = None
         self._ws_thread_loop = None
         self._loop = None
         self._event_handler = None
-        self._shutdown_sdk_executor()
-        self._persist_seen_message_ids()
-        await self._release_app_lock()
+        try:
+            self._shutdown_sdk_executor()
+            if ingress_cleanup is not None:
+                await asyncio.shield(ingress_cleanup)
+            async with self._dedup_persist_lock_or_create():
+                try:
+                    await self._persist_seen_during_teardown()
+                finally:
+                    self._dedup_persistence_retired = True
+        except Exception as exc:
+            logger.warning("[Feishu] Disconnect could not finish dedup persistence", exc_info=True)
+            failure = failure or exc
+        finally:
+            self._dedup_persistence_retired = True
+            self._shutdown_dedup_cleanup_executor()
         self._mark_disconnected()
+        if failure is not None:
+            raise failure  # keep the app lock and block replacement after an incomplete teardown
+        await self._release_app_lock()
         logger.info("[Feishu] Disconnected")
 
     async def _teardown_ws_thread(self, ws_client: Any, ws_thread_loop: Any) -> None:
@@ -2127,19 +2182,25 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
             logger.debug("[Feishu] Dropping malformed inbound event: missing message/sender")
             return
         message_id = getattr(message, "message_id", None)
-        if not message_id or await self._is_duplicate(message_id):
+        claim = await self._claim_message_id(message_id) if message_id else None
+        if claim is None:
             logger.debug("[Feishu] Dropping duplicate/missing message_id: %s", message_id)
             return
-        reason = self._admit(sender, message)
-        if reason is not None:
-            logger.debug("[Feishu] dropping inbound event: %s", reason)
-            if reason == "group_policy_rejected":
-                self._warn_once_empty_allowlist_deny(getattr(message, "chat_id", "") or "")
-            return
-        await self._process_inbound_message(
-            data=data, message=message, sender_id=getattr(sender, "sender_id", None),
-            chat_type=getattr(message, "chat_type", "p2p"), message_id=message_id, is_bot=_is_bot_sender(sender),
-        )
+        try:
+            reason = self._admit(sender, message)
+            if reason is not None:
+                logger.debug("[Feishu] dropping inbound event: %s", reason)
+                if reason == "group_policy_rejected":
+                    self._warn_once_empty_allowlist_deny(getattr(message, "chat_id", "") or "")
+                return
+            await self._process_inbound_message(
+                data=data, message=message, sender_id=getattr(sender, "sender_id", None), ingress_claim=claim,
+                chat_type=getattr(message, "chat_type", "p2p"), message_id=message_id, is_bot=_is_bot_sender(sender),
+            )
+        except BaseException:
+            if not claim.dispatched:
+                await asyncio.shield(claim.release())
+            raise
 
     def _on_message_read_event(self, data: P2ImMessageMessageReadV1) -> None:
         """Ignore read-receipt events that Hermes does not act on."""
@@ -2391,8 +2452,13 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
         """Run one event through the agent pipeline under the per-chat lock (openclaw createChatQueue)."""
         chat_id = getattr(event.source, "chat_id", "") or "" if event.source else ""
         chat_lock = self._get_chat_lock(chat_id)
-        async with chat_lock:
-            await self.handle_message(event)
+        try:
+            async with chat_lock:
+                await self.handle_message(event)
+        except BaseException:
+            if all(not claim.dispatched for claim in event._ingress_claims):
+                await asyncio.shield(event._release_unadmitted_claims())
+            raise
 
     # --- Processing status reactions ---
     def _reactions_enabled(self) -> bool:
@@ -2489,7 +2555,8 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
         return resolve_channel_prompt(extra, chat_id, parent_id)
 
     async def _process_inbound_message(
-        self, *, data: Any, message: Any, sender_id: Any, chat_type: str, message_id: str, is_bot: bool = False,
+        self, *, data: Any, message: Any, sender_id: Any, chat_type: str, message_id: str,
+        is_bot: bool = False, ingress_claim: Any = None,
     ) -> None:
         text, inbound_type, media_urls, media_types, media_text_inlined, mentions = await self._extract_message_content(message)
         if inbound_type == MessageType.TEXT:
@@ -2544,12 +2611,16 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
             media_text_inlined=media_text_inlined,
             reply_to_message_id=reply_to_message_id, reply_to_text=reply_to_text,
             channel_prompt=self._resolve_channel_prompt(chat_id, thread_id or None),
-            timestamp=datetime.now(),
+            timestamp=datetime.now(), _ingress_claims=[ingress_claim] if ingress_claim is not None else [],
         )
         await self._dispatch_inbound_event(normalized)
 
     async def _dispatch_inbound_event(self, event: MessageEvent) -> None:
         """Apply Feishu-specific burst protection before entering the base adapter."""
+        if getattr(self, "_ingress_closing", False):
+            cleanup = self._schedule_ingress_cleanup([event])
+            await asyncio.shield(cleanup)
+            return
         if event.message_type == MessageType.TEXT and not event.is_command():
             await self._enqueue_text_event(event)
             return
@@ -3412,36 +3483,6 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
             logger.debug("[Feishu] Failed to hydrate bot name from application info%s", f": {shown}" if (shown := describe_proxy_error(exc, env_proxy_for_redaction(_onboard_open_base_url(self._domain_name)))) else "", exc_info=not shown)
 
     # --- Deduplication — seen message ID cache (persistent) ---
-    def _load_seen_message_ids(self) -> None:
-        try:
-            payload = json.loads(self._dedup_state_path.read_text(encoding="utf-8-sig"))
-        except FileNotFoundError:
-            return
-        except (OSError, json.JSONDecodeError):
-            logger.warning("[Feishu] Failed to load persisted dedup state from %s", self._dedup_state_path, exc_info=True)
-            return
-        seen_data = payload.get("message_ids", {}) if isinstance(payload, dict) else {}
-        now = time.time()
-        ttl = _FEISHU_DEDUP_TTL_SECONDS
-        if isinstance(seen_data, list):  # legacy format: plain list of IDs, no timestamps
-            entries: dict[str, float] = {str(item).strip(): 0.0 for item in seen_data if str(item).strip()}
-        elif isinstance(seen_data, dict):
-            entries = {}
-            for key, value in seen_data.items():
-                if isinstance(key, str) and key.strip() and isinstance(value, (int, float, str)):
-                    try:
-                        entries[key] = float(value)
-                    except ValueError:
-                        pass
-        else:
-            return
-        # Drop TTL-expired entries; ts=0.0 (legacy) is immortal for one migration cycle.
-        valid: dict[str, float] = {m: ts for m, ts in entries.items() if ts == 0.0 or ttl <= 0 or now - ts < ttl}
-        # Size cap keeps the most recently seen IDs.
-        sorted_ids = sorted(valid, key=lambda k: valid[k], reverse=True)[:self._dedup_cache_size]
-        self._seen_message_order = list(reversed(sorted_ids))
-        self._seen_message_ids = {k: valid[k] for k in sorted_ids}
-
     def _persist_seen_message_ids(self) -> None:
         try:
             from hermes_constants import mkdir_under_hermes_home
@@ -3453,33 +3494,6 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
             atomic_json_write(self._dedup_state_path, payload, indent=None)
         except OSError:
             logger.warning("[Feishu] Failed to persist dedup state to %s", self._dedup_state_path, exc_info=True)
-
-    async def _is_duplicate(self, message_id: str) -> bool:
-        now, ttl = time.time(), _FEISHU_DEDUP_TTL_SECONDS
-        with self._dedup_lock:
-            seen_at = self._seen_message_ids.get(message_id)
-            if seen_at is not None and (ttl <= 0 or now - seen_at < ttl):
-                return True
-            self._seen_message_ids[message_id] = now  # wall-clock so TTL survives restarts
-            self._seen_message_order.append(message_id)
-            while len(self._seen_message_order) > self._dedup_cache_size:
-                self._seen_message_ids.pop(self._seen_message_order.pop(0), None)
-        # atomic_json_write() fsyncs; this runs on the event loop for every inbound message, so
-        # offload the flush onto the adapter-owned pool: the loop's default executor may already
-        # be torn down by a dead background loop, which used to wedge every inbound message in
-        # the dedup gate (#111020). The lock keeps flushes in mutation order (the snapshot
-        # inside the worker is taken under _dedup_lock, but the write itself is not).
-        async with self._dedup_persist_lock_or_create():
-            await self._run_blocking(self._persist_seen_message_ids)
-        return False
-
-    def _dedup_persist_lock_or_create(self) -> asyncio.Lock:
-        # Tests build bare adapters via object.__new__ and install dedup state
-        # by hand; create the lock lazily so those fixtures keep working.
-        lock = getattr(self, "_dedup_persist_lock", None)
-        if lock is None:
-            lock = self._dedup_persist_lock = asyncio.Lock()
-        return lock
 
     # --- Outbound payload construction and send pipeline ---
     def _build_outbound_payload(self, content: str, *, prefer_post: bool = False) -> tuple[str, str]:

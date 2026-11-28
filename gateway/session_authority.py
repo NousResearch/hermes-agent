@@ -551,16 +551,23 @@ class SessionAuthority:
     async def admit_native(self, event):
         """Await current connector policy, then commit before ACK or scheduling execution."""
         from gateway.session_ingress_media import abandon_capture, capture_lease
-        async with self._route_turn(event) as fence:
-            with capture_lease(self) as scope:  # captured bytes are held until commit or refusal
-                try:
-                    return await self._admit_native(event, fence)
-                except BaseException:
-                    # Before the shielded write starts, no row can own these bytes. A cancelled copy
-                    # arranges its own completion cleanup in prepare_native; other failures clean here.
-                    if not scope.write_started:
-                        await abandon_capture(scope)
-                    raise
+        scope = None
+        try:
+            async with self._route_turn(event) as fence:
+                with capture_lease(self) as scope:  # captured bytes are held until commit or refusal
+                    try:
+                        return await self._admit_native(event, fence)
+                    except BaseException:
+                        # A cancelled copy arranges its own completion cleanup in prepare_native.
+                        if not scope.write_started:
+                            await abandon_capture(scope)
+                        raise
+        except BaseException as exc:
+            fenced = isinstance(exc, AuthorityRefusal) and exc.reason == 'stale_generation' and exc.field == 'route'
+            refused = scope is not None and getattr(scope, 'write_refused', False)
+            if not fenced and (scope is None or not scope.write_started or refused) and getattr(event, '_ingress_claims', None):
+                await asyncio.shield(event._release_unadmitted_claims())
+            raise
 
     @contextlib.asynccontextmanager
     async def _route_turn(self, event):
@@ -634,11 +641,17 @@ class SessionAuthority:
         if (scope := _lease_scope.get()) is not None:
             scope.write_started = True
         native_write_started.set(True)  # shielded from here: a cancelled caller may still commit
+
+        async def release_refused():
+            if scope is not None and getattr(scope, 'write_refused', False) and getattr(event, '_ingress_claims', None):
+                await event._release_unadmitted_claims()
+
         return await tracked_write(self, partial(
             self._admit_native_write, principal_id='messaging:' + identity, session_id=ref.session_id,
             request_id=request_id, payload=payload, fence=fence, rewrite=rewrite,
             raw=getattr(event, 'raw_message', None)),
-            then=admitted, ordered=True, after=lambda _receipt: self._schedule_admitted(committed[0]))
+            then=admitted, ordered=True, after=lambda _receipt: self._schedule_admitted(committed[0]),
+            on_failure=release_refused)
 
     def _admit_native_write(self, *, principal_id, session_id, request_id, payload, fence=None, rewrite=None,
                             raw=None):
@@ -658,7 +671,11 @@ class SessionAuthority:
             if rewrite is not None:
                 rewrite.applied = created
             return admission_row(row)
-        except Exception:
+        except Exception as exc:
+            # These admission gates reject before insertion, unlike an uncertain I/O error.
+            from gateway.session_ingress_media import _lease_scope
+            if isinstance(exc, AuthorityRefusal) and exc.reason in {'queue_full', 'runtime_draining'} and (scope := _lease_scope.get()) is not None:
+                scope.write_refused = True
             # A refused admission owns nothing it captured (unless another admission holds the same bytes).
             drop_capture_lease()
             release_unheld_media(store, fresh, retain_history=False)

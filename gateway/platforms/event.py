@@ -143,9 +143,13 @@ class MessageEvent:
     # unknown). For adapters whose ``media_urls`` are random cache names (relay); the name is
     # display data only, never a path. Appended for positional compat.
     media_filenames: list[str] = field(default_factory=list)
+    # Process-local claims carry a dispatched flag and async release(); they survive rewrites
+    # and batching but never enter the persisted envelope.
+    _ingress_claims: list[Any] = field(default_factory=list, repr=False, compare=False)
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)
+    _ingress_handler_entries: int = field(default=0, init=False, repr=False, compare=False)
     # Set when ``admit_internal_event`` hands its producer a receipt before any drain began. The
     # producer will not retry, so a restart drain runs this event instead of refusing it at the
     # drain gate or discarding it as a queued follow-up (#138123).
@@ -198,8 +202,36 @@ class MessageEvent:
         actor: ``user_id`` "" exports none, so a narrowed approval binds to approvers and admins only
         instead of to the first sender while it carries the second sender's text."""
         self.absorb_reply_expected(other)
+        if self._ingress_claims or other._ingress_claims:
+            media_ids = self.__dict__.setdefault("_ingress_media_message_ids", {})
+            for path in self.media_urls:
+                media_ids.setdefault(path, self.message_id)
+            other_ids = getattr(other, "_ingress_media_message_ids", {})
+            for path in other.media_urls:
+                media_ids[path] = other_ids.get(path, other.message_id)
+        if self._ingress_claims is not other._ingress_claims:
+            self._ingress_claims.extend(other._ingress_claims)
         if self.sender_id() != other.sender_id():
             self.user_id = self.user_name = ""
+
+    def _mark_ingress_dispatched(self) -> None:
+        for claim in self._ingress_claims:
+            claim.dispatched = True
+
+    def _retain_ingress_claims(self) -> None:
+        self._ingress_claims.clear()
+
+    def _ingress_controls_unchanged(self) -> bool:
+        check = getattr(self, "_ingress_control_check", None)
+        return bool(check is not None and check())
+
+    async def _release_unadmitted_claims(self) -> None:
+        claims, self._ingress_claims[:] = self._ingress_claims[:], []
+        release_batch = getattr(claims[0], "release_batch", None) if claims else None
+        if callable(release_batch) and await release_batch(claims):
+            return
+        for claim in claims:
+            await claim.release()
 
     def sender_id(self) -> Optional[str]:
         """Who sent this input: ``user_id``, else the source's (a shared observed-group source has

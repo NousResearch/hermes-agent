@@ -86,6 +86,15 @@ class GatewayInboundHooksMixin:
         from gateway.session_ingress import executing_admission
         if executing_admission.get():
             return event
+        if getattr(event, "_ingress_claims", None):
+            from hermes_cli.lifecycle import has_hook
+            try:
+                may_run = has_hook("pre_gateway_dispatch")
+            except Exception:
+                logger.warning("Unable to inspect pre_gateway_dispatch hooks", exc_info=True)
+                may_run = True
+            if may_run:
+                event._retain_ingress_claims()
         try:
             from hermes_cli.lifecycle import ainvoke_hook as _ainvoke_hook
             _hook_results = await _ainvoke_hook(

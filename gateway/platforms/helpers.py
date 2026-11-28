@@ -86,6 +86,9 @@ def carry_inbound_dedup(predecessor: Any, adapter: Any) -> None:
         current = getattr(adapter, name, None)
         if isinstance(previous, MessageDeduplicator) and isinstance(current, MessageDeduplicator) and current is not previous:
             current.absorb(previous)
+    adopt = getattr(adapter, "adopt_inbound_dedup", None)
+    if callable(adopt):
+        adopt(predecessor)
 
 
 def hand_over_held_inbound(source: Any, target: Any) -> None:

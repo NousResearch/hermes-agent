@@ -40,6 +40,8 @@ async def run_post_admission_hook(
             from hermes_cli.lifecycle import ainvoke_hook, has_hook
             if not has_hook(POST_ADMISSION_HOOK):
                 return False, None
+            if getattr(event, "_ingress_claims", None):
+                event._retain_ingress_claims()  # the routed plugin may act before the FIFO write
             results = await ainvoke_hook(
                 POST_ADMISSION_HOOK, session_key=session_key,
                 platform=source.platform.value if source.platform else "",

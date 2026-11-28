@@ -3983,7 +3983,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordCommandSyncMixin, DiscordAuth
         )
         try:
             await interaction.response.send_message(
-                _unauthorized(), ephemeral=True,
+                self._slash_rejection_message(reason, _unauthorized), ephemeral=True,
             )
         except Exception as e:
             # Interaction may already be responded to (caller deferred, Discord retry).

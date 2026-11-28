@@ -1094,6 +1094,8 @@ platform:
       resolved_session: "Approved for session"
       resolved_always: "Approved permanently"
       resolved_deny: "Denied"
+    slash:
+      channel_not_allowed: "This bot does not work in this channel."
     slash_confirm:
       already_resolved: "This prompt has already been resolved~"
       approve_once: "Approve Once"

@@ -294,6 +294,43 @@ async def test_channel_not_in_allowlist_rejected(adapter, monkeypatch, caplog):
     assert any("DISCORD_ALLOWED_CHANNELS" in r.message for r in caplog.records)
 
 
+@pytest.mark.asyncio
+async def test_channel_scope_rejection_omits_pairing_hint(adapter, monkeypatch):
+    """Regression for #160573: an allowlisted user invoking a slash command in a
+    non-allowed or ignored channel must get a channel-scope notice, not a pairing prompt.
+    """
+    adapter._allowed_user_ids = {"100200300"}
+    monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "1111")
+
+    disallowed = _make_interaction("100200300", channel_id=9999)
+    assert await adapter._check_slash_authorization(disallowed, "/restart") is False
+    disallowed.response.send_message.assert_awaited_once()
+    msg_disallowed = disallowed.response.send_message.call_args.args[0]
+    assert "pairing approve" not in msg_disallowed.lower()
+    assert "channel" in msg_disallowed.lower()
+
+    monkeypatch.setenv("DISCORD_IGNORED_CHANNELS", "1111")
+    ignored = _make_interaction("100200300", channel_id=1111)
+    assert await adapter._check_slash_authorization(ignored, "/restart") is False
+    ignored.response.send_message.assert_awaited_once()
+    msg_ignored = ignored.response.send_message.call_args.args[0]
+    assert "pairing approve" not in msg_ignored.lower()
+    assert "channel" in msg_ignored.lower()
+
+
+@pytest.mark.asyncio
+async def test_unknown_user_in_allowed_channel_keeps_pairing_hint(adapter, monkeypatch):
+    """Regression for #160573: user-allowlist rejections in allowed channels keep the pairing notice."""
+    adapter._allowed_user_ids = {"100200300"}
+    monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "1111")
+
+    unknown = _make_interaction("999999999", channel_id=1111)
+    assert await adapter._check_slash_authorization(unknown, "/restart") is False
+    unknown.response.send_message.assert_awaited_once()
+    msg_unknown = unknown.response.send_message.call_args.args[0]
+    assert "pairing approve" in msg_unknown.lower()
+
+
 # ---------------------------------------------------------------------------
 # Channel blocklist (DISCORD_IGNORED_CHANNELS) parity
 # ---------------------------------------------------------------------------

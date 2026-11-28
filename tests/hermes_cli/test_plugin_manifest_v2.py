@@ -7,6 +7,7 @@ declare-only seam (surfaced, never installed).
 """
 
 import logging
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -545,6 +546,28 @@ class TestBundledKeyShadowing:
                 if hasattr(sys, attr):
                     delattr(sys, attr)
 
+
+class TestSameSourceManifestCollision:
+    @pytest.mark.parametrize("copy_dir", ["foo.bak-20261126", "a-foo-copy"])
+    def test_backup_copy_does_not_replace_the_plugin(self, hermes_home, caplog, copy_dir):
+        """A backup ``plugins/foo.bak-…`` (``name: foo``) used to win silently because it scans after
+        ``plugins/foo`` (#160459). The directory named after the plugin wins whatever the scan order, and
+        the ignored copy is named in a warning."""
+        import sys
+        _write_plugin(hermes_home / "plugins", "foo", register_body="import sys; sys._dup_probe = 'real'")
+        _write_plugin(hermes_home / "plugins", copy_dir, manifest_extra={"name": "foo"},
+                      register_body="import sys; sys._dup_probe = 'copy'")
+        _enable(hermes_home, ["foo"])
+        try:
+            with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+                mgr = PluginManager()
+                mgr.discover_and_load()
+            assert os.path.basename(mgr._plugins["foo"].manifest.path) == "foo"
+            assert sys._dup_probe == "real"
+            assert copy_dir in caplog.text and "Ignoring user plugin" in caplog.text
+        finally:
+            if hasattr(sys, "_dup_probe"):
+                del sys._dup_probe
 
 class TestManifestParsingRobustness:
     def test_list_manifest_is_rejected_with_a_clear_reason_and_hooks_alias(self, hermes_home, caplog):

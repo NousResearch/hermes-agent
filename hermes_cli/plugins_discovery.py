@@ -241,6 +241,19 @@ def resolve_manifest_winners(manifests: list[PluginManifest]) -> dict[str, Plugi
                 continue
             logger.info("Plugin '%s' at %s (%s) shadows the bundled copy at %s", key, manifest.path,
                         manifest.source, shadowed.path)
+        elif shadowed is not None and shadowed.source == manifest.source:
+            # Two manifests in one source share a key, e.g. ``plugins/foo`` and a backup copy
+            # ``plugins/foo.bak`` (#160459). Scan order must not decide: the directory named after the
+            # key wins, and the other copy is named in a warning instead of replacing it silently.
+            leaf = key.rsplit("/", 1)[-1]
+            own_dir = Path(manifest.path).name if manifest.path else ""
+            kept_dir = Path(shadowed.path).name if shadowed.path else ""
+            if kept_dir == leaf and own_dir != leaf:
+                logger.warning("Ignoring %s plugin at %s: plugin '%s' is already loaded from %s, whose "
+                               "directory matches the name", manifest.source, manifest.path, key, shadowed.path)
+                continue
+            logger.warning("Ignoring %s plugin at %s: plugin '%s' is also at %s, which is used instead",
+                           shadowed.source, shadowed.path, key, manifest.path)
         winners[key] = manifest
     return winners
 

@@ -153,7 +153,7 @@ class TestHeadedLaunch:
         assert screen == {"DISPLAY": ":99"}
         assert launches == [("profile:/bot-desktop/browser-profile", {
             "executable": "/usr/bin/chromium", "user_data_dir": "/bot-desktop/browser-profile", "ephemeral": False,
-            "extra_args": bd_browser.SHARED_PROFILE_ARGS})]
+            "headed": True, "extra_args": bd_browser.SHARED_PROFILE_ARGS})]
 
 
     def test_headed_not_applied_in_cloud_mode(self, monkeypatch):

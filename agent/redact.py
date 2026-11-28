@@ -1306,6 +1306,28 @@ def _assignment_sub(render, *, check_keyword: bool):
         groups = m.groups()
         if not _should_redact_assignment(groups[0], groups[-1], check_keyword=check_keyword):
             return m.group(0)
+        # The value group may end up holding outer quote characters that
+        # belong to the SURROUNDING text — e.g. a shell-quoted
+        # ``'^KEY=...*'`` where the quote opened before the key, so the
+        # closing ``\2`` back-reference cannot pair it and ``\S+`` swallows
+        # the quotes into the value. Masking the value as-is eats those
+        # quotes, and the rendered line becomes syntactically broken (an
+        # agent copying a redacted read into a file then bakes the
+        # corruption in — a shell script that no longer parses). Hold the
+        # unpaired outer quotes out of the mask and re-emit them around it,
+        # so redacted text stays copy-safe. A value whose own quote group
+        # matched keeps its pairing and is untouched.
+        quote, value = groups[1], groups[-1]
+        if not quote and len(value) >= 2:
+            lead = value[0] if value[0] in ("'", '"') else ""
+            core = value[1:] if lead else value
+            tail = ""
+            if len(core) > 1 and core[-1] in ("'", '"'):
+                core, tail = core[:-1], core[-1]
+            if core and (lead or tail):
+                rendered = render((*groups[:-1], core))
+                head, _, masked = rendered.partition("=")
+                return head + "=" + lead + masked + tail
         return render(groups)
     return _sub
 

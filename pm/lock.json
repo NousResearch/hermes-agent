@@ -576,11 +576,47 @@
     "npm": {
       "artifacts": {
         "any": {
-          "sha256": "07fecbf753e2c3bc10ebeb3e9ed8738f6a0cc1292998b79e2e9f1dd2a5525e0c",
-          "url": "https://registry.npmjs.org/npm/-/npm-12.2.2.tgz"
+          "sha256": "fa0711dd513fa1386bbad3962a292cb813461cb57dedf07d6eb7efe76dffe897",
+          "url": "https://registry.npmjs.org/npm/-/npm-12.2.3.tgz"
+        },
+        "darwin-arm64": {
+          "sha256": "fa0711dd513fa1386bbad3962a292cb813461cb57dedf07d6eb7efe76dffe897",
+          "url": "https://registry.npmjs.org/npm/-/npm-12.2.3.tgz"
+        },
+        "darwin-x64": {
+          "sha256": "fa0711dd513fa1386bbad3962a292cb813461cb57dedf07d6eb7efe76dffe897",
+          "url": "https://registry.npmjs.org/npm/-/npm-12.2.3.tgz"
+        },
+        "linux-arm64": {
+          "sha256": "fa0711dd513fa1386bbad3962a292cb813461cb57dedf07d6eb7efe76dffe897",
+          "url": "https://registry.npmjs.org/npm/-/npm-12.2.3.tgz"
+        },
+        "linux-arm64-bionic": {
+          "sha256": "fa0711dd513fa1386bbad3962a292cb813461cb57dedf07d6eb7efe76dffe897",
+          "url": "https://registry.npmjs.org/npm/-/npm-12.2.3.tgz"
+        },
+        "linux-arm64-musl": {
+          "sha256": "fa0711dd513fa1386bbad3962a292cb813461cb57dedf07d6eb7efe76dffe897",
+          "url": "https://registry.npmjs.org/npm/-/npm-12.2.3.tgz"
+        },
+        "linux-x64": {
+          "sha256": "fa0711dd513fa1386bbad3962a292cb813461cb57dedf07d6eb7efe76dffe897",
+          "url": "https://registry.npmjs.org/npm/-/npm-12.2.3.tgz"
+        },
+        "linux-x64-musl": {
+          "sha256": "fa0711dd513fa1386bbad3962a292cb813461cb57dedf07d6eb7efe76dffe897",
+          "url": "https://registry.npmjs.org/npm/-/npm-12.2.3.tgz"
+        },
+        "win32-arm64": {
+          "sha256": "fa0711dd513fa1386bbad3962a292cb813461cb57dedf07d6eb7efe76dffe897",
+          "url": "https://registry.npmjs.org/npm/-/npm-12.2.3.tgz"
+        },
+        "win32-x64": {
+          "sha256": "fa0711dd513fa1386bbad3962a292cb813461cb57dedf07d6eb7efe76dffe897",
+          "url": "https://registry.npmjs.org/npm/-/npm-12.2.3.tgz"
         }
       },
-      "version": "12.2.2"
+      "version": "12.2.3"
     },
     "pnpm": {
       "artifacts": {

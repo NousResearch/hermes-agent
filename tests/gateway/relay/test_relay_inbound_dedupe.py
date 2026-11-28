@@ -134,6 +134,37 @@ class TestInboundReplayDedupe:
         assert len(adapter._seen_inbound) <= adapter._SEEN_INBOUND_MAX
 
 
+class TestFailedAdmissionIsNotAReplay:
+    """The transport withholds the ACK when the handler raises, so the connector redelivers the
+    buffered frame. That redelivery is the delivery that can succeed; it is not a replay of one
+    that was taken."""
+
+    def test_frame_whose_admission_raised_is_admitted_again_on_redelivery(self, loop):
+        adapter, _ = _connected_adapter()
+        attempts, handled = [], []
+
+        async def fail_once(event):
+            attempts.append(event)
+            if len(attempts) == 1:
+                raise RuntimeError("session store is locked")
+            handled.append(event)
+
+        adapter.handle_message = fail_once
+        adapter._consume_prompt_response = lambda e: _false_coro()
+        adapter._localize_inbound_media = lambda e: _none_coro()
+        source = SessionSource(
+            platform=Platform.SLACK, chat_id="C1", chat_type="channel", message_id="1700.100"
+        )
+        event = MessageEvent(text="hi", source=source, message_id="1700.100")
+
+        with pytest.raises(RuntimeError):
+            loop.run_until_complete(adapter._on_inbound(event))
+        loop.run_until_complete(adapter._on_inbound(event))
+
+        assert attempts == [event, event]
+        assert handled == [event]
+
+
 class TestWireLevelReplayDedupe:
     """The full production inbound path: a connector wire frame decoded by
     _event_from_wire, then dispatched through RelayAdapter._on_inbound.

@@ -27,6 +27,8 @@ from concurrent.futures import TimeoutError as FutureTimeout
 from pathlib import Path
 from typing import Any
 
+from hermes_cli.gateway_client import DEFAULT_GATEWAY_WS_MAX_SIZE
+
 logger = logging.getLogger(__name__)
 
 #: Ledger states a forwarded prompt may wait behind: they end on their own.
@@ -76,10 +78,10 @@ def discover_owner(home: Path):
 
 
 @contextlib.asynccontextmanager
-async def connect_owner(home: Path, endpoint, *, scope=None, max_size: int = 2 ** 20):
+async def connect_owner(home: Path, endpoint, *, scope=None, max_size: int = DEFAULT_GATEWAY_WS_MAX_SIZE):
     """A ``GatewayClient`` on ``endpoint``, the ready gateway serving ``home``; ``scope``: the
     ticket's profile scope (``"host"``: the one native Desktop holds); ``max_size``: the largest
-    answer frame accepted (websockets' 1 MiB default)."""
+    answer frame accepted (the shared gateway budget, including full session resumes)."""
     from hermes_cli.gateway_client import GATEWAY_WS_PROTOCOL, GatewayClient, _session_ticket, gateway_ws_target
     from websockets.asyncio.client import connect
 

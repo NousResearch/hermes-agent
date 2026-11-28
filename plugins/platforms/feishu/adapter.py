@@ -205,6 +205,12 @@ _FEISHU_REACTION_FAILURE = "CrossMark"
 _FEISHU_PROCESSING_REACTION_CACHE_SIZE = 1024
 _FEISHU_MESSAGE_TEXT_CACHE_SIZE = 512       # LRU cap for reply-context message text lookups
 
+# Substituted for a quoted reply whose whole body is "@Bot": Feishu puts the quote in
+# ``parent_id`` and the mention as a bare ``@_user_1``, so the text is empty by construction.
+_QUOTED_BARE_MENTION_TEXT = (
+    "(quoted reply: the user only @-mentioned the bot — answer the message they quoted)"
+)
+
 # QR onboarding constants
 _ONBOARD_ACCOUNTS_URLS = {
     "feishu": "https://accounts.feishu.cn",
@@ -2496,10 +2502,18 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
             text = _strip_edge_self_mentions(text, mentions)
             if text.startswith("/"):
                 inbound_type = MessageType.COMMAND
-        # Post-strip guard so a pure "@Bot" message (stripped to "") is dropped.
+        # Post-strip guard so a pure "@Bot" message (stripped to "") is dropped — unless it is a
+        # quoted reply: Feishu sends the quote in ``parent_id`` and the mention as a bare
+        # ``@_user_1`` placeholder, so "quote a message + only @me" is a complete request whose
+        # text is guaranteed to be empty after stripping. Dropping it makes the bot look like it
+        # ignored the user. Substitute a directive so the turn answers the quoted message.
+        quoted_parent = getattr(message, "parent_id", None) or getattr(message, "root_id", None)
         if inbound_type == MessageType.TEXT and not text and not media_urls:
-            logger.debug("[Feishu] Ignoring empty text message id=%s", message_id)
-            return
+            if not quoted_parent or not any(ref.is_self for ref in mentions):
+                logger.debug("[Feishu] Ignoring empty text message id=%s", message_id)
+                return
+            text = _QUOTED_BARE_MENTION_TEXT
+            logger.info("[Feishu] Bare mention inside a quoted reply id=%s parent=%s", message_id, quoted_parent)
         if inbound_type != MessageType.COMMAND:
             hint = _build_mention_hint(mentions)
             if hint:

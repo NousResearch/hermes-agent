@@ -480,7 +480,7 @@ def _keccak256(data: bytes) -> bytes:
             B = [0] * 25
             for x in range(5):
                 for y in range(5):
-                    B[y*5 + ((2*x+3*y) % 5)] = rot64(state[x + 5*y], ROT[x][y])
+                    B[y + 5*((2*x+3*y) % 5)] = rot64(state[x + 5*y], ROT[x][y])
             # Chi
             state = [B[i] ^ ((~B[(i//5)*5 + (i%5+1)%5]) & B[(i//5)*5 + (i%5+2)%5]) for i in range(25)]
             # Iota

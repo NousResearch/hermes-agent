@@ -887,6 +887,22 @@ export const itApp = {
     noResults: 'Nessuna lingua trovata'
   },
   messaging: {
+    catalog: {
+      sectionTitle: 'Disponibili per l’installazione',
+      badges: { official: 'Ufficiale', verified: 'Verificato' },
+      notInstalled: 'Non installato',
+      intro: (name: string) =>
+        `${name} è un plugin del catalogo di Hermes. L’installazione lo attiva; poi puoi inserirne le credenziali qui.`,
+      disclosure: 'Informativa:',
+      install: 'Installa',
+      installing: 'Installazione…',
+      installed: (name: string) => `${name} installato`,
+      installedDetail: 'Inserisci le credenziali per collegarlo.',
+      installFailed: (name: string) => `Impossibile installare ${name}`,
+      lazyOff:
+        'Le installazioni automatiche dei plugin sono disattivate (security.allow_lazy_installs), quindi Hermes non lo installa da qui.',
+      runCommand: 'Installalo da un terminale:'
+    },
     search: 'Cerca messaggistica...',
     statusFilter: {
       all: 'Tutti',

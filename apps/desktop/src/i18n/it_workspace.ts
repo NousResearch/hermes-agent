@@ -971,6 +971,9 @@ export const itWorkspace = {
       messagingPlatforms: 'Piattaforme di messaggistica'
     },
     approvalMode: {
+      perProfile: 'Per profilo',
+      perProfileDescription:
+        'Le modalità di approvazione si impostano per profilo. Apri un bot o un profilo per cambiarne la modalità.',
       title: 'Modalità di approvazione',
       ariaLabel: mode => `Modalità di approvazione: ${mode}`,
       manual: 'Manuale',

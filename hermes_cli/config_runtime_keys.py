@@ -6,7 +6,8 @@ Four owners supply them:
 
 * Core selection keys (``browser.cloud_provider``, ``<category>.use_gateway``, ``stt.provider``):
   :func:`tools.tool_backend_helpers.selection_config_keys`, built from ``read_selection``'s tables.
-* Core-owned unseeded keys outside that table, each listed with its reader (:data:`CORE_RUNTIME_KEYS`).
+* Core-owned unseeded keys outside that table, each listed with its reader: exact leaves in
+  :data:`CORE_RUNTIME_KEYS`, open mappings in :data:`CORE_RUNTIME_SUBTREES`.
 * MoA preset fields under any preset name (:func:`hermes_cli.moa_config.is_preset_field_path`). Only a
   preset's own fields and its aggregator slot fields qualify, not arbitrary descendants of ``moa.presets``.
 * ACTIVE plugins: a ``config_keys`` list in ``plugin.yaml`` (or ``extensions.com.nousresearch.hermes``
@@ -27,15 +28,51 @@ from collections.abc import Iterable, Iterator
 
 logger = logging.getLogger(__name__)
 
-# Core-owned keys read at runtime but deliberately absent from DEFAULT_CONFIG -> their reader.
+# Core-owned keys read at runtime but deliberately absent from DEFAULT_CONFIG -> their reader. An entry
+# vouches for that exact path only, because its value is a scalar or list: a mapping typed below it
+# (``display.tool_progress.typo``) is never read. ``*`` is one user-chosen segment (a task, a provider).
 CORE_RUNTIME_KEYS: dict[str, str] = {
     "computer_use.backend": "plugins/computer_use/__init__.py configured_backend_name() (unset = cua)",
+    "agent.reasoning_effort": "hermes_constants.py / agent/auxiliary_task_config.py",
+    "auxiliary.*.fallback_chain": "agent/auxiliary_client.py (per-task fallback chain)",
+    "auxiliary.*.max_concurrency": "agent/auxiliary_client.py (per-task concurrency cap)",
+    "code_execution.timeout": "tools/code_execution_tool.py",
+    "code_execution.max_tool_calls": "tools/code_execution_tool.py",
+    "dashboard.ssh_isolated_idle_grace_s": "hermes_cli/web_server.py",
+    "delegation.worktree_isolation": "tools/delegate_tool_config.py",
+    "display.tool_progress": "gateway/display_config.py (per-platform tier default)",
+    "display.cleanup_progress": "gateway/run_turn.py",
+    "skills.creation_nudge_interval": "agent/agent_init.py",
+    "stt.prompt": "tools/transcription_cloud.py / transcription_command.py",
+    "terminal.docker_persist_across_processes": "tools/terminal_tool_backends.py",
+    "terminal.docker_orphan_reaper": "tools/terminal_tool_backends.py",
+    "terminal.lifetime_seconds": "tools/terminal_scope.py",
+    "tts.speed": "tools/tts_tool_openai.py and siblings (global fallback speed)",
+    "tts.*.speed": "tools/tts_tool_*.py (per-provider speed)",
+    "tts.openai.base_url": "tools/tts_tool_openai.py",
+    "worktree": "cli.py (hermes -w default)",
+    "worktree_sync": "hermes_cli/cli_commands_mixin.py",
+    "unauthorized_dm_decline_message": "gateway/config.py (top-level form)",
+}
+
+# Core-owned keys whose value is an open mapping: the path and everything below it is read.
+CORE_RUNTIME_SUBTREES: dict[str, str] = {
     "dashboard.kanban": "plugins/kanban/dashboard/plugin_api.py (bundled dashboard tab preferences)",
+    "agent.personalities": "hermes_cli/personality.py (user-named personalities)",
+    "skills.config": "agent/skill_utils.py (settings SKILL.md frontmatter declares)",
+    "tool_budget": "tools/budget_config.py (legacy spelling of the tool_output section)",
 }
 
 
-def _covered(key: str, paths: Iterable[str]) -> bool:
-    return any(key == path or key.startswith(path + ".") for path in paths)
+def _matches(key: str, path: str, *, subtree: bool) -> bool:
+    parts, pattern = key.split("."), path.split(".")
+    if len(parts) < len(pattern) or (not subtree and len(parts) != len(pattern)):
+        return False
+    return all(p == "*" or p == k for p, k in zip(pattern, parts))
+
+
+def _covered(key: str, paths: Iterable[str], *, subtree: bool = True) -> bool:
+    return any(_matches(key, path, subtree=subtree) for path in paths)
 
 
 def _in_default_config(path: str) -> bool:
@@ -114,6 +151,8 @@ def is_runtime_read_key(parts: list[str]) -> bool:
     if is_preset_field_path(parts):
         return True
     dotted = ".".join(parts)
-    if dotted in selection_config_keys() or _covered(dotted, CORE_RUNTIME_KEYS):
+    if dotted in selection_config_keys() or _covered(dotted, CORE_RUNTIME_KEYS, subtree=False):
+        return True
+    if _covered(dotted, CORE_RUNTIME_SUBTREES):
         return True
     return _covered(dotted, plugin_declared_config_keys())

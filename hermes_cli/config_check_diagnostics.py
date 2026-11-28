@@ -1,4 +1,4 @@
-"""Read-only diagnostics for saved toolsets, bundled platform selections and voice values."""
+"""Read-only diagnostics for saved toolsets, bundled platform selections, voice values and unknown keys."""
 
 from __future__ import annotations
 
@@ -36,4 +36,7 @@ def config_check_diagnostics(config: dict[str, Any], get_env_value: Callable[[st
                 f"platform plugin '{key}' is disabled while its required credentials are configured. "
                 f"Run `hermes plugins enable {key}` if you want it active."
             )
-    return diagnostics
+    from hermes_cli.doctor_config import unknown_config_key_lines
+
+    # Hand-edited typos (``compresion:``, ``agent.max_turnz``) load fine and silently do nothing.
+    return diagnostics + unknown_config_key_lines(config)

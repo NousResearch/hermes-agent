@@ -54,6 +54,54 @@ def collect_deprecated_env_vars(env_map: dict | None) -> list[tuple[str, str]]:
             if env_map.get(name) is not None and str(env_map[name]).strip() != ""]
 
 
+def collect_unknown_config_keys(raw_config: dict | None) -> list[tuple[str, str | None]]:
+    """``(dotted_path, did_you_mean)`` for on-disk config keys the runtime never reads.
+
+    Walks the raw (on-disk) tree and asks ``hermes config set``'s validator
+    (``_validate_config_key``) about every path, so doctor and ``config set`` share ONE
+    schema: the optional roots DEFAULT_CONFIG omits (``platform_toolsets``, ``timeouts``),
+    open mappings (``compression.model_thresholds.<model>``, ``providers.<name>``), platform
+    ``extra`` fields and ``platforms.<name>`` containers are all accepted, the same way the
+    write path accepts them. A raw DEFAULT_CONFIG walk flagged every one of those as a typo.
+    An unknown section is reported once and not descended into (``modle:`` is one finding,
+    not one per child). Underscore-prefixed keys are intentionally non-schema and skipped.
+    A dot inside a key (a model id such as ``gpt-4.1``) is escaped the way ``config set`` takes it.
+    Values are never echoed.
+    """
+    from hermes_cli.config import _validate_config_key
+
+    findings: list[tuple[str, str | None]] = []
+    if not isinstance(raw_config, dict):
+        return findings
+
+    def _walk(node: dict, prefix: str) -> None:
+        for key, value in node.items():
+            if not isinstance(key, str) or key.startswith("_"):
+                continue
+            segment = key.replace(".", "\\.")
+            path = f"{prefix}.{segment}" if prefix else segment
+            is_known, suggestion = _validate_config_key(path)
+            if not is_known:
+                findings.append((path, suggestion))
+                continue
+            if isinstance(value, dict):
+                _walk(value, path)
+
+    _walk(raw_config, "")
+    return findings
+
+
+def unknown_config_key_lines(raw_config: dict | None, limit: int = 15) -> list[str]:
+    """One warn line per unrecognized key (``hermes doctor`` and ``hermes config check`` both print these)."""
+    unknown = collect_unknown_config_keys(raw_config)
+    lines = [f"Unrecognized config key '{path}' "
+             + (f"(did you mean '{hint}'?)" if hint else "(Hermes never reads it: typo or obsolete key)")
+             for path, hint in unknown[:limit]]
+    if len(unknown) > limit:
+        lines.append(f"... and {len(unknown) - limit} more unrecognized keys")
+    return lines
+
+
 def collect_relay_plugin_cutover_findings(raw_config: dict | None, env_map: dict | None) -> list[tuple[str, str]]:
     """Return actionable findings for the removed Hermes Relay plugin."""
     from hermes_cli.relay_plugin_cutover import (LEGACY_RELAY_EXPORT_ENV_VARS, RELAY_PLUGINS_CONFIG_ENV,
@@ -80,19 +128,24 @@ def collect_relay_plugin_cutover_findings(raw_config: dict | None, env_map: dict
 
 def report_deprecated_config_and_env(raw_config: dict | None = None, env_map: dict | None = None) -> list[tuple[str, str]]:
     """Emit non-failing doctor warnings for deprecated config keys and env vars; returns the findings reported.
-    Does not mutate config/env and does not append to the blocking ``issues`` list."""
+    Does not mutate config/env and does not append to the blocking ``issues`` list.
+    Also warns on unknown config.yaml keys (possible typos or obsolete keys)."""
     deprecated = collect_deprecated_config_keys(raw_config) + collect_deprecated_env_vars(env_map)
     relay_cutover = collect_relay_plugin_cutover_findings(raw_config, env_map)
     findings = deprecated + relay_cutover
     if not findings:
         check_ok("No deprecated config keys or env vars")
-        return findings
     for legacy, replacement in deprecated:
         check_warn(f"Deprecated: {legacy}", f"(use {replacement} instead)")
         check_info(f"Replace {legacy} → {replacement} (warn-only; not auto-migrated here)")
     for legacy, replacement in relay_cutover:
         check_warn(f"Breaking Relay migration: {legacy}", f"({replacement})")
         check_info(f"Migrate {legacy}: {replacement}")
+    unknown_lines = unknown_config_key_lines(raw_config)
+    for line in unknown_lines:
+        check_warn(line)
+    if not unknown_lines:
+        check_ok("No unrecognized config keys")
     return findings
 
 

@@ -81,7 +81,7 @@ class HomeScopedRegistry(dict):
         if not self._sync_pending or getattr(_SYNCING, "active", False):
             return
         import providers
-        if getattr(providers, "_discovering", False):
+        if providers.discovery_in_progress():
             return
         _SYNCING.active = True  # the sync reads the registry
         try:

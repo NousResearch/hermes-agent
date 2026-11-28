@@ -16,6 +16,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from textwrap import dedent
 
 import pytest
 
@@ -108,6 +109,67 @@ def test_plugins_discovered_after_auth_import_resolve(tmp_path):
         "assert cfg.api_key_env_vars == ('ZZZ_LATE_PROBE_KEY',), cfg\n"
         "assert cfg.inference_base_url == 'https://zzz-late-probe.example/v1', cfg\n",
     )
+    assert probe.returncode == 0, probe.stdout + probe.stderr
+
+
+@pytest.mark.parametrize("reverse_homes", [False, True], ids=["a-enters-first", "b-enters-first"])
+@pytest.mark.parametrize("nested", [False, True], ids=["first-exits-first", "second-exits-first"])
+def test_overlapping_profile_scans_both_publish_to_the_picker(tmp_path, reverse_homes, nested):
+    names = ("parallel-probe-a", "parallel-probe-b")
+    if reverse_homes:
+        names = names[::-1]
+    for name in names:
+        _write_plugin(
+            tmp_path / name, name,
+            "from __main__ import wait_for_release\n"
+            f"wait_for_release({name!r})\n"
+            + _PLAIN_PROFILE.format(name=name, alias=f"{name}-alias", env="PARALLEL_PROBE_KEY"),
+        )
+
+    probe = _run_probe(tmp_path, dedent(f"""
+        from concurrent.futures import ThreadPoolExecutor
+        from pathlib import Path
+        from threading import Event
+
+        import providers
+        from hermes_cli.models_catalog_static import CANONICAL_PROVIDERS
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        root = Path({str(tmp_path)!r})
+        first, second = {names!r}
+        entered = {{name: Event() for name in (first, second)}}
+        release = {{name: Event() for name in (first, second)}}
+
+        def wait_for_release(name):
+            entered[name].set()
+            if not release[name].wait(10):
+                raise TimeoutError(name)
+
+        def discover(name):
+            token = set_hermes_home_override(root / name)
+            try:
+                return {{p.name for p in providers.list_providers()}}
+            finally:
+                reset_hermes_home_override(token)
+
+        discover("empty-home")
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = {{first: pool.submit(discover, first)}}
+            try:
+                assert entered[first].wait(10)
+                futures[second] = pool.submit(discover, second)
+                assert entered[second].wait(10)
+                for name in ((second, first) if {nested!r} else (first, second)):
+                    release[name].set()
+                    assert name in futures[name].result(timeout=10)
+            finally:
+                release[first].set()
+                release[second].set()
+
+        slugs = {{entry.slug for entry in CANONICAL_PROVIDERS}}
+        missing = {{first, second}} - slugs
+        assert not missing and not providers._discovering, (missing, providers._discovering)
+    """))
     assert probe.returncode == 0, probe.stdout + probe.stderr
 
 

@@ -118,6 +118,11 @@ _REGISTRATION_ONLY: ContextVar[frozenset[str] | None] = ContextVar("_provider_re
 _BUNDLED_PLUGINS_DIR = get_bundled_plugins_dir() / "model-providers"
 
 
+def discovery_in_progress() -> bool:
+    """Bundled discovery is shared; a home scan only defers its own context's mirror."""
+    return _discovering or _REGISTRATION_TARGET.get() is not None
+
+
 def _sync_auth_registry() -> None:
     """Mirror profiles into the ``hermes_cli`` snapshots (auth registry, picker catalog) that are loaded.
 
@@ -171,7 +176,7 @@ def register_provider(profile: ProviderProfile) -> None:
         for alias in profile.aliases:
             _ALIASES[alias] = profile.name
         _PROVIDER_LIST_CACHE = None
-    if _discovered and not _discovering:  # post-discovery registration: mirror it immediately
+    if _discovered and not discovery_in_progress():  # post-discovery registration: mirror it immediately
         _sync_auth_registry()
 
 
@@ -416,7 +421,7 @@ def bound_profile_resolver():
     periodic plugin-dir stamp check, skipped mid-scan so a plugin reading the mirror while it imports
     cannot re-enter its own scan.
     """
-    layer = _bound_home_layer()[0] if _discovering else _home_layer()
+    layer = _bound_home_layer()[0] if discovery_in_progress() else _home_layer()
 
     def resolve(name: str) -> tuple[ProviderProfile | None, ProviderProfile | None]:
         shared = _ALIASES.get(name, name)
@@ -490,7 +495,7 @@ def _refresh_home_layer(layer: _HomeLayer, home: Path | None, key: str, *, force
         # unpublished stamp rescanned forever; an unpublished check time
         # re-stats the plugin dirs inside the TTL.
         layer.stamp_checked_at = now
-        if _discovered and not _discovering:
+        if _discovered and not discovery_in_progress():
             _sync_auth_registry()
     layer.stamp_checked_at = now
     return True
@@ -593,9 +598,7 @@ def _scan_home_layer(layer: _HomeLayer, key: str) -> None:
     ``kind: model-provider`` (PluginManager owns every other kind there). Per-home module names
     let two profiles carry the same plugin without aliasing each other's registrations.
     """
-    global _discovering
-    token, prior_discovering = _REGISTRATION_TARGET.set(layer), _discovering
-    _discovering = True
+    token = _REGISTRATION_TARGET.set(layer)
     try:
         user_dir = _user_plugins_dir()
         if user_dir is not None:
@@ -611,7 +614,6 @@ def _scan_home_layer(layer: _HomeLayer, key: str) -> None:
                     _import_plugin_dir(child, "user", home_key=key)
     finally:
         _REGISTRATION_TARGET.reset(token)
-        _discovering = prior_discovering
 
 
 def _plugin_disabled(plugin_dir: Path) -> bool:

@@ -72,6 +72,46 @@ def test_observed_body_routes_to_its_recovery(provider, error, reason, retryable
     assert (result.reason, result.retryable, result.should_fallback) == (reason, retryable, fallback)
 
 
+STRATA_NO_ROOM_400 = {"error": {"type": "invalid_request_error", "message": (
+    "prompt (134598 tokens) leaves no room to answer in the context (131072); requests are never truncated")}}
+
+
+def test_strata_no_room_400_is_an_overflow_even_when_the_estimate_undercounts():
+    """The char/4 estimate can sit well under the server's count (113K estimated, 131K counted),
+    so the wording alone must route the 400 into compression."""
+    error = _status(openai.BadRequestError, 400, STRATA_NO_ROOM_400)
+    result = classify_api_error(error, provider="custom", model="test-model",
+                                approx_tokens=113292, context_length=131072, num_messages=208)
+    assert (result.reason, result.should_compress) == (FailoverReason.context_overflow, True)
+
+
+def test_a_400_for_a_request_over_the_window_is_an_overflow_whatever_its_wording():
+    """A descriptive 400 the patterns do not know is still an overflow once the request's own
+    estimate fills the window, so the loop compresses instead of failing every later turn."""
+    error = _status(openai.BadRequestError, 400, {"error": {
+        "type": "invalid_request_error", "message": "request rejected: prompt does not fit (134598 > 131072)"}})
+    result = classify_api_error(error, provider="custom", model="test-model",
+                                approx_tokens=134598, context_length=131072, num_messages=208)
+    assert (result.reason, result.should_compress) == (FailoverReason.context_overflow, True)
+
+
+STEPFUN_UNNAMED_400 = {"error": {"type": "invalid_request_error",
+                                 "message": "The input you provided is invalid [code=30003]"}}
+
+
+@pytest.mark.parametrize("approx_tokens,reason", [
+    (246000, FailoverReason.context_overflow),  # 94% of the window: input + output reservation overflowed
+    (2000, FailoverReason.format_error),  # small request: the same body means a malformed request
+])
+def test_stepfun_unnamed_400_is_overflow_only_on_a_large_request(approx_tokens, reason):
+    """StepFun names no reason when input + output reservation pass the window, and its body is
+    longer than a bare "Error", so only request size can tell an overflow from a bad request."""
+    error = _status(openai.BadRequestError, 400, STEPFUN_UNNAMED_400)
+    result = classify_api_error(error, provider="stepfun", model="step-3.5-flash",
+                                approx_tokens=approx_tokens, context_length=262144, num_messages=60)
+    assert result.reason == reason
+
+
 def test_affordable_402_classifies_as_billing_with_a_parseable_budget():
     """#49769 is recovered in the main loop, not by the classifier: the 402 stays ``billing`` and the
     recovery chain retries once with the cap lowered to the budget it names

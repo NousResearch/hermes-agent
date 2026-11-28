@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 
 import pytest
+from prompt_toolkit.application.current import create_app_session
 from prompt_toolkit.data_structures import Size
 from prompt_toolkit.formatted_text import ANSI, fragment_list_width, to_formatted_text
 from prompt_toolkit.output.vt100 import Vt100_Output
@@ -67,15 +68,19 @@ def test_iterm_rows_are_reserved_blank_and_the_image_draws_over_them(photo):
 
 @pytest.fixture
 def scrollback(monkeypatch):
-    """The CLI's real scrollback printer into a buffer, with output history on, on a TTY."""
+    """The CLI's real scrollback printer into a buffer, with output history on, on a TTY.
+
+    Prints go through the real ``prompt_toolkit.print_formatted_text`` (``cli._pt_print``) into the
+    app session's output: a stand-in that accepts any fragment list hid #157632.
+    """
     buf = io.StringIO()
     output = Vt100_Output(buf, lambda: Size(rows=40, columns=120), term="xterm-kitty")
-    monkeypatch.setattr(cli_mod, "_pt_print", lambda text: print_formatted_text(output, text, Style([])))
     monkeypatch.setattr("sys.__stdout__", type("Tty", (), {"isatty": staticmethod(lambda: True)})())
     for key in ("TMUX", "STY"):
         monkeypatch.delenv(key, raising=False)
     cli_mod._configure_output_history(True, 200)
-    yield buf
+    with create_app_session(output=output):
+        yield buf
     cli_mod._configure_output_history(True, 200)
 
 

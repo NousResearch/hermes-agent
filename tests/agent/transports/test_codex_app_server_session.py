@@ -30,9 +30,16 @@ class FakeClient:
     """Stand-in for CodexAppServerClient that records calls and lets the test
     drive the notification / server-request streams synchronously."""
 
-    def __init__(self, *, codex_bin: str = "codex", codex_home=None) -> None:
+    def __init__(
+        self,
+        *,
+        codex_bin: str = "codex",
+        codex_home=None,
+        config=None,
+    ) -> None:
         self.codex_bin = codex_bin
         self.codex_home = codex_home
+        self.config = config
         self.requests: list[tuple[str, dict]] = []
         self.notifications_responses: list[dict] = []
         self.responses: list[tuple[Any, dict]] = []
@@ -169,6 +176,28 @@ class TestTurnInputCoercion:
 # ---- lifecycle ----
 
 class TestLifecycle:
+    def test_ensure_started_passes_session_launch_config_to_client(self):
+        captured = {}
+        client = FakeClient()
+
+        def factory(**kwargs):
+            captured.update(kwargs)
+            return client
+
+        session = CodexAppServerSession(
+            cwd="/tmp",
+            config={"model_reasoning_effort": "high"},
+            client_factory=factory,  # type: ignore[arg-type]
+        )
+
+        session.ensure_started()
+
+        assert captured == {
+            "codex_bin": "codex",
+            "codex_home": None,
+            "config": {"model_reasoning_effort": "high"},
+        }
+
     def test_ensure_started_is_idempotent(self):
         client = FakeClient()
         s = make_session(client)

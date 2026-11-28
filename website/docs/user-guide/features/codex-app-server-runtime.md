@@ -229,7 +229,33 @@ You can also set it manually in `~/.hermes/config.yaml`:
 ```yaml
 model:
   openai_runtime: codex_app_server   # default is "auto" (= Hermes runtime)
+  codex_app_server:                  # all fields are optional
+    model_reasoning_effort: high     # minimal | low | medium | high | xhigh
+    sandbox_mode: workspace-write    # read-only | workspace-write | danger-full-access
+    ask_for_approval: on-request     # untrusted | on-request | never
+    network_access: true             # workspace-write only
+    writable_roots:                  # workspace-write only; absolute paths
+      - /absolute/path/to/artifacts
 ```
+
+The optional `model.codex_app_server` values are validated and passed as
+`-c key=value` arguments to the `codex app-server` process of that Hermes session
+only. Hermes does not write them to `~/.codex/config.toml`, so profiles stay
+independent. If the block is absent, no reasoning, sandbox, approval, network, or
+writable-root override is added. The Hermes field `ask_for_approval` maps to Codex's
+`approval_policy` key. `network_access` and `writable_roots` apply only with
+`workspace-write`, and every writable root must be absolute. The selected model is
+not part of this block; it is sent to the app server per thread/turn (see above).
+
+Kanban sessions keep a managed boundary regardless of these generic profile
+settings. It applies to the dispatcher-owned worker and to its descendants that
+still carry the worker's Kanban DB (delegate children, cron runs inside the
+worker, processes it spawns): `workspace-write` with network access disabled, and
+profile-level `sandbox_mode`, `network_access` and `writable_roots` are ignored.
+Only the owned worker gets a writable root, the Kanban root authorized by the
+dispatcher; its descendants get no additional writable root. A delegated process
+without a Kanban DB is not part of a Kanban lineage and uses the profile config
+like any normal session.
 
 If the Hermes process cannot resolve `codex` from `PATH` — typical for gateway services,
 cron and Kanban workers, or a desktop-bundled CLI — and the first turn fails with

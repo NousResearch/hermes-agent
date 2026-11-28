@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 import hermes_yaml as yaml
+from hermes_cli.plugin_catalog import known_issue_warnings
 
 #: A manifest is a few hundred bytes; never read a hostile multi-megabyte one into memory.
 _MANIFEST_MAX_BYTES = 256 * 1024
@@ -166,13 +167,18 @@ def _inspect(identifier: str, catalog_name: Optional[str]) -> dict[str, Any]:
         if entry is None:
             return _failure(f"'{catalog_name}' is not in the Hermes plugin catalog.", [], False)
         identifier, revision, names = entry.install_identifier, entry.sha or None, (entry.name,)
+        # The dialog reviewing a catalog pick is where a user decides; its known issues belong there.
+        known_issues = known_issue_warnings(entry)
+    else:
+        known_issues = []
     try:
         git_url, subdir = pc._resolve_git_url(identifier)
     except ValueError as exc:
-        return _failure(str(exc), [], False)
+        return _failure(str(exc), known_issues, False)
     insecure = git_url.startswith(("http://", "file://"))
-    warnings = ["This URL uses an insecure or local scheme. Prefer https:// or git@ for production installs."] \
-        if insecure else []
+    warnings = known_issues + (
+        ["This URL uses an insecure or local scheme. Prefer https:// or git@ for production installs."]
+        if insecure else [])
     try:
         from hermes_cli.plugins_cmd_catalog import raise_if_removed
         raise_if_removed(identifier, git_url, *names)

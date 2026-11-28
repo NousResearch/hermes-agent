@@ -635,6 +635,13 @@ def get_live_catalog_entry(name: str) -> Optional[PluginCatalogEntry]:
 
 # ── Human summaries ──────────────────────────────────────────────────────────
 
+def known_issue_warnings(entry: PluginCatalogEntry) -> list[str]:
+    """One ``Known issue: …`` line per catalog ``known_issues`` item, the form every pre-install surface
+    shows (``plugins info``, the install dialog's inspection, the install result). Informational (#124058):
+    the guard for a trap they describe belongs at the mode-selection seam (#122341 / #123771), never here."""
+    return [f"Known issue: {issue}" for issue in entry.known_issues]
+
+
 def entry_capability_summary(entry: PluginCatalogEntry) -> str:
     """One paragraph shown at install/enable prompts: what the user is granting."""
     caps = entry.capabilities

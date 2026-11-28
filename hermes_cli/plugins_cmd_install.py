@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from hermes_cli.cli_output import line_input
+from hermes_cli.plugin_catalog import known_issue_warnings
 from hermes_cli.plugin_install_phase import InstallPhase
 
 logger = logging.getLogger(__name__)
@@ -345,14 +346,6 @@ def _refuse_unavailable_portable_plugin(plugin_name: str, tree: Path, app_title:
                   if problem else f"its app is unavailable ({result.state}).")
         raise _pc().PluginOperationError(f"Can't install plugin '{plugin_name}': {reason}",
                                          failure_class="incompatible")
-
-
-def _known_issue_warnings(entry) -> list[str]:
-    """Catalog ``known_issues`` are informational (#124058): surface them as warnings, never a gate.
-
-    The guard for the traps they describe belongs at the mode-selection seam (#122341 / #123771).
-    """
-    return [f"Known issue: {issue}" for issue in entry.known_issues]
 
 
 def interactive_scan_decision(console, verb: str) -> Callable[[Any], bool]:
@@ -877,7 +870,7 @@ def _resolve_source(identifier: str, catalog_name: Optional[str]) -> tuple:
         entry = catalog.get_live_catalog_entry(catalog_name)
         if entry is None:
             return None, identifier, warnings, {"ok": False, "error": f"'{catalog_name}' is not in the Hermes plugin catalog."}
-        warnings.extend(_known_issue_warnings(entry))
+        warnings.extend(known_issue_warnings(entry))
         identifier = entry.install_identifier
     else:
         warnings.append("Custom (unreviewed) source — not from the Hermes catalog.")

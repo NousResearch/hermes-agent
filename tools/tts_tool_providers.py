@@ -9,6 +9,7 @@ are resolved through :func:`_origin` at call time.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import contextlib
 import json
@@ -26,6 +27,10 @@ from tools.xai_http import hermes_xai_user_agent
 logger = logging.getLogger("tools.tts_tool")
 
 DEFAULT_EDGE_VOICE = "en-US-AriaNeural"
+# Edge's websocket intermittently yields no audio for a request that is otherwise valid; a fresh
+# request usually succeeds, so one retry keeps a transient blip from losing the whole reply.
+_EDGE_TTS_ATTEMPTS = 3
+_EDGE_TTS_RETRY_DELAY_SECONDS = 1.0
 DEFAULT_ELEVENLABS_VOICE_ID = "pNInz6obpgDQGcFmaJgB"  # Adam
 DEFAULT_ELEVENLABS_MODEL_ID = "eleven_multilingual_v2"
 DEFAULT_ELEVENLABS_STREAMING_MODEL_ID = "eleven_flash_v2_5"
@@ -200,8 +205,22 @@ async def _generate_edge_tts(text: str, output_path: str, tts_config: dict[str, 
     kwargs = {"voice": edge_config.get("voice", DEFAULT_EDGE_VOICE)}
     if speed != 1.0:
         kwargs["rate"] = f"{round((speed - 1.0) * 100):+d}%"
-    await edge_tts.Communicate(text, **kwargs).save(output_path)
-    return output_path
+    no_audio_received = edge_tts.exceptions.NoAudioReceived
+    # Retry ONLY the empty-audio signal: a bad voice, an auth failure or a dead network must fail
+    # on the first attempt instead of costing three round-trips. Each attempt is a fresh request,
+    # because the dead websocket of the previous one cannot be resumed.
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            await edge_tts.Communicate(text, **kwargs).save(output_path)
+            return output_path
+        except no_audio_received:
+            if attempt >= _EDGE_TTS_ATTEMPTS:
+                raise
+            logger.warning(
+                "Edge TTS returned no audio (attempt %d/%d); retrying", attempt, _EDGE_TTS_ATTEMPTS)
+            await asyncio.sleep(_EDGE_TTS_RETRY_DELAY_SECONDS * attempt)
 
 
 # --- ElevenLabs ---

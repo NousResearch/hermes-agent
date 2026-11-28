@@ -158,6 +158,8 @@ def test_unconfigured_user_agent_falls_back_to_the_hermes_default(
 
     assert exchange.headers.get("User-Agent") == DEFAULT_AUTH_REQUEST_USER_AGENT
     assert refresh.headers.get("User-Agent") == DEFAULT_AUTH_REQUEST_USER_AGENT
+    # GitHub answers form-encoded unless asked for JSON; the SDK parses only JSON (#44592).
+    assert exchange.headers.get("Accept") == refresh.headers.get("Accept") == "application/json"
 
 
 def test_user_agent_does_not_disturb_token_auth_preparation(tmp_path, monkeypatch):

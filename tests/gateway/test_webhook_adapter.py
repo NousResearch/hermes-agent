@@ -1059,7 +1059,7 @@ class TestCrossPlatformDeliveryMirror:
         result = await adapter._deliver_cross_platform("telegram", "Henderson OUT Wednesday", delivery)
         assert result.success is True
         assert self._transcript(work_home, "dm-work") == [
-            ("user", "[Webhook delivery: ambush-nfl]\nHenderson OUT Wednesday")]
+            ("user", "[Webhook delivery: ambush-nfl]\nHenderson OUT Wednesday\n[Webhook delivery end: ambush-nfl]")]
         assert self._transcript(default_home, "dm-default") == []
 
     @pytest.mark.asyncio

@@ -80,6 +80,7 @@ platforms:
       group_policy: "open"       # open | allowlist | disabled
       group_allow_from:
         - "group_openid_1"
+      upload_part_timeout_seconds: 300 # Per COS part PUT; default 300 seconds
       stt:
         provider: "zai"          # zai (GLM-ASR), openai (Whisper), etc.
         baseUrl: "https://open.bigmodel.cn/api/coding/paas/v4"
@@ -87,6 +88,10 @@ platforms:
         model: "glm-asr"
         timeout: 60              # seconds per transcription request (default 60)
 ```
+
+`upload_part_timeout_seconds` must be a positive finite number. It applies to each individual COS part PUT,
+not the total time for a complete file. QQBot's `/upload_prepare`, `/upload_part_finish`, and final
+`/files` requests keep their separate upload timeout.
 
 ## Voice Messages (STT)
 

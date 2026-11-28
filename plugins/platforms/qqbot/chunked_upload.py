@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List
 
+from .config import DEFAULT_UPLOAD_PART_TIMEOUT_SECONDS, _validate_upload_part_timeout_seconds
 from .constants import FILE_UPLOAD_TIMEOUT
 
 logger = logging.getLogger(__name__)
@@ -24,7 +25,6 @@ _BIZ_CODE_DAILY_LIMIT = 40093002  # upload_prepare: daily cumulative limit
 _BIZ_CODE_PART_RETRYABLE = 40093001  # upload_part_finish: transient
 _DEFAULT_CONCURRENT_PARTS = 1
 _MAX_CONCURRENT_PARTS = 10
-_PART_UPLOAD_TIMEOUT = 300.0  # 5 minutes per COS PUT
 _PART_UPLOAD_MAX_RETRIES = 2
 _PART_FINISH_RETRY_INTERVAL = 1.0
 _PART_FINISH_DEFAULT_TIMEOUT = 120.0
@@ -124,13 +124,15 @@ class ChunkedUploader:
     """Run the prepare → PUT parts → complete sequence. ``api_request`` is the adapter's
     bound ``_api_request(method, path, body=..., timeout=...)`` (injected to avoid a
     circular import; must raise RuntimeError with the biz_code in the message);
-    ``http_put`` is ``(url, data, headers) -> httpx-like response`` for COS PUTs."""
+    ``http_put`` is ``(url, data, headers, timeout) -> httpx-like response`` for COS PUTs."""
 
     def __init__(self, api_request: Callable[..., Awaitable[dict[str, Any]]],
-                 http_put: Callable[..., Awaitable[Any]], log_tag: str = "QQBot") -> None:
+                 http_put: Callable[..., Awaitable[Any]], log_tag: str = "QQBot", *,
+                 part_upload_timeout_seconds: float = DEFAULT_UPLOAD_PART_TIMEOUT_SECONDS) -> None:
         self._api_request = api_request
         self._http_put = http_put
         self._log_tag = log_tag
+        self._part_upload_timeout_seconds = _validate_upload_part_timeout_seconds(part_upload_timeout_seconds)
 
     async def _post(self, job: _Job, endpoint: str, body: dict[str, Any]) -> dict[str, Any]:
         return await self._api_request("POST", job.path(endpoint), body=body, timeout=FILE_UPLOAD_TIMEOUT)
@@ -210,8 +212,15 @@ class ChunkedUploader:
         """PUT part data to a pre-signed COS URL with retry."""
 
         async def _attempt() -> None:
-            resp = await asyncio.wait_for(self._http_put(url, data=data, headers={"Content-Length": str(len(data))}),
-                                          timeout=_PART_UPLOAD_TIMEOUT)
+            resp = await asyncio.wait_for(
+                self._http_put(
+                    url,
+                    data=data,
+                    headers={"Content-Length": str(len(data))},
+                    timeout=self._part_upload_timeout_seconds,
+                ),
+                timeout=self._part_upload_timeout_seconds,
+            )
             status = getattr(resp, "status_code", 0)
             if 200 <= status < 300:
                 logger.debug("[%s] PUT part %d/%d: %d OK", self._log_tag, part_index, total_parts, status)

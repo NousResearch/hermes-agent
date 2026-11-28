@@ -1,9 +1,10 @@
 """QQ Bot platform adapter (Official QQ Bot API v2): WebSocket gateway for inbound
 events, REST (``api.sgroup.qq.com``) for outbound messages and media uploads.
 
-config.yaml ``platforms.qq.extra``: app_id / client_secret (or QQ_APP_ID /
+config.yaml ``platforms.qqbot.extra``: app_id / client_secret (or QQ_APP_ID /
 QQ_CLIENT_SECRET), markdown_support, dm_policy + allow_from, group_policy +
-group_allow_from (open | allowlist | disabled | pairing), and optional ``stt``
+group_allow_from (open | allowlist | disabled | pairing),
+``upload_part_timeout_seconds`` (default 300), and optional ``stt``
 {provider, baseUrl, apiKey, model} (or QQ_STT_* env vars). Voice transcription
 tries QQ's free ``asr_refer_text`` first, then the configured STT provider.
 """
@@ -67,6 +68,7 @@ from .constants import (
     QUICK_DISCONNECT_THRESHOLD, MAX_QUICK_DISCONNECT_COUNT, MAX_MESSAGE_LENGTH,
     DEDUP_WINDOW_SECONDS, DEDUP_MAX_SIZE, MSG_TYPE_TEXT, MSG_TYPE_MARKDOWN, MSG_TYPE_MEDIA,
     MSG_TYPE_INPUT_NOTIFY, MEDIA_TYPE_IMAGE, MEDIA_TYPE_VIDEO, MEDIA_TYPE_VOICE, MEDIA_TYPE_FILE)
+from .config import resolve_upload_part_timeout_seconds
 from .utils import coerce_list as _coerce_list, build_user_agent, describe_connect_proxy_error
 from .chunked_upload import (
     ChunkedUploader, UploadDailyLimitExceededError, UploadFileTooLargeError)
@@ -150,6 +152,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         super().__init__(config, Platform.QQBOT)
 
         extra = config.extra or {}
+        self._upload_part_timeout_seconds = resolve_upload_part_timeout_seconds(extra)
         self._app_id = str(extra.get("app_id") or _resolve_qq_secret("QQ_APP_ID", "")).strip()
         self._client_secret = str(extra.get("client_secret") or _resolve_qq_secret("QQ_CLIENT_SECRET", "")).strip()
         self._markdown_support = bool(extra.get("markdown_support", True))
@@ -1613,7 +1616,11 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                 raise ValueError(f"Invalid media source (looks like a placeholder): {media_source!r}")
             raise FileNotFoundError(f"Media file not found: {local_path}")
 
-        uploader = ChunkedUploader(api_request=self._api_request, http_put=client.put, log_tag=self._log_tag)
+        uploader = ChunkedUploader(
+            api_request=self._api_request,
+            http_put=client.put,
+            log_tag=self._log_tag,
+            part_upload_timeout_seconds=self._upload_part_timeout_seconds)
         return await uploader.upload(
             chat_type=chat_type, target_id=chat_id, file_path=str(local_path), file_type=file_type,
             file_name=file_name or local_path.name)

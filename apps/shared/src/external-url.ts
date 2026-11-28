@@ -9,6 +9,11 @@
 
 const WEB_PROTOCOLS = new Set(['http:', 'https:', 'mailto:'])
 
+// `tel:` opens the OS dialer, so only a plain number qualifies: an optional `+` and 7-15
+// digits. Anything else (parameters, letters, separators) could smuggle input to the
+// handler app and is refused like any unsupported scheme.
+const TELEPHONE_URL_RE = /^tel:\+?\d{7,15}$/iu
+
 export interface ExternalUrlTarget {
   kind: 'file' | 'web'
   /** `web`: the normalized URL. `file`: the trimmed input, left for the host's file opener to parse. */
@@ -33,6 +38,10 @@ export function externalUrlTarget(rawUrl: string): ExternalUrlTarget | null {
 
   if (parsed.protocol === 'file:') {
     return { kind: 'file', url: raw }
+  }
+
+  if (parsed.protocol === 'tel:') {
+    return TELEPHONE_URL_RE.test(parsed.toString()) ? { kind: 'web', url: parsed.toString() } : null
   }
 
   return WEB_PROTOCOLS.has(parsed.protocol) ? { kind: 'web', url: parsed.toString() } : null

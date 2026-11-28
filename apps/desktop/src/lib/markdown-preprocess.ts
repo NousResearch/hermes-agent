@@ -3,6 +3,7 @@ import { normalizeMathDelimiters } from '@assistant-ui/react-streamdown'
 import { isLikelyProseFence, sanitizeLanguageTag } from '@/lib/markdown-code'
 import { clampHtmlNestingDepth } from '@/lib/markdown-html-depth'
 import { mediaKind, mediaMarkdownHref } from '@/lib/media'
+import { linkifyPhoneCodeSpan, linkifyPhoneNumbersInMarkdown } from '@/lib/phone-links'
 import { previewMarkdownHref } from '@/lib/preview-targets'
 import { stripPreviewTargets } from '@/lib/preview-targets'
 import { linkifySessionRefs } from '@/lib/session-refs'
@@ -576,7 +577,7 @@ function collectSourceListIds(text: string): Set<string> {
 }
 
 function rewriteProseSegment(segment: string, sourceListIds: Set<string>): string {
-  return linkifySessionRefs(
+  const rewritten = linkifySessionRefs(
     escapeLoneTildes(
       autoLinkRawUrls(
         routeFileLinksToPreview(
@@ -597,6 +598,8 @@ function rewriteProseSegment(segment: string, sourceListIds: Set<string>): strin
       )
     )
   )
+
+  return linkifyPhoneNumbersInMarkdown(rewritten)
 }
 
 /**
@@ -641,16 +644,21 @@ function liftDirectives(text: string): { text: string; restore: (rewritten: stri
  * dollar can't be mistaken for math.
  */
 function normalizeVisibleProse(text: string, sourceListIds: Set<string>): string {
+  let offset = 0
+
   return text
     .split(INLINE_CODE_SPLIT_RE)
-    .map(part =>
-      part.startsWith('`')
-        ? part
+    .map(part => {
+      const start = offset
+      offset += part.length
+
+      return part.startsWith('`')
+        ? linkifyPhoneCodeSpan(text, start, part)
         : part
             .split(MATH_SPAN_SPLIT_RE)
             .map((segment, index) => (index % 2 === 1 ? segment : rewriteProseSegment(segment, sourceListIds)))
             .join('')
-    )
+    })
     .join('')
 }
 

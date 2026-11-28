@@ -139,6 +139,38 @@ def test_a_named_profile_slot_is_registered_but_never_autostarted(tmp_path: Path
     assert default.action == "started"
 
 
+@pytest.mark.parametrize("payload", [
+    pytest.param(b"null", id="null"),
+    pytest.param(b"[]", id="array"),
+    pytest.param(b'{"desired_state":[],"gateway_state":"running"}', id="invalid-intent"),
+    pytest.param(b'{"gateway_state":{}}', id="invalid-legacy-state"),
+    pytest.param(b"\xff", id="invalid-utf8"),
+])
+def test_malformed_profile_state_does_not_block_gateway_boot(tmp_path: Path, payload: bytes) -> None:
+    scandir = tmp_path / "run-service"
+    scandir.mkdir()
+    (tmp_path / "gateway_state.json").write_text(
+        '{"desired_state":"running","gateway_state":"stopped"}', encoding="utf-8",
+    )
+    broken = _make_profile(tmp_path, "broken", state=None)
+    (broken / "gateway_state.json").write_bytes(payload)
+    healthy = _make_profile(tmp_path, "healthy", state="running")
+    (healthy / "config.yaml").write_text("gateway:\n  standalone: true\n", encoding="utf-8")
+
+    actions = reconcile_profile_gateways(hermes_home=tmp_path, scandir=scandir)
+
+    assert {action.profile: (action.prior_state, action.action) for action in actions} == {
+        "default": ("running", "started"),
+        "broken": (None, "registered"),
+        "healthy": ("running", "started"),
+    }
+    for profile in ("default", "broken", "healthy"):
+        assert (scandir / f"gateway-{profile}" / "run").is_file()
+    assert (scandir / "gateway-broken" / "down").is_file()
+    assert not (scandir / "gateway-default" / "down").exists()
+    assert not (scandir / "gateway-healthy" / "down").exists()
+
+
 @pytest.mark.parametrize("config_value,env_value", [
     pytest.param("false", None, id="config-false"),
     pytest.param("true", "false", id="env-false-overrides-config"),

@@ -298,20 +298,23 @@ def _is_dashboard_container(argv: Sequence[str]) -> bool:
 
 
 def _read_desired_state(profile_dir: Path) -> str | None:
-    """Persisted ``desired_state`` (operator intent), else legacy ``gateway_state``; missing or
-    unparseable files count as "no state" so a corrupt file can't bork boot."""
+    """Read saved intent, falling back to legacy state when intent is absent or null."""
     state_file = profile_dir / "gateway_state.json"
     if not state_file.exists():
         return None
     try:
         data = json.loads(state_file.read_text(encoding="utf-8-sig"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         log.warning("could not read %s; treating as no prior state", state_file)
+        return None
+    if not isinstance(data, dict):
         return None
     desired_state = data.get("desired_state")
     if desired_state is not None:
-        return desired_state
+        return desired_state if isinstance(desired_state, str) else None
     gateway_state = data.get("gateway_state")
+    if not isinstance(gateway_state, str):
+        return None
     return "running" if gateway_state in _TRANSIENT_RUNNING_STATES else gateway_state
 
 

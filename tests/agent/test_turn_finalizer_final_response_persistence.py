@@ -36,6 +36,10 @@ class FakeAgent:
         self._persist_user_message_idx: int | None = None
         self._persist_user_message_override: Any = None
         self._persist_user_message_timestamp: float | None = None
+        self._turn_failed_file_mutations: dict[str, dict[str, Any]] = {}
+        self._verifier_enabled = False
+        self._verifier_footer = ""
+        self._db_flush_scan_prefix: list[str] | None = None
 
     def _handle_max_iterations(self, messages, api_call_count):
         raise AssertionError("not expected")
@@ -67,7 +71,13 @@ class FakeAgent:
             messages[idx]["content"] = override
 
     def _file_mutation_verifier_enabled(self):
-        return False
+        return self._verifier_enabled
+
+    def _file_mutations_still_failed(self, failed):
+        return failed
+
+    def _format_file_mutation_failure_footer(self, failed):
+        return self._verifier_footer
 
     def _turn_completion_explainer_enabled(self):
         return False
@@ -487,3 +497,101 @@ def test_hard_failure_exit_reasons_still_fail_the_turn(monkeypatch):
     result = _finalize(FakeAgent(), exit_reason="repeated_outer_errors(RuntimeError)", final_response="stopped")
     assert result["failed"] is True and result["completed"] is False
     assert result["failure_reason"] == "loop_error" and result["error"] == "stopped"
+
+
+# ---------------------------------------------------------------------------
+# File-mutation verifier footer: the row the session stores is the reply the
+# user reads (#158952)
+# ---------------------------------------------------------------------------
+
+FOOTER = "⚠️ File-mutation verifier: 1 file was NOT changed (/tmp/notes.md)"
+
+
+def _verifier_agent(*, enabled=True, footer=FOOTER):
+    """FakeAgent with a deterministic file-mutation verifier standing in for the real
+    ``AIAgent`` helpers (recording state lives in run_agent; the footer renderer is
+    covered by tests/agent/test_file_mutation_verifier.py)."""
+    agent = FakeAgent()
+    agent._turn_failed_file_mutations = {
+        "/tmp/notes.md": {"tool": "patch", "error_preview": "Could not find old_string"},
+    }
+    agent._verifier_enabled = enabled
+    agent._verifier_footer = footer
+    return agent
+
+
+def test_file_mutation_footer_is_persisted_with_the_reply(monkeypatch):
+    """The footer is part of the text the user reads, so the durable assistant row must
+    carry it too: appending it after ``_persist_session`` delivered it and stored it
+    nowhere, so a transcript reload dropped the very warning that turn produced.
+
+    Regression for #158952 (Desktop reload and cron output files disagreeing with the
+    live reply).
+    """
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = _verifier_agent()
+
+    result = _finalize(agent, exit_reason="text_response(final)", final_response="Done.")
+
+    assert FOOTER in result["final_response"], "footer missing from the delivered reply"
+    assert agent.persisted_messages is not None
+    stored_tail = agent.persisted_messages[-1]
+    assert stored_tail["role"] == "assistant"
+    assert FOOTER in stored_tail["content"], (
+        "the verifier footer was delivered but the persisted assistant row never got it"
+    )
+    assert stored_tail["content"].count(FOOTER) == 1, "footer appended twice"
+    # Delivered and stored text are the same bytes — the invariant this issue is about.
+    assert stored_tail["content"] == result["final_response"]
+
+
+def test_file_mutation_footer_absent_when_verifier_is_disabled(monkeypatch):
+    """Unchanged generic path: with the verifier off (``display.file_mutation_verifier:
+    false`` / env opt-out) the reply reaches the transcript exactly as before."""
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = _verifier_agent(enabled=False)
+
+    result = _finalize(agent, exit_reason="text_response(final)", final_response="Done.")
+
+    assert FOOTER not in result["final_response"]
+    assert agent.persisted_messages[-1]["content"] == "Done."
+
+
+def test_file_mutation_footer_is_persisted_when_the_tail_was_already_flushed(monkeypatch):
+    """A streamed assistant row can be flushed to the database mid-turn and carry
+    ``_db_persisted`` by the time the turn finalizes. The footer still belongs to that row:
+    the rewrite has to invalidate the marker, exactly as the blank-row fill does, or the
+    stored text keeps the pre-footer answer (#158952)."""
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = _verifier_agent()
+    agent._db_flush_scan_prefix = ["prior-snapshot"]
+    messages = [
+        {"role": "user", "content": "q"},
+        {"role": "assistant", "content": "Done.", "_db_persisted": True},
+    ]
+
+    result = finalize_turn(
+        agent,
+        final_response="Done.",
+        api_call_count=3,
+        interrupted=False,
+        failed=False,
+        messages=messages,
+        conversation_history=[],
+        effective_task_id="task",
+        turn_id="turn",
+        user_message="q",
+        original_user_message="q",
+        _should_review_memory=False,
+        _turn_exit_reason="text_response(final)",
+    )
+
+    assert FOOTER in result["final_response"]
+    stored_tail = (agent.persisted_messages or [])[-1]
+    assert FOOTER in stored_tail["content"], (
+        "an already-flushed assistant row kept the pre-footer text"
+    )
+    assert stored_tail.get("_db_persisted") is not True, (
+        "the rewritten row stayed marked as persisted, so the flush skipped it"
+    )
+

@@ -1502,8 +1502,12 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
     # (-q clears the presence flags, but its unattended context resolves first anyway.)
     approval_callback, is_cli, is_gateway, is_ask = _presence()
     # No user is present to approve arbitrary code in -q / cron / unattended
-    # sessions: the first active context resolves instantly from its mode.
-    for ctx in _unattended_contexts():
+    # sessions: the first active context resolves instantly from its mode. A
+    # /v1/runs turn registers an approval notifier, so its client can answer:
+    # it takes the human path below (approval.request -> POST .../approval).
+    runs_can_answer = (is_ask and _get_session_platform() == "api_server"
+                       and _gateway_notify_cb(get_current_session_key()) is not None)
+    for ctx in ([] if runs_can_answer else _unattended_contexts()):
         if ctx.mode() == "deny":
             return _denied(
                 "BLOCKED: execute_code runs arbitrary local Python (including "

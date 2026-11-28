@@ -97,12 +97,17 @@ def dock_argv(exe: str, user_data_dir: str, *, sandbox_bypass: Optional[bool] = 
                                               else sandbox_bypass) else ())]
 
 
-def dock_exec_line(exe: str, user_data_dir: str, *, sandbox_bypass: Optional[bool] = None) -> str:
+def dock_exec_line(exe: str, user_data_dir: str, *, sandbox_bypass: Optional[bool] = None,
+                   socket_tmpdir: Optional[str] = None) -> str:
     """The ``Exec=`` line of the dock's ``.desktop`` entry. Every argument is double-quoted per the
     Desktop Entry spec (a browser under ``/opt/Google Chrome/`` or a profile under a spaced HERMES_HOME
     otherwise splits into garbage): inside the quotes ``" ` $ \\`` are backslash-escaped, and because the
-    value is itself a string field, each of those backslashes is escaped once more."""
+    value is itself a string field, each of those backslashes is escaped once more. ``socket_tmpdir`` runs
+    Chromium under that TMPDIR instead of the desktop's, for its SingletonSocket (``socket_safe_tmpdir``)."""
     def quote(arg: str) -> str:
         quoted = "".join("\\" + ch if ch in '"`$\\' else ch for ch in arg)
         return '"' + quoted.replace("\\", "\\\\") + '"'
-    return "Exec=" + " ".join(quote(arg) for arg in dock_argv(exe, user_data_dir, sandbox_bypass=sandbox_bypass))
+    argv = dock_argv(exe, user_data_dir, sandbox_bypass=sandbox_bypass)
+    if socket_tmpdir:
+        argv = ["/usr/bin/env", f"TMPDIR={socket_tmpdir}", *argv]
+    return "Exec=" + " ".join(quote(arg) for arg in argv)

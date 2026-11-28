@@ -407,6 +407,45 @@ def test_allocation_lock_is_released_once_xvnc_claims_the_number(in_process_runt
     assert seen.get("free") is True, "allocation lock still held after Xvnc wrote its X lock"
 
 
+_RECORDING_LAUNCHER = """#!/usr/bin/env bash
+# Records the TMPDIR the panel hands its launchers and the dock Browser's Exec= line, then publishes.
+printf '%s\\n%s\\n' "$TMPDIR" "$HERMES_BD_BROWSER_EXEC_LINE" > "$HERMES_BD_XLOCK_DIR/dock"
+echo $$ > "$HERMES_BD_XLOCK_DIR/.X${HERMES_BD_DISPLAY_NUM}-lock"
+: > "$HERMES_BD_SOCKET"
+printf 'DISPLAY=:%s\\n' "$HERMES_BD_DISPLAY_NUM" > "$HERMES_BD_ENV_FILE"
+sleep 30
+"""
+
+
+@pytest.mark.platforms("linux")
+def test_the_dock_browser_runs_under_a_tmpdir_its_singleton_socket_fits(in_process_runtime, monkeypatch):
+    """Live under a named profile: Hermes boots with TMPDIR at the profile's scratch dir, the desktop inherits
+    it, and Chromium binds <TMPDIR>/org.chromium.Chromium.XXXXXX/SingletonSocket at start. Past AF_UNIX's
+    108 bytes it exits with "Socket path too long", so the dock's Browser icon opened nothing."""
+    import shlex
+    import tempfile
+
+    from hermes_constants import SCRATCH_DIR_MARKER_ENV, SCRATCH_TMP_ENV_VARS, get_scratch_dir
+    from tools.bot_desktop import browser
+
+    scratch = in_process_runtime
+    home = scratch / ("deep-" * 12) / "profiles" / "vik"
+    home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    deep_tmp = str(get_scratch_dir(home, prune=False))  # what export_scratch_tmp_env() sets at boot
+    for key in (*SCRATCH_TMP_ENV_VARS, SCRATCH_DIR_MARKER_ENV):
+        monkeypatch.setenv(key, deep_tmp)
+    monkeypatch.setattr(tempfile, "tempdir", None)
+    monkeypatch.setattr(browser, "dock_launch", lambda: ("/opt/chrome/chrome", "/p/dir"))
+    (scratch / "launcher.sh").write_text(_RECORDING_LAUNCHER, encoding="utf-8")
+    assert runtime.start(wait_seconds=10).running
+    desktop_tmp, exec_line = (scratch / "xlocks" / "dock").read_text(encoding="utf-8").splitlines()
+    argv = shlex.split(exec_line.removeprefix("Exec="))
+    env_args = argv[:argv.index("/opt/chrome/chrome")]
+    tmp = next((a.removeprefix("TMPDIR=") for a in env_args if a.startswith("TMPDIR=")), desktop_tmp)
+    assert len(f"{tmp}/org.chromium.Chromium.XXXXXX/SingletonSocket") < 108, tmp
+
+
 def _startable_host(monkeypatch, tmp_path, *, running=False):
     """A Linux host with the packages present, so only the check under test can block a start."""
     from tools.bot_desktop import resources

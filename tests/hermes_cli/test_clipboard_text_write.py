@@ -43,10 +43,25 @@ def test_linux_falls_through_backends_until_success():
     assert calls == ["xclip", "xsel"]
 
 
+@pytest.mark.platforms("windows")
+def test_windows_copy_past_the_command_line_limit_reaches_powershell():
+    """The base64 payload rode PowerShell's -Command argument, so copying more than ~24 KB of
+    UTF-8 overflowed Windows' 32,767-character command line (WinError 206) and /copy fell back to
+    OSC 52, which conhost and many other terminals ignore."""
+    text = "长文本 line 🎉\n" * 4000  # ~80 KB of UTF-8: past the limit even before base64
+    runs = []
 
+    def fake_run(argv, **kwargs):
+        if len(subprocess.list2cmdline(argv)) >= 32767:  # CreateProcess refuses the spawn
+            raise OSError(206, "The filename or extension is too long")
+        runs.append((argv, kwargs))
+        return _completed()
 
-
-
+    with patch.object(clip.subprocess, "run", side_effect=fake_run):
+        assert clip.write_clipboard_text(text) is True
+    [(argv, kwargs)] = runs
+    assert "powershell" in argv[0].lower()
+    assert base64.b64decode(kwargs["input"]).decode("utf-8") == text
 
 
 class TestOsc52MultiplexerWrapping:

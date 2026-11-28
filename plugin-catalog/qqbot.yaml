@@ -2,10 +2,10 @@ name: qqbot
 repo: https://github.com/NousResearch/hermes-official-plugins
 sha: 9153148272d6643fcc1aa664870f5ed0e46d4966
 subdir: qqbot
-description: "QQ Bot messaging platform on Tencent's official QQ Bot API v2, where messages and media travel between Tencent's QQ Bot servers (bots.qq.com, api.sgroup.qq.com and the bot WebSocket) and your Hermes gateway using your own QQ Bot App ID and App Secret: DMs, group and guild chats over QQ's bot WebSocket, native media, voice transcription, scan-to-configure setup and cron home-channel delivery. Installed by default on every home; it stays idle until you set a QQ App ID and secret. Formerly built into Hermes core; existing users are migrated automatically. Disclosure — the plugin downloads attachment URLs from received messages, uploads voice audio to your configured speech-to-text provider (Zhipu GLM-ASR by default) when QQ has no transcript, contacts q.qq.com only during scan-to-configure setup, and its requests carry a User-Agent with the adapter, Python, OS and Hermes versions."
+description: "QQ Bot messaging platform on Tencent's official QQ Bot API v2, where messages and media travel between Tencent's QQ Bot servers (bots.qq.com, api.sgroup.qq.com and the bot WebSocket) and your Hermes gateway using your own QQ Bot App ID and App Secret: DMs, group and guild chats over QQ's bot WebSocket, native media, voice transcription, scan-to-configure setup and cron home-channel delivery. It stays idle until you set a QQ App ID and secret. Formerly built into Hermes core; existing users are migrated automatically. Disclosure — the plugin downloads attachment URLs from received messages, uploads voice audio to your configured speech-to-text provider (Zhipu GLM-ASR by default) when QQ has no transcript, contacts q.qq.com only during scan-to-configure setup, and its requests carry a User-Agent with the adapter, Python, OS and Hermes versions."
 maintainer: NousResearch
 tier: official
-default: true
+default: false
 category: platform
 requires_hermes: ">=0.23.4"
 version: "2.0.0"

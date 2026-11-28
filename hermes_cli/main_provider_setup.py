@@ -6,8 +6,31 @@ Split out of ``hermes_cli/main.py``. Names that still live in main are imported 
 
 import contextlib
 
+from pathlib import Path
 from typing import Optional
 from hermes_cli.model_setup_flows_common import _ask, _ensure_dict_section, _print_numbered, _radiolist, _say
+
+
+def _dotenv_has_provider_key(env_file: Path, provider_env_vars: set) -> bool:
+    """True if ~/.hermes/.env assigns a non-empty value to any provider key.
+
+    Split out of ``hermes_cli/main.py`` (the size ratchet); the only caller is
+    ``_has_any_provider_configured`` there, which imports this module's names.
+    """
+    if not env_file.exists():
+        return False
+    try:
+        for line in env_file.read_text(encoding="utf-8-sig").splitlines():
+            line = line.strip()
+            if line.startswith("#") or "=" not in line:
+                continue
+            line = line.removeprefix("export ")
+            key, _, val = line.partition("=")
+            if key.strip() in provider_env_vars and val.strip().strip("'\""):
+                return True
+    except Exception:
+        pass
+    return False
 
 
 def _is_profile_api_key_provider(provider_id: str) -> bool:

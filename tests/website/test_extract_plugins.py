@@ -133,6 +133,20 @@ def test_unknown_tier_normalizes_to_community(mod, tmp_path):
     assert entries[0]["tier"] == "community"
 
 
+def test_title_is_emitted_and_falls_back_to_name(mod, tmp_path):
+    catalog = tmp_path / "plugin-catalog"
+    catalog.mkdir()
+    _write_entry(catalog, "nvidia-app", title="NVIDIA App")
+    _write_entry(catalog, "untitled")
+    _write_entry(catalog, "blank-title", title="   ")
+
+    entries = {e["name"]: e for e in mod.load_catalog_entries(catalog)}
+    assert entries["nvidia-app"]["title"] == "NVIDIA App"
+    assert entries["nvidia-app"]["installCommand"] == "hermes plugins install nvidia-app"
+    assert entries["untitled"]["title"] == "untitled"
+    assert entries["blank-title"]["title"] == "blank-title"
+
+
 def test_version_and_image_are_emitted_and_offhost_image_is_dropped_not_fatal(mod, tmp_path):
     catalog = tmp_path / "plugin-catalog"
     catalog.mkdir()

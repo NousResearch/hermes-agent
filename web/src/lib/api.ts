@@ -2019,10 +2019,8 @@ export interface TelegramOnboardingApplyResponse {
 export interface SessionMessage {
   role: "user" | "assistant" | "system" | "tool";
   content: string | null;
-  tool_calls?: Array<{
-    id: string;
-    function: { name: string; arguments: string };
-  }>;
+  display_kind?: string; // backend projection; "hidden" rows stay paged but must not render
+  tool_calls?: Array<{ id: string; function: { name: string; arguments: string } }>;
   tool_name?: string;
   tool_call_id?: string;
   timestamp?: number;

@@ -316,3 +316,31 @@ describe("SessionsPage header slots across navigation", () => {
     expect(header()).not.toContain("Prune old sessions");
   });
 });
+
+
+describe("session history hidden scaffolding", () => {
+  it("omits hidden compaction restatement rows from the expanded transcript", async () => {
+    apiMocks.getSessionMessages.mockResolvedValue({
+      session_id: "sid-compacted",
+      messages: [
+        { role: "user", content: "please rename the widget" },
+        { role: "user", content: "[STILL IN PROGRESS — internal restatement]", display_kind: "hidden" },
+        { role: "assistant", content: "done" },
+      ],
+    });
+    await renderSessionsPage([
+      { id: "sid-compacted", profile: "default", source: "cli", model: null, title: "Compacted",
+        started_at: 1, ended_at: null, last_active: 1, is_active: false, message_count: 3,
+        tool_call_count: 0, input_tokens: 1, output_tokens: 1, preview: "please rename the widget" },
+    ]);
+
+    await act(async () => click(button("Delete session")!.closest("div.cursor-pointer")));
+    await waitFor(() => Array.from(document.querySelectorAll('[data-testid="markdown"]'))
+      .some((node) => node.textContent === "done"));
+    const rendered = Array.from(document.querySelectorAll('[data-testid="markdown"]'))
+      .map((node) => node.textContent);
+    expect(rendered).toContain("please rename the widget");
+    expect(rendered).toContain("done");
+    expect(rendered).not.toContain("[STILL IN PROGRESS — internal restatement]");
+  });
+});

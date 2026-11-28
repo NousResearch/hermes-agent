@@ -48,7 +48,6 @@ logger = logging.getLogger(__name__)
 _YOLO_MODE_FROZEN: bool = is_truthy_value(os.getenv("HERMES_YOLO_MODE", ""))
 
 
-# --- Per-session approval state (thread-safe) -----------------------------------------------------------------------
 
 _lock = threading.RLock()  # re-entrant: a card settle checks and resolves under one hold
 _session_approved: dict[str | tuple[str, str], set] = {}

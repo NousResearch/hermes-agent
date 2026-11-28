@@ -1218,6 +1218,13 @@ def _write_config_key(key_path: str, value):
 
 def _write_config_keys(updates: dict) -> None:
     """Set related dotted keys in ONE write (remote: one backend write; file: one raw save): a refused key changes none."""
+    from hermes_cli.config import _is_sensitive_config_key
+    for key_path in updates:
+        if _is_sensitive_config_key(key_path):
+            raise ValueError(
+                f"Cannot mutate security-sensitive key '{key_path}' via _write_config_key(); "
+                "route through set_config_value() instead"
+            )
     from .methods_config_set import _refuse_managed_keys
     _refuse_managed_keys(*updates)  # an administrator-pinned key: refused whole, nothing written
     if not supports_file_tooling():

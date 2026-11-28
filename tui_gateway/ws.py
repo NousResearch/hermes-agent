@@ -656,6 +656,12 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
         _log.info("ws accepted peer=%s", peer)
         transport = WSTransport(ws, asyncio.get_running_loop(), peer=peer, auth_identity=auth_identity)
         authority_connection = _authority_connection(ws, transport, auth_identity, operator)
+        # Provenance for the TUI policy-write gate (#104697): a transport that just
+        # completed a real ws.accept() is this process's live RPC channel; registering
+        # it here (and discarding it in teardown below) keeps `_tui_policy_write`'s
+        # membership check satisfied for genuine renderer requests only.
+        from tui_gateway.transport import _POLICY_WRITE_TRANSPORTS
+        _POLICY_WRITE_TRANSPORTS.add(transport)
         # resolve_skin() is sync I/O + CPU; pooled so the read loop can drain the frontend's initial RPC burst.
         skin_payload = await asyncio.to_thread(server.resolve_skin)
         # change_events: this backend broadcasts pet/cron/sessions.changed, so clients can demote legacy
@@ -745,6 +751,8 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
         reaped_sessions = detached_sessions = 0
         if transport is not None:
             server.unregister_live_transport(transport)
+            from tui_gateway.transport import _POLICY_WRITE_TRANSPORTS
+            _POLICY_WRITE_TRANSPORTS.discard(transport)
             transport.close()
             try:
                 await asyncio.to_thread(server._release_wake_for_transport, transport)

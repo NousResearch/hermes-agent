@@ -1,0 +1,45 @@
+# Community catalog entry — hermifacts
+#
+# Owner-submitted: the PR author (`DECRUX9812`) owns and maintains the repo below.
+# Exact-SHA pin (40-hex) on main at tag v0.1.2. No self-updating code: the plugin
+# never fetches, downloads or replaces its own files. Its only network access is the
+# host's own model call that an approved app makes through the plugin's backend bridge.
+name: hermifacts
+repo: https://github.com/DECRUX9812/hermifacts
+sha: 2149ab882726547b7f269470537c7549a29353e6   # tag v0.1.2
+version: "0.1.2"
+title: Hermifacts
+description: >-
+  Turn an interactive HTML/JS/CSS artifact into an installable app: a standalone PWA
+  and a native OS launcher (.desktop / .app / .cmd) that opens it in a chromeless
+  window, running on the host's own Hermes model with no API keys anywhere. Apps call
+  window.hermesApp.llm, which the plugin's backend proxies to the configured provider,
+  so a shared app runs on the recipient's provider and no secret ever leaves a
+  machine. Tool allowlists exclude execution, file-write, process-control,
+  delegation, cron, messaging and computer-use tools because app bridge calls run
+  outside a chat approval turn. Declared inputs (select, range, number, checkbox,
+  text) broadcast live updates to window.hermesApp.onParamsChange so charts and
+  views redraw as the control moves. Any app exports as a zero-secret hf1. share link or a .hermifact.json bundle,
+  and imports always start in the sandbox tier. Three permission tiers — sandbox
+  (isolated iframe, never allow-same-origin, per-app KV storage), app (Hermes LLM
+  calls, OS notifications, explicitly allowlisted Hermes tools) and full (adds
+  read/write inside one folder the user names) — each cryptographically pinned to
+  SHA-256(html + inputs), so editing the code locks elevated access until re-approved.
+  Seven agent tools (hermifact_create, _list, _get, _install, _export, _import,
+  _delete) plus a /hermifacts command; desktop page, backend dashboard API, no hooks,
+  no middleware, no required env vars.
+maintainer: DECRUX9812
+tier: community
+category: desktop
+requires_hermes: ">=0.22"
+docs_url: https://github.com/DECRUX9812/hermifacts#readme
+image: "https://raw.githubusercontent.com/DECRUX9812/hermifacts/2149ab882726547b7f269470537c7549a29353e6/docs/banner.png"
+screenshots:
+  - "https://raw.githubusercontent.com/DECRUX9812/hermifacts/2149ab882726547b7f269470537c7549a29353e6/docs/screenshots/standalone-app.png"
+  - "https://raw.githubusercontent.com/DECRUX9812/hermifacts/2149ab882726547b7f269470537c7549a29353e6/docs/screenshots/install-modal.png"
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools: [hermifact_create, hermifact_list, hermifact_get, hermifact_install, hermifact_delete, hermifact_export, hermifact_import]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

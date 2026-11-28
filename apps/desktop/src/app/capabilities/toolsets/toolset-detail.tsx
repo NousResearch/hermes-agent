@@ -4,6 +4,8 @@ import { useNavigate } from 'react-router'
 import { Button } from '@/components/ui/button'
 import { type ProfileScope, profileScopeKey } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { overlayFrom } from '@/i18n/catalog-content'
+import { useContentDictionary } from '@/i18n/catalog-content/use-content-dictionary'
 import type { ToolsetInfo } from '@/types/hermes'
 
 import { ToolChip } from '../../master-detail'
@@ -16,6 +18,8 @@ import { TerminalBackendPanel } from '../../settings/terminal-backend-panel'
 import { ToolsetConfigPanel } from '../../settings/toolset-config-panel'
 import { DetailHeader } from '../primitives'
 
+import { toolTitle } from './localize-toolsets'
+
 export function ToolsetDetail({
   toolset,
   toolCalls,
@@ -27,7 +31,8 @@ export function ToolsetDetail({
   onConfiguredChange: () => void
   profile?: ProfileScope
 }) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
+  useContentDictionary(locale)
   const navigate = useNavigate()
   const tools = toolNames(toolset)
   const label = toolsetDisplayLabel(toolset)
@@ -44,7 +49,7 @@ export function ToolsetDetail({
         <div className="flex flex-wrap gap-1">
           {tools.map(name => (
             <ToolChip key={name}>
-              {name}
+              <span title={name}>{toolTitle(name, locale, overlayFrom(t)) ?? name}</span>
               {(toolCalls[name] ?? 0) > 0 && (
                 <span className="ml-1 text-(--ui-text-quaternary)">×{compactNumber(toolCalls[name])}</span>
               )}

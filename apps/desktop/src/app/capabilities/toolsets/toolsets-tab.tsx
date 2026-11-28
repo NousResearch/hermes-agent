@@ -4,6 +4,8 @@ import { useCallback, useMemo, useState } from 'react'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { type ProfileScope, setToolsetEnabled } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { overlayFrom } from '@/i18n/catalog-content'
+import { useContentDictionary } from '@/i18n/catalog-content/use-content-dictionary'
 import { isDesktopToolsetVisible } from '@/lib/desktop-toolsets'
 import { queryClient } from '@/lib/query-client'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
@@ -16,6 +18,7 @@ import { CapabilityEmpty } from '../primitives'
 import { CapabilitySearch } from '../ui/capability-search'
 import { CatalogSurface, type CatalogSurfaceItem, type CatalogSurfaceSection } from '../ui/catalog-surface'
 
+import { localizeToolsets } from './localize-toolsets'
 import { useToolCalls } from './tool-calls'
 import { ToolsetDetail } from './toolset-detail'
 import {
@@ -45,7 +48,8 @@ interface ToolsetsTabProps {
 /** THE Tools tab: toolsets as a catalog (feature row, themed lists, developer
  *  banner) with each toolset's settings in a dialog. */
 export function ToolsetsTab({ hints, onQueryChange, profile, query, toolsets }: ToolsetsTabProps) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
+  const dictionaryVersion = useContentDictionary(locale)
   const ts = t.catalog.toolsets
   const toolCalls = useToolCalls(profile)
   const [bulkBusy, setBulkBusy] = useState(false)
@@ -65,8 +69,8 @@ export function ToolsetsTab({ hints, onQueryChange, profile, query, toolsets }: 
 
   // Most-used first; absent counts sort A–Z until the analytics scan lands.
   const visibleToolsets = useMemo(
-    () => filteredToolsets(toolsets, query, toolCalls ?? {}, true),
-    [query, toolCalls, toolsets]
+    () => filteredToolsets(localizeToolsets(toolsets, locale, overlayFrom(t)), query, toolCalls ?? {}, true),
+    [query, toolCalls, toolsets, locale, t, dictionaryVersion]
   )
 
   // Bulk actions and the master-switch state target the WHOLE tab, never the

@@ -205,13 +205,29 @@ moa:
     completions._emit(
         "moa.reference", index=0, count=1, label="openai-codex/gpt-5.5", text="advice"
     )
+    completions._emit(
+        "moa.progress",
+        refs_done=0,
+        refs_total=1,
+        label="waiting on openai-codex/gpt-5.5 · 15s",
+        state="waiting",
+        elapsed_seconds=15,
+    )
     completions._emit("moa.aggregating", aggregator="openrouter", ref_count=1)
 
-    assert [e[0] for e in events] == ["moa.reference", "moa.aggregating"]
+    assert [e[0] for e in events] == ["moa.reference", "moa.progress", "moa.aggregating"]
     ref_event = events[0]
     assert ref_event[1][0] == "openai-codex/gpt-5.5"
     assert ref_event[1][1] == "advice"
     assert ref_event[2] == {"moa_index": 0, "moa_count": 1}
+    progress_event = events[1]
+    assert progress_event[1][0] == "waiting on openai-codex/gpt-5.5 · 15s"
+    assert progress_event[2] == {
+        "moa_refs_done": 0,
+        "moa_refs_total": 1,
+        "moa_progress_state": "waiting",
+        "moa_elapsed_seconds": 15,
+    }
 
 
 def test_moa_generic_client_rebuild_preserves_virtual_facade(monkeypatch, tmp_path):

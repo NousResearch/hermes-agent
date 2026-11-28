@@ -138,10 +138,15 @@ def test_progress_projects_reasoning_available_and_moa(monkeypatch, classic):
     turn.progress_callback('reasoning.available', '_thinking', 'because', None)
     turn.progress_callback('moa.reference', 'gpt-x', 'ref answer', None, moa_index=1, moa_count=2)
     turn.progress_callback('moa.progress', 'gpt-x', None, None, moa_refs_done=1, moa_refs_total=2)
+    turn.progress_callback('moa.progress', 'waiting on gpt-y · 15s', None, None,
+                           moa_refs_done=1, moa_refs_total=2,
+                           moa_progress_state='waiting', moa_elapsed_seconds=15)
     turn.progress_callback('moa.phase', 'agg', None, None, moa_phase='aggregator', moa_refs_done=2, moa_refs_total=2)
     turn.progress_callback('moa.aggregating', 'agg', None, None, moa_ref_count=2)
     moa = [('moa.reference', {'label': 'gpt-x', 'text': 'ref answer', 'index': 1, 'count': 2}),
            ('moa.progress', {'label': 'gpt-x', 'refs_done': 1, 'refs_total': 2}),
+           ('moa.progress', {'label': 'waiting on gpt-y · 15s', 'refs_done': 1, 'refs_total': 2,
+                             'state': 'waiting', 'elapsed_seconds': 15}),
            ('moa.phase', {'aggregator': 'agg', 'phase': 'aggregator', 'refs_done': 2, 'refs_total': 2}),
            ('moa.aggregating', {'aggregator': 'agg'})]
     # main's CLI renders MoA references whatever its reasoning display; reasoning.available only when shown.
@@ -191,10 +196,10 @@ def test_a_local_write_ships_its_inline_diff_snapshotted_before_the_tool_ran(tmp
     published = []
     turn = _turn(Platform.LOCAL, published)
     target = tmp_path / 'notes.txt'
-    target.write_text('alpha\nbeta\n')
+    target.write_text('alpha\nbeta\n', encoding='utf-8')
     args = {'path': str(target), 'content': 'alpha\ngamma\n'}
     turn.combined_tool_start_callback('w1', 'write_file', args)
-    target.write_text(args['content'])  # the tool writes after the start callback
+    target.write_text(args['content'], encoding='utf-8')  # the tool writes after the start callback
     turn.combined_tool_complete_callback('w1', 'write_file', args, '{"bytes_written": 12}')
     complete = next(payload for kind, payload in published if kind == 'tool.complete')
     diff = complete['inline_diff']

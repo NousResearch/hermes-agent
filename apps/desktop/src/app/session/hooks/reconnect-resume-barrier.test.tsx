@@ -143,6 +143,7 @@ function completeOnNewSocket(activeSessionIdRef: { current: null | string }): vo
       activeSessionIdRef,
       appendAssistantDelta: vi.fn(),
       appendReasoningDelta: vi.fn(),
+      updateMoaProgress: vi.fn(),
       compactedTurnRef: { current: new Set() },
       completeAssistantMessage: vi.fn(),
       failAssistantMessage: vi.fn(),

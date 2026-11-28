@@ -515,6 +515,8 @@ def _get_home_target_chat_id(platform_name: str) -> str:
     if value:
         return value
     home = _get_config_home_channel(platform_name)
+    if home is None and _unloaded.moved_platform_hint(platform_name):
+        return str(_unloaded._saved_home_channel(platform_name).get("chat_id") or "")
     return str(home.chat_id) if home is not None and home.chat_id else ""
 
 
@@ -540,6 +542,8 @@ def _get_home_target_thread_id(platform_name: str) -> Optional[str]:
     # keeps its env-provided thread semantics).
     if not _env_home_target_chat_id(platform_name):
         home = _get_config_home_channel(platform_name)
+        if home is None and _unloaded.moved_platform_hint(platform_name):
+            return str(_unloaded._saved_home_channel(platform_name).get("thread_id") or "") or None
         if home is not None and home.thread_id:
             return str(home.thread_id)
     return None

@@ -306,7 +306,7 @@ class TestIdleSinceLastTurn:
 class TestStatusBarFieldConfig:
     """Tests for display.status_bar.fields config customization (#41909)."""
 
-    def _cli_with_fields(self, fields, width=120):
+    def _cli_with_fields(self, fields, width=120, session_id=None):
         cli_obj = _attach_agent(
             _make_cli(),
             prompt_tokens=10_230,
@@ -317,6 +317,8 @@ class TestStatusBarFieldConfig:
             context_length=200_000,
             compressions=7,
         )
+        if session_id is not None:
+            cli_obj.session_id = session_id
         with patch.object(cli_mod, "CLI_CONFIG", {"display": {"status_bar": {"fields": fields}}}):
             text = cli_obj._build_status_bar_text(width=width)
         return text
@@ -330,14 +332,29 @@ class TestStatusBarFieldConfig:
         assert "🗜️" not in text
         assert "%" not in text
 
-
-
-
     def test_total_tokens_when_explicitly_requested(self):
         text = self._cli_with_fields(["model", "total_tokens"])
         assert "Σ12.4K" in text
         assert "claude-sonnet-4-20250514" in text
 
+    def test_session_id_when_explicitly_requested(self):
+        text = self._cli_with_fields(
+            ["model", "session_id"], session_id="20261005_111549_970fc8"
+        )
+        # Rendered whole: the trailing hex is what distinguishes two sessions
+        # minted in the same second, so a prefix would be ambiguous.
+        assert "#20261005_111549_970fc8" in text
+        assert "claude-sonnet-4-20250514" in text
+
+    def test_session_id_opt_in_never_shown_by_default(self):
+        """Not in the default set: a fields list omitting it hides the id."""
+        text = self._cli_with_fields(["model"], session_id="20261005_111549_970fc8")
+        assert "20261005_111549_970fc8" not in text
+
+    def test_session_id_hidden_when_fields_filter_is_null(self):
+        """null fields = the default set, which never includes the opt-in id."""
+        text = self._cli_with_fields(None, session_id="20261005_111549_970fc8")
+        assert "20261005_111549_970fc8" not in text
 
 
     def test_field_config_never_empties_the_bar(self):

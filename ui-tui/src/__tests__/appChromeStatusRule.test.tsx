@@ -1,10 +1,27 @@
 import React from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
-import { StatusRule } from '../components/appChrome.js'
+import { renderToScreen } from '../../packages/hermes-ink/src/ink/render-to-screen.js'
+import { cellAtIndex } from '../../packages/hermes-ink/src/ink/screen.js'
+import { sessionIdVisible, StatusRule } from '../components/appChrome.js'
 import { DEFAULT_THEME } from '../theme.js'
 
 type ReactNodeLike = React.ReactNode
+
+// Resolve childless leaf components by name so prop-passed text is visible to the
+// walk; calling arbitrary components would throw for the hook-using siblings.
+const SESSION_ID_SEGMENT = 'SessionIdSegment'
+
+const resolveLeaf = (node: React.ReactElement): ReactNodeLike => {
+  const { children, ...props } = node.props as { children?: ReactNodeLike }
+  const name = typeof node.type === 'function' ? (node.type as { name?: string }).name : ''
+
+  if (children !== undefined || name !== SESSION_ID_SEGMENT) {
+    return null
+  }
+
+  return (node.type as (p: Record<string, unknown>) => ReactNodeLike)(props)
+}
 
 const textContent = (node: ReactNodeLike): string => {
   if (node === null || node === undefined || typeof node === 'boolean') {
@@ -20,7 +37,7 @@ const textContent = (node: ReactNodeLike): string => {
   }
 
   if (React.isValidElement(node)) {
-    return textContent(node.props.children)
+    return textContent(resolveLeaf(node)) + textContent(node.props.children)
   }
 
   return ''
@@ -102,6 +119,64 @@ const baseProps = {
   turnStartedAt: null,
   usage: { context_max: 200_000, context_percent: 25, context_used: 50_000, total: 50_000 },
   voiceLabel: ''
+}
+
+// A durable session id in the real `<date>_<time>_<hex>` shape. The trailing hex is
+// what tells two sessions minted in the same second apart, so a truncated prefix is
+// indistinguishable from a genuine id.
+const SESSION_ID_FIXTURE = { sid: '20261005_111549_970fc8' }
+
+// Every visible tail segment turned on at once: the crowded case where the id has to
+// win or lose its whole width, never share it.
+const CROWDED_TAIL_PROPS = {
+  bgCount: 3,
+  cols: 140,
+  cwdLabel: '~/repos-remote/hermes-agent-configd',
+  sessionStartedAt: Date.UTC(2026, 9, 5, 10, 15, 49),
+  statusBarFields: new Set([
+    'model',
+    'context_pct',
+    'session_id',
+    'duration',
+    'compressions',
+    'cache_hit',
+    'latency',
+    'tps',
+    'bg_tasks',
+    'voice'
+  ]),
+  storedSid: SESSION_ID_FIXTURE.sid,
+  usage: {
+    active_subagents: 2,
+    avg_latency_s: 2.4,
+    avg_tps: 88,
+    cache_hit_pct: 91,
+    compressions: 3,
+    context_max: 200_000,
+    context_percent: 62,
+    context_used: 124_000,
+    total: 124_000
+  },
+  voiceLabel: '🎙 streaming'
+}
+
+// Render the rule through real Ink layout and return its painted row as a string.
+// `StatusRule()` called as a plain function returns an unlaid-out element tree, so it
+// can never show the overflow/clip behaviour the session-id budget exists to control —
+// only Yoga + the screen painter can.
+const renderStatusRowLine = ({ cols, ...props }: { cols: number } & Record<string, unknown>): string => {
+  const { height, screen } = renderToScreen(
+    <StatusRule {...(baseProps as never)} {...(props as never)} cols={cols} />,
+    cols
+  )
+
+  const rows: string[] = []
+
+  for (let y = 0; y < height; y++) {
+    rows.push(Array.from({ length: cols }, (_, x) => cellAtIndex(screen, x, y).char).join(''))
+  }
+
+  return rows.join('\n')
 }
 
 describe('StatusRule model label', () => {
@@ -478,5 +553,82 @@ describe('StatusRule perf read-outs (cache hit / latency / tps)', () => {
     })
 
     expect(textContent(element)).not.toContain('weekly-digest')
+  })
+})
+
+describe('sessionIdVisible (status-bar session id segment)', () => {
+  const durableSid = '20260225_143052_a1b2c3'
+  const enabled = new Set(['model', 'context_pct', 'session_id'])
+  const withoutSession = new Set(['model', 'context_pct'])
+
+  it('is visible on a wide terminal when opted in and a session id exists', () => {
+    expect(sessionIdVisible(enabled, durableSid, 160)).toBe(true)
+  })
+
+  it('is hidden by default (not in the default field set)', () => {
+    expect(sessionIdVisible(null, durableSid, 160)).toBe(false)
+  })
+
+  it('is hidden when the fields filter omits session_id', () => {
+    expect(sessionIdVisible(withoutSession, durableSid, 160)).toBe(false)
+  })
+
+  it('is hidden when no durable session id is present', () => {
+    expect(sessionIdVisible(enabled, null, 160)).toBe(false)
+  })
+
+  it('is hidden on a narrow terminal below the sessionId breakpoint', () => {
+    expect(sessionIdVisible(enabled, durableSid, 110)).toBe(false)
+  })
+})
+
+describe('StatusRule session id segment (tail budget)', () => {
+  const durableSid = SESSION_ID_FIXTURE.sid
+  const enabled = new Set(['model', 'context_pct', 'session_id'])
+  // A terminal far past the 116-col breakpoint, so only the BUDGET decides.
+  const wide = 200
+
+  it('renders the full id, untruncated, when the tail budget allows it', () => {
+    const text = textContent(StatusRule({ ...baseProps, cols: wide, statusBarFields: enabled, storedSid: durableSid }))
+
+    // The trailing hex suffix is the discriminator between two same-second sessions.
+    expect(text).toContain(durableSid)
+  })
+
+  it('drops the segment whole instead of cutting the id when the bar is crowded', () => {
+    // A crowded tail leaves the id no budget; absent is honest, a truncated prefix is not.
+    const text = textContent(StatusRule({ ...baseProps, cols: 140, ...CROWDED_TAIL_PROPS }))
+
+    expect(text).not.toContain(durableSid)
+    expect(text).not.toContain('20261005_1115')
+  })
+
+  it('never renders a partial id on any width from 100 to 240', () => {
+    // Real Ink layout, not a plain-function call: the bug this pins was the row's
+    // overflow path (`overflow="hidden"` + `truncate-end`), which only exists once
+    // Yoga sizes and clips the line. Calling StatusRule() as a function never
+    // truncates, so a `textContent` walk over its return value cannot see it.
+    for (const cols of [100, 110, 116, 117, 120, 130, 140, 150, 160, 200, 240]) {
+      const line = renderStatusRowLine({ ...CROWDED_TAIL_PROPS, cols })
+
+      // Whole or nothing: any id-shaped content must be the COMPLETE id.
+      const shape = /20261005_111549_[0-9a-f]*/.exec(line)?.[0]
+
+      if (shape !== undefined) {
+        expect(shape, `cols=${cols}: a partial id is indistinguishable from a real one`).toBe(durableSid)
+      }
+
+      // The row never overflows its width, and never spills a mid-id cut.
+      expect(line.length, `cols=${cols}: row must fit the terminal`).toBeLessThanOrEqual(cols)
+    }
+  })
+
+  it('keeps the id whole at the width where the un-budgeted segment used to be cut', () => {
+    // Regression witness: before the budget, 140 and 200 cols rendered
+    // `20261005_111549_` / `20261005_111549_970f` — a truncated prefix that
+    // reads as a genuine id and collides across same-second sessions.
+    const line = renderStatusRowLine({ ...CROWDED_TAIL_PROPS, cols: 200 })
+
+    expect(line).toContain(durableSid)
   })
 })

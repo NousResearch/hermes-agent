@@ -153,7 +153,7 @@ def _persist_plugin_selection(plugin_keys, chosen, disabled, initial, *, expecte
 
 def _run_composite_ui(curses, plugin_keys, plugin_labels, plugin_selected, disabled, categories, console, *, expected_config=None):
     """Custom curses screen with checkboxes + category action rows."""
-    from hermes_cli.curses_ui import _addnstr, flush_stdin
+    from hermes_cli.curses_ui import _addnstr, flush_stdin, read_key
     chosen = set(plugin_selected)
     n_plugins, n_categories = len(plugin_keys), len(categories)
     total_items = n_plugins + n_categories  # navigable rows (headers/separator are skipped)
@@ -241,7 +241,7 @@ def _run_composite_ui(curses, plugin_keys, plugin_labels, plugin_selected, disab
                 if text:
                     _addnstr(stdscr, y, 0, text, max_x - 1, attr)
             stdscr.refresh()
-            key = stdscr.getch()
+            key = read_key(stdscr)
 
             if key in nav:
                 if total_items > 0:  # (with no rows, every motion leaves cursor at 0)

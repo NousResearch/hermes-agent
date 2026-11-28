@@ -776,6 +776,9 @@ class _ProbeFailure(str):
         reason.sqlite_errorcode = getattr(exc, "sqlite_errorcode", 0)
         return reason
 
+    def __getnewargs_ex__(self):  # copy/pickle rebuild via __new__; only the code survives the exception
+        return (str(self), sqlite3.Error()), {}
+
 
 def _is_temporary_file_failure(failure) -> bool:
     return (getattr(failure, "sqlite_errorcode", 0) & 0xFF) in _TEMPORARY_FILE_FAILURE_CODES or is_disk_full_error(failure)

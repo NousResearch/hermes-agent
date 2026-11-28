@@ -37,6 +37,15 @@ export interface TimelinePartMetadata {
 
 export type ChatMessagePart = Exclude<ThreadMessageLike['content'], string>[number] & TimelinePartMetadata
 
+/** A card a plugin posted into the conversation (display kind `plugin_card`).
+ *  `directive` names a transcript directive the plugin's Desktop half claims;
+ *  its attrs are untrusted strings. Without a claim the row is its text. */
+export interface PluginCard {
+  pluginId: string
+  cardId: string
+  directive?: { name: string; attrs: Record<string, string> }
+}
+
 export type ChatMessage = {
   id: string
   role: SessionMessage['role']
@@ -44,6 +53,8 @@ export type ChatMessage = {
   /** Result body only; the system text remains the compact completion label. */
   asyncResult?: string
   asyncResultKind?: 'process'
+  /** A plugin's card (`ctx.post_card`): the directive its Desktop half renders. */
+  pluginCard?: PluginCard
   timestamp?: number
   completedAt?: number
   pending?: boolean
@@ -60,6 +71,9 @@ export type ChatMessage = {
   interim?: boolean
   /** The user stopped this reply before it finished; its text is partial. */
   interrupted?: boolean
+  /** A stopped reply that the next turn went on with (a hidden prompt, no visible row between): it
+   *  did not end there, so its stopped mark is not drawn (use-message-stream/interrupted-reply.ts). */
+  continued?: boolean
   /** A projected queued prompt (`user-queued-…`) whose own turn has started:
    *  `message.start` arrived after it was drawn. It is now that turn's user
    *  row, not a prompt still waiting for a later turn. */
@@ -78,6 +92,8 @@ export type ChatMessage = {
   attachmentRefs?: string[]
   /** Durable backend `messages.id`. Absent until the row is persisted. */
   rowId?: number
+  /** The send a stored prompt row holds (`display_metadata.submission_id`); its live copy's id is `user-<it>`. */
+  submissionId?: string
   /** Backend transcript rows this message represents — the hydration fold
    *  merges a turn's tool rows into the assistant message they belong to, so a
    *  message is not one backend row. The older-page offset (transcript-tail) is
@@ -144,6 +160,9 @@ export type GatewayEventPayload = {
   turn_id?: string
   segment?: number
   offset?: number
+  /** message.start of an automation admission: its async-result card's kind
+   *  (gateway/session_automation.admission_display), a visible row in history. */
+  display_kind?: string
   cwd?: string
   branch?: string
   terminal_backend?: string
@@ -253,6 +272,8 @@ export type GatewayEventPayload = {
   response_transformed?: MessageCompletePayload['response_transformed']
   // message.complete — `text` is a response this turn already delivered: it adds no text.
   response_reused?: MessageCompletePayload['response_reused']
+  // message.complete — an interrupted turn its interrupter continues by itself (store/paused-replies.ts).
+  paused?: MessageCompletePayload['paused']
   persisted_turn?: PersistedTurn | null
   // message.complete — history-commit note the gateway surfaced instead of dropping.
   warning?: string

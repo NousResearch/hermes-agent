@@ -116,7 +116,7 @@ def test_one_unanswerable_receipt_does_not_stop_the_others(tmp_path, caplog):
 
 def test_the_runtime_api_starts_after_a_deleted_bot_chat_expired(tmp_path, monkeypatch):
     import gateway.run_api
-    from gateway.run_runtime import start_gateway_runtime_api
+    from gateway.run_runtime_listener import start_gateway_runtime_api
     db = _receipt_then_deleted(tmp_path, status="queued", days_ago=8)
     try:
         async def fake_api(runner):

@@ -443,7 +443,7 @@ gateway:
     cache_unknown_runtime: "Кеш промпту: невідомо (це середовище виконання задає власні параметри кешу, яких Hermes не бачить)."
     cache_unknown_storage: "Кеш промпту: невідомо (не вдалося прочитати сховище сесії)."
     cache_warming_off: "Keep-alive: вимк. (два промахи)."
-    cache_tier_pending: "Рівень: 5m до першої паузи довше 5 хвилин, потім 1h."
+    cache_tier_pending: "Рівень: 5m, доки 5-хвилинний кеш уперше не спливе, потім 1h."
     cache_learned: "Вивчено: {rule}."
     cache_confidence:
       proven: "підтверджено"

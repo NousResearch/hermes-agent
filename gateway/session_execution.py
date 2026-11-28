@@ -244,4 +244,7 @@ class GatewaySessionAgentMixin:
                     cache[ctx.session_key] = (agent, sig, msg_count, ctx.session_id)
                     runner._enforce_agent_cache_cap()
             logger.debug("Created new agent for session %s (sig=%s)", ctx.session_key, sig)
+        # The chat's idle policy (a channel override, else the global key), read every turn: a cached
+        # agent keeps whatever its build saw, and the background idle run reads this value.
+        agent.compression_idle_compact_after_seconds = runner._idle_compact_after_for_source(ctx.source, ctx.user_config)
         return agent, found.reused

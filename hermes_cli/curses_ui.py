@@ -395,9 +395,13 @@ _CSI_FINAL_NAV = {
 
 def _decode_escape_sequence(stdscr) -> str:
     """Decode the bytes after an ESC: lone ESC cancels, CSI/SS3 sequences map to actions."""
+    import curses
     nxt = stdscr.getch()
     if nxt == -1:
         return NAV_CANCEL  # genuine lone ESC
+    if nxt == 27:  # two quick Esc presses: this one cancels, the second is its own keypress
+        curses.ungetch(27)
+        return NAV_CANCEL
     if nxt not in (ord("["), ord("O")):  # not a CSI / SS3 introducer — swallow
         return NAV_NONE
     raw_params, final = _read_csi_tail(stdscr)
@@ -437,6 +441,20 @@ def _decode_menu_key(stdscr, key: int) -> str:
         return _decode_escape_sequence(stdscr)
     finally:
         stdscr.timeout(-1)  # restore blocking mode
+
+
+def read_key(stdscr) -> int:
+    """``getch()`` for pickers that dispatch on raw curses key codes: an ESC-prefixed sequence the
+    terminfo did not translate (``ESC [ B`` with keypad mode on) comes back as the key it encodes,
+    a lone ESC stays 27, and an unrecognized sequence is -1 (ignored) rather than a bare ESC."""
+    import curses
+    key = stdscr.getch()
+    if key != 27:
+        return key
+    return {
+        NAV_UP: curses.KEY_UP, NAV_DOWN: curses.KEY_DOWN, NAV_BACK: curses.KEY_LEFT,
+        NAV_SELECT: 10, NAV_TOGGLE: 32, NAV_CANCEL: 27, NAV_INTERRUPT: 3,
+    }.get(_decode_menu_key(stdscr, key), -1)
 
 
 _KEEP = object()  # on_action reducer result: keep looping (state changed, menu not resolved)

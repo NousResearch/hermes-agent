@@ -61,8 +61,18 @@ def coerce_modal_mode(value: object | None) -> str:
 def has_direct_modal_credentials() -> bool:
     """Return True when direct Modal credentials/config are available. The token pair is a
     profile credential: read it through the secret scope so the default profile's Modal
-    account never selects the direct backend for a multiplexed secondary."""
-    if _scoped_credential("MODAL_TOKEN_ID") and _scoped_credential("MODAL_TOKEN_SECRET"):
+    account never selects the direct backend for a multiplexed secondary. The host-wide
+    ``~/.modal.toml`` login counts only for the process's own profile: ``ModalEnvironment``
+    refuses it for a routed profile, so selection and status must not offer it there."""
+    from agent.secret_scope import UnscopedSecretError, get_secret, serves_routed_profile
+
+    names = ("MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET")
+    if serves_routed_profile():
+        try:
+            return all((get_secret(name) or "").strip() for name in names)
+        except UnscopedSecretError:
+            return False
+    if all(_scoped_credential(name) for name in names):
         return True
     try:
         return (Path.home() / ".modal.toml").exists()

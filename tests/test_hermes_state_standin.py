@@ -30,7 +30,13 @@ import storage_user_copy
 from hermes_cli.session_export import to_legacy_export_dict
 from persistence.conversation.messages import ConversationRequest, ResumeTooLarge, TranscriptRead, TranscriptView
 from persistence.conversation.search import SearchSort
-from persistence.conversation.sessions import SessionCountQuery, SessionOrder, SessionQuery, SessionWindow
+from persistence.conversation.sessions import (
+    SessionCountQuery,
+    SessionLineageKind,
+    SessionOrder,
+    SessionQuery,
+    SessionWindow,
+)
 from persistence.housekeeping.maintenance import PruneCriteria
 from persistence_assembly import open_persistence, profile_scope, storage_health, store_location
 from tests.fixtures.storage_seed import seed_messages, seed_session
@@ -157,6 +163,40 @@ def test_the_plugin_guides_resume_lookup_resolves_a_short_id_as_written(quiet, s
         assert db.resolve_session_id("s") is None
     finally:
         db.close()
+
+
+def test_the_plugin_guides_lineage_read_gives_the_root_first_on_a_read_only_handle(store, legacy):
+    # website/docs/developer-guide/plugins/index.md: the replacement for get_compression_lineage
+    from persistence_assembly import open_persistence_reader
+
+    seed_session(store, "root", "telegram")
+    seed_messages(store, "root", {"role": "user", "content": "a"})
+    store.sessions.end("root", "compression")
+    seed_session(store, "mid", "telegram", parent_session_id="root")
+    seed_messages(store, "mid", {"role": "user", "content": "b"})
+    store.sessions.end("mid", "compression")
+    seed_session(store, "tip", "telegram", parent_session_id="mid")
+    seed_messages(store, "tip", {"role": "user", "content": "c"})
+    seed_session(store, "mid-sibling", "telegram", parent_session_id="root")
+    seed_messages(store, "mid-sibling", {"role": "user", "content": "c2"})
+    seed_session(store, "fork-child", "telegram", parent_session_id="root", lineage_kind=SessionLineageKind.BRANCH)
+    seed_messages(store, "fork-child", {"role": "user", "content": "f"})
+    seed_session(store, "tool-root", "tool")
+    seed_messages(store, "tool-root", {"role": "user", "content": "d"})
+    store.sessions.end("tool-root", "compression")
+    seed_session(store, "tool-tip", "tool", parent_session_id="tool-root")
+    seed_messages(store, "tool-tip", {"role": "user", "content": "e"})
+
+    with open_persistence_reader(profile_scope().profile_dir) as reader:
+        assert reader.lineage.lineage("tip") == ("root", "mid", "tip")
+        assert reader.lineage.lineage("mid")[0] == "root"
+        assert reader.lineage.lineage("s1") == ("s1",)
+        assert reader.lineage.lineage("no-such-session") == ()
+        assert reader.lineage.lineage("fork-child") == ("fork-child",)  # a branch fork starts its own lineage
+        assert reader.lineage.lineage("mid-sibling") == ("mid-sibling",)  # off the oldest-continuation chain
+        assert reader.lineage.lineage("tool-tip") == ("tool-tip",)  # a tool run is read as a fork
+    with pytest.raises(AttributeError, match="hermes_state-deprecated-use-the-storage-interface"):
+        legacy.get_compression_lineage("tip")
 
 
 def test_append_message_still_takes_the_old_compression_lock_holder_keyword(store, legacy):

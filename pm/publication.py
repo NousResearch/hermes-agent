@@ -14,7 +14,7 @@ from pathlib import Path
 
 from pm.environments import dependency_home_root, install_state_dir, runtime_facts_path
 from pm.filesystem import durable_write_bytes, file_digest, inherit_parent_acl, read_bytes_or_none
-from pm.workspace import enabled_plugin_dirs, _is_member_candidate
+from pm.workspace import enabled_plugin_dirs, select_workspace_members
 
 
 _METADATA_LOCK_HOLDER = threading.local()
@@ -32,21 +32,51 @@ def _metadata_records(data: bytes | None) -> dict:
     return records
 
 
-def candidate_members(extra_dirs=(), **selection):
+def candidate_members(extra_dirs=(), *, python: Path | None = None, target_env=None, **selection):
     selected = enabled_plugin_dirs(**selection)
     enabled = {path.resolve() for path in (enabled_plugin_dirs() if selection else selected)}
-    members = [source for source in selected
-               if _admitted(source, new=source.resolve() not in enabled) and _is_member_candidate(source)]
+    admitted = [source for source in selected if _admitted(source, new=source.resolve() not in enabled)]
     for directory in extra_dirs:
         directory = Path(directory)
-        if directory not in members and _is_member_candidate(directory):
-            members.append(directory)
-    return members
+        if directory not in admitted:
+            admitted.append(directory)
+    return select_workspace_members(admitted, python=python, target_env=target_env)
+
+
+class SelectionChanged(ValueError):
+    """Another writer changed a home's plugin selection while this change was being prepared: the
+    caller re-reads the selection and proposes again (nothing was published)."""
+
+
+def selection_projection(data: bytes | None) -> bytes | None:
+    """The part of a config.yaml document the plugin selection and dependency build read: the whole
+    ``plugins`` section and ``memory.provider``. Every other key (a dashboard prompt's answer, a
+    model switch) leaves it unchanged, so such an edit never refuses a publication. A document that
+    does not parse as a mapping projects to its bytes: any change to it counts."""
+    from hermes_yaml import safe_load
+    from ruamel.yaml.error import YAMLError
+
+    if data is None:
+        return None
+    try:
+        config = safe_load(data.decode("utf-8-sig"))
+    except (UnicodeError, YAMLError):
+        return data
+    if config is None:
+        config = {}
+    if not isinstance(config, dict):
+        return data
+    memory = config.get("memory")
+    provider = memory.get("provider") if isinstance(memory, dict) else memory
+    return json.dumps({"plugins": config.get("plugins"), "memory.provider": provider},
+                      sort_keys=True, default=repr).encode()
 
 
 def selection_snapshot() -> dict[Path, bytes | None]:
+    """Every dependency home's plugin selection: a change to anything else in a config.yaml is not a
+    change to what a publication decided from."""
     from pm.plugins_state import dependency_homes
-    return {home / "config.yaml": read_bytes_or_none(home / "config.yaml")  # config-reader: ok — pm publication: byte-level compare-and-swap rewrite of the local file
+    return {home / "config.yaml": selection_projection(read_bytes_or_none(home / "config.yaml"))  # config-reader: ok — pm publication: byte-level compare-and-swap rewrite of the local file
             for home in dependency_homes()}
 
 
@@ -81,10 +111,8 @@ def _admitted(source: Path, *, new: bool) -> bool:
 
 class PluginSelection:
     def __init__(self, selection: dict):
-        from hermes_yaml import roundtrip_yaml
-        from pm.plugin_eviction import settle_record
-
         self.configs = selection_snapshot()
+        self.selection = selection
         self.home = Path(selection["home"]).resolve()
         if not self.home.is_relative_to(dependency_home_root().resolve()):
             raise ValueError("config path is outside Hermes state")
@@ -93,9 +121,18 @@ class PluginSelection:
         expected = selection.get("expected_config")
         actual = hashlib.sha256(self.previous).hexdigest() if self.previous is not None else "missing"
         if expected is not None and expected != actual:
-            raise ValueError("Plugin configuration changed since this selection was read; retry.")
+            raise SelectionChanged("Plugin configuration changed since this selection was read; retry.")
+        self.proposed = self._render(self.previous)
+        self.members = candidate_members(selection.get("extra_dirs", ()), proposed_home=self.home,
+                                         enabled=selection["enabled"], disabled=selection["disabled"])
+
+    def _render(self, previous: bytes | None) -> bytes:
+        """*previous* with this selection written into its ``plugins`` section, every other key as it is."""
+        from hermes_yaml import roundtrip_yaml
+        from pm.plugin_eviction import settle_record
+
         yaml = roundtrip_yaml()
-        config = yaml.load(self.previous.decode("utf-8-sig")) if self.previous else {}
+        config = yaml.load(previous.decode("utf-8-sig")) if previous else {}
         if config is None:
             config = {}
         if not isinstance(config, dict):
@@ -103,18 +140,21 @@ class PluginSelection:
         plugins = config.setdefault("plugins", {})
         if not isinstance(plugins, dict):
             raise ValueError(f"plugins must be a mapping in {self.path}")
-        plugins["enabled"] = sorted(selection["enabled"])
-        plugins["disabled"] = sorted(selection["disabled"])
-        settle_record(plugins, selection.get("settled", ()))
+        plugins["enabled"] = sorted(self.selection["enabled"])
+        plugins["disabled"] = sorted(self.selection["disabled"])
+        settle_record(plugins, self.selection.get("settled", ()))
         output = io.StringIO()
         yaml.dump(config, output)
-        self.proposed = output.getvalue().encode("utf-8")
-        self.members = candidate_members(selection.get("extra_dirs", ()), proposed_home=self.home,
-                                         enabled=selection["enabled"], disabled=selection["disabled"])
+        return output.getvalue().encode("utf-8")
 
     def publish(self, project: Path) -> None:
-        if selection_snapshot() != self.configs or read_bytes_or_none(self.path) != self.previous:  # config-reader: ok — pm publication: byte-level compare-and-swap rewrite of the local file
-            raise ValueError("plugin configuration changed while preparing publication; retry")
+        if selection_snapshot() != self.configs:
+            raise SelectionChanged("plugin configuration changed while preparing publication; retry")
+        current = read_bytes_or_none(self.path)  # config-reader: ok — pm publication: byte-level compare-and-swap rewrite of the local file
+        if current != self.previous:
+            # Only keys outside the selection moved meanwhile: keep them, and journal them as the
+            # bytes a crash restores.
+            self.previous, self.proposed = current, self._render(current)
         row = {"config": str(self.path),
                "previous": base64.b64encode(self.previous).decode() if self.previous is not None else None,
                "facts_before": file_digest(runtime_facts_path(project)),
@@ -171,8 +211,10 @@ class StagedPlugin:
         self.members = {}
         if self.active:
             sources[self.target.resolve()] = self.staged
-            self.members = {identity: source for identity, source in sources.items()
-                            if _admitted(source, new=source == self.staged) and _is_member_candidate(source)}
+            admitted = {identity: source for identity, source in sources.items()
+                        if _admitted(source, new=source == self.staged)}
+            kept = set(select_workspace_members(admitted.values()))
+            self.members = {identity: source for identity, source in admitted.items() if source in kept}
 
     def publish(self, project: Path) -> None:
         import os
@@ -181,7 +223,7 @@ class StagedPlugin:
         from pm.store import tree_digest
 
         if selection_snapshot() != self.configs:
-            raise ValueError("Plugin enablement changed while preparing the update; retry.")
+            raise SelectionChanged("Plugin enablement changed while preparing the update; retry.")
         if tree_digest(self.staged) != self.staged_digest:
             raise ValueError("Staged plugin files changed while preparing the update; retry.")
         lock = self.metadata.with_name(f"{self.metadata.name}.lock")

@@ -1,8 +1,8 @@
 """The browser-hosted Desktop on the gateway's own listener: config, bind address and browser credential.
 
 ``webapp.enabled`` in the gateway home's ``config.yaml`` turns it on; the gateway then binds its one HTTP
-listener to ``webapp.port`` on a loopback or wildcard ``webapp.host``, and native clients keep dialling a
-loopback address.
+listener to ``webapp.port`` on a loopback, wildcard or one specific ``webapp.host`` address, and native
+clients keep dialling a loopback address.
 """
 import asyncio
 import errno
@@ -37,13 +37,99 @@ def test_an_enabled_webapp_binds_its_configured_address(tmp_path):
     assert default.bind == ("127.0.0.1", webapp.DEFAULT_PORT)
 
 
+def test_an_enabled_webapp_binds_its_environment_expanded_port(tmp_path, monkeypatch):
+    home = _home(tmp_path, "webapp:\n  enabled: true\n  port: ${WEBAPP_PORT}\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("WEBAPP_PORT", "9555")
+    assert webapp.webapp_settings(home).bind == ("127.0.0.1", 9555)
+
+
+@pytest.mark.parametrize("template", ["${WEBAPP_PORT}", "${env:WEBAPP_PORT}"])
+def test_an_enabled_webapp_expands_port_from_dotenv_end_to_end(tmp_path, monkeypatch, template):
+    from hermes_cli.env_loader import load_hermes_dotenv
+
+    home = _home(tmp_path, f"webapp:\n  enabled: true\n  port: {template}\n")
+    (home / ".env").write_text("WEBAPP_PORT=9555\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("WEBAPP_PORT", "")
+    os.environ.pop("WEBAPP_PORT", None)
+    load_hermes_dotenv(hermes_home=home, load_external_secrets=False)
+    settings = webapp.webapp_settings(home)
+    assert (settings.enabled, settings.bind, settings.reason) == (True, ("127.0.0.1", 9555), None)
+
+
+def test_an_unexpanded_port_env_var_keeps_the_webapp_off(tmp_path, monkeypatch):
+    home = _home(tmp_path, "webapp:\n  enabled: true\n  port: ${WEBAPP_PORT}\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("WEBAPP_PORT", raising=False)
+    settings = webapp.webapp_settings(home)
+    assert (settings.enabled, settings.bind) == (False, ("127.0.0.1", 0))
+    assert settings.reason and "webapp.port" in settings.reason
+
+
+@pytest.mark.parametrize(("raw_port", "expected"), [
+    (1, 1),
+    (9120, 9120),
+    (65535, 65535),
+    ("1", 1),
+    ("9555", 9555),
+    ("65535", 65535),
+    ("09120", 9120),
+    ("000009120", 9120),
+])
+def test_valid_integer_and_ascii_decimal_ports_are_accepted(tmp_path, raw_port, expected):
+    settings = webapp.webapp_settings(tmp_path, document={"webapp": {"enabled": True, "port": raw_port}})
+    assert (settings.enabled, settings.bind, settings.reason) == (True, ("127.0.0.1", expected), None)
+
+
+@pytest.mark.parametrize("raw_port", [
+    True,
+    False,
+    None,
+    0,
+    -1,
+    65536,
+    9120.0,
+    "",
+    "   ",
+    "0",
+    "00000",
+    "65536",
+    "100000",
+    "000000100000",
+    "+9120",
+    "-1",
+    "-9120",
+    "9120.0",
+    "9_120",
+    "0x23a0",
+    " 9120 ",
+    " 9120",
+    "9120 ",
+    "\t9120\n",
+    "9120\n",
+    "${WEBAPP_PORT}",
+    "${env:WEBAPP_PORT}",
+    "\u00b2",          # superscript two (str.isdigit() is True)
+    "\u0661\u0662\u0663",  # Arabic-Indic digits
+    "\uff19\uff11\uff12\uff10",  # fullwidth digits
+])
+def test_invalid_or_non_ascii_ports_keep_the_webapp_off(tmp_path, raw_port):
+    settings = webapp.webapp_settings(tmp_path, document={"webapp": {"enabled": True, "port": raw_port}})
+    assert (settings.enabled, settings.bind) == (False, ("127.0.0.1", 0))
+    assert settings.reason and "webapp.port" in settings.reason
+
+
 @pytest.mark.parametrize("block", [
     "webapp: yes\n",
     "webapp:\n  enabled: true\n  port: 70000\n",
     "webapp:\n  enabled: true\n  port: http\n",
+    "webapp:\n  enabled: true\n  port: true\n",
+    "webapp:\n  enabled: true\n  port: '0'\n",
+    "webapp:\n  enabled: true\n  port: '65536'\n",
     "webapp:\n  enabled: true\n  host: ''\n",
     "webapp:\n  enabled: 'true'\n",
-    "webapp:\n  enabled: true\n  host: 192.168.1.20\n",
+    "webapp:\n  enabled: true\n  host: 127.0.0.2\n",
     "webapp:\n  enabled: true\n  host: hermes.example.net\n",
 ])
 def test_a_malformed_webapp_block_keeps_the_listener_private(tmp_path, block):
@@ -101,7 +187,7 @@ def test_a_credential_the_browser_would_refuse_is_replaced(tmp_path, stored):
 def _start_runtime_api(monkeypatch, tmp_path, config, *, busy=False, refuse=None, while_starting=None):
     """Start the runtime's listener for *config* with the listener itself stood in; *while_starting*
     (a list) records what each Webapp verb answers while the Webapp's listener starts."""
-    from gateway import run_api, run_runtime
+    from gateway import run_api, run_runtime_listener
     home = _home(tmp_path, config)
     monkeypatch.setenv("HERMES_HOME", str(home))
     calls = []
@@ -120,7 +206,7 @@ def _start_runtime_api(monkeypatch, tmp_path, config, *, busy=False, refuse=None
     from gateway.control_socket import GatewayControlServer
     runner = SimpleNamespace(session_runtime_descriptor={}, session_authorities=[],
                              session_control_server=GatewayControlServer(home))
-    asyncio.run(run_runtime.start_gateway_runtime_api(runner))
+    asyncio.run(run_runtime_listener.start_gateway_runtime_api(runner))
     return runner, calls, home
 
 

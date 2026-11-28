@@ -41,6 +41,7 @@ import {
   sessionInfoStatePatch
 } from '../utils'
 
+import { payTurnEndReport, runningEdge } from './turn-end-report'
 import type { GatewayEventContext } from './types'
 
 /**
@@ -153,6 +154,37 @@ function reconcileSessionInfoPendingSubmissions(ctx: GatewayEventContext): void 
   }
 }
 
+/** Foreground runtime preferences; workspace ownership is reconciled separately. */
+function reconcileSessionInfoPreferences(payload: GatewayEventContext['payload']): void {
+  if (typeof payload?.terminal_backend === 'string') {
+    setTerminalBackend(payload.terminal_backend)
+  }
+
+  if (typeof payload?.personality === 'string') {
+    setCurrentPersonality(normalizePersonalityValue(payload.personality))
+  }
+
+  if (typeof payload?.reasoning_effort === 'string') {
+    setCurrentReasoningEffort(payload.reasoning_effort)
+  }
+
+  if (typeof payload?.reasoning_effort_wire === 'string') {
+    setCurrentReasoningEffortWire(payload.reasoning_effort_wire)
+  }
+
+  if (typeof payload?.service_tier === 'string') {
+    setCurrentServiceTier(payload.service_tier)
+  }
+
+  if (typeof payload?.fast === 'boolean') {
+    setCurrentFastMode(payload.fast)
+  }
+
+  if (typeof payload?.yolo === 'boolean') {
+    setYoloActive(payload.yolo)
+  }
+}
+
 /** session.info / session.usage / session.title. */
 export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
   const { deps, event, payload, sessionId, explicitSid, isActiveEvent, occurredAt, fromActiveSource } = ctx
@@ -186,13 +218,6 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
     const modelChanged = typeof payload?.model === 'string'
     const providerChanged = typeof payload?.provider === 'string'
     const runningChanged = typeof payload?.running === 'boolean'
-
-    // Reconnect can miss the structured `compacted` edge. A gateway-authored
-    // running=false is a terminal fact; a running heartbeat is intentionally
-    // not used as a timeout-like guess, so genuine compaction stays visible.
-    if (sessionId && payload?.running === false) {
-      reconcileSessionCompacting(sessionId, 'terminal')
-    }
 
     // The backend stamps model/provider (as strings) on EVERY session.info,
     // so the presence flags above are true on every heartbeat/turn edge —
@@ -263,33 +288,7 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
         setCurrentBranch(payload.branch)
       }
 
-      if (typeof payload?.terminal_backend === 'string') {
-        setTerminalBackend(payload.terminal_backend)
-      }
-
-      if (typeof payload?.personality === 'string') {
-        setCurrentPersonality(normalizePersonalityValue(payload.personality))
-      }
-
-      if (typeof payload?.reasoning_effort === 'string') {
-        setCurrentReasoningEffort(payload.reasoning_effort)
-      }
-
-      if (typeof payload?.reasoning_effort_wire === 'string') {
-        setCurrentReasoningEffortWire(payload.reasoning_effort_wire)
-      }
-
-      if (typeof payload?.service_tier === 'string') {
-        setCurrentServiceTier(payload.service_tier)
-      }
-
-      if (typeof payload?.fast === 'boolean') {
-        setCurrentFastMode(payload.fast)
-      }
-
-      if (typeof payload?.yolo === 'boolean') {
-        setYoloActive(payload.yolo)
-      }
+      reconcileSessionInfoPreferences(payload)
     }
 
     if (sessionId && (hasStatePatch || payload?.usage)) {
@@ -330,7 +329,28 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
     // its dot without the user opening it. updateSessionState only
     // mutates the per-runtime cache entry, and syncSessionStateToView
     // guards the view publish to the active session, so this is safe.
-    if (runningChanged && sessionId) {
+    // A completed turn's end-of-turn report, delivered after the next turn's
+    // message.start (ClientSessionState.turnEndReportsOwed): it says nothing about
+    // the turn now live, so it neither ends that turn's compaction phase, nor
+    // clears its prompts, nor settles it.
+    if (runningEdge(ctx, knownState, runningChanged) && sessionId) {
+      // Like every other turn-end edge, drain throttled text before settling:
+      // a delta still waiting on the flush floor would otherwise land after
+      // the settle cleared streamId and seed a fresh pending bubble. Only a
+      // live turn owns that text; with no live turn and no open stream the
+      // queued bytes are orphans of a superseded attempt, which the next
+      // turn boundary drops (#119543).
+      if (!payload!.running && (knownState?.turnLive || knownState?.streamId)) {
+        deps.flushQueuedDeltas(sessionId)
+      }
+
+      // Reconnect can miss the structured `compacted` edge. A gateway-authored
+      // running=false is a terminal fact; a running heartbeat is intentionally
+      // not used as a timeout-like guess, so genuine compaction stays visible.
+      if (!payload!.running) {
+        reconcileSessionCompacting(sessionId, 'terminal')
+      }
+
       // The agent loop's finally block emits running=false even when a
       // reconnect gap or provider crash swallowed message.complete — and
       // message.complete is where the turn-end prompt clear lives. An
@@ -340,7 +360,7 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
       // too (#86577). Bystander sessions keep their prompts: the clear is
       // scoped to this sessionId.
       if (!payload!.running && (knownState?.busy || knownState?.awaitingResponse)) {
-        clearAllPrompts(sessionId)
+        clearAllPrompts(sessionId, 'turn-end')
         // Same wipe class as the turn-end clears (#83319): a reconnect can
         // replay a pre-clarify snapshot with running=false while the server
         // bridge is still parked on the open clarify request — keep the card
@@ -359,8 +379,9 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
 
       const nextState = updateSessionState(
         sessionId,
-        state => {
+        prior => {
           const busy = Boolean(payload!.running)
+          const state = payTurnEndReport(prior, busy)
 
           if (state.busy === busy && (busy || !state.awaitingResponse)) {
             return state

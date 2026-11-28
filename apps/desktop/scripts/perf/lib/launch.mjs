@@ -12,13 +12,17 @@
 // spent regardless of the isolated backend.
 
 import { spawn } from 'node:child_process'
-import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { readDesktopLaunchConfig } from '../../../electron/renderer-heap-flags.ts'
+import { hasNvidiaProprietaryDriver, wslgLaunchArgs } from '../../../electron/wslg-launch.ts'
+
 import { CDP, requireDriver, sleep } from './cdp.mjs'
+import { seedConfigFrom } from './seed-home.mjs'
 
 const require = createRequire(import.meta.url)
 const DESKTOP_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
@@ -45,28 +49,6 @@ async function waitFor(fn, { timeoutMs, label }) {
   }
 
   throw new Error(`timed out after ${timeoutMs}ms waiting for ${label}`)
-}
-
-// Seed an isolated HERMES_HOME with just enough config (NOT sessions) so the
-// spawned instance reaches an empty chat view instead of the onboarding wizard.
-// A separate HERMES_HOME dir means a separate gateway lock — no collision with
-// the user's running app, which keeps its own sessions DB and state.
-function seedConfigFrom(sourceHome, targetHome) {
-  if (!existsSync(sourceHome)) {
-    return
-  }
-
-  for (const name of ['config.yaml', '.env', 'auth.json']) {
-    const from = join(sourceHome, name)
-
-    if (existsSync(from)) {
-      try {
-        copyFileSync(from, join(targetHome, name))
-      } catch {
-        // best-effort — a missing file just means onboarding may appear.
-      }
-    }
-  }
 }
 
 // Resolve the vite CLI entry via its package.json `bin` (Vite 8's `exports`
@@ -153,6 +135,21 @@ const ANTI_THROTTLE_FLAGS = [
   '--disable-features=CalculateNativeWinOcclusion'
 ]
 
+// Select the normal Desktop backend before the first spawn: a relaunch cannot
+// bind the CDP port while the original Electron process is still holding it.
+function selectLaunchArgs(args, env) {
+  if (process.platform !== 'linux') return args
+
+  let electronFlags = []
+  try {
+    electronFlags = readDesktopLaunchConfig(readFileSync(join(env.HERMES_HOME, 'config.yaml'), 'utf8')).electronFlags
+  } catch {
+    // An unseeded home may not yet have a config.
+  }
+
+  return wslgLaunchArgs(args, env, process.platform, electronFlags, hasNvidiaProprietaryDriver()) ?? args
+}
+
 /**
  * Spawn an isolated instance and connect the perf driver. Two render modes:
  *   · dev (default): vite dev server + dev electron-main bundle.
@@ -188,7 +185,7 @@ export async function startIsolatedInstance({
   const devUrl = prod ? null : `http://127.0.0.1:${devPort}`
 
   if (seedConfig && !hermesHome) {
-    seedConfigFrom(join(homedir(), '.hermes'), home)
+    seedConfigFrom(join(homedir(), '.hermes'), home, resolve(DESKTOP_DIR, '..', '..'))
   }
 
   const teardown = () => {
@@ -251,11 +248,12 @@ export async function startIsolatedInstance({
     }
 
     const spawnAt = Date.now()
-    const electron = spawn(
-      electronBin,
-      ['.', `--user-data-dir=${userData}`, `--remote-debugging-port=${port}`, ...ANTI_THROTTLE_FLAGS],
-      { cwd: DESKTOP_DIR, stdio: ['ignore', 'inherit', 'inherit'], env }
-    )
+    const args = ['.', `--user-data-dir=${userData}`, `--remote-debugging-port=${port}`, ...ANTI_THROTTLE_FLAGS]
+    const electron = spawn(electronBin, selectLaunchArgs(args, env), {
+      cwd: DESKTOP_DIR,
+      stdio: ['ignore', 'inherit', 'inherit'],
+      env
+    })
     children.push(electron)
 
     // Wait for the renderer + perf driver. In prod the target URL is file://,
@@ -346,7 +344,7 @@ export async function coldStartSamples({ runs = 3, port = 9222, devPort = 5174, 
     // runs 1..N are the representative warm samples.
     const home = mkdtempSync(join(tmpdir(), 'hermes-perf-cold-home-'))
     const userDataDir = mkdtempSync(join(tmpdir(), 'hermes-perf-cold-ud-'))
-    seedConfigFrom(join(homedir(), '.hermes'), home)
+    seedConfigFrom(join(homedir(), '.hermes'), home, resolve(DESKTOP_DIR, '..', '..'))
 
     try {
       for (let i = 0; i <= runs; i++) {

@@ -4,6 +4,7 @@ update was what the cell claims."""
 
 import importlib
 import inspect
+import json
 import os
 import shlex
 import subprocess
@@ -29,7 +30,8 @@ def _workflow_selection() -> str:
     wf = yaml.safe_load((_REPO / ".github/workflows/windows-install-update-e2e.yml").read_text(encoding="utf-8-sig"))
     step = next(s for s in wf["jobs"]["install-update"]["steps"] if s.get("name") == "Run Windows install + update E2E")
     argv = shlex.split(step["run"].replace("\\\n", " "))
-    assert f"{_SUITE}/" in argv, f"the workflow no longer runs {_SUITE}/: {argv}"
+    # One job per journey file: the suite directory plus the planned file of the matrix cell.
+    assert f"{_SUITE}/$SHARD" in argv, f"the workflow no longer runs a {_SUITE}/ journey per job: {argv}"
     return argv[argv.index("-m") + 1]
 
 
@@ -236,7 +238,12 @@ def test_workflow_requires_the_crash_journey_manifest(tmp_path, monkeypatch):
     names = [s.get("name") for s in steps]
     run, check = steps[names.index("Run Windows install + update E2E")], steps[names.index("Every crash cell ran")]
     assert names.index("Every crash cell ran") > names.index("Run Windows install + update E2E")
-    workflow_steps.required(check, {"inputs": {}})  # neither disabled nor advisory
+    # Each journey file runs in its own matrix job: the plan must give the crash file a job, and
+    # the check is required in that job.
+    plan = next(s for s in wf["jobs"]["plan"]["steps"] if s.get("id") == "plan")
+    shards = json.loads(workflow_steps.outputs(plan, {"inputs": {}}, _REPO)["shards"])
+    assert Path(crash.__file__).name in shards, f"no job runs the crash journey: {shards}"
+    workflow_steps.required(check, {"inputs": {}, "matrix": {"shard": Path(crash.__file__).name}})
     assert check["env"]["HERMES_E2E_ARTIFACTS"] == run["env"]["HERMES_E2E_ARTIFACTS"]
     assert f"'{crash.CELLS_RAN_MANIFEST}'" in check["run"] and "throw" in check["run"]
 

@@ -85,7 +85,7 @@ class TelegramVaultCodeMixin:
                                      submit: Callable[[str], bool], timeout_s: float,
                                      metadata: Optional[dict] = None) -> SendResult:
         from telegram import ForceReply  # late: test doubles of the telegram package need not define it
-        from plugins.platforms.telegram.adapter import ParseMode
+        from telegram.constants import ParseMode  # not the adapter's: a lazy PTB install rebinds only the gateway's copy
         import html as _html
 
         text = f"<b>{_html.escape(_t('platform.shared.vault_code.title', site=site))}</b>\n" + _html.escape(
@@ -135,7 +135,7 @@ class TelegramVaultCodeMixin:
         notice = _t("platform.shared.vault_code.submitted_footer" if outcome == "submitted"
                     else "platform.shared.vault_code.ended")
         try:
-            from plugins.platforms.telegram.adapter import ParseMode
+            from telegram.constants import ParseMode  # not the adapter's: a lazy PTB install rebinds only the gateway's copy
             await self._bot.edit_message_text(chat_id=int(reply.chat_id), message_id=int(reply.prompt_message_id),
                                               text=f"{reply.prompt_text}\n\n{notice}", parse_mode=ParseMode.HTML)
         except Exception:  # health: allow BLE001 -- the card's outcome line is cosmetic; the request is already settled

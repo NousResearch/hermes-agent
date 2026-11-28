@@ -438,6 +438,10 @@ queries the actual task XML, principal, and installed launcher.
   arbitrary shell launchers and modified Windows launcher scripts are not
   interpreted by `ensure`. Restore an explicit supported definition through an
   intentional service-management operation before retrying.
+- `profile_runs_elsewhere` (state `inaccessible`): a plugin runs this profile's
+  backend somewhere other than this host and has marked it under
+  `<hermes root>/profiles_run_elsewhere/<profile>.json`. `detail` names the
+  profile and the plugin. Turn it off in that plugin to run the profile here.
 
 These refusals do not start a service, rewrite configuration, or launch an
 unmanaged replacement. Standard explicitly bound default and custom-root installs

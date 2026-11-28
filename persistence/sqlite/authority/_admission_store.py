@@ -12,7 +12,8 @@ import heapq
 import json
 import uuid
 
-from persistence.authority.vocabulary import ADMISSION_QUEUE_MAX, ADMITTED_REQUEST_CONFLICT, STEERING, admission_fingerprint
+from persistence.authority.vocabulary import (
+    ADMISSION_QUEUE_MAX, ADMITTED_REQUEST_CONFLICT, STEERING, admission_fingerprint, retry_input)
 from persistence.authority.admissions import raise_gate
 from persistence.core.errors import AuthorityRefusal
 
@@ -73,7 +74,7 @@ def admit_session_input(holder, *, epoch: int, principal_id: str, session_id: st
         request_id=request_id, payload=payload, intent=intent)
     if retired is not None:
         return retired, False
-    digest = admission_fingerprint(canonical_target=session_id, payload={'input': json.loads(encoded), 'intent': intent})
+    digest = admission_fingerprint(canonical_target=session_id, payload={'input': retry_input(json.loads(encoded)), 'intent': intent})
     def write(conn):
         _epoch(conn, epoch)
         _session(conn, session_id)
@@ -321,7 +322,7 @@ def rehome_queued_inputs(holder, *, epoch: int, old_session_id: str, new_session
                             (old_session_id, len(principal_prefix), principal_prefix)).fetchall()
         for row in rows:
             digest = admission_fingerprint(canonical_target=new_session_id, payload={
-                'input': json.loads(row['payload_json']), 'intent': row['intent']})
+                'input': retry_input(json.loads(row['payload_json'])), 'intent': row['intent']})
             conn.execute("UPDATE session_admissions SET target_session_id=?,lineage_json=?,payload_digest=? "
                          "WHERE admission_id=? AND status='queued'",
                          (new_session_id, json.dumps([new_session_id]), digest, row['admission_id']))
@@ -359,7 +360,8 @@ def retarget_local_automation(holder, *, epoch: int, session_id: str, principal_
             if not isinstance(descriptor, dict) or descriptor.get('target') not in old_targets:
                 continue
             descriptor['target'] = new_target
-            digest = admission_fingerprint(canonical_target=session_id, payload={'input': payload, 'intent': row['intent']})
+            digest = admission_fingerprint(canonical_target=session_id, payload={
+                'input': retry_input(payload), 'intent': row['intent']})
             conn.execute("UPDATE session_admissions SET payload_json=?,payload_digest=? WHERE admission_id=? AND status='queued'",
                          (_json(payload), digest, row['admission_id']))
             moved.append(row['admission_id'])

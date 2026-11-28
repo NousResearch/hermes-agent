@@ -180,6 +180,13 @@ def _serialized_replacement(method):
     return wrapped
 
 
+class PluginHomeMoved(RuntimeError):
+    """No profile name leads to a plugin manager's directory any more: a linked profile was repointed, renamed out of
+    its root or removed while the process ran (``PluginManager.owner_home``). Its plugin work is refused until a
+    restart opens the profile again: the directory alone reads as an unmarked profile, so a marked profile's
+    run-elsewhere marker would go unseen and its own launcher and files would be used."""
+
+
 @contextmanager
 def _plugin_home_scope(home: Path):
     """Bind discovery and loading to the manager's immutable Hermes home."""
@@ -298,6 +305,17 @@ def installed_in_selected_environment(requirements: list[str]) -> bool:
         return False
 
 
+def adopt_published_dependencies() -> bool:
+    """Whether this process just moved onto a dependency generation published after it booted."""
+    from pm.environments_adopt import adopt_published
+    from pm.paths import repo_root
+    try:
+        return adopt_published(repo_root())
+    except (OSError, RuntimeError, ValueError):  # unreadable selection: keep the restart remedy
+        logger.debug("dependency generation adoption failed", exc_info=True)
+        return False
+
+
 class PluginLoaderMixin:
     def on_plugin_loaded(self, callback: Callable[[list[dict[str, Any]]], Any]) -> Callable[[], None]:
         """Subscribe to "a discovery sweep loaded plugins this process did not have": fires from INSIDE
@@ -371,7 +389,7 @@ class PluginLoaderMixin:
         this a load that raised or overran its deadline at startup stays down until a forced re-discovery
         (#126356). True when a loader was re-armed."""
         from hermes_cli.plugins_discovery import _get_disabled_plugins, _get_enabled_plugins, gate_manifest
-        with self._discovery_lock, _plugin_home_scope(self.home_path):
+        with self._discovery_lock, _plugin_home_scope(self.owner_home):
             failed = next((p.manifest for p in self._plugins.values()
                            if p.error and not p.enabled and p.manifest.kind == "platform"
                            and self._platform_name_from_manifest(p.manifest) == platform_name), None)
@@ -398,7 +416,7 @@ class PluginLoaderMixin:
             def _loader(_manifest: PluginManifest = manifest) -> None:
                 # Lock before checking cancellation: if an unload won the race it restored the predecessor
                 # and this loader must publish nothing; if loading won, unload waits and disposes the set.
-                with self._discovery_lock, _plugin_home_scope(self.home_path):
+                with self._discovery_lock, _plugin_home_scope(self.owner_home):
                     if platform_registry.is_deferred_load_cancelled(platform_name, scope=scope):
                         return
                     self._load_plugin_scoped(_manifest)
@@ -514,12 +532,21 @@ class PluginLoaderMixin:
     def _warn_python_dependencies(self, manifest: PluginManifest) -> None:
         """Report missing dependencies without installing during discovery.
 
-        Plugin admission and PM repair own dependency changes.
+        Plugin admission and PM repair own dependency changes. When the generation PM selected since this
+        process booted carries them (a platform plugin installed at gateway start, or by Desktop while the
+        gateway runs), this process adopts it first (``pm.environments_adopt.adopt_published``: only when
+        nothing it already imported would change), so the plugin loads now instead of after a restart.
         """
         missing = missing_python_dependencies(manifest)
         if not missing:
             return
         key = manifest_key(manifest)
+        if installed_in_selected_environment(missing) and adopt_published_dependencies():
+            missing = missing_python_dependencies(manifest)
+            if not missing:
+                logger.info("Plugin %s: loaded its Python dependencies from the dependency environment "
+                            "published after this process started.", key)
+                return
         if installed_in_selected_environment(missing):
             logger.warning(
                 "Plugin %s's Python dependencies were installed after this process started: %s. "
@@ -558,7 +585,7 @@ class PluginLoaderMixin:
 
     def _load_plugin(self, manifest: PluginManifest) -> None:
         """Import a plugin module and call its ``register(ctx)`` function."""
-        with self._discovery_lock, _plugin_home_scope(self.home_path):
+        with self._discovery_lock, _plugin_home_scope(self.owner_home):
             self._load_plugin_scoped(manifest)
 
     def _load_plugin_scoped(self, manifest: PluginManifest) -> None:

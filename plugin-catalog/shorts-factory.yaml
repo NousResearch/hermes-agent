@@ -1,0 +1,21 @@
+name: shorts-factory
+repo: https://github.com/skeptical-agency/shorts-factory
+sha: d8e0c70ebc5afa6bb242adcf6fbf361207889d11
+description: "The 9:16 short-video pipeline as executable tools, distilled from a production pipeline shipping daily shorts across YouTube/TikTok/Instagram/Facebook/X: sf_loudness (ebur128 measure, two-pass loudnorm to -14 LUFS/-2 dBTP, sidechain music ducking with amix normalize=0, atempo), sf_concat (mixed stills+video with full in-graph fps/SAR/bt709 normalization, exact still frame counts, post-build VIDEO-STREAM duration asserts — kills the silent concat killers: vanishing overlays, dropped audio, one-frame stills), sf_captions (script-aligned word-timed punch captions rendered as Pillow PNGs — no libass/drawtext needed — with boundary-safe enable windows and pixel-diff band verification), sf_footage_audit (contact sheets, per-second brightness, full-res fine grabs, review checklist), sf_safezone (thumbnail safe band y=400..1500 checks + simulated grid crop), sf_motion_lint (deterministic build-script lint for stutter-prone zoompan/time-driven motion). Disclosure — everything runs locally through ffmpeg/ffprobe subprocesses and every file it writes stays under its output folder (`<hermes home>/plugin-data/shorts-factory/out/` or the `output_dir` you set in plugin config), never replacing an existing file unless the call asks to overwrite; it stores and uses no credentials and makes no network calls except a one-time Bebas Neue font download from github.com/google/fonts when no local font is found, and, if you install the optional faster-whisper package for auto-timed captions, its first-use Whisper model download from Hugging Face; requires ffmpeg and ffprobe installed on the machine."
+maintainer: skeptical-agency
+tier: community
+category: tools
+docs_url: https://github.com/skeptical-agency/shorts-factory/blob/d8e0c70ebc5afa6bb242adcf6fbf361207889d11/README.md
+version: "0.1.1"
+capabilities:
+  provides_tools:
+    - sf_status
+    - sf_loudness
+    - sf_concat
+    - sf_captions
+    - sf_footage_audit
+    - sf_safezone
+    - sf_motion_lint
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

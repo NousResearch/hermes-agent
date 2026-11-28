@@ -631,6 +631,25 @@ def _plugin_disabled(plugin_dir: Path) -> bool:
     return True
 
 
+def _plugin_recalled(plugin_dir: Path) -> bool:
+    """Whether the catalog removal list names this plugin, so its import-time code never runs: a plugin
+    recalled after it was installed stops loading here as it does in the general loader (``gate_manifest``),
+    through the same offline check, which honours an install made with ``--allow-removed``. The refusal is
+    the dir's recorded load error (``plugin_load_error``)."""
+    from hermes_cli.plugins_cmd_catalog import installed_plugin_removal
+
+    name = _manifest_field(plugin_dir, "name") or plugin_dir.name
+    removed = installed_plugin_removal(name, plugin_dir)
+    if removed is None:
+        return False
+    error = f"removed from the Hermes plugin catalog: {removed.reason or 'no reason recorded'}"
+    logger.warning("Refusing to load provider plugin '%s' — %s; run `hermes plugins remove`", name, error)
+    layer = _REGISTRATION_TARGET.get()
+    if layer is not None:
+        layer.errors[plugin_dir.name] = error
+    return True
+
+
 def _user_module_name(plugin_dir: Path, home_key: str) -> str:
     digest = hashlib.sha1(home_key.encode("utf-8")).hexdigest()[:10]
     return f"_hermes_user_provider_{digest}_{plugin_dir.name.replace('-', '_')}"
@@ -645,6 +664,8 @@ def _import_plugin_dir(plugin_dir: Path, source: str, *, home_key: str = "") -> 
         return
     if source != "bundled" and _plugin_disabled(plugin_dir):
         logger.debug("Skipping disabled provider plugin %s (plugins.disabled)", plugin_dir.name)
+        return
+    if source != "bundled" and _plugin_recalled(plugin_dir):
         return
     if source == "bundled":
         # A stable import path (``plugins.model_providers.<name>``) so relative imports work.

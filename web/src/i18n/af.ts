@@ -799,4 +799,17 @@ export const af: Translations = {
     logTruncated: "(toon laaste 100 KB — volledige log by ",
     logAt: ")",
   },
+  channelsCatalog: {
+    title: "Beskikbaar om te installeer",
+    hint: "Boodskapplatforms uit die Hermes-inpropkatalogus. Installering voeg die inprop by en aktiveer dit, en maak dan die opstelling oop.",
+    badgeOfficial: "Amptelik",
+    badgeVerified: "Geverifieer",
+    disclosure: "Openbaarmaking:",
+    lazyInstallsOff: "Outomatiese inprop-installasies is af (security.allow_lazy_installs).",
+    run: "Voer uit:",
+    install: "Installeer",
+    installing: "Installeer tans…",
+    installed: (title: string) => `${title} geïnstalleer. Voer sy geloofsbriewe in om dit te koppel.`,
+    installFailed: (title: string) => `Kon nie ${title} installeer nie`,
+  },
 };

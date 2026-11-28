@@ -35,11 +35,14 @@ def test_provider_row(row: Row, turns: dict[str, TurnResult]) -> None:
 
 
 def test_catalog_is_discovered_not_listed() -> None:
-    """Every bundled plugin dir registers a provider that some shard runs (or skips with a
-    reason): the matrix follows discovery, so a new plugin can never silently fall out of it."""
+    """Every bundled plugin dir registers at least one provider that some shard runs (or skips with
+    a reason): the matrix follows discovery, so a new or multi-profile plugin can never silently
+    fall out of it."""
     root = Path(__file__).resolve().parents[4] / current_path("plugins") / "model-providers"
     dirs = {d.name for d in root.iterdir() if (d / "__init__.py").exists()}
-    names = {r.name for r in discover_catalog()}
+    catalog = discover_catalog()
+    names = {r.name for r in catalog}
+    discovered_dirs = {r.plugin_dir for r in catalog if r.plugin_dir is not None}
     assert dirs, "no bundled model-provider plugins found"
-    assert dirs <= names, f"plugin dirs with no discovered profile: {sorted(dirs - names)}"
+    assert dirs <= discovered_dirs, f"plugin dirs with no discovered profile: {sorted(dirs - discovered_dirs)}"
     assert {shard_of(n) for n in names} <= set(range(SHARDS))

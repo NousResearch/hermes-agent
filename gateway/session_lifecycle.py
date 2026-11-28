@@ -9,6 +9,7 @@ import uuid
 from datetime import datetime, timedelta, timezone, UTC
 from typing import TYPE_CHECKING, Optional
 
+from gateway.session_persistence import _apply_to_held_row, _held_row_entry
 from session_rules.session_ids import new_session_id
 
 if TYPE_CHECKING:
@@ -176,6 +177,11 @@ class SessionLifecycleMixin:
         with self._lock:
             self._ensure_loaded_locked()
             changed = sum(1 for entry in self._entries.values() if mutate(entry))
+            held = getattr(self, "_unparsed_routes", None) or {}
+            for key, data in list(held.items()):  # a held row gets the verdict now, on disk too
+                updated = _apply_to_held_row(data, mutate)
+                if updated is not None:
+                    held[key], changed = updated, changed + 1
             if changed:
                 self._save()
         return changed
@@ -299,17 +305,19 @@ class SessionLifecycleMixin:
         if max_age_days is None or max_age_days <= 0:
             return 0
         cutoff = _now() - timedelta(days=max_age_days)
+        def _idle(key: str, entry: SessionEntry) -> bool:
+            # The callback is keyed by session_key, NOT session_id.
+            return (not entry.suspended and entry.updated_at < cutoff
+                    and not self._has_active_processes_safe(key, context="prune"))
+
         with self._lock:
             self._ensure_loaded_locked()
-            removed_keys = [
-                key for key, entry in list(self._entries.items())
-                if not entry.suspended
-                # The callback is keyed by session_key, NOT session_id.
-                and not self._has_active_processes_safe(entry.session_key, context="prune")
-                and entry.updated_at < cutoff
-            ]
-            for key in removed_keys:
-                self._entries.pop(key, None)
+            held = getattr(self, "_unparsed_routes", None) or {}
+            removed_keys = [key for key, entry in list(self._entries.items()) if _idle(entry.session_key, entry)]
+            # A held route (platform not registered yet) expires on the same clock, or it outlives every peer.
+            removed_keys += [key for key, data in held.items()
+                             if key not in self._entries and _idle(key, _held_row_entry(data))]
+            self._drop_routes_locked(removed_keys)
             if removed_keys:
                 self._save()
         if removed_keys:

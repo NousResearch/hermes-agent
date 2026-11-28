@@ -6,6 +6,7 @@ import type { QueueItem } from '../hooks/useQueue.js'
 import { t } from '../i18n/runtime.js'
 import { stageImagePath } from '../lib/imageAttachments.js'
 import { pendingInputOwner, savePendingInput } from '../lib/pendingInputs.js'
+import { markSessionPersisted } from '../lib/programResume.js'
 import type { Msg } from '../types.js'
 
 import { takePastes } from './pasteStore.js'
@@ -285,12 +286,23 @@ function refreshExecutionStatus({ deps, focused, owner, sid }: AdmissionContext)
     })
 }
 
+// tui_gateway answers an inline turn's prompt.submit `streaming` only after it saved the session row
+// (methods_prompt.py _persist_session_row_for_submit): the TUI's proof that `--resume` finds it. Not proof:
+// an isolated compute-host turn (its child writes the row later), a queued prompt, a shared gateway's
+// admission receipt (no row attestation); those sessions report the bare launch until a resume shows history.
+function markSubmitPersisted(storedSid: null | string | undefined, r: null | PromptSubmitResponse | undefined): void {
+  if (r?.status === 'streaming' && !r.turn_isolation) {
+    markSessionPersisted(storedSid)
+  }
+}
+
 async function submitLegacy(
   item: QueueItem,
   sid: string,
   submitText: string,
   deps: SubmitPromptDeps,
-  focused: () => boolean
+  focused: () => boolean,
+  storedSid: null | string | undefined
 ): Promise<void> {
   if (focused()) {
     deps.sys(t('canonical.submit.legacyDelivery'))
@@ -311,6 +323,7 @@ async function submitLegacy(
     )
 
     item.settle?.(accepted)
+    markSubmitPersisted(storedSid, r)
 
     if (focused()) {
       if (r?.voice_stopped) {
@@ -457,6 +470,8 @@ export function submitPrompt(
           return
         }
 
+        markSubmitPersisted(destination.storedSid, r)
+
         if (item) {
           settleAdmissionReply(item, r, { deps, destination, focused, owner, sid })
         }
@@ -469,7 +484,7 @@ export function submitPrompt(
         const preAdmissionRefusal = e.code === 4094 || (e.code === 4000 && /submission_id/.test(e.message ?? ''))
 
         if (item && preAdmissionRefusal && !deps.gw.isCanonical && !item.attachments?.length) {
-          await submitLegacy(item, sid, submitText, deps, focused)
+          await submitLegacy(item, sid, submitText, deps, focused, destination.storedSid)
 
           return
         }

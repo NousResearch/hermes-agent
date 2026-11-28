@@ -3,8 +3,11 @@
 ``webapp.enabled`` in the gateway home's ``config.yaml`` turns it on. The gateway then binds its one
 listener to ``webapp.host``/``webapp.port`` (a stable port, so the browser's URL survives restarts) and
 its dashboard mount serves the Webapp bundle. ``webapp.host`` is ``127.0.0.1``, ``::1`` or ``localhost``
-(the binds the sign-in gate leaves local-only) or a wildcard (``0.0.0.0``/``::``), and a wildcard bind
-is gated by dashboard sign-in like any non-loopback listener.
+(the binds the sign-in gate leaves local-only), a wildcard (``0.0.0.0``/``::``) or one literal IP address
+of this machine (a LAN or Tailscale address, as ``hermes dashboard --host`` took it). A wildcard or a
+specific address is gated by dashboard sign-in like any non-loopback listener. A specific address also
+gets a loopback socket on the same port, behind the same sign-in, so native clients keep a loopback
+origin (:func:`loopback_companion`).
 ``webapp.public_url`` is the address a reverse proxy or tunnel serves the Webapp at: it engages the same
 sign-in on a loopback bind, and ``dashboard.public_url`` (``hermes dashboard``'s) never applies here.
 Native clients (Desktop, the CLI, Ink) dial the loopback address this module derives from the bind.
@@ -32,6 +35,8 @@ DEFAULT_PORT = 9120
 TOKEN_PATH = Path("webapp") / "session-token"
 # secrets.token_urlsafe(32); the launch page refuses any other shape.
 _TOKEN_FORMAT = re.compile(r"[A-Za-z0-9_-]{43}")
+_DECIMAL_PORT = re.compile(r"0*[1-9][0-9]{0,4}", re.ASCII)
+HOST_CHOICES = "127.0.0.1, ::1, localhost, 0.0.0.0, :: or one IP address of this machine"
 
 
 @dataclass(frozen=True)
@@ -73,12 +78,13 @@ def _config_document(home: Path) -> dict:
     return load_config_readonly() if own else read_user_config_raw(home / "config.yaml")
 
 
-def webapp_settings(home) -> WebappSettings:
+def webapp_settings(home, *, document: dict | None = None) -> WebappSettings:
     """``webapp:`` from *home*'s config. A missing, unreadable or malformed block reads as off, so a
     typo never exposes the listener; a block that cannot be used carries the reason in ``reason``.
     A present block's valid ``host``, ``port`` and ``public_url`` are read whether or not it turns
     the Webapp on (an invalid one reads as the default), so Web Access shows and registers the
-    address the gateway will bind."""
+    address the gateway will bind. *document*: the config to judge instead of reading *home*'s (a
+    caller that resolved it without the side effects of ``load_config``)."""
     path = Path(home) / "config.yaml"
     from ruamel.yaml.error import YAMLError
 
@@ -87,7 +93,7 @@ def webapp_settings(home) -> WebappSettings:
         return replace(configured, reason=reason)
 
     try:
-        document = _config_document(Path(home))
+        document = _config_document(Path(home)) if document is None else document
     except (OSError, ValueError, YAMLError) as exc:  # the gateway's own config load reports it
         return off(f"{path} could not be read ({exc})")
     block = document.get("webapp") if isinstance(document, dict) else None
@@ -103,7 +109,7 @@ def webapp_settings(home) -> WebappSettings:
     if enabled is not True:
         return off(f"webapp.enabled must be true or false in {path}", configured)
     if host is None:
-        return off(f"webapp.host must be 127.0.0.1, ::1, localhost, 0.0.0.0 or :: in {path}", configured)
+        return off(f"webapp.host must be {HOST_CHOICES} in {path}", configured)
     if port is None:
         return off(f"webapp.port must be a port number (1-65535) in {path}", configured)
     if public_url is None:
@@ -112,16 +118,22 @@ def webapp_settings(home) -> WebappSettings:
     return replace(configured, enabled=True)
 
 
+def configured_port(value: object) -> int | None:
+    """Read a config port, including decimal text produced by environment expansion."""
+    if isinstance(value, str) and _DECIMAL_PORT.fullmatch(value):
+        value = int(value.lstrip("0"))
+    return value if isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= 65535 else None
+
+
 def _configured_address(block: dict) -> tuple[str | None, int | None, str | None]:
     """The block's ``(host, port, public_url)``, each None when invalid (``public_url`` is "" when
-    unset): the host canonical and local-only or a wildcard, the port 1-65535, the URL as
-    :func:`_public_url` reads it."""
+    unset): the host canonical and local-only, a wildcard or one specific address
+    (:func:`_specific_address`), the port 1-65535, the URL as :func:`_public_url` reads it."""
     host = block.get("host", DEFAULT_HOST)
     host = _canonical_host(_bare_host(host)) if isinstance(host, str) else None
-    port = block.get("port", DEFAULT_PORT)
-    valid_port = isinstance(port, int) and not isinstance(port, bool) and 1 <= port <= 65535
-    return (host if host is not None and (_local_only(host) or _is_wildcard(host)) else None,
-            port if valid_port else None, _public_url(block.get("public_url")))
+    port = configured_port(block.get("port", DEFAULT_PORT))
+    usable = host is not None and (_local_only(host) or _is_wildcard(host) or _specific_address(host))
+    return host if usable else None, port, _public_url(block.get("public_url"))
 
 
 def _bare_host(host: str) -> str:
@@ -182,13 +194,53 @@ def _is_wildcard(host: str) -> bool:
     return host in {"0.0.0.0", "::"}
 
 
+_THIS_NETWORK = ipaddress.ip_network("0.0.0.0/8")
+
+
+def _specific_address(host: str) -> bool:
+    """Whether *host* is one literal unicast IP address an interface can hold (``100.64.1.5``,
+    ``169.254.10.20``, ``fd7a::5``): a bind the sign-in gate treats as public. Not: names; loopback
+    addresses other than the local-only ones (Desktop dials only ``127.0.0.1``/``::1``); the
+    unspecified, multicast and reserved ranges (IPv4 ``240.0.0.0/4`` holds ``255.255.255.255``) and
+    IPv4 ``0.0.0.0/8``, which no interface holds;
+    IPv6 link-local, which binds only with a zone, and zoned (``%eth0``) or IPv4-mapped addresses.
+    IPv4 link-local is an interface address like any other. Whether this machine holds it is checked
+    before the bind (``gateway.run_api._bind_primary``)."""
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    if address.is_loopback or address.is_unspecified or address.is_multicast or address.is_reserved:
+        return False
+    if isinstance(address, ipaddress.IPv4Address) and address in _THIS_NETWORK:
+        return False
+    return not (isinstance(address, ipaddress.IPv6Address)
+                and (address.scope_id or address.ipv4_mapped or address.is_link_local))
+
+
+def loopback_companion(bind_host: str) -> str | None:
+    """The loopback address the listener also binds, on the same port, for a specific-address
+    *bind_host*, else None. Native clients accept only a ``127.0.0.1``/``[::1]`` origin and the
+    native socket path only a loopback peer, so without it Desktop and the CLI could not attach."""
+    if not _specific_address(bind_host):
+        return None
+    return "::1" if ipaddress.ip_address(bind_host).version == 6 else "127.0.0.1"
+
+
+def bind_origin(bind_host: str, port: int) -> str | None:
+    """``http://<address>:<port>`` a browser opens for a specific-address bind, else None."""
+    if not _specific_address(bind_host):
+        return None
+    return f"http://[{bind_host}]:{port}" if ":" in bind_host else f"http://{bind_host}:{port}"
+
+
 def dial_host(bind_host: str) -> str:
     """The loopback address native clients dial for a listener bound to the address *bind_host*. A
     name (``localhost``) comes back as is, which suits a browser only: native clients get the
     address the socket bound (``gateway.run_api.start_gateway_api``)."""
     if _is_loopback(bind_host):
         return bind_host
-    return "::1" if bind_host == "::" else "127.0.0.1"
+    return loopback_companion(bind_host) or ("::1" if bind_host == "::" else "127.0.0.1")
 
 
 def dial_origin(bind_host: str, port: int) -> str:
@@ -386,13 +438,16 @@ def register_control_verbs(runner, home, server=None, *, links_checked: bool | N
             # Behind the dashboard's sign-in the page asks for it; a launch link opens only a private Webapp.
             # Sign-in returns to a callback the provider must know and checks a state cookie set where it
             # started, so the browser starts at that callback's origin: webapp.public_url when set (the
-            # listener's own public URL), else on the LAN the address Web Access registered Nous sign-in
-            # for, else the loopback address (a password provider, or sign-in set up by hand for it).
-            # Native clients keep the loopback address.
-            from hermes_cli.webapp_access import registered_lan_origin
-            address = (getattr(web.app.state, "listener_public_url", "")
-                       or registered_lan_origin(home, urlsplit(status["url"]).port) or status["url"])
-            return {"url": f"{address}/{query}", "private": False, "expires_in_seconds": None, "sign_in": True}
+            # listener's own public URL), else a specific address the listener is bound to, else on the
+            # LAN the address Web Access registered Nous sign-in for, else the loopback address (a password
+            # provider, or sign-in set up by hand for it). Native clients keep the loopback address.
+            from hermes_cli.webapp_access import sign_in_address
+            address, note = sign_in_address(home, getattr(web.app.state, "bound_host", ""),
+                                            urlsplit(status["url"]).port,
+                                            getattr(web.app.state, "listener_public_url", ""))
+            link = {"url": f"{address or status['url']}/{query}", "private": False, "expires_in_seconds": None,
+                    "sign_in": True}
+            return link if note is None else {**link, "note": note}
         # Where the browser's connection cannot be checked (macOS, the BSDs, WSL), the link is for the user
         # to open by hand ("private": printed, never passed to a browser launcher), and its ticket spends
         # without that check. Either way it works once, for 60 seconds, and carries no lasting credential.

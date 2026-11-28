@@ -44,6 +44,9 @@ def test_windows_metadata_is_read_from_package_and_stale_stamp_is_rejected(tmp_p
             }))
 
     write_package(commit)
+    # The native executable's version comes from the sidecar when present;
+    # without it a Windows host probes the unpacked executable instead.
+    (root / 'version-info-x64.json').write_text(json.dumps({'productVersion': '1.2.3.0'}), encoding='utf-8')
     out = root / 'metadata-windows-x64.json'
     original = package.read_bytes()
     record('windows', 'x64', root, tag, commit, out)
@@ -52,6 +55,7 @@ def test_windows_metadata_is_read_from_package_and_stale_stamp_is_rejected(tmp_p
     assert metadata['version'] == '1.2.3.0'
     assert metadata['publisher'] == 'CN=Test'
     assert metadata['applicationId'] == 'App'
+    assert metadata['executableVersion'] == '1.2.3.0'
     assert package.read_bytes() == original
     assert 'receiverProtocol' not in metadata
     write_package(commit, receiver=1)
@@ -62,6 +66,92 @@ def test_windows_metadata_is_read_from_package_and_stale_stamp_is_rejected(tmp_p
         record('windows', 'x64', root, tag, commit, tmp_path / 'bad.json')
     with pytest.raises(ValueError, match='provenance'):
         stamp_matches({}, tag, commit)
+
+
+def test_windows_executable_version_is_read_from_msix_not_clobbered_unpacked_dir(tmp_path):
+    """Canary win32 jobs build --variant bundled then --variant store into the same release dir;
+    the Store build overwrites win-unpacked/ with the Store quad, so record() must probe the
+    executable extracted from the bundled MSIX itself."""
+    tag, commit = 'canary.20261120T173138Z-v0.23.3', 'a' * 40
+    root = tmp_path / 'release'
+    root.mkdir()
+    package = root / 'HermesBundled-0.23.3+canary.20261120T173138Z-win-x64.msix'
+    manifest = (
+        '<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10">'
+        '<Identity Name="NousResearch.HermesBundledCanary" Publisher="CN=Test" '
+        'Version="26.1120.17.3138" ProcessorArchitecture="x64"/>'
+        '<Applications><Application Id="HermesBundledCanary" '
+        'Executable="app\\Hermes Agent Canary.exe"/></Applications></Package>'
+    )
+    stamp = {
+        'tag': tag, 'commit': commit, 'baseVersion': '0.23.3+canary.20261120T173138Z',
+        'receiverProtocol': 1,
+    }
+    with zipfile.ZipFile(package, 'w') as archive:
+        archive.writestr('AppxManifest.xml', manifest)
+        archive.writestr('app/resources/install-stamp.json', json.dumps(stamp))
+        archive.writestr('app/Hermes Agent Canary.exe', b'bundled-canary-exe-bytes')
+
+    # Simulate the subsequent --variant store build overwriting win-unpacked/.
+    unpacked = root / 'win-unpacked'
+    unpacked.mkdir()
+    (unpacked / 'Hermes Agent Canary.exe').write_bytes(b'store-overwrite-exe-bytes')
+
+    probed_paths = []
+
+    def probe(executable: Path) -> str:
+        probed_paths.append(executable)
+        assert not executable.is_relative_to(root), f'must not read mutable {executable}'
+        assert executable.name == 'Hermes Agent Canary.exe'
+        data = executable.read_bytes()
+        return '26.1120.17.3138' if data == b'bundled-canary-exe-bytes' else '2026.7769.1898.0'
+
+    out = root / 'metadata-windows-x64.json'
+    record('windows', 'x64', root, tag, commit, out, executable_version_probe=probe)
+    metadata = json.loads(out.read_text(encoding='utf-8-sig'))
+    assert metadata['version'] == '26.1120.17.3138'
+    assert metadata['executableVersion'] == '26.1120.17.3138'
+    assert len(probed_paths) == 1
+    assert not probed_paths[0].exists()  # temporary extracted executable is cleaned up
+
+    # Missing declared executable in the MSIX must fail closed rather than reading win-unpacked/.
+    with zipfile.ZipFile(package, 'w') as archive:
+        archive.writestr('AppxManifest.xml', manifest)
+        archive.writestr('app/resources/install-stamp.json', json.dumps(stamp))
+    with pytest.raises(ValueError, match='Expected exactly one'):
+        record('windows', 'x64', root, tag, commit, out, executable_version_probe=probe)
+
+
+def test_windows_executable_is_found_under_its_percent_encoded_msix_part_name(tmp_path):
+    """MakeAppx stores part names percent-encoded: the published rc.3-v0.22.0 x64 MSIX
+    declares Executable="app\\Hermes Agent.exe" and holds it as app/Hermes%20Agent.exe."""
+    tag, commit = 'v0.23.3', 'a' * 40
+    root = tmp_path / 'release'
+    root.mkdir()
+    package = root / 'HermesBundled-0.23.3-win-x64.msix'
+    manifest = (
+        '<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10">'
+        '<Identity Name="NousResearch.HermesBundled" Publisher="CN=Test" '
+        'Version="2026.7769.1898.0" ProcessorArchitecture="x64"/>'
+        '<Applications><Application Id="HermesBundled" '
+        'Executable="app\\Hermes Agent.exe"/></Applications></Package>'
+    )
+    with zipfile.ZipFile(package, 'w') as archive:
+        archive.writestr('AppxManifest.xml', manifest)
+        archive.writestr('app/resources/install-stamp.json', json.dumps({
+            'tag': tag, 'commit': commit, 'baseVersion': tag[1:],
+        }))
+        archive.writestr('app/Hermes%20Agent.exe', b'stable-exe-bytes')
+    probed = []
+
+    def probe(executable: Path) -> str:
+        probed.append(executable.read_bytes())
+        return '2026.7769.1898.0'
+
+    out = root / 'metadata-windows-x64.json'
+    record('windows', 'x64', root, tag, commit, out, executable_version_probe=probe)
+    assert json.loads(out.read_text(encoding='utf-8-sig'))['executableVersion'] == '2026.7769.1898.0'
+    assert probed == [b'stable-exe-bytes']
 
 
 @pytest.fixture
@@ -102,6 +192,9 @@ def staged_candidate(tmp_path, r2_server, https_origin):
             metadata.write_text(json.dumps(row), encoding='utf-8')
             includes = [package, metadata.name]
             if platform == 'macos':
+                dmg = package.removesuffix('.zip') + '.dmg'
+                (built / dmg).write_bytes(b'macOS dmg transport fixture')
+                includes.append(dmg)
                 feed = f'{arch}-stable-mac.yml'
                 (built / feed).write_text(legs[feed], encoding='utf-8')
                 includes.append(feed)
@@ -226,7 +319,7 @@ def test_candidate_publication_and_store_selection(tmp_path, monkeypatch, r2_ser
     with pytest.raises(ValueError, match='one Store candidate'):
         materialize(missing, tmp_path / 'missing-store', public_base=base, store_only=True)
     changed = copy.deepcopy(manifest)
-    changed['files'][0]['sha256'] = 'b' * 64
+    next(f for f in changed['files'] if f['path'].endswith('.zip'))['sha256'] = 'b' * 64
     with pytest.raises(ValueError, match='receipts differ'):
         materialize(changed, tmp_path / 'bad', public_base=base)
 
@@ -238,8 +331,10 @@ def test_candidate_publication_and_store_selection(tmp_path, monkeypatch, r2_ser
     artifacts.promote(manifest, tmp_path / 'promote', base)
     puts = [path for method, path, _ in r2_server.requests if method == 'PUT']
     assert puts == ['/hermes-releases/' + name for name in (
-        'releases/darwin/stable/stable-mac.yml', 'releases/win32/stable/stable.appinstaller',
-        'releases/termux/stable/dists/hermes-stable/Release', 'releases/termux/stable/dists/hermes-stable/InRelease')]
+        'releases/darwin/stable/stable-mac.yml', 'releases/darwin/stable/HermesBundled-mac-arm64.dmg',
+        'releases/win32/stable/stable.appinstaller',
+        'releases/termux/stable/dists/hermes-stable/Release', 'releases/termux/stable/dists/hermes-stable/InRelease',
+        'releases/stable/index.html')]
     # Promotion materializes only feed legs and indexes; packages stay receipt-bound on R2.
     for item in manifest['files']:
         local = tmp_path / 'promote' / item['path']
@@ -322,6 +417,61 @@ def test_promote_refuses_when_the_macos_feed_is_missing(tmp_path, monkeypatch, r
                 if method == 'PUT' and '/releases/win32/stable/' in path]
 
 
+
+def _controller_promote(monkeypatch, https_origin, manifest, base, root, *, pinned=None):
+    """Promote the way publish_release does: admit the candidate through accepted_stable against
+    a separately pinned digest (the release receipt's), then promote_stable_feeds. Never the CLI."""
+    import urllib.request
+
+    from scripts.releases import channel_releases, r2
+    from scripts.releases.channels import ChannelPublisher, R2ChannelStore
+
+    monkeypatch.setattr(urllib.request, 'urlopen', https_origin.opener)
+    key = f"releases/tag/{manifest['archive']}/release-candidates.json"
+    pinned = pinned or hashlib.sha256(https_origin.store[key][0]).hexdigest()
+    publisher = ChannelPublisher(R2ChannelStore(*r2.credentials()), 'fixture/release', base,
+                                 authorize=lambda _action, _record: None)
+    env = {'CANDIDATE_MANIFEST_SHA256': pinned, 'CANDIDATE_MANIFEST_URL': f'{base}/{key}'}
+    candidate = channel_releases.accepted_stable(publisher, env, manifest['archive'], manifest['commit'],
+                                                 manifest['releaseEpoch'], lanes=lane_set.DEFAULT)
+    channel_releases.promote_stable_feeds(candidate, root, base)
+
+
+@pytest.mark.parametrize('tag_key', ['tag', 'archive'])
+def test_standalone_promote_refuses_a_stable_candidate_the_controller_promotes(
+        tmp_path, monkeypatch, r2_server, https_origin, staged_candidate, tag_key):
+    """Stable promotion runs only through the serialized controller: the CLI refuses both the
+    payload tag and the attempt ref before it reads anything, and the controller still promotes."""
+    import urllib.request
+
+    manifest, _, base = staged_candidate
+    monkeypatch.setattr(urllib.request, 'urlopen', https_origin.opener)
+    reads = []
+    r2_server.requests.clear()
+    with monkeypatch.context() as patch, pytest.raises(SystemExit) as refused:
+        patch.setattr(artifacts, 'read_admitted_candidate', lambda *args, **kwargs: reads.append(args) or manifest)
+        artifacts.main(['promote', '--root', str(tmp_path / 'cli'), '--tag', manifest[tag_key],
+                        '--archive', manifest['archive'], '--commit', manifest['commit'], '--public-base', base])
+    assert refused.value.code == 2
+    assert not reads
+    assert not [path for method, path, _ in r2_server.requests if method == 'PUT']
+
+    _controller_promote(monkeypatch, https_origin, manifest, base, tmp_path / 'controller')
+    for key in ('releases/win32/stable/stable.appinstaller', 'releases/darwin/stable/stable-mac.yml',
+                'releases/darwin/stable/HermesBundled-mac-arm64.dmg', 'releases/stable/index.html'):
+        assert key in r2_server.store, key
+
+
+def test_standalone_promote_still_promotes_a_canary_candidate(tmp_path, monkeypatch):
+    tag, archive, commit = 'canary.20261120T064609Z-v1.2.3', 'canary.20261120T064609Z-v1.2.3', 'a' * 40
+    candidate = {'tag': tag, 'archive': archive}
+    promoted = []
+    monkeypatch.setattr(artifacts, 'read_admitted_candidate', lambda *args, **kwargs: candidate)
+    monkeypatch.setattr(artifacts, 'promote', lambda manifest, root, base: promoted.append(manifest['tag']))
+    artifacts.main(['promote', '--root', str(tmp_path), '--tag', tag, '--archive', archive,
+                    '--commit', commit, '--public-base', 'https://example.invalid'])
+    assert promoted == [tag]
+
 @pytest.fixture
 def candidate_workflow_step(tmp_path, r2_server, staged_candidate):
     """Run real workflow shell/CLIs; replace only service endpoints and tool setup."""
@@ -331,13 +481,9 @@ def candidate_workflow_step(tmp_path, r2_server, staged_candidate):
         (ROOT / '.github/workflows/stable-release.yml').read_text(encoding='utf-8-sig'))['jobs']
     render = next(step for step in stable_jobs['complete']['steps']
                   if step.get('name', '').startswith('Render the admitted'))
-    jobs['controller-promote'] = {
-        'env': jobs['stable-publish']['env'],
-        'steps': [
-            {'run': 'python -m scripts.bundles.release_artifacts promote --root verified'},
-            render,
-        ],
-    }
+    # The controller promotes in process (channel_releases.promote_stable_feeds); only the renderer
+    # step runs through the workflow shell.
+    jobs['controller-promote'] = {'env': jobs['stable-publish']['env'], 'steps': [render]}
     shutil.copytree(fetched, tmp_path / 'candidates')
     bin_dir = tmp_path / 'bin'
     bin_dir.mkdir()
@@ -409,7 +555,7 @@ def candidate_workflow_step(tmp_path, r2_server, staged_candidate):
 
 @pytest.mark.parametrize('ambient_needs', [None, {job: {'result': 'skipped'} for job in SMOKE_RESULTS}])
 @pytest.mark.platforms('posix')
-def test_candidate_smoke_survives_real_promotion_and_renderer(tmp_path, r2_server, staged_candidate,
+def test_candidate_smoke_survives_real_promotion_and_renderer(tmp_path, monkeypatch, r2_server, staged_candidate,
                                                            candidate_workflow_step, ambient_needs, https_origin):
     manifest, _, base = staged_candidate
     jobs, run, body_file = candidate_workflow_step
@@ -418,6 +564,7 @@ def test_candidate_smoke_survives_real_promotion_and_renderer(tmp_path, r2_serve
     # An unrelated orphan object must not acquire the candidate's Passed label.
     orphan = f"releases/tag/{manifest['archive']}/HermesBundled-1.2.3-linux-x64.AppImage"
     r2_server.store[orphan] = (b'orphan transport fixture', '"e"')
+    _controller_promote(monkeypatch, https_origin, manifest, base, tmp_path / 'verified')
     for step in jobs['controller-promote']['steps']:
         if 'run' in step:
             result = run('controller-promote', step, {'validate': {'result': 'success'}},
@@ -435,14 +582,20 @@ def test_candidate_smoke_survives_real_promotion_and_renderer(tmp_path, r2_serve
 
 
 @pytest.mark.platforms('posix')
-def test_candidate_smoke_admission_fails_before_publication(tmp_path, r2_server, staged_candidate, candidate_workflow_step):
-    manifest, _, _ = staged_candidate
+def test_candidate_smoke_admission_fails_before_publication(tmp_path, monkeypatch, r2_server, https_origin,
+                                                            staged_candidate, candidate_workflow_step):
+    manifest, _, base = staged_candidate
     jobs, run, body_file = candidate_workflow_step
     key = f"releases/tag/{manifest['archive']}/release-candidates.json"
     raw = r2_server.store[key][0]
-    for fault, message in [('legacy', 'Candidate manifest'), ('missing', 'Candidate smoke results'),
-                           ('failed', 'smoke-win32-x64=failure'), ('identity', 'release identity'),
-                           ('tampered', 'digest mismatch')]:
+    # The controller reads the archive through its pinned-digest channel reader, so a tampered
+    # manifest fails there as a SHA256 mismatch; the renderer's own read calls it a digest mismatch.
+    for fault, message, controller_message in [
+            ('legacy', 'Candidate manifest', 'Candidate manifest'),
+            ('missing', 'Candidate smoke results', 'Candidate smoke results'),
+            ('failed', 'smoke-win32-x64=failure', 'smoke-win32-x64=failure'),
+            ('identity', 'release identity', 'release identity'),
+            ('tampered', 'digest mismatch', 'SHA256 mismatch')]:
         invalid = copy.deepcopy(manifest)
         if fault == 'legacy':
             invalid['schema'] = 1
@@ -457,7 +610,13 @@ def test_candidate_smoke_admission_fails_before_publication(tmp_path, r2_server,
         r2_server.store[key] = (data, '"fault"')
         digest = hashlib.sha256(raw if fault == 'tampered' else data).hexdigest()
         before = dict(r2_server.store), body_file.read_bytes()
-        # Exercise both commands independently, not just shell short-circuiting.
+        # Exercise the controller's admission and the renderer step independently.
+        r2_server.requests.clear()
+        with pytest.raises(ValueError, match=controller_message):
+            _controller_promote(monkeypatch, https_origin, manifest, base, tmp_path / f'promote-{fault}',
+                                pinned=digest)
+        assert not any(method == 'PUT' for method, _, _ in r2_server.requests)
+        assert (dict(r2_server.store), body_file.read_bytes()) == before
         for step in jobs['controller-promote']['steps']:
             if 'run' not in step:
                 continue

@@ -58,6 +58,8 @@ _CELL_SPILL_READ_CAP = 4 * _RUNNER_SPILL_CHARS + 4096
 # Shared by both generated runners (which define _CAPTURE_LIMIT first): exec one request in the
 # persistent GLOBALS namespace, build the payload. `__name__` is `__main__` as on the per-call path.
 RUNNER_CELL_SOURCE = '''\
+import linecache
+
 GLOBALS = {"__name__": "__main__", "__builtins__": __builtins__}
 
 
@@ -109,13 +111,18 @@ def run_cell(request, execution_count):
     # An imported module keeps the code it was loaded with: name the ones edited on disk since
     # the last cell, so a fix that "still fails" is not mistaken for a wrong fix.
     stale_modules = _scan_edited_modules(True)
+    # A per-cell name registered in linecache lets inspect.getsource() and tracebacks read a
+    # cell's code back in later cells; one shared "<cell>" name had no source to show.
+    code, filename = request["code"], "<cell-%d>" % execution_count
+    linecache.cache[filename] = (len(code), None, code.splitlines(True), filename)
     try:
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            exec(compile(request["code"], "<cell>", "exec"), GLOBALS)
+            exec(compile(code, filename, "exec"), GLOBALS)
     except SystemExit as exc:
         status, trace = "exit", "SystemExit: " + repr(exc.code)
-    except BaseException:
-        status, trace = "error", traceback.format_exc()
+    except BaseException as exc:
+        # Drop this runner frame: the model should see its own code, not the kernel's exec call.
+        status, trace = "error", "".join(traceback.format_exception(type(exc), exc, exc.__traceback__.tb_next))
     _scan_edited_modules(False)  # modules this cell imported are watched from now on
     stdout_text, stdout_clipped = _clip(out.getvalue())
     stderr_text, stderr_clipped = _clip(err.getvalue())

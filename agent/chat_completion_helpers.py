@@ -52,6 +52,7 @@ from agent.reasoning_summaries import (append_streamed_reasoning_detail, redact_
 from agent.local_prompt_progress import prompt_progress, with_prompt_progress
 from agent.repetition_guard import RunawayStreamWatch, is_repetition_dominated
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
+from agent.turn_preflight_gate import StreamBudgetCut
 from tools.terminal_tool_lifecycle import is_persistent_env
 from utils import base_url_host_matches, base_url_hostname, env_float, env_int
 from session_rules.turns import _IMAGE_PART_TYPES
@@ -2986,7 +2987,7 @@ class _StreamingCall(StreamingWaitMonitor):
         # Own watch: the display takes one reasoning representation per chunk, but the plain
         # field is persisted either way and need not mirror the details.
         detail_watch = RunawayStreamWatch()
-        runaway = None
+        runaway, budget = None, StreamBudgetCut(self.agent)  # budget: the --run-budget deadline (#127773)
 
         llamacpp = _streams_llamacpp(self.agent)
 
@@ -3025,8 +3026,8 @@ class _StreamingCall(StreamingWaitMonitor):
 
         for chunk in _iter_provider_stream_chunks(stream, response=lambda: self._attempt_stream_response):
             is_progress = self._take_chunk(_diag, chunk, llamacpp)
-            if self.agent._interrupt_requested:
-                _close_half_read_stream("interrupt_stream_close_failed")
+            if self.agent._interrupt_requested or budget.reached():
+                _close_half_read_stream("run_budget_stream_close_failed" if budget.spent else "interrupt_stream_close_failed")
                 break
             if not self._stream_attempt_is_active(stream_attempt_id):
                 self._discard_stale_stream_chunk(stream_attempt_id, chunk)
@@ -3143,14 +3144,14 @@ class _StreamingCall(StreamingWaitMonitor):
         if stream.final_response is not None:
             return self._adopt_final_response(stream.final_response)
         response = self._finish_chat_stream(stream, role, content_parts, reasoning_parts, tool_calls_acc,
-            "length" if runaway else finish_reason, model_name, usage_obj, flush_pending=_flush_pending_stream_text,
+            "length" if runaway or budget.spent else finish_reason, model_name, usage_obj, flush_pending=_flush_pending_stream_text,
             response_id=response_id, upstream_provider=upstream_provider, reasoning_details=reasoning_details,
             refusal_parts=refusal_parts)
         carriers.apply(response)
         if runaway:
             # Cut, not finished: the length path ends the turn on this mark instead of continuing.
             response._runaway_repetition = True
-        return response
+        return budget.mark(response)  # cut, not finished: the length path ends the turn and keeps the text
 
     def _log_runaway_cut(self, channel: str) -> None:
         logger.warning(
@@ -3325,7 +3326,7 @@ class _StreamingCall(StreamingWaitMonitor):
         _stream_context = {"manager": None, "stream": None}
         base_final_message = None
         text_watch, thinking_watch = RunawayStreamWatch(), RunawayStreamWatch()
-        runaway = None
+        runaway, budget = None, StreamBudgetCut(self.agent)  # budget: the --run-budget deadline (#127773)
 
         from agent import relay_llm
         from agent.anthropic_adapter import normalize_stream_usage, sanitize_anthropic_kwargs
@@ -3357,7 +3358,7 @@ class _StreamingCall(StreamingWaitMonitor):
             for event in stream:
                 saw_stream_event = True
                 self._count_chunk(_diag, event)
-                if self.agent._interrupt_requested:
+                if self.agent._interrupt_requested or budget.reached():
                     break
                 event_type = getattr(event, "type", None)
                 if event_type == "message_stop":
@@ -3389,7 +3390,7 @@ class _StreamingCall(StreamingWaitMonitor):
                             runaway = "reasoning"
                             break
             raw_stream = _stream_context["stream"]
-            if not self.agent._interrupt_requested and raw_stream is not None and not runaway:
+            if not self.agent._interrupt_requested and raw_stream is not None and not runaway and not budget.spent:
                 if not saw_message_stop:
                     raise EmptyStreamError(
                         "Anthropic Messages stream ended before message_stop (possible upstream stream drop)."
@@ -3411,13 +3412,11 @@ class _StreamingCall(StreamingWaitMonitor):
 
         if self.agent._interrupt_requested:
             return None
-        if runaway:
-            self._log_runaway_cut(runaway)
+        if runaway or budget.spent:
             # No message_stop, so no final message: the SDK's snapshot is what streamed so far.
             message = accumulator.response(_stream_context["stream"].current_message_snapshot)
             message.stop_reason = "max_tokens"
-            message._runaway_repetition = True  # same hand-off as the chat_completions wire
-            return message
+            return budget.mark_cut(message, runaway, self._log_runaway_cut)  # same hand-off as the chat_completions wire
         if base_final_message is not None:
             self._check_anthropic_message(base_final_message, tool_drop=False)
             if not stream.output_modified:

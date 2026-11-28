@@ -1,0 +1,34 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: warden
+description: Find tokens, check prices, quote swaps and trade onchain with Warden.
+source: https://tokens.wardenprotocol.org/mcp
+
+# Warden Token Terminal hosts a remote MCP server over Streamable HTTP with
+# native OAuth 2.1 + Dynamic Client Registration
+# (/.well-known/oauth-authorization-server advertises registration_endpoint).
+# Market tools (list_chains, search_tokens, trending_tokens, price_history,
+# quote_swap, swap_status) answer without a token; wallet tools need sign-in.
+transport:
+  type: http
+  url: https://tokens.wardenprotocol.org/mcp
+
+auth:
+  type: oauth
+
+suggest:
+  keywords:
+    - warden
+    - token terminal
+    - onchain trading
+  hosts:
+    - wardenprotocol.org
+    - tokens.wardenprotocol.org
+
+post_install: |
+  On first connection Hermes opens a browser to sign in to Warden
+  (or run `hermes mcp login warden`). Wallet and trading tools act
+  within the limits you set in Warden under Portfolio > Agent access.
+  Restart the session so tools load.

@@ -1,0 +1,30 @@
+name: straitly
+title: Straitly
+repo: https://github.com/Straitly-ai/hermes-straitly
+sha: 42e12b63c77da5fd4f39956b38378e58af312d7c
+description: >-
+  Straitly OpenAI-compatible AI gateway: one API key for 100+ models including Claude, GPT,
+  Gemini, Grok and DeepSeek, with the /model picker populated from the live GET /v1/models
+  catalog. Disclosure: registers one model provider profile and nothing else (no tools, hooks,
+  middleware, shell commands, background processes or self-updating code). Prompts, conversation
+  history, tool definitions, tool results, attached images and STRAITLY_API_KEY are sent through
+  Hermes' client to https://api.straitly.ai/v1 (or STRAITLY_BASE_URL if set) and relayed to the
+  upstream model provider or contracted inference infrastructure provider serving the chosen
+  model, subject to that provider's policies. Per https://straitly.ai/privacy, Straitly does not
+  store prompt or response content except provider error strings on failed requests and refusal
+  categories/explanations on policy refusals, logs request metadata (timestamps, model, token
+  counts, byte size, latency, status, streaming flag, opaque request id and key id) for activity
+  logs, analytics and billing, and does not train on user data. Usage is billed per token from
+  prepaid credits with no subscription, no minimum and no charge for failed requests; the plugin
+  itself makes no payments.
+maintainer: Straitly-ai
+tier: community
+category: models
+docs_url: https://github.com/Straitly-ai/hermes-straitly#readme
+version: "0.1.0"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - STRAITLY_API_KEY

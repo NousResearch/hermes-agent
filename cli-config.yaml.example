@@ -1973,6 +1973,13 @@ display:
   #   false: Full ASCII banner with tool/skill summary (default)
   compact: false
 
+  # OSC 8 hyperlink on the banner title (links the version label to the GitHub release tag).
+  #   true:  Hyperlink enabled (default)
+  #   false: Plain text. Use this for terminals whose OSC parsing leaks the escape sequence
+  #          payload as visible text (e.g. SecureCRT leaks "d=<id>;<release URL>" and the
+  #          panel title wraps). The label text is identical either way.
+  banner_hyperlinks: true
+
   # Tool progress display level (CLI, gateway, and the TUI/Desktop tool feed)
   #   off:     Silent — no tool activity shown, just the final response
   #   new:     Show a tool indicator only when the tool changes (skip repeats)

@@ -211,6 +211,9 @@ def _cli_config_defaults():
             # Also clear scrollback on redraw/resize recovery; off because users prefer history.
             "cli_rebuild_scrollback_on_redraw": False,
             "persist_prompts": True,  # one-line summary of resolved modal prompts into scrollback
+            # OSC 8 hyperlink on the banner's release link; set false for terminals whose OSC
+            # parsing leaks the escape payload as text (e.g. SecureCRT) — see hermes_cli.banner
+            "banner_hyperlinks": True,
             "skin": "default",
         },
         "code_execution": {"timeout": 300, "max_tool_calls": 50},

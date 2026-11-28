@@ -81,3 +81,53 @@ def test_baked_banner_uses_live_identity(monkeypatch):
 
     monkeypatch.setattr(version_info, "get_code_identity", lambda: {"short_sha": "a1b2c3d4"})
     assert banner._baked_banner_state() == {"upstream": "a1b2c3d4", "local": "a1b2c3d4", "ahead": 0}
+
+
+def _render_banner_with_release_link(monkeypatch) -> str:
+    """Render the full banner with a fixed release tag, terminal-mode rich, and return raw output."""
+    import io
+
+    buf = io.StringIO()
+    with (
+        patch.object(model_tools, "check_tool_availability", return_value=([], [])),
+        patch.object(banner, "get_available_skills", return_value={}),
+        patch.object(banner, "get_update_result", return_value=None),
+        patch.object(banner, "get_latest_release_tag",
+                     return_value=("v9.9.9", "https://github.com/NousResearch/hermes-agent/releases/tag/v9.9.9")),
+        patch.object(tools.mcp_tool_discovery, "get_mcp_status", return_value=[]),
+        patch.object(banner, "_active_skin", return_value=None),
+    ):
+        console = Console(file=buf, force_terminal=True, color_system="truecolor", width=100)
+        banner.build_welcome_banner(console=console, model="m", cwd="/tmp", tools=[],
+                                    get_toolset_for_tool=lambda _: None)
+    return buf.getvalue()
+
+
+def test_banner_title_hyperlinks_by_default(monkeypatch):
+    """Default config: the version label carries an OSC 8 sequence (id param included, rich-style)."""
+    monkeypatch.setattr(banner, "_banner_hyperlinks_enabled", lambda: True)
+    out = _render_banner_with_release_link(monkeypatch)
+    assert "\x1b]8;id=" in out
+    assert "releases/tag/v9.9.9\x1b\\" in out
+
+
+def test_banner_hyperlinks_config_flag_strips_osc8(monkeypatch):
+    """display.banner_hyperlinks: false must remove the OSC 8 bytes entirely, keep the label."""
+    monkeypatch.setattr(banner, "_banner_hyperlinks_enabled", lambda: False)
+    out = _render_banner_with_release_link(monkeypatch)
+    assert "\x1b]8;" not in out
+    assert "Hermes Agent v" in out
+
+
+def test_banner_hyperlinks_reads_display_config(monkeypatch):
+    """The flag reads display.banner_hyperlinks from config, defaults true, and survives config errors."""
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"display": {"banner_hyperlinks": False}})
+    assert banner._banner_hyperlinks_enabled() is False
+    monkeypatch.setattr("hermes_cli.config.load_config", dict)
+    assert banner._banner_hyperlinks_enabled() is True
+
+    def boom():
+        raise RuntimeError("config unreadable")
+
+    monkeypatch.setattr("hermes_cli.config.load_config", boom)
+    assert banner._banner_hyperlinks_enabled() is True

@@ -393,6 +393,21 @@ class TestFleetClassification:
 
         assert fleet[0]["served_profiles"] == ["default", "coder"]
 
+    def test_served_profiles_from_identify_homes_become_profile_names(self, monkeypatch, tmp_path):
+        """``identify`` names each served profile by its home; the row carries the names."""
+        default_home = tmp_path / ".hermes"
+        coder_home = default_home / "profiles" / "coder"
+        monkeypatch.setenv("HERMES_HOME", str(default_home))
+        served = [
+            {"profile_id": str(default_home), "home": str(default_home)},
+            {"profile_id": str(coder_home), "home": str(coder_home)},
+            {"profile_id": str(tmp_path / "elsewhere"), "home": str(tmp_path / "elsewhere")},
+            "coder",
+        ]
+        row = ur._fleet_row("default", 1, "a", "1", "a", served_profiles=served)
+        assert row["served_profiles"] == ["default", "coder"]
+        assert "served_profiles" not in ur._fleet_row("default", 1, "a", "1", "a", served_profiles=["coder", 5])
+
     def test_stale_gateway(self, monkeypatch, tmp_path):
         fleet = self._fleet_with(
             monkeypatch, tmp_path,

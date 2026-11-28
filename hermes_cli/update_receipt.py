@@ -1136,11 +1136,36 @@ def _fleet_row(
     # list. Keep the field only when its shape is usable: callers use it to
     # discharge per-profile restart obligations, so corrupt status must not
     # widen coverage.
-    if isinstance(served_profiles, list) and served_profiles and all(
-        isinstance(name, str) and name for name in served_profiles
-    ):
-        row["served_profiles"] = list(dict.fromkeys(served_profiles))
+    served = _served_profile_names(served_profiles)
+    if served:
+        row["served_profiles"] = served
     return row
+
+
+def _served_profile_names(served_profiles: Any) -> list[str]:
+    """Profile names from a ``served_profiles`` claim, deduplicated in order.
+
+    The runtime status records bare names; the unified runtime's ``identify`` answers
+    ``{"profile_id", "home"}`` entries, reduced here to the profile owning that home. An
+    entry that names no profile home is dropped rather than guessed; any other entry marks
+    the whole claim corrupt.
+    """
+    if not isinstance(served_profiles, list):
+        return []
+    from hermes_constants import profile_name_for_home
+
+    names: list[str] = []
+    for entry in served_profiles:
+        if isinstance(entry, dict):
+            home = entry.get("home") or entry.get("profile_id")
+            name = profile_name_for_home(home) if isinstance(home, str) else None
+            if name:
+                names.append(name)
+        elif isinstance(entry, str) and entry:
+            names.append(entry)
+        else:
+            return []
+    return list(dict.fromkeys(names))
 
 
 # Runtime-status states that do not describe a gateway that should be running now — no down row.

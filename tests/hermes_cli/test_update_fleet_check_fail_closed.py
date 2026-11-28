@@ -238,3 +238,39 @@ def test_same_sha_retry_adds_newly_stopped_unmapped_debt_to_an_existing_inventor
     assert fleet._fleet_restart_obligation_armed()
     fleet_rows.append({"profile": "work", "state": "current", "code_sha": "head", "pid": 9})
     assert fleet._marker_only_restart_obsolete() is True
+
+
+def test_multiplexer_identify_served_homes_settle_the_unmapped_stop_debt(monkeypatch, tmp_path):
+    # The live multiplexer's `identify` lists each served profile as `{profile_id, home}`. Those
+    # entries must reach the fleet row as profile names, or the unmapped gateway it replaced never
+    # finds its successor and the restart warning outlives every `hermes gateway restart`.
+    from hermes_cli import update_cmd_fleet as fleet, update_host_obligation as host, update_receipt
+
+    default_home = tmp_path / ".hermes"
+    coder_home = default_home / "profiles" / "coder"
+    coder_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(default_home))
+    monkeypatch.setattr("hermes_cli.profiles._get_default_hermes_home", lambda: default_home)
+    monkeypatch.setattr("hermes_cli.profiles._get_profiles_root", lambda: default_home / "profiles")
+    monkeypatch.setattr(
+        "hermes_cli.version_info.get_code_identity",
+        lambda refresh=False: {"sha": "head", "short_sha": "head", "version": "1.0", "source": "git"},
+    )
+    identity = {"pid": 71272, "code_sha": "head", "code_version": "1.0", "served_profiles": [
+        {"profile_id": str(default_home), "home": str(default_home)},
+        {"profile_id": str(coder_home), "home": str(coder_home)},
+    ]}
+    monkeypatch.setattr(
+        update_receipt, "_socket_identity", lambda home: (71272, identity) if home == default_home else None)
+    monkeypatch.setattr(update_receipt, "_gateway_code_root", lambda pid, home: None)
+    monkeypatch.setattr(host, "host_obligation_path", lambda: tmp_path / "host-update-restart.json")
+    monkeypatch.setattr(fleet, "_current_checkout_sha", lambda: "head")
+    fleet._write_fleet_restart_pending_marker(expected_sha="head", runtimes=[
+        {"kind": "gateway", "profile": "default", "pid": 21087, "supervisor": "launchd"},
+        {"kind": "gateway", "profile": None, "pid": 21087, "stopped_unmapped": True},
+    ])
+
+    rows = update_receipt.collect_fleet_versions()
+    assert [(row["profile"], row["state"], row.get("served_profiles")) for row in rows] == [
+        ("default", "current", ["default", "coder"])]
+    assert fleet._marker_only_restart_obsolete() is True

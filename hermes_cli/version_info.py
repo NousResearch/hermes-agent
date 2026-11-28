@@ -15,6 +15,7 @@ import json
 import subprocess
 import tomllib
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Literal, cast
 
@@ -322,6 +323,34 @@ def get_version_info() -> VersionInfo:
 
     _cached_version_info = info
     return info
+
+
+def release_date_text() -> str:
+    """The release date printed beside the version: ``YYYY.M.D`` for the running commit.
+
+    ``commit_date`` is authoritative provenance — the install stamp's ``commitDate``
+    for packaged builds, ``git log -1 --format=%ct`` for source checkouts — and
+    :func:`get_version_info` has already resolved and cached it, so formatting it
+    adds no git call. The epoch is rendered in the process's local timezone and
+    without zero padding, keeping the shipped ``2026.9.24`` shape.
+
+    ``__release_date__`` is only the fallback when there is no provenance at all
+    (no stamp, no git), or a malformed epoch that cannot be formatted.
+    """
+    commit_date = getattr(get_version_info(), "commit_date", None)
+    if commit_date:
+        try:
+            stamped = datetime.fromtimestamp(commit_date)
+        except (OverflowError, OSError, ValueError):
+            pass
+        else:
+            return f"{stamped.year}.{stamped.month}.{stamped.day}"
+
+    # Read the package attribute at call time: it is the fallback contract, and
+    # callers (and tests) may override it on the package.
+    from hermes_cli import __release_date__
+
+    return __release_date__
 
 
 def hermes_user_agent(product: str = "hermes-cli") -> str:

@@ -178,7 +178,7 @@ class CLIStreamMixin:
         if flush_text:
             self._emit_reasoning_preview(flush_text)
 
-    def _format_submitted_user_message_preview(self, user_input: str) -> str:
+    def _format_submitted_user_message_preview(self, user_input: str, *, full: bool = False) -> str:
         """Format the submitted user-message scrollback preview."""
         from cli import _accent_hex, datetime
         ts_suffix = (
@@ -189,6 +189,11 @@ class CLIStreamMixin:
         mark = _escape(prompt_glyph()) if is_modern(self) else "●"
         if len(lines) <= 1:
             return f"[bold {_accent_hex()}]{mark}[/] [bold]{_escape(user_input)}[/]{ts_suffix}"
+        if full:
+            return "\n".join([
+                f"[bold {_accent_hex()}]{mark}[/] [bold]{_escape(lines[0])}[/]{ts_suffix}",
+                *(f"[bold]{_escape(line)}[/]" for line in lines[1:]),
+            ])
 
         first_lines = max(1, int(getattr(self, "user_message_preview_first_lines", 2)))
         last_lines = max(0, int(getattr(self, "user_message_preview_last_lines", 2)))
@@ -228,8 +233,12 @@ class CLIStreamMixin:
 
         return paste_ref_re.sub(_expand_ref, text)
 
-    def _print_user_message_preview(self, user_input: str) -> None:
-        """Render a user message using the normal chat scrollback style."""
+    def _print_user_message_preview(self, user_input: str, *, full: bool = False) -> None:
+        """Render a user message using the normal chat scrollback style.
+
+        ``full`` replays the complete message instead of the live-chat head/tail
+        preview; resume transcript mode uses it so old turns are not cut in the middle.
+        """
         from cli import ChatConsole, _accent_hex, _cprint
         from tools.process_registry_notifications import TimelineNotification
         if isinstance(user_input, TimelineNotification):
@@ -246,7 +255,7 @@ class CLIStreamMixin:
         text = str(user_input or "")
         if "\n" in text:
             # soft_wrap in the glyph layout: the terminal wraps a long prompt, so a resize re-flows it.
-            ChatConsole().print(self._format_submitted_user_message_preview(text), soft_wrap=modern)
+            ChatConsole().print(self._format_submitted_user_message_preview(text, full=full), soft_wrap=modern)
         elif modern:
             from hermes_cli.cli_modern_layout import user_echo_markup
             ChatConsole().print(user_echo_markup(text, _accent_hex()), soft_wrap=True)

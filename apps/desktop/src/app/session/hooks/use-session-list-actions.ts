@@ -8,6 +8,7 @@ import {
   MESSAGING_SESSION_SOURCE_IDS,
   normalizeSessionSource
 } from '@/lib/session-source'
+import { $activeConnectionId } from '@/store/connections'
 import { gatewayActivationEpoch } from '@/store/gateway'
 import { currentGatewaySwitchToken, isCurrentGatewaySwitch } from '@/store/gateway-switch'
 import {
@@ -19,7 +20,8 @@ import {
   SIDEBAR_FILTERED_PAGE_SIZE,
   SIDEBAR_SESSIONS_PAGE_SIZE
 } from '@/store/layout'
-import { messagingTotalsKey, normalizeProfileKey, sidebarProfileForScope } from '@/store/profile'
+import { $activeGatewayProfile, messagingTotalsKey, normalizeProfileKey, sidebarProfileForScope } from '@/store/profile'
+import type { ProfileSessionRecoveryScope } from '@/store/profile-session-recovery'
 import {
   $messagingSessions,
   $selectedStoredSessionId,
@@ -182,6 +184,15 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
   const loadMoreMessagingRequestRef = useRef<Record<string, number>>({})
   const refreshMessagingSessionsRequestRef = useRef(0)
   const refreshSessionsRequestRef = useRef(0)
+  const sessionRefreshListenersRef = useRef(new Set<(scope: ProfileSessionRecoveryScope) => void>())
+
+  const onSessionsRefreshed = useCallback((listener: (scope: ProfileSessionRecoveryScope) => void) => {
+    sessionRefreshListenersRef.current.add(listener)
+
+    return () => {
+      sessionRefreshListenersRef.current.delete(listener)
+    }
+  }, [])
 
   useLayoutEffect(() => {
     profileScopeRef.current = profileScope
@@ -398,8 +409,14 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
         // Batched: one request opens each profile DB once and returns all three
         // source-scoped slices, instead of three separate listAllProfileSessions
         // calls that each reopened + re-counted every profile DB per refresh.
-        const fetchPage = () =>
-          listSidebarSessions({
+        let publishedConnectionId = $activeConnectionId.get()
+        let publishedProfile = normalizeProfileKey($activeGatewayProfile.get())
+
+        const fetchPage = () => {
+          publishedConnectionId = $activeConnectionId.get()
+          publishedProfile = normalizeProfileKey($activeGatewayProfile.get())
+
+          return listSidebarSessions({
             recentsProfile: sessionProfile,
             recentsLimit: limit,
             recentsExclude: SIDEBAR_EXCLUDED_SOURCES,
@@ -407,6 +424,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
             messagingLimit: MESSAGING_SECTION_LIMIT,
             messagingExclude: MESSAGING_EXCLUDED_SOURCES
           })
+        }
 
         let activationEpoch = gatewayActivationEpoch()
         let result = await fetchPage()
@@ -529,6 +547,14 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
           setMessagingTruncated(prev =>
             messagingErrors?.length ? prev : result.messaging.sessions.length >= MESSAGING_SECTION_LIMIT
           )
+
+          // Resolving a discarded refresh does not mean the list was published.
+          // Notify only the owning request, including signature-identical pages.
+          if (owns() && gatewayActivationEpoch() === activationEpoch) {
+            for (const listener of sessionRefreshListenersRef.current) {
+              listener({ connectionId: publishedConnectionId, profile: publishedProfile })
+            }
+          }
         }
       } catch (error) {
         if (owns() && showLoading) {
@@ -610,6 +636,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
   return {
     loadMoreMessagingForPlatform,
     loadMoreSessions,
+    onSessionsRefreshed,
     refreshCronJobs,
     refreshMessagingSessions,
     refreshSessions

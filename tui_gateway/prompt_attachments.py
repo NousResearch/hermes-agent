@@ -261,11 +261,29 @@ def _stage_browser_file_attachment(session: dict, staged_upload: object, name: s
         staged=True)
 
 
+def _is_composer_paste(session: dict, path: Path) -> bool:
+    """Only reuse a paste that the session's own cache mounts can expose.
+
+    The workspace guard also admits installation-root pastes for named profiles,
+    but remote/container backends mount only the active profile's cache dirs.
+    A paste from a different profile must still be copied into this session's
+    attachments/ so its @file: reference remains reachable.
+    """
+    from pathlib import Path
+    from agent.context_references import COMPOSER_PASTES_DIRNAME
+
+    home = Path(session.get("profile_home") or _hermes_home).resolve()
+    return path.is_relative_to(home / COMPOSER_PASTES_DIRNAME)
+
+
 def _referenced_in_place(session: dict, path: Path, workspace: Path, *, staged: bool) -> bool:
     """Whether an attached host file is referenced where it is: inside the workspace, and not a
-    browser upload staged in the profile's ``uploads/`` (pruned after 7 days, so always copied)."""
-    if staged or not path.is_relative_to(workspace):
+    browser upload staged in the profile's ``uploads/`` (pruned after 7 days, so always copied).
+    A Desktop paste is the one outside-workspace file referenced in place."""
+    if staged:
         return False
+    if not path.is_relative_to(workspace):
+        return _is_composer_paste(session, path)
     try:
         from hermes_cli.staged_uploads import is_staged_upload
     except ImportError:

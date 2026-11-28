@@ -1771,6 +1771,8 @@ def _build_switch_result(st: _Switch) -> ModelSwitchResult:
     from hermes_cli.models import normalize_opencode_base_url, opencode_provider_family
     if opencode_provider_family(st.target_provider) is not None and isinstance(st.base_url, str):
         st.base_url = normalize_opencode_base_url(st.target_provider, st.api_mode, st.base_url)
+    from agent.model_metadata_memo_bounds import forget_route_context_length
+    forget_route_context_length(st.new_model, st.base_url)  # the switch re-reads the window (#159799)
 
     capabilities = get_model_capabilities(st.target_provider, st.new_model, allow_network=True)
     from agent.native_compaction import resolve_native_compaction_capabilities

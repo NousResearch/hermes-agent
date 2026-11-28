@@ -29,6 +29,21 @@ def remember_endpoint_models(memo_key: tuple[str, str], cache: dict[str, dict[st
     return cache
 
 
+def forget_route_context_length(model: str, base_url: str) -> None:
+    """Forget the cached window of a route the user just switched to, including the ``/models``
+    memo of its endpoint: a server restarted with a different window under the same model id is
+    asked again instead of answering from a memo of the old one (#159799)."""
+    from agent import model_metadata as mm  # facade seam: tests swap the memo dicts there
+    if not model or not base_url:
+        return
+    mm._invalidate_cached_context_length(model, base_url)
+    normalized = mm._normalize_base_url(base_url)
+    with MEMO_LOCK:
+        for memo_key in [k for k in mm._endpoint_model_metadata_cache if k[0] == normalized]:
+            mm._endpoint_model_metadata_cache.pop(memo_key, None)
+            mm._endpoint_model_metadata_cache_time.pop(memo_key, None)
+
+
 def bound_codex_caches(cache_key: str) -> None:
     """Before storing ``cache_key``, evict the stalest Codex token entry from both context memos.
     Caller holds ``MEMO_LOCK`` through its publish."""

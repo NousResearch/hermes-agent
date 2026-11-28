@@ -24,7 +24,7 @@ import asyncio
 import logging
 from functools import partial
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Literal, Optional, TypedDict
 
 from gateway.run_platform_reconcile import GatewayPlatformReconcileMixin
 from gateway.run_shutdown import _log_suppressed
@@ -39,6 +39,13 @@ _PROFILE_SIGNATURE_FILES = (".env",)  # config.yaml: the config backend's versio
 # read it can end in has no timeout of its own — on Windows the named pipe stalls there until
 # its peer answers — so the await needs one. A healthy identify answers in milliseconds.
 _OWN_GATEWAY_PROBE_TIMEOUT_SECS = 5.0
+
+
+class ProfileUnserveOutcome(TypedDict):
+    """Tracked authority work and this process's reservation, not external MCP effects."""
+
+    writer_settlement: Literal["settled", "retained"]
+    reservation: Literal["released", "retained"]
 
 
 def _stat_signature(path: Path) -> Optional[tuple]:
@@ -496,7 +503,7 @@ class GatewayProfileReconcileMixin(GatewayPlatformReconcileMixin):
             except Exception:
                 logger.warning("MCP tool discovery failed for profile '%s'", profile_name, exc_info=True)
 
-    async def _unserve_profile(self, name: str, home: Path) -> None:
+    async def _unserve_profile(self, name: str, home: Path) -> ProfileUnserveOutcome:
         """Stop and unroute one profile: cancel its reconnects, tear down its adapters, drop its
         bookkeeping and release this process's handles into its home so the deleter's rmtree succeeds.
         The releasing process is not always the deleter (#130244): under multiplexing THIS gateway
@@ -572,7 +579,7 @@ class GatewayProfileReconcileMixin(GatewayPlatformReconcileMixin):
                 # served set (ingress is gone above) but keeps its reservation and store handles until
                 # this process exits. Raising here aborted the reconcile for every other profile.
                 logger.error("[MULTIPLEX] Profile '%s' unrouted, but a turn outlived its Stop; ownership retained", name)
-                return
+                return {"writer_settlement": "retained", "reservation": "retained"}
             # The reservation (gateway.lock) is released LAST: a deleter waiting on it may rmtree the
             # home as soon as it goes, so every handle this process holds there must close first.
             try:
@@ -602,6 +609,7 @@ class GatewayProfileReconcileMixin(GatewayPlatformReconcileMixin):
             finally:
                 release_profile_home(self, home)
             logger.info("[MULTIPLEX] Profile '%s' unserved — %d adapter(s) stopped and unrouted", name, len(adapters))
+            return {"writer_settlement": "settled", "reservation": "released"}
 
 
 def _profile_lifecycle_verb(runner, *, serve: bool):
@@ -620,9 +628,9 @@ def _profile_lifecycle_verb(runner, *, serve: bool):
             if not serve:
                 if name not in known:
                     return {"error": f"profile '{name}' is not served"}
-                await runner._unserve_profile(name, known.pop(name))
+                retirement = await runner._unserve_profile(name, known.pop(name))
                 runner._record_served_profiles(active, list(known.items()))
-                return {"unserved": name, "served_profiles": runner.served_profile_names()}
+                return {"unserved": name, "served_profiles": runner.served_profile_names(), **retirement}
             installed = dict(profiles_to_serve(True, include_parked=True))
             if name not in installed:
                 return {"error": f"unknown profile '{name}'"}

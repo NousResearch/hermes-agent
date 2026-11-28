@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import functools
+import os
 import sys
 
 from hermes_cli import projects_db as pdb
@@ -130,6 +131,19 @@ def _print_project(proj) -> None:
             print(f"   {' *' if f.is_primary else '  '} {f.path}{f' ({f.label})' if f.label else ''}")
 
 
+def _warn_missing_folders(paths) -> None:
+    """Registration accepts any path (a remote terminal backend owns its own filesystem), but a local
+    typo or never-created folder is refused later at session start, so name it now."""
+    for path in paths:
+        if not os.path.isdir(path):
+            print(
+                f"project: warning: {path} is not a directory on this machine; sessions cannot start there "
+                "unless it exists where they run. Create it, or fix it with "
+                "`hermes project add-folder` / `remove-folder`.",
+                file=sys.stderr,
+            )
+
+
 @_db_command
 def _cmd_create(args, conn) -> int:
     pid = pdb.create_project(
@@ -144,6 +158,7 @@ def _cmd_create(args, conn) -> int:
         return 2
     print(f"Created project {proj.slug} ({pid})")
     _print_project(proj)
+    _warn_missing_folders(f.path for f in proj.folders)
     return 0
 
 
@@ -168,6 +183,7 @@ def _cmd_show(args, conn, proj) -> int:
 @_with_project
 def _cmd_add_folder(args, conn, proj) -> str:
     path = pdb.add_folder(conn, proj.id, args.path, label=args.label, is_primary=args.primary)
+    _warn_missing_folders([path])
     return f"Added {path} to {proj.slug}"
 
 

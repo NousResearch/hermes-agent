@@ -485,3 +485,51 @@ class TestHomeWorkingDirGuard:
         tracker = SubdirectoryHintTracker(working_dir=str(project))
         result = tracker.check_tool_call("read_file", {"path": str(sub / "f.py")})
         assert result is not None and "Package rules" in result
+
+
+def test_cursor_rule_types_split_startup_prompt_and_file_touch(tmp_path):
+    """A glob-scoped or description-only .mdc rule never rides the system prompt (only an index line
+    does); the glob rule's body reaches the model on the first tool call naming a matching file, once."""
+    from agent.prompt_builder import build_context_files_prompt
+
+    rules = tmp_path / ".cursor" / "rules"
+    rules.mkdir(parents=True)
+    (rules / "style.mdc").write_text("---\nalwaysApply: true\n---\nALWAYS body", encoding="utf-8")
+    (rules / "react.mdc").write_text(
+        "---\ndescription: React rules\nglobs: *.tsx  # react only\nalwaysApply: false\n---\nGLOB body",
+        encoding="utf-8")
+    (rules / "deploy.mdc").write_text("---\ndescription: Deploy steps\n---\nDEPLOY body", encoding="utf-8")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "App.tsx").write_text("x", encoding="utf-8")
+
+    prompt = build_context_files_prompt(cwd=str(tmp_path), skip_soul=True)
+    assert "ALWAYS body" in prompt and "GLOB body" not in prompt and "DEPLOY body" not in prompt
+    assert "alwaysApply" not in prompt and "# react only" not in prompt
+    assert "- .cursor/rules/deploy.mdc — Deploy steps" in prompt
+    assert "- .cursor/rules/react.mdc — React rules (attached for files: *.tsx)" in prompt
+
+    tracker = SubdirectoryHintTracker(working_dir=str(tmp_path))
+    assert tracker.check_tool_call("read_file", {"path": "src/other.py"}) is None
+    hint = tracker.check_tool_call("read_file", {"path": "src/App.tsx"})
+    assert "GLOB body" in hint and ".cursor/rules/react.mdc" in hint and "DEPLOY body" not in hint
+    assert tracker.check_tool_call("write_file", {"path": str(tmp_path / "src" / "Other.tsx")}) is None
+
+    (tmp_path / "AGENTS.md").write_text("root rules", encoding="utf-8")  # shadows .cursor/rules at startup
+    shadowed = SubdirectoryHintTracker(working_dir=str(tmp_path))
+    assert shadowed.check_tool_call("read_file", {"path": "src/App.tsx"}) is None
+
+
+@pytest.mark.parametrize("front, globs, always", [
+    ("globs: *.ts, src/**/*.tsx  # web", ("*.ts", "src/**/*.tsx"), False),
+    ('globs: ["*.py", "tests/**"]\nalwaysApply: false # scoped', ("*.py", "tests/**"), False),
+    ("globs:\n  - '*.md'\n  - docs/**", ("*.md", "docs/**"), False),
+    ("alwaysApply: true  # everywhere", (), True),
+    ("", (), True),
+])
+def test_cursor_rule_front_matter_dialect(front, globs, always):
+    from agent.cursor_rules import glob_matches, parse_rule
+
+    rule = parse_rule("r.mdc", f"---\n{front}\n---\nbody")
+    assert (rule.globs, rule.always, rule.body) == (globs, always, "body")
+    assert glob_matches("*.tsx", "a/b/App.tsx") and glob_matches("src/**/*.tsx", "src/App.tsx")
+    assert not glob_matches("src/*.tsx", "src/a/App.tsx") and not glob_matches("*.ts", "App.tsx")

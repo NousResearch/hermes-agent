@@ -11,6 +11,7 @@ import shlex
 from pathlib import Path
 from typing import Dict, Any, Optional, Set
 
+from agent.cursor_rules import matching_rules, parse_rule
 from agent.prompt_builder import _read_text_with_timeout, _scan_context_content, _truncate_content
 from agent.search_policy import SEARCH_PRUNE_DIR_NAMES
 
@@ -145,6 +146,24 @@ def _is_home_like_working_dir(working_dir: Path) -> bool:
     return False
 
 
+def _glob_cursor_rules(working_dir: Path) -> tuple:
+    """Glob-scoped ``.cursor/rules/*.mdc`` rules of *working_dir*, only when they are the project context
+    type startup loaded (an AGENTS.md / CLAUDE.md / .hermes.md shadows them there, so it does here too)."""
+    from agent.prompt_builder import discover_context_files  # late import: prompt_builder imports this module
+    try:
+        if not (working_dir / ".cursor" / "rules").is_dir():
+            return ()
+        files = discover_context_files(working_dir)
+    except (OSError, ValueError, RuntimeError) as exc:  # best-effort context: never fail the tracker on it
+        logger.debug("cursor rule discovery failed in %s: %s", working_dir, exc)
+        return ()
+    if next((kind for kind, _label, _path, content in files if content), None) != "cursorrules":
+        return ()
+    rules = (parse_rule(label, content) for kind, label, _path, content in files
+             if kind == "cursorrules" and content and label.endswith(".mdc"))
+    return tuple(r for r in rules if r.globs and not r.always and r.body)
+
+
 class SubdirectoryHintTracker:
     """Track which directories the agent visits and load hints on first access.
 
@@ -161,6 +180,7 @@ class SubdirectoryHintTracker:
             # Hosted: the working dir names the agent's sandbox. Nothing is resolved or read here.
             self.enabled, self.working_dir, self._home_is_working_dir = False, Path(working_dir or "/"), True
             self._loaded_dirs, self._loaded_digests = {self.working_dir}, set()
+            self._cursor_rules, self._attached_rules = (), set()
             return
         self.enabled = enabled
         self.working_dir = Path(working_dir or os.getcwd()).resolve()
@@ -180,6 +200,8 @@ class SubdirectoryHintTracker:
         found = _first_hint_file(self.working_dir)
         if found and found[1]:
             self._loaded_digests.add(_digest(found[1]))
+        self._cursor_rules = () if self._home_is_working_dir else _glob_cursor_rules(self.working_dir)
+        self._attached_rules: set[str] = set()
 
     def rebind_working_dir(self, working_dir: str) -> None:
         """Re-anchor hint discovery to *working_dir* (a session workspace adoption)."""
@@ -204,6 +226,7 @@ class SubdirectoryHintTracker:
         found = _first_hint_file(self.working_dir)
         if found and found[1]:
             self._loaded_digests.add(_digest(found[1]))
+        self._cursor_rules, self._attached_rules = _glob_cursor_rules(self.working_dir), set()
 
     def check_tool_call(self, tool_name: str, tool_args: dict[str, Any]) -> Optional[str]:
         """Return formatted hint text for newly visited directories, or None."""
@@ -215,7 +238,29 @@ class SubdirectoryHintTracker:
         if self._home_is_working_dir:
             return None
         all_hints = [h for d in self._extract_directories(tool_name, tool_args) if (h := self._load_hints_for_directory(d))]
+        all_hints += self._cursor_rule_hints(tool_args)
         return "\n\n" + "\n\n".join(all_hints) if all_hints else None
+
+    def _cursor_rule_hints(self, args: dict[str, Any]) -> list:
+        """Bodies of glob-scoped ``.cursor/rules`` rules matching a file this call names, once per rule."""
+        hints = []
+        for key in ("path", "file_path") if self._cursor_rules else ():
+            val = args.get(key)
+            if not isinstance(val, str) or not val.strip():
+                continue
+            try:
+                p = Path(val).expanduser()
+                rel = (p if p.is_absolute() else self.working_dir / p).resolve().relative_to(self.working_dir).as_posix()
+            except (OSError, ValueError, RuntimeError):
+                continue
+            for rule in matching_rules(self._cursor_rules, rel):
+                if rule.label in self._attached_rules:
+                    continue
+                self._attached_rules.add(rule.label)
+                body = _truncate_content(_scan_context_content(rule.body, rule.label), rule.label,
+                                         max_chars=_MAX_HINT_CHARS, read_path=rule.label, queue_warning=False)
+                hints.append(f"[Cursor rule attached: {rule.label} (matches {rel})]\n{body}")
+        return hints
 
     def _extract_directories(self, tool_name: str, args: dict[str, Any]) -> list:
         """Extract directory paths from tool call arguments."""

@@ -1756,11 +1756,14 @@ def _load_claude_md(cwd_path: Path, context_length: Optional[int] = None) -> str
 
 
 def _load_cursorrules(cwd_path: Path, context_length: Optional[int] = None) -> str:
-    """.cursorrules + .cursor/rules/*.mdc — cwd only, concatenated."""
-    cursorrules_content = "".join(
-        f"## {label}\n\n{_scan_context_content(content, label)}\n\n"
-        for label, _path, content in _cursorrules_candidates(cwd_path) if content
-    )
+    """.cursorrules + always-apply .cursor/rules/*.mdc bodies, then an index of the scoped rules
+    (``agent/cursor_rules.py``: glob rules attach on file touch, description rules are read on demand)."""
+    from agent.cursor_rules import parse_rule, render_startup
+    found = [(label, content) for label, _path, content in _cursorrules_candidates(cwd_path) if content]
+    always, index = render_startup([parse_rule(label, content) for label, content in found if label.endswith(".mdc")])
+    parts = [(label, content) for label, content in found if not label.endswith(".mdc")]
+    parts += [(rule.label, rule.body) for rule in always] + ([(".cursor/rules (on demand)", index)] if index else [])
+    cursorrules_content = "".join(f"## {label}\n\n{_scan_context_content(text, label)}\n\n" for label, text in parts)
     if not cursorrules_content:
         return ""
     return _truncate_content(cursorrules_content, ".cursorrules", context_length=context_length,

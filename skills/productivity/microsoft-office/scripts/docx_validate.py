@@ -51,6 +51,16 @@ def _rel_target(base_part: str, target: str) -> str:
     return posixpath.normpath(posixpath.join(base_dir, target)).lstrip("/")
 
 
+def _source_part_for_rels(rels_name: str) -> str:
+    """Map ``word/_rels/header1.xml.rels`` to ``word/header1.xml``."""
+    directory, filename = posixpath.split(rels_name)
+    if not directory.endswith("_rels") or not filename.endswith(".rels"):
+        raise ValueError(f"invalid relationships path: {rels_name}")
+    parent = directory[:-len("_rels")].rstrip("/")
+    source_name = filename[:-len(".rels")]
+    return posixpath.join(parent, source_name) if source_name else ""
+
+
 def validate(path: str) -> dict:
     issues: list[dict] = []
 
@@ -80,9 +90,7 @@ def validate(path: str) -> dict:
         except etree.XMLSyntaxError as exc:
             _issue(issues, "error", "bad-rels-xml", f"{rels_name}: {exc}")
             continue
-        source_part = posixpath.normpath(
-            posixpath.join(posixpath.dirname(rels_name), ".."))
-        source_part = "" if source_part == "." else source_part
+        source_part = _source_part_for_rels(rels_name)
         ids = {}
         for rel in root.iter(f"{{{PR}}}Relationship"):
             rid, target = rel.get("Id"), rel.get("Target", "")
@@ -90,8 +98,7 @@ def validate(path: str) -> dict:
             ids[rid] = target
             if mode == "External":
                 continue
-            resolved = _rel_target(source_part + "/x" if source_part
-                                   else "x", target)
+            resolved = _rel_target(source_part or "x", target)
             if resolved not in names:
                 _issue(issues, "error", "dangling-rel",
                        f"{rels_name}: {rid} -> {target} (missing part)")
@@ -99,7 +106,7 @@ def validate(path: str) -> dict:
 
     # --- r:id / r:embed references in document.xml -----------------------
     doc_root = etree.fromstring(zf.read("word/document.xml"))
-    doc_rels = rel_ids_by_source.get("word", {})
+    doc_rels = rel_ids_by_source.get("word/document.xml", {})
     for el in doc_root.iter():
         for attr in (f"{{{R}}}id", f"{{{R}}}embed", f"{{{R}}}link"):
             rid = el.get(attr)

@@ -59,7 +59,16 @@ def _derived_version(
     return base_version
 
 
+def _git_unusable(cwd: Path | None = None) -> bool:
+    """Missing git, or macOS's uninstalled CLT stub (any launch opens Apple's install dialog)."""
+    from hermes_cli._subprocess_compat import _git_argv0_unusable
+
+    return _git_argv0_unusable(["git"], cwd=cwd)
+
+
 def _run_git(repo_dir: Path, *args: str) -> str | None:
+    if _git_unusable(repo_dir):
+        return None
     try:
         result = subprocess.run(
             ["git", *args], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3, cwd=str(repo_dir),
@@ -226,15 +235,17 @@ def _git_version_info(repo_dir: Path, *, include_untracked: bool = False) -> Ver
         status_command = ["git", "--no-optional-locks", "status", "--porcelain"]
         if not include_untracked:
             status_command.append("-uno")
-        dirty_result = subprocess.run(
-            status_command,
-            capture_output=True,
-            text=True, encoding="utf-8", errors="replace",
-            timeout=3,
-            cwd=str(repo_dir),
-            check=False,
-        )
-        dirty = dirty_result.returncode == 0 and bool((dirty_result.stdout or "").strip())
+        dirty = False
+        if not _git_unusable(repo_dir):
+            dirty_result = subprocess.run(
+                status_command,
+                capture_output=True,
+                text=True, encoding="utf-8", errors="replace",
+                timeout=3,
+                cwd=str(repo_dir),
+                check=False,
+            )
+            dirty = dirty_result.returncode == 0 and bool((dirty_result.stdout or "").strip())
     except (OSError, subprocess.SubprocessError):
         dirty = False
 

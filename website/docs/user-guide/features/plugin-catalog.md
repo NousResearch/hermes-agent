@@ -169,6 +169,16 @@ hermes plugins install snyk
 hermes plugins enable snyk
 ```
 
+### Platform plugins whose credentials are already set
+
+When the gateway starts (or rescans a served profile after its `.env` changes), it looks for
+`category: platform` entries whose `capabilities.requires_env` variables are all set for that profile
+while the plugin is not installed. A `default: true` entry (official or verified) is installed then, so
+its adapter starts in the same gateway start. Any other entry is never installed unattended: the gateway
+logs, and the profile's next chat shows, one line naming `hermes plugins install <name>`. A plugin that
+was installed automatically once and then removed, or that `plugins.disabled` names, is left alone, and
+nothing is fetched where `security.allow_lazy_installs` is off.
+
 ### Updating a catalog install
 
 `hermes plugins update <name>` never runs `git pull` for catalog installs —

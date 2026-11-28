@@ -68,6 +68,19 @@ test('desktop stamp uses the admitted checkout rather than the dispatch SHA', ()
       assert.notEqual(run(override).status, 0)
       assert.deepEqual(fs.readFileSync(out), before)
     }
+    // A commit build on the release pipeline carries its claim tag and stays a commit build.
+    const claim = 'commit.20261026T180000Z-v0.28.0'
+    const claimed = run({ HERMES_PAYLOAD_TAG: claim, HERMES_PAYLOAD_VERSION: '0.28.0+commit.20261026T180000Z' })
+    assert.equal(claimed.status, 0, claimed.stderr)
+    const claimStamp = JSON.parse(fs.readFileSync(out, 'utf8'))
+    assert.equal(claimStamp.tag, claim)
+    assert.equal(claimStamp.source, 'commit-build')
+    assert.equal(claimStamp.commit, feature)
+    assert.equal(claimStamp.updateMechanism, 'external')
+    // A commit claim never stamps without the commit identity: it would read as a release.
+    const kept = fs.readFileSync(out)
+    assert.notEqual(run({ HERMES_BUILD_COMMIT: '', HERMES_PAYLOAD_TAG: claim, GITHUB_SHA: feature }).status, 0)
+    assert.deepEqual(fs.readFileSync(out), kept)
     assert.equal(run({ HERMES_BUILD_COMMIT: '', HERMES_PAYLOAD_TAG: 'v1.2.3', GITHUB_SHA: feature }).status, 0)
     assert.equal(JSON.parse(fs.readFileSync(out, 'utf8')).tag, 'v1.2.3')
     assert.deepEqual(JSON.parse(fs.readFileSync(out, 'utf8')).runtime, runtime)

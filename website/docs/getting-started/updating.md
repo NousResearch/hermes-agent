@@ -68,21 +68,43 @@ is baked into the package (see below).
 
 ### Bundled desktop updates
 
+Packaged desktop bundles require **macOS 13 Ventura or later on Apple Silicon
+(`arm64`)** (`Hermes Agent.app`) or **Windows 11 22H2 or later (`10.0.22621.0`)**,
+x64 or ARM64 (both Microsoft Store and `.appinstaller` MSIX). Intel Macs and
+macOS 12 or earlier use the CLI / source installer (`install.sh`); Windows 10
+and Windows 11 earlier than 22H2 use `install.ps1` or
+[WSL2](../user-guide/windows-wsl-quickstart.md).
+
 On Windows, the sideload app checks the registered App Installer source. Apply
 downloads the `.appinstaller` descriptor before stopping app-owned backends,
 opens that local file, and quits for Windows to replace the package.
 A detached waiter attempts automatic relaunch after the package version changes.
 A waiter-registration failure produces a manual-reopen warning.
 
-On macOS, apply downloads the ZIP update and waits for Squirrel.Mac to accept
-the signed app before stopping backends. Only that apply flow requests install
-and relaunch. An ordinary quit does not install a pending download.
-Download or verification failures leave backends running.
+On macOS, apply downloads the signed ZIP update and waits for Squirrel.Mac to
+accept the signed app before stopping backends. Only that apply
+flow requests install and relaunch. An ordinary quit does not install a pending
+download. Download or verification failures leave backends running.
 
 Store packages use the Store instead of either sideload feed. A broken or
 unavailable update check must not be interpreted as "already up to date."
 The application and its bundled base runtime update together; user data stays
 outside the package. See [Desktop installation](../user-guide/desktop.md#install).
+
+**Download sizes and update timing:** bundled updates split into network
+download time (which depends on your connection) and local verification/swap
+time. The sizes below are approximate and change between releases:
+
+- **macOS:** a fresh DMG install is ~948 MB, and choosing **Update** in the
+  app downloads the signed update ZIP (~983 MB in full). After the ZIP finishes
+  downloading, Squirrel.Mac unpack, code-signature verification, and bundle
+  swap take roughly **50 seconds** on Apple Silicon (measured on an M4 Mac)
+  before the app relaunches.
+- **Windows:** full per-architecture MSIX packages are ~1.89 GB (ARM64) to
+  ~2.86 GB (x64). Windows App Installer and the Microsoft Store download only
+  your host architecture and apply differential block updates between releases,
+  so incremental downloads are typically smaller than a fresh install, followed
+  by local package deployment.
 
 Stable and canary desktop bundles are separate applications. Installing canary
 does not replace stable, including on Windows with MSIX. Each application keeps
@@ -637,7 +659,9 @@ removes data. `--data` removes user data without deleting package-owned code.
 These modes are destructive; make a backup first.
 
 For MSIX/Store, use Windows Settings → Apps → Installed apps. For macOS,
-quit Hermes and move its app bundle to Trash. Docker, Nix, and Termux use the
+quit Hermes and move the app for your channel to Trash: `Hermes Agent.app`
+(stable), `Hermes Agent Canary.app` (canary), or `Hermes.app` for a
+source-built desktop. Docker, Nix, and Termux use the
 same manager that installed them. Their package files are not removed by the
 source uninstaller. Data deletion is separate from package removal.
 

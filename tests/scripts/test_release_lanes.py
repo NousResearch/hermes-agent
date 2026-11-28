@@ -4,15 +4,18 @@ import pytest
 from scripts.releases import lanes as lane_set
 
 
-def test_the_default_builds_everything_but_termux():
-    assert lane_set.DEFAULT == set(lane_set.NAMES) - {"termux"}
+def test_the_default_builds_everything_but_termux_and_diagnostic_linux():
+    assert lane_set.DEFAULT == set(lane_set.NAMES) - {"termux", "linux"}
     assert lane_set.select() == lane_set.DEFAULT
+    assert "linux" in lane_set.CANARY
+    assert not lane_set.has_bundles(["linux"])
+    assert lane_set.DIAGNOSTIC_CALLS.isdisjoint(lane_set.CANDIDATE_CALLS)
 
 
 @pytest.mark.parametrize("kwargs,expected", [
     # The request that motivated lanes: only the Windows bundles and the image, no tests.
     ({"only": ["windows", "docker"]}, {"windows", "docker"}),
-    ({"with_": ["termux"]}, set(lane_set.NAMES)),
+    ({"with_": ["termux", "linux"]}, set(lane_set.NAMES)),
     ({"without": ["macos-arm64", "upgrade"]}, set(lane_set.DEFAULT) - {"macos-arm64", "upgrade"}),
     ({"only": ["windows"], "with_": ["smoke"], "without": ["windows"]}, {"smoke"}),
     ({"only": []}, set()),

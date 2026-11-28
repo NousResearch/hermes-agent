@@ -1,21 +1,14 @@
 name: Canary E2E
 
-# Pull requests and pushes to main run no E2E suite (ci.yaml's detect gate).
-# This runs a stable claim's E2E calls (stable-release.yml's ci, install-e2e and
-# windows-live, same inputs) on each successful canary's commit, so a regression
-# shows up the day after it lands instead of at the next claim. It only reports:
-# the canary never waits on it, and install-e2e-red.yml keeps one issue in step
-# with the latest automatic run.
-#
-# A workflow_run run's github.sha is main's tip when it started, not the canary
-# commit, so every call is handed the canary run's head_sha.
+# Manual on-demand runner for a stable claim's E2E calls (stable-release.yml's
+# ci, install-e2e and windows-live, same inputs) against any commit without
+# cutting a canary tag. Daily canaries run these suites directly inside
+# Stable Release (stable-release.yml), where `track-canary-red` updates the
+# `install-e2e-red` tracker issue.
 
-run-name: Canary E2E on ${{ github.event.workflow_run.head_sha || inputs.commit || github.sha }}
+run-name: Canary E2E on ${{ inputs.commit || github.sha }}
 
 on:
-  workflow_run:
-    workflows: ['Canary Release']
-    types: [completed]
   workflow_dispatch:
     inputs:
       commit:
@@ -27,62 +20,28 @@ on:
 permissions:
   contents: read
 
-# One automatic set at a time (about 1,400 job-minutes each). A newer one waits,
-# and GitHub keeps only the newest pending run per group. Concurrency applies
-# before resolve's if, so a run that will skip (a failed canary) or a dispatch
-# gets a group of its own: in the shared one it would replace a queued set.
 concurrency:
-  group: >-
-    canary-e2e-${{ github.event_name == 'workflow_run' &&
-    github.repository == 'NousResearch/hermes-agent' &&
-    github.event.workflow_run.conclusion == 'success' &&
-    github.event.workflow_run.head_branch == github.event.repository.default_branch &&
-    'auto' || github.run_id }}
+  group: canary-e2e-${{ github.run_id }}
   cancel-in-progress: false
 
 jobs:
   resolve:
     name: Resolve the commit under test
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.repository == 'NousResearch/hermes-agent' &&
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.head_branch == github.event.repository.default_branch)
     runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 2
-    permissions:
-      actions: read
     outputs:
       commit: ${{ steps.commit.outputs.commit }}
-      tested: ${{ steps.tested.outputs.tested }}
     steps:
       - id: commit
         env:
-          COMMIT: ${{ github.event.workflow_run.head_sha || inputs.commit || github.sha }}
+          COMMIT: ${{ inputs.commit || github.sha }}
         run: |
           [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::commit must be a full 40-hex SHA, got: $COMMIT"; exit 1; }
           echo "commit=$COMMIT" >> "$GITHUB_OUTPUT"
-      # With no new commits the canary resumes its last tag and succeeds again,
-      # which would rerun the whole set on a commit that already passed. A
-      # dispatch always runs: it is the forced rerun.
-      - id: tested
-        if: github.event_name == 'workflow_run'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          TITLE: Canary E2E on ${{ steps.commit.outputs.commit }}
-        run: |
-          passed="$(gh api "repos/$REPO/actions/workflows/canary-e2e.yml/runs?event=workflow_run&status=success&per_page=100" \
-            --jq '.workflow_runs[].display_title')"
-          if grep -qxF "$TITLE" <<<"$passed"; then
-            echo "::notice::$TITLE already passed; not running the set again."
-            echo "tested=true" >> "$GITHUB_OUTPUT"
-          fi
 
   ci:
     name: Full CI pipeline
     needs: resolve
-    if: needs.resolve.outputs.tested != 'true'
     permissions:
       contents: read
       pull-requests: write
@@ -96,7 +55,6 @@ jobs:
   install-e2e:
     name: Install and update E2E
     needs: resolve
-    if: needs.resolve.outputs.tested != 'true'
     permissions:
       contents: read
       actions: read
@@ -109,7 +67,6 @@ jobs:
 
   windows-live:
     needs: resolve
-    if: needs.resolve.outputs.tested != 'true'
     uses: ./.github/workflows/windows-venv-e2e.yml
     with:
       commit: ${{ needs.resolve.outputs.commit }}

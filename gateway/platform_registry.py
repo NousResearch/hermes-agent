@@ -550,6 +550,12 @@ class PlatformRegistry:
                 logger.warning(failure_msg, entry.label, e)
                 return False
         deps_ok = _probe(entry.check_fn, "Platform '%s' check_fn raised: %s")
+        if not deps_ok:
+            from hermes_cli.plugins_loader import adopt_published_dependencies
+            if adopt_published_dependencies():
+                # The plugin's dependencies were published after this process booted (a gateway-start or
+                # mid-run install): its adapter can be built now, without a restart.
+                deps_ok = _probe(entry.check_fn, "Platform '%s' check_fn raised: %s")
         if not deps_ok and entry.ensure_deps_fn is not None:
             # The ONE place the active installer runs: the platform is enabled+configured
             # and about to connect, so an install is what the user wants.

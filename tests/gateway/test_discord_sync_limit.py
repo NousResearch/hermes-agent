@@ -136,3 +136,17 @@ async def test_safe_sync_deletes_before_creating():
         f"Deletions must happen before creations to avoid exceeding 100-command limit. "
         f"Last delete at index {last_delete_idx}, first create at index {first_create_idx}"
     )
+
+
+@pytest.mark.parametrize("move", ("delete", "rename"))
+def test_command_sync_state_skips_a_deleted_or_renamed_profile_home(adapter, tmp_path, monkeypatch, move):
+    """A late sync-state write never recreates the profile home it was bound to (#155595 U3)."""
+    import hermes_constants
+    from tests.fixtures.dead_profile_home import dead_named_home
+
+    home = dead_named_home(tmp_path, move)
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: home)
+    assert adapter._read_command_sync_state() == {}
+    with pytest.raises(FileNotFoundError, match="Named profile home does not exist"):
+        adapter._record_command_sync_attempt("test_app_id", "fp")
+    assert not home.exists()

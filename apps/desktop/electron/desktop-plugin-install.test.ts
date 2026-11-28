@@ -583,4 +583,18 @@ describe('installDesktopPluginFromGit', () => {
     expect(fs.existsSync(path.join(appRoot, String(result.pluginName), 'plugin.js'))).toBe(true)
     expect(fs.existsSync(path.join(appRoot, String(result.pluginName), PACKAGE_MARKER))).toBe(false)
   })
+
+  it('returns git-unavailable without spawning git when gitBin is null', async () => {
+    const repo = pluginRepo(null)
+    const appRoot = mkdtemp('hermes-plugin-root-')
+    roots.push(appRoot)
+
+    const probed = await probePluginRepo(null, pathToFileURL(repo).href)
+
+    expect(probed).toMatchObject({ ok: false, error: 'git is not available', agent: false, desktop: false })
+
+    const installed = await installDesktopPluginFromGit(null, pathToFileURL(repo).href, appRoot)
+
+    expect(installed).toMatchObject({ ok: false, error: 'git is not available' })
+  })
 })

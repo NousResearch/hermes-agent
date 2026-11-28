@@ -123,7 +123,10 @@ module.exports = {
   // rewritten file (#105629). afterPack keeps the signing/payload work.
   afterExtract: 'scripts/after-extract.mjs',
   afterPack: 'scripts/after-pack.mjs',
-  ...(process.platform === 'darwin' ? { afterSign: 'scripts/notarize.mjs' } : {}),
+  // dmg-builder's dmg.sign omits --timestamp and pre-dates stapling; artifactBuildCompleted signs, notarizes, staples, and refreshes blockmap/feed bytes before artifactCreated fires.
+  ...(process.platform === 'darwin'
+    ? { afterSign: 'scripts/notarize.mjs', artifactBuildCompleted: 'scripts/notarize-dmg.mjs' }
+    : {}),
   extraResources: [
     {
       from: 'build/install-stamp.json',

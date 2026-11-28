@@ -110,7 +110,7 @@ def _register_with_row(ctx, provider, kind, registry_mod, base_ref, label, optio
     register_name = options.get("register")
     admit, identity = options.get("admit"), options.get("identity")
     if admit:
-        with _plugin_home_scope(ctx._manager.home_path):
+        with _plugin_home_scope(ctx._manager.owner_home):
             refusal = _resolve(admit)(ctx.manifest)
         if refusal:
             logger.warning(options["reject_message"], ctx.manifest.name, refusal)

@@ -64,9 +64,9 @@ type ResolveHeadFn = (activeRoot: string | null | undefined) => string | null
  */
 function resolveCheckoutHead(
   activeRoot: string | null | undefined,
-  opts: { execGit?: ExecGitFn; gitBinary?: string } = {}
+  opts: { execGit?: ExecGitFn; gitBinary?: string | null } = {}
 ): string | null {
-  if (!activeRoot) {
+  if (!activeRoot || opts.gitBinary === null) {
     return null
   }
 

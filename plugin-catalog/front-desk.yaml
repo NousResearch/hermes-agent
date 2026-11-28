@@ -1,0 +1,32 @@
+name: front-desk
+repo: https://github.com/percyhendrux123-prog/hermes-front-desk
+sha: "212fc3fda800e8aa609cbca3fe184013f20cda95"
+version: "0.2.0"
+title: "Front Desk"
+description: "Front Desk for Hermes: escalations from your agents (a blocked or failed Kanban card, a scheduled job error, a message from a person you named, or a front_desk_escalate call) reach the orchestrator's live session first, and the orchestrator handles them or tells you. Your settings decide where and when you hear: the chat you're in when you're at the computer, your phone chat when you're away and it's urgent, otherwise a morning brief. A check every few hours runs standing watches you write in plain words and stays silent unless one is breached. Edit settings with /notify, including corrections with a reason. Money and approval sends are locked floors that always reach you. It never messages anyone but you and approves nothing. Disclosure — observer hooks on Kanban block and complete events, dispatcher ticks, turns (pre_llm_call adds pending escalations to the orchestrator's next turn) and inbound gateway messages, which it sees before gateway authorization and never skips or rewrites (a sender is matched by display name or id against the people you listed); writes desk.db (escalation titles, short details, decisions, timestamps, daily alert counts, and for senders you named under people only that name and the chat id, never message text) and settings.yaml plus settings.yaml.bak to <HERMES_HOME>/plugin-data/front-desk/ (or the settings_path setting); creates one unassigned Kanban card per watch and a comment per breach only for watches you mark card: true, through the undocumented hermes_cli.kanban_db and hermes_cli.kanban_db_connect modules, failing open; reads kanban.db, <HERMES_HOME>/cron/jobs.json and state.db (newest local user-message timestamp only) read-only; sends only with ctx.inject_message as a user-role notice, to the orchestrator's live session or the phone chat you configured; runs one short-lived in-process daemon thread per poll pass, never more than one at a time; makes no network calls, runs no subprocesses or Hermes child sessions, stores no credentials, approves nothing, edits no Hermes config and sends no telemetry."
+maintainer: percyhendrux123-prog
+tier: community
+category: automation
+requires_hermes: ">=0.23.3"
+docs_url: https://github.com/percyhendrux123-prog/hermes-front-desk/blob/212fc3fda800e8aa609cbca3fe184013f20cda95/README.md
+readme: true
+platforms: [macos, linux]
+capabilities:
+  provides_tools:
+    - front_desk_escalate
+    - front_desk_triage
+    - front_desk_status
+  provides_hooks:
+    - pre_llm_call
+    - kanban_task_blocked
+    - kanban_task_completed
+    - on_kanban_dispatch_tick
+    - pre_gateway_dispatch
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - "On Hermes v0.23.3 presence is degraded: at the computer means you typed in any local desktop, TUI or CLI session of the profile within present_idle_minutes (read from state.db), so it can't tell you walked away right after typing or are reading without typing. Hermes v0.23.4 or newer gives full presence through session_viewers, with no setting change."
+  - "The phone notice is a line injected into your phone chat, so the agent there relays it; the wording you see on the phone is the agent's, not a fixed template."
+  - "Standing watches are only evaluated at a check, so a breach that happens just after a check is reported at the next one, up to check_every_hours later. Board events and job errors are not delayed this way."
+  - "Digests and triage timeouts run on Kanban dispatcher ticks and turns; with no dispatcher and no activity, a digest is sent at the next tick or turn after its time."
+  - "Uses private Hermes imports (hermes_cli.plugin_session, hermes_cli.kanban_db, hermes_cli.kanban_db_connect, hermes_constants, plugins.plugin_storage) because no public seam returns the same data; each fails open, and watch cards switch off if the Kanban write functions change."

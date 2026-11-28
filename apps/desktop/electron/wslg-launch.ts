@@ -1,4 +1,6 @@
-import { detectRemoteDisplay } from './bootstrap-platform'
+import { readFileSync } from 'node:fs'
+
+import { detectRemoteDisplay } from './bootstrap-platform.ts'
 
 // Ozone is selected before application JavaScript. Never appendSwitch here:
 // that leaves the browser on X11 while GPU children receive Wayland.
@@ -78,4 +80,20 @@ function findOzoneHint(args: readonly string[]): string | undefined {
   const hintArg = args.findLast(arg => arg.startsWith('--ozone-platform-hint='))
 
   return hintArg?.slice('--ozone-platform-hint='.length)
+}
+
+// True only when the NVIDIA proprietary kernel module is loaded
+// (not nouveau, not the open kernel module, not WSL's dxg passthrough).
+export function hasNvidiaProprietaryDriver() {
+  if (process.platform !== 'linux') {
+    return false
+  }
+
+  try {
+    const version = readFileSync('/proc/driver/nvidia/version', 'utf8') || ''
+
+    return !/Open Kernel Module/.test(version)
+  } catch {
+    return false // no nvidia driver on this box
+  }
 }

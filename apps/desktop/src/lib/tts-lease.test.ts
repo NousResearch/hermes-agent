@@ -6,7 +6,13 @@ vi.mock('@/hermes', () => ({
   setTtsLease: (lease: string, active: boolean) => setTtsLease(lease, active)
 }))
 
-import { CONVERSATION_LEASE, READ_ALOUD_LEASE, resetTtsLeasesForTests, syncTtsLease } from './tts-lease'
+import {
+  anyTtsLeaseActive,
+  CONVERSATION_LEASE,
+  READ_ALOUD_LEASE,
+  resetTtsLeasesForTests,
+  syncTtsLease
+} from './tts-lease'
 
 describe('syncTtsLease', () => {
   beforeEach(() => {
@@ -95,5 +101,31 @@ describe('syncTtsLease', () => {
   it('conversation lease is per renderer, read-aloud lease is shared', () => {
     expect(CONVERSATION_LEASE).toMatch(/^desktop:conversation:[a-z0-9]+$/)
     expect(READ_ALOUD_LEASE).toBe('desktop:read-aloud')
+  })
+})
+
+describe('anyTtsLeaseActive', () => {
+  beforeEach(() => resetTtsLeasesForTests())
+  afterEach(() => resetTtsLeasesForTests())
+
+  it('tracks held speech-output leases', async () => {
+    expect(anyTtsLeaseActive()).toBe(false)
+    await syncTtsLease(READ_ALOUD_LEASE, true)
+    expect(anyTtsLeaseActive()).toBe(true)
+    await syncTtsLease(READ_ALOUD_LEASE, false)
+    expect(anyTtsLeaseActive()).toBe(false)
+  })
+})
+
+describe('anyTtsLeaseActive after a failed acquire', () => {
+  beforeEach(() => resetTtsLeasesForTests())
+  afterEach(() => resetTtsLeasesForTests())
+
+  it('reports no active lease once the rejected send settles', async () => {
+    setTtsLease.mockRejectedValueOnce(new Error('gateway down'))
+
+    await syncTtsLease(READ_ALOUD_LEASE, true)
+
+    expect(anyTtsLeaseActive()).toBe(false)
   })
 })

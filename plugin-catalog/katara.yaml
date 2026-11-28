@@ -1,0 +1,16 @@
+name: katara
+repo: https://github.com/katara-ai-inc/katara-hermes
+sha: "557526046973a0c57d9413e89d5d0d111c83205b"
+version: "0.1.0"
+description: "Katara memory provider — recalls facts and Brain/Wiki knowledge from your Katara organization before each turn, with katara_recall / katara_entity / katara_remember / katara_forget tools and mirroring of Hermes's built-in memory writes, over Katara's MCP memory API. Maintained by Katara. Disclosure — network calls only to the configured Katara MCP endpoint (mcp.katara.ai by default) with the profile's KATARA_API_KEY as bearer token (read through Hermes secrets, never from files; redirects are not followed); every non-trivial prompt is sent as a recall query (auto_recall, on by default); entries Hermes adds or replaces in its built-in MEMORY/USER stores and facts saved with katara_remember are written to the Katara Brain with world visibility, readable by every agent connected to it (mirror_memory_writes, on by default); no transcripts uploaded, no telemetry, no shell commands, no background daemons (short-lived threads for mirroring); stores only $HERMES_HOME/katara/config.json."
+maintainer: katara-ai-inc
+tier: community
+category: memory
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/katara-ai-inc/katara-hermes#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - KATARA_API_KEY

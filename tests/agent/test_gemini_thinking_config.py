@@ -83,6 +83,8 @@ def test_gemini4_maps_effort_to_thinking_level_and_long_decode_budget(reasoning,
     config = _build_gemini_thinking_config("gemini-4-argon", reasoning)
     assert config == {"includeThoughts": shown, "thinkingLevel": level}  # never thinkingBudget (400 with a level)
     profile = get_provider_profile("gemini")
+    if profile is None:
+        pytest.skip("google model-provider plugin not installed")
     native = profile.build_extra_body(model="gemini-4-argon", reasoning_config=reasoning,
                                       base_url="https://generativelanguage.googleapis.com/v1beta")
     assert native.get("max_output_tokens") == budget
@@ -99,6 +101,10 @@ def test_gemini4_maps_effort_to_thinking_level_and_long_decode_budget(reasoning,
         ("gemini-4-hydrogen", "high", "high", None),
         ("gemini-4-hydrogen", "xhigh", "xhigh", 262_144),
         ("google/gemini-4-hydrogen", "max", "xhigh", 1_048_576),
+        ("gemini-4-neon", "medium", "medium", None),
+        ("gemini-4-neon", "high", "high", None),
+        ("gemini-4-neon", "xhigh", "xhigh", 262_144),
+        ("google/gemini-4-neon", "max", "xhigh", 1_048_576),
         ("gemini-4-carbon", "xhigh", "high", 262_144),  # Argon and Carbon answer 400 to xhigh
     ],
 )
@@ -106,6 +112,8 @@ def test_gemini_provider_sends_xhigh_only_to_the_models_that_take_it(model, effo
     from providers import get_provider_profile
 
     profile = get_provider_profile("gemini")
+    if profile is None:
+        pytest.skip("google model-provider plugin not installed")
     native = profile.build_extra_body(model=model, reasoning_config={"enabled": True, "effort": effort},
                                       base_url="https://generativelanguage.googleapis.com/v1beta")
     assert native["thinking_config"] == {"includeThoughts": True, "thinkingLevel": level}
@@ -113,6 +121,29 @@ def test_gemini_provider_sends_xhigh_only_to_the_models_that_take_it(model, effo
     hidden = profile.build_extra_body(model=model, reasoning_config={"enabled": False, "effort": effort},
                                       base_url="https://generativelanguage.googleapis.com/v1beta")
     assert hidden["thinking_config"] == {"includeThoughts": False, "thinkingLevel": "low"}
+
+
+@pytest.mark.parametrize(
+    "model,effort,level",
+    [
+        ("google/gemini-4-hydrogen", "high", "high"),
+        ("google/gemini-4-hydrogen", "xhigh", "xhigh"),
+        ("google/gemini-4-neon", "xhigh", "xhigh"),
+        ("google/gemini-4-neon", "max", "xhigh"),
+        ("google/gemini-4-neon", "ultra", "xhigh"),
+        ("google/gemini-4-carbon", "xhigh", "high"),  # Argon and Carbon answer 400 to xhigh
+        ("google/gemini-4-argon", "max", "high"),
+    ],
+)
+def test_vertex_provider_sends_xhigh_only_to_the_models_that_take_it(model, effort, level):
+    from providers import get_provider_profile
+
+    profile = get_provider_profile("vertex")
+    base_url = "https://aiplatform.googleapis.com/v1beta1/projects/p/locations/global/endpoints/openapi"
+    body = profile.build_extra_body(model=model, reasoning_config={"enabled": True, "effort": effort}, base_url=base_url)
+    assert body == {"extra_body": {"google": {"thinking_config": {"include_thoughts": True, "thinking_level": level}}}}
+    hidden = profile.build_extra_body(model=model, reasoning_config={"enabled": False, "effort": effort}, base_url=base_url)
+    assert hidden["extra_body"]["google"]["thinking_config"] == {"include_thoughts": False, "thinking_level": "low"}
 
 
 @pytest.mark.parametrize(

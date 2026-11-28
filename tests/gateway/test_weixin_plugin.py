@@ -896,3 +896,13 @@ def test_is_connected_requires_account_and_token(monkeypatch):
     assert weixin._is_connected(PlatformConfig(enabled=True, token="t", extra={"account_id": "a"}))
     assert not weixin._is_connected(PlatformConfig(enabled=True, token="t"))
     assert not weixin._is_connected(PlatformConfig(enabled=True, extra={"account_id": "a"}))
+
+
+@pytest.mark.parametrize("move", ("delete", "rename"))
+def test_account_dir_refuses_a_deleted_or_renamed_profile_home(tmp_path, move):
+    from tests.fixtures.dead_profile_home import dead_named_home
+
+    home = dead_named_home(tmp_path, move)
+    with pytest.raises(FileNotFoundError, match="Named profile home does not exist"):
+        weixin._account_dir(str(home))
+    assert not home.exists()

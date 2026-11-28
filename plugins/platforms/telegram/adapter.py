@@ -2774,7 +2774,10 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             logger.info("[%s] Proxy detected; passing explicitly to HTTPXRequest: %s", self.name, safe_proxy_url_for_log(proxy_url))
         elif disable_fallback:
             logger.info("[%s] Telegram fallback-IP transport disabled via env", self.name)
-        request, get_updates_request = build_ptb_requests(HTTPXRequest, fallback_ips=fallback_ips, proxy_url=proxy_url, verify=verify)
+        from plugins.platforms.telegram.http_settings import http_read_timeout
+        request, get_updates_request = build_ptb_requests(
+            HTTPXRequest, fallback_ips=fallback_ips, proxy_url=proxy_url, verify=verify,
+            read_timeout=http_read_timeout(self.config.extra))
         return request, self._instrument_polling_request(get_updates_request)
 
     async def _initialize_app_with_retries(self, builder) -> None:

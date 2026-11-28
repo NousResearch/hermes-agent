@@ -113,7 +113,8 @@ def getupdates_keepalive_connections() -> int:
     return 0 if sys.platform == "win32" else 1
 
 
-def build_ptb_requests(request_cls, *, fallback_ips: list[str], proxy_url: Optional[str], verify=None) -> tuple:
+def build_ptb_requests(request_cls, *, fallback_ips: list[str], proxy_url: Optional[str], verify=None,
+                       read_timeout: Optional[float] = None) -> tuple:
     """The (general, getUpdates) ``request_cls`` (PTB ``HTTPXRequest``) pair the gateway adapter and
     the standalone sender both use. Each client is served by its own ``TelegramFallbackTransport``:
     the fallback-IP walk when ``fallback_ips`` and no proxy, else every request through
@@ -133,6 +134,8 @@ def build_ptb_requests(request_cls, *, fallback_ips: list[str], proxy_url: Optio
     from gateway.platforms._http_client_limits import platform_httpx_limits
     verify = platform_ssl_context() if verify is None else verify
     kwargs = ptb_request_kwargs()
+    if read_timeout is not None:
+        kwargs["read_timeout"] = read_timeout
     ips = _cap_fallback_ips(fallback_ips) if not proxy_url else []
     base = platform_httpx_limits()
     pool = updates = None

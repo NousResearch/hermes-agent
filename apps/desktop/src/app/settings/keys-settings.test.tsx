@@ -1,18 +1,22 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, useNavigate } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { ConfirmHost } from '@/components/confirm-host'
+import { settleConfirm } from '@/store/confirm'
 import { stubResizeObserver } from '@/test/jsdom'
 
 import { envVar } from './test-utils'
 
 const getEnvVars = vi.fn()
+const deleteEnvVar = vi.fn()
 
 stubResizeObserver()
 
 vi.mock('@/hermes', () => ({
-  deleteEnvVar: vi.fn(),
+  deleteEnvVar: (...args: unknown[]) => deleteEnvVar(...args),
   getEnvVars: (profile?: null | string) => getEnvVars(profile),
+  getProfiles: async () => ({ profiles: [] }),
   revealEnvVar: vi.fn(),
   setApiRequestProfile: () => undefined,
   setEnvVar: vi.fn()
@@ -25,6 +29,7 @@ const { $settingsScopeOverride } = await import('@/store/settings-scope')
 
 beforeEach(() => {
   getEnvVars.mockResolvedValue({})
+  deleteEnvVar.mockResolvedValue({ ok: true })
   Object.defineProperty(Element.prototype, 'scrollIntoView', {
     configurable: true,
     value: vi.fn()
@@ -33,6 +38,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  settleConfirm(false)
   vi.clearAllMocks()
 })
 
@@ -41,6 +47,7 @@ async function renderKeysSettings(view: 'settings' | 'tools', route = '/settings
     render(
       <MemoryRouter initialEntries={[route]}>
         <KeysSettings view={view} />
+        <ConfirmHost />
       </MemoryRouter>
     )
   })
@@ -57,6 +64,39 @@ function DeepLinkButton({ target }: { target: string }) {
 }
 
 describe('KeysSettings', () => {
+  it('removes a saved key without editing it and keeps it when confirmation is cancelled', async () => {
+    $settingsScopeOverride.set('profile-b')
+    getEnvVars.mockResolvedValue({
+      WIDGET_API_KEY: envVar('tool', { is_set: true, redacted_value: '••••1234' })
+    })
+
+    try {
+      await renderKeysSettings('tools')
+
+      const remove = await screen.findByRole('button', { name: 'Remove' })
+      expect(screen.getByDisplayValue('••••1234').hasAttribute('readonly')).toBe(true)
+      expect(screen.queryByRole('button', { name: 'Save' })).toBeNull()
+      fireEvent.click(remove)
+
+      const cancelled = await screen.findByRole('dialog')
+      expect(deleteEnvVar).not.toHaveBeenCalled()
+      fireEvent.click(within(cancelled).getByRole('button', { name: 'Cancel' }))
+      expect(deleteEnvVar).not.toHaveBeenCalled()
+      expect(screen.getByDisplayValue('••••1234')).toBeTruthy()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
+      const confirmed = await screen.findByRole('dialog')
+      fireEvent.click(within(confirmed).getByRole('button', { name: 'Confirm' }))
+
+      await waitFor(() => expect(deleteEnvVar).toHaveBeenCalledWith('WIDGET_API_KEY', 'profile-b'))
+      await waitFor(() => expect(screen.queryByRole('button', { name: 'Remove' })).toBeNull())
+      expect(screen.queryByDisplayValue('••••1234')).toBeNull()
+    } finally {
+      cleanup()
+      $settingsScopeOverride.set(null)
+    }
+  })
+
   it('fetches env vars for the displayed profile (the concrete key, never null) when unscoped', async () => {
     // #90549 class: getEnvVars(null) targets the primary profile's env store,
     // so a non-default profile's Keys page would read (and edit) the wrong

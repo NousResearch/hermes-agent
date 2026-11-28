@@ -3554,14 +3554,34 @@ def _landing_status_after_parents(conn: sqlite3.Connection, task_id: str) -> str
     return "ready" if _parents_satisfied(conn, task_id) else "todo"
 
 
+def _scheduled_resume_status(conn: sqlite3.Connection, task_id: str) -> str:
+    """``review`` when the run that parked the card in ``scheduled`` was a reviewer run.
+
+    Local patch (scheduled-keeps-review-lane): ``schedule_task`` records no
+    source_status, so a reviewer that scheduled a timed wait (CI pending, merge
+    window) came back in the ``ready`` lane as an implementer -- without
+    ``sdlc-review`` and, on a card whose skills only the implementer has,
+    straight into ``kanban_skills_unavailable``. Same rule as crash/reclaim:
+    ``_retry_status_for_run`` on the scheduling run's ``claimed`` event."""
+    row = conn.execute(
+        "SELECT run_id FROM task_events WHERE task_id = ? AND kind = 'scheduled' "
+        "ORDER BY id DESC LIMIT 1", (task_id,),
+    ).fetchone()
+    run_id = _row_get(row, "run_id") if row is not None else None
+    return "ready" if run_id is None else _retry_status_for_run(conn, task_id, run_id)
+
+
 def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     """``blocked``/``scheduled`` -> its resumable phase (parent re-gated; ``review``
     when that is where it left off), closing any leaked run first."""
     now = int(time.time())
     with write_txn(conn):
+        cur_status = _task_status(conn, task_id)
         resume_status = (
             _resume_status_from_events(conn, task_id)
-            if _task_status(conn, task_id) == "blocked"
+            if cur_status == "blocked"
+            else _scheduled_resume_status(conn, task_id)
+            if cur_status == "scheduled"
             else "ready"
         )
         _reclaim_dangling_run(

@@ -1474,13 +1474,11 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
         if self.provider not in _SINGLE_USE_REFRESH_PROVIDERS and plugin_refresh_hook(self.provider) is None:
             return self._refresh_entry_impl(entry, force=force, failed_key=failed_key)
 
-        # Single-use refresh tokens: sync -> POST -> write-back must be atomic
-        # across Hermes processes, or two processes adopt the same on-disk
-        # token, both POST it, and the loser gets ``refresh_token_reused`` /
-        # ``invalid_grant`` (for Anthropic sources other than claude_code
-        # there was no recovery path at all). Serialize through the shared
-        # cross-process auth-store flock; a waiter's in-lock re-sync picks up
-        # the winner's rotated token and skips the POST.
+        # Single-use refresh tokens: sync -> POST -> write-back must be atomic across Hermes processes, or two
+        # processes adopt the same on-disk token, both POST it, and the loser gets ``refresh_token_reused`` /
+        # ``invalid_grant`` (for Anthropic sources other than claude_code there was no recovery path at all).
+        # Serialize through the shared cross-process auth-store flock; a waiter's in-lock re-sync picks up the
+        # winner's rotated token and skips the POST.
         with _auth_store_lock(timeout_seconds=self._single_use_refresh_lock_timeout()):
             if self.provider == "openai-codex":
                 synced = self._sync_entry_from_auth_store(entry)
@@ -1489,21 +1487,21 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
                 return self._refresh_entry_impl(synced, force=force)
             synced = self._sync_entry_from_pool_store(entry)
             if self.provider == "anthropic" and synced.source == "claude_code":
-                # claude_code entries are NOT profile-owned: the refresh token
-                # lives in one shared ~/.claude/.credentials.json (or Keychain)
-                # every profile reads. The profile-scoped lock above only covers
-                # THIS profile's auth.json, so take the dedicated shared-file
-                # lock (inner, per the ordering invariant on ``_auth_store_lock``)
-                # and re-read that authoritative file before any
-                # adopt-and-return shortcut fires. The official ``claude`` CLI
-                # rotating out-of-band is handled by the sync-and-retry-once
-                # fallback in ``_recover_failed_refresh``.
+                # claude_code entries are NOT profile-owned: the refresh token lives in one shared
+                # ~/.claude/.credentials.json (or Keychain) every profile reads. The profile-scoped lock above
+                # only covers THIS profile's auth.json, so take the dedicated shared-file lock (inner, per the
+                # ordering invariant on ``_auth_store_lock``) and re-read that authoritative file before any
+                # adopt-and-return shortcut fires. The official ``claude`` CLI rotating out-of-band is handled
+                # by the sync-and-retry-once fallback in ``_recover_failed_refresh``.
                 with self._claude_code_credentials_lock():
                     synced = self._sync_anthropic_entry_from_credentials_file(synced)
                     if synced.refresh_token != entry.refresh_token:
                         return synced
                     return self._refresh_entry_impl(synced, force=force)
-            if synced.access_token != entry.access_token or synced.refresh_token != entry.refresh_token:
+            # Judge the bearer the 401'd request sent, not this row's copy: re-POSTing revokes a sibling (#138337).
+            rotated = (synced.runtime_api_key not in ("", failed_key) and not self._entry_needs_refresh(synced)
+                       if failed_key else synced.access_token != entry.access_token)
+            if rotated or synced.refresh_token != entry.refresh_token:
                 return synced
             return self._refresh_entry_impl(synced, force=force)
 

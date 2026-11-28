@@ -27,7 +27,7 @@ hermes plugins install wecom
 :::info 从内置 WeCom 的版本升级
 `config.yaml` 来自迁移前的 profile 无需任何操作。这类已在使用 WeCom 的 profile（`.env` 中有 `WECOM_BOT_ID` 和 `WECOM_SECRET`，或 `config.yaml` 中有 `platforms.wecom.extra.bot_id`）会在 `hermes update` 时，或该 profile 首次启动时（agent 或网关启动；遵循 `security.allow_lazy_installs`），自动从插件目录安装该插件。每个 profile 只执行一次：安装失败会按退避策略重试；`hermes update` 总会重试。如果之后移除了插件（`hermes plugins remove wecom`），它将保持移除状态。
 
-升级之后才配置 WeCom 的 profile（填写了凭据，或只设置了 `enabled: true`）不会自动安装任何内容：Hermes Labs 代码只在你要求时安装，agent 和网关会输出一行提示 `hermes plugins install wecom`。运行该命令（或在 dashboard / Desktop 提供时使用 WeCom 卡片上的安装操作）即可安装并启用插件。
+升级之后才配置 WeCom 的 profile（填写了凭据，或只设置了 `enabled: true`）不会自动安装任何内容：Hermes Labs 代码只在你要求时安装，agent 和网关会输出一行提示 `hermes plugins install wecom`。运行该命令即可安装并启用插件（dashboard 和 Desktop 的频道页面不列出 Hermes Labs 平台）。
 
 “来自迁移前”指该 profile 的 `config.yaml` 带有低于 55 的版本标记（`_config_version`），或升级到 55 时记录了 WeCom 的使用。只在 `.env` 中配置了 WeCom、没有带版本标记的 `config.yaml` 的 profile 与新配置无法区分，因此只会收到安装命令的提示：如果你在升级前就以这种方式使用 WeCom，请运行一次 `hermes plugins install wecom`。
 :::

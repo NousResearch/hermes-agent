@@ -170,9 +170,9 @@ def test_a_bare_wecom_in_plugins_disabled_is_kept_with_one_enable_notice(tmp_pat
     assert "hermes plugins enable wecom" in said[0]
 
 
-def test_the_wecom_card_installs_the_labs_plugin_once_wecom_is_set_up(monkeypatch):
-    """The explicit choice besides the command: the platform card's install route takes the Labs entry once
-    this home has WeCom (here callback mode) set up, and refuses it before."""
+def test_no_channels_install_takes_the_labs_plugin_for_a_set_up_wecom_home(monkeypatch):
+    """Neither Channels page lists a Labs platform, so the Channels install route refuses one even for a
+    home that has WeCom (here callback mode) set up: the explicit choice is `hermes plugins install wecom`."""
     import hermes_cli.plugins_cmd_install as pci
     from hermes_cli import plugin_catalog
     from hermes_cli.catalog_platform_listing import install_catalog_platform
@@ -185,14 +185,11 @@ def test_the_wecom_card_installs_the_labs_plugin_once_wecom_is_set_up(monkeypatc
     monkeypatch.setattr(plugin_catalog, "load_catalog_live", lambda: [entry])
     monkeypatch.setattr(plugin_catalog, "load_catalog", lambda *a, **k: [entry])
     monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
-    asked = []
-    monkeypatch.setattr(pci, "dashboard_install_plugin",
-                        lambda *a, **k: asked.append(k["catalog_name"]) or {"ok": True, "plugin_name": "wecom"})
+    monkeypatch.setattr(pci, "dashboard_install_plugin", lambda *a, **k: pytest.fail("Labs code installed from a list"))
     home = get_hermes_home()
     (home / "config.yaml").write_text("_config_version: 55\n", encoding="utf-8")
-    assert install_catalog_platform("wecom")["ok"] is False and asked == []
     (home / ".env").write_text(_CALLBACK_ENV, encoding="utf-8")
-    assert install_catalog_platform("wecom")["ok"] is True and asked == ["wecom"]
+    assert install_catalog_platform("wecom")["ok"] is False
 
 
 @pytest.fixture

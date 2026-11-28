@@ -591,44 +591,158 @@ def _rule_running_with_open_parents(task, events, runs, now, cfg) -> list[Diagno
     )]
 
 
+def _age_text(seconds: float) -> str:
+    return f"{seconds / 86400:.0f}d" if seconds >= 2 * 86400 else f"{int(seconds / 3600)}h"
+
+
+def _age_severity(age_seconds: float, cfg: dict) -> Optional[str]:
+    """The total-age ladder shared by the waiting-state rules: ``error`` past
+    ``stale_error_days`` and ``critical`` past ``stale_critical_days``, however
+    much the card was touched meanwhile. ``None`` below the error step."""
+    critical_days = float(cfg.get("stale_critical_days", 30))
+    error_days = min(float(cfg.get("stale_error_days", 7)), critical_days)
+    if age_seconds >= critical_days * 86400:
+        return "critical"
+    if age_seconds >= error_days * 86400:
+        return "error"
+    return None
+
+
+def _latest_event(events: Iterable[Any], kinds: set[str]):
+    latest = None
+    for ev in events:
+        if _event_kind(ev) in kinds and (latest is None or _event_ts(ev) >= _event_ts(latest)):
+            latest = ev
+    return latest
+
+
 def _rule_stuck_in_blocked(task, events, runs, now, cfg) -> list[Diagnostic]:
-    """Blocked for >= cfg["blocked_stale_hours"] (default 24) with no comment
-    or unblock since the last ``blocked`` event."""
+    """Blocked with nobody acting on it. ``warning`` once the card has gone
+    cfg["blocked_stale_hours"] (default 24) without a comment since it blocked
+    or since its latest comment: a comment re-arms the timer, it no longer
+    discharges it forever (#154122). Independently of comments, total time
+    blocked escalates through the ``stale_error_days`` / ``stale_critical_days``
+    ladder, so a card cannot sit blocked for months behind one reply. Comments
+    by an author in cfg["blocked_ignore_comment_authors"] (automation, #140663)
+    do not re-arm anything."""
     hours = float(cfg.get("blocked_stale_hours", 24))
     if _task_field(task, "status") != "blocked":
         return []
-    last_blocked_ts = _latest_event_ts(events, {"blocked"})
-    if last_blocked_ts == 0:
+    blocked_ev = _latest_event(events, {"blocked"})
+    if blocked_ev is None:
         return []
-    age_hours = (now - last_blocked_ts) / 3600.0
-    if age_hours < hours:
-        return []
-    # Any comment / unblock after the block breaks the "stale" signal.
-    if any(_event_kind(ev) in {"commented", "unblocked"} and _event_ts(ev) > last_blocked_ts
-           for ev in events):
-        return []
+    last_blocked_ts = _event_ts(blocked_ev)
+    ignored = {str(a).strip() for a in (cfg.get("blocked_ignore_comment_authors") or ()) if str(a).strip()}
+    last_comment_ts = max(
+        (_event_ts(ev) for ev in events
+         if _event_kind(ev) == "commented" and _event_ts(ev) > last_blocked_ts
+         and str(_parse_payload(ev).get("author") or "").strip() not in ignored),
+        default=0)
+    age_seconds = now - last_blocked_ts
+    quiet_seconds = now - max(last_blocked_ts, last_comment_ts)
+    severity = _age_severity(age_seconds, cfg)
+    if severity is None:
+        if quiet_seconds < hours * 3600:
+            return []
+        severity = "warning"
+
+    payload = _parse_payload(blocked_ev)
+    reason = str(payload.get("reason") or "").strip()
+    block_kind = str(payload.get("kind") or "").strip()
+    last_err = _error_snippet(_task_field(task, "last_failure_error"))
+    age = _age_text(age_seconds)
+    cause = f"Block reason{f' ({block_kind})' if block_kind else ''}: {reason or 'none recorded'}."
+    if last_err:
+        cause += f" Last error: {last_err}"
+    touched = (f"The latest comment was {_age_text(now - last_comment_ts)} ago and did not resolve it."
+               if last_comment_ts else "Nobody has commented since it blocked.")
     return [Diagnostic(
-        kind="stuck_in_blocked", severity="warning",
-        title=f"Task has been blocked for {int(age_hours)}h",
-        detail=f"This task transitioned to blocked {int(age_hours)}h ago and has had no comments or "
-               f"unblock attempts since. Blocked tasks are waiting for human input — check the block "
-               f"reason and either unblock with feedback or answer with a comment.",
+        kind="stuck_in_blocked", severity=severity,
+        title=f"Task has been blocked for {age}",
+        detail=f"This task has been blocked for {age} waiting for human input. {touched} {cause} "
+               f"Unblock it with feedback, answer the question in a comment, or archive it if the "
+               f"work is no longer wanted.",
         actions=[DiagnosticAction(kind="comment", label="Add a comment / unblock the task",
                                   suggested=True)],
-        first_seen_at=last_blocked_ts, last_seen_at=last_blocked_ts, count=1,
-        data={"blocked_at": last_blocked_ts, "age_hours": round(age_hours, 1)},
+        first_seen_at=last_blocked_ts, last_seen_at=max(last_blocked_ts, last_comment_ts), count=1,
+        data={"blocked_at": last_blocked_ts, "age_hours": round(age_seconds / 3600.0, 1),
+              "quiet_hours": round(quiet_seconds / 3600.0, 1),
+              "last_comment_at": last_comment_ts or None, "block_kind": block_kind or None,
+              "reason": reason or None, "last_failure_error": last_err or None},
+    )]
+
+
+# Events that put a task into ``todo``: created there (open parents), demoted by a new or reopened
+# parent, or sent back by an invalidated ancestor. ``status`` covers explicit status writes.
+_TODO_ENTRY_EVENTS = {"created", "dependency_wait", "descendant_invalidated"}
+
+
+def _rule_stuck_in_todo(task, events, runs, now, cfg) -> list[Diagnostic]:
+    """``todo`` for >= cfg["todo_stale_hours"] (default 72) since it last entered
+    ``todo``, escalating through the same total-age ladder as
+    ``stuck_in_blocked``. A todo card waits on its parents, so the diagnostic
+    names the open ones (when the caller passed the task graph): those, not
+    this card, are what needs attention."""
+    hours = float(cfg.get("todo_stale_hours", 72))
+    if _task_field(task, "status") != "todo":
+        return []
+    entered_ts = max(
+        (_event_ts(ev) for ev in events
+         if _event_kind(ev) in _TODO_ENTRY_EVENTS
+         or (_event_kind(ev) == "status" and _parse_payload(ev).get("status") == "todo")),
+        default=0)
+    if entered_ts == 0:
+        # No entry event (old task / truncated history): over-flagging an ancient
+        # card beats missing one, as in ``stranded_in_ready``.
+        entered_ts = int(_task_field(task, "created_at", default=0) or 0)
+    if entered_ts == 0:
+        return []
+    age_seconds = now - entered_ts
+    severity = _age_severity(age_seconds, cfg)
+    if severity is None:
+        if age_seconds < hours * 3600:
+            return []
+        severity = "warning"
+
+    graph = cfg.get("_graph")
+    open_parents = [
+        {"id": str(p["id"]), "status": p.get("status")}
+        for p in ((graph or {}).get("parents") or [] if isinstance(graph, dict) else [])
+        if isinstance(p, dict) and p.get("id") and p.get("status") not in ("done", "archived")
+    ]
+    age = _age_text(age_seconds)
+    task_id = str(_task_field(task, "id") or "")
+    if open_parents:
+        waiting = ", ".join(f"{p['id']} ({p['status']})" for p in open_parents)
+        cause = (f"It is waiting on {len(open_parents)} parent(s) that are not done: {waiting}. "
+                 f"Finish or unblock those, or unlink an edge that should not gate this card.")
+        actions = [_cli_hint("Inspect the first open parent", f"hermes kanban show {open_parents[0]['id']}",
+                             suggested=True),
+                   _cli_hint("Unlink a parent that should not gate this card",
+                             f"hermes kanban unlink {open_parents[0]['id']} {task_id}")]
+    else:
+        cause = ("No open parent is holding it, so nothing will promote it on its own. Promote it to "
+                 "ready, or archive it if the work is no longer wanted."
+                 if isinstance(graph, dict) else
+                 "Check which parents it is waiting on, then finish them, unlink the edge, or archive it.")
+        actions = [_cli_hint("Show the card and its links", f"hermes kanban show {task_id}", suggested=True)]
+    return [Diagnostic(
+        kind="stuck_in_todo", severity=severity,
+        title=f"Waiting in todo for {age}",
+        detail=f"This task has been in todo for {age}. {cause}",
+        actions=actions,
+        first_seen_at=entered_ts, last_seen_at=entered_ts, count=max(1, len(open_parents)),
+        data={"todo_since": entered_ts, "age_hours": round(age_seconds / 3600.0, 1),
+              "open_parents": open_parents if isinstance(graph, dict) else None},
     )]
 
 
 def _rule_block_unblock_cycling(task, events, runs, now, cfg) -> list[Diagnostic]:
     """>= cfg["block_cycle_threshold"] (default 3) blocked-after-unblocked
     cycles within cfg["block_cycle_window_seconds"] (default 24h). Complements
-    ``_rule_stuck_in_blocked``, whose timer any unblock resets, so fast cyclers
-    are invisible to it.
-
-    ``_rule_stuck_in_blocked`` resets its timer on any ``commented`` / ``unblocked`` event, so a task that
-    cycles every few minutes is invisible to it regardless of how many times it cycles (#29747 gap 1). This
-    rule complements that one by counting block→unblock cycles in a sliding window.
+    ``_rule_stuck_in_blocked``, which measures from the latest ``blocked`` event: a task that cycles
+    every few minutes never ages there, however many times it cycles (#29747 gap 1). This rule counts
+    block→unblock cycles in a sliding window instead.
     """
     threshold = _positive_int(cfg.get("block_cycle_threshold"), 3)
     window_seconds = float(cfg.get("block_cycle_window_seconds", 24 * 3600))
@@ -818,6 +932,7 @@ _RULES: list[RuleFn] = [
     _rule_running_with_open_parents,
     _rule_stuck_in_blocked,
     _rule_block_unblock_cycling,
+    _rule_stuck_in_todo,
     _rule_stranded_in_ready,
     _rule_stale_running,
 ]
@@ -831,6 +946,14 @@ DEFAULT_CONFIG = {
     "spawn_failure_threshold": 2,
     "crash_threshold": 2,
     "blocked_stale_hours": 24,
+    # Comments by these authors (automation) never re-arm ``stuck_in_blocked``.
+    "blocked_ignore_comment_authors": [],
+    # A todo card normally waits a while on parents being worked on.
+    "todo_stale_hours": 72,
+    # Total-age ladder for waiting cards (blocked, todo): touched or not, a card
+    # this old is an error, and past the critical step it is the board's loudest signal.
+    "stale_error_days": 7,
+    "stale_critical_days": 30,
     # Below 30 min the signal is dominated by tasks about to be claimed on
     # the next dispatcher tick.
     "stranded_threshold_seconds": 30 * 60,

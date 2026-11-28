@@ -500,6 +500,7 @@ class ModelCapabilities(Result):
     daybreak: bool = False
     reasoning: bool
     can_disable_reasoning: bool | None = None
+    extended_context_tokens: int | None = None
 
 
 class ProviderLimit(Result):

@@ -21,7 +21,8 @@ from agent import model_metadata_http
 from agent.model_metadata_cache import _write_context_cache, locked_context_cache
 from agent.context_default_record import mark_context_defaulted, records_context_defaults
 from agent.model_metadata_llamacpp import llamacpp_context
-from agent.model_metadata_memo_bounds import MEMO_LOCK, bound_codex_caches, remember_endpoint_models as _remember_endpoint_models
+from agent.codex_extended_context import extended_context_base
+from agent.model_metadata_memo_bounds import MEMO_LOCK, bound_codex_caches, cached_codex_extended_budgets, remember_codex_context_catalog, remember_endpoint_models as _remember_endpoint_models
 from agent.process_transport import is_local_server as _is_local_server
 from agent.model_metadata_memo_keys import endpoint_disk_slot as _endpoint_disk_slot, endpoint_memo_key as _endpoint_memo_key
 
@@ -1716,15 +1717,17 @@ def _codex_variant_base(model: Optional[str]) -> Optional[str]:
 
 
 def is_codex_context_variant(model: Optional[str]) -> bool:
-    """Suffix AND eligible base — ``gpt-5.5-900k`` is an invalid alias, not a variant."""
-    return _codex_variant_base(model) is not None
+    """Recognize Codex context choice syntax; live eligibility is checked against the route."""
+    return extended_context_base(model) is not None or _codex_variant_base(model) is not None
 
 
-def strip_codex_context_variant_suffix(model: Optional[str]) -> str:
+def strip_codex_context_variant_suffix(model: Optional[str], *, catalog_choice: bool = True) -> str:
     """Wire-safe slug with a VALID ``-900k`` suffix removed (vendor prefix kept); an ineligible alias is
     returned unchanged so it fails honestly at the API instead of running as another model."""
     raw = (model or "").strip()
-    return raw[: -len(CODEX_CONTEXT_VARIANT_SUFFIX)] if _codex_variant_base(raw) is not None else raw
+    if catalog_choice and (base := extended_context_base(raw)):
+        return base
+    return raw[: -len(CODEX_CONTEXT_VARIANT_SUFFIX)] if _codex_variant_base(raw) else raw
 
 
 def has_codex_context_variant(model_bare: str) -> bool:
@@ -1747,6 +1750,7 @@ _codex_oauth_context_cache: dict[str, tuple[dict[str, int], float]] = {}
 # ``{slug: max_context_window}`` from the same fetch, keyed by the same token fingerprint. Only the
 # opted-in ``-900k`` bump reads it (#105443); a catalog without the field leaves the entry empty.
 _codex_oauth_max_context_cache: dict[str, dict[str, int]] = {}
+_codex_oauth_extended_cache: dict[str, dict[str, int]] = {}
 _CODEX_OAUTH_CONTEXT_CACHE_TTL = 3600  # 1 hour
 _CODEX_OAUTH_CONTEXT_NEGATIVE_TTL = 300  # a probe that found no catalog is retried after 5 minutes; must stay < TTL
 # The Codex models endpoint reads ``client_version`` as a Codex CLI compatibility version and
@@ -1859,25 +1863,10 @@ def _fetch_codex_oauth_context_lengths_with_source(access_token: str, base_url: 
         logger.debug("Codex /models probe failed: %s", exc)
         _remember_no_codex_catalog(cache_key)
         return {}, False
-    from agent.codex_service_tiers import remember_catalog
-    remember_catalog(cache_key, entries)
-    result: dict[str, int] = {}
-    max_result: dict[str, int] = {}
-    for item in entries:
-        slug, ctx, max_ctx = (item.get("slug"), item.get("context_window"), item.get("max_context_window")) if isinstance(item, dict) else (None, None, None)
-        if isinstance(slug, str) and isinstance(ctx, int) and ctx > 0:
-            result[slug.strip()] = ctx
-            if isinstance(max_ctx, int) and max_ctx > 0:
-                max_result[slug.strip()] = max_ctx
+    result = remember_codex_context_catalog(access_token, base_url, entries)
     if not result:
         _remember_no_codex_catalog(cache_key)
-        return {}, False
-    # Max first: a reader that sees the fresh context entry must also see its cap.
-    with MEMO_LOCK:
-        bound_codex_caches(cache_key)
-        _codex_oauth_max_context_cache[cache_key] = max_result
-        _codex_oauth_context_cache[cache_key] = (result, now)
-    return result, True
+    return result, bool(result)
 
 
 def _codex_catalog_key(keys, slug: str) -> Optional[str]:
@@ -1912,6 +1901,7 @@ def _resolve_codex_oauth_context_length_with_source(model: str, access_token: st
     # against the stripped id. Also drop any ``vendor/`` namespace (``openai/gpt-5.6-sol-900k``): the
     # main-agent path normalizes it away before reaching here, but display/auxiliary callers pass it through
     # (#92797 review).
+    catalog_choice = extended_context_base(model_bare)
     lookup_bare = _bare_codex_slug(strip_codex_context_variant_suffix(model_bare))
     catalog_max = None
     if access_token:
@@ -1920,9 +1910,15 @@ def _resolve_codex_oauth_context_length_with_source(model: str, access_token: st
         catalog_max = _cached_codex_catalog_max(access_token, base_url, lookup_bare)
         slug = _codex_catalog_key(live, lookup_bare)
         if slug is not None:
-            return _apply_verified_bump(live[slug], "live" if fresh_probe else "memory", catalog_max)
+            source = "live" if fresh_probe else "memory"
+            if catalog_choice:
+                budget = cached_codex_extended_budgets(access_token, base_url).get(lookup_bare)
+                return budget or live[slug], source
+            return _apply_verified_bump(live[slug], source, catalog_max)
     hit = _longest_key_match(_CODEX_OAUTH_CONTEXT_FALLBACK, lookup_bare.lower())
-    return _apply_verified_bump(hit[1], "fallback", catalog_max) if hit else (None, "")
+    if hit:
+        return _apply_verified_bump(hit[1], "fallback", catalog_max)
+    return (DEFAULT_FALLBACK_CONTEXT, "fallback") if catalog_choice else (None, "")
 
 
 def _resolve_nous_context_length(model: str, base_url: str = "", api_key: str = "") -> tuple[Optional[int], str]:
@@ -2085,6 +2081,7 @@ def _resolve_custom_codex_route_context_length(model: str, base_url: str, api_ke
     The proxy's context_window is never trusted; only an opted-in ``-900k`` variant asks the route's own
     catalog (with the route's own key), and only for its max_context_window cap. Slugs the table does
     not know take the ordinary endpoint probes."""
+    model = extended_context_base(model) or model
     ctx, _source = _resolve_codex_oauth_context_length_with_source(model)
     if ctx and api_key and is_codex_context_variant(model):
         # The -900k bump is an account-level assumption; a gateway whose own catalog publishes a

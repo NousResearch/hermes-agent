@@ -62,7 +62,39 @@ def _get_project_plugins_dir() -> Optional[Path]:
         return None
 
 
+_PROVIDER_DIR_VERDICTS: dict[str, tuple[tuple, bool]] = {}
+
+
+def _dir_signature(path: Path) -> tuple:
+    """(name, mtime_ns, size) of every top-level module — what ``_defines_memory_provider`` reads."""
+    sig = []
+    for module in sorted(path.glob("*.py")):
+        try:
+            st = module.stat()
+        except OSError:
+            continue
+        sig.append((module.name, st.st_mtime_ns, st.st_size))
+    return tuple(sig)
+
+
 def _is_memory_provider_dir(path: Path) -> bool:
+    """Memoized on the directory's module signature: a heuristic miss AST-parses every top-level
+    module (~0.6 s for a 100-module plugin), and the dashboard reaches this through
+    ``list_memory_provider_names`` on every ``GET /api/config/schema``, on the event loop (#147444)."""
+    try:
+        sig = _dir_signature(path)
+    except OSError:
+        sig = None
+    key = str(path)
+    if sig is not None and (hit := _PROVIDER_DIR_VERDICTS.get(key)) and hit[0] == sig:
+        return hit[1]
+    verdict = _is_memory_provider_dir_uncached(path)
+    if sig is not None:
+        _PROVIDER_DIR_VERDICTS[key] = (sig, verdict)
+    return verdict
+
+
+def _is_memory_provider_dir_uncached(path: Path) -> bool:
     """Cheap text heuristic (no import): ``__init__.py`` mentions the memory provider contract.
     A miss in the first 8 KB falls back to parsing, so a long module docstring cannot hide a provider."""
     init_file = path / "__init__.py"

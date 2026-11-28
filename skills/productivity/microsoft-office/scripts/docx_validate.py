@@ -73,6 +73,12 @@ def validate(path: str) -> dict:
         return {"ok": False, "issues": issues}
 
     # --- relationships resolve ------------------------------------------
+    # Keyed by the SOURCE PART ("word/document.xml", "word/header1.xml";
+    # "_package" for _rels/.rels), never by its directory: every part under
+    # word/ has its own .rels, and a directory key let the last one read win,
+    # so document.xml's r:id references were checked against a header's or
+    # footer's ids — randomly, since set order follows the per-process hash
+    # seed. Targets still resolve relative to the part's directory.
     rel_ids_by_source: dict[str, dict] = {}
     for rels_name in [n for n in names if n.endswith(".rels")]:
         try:
@@ -80,9 +86,12 @@ def validate(path: str) -> dict:
         except etree.XMLSyntaxError as exc:
             _issue(issues, "error", "bad-rels-xml", f"{rels_name}: {exc}")
             continue
-        source_part = posixpath.normpath(
+        part_dir = posixpath.normpath(
             posixpath.join(posixpath.dirname(rels_name), ".."))
-        source_part = "" if source_part == "." else source_part
+        part_dir = "" if part_dir == "." else part_dir
+        part_file = posixpath.basename(rels_name)[:-len(".rels")]
+        source_part = posixpath.join(part_dir, part_file) if part_file \
+            else part_dir
         ids = {}
         for rel in root.iter(f"{{{PR}}}Relationship"):
             rid, target = rel.get("Id"), rel.get("Target", "")
@@ -90,8 +99,7 @@ def validate(path: str) -> dict:
             ids[rid] = target
             if mode == "External":
                 continue
-            resolved = _rel_target(source_part + "/x" if source_part
-                                   else "x", target)
+            resolved = _rel_target(source_part or "x", target)
             if resolved not in names:
                 _issue(issues, "error", "dangling-rel",
                        f"{rels_name}: {rid} -> {target} (missing part)")
@@ -99,7 +107,7 @@ def validate(path: str) -> dict:
 
     # --- r:id / r:embed references in document.xml -----------------------
     doc_root = etree.fromstring(zf.read("word/document.xml"))
-    doc_rels = rel_ids_by_source.get("word", {})
+    doc_rels = rel_ids_by_source.get("word/document.xml", {})
     for el in doc_root.iter():
         for attr in (f"{{{R}}}id", f"{{{R}}}embed", f"{{{R}}}link"):
             rid = el.get(attr)

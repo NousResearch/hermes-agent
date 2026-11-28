@@ -1,7 +1,14 @@
 import { atom, computed } from 'nanostores'
 
+import { requestPaneFocus } from '@/components/pane-shell/pane-focus'
 import { findGroup, findGroupOfPane } from '@/components/pane-shell/tree/model'
-import { $activeTreeGroup, $layoutTree } from '@/components/pane-shell/tree/store'
+import {
+  $activeTreeGroup,
+  $layoutTree,
+  isPaneVisible,
+  noteActiveTreeGroup,
+  revealTreePane
+} from '@/components/pane-shell/tree/store'
 import { $workspaceMode } from '@/components/pane-shell/workspace-scope'
 
 import { $selectedStoredSessionId } from './session'
@@ -12,6 +19,22 @@ export const TILE_PANE_PREFIX = 'session-tile:'
 const PLUGIN_PANE_PREFIX = 'plugin-workspace:'
 
 const isChatPane = (paneId?: string): boolean => paneId === 'workspace' || Boolean(paneId?.startsWith(TILE_PANE_PREFIX))
+
+/** Front an already-open session pane and claim typing focus only if it is visible. */
+export function frontSessionPane(paneId: string): boolean {
+  revealTreePane(paneId)
+  const tree = $layoutTree.get()
+  const group = tree ? findGroupOfPane(tree, paneId) : null
+
+  if (!group || !isPaneVisible(paneId)) {
+    return false
+  }
+
+  noteActiveTreeGroup(group.id)
+  requestPaneFocus(paneId)
+
+  return true
+}
 
 // Chrome can own keyboard focus, but working in it (navigating the sessions
 // list, browsing Files, typing in Terminal) must not replace the chat being

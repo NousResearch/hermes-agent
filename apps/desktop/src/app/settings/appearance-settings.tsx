@@ -17,7 +17,6 @@ import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { $backdrop, setBackdrop } from '@/store/backdrop'
 import { $chatTextScale, CHAT_TEXT_SCALE_PRESETS, setChatTextScale } from '@/store/chat-text-scale'
-import { $composerPopoutGesturesEnabled, setComposerPopoutGesturesEnabled } from '@/store/composer-popout'
 import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedMode } from '@/store/embed-consent'
 import {
   $interfaceMode,
@@ -80,6 +79,7 @@ import { AppearanceExtraSlot } from './appearance-contrib'
 import type { AppearanceSubpageId } from './appearance-subpages'
 import { ChatFontSetting } from './chat-font-setting'
 import { MODE_OPTIONS } from './constants'
+import { ComposerInteractionSettings } from './focus-follows-mouse-setting'
 import { setNested } from './helpers'
 import { MinimizeToTraySetting } from './minimize-to-tray-setting'
 import { PetSettings } from './pet-settings'
@@ -428,7 +428,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
   const chatTextScale = useStore($chatTextScale)
   const embedMode = useStore($embedMode)
   const embedAllowed = useStore($embedAllowed)
-  const composerPopoutGesturesEnabled = useStore($composerPopoutGesturesEnabled)
+
   const fileBrowserOpen = useStore($fileBrowserOpen)
   const fileBrowserShadowed = useStore($modeShadowed('fileBrowserOpen'))
   const translucency = useStore($translucency)
@@ -965,15 +965,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
             />
           )}
 
-          {show('window-layout') && (
-            <ToggleRow
-              checked={composerPopoutGesturesEnabled}
-              description={a.composerPopoutDesc}
-              id={settingElementId(ids.composerPopout)}
-              label={a.composerPopoutTitle}
-              onChange={setComposerPopoutGesturesEnabled}
-            />
-          )}
+          {show('window-layout') && <ComposerInteractionSettings />}
 
           {show('general') && <ResumeLastSessionSetting />}
 

@@ -1,0 +1,20 @@
+name: hermes-anchor
+title: Anchor
+repo: "https://github.com/Aayu095/hermes-anchor"
+sha: "b1826a59eea7bd378d2fa89611b643da1baf3eb7"
+description: "Context engine that pins decisions, amounts and dates verbatim before compressing: facts are detected deterministically (zero model calls), re-issued word-for-word in a carrier message on every compression pass, and the unpinned middle folds into a size-capped extractive digest. Disclosure — Anchor makes no network requests, no model calls and no subprocesses; it reads only the conversation messages the host hands the engine and writes only its own pin store at $HERMES_HOME/plugin-data/anchor/pins.json; no credentials are requested or read; token-saved figures are estimates (~4 chars/token) and never gate behaviour."
+maintainer: Aayu095
+tier: community
+category: general
+requires_hermes: ">=0.23.0"
+version: "0.1.0"
+readme: true
+capabilities:
+  provides_tools:
+    - anchor_pin
+    - anchor_unpin
+    - anchor_pins
+    - anchor_status
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

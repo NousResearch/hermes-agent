@@ -14,7 +14,7 @@ import pytest
 from persistence import ExportTooLarge, ProfileScope, SessionId
 from persistence.conversation.messages import NewMessage
 from persistence.conversation.sessions import CANONICAL_BOT_CHAT_TITLE, END_REASON_COMPRESSION, NewSession
-from persistence.housekeeping.maintenance import IMPORT_MAX_SESSIONS, SESSION_PROJECTION_FIELDS, ImportResult, PruneCriteria, TreeServeFacts
+from persistence.housekeeping.maintenance import IMPORT_MAX_SESSIONS, SESSION_PROJECTION_FIELDS, ImportLimits, ImportResult, PruneCriteria, TreeServeFacts
 
 from tests.contracts._scopes import MEDIA_ROOT
 
@@ -138,6 +138,29 @@ def test_import_skips_existing_ids_and_rejects_invalid_payloads_wholesale(backen
         store_a.maintenance.import_sessions({"id": "x"})
     with pytest.raises(ValueError):
         store_a.maintenance.import_sessions([_payload(f"s-many-{i}") for i in range(IMPORT_MAX_SESSIONS + 1)])
+
+
+def test_import_checks_the_callers_limits(backend, scope_a):
+    store_a = backend.open(scope_a)
+    # CONTRACT: ``limits`` replaces each default guard: a lower one refuses a payload the defaults import, naming the guard and writing nothing.
+    for limits, error in (
+        (ImportLimits(max_messages_per_session=4), "messages exceeds the per-session import limit"),
+        (ImportLimits(max_total_messages=4), "messages exceeds the total import limit"),
+        (ImportLimits(max_session_bytes=64), "session exceeds the import size limit"),
+        (ImportLimits(max_total_bytes=64), "import exceeds the total size limit"),
+    ):
+        refused = store_a.maintenance.import_sessions([_payload("s-limited")], limits=limits)
+        assert (refused.ok, refused.imported, refused.errors) == (False, 0, ({"index": 0, "error": error, "session_id": "s-limited"},))
+    with pytest.raises(ValueError, match="at most 1 entries"):
+        store_a.maintenance.import_sessions([_payload("s-limited"), _payload("s-limited-2")], limits=ImportLimits(max_sessions=1))
+    assert store_a.sessions.get(SessionId("s-limited")) is None
+    # CONTRACT: 0 disables a guard, so a payload over the default lands.
+    wide = store_a.maintenance.import_sessions([_payload(f"s-wide-{i}", messages=[]) for i in range(IMPORT_MAX_SESSIONS + 1)], limits=ImportLimits(max_sessions=0))
+    assert (wide.ok, wide.imported) == (True, IMPORT_MAX_SESSIONS + 1)
+    # CONTRACT: a negative or non-int limit is a ValueError.
+    for bad in (-1, 1.5, True):
+        with pytest.raises(ValueError):
+            ImportLimits(max_sessions=bad)
 
 
 def test_import_refuses_a_deleted_id_by_name(backend, scope_a):

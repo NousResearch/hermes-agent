@@ -2252,13 +2252,13 @@ DEFAULT_CONFIG = {
         # routing path (fts5 / trigram / like_scan). 0 logs every search. Bridged to
         # HERMES_SEARCH_SLOW_MS.
         "search_slow_ms": 1000,
-        # Transcript guards (a runaway 100k+ row session can exhaust memory when materialized at
-        # once; 0 disables). Max active messages (across the compression lineage) for interactive
-        # resume.
+        # Transcript guards (a runaway 100k+ row session can exhaust memory at once; 0 disables): active
+        # messages across the lineage for resume; per session for `hermes sessions export`.
         "max_resume_messages": 20000,
-        # Max active messages per session for in-memory export (`hermes sessions export`); checked
-        # per session, so full-DB backups of small sessions work.
         "max_export_messages": 20000,
+        # Import payload guards (dashboard import, lineage adoption, foreign-session import); 0 disables.
+        "import_max_sessions": 500, "import_max_messages_per_session": 10000, "import_max_total_messages": 50000,
+        "import_max_session_bytes": 5 * 1024 * 1024, "import_max_total_bytes": 25 * 1024 * 1024,
         # Seconds before a local session with no viewer is ended (resumable) once its turn settles; 0 = never; after a
         # restart also >= 6h idle. Unset: dashboard.ws_orphan_reap_grace_s: 0 / startup_orphan_sweep: false opt out.
         "orphan_end_grace_s": 300.0,

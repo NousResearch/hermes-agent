@@ -15,6 +15,7 @@ from typing import Any, ClassVar, Literal, Protocol, runtime_checkable
 from ..core.canonical import canonical_json
 from ..core.errors import AuthorityRefusal
 from ..core.identity import SessionId
+from ..housekeeping.maintenance import ImportLimits
 from .admissions import GateRefusal
 from .vocabulary import OwnerRule, admission_fingerprint
 
@@ -434,10 +435,11 @@ class ClaimHistory:
 
 @dataclass(frozen=True, slots=True)
 class ImportControl:
-    """Bind the import's not-yet-existing ``session_ids`` to ``actor``."""
+    """Bind the import's not-yet-existing ``session_ids`` to ``actor``; ``limits`` are the payload guards the import's write re-checks (an import without one checks the defaults)."""
 
     actor: HistoryActor
     session_ids: tuple[str, ...]
+    limits: ImportLimits = field(default_factory=ImportLimits)
 
 
 #: The history-control write ``mutate`` runs inside its transaction after the fence, revision and generation checks, before the mutation is applied.

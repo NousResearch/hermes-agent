@@ -9,6 +9,7 @@ from persistence.authority import runtime as rt
 from persistence.authority.bindings import local_session_id
 from persistence.conversation.messages import NewMessage
 from persistence.conversation.sessions import NewSession
+from persistence.housekeeping.maintenance import IMPORT_MAX_SESSIONS, ImportLimits
 
 VALID = [
     ("model", {"model": "gpt", "provider": "openai", "reasoning": "high"}, rt.ModelPick("gpt", provider="openai", reasoning="high")),
@@ -201,6 +202,28 @@ def test_import_creates_absent_rows_and_refuses_a_deleted_id(backend, scope_a):
     with pytest.raises(AuthorityRefusal) as deleted:
         store.runtime.mutate(epoch, principal_id="p", session_id="s-new", request_id="imp-3", expected_revision=0, command=rt.Import(payload), owner=None)
     assert (deleted.value.reason, deleted.value.field) == ("admission_conflict", "sessions")
+
+
+def test_import_checks_the_import_controls_limits(backend, scope_a):
+    store = backend.open(scope_a)
+    epoch = store.runtime.begin_epoch(instance_id="instance-cmd")
+    payload = ({"id": "s-lim", "source": "import", "messages": [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "yo"}]},
+               {"id": "s-lim-2", "source": "import", "messages": []})
+    actor = rt.HistoryActor(str(scope_a.profile_dir), "p", None, True)
+    # CONTRACT: the import's write re-checks the payload under ``ImportControl.limits``, not the defaults: over one it refuses and writes nothing.
+    for limits in (ImportLimits(max_messages_per_session=1), ImportLimits(max_sessions=1)):
+        with pytest.raises(AuthorityRefusal, match="^invalid_params$"):
+            store.runtime.mutate(epoch, principal_id="p", session_id="s-lim", request_id="imp-tight", expected_revision=0, command=rt.Import(payload),
+                                 history=rt.ImportControl(actor, ("s-lim", "s-lim-2"), limits), owner=None)
+    assert store.sessions.get("s-lim") is None
+    # CONTRACT: 0 disables a guard; an ImportControl without limits checks the defaults.
+    many = tuple({"id": f"s-many-{i}", "source": "import", "messages": []} for i in range(IMPORT_MAX_SESSIONS + 1))
+    with pytest.raises(AuthorityRefusal, match="^invalid_params$"):
+        store.runtime.mutate(epoch, principal_id="p", session_id="s-many-0", request_id="imp-default", expected_revision=0, command=rt.Import(many),
+                             history=rt.ImportControl(actor, tuple(item["id"] for item in many)), owner=None)
+    outcome = store.runtime.mutate(epoch, principal_id="p", session_id="s-many-0", request_id="imp-wide", expected_revision=0, command=rt.Import(many),
+                                   history=rt.ImportControl(actor, tuple(item["id"] for item in many), ImportLimits(max_sessions=0)), owner=None)
+    assert outcome.result["imported"] == IMPORT_MAX_SESSIONS + 1
 
 
 def test_reset_branch_and_compress_run_their_fences_first(backend, scope_a):

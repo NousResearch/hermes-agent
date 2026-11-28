@@ -176,7 +176,8 @@ def test_the_last_open_failure_is_kept_until_the_next_one(monkeypatch):
     assert storage_user_copy.get_last_init_error() is None
 
 
-@pytest.mark.parametrize(("configured", "limit"), [(None, 20_000), (5, 5), (0, 0), (-1, 20_000), ("x", 20_000)])
+@pytest.mark.parametrize(("configured", "limit"), [(None, 20_000), (5, 5), (0, 0), (-1, 20_000), ("x", 20_000),
+                                                   (True, 20_000), (False, 20_000)])
 def test_transcript_limits_come_from_the_sessions_config(monkeypatch, configured, limit):
     import hermes_cli.config
 

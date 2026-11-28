@@ -148,3 +148,53 @@ async def test_delete_reports_already_absent_only_for_rows_that_are_gone(tmp_pat
         assert unrestorable.status_code == 404 and unrestorable.json()['detail'] == 'not_found', unrestorable.text
         assert session_row(store, 'cold-api') is not None
         assert gone.status_code == 200 and gone.json() == {'ok': True, 'already_absent': True}, gone.text
+
+
+@pytest.mark.asyncio
+async def test_http_import_honours_the_served_profiles_import_limits(tmp_path, monkeypatch):
+    """``sessions.import_max_*`` in the served store's profile config.yaml bounds the dashboard import end to end,
+    not the dashboard process's own: the endpoint's pre-check and the authority's write both read it, so 0 lets a
+    payload over a default land."""
+    from gateway.session_contract import SessionActor
+    from hermes_cli.web_routers.sessions import manage_router
+    from hermes_cli import web_server as web
+    import hermes_cli.web_server_sessions as web_sessions
+    from persistence.housekeeping.maintenance import IMPORT_MAX_SESSIONS
+    process_home, served = tmp_path / 'process', tmp_path / 'served'
+    process_home.mkdir()
+    served.mkdir()
+    # The process's own config is stricter than anything below: it must never apply to the served store.
+    (process_home / 'config.yaml').write_text('sessions:\n  import_max_messages_per_session: 1\n  import_max_sessions: 1\n')
+    monkeypatch.setattr(web, '_SESSION_TOKEN', 'fixture-token')
+    monkeypatch.setenv('HERMES_HOME', str(process_home))
+    app = FastAPI()
+    app.state.auth_required = False
+    app.include_router(manage_router)
+    config = served / 'config.yaml'
+    with open_persistence(profile_scope(home=served)) as store:
+        epoch = store.runtime.begin_epoch(instance_id='owner')
+        authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id=str(served), instance_id='owner', epoch=epoch, persistence=storage_handle(served))
+        # The served profile's authority and login: another profile than the dashboard process's own home.
+        login = SessionActor('basic:alice', str(served), frozenset({'session:read', 'session:control', 'session:create'}), 'http')
+        monkeypatch.setattr(web_sessions, '_session_mutation_context', lambda request, profile: (authority, login))
+        headers = {'Authorization': 'Bearer fixture-token'}
+
+        def two_turns(sid):
+            return [{'id': sid, 'source': 'cli', 'messages': [{'role': 'user', 'content': 'a'}, {'role': 'assistant', 'content': 'b'}]},
+                    {'id': f'{sid}-sibling', 'source': 'cli', 'messages': []}]
+        many = [{'id': f'many-{i}', 'source': 'cli', 'messages': []} for i in range(IMPORT_MAX_SESSIONS + 1)]
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://localhost', headers=headers) as client:
+            defaults = await client.post('/api/sessions/import', json={'request_id': 'defaults', 'expected_revision': 0, 'sessions': two_turns('defaults')})
+            assert defaults.status_code == 200, defaults.text
+            config.write_text('sessions:\n  import_max_messages_per_session: 1\n')
+            limited = await client.post('/api/sessions/import', json={'request_id': 'limited', 'expected_revision': 0, 'sessions': two_turns('limited')})
+            assert limited.status_code == 400, limited.text
+            assert limited.json()['detail']['errors'][0]['error'] == 'messages exceeds the per-session import limit'
+            assert session_row(store, 'limited') is None
+            refused = await client.post('/api/sessions/import', json={'request_id': 'many-default', 'expected_revision': 0, 'sessions': many})
+            assert refused.status_code == 400, refused.text
+            # Different sizes: the config cache may key on mtime + size, and both writes can share a tick.
+            config.write_text('sessions:\n  import_max_sessions: 0  # off\n')
+            wide = await client.post('/api/sessions/import', json={'request_id': 'many-off', 'expected_revision': 0, 'sessions': many})
+            assert wide.status_code == 200, wide.text
+            assert wide.json()['imported'] == IMPORT_MAX_SESSIONS + 1

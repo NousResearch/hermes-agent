@@ -8,6 +8,7 @@ from typing import Any
 from persistence.conversation.messages import TranscriptRead, TranscriptView
 from persistence.conversation.sessions import END_REASON_ADOPTED
 from persistence.housekeeping.maintenance import ImportResult, SessionExport
+from storage_limits import resolved_import_limits
 
 # caplog tests pin the "hermes_state" logger name.
 logger = logging.getLogger("hermes_state")
@@ -57,7 +58,8 @@ def adopt_session_lineage(store, donor, session_id: str, *, retire_donor: bool =
             logger.warning("adoption divergence: donor segment %s has %d messages, "
                            "local copy has %d — donor will NOT be retired", seg_id, donor_count, local_count)
 
-    result = _result_dict(store.maintenance.import_sessions([_import_entry(segment) for segment in segments]))
+    result = _result_dict(store.maintenance.import_sessions([_import_entry(segment) for segment in segments],
+                                                            limits=resolved_import_limits(store.scope.profile_dir)))
     imported = result["imported"]
     skipped = result["skipped"]
     adopted = result["ok"] and (imported + skipped) == len(segments)

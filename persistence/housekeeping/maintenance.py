@@ -30,6 +30,7 @@ __all__ = [
     "ForeignImportResult",
     "ForeignOrigin",
     "ForeignTurn",
+    "ImportLimits",
     "ImportResult",
     "PruneCandidate",
     "PruneCriteria",
@@ -283,6 +284,28 @@ class ForeignImportResult:
 
 
 @dataclass(frozen=True, slots=True)
+class ImportLimits:
+    """The import payload guards ``import_sessions``, ``import_foreign_history`` and the authority's ``import`` check; 0 disables one. The defaults are the ``IMPORT_MAX_*`` constants; ``storage_limits.resolved_import_limits`` reads ``sessions.import_max_*`` of the receiving profile."""
+
+    max_sessions: int = IMPORT_MAX_SESSIONS
+    max_messages_per_session: int = IMPORT_MAX_MESSAGES_PER_SESSION
+    max_total_messages: int = IMPORT_MAX_TOTAL_MESSAGES
+    max_session_bytes: int = IMPORT_MAX_SESSION_BYTES
+    max_total_bytes: int = IMPORT_MAX_TOTAL_BYTES
+
+    def __post_init__(self) -> None:
+        for field in fields(self):
+            value = getattr(self, field.name)
+            if type(value) is not int or value < 0:
+                raise ValueError(f"ImportLimits.{field.name} must be a non-negative int")
+
+    @staticmethod
+    def exceeded(limit: int, value: int) -> bool:
+        """True when ``value`` is over an enabled ``limit``."""
+        return bool(limit) and value > limit
+
+
+@dataclass(frozen=True, slots=True)
 class ImportResult:
     """Outcome of ``import_sessions``. A refused payload is ``ok=False`` with nothing written: ``errors`` holds one ``{"index", "error"[, "session_id"]}`` mapping per rejected entry, or one text per already-deleted id."""
 
@@ -323,8 +346,8 @@ class SessionMaintenance(Protocol):
         """The idle sweep's archive of one match: archive the session's compression lineage in one write, stamping ``auto_archived`` only on rows this call archives. True when the lineage exists."""
         ...
 
-    def import_foreign_history(self, origin: ForeignOrigin, messages: Sequence[ForeignTurn], *, title: str, cwd: Optional[str], profile: str) -> ForeignImportResult:
-        """Adopt or mint the session for ``origin``. The id is minted and the payload validated by the ``import_sessions`` rules before the write (a refusal raises ``ValueError`` with the first error text); then one write re-checks the origin (already imported: its id with ``already_imported=True``), suffixes a title another row holds with `` (<last 12 id characters>)``, inserts the row and its messages as an import does, and stores ``{"imported_from": origin}`` as ``origin_json`` and ``profile`` as ``profile_name``."""
+    def import_foreign_history(self, origin: ForeignOrigin, messages: Sequence[ForeignTurn], *, title: str, cwd: Optional[str], profile: str, limits: ImportLimits = ImportLimits()) -> ForeignImportResult:
+        """Adopt or mint the session for ``origin``. The id is minted and the payload validated by the ``import_sessions`` rules under ``limits`` before the write (a refusal raises ``ValueError`` with the first error text); then one write re-checks the origin (already imported: its id with ``already_imported=True``), suffixes a title another row holds with `` (<last 12 id characters>)``, inserts the row and its messages as an import does, and stores ``{"imported_from": origin}`` as ``origin_json`` and ``profile`` as ``profile_name``."""
         ...
 
     def register_backend_heartbeat(self, *, backend_id: str, pid: int, started_at: float, last_heartbeat: Optional[float] = None, profile: str = '', host: str = '') -> None:
@@ -335,8 +358,8 @@ class SessionMaintenance(Protocol):
         """Delete the heartbeat row of ``backend_id``; True when a row was deleted. An empty id returns False without a write."""
         ...
 
-    def import_sessions(self, sessions: Sequence[Mapping[str, JsonValue]]) -> ImportResult:
-        """Import session dicts as ``export_session`` / ``export_all`` produce them. More than ``IMPORT_MAX_SESSIONS`` entries raises ``ValueError``. Every entry is validated first (an object with an id, no duplicate id, a message list within the per-session and total limits, typed text, JSON and number fields); any rejection returns ``ok=False`` with every error and writes nothing. In one write: an id deleted here refuses the whole payload by name; an existing id is skipped; each new row is inserted with ``source`` defaulting to ``import``, the flags kept (``auto_archived`` only on an archived row), the routing, handoff, rewind and activity columns reset, and its messages inserted (a message with a false ``active`` restored archived, compacted per its flag); the counters count live rows. A parent edge is kept when the parent exists in the store or the payload and closes no cycle, else the child is detached and counted."""
+    def import_sessions(self, sessions: Sequence[Mapping[str, JsonValue]], *, limits: ImportLimits = ImportLimits()) -> ImportResult:
+        """Import session dicts as ``export_session`` / ``export_all`` produce them. More than ``limits.max_sessions`` entries raises ``ValueError``. Every entry is validated first (an object with an id, no duplicate id, a message list and size within the per-session and total ``limits``, typed text, JSON and number fields); any rejection returns ``ok=False`` with every error and writes nothing. In one write: an id deleted here refuses the whole payload by name; an existing id is skipped; each new row is inserted with ``source`` defaulting to ``import``, the flags kept (``auto_archived`` only on an archived row), the routing, handoff, rewind and activity columns reset, and its messages inserted (a message with a false ``active`` restored archived, compacted per its flag); the counters count live rows. A parent edge is kept when the parent exists in the store or the payload and closes no cycle, else the child is detached and counted."""
         ...
 
     def list_prune_candidates(self, older_than_days: Optional[float] = None, source: Optional[str] = None, *, criteria: PruneCriteria = PruneCriteria(), whole_lineages: bool = False) -> tuple[PruneCandidate, ...]:

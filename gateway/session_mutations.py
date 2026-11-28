@@ -24,18 +24,21 @@ _FIELDS = frozenset({'session_id', 'request_id', 'expected_revision', 'operation
 
 
 def _authorize_import(authority, actor, ref, params):
-    """Import authorization; returns the imported session ids the write must claim."""
+    """Import authorization; returns the imported session ids the write must claim and the payload limits
+    (``sessions.import_max_*`` of the authority's profile) its write re-checks."""
     if actor.profile_id != authority.profile_id or ref.profile_id != authority.profile_id:
         raise AuthorityRefusal('profile_mismatch')
     if 'session:create' not in actor.capabilities:
         raise AuthorityRefusal('permission_denied')
     from persistence.authority.runtime import parse_mutation
     from session_rules.imports import validate_import_payload
+    from storage_limits import resolved_import_limits
     parse_mutation('import', params['payload'])
-    normalized, errors = validate_import_payload(params['payload']['sessions'])
+    limits = resolved_import_limits(authority_persistence(authority).scope.profile_dir)
+    normalized, errors = validate_import_payload(params['payload']['sessions'], limits)
     if errors:
         raise AuthorityRefusal('invalid_params')
-    return tuple(item['session']['id'] for item in normalized)
+    return tuple(item['session']['id'] for item in normalized), limits
 
 
 def _authorize_control(authority, actor, ref, params, owner=None):
@@ -158,9 +161,9 @@ async def _mutate_session(authority, actor, ref, params, *, commit_lock=None, ow
     payload, editor_servers = private_mutation_payload(operation, params['payload'])
     params = {**params, 'payload': payload}
     cold_history = False
-    imported_ids = None
+    imported_ids = import_limits = None
     if operation == 'import':
-        imported_ids = _authorize_import(authority, actor, ref, params)
+        imported_ids, import_limits = _authorize_import(authority, actor, ref, params)
     else:
         cold_history = _authorize_control(authority, actor, ref, params, owner)
     if operation == 'branch' and 'session:create' not in actor.capabilities:
@@ -178,7 +181,7 @@ async def _mutate_session(authority, actor, ref, params, *, commit_lock=None, ow
         from session_rules.legacy_local import login_label
         writer = HistoryActor(actor.profile_id, actor.subject, login_label(actor.subject),
                               'session:create' in actor.capabilities)
-        history = ImportControl(writer, imported_ids) if operation == 'import' else ClaimHistory(writer)
+        history = ImportControl(writer, imported_ids, import_limits) if operation == 'import' else ClaimHistory(writer)
     return await write_mutation(authority, ref, params, editor_servers, principal_id=actor.subject, history=history,
                                 commit_lock=commit_lock)
 

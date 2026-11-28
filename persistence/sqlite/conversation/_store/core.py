@@ -111,12 +111,6 @@ _AUTO_PRUNE_STALE_OPEN_SOURCES: tuple[str, ...] = (
 )
 
 
-_IMPORT_MAX_SESSIONS, _IMPORT_MAX_MESSAGES_PER_SESSION, _IMPORT_MAX_TOTAL_MESSAGES = 500, 10_000, 50_000
-
-
-_IMPORT_MAX_SESSION_BYTES, _IMPORT_MAX_TOTAL_BYTES = 5 * 1024 * 1024, 25 * 1024 * 1024
-
-
 def _delete_unreferenced_system_prompts(conn) -> None:
     conn.execute(
         "DELETE FROM system_prompts WHERE NOT EXISTS ("

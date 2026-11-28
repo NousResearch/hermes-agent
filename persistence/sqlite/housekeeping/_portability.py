@@ -16,9 +16,8 @@ from typing import Any, Mapping, Optional, Sequence
 
 from persistence import Conflict, SessionId
 from persistence.housekeeping.maintenance import (
-    IMPORT_MAX_MESSAGES_PER_SESSION, IMPORT_MAX_SESSION_BYTES, IMPORT_MAX_SESSIONS, IMPORT_MAX_TOTAL_BYTES,
-    IMPORT_MAX_TOTAL_MESSAGES, ForeignImportResult, ForeignOrigin, ForeignTurn, ImportResult, SessionExport,
-    SessionExportRow, SessionLineageExport,
+    ForeignImportResult, ForeignOrigin, ForeignTurn, ImportLimits, ImportResult, SessionExport, SessionExportRow,
+    SessionLineageExport,
 )
 from session_rules.session_ids import new_session_id
 from utils import safe_json_loads
@@ -280,9 +279,9 @@ def _normalize_import_session(raw: dict[str, Any], session_id: str, messages: li
     return {"session": clean_session, "messages": clean_messages}
 
 
-def _validate_import_payload(sessions: list[dict[str, Any]]) -> tuple:
-    """Size/shape/type validation of the whole payload; returns ``(normalized_items,
-    errors)``. Every rejected entry is reported."""
+def _validate_import_payload(sessions: list[dict[str, Any]], limits: ImportLimits = ImportLimits()) -> tuple:
+    """Size/shape/type validation of the whole payload under ``limits`` (not the session count, which
+    the importer checks first); returns ``(normalized_items, errors)``. Every rejected entry is reported."""
     normalized: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
@@ -290,7 +289,7 @@ def _validate_import_payload(sessions: list[dict[str, Any]]) -> tuple:
     for index, raw in enumerate(sessions):
         session_id = str(raw.get("id") or "").strip() if isinstance(raw, dict) else ""
         try:
-            item = _validate_import_session(raw, session_id, seen_ids, totals)
+            item = _validate_import_session(raw, session_id, seen_ids, totals, limits)
         except ValueError as exc:
             item = {"index": index, "error": str(exc)}
             if session_id:
@@ -302,7 +301,8 @@ def _validate_import_payload(sessions: list[dict[str, Any]]) -> tuple:
     return normalized, errors
 
 
-def _validate_import_session(raw: Any, session_id: str, seen_ids: set, totals: dict[str, int]) -> dict[str, Any]:
+def _validate_import_session(raw: Any, session_id: str, seen_ids: set, totals: dict[str, int],
+                             limits: ImportLimits) -> dict[str, Any]:
     """One payload session -> normalized item; ValueError(message) on rejection. *totals*
     accumulate before their limit check (a rejected oversize entry still counts)."""
     if not isinstance(raw, dict):
@@ -314,7 +314,7 @@ def _validate_import_session(raw: Any, session_id: str, seen_ids: set, totals: d
     messages = raw.get("messages") or []
     if not isinstance(messages, list):
         raise ValueError("messages must be a list")
-    if len(messages) > IMPORT_MAX_MESSAGES_PER_SESSION:
+    if limits.exceeded(limits.max_messages_per_session, len(messages)):
         raise ValueError("messages exceeds the per-session import limit")
     if any(not isinstance(msg, dict) for msg in messages):
         raise ValueError("messages must contain only objects")
@@ -325,14 +325,14 @@ def _validate_import_session(raw: Any, session_id: str, seen_ids: set, totals: d
         session_bytes = len(json.dumps(measured, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
     except (TypeError, ValueError):
         raise ValueError("session must be JSON serializable") from None
-    if session_bytes > IMPORT_MAX_SESSION_BYTES:
+    if limits.exceeded(limits.max_session_bytes, session_bytes):
         raise ValueError("session exceeds the import size limit")
     totals["bytes"] += session_bytes
-    if totals["bytes"] > IMPORT_MAX_TOTAL_BYTES:
+    if limits.exceeded(limits.max_total_bytes, totals["bytes"]):
         raise ValueError("import exceeds the total size limit")
     item = _normalize_import_session(raw, session_id, messages)
     totals["messages"] += len(item["messages"])
-    if totals["messages"] > IMPORT_MAX_TOTAL_MESSAGES:
+    if limits.exceeded(limits.max_total_messages, totals["messages"]):
         raise ValueError("messages exceeds the total import limit")
     return item
 
@@ -478,12 +478,13 @@ class SessionPortability:
         with translated():
             return self._export_all(self._store.holder(), source, include_compacted, include_inactive)
 
-    def import_sessions(self, sessions: Sequence[Mapping[str, Any]]) -> ImportResult:
+    def import_sessions(self, sessions: Sequence[Mapping[str, Any]], *,
+                        limits: ImportLimits = ImportLimits()) -> ImportResult:
         if not isinstance(sessions, (list, tuple)):
             raise ValueError("sessions must be a list")
-        if len(sessions) > IMPORT_MAX_SESSIONS:
-            raise ValueError(f"sessions must contain at most {IMPORT_MAX_SESSIONS} entries")
-        normalized, errors = _validate_import_payload(list(sessions))
+        if limits.exceeded(limits.max_sessions, len(sessions)):
+            raise ValueError(f"sessions must contain at most {limits.max_sessions} entries")
+        normalized, errors = _validate_import_payload(list(sessions), limits)
         if errors:
             return ImportResult(ok=False, imported=0, skipped=0, detached=0, errors=tuple(errors))
         holder = self._store.holder()
@@ -525,7 +526,8 @@ class SessionPortability:
         return None if found is None else SessionId(found)
 
     def import_foreign_history(self, origin: ForeignOrigin, messages: Sequence[ForeignTurn], *, title: str,
-                               cwd: Optional[str], profile: str) -> ForeignImportResult:
+                               cwd: Optional[str], profile: str,
+                               limits: ImportLimits = ImportLimits()) -> ForeignImportResult:
         """Adopt or mint a foreign snapshot in one transaction, including its provenance.
 
         BEGIN IMMEDIATE serializes duplicate clicks across connections/processes.
@@ -537,7 +539,7 @@ class SessionPortability:
         session_id = new_session_id(hex_len=12)
         normalized, errors = _validate_import_payload([
             {"id": session_id, "source": origin_dict["tool"], "title": title,
-             "cwd": cwd, "messages": turns}])
+             "cwd": cwd, "messages": turns}], limits)
         if errors:
             raise ValueError(errors[0]["error"])
         holder = self._store.holder()

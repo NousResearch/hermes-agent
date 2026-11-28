@@ -7,6 +7,7 @@ from pathlib import Path
 
 from hermes_cli.foreign_sessions import _SOURCE_DB_NAMES, _SOURCE_LABELS, _SOURCES, _parser, _walk
 from persistence.housekeeping.maintenance import ForeignOrigin, ForeignTurn
+from storage_limits import resolved_import_limits
 
 MAX_LOG_BYTES = 32 * 1024 * 1024
 
@@ -93,5 +94,6 @@ def import_browser_session(handle, db, profile, *, persistence=None):
     result = persistence.maintenance.import_foreign_history(
         ForeignOrigin(**foreign_origin(candidate, parsed)),
         [ForeignTurn(turn["role"], turn["content"]) for turn in parsed["turns"]],
-        title=_display_title(parsed, candidate[2]), cwd=cwd if cwd and Path(cwd).is_dir() else None, profile=profile)
+        title=_display_title(parsed, candidate[2]), cwd=cwd if cwd and Path(cwd).is_dir() else None, profile=profile,
+        limits=resolved_import_limits(persistence.scope.profile_dir))
     return {"session_id": result.session_id, "already_imported": result.already_imported}

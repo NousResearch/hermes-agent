@@ -23,12 +23,12 @@ from persistence.conversation.sessions import CANONICAL_BOT_CHAT_TITLE, END_REAS
 from persistence.housekeeping.maintenance import (
     GHOST_SESSION_MIN_AGE,
     GHOST_SESSION_SOURCE,
-    IMPORT_MAX_SESSIONS,
     ORPHAN_REAP_END_REASON,
     SESSION_PROJECTION_FIELDS,
     ForeignImportResult,
     ForeignOrigin,
     ForeignTurn,
+    ImportLimits,
     ImportResult,
     PruneCandidate,
     PruneCriteria,
@@ -555,12 +555,12 @@ class InMemoryMaintenance:
                 detached += 1
         return detached
 
-    def import_sessions(self, sessions: Sequence[Mapping[str, Any]]) -> ImportResult:
+    def import_sessions(self, sessions: Sequence[Mapping[str, Any]], *, limits: ImportLimits = ImportLimits()) -> ImportResult:
         if not isinstance(sessions, (list, tuple)):
             raise ValueError("sessions must be a list")
-        if len(sessions) > IMPORT_MAX_SESSIONS:
-            raise ValueError(f"sessions must contain at most {IMPORT_MAX_SESSIONS} entries")
-        normalized, errors = validate_import_payload(sessions)
+        if limits.exceeded(limits.max_sessions, len(sessions)):
+            raise ValueError(f"sessions must contain at most {limits.max_sessions} entries")
+        normalized, errors = validate_import_payload(sessions, limits)
         if errors:
             return ImportResult(ok=False, imported=0, skipped=0, detached=0, errors=tuple(errors))
         ids = [str(item["session"].get("id") or "").strip() for item in normalized]
@@ -600,10 +600,10 @@ class InMemoryMaintenance:
     def find_foreign_import(self, origin: ForeignOrigin) -> Optional[SessionId]:
         return self._find_foreign(self._rows(), origin)
 
-    def import_foreign_history(self, origin: ForeignOrigin, messages: Sequence[ForeignTurn], *, title: str, cwd: Optional[str], profile: str) -> ForeignImportResult:
+    def import_foreign_history(self, origin: ForeignOrigin, messages: Sequence[ForeignTurn], *, title: str, cwd: Optional[str], profile: str, limits: ImportLimits = ImportLimits()) -> ForeignImportResult:
         session_id = _mint_session_id()
         turns = [{"role": turn.role, "content": turn.content} for turn in messages]
-        normalized, errors = validate_import_payload([{"id": session_id, "source": origin.tool, "title": title, "cwd": cwd, "messages": turns}])
+        normalized, errors = validate_import_payload([{"id": session_id, "source": origin.tool, "title": title, "cwd": cwd, "messages": turns}], limits)
         if errors:
             raise ValueError(errors[0]["error"])
         with self._staged_import() as staged:

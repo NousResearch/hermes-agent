@@ -98,3 +98,30 @@ def test_foreign_pages_confine_handles_and_failed_import_rolls_back(tmp_path, mo
         assert store.sessions.count_sessions() == 0
     finally:
         store.close()
+
+
+def test_foreign_import_checks_the_target_profiles_import_limits(tmp_path, monkeypatch):
+    """``sessions.import_max_*`` of the profile whose store receives the import bounds it, not the process's."""
+    from hermes_cli import foreign_sessions_browser as browser
+    from persistence_assembly import open_persistence, profile_scope
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    (tmp_path / ".hermes").mkdir()
+    (tmp_path / ".hermes" / "config.yaml").write_text("sessions:\n  import_max_messages_per_session: 1\n")
+    folder = tmp_path / ".claude" / "projects" / "project"
+    folder.mkdir(parents=True)
+    (folder / "session.jsonl").write_text("\n".join(json.dumps({
+        "type": role, "sessionId": "foreign-limits", "cwd": str(tmp_path), "message": {"role": role, "content": content}})
+        for role, content in [("user", "Fix the import"), ("assistant", "Here is the fix.")]), encoding="utf-8")
+    handle = browser.list_foreign_sessions(limit=1)["sessions"][0]["id"]
+    target = tmp_path / "profiles" / "work"
+    target.mkdir(parents=True)
+    with open_persistence(profile_scope(home=target)) as store:
+        (target / "config.yaml").write_text("sessions:\n  import_max_messages_per_session: 1\n")
+        with pytest.raises(ValueError, match="per-session import limit"):
+            browser.import_browser_session(handle, store, "work", persistence=store)
+        assert store.sessions.count_sessions() == 0
+        (target / "config.yaml").write_text("sessions:\n  import_max_messages_per_session: 0  # off\n")
+        imported = browser.import_browser_session(handle, store, "work", persistence=store)
+        assert store.sessions.get(imported["session_id"]).message_count == 2

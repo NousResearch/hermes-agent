@@ -25,6 +25,7 @@ from persistence.authority.runtime import (
 from persistence.authority.vocabulary import OwnerRule
 from persistence.core.canonical import canonical_json
 from persistence.core.errors import AuthorityRefusal, ProofRejected
+from persistence.housekeeping.maintenance import ImportLimits
 from session_rules.legacy_local import binding_names, same_owner
 
 from .._authority import session_runtime
@@ -139,7 +140,8 @@ class MutationMixin:
                 for sid in history.session_ids:
                     if sid not in self._tables().get("sessions", {}):
                         state.snapshot["meta"][_history_key(sid)] = [history.actor.profile_id, history.actor.subject]
-            affected, projection = apply_command(self, session_id, parsed, prepared, media_root, owner)
+            affected, projection = apply_command(self, session_id, parsed, prepared, media_root, owner,
+                                                 history.limits if isinstance(history, ImportControl) else ImportLimits())
             authority = state.snapshot
             gone = None
             if parsed.operation == "delete":

@@ -308,7 +308,7 @@ class SessionListingMixin:
     def _chain_matches(self, table: Mapping[str, Mapping[str, Any]], row: Mapping[str, Any], query: SessionQuery) -> bool:
         """The ``id_query`` and ``search_text`` filters: the row's own id or any id of its forward compression chain matches (search also matches titles, and a punctuation-stripped title)."""
         id_needle = (query.id_query or "").strip().lower()
-        search = (query.search_text or "").strip().lower()
+        search = (query.search_text or "").strip().casefold()
         if not id_needle and not search:
             return True
         members = [table[sid] for sid in self._chain_members(table, row["session_id"])]
@@ -851,8 +851,8 @@ class SessionListingMixin:
 
 
 def _text_matches(row: Mapping[str, Any], needle: str, compact: str) -> bool:
-    """``search_text`` on one chain member: the title or id contains it, or the title with ``-_. `` removed contains the punctuation-stripped needle."""
-    title = ascii_lower(row["title"] or "")
+    """``search_text`` on one chain member: the casefolded title or id contains it, or the title with ``-_. `` removed contains the punctuation-stripped needle."""
+    title = (row["title"] or "").casefold()
     if needle in title or needle in ascii_lower(row["session_id"]):
         return True
     return bool(compact) and compact in re.sub(r"[-_. ]", "", title)

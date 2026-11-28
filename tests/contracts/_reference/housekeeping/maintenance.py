@@ -74,8 +74,8 @@ def _ascii_lower(text: str) -> str:
 
 
 def _like(haystack: Optional[str], needle: str) -> bool:
-    """``LOWER(COALESCE(col, '')) LIKE '%' || needle.lower() || '%'``: SQLite folds ASCII only, Python lowers the needle in full."""
-    return _ascii_lower(needle.lower()) in _ascii_lower(haystack or "")
+    """Case-insensitive substring in any script: both sides compare ``str.casefold()``-ed."""
+    return needle.casefold() in (haystack or "").casefold()
 
 
 def _under(path: Optional[str], prefix: str) -> bool:

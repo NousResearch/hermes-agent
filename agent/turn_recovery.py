@@ -26,7 +26,8 @@ from agent.message_sanitization import (
     _looks_like_corrupt_image_rejection, _looks_like_image_content_rejection, _messages_carry_images,
     _sanitize_messages_non_ascii,
     _sanitize_messages_surrogates, _sanitize_structure_non_ascii, _sanitize_structure_surrogates,
-    _strip_images_from_messages, _strip_non_ascii, close_interrupted_tool_sequence, record_reasoning_field_rejection,
+    _strip_images_from_messages, _strip_non_ascii, close_interrupted_tool_sequence, record_media_rejection,
+    record_reasoning_field_rejection,
 )
 from agent.thinking_timeout_guidance import build_thinking_timeout_guidance, is_thinking_timeout
 from agent.vision_message_prep import _provider_model_key
@@ -270,37 +271,20 @@ def recover_before_classification(
     except Exception:
         pass
     _err_status = getattr(api_error, "status_code", None)
-    # 4xx-only gate: 5xx/timeouts are transient and take the retry path.
     _status_ok = _err_status is None or (400 <= int(_err_status) < 500)
-    # Guarded PER MODEL, not by a turn-global flag: in a fallback chain the next model can reject
-    # images too, and a turn-wide flag would skip its recovery and fail the turn.
-    _model_key = _provider_model_key(agent)
-    _rejected = agent._image_rejecting_models
-    _corrupt = _looks_like_corrupt_image_rejection(_err_body)
-    if _status_ok and (_corrupt or (_model_key not in _rejected and _looks_like_image_content_rejection(_err_body))):
-        # Send-path only. A rejection says what THIS model accepts, not what the conversation
-        # holds: stripping ``messages`` (canonical history) and forcing a flush deleted every
-        # image — and every image-only message — from state.db for good, so a later switch to a
-        # vision model found them gone. Same failure as the ASCII strip in #117802.
-        if _corrupt:
-            # A bad payload says nothing about the model's capability: strip this attempt only
-            # (like the image_corrupt branch below) and leave the model unmarked so a later good
-            # image still reaches it. Retry only if something was stripped, or a text-only
-            # request would loop on the same error.
-            if _strip_request_images_and_retry(agent, api_messages):
-                return True, active_system_prompt
-        elif _messages_carry_images(api_messages or messages):
-            # Record the model; the retry re-enters build_api_request with the same
-            # api_messages and strip_images_for_rejecting_model strips them there.
-            # A request with no image never marks: a 4xx body can echo the user's own text
-            # ("X is not a multimodal model"), and a wrong mark blinds a vision model until /new.
-            _rejected.add(_model_key)
-            _vlines(
-                agent,
-                "⚠️  Server rejected image content — sending text only to this model; "
-                "images stay in the session history.",
-            )
+    _sent_wire = (
+        api_kwargs.get("messages")
+        if isinstance(api_kwargs, dict)
+        and isinstance(api_kwargs.get("messages"), list)
+        and getattr(agent, "api_mode", "") != "bedrock_converse"
+        else (api_kwargs.get("input") if isinstance(api_kwargs, dict) and isinstance(api_kwargs.get("input"), list) else None)
+    )
+    if _status_ok and _looks_like_corrupt_image_rejection(_err_body):
+        if _strip_request_images_and_retry(agent, api_messages):
             return True, active_system_prompt
+    elif _status_ok and (rejected_kind := record_media_rejection(agent, _err_body, _sent_wire if _sent_wire is not None else (api_messages or messages))):
+        _vlines(agent, f"⚠️  Server rejected {rejected_kind} content — sending without {rejected_kind} to this model; media stays in session history.")
+        return True, active_system_prompt
 
     # A strict schema rejected a replayed reasoning key BY NAME: record it per (provider, host, model)
     # and retry once; build_api_request re-shapes api_messages without it. An unnamed upstream error

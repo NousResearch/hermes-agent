@@ -16,6 +16,7 @@ from typing import Any, Callable, Dict, Iterator, List, NamedTuple, Optional, Ty
 from agent.message_sanitization import coerce_tool_name, deterministic_call_id
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 from hermes_cli.route_identity import normalize_route_base_url
+from session_rules.turns import _AUDIO_PART_TYPES, _DOCUMENT_PART_TYPES
 
 logger = logging.getLogger(__name__)
 
@@ -346,19 +347,27 @@ def _chat_content_to_responses_parts(content: Any, *, role: str = "user") -> lis
     """Chat-style multimodal content → Responses API input parts ([] if not a list). Text is
     ``input_text`` (user) / ``output_text`` (assistant) — the API rejects the wrong type per role;
     ``input_image`` is only legal on user messages (see :func:`_input_image_part`). Unsupported
-    video parts fail closed instead of silently turning a video request into a text-only request."""
-    for part in _as_list(content):
-        if isinstance(part, dict) and (ptype := _part_type(part)) in _VIDEO_PART_TYPES:
-            raise ValueError(
-                f"Codex Responses does not support {ptype} input; use a video-capable provider."
-            )
+    video parts fail closed; audio/document parts downgrade to explicit omission notes."""
     text_type = _text_type_for(role)
     converted: list[dict[str, Any]] = []
-    for kind, payload in _iter_content_parts(_as_list(content)):
-        if kind == "text":
-            converted.append({"type": text_type, "text": payload})
-        elif (part := _input_image_part(payload, role, keep_empty_url=False)) is not None:
-            converted.append(part)
+    for raw_part in _as_list(content):
+        if isinstance(raw_part, str) and raw_part:
+            converted.append({"type": text_type, "text": raw_part})
+        elif isinstance(raw_part, dict):
+            ptype = _part_type(raw_part)
+            if ptype in _VIDEO_PART_TYPES:
+                raise ValueError(
+                    f"Codex Responses does not support {ptype} input; use a video-capable provider."
+                )
+            if ptype in _TEXT_PART_TYPES and _nonempty_str(raw_part.get("text")):
+                converted.append({"type": text_type, "text": raw_part["text"]})
+            elif ptype in _IMAGE_PART_TYPES:
+                if (img := _input_image_part(raw_part, role, keep_empty_url=False)) is not None:
+                    converted.append(img)
+            elif ptype in _AUDIO_PART_TYPES:
+                converted.append({"type": text_type, "text": "[audio omitted — unsupported by Codex Responses]"})
+            elif ptype in _DOCUMENT_PART_TYPES:
+                converted.append({"type": text_type, "text": "[document omitted — unsupported by Codex Responses]"})
     return converted
 
 

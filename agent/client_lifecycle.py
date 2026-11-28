@@ -11,6 +11,7 @@ from typing import Any, Optional
 
 from agent.lazy_forward import forward as _forward, forward_static as _forward_static, lazy_attr as _lazy_attr
 from hermes_cli.timeouts import get_provider_request_timeout
+from session_rules.turns import _ALL_MEDIA_PART_TYPES
 from utils import base_url_host_matches, env_float
 
 logger = logging.getLogger("run_agent")  # origin module's logger name: log records / caplog filters unchanged
@@ -338,7 +339,7 @@ class ClientLifecycleMixin:
         def _contains_image(value: Any) -> bool:
             if isinstance(value, dict):
                 _part_type = value.get("type")
-                return (isinstance(_part_type, str) and _part_type in {"image_url", "input_image"}) or any(
+                return (isinstance(_part_type, str) and _part_type in _ALL_MEDIA_PART_TYPES) or any(
                     _contains_image(v) for v in value.values()
                 )
             return isinstance(value, list) and any(_contains_image(v) for v in value)

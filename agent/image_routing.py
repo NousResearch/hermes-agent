@@ -25,6 +25,10 @@ logger = logging.getLogger(__name__)
 
 
 _VALID_MODES = frozenset({"auto", "native", "text"})
+_VALID_VIDEO_MODES = frozenset({"auto", "native", "auxiliary"})
+_VIDEO_MODE_ALIASES = {"text": "auxiliary"}
+_GEMINI_NATIVE_VIDEO_PROVIDERS = frozenset({"google", "gemini", "google-gemini", "google-ai-studio", "google-vertex-gemini", "solstice"})
+_ANTHROPIC_PDF_PROVIDERS = frozenset({"anthropic", "claude", "claude-oauth", "claude-code"})
 
 
 # Extensions extract_image_refs() auto-attaches. Documents/archives are excluded:
@@ -138,30 +142,29 @@ def _custom_provider_list(cfg: dict[str, Any]) -> list[dict[str, Any]]:
     return [e for e in raw if isinstance(e, dict)] if isinstance(raw, list) else []
 
 
-def _supports_vision_override(
+def _capability_override(
     cfg: Optional[dict[str, Any]],
     provider: str,
     model: str,
     *,
+    key: str,
+    alias: str,
     requested_provider: str = "",
 ) -> Optional[bool]:
-    """Resolve user-declared vision capability from config.yaml; None when unset.
-
-    First hit wins: ``model.supports_vision`` → ``providers.<p>.models.<model>``
-    → legacy ``custom_providers[].models.<model>``. Named custom providers are
-    rewritten to ``provider="custom"`` at runtime while config keeps the user's
-    name under ``model.provider``, so the requested, runtime and config
-    identities are all tried, plus the bare ``<name>`` of any ``custom:<name>``.
-    """
+    """Resolve a user-declared boolean capability override (``model.<key>`` → ``providers.<p>.models.<m>``
+    → legacy ``custom_providers[].models.<m>``); None when unset."""
     if not isinstance(cfg, dict):
         return None
     model_cfg = _dict_or_empty(cfg.get("model"))
-    top = _coerce_capability_bool(model_cfg.get("supports_vision"))
+    top = _coerce_capability_bool(model_cfg.get(key))
     if top is not None:
         return top
 
     candidates: list[str] = []
-    for candidate in filter(None, (requested_provider, provider, _clean_str(model_cfg.get("provider")))):
+    for raw_candidate in (requested_provider, provider, model_cfg.get("provider")):
+        candidate = _clean_str(raw_candidate)
+        if not candidate:
+            continue
         candidates.append(candidate)
         if candidate.startswith("custom:") and candidate[len("custom:"):]:
             candidates.append(candidate[len("custom:"):])
@@ -170,7 +173,25 @@ def _supports_vision_override(
     providers_cfg = _dict_or_empty(cfg.get("providers"))
     model_maps = [_dict_or_empty(providers_cfg.get(p)).get("models") for p in candidates]
     model_maps += [entry.get("models") for entry in _custom_provider_entries(cfg, candidates)]
-    return next((v for v in (_model_supports_vision_override(m, model) for m in model_maps) if v is not None), None)
+    for models_cfg in model_maps:
+        per_model = _dict_or_empty(_dict_or_empty(models_cfg).get(model))
+        verdict = _coerce_capability_bool(per_model.get(key, per_model.get(alias)))
+        if verdict is not None:
+            return verdict
+    return None
+
+
+def _supports_vision_override(
+    cfg: Optional[dict[str, Any]],
+    provider: str,
+    model: str,
+    *,
+    requested_provider: str = "",
+) -> Optional[bool]:
+    """Resolve user-declared vision capability from config.yaml; None when unset."""
+    return _capability_override(
+        cfg, provider, model, key="supports_vision", alias="vision", requested_provider=requested_provider,
+    )
 
 
 def _resolve_inference_value(
@@ -277,7 +298,7 @@ def _explicit_aux_vision_override(cfg: Optional[dict[str, Any]]) -> bool:
     vision = _dict_or_empty(_dict_or_empty(_dict_or_empty(cfg).get("auxiliary")).get("vision"))
     return bool(vision) and not (
         _clean_str(vision.get("provider")).lower() in {"", "auto"}
-        and not _clean_str(vision.get("model"))
+        and _clean_str(vision.get("model")).lower() in {"", "auto"}
         and not _clean_str(vision.get("base_url"))
     )
 
@@ -418,6 +439,398 @@ def decide_image_input_mode(
     # Keep the three-argument call contract for callers/tests that replace the lookup hook.
     extra = {"requested_provider": requested_provider} if requested_provider else {}
     return "native" if _lookup_supports_vision(provider, model, cfg, **extra) is True else "text"
+
+
+def _coerce_video_mode(raw: Any) -> str:
+    """Normalize ``agent.video_input_mode`` into ``auto`` | ``native`` | ``auxiliary`` (``text`` aliases ``auxiliary``)."""
+    mode = raw.strip().lower() if isinstance(raw, str) else ""
+    mode = _VIDEO_MODE_ALIASES.get(mode, mode)
+    return mode if mode in _VALID_VIDEO_MODES else "auto"
+
+
+def _scoped_env_value(name: str) -> str:
+    """Profile-scoped env lookup (prevents launch-profile env leakage in multiplexed gateways)."""
+    from agent.secret_scope import UnscopedSecretError, get_secret
+    try:
+        return _clean_str(get_secret(name))
+    except UnscopedSecretError:
+        return _clean_str(os.getenv(name))
+
+
+def _explicit_aux_video_override(cfg: Optional[dict[str, Any]]) -> bool:
+    """True when the user explicitly configured ``auxiliary.vision`` (which backs ``video_analyze``)
+    or set profile-scoped ``AUXILIARY_VIDEO_MODEL``."""
+    if _scoped_env_value("AUXILIARY_VIDEO_MODEL"):
+        return True
+    return _explicit_aux_vision_override(cfg)
+
+
+def _coerce_audio_mode(raw: Any) -> str:
+    """Normalize ``agent.audio_input_mode`` into ``auto`` | ``native`` | ``auxiliary`` (``text`` aliases ``auxiliary``)."""
+    mode = raw.strip().lower() if isinstance(raw, str) else ""
+    mode = _VIDEO_MODE_ALIASES.get(mode, mode)
+    return mode if mode in _VALID_VIDEO_MODES else "auto"
+
+
+def _coerce_pdf_mode(raw: Any) -> str:
+    """Normalize ``agent.pdf_input_mode`` into ``auto`` | ``native`` | ``text`` (``auxiliary`` aliases ``text``)."""
+    mode = raw.strip().lower() if isinstance(raw, str) else ""
+    if mode == "auxiliary":
+        mode = "text"
+    return mode if mode in ("auto", "native", "text") else "auto"
+
+
+def _lookup_modality_capability(
+    modality: str,
+    provider: str,
+    model: str,
+    cfg: Optional[dict[str, Any]] = None,
+    *,
+    override_key: str,
+    override_alias: str,
+    requested_provider: str = "",
+    allow_network: bool = True,
+) -> Optional[bool]:
+    """Return True/False when *modality* input capability is known, None if unknown."""
+    provider_clean = _clean_str(provider)
+    model_clean = _clean_str(model)
+    requested_clean = _clean_str(requested_provider)
+    if (
+        not requested_clean
+        and _runtime_main("provider").lower() == provider_clean.lower()
+        and _runtime_main("model") == model_clean
+    ):
+        requested_clean = _runtime_main("requested_provider")
+
+    override = _capability_override(
+        cfg, provider_clean, model_clean, key=override_key, alias=override_alias, requested_provider=requested_clean,
+    )
+    if override is not None:
+        return override
+    if not provider_clean or not model_clean:
+        return None
+
+    from agent.models_dev import get_model_capabilities
+    try:
+        caps = get_model_capabilities(provider_clean, model_clean, allow_network=allow_network, config=cfg)
+    except (ImportError, OSError, ValueError, TypeError, RuntimeError, AttributeError) as exc:
+        logger.debug("image_routing: %s caps lookup failed for %s:%s — %s", modality, provider_clean, model_clean, exc)
+        return None
+    return None if caps is None else caps.supports_modality(modality)
+
+
+def _supports_video_override(
+    cfg: Optional[dict[str, Any]],
+    provider: str,
+    model: str,
+    *,
+    requested_provider: str = "",
+) -> Optional[bool]:
+    """Resolve user-declared video capability from config.yaml; None when unset."""
+    return _capability_override(
+        cfg, provider, model, key="supports_video", alias="video", requested_provider=requested_provider,
+    )
+
+
+def _lookup_supports_video(
+    provider: str,
+    model: str,
+    cfg: Optional[dict[str, Any]] = None,
+    *,
+    requested_provider: str = "",
+    allow_network: bool = True,
+) -> Optional[bool]:
+    """Return True/False when video input capability is known, None if unknown."""
+    return _lookup_modality_capability(
+        "video", provider, model, cfg,
+        override_key="supports_video", override_alias="video",
+        requested_provider=requested_provider, allow_network=allow_network,
+    )
+
+
+def _lookup_supports_audio(
+    provider: str,
+    model: str,
+    cfg: Optional[dict[str, Any]] = None,
+    *,
+    requested_provider: str = "",
+    allow_network: bool = True,
+    base_url: str = "",
+) -> Optional[bool]:
+    """Return True/False when audio input capability is known, None if unknown."""
+    verdict = _lookup_modality_capability(
+        "audio", provider, model, cfg,
+        override_key="supports_audio", override_alias="audio",
+        requested_provider=requested_provider, allow_network=allow_network,
+    )
+    if verdict is None and _is_native_gemini_user_media_route(provider, model, cfg, base_url=base_url):
+        return True
+    return verdict
+
+
+def _lookup_supports_pdf(
+    provider: str,
+    model: str,
+    cfg: Optional[dict[str, Any]] = None,
+    *,
+    requested_provider: str = "",
+    allow_network: bool = True,
+    base_url: str = "",
+) -> Optional[bool]:
+    """Return True/False when native PDF input capability is known, None if unknown."""
+    verdict = _lookup_modality_capability(
+        "pdf", provider, model, cfg,
+        override_key="supports_pdf", override_alias="pdf",
+        requested_provider=requested_provider, allow_network=allow_network,
+    )
+    if verdict is None and (
+        _is_native_gemini_user_media_route(provider, model, cfg, base_url=base_url)
+        or _clean_str(provider).lower() == "anthropic"
+    ):
+        return True
+    return verdict
+
+
+def _entry_base_url(entry: dict[str, Any]) -> str:
+    for key in ("base_url", "url", "api"):
+        if val := _clean_str(entry.get(key)):
+            return val
+    return ""
+
+
+def _provider_base_url_for_video_route(cfg: Optional[dict[str, Any]], provider: str, base_url: str = "") -> str:
+    """Resolve base URL for *provider* without leaking ``cfg['model']['base_url']`` from a different provider."""
+    if explicit := _clean_str(base_url):
+        return explicit
+    p_low = _clean_str(provider).lower()
+    if _runtime_main("provider").lower() == p_low and (rt_url := _runtime_main("base_url")):
+        return rt_url
+    if not isinstance(cfg, dict):
+        return ""
+    model_cfg = _dict_or_empty(cfg.get("model"))
+    cfg_provider = _clean_str(model_cfg.get("provider")).lower()
+    if (not cfg_provider or cfg_provider == p_low) and (m_url := _entry_base_url(model_cfg)):
+        return m_url
+    providers_cfg = _dict_or_empty(cfg.get("providers"))
+    names = [provider, p_low]
+    if p_low in _GEMINI_NATIVE_VIDEO_PROVIDERS:
+        names.extend(("gemini", "google"))
+    for name in dict.fromkeys(filter(None, names)):
+        if p_url := _entry_base_url(_dict_or_empty(providers_cfg.get(name))):
+            return p_url
+    for entry in _custom_provider_entries(cfg, (provider, p_low)):
+        if c_url := _entry_base_url(entry):
+            return c_url
+    return ""
+
+
+def is_native_gemini_video_route(
+    provider: str,
+    model: str,
+    cfg: Optional[dict[str, Any]] = None,
+    *,
+    base_url: str = "",
+) -> bool:
+    """True when the active route speaks native Gemini REST/Interactions and the model supports multimodal tool parts."""
+    p = _clean_str(provider).lower()
+    m = _clean_str(model)
+    if not p or not m:
+        return False
+    from providers import routed_model_rejects_vision_tool_messages
+    if routed_model_rejects_vision_tool_messages(p, m):
+        return False
+    from agent.gemini_model_family import gemini_supports_multimodal_tool_responses
+    from agent.gemini_urls import is_native_gemini_base_url
+    if not gemini_supports_multimodal_tool_responses(m):
+        return False
+    if p == "solstice":
+        return True
+    resolved_url = _provider_base_url_for_video_route(cfg, p, base_url=base_url)
+    if resolved_url:
+        return is_native_gemini_base_url(resolved_url)
+    return p in _GEMINI_NATIVE_VIDEO_PROVIDERS
+
+
+def supports_video_in_tool_results(
+    provider: str,
+    model: str,
+    cfg: Optional[dict[str, Any]] = None,
+    *,
+    base_url: str = "",
+    api_mode: str = "",
+) -> bool:
+    """Whether provider+model accepts video media inside tool-result messages."""
+    if api_mode in ("anthropic_messages", "bedrock_converse", "codex_responses"):
+        return False
+    return is_native_gemini_video_route(provider, model, cfg, base_url=base_url)
+
+
+def _is_native_gemini_user_media_route(
+    provider: str,
+    model: str,
+    cfg: Optional[dict[str, Any]] = None,
+    *,
+    base_url: str = "",
+) -> bool:
+    """True when the route speaks native Gemini REST/Interactions for user-turn media (including Gemini 2.5+)."""
+    p = _clean_str(provider).lower()
+    m = _clean_str(model)
+    if not p or not m:
+        return False
+    if p == "solstice":
+        return True
+    from agent.gemini_urls import is_native_gemini_base_url
+    resolved_url = _provider_base_url_for_video_route(cfg, p, base_url=base_url)
+    if resolved_url:
+        return is_native_gemini_base_url(resolved_url)
+    return p in _GEMINI_NATIVE_VIDEO_PROVIDERS
+
+
+def _is_native_anthropic_pdf_route(
+    provider: str,
+    model: str,
+    *,
+    base_url: str = "",
+    api_mode: str = "",
+) -> bool:
+    """True only for genuine Anthropic / AnthropicBedrock Messages routes (never MiniMax or arbitrary proxies)."""
+    if not _clean_str(model):
+        return False
+    p = _clean_str(provider).lower()
+    clean_url = _clean_str(base_url)
+    if p in _ANTHROPIC_PDF_PROVIDERS:
+        if api_mode and api_mode != "anthropic_messages":
+            return False
+        if clean_url:
+            from utils import base_url_host_matches
+            return base_url_host_matches(clean_url, "api.anthropic.com")
+        return True
+    if p == "bedrock" and api_mode == "anthropic_messages":
+        return True
+    if api_mode == "anthropic_messages" and clean_url:
+        from utils import base_url_host_matches
+        return base_url_host_matches(clean_url, "api.anthropic.com")
+    return False
+
+
+def supports_audio_in_user_turns(
+    provider: str,
+    model: str,
+    cfg: Optional[dict[str, Any]] = None,
+    *,
+    base_url: str = "",
+    api_mode: str = "",
+) -> bool:
+    """Whether provider+model accepts native audio inside user-turn messages."""
+    if api_mode in ("anthropic_messages", "bedrock_converse", "codex_responses"):
+        return False
+    return _is_native_gemini_user_media_route(provider, model, cfg, base_url=base_url)
+
+
+def supports_pdf_in_user_turns(
+    provider: str,
+    model: str,
+    cfg: Optional[dict[str, Any]] = None,
+    *,
+    base_url: str = "",
+    api_mode: str = "",
+) -> bool:
+    """Whether provider+model accepts native PDF documents inside user-turn messages."""
+    if api_mode in ("bedrock_converse", "codex_responses"):
+        return False
+    if _is_native_anthropic_pdf_route(provider, model, base_url=base_url, api_mode=api_mode):
+        return True
+    if api_mode == "anthropic_messages":
+        return False
+    return _is_native_gemini_user_media_route(provider, model, cfg, base_url=base_url)
+
+
+def supports_audio_in_tool_results(
+    provider: str,
+    model: str,
+    cfg: Optional[dict[str, Any]] = None,
+    *,
+    base_url: str = "",
+    api_mode: str = "",
+) -> bool:
+    """Whether provider+model accepts native audio inside tool-result messages."""
+    if api_mode in ("anthropic_messages", "bedrock_converse", "codex_responses"):
+        return False
+    return is_native_gemini_video_route(provider, model, cfg, base_url=base_url)
+
+
+def supports_pdf_in_tool_results(
+    provider: str,
+    model: str,
+    cfg: Optional[dict[str, Any]] = None,
+    *,
+    base_url: str = "",
+    api_mode: str = "",
+) -> bool:
+    """Whether provider+model accepts native PDF documents inside tool-result messages."""
+    if api_mode in ("anthropic_messages", "bedrock_converse", "codex_responses"):
+        return False
+    return is_native_gemini_video_route(provider, model, cfg, base_url=base_url)
+
+
+def decide_video_input_mode(
+    provider: str,
+    model: str,
+    cfg: Optional[dict[str, Any]],
+    *,
+    requested_provider: str = "",
+    allow_network: bool = True,
+) -> str:
+    """Return ``"native"`` or ``"auxiliary"`` for video tool-result routing."""
+    mode_cfg = _coerce_video_mode(_dict_or_empty(_dict_or_empty(cfg).get("agent")).get("video_input_mode"))
+    if mode_cfg != "auto":
+        return mode_cfg
+    if _explicit_aux_video_override(cfg):
+        return "auxiliary"
+    extra = {"requested_provider": requested_provider} if requested_provider else {}
+    return "native" if _lookup_supports_video(provider, model, cfg, allow_network=allow_network, **extra) is True else "auxiliary"
+
+
+def decide_audio_input_mode(
+    provider: str,
+    model: str,
+    cfg: Optional[dict[str, Any]],
+    *,
+    requested_provider: str = "",
+    allow_network: bool = True,
+    base_url: str = "",
+) -> str:
+    """Return ``"native"`` or ``"auxiliary"`` for audio input routing."""
+    mode_cfg = _coerce_audio_mode(_dict_or_empty(_dict_or_empty(cfg).get("agent")).get("audio_input_mode"))
+    if mode_cfg != "auto":
+        return mode_cfg
+    extra = {"requested_provider": requested_provider} if requested_provider else {}
+    return (
+        "native"
+        if _lookup_supports_audio(provider, model, cfg, allow_network=allow_network, base_url=base_url, **extra) is True
+        else "auxiliary"
+    )
+
+
+def decide_pdf_input_mode(
+    provider: str,
+    model: str,
+    cfg: Optional[dict[str, Any]],
+    *,
+    requested_provider: str = "",
+    allow_network: bool = True,
+    base_url: str = "",
+) -> str:
+    """Return ``"native"`` or ``"text"`` for PDF document routing."""
+    mode_cfg = _coerce_pdf_mode(_dict_or_empty(_dict_or_empty(cfg).get("agent")).get("pdf_input_mode"))
+    if mode_cfg != "auto":
+        return mode_cfg
+    extra = {"requested_provider": requested_provider} if requested_provider else {}
+    return (
+        "native"
+        if _lookup_supports_pdf(provider, model, cfg, allow_network=allow_network, base_url=base_url, **extra) is True
+        else "text"
+    )
 
 
 # Image size handling is REACTIVE: attach at full size and let
@@ -619,4 +1032,12 @@ def split_image_notes(text: str) -> tuple[str, list[str]]:
     return (rest, paths) if paths else (text, [])
 
 
-__all__ = ["build_native_content_parts", "decide_image_input_mode", "extract_image_refs", "split_image_notes"]
+__all__ = [
+    "build_native_content_parts",
+    "decide_image_input_mode",
+    "decide_video_input_mode",
+    "extract_image_refs",
+    "is_native_gemini_video_route",
+    "split_image_notes",
+    "supports_video_in_tool_results",
+]

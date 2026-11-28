@@ -352,7 +352,7 @@ def _init_session(
         _sessions[sid] = {
             "agent": agent, "session_key": key, "history": history, "history_lock": threading.Lock(),
             "history_version": 0, "inflight_turn": None, "created_at": now, "last_active": now,
-            "running": False, "attached_images": [], "image_counter": 0, "cwd": cwd or _completion_cwd(),
+            "running": False, "attached_images": [], "attached_documents": [], "image_counter": 0, "cwd": cwd or _completion_cwd(),
             "explicit_cwd": bool(explicit_cwd), "cols": cols, "slash_worker": None,
             "show_reasoning": _load_show_reasoning(), "source": _resolve_session_source(source),
             "tool_progress_mode": _load_tool_progress_mode(), "edit_snapshots": {}, "tool_started_at": {},
@@ -462,7 +462,7 @@ def _deferred_session_record(
     """A live-session record whose AIAgent is built later (lazy watch / cold resume) — _init_session's shape minus the agent."""
     now = time.time()
     return {
-        "agent": None, "agent_error": None, "agent_ready": threading.Event(), "attached_images": [],
+        "agent": None, "agent_error": None, "agent_ready": threading.Event(), "attached_images": [], "attached_documents": [],
         "close_on_disconnect": close_on_disconnect, "active_session_lease": lease, "cols": cols,
         "created_at": now, "cwd": cwd, "display_history_prefix": display_history_prefix or [],
         "edit_snapshots": {}, "explicit_cwd": bool(explicit_cwd), "history": history,

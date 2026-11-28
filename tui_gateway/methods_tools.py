@@ -739,7 +739,7 @@ def _cmd_retry(rid, params, session, name, arg):
     with session["history_lock"]:
         if busy := _busy_error(rid, session, "retry"):
             return busy
-        if session.get("attached_images"):
+        if session.get("attached_images") or session.get("attached_documents"):
             return _err(rid, 4018, "retry cannot safely reconstruct or combine attached media")
         history, user_indices, err = _rewind_prelude(rid, session, "retry", "no previous user message to retry")
         if err:

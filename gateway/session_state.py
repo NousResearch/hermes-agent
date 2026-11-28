@@ -91,6 +91,7 @@ class PersistentState:
     approvals: Optional[dict[str, Any]] = None  # {"command": ..., "pattern_key": ...}
     update_prompt_pending: bool = False  # /update prompt awaiting a reply
     native_image_paths: list[str] = field(default_factory=list)  # consumed one-shot
+    native_media_attachments: list[dict[str, str]] = field(default_factory=list)  # consumed one-shot (audio/document)
     # Legacy runner-level pending text (flushed on shutdown); not the adapter-level one.
     pending_command_text: Optional[str] = None
     run_generation: int = 0  # monotonic; NEVER reset (stale-run detection depends on it)

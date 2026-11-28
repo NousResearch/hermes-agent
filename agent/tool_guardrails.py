@@ -206,7 +206,7 @@ def canonical_tool_args(args: Mapping[str, Any]) -> str:
     return _canonical_json(args)
 
 
-def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]:
+def classify_tool_failure(tool_name: str, result: Any) -> tuple[bool, str]:
     """Fallback classifier used only when callers don't pass ``failed``; mirrors
     ``agent.display._detect_tool_failure`` so the guardrail never disagrees with the CLI's ``[error]`` tag."""
     if result is None or file_mutation_result_landed(tool_name, result):
@@ -220,11 +220,11 @@ def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str
         return False, ""
 
     if tool_name == "terminal":
-        data = safe_json_loads(result)
+        data = result if isinstance(result, dict) else safe_json_loads(result)
         exit_code = data.get("exit_code") if isinstance(data, dict) else None
         return (True, f" [exit {exit_code}]") if exit_code is not None and exit_code != 0 else (False, "")
 
-    data = safe_json_loads(result)
+    data = result if isinstance(result, dict) else safe_json_loads(result)
     if isinstance(data, dict):
         failed = data.get("success") is False
         if tool_name == "memory" and failed and "exceed the limit" in data.get("error", ""):
@@ -233,6 +233,8 @@ def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str
         # shape, never by a substring scan of its nested content.
         err = data.get("error") or data.get("message")
         return (True, " [error]") if (err and (failed or "error" in data)) or shape_failure_error(data) else (False, "")
+    if not isinstance(result, str):
+        return False, ""
     return (True, " [error]") if has_failure_marker(result) else (False, "")
 
 
@@ -368,7 +370,7 @@ class ToolCallGuardrailController:
         return allow
 
     def after_call(
-        self, tool_name: str, args: Mapping[str, Any] | None, result: str | None,
+        self, tool_name: str, args: Mapping[str, Any] | None, result: Any,
         *, failed: bool | None = None,
     ) -> ToolGuardrailDecision:
         args = _coerce_args(args)
@@ -568,12 +570,33 @@ def toolguard_synthetic_result(decision: ToolGuardrailDecision) -> str:
     return json.dumps({"error": decision.message, "guardrail": decision.to_metadata()}, ensure_ascii=False)
 
 
-def append_toolguard_guidance(result: str, decision: ToolGuardrailDecision) -> str:
+def _append_text_to_multimodal(value: dict[str, Any], suffix: str) -> dict[str, Any]:
+    """Append guidance text to a ``_multimodal`` tool result envelope without breaking its shape."""
+    updated = dict(value)
+    parts = list(value.get("content") or [])
+    for idx, part in enumerate(parts):
+        if isinstance(part, dict) and part.get("type") == "text":
+            parts[idx] = {**part, "text": str(part.get("text", "")) + suffix}
+            break
+    else:
+        parts.insert(0, {"type": "text", "text": suffix.lstrip()})
+    updated["content"] = parts
+    if isinstance(value.get("text_summary"), str):
+        updated["text_summary"] = value["text_summary"] + suffix
+    return updated
+
+
+def append_toolguard_guidance(result: Any, decision: ToolGuardrailDecision) -> Any:
     """Append runtime guidance to the current tool result content."""
     if decision.action not in {"warn", "halt"} or not decision.message:
         return result
     label = "Tool loop hard stop" if decision.action == "halt" else "Tool loop warning"
-    return (result or "") + f"\n\n[{label}: {decision.code}; count={decision.count}; {decision.message}]"
+    suffix = f"\n\n[{label}: {decision.code}; count={decision.count}; {decision.message}]"
+    if isinstance(result, dict) and result.get("_multimodal") is True:
+        return _append_text_to_multimodal(result, suffix)
+    if result is not None and not isinstance(result, str):
+        return result
+    return (result or "") + suffix
 
 
 def _tool_failure_recovery_hint(tool_name: str, count: int) -> str:
@@ -619,7 +642,12 @@ def _without_execute_code_metadata(parsed: Any) -> Any:
     return cleaned
 
 
-def _result_hash(result: str | None, tool_name: str = "") -> str:
+def _result_hash(result: Any, tool_name: str = "") -> str:
+    if isinstance(result, dict):
+        parsed = _without_execute_code_metadata(result) if tool_name == "execute_code" else result
+        return _sha256(_canonical_json(parsed))
+    if not isinstance(result, str):
+        return _sha256("" if result is None else _canonical_json(result))
     parsed = safe_json_loads(result or "")
     if parsed is None:
         return _sha256(result or "")

@@ -35,7 +35,12 @@ def sanitize_context(text: str) -> str:
     return text
 
 
-_NON_TEXT_PART_TYPES = {"image", "image_url", "input_image", "audio", "input_audio"}
+_IMAGE_PART_TYPES = frozenset({"image", "image_url", "input_image"})
+_VIDEO_PART_TYPES = frozenset({"video", "video_url", "input_video"})
+_AUDIO_PART_TYPES = frozenset({"audio", "audio_url", "input_audio"})
+_DOCUMENT_PART_TYPES = frozenset({"document", "document_url", "file", "input_file"})
+_ALL_MEDIA_PART_TYPES = _IMAGE_PART_TYPES | _VIDEO_PART_TYPES | _AUDIO_PART_TYPES | _DOCUMENT_PART_TYPES
+_NON_TEXT_PART_TYPES = _ALL_MEDIA_PART_TYPES
 _TEXT_KEYS = ("text", "content", "input_text", "output_text", "summary_text")
 
 
@@ -75,12 +80,14 @@ def flatten_message_text(content: Any, *, sep: str = "\n") -> str:
 
 
 def is_content_blank(content: Any) -> bool:
-    """True when decoded message content is None, whitespace-only, or has no visible text parts."""
+    """True when decoded message content is None, whitespace-only, or has no visible text or media parts."""
     if content is None:
         return True
     if isinstance(content, str):
         return not content.strip()
     if isinstance(content, list):
+        if any(isinstance(p, dict) and p.get("type") in _ALL_MEDIA_PART_TYPES for p in content):
+            return False
         return not "".join(p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text").strip()
     return False
 
@@ -967,24 +974,40 @@ _EPHEMERAL_SCAFFOLDING_FLAGS = (
     "_dropped_toolcall_nudge",  # internal retry instruction; must not replay as user context
 )
 
-_IMAGE_PART_TYPES = {"image", "image_url", "input_image"}
-
-
 def _is_ephemeral_scaffolding(msg: Any) -> bool:
     """True when ``msg`` is internal recovery scaffolding that must never reach the durable transcript."""
     return isinstance(msg, dict) and any(msg.get(flag) for flag in _EPHEMERAL_SCAFFOLDING_FLAGS)
 
 
+def _document_marker(part: dict) -> str:
+    raw_file = part.get("file")
+    file_obj = raw_file if isinstance(raw_file, dict) else {}
+    name = part.get("filename") or part.get("title") or file_obj.get("filename") or ""
+    clean = str(name).strip() if isinstance(name, str) else ""
+    return f"[document: {clean}]" if clean else "[document]"
+
+
+def _media_marker(part: dict) -> str:
+    ptype = part.get("type")
+    if ptype in _VIDEO_PART_TYPES:
+        return "[video]"
+    if ptype in _AUDIO_PART_TYPES:
+        return "[audio]"
+    if ptype in _DOCUMENT_PART_TYPES:
+        return _document_marker(part)
+    return _image_marker(part)
+
+
 def _durable_content(content: Any) -> Any:
-    """Text-only DB projection: multimodal envelopes → summary; part lists keep text, images → ``[screenshot]``."""
+    """Text-only DB projection: multimodal envelopes → summary; part lists keep text and map media parts to markers."""
     if _is_multimodal_tool_result(content):
         return _multimodal_text_summary(content)
     if not isinstance(content, list):
         return content
     txt = [
-        str(p.get("text", "")) if p.get("type") == "text" else _image_marker(p)
+        str(p.get("text", "")) if p.get("type") == "text" else _media_marker(p)
         for p in content
-        if isinstance(p, dict) and (p.get("type") == "text" or p.get("type") in _IMAGE_PART_TYPES)
+        if isinstance(p, dict) and (p.get("type") == "text" or p.get("type") in _ALL_MEDIA_PART_TYPES)
     ]
     return "\n".join(txt) if txt else None
 

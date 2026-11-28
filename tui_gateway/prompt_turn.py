@@ -118,7 +118,8 @@ def _plan_goal_compression_recovery(
 def _admit_prompt_turn(
     sid: str, session: dict, text: Any, image_paths: list[str] | None,
     queued_prompt_generation: int | None, display_kind: str | None,
-    display_metadata: dict | None, *, report_ownership_refusal: bool = True) -> tuple[list[str], Any] | None:
+    display_metadata: dict | None, *, report_ownership_refusal: bool = True,
+    attached_documents: list[dict] | None = None) -> tuple[list[str], Any] | None:
     """Ownership + liveness gate every turn source must cross; ``(images, agent)`` or None.
     Synthesized turns (auto-continue, wake-ups) call ``_run_prompt_submit`` directly — the
     bypass that once let a second backend run a duplicate turn."""
@@ -147,9 +148,11 @@ def _admit_prompt_turn(
                 # the session already held stays for close's own handoff (_settle_isolated_turn_before_close).
                 _release_active_session_slot(session)
             return None
-        images = list(session.get("attached_images", []) if image_paths is None else image_paths)
-        if image_paths is None:
-            session["attached_images"] = []
+        consume_live = (
+            image_paths is None and attached_documents is None and queued_prompt_generation is None
+        )
+        images = list(session.get("attached_images", []) if consume_live else (image_paths or []))
+        turn_docs = list(session.get("attached_documents", []) if consume_live else (attached_documents or []))
         inflight = session.get("inflight_turn")
         # A retained failed turn (see _fail_inflight_turn) is a stale leftover
         # by the time a new turn starts — replace it, never append onto it.
@@ -159,7 +162,12 @@ def _admit_prompt_turn(
         agent = session["agent"]
         if agent is None:
             session["running"] = False
+            session.pop("_turn_attached_documents", None)
         else:
+            if consume_live:
+                session["attached_images"] = []
+                session["attached_documents"] = []
+            session["_turn_attached_documents"] = turn_docs
             with contextlib.suppress(Exception):
                 agent.clear_interrupt()
     if agent is None:
@@ -243,6 +251,59 @@ def _route_turn_images(agent, prompt: Any, images: list[str]) -> Any:
         print(f"[tui_gateway] native attach failed, falling back to text: {_img_exc}",
               file=sys.stderr)
     return _build_image_ref_message(prompt, images)
+
+
+def _route_turn_documents(agent, run_message: Any, docs: list[dict[str, str]]) -> Any:
+    """Attach staged native documents (e.g., PDFs) to *run_message* when supported by the active model,
+    falling back to path notes if the model switched before submit or the file is unreadable."""
+    import base64 as _b64
+    from pathlib import Path as _Path
+    try:
+        from agent.image_routing import decide_pdf_input_mode, supports_pdf_in_user_turns
+        from hermes_cli.config import load_config as _tui_load_config
+        _provider, _model = _active_image_routing_identity(agent)
+        _base_url = getattr(agent, "base_url", "") or ""
+        _api_mode = getattr(agent, "api_mode", "") or ""
+        cfg = _tui_load_config()
+        native_ok = (
+            supports_pdf_in_user_turns(_provider, _model, cfg, base_url=_base_url, api_mode=_api_mode)
+            and decide_pdf_input_mode(
+                _provider, _model, cfg,
+                requested_provider=getattr(agent, "requested_provider", ""),
+                allow_network=False,
+                base_url=_base_url,
+            ) == "native"
+        )
+    except (AttributeError, ImportError, KeyError, OSError, RuntimeError, TypeError, ValueError):
+        native_ok = False
+
+    doc_parts: list[dict[str, Any]] = []
+    fallback_lines: list[str] = []
+    for item in docs:
+        raw_path = str(item.get("path") or "")
+        filename = str(item.get("filename") or _Path(raw_path).name or "document.pdf")
+        mime_type = str(item.get("mime_type") or "application/pdf")
+        if native_ok and raw_path:
+            from tools.media_io import MAX_NATIVE_MEDIA_RAW_BYTES, is_valid_pdf_bytes, read_file_bounded_nofollow
+            data = read_file_bounded_nofollow(raw_path, max_bytes=MAX_NATIVE_MEDIA_RAW_BYTES)
+            if data is not None and (mime_type != "application/pdf" or is_valid_pdf_bytes(data)):
+                doc_parts.append({
+                    "type": "document",
+                    "mime_type": mime_type,
+                    "data": _b64.b64encode(data).decode("ascii"),
+                    "filename": filename,
+                })
+                continue
+        fallback_lines.append(f"[Attached document: {filename} ({raw_path})]")
+
+    if fallback_lines:
+        run_message = _prepend_note(run_message, "\n".join(fallback_lines))
+    if not doc_parts:
+        return run_message
+    if isinstance(run_message, list):
+        return [*run_message, *doc_parts]
+    text_part = [{"type": "text", "text": str(run_message)}] if str(run_message or "").strip() else []
+    return [*text_part, *doc_parts]
 
 
 def _start_turn_voice() -> tuple[Any, bool]:
@@ -739,6 +800,10 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
         prompt = ctx.message
     st.prompt_text = prompt if isinstance(prompt, str) else ""
     run_message: Any = _route_turn_images(agent, prompt, images) if images else prompt
+    with session["history_lock"]:
+        docs = list(session.pop("_turn_attached_documents", []))
+    if docs:
+        run_message = _route_turn_documents(agent, run_message, docs)
     from agent.notification_presentation import event_presentation_muted
     if not event_presentation_muted("message.delta", sid):
         st.tts_queue, st.thinking_started = _start_turn_voice()
@@ -800,7 +865,8 @@ def _invoke_agent(
         "conversation_history": list(st.history),
         "stream_callback": _stream,
         "persist_user_message": (
-            _build_persist_user_message(prompt, images, run_message) if images else prompt)}
+            _build_persist_user_message(prompt, images, run_message)
+            if (images or (isinstance(prompt, str) and isinstance(run_message, list))) else prompt)}
     try:
         run_params = inspect.signature(agent.run_conversation).parameters
     except (TypeError, ValueError):
@@ -1144,6 +1210,7 @@ def _reopen_routed_session_row(persistence, sid: str, session: dict) -> None:
 def _run_prompt_submit(
     rid, sid: str, session: dict, text: Any, *, display_kind: str | None = None,
     display_metadata: dict | None = None, image_paths: list[str] | None = None,
+    attached_documents: list[dict] | None = None,
     queued_prompt_generation: int | None = None,
     terminal_callback: Callable[[dict[str, Any]], None] | None = None,
     turn_author: dict | None = None, report_ownership_refusal: bool = True) -> bool:
@@ -1157,7 +1224,7 @@ def _run_prompt_submit(
             session.get("session_key") or sid)
     admitted = _admit_prompt_turn(
         sid, session, text, image_paths, queued_prompt_generation, display_kind, display_metadata,
-        report_ownership_refusal=report_ownership_refusal)
+        report_ownership_refusal=report_ownership_refusal, attached_documents=attached_documents)
     if admitted is None:
         return False
     images, agent = admitted

@@ -12,12 +12,14 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from agent.image_eviction_policy import images_all_within_many_image_limit, outbound_image_retire_count
 from agent.anthropic_thinking_policy import anthropic_thinking_route, route_replays_prior_thinking
+from session_rules.turns import _ALL_MEDIA_PART_TYPES
 
 logger = logging.getLogger(__name__)
 
 _THINKING_TYPES = frozenset(("thinking", "redacted_thinking"))
 _CACHEABLE_TYPES = frozenset(("text", "tool_use"))
 _EMPTY_TEXT_PLACEHOLDER = "(empty)"
+_STRICT_BASE64_RE = re.compile(r"^[A-Za-z0-9+/]+={0,2}$")
 _EMPTY_SCHEMA = {"type": "object", "properties": {}}
 _BEDROCK_REGION_PREFIXES = ("global.", "us.", "eu.", "apac.", "ap.", "au.", "jp.", "ca.", "sa.", "me.", "af.")
 
@@ -191,6 +193,7 @@ def _convert_content_part_to_anthropic(part: Any) -> Optional[dict[str, Any]]:
     if not isinstance(part, dict):
         return _text_block(part if isinstance(part, str) else str(part))
     ptype = part.get("type")
+    block: dict[str, Any]
     if ptype in ("input_text", "text"):
         # Rebuild from whitelisted fields only: stored SDK text blocks carry output-only siblings
         # (parsed_output, citations=None) that the INPUT schema rejects with 400.
@@ -199,6 +202,22 @@ def _convert_content_part_to_anthropic(part: Any) -> Optional[dict[str, Any]]:
         image_value = part.get("image_url", {})
         url = image_value.get("url", "") if isinstance(image_value, dict) else str(image_value or "")
         block = _image_block_from_openai_url(url)
+    elif ptype in {"audio", "audio_url", "input_audio"}:
+        block = _text_block("[audio omitted — unsupported by Anthropic]")
+    elif ptype in {"video", "video_url", "input_video"}:
+        block = _text_block("[video omitted — unsupported by Anthropic]")
+    elif ptype in {"document_url", "file", "input_file"}:
+        block = _text_block("[document omitted — unsupported by Anthropic]")
+    elif ptype == "document" and not isinstance(part.get("source"), dict):
+        # Raw Interactions/Gemini document shape ({type: "document", mime_type, data}); convert PDF to Anthropic's
+        # native document source or downgrade non-PDF to a safe text marker so Anthropic never 400s.
+        mime = str(part.get("mime_type") or part.get("media_type") or "").strip().lower()
+        raw_data = part.get("data")
+        cleaned = "".join(raw_data.split()) if isinstance(raw_data, str) else ""
+        if mime == "application/pdf" and cleaned and len(cleaned) % 4 == 0 and _STRICT_BASE64_RE.fullmatch(cleaned):
+            block = {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": cleaned}}
+        else:
+            block = _text_block("[document omitted — unsupported by Anthropic]")
     else:
         block = dict(part)
     if (cache_control := _cache_control_of(part)) is not None:
@@ -276,6 +295,8 @@ def _content_parts_to_anthropic_blocks(parts: Any) -> list[dict[str, Any]]:
             out.append(_text_block(text_val))
         elif btype == "image" and isinstance(src, dict) and src:
             out.append({"type": "image", "source": src})
+        elif btype == "document":
+            out.append(_text_block("[document omitted — unsupported in Anthropic tool results]"))
     return out
 
 
@@ -452,6 +473,10 @@ def _tool_result_content(m: dict[str, Any]) -> Any:
         converted = _content_parts_to_anthropic_blocks(content)
         if _has_block_type(converted, {"image"}):
             multimodal_blocks = converted
+        elif any(isinstance(p, dict) and p.get("type") in _ALL_MEDIA_PART_TYPES for p in content):
+            # Never fall through to json.dumps(content) on media-bearing lists (leaks raw base64).
+            texts = [b["text"] for b in converted if b.get("type") == "text" and b.get("text")]
+            return "\n\n".join(texts) or "[media omitted — unsupported in Anthropic tool results]"
     if multimodal_blocks is None:  # back-compat: blocks stashed under a private key
         stashed = m.get("_anthropic_content_blocks")
         if isinstance(stashed, list) and stashed:

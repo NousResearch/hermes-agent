@@ -51,6 +51,11 @@ def gemini_uses_thinking_level(model: str) -> bool:
     return (bare.startswith("gemini-") and bare.endswith("-latest")) or gemini_version(bare) >= (3, 0)
 
 
+def gemini_supports_multimodal_tool_responses(model: str) -> bool:
+    """True for Gemini 3+/4.x and ``gemini-*-latest`` aliases that accept multimodal tool-result parts."""
+    return gemini_requires_tool_call_ids(model) or gemini_uses_thinking_level(model)
+
+
 def gemini_sampling_deprecated(model: str) -> bool:
     """Gemini 3.6+ (Gemini 4 Argon included) ignores ``temperature``/``top_p``/``top_k`` and Google
     slated them for removal; older families (2.x, 3.0-3.5) keep them."""

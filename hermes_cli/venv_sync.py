@@ -406,6 +406,41 @@ def _may_retry_completion(root: Path, command: list[str], *, current: bool) -> b
     return may_retry
 
 
+class UpdateInProgress(RuntimeError):
+    """Another live process owns the update/checkout lock, so this launch may not proceed.
+
+    Typed (not a bare ``RuntimeError``) because the launch caller degrades differently: a
+    *failed* completion leaves the previous dependency generation selected and usable, while a
+    *refused* claim says nothing about this tree — the update may be rewriting it right now. A
+    caller that printed the failed-completion remedy for this case would promise a usable
+    install it never verified, and tell the operator to re-run ``hermes update``, which the
+    same holder would refuse again (#135793).
+
+    ``holder`` carries the refusal (process, age, ``held``) so the message can name who owns
+    the checkout instead of the bare "another update is running".
+    """
+
+    def __init__(self, message: str, holder=None) -> None:
+        super().__init__(message)
+        self.holder = holder
+
+
+def busy_message(holder) -> str:
+    """One-line launch-path refusal naming the holder (``describe_holder`` is the CLI's prose)."""
+    if holder is not None and holder.reason:
+        return f"an update is still running ({holder.reason}); wait for it to exit, then relaunch Hermes"
+    seconds = int(max(0.0, 0.0 if holder is None else holder.age_seconds))
+    minutes, seconds = divmod(seconds, 60)
+    elapsed = f"{minutes}m {seconds}s" if minutes else f"{seconds}s"
+    who = f"process {holder.pid}, " if holder is not None and holder.pid else ""
+    if holder is not None and holder.held:
+        tail = "; its owner exited but a process it started still holds the checkout"
+    else:
+        tail = ""
+    return (f"an update is still running ({who}started {elapsed} ago{tail}); "
+            "wait for it to exit, then relaunch Hermes")
+
+
 def _relaunch_target(root: Path, python: Path, *, same: bool) -> Path | None:
     """*python*, unless this process is a relaunch into that same interpreter and is still stale.
 
@@ -497,7 +532,7 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
         # keeps a dead update's marker (R6: refused as held, never reclaimed).
         lock = UpdateLock(install_root=root, checkout_first=False)
         if not lock.acquire():
-            raise RuntimeError("an update is still running; wait for it to exit, then relaunch Hermes")
+            raise UpdateInProgress(busy_message(lock.holder), holder=lock.holder)
         try:
             # Under the launching update's own claim (its pid is our ancestor) a process it
             # spawned owes no tail: that obligation is the updater's.
@@ -516,7 +551,7 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
                 # marker over a held checkout lock is a killed update whose tree (its completion
                 # child) still runs.
                 if not lock.acquire_checkout(root):
-                    raise RuntimeError("an update is still running; wait for it to exit, then relaunch Hermes")
+                    raise UpdateInProgress(busy_message(lock.holder), holder=lock.holder)
                 _finish_source_update(root, current=current, pending=pending)
         finally:
             lock.release()
@@ -560,7 +595,7 @@ def _prepare_borrowed_launch(root: Path, owner: Path, *, current: bool) -> Path 
     if not current:
         lock = UpdateLock(install_root=root, checkout_first=False)  # R6, as in prepare_launch
         if not lock.acquire():
-            raise RuntimeError("an update is still running; wait for it to exit, then relaunch Hermes")
+            raise UpdateInProgress(busy_message(lock.holder), holder=lock.holder)
         try:
             _sync_source_dependencies(root, arm=False, borrowed_from=owner)
         finally:
@@ -585,8 +620,10 @@ def _finish_source_update(root: Path, *, current: bool, pending: Path) -> None:
         # Existing markers guard liveness, never create the completion obligation.
         # Current post-sync verification children can boot under a live updater.
         legacy_markers = (root / ".update-incomplete", root / ".lazy-refresh-incomplete")
-        if any(_marker_owner_is_live(marker) for marker in legacy_markers):
-            raise RuntimeError("an update is still running; wait for it to exit, then relaunch Hermes")
+        live = next((marker for marker in legacy_markers if _marker_owner_is_live(marker)), None)
+        if live is not None:
+            raise UpdateInProgress(f"an update is still running ({live.name} has a live owner); "
+                                   "wait for it to exit, then relaunch Hermes")
         print("hermes: completing source-update dependencies...", file=sys.stderr, flush=True)
         completed = _tree_matches_completed_stamp(root)
         # ponytail: commit-only match; a product dir deleted by hand is rebuilt on demand

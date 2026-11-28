@@ -595,3 +595,60 @@ def test_failed_tail_attempt_is_counted_and_success_clears_it(source_launch, tmp
     assert not completion_pending_path(root).exists()
     assert not _completion_attempts_path(root).exists(), "success cleared the attempt record"
 
+
+
+@pytest.mark.platforms("posix")
+def test_refused_checkout_lock_names_the_holder_and_not_the_previous_generation(
+        source_launch, tmp_path, isolated_python):
+    """A launch refused by a live update must say who holds the checkout (#135793).
+
+    The refused path used to print the failed-completion remedy — "running with the previous
+    dependencies" — for a tree nothing had verified, and point at `hermes update`, which the
+    same holder refuses again. One gateway crash-looped 88 times on a half-updated tree that
+    way. The refusal must name the holder and must not promise a usable previous generation.
+    """
+    from hermes_cli.update_lock import _acquire_checkout, _release_checkout
+
+    root, _store_python, worker_command = source_launch
+    repository = Path(__file__).resolve().parents[2]
+    shutil.copy2(repository / "hermes_bootstrap.py", root / "hermes_bootstrap.py")
+    (root / "launch_test_tools.py").write_text(
+        "import sys\n"
+        "from pathlib import Path\n"
+        f"sys.path.insert(1, {str(repository)!r})\n"
+        "import pm.client\n"
+        "from pm import paths\n"
+        f"paths.lockfile_path = lambda: Path({str(tmp_path / 'tool-lock.json')!r})\n"
+        f"pm.client.runtime_command = lambda *args, **kwargs: {worker_command!r}\n",
+        encoding="utf-8",
+    )
+    entry = root / "launch_probe.py"
+    entry.write_text(
+        "import launch_test_tools\n"
+        "import hermes_bootstrap\n"
+        "import json, sys\n"
+        "print(json.dumps({'executable': sys.executable, 'args': sys.argv[1:]}))\n",
+        encoding="utf-8",
+    )
+    pm.sync_venv(["all"], explicit=True, project_root=root)
+    # A stale tree (the shape an interrupted update leaves) plus a live holder of the
+    # checkout lock: the update CLI's completion path and this launch race for the same lock.
+    (root / "uv.lock").write_text("version = 1\nnot valid TOML\n", encoding="utf-8")
+    assert not pm.venv_is_current(project_root=root)
+
+    assert _acquire_checkout(root) is None, "test could not hold the checkout lock"
+    try:
+        result = subprocess.run(
+            [str(isolated_python), str(entry)], cwd=root,
+            env=dict(os.environ), capture_output=True, text=True, timeout=60,
+            check=False,
+        )
+    finally:
+        _release_checkout()
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"executable": str(isolated_python), "args": []}
+    assert "an update is still running" in result.stderr
+    assert f"process {os.getpid()}" in result.stderr, result.stderr
+    assert "source-update completion failed" not in result.stderr
+    assert "running with the previous dependencies" not in result.stderr

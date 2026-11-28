@@ -13,8 +13,19 @@ from dataclasses import asdict
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from hermes_cli import update_inventory
 from hermes_cli import main_dashboard
+
+
+@pytest.fixture(autouse=True)
+def _no_host_unit_owns_the_fake_pids(monkeypatch):
+    """The ledger rows carry fake pids (4321, 8123...), but the systemd classifier asks the REAL host
+    which unit's MainPID each one is; on a CI runner 4321 can be some live unit's MainPID and the
+    row reads ``systemd``. No unit owns a fake pid."""
+    monkeypatch.setattr(update_inventory, "_systemd_owner_for_ledger_pid", lambda pid: None)
+
 
 def _ledger_entry(**over):
     entry = {

@@ -139,8 +139,31 @@ describe('PreviewAttachment local target classification (#101683)', () => {
     expect(revealPath).not.toHaveBeenCalled()
   })
 
+  it('retries an unavailable target when the user opens the preview', async () => {
+    const path = 'C:/Users/E/cloud/report.pdf'
+    const pdf = fileTarget(path, 'pdf')
+    const normalizePreviewTarget = vi.fn().mockResolvedValueOnce(null).mockResolvedValue(pdf)
+    mountDesktopStub(normalizePreviewTarget)
+
+    await act(async () => {
+      render(<PreviewAttachment target={path} />)
+    })
+
+    expect(normalizePreviewTarget).toHaveBeenCalledTimes(1)
+    expect(await buttons()).toEqual(['Download', 'Open preview'])
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Open preview' }))
+    })
+
+    expect(normalizePreviewTarget).toHaveBeenCalledTimes(2)
+    expect(openPreview).toHaveBeenCalledWith(pdf)
+    expect(notifyError).not.toHaveBeenCalled()
+  })
+
   it('reports a missing path instead of opening a broken preview tab', async () => {
-    mountDesktopStub(() => fileTarget('/work/gone.md', 'missing'))
+    const normalizePreviewTarget = vi.fn(() => fileTarget('/work/gone.md', 'missing'))
+    mountDesktopStub(normalizePreviewTarget)
 
     render(<PreviewAttachment target="/work/gone.md" />)
 
@@ -152,5 +175,6 @@ describe('PreviewAttachment local target classification (#101683)', () => {
 
     expect(notifyError).toHaveBeenCalled()
     expect(openPreview).not.toHaveBeenCalled()
+    expect(normalizePreviewTarget).toHaveBeenCalledTimes(1)
   })
 })

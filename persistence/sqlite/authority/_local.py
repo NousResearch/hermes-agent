@@ -172,7 +172,7 @@ def legacy_adoption_scan(holder, owner):
             " AND ifnull(chat_id,'')='' AND ifnull(origin_json,'')='') ORDER BY started_at, id",
             local + refused)]
         bound = {row[0] for row in conn.execute(
-            'SELECT key FROM state_meta WHERE key LIKE ? OR key LIKE ?', (POLICY_PREFIX + '%', LEGACY_PREFIX + '%'))}
+            'SELECT key FROM state_meta WHERE key GLOB ? OR key GLOB ?', (POLICY_PREFIX + '*', LEGACY_PREFIX + '*'))}
     return ids, {key[len(prefix):] for key in bound for prefix in (POLICY_PREFIX, LEGACY_PREFIX) if key.startswith(prefix)}
 
 
@@ -197,20 +197,27 @@ def handoff_head(holder, session_id):
 _BOOT_RECEIPTS_SQL = (
     "SELECT m.key FROM state_meta m LEFT JOIN sessions s "
     "ON s.id = CASE WHEN json_valid(m.value) THEN json_extract(m.value, '$.entry.session_id') END "
-    "WHERE m.key LIKE ? AND (s.ended_at IS NULL OR s.end_reason = 'compression' "
+    "WHERE m.key GLOB ? AND (s.ended_at IS NULL OR s.end_reason = 'compression' "
     "OR EXISTS (SELECT 1 FROM session_admissions a WHERE a.target_session_id = substr(m.key, ?) "
     "AND a.status IN ('queued','started','unknown')) "
     "OR EXISTS (SELECT 1 FROM state_meta c WHERE c.key = ? || substr(m.key, ?)))")
 
 
 def local_receipt_ids(holder):
-    """The ids of the receipts boot restores, in one read."""
+    """The ids of the receipts boot restores, in one read.
+
+    GLOB, not LIKE: LIKE is case-insensitive and cannot use the state_meta
+    primary-key index, so boot parsed every state_meta row — including the
+    multi-megabyte admission-result blobs — which under memory pressure made
+    this read take minutes with almost no CPU. GLOB with a constant prefix
+    walks the key index instead.
+    """
     from ..conversation._store.local import POLICY_PREFIX
     from ..conversation._store.retirement import VIEWER_CLOSE_PREFIX as CLOSE_PREFIX
     start = len(POLICY_PREFIX) + 1
     with holder._read_ctx() as conn:
         return [row[0][len(POLICY_PREFIX):] for row in conn.execute(
-            _BOOT_RECEIPTS_SQL, (POLICY_PREFIX + '%', start, CLOSE_PREFIX, start))]
+            _BOOT_RECEIPTS_SQL, (POLICY_PREFIX + '*', start, CLOSE_PREFIX, start))]
 
 
 def end_idle_local_session(holder, *, epoch, session_id, target_id, reason):

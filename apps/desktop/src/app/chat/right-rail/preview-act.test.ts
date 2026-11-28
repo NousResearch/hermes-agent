@@ -593,6 +593,41 @@ describe('actOnActivePreview (drive_preview tool)', () => {
     }
   })
 
+  it('locates and remeasures before input when guest animation frames are suspended', async () => {
+    vi.useFakeTimers()
+    document.body.innerHTML = '<button id="target">Sign in</button>'
+    const started = Date.now()
+
+    const rect = vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(() => {
+      const x = Date.now() - started < 300 ? 0 : 100
+
+      return { bottom: 40, height: 40, left: x, right: x + 40, top: 0, width: 40, x, y: 0, toJSON: () => ({}) }
+    })
+
+    // A locked/occluded guest can execute scripts while Chromium stops producing frames.
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockReturnValue(1)
+    const send = vi.fn()
+    const tabId = openBrowserTab()
+
+    cleanups.push(registerPreviewScriptRunner(tabId, async code => await new Function('return ' + code)()))
+    cleanups.push(registerPreviewInput(tabId, { focus: vi.fn(), send }))
+
+    try {
+      const pending = actOnActivePreview({ kind: 'hover', selector: '#target' })
+      await vi.advanceTimersByTimeAsync(8_000)
+      const result = await pending
+
+      expect(result.success).toBe(true)
+      expect(send).toHaveBeenLastCalledWith(expect.objectContaining({ type: 'mouseMove', x: 120, y: 20 }))
+    } finally {
+      raf.mockRestore()
+      rect.mockRestore()
+      document.body.replaceChildren()
+      delete (window as unknown as { __hermesActHolder?: unknown }).__hermesActHolder
+      vi.useRealTimers()
+    }
+  })
+
   it('says so when the overlay itself swallowed the click', async () => {
     const tabId = openBrowserTab()
 

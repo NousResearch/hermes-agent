@@ -289,7 +289,8 @@ class CodexAppServerSession:
             if self._history_seed:
                 params["developerInstructions"] = "\n\n".join(
                     part for part in (params.get("developerInstructions"), self._history_seed) if part)
-            result = self._client.request("thread/start", params, timeout=15)
+            # A cold app-server may still be loading plugins and MCP servers on its first thread.
+            result = self._client.request("thread/start", params, timeout=45)
             thread_id = _extract_thread_id(result)
             if not thread_id:
                 raise CodexAppServerError(

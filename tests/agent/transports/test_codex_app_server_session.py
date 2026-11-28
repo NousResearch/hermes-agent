@@ -169,6 +169,25 @@ class TestTurnInputCoercion:
 # ---- lifecycle ----
 
 class TestLifecycle:
+    @pytest.mark.parametrize("startup_seconds,finishes", [(20, True), (120, False)])
+    def test_cold_thread_start(self, startup_seconds, finishes):
+        class ColdClient(FakeClient):
+            def request(self, method, params=None, timeout=30.0):
+                if method == "thread/start" and startup_seconds > timeout:
+                    raise TimeoutError("thread/start timed out")
+                return super().request(method, params, timeout)
+
+        client = ColdClient()
+        client.queue_notification("turn/completed", turn={"id": "tu1", "status": "completed"})
+        result = make_session(client).run_turn("hello")
+        if finishes:
+            assert result.error is None
+            assert result.turn_id == "turn-fake-001"
+        else:
+            assert result.should_retire
+            assert "thread/start timed out" in result.error
+            assert all(method != "turn/start" for method, _ in client.requests)
+
     def test_ensure_started_is_idempotent(self):
         client = FakeClient()
         s = make_session(client)

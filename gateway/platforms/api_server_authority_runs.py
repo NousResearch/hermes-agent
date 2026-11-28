@@ -75,6 +75,7 @@ def run_projection(adapter, run_id):
     from gateway.platforms.api_server_store import authority_store
     saved = admission_result(authority_store(authority), row['admission_id'])
     result = saved.get('result', {}) if saved else {}
+    terminal_fields = {}
     if row['status'] == 'terminal':
         if result.get('interrupted') or row['outcome'] == 'interrupted':
             status = 'cancelled'
@@ -85,7 +86,9 @@ def run_projection(adapter, run_id):
             # budget, truncation) settles with outcome `completed` but is a failed run there,
             # so polling must not report `completed` for the same receipt.
             from gateway.platforms.api_server_runs import terminal_run_status
-            status = terminal_run_status(result)[0]
+            status, fields = terminal_run_status(result)
+            terminal_fields = {key: fields[key]
+                               for key in ('completed', 'partial', 'interrupted', 'turn_exit_reason') if key in fields}
     pending, progress = [], {}
     live = authority.sessions.get(row['target_session_id'])
     if live is not None and row['status'] == 'started':
@@ -95,7 +98,8 @@ def run_projection(adapter, run_id):
             status = 'waiting_for_approval'  # the documented run state main's run store reports
     return {**progress, 'pending_controls': pending, 'run_id': run_id, 'status': status, 'session_id': row['target_session_id'],
             'admission_id': row['admission_id'], 'execution_generation': row['generation'],
-            'output': result.get('final_response', ''), 'usage': saved.get('usage', {}) if saved else {}}
+            'output': result.get('final_response', ''), 'usage': saved.get('usage', {}) if saved else {},
+            **terminal_fields}
 
 
 async def send_clarify(adapter, *, chat_id, **kwargs):

@@ -9,6 +9,7 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
+from gateway.config import Platform
 from hermes_cli import gateway
 
 
@@ -28,6 +29,204 @@ def inert_task_scheduler_probe():
     mp.undo()
 
 
+def _run_gateway_start_with_port_probe(
+    monkeypatch, capsys, occupied, host="127.0.0.1", port=8642
+):
+    import socket
+
+    api_config = SimpleNamespace(
+        enabled=True,
+        extra={"host": host, "port": port},
+    )
+    monkeypatch.setattr(
+        gateway,
+        "load_gateway_config",
+        lambda: SimpleNamespace(platforms={Platform.API_SERVER: api_config}),
+    )
+    probe_calls = []
+
+    def probe(address, timeout):
+        probe_calls.append((address, timeout))
+        if occupied:
+            return socket.socket()
+        raise OSError("refused")
+
+    monkeypatch.setattr(socket, "create_connection", probe)
+    monkeypatch.setattr(
+        "hermes_cli.profiles.get_active_profile_name", lambda: "testprof"
+    )
+    monkeypatch.setattr(
+        "hermes_cli.gateway_profile_lifecycle.profile_lifecycle", lambda verb, args: False
+    )
+    monkeypatch.setattr(gateway, "_guard_named_profile_under_multiplexer", lambda **kwargs: None)
+    monkeypatch.setattr(gateway, "_dispatch_via_service_manager_if_s6", lambda action: False)
+    monkeypatch.setattr(gateway, "_service_mgmt_blocked", lambda: False)
+    monkeypatch.setattr(gateway, "_service_backend", lambda: "systemd")
+    starts = []
+    monkeypatch.setattr(
+        gateway, "_service_call",
+        lambda backend, verb, system: starts.append((backend, verb, system)),
+    )
+
+    gateway._gateway_command_inner(
+        SimpleNamespace(gateway_command="start", system=False, all=False)
+    )
+    return capsys.readouterr().out, starts, probe_calls
+
+
+def test_gateway_start_warns_when_api_server_port_is_occupied(monkeypatch, capsys):
+    output, starts, _ = _run_gateway_start_with_port_probe(monkeypatch, capsys, True)
+
+    assert "testprof" in output
+    assert "127.0.0.1" in output
+    assert "8642" in output
+    assert "Another process is listening on this endpoint" in output
+    assert "Stop or reconfigure the process using that port" in output
+    assert "hermes --profile testprof gateway stop" not in output
+    assert "hermes --profile testprof gateway start" in output
+    assert output.count("⚠") == 1
+    assert starts == [("systemd", "start", False)]
+
+
+def test_gateway_port_probe_detects_real_loopback_listener(monkeypatch, capsys):
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        host, port = listener.getsockname()
+        api_config = SimpleNamespace(
+            enabled=True,
+            extra={"host": host, "port": port},
+        )
+        monkeypatch.setattr(
+            gateway,
+            "load_gateway_config",
+            lambda: SimpleNamespace(platforms={Platform.API_SERVER: api_config}),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_active_profile_name", lambda: "testprof"
+        )
+
+        gateway._warn_if_gateway_api_server_port_is_occupied()
+
+    output = capsys.readouterr().out
+    assert f"host={host}, port={port}" in output
+    assert "Another process is listening on this endpoint" in output
+
+
+@pytest.mark.parametrize("port", ["not-a-port", None])
+def test_gateway_start_logs_invalid_api_server_port(monkeypatch, capsys, port):
+    debug_calls = []
+    monkeypatch.setattr(
+        gateway.logger,
+        "debug",
+        lambda message, **kwargs: debug_calls.append((message, kwargs)),
+    )
+
+    output, starts, probe_calls = _run_gateway_start_with_port_probe(
+        monkeypatch, capsys, True, port=port
+    )
+
+    assert output == ""
+    assert probe_calls == []
+    assert debug_calls == [
+        (
+            "Could not check gateway API server port occupancy",
+            {"exc_info": True},
+        )
+    ]
+    assert starts == [("systemd", "start", False)]
+
+
+def test_gateway_start_does_not_warn_when_api_server_port_is_free(monkeypatch, capsys):
+    output, starts, _ = _run_gateway_start_with_port_probe(monkeypatch, capsys, False)
+
+    assert "port" not in output.lower()
+    assert starts == [("systemd", "start", False)]
+
+
+def test_gateway_start_skips_non_loopback_host_probe(monkeypatch, capsys):
+    output, starts, probe_calls = _run_gateway_start_with_port_probe(
+        monkeypatch, capsys, True, host="gateway.example.com"
+    )
+
+    assert probe_calls == []
+    assert "port" not in output.lower()
+    assert starts == [("systemd", "start", False)]
+
+
+@pytest.mark.parametrize("restart_all", [False, True], ids=["profile", "all"])
+def test_gateway_restart_warns_after_stopping_owned_gateway(monkeypatch, capsys, restart_all):
+    from contextlib import nullcontext
+
+    profile = "default" if restart_all else "testprof"
+    host, port = "127.0.0.1", 8642
+    api_config = SimpleNamespace(enabled=True, extra={"host": host, "port": port})
+    calls = []
+    monkeypatch.setattr(
+        gateway, "load_gateway_config",
+        lambda: SimpleNamespace(platforms={Platform.API_SERVER: api_config}),
+    )
+    monkeypatch.setattr("hermes_cli.profiles.get_active_profile_name", lambda: profile)
+    monkeypatch.setattr(gateway, "_refuse_from_inside_gateway", lambda *args: None)
+    monkeypatch.setattr(
+        "hermes_cli.gateway_profile_lifecycle.profile_lifecycle", lambda verb, args: False
+    )
+    monkeypatch.setattr(
+        "hermes_cli.gateway_lifecycle_guards.refuse_while_sessions_live", lambda verb, args: None
+    )
+    monkeypatch.setattr(gateway, "_installed_service_kind_for", lambda is_windows: None)
+    monkeypatch.setattr(gateway, "_forget_host_gateway_probe", lambda: None)
+    if restart_all:
+        monkeypatch.setattr(gateway, "_dispatch_all_via_service_manager_if_s6", lambda action: False)
+        monkeypatch.setattr(gateway, "_host_multiplexer_for_all_verb", lambda: None)
+        monkeypatch.setattr(
+            "hermes_cli.gateway_profile_lifecycle.restart_all_verb_scope",
+            lambda owner: nullcontext(lambda: None),
+        )
+        monkeypatch.setattr(gateway, "_stop_installed_service", lambda system: False)
+        monkeypatch.setattr(
+            gateway, "kill_gateway_processes",
+            lambda *, all_profiles: calls.append(("kill", all_profiles)) or 0,
+        )
+        monkeypatch.setattr(gateway, "_discard_dead_host_record", lambda: None)
+        monkeypatch.setattr("hermes_constants.named_profile_home", lambda home: None)
+    else:
+        monkeypatch.setattr(gateway, "_guard_named_profile_under_multiplexer", lambda **kwargs: None)
+        monkeypatch.setattr(gateway, "_dispatch_via_service_manager_if_s6", lambda action: False)
+        monkeypatch.setattr(gateway, "_reap_unsupervised_gateway_orphans", lambda: None)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+        monkeypatch.setattr(gateway, "stop_profile_gateway", lambda: calls.append(("stop",)) or True)
+
+    monkeypatch.setattr(
+        gateway, "_wait_for_gateway_exit",
+        lambda *, timeout, force_after: calls.append(("wait", timeout, force_after)),
+    )
+    monkeypatch.setattr(
+        gateway, "_wait_for_tcp_port_free",
+        lambda host, port, *, timeout: calls.append(("port", host, port)) or False,
+    )
+    monkeypatch.setattr(
+        "socket.create_connection",
+        lambda *args, **kwargs: pytest.fail("Restart should reuse the port wait result"),
+    )
+    monkeypatch.setattr(gateway, "run_gateway", lambda **kwargs: calls.append(("run", kwargs)))
+
+    gateway._gateway_command_inner(
+        SimpleNamespace(gateway_command="restart", system=False, all=restart_all)
+    )
+
+    assert calls == [
+        ("kill", True) if restart_all else ("stop",),
+        ("wait", 10.0, 5.0),
+        ("port", host, port),
+        ("run", {"verbose": 0, "replace": True} if restart_all else {"verbose": 0, "force": False}),
+    ]
+    output = capsys.readouterr().out
+    assert output.count("⚠") == 1
+    assert f"hermes --profile {profile} gateway restart" in output
+    assert "Another process is listening on this endpoint" in output
 
 
 def _run_native_windows_gateway_start_diag(

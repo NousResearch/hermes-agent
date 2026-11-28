@@ -3929,7 +3929,75 @@ def _wait_for_tcp_port_free(host: str, port: int, *, timeout: float = 10.0) -> b
     return poll_until(_port_free, timeout, 0.1)
 
 
-def _wait_for_api_server_port_free(*, timeout: float = 10.0) -> bool:
+def _loopback_probe_host(host: str) -> str | None:
+    """Return a safe local address for an API-port probe, or ``None``."""
+    import ipaddress
+
+    if not isinstance(host, str):
+        return None
+    normalized = host.strip().lower()
+    if normalized.startswith("[") and normalized.endswith("]"):
+        normalized = normalized[1:-1]
+    if normalized in {"localhost", "0.0.0.0"}:
+        return "127.0.0.1"
+    if normalized in {"::", "::1"}:
+        return "::1"
+    try:
+        address = ipaddress.ip_address(normalized)
+    except ValueError:
+        return None
+    return normalized if address.is_loopback else None
+
+
+def _print_occupied_api_server_port(host: str, port: int, retry_command: str) -> None:
+    from hermes_cli.profiles import (
+        get_active_profile_name,
+        normalize_profile_name,
+        validate_profile_name,
+    )
+
+    try:
+        profile = normalize_profile_name(get_active_profile_name() or "default")
+        validate_profile_name(profile)
+    except Exception:
+        profile = "default"
+    print_warning(
+        f"API server port is already in use for profile={profile}: "
+        f"host={host}, port={port}. Another process is listening on this endpoint. "
+        f"Stop or reconfigure the process using that port, then retry "
+        f"`hermes --profile {profile} gateway {retry_command}`."
+    )
+
+
+def _warn_if_gateway_api_server_port_is_occupied() -> None:
+    """Check for a local listener without delaying or blocking service startup."""
+    try:
+        from gateway.config import Platform
+        from gateway.platforms._shared import coerce_port
+        from gateway.platforms.api_server import listen_address
+
+        config = load_gateway_config().platforms.get(Platform.API_SERVER)
+        if config is None or not config.enabled:
+            return
+        extra = config.extra or {}
+        # Avoid attributing an unrelated listener on the fallback port to a malformed setting.
+        if "port" in extra and not 0 < coerce_port(extra["port"], 0) <= 65535:
+            raise ValueError("Invalid configured API server port")
+        host, port = listen_address(extra)
+        probe_host = _loopback_probe_host(host)
+        if probe_host is None:
+            return
+        try:
+            with socket.create_connection((probe_host, port), timeout=0.2):
+                pass
+        except OSError:
+            return
+        _print_occupied_api_server_port(host, port, "start")
+    except Exception:
+        logger.debug("Could not check gateway API server port occupancy", exc_info=True)
+
+
+def _wait_for_api_server_port_free(*, timeout: float = 10.0, retry_command: str = "restart") -> bool:
     """Wait for the configured api_server listen address to stop accepting.
 
     Only when api_server is enabled: with the platform off, a foreign listener on the default
@@ -3940,8 +4008,11 @@ def _wait_for_api_server_port_free(*, timeout: float = 10.0) -> bool:
     if pconfig is None or not pconfig.enabled:
         return True
     host, port = listen_address(pconfig.extra or {})
-    freed = _wait_for_tcp_port_free(host, port, timeout=timeout)
-    if not freed:
+    probe_host = _loopback_probe_host(host)
+    freed = _wait_for_tcp_port_free(probe_host or host, port, timeout=timeout)
+    if not freed and probe_host is not None:
+        _print_occupied_api_server_port(host, port, retry_command)
+    elif not freed:
         print(
             f"⚠ {host}:{port} still accepting connections — "
             "new api_server may fail to bind"
@@ -5209,14 +5280,15 @@ def _cmd_start(args):
         start_scope = contextlib.nullcontext()
 
     with start_scope:
-        if start_all:
-            killed = kill_gateway_processes(all_profiles=True)
-            if killed:
-                print(f"✓ Killed {killed} stale gateway process(es) across all profiles")
-                _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
-                _wait_for_api_server_port_free()
+        killed = kill_gateway_processes(all_profiles=True) if start_all else 0
+        if killed:
+            print(f"✓ Killed {killed} stale gateway process(es) across all profiles")
+            _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
+            _wait_for_api_server_port_free(retry_command="start")
         if _service_mgmt_blocked():
             _no_backend_exit("start", "termux")
+        if not killed:
+            _warn_if_gateway_api_server_port_is_occupied()
         backend = _service_backend()
         if backend is not None:
             _service_call(backend, "start", system)

@@ -7,10 +7,12 @@ import logging
 import os
 import json
 import threading
+from functools import wraps
 from pathlib import Path
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field, fields
 from typing import Dict, List, Optional, Any
+from agent.i18n import use_language
 
 from .config import Platform, GatewayConfig, HomeChannel
 from .whatsapp_identity import canonical_whatsapp_identifier
@@ -25,6 +27,19 @@ from gateway.session_transcript import SessionTranscriptMixin
 from session_keys import profile_from_session_key_namespace
 
 logger = logging.getLogger(__name__)
+
+
+def in_message_language(handler):
+    """Bind the event's display language, including queued and internally revived turns.
+
+    Each entry rebinds instead of inheriting the preceding turn's context: a
+    queued message may be drained by a task created for a different sender.
+    """
+    @wraps(handler)
+    async def localized(self, event, *args, **kwargs):
+        with use_language(event.source.language):
+            return await handler(self, event, *args, **kwargs)
+    return localized
 
 
 # -- PII redaction helpers --------------------------------------------------------------------
@@ -108,6 +123,8 @@ class SessionSource:
     # (gateway/session_detached.py). It replaces the chat's key, so nothing keyed by route reaches
     # the chat's current conversation, and delivery goes nowhere.
     detached_route: Optional[str] = field(default=None, repr=False, compare=False)
+    # Display-only preference; persist for delayed replies without changing prompt context.
+    language: Optional[str] = None
 
     def __post_init__(self) -> None:
         # Mirror scope_id/guild_id onto each other (scope_id wins) so readers of EITHER agree.
@@ -136,7 +153,7 @@ class SessionSource:
     _ALWAYS_FIELDS = ("chat_id", "chat_name", "chat_type", "user_id", "user_name", "thread_id", "chat_topic")
     _OPTIONAL_PRE_SCOPE = ("user_id_alt", "chat_id_alt")
     _OPTIONAL_POST_SCOPE = ("parent_chat_id", "message_id", "profile")
-    _OPTIONAL_TAIL = ("auto_thread_initial_name", "prospective_thread_id")
+    _OPTIONAL_TAIL = ("auto_thread_initial_name", "prospective_thread_id", "language")
 
     def to_dict(self) -> dict[str, Any]:
         d = {"platform": self.platform.value}

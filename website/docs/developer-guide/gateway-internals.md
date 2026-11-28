@@ -1017,3 +1017,18 @@ Plugins that load after the adapters connected (install/enable from the CLI, Des
 - [ACP Internals](./acp-internals.md)
 - [Agent Loop Internals](./agent-loop.md)
 - [Messaging Gateway (User Guide)](../user-guide/messaging/index.md)
+
+### Per-message display language
+
+Platform adapters can set `SessionSource.language` to a supported language ID or
+regional alias (for example `ko-KR`). The gateway binds this preference while
+handling that message, including progress labels, approvals and copied worker
+contexts. Concurrent conversations and queued messages do not change each other's
+language or the profile's `display.language` setting. The optional source field
+round-trips through session origins so revived background replies retain it.
+
+Resolution is explicit `t(..., lang=...)`, then the source language, then the
+existing `HERMES_LANGUAGE` / `display.language` / English fallback. Unknown IDs
+fall back to the profile language. Detection and user preference policy belong to
+the adapter; the core does not infer a language from arbitrary message text.
+This affects static UI text only, not model-generated prose or shell/code output.

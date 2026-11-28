@@ -35,7 +35,7 @@ from gateway.run_inbound_unauthorized import (
     UnauthorizedOwnerNotifier, pairing_code_reply, pairing_profile_arg, pairing_rate_limited_reply,
     unauthorized_owner_hint,
 )
-from gateway.session import SessionSource, build_session_context, label_shared_sender
+from gateway.session import SessionSource, build_session_context, label_shared_sender, in_message_language
 from gateway.turn_lease import TurnLeaseTimeoutError
 from hermes_cli.observability.shared_metrics_busy import (
     note_busy_admitting, note_busy_outcome, settle_busy_arrival, stamp_busy_arrival)
@@ -1349,6 +1349,7 @@ class GatewayInboundMixin(
             await self._send_busy_ack_reply(event, self._delivery_adapter_for(source), notice)
         return True, await admit_message(authority, event)
 
+    @in_message_language
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """Handle an incoming message from any platform: auth → command check → running-agent
         interrupt → get/create session → build context → run agent → return response."""

@@ -126,9 +126,13 @@ def _remove_user_plugin(plugins_dir: Path, name: str, target: Path) -> dict[str,
     and following it deleted that plugin plus its install metadata while the alias stayed dangling.
     Config bookkeeping (aliases, toolset) is gathered before the tree disappears.
     """
+    from hermes_cli.plugins import get_plugin_manager
+
+    manager = get_plugin_manager()
     link = plugins_dir / name.strip("/")
     if link.is_symlink():
-        link.unlink()
+        with manager.unload_native_plugin_on_remove(link):
+            link.unlink()
         return {"ok": True, "name": name, **_pc()._forget_plugin_config({link.name})}
     entry = next((e for e in _pc()._discover_all_plugins() if Path(str(e[4])) == target), None)
     key = entry[5] if entry else target.name
@@ -136,7 +140,8 @@ def _remove_user_plugin(plugins_dir: Path, name: str, target: Path) -> dict[str,
     from hermes_cli.plugin_oauth import forget_plugin_grants, plugin_key
     grant_key = plugin_key(target)  # grants are stored by directory key, which the manifest name may not match
     _pc()._toggle_plugin_toolset(key, enable=False)
-    _remove_plugin_core(target)
+    with manager.unload_native_plugin_on_remove(target):
+        _remove_plugin_core(target)
     forget_plugin_grants(grant_key)  # a later plugin installed under the same key must not inherit the sign-in
     return {"ok": True, "name": name, **_pc()._forget_plugin_config(aliases)}
 

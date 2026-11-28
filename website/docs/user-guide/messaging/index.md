@@ -534,6 +534,8 @@ By default, messaging a busy agent redirects its active turn (a running foregrou
 - `queue` — follow-up messages wait and run as the next turn after the current task finishes. Each follow-up (text, voice note, video, document) gets its own turn in arrival order; only a rapid photo burst is merged into one album turn.
 - `steer` — follow-up messages are injected into the current run via `/steer`, arriving at the agent after the next tool call. No interrupt, no new turn. Falls back to `queue` behavior if the agent hasn't started yet.
 
+While subagents are running, `interrupt` is demoted to `queue` — interrupting the parent would abort them. Only `/stop` cancels the children. See [Subagent Delegation](../features/delegation.md#messaging-chats-without-interim-messages).
+
 A steer carries text only, so a message with an attachment (a photo, file or video, including one captioned `/steer ...`) is queued with its attachment as the next turn instead. With no agent running, `/queue` or `/steer` as an attachment's caption (bare, or with text) sends the attachment as a normal message.
 
 A small text file is normally inlined into the message. When its caption is a slash command (`/goal summarize this`), the file is attached without its text inlined so the command still runs, and the agent is told to read the saved file.

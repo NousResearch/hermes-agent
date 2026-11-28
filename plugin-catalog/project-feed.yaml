@@ -1,0 +1,27 @@
+name: project-feed
+title: Project Feed
+repo: https://github.com/nyarenari/project-feed-plugins
+sha: 8f4b72df1bea00f96f1798a66c98e99a1a302418
+version: "0.3.1"
+description: >-
+  Plan work, run tasks, and report project progress in Project Feed through its hosted
+  Streamable HTTP MCP server, with four workflow skills: task-workflow, plan-project,
+  project-status and work-triage. Agent Plugins v1 package (plugin.json, mcp.json,
+  skills/), configuration only. Needs a Project Feed Pro workspace and OAuth sign-in:
+  the README's Hermes section adds the server to mcp_servers with auth: oauth, then
+  hermes mcp login "Project Feed". Disclosure: every tool call goes to projectfeed.app
+  and acts on the user's workspace with their own role, including tools that create,
+  edit, archive and delete tasks, posts, docs, canvases and chat messages. The tool set
+  is served at runtime and is not covered by the pinned sha. The README sets
+  trust: untrusted so Hermes asks before any tool that is not marked read-only.
+maintainer: Nyarenari
+tier: community
+category: tools
+docs_url: https://github.com/nyarenari/project-feed-plugins#hermes-agent
+requires_hermes: ">=0.23.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

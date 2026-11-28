@@ -181,6 +181,7 @@ gateway:
     denied_plural: "❌ Commands denied ({count} commands)."
     denied_reason_singular: "❌ Command denied. Reason relayed to the agent: \"{reason}\""
     denied_reason_plural: "❌ Commands denied ({count} commands). Reason relayed to the agent: \"{reason}\""
+    declined_by_reply: "❌ Declined. Your message was passed to the agent as the next instruction."
 
   usage_limit:
     picker_title: "Keep going on another model:"

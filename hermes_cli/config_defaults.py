@@ -1636,11 +1636,11 @@ DEFAULT_CONFIG = {
         "deny": [],
         # Who may answer a chat approval/slash confirm/clarify: ["*"] any admitted member; [] requester + admins (+ ids).
         "approvers": ["*"],
+        "typed_reply_declines": False,  # a message sent while an approval is pending declines it, as the next instruction
         # /reload-mcp confirms before rebuilding the MCP tool set (it invalidates the prompt cache). "Always Approve" → false.
         "mcp_reload_confirm": True,
-        # /clear, /new, /reset, /undo confirm before discarding state (Approve Once / Always Approve
-        # / Cancel via tools.slash_confirm; native buttons on Telegram/ Discord/Slack). "Always
-        # Approve" → false. HERMES_TUI_NO_CONFIRM=1 skips the TUI modal.
+        # /clear, /new, /reset, /undo confirm before discarding state (Approve Once / Always Approve / Cancel via
+        # tools.slash_confirm; native buttons on Telegram/Discord/Slack). "Always Approve" → false. HERMES_TUI_NO_CONFIRM=1 skips the TUI modal.
         "destructive_slash_confirm": True,
     },
     # Permanently allowed dangerous command patterns (added via "always" approval).

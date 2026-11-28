@@ -204,6 +204,7 @@ gateway:
     denied_plural: "❌ Commandes refusées ({count} commandes)."
     denied_reason_singular: "❌ Commande refusée. Raison transmise à l'agent: \"{reason}\""
     denied_reason_plural: "❌ Commandes refusées ({count} commandes). Raison transmise à l'agent: \"{reason}\""
+    declined_by_reply: "❌ Refusé. Votre message a été transmis à l'agent comme prochaine instruction."
 
   usage_limit:
     picker_title: "Continuer avec un autre modèle :"

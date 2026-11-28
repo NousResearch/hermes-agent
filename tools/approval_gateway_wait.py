@@ -26,7 +26,7 @@ logger = logging.getLogger("tools.approval")
 class _ApprovalEntry:
     """One pending dangerous-command approval inside a gateway session."""
     __slots__ = ("authority", "cancelled", "card_deny_only", "data", "event", "expired", "identity", "observers",
-                 "owner", "reason", "result", "settle")
+                 "owner", "reason", "replied", "result", "settle")
 
     def __init__(self, data: dict):
         self.owner = None
@@ -49,6 +49,9 @@ class _ApprovalEntry:
         self.result: str | None = None  # "once"|"session"|"always"|"deny"
         # Free-text reason from ``/deny <reason>`` so the agent can adapt, not just hear "denied".
         self.reason: str | None = None
+        # The reason is a typed reply the user sent instead of answering (``approvals.typed_reply_declines``):
+        # the agent hears it as the user's next instruction, not as a bare refusal.
+        self.replied = False
         # Why the prompt was withdrawn with nobody answering (interrupt cause, session teardown);
         # followers and teardown read it so a withdrawn prompt never renders as a user deny.
         self.cancelled: str | None = None
@@ -158,6 +161,8 @@ def _await_coalesced_leader(session_key: str, leader, payload: dict):
         # The post hook fires for the fresh prompt's own lifecycle, not here.
         return None
     extra = {"cancelled": cancelled} if cancelled else {}
+    if getattr(leader, "replied", False):
+        extra["replied"] = True
     return _finish(payload, resolved, choice, getattr(leader, "reason", None), coalesced=True, **extra)
 
 
@@ -298,6 +303,8 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
         # not a timeout (#112548) — the same first-settlement rule as server_requests.send().
         resolved = state != "timeout" or choice is not None
         extra = {"cancelled": cancelled} if cancelled else {}
+        if entry.replied and choice == "deny":
+            extra["replied"] = True
         human.outcome = _hook_choice(resolved, choice, extra)
         # Bounded settle trace (#138133): without this, a timeout that nobody answered leaves no
         # gateway-side record of how the wait ended — only the BLOCKED text the agent sees.

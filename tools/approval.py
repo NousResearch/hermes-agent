@@ -149,12 +149,14 @@ def unregister_gateway_notify(session_key: str) -> None:
 def resolve_gateway_approval(session_key: str, choice: str,
                              resolve_all: bool = False,
                              reason: Optional[str] = None,
-                             request_id: Optional[str] = None) -> int:
+                             request_id: Optional[str] = None,
+                             replied: bool = False) -> int:
     """Unblock waiting agent thread(s) from the gateway's /approve or /deny handler.
 
     *resolve_all* resolves every pending approval (``/approve all``); otherwise the oldest
     (FIFO) or the one matching *request_id*. *reason* is the ``/deny <reason>`` free text,
-    relayed to the agent in the BLOCKED message. Returns the number resolved.
+    relayed to the agent in the BLOCKED message; *replied* marks it as a message the user typed
+    instead of answering, relayed as their next instruction. Returns the number resolved.
     """
     # Canonicalize where the answer is stored, not only in ``grant``: coalesced followers
     # (``choice == "once"`` covers only the leader) and the protected-write and elicitation
@@ -184,6 +186,7 @@ def resolve_gateway_approval(session_key: str, choice: str,
             entry.result = choice
             if reason:
                 entry.reason = reason
+                entry.replied = replied
             entry.event.set()
     return len(targets)
 
@@ -639,6 +642,16 @@ def _user_summary(outcome: str, noun: str = "command") -> str:
     key = f"approval.summary.{outcome}" if outcome in _USER_SUMMARY_OUTCOMES else "approval.summary.default"
     noun_text = t(f"approval.noun.{noun}") if noun in _USER_SUMMARY_NOUNS else noun
     return t(key, noun=noun_text, window=window)
+
+
+def _user_denial_wording(deny_reason: Optional[str], *, replied: bool) -> tuple[str, str]:
+    """``(reason, reason_addendum)`` for a user's deny. A message the user sent instead of answering
+    (``approvals.typed_reply_declines``) is their next instruction, not only why they refused."""
+    if replied and deny_reason:
+        return ("declined: the user replied with a message instead of approving it",
+                f' The user\'s reply, which is their next instruction: "{deny_reason}".'
+                " Act on that reply instead of this action.")
+    return "denied by user", (f' Reason given by the user: "{deny_reason}".' if deny_reason else "")
 
 
 def _denied(message: str, *, pattern_key: str, description: str, outcome: str, noun: str = "command",
@@ -1122,8 +1135,8 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
                             reason_addendum="", timeout_addendum=" Silence is not consent.",
                             deny_reason=deny_reason)
             if choice is None or choice == "deny":
-                return deny(spec.gateway_refused, "denied", reason="denied by user",
-                            reason_addendum=(f' Reason given by the user: "{deny_reason}".' if deny_reason else ""),
+                reason, addendum = _user_denial_wording(deny_reason, replied=bool(decision.get("replied")))
+                return deny(spec.gateway_refused, "denied", reason=reason, reason_addendum=addendum,
                             timeout_addendum="", deny_reason=deny_reason)
             return grant(choice)
 

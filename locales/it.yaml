@@ -178,6 +178,7 @@ gateway:
     denied_plural: "❌ Comandi negati ({count} comandi)."
     denied_reason_singular: "❌ Comando negato. Motivo inoltrato all'agente: \"{reason}\""
     denied_reason_plural: "❌ Comandi negati ({count} comandi). Motivo inoltrato all'agente: \"{reason}\""
+    declined_by_reply: "❌ Rifiutato. Il tuo messaggio è stato passato all'agente come prossima istruzione."
 
   usage_limit:
     picker_title: "Continua con un altro modello:"

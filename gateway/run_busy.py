@@ -712,11 +712,9 @@ class GatewayBusySessionMixin:
                         "Approval response via plain text: session=%s verb=%s args=%r",
                         session_key, _verb, _normalized_args,
                     )
-                    _adapter = self._delivery_adapter_for(event.source)
-                    if _adapter and _reply:
-                        _text, _eph_ttl = _adapter._unwrap_ephemeral(_reply)
-                        if _text:
-                            await self._send_busy_reply(event, _adapter, _text, plain_anchor=True)
+                    await self._send_plaintext_approval_reply(event, _reply)
+                    return True
+                if await self._decline_approval_with_typed_reply(event, session_key):
                     return True
         except Exception:
             logger.warning(
@@ -724,6 +722,45 @@ class GatewayBusySessionMixin:
                 "falling through to busy handling", session_key, exc_info=True,
             )
         return False
+
+    async def _send_plaintext_approval_reply(self, event: MessageEvent, reply) -> None:
+        adapter = self._delivery_adapter_for(event.source)
+        if adapter and reply:
+            text, _eph_ttl = adapter._unwrap_ephemeral(reply)
+            if text:
+                await self._send_busy_reply(event, adapter, text, plain_anchor=True)
+
+    # A declining reply rides into the agent's tool result; keep it a message, not a document.
+    _TYPED_REPLY_DECLINE_MAX_CHARS = 4000
+
+    async def _decline_approval_with_typed_reply(self, event: MessageEvent, session_key: str) -> bool:
+        """``approvals.typed_reply_declines``: any other plain-text message from someone who may answer
+        declines every pending approval, and the agent reads it as the user's next instruction
+        ("no, use git clean -n first"). The blocked turn continues with it; nothing is queued."""
+        from gateway.bot_peer_notices import automatic_notices_allowed
+        from tools.approval import resolve_gateway_approval
+        from tools.approval_context import typed_reply_declines
+        text = (event.text or "").strip()
+        if (not text or event.is_command() or event.message_type != MessageType.TEXT or event.media_urls
+                or getattr(event, "internal", False) or not automatic_notices_allowed(event.source)):
+            return False
+        async with self._async_profile_scope_for_source(event.source):
+            if not typed_reply_declines():
+                return False
+        _key, refused, request_ids = self._blocking_approval_or_stale(
+            event, "gateway.deny.stale", "gateway.deny.no_pending", resolve_all=True, choice="deny")
+        if refused or not request_ids:
+            return False  # not theirs to answer: the message takes the ordinary busy path
+        reply = text[: self._TYPED_REPLY_DECLINE_MAX_CHARS]
+        count = sum(resolve_gateway_approval(session_key, "deny", reason=reply, request_id=rid, replied=True)
+                    for rid in request_ids)
+        if not count:
+            return False
+        logger.info("Approval declined by a typed reply: session=%s count=%d", session_key, count)
+        confirmation = t("gateway.deny.declined_by_reply", count=count)
+        await self._send_plaintext_approval_reply(
+            event, await self._deliver_approval_confirmation(event, confirmation, "deny"))
+        return True
 
     async def _resolve_busy_steer_or_redirect(
         self, event: MessageEvent, session_key: str, effective_mode: str, running_agent: Any

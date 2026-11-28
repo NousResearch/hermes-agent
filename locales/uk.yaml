@@ -178,6 +178,7 @@ gateway:
     denied_plural: "❌ Команди відхилено ({count} команд)."
     denied_reason_singular: "❌ Команду відхилено. Причину передано агентові: \"{reason}\""
     denied_reason_plural: "❌ Команди відхилено ({count} команд). Причину передано агентові: \"{reason}\""
+    declined_by_reply: "❌ Відхилено. Ваше повідомлення передано агентові як наступну інструкцію."
 
   usage_limit:
     picker_title: "Продовжити на іншій моделі:"

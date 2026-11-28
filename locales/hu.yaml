@@ -181,6 +181,7 @@ gateway:
     denied_plural: "❌ Parancsok elutasítva ({count} parancs)."
     denied_reason_singular: "❌ Parancs elutasítva. Indok továbbítva az ügynöknek: \"{reason}\""
     denied_reason_plural: "❌ Parancsok elutasítva ({count} parancs). Indok továbbítva az ügynöknek: \"{reason}\""
+    declined_by_reply: "❌ Elutasítva. Az üzenetedet következő utasításként továbbítottuk az ügynöknek."
 
   usage_limit:
     picker_title: "Keep going on another model:"

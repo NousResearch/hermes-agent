@@ -1103,6 +1103,15 @@ def _prepare_runtime_status_update(
         previous_payload = _runtime_status_state
         payload = copy.deepcopy(previous_payload)
         current_record = _build_pid_record()
+        if clear_profile_platforms:
+            # Startup must compare identities before stamping the successor. Same-process
+            # profile cleanup preserves its primary adapters; a predecessor owns none.
+            previous_pid = _pid_from_record(previous_payload)
+            if previous_pid is not None and (
+                previous_pid != current_record["pid"]
+                or _start_times_conflict(previous_payload.get("start_time"), current_record["start_time"])
+            ):
+                payload["platforms"] = {}
         payload.setdefault("platforms", {})
         if not isinstance(payload["platforms"], dict):
             payload["platforms"] = {}

@@ -340,6 +340,32 @@ class TestSSHProbeOnly:
         assert len(control_exit_calls) == 1
 
 
+class TestSharedMasterCleanup:
+    def test_cleanup_stops_shared_master_instead_of_killing_it(self, monkeypatch, _mock_ssh_runtime):
+        # Two envs on one target share a ControlMaster. Reaping the stale one must not end the
+        # other's running command: `-O exit` kills every mux session (the client exits 255),
+        # `-O stop` only refuses new ones.
+        control_calls = []
+
+        def _fake_run(*args, **kwargs):
+            control_calls.append(args[0])
+            return subprocess.CompletedProcess([], 0)
+
+        monkeypatch.setattr(ssh_env.subprocess, "run", _fake_run)
+
+        stale = ssh_env.SSHEnvironment(host="example.com", user="alice")
+        live = ssh_env.SSHEnvironment(host="example.com", user="alice")
+        assert stale.control_socket == live.control_socket
+
+        stale.control_socket.touch()
+        stale.cleanup()
+
+        assert len(control_calls) == 1
+        cmd = control_calls[0]
+        assert cmd[cmd.index("-O") + 1] == "stop"
+        assert "exit" not in cmd
+
+
 def _setup_ssh_env(monkeypatch, persistent: bool):
     monkeypatch.setenv("TERMINAL_ENV", "ssh")
     monkeypatch.setenv("TERMINAL_SSH_HOST", _SSH_HOST)

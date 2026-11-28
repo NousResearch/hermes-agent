@@ -5,7 +5,7 @@ manifest_version: 1
 name: paypal
 description: >-
   Payments, invoices, and subscriptions via PayPal's hosted MCP.
-source: https://developer.paypal.com/tools/mcp-server/
+source: https://developer.paypal.com/ai-tools/mcp-server
 
 # Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
 # process for this entry). Native OAuth 2.1 + Dynamic Client Registration;
@@ -13,7 +13,9 @@ source: https://developer.paypal.com/tools/mcp-server/
 # exchange, and refresh.
 transport:
   type: http
-  url: https://mcp.paypal.com/sse
+  # PayPal's MCP registry entry identifies /mcp as Streamable HTTP; /sse is legacy SSE.
+  # Its quickstart lists /http, which currently returns 404.
+  url: https://mcp.paypal.com/mcp
 
 auth:
   type: oauth

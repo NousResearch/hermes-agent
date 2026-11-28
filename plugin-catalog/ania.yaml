@@ -1,0 +1,19 @@
+name: ania
+title: Ania
+repo: https://github.com/rob-d3v/ania-plugins
+sha: 1c9f5f2a39ac4ee64f7df25e9791f7fcd9256cf8
+subdir: plugins/ania
+version: "2.1.3"
+description: "Ania: talking avatars, your own cloned voice and narrated videos (Ania Studio) with both, plus Ania Player to put the avatar on your desktop and in OBS, Discord or Zoom. Agent Plugins v1 package (plugin.json + mcp.json + three skills: get-started, make-video, avatar-on-screen), configuration only. Disclosure: hosted-only connector with no local code; every tool call goes to Ania's own server at mcp-avatar.diatech.solutions (Streamable HTTP). Free catalogue tools work without sign-in; account tools (avatars, voice, video rendering, wallet) need the user's Ania sign-in, added with `hermes mcp add ania --url "https://mcp-avatar.diatech.solutions/mcp/ania?oauth=1" --auth oauth` (OAuth 2.1, PKCE, monthly spending cap chosen by the user, revocable on avatar.diatech.solutions). Spending tools show the exact price and require the user's explicit confirmation; the package marks the server untrusted, so Hermes also asks before any write and refuses them in unattended runs. The tool set is served by the remote server at runtime and is not covered by the pinned sha."
+maintainer: Ania Models
+tier: community
+category: tools
+docs_url: https://github.com/rob-d3v/ania-plugins/tree/main/plugins/ania
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

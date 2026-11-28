@@ -21,9 +21,9 @@ _CORE_HOME_PLATFORMS = frozenset({"local", "relay", "msgraph_webhook"})
 
 def _saved_home_channel(platform_name: str) -> dict:
     """The ``home_channel`` block the job profile saves for *platform_name* (``chat_id``, optional ``thread_id``),
-    from the platform block as the gateway loader merges it (``gateway.platforms`` / ``platforms`` /
-    ``gateway.<name>``, later wins): a platform nothing registers here has no gateway-config home, but the
-    address the profile saved is still its home. ``{}`` when none is saved."""
+    from the platform block as the gateway loader builds it (``left_core_migration._merged_platform_block``): a
+    platform nothing registers here has no gateway-config home, but the address the profile saved is still its
+    home. ``{}`` when none is saved."""
     from hermes_cli.left_core_migration import _merged_platform_block
     from hermes_constants import get_hermes_home
     block = _merged_platform_block(get_hermes_home(), platform_name)
@@ -99,5 +99,4 @@ def _moved_platform_ref(platform_key: str, ref: str) -> tuple[str, Optional[str]
 
 
 # Late-bound (see module docstring): imported LAST, after both modules define their names.
-from cron import scheduler as _sched
 from cron import scheduler_delivery as _delivery

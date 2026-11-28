@@ -1316,7 +1316,7 @@ def _pending(home: Path, *, say: Callable[[str], None], process_env: bool = Fals
         present = _installed_for_good(home, feature.plugin)
         # Core ran the feature despite that entry; the plugin the home has honours it, so the upgrade turns
         # it off. The disable stays.
-        kept_off = present and _plugins_listed(home, (feature.plugin, *legacy_plugin_keys(feature.plugin)))[1]
+        kept_off = present and _tree_lists(home, feature.plugin)[1]
         try:
             _record_migration(home, feature)
         except Exception as exc:

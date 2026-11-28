@@ -47,6 +47,18 @@ class WorkerPersistenceError(RuntimeError):
     pass
 
 
+class WorkerOwnerChanged(WorkerPersistenceError):
+    """The confirmed owner changed before this attempt sent a request."""
+
+
+class WorkerOwnerStarting(WorkerPersistenceError):
+    """Discovery found an owner starting before a request was sent."""
+
+
+class WorkerOwnerUnreachable(WorkerPersistenceError):
+    """A detached worker's dial to a ready owner failed before any request was sent."""
+
+
 def _caller_summary(limit=8):
     """module:function:line of the frames above this store (its own frames skipped), never
     locals or argument values: best-effort callers swallow the guard's raise (#139029)."""
@@ -82,8 +94,8 @@ class _OwnerLink:
     transport are discarded as they arrive, idle or not: left queued, websockets' bounded receive
     buffer pauses socket reads, which also stalls pongs and the close handshake. The reply to the
     one outstanding request id goes to its caller; a closed connection goes to it as the exception."""
-    def __init__(self, ws):
-        self.ws = ws
+    def __init__(self, ws, attachment):
+        self.ws, self.attachment = ws, attachment
         self.awaiting = None
         self.replies = queue.SimpleQueue()
         self.reader = threading.Thread(target=self._read, name='worker-rpc-reader', daemon=True)
@@ -128,12 +140,16 @@ class WorkerRPC:
         self.endpoint = None
         self.link = None
         self.request_id = 0
+        self.owner_attachment = None  # optional control-channel snapshot, bound before the first call
 
     def _connection(self):
+        # Under the RPC lock: compare and stamp the link before sending. Snapshot before dialing,
+        # so an attachment arriving during the dial cannot relabel an old socket as the new one.
+        attachment = self.owner_attachment() if self.owner_attachment is not None else None
         if self.link is not None:
-            if self.link.reader.is_alive():
+            if self.link.reader.is_alive() and self.link.attachment == attachment:
                 return self.link
-            # The owner closed it while idle, before any send: redial with a fresh ticket.
+            # The link closed while idle or control confirmed a new attachment. Use a fresh ticket.
             self._drop()
         from hermes_cli.gateway_client import _session_ticket, gateway_ws_target
         from hermes_cli.gateway_runtime_discovery import query_identify
@@ -143,6 +159,8 @@ class WorkerRPC:
         discovery = discover_gateway_endpoint(self.home, timeout=5)
         if discovery.state == 'ready' and discovery.endpoint is not None:
             self.endpoint = discovery.endpoint
+        elif discovery.state == 'starting':
+            raise WorkerOwnerStarting('owner_unavailable')
         elif discovery.state != 'draining' or self.endpoint is None:
             raise WorkerPersistenceError('owner_unavailable')
         from hermes_cli.gateway_runtime import control_home_for
@@ -155,8 +173,16 @@ class WorkerRPC:
         # The owner is loopback, like connect_gateway's peer: an inherited HTTPS_PROXY must not carry it.
         # No library keepalive: its pong deadline would run independently of (and could fail) a call
         # inside its receipt budget; that budget and the observed close are the liveness checks.
-        self.link = _OwnerLink(connect(url, subprotocols=protocols, open_timeout=5, close_timeout=1,
-                                       max_size=8 * 1024 * 1024, proxy=None, ping_interval=None))
+        try:
+            ws = connect(url, subprotocols=protocols, open_timeout=5, close_timeout=1,
+                         max_size=8 * 1024 * 1024, proxy=None, ping_interval=None)
+        except (TimeoutError, OSError) as exc:
+            if attachment is None:
+                raise
+            # Nothing was written: a just-restarted owner can still be importing its socket
+            # handler when a re-adopted worker dials. The detached caller may retry this.
+            raise WorkerOwnerUnreachable('owner_unavailable') from exc
+        self.link = _OwnerLink(ws, attachment)
         return self.link
 
     def _drop(self):
@@ -169,7 +195,7 @@ class WorkerRPC:
         with self.lock:
             self._drop()
 
-    def __call__(self, method, **params):
+    def __call__(self, method, *, _attachment=None, **params):
         try:
             asyncio.get_running_loop()
         except RuntimeError:
@@ -183,18 +209,26 @@ class WorkerRPC:
             self.request_id += 1
             request_id = self.request_id
             message = json.dumps({'jsonrpc': '2.0', 'id': request_id, 'method': method, 'params': params})
+            def send(link):
+                if _attachment is not None and (link.attachment != _attachment
+                        or self.owner_attachment() != _attachment):
+                    raise WorkerOwnerChanged('owner_changed_before_send')
+                link.send(request_id, message)
+
             try:
                 link = self._connection()
                 try:
-                    link.send(request_id, message)
+                    send(link)
                 except ConnectionClosed:
                     # websockets raises this from send only before a complete frame is written (closed
                     # on entry, or the socket write failed): the owner closed the link after the idle
                     # check and never saw this request, so redial and send it once more.
                     self._drop()
                     link = self._connection()
-                    link.send(request_id, message)
+                    send(link)
                 response = link.receive(20)
+            except (WorkerOwnerChanged, WorkerOwnerUnreachable):
+                raise  # No request was sent; no link was installed.
             except BaseException:
                 # Outcome unknown once sent: surface the error and never resend; the next call redials.
                 self._drop()

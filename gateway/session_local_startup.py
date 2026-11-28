@@ -127,6 +127,10 @@ def _publish(authority, bundle, before, adapter, previous_closes, viewers, sched
 async def _prepare_operation(authority, schedule, initial):
     from gateway.session_local_adoption import adopt_before_restore, adopt_local_compressions
     # This whole operation is tracked (or joined before an unpublished build can unwind).
+    if initial:
+        from gateway.session_detached_workers import read_resume_slots
+        # The authority is still private. Guard each FIFO before a restored route can schedule it.
+        authority.detached_resume_slots.update(await asyncio.to_thread(read_resume_slots, authority))
     # Compression adoption retains the expected-receipt and owner-epoch fences.
     await adopt_local_compressions(authority, tracked=not initial)
     failed = set()

@@ -28,7 +28,7 @@ from persistence.workers.delegations import (
     WorkerDelegationPayload, WorkerDelegationView, delegation_payload,
 )
 from persistence.workers.executions import (
-    AdmissionWorkerScope, ChildExecution, ChildReservation, WorkerAuxiliaryUsage, WorkerExecutionId,
+    AdmissionWorkerScope, ChildExecution, ChildReservation, DetachedWorkerReservation, WorkerAuxiliaryUsage, WorkerExecutionId,
     WorkerExecutionRecord, WorkerKind, WorkerMainUsage, WorkerStatus, WorkerTurnLease,
 )
 from persistence.workers.sessions import (
@@ -102,6 +102,16 @@ class SQLiteWorkerExecutionRepository:
 
     # ── WorkerExecutionRepository ─────────────────────────────────────────────
 
+    def detached_reservations(self, *, epoch: AuthorityEpoch) -> tuple[DetachedWorkerReservation, ...]:
+        from ._runtime_workers import read_detached_reservations
+        holder = self._store.holder()
+        with refused(), holder.transcript_read_snapshot() as consistent:
+            with holder._read_ctx() as conn:
+                reservations = read_detached_reservations(conn, epoch)
+            if not consistent():
+                raise AuthorityRefusal('storage_unavailable')
+        return reservations
+
     def register(self, *, epoch: AuthorityEpoch, execution_id: WorkerExecutionId, session_id: SessionId, generation: ExecutionGeneration, kind: WorkerKind, adoption_secret: str, require_idle: bool = False) -> WorkerExecutionRecord:
         from ._executions import register_worker_execution
         with refused():
@@ -119,12 +129,13 @@ class SQLiteWorkerExecutionRepository:
         return _record(row)
 
     def reserve_for_admission(self, *, epoch: AuthorityEpoch, admission_id: AdmissionId, principal_id: str, profile_id: str, pid: int, birth: float, secret: str,
-                              owner: OwnerRule | None, worker_subject: str | None = None) -> AdmissionWorkerScope:
+                              owner: OwnerRule | None, worker_subject: str | None = None,
+                              detach_socket: str | None = None) -> AdmissionWorkerScope:
         with refused():
             scope = _gateway.reserve_admission_worker(self._store.holder(), epoch=epoch, admission_id=admission_id,
                                                       principal_id=principal_id, profile_id=profile_id, pid=pid,
                                                       birth=birth, secret=secret, rule=owner,
-                                                      worker_subject=worker_subject)
+                                                      worker_subject=worker_subject, detach_socket=detach_socket)
         return AdmissionWorkerScope(
             profile_id=scope['profile_id'], session_id=SessionId(scope['session_id']),
             execution_id=WorkerExecutionId(scope['execution_id']), generation=ExecutionGeneration(scope['generation']),

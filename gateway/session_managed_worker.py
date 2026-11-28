@@ -5,6 +5,7 @@ from collections import deque
 from dataclasses import asdict, replace
 from functools import partial
 import json
+import logging
 import os
 import queue
 import threading
@@ -32,9 +33,16 @@ LOSS_RECORD_WAIT_S = 10
 # detached-spawn: ok — covered: the worker kills its own group when its owner dies (_die_with_owner)
 WORKER_POPEN = {'start_new_session': True, 'close_fds': True}
 
+logger = logging.getLogger(__name__)
+
 
 class ManagedExecutionUnknown(RuntimeError):
     """The committed unknown verdict stops the FIFO without forging failed settlement."""
+
+
+class ManagedWorkerHandedOff(asyncio.CancelledError):
+    """A stopping owner handed its detachable worker to the next one (``gateway.detached_workers``):
+    the turn is neither settled nor lost here, and the drain ends as if cancelled."""
 
 
 def managed_policy(authority, ref):
@@ -184,6 +192,9 @@ class ManagedWorker:
         self.stderr_drain = None
         # Exact secrets this worker was handed; the stderr sink scrubs them besides the patterns.
         self.secrets = []
+        # Bootstrapped with ``detach_v1``: a stopping owner hands it over instead of stopping it.
+        self.detachable = False
+        self.handed_off = False
 
     def _write_controls(self):
         try:
@@ -297,8 +308,28 @@ class ManagedWorker:
             stopper.cancel()
             arrived.cancel()
 
-    def interrupt(self):
-        self.control({'type': 'stop'})
+    def interrupt(self, message=None, *, tool_reason=None):
+        """The legacy ``interrupt(message)`` ABI ``request_hard_interrupt`` falls back to, which every
+        drain reaches a worker through: a turn stays adopted after ``execute_managed`` has dropped it
+        from ``_managed_workers``, so profile stop and ``session.interrupt`` resolve it as an agent.
+        A worker has no in-process turn to cancel — the reason it was stopped is recorded as the
+        stop cause (never overwriting one already latched, whose cause won) and the same Stop control
+        ``interrupt_managed`` sends goes out.
+
+        A control that cannot be queued is not a failure of the stop: ``managed_worker_lost`` means
+        the turn already ended, and ``worker_control_backpressure`` latched Stop first, so the owner's
+        read loop escalates on that latch. Raising either would abort a graceful profile restart —
+        the drain has no handler for it.
+        """
+        if self.handed_off:
+            return True  # gateway.detached_workers: the turn belongs to the next owner now
+        if message is not None and self.stop_cause is None and not self.stop.is_set():
+            self.stop_cause = message
+        try:
+            self.control({'type': 'stop'})
+        except AuthorityRefusal as exc:
+            logger.debug('managed Stop not queued (%s); the latch escalates it', exc.reason)
+        return True
 
     def respond(self, kind, prompt_id, value):
         self.control({'type': kind, 'prompt_id': prompt_id, 'value': value})
@@ -307,6 +338,9 @@ class ManagedWorker:
         with self.write_lock:
             self.process.stdin.write(encode_frame(frame))
             self.process.stdin.flush()
+            if self.handed_off:
+                # A hand_off that found this write in progress left the hang-up to it.
+                self._hang_up()
 
     def _signal_worker(self, kill):
         """Signal the verified interpreter, not only the handle: a launcher that exec-chained
@@ -335,6 +369,42 @@ class ManagedWorker:
             except (ProcessLookupError, PermissionError):
                 pass
         (self.process.kill if kill else self.process.terminate)()
+
+    def hand_off(self):
+        """Leave the worker running for the next owner: close this side's control stream (the
+        worker reads EOF and listens on its socket). No signal is sent. Called on the loop, so it
+        never waits for a control write in progress (a worker that stopped reading can hold one
+        forever): that write's ``send`` hangs up as soon as it returns."""
+        self.handed_off = True
+        if self.write_lock.acquire(blocking=False):
+            try:
+                self._hang_up()
+            finally:
+                self.write_lock.release()
+
+    def _hang_up(self):
+        hangup = getattr(self.process, 'hangup', None)
+        with suppress(OSError, ValueError):
+            (hangup or self.process.stdin.close)()
+
+    def release(self):
+        """``close`` without the signals and the wait: a handed-off worker keeps running. A writer
+        still blocked in a control write keeps the stream: that ``send`` hangs up when it returns."""
+        self.closed.set()
+        self._demand.release()
+        if self.writer.ident is not None:
+            self.writer.join(timeout=5)
+        if self.write_lock.acquire(blocking=False):
+            try:
+                self._hang_up()
+            finally:
+                self.write_lock.release()
+        if self.reader is None:
+            self.process.stdout.close()
+        else:
+            self.reader.join(timeout=5)
+        if self.stderr_drain is not None:
+            self.stderr_drain.join(timeout=5)
 
     def close(self):
         self.closed.set()
@@ -371,6 +441,8 @@ def interrupt_managed(authority, actor, ref, generation):
         return False
     authority.authorize(actor, ref, 'session:control')
     authority.check_approval_generation(ref.session_id, generation)
+    if worker.handed_off:
+        raise AuthorityRefusal('runtime_draining')
     worker.control({'type': 'stop'})
     return True
 
@@ -595,18 +667,49 @@ async def _settle_lost(authority, row, scope, recording):
         await tracked_write(authority, partial(lose_admission_worker, authority, row, scope))
 
 
-async def _spawn_registered_worker(authority, ref, row):
-    """Spawn the turn's child and register it for Stops: ``(worker, process)``, or None when the spawn was cancelled (the
-    interrupted result is already recorded). The generation stays marked spawning until registration."""
+def _worker_launch(authority, row, policy):
+    """The worker's ``(argv, env, detachable)``, prepared together and off the loop (the scope probe may block).
+
+    A detachable worker of a systemd-supervised gateway runs in its own transient user scope
+    (``systemd-run --scope`` execs in place: same pid, same pipes), so the service's cgroup kill
+    on a restart does not reach it. The wrapper gets the user-bus variables the probe was given
+    (derived from this process's environ: a system-level unit inherits no session variables) over
+    the worker's own env. Without a scope there (``degraded``) the restart kills the worker anyway,
+    so it is not detachable and keeps the ordinary Stop. Everywhere else ``start_new_session``
+    already detaches it, with ``_worker_env`` unchanged."""
+    argv, env = [sys.executable, '-m', 'agent.managed_worker'], _worker_env(authority)
+    from gateway.session_detached_workers import detach_enabled
+    if policy is None or not detach_enabled(policy):
+        return argv, env, False
+    from tools.process_registry import restart_safe_gateway_child_argv, systemd_user_bus_env
+    dispatch = restart_safe_gateway_child_argv(argv, unit_suffix='mw-' + row['admission_id'][:12],
+                                               require_restart_safe_scope=False,
+                                               degraded_consequence=_UNSCOPED_DETACH_CONSEQUENCE)
+    if dispatch.mode != 'scoped':
+        return argv, env, dispatch.mode == 'in_process'
+    probed = systemd_user_bus_env()
+    bus = {name: probed[name] for name in ('XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS') if name in probed}
+    return dispatch.argv, {**(os.environ if env is None else env), **bus}, True
+
+
+_UNSCOPED_DETACH_CONSEQUENCE = (
+    "gateway.detached_workers is off for managed workers until then: they run inside the gateway's "
+    "cgroup and a gateway restart stops them as without the setting."
+)
+
+
+async def _spawn_registered_worker(authority, ref, row, policy=None):
+    """Spawn the turn's child and register it for Stops: ``(worker, process, detachable)``, or None when the spawn was
+    cancelled (the interrupted result is already recorded). The generation stays marked spawning until registration."""
     spawning = _mark_spawning(authority, ref, row)
     generation = row.get('generation')
     try:
-        env = await asyncio.to_thread(_worker_env, authority)
+        argv, env, detachable = await asyncio.to_thread(_worker_launch, authority, row, policy)
         cwd = (await asyncio.to_thread(Path(__file__).resolve)).parents[1]
         from gateway.session_worker_spawn import acquire_process
         from gateway.session_managed_worker_log import worker_log_path
         log_path = worker_log_path(authority.profile_id)
-        process = await acquire_process(subprocess.Popen, [sys.executable, '-m', 'agent.managed_worker'],
+        process = await acquire_process(subprocess.Popen, argv,
             cwd=cwd, stdin=subprocess.PIPE, env=env, stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL if log_path is None else subprocess.PIPE, **WORKER_POPEN)
     except asyncio.CancelledError:
@@ -626,7 +729,7 @@ async def _spawn_registered_worker(authority, ref, row):
     workers[ref.session_id] = worker
     spawning.pop(ref.session_id, None)
     worker.stop_cause = _latched_stop_cause(authority, ref.session_id, generation)
-    return worker, process
+    return worker, process, detachable
 
 
 async def admit_managed(authority, ref, row, policy):
@@ -685,7 +788,6 @@ async def _finalize_managed_refusal(authority, session_id, accepted):
 
 
 async def execute_managed(authority, ref, row, policy):
-    from gateway.run_turn_progress import publish_worker_tool_event
     # This route never passes the inbound prepare step, so the worker would read ``@`` tokens as typed.
     from gateway.session_context_refs import managed_turn_text, refused_turn_result
     _mark_spawning(authority, ref, row)
@@ -700,15 +802,14 @@ async def execute_managed(authority, ref, row, policy):
         return refusal
     if _stopped_before_spawn(authority, ref, row):
         return ''
-    spawned = await _spawn_registered_worker(authority, ref, row)
+    spawned = await _spawn_registered_worker(authority, ref, row, policy)
     if spawned is None:
         return ''
-    worker, process = spawned
+    worker, process, detachable = spawned
     workers = authority._managed_workers
     # A Stop acknowledged during the env/spawn awaits found no worker and was latched for this
     # generation; consume it in the same step that makes the worker reachable to interrupt_managed.
     authority.adopt_agent(ref.session_id, row['generation'], worker)
-    accepted = usage = None
     scope = None
     try:
         # The interpreter behind the handle introduces itself first; the owner verifies that
@@ -717,83 +818,158 @@ async def execute_managed(authority, ref, row, policy):
         if worker.stop.is_set():
             # Stopped before the child could receive controls: hello raced the latch; never bootstrap.
             raise AuthorityRefusal('managed_worker_stopped')
+        from gateway.session_detached_workers import socket_path
+        detach = (await asyncio.to_thread(socket_path, authority.profile_id, 'admission-worker:' + row['admission_id'])
+                  if detachable else None)
         # psutil + BEGIN IMMEDIATE: off-loop and retirement-tracked, like admission and claim.
         from gateway.session_runtime_workers import tracked_write
         scope = await tracked_write(authority, partial(reserve_admission_worker, authority,
                     admission_id=row['admission_id'], process=process, principal_id=row['principal_id'], hello=hello,
-                    worker_subject=owner_worker_subject()))
+                    worker_subject=owner_worker_subject(), detach_socket=detach))
         worker.worker = (scope['pid'], scope['birth'])
         # The child reads nothing else until the exact reservation has committed.
         frame = await asyncio.to_thread(_bootstrap, authority, ref, row, policy, scope, text)
+        if detach is not None:
+            frame['detach_v1'] = {'socket': detach}
         worker.secrets.extend(v for v in (frame['api_key'], scope['secret']) if isinstance(v, str) and v)
         await asyncio.to_thread(worker.send, frame)
+        worker.detachable = detach is not None
         worker.writer.start()
-        while True:
-            frame = await worker.next_frame(None, ack=STOP_ACK_SECONDS)
-            # The claim's execution stamp, not a ledger read per frame (publish_execution fences the same way).
-            if authority.executing.get(ref.session_id) != row['generation']:
-                raise AuthorityRefusal('stale_generation')
-            with authority.sessions[ref.session_id].event_stream.lock:
-                if _prompt_frame(authority, ref, row, worker, frame):
-                    continue
-            if frame == {'type': 'error', 'reason': 'managed_worker_failed'}:
-                raise AuthorityRefusal('managed_worker_failed')
-            kind = frame.get('type')
-            if kind == 'ready' and set(frame) == {'type', 'pid'} and frame['pid'] == scope['pid']:
-                continue
-            if kind == 'delta' and set(frame) == {'type', 'text'} and isinstance(frame['text'], str):
-                authority.publish_execution(ref.session_id, row['generation'], 'message.delta', {'text': frame['text']})
-                continue
-            if publish_worker_tool_event(authority, ref.session_id, row['generation'], frame):
-                continue
-            if kind == 'result' and set(frame) == {'type', 'result'} and accepted is None:
-                try:
-                    accepted, usage = accept_result(frame['result'])
-                except ValueError as exc:
-                    raise AuthorityRefusal('invalid_worker_result') from exc
-                authority.sessions[ref.session_id].controls.snapshot(ref.session_id, None)
-                await asyncio.to_thread(worker.send, {'type': 'finish'})
-                continue
-            if frame == {'type': 'finished'} and accepted is not None:
-                # 'finished' follows the worker's durable execution.finish: the turn is complete.
-                # A slow or non-zero interpreter exit after it is close()'s cleanup, not a loss.
-                with suppress(subprocess.TimeoutExpired):
-                    await asyncio.to_thread(process.wait, 10)
-                accepted = _with_stop_cause(accepted, worker)
-                await _finalize_managed_refusal(authority, scope['session_id'], accepted)
-                # Like in-process execution, settlement belongs to the drain's stream lock.
-                authority.pending_results[row['admission_id']] = {
-                    'result': {**accepted, 'local_viewer': True}, 'usage': usage,
-                    **await asyncio.to_thread(_settled_session_usage, authority, scope['session_id'], accepted, scope['execution_id'])}
-                return accepted['final_response']
-            raise AuthorityRefusal('invalid_worker_frame')
-    except (Exception, asyncio.CancelledError) as exc:
-        import logging
-        from storage_user_copy import error_type_name
-        reason = exc.reason if isinstance(exc, AuthorityRefusal) else error_type_name(exc)
-        logging.getLogger(__name__).warning('Managed worker lost: %s', reason)
-        if scope is None:
-            if isinstance(exc, asyncio.CancelledError) or (
-                    isinstance(exc, AuthorityRefusal) and exc.reason == 'managed_worker_stopped'):
-                # Stopped before the child ever received its bootstrap: nothing executed, so
-                # this settles like an ordinary interrupted turn (the finally kills the child).
-                return _interrupted_before_bootstrap(authority, row, worker.stop_cause)
-            _record_lost_attempt(authority, policy, exc, reason, scope)  # nothing bound: a late note is dropped, never misbooked
-            raise
-        await _settle_lost(authority, row, scope, _record_lost_attempt(authority, policy, exc, reason, scope))
-        live = authority.sessions[ref.session_id]
-        with live.event_stream.lock:
-            live.controls.snapshot(ref.session_id, None)
-            authority._publish_pending(ref)
-            live.event_stream.publish(ref.session_id, {'text': 'Worker execution is unknown.',
-                'content': 'Worker execution is unknown.', 'admission_id': row['admission_id'], 'outcome': 'unknown',
-                'status': 'error'})  # the message.complete TurnStatus: never painted as a normal finish
-        waiter = authority.waiters.pop(row['admission_id'], None)
-        if waiter is not None and not waiter.done():
-            waiter.set_result('Worker execution is unknown.')
-        # Stop this drain without its ordinary Exception→failed settlement. The
-        # committed unknown row deliberately pauses every accepted follower.
-        raise ManagedExecutionUnknown('managed_worker_unknown') from exc
+        return await _pump(authority, ref, row, worker, process, scope)
+    except (Exception, asyncio.CancelledError) as exc:  # health: allow BLE001 -- every loss settles unknown (or hands off)
+        return await _turn_lost(authority, ref, row, policy, worker, scope, exc)
     finally:
         workers.pop(ref.session_id, None)
-        await asyncio.to_thread(worker.close)
+        await asyncio.to_thread(_closer(worker))
+
+
+def _closer(worker):
+    """How the turn lets go of its worker: a handed-off one keeps running for the next owner."""
+    return worker.release if getattr(worker, 'handed_off', False) else worker.close
+
+
+async def resume_managed(authority, ref, row, record):
+    """A turn whose worker outlived the previous owner (``gateway.detached_workers``): reattach
+    over its socket and take the rest of its frames; a failed reattach is the ordinary loss."""
+    from gateway.session_detached_workers import kill_recorded, reattach, resume_scope
+    scope, worker = resume_scope(authority, record), None
+    sid = ref.session_id
+    reattaching = getattr(authority, '_managed_reattaching', None)
+    if reattaching is None:
+        reattaching = authority._managed_reattaching = {}
+    reattaching[sid] = False
+    try:
+        try:
+            worker = await reattach(authority, ref, row, record, ManagedWorker)
+        except (AuthorityRefusal, asyncio.CancelledError) as exc:
+            # A transport failure after retirement is for the next owner to reconcile.
+            # An identity refusal or a user Stop still follows native loss handling.
+            transport_lost = isinstance(exc, AuthorityRefusal) and exc.reason == 'managed_worker_lost'
+            if (isinstance(exc, asyncio.CancelledError) or transport_lost) and reattaching[sid]:
+                if authority.pending_stops.get(sid) != row['generation']:
+                    authority.sessions[sid].handed_off_generation = row['generation']
+                    raise ManagedWorkerHandedOff() from exc
+            raise
+        finally:
+            handoff = reattaching.pop(sid)
+        if handoff and authority.pending_stops.get(sid) != row['generation']:
+            authority.sessions[sid].handed_off_generation = row['generation']
+            if worker is not None:
+                worker.hand_off()
+            raise ManagedWorkerHandedOff()
+        authority.adopt_agent(ref.session_id, row['generation'], worker)
+        worker.writer.start()
+        return await _pump(authority, ref, row, worker, worker.process, scope)
+    except ManagedWorkerHandedOff:
+        raise
+    except (Exception, asyncio.CancelledError) as exc:  # health: allow BLE001 -- every loss settles unknown (or hands off)
+        if worker is None:
+            await asyncio.to_thread(kill_recorded, record)
+        # Successor policy is for the optional Kanban loss note, not for admission routing.
+        from gateway.session_policy import policy_for_source
+        policy = None
+        with suppress(AuthorityRefusal):
+            policy = policy_for_source(authority.runner, authority.sessions[sid].source)
+        return await _turn_lost(authority, ref, row, policy, worker, scope, exc)
+    finally:
+        if worker is not None:
+            authority._managed_workers.pop(ref.session_id, None)
+            await asyncio.to_thread(_closer(worker))
+
+
+async def _pump(authority, ref, row, worker, process, scope):
+    """Consume frames; expose the pending result only after execution.finish returns."""
+    from gateway.run_turn_progress import publish_worker_tool_event
+    accepted = usage = None
+    while True:
+        frame = await worker.next_frame(None, ack=STOP_ACK_SECONDS)
+        # The claim's execution stamp, not a ledger read per frame (publish_execution fences the same way).
+        if authority.executing.get(ref.session_id) != row['generation']:
+            raise AuthorityRefusal('stale_generation')
+        with authority.sessions[ref.session_id].event_stream.lock:
+            if _prompt_frame(authority, ref, row, worker, frame):
+                continue
+        if frame == {'type': 'error', 'reason': 'managed_worker_failed'}:
+            raise AuthorityRefusal('managed_worker_failed')
+        kind = frame.get('type')
+        if kind == 'ready' and set(frame) == {'type', 'pid'} and frame['pid'] == scope['pid']:
+            continue
+        if kind == 'delta' and set(frame) == {'type', 'text'} and isinstance(frame['text'], str):
+            authority.publish_execution(ref.session_id, row['generation'], 'message.delta', {'text': frame['text']})
+            continue
+        if publish_worker_tool_event(authority, ref.session_id, row['generation'], frame):
+            continue
+        if kind == 'result' and set(frame) == {'type', 'result'} and accepted is None:
+            try:
+                accepted, usage = accept_result(frame['result'])
+            except ValueError as exc:
+                raise AuthorityRefusal('invalid_worker_result') from exc
+            authority.sessions[ref.session_id].controls.snapshot(ref.session_id, None)
+            await asyncio.to_thread(worker.send, {'type': 'finish'})
+            continue
+        if frame == {'type': 'finished'} and accepted is not None:
+            # 'finished' follows the worker's durable execution.finish: the turn is complete.
+            # A slow or non-zero interpreter exit after it is close()'s cleanup, not a loss.
+            with suppress(subprocess.TimeoutExpired):
+                await asyncio.to_thread(process.wait, 10)
+            accepted = _with_stop_cause(accepted, worker)
+            await _finalize_managed_refusal(authority, scope['session_id'], accepted)
+            # Like in-process execution, settlement belongs to the drain's stream lock.
+            authority.pending_results[row['admission_id']] = {
+                'result': {**accepted, 'local_viewer': True}, 'usage': usage,
+                **await asyncio.to_thread(_settled_session_usage, authority, scope['session_id'], accepted, scope['execution_id'])}
+            return accepted['final_response']
+        raise AuthorityRefusal('invalid_worker_frame')
+
+
+async def _turn_lost(authority, ref, row, policy, worker, scope, exc):
+    """Use native loss settlement unless the owner is handing off a live worker."""
+    import logging
+    from storage_user_copy import error_type_name
+    if getattr(worker, 'handed_off', False):
+        logging.getLogger(__name__).info('Managed worker handed off for re-adoption: pid %s', (worker.worker or (None,))[0])
+        raise ManagedWorkerHandedOff() from exc
+    reason = exc.reason if isinstance(exc, AuthorityRefusal) else error_type_name(exc)
+    logging.getLogger(__name__).warning('Managed worker lost: %s', reason)
+    if scope is None:
+        if isinstance(exc, asyncio.CancelledError) or (
+                isinstance(exc, AuthorityRefusal) and exc.reason == 'managed_worker_stopped'):
+            # Stopped before the child ever received its bootstrap: nothing executed, so
+            # this settles like an ordinary interrupted turn (the finally kills the child).
+            return _interrupted_before_bootstrap(authority, row, worker.stop_cause)
+        _record_lost_attempt(authority, policy, exc, reason, scope)  # nothing bound: a late note is dropped, never misbooked
+        raise exc
+    await _settle_lost(authority, row, scope, _record_lost_attempt(authority, policy, exc, reason, scope))
+    live = authority.sessions[ref.session_id]
+    with live.event_stream.lock:
+        live.controls.snapshot(ref.session_id, None)
+        authority._publish_pending(ref)
+        live.event_stream.publish(ref.session_id, {'text': 'Worker execution is unknown.',
+            'content': 'Worker execution is unknown.', 'admission_id': row['admission_id'], 'outcome': 'unknown',
+            'status': 'error'})  # the message.complete TurnStatus: never painted as a normal finish
+    waiter = authority.waiters.pop(row['admission_id'], None)
+    if waiter is not None and not waiter.done():
+        waiter.set_result('Worker execution is unknown.')
+    # Stop this drain without its ordinary Exception→failed settlement. The
+    # committed unknown row deliberately pauses every accepted follower.
+    raise ManagedExecutionUnknown('managed_worker_unknown') from exc

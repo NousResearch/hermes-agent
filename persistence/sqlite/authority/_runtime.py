@@ -121,7 +121,8 @@ def _retire_admission_workers(conn, row, owner_epoch):
     targets = list({row['target_session_id'], lineage[-1] if lineage else row['target_session_id']})
     scope = f"session_id IN ({','.join('?' * len(targets))}) AND generation=? AND owner_epoch=?"
     # Settlement closes an execution that never wrote execution.finish: its read copies go too.
-    from ..workers._runtime_workers import compact_terminal_receipts
+    from ..workers._runtime_workers import clear_detached_reservation, compact_terminal_receipts
+    clear_detached_reservation(conn, 'admission-worker:' + row['admission_id'])
     for (execution_id,) in conn.execute(f"SELECT execution_id FROM worker_executions WHERE {scope} "
                                         "AND status!='terminal'", (*targets, row['generation'], owner_epoch)).fetchall():
         compact_terminal_receipts(conn, execution_id)

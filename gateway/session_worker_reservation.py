@@ -60,7 +60,8 @@ def owner_worker_subject():
     return f'uid:{os.getuid()}'  # windows-footgun: ok — POSIX branch
 
 
-def reserve_admission_worker(authority, *, admission_id, process, principal_id, hello, worker_subject=None):
+def reserve_admission_worker(authority, *, admission_id, process, principal_id, hello, worker_subject=None,
+                             detach_socket=None):
     """Return a private bootstrap scope; never accept caller-selected kind/target.
 
     Only the owner process may reserve its live direct exec child. The admission
@@ -71,13 +72,17 @@ def reserve_admission_worker(authority, *, admission_id, process, principal_id, 
     as (``owner_worker_subject``), when given. An automation admission's principal is a route
     (``automation:<session key>``), never a ticket subject, so a claim bound to it refused every
     adopt and each bot DM or completion wake on a managed session ended interrupted (#144139).
+
+    ``detach_socket`` is an owner-created private listener path. The storage backend records it
+    in the same transaction as the reservation, without recording the bootstrap secret.
     """
     authority._require_admission_open()
     pid, birth = verify_worker_identity(process, hello)
+    detach = {} if detach_socket is None else {'detach_socket': detach_socket}
     return asdict(authority_persistence(authority).worker_executions.reserve_for_admission(
         epoch=authority.epoch, admission_id=admission_id, principal_id=principal_id,
         profile_id=authority.profile_id, pid=pid, birth=birth, secret=secrets.token_urlsafe(32),
-        owner=owner_rule(), worker_subject=worker_subject))
+        owner=owner_rule(), worker_subject=worker_subject, **detach))
 
 
 def lose_admission_worker(authority, row, scope):

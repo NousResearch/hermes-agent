@@ -198,6 +198,8 @@ def apply_worker_receipt(holder, *, epoch, execution_id, session_id, generation,
             conn.execute('UPDATE sessions SET runtime_revision=runtime_revision+1 WHERE id=?', (session_id,))
         if operation == 'execution.finish':
             from ._runtime_workers import compact_terminal_receipts
-            compact_terminal_receipts(conn, execution_id)
+            # Close writes, not the admission: a still-live detached producer can replay
+            # this exact receipt after handoff until admission settlement clears it.
+            compact_terminal_receipts(conn, execution_id, keep_detached_reservation=True)
         return result
     return holder._execute_write(write, patience_s=holder._TRANSCRIPT_WRITE_PATIENCE_S)

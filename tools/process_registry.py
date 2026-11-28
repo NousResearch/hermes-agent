@@ -341,7 +341,7 @@ def _build_systemd_scope_argv(shell_argv: list[str], unit_suffix: str) -> list[s
     return _systemd_scope_argv(binary, f"hermes-worker-{unit_suffix}", *shell_argv)
 
 
-_scope_degraded_warned = False
+_scope_degraded_warned = set()
 
 
 class RestartSafeScopeUnavailable(RuntimeError):
@@ -354,12 +354,10 @@ class RestartSafeScopeUnavailable(RuntimeError):
 
 
 def _warn_scope_degraded_once(detail: str, *, consequence: str) -> None:
-    """Warn once per process: the condition is host-level and the probe verdict
-    is cached, so this would otherwise fire on every cron dispatch."""
-    global _scope_degraded_warned
-    if _scope_degraded_warned:
+    """Warn once per consequence; different callers need their own remedy."""
+    if consequence in _scope_degraded_warned:
         return
-    _scope_degraded_warned = True
+    _scope_degraded_warned.add(consequence)
     logger.warning("%s; %s", detail, consequence)
 
 
@@ -414,7 +412,7 @@ def scoped_spawn_lost_user_bus(spawn_env: dict[str, str]) -> bool:
 
 def restart_safe_gateway_child_argv(
     command: list[str], *, unit_suffix: str, require_restart_safe_scope: bool,
-    outlives_parent: bool = False,
+    outlives_parent: bool = False, degraded_consequence: str = _CRON_DEGRADED_CONSEQUENCE,
 ) -> GatewayChildDispatch:
     """Place a managed-systemd gateway child outside the gateway cgroup.
 
@@ -451,7 +449,7 @@ def restart_safe_gateway_child_argv(
                 raise RestartSafeScopeUnavailable(
                     f"cannot create restart-safe systemd scope for gateway child: {detail}"
                 )
-            _warn_scope_degraded_once(f"managed gateway: {detail}", consequence=_CRON_DEGRADED_CONSEQUENCE)
+            _warn_scope_degraded_once(f"managed gateway: {detail}", consequence=degraded_consequence)
         else:
             _warn_scope_degraded_once(f"systemd unit dispatch: {detail}", consequence=_UNIT_DEGRADED_CONSEQUENCE)
         return GatewayChildDispatch("degraded", command)

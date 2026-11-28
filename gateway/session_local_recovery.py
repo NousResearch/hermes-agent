@@ -31,7 +31,10 @@ def local_adapter(authority):
     """The LOCAL adapter *authority*'s local sessions, and the conversations its chats moved past
     (gateway/session_detached.py), deliver through: created on first use."""
     adapters = local_adapter_map(authority)
-    if (adapter := adapters.get(Platform.LOCAL)) is None:
+    adapter = adapters.get(Platform.LOCAL)
+    previous = getattr(adapter, 'authority', None)
+    # Recovery can run before hot-serve has replaced the retired adapter.
+    if adapter is None or (previous is not authority and getattr(previous, 'retired', False)):
         from gateway.session_local import LocalSessionAdapter
         adapter = adapters[Platform.LOCAL] = LocalSessionAdapter(authority)
     return adapter

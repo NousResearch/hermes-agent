@@ -78,6 +78,8 @@ class LiveSession:
     # (a contended SQLite writer must not stall loop-side lock takers); readers holding that lock
     # still see the claim as started, so no snapshot shows a terminal row without its completion.
     settling: dict = field(default_factory=dict)
+    # The old owner cannot deliver controls after handing this claim to its successor.
+    handed_off_generation: int | None = None
     # ``(revision key, payload)`` of the last ``session.context_breakdown``: Desktop re-polls it on
     # every idle mount and reconnect, and a rebuild walks the whole stored transcript (#140667).
     context_breakdown: tuple | None = None
@@ -158,6 +160,7 @@ class SessionAuthority:
         self.persistence = persistence
         self.epoch = epoch
         self.sessions = {}
+        self.detached_resume_slots = {}
         self.waiters = {}
         self.events = {}
         self.native_waiters = set()
@@ -511,6 +514,10 @@ class SessionAuthority:
         restore_retired(self, ref.session_id)
         live = self.sessions[ref.session_id]
         live.rescan = True
+        if ref.session_id in self.detached_resume_slots:
+            from gateway.run_runtime import _start_detached_resumes
+            _start_detached_resumes(self.runner, self)
+            return  # the spared claim owns the next drain for this session
         if getattr(live, "background_wait", None) is not None:
             from gateway.run_plugin_injection import wake_background_wait
             wake_background_wait(self, ref)
@@ -985,6 +992,8 @@ class SessionAuthority:
         if handle.execution_generation != generation:
             raise AuthorityRefusal('stale_generation')
         live, agent = self.sessions[ref.session_id], None
+        if handle.execution_state == 'running' and live.handed_off_generation == generation:
+            raise AuthorityRefusal('runtime_draining')
         if handle.execution_state == 'running':
             # Latches are written under the lock adopt_agent takes on the executor thread, BEFORE the
             # agent is called: an adoption racing the call consumes them. The agent is called outside it.
@@ -1354,7 +1363,7 @@ class SessionAuthority:
                 return None
             await asyncio.sleep(_CLAIM_RETRY_MIN_S)
 
-    async def _execute_claimed(self, ref, live, row):
+    async def _execute_claimed(self, ref, live, row, *, resume=None):
         """Run the claimed admission: ``(response, outcome)``. The executing stamp clears the moment
         execution returns; a lost managed worker settles an automation turn (``settled_unknown``) or pauses
         the FIFO and re-raises ManagedExecutionUnknown."""
@@ -1364,6 +1373,9 @@ class SessionAuthority:
         from gateway.session_open import settled
         try:
             try:
+                if resume is not None:
+                    from gateway.session_managed_worker import resume_managed
+                    return await resume_managed(self, ref, row, resume), 'completed'
                 if review is not None and not review.request_done.is_set():
                     # A cold /refine's review shares the session id, as the resident agent's does:
                     # cancel it before the turn (its bounded wait runs off-loop). Inside the try: a
@@ -1395,7 +1407,6 @@ class SessionAuthority:
             return 'The admitted turn failed.', 'failed'
 
     async def _drain(self, ref):
-        from gateway.session_managed_worker import ManagedExecutionUnknown
         live = self.sessions[ref.session_id]
         while True:
             claimed = await self._claim_with_retry(ref, live)
@@ -1426,41 +1437,48 @@ class SessionAuthority:
                 from gateway.session_retirement import retire_at_idle
                 retire_at_idle(self, ref, live)
                 return
-            admission_id = row['admission_id']
-            from gateway.run_plugin_injection import admission_turn_scope
-            try:
-                with admission_turn_scope(self, ref, live, row):
-                    response, outcome = await self._execute_claimed(ref, live, row)
-                if outcome == 'settled_unknown':
-                    self.deferred_resets.pop(live.route, None)  # no settlement follows, as below
-                    continue
-            except BaseException as exc:
-                # No settlement follows (a lost managed worker, a cancelled drain): the turn is never
-                # replayed, so its deferred reset is dropped (the next turn re-detects the overflow),
-                # never left to fire after a later settled turn with a stale entry.
-                self.deferred_resets.pop(live.route, None)
-                from gateway.session_ingress import fire_post_delivery
-                await fire_post_delivery(self, admission_id)  # cancelled mid-turn: as an adapter task's finally
-                if isinstance(exc, ManagedExecutionUnknown):
-                    return
-                raise
-            from gateway.session_runtime_workers import track_mutation
-            from gateway.session_settlement_recovery import settle_and_deliver
-            delivery = track_mutation(self, settle_and_deliver(self, live, ref, row, response, outcome))
-            try:
-                advance = await asyncio.shield(delivery)
-            except asyncio.CancelledError:
-                # Keep this FIFO's drain live until the committed reply has been handed off.
-                # Cleanup itself is separately tracked and must not delay the next turn.
-                try:
-                    await asyncio.shield(delivery)
-                except Exception:
-                    import logging
-                    logging.getLogger(__name__).exception(
-                        'Delivery of admission %s failed after its drain was cancelled', row['admission_id'])
-                raise
-            if not advance:
+            if not await self._run_claimed(ref, live, row):
                 return
+
+    async def _run_claimed(self, ref, live, row, *, resume=None):
+        """Execute and settle one claimed admission; False when the drain must stop after it."""
+        from gateway.session_managed_worker import ManagedExecutionUnknown, ManagedWorkerHandedOff
+        admission_id = row['admission_id']
+        from gateway.run_plugin_injection import admission_turn_scope
+        try:
+            with admission_turn_scope(self, ref, live, row):
+                response, outcome = await self._execute_claimed(ref, live, row, resume=resume)
+            if outcome == 'settled_unknown':
+                self.deferred_resets.pop(live.route, None)  # no settlement follows, as below
+                return True
+        except BaseException as exc:
+            # No settlement follows (a lost managed worker, a cancelled drain): the turn is never
+            # replayed, so its deferred reset is dropped (the next turn re-detects the overflow),
+            # never left to fire after a later settled turn with a stale entry.
+            self.deferred_resets.pop(live.route, None)
+            if isinstance(exc, ManagedWorkerHandedOff):
+                raise  # The next owner will settle and deliver it.
+            from gateway.session_ingress import fire_post_delivery
+            await fire_post_delivery(self, admission_id)  # cancelled mid-turn: as an adapter task's finally
+            if isinstance(exc, ManagedExecutionUnknown):
+                return False
+            raise
+        from gateway.session_runtime_workers import track_mutation
+        from gateway.session_settlement_recovery import settle_and_deliver
+        delivery = track_mutation(self, settle_and_deliver(self, live, ref, row, response, outcome))
+        try:
+            advance = await asyncio.shield(delivery)
+        except asyncio.CancelledError:
+            # Keep this FIFO's drain live until the committed reply has been handed off.
+            # Cleanup itself is separately tracked and must not delay the next turn.
+            try:
+                await asyncio.shield(delivery)
+            except Exception:
+                import logging
+                logging.getLogger(__name__).exception(
+                    'Delivery of admission %s failed after its drain was cancelled', row['admission_id'])
+            raise
+        return advance
 
     @staticmethod
     async def _run_deferred_reset(route, reset):

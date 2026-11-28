@@ -336,8 +336,33 @@ def decompose_task(
     return _apply_fanout(task_id, parsed, routing, audit_author)
 
 
-def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:
-    """Return task ids currently in the triage column."""
+def list_triage_ids(
+    *, tenant: Optional[str] = None, exclude_loop_limited: bool = False
+) -> list[str]:
+    """Return task ids currently in the triage column.
+
+    ``exclude_loop_limited`` drops cards the unblock-loop breaker parked here
+    (``block_recurrences >= BLOCK_RECURRENCE_LIMIT``, see ``_route_block``).
+    Those reached triage *because* automatic re-specify kept re-arming a
+    human-wait card into fresh worker spawns — the decomposer pulling them
+    back out is the storm itself (t_f0ad4213: ~1 specified→claimed→
+    block_loop_detected cycle per minute, 15 recurrences past its limit).
+    The loop breaker's routing is terminal for automation: the card stays in
+    triage for a human, whose explicit ``specify``/``decompose`` resets the
+    counter (``specify_triage_task``) and re-arms with a fresh loop budget.
+    """
     with kbc.connect_closing() as conn:
         rows = kb.list_tasks(conn, status="triage", tenant=tenant, limit=1000)
+    if exclude_loop_limited:
+        kept = [
+            row for row in rows
+            if (getattr(row, "block_recurrences", 0) or 0) < kb.BLOCK_RECURRENCE_LIMIT
+        ]
+        if len(kept) < len(rows):
+            parked = sorted({row.id for row in rows} - {row.id for row in kept})
+            logger.debug(
+                "kanban auto-decompose: skipping %d loop-limited triage card(s) "
+                "parked for a human: %s", len(parked), ", ".join(parked),
+            )
+        rows = kept
     return [row.id for row in rows]

@@ -421,10 +421,23 @@ def list_skins() -> list[dict[str, str]]:
     return result
 
 
+def match_skin_name(name: str, available) -> str:
+    """``name`` as *available* lists it: an exact name wins, else a case-insensitive match, since
+    built-ins are lowercase but a user skin keeps its own case (``MyTheme``). Unknown: unchanged."""
+    if name in available:
+        return name
+    return next((n for n in sorted(available) if n.lower() == name.lower()), name)
+
+
 def load_skin(name: str) -> SkinConfig:
     """Load a skin by name: user skins first, then built-in, then default."""
-    user_file = _skins_dir() / f"{name}.yaml"
+    skins_path = _skins_dir()
+    user_file = skins_path / f"{name}.yaml"
     data = _load_skin_from_yaml(user_file) if user_file.is_file() else None
+    if not data and skins_path.is_dir():
+        # list_skins() lists a user skin by its declared `name:`, which need not match the file name.
+        data = next((d for f in sorted(skins_path.glob("*.yaml"))
+                     if (d := _load_skin_from_yaml(f)) and d.get("name") == name), None)
     if not data and name not in _BUILTIN_SKINS:
         logger.warning("Skin '%s' not found, using default", name)
     return _build_skin_config(data or _BUILTIN_SKINS.get(name) or _BUILTIN_SKINS["default"])

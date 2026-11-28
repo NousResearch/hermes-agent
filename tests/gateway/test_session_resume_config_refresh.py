@@ -670,6 +670,33 @@ def test_a_skipped_resume_refresh_warns_unless_the_session_is_busy(monkeypatch, 
 
 
 @pytest.mark.asyncio
+async def test_a_messaging_session_open_takes_no_refresh_and_no_warning(monkeypatch, caplog):
+    """Regression for #148456. A messaging row (Telegram, Discord, ...) has no local creation receipt by
+    design; its open must take the same no-refresh the SURFACES guard gives it, not read the absent receipt
+    and log ``storage_unavailable`` as if the store were broken. A local row that lost its receipt is a real
+    storage fault and still warns."""
+    import logging
+    from gateway import session_policy_refresh as refresh
+    from tests.fixtures.storage_seed import seed_session
+    home = _home(monkeypatch)
+    store, authority = await _owner_authority(home)
+    try:
+        seed_session(store.persistence, 'tg-1', 'telegram', session_key='agent:main:telegram:dm:42',
+                     chat_id='42', chat_type='dm', user_id='u-42')
+        seed_session(store.persistence, 'cli-lost', 'cli')
+        with caplog.at_level(logging.INFO, logger=refresh.__name__):
+            await refresh.refresh_resumed_policy(authority, SimpleNamespace(session_id='tg-1'))
+            assert await refresh.commit_refresh(authority, SimpleNamespace(session_id='tg-1')) is False
+            await refresh.refresh_resumed_policy(authority, SimpleNamespace(session_id='cli-lost'))
+        skipped = [(record.levelno, record.getMessage()) for record in caplog.records
+                   if 'keeps its stored policy' in record.getMessage()]
+        assert skipped == [(logging.WARNING, 'Session cli-lost keeps its stored policy on resume: '
+                                             'storage_unavailable')], skipped
+    finally:
+        store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
 async def test_a_resume_expands_var_references_from_the_profiles_current_env(tmp_path, monkeypatch):
     """The resume refresh reads config.yaml as session creation does: ``${VAR}`` against the profile's
     current ``.env``, not the environment the gateway process started with, so an unchanged chat stays

@@ -412,8 +412,8 @@ def builtin_platform_status(platform_id: str, yaml_cfg: dict) -> Optional[tuple[
     platform = Platform(platform_id)
     names = {platform_id, Platform.RELAY.value}
 
-    def yaml_platforms(cfg: dict) -> GatewayConfig:
-        top, nested = _platform_layers(cfg, names)
+    def yaml_platforms() -> GatewayConfig:
+        top, nested = _platform_layers(yaml_cfg, names)
         platforms = merge_platform_sections(top, nested, gw_data={})
         authored = snapshot_authored_extra(platforms)  # no gateway.json layer here: the merge is config.yaml only
         managed_top, managed_nested = _platform_layers(apply_managed_overlay({}), names)
@@ -423,8 +423,9 @@ def builtin_platform_status(platform_id: str, yaml_cfg: dict) -> Optional[tuple[
             block.pop("home_channel", None)  # status needs none; HomeChannel.from_dict can raise or name another platform
         return GatewayConfig.from_dict({"platforms": platforms})
 
-    # A block that makes the gateway's own load drop config.yaml leaves this verdict to env alone, as there.
-    config = with_yaml_fallback(get_hermes_home(), lambda: yaml_platforms(yaml_cfg), lambda: yaml_platforms({}))
+    # A block that makes the gateway's own load drop config.yaml (user or managed layer) leaves this
+    # verdict to env alone, as there; the fallback must not re-read the managed layer that may have raised.
+    config = with_yaml_fallback(get_hermes_home(), yaml_platforms, lambda: GatewayConfig.from_dict({}))
     token = _STATUS_READ.set(True)
     try:
         _apply_env_overrides(config, only=platform)

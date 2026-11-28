@@ -107,6 +107,31 @@ async function loadClock() {
   return import('./avatar')
 }
 
+/** A live `prefers-reduced-motion` query the test can flip. */
+function stubReducedMotion(matches: boolean) {
+  const listeners = new Set<() => void>()
+
+  const query = {
+    matches,
+    addEventListener: (_type: string, listener: () => void) => listeners.add(listener),
+    removeEventListener: (_type: string, listener: () => void) => listeners.delete(listener)
+  }
+
+  window.matchMedia = ((media: string) =>
+    media === '(prefers-reduced-motion: reduce)'
+      ? query
+      : { matches: false, addEventListener() {}, removeEventListener() {} }) as unknown as typeof window.matchMedia
+
+  return {
+    set(next: boolean) {
+      query.matches = next
+      listeners.forEach(listener => listener())
+    }
+  }
+}
+
+const originalMatchMedia = window.matchMedia
+
 beforeEach(() => {
   frames = new Map()
   frameSeq = 0
@@ -131,6 +156,7 @@ beforeEach(() => {
 
 afterEach(() => {
   window.__hbFaceClock?.stop()
+  window.matchMedia = originalMatchMedia
   vi.unstubAllGlobals()
 })
 
@@ -201,6 +227,27 @@ describe('the hand-rolled rAF path (older shells)', () => {
     expect(frames.size).toBe(1)
   })
 
+  it('holds faces still under reduced motion and resumes when it is turned off', async () => {
+    const motion = stubReducedMotion(true)
+    const { startFaceClock } = await loadClock()
+    const face = mountFace()
+
+    startFaceClock()
+    observer?.emit([{ isIntersecting: true, target: face }])
+    pump()
+    pump()
+
+    expect(face.style.transform).toBe('')
+    expect(frames.size).toBe(0)
+
+    motion.set(false)
+    expect(frames.size).toBe(1)
+
+    pump()
+    pump()
+    expect(face.style.transform).toContain('rotate')
+  })
+
   it('stops the whole-document walk when a face unmounts', async () => {
     const { startFaceClock } = await loadClock()
     const face = mountFace()
@@ -267,6 +314,22 @@ describe('the SDK budgeted-loop path', () => {
     // Re-entry (a BotFace mount) wakes rather than re-initializing.
     startFaceClock()
     expect(calls.wake).toBeGreaterThanOrEqual(2)
+  })
+
+  it('parks without painting visible faces under reduced motion', async () => {
+    stubReducedMotion(true)
+
+    const { captured } = captureLoop()
+    const { startFaceClock } = await loadClock()
+    const face = mountFace()
+
+    startFaceClock()
+    captured.draw!(1000)
+    observer?.emit([{ isIntersecting: true, target: face }])
+    captured.draw!(2500)
+
+    expect(face.style.transform).toBe('')
+    expect(captured.idleWhen!()).toBe(true)
   })
 
   it('keeps a single clock across plugin loads', async () => {

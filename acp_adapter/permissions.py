@@ -15,19 +15,10 @@ logger = logging.getLogger(__name__)
 # ACP permission option id -> Hermes approval result. Ids are stable across the
 # ``allow_permanent=True`` and ``False`` paths even though the option list differs.
 _OPTION_ID_TO_HERMES = {
-    "allow_once": "once", "allow_session": "session", "allow_always": "always", "deny": "deny", "deny_always": "deny"
+    "allow_once": "once", "allow_session": "session", "allow_always": "always", "deny": "deny"
 }
 
 _PERMISSION_REQUEST_IDS = count(1)
-
-
-def _permission_option_supports_kind(kind: str) -> bool:
-    """Return whether the installed ACP SDK accepts a permission option kind."""
-    try:
-        PermissionOption(option_id="__probe__", kind=kind, name="probe")
-        return True
-    except Exception:
-        return False
 
 
 def _build_permission_options(
@@ -46,8 +37,6 @@ def _build_permission_options(
         if allow_permanent:
             options.append(PermissionOption(option_id="allow_always", kind="allow_always", name="Allow always"))
     options.append(PermissionOption(option_id="deny", kind="reject_once", name="Deny"))
-    if not once_only and _permission_option_supports_kind("reject_always"):
-        options.append(PermissionOption(option_id="deny_always", kind="reject_always", name="Deny always"))
     return options
 
 

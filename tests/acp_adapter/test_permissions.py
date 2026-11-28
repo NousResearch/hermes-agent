@@ -97,7 +97,6 @@ class TestApprovalBridge:
             "allow_session",
             "allow_always",
             "deny",
-            "deny_always",
         ]
 
     def test_session_less_gate_offers_only_once_and_deny(self):

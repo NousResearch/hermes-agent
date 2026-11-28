@@ -1,17 +1,17 @@
 name: hermes-finance
 title: Hermes Finance
 repo: https://github.com/apelabs-dev/hermes-finance
-sha: "79b27f6ef5a8519655818685c75048b770b6911f"
+sha: "299144d51f61abbb2803f8ace88663ab2686ece4"
 subdir: hermes_plugin
-version: "0.4.0"
+version: "0.7.0"
 description: "Personal-finance tools over your own local hermes-finance database: spending, budgets, transactions, net worth, bills, loans, investments, cash flow, goals and categorization rules (read-only), a bank sync on request, and seven writes (file a transaction, add a rule, set a budget cap, track a bill, create a category, rename or re-icon a category, delete a category and move its transactions) that each wait for your approval and are blocked under cron and other unattended runs. Needs a separate trusted app checkout prepared with Python 3.12 and `uv sync`, set as HERMES_FINANCE_APP_DIR. Disclosure — reads open the separate hermes-finance app's SQLite database outside the plugin directory, and the plugin imports that app checkout's code into the Hermes process, so it runs whatever that checkout contains, not the catalog pin. `finance_sync` runs the app's sync, which calls Plaid with your optional Plaid keys, calls SimpleFIN Bridge (read-only, with the access link you set up in the app) if you connected it, and fetches security logos from financialmodelingprep.com (ticker symbols leave the machine). `hermes finance completion`, started by the app's Ask panel, sends that conversation and your finance results to your profile's own model. If you switch the Ask panel to a CLI brain, the app instead starts your locally installed, signed-in Claude Code or Codex CLI as a child process, one per request, and sends it the conversation and finance results; that CLI sends them on to its own provider. The app runs every read and write itself, and writes still wait for your approval. The opt-in report jobs (`hermes finance crons plan/apply`) write profile-owned entry scripts and run the app on a schedule. They call Plaid and, with a live read-only key, Alpaca (GET-only); they look up car and home values through NHTSA, Wikimedia/OpenStreetMap and, only if you switch them on, Carfax (in the local Chrome at 127.0.0.1:9222) and Redfin. The daily job's agent applies transaction categorizations through the app's own CLI without a per-change approval card. The seven approval-gated writes stay blocked in cron. Nothing moves money or places trades. The optional Plaid and Alpaca keys are read through Hermes's secret scope only; the plugin opens no key file. The SimpleFIN access link (it carries credentials) is kept only in the app's own 0600 secrets file, never in the database, and the app code the plugin imports reads it from there; it is not in Hermes's secret scope. Installing starts no server, sync or job. No telemetry, no update check, no Python dependencies in Hermes."
 maintainer: "arspesk"
 tier: community
 category: tools
-docs_url: https://github.com/apelabs-dev/hermes-finance/blob/79b27f6ef5a8519655818685c75048b770b6911f/README.md#install-as-a-hermes-plugin
-image: https://raw.githubusercontent.com/apelabs-dev/hermes-finance/79b27f6ef5a8519655818685c75048b770b6911f/docs/assets/catalog-banner.jpg
+docs_url: https://github.com/apelabs-dev/hermes-finance/blob/299144d51f61abbb2803f8ace88663ab2686ece4/README.md#install-as-a-hermes-plugin
+image: https://raw.githubusercontent.com/apelabs-dev/hermes-finance/299144d51f61abbb2803f8ace88663ab2686ece4/docs/assets/catalog-banner.jpg
 screenshots:
-  - https://raw.githubusercontent.com/apelabs-dev/hermes-finance/79b27f6ef5a8519655818685c75048b770b6911f/docs/assets/screenshots/showcase.jpg
+  - https://raw.githubusercontent.com/apelabs-dev/hermes-finance/299144d51f61abbb2803f8ace88663ab2686ece4/docs/assets/screenshots/showcase.jpg
 readme: false
 platforms: []
 known_issues:
@@ -27,6 +27,9 @@ capabilities:
     - finance_loans
     - finance_holdings
     - finance_cashflow
+    - finance_reports_spending
+    - finance_reports_cashflow
+    - finance_reports_forecast
     - finance_status
     - finance_goals
     - finance_rules

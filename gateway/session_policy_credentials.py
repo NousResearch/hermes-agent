@@ -60,6 +60,9 @@ def policy_identity(policy, unhashed=()):
     data = asdict(policy)
     data.pop('credential_ref')
     data.pop('config_secret_ref')
+    # An opaque per-bind ref (session slot + fingerprint), never the values: always differs even for an
+    # identical underlying context, like credential_ref/config_secret_ref above -- never part of identity.
+    data.pop('paperclip_context_ref')
     # Fields added after release are hashed only when set, so an older session's reference still matches.
     if data.get('editor_mcp_json') is None:
         data.pop('editor_mcp_json', None)

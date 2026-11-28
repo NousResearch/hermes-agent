@@ -193,6 +193,11 @@ def _build_child_env(*, rpc_endpoint: str, rpc_token: str, tmpdir: str,
     if _existing_pp:
         _pp_parts.append(_existing_pp)
     child_env["PYTHONPATH"] = os.pathsep.join(_pp_parts)
+    # Paperclip run identity never comes from the daemon's own inherited environment or any
+    # env_passthrough declaration (both can carry a stale/foreign PAPERCLIP_* value): the bound
+    # per-turn context is the sole source of truth, applied last so it cannot be shadowed.
+    from agent.paperclip_context import child_environ as _paperclip_child_environ
+    child_env = _paperclip_child_environ(child_env)
     return child_env
 
 

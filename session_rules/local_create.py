@@ -48,12 +48,15 @@ def normalise_client_env(value, rules) -> dict[str, str]:
 
 
 def retry_matches(committed: dict, request: dict) -> bool:
-    """Whether a retried ``session.create`` (``request``: its params) carries the client environment the
-    committed session (``committed``: its stored policy) froze. The complete retried map, normalised by
-    the rules frozen with the session, must equal the stored one: an added name those rules keep, a
-    missing stored name or a changed value is a different request; one they drop never counts. Staging
-    and the transactional commit both judge by this. A session committed without a map (Desktop, one
-    from before the field) still matches only a retry that sends none."""
+    """Whether a retried ``session.create`` (``request``: its params) carries the client environment and
+    Paperclip run identity (``agent.paperclip_context``) the committed session (``committed``: its stored
+    policy) froze. The complete retried map, normalised by the rules frozen with the session, must equal
+    the stored one: an added name those rules keep, a missing stored name or a changed value is a
+    different request; one they drop never counts. Staging and the transactional commit both judge by
+    this. A session committed without a map (Desktop, one from before the field) still matches only a
+    retry that sends none."""
+    if not _paperclip_context_matches(committed, request):
+        return False
     stored = committed.get('client_env_json')
     if stored is None or 'client_env' not in request:
         return stored is None and 'client_env' not in request
@@ -63,6 +66,30 @@ def retry_matches(committed: dict, request: dict) -> bool:
     except ValueError:
         return False
     return sent == json.loads(stored)
+
+
+def _context_fingerprint(value: dict) -> str:
+    """The same non-reversible digest ``gateway.session_policy.bind_paperclip_context`` computes over a
+    validated context (``agent.credential_persistence.fingerprint_secret_value``, reimplemented here:
+    this module is standard-library only, so it is not imported)."""
+    import hashlib
+    digest = hashlib.sha256(json.dumps(value, sort_keys=True).encode('utf-8', 'surrogatepass')).hexdigest()
+    return f'sha256:{digest[:16]}'
+
+
+def _paperclip_context_matches(committed: dict, request: dict) -> bool:
+    """Whether a retried ``session.create`` carries the Paperclip run identity the committed session froze.
+    The committed policy never carries the values themselves (``gateway.session_policy.
+    bind_paperclip_context`` keeps those authority-side only) -- just ``paperclip_context_ref``, an opaque
+    session slot plus a fingerprint of what was bound. The sent map's own fingerprint must equal that
+    stored one: this is a run's own identity, not a client preference, so a mismatch is a conflicting
+    request, never a silent keep of the original. A session committed without one (every surface but a
+    Paperclip-launched run) matches only a retry that sends none either."""
+    stored = committed.get('paperclip_context_ref')
+    if stored is None or 'paperclip_context' not in request:
+        return stored is None and 'paperclip_context' not in request
+    _, _, fingerprint = stored.partition('#')
+    return bool(fingerprint) and fingerprint == _context_fingerprint(request['paperclip_context'])
 
 
 def client_request(request_json, derived=None):

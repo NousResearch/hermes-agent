@@ -363,7 +363,7 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
     from gateway.session_local_recovery import restore_local_session
     authority._require_admission_open()
     sid = local_session_id(authority.profile_id, actor.subject, request_id)
-    from gateway.session_policy import bind_launch_key, restore_policy, launch_key
+    from gateway.session_policy import bind_launch_key, bind_paperclip_context, restore_policy, launch_key
     store = authority_persistence(authority)
     if store.sessions.get(sid) is not None:
         saved = store.bindings.receipt(sid)
@@ -393,7 +393,10 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
     policy = replace(policy, skills_prompt=skills_prompt)
     if warning := project_plugins_warning(policy):
         logger.warning('session %s: %s', sid, warning)
-    client_request = {k: params[k] for k in ('client_env',) if k in params}
+    client_request = {k: params[k] for k in ('client_env', 'paperclip_context') if k in params}
+    # Bound before bind_launch_key: an owner-resolved alias's captured ``owners[ref]`` (session_policy.py)
+    # reads ``policy.paperclip_context_ref`` off *this* policy, so the ref must already be frozen on it.
+    policy = bind_paperclip_context(authority, sid, policy, params.get('paperclip_context'))
     policy = bind_launch_key(authority, sid, policy, params.get("api_key"), config_secrets=private_secrets,
                              owner_key=client_key is None,  # an overlapping exact retry takes the held one
                              client_request=client_request)

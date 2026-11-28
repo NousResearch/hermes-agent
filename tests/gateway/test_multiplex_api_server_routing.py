@@ -242,3 +242,41 @@ class TestApiServerSessionProfileBinding:
             assert tt._resolve_container_task_id(None) == "profile:nm-media"
         finally:
             clear_session_vars(tokens)
+
+
+class TestRoutedProfileVirtualModel:
+    """Regression for #160510: ``/p/<profile>/v1/models`` advertises the profile's name, so a request
+    under that prefix naming it means "this profile's default", never a provider model id."""
+
+    @staticmethod
+    def _adapter(monkeypatch) -> APIServerAdapter:
+        adapter = _make_adapter(multiplex=True)
+        adapter._model_name = "hermes-agent"
+        adapter._direct_model_requests = True
+        monkeypatch.setattr("hermes_cli.profiles.get_active_profile_name", lambda: "ask")
+        return adapter
+
+    @staticmethod
+    def _requested_model(adapter: APIServerAdapter, model: str):
+        _route, overrides, err = adapter._select_request_route(
+            {"model": model}, session_id=None, gateway_session_key=None, model_alias=model)
+        assert err is None
+        return overrides.get("requested_model")
+
+    def test_advertised_profile_id_selects_the_profile_default(self, monkeypatch):
+        adapter = self._adapter(monkeypatch)
+        token = _api_request_profile.set("ask")
+        try:
+            assert self._requested_model(adapter, "ask") is None
+            assert self._requested_model(adapter, "hermes-agent") is None
+            assert self._requested_model(adapter, "glm-5.3-flash") == "glm-5.3-flash"
+            # A session row poisoned by the old behaviour must not replay the name upstream.
+            assert adapter._stored_session_model({"model": "ask"}) is None
+        finally:
+            _api_request_profile.reset(token)
+
+    def test_profile_name_stays_a_real_model_id_outside_its_prefix(self, monkeypatch):
+        adapter = self._adapter(monkeypatch)
+        assert _api_request_profile.get() is None
+        assert self._requested_model(adapter, "ask") == "ask"
+        assert adapter._stored_session_model({"model": "ask"}) == "ask"

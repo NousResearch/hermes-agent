@@ -780,6 +780,15 @@ def _parse_conversation_history(raw_history: Any) -> tuple:
 class OpenAICompatRoutesMixin:
     """/v1/chat/completions and /v1/responses handlers + SSE writers."""
 
+    def _virtual_model_names(self) -> frozenset[str]:
+        """Advertised ``/v1/models`` ids that mean "this profile's default", never a provider model
+        id: the listener's own, plus under ``/p/<profile>/`` the name advertised for that profile."""
+        from gateway.platforms.api_server import _api_request_profile
+        names = {self._model_name}
+        if _api_request_profile.get():
+            names.add(self._resolve_model_name(""))
+        return frozenset(names)
+
     def _select_request_route(
         self, body: dict[str, Any], *, session_id, gateway_session_key, model_alias) -> tuple:
         """Resolve the model_routes alias + per-request overrides ->
@@ -787,7 +796,7 @@ class OpenAICompatRoutesMixin:
         from gateway.platforms.api_server import _error_response, _request_agent_overrides
         route = self._resolve_route(model_alias)
         overrides = _request_agent_overrides(
-            body, virtual_model=self._model_name, allow_bare_model=self._direct_model_requests)
+            body, virtual_models=self._virtual_model_names(), allow_bare_model=self._direct_model_requests)
         err = self._request_route_conflict_error(
             session_id=session_id, gateway_session_key=gateway_session_key,
             requested_model=overrides.get("requested_model"),

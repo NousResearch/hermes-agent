@@ -9,6 +9,7 @@ import {
   Plus,
   Save,
   Settings,
+  Sparkles,
   Trash2,
   X,
   Zap,
@@ -92,6 +93,7 @@ interface ProviderGroup {
 const CATEGORY_META_ICONS: Record<string, typeof KeyRound> = {
   provider: Zap,
   tool: KeyRound,
+  skill: Sparkles,
   messaging: MessageSquare,
   setting: Settings,
 };
@@ -632,9 +634,10 @@ export default function EnvPage() {
       { id: "section-providers", label: "Providers" },
     ];
     if (vars) {
-      const categories = ["tool", "messaging", "setting"];
+      const categories = ["tool", "skill", "messaging", "setting"];
       const CATEGORY_LABELS: Record<string, string> = {
         tool: "Tools",
+        skill: t.app.nav.skills,
         messaging: t.common.gateway ?? "Gateway",
         setting: "Settings",
       };
@@ -835,6 +838,7 @@ export default function EnvPage() {
     // settings and relabelled accordingly.
     const CATEGORY_META_LABELS: Record<string, string> = {
       tool: t.app.nav.keys,
+      skill: t.app.nav.skills,
       messaging: t.common.gateway ?? "Gateway",
       setting: t.app.nav.config,
     };
@@ -843,7 +847,7 @@ export default function EnvPage() {
         t.common.gatewayHint ??
         "Messaging platforms, the API server and webhooks are configured on the Channels page. These are gateway-wide settings (proxy/relay mode and the global allowlist).",
     };
-    const otherCategories = ["tool", "messaging", "setting"];
+    const otherCategories = ["tool", "skill", "messaging", "setting"];
     const nonProvider = otherCategories.map((cat) => {
       const entries = Object.entries(vars).filter(
         ([, info]) =>

@@ -462,7 +462,25 @@ def _build_gateway_vbs_script(python_path: str, working_dir: str, hermes_home: s
         # Window style 0 = hidden; bWaitOnReturn True: wscript lives as long as the gateway and exits
         # with its code, so the task's RestartOnFailure sees a gateway that died (#146976). A launcher
         # that returned at once ended the task "successfully" before the gateway could ever fail.
-        f"code = sh.Run({q(command_line)}, 0, True)",
+        # Exit 75 is the restart request (liveness watchdog, service restart, lost host lock). The
+        # Scheduled Task install retries it through RestartOnFailure, but the Startup-folder fallback
+        # has no task, so the launcher retries it itself: at most 5 restarts per rolling hour, 15s
+        # between tries. Any other code leaves the loop at once, and the 78 and owned-exit mappings
+        # below still apply to the final code (#156780).
+        "Dim restarts, windowStart",
+        "restarts = 0",
+        "windowStart = Now",
+        "Do",
+        f"  code = sh.Run({q(command_line)}, 0, True)",
+        "  If code <> 75 Then Exit Do",
+        '  If DateDiff("n", windowStart, Now) >= 60 Then',
+        "    restarts = 0",
+        "    windowStart = Now",
+        "  End If",
+        "  restarts = restarts + 1",
+        "  If restarts > 5 Then Exit Do",
+        "  WScript.Sleep 15000",
+        "Loop",
         _LAUNCHER_FATAL_CONFIG_EXIT,
         _launcher_owned_exit_line(hermes_home),
         "WScript.Quit code",

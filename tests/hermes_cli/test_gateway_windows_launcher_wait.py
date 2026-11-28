@@ -20,21 +20,36 @@ def _launcher(tmp_path, monkeypatch, python):
     return home, gateway_windows._build_gateway_vbs_script(str(python), str(tmp_path), str(home), "")
 
 
+def _146976_waiting(script: str) -> str:
+    """The waiting launcher installs made by #146976 still run: it waits on the gateway but has
+    no exit-75 retry loop, so the Run line sits at the top level, not inside a Do loop."""
+    lines = script.split("\r\n")
+    run = next(i for i, line in enumerate(lines) if line.strip().startswith("code = sh.Run("))
+    lines[run] = lines[run].strip()
+    del lines[run + 1:run + 10]  # the retry loop after the Run line, through Loop
+    del lines[run - 4:run]  # Dim restarts, restarts = 0, windowStart = Now, Do
+    return "\r\n".join(lines)
+
+
 def _pre_146976(script: str) -> str:
     """The launcher installs made before #146976 still run: the same template, returning at once."""
     lines = script.split("\r\n")
-    run = next(i for i, line in enumerate(lines) if line.startswith("code = sh.Run("))
+    run = next(i for i, line in enumerate(lines) if line.strip().startswith("code = sh.Run("))
     lines[2] = "Dim sh, env, existing_pp"
-    lines[run] = "sh.Run " + lines[run][len("code = sh.Run("):-len(", 0, True)")] + ", 0, False"
-    del lines[run + 1:run + 4]
+    stripped = lines[run].strip()
+    lines[run] = "sh.Run " + stripped[len("code = sh.Run("):-len(", 0, True)")] + ", 0, False"
+    del lines[run + 1:]  # the rest of the exit-75 retry loop, the exit mappings, and WScript.Quit
+    del lines[run - 4:run]  # Dim restarts, restarts = 0, windowStart = Now, Do
     return "\r\n".join(lines)
 
 
 @pytest.mark.platforms("any")
-def test_both_installer_generations_verify(tmp_path, monkeypatch):
-    """The ownership check accepts the waiting launcher AND the one existing installs still run."""
+def test_all_installer_generations_verify(tmp_path, monkeypatch):
+    """The ownership check accepts every launcher generation existing installs still run: the
+    exit-75 retry-loop launcher, the #146976 waiting launcher without the loop, and the
+    pre-#146976 launcher that returns at once."""
     home, script = _launcher(tmp_path, monkeypatch, tmp_path / "python.exe")
-    for text in (script, _pre_146976(script)):
+    for text in (script, _146976_waiting(script), _pre_146976(script)):
         configured, argv = _vbs_identity(text)
         assert configured == str(home)
         assert argv[0] == str(tmp_path / "python.exe") and argv[-2:] == ["gateway", "run"]
@@ -49,8 +64,9 @@ def test_both_installer_generations_verify(tmp_path, monkeypatch):
 ])
 def test_an_edited_exit_mapping_is_not_the_installers(tmp_path, monkeypatch, edit):
     _home, script = _launcher(tmp_path, monkeypatch, tmp_path / "python.exe")
-    with pytest.raises(ValueError):
-        _vbs_identity(edit(script))
+    for text in (script, _146976_waiting(script)):
+        with pytest.raises(ValueError):
+            _vbs_identity(edit(text))
 
 
 @pytest.mark.platforms("windows")

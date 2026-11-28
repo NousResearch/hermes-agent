@@ -363,9 +363,47 @@ def _masked_literals(line: str) -> str:
 # The launcher's lines after its env block; None slots hold values, which _vbs_identity checks one by one.
 _LAUNCHER_TAIL = ('existing_pp = env.Item("PYTHONPATH")', 'If Len(existing_pp) > 0 Then', None, 'Else', None,
                   'End If', None, None)
-# The waiting launcher (#146976) maps stop exits to 0 (the owned-exit line is shape-checked by
-# _vbs_identity) and quits with the gateway's code.
-_WAITING_LAUNCHER_TAIL = (*_LAUNCHER_TAIL, "If code = 78 Then code = 0", None, "WScript.Quit code")
+# The waiting launcher (#146976) retries exit 75 itself (the Startup-folder fallback has no Task
+# Scheduler RestartOnFailure): at most 5 restarts per rolling hour, 15s between tries (#156780).
+# It maps stop exits to 0 (the owned-exit line is shape-checked by _vbs_identity) and quits with the
+# gateway's code.
+_WAITING_LAUNCHER_TAIL = (
+    *_LAUNCHER_TAIL[:7],
+    "Dim restarts, windowStart",
+    "restarts = 0",
+    "windowStart = Now",
+    "Do",
+    None,  # the Run line; _vbs_identity checks it (indented inside the loop)
+    "  If code <> 75 Then Exit Do",
+    '  If DateDiff("n", windowStart, Now) >= 60 Then',
+    "    restarts = 0",
+    "    windowStart = Now",
+    "  End If",
+    "  restarts = restarts + 1",
+    "  If restarts > 5 Then Exit Do",
+    "  WScript.Sleep 15000",
+    "Loop",
+    "If code = 78 Then code = 0",
+    None,
+    "WScript.Quit code",
+)
+# The waiting launcher installs made by #146976 still run: it waits on the gateway but has no
+# exit-75 retry loop, so its Run line sits at the top level and the exit mappings follow at once.
+# Those installs keep this launcher until the next install re-renders it, so the ownership check
+# must still recognise it.
+_WAITING_LAUNCHER_TAIL_NO_RETRY = (
+    *_LAUNCHER_TAIL[:7],
+    None,  # the Run line; _vbs_identity checks it
+    "If code = 78 Then code = 0",
+    None,  # the owned-exit line; _vbs_identity checks it
+    "WScript.Quit code",
+)
+# Waiting launchers, retry-loop shape first: (tail template, Run-line offset, owned-exit-line
+# offset). _vbs_identity tries them in this order; the first shape that holds wins.
+_WAITING_LAUNCHER_TAILS = (
+    (_WAITING_LAUNCHER_TAIL, 11, 22),
+    (_WAITING_LAUNCHER_TAIL_NO_RETRY, 7, 9),
+)
 
 
 def launcher_pid_file(hermes_home: str) -> str:
@@ -374,13 +412,30 @@ def launcher_pid_file(hermes_home: str) -> str:
     return hermes_home.rstrip("\\/") + "\\gateway.pid"
 
 
-def _tail_mismatch(tail: list[str], waits: bool = False) -> int | None:
-    """Offset of the first tail line that breaks the template's shape, or None when it holds."""
-    shape = _WAITING_LAUNCHER_TAIL if waits else _LAUNCHER_TAIL
+def _shape_mismatch(tail: list[str], shape: tuple) -> int | None:
+    """Offset of the first tail line that breaks ``shape``, or None when it holds."""
     for offset, expected in enumerate(shape):
         if offset == len(tail) or expected not in (None, tail[offset]):
             return offset
     return len(shape) if len(tail) > len(shape) else None
+
+
+def _tail_mismatch(tail: list[str], waits: bool = False) -> int | None:
+    """Offset of the first tail line that breaks the template's shape, or None when it holds."""
+    shapes = [shape for shape, _, _ in _WAITING_LAUNCHER_TAILS] if waits else [_LAUNCHER_TAIL]
+    for shape in shapes:
+        if _shape_mismatch(tail, shape) is None:
+            return None
+    return _shape_mismatch(tail, shapes[0])
+
+
+def _waiting_tail_offsets(tail: list[str]) -> tuple[int, int]:
+    """(Run-line offset, owned-exit-line offset) of the waiting launcher shape ``tail`` holds.
+    Call only after _tail_mismatch(tail, waits=True) returned None, so a shape always holds."""
+    for shape, run, owned in _WAITING_LAUNCHER_TAILS:
+        if _shape_mismatch(tail, shape) is None:
+            return run, owned
+    raise AssertionError("unreachable: a waiting launcher shape holds here")
 
 
 def _vbs_identity(script: str) -> tuple[str, list[str]]:
@@ -390,8 +445,10 @@ def _vbs_identity(script: str) -> tuple[str, list[str]]:
     lines = script.splitlines()
     if len(lines) < 16 or not lines[0].startswith("' "):
         _unverified("the launcher does not start with the installer's header")
-    # Two installer generations: the waiting launcher (``Dim ... code``, #146976) and the one installs
-    # made before it still run (returns at once) until the next install or update re-renders it.
+    # Three installer generations: the waiting launcher with the exit-75 retry loop (#156780),
+    # the waiting launcher installs made by #146976 still run (no retry loop), and the one
+    # installs made before #146976 still run (returns at once) until the next install or update
+    # re-renders it.
     waits = lines[2:3] == ["Dim sh, env, existing_pp, code"]
     fixed = ["Option Explicit", "Dim sh, env, existing_pp, code" if waits else "Dim sh, env, existing_pp",
              'Set sh = CreateObject("WScript.Shell")', 'Set env = sh.Environment("PROCESS")']
@@ -417,13 +474,18 @@ def _vbs_identity(script: str) -> tuple[str, list[str]]:
         _unverified("the launcher's PYTHONPATH lines are not the installer's")
     if not re.fullmatch(r'sh.CurrentDirectory = ' + literal, tail[6]):
         _unverified("the launcher's working-directory line is not the installer's")
+    if waits:
+        run_offset, owned_offset = _waiting_tail_offsets(tail)
+        run_line = tail[run_offset]
+    else:
+        run_line = tail[7]
     run = re.fullmatch(r'code = sh\.Run\((' + literal + r'), 0, True\)' if waits else r'sh.Run (' + literal + r'), 0, False',
-                       tail[7])
+                       run_line.strip())
     if not run or not env.get("HERMES_SUPERVISED_CHILD"):
         _unverified("the launcher has no Run line or does not set HERMES_SUPERVISED_CHILD")
     if waits:
         owned = re.fullmatch(r'If code = 1 And CreateObject\("Scripting\.FileSystemObject"\)\.FileExists\(('
-                             + literal + r')\) Then code = 0', tail[9])
+                             + literal + r')\) Then code = 0', tail[owned_offset])
         pid_file = owned[1][1:-1].replace('""', '"') if owned else None
         if pid_file is None or pid_file != launcher_pid_file(env.get("HERMES_HOME", "")):
             _unverified("the launcher's exit mapping is not the installer's")

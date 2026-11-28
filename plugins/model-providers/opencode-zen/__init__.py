@@ -43,6 +43,19 @@ def _is_glm_5_2_model(model: str | None) -> bool:
     return any(token in m for token in ("glm-5.2", "glm-5-2", "glm-5p2"))
 
 
+def _is_gemini_4_model(model: str | None) -> bool:
+    """Gemini 4 on the Go relay takes a top-level ``reasoning_effort`` (low/medium/high).
+
+    Without this branch the knob is dropped and every Gemini 4 turn runs at the destination
+    default (medium). live-verified 2026-11-25 against https://opencode.ai/zen/go/v1/models:
+    the only ``gemini-4`` id served there is ``gemini-4-argon``, advertising low/medium/high.
+    An ``xhigh`` probe was accepted (346 vs 314 reasoning tokens) but stays outside the
+    advertised vocabulary, so the clamp follows the advertised three levels and matches
+    ``GEMINI4_XHIGH_MODELS`` in agent/reasoning_effort.py, which excludes argon as well.
+    """
+    return _flat_model_name(model).startswith("gemini-4-")
+
+
 def _classify_go_error(error, *, status_code, message, **_):
     """Go answers 429 for two different walls. ``GoUsageLimitError`` is the key's plan window
     (5-hour/weekly/monthly) and must bench the key; the built-in pipeline already does that.
@@ -115,6 +128,21 @@ class OpenCodeGoProfile(ProviderProfile):
             return re_.thinking_toggle_extras(reasoning_config, re_.KIMI_K2_EFFORTS)
         if _is_deepseek_thinking_model(model):
             return re_.thinking_toggle_extras(reasoning_config, re_.DEEPSEEK_V4_EFFORTS, re_.DEEPSEEK_V4_OVERRIDES)
+        if _is_gemini_4_model(model):
+            if not isinstance(reasoning_config, dict):
+                return {}, {}
+            effort = re_.requested_effort(reasoning_config)
+            if reasoning_config.get("enabled") is False or effort == "none":
+                # This relay has no off switch: "low" is the lowest advertised level, and a probe at
+                # "low" returned no reasoning tokens at all. Sending it keeps the choice explicit
+                # instead of leaving the level to the relay's undocumented default.
+                return {}, {"reasoning_effort": "low"}
+            if not effort:
+                return {}, {}
+            clamped = re_.clamp_effort(effort, re_.GEMINI4_THINKING_LEVELS)
+            # Unknown levels (typos like "turbo") fall back to "medium", matching the native
+            # Gemini 4 path; never put an unrecognized string on the wire.
+            return {}, {"reasoning_effort": clamped if clamped in re_.GEMINI4_THINKING_LEVELS else "medium"}
         return {}, {}
 
 

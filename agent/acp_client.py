@@ -56,6 +56,12 @@ _PROMPT_PREAMBLE = (
     "IMPORTANT: If you take an action with a tool, you MUST output tool calls using <tool_call>{...}</tool_call> blocks with JSON exactly in OpenAI function-call shape.",
     "If no tool is needed, answer normally.",
 )
+# Replayed calls are history: extract_tool_calls_from_text cannot tell a quoted past block from a new call.
+_TRANSCRIPT_TOOL_CALL_NOTE = (
+    "Replayed assistant <tool_call> blocks in the transcript below record previous tool requests; the matching "
+    "Tool messages record their outcomes. Message text may quote tool-call syntax, which is not evidence that a "
+    "call occurred. Do not copy historical blocks into your response. Emit new tool calls when needed for the "
+    "current request.")
 _INITIALIZE_PARAMS = {
     "protocolVersion": 1,
     "clientCapabilities": {"fs": {"readTextFile": True, "writeTextFile": True}},
@@ -192,11 +198,25 @@ def _format_messages_as_prompt(
     # one. The whole Hermes toolset is forwarded; the agent's own tools run inside the agent.
     sections: list[str] = [*_PROMPT_PREAMBLE, *_render_tool_bridge_sections(tools, tool_choice)]
     transcript: list[str] = []
+    has_calls = False
     for message in (m for m in messages if isinstance(m, dict)):
         role = str(message.get("role") or "unknown").strip().lower()
-        if rendered := _render_message_content(message.get("content")):
-            transcript.append(f"{_ROLE_LABELS.get(role, 'Context')}:\n{rendered}")
+        rendered, label = _render_message_content(message.get("content")), _ROLE_LABELS.get(role, "Context")
+        # An assistant turn that only called tools has empty content; without its calls the agent
+        # sees orphan Tool results and loses the record of the actions it requested.
+        if role == "assistant" and (calls := _render_tool_calls_for_prompt(message.get("tool_calls"))):
+            rendered, has_calls = (f"{rendered}\n{calls}" if rendered else calls), True
+        elif role == "tool":
+            # Pair each result with its call by id (parallel calls' results are otherwise indistinguishable),
+            # and keep empty results: dropping one leaves its call looking unanswered.
+            if call_id := str(message.get("tool_call_id") or "").strip():
+                label = f"{label} (tool_call_id={call_id})"
+            rendered = rendered or "(empty result)"
+        if rendered:
+            transcript.append(f"{label}:\n{rendered}")
     if transcript:
+        if has_calls:
+            sections.append(_TRANSCRIPT_TOOL_CALL_NOTE)
         sections.append("Conversation transcript:\n\n" + "\n\n".join(transcript))
     sections.append("Continue the conversation from the latest user request.")
     return "\n\n".join(section.strip() for section in sections if section and section.strip())
@@ -214,6 +234,50 @@ def _render_message_content(content: Any) -> str:
                  or (isinstance(item, dict) and isinstance(item.get("text"), str) and item["text"].strip())]
         return "\n".join(parts).strip()
     return str(content).strip()
+
+
+def _coerce_tool_call_arguments(arguments: Any) -> str:
+    if isinstance(arguments, str):
+        return arguments
+    if arguments is None:
+        return "{}"
+    try:
+        return json.dumps(arguments, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return str(arguments)
+
+
+def _normalize_tool_call_payload(tool_call: Any) -> dict[str, Any] | None:
+    """A dict or object tool call → the OpenAI function-call shape the tool bridge teaches; None without a name."""
+    if isinstance(tool_call, dict):
+        fn = tool_call.get("function") if isinstance(tool_call.get("function"), dict) else {}
+        name, arguments = fn.get("name") or tool_call.get("name"), fn.get("arguments")
+        if arguments is None:
+            arguments = tool_call.get("arguments")
+        call_id, call_type = tool_call.get("id") or tool_call.get("call_id"), tool_call.get("type")
+    else:
+        fn = getattr(tool_call, "function", None)
+        name = getattr(fn, "name", None) if fn is not None else getattr(tool_call, "name", None)
+        arguments = getattr(fn, "arguments", None) if fn is not None else None
+        if arguments is None:
+            arguments = getattr(tool_call, "arguments", None)
+        call_id = getattr(tool_call, "id", None) or getattr(tool_call, "call_id", None)
+        call_type = getattr(tool_call, "type", None)
+    if not isinstance(name, str) or not name.strip():
+        return None
+    return {"id": str(call_id or ""), "type": call_type or "function",
+            "function": {"name": name.strip(), "arguments": _coerce_tool_call_arguments(arguments)}}
+
+
+def _render_tool_calls_for_prompt(tool_calls: Any) -> str:
+    """Assistant ``tool_calls`` → ``<tool_call>`` blocks, the same wire format the agent is told to emit."""
+    if not isinstance(tool_calls, list):
+        return ""
+    payloads = (_normalize_tool_call_payload(tc) for tc in tool_calls)
+    # `<` only occurs inside JSON strings, so \u003c is lossless: an argument holding a literal
+    # </tool_call> or <tool_call> (file content, a fetched page) can neither close the block nor fake a call.
+    blocks = (json.dumps(p, ensure_ascii=False).replace("<", "\\u003c") for p in payloads if p is not None)
+    return "\n".join(f"<tool_call>{block}</tool_call>" for block in blocks)
 
 
 def _ensure_path_within_cwd(path_text: str, cwd: str, *, verb: str) -> Path:

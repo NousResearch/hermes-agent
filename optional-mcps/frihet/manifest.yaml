@@ -1,0 +1,150 @@
+# Frihet MCP manifest for Hermes's optional-mcps catalog.
+#
+# This file is a CANDIDATE for a future PR to NousResearch/hermes-agent.
+# When upstream accepts it, it lands at:
+#     NousResearch/hermes-agent/optional-mcps/frihet/manifest.yaml
+#
+# Modeled on optional-mcps/linear/manifest.yaml (present at the same path
+# in hermes-agent). Presence in ``optional-mcps/`` = Nous-approved; PRs go
+# through Nous's review.
+#
+# Auth strategy: native MCP OAuth 2.1 + PKCE (case 1 — same as Linear). The
+# MCP client + ``mcp_oauth_manager`` handle discovery, the browser flow, the
+# token exchange and the refresh loop. We do NOT add a third-party provider
+# like Google; we do NOT add a Bearer API key fallback here — Bearer key is
+# still supported via the user's own ``mcp_servers.frihet`` config block.
+manifest_version: 1
+
+name: frihet
+connector_slug: frihet
+description: Find, create, and update Frihet ERP records — invoices, expenses, clients, quotes, products, webhooks, and tax filings — from inside Hermes.
+source: https://github.com/Frihet-io/frihet-mcp
+
+# Frihet ships a remote MCP server over Streamable HTTP. Authentication is
+# native MCP OAuth 2.1 + PKCE. Hermes's MCP client + mcp_oauth_manager
+# handle the browser flow, token exchange, and refresh — nothing to install
+# locally. The Frihet MCP also accepts Bearer API keys for unattended
+# callers; users who prefer that path configure it under ``mcp_servers``
+# in their config.yaml directly (outside this catalog entry).
+transport:
+  type: http
+  url: https://mcp.frihet.io/mcp
+
+auth:
+  type: oauth
+  # No `provider:` — this is native MCP OAuth (case 1), not a third-party
+  # provider like Google. The MCP client triggers the browser flow on the
+  # first probe / first connect.
+
+# Frihet's MCP exposes 158 canonical operations (drafts, sends, payments,
+# VeriFactu filings, etc.).
+#
+# Install-time tool selection — defensive defaults:
+#
+# The Frihet MCP is large (158 ops including send, mark_paid, delete,
+# VeriFactu). The connector does NOT depend on the optional plugin, so
+# we cannot rely on the plugin's pre_tool_call hook to gate mutating
+# operations when the connector is used standalone. We pre-prune here:
+#
+#   * ``default_enabled`` lists the safe read + draft operations we
+#     believe every user wants available immediately. Mutating ops
+#     (send, mark_paid, delete, register_verifactu, etc.) are excluded
+#     from the default checklist — the user must opt in explicitly via
+#     ``hermes mcp configure frihet`` (case 2 of the install-time tool
+#     selection policy). This is the connector-only safety net for
+#     users who install Frihet without the companion plugin.
+#
+#   * ``default_excluded`` is intentionally NOT declared: the user's
+#     explicit opt-in (when they want a mutating tool) is recorded in
+#     ``~/.hermes/config.yaml`` by ``hermes mcp configure frihet`` and
+#     survives future reinstalls. An ``exclude`` mode would silently
+#     drop new mutating tools the Frihet server adds.
+tools:
+  default_enabled:
+    # Read-only operations. Every name verified against the canonical
+    # Frihet MCP README catalogue (Frihet-io/frihet-mcp/README.md) AND
+    # against the agent-onboarding contract
+    # (Frihet-io/frihet-mcp/docs/agent-onboarding.json).
+    #
+    # **Why only reads?** The Frihet MCP's own contract declares
+    # ``externalSideEffects`` for many ``create_*`` operations — they
+    # can deliver webhooks or trigger fiscal/e-invoice submissions even
+    # when they create a "draft". The Frihet server's own
+    # `externalSideEffects` table is the source of truth, not the verb
+    # in the operation name. We pre-check only reads here so a user
+    # installing Frihet via the Connectors surface without the
+    # companion plugin has zero mutating ops available by default.
+    # Mutating ops are still reachable — the user opts in via
+    # ``hermes mcp configure frihet`` (case 2 of the install-time
+    # tool selection policy). Their opt-in is recorded in
+    # ``~/.hermes/config.yaml`` and survives reinstalls.
+    - list_invoices
+    - get_invoice
+    - search_invoices
+    - list_clients
+    - get_client
+    - list_client_activities
+    - list_expenses
+    - get_expense
+    - list_vendors
+    - get_vendor
+    - list_quotes
+    - get_quote
+    - list_products
+    - get_product
+    - list_recurring_invoices
+    - get_recurring_invoice
+    - list_reservations
+    - get_reservation
+    - list_properties
+    - list_bank_accounts
+    - get_bank_account
+    - list_transactions
+    - list_deposits
+    - get_deposit
+    - list_webhooks
+    - get_webhook
+    - list_team_members
+    - list_kitchen_tickets
+    - get_kitchen_ticket
+    - list_kitchen_stations
+    - list_menu_items
+    - list_sales
+    - get_sale
+    - list_terminals
+    - get_time_summary
+    - get_quarterly_taxes
+    - get_business_context
+    - get_monthly_summary
+    - anomaly_list
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - frihet
+    - invoice
+    - invoices
+    - expense
+    - expenses
+    - quote
+    - quotes
+    - accounting
+    - erp
+    - verifactu
+  hosts:
+    - frihet.io
+
+post_install: |
+  On first connection, Hermes will open a browser to authenticate with Frihet.
+  After auth, restart your Hermes session so the Frihet tools are loaded.
+
+  You can re-run the tool checklist any time with:
+    hermes mcp configure frihet
+
+  Prefer drafts over sends: Frihet's create_invoice / create_quote /
+  create_credit_note default to status=draft. Build the draft, present the
+  totals, and let a human confirm before sending.
+
+  For unattended callers without a browser, use the standalone plugin
+  (Frihet-io/hermes-frihet) and configure FRIHET_API_KEY on the
+  ``mcp_servers.frihet.env`` block directly.

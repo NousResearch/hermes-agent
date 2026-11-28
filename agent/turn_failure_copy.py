@@ -226,6 +226,10 @@ _EXHAUSTED_FIRST_ATTEMPT_LEADS: dict[str, str] = {
 
 # Terminal copy for a non-retryable provider rejection, keyed by classifier reason.
 _NONRETRYABLE_COPY: dict[str, str] = {
+    FailoverReason.reasoning_configuration.value: (
+        "{label} rejected the configured reasoning level for {model}. Choose an available reasoning effort "
+        "in the session/model settings or the relevant auxiliary task's reasoning_effort setting."
+    ),
     FailoverReason.model_not_found.value: (
         "Model '{model}' isn't available on {label}. Pick a different model with /model "
         "(or `hermes model` in a terminal).{prefix_hint}"

@@ -21,6 +21,15 @@ def _make_ctx(plugin_key: str = "my-plugin") -> PluginContext:
     return PluginContext(manifest, manager)
 
 
+def test_get_portable_mcp_servers_is_the_documented_availability_read():
+    """ctx.get_portable_mcp_servers() delegates to the manager's defensive copy — the public
+    read a plugin's is_available() uses instead of private manager access (#152373)."""
+    ctx = _make_ctx()
+    ctx._manager.get_portable_mcp_servers.return_value = {"knowledge_rag": {"command": "x"}}
+    assert ctx.get_portable_mcp_servers() == {"knowledge_rag": {"command": "x"}}
+    ctx._manager.get_portable_mcp_servers.assert_called_once_with()
+
+
 def _patch_config(monkeypatch, entries: dict) -> None:
     import hermes_cli.config as config_mod
 

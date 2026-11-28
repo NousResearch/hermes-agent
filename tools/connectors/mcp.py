@@ -28,8 +28,8 @@ NOTE = (
     "a later request from the USER for that same app is not a re-ask — run it. Connected "
     "targets' tools are available now through tool_describe/tool_call and are named under "
     "tools_listing. A target with discovery_error is authorized but its tools are unavailable; "
-    "retry discovery with manage_connections using that target's authorize or install action "
-    "without asking for consent again."
+    "retry discovery with manage_connections using that target's enable action (authorize for a "
+    "server that has a url) without asking for consent again."
 )
 
 NO_CARD_NOTE = (
@@ -37,9 +37,9 @@ NO_CARD_NOTE = (
     "open it in a browser, then ask them to say when they are done. Connected targets' tools are "
     "available now through tool_describe/tool_call and are named under tools_listing. A target with "
     "discovery_error is authorized but its tools are unavailable; retry discovery with "
-    "manage_connections using that target's authorize or install action without asking for consent "
-    "again. Do not re-ask on your own for skipped or timed-out targets, but a later request from "
-    "the USER for that same app is not a re-ask — run it."
+    "manage_connections using that target's enable action (authorize for a server that has a url) "
+    "without asking for consent again. Do not re-ask on your own for skipped or timed-out targets, "
+    "but a later request from the USER for that same app is not a re-ask — run it."
 )
 
 
@@ -49,10 +49,39 @@ def _catalog_names() -> list[str]:
     return sorted(e.name for e in list_catalog())
 
 
-def _configured_names() -> list[str]:
+def _configured_servers() -> dict[str, dict]:
+    """The configured MCP servers, by name: the one source both the name list and the transport
+    read, so the two can never disagree about what is configured."""
     from hermes_cli.mcp_catalog import installed_servers
 
-    return sorted(installed_servers())
+    return installed_servers() or {}
+
+
+def _configured_names() -> list[str]:
+    return sorted(_configured_servers())
+
+
+def _configured_transport(name: str) -> str:
+    """``stdio`` for a local command server, ``http`` for one reached over a url.
+
+    Only a server with a url can run an OAuth flow: a stdio server takes its credentials
+    from the environment, so ``authorize`` can never apply to one.
+    """
+    cfg = _configured_servers().get(name) or {}
+    return "http" if cfg.get("url") else "stdio"
+
+
+def _configured_actions(configured: list[str]) -> str:
+    """Which action reaches each configured server, by transport."""
+    servers = _configured_servers()
+    stdio = [n for n in configured if not (servers.get(n) or {}).get("url")]
+    http = [n for n in configured if (servers.get(n) or {}).get("url")]
+    parts = []
+    if stdio:
+        parts.append(f"enable for stdio server(s): {', '.join(stdio)}")
+    if http:
+        parts.append(f"enable or authorize for server(s) with a url: {', '.join(http)}")
+    return "; ".join(parts)
 
 
 def validate_mcp_names(action: str, names: list[str]) -> Optional[str]:
@@ -63,6 +92,14 @@ def validate_mcp_names(action: str, names: list[str]) -> Optional[str]:
         return f"could not read the MCP catalog: {exc}"
     allowed = set(catalog) if action == "install" else set(configured)
     unknown = [n for n in names if n not in allowed]
+    if action == "authorize" and not unknown:
+        stdio = [n for n in names if _configured_transport(n) == "stdio"]
+        if stdio:
+            quoted = ", ".join(f"'{n}'" for n in stdio)
+            return (
+                f"{quoted}: a stdio MCP server takes env keys, not OAuth, so authorize does not "
+                "apply. Use the enable action instead."
+            )
     if not unknown:
         return None
     foreign = [n for n in unknown if n not in catalog and n not in configured]
@@ -75,7 +112,7 @@ def validate_mcp_names(action: str, names: list[str]) -> Optional[str]:
         return (
             f"unknown MCP server(s) for install: {', '.join(unknown)}. Install works for "
             f"catalog entries only: {', '.join(catalog) or '(empty catalog)'}."
-            + (f" Already configured (use enable/authorize): {', '.join(configured)}." if configured else "")
+            + (f" Already configured ({_configured_actions(configured)})." if configured else "")
         )
     return (
         f"unknown MCP server(s) for {action}: {', '.join(unknown)}. {action} works for servers "
@@ -437,6 +474,41 @@ def _catalog_instructions(name: str) -> str:
 
     entry = get_entry(name)
     return str(entry.post_install or "") if entry is not None else ""
+
+
+def status_rows(names: Optional[list[str]] = None) -> list[dict]:
+    """Configured local MCP servers and whether their tools are live right now.
+
+    A status answer that names only hosted connectors cannot answer "is my MCP server
+    connected": the model reads the missing server as a disconnect and starts a connection
+    it already has (#111717). Each row carries the transport too, so a stdio server is
+    never answered with an OAuth action.
+    """
+    from tools.mcp_tool_discovery import get_mcp_status
+
+    configured = _configured_servers()
+    if names:
+        wanted = set(names)
+        configured = {k: v for k, v in configured.items() if k in wanted}
+    if not configured:
+        return []
+    try:
+        rows = get_mcp_status(configured)
+    except Exception as exc:
+        logger.warning("mcp status read failed: %s", exc)
+        return []
+    return [
+        {
+            "name": row.get("name"),
+            "transport": row.get("transport", "stdio"),
+            "status": row.get("status", "configured"),
+            "connected": bool(row.get("connected")),
+            "tools": row.get("tools", 0),
+            "disabled": bool(row.get("disabled")),
+            "needs_auth": bool(row.get("needs_auth")),
+        }
+        for row in rows
+    ]
 
 
 def _move(operation: ConnectionOperation, target: Target, to: TargetState, actor: Actor, **fields: Any) -> bool:

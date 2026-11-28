@@ -53,8 +53,8 @@ def _desktop_session(monkeypatch, db):
 def _rotate_to_compression_child(db, parent, agent, *, reopen_parent):
     """The production rotation: the real publisher closes the parent and mints the continuation.
 
-    ``reopen_parent`` models a ``session.resume`` of the pre-rotation id, which reopens the parent row
-    unconditionally (``methods_session.read_history`` / ``_schedule_resume_hydration``). Left closed,
+    ``reopen_parent`` models a row an older reopen already un-stamped (``reopen`` keeps the stamp
+    now, #148047, but stores in the wild still hold such rows). Left closed,
     the ``_ended_by_compression`` guard refuses the submit append outright and the row is silently
     dropped; reopened, the stale key is writable and the turn's rows split across both sessions.
     """
@@ -67,7 +67,7 @@ def _rotate_to_compression_child(db, parent, agent, *, reopen_parent):
         compression_lock_holder=None, require_compression_lease=False)
     agent.session_id = child  # what every adoption/rotation path does to the live agent
     if reopen_parent:
-        db.sessions.reopen(parent)
+        db.sessions.reopen(parent, drop_compression_boundary=True)
     return child
 
 def _rows(db, key):

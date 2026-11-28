@@ -472,10 +472,10 @@ class SQLiteSessionRepository:
             raise SessionExists(session_record(existing))
         raise RetiredSessionError(session_id, "session_deleted")
 
-    def reopen(self, session_id: SessionId) -> None:
+    def reopen(self, session_id: SessionId, *, drop_compression_boundary: bool = False) -> None:
         holder = self._store.holder()
         with refusals(holder, session_id):
-            reopen_session(holder, session_id)
+            reopen_session(holder, session_id, drop_compression_boundary=drop_compression_boundary)
 
     def retire_undrained_queue_rows(self, session_id: SessionId) -> int:
         holder = self._store.holder()

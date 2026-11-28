@@ -476,11 +476,14 @@ def retire_undrained_queue_rows(holder: StoreHolder, session_id: str) -> int:
         lambda conn: _retire_undrained_queue_rows_conn(conn, session_id))
 
 
-def reopen_session(holder: StoreHolder, session_id: str) -> None:
+def reopen_session(holder: StoreHolder, session_id: str, *, drop_compression_boundary: bool = False) -> None:
     """Clear ended_at/end_reason so a session can be resumed; first freeze markerless legacy reset
     children, skipping explicit fork/delegate provenance and children that predate the parent itself.
     The guard compares against the parent's started_at, not its current ended_at: a parent that was
-    reopened and re-ended later still owns reset children from its earlier boundaries."""
+    reopened and re-ended later still owns reset children from its earlier boundaries.
+    A compression parent whose continuation exists keeps its stamp: the lineage walks and
+    ``validate_local_lineage`` read it as the chain edge, and nothing re-stamps it (#148047).
+    ``drop_compression_boundary`` is for a caller immediately re-stamping the row itself."""
     def _do(conn):
         _retire_undrained_queue_rows_conn(conn, session_id)
         conn.execute(
@@ -494,9 +497,16 @@ def reopen_session(holder: StoreHolder, session_id: str) -> None:
             f"AND {_legacy_reset_child_sql('child', _session_ids_placeholders(_RESET_END_REASONS))}",
             (session_id, *_RESET_END_REASONS),
         )
-        conn.execute(
-            "UPDATE sessions SET ended_at = NULL, end_reason = NULL WHERE id = ?", (session_id,),
-        )
+        keeps_boundary = not drop_compression_boundary and conn.execute(
+            "SELECT 1 FROM sessions AS parent JOIN sessions ON sessions.parent_session_id = parent.id "
+            "WHERE parent.id = ? AND parent.end_reason = 'compression'"
+            + _NON_CONTINUATION_CHILD_FILTER_SQL.format(alias="sessions.") + " LIMIT 1",
+            (session_id,) * 4,
+        ).fetchone() is not None
+        if not keeps_boundary:
+            conn.execute(
+                "UPDATE sessions SET ended_at = NULL, end_reason = NULL WHERE id = ?", (session_id,),
+            )
         # Resuming re-activates the chat: drop the idle sweep's archive (never a manual one).
         _unarchive_auto_archived_lineage(conn, session_id)
     holder._execute_write(_do)

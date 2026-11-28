@@ -899,8 +899,8 @@ class SessionRepository(Protocol):
         """Stamp ``ended_at`` and ``reason`` on a live row; the first end wins. An end that landed advances the peer's conversation generation."""
         ...
 
-    def reopen(self, session_id: SessionId) -> None:
-        """Retire never-drained queued prompt rows, freeze markerless legacy reset children as ``_reset_from`` children, clear the end stamp, and un-archive a lineage only the idle sweep archived."""
+    def reopen(self, session_id: SessionId, *, drop_compression_boundary: bool = False) -> None:
+        """Retire never-drained queued prompt rows, freeze markerless legacy reset children as ``_reset_from`` children, clear the end stamp, and un-archive a lineage only the idle sweep archived. A ``compression`` stamp with a continuation child is kept, since the lineage walks read it as the chain edge (#148047); ``drop_compression_boundary`` clears it anyway, for a caller that re-stamps the row at once."""
         ...
 
     def retire_undrained_queue_rows(self, session_id: SessionId) -> int:

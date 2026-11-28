@@ -888,6 +888,8 @@ export interface Translations extends NoticeTranslations {
       themeTitle: string
       themeDesc: string
       themeSearchPlaceholder: string
+      marketplaceHeading: string
+      noThemesMatch: (query: string) => string
       themeProfileNote: (profile: string) => string
       installTitle: string
       installDesc: string

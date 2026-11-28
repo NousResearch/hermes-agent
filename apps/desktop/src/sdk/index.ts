@@ -91,6 +91,7 @@ import {
   setResumeExhaustedSessionId,
   setSessionOwnerHint
 } from '@/store/session'
+import { $sessionColorById } from '@/store/session-color'
 import { $focusedStoredSessionId } from '@/store/session-focus'
 import {
   $focusedRuntimeId,
@@ -601,6 +602,12 @@ export const host = {
     model: readonlyAtom<string>($currentModel),
     /** Profile the live gateway is routed to. */
     profile: readonlyAtom<string>($activeGatewayProfile),
+    /** Resolved colour per session (LIVE session id → CSS colour), including a
+     *  colour inherited from the session's project. The read side of
+     *  `host.sessions.setColor`: a plugin that offers a colour picker reads the
+     *  current value here instead of core's `localStorage`, and the sidebar dot
+     *  and the chat field can never disagree. */
+    sessionColors: readonlyAtom<Record<string, string>>($sessionColorById),
     /** Window geometry ({ width, height, narrow }). */
     viewport: readonlyAtom<ViewportRect>($viewport)
   },

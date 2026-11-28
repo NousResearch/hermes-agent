@@ -50,6 +50,7 @@ import {
   sessionPinId,
   shouldMigrateComposerScope
 } from '@/store/session'
+import { $sessionColorById, sessionColorFor, sessionSeedHue } from '@/store/session-color'
 import { $focusedStoredSessionId } from '@/store/session-focus'
 import { $sessionStates, sessionTileDelegate } from '@/store/session-states'
 import { $transcriptTailBySessionId, transcriptTailState } from '@/store/transcript-tail'
@@ -601,6 +602,21 @@ const ChatViewContent = memo(function ChatViewContent({
   const lastVisibleIsUser = useStore(view.$lastVisibleIsUser)
   const selectedSessionId = useStore(view.$storedId)
   const sessions = useStore($sessions)
+  // Session-colour hooks (desktop-plugin-sdk.md ▸ Session colour hooks): the
+  // surface publishes its resolved colour and a stable seed hue inline, so a
+  // CSS-only theme can tint each chat without querying core's markup or reading
+  // core's storage. Subscribed to the colour map so a pick in the sidebar menu
+  // repaints this field in the same commit as the row's dot.
+  useStore($sessionColorById)
+  const colourSession = sessions.find(row => sessionMatchesStoredId(row, storedId ?? ''))
+  const sessionColor = sessionColorFor(colourSession)
+  const sessionSeed = String(storedId ?? activeSessionId ?? 'chat')
+
+  const sessionSurfaceStyle = {
+    '--ui-session-hue': String(sessionSeedHue(sessionSeed)),
+    ...(sessionColor ? { '--ui-session-color': sessionColor } : {})
+  } as React.CSSProperties
+
   const resumeExhaustedSessionId = useStore($resumeExhaustedSessionId)
 
   // Durable composer/queue scope (lineage root) so auto-compression tip rotation
@@ -781,7 +797,9 @@ const ChatViewContent = memo(function ChatViewContent({
       data-composer-target={composerScope.target}
       data-guide-arrived={isPrimary && guideStarted ? '' : undefined}
       data-session-anchor={sessionAnchor}
+      data-session-color={sessionColor}
       data-setup-chat={setupChat ? '' : undefined}
+      style={sessionSurfaceStyle}
     >
       <Backdrop />
       {/* Tiles get their chrome from the layout zone (chip strip); the modal

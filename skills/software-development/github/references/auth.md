@@ -1,9 +1,10 @@
 # GitHub Authentication Setup
 
-This skill sets up authentication so the agent can work with GitHub repositories, PRs, issues, and CI. It covers two paths:
+This skill sets up authentication so the agent can work with GitHub repositories, PRs, issues, and CI. It covers three paths:
 
 - **`git` (always available)** — uses HTTPS personal access tokens or SSH keys
 - **`gh` CLI (if installed)** — richer GitHub API access with a simpler auth flow
+- **GitHub App installation tokens (opt-in)** — short-lived, auto-rotating tokens with a bot identity; see Method 3
 
 ## Detection Flow
 
@@ -236,6 +237,119 @@ If `--with-token` hangs here, use the hosts.yml fallback from the pitfall above.
 ```bash
 gh auth status
 ```
+
+---
+
+## Method 3: GitHub App Installation Tokens (Bot Identity)
+
+An opt-in alternative to personal access tokens: a GitHub App installed on an
+account or org mints short-lived (~1 hour) installation tokens on demand.
+Benefits over a PAT:
+
+- **No long-lived secret at rest** — only the App's private key is stored;
+  tokens auto-rotate every hour
+- **Org-scoped and revocable** — uninstall the App and every token stops working
+- **Bot identity** — commits and PRs are attributed to the App, not a person
+
+**Precedence:** this method is the *last* fallback. Explicit auth always wins —
+`gh auth login`, an exported `GITHUB_TOKEN`, a token key in the Hermes `.env`,
+or `~/.git-credentials` are all checked first by `scripts/gh-env.sh`. With no
+App credentials configured, behavior is unchanged.
+
+### Setup
+
+**Step 1: Create a GitHub App**
+
+Tell the user to go to: **https://github.com/settings/apps** (or the org's
+Settings → Developer settings → GitHub Apps) and create a new App:
+
+- Name it something like "hermes-agent-bot"
+- Disable webhooks (not needed)
+- Repository permissions: `Contents: Read and write`, `Pull requests: Read and
+  write`, `Issues: Read and write` (add `Workflows: Read and write` if the
+  agent edits Actions files)
+- After creating: note the **App ID**, then "Generate a private key" and save
+  the downloaded `.pem` file somewhere private (e.g. `~/.hermes/github-app.pem`)
+
+**Step 2: Install the App** on the user's account or org ("Install App" in the
+App's settings) and grant it the repos the agent should touch.
+
+**Step 3: Configure the Hermes .env** (`${HERMES_HOME:-~/.hermes}/.env`):
+
+```bash
+GITHUB_APP_ID=123456
+GITHUB_APP_PRIVATE_KEY_PATH=/home/user/.hermes/github-app.pem
+# Optional — auto-discovered when the App has exactly one installation:
+# GITHUB_APP_INSTALLATION_ID=987654
+```
+
+The helper reads these from the `.env` file directly (not from process env),
+so it works even in restricted subprocess environments.
+
+### Usage
+
+The helper script has two subcommands:
+
+```bash
+# Print a valid installation token (mints or reuses the cache)
+python3 skills/software-development/github/scripts/gh-app-token.py mint
+
+# Git credential-helper protocol (used by git, below)
+python3 skills/software-development/github/scripts/gh-app-token.py credential get
+```
+
+`scripts/gh-env.sh` picks this up automatically as its final fallback and
+exports `GITHUB_TOKEN`/`GH_TOKEN` for the session.
+
+**Git credential-helper wiring** (lets plain `git push`/`git fetch` mint
+tokens transparently):
+
+```bash
+# Scope the helper to github.com — git invokes credential helpers for every
+# https remote, and a GitHub token should never be offered anywhere else.
+git config --global 'credential.https://github.com.helper' \
+  '!python3 /absolute/path/to/skills/software-development/github/scripts/gh-app-token.py credential'
+# Send the repo path to the helper so each token is restricted to the one
+# repository being pushed/fetched instead of everything the App can reach.
+git config --global 'credential.https://github.com.useHttpPath' true
+```
+
+With `useHttpPath`, git passes `path=owner/name.git` and the helper mints a
+token whose `repositories` list holds only that repo (cached per repo).
+Without it, the helper falls back to an installation-wide token.
+
+Git invokes the helper with a trailing operation argument (`get`, `store`, or
+`erase`); the script emits credentials only on `get` and is a silent no-op for
+the others, so it composes cleanly with other configured helpers. As a second
+layer, the script itself refuses to answer for hosts other than `github.com` /
+`gist.github.com`, so even an unscoped wiring cannot leak the token to a
+different remote.
+
+Narrow a manual token too: `gh-app-token.py mint --repo owner/name`.
+
+### Long-running commands
+
+Installation tokens last about an hour. Before a command that may run long
+(a big push, a CI-watch loop), ask for a token that will outlive it:
+
+```bash
+GH_TOKEN=$(python3 .../gh-app-token.py mint --repo owner/name --min-ttl 2400) gh run watch ...
+```
+
+`--min-ttl SECONDS` (both subcommands) reuses a cached token only if it stays
+valid that long; otherwise it mints a fresh one.
+
+### Token Cache
+
+Tokens are never written to `config.yaml` or `.env`. The only on-disk copy is
+`<HERMES_HOME>/cache/github-app-token.json` (the active profile's home;
+owner-only permissions, atomic writes), one entry per scope (installation-wide
+or per repo). A cached token is re-minted when less than 5 minutes of validity
+remain (or less than `--min-ttl`). Delete the file to force a fresh mint.
+
+The helper only talks to `api.github.com` and only answers git for
+`https://github.com` / `https://gist.github.com`; GitHub Enterprise Server is
+not supported.
 
 ---
 

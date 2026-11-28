@@ -31,8 +31,8 @@ starting that workflow, the body below only routes.
 | Review someone's PR: diffs, inline comments, verdict | `references/code-review.md` |
 | Clone/create/fork repos, remotes, releases | `references/repo-management.md` |
 
-Supporting assets: `scripts/gh-env.sh` + `scripts/git-credential-token.py`
-(auth helpers), `templates/` (PR bodies, bug report, feature request),
+Supporting assets: `scripts/gh-env.sh`, `scripts/git-credential-token.py`,
+`scripts/gh-app-token.py` (auth helpers; the last mints GitHub App tokens), `templates/` (PR bodies, bug report, feature request),
 `references/ci-troubleshooting.md`, `references/conventional-commits.md`,
 `references/github-api-cheatsheet.md`, `references/review-output-template.md`.
 

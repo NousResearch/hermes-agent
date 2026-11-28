@@ -108,13 +108,15 @@ describe('useVoiceRecorder STT readiness barrier', () => {
 
   function renderRecorder(
     onTranscribeAudio: (audio: Blob, owner?: unknown) => Promise<string>,
-    onTranscript: (text: string) => void = () => undefined
+    onTranscript: (text: string) => void = () => undefined,
+    onTranscriptSubmit: (text: string) => void = () => undefined
   ) {
     return renderHook(() =>
       useVoiceRecorder({
         focusInput: () => undefined,
         maxRecordingSeconds: 30,
         onTranscript,
+        onTranscriptSubmit,
         onTranscribeAudio
       })
     )
@@ -304,5 +306,57 @@ describe('useVoiceRecorder STT readiness barrier', () => {
     await stopping
 
     expect(onTranscript).not.toHaveBeenCalled()
+  })
+
+  // Stop-and-send: dictateAndSend() stops the recording and routes the settled
+  // transcript to the submit path (instead of parking it in the draft), so the
+  // user never sees the stop-then-send two-step.
+  it('routes the transcript to onTranscriptSubmit on dictateAndSend', async () => {
+    syncSttLeaseSpy.mockImplementation(async () => undefined)
+    const transcribe = vi.fn(async () => 'send me this')
+    const onTranscript = vi.fn()
+    const onTranscriptSubmit = vi.fn()
+    const hook = renderRecorder(transcribe, onTranscript, onTranscriptSubmit)
+
+    await act(async () => {
+      hook.result.current.dictate() // start
+    })
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    await act(async () => {
+      hook.result.current.dictateAndSend() // stop + send
+    })
+    await waitFor(() => expect(transcribe).toHaveBeenCalledTimes(1))
+    await waitFor(() =>
+      expect(onTranscriptSubmit).toHaveBeenCalledWith('send me this')
+    )
+
+    // The normal draft route never fires for a stop-and-send.
+    expect(onTranscript).not.toHaveBeenCalled()
+  })
+
+  it('routes the transcript to onTranscript on a plain dictate stop (no submit)', async () => {
+    syncSttLeaseSpy.mockImplementation(async () => undefined)
+    const transcribe = vi.fn(async () => 'draft me')
+    const onTranscript = vi.fn()
+    const onTranscriptSubmit = vi.fn()
+    const hook = renderRecorder(transcribe, onTranscript, onTranscriptSubmit)
+
+    await act(async () => {
+      hook.result.current.dictate() // start
+    })
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    await act(async () => {
+      hook.result.current.dictate() // stop, park in draft
+    })
+    await waitFor(() => expect(transcribe).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(onTranscript).toHaveBeenCalledWith('draft me'))
+
+    expect(onTranscriptSubmit).not.toHaveBeenCalled()
   })
 })

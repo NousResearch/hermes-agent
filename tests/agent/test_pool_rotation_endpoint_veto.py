@@ -14,8 +14,8 @@ _AZURE = "https://res.cognitiveservices.azure.com/openai/v1"
 _PUBLIC = "https://api.openai.com/v1"
 
 
-def _entry(eid, url):
-    return PooledCredential(provider="openai", id=eid, label=eid, auth_type="api_key", priority=0,
+def _entry(eid, url, priority=0):
+    return PooledCredential(provider="openai", id=eid, label=eid, auth_type="api_key", priority=priority,
                             source=f"env:{eid}", access_token=f"key-{eid}", base_url=url)
 
 
@@ -54,3 +54,15 @@ def test_rotation_on_mixed_pool_never_rebinds_to_an_entry_for_another_endpoint()
     assert (agent.api_key, agent.base_url, agent._credential_pool_entry_id) == ("key-az", _AZURE, "az")
     # The failed Azure entry is still benched; only the swap onto the wrong host was refused.
     assert next(e for e in pool.entries() if e.id == "az").last_status == "exhausted"
+
+
+def test_rotation_on_mixed_pool_takes_the_backup_for_the_sessions_endpoint():
+    pool = CredentialPool("openai", [_entry("az", _AZURE), _entry("pub", _PUBLIC, 1), _entry("az2", _AZURE, 2)])
+    agent = _AzureChild(pool)
+
+    recovered, _ = recover_with_credential_pool(
+        agent, status_code=429, has_retried_429=True, error_context={"message": "Rate limit"},
+    )
+
+    assert recovered is True
+    assert (agent.api_key, agent.base_url, agent._credential_pool_entry_id) == ("key-az2", _AZURE, "az2")

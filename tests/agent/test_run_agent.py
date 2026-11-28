@@ -5443,7 +5443,7 @@ class TestCredentialPoolRecovery:
                 status_code,
                 error_context=None,
                 api_key_hint=None,
-                failure_reason=None,
+                failure_reason=None, endpoint_url=None,
             ):
                 assert status_code == 402
                 assert error_context is None
@@ -5476,7 +5476,7 @@ class TestCredentialPoolRecovery:
 
             def mark_exhausted_and_rotate(
                 self, *, status_code, error_context=None, api_key_hint=None,
-                failure_reason=None,
+                failure_reason=None, endpoint_url=None,
             ):
                 assert status_code == 429
                 assert error_context is None

@@ -2174,8 +2174,8 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
         error_context: Optional[dict[str, Any]] = None,
         api_key_hint: Optional[str] = None,
         credential_id: Optional[str] = None,
-        failure_reason: Optional[str] = None,
-        model: Optional[str] = None,
+        failure_reason: Optional[str] = None, model: Optional[str] = None,
+        endpoint_url: Optional[str] = None,
     ) -> Optional[PooledCredential]:
         with self._lock:
             identity_supplied = bool(credential_id or api_key_hint)
@@ -2196,7 +2196,7 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
                 self._cool_down_model(entry, model, error_context, failure_reason=failure_reason)
                 logger.info("credential pool: %s unavailable for model %s; other models stay available", _label, model)
                 self._current_id = None
-                next_entry, _pending = self._select_unlocked(refresh=False, model=model)
+                next_entry, _pending = self._select_unlocked(refresh=False, model=model, endpoint_url=endpoint_url)
                 return next_entry
             self._mark_exhausted(entry, status_code, error_context, failure_reason=failure_reason)
             # A 402/429/401 is a key-level failure, and the same key can back
@@ -2227,7 +2227,7 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
             else:
                 logger.info("credential pool: marking %s exhausted (status=%s), rotating", _label, status_code)
             self._current_id = None
-            next_entry, _pending = self._select_unlocked(refresh=False)
+            next_entry, _pending = self._select_unlocked(refresh=False, model=model, endpoint_url=endpoint_url)
             if next_entry is not None and next_entry.id == entry.id:
                 # No-recovery guard (#97315): selection handed back the very entry that was
                 # just marked (the auth-store sync adopted fresher tokens, or a quota probe

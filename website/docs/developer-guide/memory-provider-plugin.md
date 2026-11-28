@@ -213,6 +213,8 @@ create/rename request on every surface, so do network work on a background threa
 `plugins.isolation: host` they run in a plugin host of their own, separate from the profile's shared host
 and stopped when they return, so module-level state from the shared host's import isn't visible to them.
 
+The per-turn hooks (`on_turn_start`, `prefetch`, `queue_prefetch`, `sync_turn`) run only for user-originated turns: a turn the host typed with a display kind when it arrived (a notice, a task result, a hidden prompt) is skipped. `on_session_end` and `on_pre_compress` receive the transcript as before.
+
 For native `replace` and `remove`, `metadata["previous_content"]` contains the full
 entry selected under the native-store lock. Notifications are emitted only after
 the complete write or batch succeeds. Batch notifications preserve operation order;

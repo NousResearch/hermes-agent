@@ -139,7 +139,10 @@ class DispatchResult:
     respawn_guarded: list[tuple[str, str]] = field(default_factory=list)
     """``(task_id, reason)`` skipped by the respawn guard: ``"blocker_auth"``
     (quota/auth error — also auto-blocked), ``"recent_success"`` (completed run
-    within guard window), ``"active_pr"`` (GitHub PR URL in a recent comment)."""
+    within guard window), ``"active_pr"`` (GitHub PR URL in a recent comment),
+    ``"rate_limit_streak"`` (the trailing run of rate-limited requeues spent
+    the budget — the card parks instead of respawning behind the quota
+    wall)."""
     rate_limited: list[str] = field(default_factory=list)
     """Task ids whose workers bailed on a provider rate-limit / quota wall
     (EX_TEMPFAIL sentinel exit) and were released to ``ready`` WITHOUT counting
@@ -971,6 +974,46 @@ def _protocol_violation_streak(conn: sqlite3.Connection, task_id: str) -> int:
     return streak
 
 
+# A rate-limited requeue records NO failure, so the consecutive-failure breaker
+# can never trip on that path: without a budget of its own, a card parked behind
+# a provider quota wall is respawned once per cooldown tick forever, burning
+# paid tokens on every attempt. Bound the trailing run of ``rate_limited``
+# outcomes instead. ``HERMES_KANBAN_RATE_LIMIT_MAX_STREAK=0`` disables it.
+_RATE_LIMIT_STREAK_FAILURE_LIMIT = 3
+
+# Closed runs to walk when counting the streak (same bound as the violation one).
+_RATE_LIMIT_STREAK_SCAN_LIMIT = 50
+
+
+def _resolve_rate_limit_streak_limit() -> int:
+    """``HERMES_KANBAN_RATE_LIMIT_MAX_STREAK`` (0 = unbounded) else the default."""
+    return _kb._env_int(
+        "HERMES_KANBAN_RATE_LIMIT_MAX_STREAK", _RATE_LIMIT_STREAK_FAILURE_LIMIT,
+    )
+
+
+def _rate_limit_streak(conn: sqlite3.Connection, task_id: str) -> int:
+    """Count the task's trailing run of ``rate_limited`` outcomes.
+
+    Read from durable ``task_runs`` rows, so a gateway restart cannot reset the
+    counter mid-loop. Any other closed outcome breaks the streak: a real run
+    (success or failure) supersedes the quota wall, so the budget never
+    accumulates across unrelated attempts.
+    """
+    streak = 0
+    rows = conn.execute(
+        "SELECT outcome FROM task_runs "
+        "WHERE task_id = ? AND ended_at IS NOT NULL "
+        "ORDER BY id DESC LIMIT ?",
+        (task_id, _RATE_LIMIT_STREAK_SCAN_LIMIT),
+    ).fetchall()
+    for row in rows:
+        if (row["outcome"] or "") != "rate_limited":
+            break
+        streak += 1
+    return streak
+
+
 WORKER_OUTPUT_SEP = " Worker's last output: "  # dead-worker error text: our words, then the worker's
 _PROTOCOL_VIOLATION_ERROR = (
     # Worker subprocess returned 0 but its task is still ``running`` in the DB — it exited without calling
@@ -1493,6 +1536,29 @@ def _record_task_failure(
         return True
 
 
+def _park_rate_limit_streak(conn: sqlite3.Connection, task_id: str, streak: int, limit: int) -> None:
+    """Block a card whose rate-limit streak spent the budget — sticky.
+
+    A quota wall is not a card fault, so ``consecutive_failures`` is left
+    untouched: the ``gave_up`` payload's ``sticky`` flag is what holds the card
+    for an operator (``recompute_ready`` honours it), exactly like a bounded
+    policy trip.
+    """
+    conn.execute(
+        "UPDATE tasks SET status = 'blocked', "
+        "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL "
+        "WHERE id = ? AND status IN ('running', 'ready', 'review')",
+        (task_id,),
+    )
+    _kb._append_event(conn, task_id, "gave_up", {
+        "rate_limited_streak": streak,
+        "effective_limit": limit,
+        "limit_source": "HERMES_KANBAN_RATE_LIMIT_MAX_STREAK",
+        "error": "provider rate limit outlasted the retry budget",
+        "sticky": True,
+    })
+
+
 def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int, *, run_id=None, claim_lock=None) -> None:
     """Publish the launcher only while this claim has no executing worker yet, together with its
     restart-stable fingerprint (``_process_fingerprint``); the ``spawned`` event carries both. The
@@ -1566,7 +1632,10 @@ def check_respawn_guard(
     ``"rate_limit_cooldown"`` (latest run ``rate_limited`` within the cooldown;
     checked BEFORE ``blocker_auth`` because the requeue stamps a quota-flavored
     ``last_failure_error`` that would otherwise park the task forever — that
-    path never increments ``consecutive_failures``), ``"blocker_auth"``
+    path never increments ``consecutive_failures``), ``"rate_limit_streak"``
+    (that run of retries spent ``HERMES_KANBAN_RATE_LIMIT_MAX_STREAK``: the
+    dispatch site parks the card ``blocked`` sticky so it stops respawning while
+    the quota wall lasts), ``"blocker_auth"``
     (quota/auth pattern; the breaker still trips eventually), then for the
     ready lane only ``"recent_success"`` (completed run within the window, unless
     a re-queue event arrived after it — a deliberate re-run) and ``"active_pr"``
@@ -1603,6 +1672,12 @@ def check_respawn_guard(
     if rl_cooldown > 0 and ended_at is not None and (now - ended_at) < rl_cooldown:
         return "infrastructure_cooldown"
     if latest_run is not None and latest_run["outcome"] == "rate_limited":
+        rl_streak_limit = _resolve_rate_limit_streak_limit()
+        if rl_streak_limit > 0 and _rate_limit_streak(conn, task_id) >= rl_streak_limit:
+            # Quota wall outlasted the budget: halt the respawn instead of
+            # trying again. This path records no failure, so the
+            # consecutive-failure breaker would never see it.
+            return "rate_limit_streak"
         if rl_cooldown <= 0:
             # Cooldown disabled — respawn immediately, skipping blocker_auth so
             # the stamped rate-limit text doesn't re-trap the task.
@@ -1611,8 +1686,8 @@ def check_respawn_guard(
         if ended_at is not None and (now - ended_at) < rl_cooldown:
             return "rate_limit_cooldown"
         # Cooldown elapsed — return early so blocker_auth doesn't catch the
-        # stamped rate-limit text; this path intentionally retries forever
-        # (spaced by the cooldown) until quota returns or a real run supersedes it.
+        # stamped rate-limit text. Retries are spaced by the cooldown and bounded
+        # by the streak budget above; a real run supersedes the quota wall.
         return None
 
     # 2. Quota / auth blocker: retrying immediately will not help.  A plain
@@ -2110,7 +2185,16 @@ def _dispatch_lane_task(
         # owned by ``kanban.default_assignee``, not "unassigned but secretly routed".
         if not dry_run:
             with _kb.write_txn(conn):
-                _kb._append_event(conn, task_id, "respawn_guarded", {"reason": guard_reason})
+                if guard_reason == "rate_limit_streak":
+                    # Park it: a card held forever in ``ready`` looks stuck and
+                    # gets respawned on the next tick anyway.
+                    _park_rate_limit_streak(
+                        conn, task_id,
+                        _rate_limit_streak(conn, task_id),
+                        _resolve_rate_limit_streak_limit(),
+                    )
+                else:
+                    _kb._append_event(conn, task_id, "respawn_guarded", {"reason": guard_reason})
         return False
 
     def _count_spawn(name: str) -> None:

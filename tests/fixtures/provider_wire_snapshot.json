@@ -11555,7 +11555,8 @@
      "role": "user"
     }
    ],
-   "model": "mimo-v2-pro",
+   "model": "mimo-v2.6-pro",
+   "reasoning_effort": "high",
    "timeout": 1800.0,
    "tools": [
     {
@@ -11578,8 +11579,13 @@
     }
    ]
   },
-  "model": "mimo-v2-pro",
+  "model": "mimo-v2.6-pro",
   "off": {
+   "extra_body": {
+    "thinking": {
+     "type": "disabled"
+    }
+   },
    "messages": [
     {
      "content": "You are a test agent.",
@@ -11614,7 +11620,7 @@
      "role": "user"
     }
    ],
-   "model": "mimo-v2-pro",
+   "model": "mimo-v2.6-pro",
    "timeout": 1800.0,
    "tools": [
     {
@@ -11638,6 +11644,11 @@
    ]
   },
   "unset": {
+   "extra_body": {
+    "thinking": {
+     "type": "enabled"
+    }
+   },
    "messages": [
     {
      "content": "You are a test agent.",
@@ -11672,7 +11683,7 @@
      "role": "user"
     }
    ],
-   "model": "mimo-v2-pro",
+   "model": "mimo-v2.6-pro",
    "timeout": 1800.0,
    "tools": [
     {

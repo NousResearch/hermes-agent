@@ -1,0 +1,16 @@
+name: memleaf
+title: Memleaf
+repo: https://github.com/miffyblueboo/memleaf
+sha: 2cd3be475b90fb54b68a3f1abcc5b1f34424da65
+subdir: src/memleaf/hermes_provider
+description: "Local-first Markdown memory provider for Hermes and Memleaf MCP clients. Disclosure: uses a separately installed, version-matched local MCP process and stores eligible visible conversation text in a configured Vault. Cloud processing is opt-in in the catalog setup and sends eligible processing inputs to the model endpoint you configure."
+maintainer: miffyblueboo
+tier: community
+category: memory
+version: "1.1.1"
+docs_url: https://github.com/miffyblueboo/memleaf/blob/2cd3be475b90fb54b68a3f1abcc5b1f34424da65/src/memleaf/hermes_provider/README.md
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

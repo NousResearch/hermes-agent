@@ -107,11 +107,13 @@ def test_soft_interrupt_with_tool_reason_is_attributed_to_the_system():
     from unittest.mock import patch
 
     import agent.tool_executor as te
+    from tools.clarify_gateway import ClarifyWaitScope
 
     agent = _bare_agent()
     agent._touch_activity = lambda *_: None
     batch = SimpleNamespace(authorization_gate=te._ConcurrentToolAuthorizationGate(), executor=None, close=lambda: None)
-    prepared = SimpleNamespace(batch=batch, tids=[], future=concurrent.futures.Future())
+    # Stands in for a _TerminalSlot, which owns its call's clarify wait scope.
+    prepared = SimpleNamespace(batch=batch, tids=[], future=concurrent.futures.Future(), clarify_scope=ClarifyWaitScope())
     try:
         # Drive the REAL batch-timeout guard: a prepared terminal call whose worker never settles.
         with (

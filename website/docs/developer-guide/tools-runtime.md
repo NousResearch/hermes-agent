@@ -152,6 +152,65 @@ Return result string (or JSON error)
 [Plugin post-hook] → invoke_hook("post_tool_call", ...)
 ```
 
+### Executor abandonment and nested Clarify
+
+A plugin invoking `clarify` still has its outer tool's finite executor deadline;
+waiting for an answer does not exempt arbitrary plugin work from that deadline or
+borrow approval-only human-wait accounting. The platform callback is framework
+context, never a value supplied in model arguments. A background fork (the
+background review, `/btw`, a plugin's `ctx.fork_session`) is built without one,
+so a handler running inside it receives no `clarify_callback` and a nested
+`clarify` fails closed; a fork that needs the user hands off to a live turn
+(`ctx.inject_message`).
+
+Sequential and concurrent workers bind a call-local Clarify wait scope. Prepared
+terminal workers create it before middleware/consent preparation; the sequential
+executor reuses that same scope with their future, and batch closure cancels all
+of its slots. When an executor abandons that call, it removes and wakes only that scope's gateway
+registrations. Registration and cancellation share the queue lock, so a late
+callback cannot leave a new actionable prompt. A gateway waiter receives the
+existing cancellation sentinel so the platform can retire its card and disarm
+late-delivery watchers. Before returning to plugin code, `clarify_tool` raises the
+internal `ClarifyWaitAbandoned` control-flow exception; the executor catches it.
+It deliberately bypasses ordinary `Exception`-to-tool-error wrapping: an abandoned
+answer (or callback error) must not resume the plugin as a normal result. This is
+not the session `/stop` signal and does not clear unrelated prompts. An
+already-abandoned call shows no prompt, so `on_human_input_request` does not fire;
+a prompt that was shown still fires `on_human_input_resolved` exactly once, with
+the callback's outcome (`cancelled` from a gateway wait the executor abandoned).
+An MCP server's form elicitation asks through the same callback, but on the MCP
+loop, outside the worker: for an abandoned call it answers the server `cancel`
+instead of raising into the MCP SDK.
+
+Concurrent workers and their executor share a call-local terminal-event claim:
+the first `post_tool_call` event wins. Hooks are not deferred or reordered:
+`post_tool_call` still precedes `transform_tool_result` in the worker. If timeout
+wins before dispatch finishes, later worker events are suppressed. If dispatch
+already emitted its terminal event before outer middleware stalls, that event
+cannot be retracted; the model-facing outer result may still time out, without a
+second terminal event. Sequential registry calls retain their existing
+outer-owned terminal-event suppression.
+
+Delivery failure releases only its exact prompt, never every prompt in the
+session. A fallback send checks ownership under the queue lock when scheduled, and
+initial and fallback sends check when their coroutine starts; neither posts anything
+for a prompt that is no longer pending. An answered prompt needs no card: its send
+counts as done and the waiter returns the answer. A prompt cancelled, cleared by
+another turn's teardown, or abandoned resolves as a withdrawn card, so the tool
+reports `cancelled`, not a send failure or a timeout. A native card that waits for
+its explanation's send checks once more just before it posts: a prompt whose owner
+was abandoned during that wait is withdrawn like a cancelled one, so no card and
+no text fallback go out. The text fallback keeps its
+human-decision `is_approval_prompt` marker, so it is still pushed on Telegram.
+A boundary/flush wait cannot cause an already-abandoned worker to start a new prompt.
+A send already in flight when abandonment occurs may still reach the platform;
+this mechanism does not claim network rollback.
+
+This is cooperative settlement, not general thread termination. Non-cooperating
+plugin code can still outlive its deadline and its effects remain unknown; the
+executor must not wait indefinitely for it or claim rollback. Normal submitted
+answers and platform cancellation keep their existing results.
+
 ### Error wrapping
 
 All tool execution is wrapped in error handling at two levels:

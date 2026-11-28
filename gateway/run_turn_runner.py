@@ -704,8 +704,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         """One card: register, send, wait, then retire it (no answer) or re-arm (answer).
         Returns ``(response, answered)``; the caller decides what "no answer" means."""
         from gateway.run_turn_runner_clarify_delivery import (
-            UNDELIVERED_NO_SURFACE, _clarify_send_then_wait, text_fallback_coro)
+            UNDELIVERED_NO_SURFACE, _clarify_send_then_wait, send_clarify_if_pending, text_fallback_coro)
         from tools import clarify_gateway as clarify_mod
+        from functools import partial
         import uuid
         ctx = self._ctx
         if not ctx._status_adapter:
@@ -745,7 +746,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         except Exception:
             logger.debug("Stream-consumer flush before clarify prompt failed", exc_info=True)
         fut = self._schedule(
-            self._send_shared_clarify(entry, **send_kwargs),
+            send_clarify_if_pending(partial(self._send_shared_clarify, entry), **send_kwargs),
             "Clarify send failed to schedule",
         )
         # Boundary rule (see _approval_send_outcome): a send timeout is AMBIGUOUS — the card may

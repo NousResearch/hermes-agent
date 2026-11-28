@@ -354,11 +354,16 @@ class ElicitationHandler:
         decline there) with the consent content that answer can honestly fill."""
         from tools import approval_context as _ctx
         from tools.approval_prompt import request_elicitation_consent
+        from tools.clarify_gateway import ClarifyWaitAbandoned, check_wait_scope
         from tools.mcp_elicitation_form import FormOutcome, ask_form, current_form_asker
 
         asker = current_form_asker()
         if asker is not None and not _ctx._no_user_can_answer():
-            return ask_form(asker, self.server_name, message, schema, ended)
+            try:  # an abandoned tool call answers the server cancel, never unwinds into its SDK
+                check_wait_scope()  # before the form opens, so observers see no prompt
+                return ask_form(asker, self.server_name, message, schema, ended)
+            except ClarifyWaitAbandoned:
+                return FormOutcome("cancel")
         answer = request_elicitation_consent(message, _format_elicitation_schema_summary(schema, self.server_name),
                                              timeout_seconds=int(self.timeout),
                                              surface=f"mcp-elicitation/{self.server_name}")

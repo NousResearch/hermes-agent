@@ -32,6 +32,19 @@ SEND_ACK_WINDOW = 15
 WITHDRAWN = "clarify_withdrawn"
 
 
+async def send_clarify_if_pending(send, **send_kwargs):
+    """Send only while the prompt is pending, checked when the coroutine starts: queued sends can
+    outlive their owner. A settled prompt posts nothing. An answered one needs no card, so the send
+    counts as done and its waiter returns the answer. Any other (cancelled, cleared by another turn's
+    teardown, owner abandoned) resolves as a withdrawn card, so its waiter reports ``cancelled``."""
+    from gateway.platforms.base import SendResult
+    from tools import clarify_gateway
+    clarify_id = send_kwargs["clarify_id"]
+    if clarify_gateway.run_if_pending(clarify_id, lambda: True):
+        return await send(**send_kwargs)
+    return SendResult(success=True) if clarify_gateway.answer_waiting(clarify_id) else withdrawn_result()
+
+
 def text_fallback_coro(adapter, **send_kwargs):
     """The base numbered-text ``send_clarify`` as a fresh coroutine, or ``None`` when the adapter has
     no native override — its ``send_clarify`` already IS the text path, so retrying it would only
@@ -41,12 +54,13 @@ def text_fallback_coro(adapter, **send_kwargs):
     if not isinstance(adapter, BasePlatformAdapter) \
             or type(adapter).send_clarify is BasePlatformAdapter.send_clarify:
         return None
+    from functools import partial
     # A human-decision prompt: Telegram's "important" mode must push it, not deliver it silently (#132516).
     metadata = {**(send_kwargs.pop("metadata", None) or {}), "is_approval_prompt": True}
-    return BasePlatformAdapter.send_clarify(adapter, metadata=metadata, **send_kwargs)
+    return send_clarify_if_pending(partial(BasePlatformAdapter.send_clarify, adapter), metadata=metadata, **send_kwargs)
 
 
-def _abort_for_outcome(outcome: str, *, session_key: str, clarify_mod) -> Optional[str]:
+def _abort_for_outcome(outcome: str, *, clarify_id: str, clarify_mod) -> Optional[str]:
     """Map a send outcome to the abort sentinel (registration torn down) or ``None`` (proceed to wait).
 
     Only a DEFINITIVE failure tears down the registration; ``ambiguous`` (card may have posted) stays armed
@@ -61,13 +75,11 @@ def _abort_for_outcome(outcome: str, *, session_key: str, clarify_mod) -> Option
             "Clarify prompt DECLINED by the connector's egress guard; "
             "clearing registration"
         )
-        clarify_mod.clear_session(session_key)
-        return UNDELIVERED_DECLINED
+        return UNDELIVERED_DECLINED if clarify_mod.cancel_prompt(clarify_id) else None
     if outcome == "failed":
         # Undeliverable: clear the registration and return the sentinel so the agent falls back, not hangs.
         logger.warning("Clarify send failed definitively; clearing registration")
-        clarify_mod.clear_session(session_key)
-        return UNDELIVERED
+        return UNDELIVERED if clarify_mod.cancel_prompt(clarify_id) else None
     if outcome == "ambiguous":
         logger.warning(
             "Clarify prompt send timed out — treating as possibly-delivered "
@@ -75,12 +87,12 @@ def _abort_for_outcome(outcome: str, *, session_key: str, clarify_mod) -> Option
     return None
 
 
-def _clarify_send_disposition(fut, *, session_key: str, clarify_mod) -> Optional[str]:
+def _clarify_send_disposition(fut, *, clarify_id: str, clarify_mod) -> Optional[str]:
     """Decide whether a clarify prompt send aborts the wait; returns the abort sentinel or ``None``."""
     from gateway.run import _approval_send_outcome
 
     return _abort_for_outcome(
-        _approval_send_outcome(fut, timeout=SEND_ACK_WINDOW), session_key=session_key, clarify_mod=clarify_mod)
+        _approval_send_outcome(fut, timeout=SEND_ACK_WINDOW), clarify_id=clarify_id, clarify_mod=clarify_mod)
 
 
 def _clarify_send_then_wait(fut, *, clarify_id: str, session_key: str, clarify_mod,
@@ -104,21 +116,23 @@ def _clarify_send_then_wait(fut, *, clarify_id: str, session_key: str, clarify_m
         return clarify_mod.CANCELLED, False
     if outcome == "failed" and fallback is not None:
         # The text prompt is the last resort: a late failure of ITS send has nothing to retry.
-        fut, fallback = fallback(), None
+        fut, fallback = clarify_mod.run_if_pending(clarify_id, fallback), None
         # ``None`` = the fallback could not even be scheduled; the card failure already stands,
         # so re-classifying would only log a misleading "no scheduling future".
         if fut is not None:
             outcome = _approval_send_outcome(fut, timeout=SEND_ACK_WINDOW)
         if outcome == "sent":
             logger.info("Clarify card undeliverable; plain-text prompt sent instead (id=%s)", clarify_id)
-    abort = _abort_for_outcome(outcome, session_key=session_key, clarify_mod=clarify_mod)
+    abort = _abort_for_outcome(outcome, clarify_id=clarify_id, clarify_mod=clarify_mod)
     if abort is not None:
         return abort, False
     late = _LateFailureWatch(fut, clarify_id=clarify_id, session_key=session_key,
                              clarify_mod=clarify_mod, fallback=fallback)
     timeout = clarify_mod.get_clarify_timeout()
-    response = clarify_mod.wait_for_response(clarify_id, timeout=float(timeout))
-    late.disarm()
+    try:
+        response = clarify_mod.wait_for_response(clarify_id, timeout=float(timeout))
+    finally:
+        late.disarm()
     if late.undeliverable:
         return late.undeliverable, False
     if response == clarify_mod.CANCELLED:
@@ -132,7 +146,7 @@ class _LateFailureWatch:
     """Watch a possibly-delivered card send: when it resolves as a definitive failure after the
     ack window, try the text fallback once, then release the waiter with the delivery notice.
 
-    Callbacks run on the gateway loop thread (the send future completes there); ``clear_session``
+    Callbacks run on the gateway loop thread (the send future completes there); ``cancel_prompt``
     wakes the agent thread blocked in ``wait_for_response`` and ``undeliverable`` (the delivery
     sentinel, or ``None`` while nothing definitive happened) tells it why.
     Armed only while the future is still pending: a sent card needs no watch."""
@@ -178,7 +192,10 @@ class _LateFailureWatch:
             # says so rather than the generic delivery failure.
             self._release(UNDELIVERED_DECLINED)
             return
-        fallback_fut = self._fallback() if self._fallback is not None else None
+        fallback_fut = (
+            self._clarify_mod.run_if_pending(self._clarify_id, self._fallback)
+            if self._fallback is not None else None
+        )
         if fallback_fut is None:
             self._release()
             return
@@ -193,8 +210,11 @@ class _LateFailureWatch:
         self._release()
 
     def _release(self, notice: str = UNDELIVERED) -> None:
-        self.undeliverable = notice
-        self._clarify_mod.clear_session(self._session_key)
+        def release():
+            # Publish the reason before waking the waiter, under the same ownership lock.
+            self.undeliverable = notice
+            self._clarify_mod.cancel_prompt(self._clarify_id)
+        self._clarify_mod.run_if_pending(self._clarify_id, release)
 
 
 def _withdrawn(fut) -> bool:
@@ -215,13 +235,17 @@ def withdrawn_result():
 def clarify_card_still_wanted(runner, entry) -> bool:
     """After the card's awaited explanation: False once the run went stale or the question was
     withdrawn meanwhile (cancelled, or cleared by ``/new`` / ``/stop``). An answered question keeps
-    posting as before: its waiter returns the answer either way."""
+    posting as before: its waiter returns the answer either way. A question whose owning tool call
+    was abandoned is withdrawn too: ``send_clarify_if_pending`` admitted the card before this wait,
+    and the same ownership rule as ``run_if_pending`` must still hold when it is about to post."""
     still_current = getattr(runner._ctx, "_run_still_current", None)
     if callable(still_current) and not still_current():
         return False
     if entry is None:
         return True
     from tools import clarify_gateway
+    if clarify_gateway.owner_abandoned(entry):
+        return False
     return not (entry.event.is_set() and entry.response == clarify_gateway.CANCELLED)
 
 

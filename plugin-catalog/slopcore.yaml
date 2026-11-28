@@ -1,0 +1,28 @@
+name: slopcore
+repo: https://github.com/ChrisAaronNewton/hermes-slopcore
+sha: 609f553abf5f9df57408ad0348ab464bc89ee0d6
+version: "0.1.0"
+description: Slopcore — the verified music-video pipeline as Hermes tools. Intake a finished
+  song plus character sheets (SHA-256 fingerprinted; a build cannot open without a song),
+  isolate the vocal stem through a hosted Demucs separator, align a wordmap to onsets
+  measured in the stem, fire ONE stem-fed performance insert behind a spend gate (the
+  batch stays locked until a hero insert passes a human full-screen eye), and verify the
+  finished film — exact frame count, manifest sums, master audio correlation, per-take
+  lag records. Gates fail closed: full-mix feeds and envelope-only sync claims are
+  rejected. The one paid stage (Pika reference-to-video) requires a caller-set ceiling.
+  Maintained by Chris Newton.
+maintainer: ChrisAaronNewton
+tier: community
+category: tools
+docs_url: https://github.com/ChrisAaronNewton/hermes-slopcore#readme
+capabilities:
+  provides_tools:
+    - slopcore_insert
+    - slopcore_intake
+    - slopcore_stem
+    - slopcore_verify
+    - slopcore_wordmap
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - PIKA_API_KEY

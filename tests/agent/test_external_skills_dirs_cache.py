@@ -81,6 +81,31 @@ def test_cache_invalidates_on_mtime_change(hermes_home_with_config):
 
 
 
+def test_symlink_retarget_and_late_dir_seen_without_config_edit(tmp_path, monkeypatch):
+    """A ``current`` symlink retargeted (or a dir created) after the first call is seen on the
+    next one even though config.yaml never changed."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    gen1, gen2, late = tmp_path / "gen1", tmp_path / "gen2", tmp_path / "late"
+    gen1.mkdir()
+    gen2.mkdir()
+    current = tmp_path / "current"
+    current.symlink_to(gen1)
+    (home / "config.yaml").write_text(
+        f"skills:\n  external_dirs:\n    - {current}\n    - {late}\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    _external_dirs_cache_clear()
+    assert get_external_skills_dirs() == [gen1.resolve()]
+
+    tmp_link = tmp_path / "current.new"
+    tmp_link.symlink_to(gen2)
+    os.replace(tmp_link, current)
+    late.mkdir()
+    assert get_external_skills_dirs() == [gen2.resolve(), late.resolve()]
+    _external_dirs_cache_clear()
+
+
 def test_cache_key_is_per_config_path(tmp_path, monkeypatch):
     """Two different HERMES_HOMEs keep separate cache entries."""
     home_a = tmp_path / "home_a" / ".hermes"

@@ -9,6 +9,7 @@ with ``RedactingFormatter`` so secrets never reach disk.
 import atexit
 import contextlib
 import copy
+import errno
 import io
 import logging
 import os
@@ -231,7 +232,7 @@ def _warn_windows_lock_timeout_once() -> None:
 def _is_unavailable_log_stream(exc: BaseException | None) -> bool:
     """True when a file handler lost its backing stream during teardown or I/O."""
     return (
-        (isinstance(exc, OSError) and exc.errno == 5)
+        (isinstance(exc, OSError) and exc.errno in (errno.EIO, errno.ENOSPC))
         or (isinstance(exc, ValueError) and "closed file" in str(exc).lower())
     )
 

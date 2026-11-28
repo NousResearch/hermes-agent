@@ -2747,36 +2747,6 @@ def _is_secret_config_key(key: str) -> bool:
     return leaf in _SECRET_CONFIG_KEYS or leaf.endswith(_SECRET_CONFIG_KEY_SUFFIXES)
 
 
-def edit_config():
-    """Open config file in user's editor."""
-    if is_managed():
-        managed_error("edit configuration")
-        return
-    if not supports_file_tooling():
-        # Exits 1 (unlike the managed refusal above, which every managed_error caller shares):
-        # a script must not read this refusal as a successful edit.
-        _exit_invalid("`hermes config edit` opens the local config file, and this config backend has none. "
-                      "Use `hermes config set <key> <value>` instead.")
-    config_path = get_config_path()
-    if not config_path.exists():  # config-reader: ok — file tooling, gated on supports_file_tooling()
-        seed_config_file(config_path)
-        print(f"Created {config_path}")
-
-    # Windows lands on notepad even without Git Bash/nano; POSIX prefers nano/vim, which headless
-    # servers are more likely to have.
-    candidates = (['notepad', 'code', 'vim', 'vi', 'nano'] if sys.platform == "win32"
-                  else ['nano', 'vim', 'vi', 'code', 'notepad'])
-    editor = os.getenv('EDITOR') or os.getenv('VISUAL') or next(
-        (cmd for cmd in candidates if shutil.which(cmd)), None)
-    if not editor:
-        print("No editor found. Config file is at:")
-        print(f"  {config_path}")
-        return
-
-    print(f"Opening {config_path} in {editor}...")
-    subprocess.run([editor, str(config_path)], check=False)
-
-
 def _default_value_for_key(dotted_key: str):
     """Return the leaf value declared for *dotted_key* in ``DEFAULT_CONFIG`` (None for dicts/misses)."""
     node = cfg_get(DEFAULT_CONFIG, *_split_key_path(dotted_key))
@@ -3533,10 +3503,15 @@ def _cmd_config_show() -> None:
     show_config()
 
 
+def _cmd_config_edit() -> None:
+    from hermes_cli.config_edit import edit_config
+    edit_config()
+
+
 _CONFIG_SUBCOMMANDS = {
     None: lambda args: _cmd_config_show(),
     "show": lambda args: _cmd_config_show(),
-    "edit": lambda args: edit_config(),
+    "edit": lambda args: _cmd_config_edit(),
     "get": _cmd_config_get,
     "set": _cmd_config_set,
     "unset": _cmd_config_unset,

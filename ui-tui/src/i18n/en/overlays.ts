@@ -14,6 +14,7 @@ export const overlaysEn = {
       session: 'Allow this session',
       always: 'Always allow',
       deny: 'Deny',
+      hold: 'Hold (discuss first)',
       tell: 'No, and tell Hermes what to do instead',
       tellHint: 'type what Hermes should do instead · Enter deny and send · Esc back'
     },

@@ -521,11 +521,15 @@ export function useComposerActions({
       let paths: string[]
 
       try {
-        paths = await selectDesktopPaths({
-          title: kind === 'file' ? 'Add files as context' : 'Add folders as context',
-          defaultPath: currentCwd || undefined,
-          directories: kind === 'folder'
-        })
+        paths = await selectDesktopPaths(
+          {
+            title: kind === 'file' ? 'Add files as context' : 'Add folders as context',
+            defaultPath: currentCwd || undefined,
+            directories: kind === 'folder'
+          },
+          // A Bot chat's remote folders are browsed as the Bot, not the window's profile.
+          activeSessionId ? { sessionId: activeSessionId } : undefined
+        )
       } catch (err) {
         // As in pickImages: the browser stages a pick before returning its path, and a refused
         // stage (a file over the upload limit) is reported here, not left as an unhandled rejection.
@@ -551,7 +555,7 @@ export function useComposerActions({
         })
       }
     },
-    [attachToMain, copy.attachFailed, currentCwd]
+    [activeSessionId, attachToMain, copy.attachFailed, currentCwd]
   )
 
   const insertContextPathInlineRef = useCallback(

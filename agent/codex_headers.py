@@ -18,6 +18,17 @@ from urllib.parse import urlparse
 
 CODEX_AUX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 
+# Response fields Hermes never reads, so the official backend may leave them out of the SSE
+# stream: the echoed request tool catalog (repeated on every lifecycle frame), per-item usage
+# attribution, delta sequence numbers and the reasoning ciphertext on ``output_item.added`` (replay
+# takes it from ``output_item.done``). Same defaults as openai/codex#62863/#63219/#63461/#63479. A
+# user ``model.default_headers`` value wins; an empty one opts out.
+CODEX_STREAM_EXCLUSIONS = {
+    "x-codex-exclude": "tools,usage.attribution",
+    "x-codex-exclude-stream-fields": "delta.sequence_number,reasoning.added.encrypted_content",
+}
+_EXCLUSION_NAMES = frozenset(CODEX_STREAM_EXCLUSIONS)
+
 logger = logging.getLogger(__name__)
 
 
@@ -36,19 +47,22 @@ def is_official_codex_base_url(base_url: str) -> bool:
         return False
 
 
-def codex_cloudflare_headers(access_token: str, *, base_url: str = CODEX_AUX_BASE_URL) -> dict[str, str]:
+def codex_cloudflare_headers(access_token: str, *, base_url: str = CODEX_AUX_BASE_URL,
+                             stream_exclusions: bool = True) -> dict[str, str]:
     """Identity and account headers for chatgpt.com/backend-api/codex.
 
     OpenAI requires third-party harnesses to identify themselves: the official
     endpoint gets Hermes' originator and version, custom endpoints keep the
     codex_cli_rs compatibility identity. The account headers come from the
-    OAuth JWT (see :func:`codex_account_headers`).
+    OAuth JWT (see :func:`codex_account_headers`). ``stream_exclusions`` adds
+    :data:`CODEX_STREAM_EXCLUSIONS` (Responses clients); non-Responses callers pass False.
     """
     if is_official_codex_base_url(base_url):
         from hermes_cli.version_info import get_version_info
         headers = {
             "User-Agent": f"HermesAgent/{get_version_info().base_version}",
             "originator": "hermes-agent",
+            **(CODEX_STREAM_EXCLUSIONS if stream_exclusions else {}),
         }
     else:
         headers = {"User-Agent": "codex_cli_rs/0.0.0 (Hermes Agent)", "originator": "codex_cli_rs"}
@@ -219,9 +233,11 @@ def apply_required_codex_headers(client_kwargs: dict[str, Any], *, access_token:
     """Keep required Codex identity after user/provider header overrides."""
     if not is_official_codex_base_url(base_url):
         return
-    required = codex_cloudflare_headers(access_token, base_url=base_url)
-    required_names = {name.lower() for name in required}
     existing = client_kwargs.get("default_headers") or {}
+    overridden = {str(name).lower() for name in existing} & _EXCLUSION_NAMES
+    required = {name: value for name, value in codex_cloudflare_headers(access_token, base_url=base_url).items()
+                if name not in overridden}
+    required_names = {name.lower() for name in required}
     client_kwargs["default_headers"] = {
         **{name: value for name, value in existing.items() if str(name).lower() not in required_names},
         **required,

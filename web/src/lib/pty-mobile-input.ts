@@ -77,6 +77,12 @@ export function shouldTreatInputAsMobileReplacement(
   data: string | null | undefined,
   isMobileLike: boolean,
 ): boolean {
+  // Line-replacement normalisation models Gboard's predictive-text swap. On a
+  // desktop the *same* input types are simply how every CJK IME commits text,
+  // so applying it there rewrites or duplicates plain commits (issue #106487).
+  if (!isMobileLike) {
+    return false;
+  }
   if (
     inputType === "insertReplacementText" ||
     inputType === "insertFromComposition" ||
@@ -84,7 +90,7 @@ export function shouldTreatInputAsMobileReplacement(
   ) {
     return true;
   }
-  return isMobileLike && inputType === "insertText" && (data?.length ?? 0) > 1;
+  return inputType === "insertText" && (data?.length ?? 0) > 1;
 }
 
 export function updatePtyInputLine(currentLine: string, data: string): string {

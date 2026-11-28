@@ -168,6 +168,11 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
             keys = [task] if task in bs._active_sessions else []
         else:
             keys = [key for key in bs._active_sessions if key == task or bs.owner_task_id(key) == task]
+    # browser_exec attaches its CDP supervisor under the bare task id with or without a session record
+    # (a browser.cdp_url override records none), so no key above may name it. Close it before any
+    # session tears its endpoint down.
+    from tools.browser_session_cdp import stop_cdp_supervisor
+    stop_cdp_supervisor(task)
     for key in keys:
         cleanup_single_session(key)
     if not keys:

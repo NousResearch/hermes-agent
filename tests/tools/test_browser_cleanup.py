@@ -44,6 +44,32 @@ class TestBrowserCleanup:
         assert "task-1" not in bs._session_last_activity
         mock_stop.assert_called_once_with("task-1")
 
+    def test_cleanup_browser_stops_a_supervisor_with_no_session_record(self, monkeypatch):
+        """browser_exec on a ``browser.cdp_url`` override attaches the task's CDP supervisor but records
+        no session, so per-turn cleanup must still stop it or it stays attached until gateway restart."""
+        from tools.browser_supervisor import SUPERVISOR_REGISTRY
+        task, stopped = "cron:job:exec", []
+        monkeypatch.setitem(SUPERVISOR_REGISTRY._by_task, task, SimpleNamespace(stop=lambda: stopped.append(task)))
+
+        lifecycle.cleanup_browser(task)
+
+        assert stopped == [task]
+        assert SUPERVISOR_REGISTRY.get(task) is None
+
+    def test_cleanup_browser_stops_the_task_supervisor_before_its_tagged_sessions(self, monkeypatch):
+        """The supervisor lives under the bare task id while browser_exec's session is keyed
+        ``<task>@<home>``; it must close before the session tears the endpoint down."""
+        from tools.browser_supervisor import SUPERVISOR_REGISTRY
+        order = []
+        bs._active_sessions["task-1@home"] = {"session_name": "s"}
+        monkeypatch.setattr(lifecycle, "cleanup_single_session", lambda key: order.append(("session", key)))
+        monkeypatch.setitem(SUPERVISOR_REGISTRY._by_task, "task-1",
+                            SimpleNamespace(stop=lambda: order.append(("supervisor", "task-1"))))
+
+        lifecycle.cleanup_browser("task-1")
+
+        assert order == [("supervisor", "task-1"), ("session", "task-1@home")]
+
 
     def test_emergency_cleanup_clears_all_tracking_state(self):
         bs._cleanup_done = False

@@ -649,6 +649,78 @@ class TestRateLimitCooldown:
         result = agent._restore_primary_runtime()
         assert result is False
         assert agent._fallback_activated is True  # still on fallback
+        assert agent._fallback_index == 1  # #24996: index preserved during cooldown
+
+    def test_exhausted_chain_preserves_index_during_cooldown(self):
+        """Prior-turn chain exhaustion must not reset _fallback_index while
+        cooldown is active (#24996 bounded-replay guarantee)."""
+        agent = _make_agent(
+            fallback_model=[
+                {"provider": "openrouter", "model": "model-a"},
+                {"provider": "anthropic", "model": "model-b"},
+            ],
+        )
+        mock_client = _mock_resolve()
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
+            assert agent._try_activate_fallback() is True
+            assert agent._try_activate_fallback() is True
+            assert agent._try_activate_fallback() is False
+
+        assert agent._fallback_index == 2
+        assert agent._fallback_activated is True
+        from agent.chat_completion_helpers import _FALLBACK_EXHAUSTED_COOLDOWN_S
+        window = _FALLBACK_EXHAUSTED_COOLDOWN_S
+        frozen = 1_000.0
+        agent._rate_limited_until = frozen + window
+
+        # A sub-window retry loop re-drives the exhausted walk. Without the fix this
+        # re-arms via max() each time and the primary is never restorable (#57582).
+        with (
+            patch("agent.chat_completion_helpers.time.monotonic", return_value=frozen + 1.0),
+            patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)),
+        ):
+            assert agent._try_activate_fallback() is False
+            assert agent._try_activate_fallback() is False
+        assert agent._rate_limited_until == frozen + window  # not extended
+
+        with patch("agent.chat_completion_helpers.time.monotonic", return_value=frozen + 1.0):
+            assert agent._restore_primary_runtime() is False
+        assert agent._fallback_activated is True
+        assert agent._fallback_index == 2  # #24996: preserved, not reset
+        assert agent._has_pending_fallback() is False
+
+        # Once the ORIGINAL window expires the primary restores.
+        with (
+            patch("agent.chat_completion_helpers.time.monotonic", return_value=frozen + window + 0.1),
+            patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()),
+        ):
+            assert agent._restore_primary_runtime() is True
+        assert agent._fallback_index == 0
+        assert agent._fallback_activated is False
+
+    def test_exhausted_chain_resets_index_after_cooldown_expires(self):
+        """Once cooldown expires, restore resets the chain for a fresh walk (#57582)."""
+        agent = _make_agent(
+            fallback_model=[
+                {"provider": "openrouter", "model": "model-a"},
+                {"provider": "anthropic", "model": "model-b"},
+            ],
+        )
+        mock_client = _mock_resolve()
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
+            assert agent._try_activate_fallback() is True
+            assert agent._try_activate_fallback() is True
+            assert agent._try_activate_fallback() is False
+
+        assert agent._fallback_index == 2
+        assert agent._fallback_activated is True
+        agent._rate_limited_until = time.monotonic() - 1  # expired
+
+        with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
+            assert agent._restore_primary_runtime() is True
+        assert agent._fallback_activated is False
+        assert agent._fallback_index == 0
+        assert agent._has_pending_fallback() is True
 
 
     def test_cooldown_set_on_rate_limit_reason(self):

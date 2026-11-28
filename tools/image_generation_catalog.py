@@ -390,6 +390,18 @@ FAL_MODELS: dict[str, dict[str, Any]] = {
         },
         max_reference_images=1, edit_image_param="image_url",
     ),
+    # 2K is the cheapest tier ($0.063; 4K $0.094, 8K $0.157). Unlike v3 the edit endpoint takes an
+    # `image_urls` list (up to 10 refs). No seed/output_format/negative_prompt in the vendor schema.
+    # Edits omit aspect_ratio (vendor default "auto" follows the input image).
+    "kling/v4/text-to-image": _model(
+        "Kling Image 4.0", "~45s", "Kuaishou. Native 2K-8K, real text rendering, 10-ref edits", "$0.063/image (2K)",
+        style="aspect_ratio",
+        defaults={"num_images": 1, "resolution": "2K"},
+        supports={"prompt", "aspect_ratio", "num_images", "resolution", "sync_mode"},
+        edit_endpoint="kling/v4/image-to-image",
+        edit_supports={"prompt", "image_urls", "num_images", "resolution", "sync_mode"},
+        max_reference_images=10,
+    ),
     "meta/muse-image/text-to-image": _model(
         "Meta Muse Image", "~5s", "Meta. Realism + typography at commodity price", "$0.01/image",
         style="aspect_ratio",

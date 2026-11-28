@@ -218,7 +218,7 @@ def _validate_client_redirect_uri(uri: str) -> str:
 
 def _start_loopback_receiver(flow) -> http.server.HTTPServer:
     """Bind the single backend-hosted one-shot receiver and feed its callback into ``flow``."""
-    from tools.mcp_oauth import _parse_redirect_query
+    from tools.mcp_oauth import _parse_redirect_query, _redirect_query
 
     class _Handler(http.server.BaseHTTPRequestHandler):
         # Connections are served on their own threads, so an idle browser preconnect never blocks the
@@ -234,7 +234,7 @@ def _start_loopback_receiver(flow) -> http.server.HTTPServer:
             body = b"<h1>Authorization received</h1><p>You can close this tab and return to Hermes.</p>"
             status = 200
             try:
-                flow.deliver_callback(**_parse_redirect_query(parsed.query))
+                flow.deliver_callback(**_parse_redirect_query(_redirect_query(self)))
             except Exception:
                 body = b"<h1>OAuth callback rejected</h1><p>The callback was invalid or already used.</p>"
                 status = 400
@@ -243,6 +243,8 @@ def _start_loopback_receiver(flow) -> http.server.HTTPServer:
             self.end_headers()
             with suppress(Exception):
                 self.wfile.write(body)
+
+        do_POST = do_GET  # response_mode=form_post
 
         def log_message(self, format, *args):
             return

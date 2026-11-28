@@ -88,6 +88,36 @@ def test_hosted_callback_bypasses_gated_cookie_auth(monkeypatch):
     assert flow._callback == ("abc", "expected", None)
 
 
+def test_hosted_callback_accepts_a_cross_site_form_post(tmp_path, monkeypatch):
+    """response_mode=form_post: the authorization server's page POSTs the redirect cross-site."""
+    import asyncio
+
+    from starlette.testclient import TestClient
+
+    from hermes_cli import web_server
+    from tools.mcp_dashboard_oauth import DashboardOAuthFlow
+
+    flow = DashboardOAuthFlow(
+        flow_id="flow-form-post",
+        server_name="reports",
+        hermes_home=str(tmp_path),
+        redirect_uri="https://agent.example/api/mcp/oauth/callback/reports",
+    )
+    asyncio.run(flow.publish_authorization_url("https://idp.example/authorize?state=expected"))
+    _web_server_mcp._mcp_oauth_flows[flow.flow_id] = flow
+    monkeypatch.setattr(web_server.app.state, "auth_required", True, raising=False)
+
+    response = TestClient(web_server.app).post(
+        "/api/mcp/oauth/callback/reports",
+        content="code=abc&state=expected&iss=https%3A%2F%2Fidp.example",
+        headers={"Content-Type": "application/x-www-form-urlencoded",
+                 "Origin": "https://idp.example", "Sec-Fetch-Site": "cross-site"},
+    )
+
+    assert response.status_code == 200
+    assert flow._callback == ("abc", "expected", "https://idp.example")
+
+
 def test_hosted_auth_allows_same_server_name_in_different_profiles(tmp_path, monkeypatch):
     from hermes_cli import web_server
     from tools.mcp_dashboard_oauth import DashboardOAuthFlow

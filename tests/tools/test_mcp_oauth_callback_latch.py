@@ -25,10 +25,15 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
-def _get(port: int, path: str) -> int:
+def _get(port: int, path) -> int:
+    """GET *path*, or POST an urlencoded form for a ``(path, body)`` pair (response_mode=form_post)."""
     conn = HTTPConnection("127.0.0.1", port, timeout=5)
     try:
-        conn.request("GET", path)
+        if isinstance(path, tuple):
+            conn.request("POST", path[0], body=path[1],
+                         headers={"Content-Type": "application/x-www-form-urlencoded"})
+        else:
+            conn.request("GET", path)
         resp = conn.getresponse()
         resp.read()
         return resp.status
@@ -105,3 +110,14 @@ def test_first_terminal_callback_wins_over_later_ones(monkeypatch):
     ])
     assert statuses == [404, 200, 200, 200]
     assert (result.code, result.state) == ("first", "s1")
+
+
+def test_form_post_callback_delivers_the_code(monkeypatch):
+    """An authorization server using response_mode=form_post POSTs code/state as a form; GET-only
+    listeners answered 501 and the sign-in never finished."""
+    statuses, result = _drive_waiter(monkeypatch, [
+        ("/callback", "code=posted&state=s1&iss=https%3A%2F%2Fas.example"),
+        "/favicon.ico",
+    ])
+    assert statuses == [200, 404]
+    assert (result.code, result.state, result.iss) == ("posted", "s1", "https://as.example")

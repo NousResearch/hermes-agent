@@ -135,6 +135,11 @@ class CommandTokenSource:
         """Stable catalog identity; token rotation must not mint on cache reads."""
         return f"cmd:{self._command}"
 
+    def invalidate(self) -> None:
+        """Drop the cached bearer without running the helper; the next request obtains a fresh one."""
+        with self._lock:
+            self._token = ""
+
     def __call__(self) -> str:
         with self._lock:
             if self._token and time.monotonic() < self._expires_at:

@@ -61,6 +61,70 @@ class TestAgentConfigSignature:
         sig2 = GatewayRunner._agent_config_signature("gpt-5.3-codex", rt2, ["hermes-telegram"], "")
         assert sig1 != sig2
 
+    def test_key_cmd_reuses_signature_between_turns_without_minting(self, monkeypatch):
+        from agent import command_token_source
+        from gateway.run import GatewayRunner
+
+        def unexpected_mint(*args):
+            raise AssertionError("cache lookup must not execute key_cmd")
+
+        monkeypatch.setattr(command_token_source, "_mint", unexpected_mint)
+
+        def signature(key):
+            return GatewayRunner._agent_config_signature("model", {"api_key": key}, [], "")
+
+        # Each turn resolves its own source instance from the same provider config.
+        first = command_token_source.build_command_token_provider("fixture-a")
+        second = command_token_source.build_command_token_provider("fixture-a")
+        changed = command_token_source.build_command_token_provider("fixture-b")
+        assert signature(first) == signature(second)
+        assert signature(first) != signature(changed)
+        assert signature(first) != signature(first.cache_identity)  # literal-key route
+
+    def test_warm_agent_uses_fresh_command_credential_on_next_turn(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from agent import command_token_source as tokens
+        from gateway.run_turn_runner import TurnRunner
+
+        mint = MagicMock(side_effect=[("first", 3600), ("replacement", 3600)])
+        monkeypatch.setattr(tokens, "_mint", mint)
+        runner = _make_runner()
+        ctx = MagicMock(session_key="chat", session_id=None, user_config={}, enabled_toolsets=[],
+                        source=SimpleNamespace(), _interrupt_depth=0, interim_assistant_messages_enabled=False)
+        turn = TurnRunner(runner, ctx)
+        monkeypatch.setattr(turn, "_skip_context_files", lambda _: False)
+        monkeypatch.setattr(runner, "_extract_cache_busting_config", lambda _: {})
+        monkeypatch.setattr(runner, "_refresh_fallback_model", lambda: None)
+        monkeypatch.setattr(runner, "_apply_fallback_chain_to_agent", lambda *_: None)
+        monkeypatch.setattr(runner, "_enforce_agent_cache_cap", lambda: None)
+        def build_agent(route, *_):
+            return SimpleNamespace(**route["runtime"], _primary_runtime=route["runtime"].copy())
+
+        monkeypatch.setattr(turn, "_build_fresh_agent", build_agent)
+
+        def resolve():
+            route = {"model": "m", "runtime": {"api_key": tokens.CommandTokenSource("fixture")}}
+            return turn._resolve_turn_agent(route, "local", "", 10, {}, {})
+
+        original, reused = resolve()
+        assert not reused and original.api_key() == "first"
+        second, reused = resolve()
+        assert reused and second is original
+        assert mint.call_count == 1  # Lookup itself must not run the helper.
+        assert second.api_key() == second.api_key() == "replacement"
+        assert mint.call_count == 2  # Within the turn, the helper's TTL still applies.
+
+        # A fallback can still be active at lookup, before the agent restores its primary route.
+        primary = second.api_key
+        second._primary_runtime = {"api_key": primary}
+        second.api_key = "fallback"
+        mint.side_effect = [("restored", 3600)]
+        restored, reused = resolve()
+        assert reused and restored is second and mint.call_count == 2
+        assert restored.api_key == "fallback"
+        assert restored._primary_runtime["api_key"]() == "restored"
+
     def test_provider_change_different_signature(self):
         from gateway.run import GatewayRunner
 

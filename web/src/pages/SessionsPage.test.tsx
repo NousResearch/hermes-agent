@@ -190,6 +190,75 @@ describe("SessionsPage per-row profile routing (#99387)", () => {
   });
 });
 
+describe("SessionsPage list ordering (#155919)", () => {
+  it("asks for most-recently-active order on both the history list and the overview poll", async () => {
+    await renderSessionsPage([
+      { id: "sid-old-chat", profile: "default", source: "cli", model: null, title: "Old chat", started_at: 1,
+        ended_at: null, last_active: 100, is_active: false, message_count: 2, tool_call_count: 0,
+        input_tokens: 1, output_tokens: 1, preview: "hi" },
+    ]);
+    await waitFor(() => apiMocks.getSessions.mock.calls.some(([limit]) => limit >= 50));
+
+    const calls = apiMocks.getSessions.mock.calls as unknown as [number, number, { order?: string }, string?][];
+    expect(calls.length).toBeGreaterThan(0);
+    for (const [, , options, order] of calls) {
+      // Either the options object or the explicit fourth argument must say
+      // "recent"; the default ("created") hides long-lived chats under cron runs.
+      expect(order ?? options?.order).toBe("recent");
+    }
+  });
+
+  it("refreshes the history list when the overview order changes but the head id does not", async () => {
+    const pollCallbacks: (() => void)[] = [];
+    const realSetInterval = globalThis.setInterval;
+    const intervalSpy = vi.spyOn(globalThis, "setInterval").mockImplementation(((fn: () => void, delay?: number) => {
+      if (delay === 5000) pollCallbacks.push(fn);
+      return realSetInterval(fn, delay);
+    }) as typeof setInterval);
+
+    try {
+      const row = (id: string, last_active: number) => ({
+        id, profile: "default", source: "cli", model: null, title: id, started_at: 1, ended_at: null,
+        last_active, is_active: false, message_count: 2, tool_call_count: 0, input_tokens: 1,
+        output_tokens: 1, preview: id,
+      });
+      await renderSessionsPage([row("A", 300)]);
+      await waitFor(() => pollCallbacks.length > 0);
+
+      let overview = [row("A", 300), row("B", 200), row("C", 100)];
+      const listCalls = () => apiMocks.getSessions.mock.calls.filter(([limit]) => limit < 50).length;
+      const pollOverview = async () => {
+        apiMocks.getSessions.mockImplementation(async (limit: number) => ({
+          sessions: limit >= 50 ? overview : [row("A", 300)],
+          total: limit >= 50 ? overview.length : 1,
+          limit,
+          offset: 0,
+        }));
+        await act(async () => {
+          pollCallbacks[pollCallbacks.length - 1]();
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        });
+      };
+
+      // First poll only sets the baseline.
+      await pollOverview();
+      const baseline = listCalls();
+
+      // Same order again: no refresh.
+      await pollOverview();
+      expect(listCalls()).toBe(baseline);
+
+      // Chat C is continued and A is active again in the same poll window:
+      // A stays first while C moves ahead of B.
+      overview = [row("A", 400), row("C", 390), row("B", 200)];
+      await pollOverview();
+      expect(listCalls()).toBe(baseline + 1);
+    } finally {
+      intervalSpy.mockRestore();
+    }
+  });
+});
+
 describe("structured reasoning rendering (#59957)", () => {
   const reasoningSession = () => {
     apiMocks.getSessionMessages.mockResolvedValue({

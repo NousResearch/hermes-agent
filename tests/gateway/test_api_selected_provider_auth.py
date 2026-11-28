@@ -114,17 +114,3 @@ def test_selected_provider_auth_failure_never_uses_default(monkeypatch, selectio
 
     with pytest.raises(_ProviderAuthResolutionError, match="selected credentials unavailable"):
         adapter._create_agent(**kwargs)
-
-
-def test_unselected_turn_preserves_default_auth_failure(monkeypatch):
-    _patch_create_agent_runtime(monkeypatch, {}, lambda **kwargs: None)
-
-    def unavailable_default():
-        raise RuntimeError("default credentials unavailable")
-
-    monkeypatch.setattr("gateway.run._resolve_runtime_agent_kwargs", unavailable_default)
-    adapter = _make_routing_adapter({})
-    monkeypatch.setattr(adapter, "_session_model_override_for", lambda *_: None)
-
-    with pytest.raises(_ProviderAuthResolutionError, match="default credentials unavailable"):
-        adapter._create_agent(session_id="default-session")

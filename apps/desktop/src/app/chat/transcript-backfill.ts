@@ -15,6 +15,7 @@
  * drift on the next page.
  */
 
+import { reconcileLiveRowsWithPage } from '@/app/chat/transcript-live-rows'
 import {
   dropPageFoldsCutByTheBoundary,
   dropPageRowsOfStoppedTurns,
@@ -403,16 +404,15 @@ function mergeOverlappingTail(previous: ChatMessage[], refreshedTail: ChatMessag
     return pending
   }
 
-  const previousTrailing = withoutLiveTurnsThePageStores(
-    place(
-      receiptDrop.window.filter(message => !anchorNotice(message)),
-      false
-    ),
-    refreshedTail
+  // The page rows that will be drawn (cut folds and stopped turns' partial copies filtered out)
+  // are the only ones a live turn's rows may give way to.
+  const live = reconcileLiveRowsWithPage(
+    receiptDrop.window.filter(message => !anchorNotice(message)),
+    dropPageRowsOfStoppedTurns(previous, dropPageFoldsCutByTheBoundary(previous, refreshedTail))
   )
 
-  const freshRows = dropPageRowsOfStoppedTurns(previous, dropPageFoldsCutByTheBoundary(previous, refreshedTail))
-  const refreshedTrailing = place(freshRows, true)
+  const previousTrailing = withoutLiveTurnsThePageStores(place(live.window, false), refreshedTail)
+  const refreshedTrailing = place(live.page, true)
 
   const stored = [...byRowId.entries()]
     .sort((left, right) => left[0] - right[0])

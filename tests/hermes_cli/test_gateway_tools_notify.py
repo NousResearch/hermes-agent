@@ -164,6 +164,9 @@ def test_stamp_claim_publishes_the_card_and_an_ordinary_claim_stays_empty():
     SessionAuthority._stamp_claim(authority, ref, live, {"generation": 9, "admission_id": "adm-9", "payload": automation})
     SessionAuthority._stamp_claim(authority, ref, live, {"generation": 10, "admission_id": "adm-10",
                                                          "payload": {"text": "typed"}})
+    # Each claim's start also names its own stream turn (tui_gateway/stream_segments.py).
+    turns = [payload.pop("turn_id") for _, payload in published]
+    assert len(set(turns)) == 2
     assert published == [("message.start", {"display_kind": "process_complete", "display_text": DISPLAY,
                                             "text": MODEL_TEXT}), ("message.start", {})]
 

@@ -123,23 +123,41 @@ def _tool_complete_payload(call_id, tool_name, args, result, *, is_error=None, v
     return payload
 
 
+_WORKER_ROW_FIELDS = ("row_id", "message_uid", "tool_call_uid")
+
+
+def _worker_row_fields_valid(stored) -> bool:
+    """A row id is a positive int and comes with any uid; uids are short non-empty strings."""
+    row = stored.get("row_id")
+    if not stored:
+        return True
+    return (type(row) is int and row > 0
+            and all(isinstance(stored[key], str) and 0 < len(stored[key]) <= 128
+                    for key in ("message_uid", "tool_call_uid") if key in stored))
+
+
 def publish_worker_tool_event(authority, session_id, generation, frame) -> bool:
     """A managed worker's tool frame, published exactly as an in-process turn publishes its own
     (the shared viewer stream and this admission's API observers). False for any other frame."""
     kind = frame.get("type")
     fields = {"type", "tool_call_id", "name", "args"} | ({"result", "is_error"} if kind == "tool.complete" else set())
-    if (kind not in ("tool.start", "tool.complete") or set(frame) != fields
+    # The stored row the worker's round names (agent/live_row_identity.py); a worker that predates it sends none.
+    stored = {key: frame[key] for key in _WORKER_ROW_FIELDS if key in frame}
+    if (kind not in ("tool.start", "tool.complete") or set(frame) - set(stored) != fields
             or not isinstance(frame["tool_call_id"], str) or not isinstance(frame["name"], str)
             or not isinstance(frame["args"], dict)
             or (kind == "tool.complete" and (not isinstance(frame["result"], str) or type(frame["is_error"]) is not bool))):
         return False
+    if not _worker_row_fields_valid(stored):
+        # The identity is optional: a viewer without it falls back to the receipt rules, the turn goes on.
+        stored = {}
     call_id, name, args, result = frame["tool_call_id"], frame["name"], frame["args"], frame.get("result")
     if kind == "tool.start":
         payload = _tool_lifecycle_payload(call_id, name, args)
     else:
         verbose = getattr(authority.sessions[session_id], "tool_progress_mode", None) == "verbose"
         payload = _tool_complete_payload(call_id, name, args, result, is_error=frame["is_error"], verbose=verbose)
-    authority.publish_execution(session_id, generation, kind, payload)
+    authority.publish_execution(session_id, generation, kind, {**payload, **stored})
     from gateway.session_api_turn import publish_api_tool_event, publish_api_tool_progress
     publish_api_tool_event(authority, session_id, generation, kind, call_id, name, args, result)
     # A worker sends no progress events: progress-only observers get the executor's preview of its
@@ -1049,12 +1067,19 @@ class GatewayTurnProgressMixin:
             "type": "tool.completed", "tool_call_id": str(call_id or ""), "tool_name": name, "is_error": bool(is_error),
         })
 
+    def _tool_call_row(self, call_id) -> dict:
+        """The stored row of the running round that holds ``call_id`` (agent/live_row_identity.py)."""
+        from agent.live_row_identity import tool_call_row_identity
+        holder = getattr(self._ctx, "agent_holder", None)
+        return tool_call_row_identity(holder[0] if holder else None, call_id)
+
     def combined_tool_start_callback(self, call_id, tool_name, args):
         """Compose the voice ack + native task-card start consumers."""
         if local_viewer_turn(self):
             from gateway import local_viewer_events
             local_viewer_events.note_tool_start(self, call_id, tool_name, args)
-        self._publish_execution("tool.start", _tool_lifecycle_payload(call_id, tool_name, args))
+        self._publish_execution("tool.start", {**_tool_lifecycle_payload(call_id, tool_name, args),
+                                               **self._tool_call_row(call_id)})
         self._publish_api_tool("tool.start", call_id, tool_name, args)
         if self._ctx._voice_ack_guild[0] is not None:
             self.voice_ack_callback(call_id, tool_name, args)
@@ -1068,7 +1093,8 @@ class GatewayTurnProgressMixin:
         live = owner[0].sessions.get(owner[1]) if owner is not None else None
         # A session's /verbose (gateway/session_busy_controls.py) ships the Result block text.
         verbose = live is not None and (getattr(live, "tool_progress_mode", None) or self._ctx.progress_mode) == "verbose"
-        payload = _tool_complete_payload(call_id, tool_name, args, result, is_error=is_error, verbose=verbose)
+        payload = {**_tool_complete_payload(call_id, tool_name, args, result, is_error=is_error, verbose=verbose),
+                   **self._tool_call_row(call_id)}
         if local_viewer_turn(self):
             from gateway import local_viewer_events
             payload.update(local_viewer_events.complete_fields(self, call_id, tool_name, args, result, is_error=is_error))

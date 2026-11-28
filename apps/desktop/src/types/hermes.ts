@@ -700,6 +700,7 @@ export type TimelineDisplayMetadata =
     }
   | { display_text: string }
   | { reactions: MessageReaction[] }
+  | { submission_id: string }
   | { tool_result_metadata: ToolResultMetadata }
   | { error?: string; error_surface?: unknown }
 
@@ -766,6 +767,9 @@ export interface SessionMessage {
    */
   row_id?: number
   id?: number
+  /** The row's durable identity (`messages.message_uid`): kept by every copy a compaction or
+   *  rotation writes, which re-issue `id`. Absent on older backends. */
+  message_uid?: null | string
   text?: unknown
   timestamp?: number
   tool_call_id?: null | string

@@ -27,20 +27,27 @@ import { isRowId, isTurnUserBubble, receiptUserRowIds } from '@/app/session/hook
 import { transcriptRowIds } from '@/app/session/hooks/use-session-actions/pending-turn-identity'
 import { type ChatMessage, isLocalSystemNotice } from '@/lib/chat-messages'
 
-/** Index of the turn's prompt in the window, by the receipt's own identity. */
+const receiptUserRows = (receipt: PersistedTurn) =>
+  [receipt.user_row_id, ...(receipt.user_row_ids ?? [])].filter(isRowId)
+
+/**
+ * Index of the turn's prompt in the window, by the receipt's own identity. A backend-started
+ * turn's prompt row (an async delegation or process completion) is stored as a user row that
+ * history paints as a system card: its stored id, not its role, makes it the prompt.
+ */
 function receiptPromptIndex(window: ChatMessage[], receipt: PersistedTurn, before: number): number {
   const submission = typeof receipt.submission_id === 'string' && receipt.submission_id ? receipt.submission_id : ''
-  const userRows = [receipt.user_row_id, ...(receipt.user_row_ids ?? [])].filter(isRowId)
+  const userRows = receiptUserRows(receipt)
 
   for (let index = before; index >= 0; index -= 1) {
     const message = window[index]
 
-    if (message.role !== 'user') {
+    if (message.role !== 'user' && message.role !== 'system') {
       continue
     }
 
     if (
-      (submission && message.id === `user-${submission}`) ||
+      (submission && message.role === 'user' && message.id === `user-${submission}`) ||
       (message.rowId !== undefined && userRows.includes(message.rowId))
     ) {
       // A steer row of the same turn sits after the prompt: keep walking while
@@ -62,9 +69,50 @@ function receiptBounds(message: ChatMessage): null | { first: number; last: numb
   return receipt && rows.length ? { first: Math.min(...rows), last: Math.max(...rows), receipt } : null
 }
 
+/**
+ * Where a receipt turn whose prompt the window cannot name starts (a backend-started turn on a
+ * runtime that stamps no stream turn): the row after the one that was newest when the turn's own
+ * message.start arrived (`receiptTurnAnchorId`, local to this window, never a wire identity). The
+ * boundary is proven only while every row between it and the receipt bubble can be nothing but
+ * this turn's live copy: its sealed narration (interim) and the notices this window drew. A user
+ * row there, a stored non-assistant row, or a reply that settled, failed or still streams may be
+ * another turn's, and an unnamed user prompt at the anchor is this turn's own prompt that the
+ * receipt failed to prove. Any of those, or an anchor no longer on screen, proves nothing (-1).
+ */
+function anchoredTurnStart(window: ChatMessage[], end: number): number {
+  const anchorId = window[end].receiptTurnAnchorId
+  const anchor = anchorId ? window.findIndex(message => message.id === anchorId) : -1
+
+  if (anchor < 0 || anchor >= end || (window[anchor].role === 'user' && window[anchor].rowId === undefined)) {
+    return -1
+  }
+
+  for (let index = anchor + 1; index < end; index += 1) {
+    const message = window[index]
+
+    if (isLocalSystemNotice(message)) {
+      continue
+    }
+
+    if (message.role !== 'assistant' || !message.interim || message.pending || message.error || message.persistedTurn) {
+      return -1
+    }
+  }
+
+  return anchor + 1
+}
+
 /** Window indices of the turn ending at `end`, or none when its identity is incomplete. */
-function windowTurnIndices(window: ChatMessage[], end: number, first: number, last: number, receipt: PersistedTurn) {
-  const start = receiptPromptIndex(window, receipt, end)
+function windowTurnIndices(
+  window: ChatMessage[],
+  end: number,
+  first: number,
+  last: number,
+  receipt: PersistedTurn,
+  { anchored = false } = {}
+) {
+  const prompt = receiptPromptIndex(window, receipt, end)
+  const start = prompt < 0 && anchored ? anchoredTurnStart(window, end) : prompt
 
   if (start < 0) {
     return []
@@ -98,7 +146,9 @@ const pageReplyRows = (page: ChatMessage[]): Set<number> =>
   new Set(
     page.flatMap(message =>
       message.role === 'assistant'
-        ? message.parts.flatMap(part => (part.type === 'text' && part.sourceRowId !== undefined ? [part.sourceRowId] : []))
+        ? message.parts.flatMap(part =>
+            part.type === 'text' && part.sourceRowId !== undefined ? [part.sourceRowId] : []
+          )
         : []
     )
   )
@@ -108,9 +158,16 @@ const pageReplyRows = (page: ChatMessage[]): Set<number> =>
  * address only the rows that were stored (agent/persisted_turn_receipt.py): when the final answer
  * failed to store, the turn's last stored row is a tool row and the window's bubble is the only copy
  * of the answer. Proven by a complete receipt, by the page painting the turn's last stored row as
- * reply text, or by a stopped turn (everything it produced before the stop is stored).
+ * reply text, or by a stopped turn (everything it produced before the stop is stored). A receipt that
+ * names its final row needs that very row on the page: a later turn's rows reaching past it are no copy.
  */
 function pageHoldsTheReply(message: ChatMessage, last: number, replyRows: Set<number>): boolean {
+  const final = message.persistedTurn?.final_assistant_row_id
+
+  if (isRowId(final)) {
+    return replyRows.has(final)
+  }
+
   return Boolean(message.persistedTurn?.complete || message.interrupted) || replyRows.has(last)
 }
 
@@ -123,16 +180,23 @@ function receiptTurnIndices(
 ): number[] {
   const bounds = receiptBounds(window[end])
 
+  // A hidden starter has no rendered row. An earlier visible row establishes that the
+  // contiguous page starts before it; a page starting inside the turn proves nothing.
+  const reachesStarter =
+    bounds && (pageRows.has(bounds.first) || (window[end].receiptTurnAnchorId && Math.min(...pageRows) < bounds.first))
+
   if (
     !bounds ||
-    !pageRows.has(bounds.first) ||
+    !reachesStarter ||
     Math.max(...pageRows) < bounds.last ||
     !pageHoldsTheReply(window[end], bounds.last, replyRows)
   ) {
     return []
   }
 
-  return windowTurnIndices(window, end, bounds.first, bounds.last, bounds.receipt)
+  // The page holds the whole turn and its reply; with no prompt identity on screen, the local
+  // start boundary may stand in (only here: a stopped turn's partial copy keeps its prompt rule).
+  return windowTurnIndices(window, end, bounds.first, bounds.last, bounds.receipt, { anchored: true })
 }
 
 /** The window without the turns the page holds whole, and where their notices go. */
@@ -208,7 +272,9 @@ export function dropReceiptTurnsThePageHolds(window: ChatMessage[], page: ChatMe
     indices.forEach(at => dropped.add(at))
 
     for (let at = indices[0] ?? index; at < index; at += 1) {
-      const anchor = isLocalSystemNotice(window[at]) ? nextDroppedRowId(window, indices, at, message.persistedTurn) : undefined
+      const anchor = isLocalSystemNotice(window[at])
+        ? nextDroppedRowId(window, indices, at, message.persistedTurn)
+        : undefined
 
       if (anchor !== undefined) {
         noticeAnchors.set(window[at].id, anchor)

@@ -134,6 +134,36 @@ describe('persistInFlightTurnState', () => {
     expect(entry?.messages.map(m => m.role)).toEqual(['user', 'assistant'])
   })
 
+  it('keeps the stored row each live part names, so a restored bubble still gives way to history', () => {
+    const named: ChatMessage = {
+      id: 'assistant-stream-1',
+      role: 'assistant',
+      pending: true,
+      parts: [
+        { type: 'text', text: 'looking', sourceRowId: 7, sourceMessageUid: 'uid-7' },
+        {
+          type: 'tool-call',
+          toolCallId: 'call_0',
+          toolName: 'terminal',
+          args: {},
+          sourceCallRowId: 7,
+          sourceMessageUid: 'uid-7'
+        },
+        { type: 'text', text: 'still typing' }
+      ]
+    }
+
+    persistInFlightTurnState(journalState({ messages: [user('u1', 'do the thing'), named] }))
+    vi.advanceTimersByTime(400)
+
+    const [, restored] = readInFlightTurnJournal('stored-1')?.messages ?? []
+    expect(restored.parts.map(part => [part.sourceRowId ?? part.sourceCallRowId, part.sourceMessageUid])).toEqual([
+      [7, 'uid-7'],
+      [7, 'uid-7'],
+      [undefined, undefined]
+    ])
+  })
+
   it('coalesces rapid updates into one write carrying the latest state', () => {
     persistInFlightTurnState(journalState())
     persistInFlightTurnState(
@@ -164,9 +194,11 @@ describe('persistInFlightTurnState', () => {
       )
 
     commit('first')
+
     for (now = 1; now < 400; now += 1) {
       commit(`progress-${now}`)
     }
+
     expect(window.localStorage.getItem(sessionStorageKey('stored-1'))).toBeNull()
 
     // Time passed, but Chromium has not delivered the trailing timer.

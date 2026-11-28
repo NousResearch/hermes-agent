@@ -271,11 +271,20 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         """The turn's wire identity on its reply frames (tui_gateway/stream_segments.py), so a viewer
         upserts a re-sent delta or seal instead of painting a second copy (#144609). The same
         stamping rule as tui_gateway's ``_emit``, with one cursor per execution generation."""
-        from tui_gateway.stream_segments import TurnSegments, stamp_reply_frame
+        from tui_gateway.stream_segments import stamp_reply_frame
+        return stamp_reply_frame(self._turn_segments(generation), event_type, payload)
+
+    def _turn_segments(self, generation):
+        """The reply-frame cursor of execution ``generation``: the one its claim minted and named on
+        ``message.start``, else (an owner that minted none) one per generation, created on first use."""
+        from tui_gateway.stream_segments import TurnSegments, claimed_segments
+        owner = getattr(self, "_approval_owner", None)
+        if owner is not None and (claimed := claimed_segments(owner[0], owner[1], generation)) is not None:
+            return claimed
         segments = getattr(self, "_segments", None)
         if segments is None or segments[0] != generation:
             segments = self._segments = (generation, TurnSegments())
-        return stamp_reply_frame(segments[1], event_type, payload)
+        return segments[1]
 
     def _publish_api_tool(self, event_type, call_id, tool_name, args, result=None):
         """The retained tool payload reaches the API observers of this exact admission only;
@@ -390,7 +399,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 # final that arrives with no deltas then suppresses the reply (message.complete "").
                 # Publish the in-process TUI's message.interim contract instead, and count the text
                 # as delivered only when a viewer or observer actually took it.
-                payload = {"text": text, "already_streamed": False}
+                from agent.live_row_identity import interim_row_identity
+                payload = {"text": text, "already_streamed": False, **interim_row_identity(ctx.agent_holder[0])}
                 unseen = not self._publish_execution("message.interim", payload)
             if stts is not None:
                 # Flush accepted deltas; completed commentary is a separate speech segment.
@@ -1494,6 +1504,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 from gateway.session_local_inventory import publish_settled_info
                 publish_settled_info(self, agent)
         persisted_turn = _persisted_turn(agent, agent_history, result, compressions)
+        # The reply's own stored row, named on message.complete whether or not the receipt rides along.
+        from agent.live_row_identity import reply_row_result_fields
+        reply_row = reply_row_result_fields(result, agent_history)
         self._finish_stream_consumer(result, agent_history, stream_consumer)
         if _finite_viewer_turn() and getattr(agent, "_codex_session", None) is not None:
             # The classic `chat -q` process exit bounded the codex app-server child; a finite turn
@@ -1548,6 +1561,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             **({"current_turn_user_idx": result["current_turn_user_idx"]} if "current_turn_user_idx" in result else {}),
             **usage,
             **({"persisted_turn": persisted_turn} if persisted_turn else {}),
+            **reply_row,
         }
         previewed = result.get("response_previewed", False)
         viewer_meta = {}

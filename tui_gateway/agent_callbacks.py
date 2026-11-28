@@ -192,8 +192,11 @@ def _agent_cbs(sid: str) -> dict:
     # Interim assistant commentary (text alongside tool calls), gated on display.interim_assistant_
     # messages; _run_prompt_submit overwrites it per turn and clears it so a stale closure can't fire.
     if _load_interim_assistant_messages():
+        from agent.live_row_identity import interim_row_identity
+
         callbacks["interim_assistant_callback"] = lambda text, *, already_streamed=False: _emit(
-            "message.interim", sid, {"text": str(text), "already_streamed": bool(already_streamed)})
+            "message.interim", sid, {"text": str(text), "already_streamed": bool(already_streamed),
+                                     **interim_row_identity((_sessions.get(sid) or {}).get("agent"))})
     return callbacks
 
 

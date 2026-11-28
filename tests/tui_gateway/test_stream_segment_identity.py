@@ -78,3 +78,36 @@ def test_deltas_and_seals_carry_turn_segment_and_utf16_offset(monkeypatch):
     assert len(first) == len(second) == 1 and None not in first | second and first != second
     # A finished turn leaves no cursor behind, so a later non-turn emitter's frame stays unstamped.
     assert srv.stream_segments.SESSION_KEY not in session
+
+
+def test_interim_and_tool_frames_name_the_stored_row_of_the_round(monkeypatch):
+    """The frames a client sees carry the identity the round names (agent/live_row_identity.py), through
+    the contract's validation; a frame fired outside the round names no row."""
+    from agent.live_row_identity import live_assistant_row
+
+    row = {"role": "assistant", "content": "Checking", "_row_id": 41, "_db_persisted": True,
+           "message_uid": "uid-41", "_tool_call_uids": {"call_0": "call-uid-41"},
+           "tool_calls": [{"id": "call_0", "type": "function", "function": {"name": "terminal", "arguments": "{}"}}]}
+
+    def run_conversation(agent, prompt, stream_callback=None, **_kwargs):
+        stream_callback("Checking")
+        with live_assistant_row(agent, row):
+            agent.interim_assistant_callback("Checking", already_streamed=True)
+            srv._on_tool_start("sid", "call_0", "terminal", {})
+            srv._on_tool_complete("sid", "call_0", "terminal", {}, "ok")
+        srv._on_tool_start("sid", "call_0", "terminal", {})
+        stream_callback("Done.")
+        return {"final_response": "Done.", "messages": [
+            {"role": "user", "content": prompt}, {"role": "assistant", "content": "Done."}]}
+
+    frames, _session = _submit_turns(monkeypatch, run_conversation, turns=1)
+
+    named = {"row_id": 41, "message_uid": "uid-41"}
+    picked = [(event, {key: payload.get(key) for key in ("row_id", "message_uid", "tool_call_uid")})
+              for event, payload in frames if event in {"message.interim", "tool.start", "tool.complete"}]
+    assert picked == [
+        ("message.interim", {**named, "tool_call_uid": None}),
+        ("tool.start", {**named, "tool_call_uid": "call-uid-41"}),
+        ("tool.complete", {**named, "tool_call_uid": "call-uid-41"}),
+        ("tool.start", {"row_id": None, "message_uid": None, "tool_call_uid": None}),
+    ]

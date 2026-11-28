@@ -70,6 +70,14 @@ def stamp_reply_frame(segments: TurnSegments | None, event: str, payload: dict |
     return payload
 
 
+def claimed_segments(owner: Any, session_id: str, generation: Any) -> TurnSegments | None:
+    """The cursor ``owner`` (a session authority) minted when it claimed ``generation`` of ``session_id``,
+    the one its ``message.start`` named; None from an owner that minted none (the caller keeps its own)."""
+    lookup = getattr(owner, "stream_segments", None)
+    segments = lookup(session_id, generation) if callable(lookup) else None
+    return segments if isinstance(segments, TurnSegments) else None
+
+
 def stamp_session_frame(session: dict | None, event: str, payload: dict | None) -> dict | None:
     """:func:`stamp_reply_frame` with the cursor of the prompt turn ``session`` is running, if any."""
     return stamp_reply_frame((session or {}).get(SESSION_KEY), event, payload)

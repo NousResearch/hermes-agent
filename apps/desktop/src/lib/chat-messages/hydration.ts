@@ -216,6 +216,27 @@ function parseDisplayMetadata(metadata: SessionMessage['display_metadata']): nul
   return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null
 }
 
+/** Mark source rows before several transcript rows fold into one assistant message. */
+function stampStoredParts(parts: ChatMessagePart[], message: SessionMessage, rowId: number | undefined): void {
+  if (rowId === undefined) {
+    return
+  }
+
+  const uid = typeof message.message_uid === 'string' && message.message_uid ? message.message_uid : undefined
+
+  for (const part of parts) {
+    if (part.type === 'text') {
+      part.sourceRowId = rowId
+    } else if (part.type === 'tool-call') {
+      part.sourceCallRowId = rowId
+    }
+
+    if (uid && (part.type === 'text' || part.type === 'tool-call')) {
+      part.sourceMessageUid = uid
+    }
+  }
+}
+
 // A micro-compaction merge (`display_metadata.model_only`) is the model's copy of prompts whose originals
 // the history shows: the owner's resume snapshot keeps it as an undo target, and it is never painted.
 function isPainted(message: SessionMessage): boolean {
@@ -679,13 +700,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       )
     }
 
-    if (rowId !== undefined) {
-      for (const part of parts) {
-        if (part.type === 'text') {
-          part.sourceRowId = rowId
-        }
-      }
-    }
+    stampStoredParts(parts, message, rowId)
 
     if (!parts.length && !extractedAttachmentRefs?.length) {
       if (message.role === 'assistant') {

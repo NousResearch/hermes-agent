@@ -24,6 +24,9 @@ class SessionEvents:
         self.sequence = 0
         self._public_id = None
         self.execution = {}
+        # ``(generation, TurnSegments)`` the running claim minted (set and cleared with ``execution``'s
+        # claim stamp): its message.start named the turn_id, and its execution stamps its reply frames.
+        self.turn_segments = None
         # Synchronous same-thread recipients (API run projections): unlike fanout peers they
         # cannot lose a frame to a detach that races the writer thread.
         self.observers = set()

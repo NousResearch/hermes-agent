@@ -349,12 +349,19 @@ function boundedString(value: string, maxChars: number): string {
   return value.length <= maxChars ? value : value.slice(0, maxChars)
 }
 
+/** The stored row a live part names (lib/chat-messages/live-row-identity): a restored bubble still
+ *  gives way to that row's history copy. */
+function storedUidOf(part: ChatMessagePart): Pick<ChatMessagePart, 'sourceMessageUid'> {
+  return part.sourceMessageUid ? { sourceMessageUid: boundedString(part.sourceMessageUid, MAX_METADATA_CHARS) } : {}
+}
+
 function boundedPart(part: ChatMessagePart): ChatMessagePart | null {
   if (part.type === 'text') {
     return {
       type: 'text',
       text: boundedString(part.text, MAX_TEXT_PART_CHARS),
       ...(part.sourceRowId === undefined ? {} : { sourceRowId: part.sourceRowId }),
+      ...storedUidOf(part),
       ...(part.parentId === undefined ? {} : { parentId: boundedString(part.parentId, MAX_METADATA_CHARS) })
     }
   }
@@ -376,6 +383,8 @@ function boundedPart(part: ChatMessagePart): ChatMessagePart | null {
       toolName: boundedString(part.toolName, MAX_METADATA_CHARS),
       args: {},
       ...(part.toolCallId === undefined ? {} : { toolCallId: boundedString(part.toolCallId, MAX_METADATA_CHARS) }),
+      ...(part.sourceCallRowId === undefined ? {} : { sourceCallRowId: part.sourceCallRowId }),
+      ...storedUidOf(part),
       ...(part.result === undefined ? {} : { result: {} }),
       ...(part.isError === undefined ? {} : { isError: part.isError })
     }

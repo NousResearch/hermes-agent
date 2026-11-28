@@ -14,6 +14,7 @@ import {
   type GatewayEventPayload,
   hasUnresolvedToolCall,
   isRedeliveredToolEvent,
+  type LiveRowIdentity,
   mergeFinalAssistantText,
   normalizeWs,
   partsText,
@@ -21,6 +22,7 @@ import {
   reasoningPart,
   renderMediaTags,
   sealOpenToolParts,
+  storedRowFields,
   toolEventOwnerMessageId,
   upsertToolPart
 } from '@/lib/chat-messages'
@@ -60,7 +62,13 @@ import { useGatewayEventHandler } from './gateway-event'
 import { handleServerRequest as dispatchServerRequest } from './gateway-event/server-requests'
 import { bindReceiptUserRows } from './receipt-user-rows'
 import { currentResponseParts, mergeCurrentResponseText } from './response-parts'
-import { admitSegmentDelta, admitSegmentSeal, type SegmentCursor, type SegmentStamp } from './segment-identity'
+import {
+  admitSegmentDelta,
+  admitSegmentSeal,
+  type SegmentCursor,
+  type SegmentStamp,
+  streamTurnOf
+} from './segment-identity'
 import { completionErrorText, delegateTaskPayloads, streamFlushFloor } from './utils'
 
 interface MessageStreamOptions {
@@ -105,6 +113,35 @@ function streamMessageIndex(messages: readonly ChatMessage[], streamId: string):
   return tailIndex >= 0 && messages[tailIndex].id === streamId
     ? tailIndex
     : messages.findIndex(message => message.id === streamId)
+}
+
+/** `part` already names a row other than `stored` (a receipt that bound the same row still lets it take the uid). */
+const namesAnotherRow = (part: ChatMessagePart, stored: LiveRowIdentity) =>
+  (part.sourceRowId !== undefined && part.sourceRowId !== stored.rowId) ||
+  (part.sourceMessageUid !== undefined && part.sourceMessageUid !== stored.messageUid)
+
+/**
+ * The sealed text the interim (or completion) names gets that row's address
+ * (lib/chat-messages/live-row-identity). A last text part that already names a row is an earlier
+ * round's (the new text merged into it unchanged), so it keeps its own.
+ */
+function withStoredText(parts: ChatMessagePart[], stored: LiveRowIdentity): ChatMessagePart[] {
+  const fields = storedRowFields('text', stored)
+  const at = Object.keys(fields).length ? parts.findLastIndex(part => part.type === 'text') : -1
+  const last = at < 0 ? undefined : parts[at]
+
+  if (!last || namesAnotherRow(last, stored)) {
+    return parts
+  }
+
+  return parts.map((part, index) => (index === at ? { ...part, ...fields } : part))
+}
+
+/** Only a window that saw this turn start can name the row just before it. */
+function receiptTurnBoundary(state: ClientSessionState, receipt?: PersistedTurn | null) {
+  const anchor = receipt && state.turnLive ? state.receiptTurnAnchorId : undefined
+
+  return anchor ? { receiptTurnAnchorId: anchor } : {}
 }
 
 /**
@@ -232,7 +269,8 @@ export function useMessageStream({
                   parts: seed(),
                   timestamp: occurredAt,
                   pending: true,
-                  branchGroupId: groupId
+                  branchGroupId: groupId,
+                  ...streamTurnOf(state)
                 }
               ]
             } else {
@@ -566,6 +604,34 @@ export function useMessageStream({
     }
   }, [flushQueuedDeltas])
 
+  // A start that named no turn (the session authority names its execution on the envelope and
+  // stamps only its reply frames) takes the turn its first stamped reply frame names. A frame of
+  // the turn this session's cursor followed before that start is a late frame of an earlier turn.
+  const adoptStreamTurn = useCallback(
+    (sessionId: string, stamp: SegmentStamp, cursorBefore: SegmentCursor | undefined) => {
+      if (cursorBefore?.turnId === stamp.turnId) {
+        return
+      }
+
+      updateSessionState(sessionId, state => {
+        if (!state.turnLive || state.streamTurnId) {
+          return state
+        }
+
+        return {
+          ...state,
+          streamTurnId: stamp.turnId,
+          messages: state.messages.map(message =>
+            message.id === state.streamId && !message.streamTurnId
+              ? { ...message, streamTurnId: stamp.turnId }
+              : message
+          )
+        }
+      })
+    },
+    [updateSessionState]
+  )
+
   const appendAssistantDelta = useCallback(
     (sessionId: string, delta: string, occurredAt?: number, stamp?: null | SegmentStamp) => {
       if (!delta) {
@@ -575,7 +641,9 @@ export function useMessageStream({
       let offset: number | undefined
 
       if (stamp) {
-        const admitted = admitSegmentDelta(segmentCursorsRef.current.get(sessionId), stamp, delta)
+        const cursorBefore = segmentCursorsRef.current.get(sessionId)
+        adoptStreamTurn(sessionId, stamp, cursorBefore)
+        const admitted = admitSegmentDelta(cursorBefore, stamp, delta)
         segmentCursorsRef.current.set(sessionId, admitted.cursor)
         // Admission trims only an already-applied head, so the rest starts that much later.
         offset = stamp.offset === undefined ? undefined : stamp.offset + delta.length - admitted.text.length
@@ -584,7 +652,7 @@ export function useMessageStream({
 
       queueDelta(sessionId, 'assistant', delta, occurredAt, offset)
     },
-    [queueDelta]
+    [adoptStreamTurn, queueDelta]
   )
 
   const appendReasoningDelta = useCallback(
@@ -703,9 +771,17 @@ export function useMessageStream({
   )
 
   const finalizeInterimAssistantMessage = useCallback(
-    (sessionId: string, text: string, occurredAt = Date.now() / 1000, stamp?: null | SegmentStamp) => {
+    (
+      sessionId: string,
+      text: string,
+      occurredAt = Date.now() / 1000,
+      stamp?: null | SegmentStamp,
+      stored: LiveRowIdentity = {}
+    ) => {
       if (stamp) {
-        const admitted = admitSegmentSeal(segmentCursorsRef.current.get(sessionId), stamp)
+        const cursorBefore = segmentCursorsRef.current.get(sessionId)
+        adoptStreamTurn(sessionId, stamp, cursorBefore)
+        const admitted = admitSegmentSeal(cursorBefore, stamp)
         segmentCursorsRef.current.set(sessionId, admitted.cursor)
 
         // A copy of a seal this turn already applied: its bubble is on screen.
@@ -737,9 +813,12 @@ export function useMessageStream({
             part => (part.type === 'text' || part.type === 'reasoning') && part.text.trim()
           )
 
-          return hasNewResponse
-            ? mergeCurrentResponseText(parts, visibleText, occurredAt)
-            : mergeFinalAssistantText(parts, visibleText, occurredAt)
+          return withStoredText(
+            hasNewResponse
+              ? mergeCurrentResponseText(parts, visibleText, occurredAt)
+              : mergeFinalAssistantText(parts, visibleText, occurredAt),
+            stored
+          )
         }
 
         let nextMessages = state.messages
@@ -796,12 +875,19 @@ export function useMessageStream({
               {
                 id: nextStreamMessageId('assistant-interim'),
                 role: 'assistant' as const,
-                parts: [{ ...assistantTextPart(authoritativeText, occurredAt), completedAt: occurredAt }],
+                parts: [
+                  {
+                    ...assistantTextPart(authoritativeText, occurredAt),
+                    completedAt: occurredAt,
+                    ...storedRowFields('text', stored)
+                  }
+                ],
                 timestamp: occurredAt,
                 completedAt: occurredAt,
                 pending: false,
                 interim: true,
-                branchGroupId: state.pendingBranchGroup ?? undefined
+                branchGroupId: state.pendingBranchGroup ?? undefined,
+                ...streamTurnOf(state)
               }
             ]
           }
@@ -816,7 +902,7 @@ export function useMessageStream({
         }
       })
     },
-    [updateSessionState]
+    [adoptStreamTurn, updateSessionState]
   )
 
   const completeAssistantMessage = useCallback(
@@ -830,7 +916,8 @@ export function useMessageStream({
       responseTransformed?: boolean,
       status?: string,
       responseReused?: boolean,
-      failureReason?: string
+      failureReason?: string,
+      stored: LiveRowIdentity = {}
     ) => {
       let shouldHydrate = false
 
@@ -892,10 +979,11 @@ export function useMessageStream({
           const hasFinalRow = typeof finalRowId === 'number' && Number.isSafeInteger(finalRowId) && finalRowId > 0
           const finalPartIndex = message.parts.findLastIndex(part => part.type === 'text')
 
-          return {
+          const bound = {
             ...message,
             durableComplete: persistedTurn?.complete === true,
             persistedTurn: persistedTurn ?? undefined,
+            ...receiptTurnBoundary(state, persistedTurn),
             // A folded bubble can already address its first source row. Keep
             // that address and bind the final response's exact source as well.
             ...(hasFinalRow
@@ -907,6 +995,9 @@ export function useMessageStream({
                 }
               : {})
           }
+
+          // The reply's own row, which the completion names even when it carries no receipt.
+          return { ...bound, parts: withStoredText(bound.parts, stored) }
         }
 
         // Settling the final response onto a bubble makes it the turn's real
@@ -949,6 +1040,7 @@ export function useMessageStream({
             timestamp: occurredAt,
             completedAt: occurredAt,
             branchGroupId: state.pendingBranchGroup ?? undefined,
+            ...streamTurnOf(state),
             ...(durationS !== undefined ? { durationS } : {}),
             ...(completionError && { error: completionError }),
             ...(completionError && failure?.surface ? { errorSurface: failure.surface } : {})
@@ -1189,7 +1281,8 @@ export function useMessageStream({
           needsInput: false,
           interimBoundaryPending: false,
           turnStartedAt: null,
-          turnLive: false
+          turnLive: false,
+          receiptTurnAnchorId: null
         }
       })
 
@@ -1305,7 +1398,8 @@ export function useMessageStream({
           needsInput: false,
           interimBoundaryPending: false,
           turnStartedAt: null,
-          turnLive: false
+          turnLive: false,
+          receiptTurnAnchorId: null
         }
       })
     },

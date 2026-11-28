@@ -16,6 +16,49 @@ export function conflictingTranscriptIdentity(local: ChatMessage, authoritative:
   return Boolean(localIds.length && authoritativeIds.length && !localIds.some(id => authoritativeIds.includes(id)))
 }
 
+/**
+ * The page row in live row `row`'s reply slot (`byOrdinal`, keyed `role:ordinal`), unless their stored
+ * ids conflict. A row the page's stored rows already paired by identity (reduced to `remainder`) is
+ * past the slot its stored part fills, so it has none.
+ */
+export function ordinalCounterpart(
+  byOrdinal: Map<string, ChatMessage>,
+  row: ChatMessage,
+  remainder: ChatMessage,
+  ordinal: number
+): ChatMessage | undefined {
+  const match = remainder === row ? byOrdinal.get(`${row.role}:${ordinal}`) : undefined
+
+  return match && !conflictingTranscriptIdentity(remainder, match) ? match : undefined
+}
+
+/** Match the old projection by role ordinal, except for a live row the graft already carried over. */
+export function matchPreviousResumeRows(previousMessages: ChatMessage[]) {
+  const previousIds = new Set<string>()
+  const previousByRole = new Map<ChatMessage['role'], ChatMessage[]>()
+  const counts = new Map<ChatMessage['role'], number>()
+
+  for (const message of previousMessages) {
+    const group = previousByRole.get(message.role) ?? []
+    group.push(message)
+    previousByRole.set(message.role, group)
+    previousIds.add(message.id)
+  }
+
+  return (message: ChatMessage): ChatMessage | undefined => {
+    const ordinal = counts.get(message.role) ?? 0
+    counts.set(message.role, ordinal + 1)
+
+    if (message.streamTurnId && previousIds.has(message.id)) {
+      return undefined
+    }
+
+    const previous = previousByRole.get(message.role)?.[ordinal]
+
+    return previous && !conflictingTranscriptIdentity(previous, message) ? previous : undefined
+  }
+}
+
 export function persistedTurnsEquivalent(a: ChatMessage['persistedTurn'], b: ChatMessage['persistedTurn']): boolean {
   return (
     a === b ||

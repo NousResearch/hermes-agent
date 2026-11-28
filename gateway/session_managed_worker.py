@@ -17,6 +17,7 @@ import time
 from agent.managed_worker import ACTIVITY_FRAME, accept_result, activity_interval, encode_frame, read_frame
 from gateway.session_worker_reservation import owner_worker_subject, reserve_admission_worker
 from persistence.core.errors import AuthorityRefusal
+from tui_gateway.stream_segments import TurnSegments, claimed_segments, stamp_reply_frame
 
 # The interpreter only imports psutil before it introduces itself; a child silent this long
 # is wedged (loader/stdio stall), not slow.
@@ -83,6 +84,8 @@ def _bootstrap(authority, ref, row, policy, scope, text=None):
     # This owner consumes the worker's ACTIVITY_FRAME, often enough for its wedge timeout.
     from gateway.run import _float_env
     request['activity_frames_v1'] = {'interval': activity_interval(_float_env("HERMES_AGENT_TIMEOUT", 1800))}
+    # This owner reads the stored-row fields on tool and result frames (agent/managed_worker.live_rows_asked).
+    request['live_rows_v1'] = True
     config = _worker_config(authority, policy)
     hydrated = replace(policy, config_json=json.dumps(config), request_json=json.dumps(request),
                        terminal_json=json.dumps(terminal), credential_ref=None, config_secret_ref=None)
@@ -723,6 +726,9 @@ async def execute_managed(authority, ref, row, policy):
                     admission_id=row['admission_id'], process=process, principal_id=row['principal_id'], hello=hello,
                     worker_subject=owner_worker_subject()))
         worker.worker = (scope['pid'], scope['birth'])
+        # This execution's reply-frame cursor (tui_gateway/stream_segments.py): the one the claim minted
+        # and named on message.start (a fresh one from an owner that minted none).
+        segments = claimed_segments(authority, ref.session_id, row['generation']) or TurnSegments()
         # The child reads nothing else until the exact reservation has committed.
         frame = await asyncio.to_thread(_bootstrap, authority, ref, row, policy, scope, text)
         worker.secrets.extend(v for v in (frame['api_key'], scope['secret']) if isinstance(v, str) and v)
@@ -742,7 +748,8 @@ async def execute_managed(authority, ref, row, policy):
             if kind == 'ready' and set(frame) == {'type', 'pid'} and frame['pid'] == scope['pid']:
                 continue
             if kind == 'delta' and set(frame) == {'type', 'text'} and isinstance(frame['text'], str):
-                authority.publish_execution(ref.session_id, row['generation'], 'message.delta', {'text': frame['text']})
+                authority.publish_execution(ref.session_id, row['generation'], 'message.delta',
+                                            stamp_reply_frame(segments, 'message.delta', {'text': frame['text']}))
                 continue
             if publish_worker_tool_event(authority, ref.session_id, row['generation'], frame):
                 continue

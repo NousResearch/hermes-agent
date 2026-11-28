@@ -1,5 +1,7 @@
 export { sameAttachmentTurn } from './attachment-turn'
 export { toChatMessages } from './hydration'
+export { indexStoredParts, lendLiveResults, liveRemainder, liveRowIdentity, storedRowFields } from './live-row-identity'
+export type { LiveRowIdentity, PartAt, StoredParts } from './live-row-identity'
 export {
   appendAssistantTextPart,
   appendReasoningPart,

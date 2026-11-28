@@ -1101,6 +1101,12 @@ class SessionAuthority:
             observed = publish_api_event(self, session_id, event_type, payload)
             return bool(delivered or observed)
 
+    def stream_segments(self, session_id, generation):
+        """The reply-frame cursor the claim of ``generation`` minted (its message.start named its turn_id),
+        or None once that execution ended or for a generation this owner never claimed."""
+        claimed = getattr(getattr(self.sessions.get(session_id), 'event_stream', None), 'turn_segments', None)
+        return claimed[1] if claimed is not None and claimed[0] == generation else None
+
     def register_approval(self, session_id, generation, route, data, *, timeout_s=None):
         live = self.sessions[session_id]
         with live.event_stream.lock:
@@ -1251,9 +1257,14 @@ class SessionAuthority:
                     'authority_epoch': self.epoch, 'execution_generation': row['generation'],
                     'admission_id': row['admission_id']}
                 self.executing[ref.session_id] = row['generation']
+                # One reply-frame cursor per claimed generation, named on the start before any output,
+                # so a turn that calls a tool before (or instead of) any text already has its identity.
+                from tui_gateway.stream_segments import TurnSegments, stamp_reply_frame
+                segments = TurnSegments()
+                live.event_stream.turn_segments = (row['generation'], segments)
                 from gateway.session_automation import admission_display
-                live.event_stream.publish(ref.session_id, admission_display(row.get('payload') or {}),
-                                          event_type='message.start')
+                live.event_stream.publish(ref.session_id, stamp_reply_frame(
+                    segments, 'message.start', admission_display(row.get('payload') or {})), event_type='message.start')
                 self._publish_pending(ref)
         return row
 
@@ -1375,6 +1386,7 @@ class SessionAuthority:
             finally:
                 with live.event_stream.lock:
                     self.executing.pop(ref.session_id, None)
+                    live.event_stream.turn_segments = None
         except ManagedExecutionUnknown:
             with live.event_stream.lock:
                 live.event_stream.execution = {}

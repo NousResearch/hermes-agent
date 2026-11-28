@@ -499,7 +499,9 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
             pendingBranchGroup: null,
             streamId: null,
             turnStartedAt: null,
-            turnLive: false
+            turnLive: false,
+            // A late receipt of this settled turn proves no start boundary (see ClientSessionState).
+            receiptTurnAnchorId: null
           }
         },
         payload?.stored_session_id || undefined

@@ -21,6 +21,7 @@ it('says a /reasoning level typed while a reply streams applies from the next me
       createBackendSessionForSend: async () => null,
       getRoutedStoredSessionId: () => 'stored-a',
       getRuntimeIdForStoredSession: () => 'runtime-a',
+      getRouteToken: () => 'route',
       requestGateway: vi.fn(async () => ({ status: 'deferred', value: 'high' })) as GatewayRequest,
       resumeStoredSession: vi.fn(),
       updateSessionState: vi.fn((_sid, updater) => updater(createClientSessionState())),

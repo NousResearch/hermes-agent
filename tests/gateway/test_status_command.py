@@ -406,6 +406,7 @@ async def test_agents_command_reports_active_agents_and_processes(monkeypatch):
                     "status": "running",
                     "uptime_seconds": 17,
                     "command": "sleep 30",
+                    "session_key": session_key,  # this chat's: other chats' work is counted, not listed
                 }
             ]
 

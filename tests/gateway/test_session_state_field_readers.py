@@ -49,6 +49,7 @@ async def test_agents_elapsed_comes_from_turn_started_ts():
     running = MagicMock(session_id="sid-1", model="m")
     runner._running_agents = {"agent:main:x:dm:1": running, "agent:main:x:dm:2": _AGENT_PENDING_SENTINEL}
     runner._session_state("agent:main:x:dm:1").turn.started_ts = time.time() - 3725
+    runner._resume_caller_is_admin = lambda _source: True  # other chats' rows are listed for an admin only
 
     lines = (await runner._handle_agents_command(_event("/agents"))).splitlines()
 

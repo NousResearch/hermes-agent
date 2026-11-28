@@ -1,8 +1,7 @@
 """Context-cache model-switch guard.
 
-A mid-session model switch abandons the provider prompt cache, so the first call after the switch
-re-reads the whole conversation at full input price. The guard asks for confirmation only when the
-live session exceeds a configurable token threshold.
+A mid-session model switch may require a cold input pass. The guard asks for confirmation only when
+the supplied context meets a configurable token threshold; it does not know cache residency or billing.
 """
 
 from unittest.mock import patch
@@ -36,6 +35,10 @@ class TestContextCacheGuard:
         assert warning is not None
         assert warning.kind == "context_cache"
         assert f"{tokens:,}" in warning.message
+        assert "new/model may need" in warning.message
+        assert "If the previous model's cache is already cold" in warning.message
+        assert "charges or quota depend on the selected route" in warning.message
+        assert "full-price" not in warning.message
 
     def test_same_model_reselect_stays_silent(self):
         ctx = SelectionContext(context_tokens=DEFAULT_CONTEXT_CACHE_SWITCH_THRESHOLD * 2, current_model="same/model")

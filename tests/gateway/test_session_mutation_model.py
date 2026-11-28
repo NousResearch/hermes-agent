@@ -730,6 +730,9 @@ async def test_large_context_guard_reads_the_persisted_anchor_with_no_resident_a
         result = response['result']
         assert result['status'] == 'confirmation_required', result
         assert 'LARGE CONTEXT' in result['confirm_message']
+        assert 'other-model may need' in result['confirm_message']
+        assert "If the previous model's cache is already cold" in result['confirm_message']
+        assert 'full-price' not in result['confirm_message']
         assert session_row(db, ref.session_id)['model'] == snap['model']
     finally:
         await owner.close()

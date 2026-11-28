@@ -455,13 +455,23 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True,
     if 'model' in params and (not isinstance(model, str) or not model.strip()):
         _refuse('model', 'must be a non-empty string')
     cwd = params.get('cwd', str(resolve_agent_cwd()))
+    if params.get('cwd_explicit') is False and 'cwd' in params:
+        # The inherited app-global workspace is provenance, not a pick: a named profile's own
+        # folder beats it, as before, but the resolution now happens BEFORE validation — a remote
+        # client's cwd (e.g. a Windows Desktop dialing a Linux gateway) is a foreign spelling that
+        # can never validate here, and the old order refused the whole create (#155820 family).
+        cwd = _profile_workspace_cwd(get_hermes_home()) or cwd
     if not isinstance(cwd, str) or not Path(cwd).is_absolute() or not Path(cwd).is_dir():
-        _refuse('cwd', 'must be an absolute path to an existing directory')
+        if params.get('cwd_explicit') is False:
+            # Nothing the client inherited resolves on this host and the profile names no
+            # workspace: fall back to the host's own agent cwd, exactly as a create without
+            # ``cwd`` would. An explicit pick (true) or an unset/legacy spelling stays strict.
+            cwd = str(resolve_agent_cwd())
+        else:
+            _refuse('cwd', 'must be an absolute path to an existing directory')
     row_cwd = params.get('row_cwd')
     if 'row_cwd' in params and (not isinstance(row_cwd, str) or (row_cwd and not Path(row_cwd).is_absolute())):
         _refuse('row_cwd', 'must be an absolute path when set')
-    if params.get('cwd_explicit') is False and 'cwd' in params:
-        cwd = _profile_workspace_cwd(get_hermes_home()) or cwd
     from gateway.session_local_editor import validate_editor
     validate_editor(source, params.get('editor'))
     if 'client' in params:  # a self-declared label kept in the request as sent; no decision below reads it

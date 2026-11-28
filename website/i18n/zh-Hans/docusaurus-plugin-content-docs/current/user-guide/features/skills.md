@@ -25,7 +25,7 @@ Skills 是 agent 在需要时可以加载的按需知识文档。它们遵循**�
 # 在 CLI 或任何消息平台中：
 /gif-search funny cats
 /axolotl help me fine-tune Llama 3 on my dataset
-/github-pr-workflow create a PR for the auth refactor
+/github create a PR for the auth refactor
 /songsee analyze the frequency spread of this mix
 
 # 只输入 skill 名称即可加载它，并让 agent 询问你的需求：
@@ -272,9 +272,8 @@ Skill 捆绑包是将多个 skills 归组在单个斜杠命令下的小型 YAML 
 ```bash
 # 为后端功能开发创建一个捆绑包
 hermes bundles create backend-dev \
-  --skill github-code-review \
+  --skill github \
   --skill test-driven-development \
-  --skill github-pr-workflow \
   -d "Backend feature work — review, test, PR workflow"
 ```
 
@@ -284,7 +283,7 @@ hermes bundles create backend-dev \
 /backend-dev refactor the auth middleware
 ```
 
-agent 接收到所有三个 skills 加载到一条用户消息中，斜杠命令后的任何文本都作为用户指令附加。
+agent 接收到所有 skills 加载到一条用户消息中，斜杠命令后的任何文本都作为用户指令附加。
 
 ### YAML 模式
 
@@ -294,9 +293,8 @@ agent 接收到所有三个 skills 加载到一条用户消息中，斜杠命令
 name: backend-dev
 description: Backend feature work — review, test, PR workflow.
 skills:
-  - github-code-review
+  - github
   - test-driven-development
-  - github-pr-workflow
 instruction: |
   Always start by writing failing tests, then implement.
   Open the PR through the standard workflow with co-author tags.

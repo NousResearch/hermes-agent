@@ -369,6 +369,42 @@ def service_path_prefix_entries() -> list[str]:
     return list(dict.fromkeys(entries))
 
 
+def _paths_share_one_volume(a: Path, b: Path) -> bool:
+    """True when both paths sit on the same mounted volume (``st_dev`` equality).
+
+    The launchd failure mode is per-volume, not per-path: a background context's pre-exec open of
+    ANY path on an external/removable volume is TCC-denied, and ``st_dev`` inequality is exactly
+    that boundary. Unstattable paths count as same-volume so callers keep their original paths.
+    """
+    try:
+        return os.stat(a).st_dev == os.stat(b).st_dev
+    except OSError:
+        return True
+
+
+def _launchd_stdio_log_paths(stdout_log: Path, stderr_log: Path, label: str) -> tuple[Path, Path]:
+    """plist ``Standard*Path`` pair, parked on the boot volume when the log dir is off it.
+
+    xpcproxy opens the plist stdio files BEFORE exec'ing the job, and in that pre-exec context an
+    open of a path on an external/removable volume is TCC-denied (EPERM): posix_spawn never runs
+    the job and xpcproxy exits 78 on every respawn — masquerading as the gateway's own EX_CONFIG
+    78 unless you read launchd's posix_spawn errors (2026-11-13, HERMES_HOME on an external NVMe
+    APFS volume; FDA grants to the wrapped executables do not help, the denied open happens
+    before they exist). The JXA ``>>`` redirections inside ProgramArguments are post-exec opens by
+    the job's own processes and keep appending the real gateway logs under HERMES_HOME/logs; the
+    plist handles only capture pre-redirection output (osascript/JXA errors), so parking them in
+    ~/Library/Logs when the volumes differ loses nothing.
+    """
+    if _paths_share_one_volume(stdout_log.parent, Path.home()):
+        return stdout_log, stderr_log
+    boot_log_dir = Path.home() / "Library" / "Logs"
+    try:
+        boot_log_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return stdout_log, stderr_log  # no boot-volume location to park them: keep the historical paths
+    return boot_log_dir / f"{label}.stdio.log", boot_log_dir / f"{label}.stdio.err"
+
+
 def generate_launchd_plist() -> str:
     from html import escape
     # Stable cwd anchor — never the volatile source checkout (same rot risk as systemd's WorkingDirectory).
@@ -393,6 +429,7 @@ def generate_launchd_plist() -> str:
     prog_args_xml = "\n        ".join(
         f"<string>{escape(part)}</string>" for part in launchd_program_arguments(command, stdout_log, stderr_log)
     )
+    stdio_out, stdio_err = _launchd_stdio_log_paths(stdout_log, stderr_log, label)
 
     from hermes_cli.gateway_bundled_env import launchd_bundled_env_xml
     bundled_env_xml = launchd_bundled_env_xml(_gw().get_launchd_plist_path())  # #85357
@@ -473,11 +510,16 @@ def generate_launchd_plist() -> str:
     <key>ExitTimeOut</key>
     <integer>60</integer>
 {nofile_block}
+    <!-- Opened by xpcproxy BEFORE exec: when HERMES_HOME sits on an external volume
+         that open is TCC-denied (EPERM) and the job never runs (xpcproxy exit 78,
+         not the gateway's EX_CONFIG). _launchd_stdio_log_paths() parks them in
+         ~/Library/Logs when the log dir is off the boot volume; the JXA >>
+         redirections above keep appending the real logs under HERMES_HOME/logs. -->
     <key>StandardOutPath</key>
-    <string>{stdout_log}</string>
-    
+    <string>{stdio_out}</string>
+
     <key>StandardErrorPath</key>
-    <string>{stderr_log}</string>
+    <string>{stdio_err}</string>
 </dict>
 </plist>
 """
@@ -533,6 +575,10 @@ def _spawn_deferred_launchd_reload(
     reload_log_path = _launchd_reload_log_path()
     with contextlib.suppress(OSError):
         reload_log_path.parent.mkdir(parents=True, exist_ok=True)
+    # -o/-e are launchd PRE-exec opens: on an external-volume HERMES_HOME they are TCC-denied and the
+    # submitted job dies with xpcproxy's 78 without running a line (same class as the plist stdio fix,
+    # 2026-11-15). The script's own >> appends are post-exec shell opens and keep the canonical log.
+    submit_out, submit_err = _launchd_stdio_log_paths(reload_log_path, reload_log_path, f"{label}.reload")
 
     # Durable pre-bootout marker: distinguishes "helper never started" from "helper ran but failed".
     _gw()._append_launchd_reload_log(f"Launchd reload helper started for {target}")
@@ -576,7 +622,7 @@ def _spawn_deferred_launchd_reload(
         # job cannot reach the helper.
         subprocess.Popen(
             [
-                "launchctl", "submit", "-l", submit_label, "-o", str(reload_log_path), "-e", str(reload_log_path),
+                "launchctl", "submit", "-l", submit_label, "-o", str(submit_out), "-e", str(submit_err),
                 "--", "/bin/bash", "-c", reload_script,
             ],
             stdout=subprocess.DEVNULL,

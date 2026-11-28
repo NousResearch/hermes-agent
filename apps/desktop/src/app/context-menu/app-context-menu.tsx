@@ -263,7 +263,11 @@ function domImageSection(
         onSelect={() => openExternalLink(target.imageUrl)}
       />
     ) : null,
-    window.hermesDesktop?.contextMenuCopyImage || target.imageUrl ? (
+    window.hermesDesktop?.contextMenuCopyImage ||
+    (target.imageUrl &&
+      window.isSecureContext &&
+      typeof navigator.clipboard?.write === 'function' &&
+      typeof ClipboardItem !== 'undefined') ? (
       <Item
         icon="file-media"
         key="image-copy"

@@ -97,7 +97,7 @@ it('the pane fallback serves clicked content without taking explicit or unrelate
     { id: 'input', label: 'Paste', app: true },
     { id: 'editable-child', label: 'Paste', app: true },
     { id: 'link', label: 'Copy URL', app: true },
-    { id: 'image', label: 'Copy image', app: true },
+    { id: 'image', label: 'Copy image address', app: true },
     { id: 'selected', label: 'Copy', app: true, selection: true, copy: true },
     { id: 'bare', label: 'Zone action', app: false },
     { id: 'bare', label: 'Zone action', app: false, selection: true },

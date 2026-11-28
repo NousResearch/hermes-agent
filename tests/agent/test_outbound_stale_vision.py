@@ -246,12 +246,8 @@ class TestOutboundStaleVisionEviction:
         )
         assert _outbound_image_blocks(outbound) <= OUTBOUND_IMAGE_LIMIT
 
-    def test_user_uploads_count_against_the_ceiling(self):
-        """Uploads occupy the provider's budget, so they must force tool eviction.
-
-        Holding the tool-screenshot count fixed and adding uploads must increase the
-        number of retired screenshots; ignoring uploads leaves the request over the limit.
-        """
+    def test_user_uploads_share_the_oldest_first_frontier(self):
+        """Old uploads are carriers too, so they retire before newer tool images."""
         def outbound_for(n_uploads: int) -> list[dict]:
             history: list[dict] = [
                 {
@@ -289,14 +285,14 @@ class TestOutboundStaleVisionEviction:
                 1 for p in user["content"]
                 if isinstance(p, dict) and p.get("type") == "image_url"
             )
-            assert intact == n_uploads, "user uploads must never be rewritten"
+            assert intact == 0, "an old upload carrier must enter the eviction frontier"
+            assert any(
+                isinstance(p, dict) and p.get("text") == "look"
+                for p in user["content"]
+            )
 
     def test_keep_newest_is_a_floor_when_uploads_fill_the_ceiling(self):
-        """Reserved uploads alone over the limit must not blind the model.
-
-        Retiring every screenshot cannot bring the request under the ceiling here, so
-        the newest frames have to survive rather than be stripped for no benefit.
-        """
+        """Retiring an oversized upload batch still leaves the newest frames visible."""
         history: list[dict] = [
             {
                 "role": "user",
@@ -319,13 +315,18 @@ class TestOutboundStaleVisionEviction:
         # At least the floor survives; retirement still moves in whole batches (#133999).
         kept = len(_image_bearing_tool_ids(outbound))
         assert OUTBOUND_IMAGE_FLOOR <= kept < OUTBOUND_IMAGE_FLOOR + IMAGE_EVICTION_BATCH
+        assert _outbound_image_blocks(outbound) <= OUTBOUND_IMAGE_LIMIT
+        user = next(m for m in outbound if m.get("role") == "user")
+        assert not any(
+            isinstance(p, dict) and p.get("type") == "image_url"
+            for p in user["content"]
+        )
 
     def test_a_batch_that_would_blind_the_model_stops_at_the_floor(self):
-        """A whole-batch retire must not take the newest frames when the floor already fits.
+        """A whole-batch retire keeps the newest frames after retiring the old upload carrier.
 
-        Fifteen reserved uploads leave five block slots; the sixth screenshot breaches, and
-        one eight-wide batch would retire all six tool frames -- including the one the model
-        was just asked about -- although keeping the newest three already clears the limit.
+        The old upload carrier and the two oldest screenshots retire together; the newest
+        three frames remain so the model can still answer the current question.
         """
         uploads = OUTBOUND_IMAGE_LIMIT - 5
         history: list[dict] = [
@@ -347,6 +348,11 @@ class TestOutboundStaleVisionEviction:
         assert _outbound_image_blocks(outbound) <= OUTBOUND_IMAGE_LIMIT
         kept = _image_bearing_tool_ids(outbound)
         assert kept[-OUTBOUND_IMAGE_FLOOR:] == [f"call_{i}" for i in range(6 - OUTBOUND_IMAGE_FLOOR, 6)]
+        user = next(m for m in outbound if m.get("role") == "user")
+        assert not any(
+            isinstance(p, dict) and p.get("type") == "image_url"
+            for p in user["content"]
+        )
 
     def test_byte_pressure_overrides_the_keep_newest_floor(self):
         """A hard request-size breach must not be preserved by the floor.
@@ -354,8 +360,8 @@ class TestOutboundStaleVisionEviction:
         Five 5 MB uploads plus three 3 MB tool images serialize to ~34 MB against
         Anthropic's 32 MB Messages limit
         (https://platform.claude.com/docs/en/api/overview#request-size-limits).
-        Uploads are never rewritten, so the only way under the ceiling is to retire
-        every removable tool image — the floor may cost a frame, never a 413.
+        Retiring the oldest upload carrier clears the request while keeping the current
+        three tool frames available.
         """
         mb = 1024 * 1024
         hard_limit = 32 * mb
@@ -410,12 +416,12 @@ class TestOutboundStaleVisionEviction:
         assert len(json.dumps(outbound, ensure_ascii=False)) < hard_limit, (
             "the floor kept tool images that push the request past the 32 MB limit"
         )
-        assert _image_bearing_tool_ids(outbound) == []
+        assert _image_bearing_tool_ids(outbound) == ["call_0", "call_1", "call_2"]
         user = next(m for m in outbound if m.get("role") == "user")
         assert sum(
             1 for p in user["content"]
             if isinstance(p, dict) and p.get("type") == "image_url"
-        ) == 5, "user uploads must survive byte-driven eviction untouched"
+        ) == 0, "the oldest byte-heavy upload carrier must be retired"
 
     def test_floor_yields_when_eviction_can_fix_the_breach(self):
         """The floor shelters only violations that retiring tool content cannot fix.
@@ -473,7 +479,7 @@ class TestOutboundStaleVisionEviction:
             f"call_{i}" for i in range(IMAGE_EVICTION_BATCH, n)
         ]
 
-    def test_user_uploads_are_not_evicted(self):
+    def test_newest_user_upload_survives_oldest_first_eviction(self):
         history = [
             {
                 "role": "user",
@@ -488,7 +494,23 @@ class TestOutboundStaleVisionEviction:
         ]
         for i in range(OUTBOUND_IMAGE_LIMIT):
             history.extend(_image_tool(i))
+        history.append(
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "now look at this"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,NEWESTUPLOAD"},
+                    },
+                ],
+            }
+        )
         outbound = sanitize_api_messages(history)
         assert evict_stale_outbound_tool_images(outbound) > 0
-        user = next(m for m in outbound if m.get("role") == "user")
-        assert user["content"][1]["image_url"]["url"].endswith("USERUPLOAD")
+        users = [m for m in outbound if m.get("role") == "user"]
+        assert not any(
+            isinstance(p, dict) and p.get("type") == "image_url"
+            for p in users[0]["content"]
+        )
+        assert users[-1]["content"][1]["image_url"]["url"].endswith("NEWESTUPLOAD")

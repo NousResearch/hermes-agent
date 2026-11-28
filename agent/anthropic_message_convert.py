@@ -636,7 +636,7 @@ def _image_source_data(block: Any) -> Optional[str]:
 
 
 def _evict_old_screenshots(result: list[dict[str, Any]]) -> None:
-    """Retire screenshot payloads once the request would cross the API's per-request image limit.
+    """Retire old image payloads once the request would cross the API's per-request image limit.
 
     Mutates ``result`` in place. The block ceiling is conditional on the request's actual image
     dimensions (the strict 20 only when some image exceeds the many-image per-side cap), so this
@@ -647,23 +647,36 @@ def _evict_old_screenshots(result: list[dict[str, Any]]) -> None:
     no request-size guard at all (post-#113953 review). Policy and rationale:
     :mod:`agent.image_eviction_policy`.
     """
-    reserved = [
-        (block, _image_source_data(block))
-        for msg in result
-        for block in (msg.get("content") if isinstance(msg.get("content"), list) else [])
-        if _block_type(block) == "image"
-    ]
-    # Parallel tool calls land as sibling tool_result blocks inside ONE user message
-    # (oldest first), so the inner walk must also run newest -> oldest or a batch that
-    # ends mid-message retires the newest frames instead of the oldest (#103217).
-    carriers = [
-        (block, [(b, _image_source_data(b)) for b in block["content"] if _block_type(b) == "image"])
-        for msg in reversed(result)
-        for block in reversed(msg.get("content") if isinstance(msg.get("content"), list) else [])
-        if _block_type(block) == "tool_result"
-        and isinstance(block.get("content"), list)
-        and _has_block_type(block["content"], {"image"})
-    ]
+    reserved: list[tuple[Any, Optional[str]]] = []
+    carriers: list[tuple[list[Any], list[tuple[Any, Optional[str]]]]] = []
+    for msg in reversed(result):
+        content = msg.get("content") if isinstance(msg.get("content"), list) else []
+        direct_images: list[tuple[Any, Optional[str]]] = []
+        # Parallel tool calls land as sibling tool_result blocks inside ONE user message
+        # (oldest first), so the inner walk must also run newest -> oldest or a batch that
+        # ends mid-message retires the newest frames instead of the oldest (#103217).
+        for block in reversed(content):
+            if (
+                _block_type(block) == "tool_result"
+                and isinstance(block.get("content"), list)
+                and _has_block_type(block["content"], {"image"})
+            ):
+                carriers.append(
+                    (
+                        block["content"],
+                        [
+                            (image, _image_source_data(image))
+                            for image in block["content"]
+                            if _block_type(image) == "image"
+                        ],
+                    )
+                )
+            elif msg.get("role") == "user" and _block_type(block) == "image":
+                direct_images.append((block, _image_source_data(block)))
+            elif _block_type(block) == "image":
+                reserved.append((block, _image_source_data(block)))
+        if direct_images:
+            carriers.append((content, direct_images))
     many_image_safe = images_all_within_many_image_limit(
         [
             *(data for _, data in reserved),
@@ -679,10 +692,11 @@ def _evict_old_screenshots(result: list[dict[str, Any]]) -> None:
         reserved_bytes=sum(len(data) for _, data in reserved if data),
         many_image_safe=many_image_safe,
     )
-    for block, _ in carriers[len(carriers) - retire:]:
-        placeholder = _text_block("[screenshot removed to save context]")
-        block["content"] = [
-            placeholder if _block_type(b) == "image" else b for b in block["content"]
+    for container, _ in carriers[len(carriers) - retire:]:
+        placeholder = _text_block("[image removed to save context]")
+        container[:] = [
+            placeholder if _block_type(block) == "image" else block
+            for block in container
         ]
 
 

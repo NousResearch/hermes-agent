@@ -90,6 +90,40 @@ def test_session_without_continuation_is_its_own_tip_root_and_lineage(backend, s
     assert store_a.lineage.resolve_resume_target(solo) == solo
 
 
+def test_live_compression_recovery_returns_only_the_unique_leaf(backend, scope_a):
+    store = backend.open(scope_a)
+    _chain(backend, scope_a, "recovery-root", "recovery-mid", "recovery-tip")
+    for parent in ("recovery-root", "recovery-tip"):
+        for kind in (SessionLineageKind.BRANCH, SessionLineageKind.DELEGATE, SessionLineageKind.RESET):
+            store.sessions.create(_new(f"{parent}-{kind.value}", parent_session_id=SessionId(parent), lineage_kind=kind))
+        store.sessions.create(_new(f"{parent}-tool", source="tool", parent_session_id=SessionId(parent)))
+    root, mid, tip = (SessionId(f"recovery-{part}") for part in ("root", "mid", "tip"))
+    for parent in (root, mid):
+        leaf = store.lineage.live_compression_child(parent)
+        assert leaf is not None and leaf.session_id == tip and leaf.parent_session_id == mid
+        assert leaf.ended_at is None and leaf.end_reason is None
+    for parent in (tip, SessionId(""), SessionId("unknown")):
+        assert store.lineage.live_compression_child(parent) is None
+
+
+@pytest.mark.parametrize("obstruction", ["closed-sibling", "live-intermediate", "invalid-marker", "ambiguous-markers"])
+def test_live_compression_recovery_refuses_unproven_leaves(backend, scope_a, obstruction):
+    store = backend.open(scope_a)
+    _chain(backend, scope_a, "guard-root", "guard-child")
+    root, child = SessionId("guard-root"), SessionId("guard-child")
+    if obstruction == "closed-sibling":
+        store.sessions.create(_new("guard-sibling", parent_session_id=root))
+        store.sessions.end(SessionId("guard-sibling"), "agent_close")
+    if obstruction == "live-intermediate":
+        store.sessions.create(_new("guard-descendant", parent_session_id=child))
+    if obstruction in {"invalid-marker", "ambiguous-markers"}:
+        # A malformed decoy beside the canonical child must refuse, not disappear.
+        config = {"_branched_from": None} if obstruction == "invalid-marker" else {
+            "_branched_from": str(root), "_delegate_from": str(root)}
+        store.sessions.create(_new("guard-decoy", parent_session_id=root, model_config=config))
+    assert store.lineage.live_compression_child(root) is None
+
+
 # ── tip ───────────────────────────────────────────────────────────────────────
 
 

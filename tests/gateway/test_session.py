@@ -1209,8 +1209,7 @@ class TestGatewaySessionDbRecovery:
 
     def test_transcript_reroute_follows_multi_hop_compression_chain(self, tmp_path):
         """A stale writer behind >=2 compression hops (root -> mid -> tip) must
-        reroute to the live tip via the transitive ``get_compression_tip`` walk
-        — the depth-1 live-child lookup found nothing here (#82001)."""
+        reroute only when the conservative resolver proves a unique live leaf."""
         import threading
         from types import SimpleNamespace
 
@@ -1274,18 +1273,47 @@ class TestGatewaySessionDbRecovery:
         assert [m["content"] for m in conversation(db, "stale")] == []
         db.close()
 
+    @pytest.mark.parametrize("obstruction", ["closed-sibling", "live-intermediate", "invalid-marker"])
+    def test_transcript_recovery_refuses_unproven_live_leaf(self, tmp_path, obstruction):
+        import threading
+        from types import SimpleNamespace
+
+        db = storage_handle(tmp_path)
+        seed_session(db, "parent", "telegram", end_reason="compression")
+        config = {"_branched_from": None} if obstruction == "invalid-marker" else None
+        seed_session(db, "child", "telegram", parent_session_id="parent", model_config=config)
+        if obstruction == "closed-sibling":
+            seed_session(db, "sibling", "telegram", parent_session_id="parent", end_reason="agent_close")
+        if obstruction == "live-intermediate":
+            seed_session(db, "descendant", "telegram", parent_session_id="child")
+
+        store = object.__new__(SessionStore)
+        store._db, store._persistence_beside = db, lambda pinned: pinned
+        store._lock = threading.RLock()
+        store._entries = {"route": SimpleNamespace(session_id="parent")}
+        store._loaded = True
+        store._save = lambda: None
+        store._transcript_retry_lock = threading.Lock()
+        store._dirty_transcripts = {}
+        store._transcript_append_failures = {}
+        store._fts_rebuild_last_attempt_at = None
+        try:
+            store.append_to_transcript("parent", {"role": "assistant", "content": "must not land"})
+            assert store._entries["route"].session_id == "parent"
+            assert not conversation(db, "child")
+            assert store._dirty_transcripts == {}
+        finally:
+            db.close()
+
     def test_transcript_reroute_migrates_remaining_backlog_to_child(self):
         import threading
         from types import SimpleNamespace
         from persistence.core.errors import CompressionClosed
 
         class FakeDb:
-            def tip(self, session_id):
+            def live_compression_child(self, session_id):
                 assert session_id == "parent"
-                return "child"
-
-            def get(self, session_id):
-                return SimpleNamespace(session_id=session_id, ended_at=None)
+                return SimpleNamespace(session_id="child")
 
         store = object.__new__(SessionStore)
         store._db = FakeDb()
@@ -1346,6 +1374,74 @@ class TestGatewaySessionDbRecovery:
         assert "parent" not in store._dirty_transcripts
         assert "child" not in store._dirty_transcripts
 
+
+    @pytest.mark.parametrize("reroute", [False, True])
+    @pytest.mark.parametrize("backlog", [False, True])
+    def test_fts_retry_drains_once_on_the_actual_destination(self, tmp_path, monkeypatch, reroute, backlog):
+        import threading
+        from types import SimpleNamespace
+        from typing import Any
+
+        db = storage_handle(tmp_path)
+        ambient = storage_handle(tmp_path / "ambient")
+        seed_session(db, "parent", "telegram")
+        target = "parent"
+        if reroute:
+            db.sessions.end("parent", "compression")
+            seed_session(db, "child", "telegram", parent_session_id="parent")
+            target = "child"
+
+        store: Any = object.__new__(SessionStore)
+        store._scoped_persistence = lambda: ambient
+        store._persistence_for_key = lambda key: db if key == "owned-route" else ambient
+        store._lock = threading.RLock()
+        store._entries = {"route": SimpleNamespace(session_id="parent", session_key="owned-route")}
+        store._loaded = True
+        store._save = lambda: None
+        store._transcript_retry_lock = threading.Lock()
+        store._dirty_transcripts = (
+            {"parent": [{"role": "user", "content": "older"}]} if backlog else {}
+        )
+        store._transcript_append_failures = {}
+        store._fts_rebuild_last_attempt_at = None
+        attempts = []
+        rebuilds = []
+        failed_once = False
+        original_append = store._append_transcript_message
+
+        def append(session_id, message):
+            nonlocal failed_once
+            attempts.append((session_id, message["content"]))
+            # Bound the broken pre-fix drain without hiding its duplicate writes.
+            if len(attempts) > 5:
+                raise RuntimeError("transcript retry did not advance")
+            if session_id == target and not failed_once:
+                failed_once = True
+                raise RuntimeError("messages_fts is malformed")
+            original_append(session_id, message)
+
+        store._append_transcript_message = append
+        monkeypatch.setattr(db.search, "rebuild_search_index", lambda: rebuilds.append(target) or 1)
+        monkeypatch.setattr(ambient.search, "rebuild_search_index", lambda: pytest.fail("repaired ambient store"))
+        first = "older" if backlog else "newer"
+        expected_attempts = ([("parent", first)] if reroute else []) + [
+            (target, first), (target, first)
+        ]
+        if backlog:
+            expected_attempts.append((target, "newer"))
+        try:
+            store.append_to_transcript("parent", {"role": "assistant", "content": "newer"})
+            assert attempts == expected_attempts
+            assert rebuilds == [target]
+            assert store._entries["route"].session_id == target
+            assert store._dirty_transcripts == {}
+            assert not conversation(ambient, target)
+            assert [m["content"] for m in conversation(db, target)] == (
+                ["older", "newer"] if backlog else ["newer"]
+            )
+        finally:
+            db.close()
+            ambient.close()
 
     def test_fts_corruption_error_requires_fts_provenance(self):
         """_is_fts_corruption_error must not treat a generic malformed-image

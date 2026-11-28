@@ -891,6 +891,9 @@ export function TreeGroup({
                           </TabKeyHint>
                         </span>
                       ) : null}
+                      {chrome.tabBadge ? (
+                        <span className="ml-1 flex shrink-0 items-center">{chrome.tabBadge()}</span>
+                      ) : null}
                       <PaneTabLabel>{tabLabel(paneId)}</PaneTabLabel>
                     </PaneTab>
                   )

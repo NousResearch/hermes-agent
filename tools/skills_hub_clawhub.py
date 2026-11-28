@@ -99,7 +99,8 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
 
     @staticmethod
     def _owner_from_payload(data: Optional[dict[str, Any]]) -> Optional[str]:
-        owner = data.get("owner") if isinstance(data, dict) else None
+        # Detail payloads carry ``owner``; listing items carry ``ownerHandle``.
+        owner = (data.get("owner") or data.get("ownerHandle")) if isinstance(data, dict) else None
         if isinstance(owner, dict):
             owner = owner.get("handle")
         return owner.strip() if isinstance(owner, str) and owner.strip() else None
@@ -113,15 +114,18 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
 
     @classmethod
     def _item_to_meta(cls, item: dict[str, Any]) -> Optional[SkillMeta]:
-        """Listing item -> SkillMeta (None without a slug)."""
+        """Listing item -> SkillMeta (None without a slug). Slugs are unique per owner
+        only, and ClawHub answers a bare slug that several owners publish with 409, so
+        a known owner goes into the identifier: ``@owner/slug``."""
         slug = item.get("slug")
         if not isinstance(slug, str) or not slug:
             return None
         owner = cls._owner_from_payload(item)
+        owner = owner if owner and cls._SLUG_RE.fullmatch(owner) else None
         return SkillMeta(
             name=item.get("displayName") or item.get("name") or slug,
             description=item.get("summary") or item.get("description") or "",
-            source="clawhub", identifier=slug, trust_level="community",
+            source="clawhub", identifier=f"@{owner}/{slug}" if owner else slug, trust_level="community",
             tags=cls._normalize_tags(item.get("tags", [])), extra={"owner": owner} if owner else {},
         )
 

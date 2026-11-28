@@ -121,9 +121,17 @@ def probe_vscode_images() -> bool | None:
     return _VSCODE_IMAGES
 
 
-def supports_kitty_placeholders() -> bool:
-    """True when the terminal paints kitty Unicode placeholders; WezTerm speaks kitty APC but renders placeholders as tofu."""
+def is_kitty_terminal() -> bool:
+    """True on kitty/Ghostty, also behind a multiplexer; WezTerm speaks kitty APC but renders placeholders as tofu."""
     return detect_terminal_graphics() == "kitty" and not _is_wezterm()
+
+
+def supports_kitty_placeholders() -> bool:
+    """True when the terminal paints kitty Unicode placeholders.
+
+    Zellij inherits the outer kitty's env yet answers a ``U=1`` transmit with ``ENOTSUPPORTED``.
+    """
+    return is_kitty_terminal() and not os.environ.get("ZELLIJ")
 
 
 def _png_b64(image) -> str:
@@ -147,10 +155,18 @@ def cell_box(image) -> tuple[int, int]:
 
 
 def _kitty_apc(ctrl: str, data: str) -> str:
-    """kitty APC escape for *data*, chunked into ≤4096-byte ``m`` pieces (``m=1`` = more chunks follow)."""
+    """kitty APC escape for *data*, chunked into ≤4096-byte ``m`` pieces (``m=1`` = more chunks follow).
+
+    Later chunks carry only ``m`` and the ``q`` key: unquieted, Zellij answers a later chunk of a
+    transmit it rejected with ``EINVAL``, which lands in the prompt as typed text.
+    """
     pieces = [data[i : i + 4096] for i in range(0, len(data), 4096)] or [""]
     last = len(pieces) - 1
-    return "".join(f"\x1b_G{ctrl + ',' if i == 0 else ''}m={int(i != last)};{piece}\x1b\\" for i, piece in enumerate(pieces))
+    quiet = "".join(f",{kv}" for kv in ctrl.split(",") if kv.startswith("q="))
+    return "".join(
+        f"\x1b_G{ctrl + ',' if i == 0 else ''}m={int(i != last)}{quiet if i else ''};{piece}\x1b\\"
+        for i, piece in enumerate(pieces)
+    )
 
 
 def encode_kitty(image) -> str:
@@ -294,8 +310,9 @@ _RENDERABLE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".
 # Pet ids live in [1, 0x7FFF] (``agent.pet.render.kitty_image_id``); images take the rest of
 # the 24-bit space the placeholder foreground color can carry, so neither replaces the other.
 _IMAGE_ID_BASE, _IMAGE_ID_SPAN = 0x8000, 0xFFFFFF - 0x8000
-# Multiplexers that swallow image transmits (and inherit the outer terminal's KITTY_WINDOW_ID).
-_MULTIPLEXER_ENV = ("TMUX", "STY")
+# Multiplexers that paint neither kitty Unicode placeholders nor iTerm2 images, though they inherit
+# the outer terminal's KITTY_WINDOW_ID (Zellij does forward direct kitty placements).
+_MULTIPLEXER_ENV = ("TMUX", "STY", "ZELLIJ")
 # Transmit at up to 2 px per nominal cell pixel: sharp on HiDPI cells without shipping
 # a full-resolution photo through the tty.
 _PIXELS_PER_CELL_PIXEL = 2
@@ -313,9 +330,10 @@ def resolve_inline_mode(
     it can reserve blank rows and paint a cell-pinned image over them (the classic CLI's
     scrollback can, Ink's re-laid-out frame can't). ``auto`` picks kitty placeholders where they
     paint (kitty, Ghostty), then iTerm2 images over reserved rows where the painter allows it
-    (iTerm2, WezTerm, Konsole), else half-blocks. tmux and GNU screen swallow both transmits,
-    so ``auto`` stays on half-blocks there. Pinning a protocol opts in: the classic CLI wraps its
-    transmits for tmux's ``allow-passthrough on``; the TUI and GNU screen send them unwrapped.
+    (iTerm2, WezTerm, Konsole), else half-blocks. tmux, GNU screen and Zellij swallow both
+    transmits, so ``auto`` stays on half-blocks there. Pinning a protocol opts in: the classic
+    CLI wraps its transmits for tmux's ``allow-passthrough on``; the TUI and GNU screen send
+    them unwrapped.
 
     ``detected`` is a remote painter's own ``auto`` pick (``kitty``/``unicode``), made from its
     terminal's env: a shared gateway serves many clients, and its own env names none of them.

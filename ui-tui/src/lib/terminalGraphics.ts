@@ -5,8 +5,8 @@
  * client's terminal. Env vars only, never a terminal query that could hang.
  *
  * Mirrors `agent/terminal_image.py`'s `auto` pick (detect_terminal_graphics,
- * supports_kitty_placeholders, the TMUX check), plus GNU screen and the
- * dashboard's xterm.js, which drop the kitty transmit too.
+ * supports_kitty_placeholders, the tmux/GNU screen/Zellij check), plus the
+ * dashboard's xterm.js, which drops the kitty transmit too.
  */
 export type TerminalGraphics = 'kitty' | 'unicode'
 
@@ -21,8 +21,9 @@ export const detectTerminalGraphics = (env: NodeJS.ProcessEnv = process.env): Te
     return 'unicode'
   }
 
-  // Multiplexers swallow the APC transmit (tmux without allow-passthrough, screen always).
-  if (env.TMUX || env.STY) {
+  // Multiplexers swallow the APC transmit (tmux without allow-passthrough, screen always);
+  // Zellij rejects Unicode placeholders.
+  if (env.TMUX || env.STY || env.ZELLIJ) {
     return 'unicode'
   }
 

@@ -19,4 +19,13 @@ describe('detectTerminalGraphics', () => {
     expect(detectTerminalGraphics({ ...kitty, TERM_PROGRAM: 'vscode' })).toBe('unicode')
     expect(detectTerminalGraphics({ ...kitty, HERMES_PTY_HOST: 'dashboard' })).toBe('unicode')
   })
+
+  it('keeps half-blocks inside Zellij, which rejects kitty Unicode placeholders', () => {
+    expect(detectTerminalGraphics({ KITTY_WINDOW_ID: '1', TERM: 'xterm-kitty', ZELLIJ: '0' })).toBe('unicode')
+    expect(detectTerminalGraphics({ TERM: 'xterm-ghostty', ZELLIJ: '0' })).toBe('unicode')
+    expect(detectTerminalGraphics({ TERM_PROGRAM: 'ghostty', ZELLIJ: '0' })).toBe('unicode')
+    expect(detectTerminalGraphics({ TERM_PROGRAM: 'WezTerm', WEZTERM_PANE: '0', ZELLIJ: '0' })).toBe('unicode')
+    expect(detectTerminalGraphics({ TERM_PROGRAM: 'iTerm.app', ITERM_SESSION_ID: 'w0t0p0', ZELLIJ: '0' })).toBe('unicode')
+    expect(detectTerminalGraphics({ KONSOLE_VERSION: '251203', ZELLIJ: '0' })).toBe('unicode')
+  })
 })

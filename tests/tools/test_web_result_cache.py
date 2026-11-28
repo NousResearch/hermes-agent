@@ -336,3 +336,63 @@ def test_ttl_clamping(monkeypatch):
     assert wrc.ttl_seconds() == 1440 * 60.0   # ceiling 24h
     monkeypatch.setattr(wrc, "_web_config", lambda: {"cache_ttl_minutes": "bogus"})
     assert wrc.ttl_seconds() == 20 * 60.0     # default on garbage
+
+
+def test_extract_cache_files_leave_with_their_index_rows(monkeypatch, _isolated_cache):
+    """The index is the only way back to a .cache.md file, so a row that leaves it (past the cap, or expired)
+    takes its file along; dropping only the row grew cache/web by one orphan per URL, forever."""
+    monkeypatch.setattr(wrc, "_INDEX_MAX_ENTRIES", 3)
+    for i in range(5):
+        extract_cache_put(f"https://example.com/p{i}", f"page {i}")
+    extract_cache_put("https://example.com/p4", "page 4 again")  # a refresh supersedes the row's old file
+    index = json.loads((_isolated_cache / "extract-index.json").read_text())
+    assert len(index) == 3
+    assert sorted(p.name for p in _isolated_cache.glob("*.cache.md")) == sorted(
+        wrc.Path(row["file"]).name for row in index.values())
+    assert extract_cache_get("https://example.com/p0") is None and extract_cache_get("https://example.com/p4")
+
+    real = time.time
+    monkeypatch.setattr(time, "time", lambda: real() + wrc.ttl_seconds() + 1)
+    extract_cache_put("https://example.com/later", "later page")
+    assert [p.name for p in _isolated_cache.glob("*.cache.md")] == [
+        wrc.Path(row["file"]).name for row in json.loads((_isolated_cache / "extract-index.json").read_text()).values()]
+    assert len(list(_isolated_cache.glob("*.cache.md"))) == 1
+
+
+def test_evicting_a_tampered_row_never_deletes_outside_the_cache(monkeypatch, tmp_path, _isolated_cache):
+    outside = tmp_path / "notes.cache.md"
+    outside.write_text("keep me")
+    (_isolated_cache / "extract-index.json").write_text(json.dumps(
+        {"tampered": {"url": "https://example.com/x", "file": str(outside), "title": "", "fetched_at": 0}}))
+
+    extract_cache_put("https://example.com/new", "new page")
+
+    assert "tampered" not in json.loads((_isolated_cache / "extract-index.json").read_text())
+    assert outside.read_text() == "keep me"
+
+
+
+def test_stale_cleanup_never_deletes_a_file_a_concurrent_writer_committed(monkeypatch, _isolated_cache):
+    """Another process (own _index_lock) refreshes X between this process's index write and its cleanup of
+    the expired X row it snapshotted; the committed fresh X row must still resolve to its file."""
+    x = "https://example.com/x"
+    extract_cache_put(x, "old x")
+    index_path = _isolated_cache / "extract-index.json"
+    index = json.loads(index_path.read_text())
+    for row in index.values():
+        row["fetched_at"] = 0
+    index_path.write_text(json.dumps(index))
+
+    real_write, fired = wrc.atomic_json_write, []
+
+    def write_then_let_another_process_refresh_x(path, data, **kw):
+        real_write(path, data, **kw)
+        if not fired:
+            fired.append(True)
+            monkeypatch.setattr(wrc, "_index_lock", threading.Lock())  # a separate process's lock domain
+            extract_cache_put(x, "fresh x")
+
+    monkeypatch.setattr(wrc, "atomic_json_write", write_then_let_another_process_refresh_x)
+    extract_cache_put("https://example.com/y", "y page")
+
+    assert fired and (hit := extract_cache_get(x)) and hit["content"] == "fresh x"

@@ -232,6 +232,7 @@ export const en: Translations = {
       "{deleted} deleted; {count} kept because a turn is running",
     failedToDeleteSelected: "Failed to delete selected sessions",
     resumeInChat: "Resume in Chat",
+    viewLogs: "View logs",
     newChat: "New chat",
     workspace: "workspace",
     workspaceDefault: "Default",
@@ -293,6 +294,8 @@ export const en: Translations = {
     component: "Component",
     lines: "Lines",
     noLogLines: "No log lines found",
+    session: "Session",
+    allSessions: "Show all sessions",
   },
 
   cron: {

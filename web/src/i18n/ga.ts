@@ -174,6 +174,7 @@ export const ga: Translations = {
     selectedSessionsSkippedActive: "Scriosadh {deleted}; coinníodh {count} mar go bhfuil seal ar siúl",
     failedToDeleteSelected: "Theip ar scriosadh na seisiún roghnaithe",
     resumeInChat: "Lean ar aghaidh sa chomhrá",
+    viewLogs: "Féach ar logaí",
     newChat: "Comhrá nua",
     workspace: "spás oibre",
     workspaceDefault: "Réamhshocrú",
@@ -235,6 +236,8 @@ export const ga: Translations = {
     component: "Comhpháirt",
     lines: "Línte",
     noLogLines: "Níor aimsíodh línte loga",
+    session: "Seisiún",
+    allSessions: "Taispeáin gach seisiún",
   },
 
   cron: {

@@ -993,7 +993,7 @@ async def run_debug_share_endpoint(body: DebugShareRequest | None = None,
 async def get_logs(
     file: str = "agent", lines: int = 100, level: Optional[str] = None,
     component: Optional[str] = None, search: Optional[str] = None,
-    profile: Optional[str] = None):
+    session: Optional[str] = None, profile: Optional[str] = None):
     from hermes_cli.logs import _read_tail, LOG_FILES
     log_name = LOG_FILES.get(file)
     if not log_name:
@@ -1019,8 +1019,8 @@ async def get_logs(
     def _load_logs():
         result = _read_tail(
             log_path, min(lines, 500) if not search else 2000,
-            has_filters=bool(min_level or comp_prefixes or search),
-            min_level=min_level, component_prefixes=comp_prefixes)
+            has_filters=bool(min_level or comp_prefixes or search or session),
+            min_level=min_level, component_prefixes=comp_prefixes, session_filter=session or None)
         # _read_tail doesn't support free-text search, so post-filter (case-insensitive
         # substring) here and trim to the requested line count afterward.
         if search:

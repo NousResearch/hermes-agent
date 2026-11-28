@@ -28,6 +28,7 @@ Examples:
     hermes logs --component tools  Only show tool-related lines
     hermes logs --since 1h         Lines from the last hour
     hermes logs --since 30m -f     Follow, starting from 30 min ago
+    hermes logs --json             Emit JSON Lines (one record per log entry)
     hermes logs list               List available log files with sizes
 """)
     logs_parser.add_argument(
@@ -49,4 +50,8 @@ Examples:
     logs_parser.add_argument(
         "--component", metavar="NAME",
         help="Filter by component: gateway, agent, tools, cli, cron, gui")
+    logs_parser.add_argument(
+        "--json", action="store_true", dest="as_json",
+        help="Emit JSON Lines: {ts, level, session, logger, message, file} per record "
+             "(tracebacks folded into message; no banner)")
     logs_parser.set_defaults(func=cmd_logs)

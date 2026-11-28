@@ -174,6 +174,7 @@ export const fr: Translations = {
     selectedSessionsSkippedActive: "{deleted} supprimées ; {count} conservées car un tour est en cours",
     failedToDeleteSelected: "Échec de la suppression des sessions sélectionnées",
     resumeInChat: "Reprendre dans le chat",
+    viewLogs: "Voir les journaux",
     newChat: "Nouveau chat",
     workspace: "espace de travail",
     workspaceDefault: "Par défaut",
@@ -235,6 +236,8 @@ export const fr: Translations = {
     component: "Composant",
     lines: "Lignes",
     noLogLines: "Aucune ligne de journal trouvée",
+    session: "Session",
+    allSessions: "Afficher toutes les sessions",
   },
 
   cron: {

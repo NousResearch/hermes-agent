@@ -19,8 +19,10 @@ Usage examples::
     hermes logs --component tools  # only tool-related lines
     hermes logs --since 1h         # lines from the last hour
     hermes logs --since 30m -f     # follow, starting 30 min ago
+    hermes logs --json -f          # follow as JSON Lines (one record per line)
 """
 
+import json
 import re
 import sys
 import time
@@ -77,6 +79,10 @@ _LEVEL_RE = re.compile(r"\s(DEBUG|INFO|WARNING|ERROR|CRITICAL)\s")
 # e.g. "INFO gateway.run:" or "INFO [sess_abc] tools.terminal_tool:".
 _LOGGER_NAME_RE = re.compile(r"\s(?:DEBUG|INFO|WARNING|ERROR|CRITICAL)(?:\s+\[.*?\])?\s+(\S+):")
 _LEVEL_ORDER = {"DEBUG": 0, "INFO": 1, "WARNING": 2, "ERROR": 3, "CRITICAL": 4}
+# One full hermes_logging._LOG_FORMAT line: "<asctime> <LEVEL>[ [<sid>]] <logger>: <message>".
+_RECORD_RE = re.compile(
+    r"^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:,\d+)?) (?P<level>DEBUG|INFO|WARNING|ERROR|CRITICAL)"
+    r"(?: \[(?P<session>[^\]]+)\])? (?P<logger>\S+): (?P<message>.*)$", re.DOTALL)
 
 
 def _parse_since(since_str: str) -> Optional[datetime]:
@@ -154,6 +160,49 @@ class _LineFilter:
         return self._carry
 
 
+def _new_record(line: str, log_name: str) -> dict:
+    text = line.rstrip("\r\n")
+    m = _RECORD_RE.match(text)
+    if m:
+        return {**m.groupdict(), "file": log_name}
+    # Stamped but not the agent format (update.log, desktop.log) or unstamped preamble.
+    ts = _TS_RE.search(text) if _parse_line_timestamp(text) else None
+    return {"ts": ts.group(1) if ts else None, "level": _extract_level(text), "session": None,
+            "logger": None, "message": text, "file": log_name}
+
+
+class _RecordFolder:
+    """Fold raw log lines into records: an unstamped line (traceback frame, multi-line message)
+    continues the record above it. ``feed`` returns the record a new stamp just closed."""
+
+    def __init__(self, log_name: str):
+        self._log_name = log_name
+        self._pending: Optional[dict] = None
+
+    def feed(self, line: str) -> Optional[dict]:
+        if self._pending is not None and _parse_line_timestamp(line) is None:
+            self._pending["message"] += "\n" + line.rstrip("\r\n")
+            return None
+        done, self._pending = self._pending, _new_record(line, self._log_name)
+        return done
+
+    def flush(self) -> Optional[dict]:
+        done, self._pending = self._pending, None
+        return done
+
+
+def parse_log_records(lines: Sequence[str], log_name: str = "agent") -> list:
+    """Parse raw log lines into ``{ts, level, session, logger, message, file}`` records."""
+    folder = _RecordFolder(log_name)
+    records = [rec for line in lines if (rec := folder.feed(line)) is not None]
+    last = folder.flush()
+    return records + [last] if last is not None else records
+
+
+def _emit_json(record: dict) -> None:
+    print(json.dumps(record, ensure_ascii=False))
+
+
 def tail_log(
     log_name: str = "agent",
     *,
@@ -163,6 +212,7 @@ def tail_log(
     session: Optional[str] = None,
     since: Optional[str] = None,
     component: Optional[str] = None,
+    as_json: bool = False,
 ) -> None:
     """Read and display log lines, optionally following in real time.
 
@@ -183,6 +233,8 @@ def tail_log(
         Relative time string (e.g. ``"1h"``, ``"30m"``).
     component
         Component name to filter by (e.g. ``"gateway"``, ``"tools"``).
+    as_json
+        Emit JSON Lines (one ``parse_log_records`` record per line, no banner).
     """
     filename = LOG_FILES.get(log_name)
     if filename is None:
@@ -222,10 +274,24 @@ def tail_log(
     has_filters = any(v is not None for v in filters.values())
 
     try:
-        lines = _read_tail(log_path, num_lines, has_filters=has_filters, **filters)
+        if as_json:
+            records = _read_tail_records(log_path, num_lines, log_name, **filters)
+        else:
+            lines = _read_tail(log_path, num_lines, has_filters=has_filters, **filters)
     except PermissionError:
         print(f"Permission denied: {log_path}")
         sys.exit(1)
+
+    if as_json:
+        for record in records:
+            _emit_json(record)
+        sys.stdout.flush()
+        if follow:
+            try:
+                _follow_log(log_path, folder=_RecordFolder(log_name), **filters)
+            except KeyboardInterrupt:
+                pass
+        return
 
     filter_parts = [
         f"{label}={value}" for label, value in
@@ -255,6 +321,20 @@ def _read_tail(path: Path, num_lines: int, *, has_filters: bool = False, **filte
     raw_lines = _read_last_n_lines(path, max(num_lines * 20, 2000))
     keep = _LineFilter(**filters)
     return [l for l in raw_lines if keep(l)][-num_lines:]
+
+
+def _read_tail_records(path: Path, num_records: int, log_name: str, **filters) -> list:
+    """The last *num_records* records (``-n`` counts entries in JSON mode). Over-reads so a
+    traceback keeps its stamped header; a record the read window cut off at the top is dropped."""
+    window = max(num_records * 20, 2000)
+    raw_lines = _read_last_n_lines(path, window)
+    if len(raw_lines) >= window:
+        # Trim the headerless fragment BEFORE filtering, so a filter can't hide it from the trim.
+        first = next((i for i, line in enumerate(raw_lines) if _parse_line_timestamp(line)), len(raw_lines))
+        raw_lines = raw_lines[first:]
+    keep = _LineFilter(**filters)
+    records = parse_log_records([line for line in raw_lines if keep(line)], log_name)
+    return records[-num_records:] if num_records > 0 else []
 
 
 def _read_all_lines(path: Path) -> list:
@@ -293,20 +373,37 @@ def _read_last_n_lines(path: Path, n: int) -> list:
         return _read_all_lines(path)[-n:]
 
 
-def _follow_log(path: Path, **filters) -> None:
-    """Poll a log file for new content and print matching lines."""
+def _follow_log(path: Path, *, folder: Optional[_RecordFolder] = None, **filters) -> None:
+    """Poll a log file for new content and print matching lines (records, given a ``folder``).
+    A folded record is emitted once the next stamp or an idle poll ends it."""
     keep = _LineFilter(**filters)
     with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
-        # Seek to end
-        f.seek(0, 2)
-        while True:
-            line = f.readline()
-            if not line:
-                time.sleep(0.3)
-            elif keep(line):
-                print(line, end="")
+        try:
+            _poll_lines(f, keep, folder)
+        finally:
+            # Ctrl+C mid-record: the last entry already read still goes out.
+            if folder is not None and (rec := folder.flush()) is not None:
+                _emit_json(rec)
                 sys.stdout.flush()
 
+
+def _poll_lines(f, keep, folder: Optional[_RecordFolder]) -> None:
+    f.seek(0, 2)
+    while True:
+        line = f.readline()
+        if not line:
+            if folder is not None and (rec := folder.flush()) is not None:
+                _emit_json(rec)
+                sys.stdout.flush()
+            time.sleep(0.3)
+        elif not keep(line):
+            continue
+        elif folder is None:
+            print(line, end="")
+            sys.stdout.flush()
+        elif (rec := folder.feed(line)) is not None:
+            _emit_json(rec)
+            sys.stdout.flush()
 
 def _size_label(size: int) -> str:
     if size < 1024:

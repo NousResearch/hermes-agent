@@ -174,6 +174,7 @@ export const af: Translations = {
     selectedSessionsSkippedActive: "{deleted} geskrap; {count} behou omdat 'n beurt nog loop",
     failedToDeleteSelected: "Kon nie gekose sessies skrap nie",
     resumeInChat: "Hervat in Klets",
+    viewLogs: "Bekyk logs",
     newChat: "Nuwe klets",
     workspace: "werkruimte",
     workspaceDefault: "Verstek",
@@ -235,6 +236,8 @@ export const af: Translations = {
     component: "Komponent",
     lines: "Reëls",
     noLogLines: "Geen logreëls gevind nie",
+    session: "Sessie",
+    allSessions: "Wys alle sessies",
   },
 
   cron: {

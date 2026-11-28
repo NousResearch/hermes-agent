@@ -11,7 +11,7 @@
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { atom } from 'nanostores'
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { RightSidebarPane } from '@/app/right-sidebar'
 import { ReviewPane } from '@/app/right-sidebar/review'
@@ -19,13 +19,19 @@ import type { GroupSetter } from '@/app/shell/group-setter'
 import type { StatusbarItem } from '@/app/shell/statusbar-controls'
 import type { TitlebarTool } from '@/app/shell/titlebar-controls'
 import { DecodeText } from '@/components/ui/decode-text'
+import { SegmentedControl } from '@/components/ui/segmented-control'
 import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { registry } from '@/contrib/registry'
 import { getLogs } from '@/hermes'
+import { useI18n } from '@/i18n'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
+import { logLineSeverity, type LogSeverity } from '@/lib/log-search'
 import { cn } from '@/lib/utils'
 import { openPreview } from '@/store/preview'
+import { $sessions, knownSessionOwner } from '@/store/session'
+import { $focusedStoredSessionId } from '@/store/session-focus'
+import { profileScopeForSessionOwner } from '@/store/session-request-router'
 import { $focusedWorkspaceCwd } from '@/store/session-states'
 
 // ---------------------------------------------------------------------------
@@ -36,10 +42,58 @@ import { $focusedWorkspaceCwd } from '@/store/session-states'
 
 const LOGS_BOTTOM_THRESHOLD = 48
 
+const SEVERITY_TEXT: Record<LogSeverity, string> = {
+  critical: 'text-destructive',
+  error: 'text-destructive',
+  warning: 'text-(--ui-yellow)'
+}
+
+type LogsScope = 'all' | 'session'
+
+const STAMPED_LINE = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}/
+
+/** Per-line tint; an unstamped line (traceback frame) continues the record above it. */
+function recordSeverities(lines: readonly string[]): (LogSeverity | null)[] {
+  let carry: LogSeverity | null = null
+
+  return lines.map(line => {
+    carry = STAMPED_LINE.test(line) ? logLineSeverity(line) : carry
+
+    return carry
+  })
+}
+
+/** Keep `session`'s records (stamped lines naming it + their continuation lines).
+ *  Idempotent over an already-filtered tail; it is what scopes the view when the
+ *  backend predates `/api/logs?session=` and returns every session's lines. */
+export function sessionRecordLines(lines: readonly string[], session: string): string[] {
+  let keep = false
+
+  return lines.filter(line => {
+    keep = STAMPED_LINE.test(line) ? line.includes(session) : keep
+
+    return keep
+  })
+}
+
 export function LogsPane() {
+  const { t } = useI18n()
+  const sessionId = useStore($focusedStoredSessionId)
+  // All logs by default (the pane's long-standing view); "This session" narrows the
+  // tail to lines tagged with the focused session's id (`/api/logs?session=`).
+  const [scope, setScope] = useState<LogsScope>('all')
+  const session = scope === 'session' && sessionId ? sessionId : undefined
+  // The focused chat may be a Bot or another profile's tile: read ITS backend's log.
+  const sessions = useStore($sessions)
+  const owner = session ? profileScopeForSessionOwner(knownSessionOwner(sessions, session)) : undefined
+
   const { data, error } = useQuery({
-    queryKey: ['contrib-logs-tail'],
-    queryFn: () => getLogs({ lines: 300 }),
+    queryKey: ['contrib-logs-tail', session ?? null, owner ?? null],
+    queryFn: async () => {
+      const res = await getLogs({ lines: 300, owner, session })
+
+      return session ? { ...res, lines: sessionRecordLines(res.lines, session) } : res
+    },
     refetchInterval: 5000
   })
 
@@ -83,17 +137,43 @@ export function LogsPane() {
     )
   }
 
-  // No chrome of its own — the zone header (when the user summons it) is the
-  // pane's only label. Just the tail.
+  const severities = recordSeverities(data.lines)
+
+  const scopes: { id: LogsScope; label: string }[] = [
+    { id: 'all', label: t.sidebar.logsAllSessions },
+    { id: 'session', label: t.sidebar.logsThisSession }
+  ]
+
+  // The zone header (when the user summons it) is the pane's label; the only
+  // chrome is the session scope switch, shown while a session is focused.
   return (
-    <pre
-      className="h-full min-h-0 overflow-auto whitespace-pre-wrap break-words p-2.5 font-mono text-[0.66rem] leading-relaxed text-(--ui-text-secondary)"
-      data-selectable-text="true"
-      onScroll={handleScroll}
-      ref={preRef}
-    >
-      {data.lines.join('\n')}
-    </pre>
+    <div className="flex h-full min-h-0 flex-col">
+      {sessionId && (
+        <div className="shrink-0 px-2.5 pt-1.5">
+          <SegmentedControl onChange={setScope} options={scopes} sizing="content" value={scope} />
+        </div>
+      )}
+      <pre
+        className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words p-2.5 font-mono text-[0.66rem] leading-relaxed text-(--ui-text-secondary)"
+        data-selectable-text="true"
+        onScroll={handleScroll}
+        ref={preRef}
+      >
+        {session && data.lines.length === 0 ? (
+          <span className="text-(--ui-text-quaternary)">{t.sidebar.logsNoSessionLines}</span>
+        ) : (
+          data.lines.map((line, index) => {
+            const severity = severities[index]
+
+            return (
+              <span className={severity ? SEVERITY_TEXT[severity] : undefined} key={index}>
+                {line.endsWith('\n') ? line : `${line}\n`}
+              </span>
+            )
+          })
+        )}
+      </pre>
+    </div>
   )
 }
 

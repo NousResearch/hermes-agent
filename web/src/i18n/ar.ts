@@ -155,6 +155,7 @@ export const ar = defineLocale({
     sessionDeleted: "تم حذف الجلسة",
     failedToDelete: "فشل حذف الجلسة",
     resumeInChat: "استئناف في المحادثة",
+    viewLogs: "عرض السجلات",
     previousPage: "الصفحة السابقة",
     nextPage: "الصفحة التالية",
     roles: {
@@ -211,6 +212,8 @@ export const ar = defineLocale({
     component: "المكوِّن",
     lines: "الأسطر",
     noLogLines: "لم يُعثر على أسطر سجل",
+    session: "الجلسة",
+    allSessions: "عرض كل الجلسات",
   },
 
   cron: {

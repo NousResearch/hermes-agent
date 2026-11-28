@@ -2870,6 +2870,9 @@ export interface Translations extends NoticeTranslations {
     files: string
     review: string
     logs: string
+    logsThisSession: string
+    logsAllSessions: string
+    logsNoSessionLines: string
     cronJobs: string
     groupAriaGrouped: string
     groupAriaUngrouped: string

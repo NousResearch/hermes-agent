@@ -6,6 +6,7 @@ loads automatically when you work in that directory; read it before editing ther
 goes in `website/docs/developer-guide/`.
 
 **Never give up on the right solution.**
+## git 
 
 ## What Hermes Is
 

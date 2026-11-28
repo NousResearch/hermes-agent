@@ -1456,6 +1456,11 @@ export interface SessionSearchResult {
    *  used as the durable pin id; falls back to session_id when absent. */
   lineage_root?: string | null
   model: string | null
+  /** Owning profile of the hit, stamped by the serving backend
+   *  (`add_lineage_result`). Carried onto the synthesized row: the flat
+   *  All-profiles search list tags each row with it, and dropping it painted
+   *  every hit as `default` (no chip, wrong prewarm/drag profile). */
+  profile?: string | null
   role: string | null
   /** Live compression tip of the matched conversation — resume by this id. */
   session_id: string

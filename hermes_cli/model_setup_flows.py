@@ -470,8 +470,11 @@ def _model_flow_minimax_oauth(config, current_model="", args=None):
         _note_setup_failure("auth")
         return
 
-    from hermes_cli.models import _PROVIDER_MODELS
-    model_ids = _PROVIDER_MODELS.get("minimax-oauth", [])
+    from hermes_cli.models import provider_model_ids
+    # The same list every other picker surface shows: the live OAuth catalog merged with
+    # the curated row, so `hermes model` and `/model` never disagree about which models
+    # the account can run.
+    model_ids = provider_model_ids("minimax-oauth") or []
     selected = _prompt_model_selection(model_ids, current_model, confirm_provider="minimax-oauth", confirm_base_url=creds["base_url"])
     _activate_provider_model(selected, "minimax-oauth", creds["base_url"], f"\u2713 Using MiniMax model: {selected}", no_change=None)
 

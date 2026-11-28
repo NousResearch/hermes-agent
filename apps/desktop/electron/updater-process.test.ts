@@ -558,3 +558,26 @@ async function writeLauncher(dir: string, body: string): Promise<string> {
 
   return file
 }
+
+test.skipIf(process.platform === 'win32')(
+  'the ticket-minting launcher probe honours HERMES_PROBE_TIMEOUT_MS',
+  async (): Promise<void> => {
+    // The ticket path and the usability path must share one budget knob: a
+    // stalled machine must not time out ticket minting (which forgets the
+    // canonical endpoint) while the runtime probe itself still succeeds.
+    const dir: string = await realpathMkdtemp('launcher-budget-')
+    const launcher: string = await writeLauncher(dir, 'sleep 30')
+    vi.stubEnv('HERMES_PROBE_TIMEOUT_MS', '300')
+
+    try {
+      const started: number = Date.now()
+      assert.equal(launcherInstallDirectory(launcher), null)
+      assert.ok(
+        Date.now() - started < 5_000,
+        'the ticket probe must honour the configured budget instead of a hardcoded one'
+      )
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  }
+)

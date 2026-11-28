@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs'
 import path from 'node:path'
 
 import { buildDesktopBackendEnv } from './backend-env'
-import { execProbe, PROBE_TIMEOUT_MS } from './backend-probes'
+import { execProbe, isTimeoutError, PROBE_TIMEOUT_MS } from './backend-probes'
 import { resolveInstallationLauncher } from './updater-process'
 
 export interface SourceBackend {
@@ -20,6 +20,24 @@ export interface SourceBackend {
 interface SourceOptions {
   isWindows?: boolean
   env?: NodeJS.ProcessEnv
+  /** Per-attempt probe budget (ms). Defaults to PROBE_TIMEOUT_MS. */
+  probeTimeoutMs?: number
+  /**
+   * What a probe that times out on every attempt means.
+   *
+   * A timeout is "unknown", not "broken": the launcher answered slowly, it did not
+   * say the install is gone. The two callers need opposite answers, so the policy is
+   * explicit rather than a widened default.
+   *
+   *  - 'reject' (default) — an unproven runtime is not runnable. Keeps
+   *    `isSourceRuntimeUsable()` strict so `chooseUpdaterArgs()` picks `--repair`
+   *    for unproven pairs (`windows-hermes-path.ts`: only a runnable pair may
+   *    use `--update`).
+   *  - 'accept' — the boot rung, where the only alternative is the first-run setup
+   *    card. Presence beats a probe that never ran, so a stalled machine must not be
+   *    reported as a missing install (#79087).
+   */
+  onProbeTimeout?: 'reject' | 'accept'
 }
 
 /** Keep the validated command. PM owns interpreter and generation selection. */
@@ -43,20 +61,7 @@ export async function resolveSourceInstallationBackend(
   const command: string = shell ? `"${launcher}"` : launcher
   const env: NodeJS.ProcessEnv = buildDesktopBackendEnv({ currentEnv: options.env ?? process.env })
 
-  try {
-    await execProbe(command, ['--version'], {
-      cwd: root,
-      env: { ...process.env, ...options.env, ...env },
-      shell,
-      stdio: 'ignore',
-      timeout: PROBE_TIMEOUT_MS,
-      windowsHide: true
-    })
-  } catch {
-    return null
-  }
-
-  return {
+  const backend: SourceBackend = {
     kind: 'command',
     label: `Hermes at ${root}`,
     command,
@@ -66,6 +71,28 @@ export async function resolveSourceInstallationBackend(
     bootstrap: false,
     shell,
     local: 'installed'
+  }
+
+  try {
+    // execProbe already retries a timeout once internally, so this is the whole
+    // budget: two invocations, not a loop that multiplies that retry (#157543 review).
+    await execProbe(command, ['--version'], {
+      cwd: root,
+      env: { ...process.env, ...options.env, ...env },
+      shell,
+      stdio: 'ignore',
+      timeout: options.probeTimeoutMs ?? PROBE_TIMEOUT_MS,
+      windowsHide: true
+    })
+
+    return backend
+  } catch (err) {
+    // A definitive failure (ENOENT, non-zero exit) proves the install is gone.
+    if (!isTimeoutError(err)) {
+      return null
+    }
+
+    return (options.onProbeTimeout ?? 'reject') === 'accept' ? backend : null
   }
 }
 

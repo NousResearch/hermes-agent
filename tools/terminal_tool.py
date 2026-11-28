@@ -139,6 +139,7 @@ def _container_profile() -> str:
 
 from tools.approval import (
     check_all_command_guards as _check_all_guards_impl,
+    check_preconfirmed_command_guards as _check_preconfirmed_guards,
 )
 
 
@@ -1184,7 +1185,7 @@ class _ApprovalVerdict:
     """Outcome of the pre-exec guard pass.
 
     ``note`` is the audit note attached to the result. ``approved_run`` is True
-    when the user explicitly approved (or pre-confirmed via ``force``); it drives
+    when a human approved it or its caller vetted it via ``force``; it drives
     the clean-interrupt-slate clear before ``env.execute`` so an approved command
     can't be SIGINT-killed by a bit that landed during the approval-wait.
     """
@@ -1193,12 +1194,17 @@ class _ApprovalVerdict:
 
 
 def _run_approval_guards(command: str, env_type: str, config: dict[str, Any], *, force: bool) -> _ApprovalVerdict:
-    """Run the command guards; ``force`` skips them entirely.
+    """Run the command guards; ``force`` skips the approval layers but not the floor
+    (``check_preconfirmed_command_guards``).
     Raises :class:`_Rejected` when the command may not run (denied, or pending
     gateway approval)."""
+    has_host_access = _docker_has_host_access(config)
     if force:
-        return _ApprovalVerdict(approved_run=True)
-    approval = _check_all_guards(command, env_type, has_host_access=_docker_has_host_access(config))
+        approval = _check_preconfirmed_guards(command, env_type, has_host_access=has_host_access)
+        if approval["approved"]:
+            return _ApprovalVerdict(approved_run=True)
+    else:
+        approval = _check_all_guards(command, env_type, has_host_access=has_host_access)
     if not approval["approved"]:
         if approval.get("status") == "pending_approval":  # gateway ask mode
             raise _Rejected(_error_json(
@@ -1589,8 +1595,9 @@ def terminal_tool(
 ) -> str:
     """Execute *command* in the configured terminal environment; returns a JSON string.
 
-    ``force`` (internal, not in the model schema) skips the dangerous-command
-    check after the user confirmed. ``workdir`` is per-command and never
+    ``force`` (internal, not in the model schema) marks a command its caller already
+    vetted: it skips the approval layers, never the floor.
+    ``workdir`` is per-command and never
     recorded as the session cwd. ``pty`` applies to the local backend only.
     ``notify_on_complete`` and ``watch_patterns`` are mutually exclusive
     background-only flags: on conflict watch_patterns is dropped. watch_patterns
@@ -1671,7 +1678,7 @@ def terminal_tool(
                     status="error",
                 ))
             # Pre-exec security checks (floors + dangerous command detection);
-            # force=True means the user already confirmed.
+            # force: the caller already vetted the command; the floor still runs.
             verdict = _run_approval_guards(command, env_type, plan.config, force=force)
 
             pty_disabled = pty and _command_requires_pipe_stdin(command)

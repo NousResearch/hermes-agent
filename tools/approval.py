@@ -1,9 +1,9 @@
 """Dangerous command approval -- the gate flow and per-session state.
 
-Owns the session state (approvals, yolo, gateway queues, denial breaker), the three guard
-entry points (``check_all_command_guards``, ``check_execute_code_guard``,
-``request_tool_approval`` / ``_run_approval_gate``) and the shared human-decision engine
-behind them. Leaves: ``approval_detection`` (hardline/dangerous patterns), ``approval_context``
+Owns the session state (approvals, yolo, gateway queues, denial breaker), the guard
+entry points (``check_all_command_guards``, ``check_preconfirmed_command_guards``,
+``check_execute_code_guard``, ``request_tool_approval`` / ``_run_approval_gate``) and the
+shared human-decision engine behind them. Leaves: ``approval_detection`` (hardline/dangerous patterns), ``approval_context``
 (contextvars, config readers), ``approval_floors`` (pre-gate blocks, allowlist match),
 ``approval_prompt`` (CLI prompt, plugin transports, MCP elicitation), ``approval_gateway_wait``
 (blocking gateway round-trip), ``approval_smart`` (guardian LLM), ``approval_human_wait``.
@@ -664,14 +664,16 @@ _SCAN_INCOMPLETE_BLOCK_MESSAGE = (
 
 def _scan_incomplete_block(why: str) -> dict:
     """Refusal for a command the hardline scan could not finish where no human reviews it (YOLO,
-    ``approvals.mode: off``, cron / -q / unattended approve-mode, no prompt surface). Its hardline
-    coverage is only the linear fallback, so nothing but a person may wave it through."""
+    ``approvals.mode: off``, cron / -q / unattended approve-mode, no prompt surface, a pre-confirmed
+    ``terminal(force=True)``). Its hardline coverage is only the linear fallback, so nothing but a
+    person may wave it through."""
     return _blocked(_SCAN_INCOMPLETE_BLOCK_MESSAGE.format(why=why),
                     pattern_key=_SCAN_INCOMPLETE_DESCRIPTION, description=_SCAN_INCOMPLETE_DESCRIPTION)
 
 
 _NO_REVIEWER_BYPASS = "approvals are bypassed (--yolo, /yolo or approvals.mode: off)"
 _NO_REVIEWER_PRESENT = "no human is present to review it"
+_NO_REVIEWER_PRECONFIRMED = "Hermes pre-confirmed it without a human reviewing it"
 
 
 def _user_approved(session_key: str, description: str) -> dict:
@@ -1399,18 +1401,35 @@ def request_tool_approval(tool_name: str, reason: str, *, rule_key: str = "", ap
 
 # --- Combined pre-exec guard (floors + dangerous command detection) ------------------------------------------------
 
+def _floor_verdict(command: str, env_type: str, has_host_access: bool) -> dict | None:
+    """The final verdict no approval setting can change, or None to go on to the approval layers.
+    An isolated container gets only the operator's deny rules (its isolation stands in for the
+    floor); everywhere else the full floor runs."""
+    if _should_skip_container_guards(env_type, has_host_access=has_host_access):
+        return _user_deny_block(command) or _approved()
+    return _floor_block(command, sudo_guard=True)
+
+
+def check_preconfirmed_command_guards(command: str, env_type: str, has_host_access: bool = False) -> dict:
+    """Guards for a command its caller already confirmed (``terminal_tool(force=True)``): a
+    confirmation cannot outrank what YOLO and ``approvals.mode: off`` cannot, so the floor still
+    applies, and so does the refusal of a command the hardline scan could not read to the end —
+    the caller vouched for the command, not for what the guard could not see (#157918)."""
+    if (floor := _floor_verdict(command, env_type, has_host_access)) is not None:
+        return floor
+    if hardline_scan_incomplete(command):
+        return _scan_incomplete_block(_NO_REVIEWER_PRECONFIRMED)
+    return _approved()
+
+
 def check_all_command_guards(command: str, env_type: str,
                              approval_callback=None,
                              has_host_access: bool = False) -> dict:
     """Run all pre-exec security checks and return a single approval decision. Plugins that
     want to veto or escalate a command do it from ``pre_tool_call``.
     ``has_host_access``: a Docker sandbox with bind-mounted host paths takes the normal flow."""
-    if _should_skip_container_guards(env_type, has_host_access=has_host_access):
-        return _user_deny_block(command) or _approved()
-
-    blocked = _floor_block(command, sudo_guard=True)
-    if blocked is not None:
-        return blocked
+    if (floor := _floor_verdict(command, env_type, has_host_access)) is not None:
+        return floor
 
     from agent.terminal_approval_batch import consume_prepared_guard
     prepared = consume_prepared_guard(command, env_type, has_host_access)

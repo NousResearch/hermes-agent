@@ -98,6 +98,17 @@ describe("ProfileProvider URL sync", () => {
     expect(seen()).toEqual({ profile: "gamma", url: "/config?profile=gamma" });
   });
 
+  it("drops ?resume= when the switcher changes profile", async () => {
+    await mount("/chat?profile=alpha&resume=sess-from-alpha");
+    expect(seen()).toEqual({
+      profile: "alpha",
+      url: "/chat?profile=alpha&resume=sess-from-alpha",
+    });
+
+    await act(async () => container.querySelector("button")!.click());
+    expect(seen()).toEqual({ profile: "gamma", url: "/chat?profile=gamma" });
+  });
+
   it("preserves router location state when re-asserting ?profile= after a bare navigation", async () => {
     await mount("/skills?profile=alpha");
 

@@ -9,8 +9,7 @@ import {
   extendRefreshPageToOverlap,
   graftRefreshedTailOntoBackfill,
   mergeOlderTranscriptPage,
-  transcriptBackfillAvailable,
-  unhideOpeningUserRows
+  transcriptBackfillAvailable
 } from './transcript-backfill'
 
 vi.mock('@/hermes', () => ({
@@ -582,11 +581,10 @@ describe('backfillOlderTranscriptPage', () => {
   })
 
   // #96875: paging can reach the true top while the opening USER turn is still
-  // missing — compaction projection stamps the durable opening row
-  // display_kind=hidden (hydration drops it) or the last `latest` page begins
-  // at the first assistant row. Once the tail bookkeeping reports the session
-  // fully loaded, the oldest display rows must be fetched once and the opening
-  // user turn prepended so "Show earlier" lands on the greeting.
+  // missing — the last `latest` page begins at the first assistant row. Once
+  // the tail bookkeeping reports the session fully loaded, the oldest display
+  // rows must be fetched once and the opening user turn prepended so "Show
+  // earlier" lands on the greeting.
   it('fetches the oldest page once paging is exhausted and prepends the opening user turn', async () => {
     truncatedTail()
     // The last older page: full paging history ends at the first assistant row.
@@ -595,14 +593,13 @@ describe('backfillOlderTranscriptPage', () => {
       pagination: { limit: 120, offset: 120, order: 'latest', returned: 1 },
       session_id: 'stored-1'
     } as never)
-    // The oldest page (order=oldest, offset 0) holds the greeting, hidden.
+    // The oldest page (order=oldest, offset 0) holds the greeting.
     vi.mocked(getSessionMessages).mockResolvedValue({
       messages: [
         {
           id: 1,
           role: 'user' as const,
           content: 'opening greeting',
-          display_kind: 'hidden',
           timestamp: 1
         },
         { ...row(10, 'first-assistant'), role: 'assistant' as const }
@@ -689,43 +686,54 @@ describe('backfillOlderTranscriptPage', () => {
     expect(applied).toBe(true)
     expect(applyOlderPage).toHaveBeenCalledTimes(1)
   })
-})
 
-describe('unhideOpeningUserRows', () => {
-  it('clears hidden on the opening user row so hydration keeps the greeting', () => {
-    const messages = unhideOpeningUserRows([
-      {
-        id: 1,
-        role: 'user',
-        content: 'hello there',
-        display_kind: 'hidden',
-        timestamp: 1
-      }
-    ])
+  const appliedTexts = (applyOlderPage: ReturnType<typeof vi.fn>) =>
+    applyOlderPage.mock.calls
+      .flatMap(([page]) => page as ChatMessage[])
+      .flatMap(message => message.parts)
+      .flatMap(part => (part.type === 'text' ? [part.text] : []))
 
-    expect(messages[0].display_kind).toBeUndefined()
-    expect(messages[0].display_content).toBe('hello there')
+  it('keeps a hidden first user row on an older page hidden (#159492)', async () => {
+    truncatedTail()
+    vi.mocked(getOlderSessionMessages).mockResolvedValue({
+      messages: [
+        { id: 5, role: 'user' as const, content: 'internal placeholder', display_kind: 'hidden', timestamp: 1_005 },
+        row(6, 'real question'),
+        { ...row(7, 'real reply'), role: 'assistant' as const }
+      ],
+      pagination: { limit: 120, offset: 120, order: 'latest', returned: 3 },
+      session_id: 'stored-1'
+    } as never)
+
+    const applyOlderPage = vi.fn()
+
+    await backfillOlderTranscriptPage({ storedSessionId: 'stored-1', isCurrent: () => true, applyOlderPage })
+
+    expect(appliedTexts(applyOlderPage)).toEqual(['real question', 'real reply'])
   })
 
-  it('leaves a visible opening user row untouched', () => {
-    const messages = unhideOpeningUserRows([row(1, 'plain greeting')])
+  it('keeps a hidden opening row on the oldest page hidden (#159492)', async () => {
+    truncatedTail()
+    vi.mocked(getOlderSessionMessages).mockResolvedValue({
+      messages: [{ ...row(10, 'first-assistant'), role: 'assistant' as const }],
+      pagination: { limit: 120, offset: 120, order: 'latest', returned: 1 },
+      session_id: 'stored-1'
+    } as never)
+    vi.mocked(getSessionMessages).mockResolvedValue({
+      messages: [
+        { id: 1, role: 'user' as const, content: 'onboarding opener', display_kind: 'hidden', timestamp: 1 },
+        { ...row(10, 'first-assistant'), role: 'assistant' as const }
+      ],
+      pagination: { limit: 20, offset: 0, order: 'oldest', returned: 2 },
+      session_id: 'stored-1'
+    } as never)
 
-    expect(messages[0].display_kind).toBeUndefined()
-    expect(messages[0].display_content).toBeUndefined()
-  })
+    const applyOlderPage = vi.fn()
 
-  it('leaves hidden rows after the opening user turn alone', () => {
-    const messages = unhideOpeningUserRows([
-      row(1, 'greeting'),
-      { id: 2, role: 'user', content: 'scaffolding', display_kind: 'hidden', timestamp: 2 }
-    ])
+    await backfillOlderTranscriptPage({ storedSessionId: 'stored-1', isCurrent: () => true, applyOlderPage })
 
-    expect(messages[1].display_kind).toBe('hidden')
-  })
-
-  it('leaves a hidden opening row without content hidden', () => {
-    const messages = unhideOpeningUserRows([{ id: 1, role: 'user', content: '', display_kind: 'hidden', timestamp: 1 }])
-
-    expect(messages[0].display_kind).toBe('hidden')
+    expect(getSessionMessages).toHaveBeenCalledTimes(1)
+    expect(applyOlderPage).toHaveBeenCalledTimes(2)
+    expect(appliedTexts(applyOlderPage)).not.toContain('onboarding opener')
   })
 })

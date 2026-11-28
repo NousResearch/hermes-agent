@@ -201,28 +201,29 @@ class TestStreamingEndToEnd:
 
         asyncio.run(run())
 
-    def test_tasks_subscribe_replays_terminal_state(self, monkeypatch):
+    def test_subscribe_to_terminal_task_returns_error_and_get_task_returns_result(self, monkeypatch):
         monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
         monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
-        adapter, base = _make_live_adapter(monkeypatch)
+        adapter, base = _make_live_adapter(monkeypatch, reply_fn=lambda _: "finished reply")
 
         async def run():
             assert await adapter.connect() is True
             resp = await asyncio.to_thread(_post_json, base + "/", _send_body("hello"))
             task = resp["result"]
 
-            payloads, events = await asyncio.to_thread(_post_sse, base + "/", {
-                "jsonrpc": "2.0", "id": "2", "method": "tasks/subscribe",
-                "params": {"taskId": task["id"]},
-            })
-            states = [p["statusUpdate"]["status"]["state"]
-                      for p in payloads if "statusUpdate" in p]
-            assert "TASK_STATE_COMPLETED" in states
-            artifacts = [p for p in payloads if "artifactUpdate" in p]
-            assert artifacts and "ECHO:" in protocol.extract_text(
-                artifacts[0]["artifactUpdate"]["artifact"])
-            assert events == []  # v1.0: stream closure is the terminal signal, no event frame
-            await adapter.disconnect()
+            try:
+                params = {"id": task["id"]}
+                resp = await asyncio.to_thread(_post_json, base + "/", {
+                    "jsonrpc": "2.0", "id": "2", "method": "SubscribeToTask", "params": params,
+                })
+                assert resp["error"]["code"] == protocol.ERR_UNSUPPORTED_OPERATION
+                resp = await asyncio.to_thread(_post_json, base + "/", {
+                    "jsonrpc": "2.0", "id": "3", "method": "GetTask", "params": params,
+                })
+                assert resp["result"]["status"]["state"] == protocol.STATE_COMPLETED
+                assert protocol.extract_text(resp["result"]["artifacts"][0]) == "finished reply"
+            finally:
+                await adapter.disconnect()
 
         asyncio.run(run())
 
@@ -463,7 +464,7 @@ class TestTaskStore:
         # Second sweep does nothing (already terminal).
         assert store.fail_orphans(timeout_seconds=300) == []
 
-    def test_watchdog_preserves_active_requests_and_reply_window(self, monkeypatch):
+    def test_watchdog_preserves_owned_work_and_only_expires_orphans(self, monkeypatch):
         monkeypatch.setenv("A2A_REPLY_TIMEOUT", "600")
         adapter, _base = _make_live_adapter(monkeypatch)
         now = time.time()
@@ -496,54 +497,49 @@ class TestTaskStore:
 
         adapter._pop_pending("t-live")
         assert adapter._fail_orphans_once() == ["t-live"]
+        asyncio.run(adapter.disconnect())
 
-    def test_orphan_timeout_is_bounded_and_disconnect_clears_active_tasks(self, monkeypatch):
+    def test_orphan_timeout_is_bounded_and_disconnect_clears_pending_tasks(self, monkeypatch):
         from plugins.platforms.a2a import adapter as mod
         monkeypatch.setenv("A2A_REPLY_TIMEOUT", "1e18")
         assert mod._orphan_timeout() == mod._MAX_ORPHAN_TIMEOUT
 
         adapter, _base = _make_live_adapter(monkeypatch)
+        adapter.tasks.create("t-live", "c1", "peer")
         adapter._add_pending("t-live", "c1")
         asyncio.run(adapter.disconnect())
-        assert adapter._active_tasks == set()
+        assert adapter._pending == {}
 
     def test_watchdog_cannot_race_local_finalization(self, monkeypatch):
         adapter, _base = _make_live_adapter(monkeypatch)
-        rec = adapter.tasks.create("t-live", "c1", "peer")
+        adapter.tasks.create("t-live", "c1", "peer")
         adapter.tasks.set_state("t-live", protocol.STATE_WORKING)
         adapter.tasks._tasks["t-live"]["created_at"] = time.time() - 700
         future = adapter._add_pending("t-live", "c1")
-        future.set_result((protocol.STATE_COMPLETED, "reply"))
-        pending = {
-            "task_id": "t-live", "context_id": "c1", "peer": "peer",
-            "future": future, "created_iso": rec["created_iso"], "started": time.time(),
-        }
-
-        original_redact = security.redact_outbound
         finalizing = threading.Event()
         resume = threading.Event()
         result = []
 
-        def pause_while_finalizing(reply):
+        def pause_while_finalizing(_future):
             finalizing.set()
-            assert resume.wait(timeout=1)
-            return original_redact(reply)
+            assert resume.wait(timeout=5)
 
-        monkeypatch.setattr(security, "redact_outbound", pause_while_finalizing)
+        future.add_done_callback(pause_while_finalizing)
         thread = threading.Thread(
-            target=lambda: result.append(adapter._finalize_task(pending, *adapter._await_reply(pending)))
+            target=lambda: result.append(adapter._resolve_task("t-live", protocol.STATE_COMPLETED, "reply"))
         )
         thread.start()
-        assert finalizing.wait(timeout=1)
+        assert finalizing.wait(timeout=5)
         try:
             assert adapter._fail_orphans_once() == []
         finally:
             resume.set()
-            thread.join(timeout=1)
+            thread.join(timeout=5)
 
         assert not thread.is_alive()
-        assert result == [(protocol.STATE_COMPLETED, "reply")]
+        assert result == [True]
         assert adapter.tasks.get("t-live")["state"] == protocol.STATE_COMPLETED
+        asyncio.run(adapter.disconnect())
 
     def test_stream_disconnect_releases_active_request(self, monkeypatch):
         adapter, _base = _make_live_adapter(monkeypatch)
@@ -575,10 +571,14 @@ class TestTaskStore:
         adapter._rpc_message_stream(Handler(), 1, {}, "peer")
 
         stored = adapter.tasks.get("t-live")
-        assert stored["state"] == protocol.STATE_FAILED
-        assert stored["reply"] == "[client disconnected]"
+        assert stored["state"] == protocol.STATE_WORKING
+        assert stored["reply"] == ""
+        assert not pending["future"].done()
+        adapter._resolve_task("t-live", protocol.STATE_COMPLETED, "later")
+        assert adapter.tasks.get("t-live")["reply"] == "later"
+        asyncio.run(adapter.disconnect())
         assert "t-live" not in adapter._pending
-        assert "t-live" not in adapter._active_tasks
+        assert "t-live" not in adapter._pending
 
     def test_list_newest_first_with_filters(self):
         store = protocol.TaskStore()

@@ -1568,6 +1568,13 @@ platform_toolsets:
 #       # Public HTTPS origin in front of this listener; MCP servers with
 #       # `events: true` POST event deliveries to <public_url>/webhooks/<route>.
 #       public_url: "https://hermes.example.com"
+#   a2a:
+#     extra:
+#       # Seconds to wait for input or authentication after a task is interrupted.
+#       # Polling does not extend this deadline.
+#       input_wait_timeout_seconds: 86400
+#       # Seconds to retain terminal results. The 500-task cap may evict them sooner.
+#       task_retention_seconds: 86400
 #
 # Discord-specific settings (config.yaml top-level, not under platforms:):
 #

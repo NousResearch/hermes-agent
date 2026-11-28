@@ -665,6 +665,7 @@ class TestReplyCapture:
     def test_send_waits_for_notify_marked_final_reply(self):
         """Interim/editable sends must not satisfy the blocked A2A RPC future."""
         adapter = _bare_adapter()
+        adapter.tasks.create("task-final", "ctx-final", "peer")
         fut = adapter._add_pending("task-final", "ctx-final")
 
         async def run():
@@ -693,6 +694,8 @@ class TestReplyCapture:
         """Two in-flight tasks sharing a context must not cross-talk: replies
         resolve the oldest outstanding task first."""
         adapter = _bare_adapter()
+        adapter.tasks.create("task-1", "ctx-shared", "peer")
+        adapter.tasks.create("task-2", "ctx-shared", "peer")
         fut1 = adapter._add_pending("task-1", "ctx-shared")
         fut2 = adapter._add_pending("task-2", "ctx-shared")
 
@@ -714,6 +717,7 @@ class TestReplyCapture:
         from gateway.platforms.event import ProcessingOutcome
 
         adapter = _bare_adapter()
+        adapter.tasks.create("task-fail", "ctx-fail", "peer")
         fut = adapter._add_pending("task-fail", "ctx-fail")
         event = SimpleNamespace(message_id="task-fail")
 
@@ -731,6 +735,7 @@ class TestReplyCapture:
         from gateway.platforms.event import ProcessingOutcome
 
         adapter = _bare_adapter()
+        adapter.tasks.create("task-ok", "ctx-ok", "peer")
         fut = adapter._add_pending("task-ok", "ctx-ok")
         event = SimpleNamespace(message_id="task-ok")
 
@@ -752,6 +757,7 @@ class TestReplyCapture:
         from gateway.platforms.event import ProcessingOutcome
 
         adapter = _bare_adapter()
+        adapter.tasks.create("task-streamed", "ctx-streamed", "peer")
         fut = adapter._add_pending("task-streamed", "ctx-streamed")
         event = SimpleNamespace(message_id="task-streamed", _streamed_final_response="SSE_OK")
 
@@ -1202,24 +1208,25 @@ class TestInboundRoundTrip:
 
         asyncio.run(run())
 
-    def test_timeout_returns_failed_not_completed(self, monkeypatch):
-        """When the agent never replies, the task must FAIL (and count as a
-        failure), not report success."""
+    def test_processing_failure_releases_blocking_request(self, monkeypatch):
         monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
         monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
-        monkeypatch.setenv("A2A_REPLY_TIMEOUT", "1")
-        adapter, base = _make_live_adapter(monkeypatch, reply_fn=lambda e: None)
+        adapter, base = _make_live_adapter(monkeypatch, reply_fn=lambda e: setattr(e, "_gateway_accepted", True))
 
         async def run():
             assert await adapter.connect() is True
             failed_before = protocol.metrics.tasks_failed
             completed_before = protocol.metrics.tasks_completed
-            resp = await asyncio.to_thread(_post_json, base + "/", _send_body("are you there"))
-            task = resp["result"]
+            from tests.waiting import async_wait_until
+            waiting = asyncio.create_task(asyncio.to_thread(_post_json, base + "/", _send_body("are you there")))
+            await async_wait_until(lambda: bool(adapter._pending), timeout=5)
+            tid = next(iter(adapter._pending))
+            from gateway.platforms.event import ProcessingOutcome
+            await adapter.on_processing_complete(SimpleNamespace(message_id=tid), ProcessingOutcome.FAILURE)
+            task = (await waiting)["result"]
             assert task["status"]["state"] == "TASK_STATE_FAILED"
             assert protocol.metrics.tasks_failed == failed_before + 1
             assert protocol.metrics.tasks_completed == completed_before
-            # The task store agrees.
             rec = adapter.tasks.get(task["id"])
             assert rec["state"] == "TASK_STATE_FAILED"
             await adapter.disconnect()

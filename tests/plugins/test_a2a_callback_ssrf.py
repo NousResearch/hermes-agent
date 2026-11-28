@@ -71,7 +71,9 @@ def _push(monkeypatch, url: str) -> None:
     adapter = A2AAdapter(PlatformConfig(enabled=True))
     adapter.tasks.create("t1", "c1", "peer")
     assert adapter.tasks.set_push_config("t1", url) is not None
-    adapter._send_push_notification("t1", "c1", "done", protocol.STATE_COMPLETED)
+    outcome = adapter.tasks.complete("t1", protocol.STATE_COMPLETED, "done", consume_push=True)
+    assert outcome is not None
+    adapter._push_outcome(outcome)
 
 
 def _resolve_as(monkeypatch, answers):
@@ -104,7 +106,7 @@ def test_dns_name_is_judged_by_what_it_resolves_to(monkeypatch):
 
 
 def test_push_follows_the_owning_profiles_private_url_policy(monkeypatch, serve, tmp_path):
-    """The push runs on an HTTP handler thread, which carries no profile scope: a secondary
+    """The push runs on a background thread, which carries no profile scope: a secondary
     profile's own ``security.allow_private_urls`` must decide, not the launch profile's."""
     from agent.runtime_scope import bind_state, scope_for_profile
     from gateway.config import PlatformConfig
@@ -125,8 +127,9 @@ def test_push_follows_the_owning_profiles_private_url_policy(monkeypatch, serve,
     adapter.tasks.create("t1", "c1", "peer")
     adapter.tasks.set_push_config("t1", f"http://receiver.lan:{target.server_port}/hook")
 
-    pusher = threading.Thread(target=adapter._send_push_notification,
-                              args=("t1", "c1", "done", protocol.STATE_COMPLETED))
+    outcome = adapter.tasks.complete("t1", protocol.STATE_COMPLETED, "done", consume_push=True)
+    assert outcome is not None
+    pusher = threading.Thread(target=adapter._push_outcome, args=(outcome,))
     pusher.start()
     pusher.join(30)
 

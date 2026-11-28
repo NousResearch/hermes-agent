@@ -34,3 +34,20 @@ def test_nested_plugin_load_runs_inline_on_deadline_worker(monkeypatch):
     assert observed_threads[0] is observed_threads[1]
     # The outer timeout abandons only contexts still loading, not a nested load that already finished.
     assert abandoned == ["outer", "hung"]
+
+
+def test_default_load_timeout_stays_generous_and_consistent(tmp_path, monkeypatch):
+    """The shipped default must stay generous to slow-but-legitimate imports (#140621): cold imports of
+    bundled platform SDKs and the dashboard auth providers exceed 10s on slow storage, and an auth
+    provider that times out keeps a gated (non-loopback) dashboard from starting at all for that boot.
+    The config default and the loader constant are independent literals, so pin them to each other —
+    they must not drift apart — and pin the resolver to the same value with no user config present."""
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+    home = tmp_path / "hermes_home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    assert DEFAULT_CONFIG["plugins"]["load_timeout_seconds"] == plugins_loader._LOAD_TIMEOUT_SECS
+    assert plugins_loader._LOAD_TIMEOUT_SECS >= 30.0
+    assert plugins_loader._resolve_plugin_load_timeout() == plugins_loader._LOAD_TIMEOUT_SECS

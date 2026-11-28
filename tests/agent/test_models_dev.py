@@ -94,6 +94,8 @@ SAMPLE_REGISTRY = {
 
 class TestProviderMapping:
 
+    def test_upstage_provider_is_mapped(self):
+        assert PROVIDER_TO_MODELS_DEV["upstage"] == "upstage"
 
     def test_xai_oauth_uses_xai_catalog(self):
         assert PROVIDER_TO_MODELS_DEV["xai"] == "xai"

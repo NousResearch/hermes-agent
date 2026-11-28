@@ -403,16 +403,42 @@ def _locate_for_write(name: str, action: str, not_found_suffix: str = ""):
     return (None, guard) if guard else (skill_dir, None)
 
 
+def _existing_eol(target: Path) -> Optional[str]:
+    """Dominant line ending of an existing *target* ("\r\n" or "\n"), None when new/unreadable/one line.
+
+    Targets are read with universal newlines, so without this every write would emit the payload's
+    "\n" and silently convert a CRLF file (or, before atomic_write_text wrote verbatim, an LF file
+    on Windows) as a whole. Ties go to LF."""
+    try:
+        data = target.read_bytes()
+    except OSError:
+        return None
+    crlf = data.count(b"\r\n")
+    lf = data.count(b"\n") - crlf
+    if not crlf and not lf:
+        return None
+    return "\r\n" if crlf > lf else "\n"
+
+
+def _with_eol(content: str, eol: Optional[str]) -> str:
+    """*content* with every line ending set to *eol* (unchanged when *eol* is None)."""
+    if eol is None:
+        return content
+    normalized = content.replace("\r\n", "\n")
+    return normalized if eol == "\n" else normalized.replace("\n", eol)
+
+
 def _guarded_write(name: str, skill_dir: Path, target: Path, action: str, label: str,
                    content: str) -> Optional[dict[str, Any]]:
     """Read-before-write guard (existing targets only), the description budget for the root SKILL.md
     (whichever action and file_path reach it), atomic write, then the security scan; a blocked scan
     restores the original (or unlinks a new file). Error dict or None."""
-    original = None
+    original = eol = None
     if target.exists():
         if read_guard := _background_review_read_before_write_guard(name, target, action, label):
             return read_guard
         original = target.read_text(encoding="utf-8-sig")
+        eol = _existing_eol(target)  # keep the file's own convention; new files are written verbatim
     if target == skill_dir / "SKILL.md" and (err := _description_budget_error(content, before=original)):
         return _err(err)
     scope, baseline, scan_error = _scan_baseline(skill_dir, target)
@@ -420,12 +446,12 @@ def _guarded_write(name: str, skill_dir: Path, target: Path, action: str, label:
         return _err(scan_error)
     from hermes_constants import mkdir_under_hermes_home
     mkdir_under_hermes_home(target.parent)
-    atomic_write_text(target, content, preserve_mode=True, create_mode=0o644)
+    atomic_write_text(target, _with_eol(content, eol), preserve_mode=True, create_mode=0o644)
     scan_error = _security_scan_skill(skill_dir, baseline, scope)
     if not scan_error:
         return None
     if original is not None:
-        atomic_write_text(target, original, preserve_mode=True)
+        atomic_write_text(target, _with_eol(original, eol), preserve_mode=True)
     else:  # a dangling symlink's write created its destination: remove that, keep the link
         target.resolve().unlink(missing_ok=True)
     return _err(scan_error)

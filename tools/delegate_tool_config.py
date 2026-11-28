@@ -575,15 +575,38 @@ class ResolvedReasoning(NamedTuple):
     config: Optional[dict]
 
 
-def _child_reasoning(parent_agent, delegation_cfg: dict, route_effort: Any) -> Any:
+def _per_model_reasoning_effort(model: Optional[str]) -> Optional[dict]:
+    """``agent.reasoning_overrides`` entry for *model*, through the resolver every other surface uses.
+
+    Delegation resolved effort from ``delegation.reasoning_effort`` alone, which cannot see a per-model
+    entry for a child pinned to a different model (#155866). Spelling tolerance and the ``false``/
+    ``none`` → ``{"enabled": False}`` reading both belong to ``hermes_constants``; this only supplies
+    the config. Read-only load, never mutated.
+    """
+    if not model or os.environ.get("HERMES_IGNORE_USER_CONFIG") == "1":
+        return None
+    from hermes_cli.config import load_config_readonly
+    from hermes_constants import resolve_per_model_reasoning_effort
+    agent_cfg = load_config_readonly().get("agent")
+    overrides = agent_cfg.get("reasoning_overrides") if isinstance(agent_cfg, dict) else None
+    return resolve_per_model_reasoning_effort(str(model), overrides or {})
+
+
+def _child_reasoning(parent_agent, delegation_cfg: dict, route_effort: Any,
+                     model: Optional[str] = None) -> Any:
     """Child reasoning config: a :class:`ResolvedReasoning` route value as-is, else the route's raw effort >
-    ``delegation.reasoning_effort`` > the parent's level. Keep the raw value — a YAML ``false`` must disable
-    thinking, not coerce to "" and inherit."""
+    the child model's ``agent.reasoning_overrides`` entry > ``delegation.reasoning_effort`` > the parent's level.
+    Keep the raw value — a YAML ``false`` must disable thinking, not coerce to "" and inherit."""
     if isinstance(route_effort, ResolvedReasoning):
         return route_effort.config
     child_reasoning = getattr(parent_agent, "reasoning_config", None)
     delegation_effort = route_effort
     if not (delegation_effort or delegation_effort is False):
+        # Model-scoped beats group-scoped: an entry for THIS model is the user's statement about it, so it
+        # outranks the delegation-wide default the way it outranks the global level everywhere else.
+        per_model = _per_model_reasoning_effort(model)
+        if per_model is not None:
+            return per_model
         delegation_effort = (delegation_cfg or {}).get("reasoning_effort")
     if delegation_effort or delegation_effort is False:
         from hermes_constants import parse_reasoning_effort
@@ -665,8 +688,8 @@ def _resolve_child_runtime(
             getattr(parent_agent, "requested_provider", None) or effective_provider
         )
 
-    # Reasoning: the task route's effort (delegation provider) > delegation.reasoning_effort > parent.
-    child_reasoning = _child_reasoning(parent_agent, delegation_cfg, override_reasoning_effort)
+    # Reasoning: the task route's effort > the child model's agent.reasoning_overrides > delegation.reasoning_effort.
+    child_reasoning = _child_reasoning(parent_agent, delegation_cfg, override_reasoning_effort, effective_model)
 
     kwargs: dict[str, Any] = {
         "base_url": effective_base_url, "api_key": override_api_key or parent_api_key, "model": effective_model,

@@ -68,6 +68,7 @@ def _fire_post_api_request_hook(
     api_call_count: Any, api_duration: Any, api_start_time: Any, api_request_id: Any,
     effective_task_id: Any, turn_id: Any,
 ) -> None:
+    from agent.api_request_hooks import response_impact
     from agent.conversation_loop import _moa_reference_metrics_for_hook
 
     if getattr(agent, "_loop_aux_task", None):  # a plugin session fork (begin_loop_aux_attempt)
@@ -103,6 +104,9 @@ def _fire_post_api_request_hook(
                     response, assistant_message, finish_reason=finish_reason
                 ),
                 usage=agent._usage_summary_for_api_request_hook(response),
+                # Optional per-call energy/emissions object some OpenAI-compatible gateways
+                # attach to the response (top level, or the final usage chunk when streamed).
+                impact=response_impact(response),
                 context_length=getattr(getattr(agent, "context_compressor", None), "context_length", None),
                 assistant_message=assistant_message,
                 assistant_content_chars=len(assistant_message.content or ""),

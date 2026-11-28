@@ -63,6 +63,17 @@ def test_call_llm_emits_auxiliary_events_not_api_request_events(manager, aux_cli
     assert post["response"]["assistant_message"]["content"] == "A title"
 
 
+def test_gateway_impact_object_rides_post_auxiliary_call(manager, aux_client):
+    impact = {"energy": {"total": 52, "unit": "Wms"}, "emissions": {"total": 1, "unit": "ugCO2e"}}
+    aux_client.chat.completions.create.return_value.impact = impact
+    fired = []
+    manager.register_hook("post_auxiliary_call", lambda **kw: fired.append(kw))
+
+    call_llm(task="title_generation", messages=[{"role": "user", "content": "hello"}])
+
+    assert fired[0]["impact"] == impact
+
+
 def test_raising_subscriber_does_not_break_the_auxiliary_call(manager, aux_client):
     def boom(**_kw):
         raise RuntimeError("observer exploded")

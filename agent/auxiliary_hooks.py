@@ -153,7 +153,7 @@ class _AuxCallHooks:
         that is not chat.completions-shaped (an agent transport's native reply)."""
         if not _has_hook(POST_AUXILIARY_CALL):
             return
-        from agent.api_request_hooks import ApiRequestHooksMixin as _Sanitize
+        from agent.api_request_hooks import ApiRequestHooksMixin as _Sanitize, response_impact
 
         ended_at = time.time()
         payload: dict[str, Any] = dict(
@@ -164,7 +164,7 @@ class _AuxCallHooks:
         # A streamed response is handed back unconsumed (the MoA facade owns reassembly), so
         # there is no usage/finish_reason to report yet; ``streaming`` tells the observer why.
         if error is not None or self.streaming:
-            payload.update(finish_reason=None, response_model=None, usage=None, response=None,
+            payload.update(finish_reason=None, response_model=None, usage=None, impact=None, response=None,
                            assistant_content_chars=0, assistant_tool_call_count=0)
         else:
             message, finish_reason, usage = normalized or (*_first_choice_message(response), _usage_summary(response))
@@ -174,6 +174,7 @@ class _AuxCallHooks:
                 finish_reason=finish_reason,
                 response_model=_field(response, "model"),
                 usage=usage,
+                impact=response_impact(response),
                 response=_Sanitize._sanitize_hook_payload({
                     "model": _field(response, "model"),
                     "finish_reason": finish_reason,

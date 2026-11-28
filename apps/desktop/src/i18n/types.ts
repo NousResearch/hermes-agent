@@ -4299,6 +4299,7 @@ export interface Translations extends NoticeTranslations {
     zoomIn: string
     zoomOut: string
     resetZoom: string
+    close: string
     imagePreviewFailed: string
     imageAttach: string
     imageWriteFailed: string

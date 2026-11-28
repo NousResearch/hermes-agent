@@ -7,7 +7,7 @@ import { Dialog, DialogContent } from '@/components/ui/dialog'
 import { useZoomPan } from '@/components/ui/use-zoom-pan'
 import { useImageDownload } from '@/hooks/use-image-download'
 import { useI18n } from '@/i18n'
-import { Download, ZoomIn, ZoomOut } from '@/lib/icons'
+import { Download, X, ZoomIn, ZoomOut } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { $transcriptLightbox, closeTranscriptLightbox, openTranscriptLightbox } from '@/store/transcript-lightbox'
 
@@ -24,6 +24,7 @@ export interface ZoomableImageProps extends ComponentProps<'img'> {
 }
 
 export interface ImageActionCopy {
+  close: string
   downloadImage: string
   savingImage: string
   zoomIn: string
@@ -173,6 +174,15 @@ export function ImageLightbox({
                 type="button"
               >
                 <ZoomIn className="size-4" />
+              </button>
+              <div className="mx-0.5 h-5 w-px bg-border/60" />
+              <button
+                aria-label={copy.close}
+                className="grid size-8 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                onClick={() => onOpenChange(false)}
+                type="button"
+              >
+                <X className="size-4" />
               </button>
             </div>
           )

@@ -111,6 +111,20 @@ describe('ZoomableImage lightbox', () => {
     }
   )
 
+  it('closes the lightbox via the chrome pill close button', async () => {
+    await renderImage()
+    await openLightbox()
+
+    const closeButton = within(screen.getByRole('dialog')).getByRole('button', { name: 'Close' })
+    await act(async () => {
+      fireEvent.click(closeButton)
+    })
+
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).toBeNull()
+    })
+  })
+
   it('wheel zooms toward the cursor and prevents the page from scrolling', async () => {
     await renderImage()
     await openLightbox()

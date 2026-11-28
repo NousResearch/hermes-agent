@@ -487,10 +487,15 @@ def verify_windows_task(xml: str | bytes, home: Path, account: str, sid: str, *,
     if user.casefold() not in {account.casefold(), sid.casefold()}:
         raise ValueError("service_account_mismatch")
     # schtasks /Query /XML omits elements that hold the Windows default (#139013): an absent RunLevel
-    # is least privilege and an absent Enabled is enabled. An explicit other value is still refused.
-    if principal.findtext("t:RunLevel", "LeastPrivilege", ns) != "LeastPrivilege" or actions.get("Context") != principal.get("id"):
-        _unverified(f"the task RunLevel is {principal.findtext('t:RunLevel', 'LeastPrivilege', ns)!r} and its "
-                    f"action context is {actions.get('Context')!r}; expected LeastPrivilege and {principal.get('id')!r}")
+    # is least privilege and an absent Enabled is enabled. schtasks also reports "Limited" when the
+    # task runs under a UAC-isolated (elevated) context; treat "Limited" as least privilege too.
+    # An explicit other value is still refused.
+    runlevel = (principal.findtext("t:RunLevel", "", ns) or "").strip().lower()
+    context = actions.get("Context") or ""
+    principal_id = principal.get("id") or ""
+    if runlevel not in ("", "leastprivilege", "limited") or context != principal_id:
+        _unverified(f"the task RunLevel is {runlevel!r} and its action context is {context!r}; "
+                    f"expected LeastPrivilege and {principal_id!r}")
     if task.findtext("t:Settings/t:Enabled", "true", ns) != "true":
         raise ValueError("service_disabled")
     action = actions[0]

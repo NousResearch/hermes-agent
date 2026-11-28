@@ -51,10 +51,10 @@ fi
 """
 
 
-def _wire(home: Path, runs: int = 1) -> None:
-    env = {k: v for k, v in os.environ.items() if k not in ("CI", "GITHUB_ACTIONS")}
-    env.update(HOME=str(home), HERMES_HOME=str(home / "hermes"), SHELL="/bin/bash",
-               NO_COLOR="1", TERM="dumb", CI="true")
+def _wire(home: Path, runs: int = 1, shell: str = "/bin/bash", **extra: str) -> None:
+    env = {k: v for k, v in os.environ.items() if k not in ("CI", "GITHUB_ACTIONS", "ZDOTDIR")}
+    env.update(HOME=str(home), HERMES_HOME=str(home / "hermes"), SHELL=shell,
+               NO_COLOR="1", TERM="dumb", CI="true", **extra)
     script = f"source {shlex.quote(INSTALL_SH.as_posix())} --manifest\n" + "wire_shell_path\n" * runs
     result = subprocess.run(["bash", "-c", script], env=env, stdin=subprocess.DEVNULL,
                             capture_output=True, text=True, timeout=30, check=False)
@@ -103,3 +103,13 @@ def test_bash_login_only_user_gets_local_bin(tmp_path):
     home = _home(tmp_path, **{".bash_login": "# mine\n"})
     _wire(home)
     assert str(home / ".local" / "bin") in _login_path(home)
+
+
+def test_zsh_with_zdotdir_wires_the_files_zsh_reads(tmp_path):
+    # zsh reads .zshrc/.zprofile from $ZDOTDIR when it is set and never looks in $HOME then.
+    home = _home(tmp_path)
+    zdotdir = home / ".config" / "zsh"
+    _wire(home, shell="/bin/zsh", ZDOTDIR=str(zdotdir))
+    assert MARKER in (zdotdir / ".zshrc").read_text(encoding="utf-8")
+    assert MARKER in (zdotdir / ".zprofile").read_text(encoding="utf-8")
+    assert not (home / ".zshrc").exists()

@@ -54,6 +54,24 @@ def _add_browse(sessions_subparsers) -> None:
     _flag(browse, "--all", help=_ALL_HELP)
 
 
+def _add_prune_flags(sessions_prune) -> None:
+    """Prune-only safety knobs: archived selection, pinned keep-flag, never-active, force."""
+    _flag(sessions_prune, "--include-archived",
+          help="Also delete archived sessions (excluded by default)")
+    _flag(sessions_prune, "--archived-only",
+          help="Delete only archived sessions (excluded by default); combine with "
+               "--older-than/--before to bound them by time. Cannot be used with --include-archived")
+    _flag(sessions_prune, "--include-pinned",
+          help="Also delete pinned sessions (excluded by default — pin is a keep flag)")
+    _flag(sessions_prune, "--never-active",
+          help="Instead of ended sessions, delete keyed gateway rows that were "
+               "opened and never used (no messages, tokens, tool calls or title) "
+               "and are older than AGE (default 30 days). Ordinary prune can "
+               "never reach these — it only ever selects ended sessions")
+    _flag(sessions_prune, "--force",
+          help="With no gateway running: run even while another Hermes process (Desktop, dashboard, cron) holds state.db — rewriting the store under a live writer can leave every agent refusing turns until all writers are stopped. With the gateway running, prune always goes through it")
+
+
 def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
     """Attach the ``sessions`` subcommand to ``subparsers``."""
     sessions_parser = subparsers.add_parser(
@@ -153,17 +171,7 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
         sessions_prune, "Delete sessions older than AGE — days if bare number, or a duration "
         "like '5h'/'2d'/'1w', or an ISO timestamp (bare prune with no filters "
         "defaults to 90 days; any filter matches all ages)")
-    _flag(sessions_prune, "--include-archived",
-        help="Also delete archived sessions (excluded by default)")
-    _flag(sessions_prune, "--include-pinned",
-        help="Also delete pinned sessions (excluded by default — pin is a keep flag)")
-    _flag(sessions_prune, "--never-active",
-        help="Instead of ended sessions, delete keyed gateway rows that were "
-            "opened and never used (no messages, tokens, tool calls or title) "
-            "and are older than AGE (default 30 days). Ordinary prune can "
-            "never reach these — it only ever selects ended sessions")
-    _flag(sessions_prune, "--force",
-        help="With no gateway running: run even while another Hermes process (Desktop, dashboard, cron) holds state.db — rewriting the store under a live writer can leave every agent refusing turns until all writers are stopped. With the gateway running, prune always goes through it")
+    _add_prune_flags(sessions_prune)
 
     sessions_archive = sessions_subparsers.add_parser(
         "archive", help="Bulk-archive (soft-hide) sessions matching filters — no deletion")

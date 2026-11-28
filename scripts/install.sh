@@ -313,8 +313,9 @@ uv_bootstrap_pin() {
 # --- END GENERATED: bootstrap pins ---
 
 uv_bootstrap_target() {
-    # Map this host to a pm/lock.json target key (<os>-<arch>).
-    local _arch
+    # Map this host to a pm/lock.json target key (<os>-<arch>). Trailing
+    # arguments override the ELF probes; tests use that to feed fixtures.
+    local _arch _probes
     case "$(uname -m)" in
         arm64|aarch64) _arch="arm64" ;;
         x86_64|amd64)  _arch="x64" ;;
@@ -326,14 +327,42 @@ uv_bootstrap_target() {
             # userland's ELF interpreter decides; ldd and a musl loader on
             # disk are fallbacks only (a glibc host may carry musl as a
             # secondary toolchain, and minimal musl roots may lack ldd).
-            local _libc="" _probe _head
-            for _probe in /bin/sh /bin/ls; do
-                _head="$(head -c 8192 "$_probe" 2>/dev/null | LC_ALL=C tr -d '\000')" || continue
-                [[ "$_head" == $'\x7f'ELF* ]] || continue
-                case "$_head" in
-                    *ld-musl-*) _libc="musl"; break ;;
-                    *ld-linux*) _libc="glibc"; break ;;
-                esac
+            # Read PT_INTERP straight from the ELF program headers. A fixed
+            # head window is not enough (Fedora 44: /usr/bin/bash keeps the
+            # interpreter string at 0x10a000), and grepping the whole file for
+            # the loader name false-positives on binaries that merely mention
+            # it (astral's glibc uv embeds "/lib/ld-musl-x86_64.so.1").
+            _probe_libc() {
+                local _f="$1" _cls _off _esz _num _i _type _poff _psz _interp
+                # ELF64 little-endian only: EI_CLASS=2, EI_DATA=1.
+                _cls="$(od -An -t u1 -j 4 -N 2 "$_f" 2>/dev/null | tr -d ' \n')"
+                [ "$_cls" = "21" ] || return 1
+                _off="$(od -An -t u8 -j 32 -N 8 "$_f" 2>/dev/null | tr -d ' \n')"
+                _esz="$(od -An -t u2 -j 54 -N 2 "$_f" 2>/dev/null | tr -d ' \n')"
+                _num="$(od -An -t u2 -j 56 -N 2 "$_f" 2>/dev/null | tr -d ' \n')"
+                [ -n "$_off" ] && [ -n "$_esz" ] && [ -n "$_num" ] || return 1
+                for (( _i = 0; _i < _num; _i++ )); do
+                    _type="$(od -An -t u4 -j $(( _off + _i * _esz )) -N 4 "$_f" 2>/dev/null | tr -d ' \n')"
+                    [ "$_type" = "3" ] || continue   # PT_INTERP
+                    _poff="$(od -An -t u8 -j $(( _off + _i * _esz + 8 )) -N 8 "$_f" 2>/dev/null | tr -d ' \n')"
+                    _psz="$(od -An -t u8 -j $(( _off + _i * _esz + 32 )) -N 8 "$_f" 2>/dev/null | tr -d ' \n')"
+                    [ -n "$_poff" ] && [ -n "$_psz" ] || return 1
+                    _interp="$(od -An -t c -j "$_poff" -N "$_psz" "$_f" 2>/dev/null | tr -d ' \n')"
+                    case "$_interp" in
+                        *ld-musl-*) echo musl; return 0 ;;
+                        *ld-linux*) echo glibc; return 0 ;;
+                        *) return 1 ;;
+                    esac
+                done
+                return 1
+            }
+            local _libc="" _probe _verdict
+            if [ "$#" -gt 0 ]; then _probes=("$@"); else _probes=(/bin/sh /bin/ls); fi
+            for _probe in "${_probes[@]}"; do
+                [ -r "$_probe" ] || continue
+                if _verdict="$(_probe_libc "$_probe")"; then
+                    _libc="$_verdict"; break
+                fi
             done
             if [[ -z "$_libc" ]]; then
                 _libc="$(ldd --version 2>&1 || true)"
@@ -342,6 +371,10 @@ uv_bootstrap_target() {
             if [[ "$_libc" == *musl* ]]; then
                 echo "linux-$_arch-musl"
             elif [[ "$_libc" == *glibc* || "$_libc" == *"gnu libc"* || "$_libc" == *"gnu c library"* ]]; then
+                echo "linux-$_arch"
+            elif ls /lib/ld-linux-*.so* /lib64/ld-linux-*.so* >/dev/null 2>&1; then
+                # A glibc userland always carries its loader; a musl loader on
+                # disk may still be a secondary cross-compilation toolchain.
                 echo "linux-$_arch"
             elif compgen -G '/lib/ld-musl-*.so.1' >/dev/null; then
                 echo "linux-$_arch-musl"

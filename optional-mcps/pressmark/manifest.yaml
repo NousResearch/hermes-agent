@@ -1,0 +1,27 @@
+name: pressmark
+manifest_version: 1
+description: Sub-25ms vector PDF synthesis engine for invoices, estimates, receipts, contracts, NDAs, and 50-state statutory real estate agreements with 1-scan QR payments.
+source: https://github.com/mooshee/pressmark
+transport:
+  type: http
+  url: https://pressmark.dev/mcp
+auth:
+  type: none
+tools:
+  default_enabled:
+    - generate_document
+    - preview_document
+    - convert_document
+    - record_payment
+    - calculate_totals
+    - get_pricing
+suggest:
+  keywords:
+    - pressmark
+    - invoice generation
+    - real estate lease
+    - vector pdf
+  hosts:
+    - pressmark.dev
+post_install: |
+  No account or API key is required to connect to Pressmark's stateless synthesis tools.

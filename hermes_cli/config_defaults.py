@@ -2045,11 +2045,11 @@ DEFAULT_CONFIG = {
     # Positive integers only (no unlimited/0). Read from the root owner's config at service
     # startup for all hosted rooms; restart the owning service after changing them.
     "hosted_rooms": {
-        "discussion": {
-            "max_rounds": 3,
-            "max_messages": 10,
-        },
+        "discussion": {"max_rounds": 3, "max_messages": 10},
     },
+    # New profiles: runtime "auto" follows the serving gateway's runtime_kind (else native) | "container" |
+    # "native"; container_name only renders the `docker exec <name> ...` hand-off hint, never run.
+    "profiles": {"runtime": "auto", "container_name": "hermes"},
     "gateway": {  # Gateway settings (messaging platforms: Telegram, Discord, Slack, ...).
         "unmanaged_idle_exit_seconds": 600,  # client-auto-started gateway only; 0 disables
         # Seconds a SIGTERM-interrupted agent unwinds before teardown (short: service stop budgets).

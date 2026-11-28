@@ -6928,6 +6928,7 @@ async def _standalone_send(
 
 
 _SETUP_STEPS = (
+    "Shortcut: `hermes slack create` creates the app from one App Configuration token.",
     "Steps to create a Slack app:",
     "   1. Go to https://api.slack.com/apps → Create New App",
     "      Pick 'From an app manifest' — we'll generate one for you below.",

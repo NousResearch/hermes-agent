@@ -51,4 +51,20 @@ def build_slack_parser(subparsers, *, cmd_slack: Callable) -> None:
         "app_home_opened + message.im) instead of the legacy assistant_view "
         "experience. This changes Slack's app messaging surface and cannot "
         "be reversed in Slack after applying the manifest.")
+    slack_create = slack_sub.add_parser(
+        "create",
+        help="Create the Hermes Slack app from one App Configuration token, or re-sync its "
+        "manifest (slash commands, scopes) on later runs",
+        description="Paste one Slack App Configuration refresh token (prompted, masked; never "
+            "an argument). Hermes rotates it, creates the app from the generated manifest and "
+            "saves slack.app_id to config.yaml and the rotated refresh token to .env. Re-runs "
+            "update the existing app's manifest so its slash commands track Hermes.")
+    slack_create.add_argument(
+        "--app-id", default=None, metavar="A...",
+        help="Sync this existing app instead of creating one (saved as slack.app_id).")
+    slack_create.add_argument("--name", default=None, help='App display name (default: "Hermes")')
+    slack_create.add_argument("--description", default=None, help="App description.")
+    slack_create.add_argument(
+        "--messaging", choices=("agent", "assistant", "none"), default="agent",
+        help="Slack messaging experience for a NEW app (default: agent).")
     slack_parser.set_defaults(func=cmd_slack)

@@ -34,7 +34,24 @@ declares every built-in slash command (`/btw`, `/stop`, `/model`, …),
 every required OAuth scope, every event subscription, and enables Socket
 Mode — all at once.
 
-### Option A: From a Hermes-generated manifest (recommended)
+### Option A0: Let Hermes create the app (one token)
+
+```bash
+hermes slack create
+```
+
+Paste a Slack **App Configuration refresh token** when asked (generate one at
+[https://api.slack.com/apps](https://api.slack.com/apps) → **Your App
+Configuration Tokens**). Hermes creates the app from the same manifest as
+Option A, stores its id as `slack.app_id` in `config.yaml` and the rotated
+refresh token in `.env`, then walks you through the two clicks Slack still
+requires: **Install to Workspace** (for the `xoxb-` bot token) and an
+**App-Level Token** with `connections:write` (for the `xapp-` Socket Mode
+token). Both prompts are masked; press Enter to skip one. Re-run
+`hermes slack create` after `hermes update` to push new slash commands to the
+app. See [`hermes slack create`](../../reference/cli-commands.md#hermes-slack-create).
+
+### Option A: From a Hermes-generated manifest
 
 1. Generate the manifest. New Slack apps must use Agent view:
    ```bash
@@ -283,7 +300,10 @@ channel's history.
 
 ### Refreshing slash commands after updates
 
-When Hermes adds new commands (e.g. after `hermes update`), regenerate
+If Hermes created the app (`hermes slack create`), re-run that command:
+it updates the app's manifest over Slack's API, no pasting needed.
+
+Otherwise, when Hermes adds new commands (e.g. after `hermes update`), regenerate
 the manifest and update your Slack app:
 
 ```bash

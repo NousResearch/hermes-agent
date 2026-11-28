@@ -1,0 +1,30 @@
+name: ctx-monitor
+repo: https://github.com/brunomalveira/hermes-ctx-monitor
+sha: 5de23e31975ac5aab18e756a72c66f9636171a1c
+title: Context Monitor
+description: >-
+  Desktop status bar chip showing, live, how full the focused session's context
+  window is (CTX %, streamed during the turn with used/max tokens in the tooltip)
+  and how full the agent's persistent memory stores are (MEM %, characters vs the
+  configured limits, refreshed every 15 s), turning accent-colored at 85% so a
+  session approaching compression — or a memory store approaching its
+  consolidation point — is visible before it becomes a problem. Desktop-only
+  (desktop/plugin.js inside the plugin SDK surface); no agent tools, hooks,
+  middleware or env vars. The backend half (dashboard/plugin_api.py) serves
+  read-only character counts of the profile's memories/MEMORY.md and USER.md
+  against the configured limits over /api/plugins/ctx-monitor/stats — only the
+  local gateway serves it, authenticated; counts only, never contents.
+  Disclosure — no network calls, no credentials, no env vars, no telemetry, no
+  background processes.
+maintainer: brunomalveira
+tier: community
+category: desktop
+requires_hermes: ">=0.23.4"
+docs_url: https://github.com/brunomalveira/hermes-ctx-monitor#readme
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

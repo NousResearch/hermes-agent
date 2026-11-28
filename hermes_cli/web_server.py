@@ -1062,6 +1062,8 @@ def _build_uvicorn_server(host: str, port: int, *, ssh_isolated: bool = False):
         _dash_cfg = load_config().get("dashboard") or {}
     except Exception:
         _dash_cfg = {}
+    from tui_gateway import event_replay
+    event_replay.configure(coalesce_deltas=_dash_cfg.get("replay_coalesce_deltas") is True)
 
     def _ws_ping_setting(key: str, default: float = 20.0) -> float:
         try:

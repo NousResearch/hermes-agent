@@ -157,6 +157,10 @@ When the gateway withdraws a question (timeout, interrupt, answered from another
 
 `session.resume` / `session.activate` results carry `inflight` — the turn still running (or the retained failed one) that history does not hold yet: `user`, `assistant` streamed so far, `streaming`, mid-turn `corrections`, and error fields. When the turn was started by the gateway rather than typed by a person (a background-process completion, an async delegation result, a hidden scaffolding prompt) `inflight` also carries the same `display_kind` / `display_metadata` the persisted `messages` row will get, so a client renders the live prompt exactly as it will render history after the turn lands — a `process_complete` timeline marker with `display_metadata.display_text`, nothing at all for `hidden`. Both fields are absent for genuine user input; never infer origin from the prompt text (a user quoting a marker string is still a user).
 
+### Replaying streamed text after a reconnect
+
+With `dashboard.replay_coalesce_deltas: true`, `session.events.since` replays a streamed block as one coalesced frame, not chunk by chunk (by default each chunk is its own replay entry). Consecutive `message.delta` / `reasoning.delta` frames of the same block (same `turn_id` + `segment`), or `agent.terminal.output` frames of the same `process_id`, take one replay entry. A reconnect gets one delta per block holding every chunk newer than `last_seen`: its `seq` is the block's last chunk's seq, and its `offset` is the first included chunk's offset (`0` when the client saw none of it). Every chunk still has its own `seq` live, so seqs in a replay skip numbers inside a block; that is not a gap and not `truncated`. A text block is always closed by a record carrying the full text (`message.interim` / `message.complete`). A terminal block keeps only its last 4 KiB; re-read the rest from the process snapshot. `thinking.delta` frames replace a status line and are replayed one by one.
+
 ### Pi-style RPC mapping
 
 Every command in the Pi-mono RPC spec ([issue #360](https://github.com/NousResearch/hermes-agent/issues/360)) has a TUI-gateway equivalent:

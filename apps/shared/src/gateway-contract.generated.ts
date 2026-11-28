@@ -4636,6 +4636,10 @@ export interface PluginsManageResult {
   after_install_path?: string | null
   enabled?: boolean | null
   sha?: string | null
+  installed_repo?: string | null
+  installed_subdir?: string | null
+  installed_sha?: string | null
+  has_desktop_half?: boolean | null
   consent_required?: boolean | null
   delta?: Record<string, string[]> | null
   delta_lines?: string[] | null
@@ -4674,6 +4678,8 @@ export interface AgentPluginRow {
   servers: PluginServerRow[]
   catalog_name?: string | null
   catalog_tier?: string | null
+  installed_repo?: string | null
+  installed_subdir?: string | null
   installed_sha?: string | null
   catalog_sha?: string | null
   catalog_version?: string | null
@@ -4763,6 +4769,10 @@ export interface PluginUpdateAllRow {
   name: string
   status: PluginUpdateAllStatus
   detail?: string
+  installed_repo?: string | null
+  installed_subdir?: string | null
+  installed_sha?: string | null
+  has_desktop_half?: boolean | null
 }
 export type PluginUpdateAllStatus = 'updated' | 'current' | 'failed' | 'needs_review'
 export interface PluginUpdateAllSkip {

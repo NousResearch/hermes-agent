@@ -285,6 +285,38 @@ describe('installDesktopPluginFromGit', () => {
     return repo
   }
 
+  it('stamps the checked-out unified package commit and catalog name', async () => {
+    const repo = pluginRepo('media')
+    const appRoot = mkdtemp('hermes-plugin-root-')
+    roots.push(appRoot)
+    const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo }).toString().trim()
+    const result = await installDesktopPluginFromGit('git', pathToFileURL(repo).href, appRoot, { sha, catalogName: 'catalog-media' })
+
+    expect(result.ok).toBe(true)
+    const marker = JSON.parse(fs.readFileSync(path.join(appRoot, result.pluginName!, PACKAGE_MARKER), 'utf8'))
+    expect(marker).toMatchObject({ package: 'media', sha, catalogName: 'catalog-media' })
+  })
+
+  it('exposes a SHA mismatch when local reconciliation replaces a remote install', async () => {
+    const repo = pluginRepo('media')
+    const home = mkdtemp('hermes-plugin-home-')
+    roots.push(home)
+    const appRoot = path.join(home, 'desktop-plugins')
+    const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo }).toString().trim()
+    const result = await installDesktopPluginFromGit('git', pathToFileURL(repo).href, appRoot, { sha })
+    expect(result.ok).toBe(true)
+    const markerPath = path.join(appRoot, 'media', PACKAGE_MARKER)
+    expect(JSON.parse(fs.readFileSync(markerPath, 'utf8')).sha).toBe(sha)
+
+    const local = path.join(home, 'plugins', 'media')
+    fs.mkdirSync(path.join(local, 'desktop'), { recursive: true })
+    fs.writeFileSync(path.join(local, 'desktop', 'plugin.js'), 'local copy')
+    fs.writeFileSync(path.join(local, '.hermes-catalog.json'), JSON.stringify({ catalog_name: 'media', repo: 'https://example.com/local', sha: 'b'.repeat(40) }))
+    await reconcileUnifiedDesktopHalves(home, appRoot)
+    expect(fs.readFileSync(path.join(appRoot, 'media', 'plugin.js'), 'utf8')).toBe('local copy')
+    expect(JSON.parse(fs.readFileSync(markerPath, 'utf8')).sha).not.toBe(sha)
+  })
+
   it('installs the commit the dialog reviewed after the branch moved, and refuses one the source lacks', async () => {
     const repo = pluginRepo(null, { 'panel.js': 'reviewed\n' })
     const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, stdio: 'pipe' }).toString().trim()

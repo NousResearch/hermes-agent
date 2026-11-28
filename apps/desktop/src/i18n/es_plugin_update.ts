@@ -2,6 +2,7 @@ import type { PluginUpdateTranslations } from './types_plugin_update'
 
 /** Copy for updating an installed plugin (Plugins tab): catalog re-pin consent and the security-scan override. */
 export const esPluginUpdate: PluginUpdateTranslations = {
+  updateDesktopPartial: name => `${name} se actualizó en el agente, pero no se pudo actualizar su parte Desktop. Vuelve a instalarla.`,
   folderAccess: {
     title: 'Acceso a carpetas',
     hint: (name: string) => `${name} puede leer y modificar archivos en estas carpetas. Revocar el acceso surte efecto al instante.`,

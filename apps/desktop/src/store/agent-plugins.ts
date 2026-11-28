@@ -1,4 +1,4 @@
-import { jsonRpcErrorReason, JsonRpcGatewayError, type PluginsManageParams } from '@hermes/shared'
+import { jsonRpcErrorReason, JsonRpcGatewayError, type PluginsManageParams, type PluginsManageResult } from '@hermes/shared'
 import { atom } from 'nanostores'
 
 import { notifyError } from '@/store/notifications'
@@ -592,7 +592,8 @@ export interface AgentPluginScanFinding {
  *  new code (a `caution` verdict can be retried with `force`). The backend
  *  changed nothing for `consent` and `scan`. */
 export type AgentPluginUpdateOutcome =
-  | { kind: 'applied' | 'unchanged' | 'failed' }
+  | { kind: 'applied'; provenance?: Pick<PluginsManageResult, 'installed_repo' | 'installed_subdir' | 'installed_sha' | 'has_desktop_half'> }
+  | { kind: 'unchanged' | 'failed' | 'partial' }
   | { kind: 'consent'; sha: string; deltaLines: string[] }
   | { kind: 'scan'; verdict: string; findings: AgentPluginScanFinding[] }
 
@@ -635,6 +636,10 @@ export async function updateAgentPlugin(
       scan_blocked?: boolean
       scan_verdict?: string
       scan_findings?: AgentPluginScanFinding[]
+      installed_repo?: string | null
+      installed_subdir?: string | null
+      installed_sha?: string | null
+      has_desktop_half?: boolean | null
     }>('plugins.manage', withProfile({ ...params }, profile), PLUGIN_INSTALL_REQUEST_TIMEOUT_MS)
 
     if (result?.consent_required) {
@@ -651,7 +656,17 @@ export async function updateAgentPlugin(
 
     await loadAgentPlugins(request, profile)
 
-    return { kind: result.unchanged ? 'unchanged' : 'applied' }
+    if (result.unchanged) {
+      return { kind: 'unchanged' }
+    }
+
+    const { installed_repo, installed_subdir, installed_sha, has_desktop_half } = result
+
+    if ([installed_repo, installed_subdir, installed_sha, has_desktop_half].some(value => value != null)) {
+      return { kind: 'applied', provenance: { installed_repo, installed_subdir, installed_sha, has_desktop_half } }
+    }
+
+    return { kind: 'applied' }
   } catch (e) {
     notifyError(e, failMessage)
 

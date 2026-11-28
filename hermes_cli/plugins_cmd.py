@@ -10,14 +10,18 @@ import functools
 import logging
 import os
 import shutil
+import subprocess
 import sys
 import threading
+import urllib.parse
 from pathlib import Path
 from typing import Any, NoReturn, Optional
 
 from hermes_constants import get_hermes_home, hermes_home_key, mkdir_under_hermes_home
 from hermes_cli.config import cfg_get
 from hermes_cli.plugin_capabilities import _child_dict
+from hermes_cli.desktop_plugin_halves import desktop_source
+from hermes_cli.plugins_cmd_catalog import _install_record
 # Tests patch these two on the facade; the install/remove siblings read them through it.
 from hermes_cli.secret_prompt import masked_secret_prompt
 from utils import rmtree_readonly
@@ -31,7 +35,7 @@ from hermes_cli.plugins_cmd_capabilities import (
 from hermes_cli.plugins_cmd_git import (
     _EXACT_COMMIT_RE, _canonical_source, _checkout_exact_revision, _clone_plugin_repo, _git_head_revision,
     _git_or_raise, _git_pull_plugin_dir, _git_resolve_commit, _normalize_exact_revision, _pin_annotation,
-    _read_install_metadata, _run_plugin_git, _safe_git_error, _scrub_cloned_origin, _update_install_record,
+    _read_install_metadata, _run_plugin_git, _safe_git_error, _scrub_cloned_origin, _scrub_git_url, _update_install_record,
     _write_install_metadata, pinned_revision,
 )
 from hermes_cli.plugins_cmd_install import (
@@ -339,6 +343,35 @@ def _resolve_git_url(identifier: str) -> tuple[str, Optional[str]]:
         f"Invalid plugin identifier: '{identifier}'. "
         "Use a Git URL or 'owner/repo' shorthand (optionally with a subdirectory: "
         "'owner/repo/path/to/plugin').")
+
+
+def installed_source_fields(plugin_dir: Path) -> dict:
+    """Report installer-owned source and the installed commit, not a tree sidecar."""
+    record = _install_record(plugin_dir)
+    if not record or not isinstance(record.get("source"), str):
+        return {}
+    try:
+        repo, subdir = _resolve_git_url(record["source"])
+        repo = _scrub_git_url(repo)
+        parsed = urllib.parse.urlsplit(repo)
+        if (parsed.password or parsed.query or parsed.fragment
+                or (parsed.username and not (parsed.scheme == "ssh" and parsed.username == "git"))):
+            return {}
+        if (plugin_dir / ".git").exists():
+            git = _resolve_git_executable()
+            if not git:
+                return {}
+            sha = _git_head_revision(plugin_dir, git)
+        else:
+            if not subdir:
+                return {}
+            sha = record.get("revision")
+        if not isinstance(sha, str) or not _EXACT_COMMIT_RE.fullmatch(sha):
+            return {}
+    except (ValueError, OSError, subprocess.SubprocessError, PluginOperationError):
+        return {}
+    return {"installed_repo": repo, "installed_subdir": subdir or "", "installed_sha": sha.lower(),
+            "has_desktop_half": bool(desktop_source(plugin_dir))}
 
 
 def _resolve_subdir_within(clone_root: Path, subdir: str) -> Path:

@@ -9,6 +9,7 @@ import {
 } from '@/store/agent-plugins'
 import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
+import { refreshUpdatedDesktopHalf } from '@/store/plugin-update-desktop'
 
 type PluginsCopy = Translations['skills']['plugins']
 
@@ -36,9 +37,10 @@ export function scanFindingLines(findings: AgentPluginScanFinding[], more: (n: n
  *  dangerous verdict is reported and never offered. Resolves with the final outcome. */
 export async function runPluginUpdate(
   request: GatewayRequest,
-  row: Pick<AgentPluginRow, 'catalog_name' | 'name'>,
+  row: Pick<AgentPluginRow, 'catalog_name' | 'name' | 'has_desktop_half'>,
   scope: null | string,
-  p: PluginsCopy
+  p: PluginsCopy,
+  remote = false
 ): Promise<AgentPluginUpdateOutcome> {
   const { name } = row
   const gitInstall = !row.catalog_name
@@ -87,6 +89,12 @@ export async function runPluginUpdate(
     if (outcome.kind === 'scan') {
       notifyError(new Error(p.updateScanBlocked(name)), p.updateFailed(name))
     } else if (outcome.kind === 'applied') {
+      if (!(await refreshUpdatedDesktopHalf(outcome.provenance ?? {}, remote, row.has_desktop_half, row.catalog_name))) {
+        notify({ kind: 'warning', message: p.updateDesktopPartial(name) })
+
+        return { kind: 'partial' }
+      }
+
       notify({ kind: 'success', message: gitInstall ? p.updatedGit(name) : p.updated(name) })
     }
 

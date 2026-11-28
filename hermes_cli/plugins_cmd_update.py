@@ -378,7 +378,7 @@ def _dashboard_update_locked(name: str, target: Path, *, accept_capabilities: bo
             deps = _pc()._python_dependency_summary(new_target, warnings) if result.changed else []
             activated = activate_plugin_now(result.installed_name) if result.changed else {}
             return {"ok": True, "name": result.installed_name, "sha": result.sha, "unchanged": not result.changed,
-                    "python_dependencies": deps, "warnings": warnings, **activated}
+                    "python_dependencies": deps, "warnings": warnings, **activated, **_pc().installed_source_fields(new_target)}
         msg = _pull_plugin_update(
             target,
             lambda rec: (
@@ -397,7 +397,8 @@ def _dashboard_update_locked(name: str, target: Path, *, accept_capabilities: bo
     _post_pull_housekeeping(target, _pc()._console())
     unchanged = "Already up to date" in msg
     activated = {} if unchanged else activate_plugin_now(target.name)
-    return {"ok": True, "name": name, "output": msg, "unchanged": unchanged, **activated}
+    return {"ok": True, "name": name, "output": msg, "unchanged": unchanged, **activated,
+            **_pc().installed_source_fields(target)}
 
 
 def _clear_plugin_bytecode(target: Path) -> int:

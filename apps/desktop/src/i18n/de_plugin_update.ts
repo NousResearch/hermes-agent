@@ -2,6 +2,7 @@ import type { PluginUpdateTranslations } from './types_plugin_update'
 
 /** Copy for updating an installed plugin (Plugins tab): catalog re-pin consent and the security-scan override. */
 export const dePluginUpdate: PluginUpdateTranslations = {
+  updateDesktopPartial: name => `${name} wurde auf dem Agenten aktualisiert, aber die Desktop-Hälfte konnte nicht aktualisiert werden. Installiere sie erneut.`,
   folderAccess: {
     title: 'Ordnerzugriff',
     hint: (name: string) => `${name} darf Dateien in diesen Ordnern lesen und ändern. Ein Widerruf gilt sofort.`,

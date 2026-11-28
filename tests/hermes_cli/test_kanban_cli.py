@@ -293,3 +293,28 @@ def test_run_slash_reclaim_running_task(kanban_home):
 # ---------------------------------------------------------------------------
 
 
+
+
+def test_complete_names_missing_pr_proof(kanban_home):
+    """A repository-contract card without published_pr must name the missing proof
+    instead of the generic "unknown id or terminal state" line (#158452)."""
+    with kbc.connect_closing() as conn:
+        tid = kb.create_task(conn, title="publish", completion_contract="acme/repo")
+
+    out = kc.run_slash(f"complete {tid} --summary done")
+
+    assert "completion contract acme/repo needs metadata published_pr=" in out
+    assert "unknown id or terminal state" not in out
+    with kbc.connect_closing() as conn:
+        assert kb.get_task(conn, tid).status != "done"
+
+
+def test_complete_local_contract_still_works(kanban_home):
+    # The new pre-check must not touch local-only cards.
+    with kbc.connect_closing() as conn:
+        tid = kb.create_task(conn, title="local", completion_contract="local-only")
+
+    kc.run_slash(f"complete {tid} --summary done")
+
+    with kbc.connect_closing() as conn:
+        assert kb.get_task(conn, tid).status == "done"

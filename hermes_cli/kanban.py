@@ -917,6 +917,22 @@ def _cmd_complete(args: argparse.Namespace) -> int:
             if gate_err:
                 fail_msg[tid] = gate_err
                 return False
+            # A repository completion contract needs the PR that satisfies it. Name the
+            # missing proof instead of hiding it behind the generic "unknown id" line;
+            # the kanban_complete tool reports the same acceptance detail (#158452).
+            from hermes_cli.kanban_pr_acceptance import _PR
+            contract_row = conn.execute(
+                "SELECT completion_contract FROM tasks WHERE id=?", (tid,)
+            ).fetchone()
+            contract = contract_row["completion_contract"] if contract_row else None
+            published_pr = metadata.get("published_pr") if isinstance(metadata, dict) else None
+            if (isinstance(contract, str) and contract != "local-only" and not _PR.fullmatch(contract)
+                    and not (isinstance(published_pr, str) and _PR.fullmatch(published_pr))):
+                fail_msg[tid] = (
+                    f"cannot complete {tid}: completion contract {contract} needs "
+                    f"metadata published_pr=<owner/repo>#<number> — the PR that satisfies it."
+                )
+                return False
             fail_msg[tid] = f"cannot complete {tid} (unknown id or terminal state)"
             try:
                 done = kb.complete_task(conn, tid, result=args.result, summary=summary, metadata=metadata,
@@ -939,6 +955,15 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                     detail = ", ".join(f"{pid} ({status})" for pid, status in blockers)
                     fail_msg[tid] = (f"cannot complete {tid}: unsatisfied parent dependencies: {detail}; "
                                      f"complete the parents first, or `hermes kanban unlink <parent> {tid}`.")
+                else:
+                    # record_acceptance persists the actionable refusal here before
+                    # complete_task returns bare False; surface it (#158452).
+                    row = conn.execute(
+                        "SELECT last_failure_error FROM tasks WHERE id=?", (tid,)
+                    ).fetchone()
+                    detail = row["last_failure_error"] if row else None
+                    if detail and detail.startswith("PR acceptance"):
+                        fail_msg[tid] = f"cannot complete {tid}: {detail}"
             return done
 
         return _bulk_apply(ids, op, lambda tid: f"Completed {tid}", fail_msg.__getitem__)

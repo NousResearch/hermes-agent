@@ -199,6 +199,14 @@ export function namingKit(doc: Document): NamingKit {
       return el.getAttribute('aria-checked') === 'true' ? 'checked' : 'unchecked'
     }
 
+    // A password box answers with a fixed word, never its contents. The value
+    // is not only reported: an element with no label is NAMED after its value,
+    // and the ref coined from that name is a lowercased, re-punctuated copy the
+    // exact-match vault redaction on the Python side cannot recognise.
+    if (kind === 'password') {
+      return control.value ? 'filled' : ''
+    }
+
     if (typeof control.value === 'string' && control.value) {
       return clamp(control.value, 60)
     }

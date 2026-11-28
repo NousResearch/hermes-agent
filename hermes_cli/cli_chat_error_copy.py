@@ -37,10 +37,11 @@ def refusal_text(error: BaseException | str) -> str:
     """The refusal as the client shows it: the reason code, plus the check that fired when the owner
     named one (``invalid_params (toolsets: unknown or invalid toolset name: 'mcp-codegraph')``).
 
-    The gateway sends ``field``/``detail`` in the JSON-RPC error's ``data``
-    (``gateway/session_controls.py``), and ``hermes_cli.gateway_client.rpc_error`` carries the
-    bounded scalars onto ``GatewayRPCError.data``. A refusal from anywhere else has no ``data`` and
-    reads exactly as before."""
+    The gateway sends ``field``/``detail`` for handler-owned refusals, or the plural ``fields``
+    key-path list for the canonical contract gate's closed-key refusals (#145286), in the JSON-RPC
+    error's ``data`` (``gateway/session_controls.py``); ``hermes_cli.gateway_client.rpc_error``
+    carries the bounded scalars onto ``GatewayRPCError.data``. A refusal from anywhere else has no
+    ``data`` and reads exactly as before."""
     if str(error) == "launch_credentials_unavailable":
         # The chat's launch key changed: every retry repeats the refusal, so name the way out.
         from agent.turn_failure_copy import launch_credentials_copy
@@ -50,6 +51,11 @@ def refusal_text(error: BaseException | str) -> str:
     data = data if isinstance(data, dict) else {}
     field, detail = str(data.get("field") or "").strip(), str(data.get("detail") or "").strip()
     if not field and not detail:
+        fields = data.get("fields")
+        names = [str(name).strip() for name in fields] if isinstance(fields, list) else []
+        names = [name for name in names if name]
+        if names:
+            return f"{error} ({', '.join(names)})"
         return str(error)
     return f"{error} ({field or 'unnamed field'}{': ' + detail if detail else ''})"
 
@@ -87,10 +93,14 @@ def chat_error_response(
 def agent_init_failure_message(error: BaseException) -> str:
     """Copy for a failed AIAgent build on first message: the user's turn was dropped.
 
-    A gateway that cannot be reached keeps its whole first line: its discovery detail is already
-    bounded (``DiscoveryError.bounded_detail``) and ends in the repair command, which the summary
-    limit would cut mid-path."""
-    from hermes_cli.gateway_client import GatewayUnavailableError
+    A ``GatewayRPCError`` is a refusal the owner sent on the wire (``hermes_cli.gateway_client``),
+    never a provider failure, so it gets the refusal copy (#145286): the provider-connection copy
+    would send the user to repair a model connection that was never dialed. A gateway that cannot
+    be reached keeps its whole first line: its discovery detail is already bounded
+    (``DiscoveryError.bounded_detail``) and ends in the repair command, which the summary limit
+    would cut mid-path."""
+    from hermes_cli.gateway_client import GatewayRPCError, GatewayUnavailableError
 
     limit = None if isinstance(error, GatewayUnavailableError) else _SUMMARY_LIMIT
-    return t("cli.error.agent_init_failed", error=_short(refusal_text(error), limit) or type(error).__name__)
+    key = "cli.error.agent_init_refused" if isinstance(error, GatewayRPCError) else "cli.error.agent_init_failed"
+    return t(key, error=_short(refusal_text(error), limit) or type(error).__name__)

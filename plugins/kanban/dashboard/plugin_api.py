@@ -787,6 +787,9 @@ def _set_status_direct(conn: sqlite3.Connection, task_id: str, new_status: str) 
     # Re-opening something may have made children stale.
     if effective_status in {"done", "ready", "review"}:
         kanban_db.recompute_ready(conn)
+    # Column drags have no lifecycle verb of their own; report them post-commit so
+    # observers see every board mutation.
+    kanban_db.notify_task_updated(conn, task_id, ["status"])
     return True
 
 

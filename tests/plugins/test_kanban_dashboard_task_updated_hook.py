@@ -101,3 +101,25 @@ def test_bulk_priority_fires_task_updated_per_task(client, captured_updates):
     fired = {kw["task_id"]: kw for kw in captured_updates}
     assert set(fired) == {tid1, tid2}
     assert all(kw["changed_fields"] == ["priority"] for kw in fired.values())
+
+
+def test_drag_status_move_fires_task_updated(client, captured_updates):
+    tid = _make_task()
+    captured_updates.clear()
+    r = client.patch(f"/api/plugins/kanban/tasks/{tid}", json={"status": "triage"})
+    assert r.status_code == 200, r.text
+    assert r.json()["task"]["status"] == "triage"
+    assert [kw["changed_fields"] for kw in captured_updates if kw["task_id"] == tid] == [["status"]]
+
+
+def test_refused_drag_does_not_fire_task_updated(client, captured_updates):
+    conn = kbc.connect()
+    try:
+        parent = kb.create_task(conn, title="p", assignee="alice")
+        child = kb.create_task(conn, title="c", assignee="alice", parents=[parent])
+    finally:
+        conn.close()
+    captured_updates.clear()
+    r = client.patch(f"/api/plugins/kanban/tasks/{child}", json={"status": "ready"})
+    assert r.status_code == 409
+    assert not [kw for kw in captured_updates if kw["task_id"] == child]

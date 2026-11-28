@@ -36,7 +36,11 @@ from agent.context_compressor_prune import ProactivePruneMixin, delegate_stub, s
 from agent.context_compressor_summary import SummaryDispatchMixin
 from agent.context_compressor_sampling import SummaryInputSamplingMixin
 from agent.context_compressor_prompt_rules import EPISTEMIC_STANCE_RULE, UNVERIFIED_HYPOTHESES_SECTION, _today_for_prompt
-from agent.context_compressor_typed_input import TYPED_TURNS_POINTER, typed_summary_messages
+from agent.context_compressor_typed_input import (
+    TYPED_TURNS_POINTER,
+    response_attempted_tool_calls,
+    typed_summary_messages,
+)
 from agent.conversation_compression_scaffolding import is_user_role_scaffolding
 from agent.context_compressor_tail import (
     demote_stale_tail_tools, lean_tail_budget, is_demoted_stub, skill_view_names_by_call_id, tail_cut_pricer,
@@ -3560,21 +3564,12 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         if not content.strip():
             raise RuntimeError(f"Context compression LLM returned empty content {where}")
         if _is_refusal_response(response, content):
-            # Treat a refusal as unusable content. This deliberately reuses the
-            # established fallback/cooldown/abort path for an empty body, so it
-            # can never be committed as `_previous_summary`.
             raise RuntimeError(f"Context compression LLM returned refusal content {where}")
-        # A finish_reason of "length" means the summarizer hit its output token cap mid-generation: the text
-        # present is PARTIAL. Persisting a partial summary as the compaction checkpoint silently truncates
-        # the conversation's memory — the cut-off text replaces the real middle turns AND is fed back into
-        # every subsequent iterative update prompt, compounding the loss across compactions. Treat it as a
-        # failure so it routes through the same main-model fallback + abort machinery as other degraded
-        # responses instead of becoming a checkpoint. (Ported from earendil-works/pi#7048.)
-        # A length stop means the merged rolling summary is partial — persisting it would silently drop the
-        # tail of the merge and feed the cut-off text into every later micro-compact pass. Leave the
-        # exchange unabsorbed instead; a later pass retries it. (Same class as _generate_summary's guard;
-        # pi#7048.)
-        if _response_finish_reason(response) == "length":
+        finish_reason = _response_finish_reason(response)
+        if response_attempted_tool_calls(response, finish_reason):
+            raise RuntimeError(f"Context compression LLM attempted tool calls instead of summarizing {where}")
+        # A length stop means the summary text is PARTIAL; persisting it truncates memory (#pi7048).
+        if finish_reason == "length":
             raise RuntimeError(
                 f"Context compression summary was truncated ({_TRUNCATED_SUMMARY_MARKER}): generation hit the output "
                 f"token cap and the summary is incomplete {where}"

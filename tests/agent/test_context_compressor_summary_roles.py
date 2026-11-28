@@ -57,3 +57,27 @@ class TestSummaryRequestRoles:
         assert "You are updating a context compaction summary" in system["content"]
         assert user["content"].startswith("PREVIOUS SUMMARY:\nPREV_CHECKPOINT body")
         assert "NEW TURNS TO INCORPORATE:\n" in user["content"] and "PREV_CHECKPOINT" not in system["content"]
+
+    def test_lean_final_user_message_ends_with_summarization_reminder(self):
+        """Final user message in lean typed mode reinforces the summarization task (#160985)."""
+        compressor = ContextCompressor(model="test/model", quiet_mode=True, tail_mode="lean")
+        turns = [{"role": "user", "content": "check the logs"}]
+        with patch("agent.context_compressor.call_llm", return_value=self._resp()) as mock_call:
+            assert compressor._generate_summary(turns) is not None
+        final_user = mock_call.call_args.kwargs["messages"][-1]
+        assert final_user["role"] == "user"
+        assert "TASK REMINDER: You are the summarization agent." in final_user["content"]
+        assert "do NOT call tools" in final_user["content"]
+
+    def test_summarizer_rejects_tool_call_continuation_response(self):
+        """If the summarizer emits tool_calls instead of a summary, fail the attempt (#160985)."""
+        compressor = ContextCompressor(model="test/model", quiet_mode=True, tail_mode="lean")
+        bad_resp = self._resp(text="Let me check that:")
+        bad_resp.choices[0].finish_reason = "tool_calls"
+        bad_resp.choices[0].message.tool_calls = [{"id": "tc1", "function": {"name": "memory", "arguments": "{}"}}]
+
+        turns = [{"role": "user", "content": "fix bug"}]
+        with patch("agent.context_compressor.call_llm", return_value=bad_resp):
+            assert compressor._generate_summary(turns) is None
+        assert compressor._last_summary_error is not None
+        assert "tool calls" in compressor._last_summary_error

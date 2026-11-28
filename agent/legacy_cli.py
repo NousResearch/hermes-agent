@@ -23,17 +23,25 @@ if _early_recovery.restore_interrupted_pull():
     _early_recovery.relaunch_after_restore()
 
 import argparse
+import sys
 from typing import Callable, List, Optional
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    from hermes_cli import __release_date__, __version__
+    class _VersionAction(argparse.Action):
+        """Resolve identity only when ``--version`` runs, so ``--help`` never probes git."""
+
+        def __call__(self, parser, namespace, values, option_string=None):
+            from hermes_cli.version_info import get_version_info, release_date_text
+
+            parser._print_message(f"Hermes Agent v{get_version_info().base_version} ({release_date_text()})\n", sys.stdout)
+            parser.exit()
 
     parser = argparse.ArgumentParser(
         prog="hermes-agent",
         description="Legacy single-query Hermes Agent runner. For the full CLI use `hermes`.",
     )
-    parser.add_argument("--version", action="version", version=f"Hermes Agent v{__version__} ({__release_date__})")
+    parser.add_argument("--version", nargs=0, action=_VersionAction, help="show version and exit")
     parser.add_argument("prompt", nargs="*", help="query to run (same as --query)")
     parser.add_argument("--query", "-q", help="natural-language query to run")
     parser.add_argument("--model", default="", help="model id (provider/model)")

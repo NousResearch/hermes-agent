@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import { toolResultRecord } from '@/lib/tool-result-metadata'
 import type { SessionMessage } from '@/types/hermes'
@@ -613,6 +613,34 @@ describe('toChatMessages', () => {
       serverRowSpan: 0
     })
     expect(chatMessageText(messages[2])).toBe('Your request was not processed.')
+  })
+
+  it('pairs a timestamp-less failed-turn error with its notice even if Date.now advances', () => {
+    let clock = 1000
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock++)
+
+    try {
+      const messages = toChatMessages([
+        { role: 'user', content: 'do the thing' },
+        {
+          role: 'assistant',
+          content: 'Your request was not processed.',
+          display_kind: 'failed_turn',
+          display_metadata: {
+            error: 'Rate limited',
+            error_surface: { code: 'rate_limit', layer: 'provider', retryable: true, resets_at: 2000 }
+          }
+        }
+      ])
+
+      const error = messages.find(message => message.role === 'assistant' && message.error)
+      const notice = messages.find(message => message.role === 'system')
+
+      expect(error?.id).toMatch(/-failed-turn-error$/)
+      expect(notice?.id).toBe(error?.id.replace(/-failed-turn-error$/, '-system'))
+    } finally {
+      now.mockRestore()
+    }
   })
 
   it('shows only the notice for a boundary row without a usable error surface', () => {

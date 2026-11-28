@@ -1665,9 +1665,20 @@ def terminal_tool(
             finally:
                 acting_for_tid.reset(_acting_token)
             if bounded_guard.timed_out:
+                # Name the STAGE, not a suspect. This deadline wraps the whole of
+                # ``_pre_exec_block`` -- the gateway-lifecycle scan (which takes the
+                # SQLite connection-lifecycle lock for every script the command
+                # executes), the workdir validation, and the self-repo guard -- so no
+                # single subsystem can be blamed from here. It used to read
+                # "(process-identity probe wedged)", which named the one stage that
+                # measurement rules out: the identity chain renders in 0.28s on this
+                # host (psutil create_time 0.10s), while the real wedge was a raw
+                # reader parked under an unbounded lifecycle lock. That label sent
+                # five remediation passes at the wrong call site (board #741/#826).
                 raise _Rejected(_error_json(
                     f"Terminal pre-execution guard did not finish within {guard_timeout}s "
-                    "(process-identity probe wedged); the command was not run. Retry the call.",
+                    "(no verdict from the pre-exec checks: gateway-lifecycle scan, workdir "
+                    "validation, or self-repo guard); the command was not run. Retry the call.",
                     status="error",
                 ))
             # Pre-exec security checks (floors + dangerous command detection);

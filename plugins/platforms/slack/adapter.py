@@ -1964,8 +1964,8 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         right bot token, and results are cached per (team, user) so repeated sends don't re-open. See
         #17261, #19236.
         """
-        cid = str(chat_id or "")
-        if not cid or cid[0] not in ("U", "W"):
+        cid = _slack_user_id_target(chat_id)
+        if not cid:
             return chat_id
         cache_key = f"{team_id or ''}:{cid}"
         cached = self._dm_conversation_cache.get(cache_key)
@@ -6635,6 +6635,16 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
 # in ``hermes_cli/{setup,gateway}.py``, and the ``_send_slack`` dispatch in ``gateway/outbound/send.py``).
 # ──────────────────────────────────────────────────────────────────────────
 _slack_dm_cache: dict[str, str] = {}
+
+
+def _slack_user_id_target(chat_id) -> str:
+    """User id (U.../W...) behind a DM-able target, else ``""``. Accepts the bare id and the
+    ``user:U...`` form ``send_targets`` emits for ``deliver=slack:U...`` (cron hands that form to
+    ``send()`` / the standalone sender, which must open the DM rather than post to it)."""
+    cid = str(chat_id or "").removeprefix("user:")
+    return cid if cid[:1] in ("U", "W") else ""
+
+
 _SLACK_DM_CACHE_MAX = 5000
 
 
@@ -6880,7 +6890,8 @@ async def _standalone_send(
     # to a DM conversation ID (D...) first via conversations.open so `deliver=slack:U…` cron jobs reach the
     # user's DM instead of failing with channel_not_found (#17444).
     chat_id = str(chat_id or "")
-    if chat_id[:1] in ("U", "W"):
+    if user_id := _slack_user_id_target(chat_id):
+        chat_id = user_id
         resolved = None
         for _tok in tokens:
             resolved = await _resolve_slack_user_dm(_tok, chat_id)

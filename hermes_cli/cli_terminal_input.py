@@ -368,6 +368,9 @@ def _terminal_supports_extended_enter_keys(env: Optional[Mapping[str, str]] = No
     term = (env.get("TERM") or "").strip().lower()
     return bool(
         env.get("WT_SESSION")
+        # Bitty implements both the Kitty keyboard protocol and modifyOtherKeys,
+        # and reports Shift+Enter as ESC[13;2u (kitty) or ESC[27;2;13~ (xterm).
+        or term_program.lower() == "bitty"
         or term_program in {"iTerm.app", "WezTerm", "ghostty", "vscode"}
         or env.get("KITTY_WINDOW_ID") or "kitty" in term
         or term == "xterm-ghostty"

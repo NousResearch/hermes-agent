@@ -136,6 +136,23 @@ def test_unknown_terminal_does_not_enable_extended_enter_keys():
     assert cli_mod._terminal_supports_extended_enter_keys({"TERM_PROGRAM": "unknown"}) is False
 
 
+def test_bitty_terminal_enables_extended_enter_keys():
+    """Bitty reports Shift+Enter distinctly under both protocols.
+
+    Without the allowlist entry the CLI never pushes the sequences, so
+    Shift+Enter arrives as a bare CR and submits instead of inserting a newline.
+    """
+    import cli as cli_mod
+
+    env = {"TERM_PROGRAM": "bitty", "TERM": "xterm-256color"}
+    assert cli_mod._terminal_supports_extended_enter_keys(env) is True
+
+    out = _FakeOutput()
+    assert cli_mod._enable_extended_enter_keys(output=out, env=env) is True
+    assert b"\x1b[>1u" in out.written
+    assert b"\x1b[>4;2m" in out.written
+
+
 # ---------------------------------------------------------------------------
 # Ghostty: must push ONLY modifyOtherKeys, not the Kitty keyboard protocol —
 # see cli._is_ghostty_terminal for the full rationale (#87630).

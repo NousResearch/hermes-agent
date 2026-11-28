@@ -187,12 +187,15 @@ def _repo_discovery_policy(raw: dict | None = None) -> dict:
         "exclude_paths": _paths("exclude_paths", "repo_scan_exclude_paths")}
 
 
+def _repo_discovery_abspath(value: str) -> str:
+    """A policy root or excluded path as typed (``~/code``, ``code``, ``/srv/code``) made absolute the
+    way the scan and the policy's cache key read it: ``~`` expanded, a relative path taken from home."""
+    return os.path.abspath(os.path.join(os.path.expanduser("~"), os.path.expanduser(value)))
+
+
 def _repo_discovery_policy_key(policy: dict) -> str:
     def _paths(values: list[str]) -> list[str]:
-        home = os.path.expanduser("~")
-        return sorted({
-            os.path.normcase(os.path.abspath(os.path.join(home, os.path.expanduser(v))))
-            for v in values})
+        return sorted({os.path.normcase(_repo_discovery_abspath(v)) for v in values})
     canonical = {
         "enabled": bool(policy["enabled"]), "roots": _paths(policy["roots"]),
         "exclude_paths": _paths(policy["exclude_paths"])}
@@ -218,15 +221,15 @@ def _scan_discovered_repos_remote(conn, policy: dict) -> bool:
     See #81723.
     """
     from hermes_cli import projects_db as pdb
-    roots = policy.get("roots") or []
-    excludes = policy.get("exclude_paths") or []
+    # The policy holds paths as typed: ``~/code`` is no directory to os.path.isdir, nor a prefix of a walked path.
+    roots = [_repo_discovery_abspath(root) for root in policy.get("roots") or [] if root]
+    excludes = [_repo_discovery_abspath(ex) for ex in policy.get("exclude_paths") or [] if ex]
     pairs: list[tuple[str, str | None]] = []
     seen: set[str] = set()
     authoritative = True
 
     def _is_excluded(path: str) -> bool:
-        return any(
-            path == ex or path.startswith(ex.rstrip("/\\") + os.sep) for ex in excludes if ex)
+        return any(path == ex or path.startswith(ex.rstrip("/\\") + os.sep) for ex in excludes)
     for root in roots:
         if not os.path.isdir(root):
             # `os.walk` on a missing root yields nothing; an unmounted volume must not wipe.

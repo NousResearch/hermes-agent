@@ -33,6 +33,9 @@ def turn_exit_code(
         return 0
     if kanban_worker:
         reason = result.get("failure_reason")
+        if result.get("failure_unreachable"):
+            # A local endpoint refused the connection: it is down, not throttled, so spend the retry budget.
+            return 1
         if reason in transient_reasons:
             from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE
             return KANBAN_RATE_LIMIT_EXIT_CODE

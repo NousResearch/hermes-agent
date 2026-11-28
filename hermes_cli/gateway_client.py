@@ -282,7 +282,7 @@ _UNKNOWN_TICKET_PARAMS = "PermissionError: invalid bootstrap parameters"
 
 
 def _session_ticket(home: Path, endpoint, *, purpose="interactive", scope=None, subject=None,
-                    refuse_restart_wait=False) -> str:
+                    refuse_restart_wait=False, acp_launch_env=None) -> str:
     from hermes_cli.gateway_runtime import control_home_for
     from hermes_cli.gateway_runtime_discovery import _identify_response
     # A served secondary's ticket is minted by the multiplexer's socket, bound to the secondary.
@@ -292,7 +292,8 @@ def _session_ticket(home: Path, endpoint, *, purpose="interactive", scope=None, 
     # ``restart_wait``: the owner refuses the socket at admission if a restart wait has opened by then.
     params = {"profile_id": endpoint.profile_id, "instance_id": endpoint.instance_id, "purpose": purpose,
               **({"scope": scope} if scope else {}), **({"subject": subject} if subject else {}),
-              **({"restart_wait": "refuse"} if refuse_restart_wait else {})}
+              **({"restart_wait": "refuse"} if refuse_restart_wait else {}),
+              **({"acp_launch_env": acp_launch_env} if acp_launch_env is not None else {})}
     request = json.dumps({"protocol": 1, "id": 1, "verb": "session-ticket", "params": params}).encode() + b"\n"
     answer = private_control_query(home, request)
     refused = json.loads(answer.split(b"\n", 1)[0]) if refuse_restart_wait else None
@@ -327,7 +328,7 @@ def outside_restart_wait():
 
 
 @asynccontextmanager
-async def connect_gateway(endpoint=None, subject=None, *, max_size=8 * 1024 * 1024):
+async def connect_gateway(endpoint=None, subject=None, *, max_size=8 * 1024 * 1024, acp_launch_env=None):
     """Attach to this home's owner. ``endpoint``: an already-discovered ready owner to dial as-is
     (maintenance that must never start a gateway); default ensures one, starting it if needed.
     ``subject``: mint the ticket for this principal (the caller's authenticated dashboard user)
@@ -344,6 +345,8 @@ async def connect_gateway(endpoint=None, subject=None, *, max_size=8 * 1024 * 10
     from urllib.parse import urlsplit
 
     remote = "" if endpoint is not None else os.environ.get("HERMES_TUI_GATEWAY_URL", "").strip()
+    if acp_launch_env is not None and (remote or endpoint is not None or subject is not None):
+        raise GatewayClientError("ACP launch credentials require the private local gateway connection")
     protocols = None
     if endpoint is not None:
         ticket = await asyncio.to_thread(_session_ticket, gateway_profile_home(get_hermes_home()), endpoint,
@@ -360,7 +363,13 @@ async def connect_gateway(endpoint=None, subject=None, *, max_size=8 * 1024 * 10
         home = gateway_profile_home(get_hermes_home())
         # A client's own start: the daemon it may launch ends itself once idle (no client, adapter,
         # cron/kanban work or admission), and the next client starts a fresh one.
-        result = refused or await asyncio.to_thread(ensure_gateway_runtime, home, idle_exit=True)
+        start_options = {"idle_exit": True}
+        if acp_launch_env is not None:
+            from acp_adapter.launch_env import launch_env_prefix
+
+            # A daemon this viewer starts must not adopt the harness identity as its own.
+            start_options["exclude_inherited_prefixes"] = (launch_env_prefix(acp_launch_env),)
+        result = refused or await asyncio.to_thread(ensure_gateway_runtime, home, **start_options)
         if not attachable(result) or (_REFUSE_RESTART_WAIT.get() and result.state != "ready"):
             detail = getattr(result, "detail", None)
             if result.reason_code == "runtime_exited" and detail:
@@ -372,6 +381,8 @@ async def connect_gateway(endpoint=None, subject=None, *, max_size=8 * 1024 * 10
         endpoint = result.endpoint
         try:
             policy: dict = {"refuse_restart_wait": True} if _REFUSE_RESTART_WAIT.get() else {}
+            if acp_launch_env is not None:
+                policy["acp_launch_env"] = acp_launch_env
             ticket = await asyncio.to_thread(_session_ticket, home, endpoint, **policy)
         except DiscoveryError as exc:
             # The control socket refused the ticket: the verdict discovery gives the same refusal.

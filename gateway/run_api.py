@@ -582,9 +582,12 @@ class GatewayRuntimeAPI:
                 await ws.close(code=1013)
                 return
             with owner_scope(authority):
+                private = {}
+                if (launch_env := grant.pop('acp_launch_env', None)) is not None:
+                    private['acp_launch_env'] = launch_env
                 await handle_ws(ws, auth_identity={'user_id': grant['subject'], 'provider': 'local',
                                                   'profile_id': grant['profile_id'],
                                                   'instance_id': grant['instance_id'],
                                                   'capabilities': grant['capabilities'], 'native_bootstrap': True,
                                                   'profile_scope': grant.get('scope', 'profile')},
-                                subprotocol=CANONICAL_GATEWAY_PROTOCOL, operator=operator)
+                                subprotocol=CANONICAL_GATEWAY_PROTOCOL, operator=operator, **private)

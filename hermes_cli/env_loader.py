@@ -455,6 +455,12 @@ def dotenv_lookup_from(env: dict[str, str], record: dict[str, tuple[str | None, 
     return _peel_dotenv_output(dict(env), record, None)
 
 
+def inherited_process_env() -> dict[str, str]:
+    """The process environment with Hermes' dotenv writes removed."""
+    with _DOTENV_LOCK:
+        return _dotenv_lookup_env(None)
+
+
 def _resolve_dotenv_assignments(
     assignments: list[tuple[str, str | None]], lookup_env: dict[str, str], *, override: bool,
     live_env: dict[str, str] | None = None, live_names: Callable[[str], bool] | None = None,

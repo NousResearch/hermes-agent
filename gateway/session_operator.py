@@ -6,11 +6,12 @@ path. Only SessionAuthority.submit writes this envelope after authorization;
 public submission parameters cannot supply it.
 """
 from gateway.owner_identity import same_owner
+from gateway.session_acp_launch import ACP_LAUNCH_BINDING
 from persistence.core.errors import AuthorityRefusal
 
 # Fields ``SessionAuthority.submit`` commits for a local session's input; producers commit their own envelope.
 LOCAL_INPUT_FIELDS = frozenset({'text', 'attachments_v1', 'finite', 'unattended', 'surface_v1', 'display_v1',
-                                'cli_turn_v1', 'kanban_card_v1'})
+                                'cli_turn_v1', 'kanban_card_v1', ACP_LAUNCH_BINDING})
 
 
 def is_viewer_input(row):

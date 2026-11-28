@@ -45,7 +45,12 @@ def _offline_model_inventory(monkeypatch):
 
 
 @pytest.fixture
-def daemon(tmp_path, model_peer, request):
+def daemon_env():
+    return {}
+
+
+@pytest.fixture
+def daemon(tmp_path, model_peer, request, daemon_env):
     """An ordinary isolated ``gateway.run`` process: ``(home, descriptor, env, root)``."""
     from tests.gateway.test_normal_runtime_boot import control
 
@@ -93,7 +98,7 @@ runpy.run_module('gateway.run', run_name='__main__')
 ''']
     log_path = tmp_path / "gateway.log"
     with log_path.open("w") as log:
-        process = subprocess.Popen(command, cwd=root, env=env,
+        process = subprocess.Popen(command, cwd=root, env={**env, **daemon_env},
                                    stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
         try:
             deadline = time.monotonic() + 40

@@ -392,7 +392,8 @@ class GatewayControlServer:
             raise PermissionError("invalid bootstrap envelope")
         params = request.get("params")
         if (not isinstance(params, dict) or not {"profile_id", "instance_id", "purpose"} <= set(params)
-                or set(params) - {"profile_id", "instance_id", "purpose", "scope", "subject", "restart_wait"}
+                or set(params) - {"profile_id", "instance_id", "purpose", "scope", "subject", "restart_wait",
+                                  "acp_launch_env"}
                 or params.get("restart_wait", "refuse") != "refuse"):
             raise PermissionError("invalid bootstrap parameters")
         if params["instance_id"] != self.ticket_store.instance_id:
@@ -408,9 +409,15 @@ class GatewayControlServer:
             raise PermissionError("invalid bootstrap subject")
         if subject is not peer_subject and not _structured_login_subject(subject):
             raise PermissionError("invalid bootstrap subject")
+        extra = {}
+        if "acp_launch_env" in params:
+            if "subject" in params or params.get("scope", "profile") != "profile" or params["purpose"] != "interactive":
+                raise PermissionError("ACP launch credentials require a local profile ticket")
+            from acp_adapter.launch_env import validate_launch_env
+            extra["acp_launch_env"] = validate_launch_env(params["acp_launch_env"])
         ticket = self.ticket_store.mint(profile_id=params["profile_id"], subject=subject,
                                        purpose=params["purpose"], scope=params.get("scope", "profile"),
-                                       refuse_restart_wait="restart_wait" in params)
+                                       refuse_restart_wait="restart_wait" in params, **extra)
         return {"ticket": ticket, "expires_in_seconds": 30,
                 "instance_id": self.ticket_store.instance_id,
                 "profile_id": params["profile_id"], "runtime_protocol": 1}

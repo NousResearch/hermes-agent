@@ -34,7 +34,8 @@ class TicketStore:
         self._entries: dict[str, tuple[float, dict]] = {}
         self._lock = threading.Lock()
 
-    def mint(self, *, profile_id, subject, purpose, scope='profile', refuse_restart_wait=False) -> str:
+    def mint(self, *, profile_id, subject, purpose, scope='profile', refuse_restart_wait=False,
+             acp_launch_env=None) -> str:
         """``scope='host'`` lets an interactive connection select every profile this process
         serves (the Desktop's one shared socket); the default binds exactly ``profile_id``.
         ``refuse_restart_wait``: the socket redeeming it is refused while a restart's after-turn
@@ -52,7 +53,8 @@ class TicketStore:
                 now + self.TTL_SECONDS,
                 {'instance_id': self.instance_id, 'profile_id': profile_id, 'subject': subject,
                  'purpose': purpose, 'capabilities': _PURPOSE_CAPABILITIES[purpose], 'scope': scope,
-                 'refuse_restart_wait': bool(refuse_restart_wait)})
+                 'refuse_restart_wait': bool(refuse_restart_wait),
+                 **({'acp_launch_env': acp_launch_env} if acp_launch_env is not None else {})})
             return ticket
 
     def redeem(self, ticket, *, profile_id, purpose) -> dict:

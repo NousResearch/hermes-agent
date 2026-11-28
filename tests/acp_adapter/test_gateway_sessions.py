@@ -51,11 +51,12 @@ class ACPPeer:
 
 
 @asynccontextmanager
-async def editor(daemon, tmp_path):
+async def editor(daemon, tmp_path, *, launch_env=None):
     _, _, env, root = daemon
     with (tmp_path / "acp.log").open("w") as log:
         process = await asyncio.create_subprocess_exec(sys.executable, "-m", "acp_adapter.entry",
-            cwd=root, env=env, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=log)
+            cwd=root, env={**env, **(launch_env or {})}, stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE, stderr=log)
         peer = ACPPeer(process)
         try:
             yield peer

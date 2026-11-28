@@ -476,11 +476,14 @@ def test_force_prefix_is_not_plugin_passthrough(child_env, monkeypatch, builder,
         assert "AUXILIARY_VISION_API_KEY" not in factories[builder]()
 
 
-@pytest.mark.parametrize("managed,platform,allowed", [(True, "telegram", True), (False, "buzz", True), (False, "telegram", False)])
+@pytest.mark.parametrize("managed,platform,allowed", [
+    (True, "", True), (False, "buzz", True), (True, "telegram", False),
+    (False, "telegram", False), (True, "cron", False),
+])
 @pytest.mark.parametrize("scope", [None, {"BUZZ_PRIVATE_KEY": "fake-scoped"}])
 def test_buzz_context_and_plain_process_value(child_env, monkeypatch, managed, platform, allowed, scope):
     from agent import secret_scope as ss
-    from gateway.session_context import _SESSION_PLATFORM
+    from gateway.session_context import _CRON_SESSION, _SESSION_PLATFORM
     from tools.code_execution_env import _scrub_child_env
     from tools.env_passthrough import register_env_passthrough, is_env_passthrough
     buzz = {"BUZZ_PRIVATE_KEY": "fake-process", "BUZZ_AUTH_TAG": "fake-tag", "BUZZ_RELAY_URL": "fake-relay"}
@@ -488,7 +491,8 @@ def test_buzz_context_and_plain_process_value(child_env, monkeypatch, managed, p
         monkeypatch.setenv(k, v)
     if managed:
         monkeypatch.setenv("BUZZ_MANAGED_AGENT", "1")
-    platform_token = _SESSION_PLATFORM.set(platform)
+    platform_token = _SESSION_PLATFORM.set("" if platform == "cron" else platform)
+    cron_token = _CRON_SESSION.set("1" if platform == "cron" else "")
     ss.set_multiplex_active(True)
     scope_token = ss.set_secret_scope(scope) if scope is not None else None
     try:
@@ -502,6 +506,7 @@ def test_buzz_context_and_plain_process_value(child_env, monkeypatch, managed, p
         if scope_token is not None:
             ss.reset_secret_scope(scope_token)
         ss.set_multiplex_active(False)
+        _CRON_SESSION.reset(cron_token)
         _SESSION_PLATFORM.reset(platform_token)
 
 

@@ -5,9 +5,11 @@ import asyncio
 from contextlib import suppress
 import logging
 import os
+from pathlib import Path
 import uuid
 
 import acp
+from acp.exceptions import RequestError
 from acp.schema import (
     AgentCapabilities, Implementation, InitializeResponse, LoadSessionResponse,
     NewSessionResponse, PromptCapabilities, PromptResponse, ResumeSessionResponse,
@@ -136,6 +138,97 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
                 and message.get("method") == "initialize":
             from acp_adapter.elicitation import client_supports_form_elicitation
             self._form_elicitation = client_supports_form_elicitation(message.get("params"))
+
+    # ---- Side panel session extension methods -------------------------------
+    #
+    # A side panel's tabs are a projection of ``sessions.hidden``: a tab is an *unhidden* session,
+    # so the panel needs the whole catalog (hidden rows included, with the flag), a way to flip
+    # that flag, and a way to name a session. None of it belongs on ``session/list`` — that is the
+    # visible catalog every other ACP client sees, and its meaning must not change.
+    #
+    # The handlers open the profile's store directly, as the CLI does, rather than routing through
+    # the daemon: the store is process-shared (``persistence_assembly`` keeps one backend per
+    # profile), so a panel's write is what the agent reads on the next turn, and its read sees what
+    # the agent just wrote.
+
+    def _ext_store(self):
+        """A writable handle on this profile's store, or None when this profile has no store."""
+        from persistence_assembly import open_persistence, profile_scope, store_exists
+        scope = profile_scope(home=Path(self._home))
+        if not store_exists(scope):
+            return None
+        return open_persistence(scope, eager=True)
+
+    async def ext_method(self, method: str, params: dict) -> dict:
+        """Answer a ``_``-prefixed ACP extension request (the SDK strips the leading underscore)."""
+        handlers = {
+            "session/catalog": self._ext_session_catalog,
+            "session/setHidden": self._ext_session_set_hidden,
+            "session/setTitle": self._ext_session_set_title,
+        }
+        handler = handlers.get(method)
+        if handler is None:
+            raise RequestError.method_not_found(f"_{method}")
+        return await handler(params or {})
+
+    async def _ext_session_catalog(self, params: dict) -> dict:
+        from acp_adapter.catalog import catalog_with_hidden
+        raw_cwd = params.get("cwd")
+        cwd = raw_cwd if isinstance(raw_cwd, str) and raw_cwd.strip() else None
+        sessions = await asyncio.to_thread(catalog_with_hidden, str(self._home), cwd)
+        return {"sessions": sessions}
+
+    async def _ext_session_set_hidden(self, params: dict) -> dict:
+        session_id = str(params.get("sessionId") or "").strip()
+        hidden = params.get("hidden")
+        if not session_id or not isinstance(hidden, bool):
+            raise RequestError.invalid_params(
+                {"reason": "session/setHidden needs {sessionId: string, hidden: boolean}"})
+        ok = await asyncio.to_thread(self._ext_write_hidden, session_id, hidden)
+        if not ok:
+            raise RequestError.invalid_params({"reason": f"unknown session {session_id}"})
+        logger.info("Session %s hidden=%s", session_id, hidden)
+        return {"ok": True, "sessionId": session_id, "hidden": hidden}
+
+    async def _ext_session_set_title(self, params: dict) -> dict:
+        """Retitle a session on the client's behalf.
+
+        The write lands on the row as a user title, so the agent's auto-titler cannot overwrite it,
+        and the client reads the new name back from the catalog. A refusal — a name another
+        session holds, the canonical Bot Chat, or one past the store's length limit — is passed
+        through as the reason, because that text is all the user sees.
+        """
+        session_id = str(params.get("sessionId") or "").strip()
+        title = params.get("title")
+        if not session_id or not isinstance(title, str):
+            raise RequestError.invalid_params(
+                {"reason": "session/setTitle needs {sessionId: string, title: string}"})
+        try:
+            ok = await asyncio.to_thread(self._ext_write_title, session_id, title)
+        except ValueError as exc:
+            raise RequestError.invalid_params({"reason": str(exc)}) from exc
+        if not ok:
+            raise RequestError.invalid_params({"reason": f"unknown session {session_id}"})
+        logger.info("Session %s retitled", session_id)
+        return {"ok": True, "sessionId": session_id, "title": title}
+
+    def _ext_write_hidden(self, session_id: str, hidden: bool) -> bool:
+        handle = self._ext_store()
+        if handle is None:
+            return False
+        try:
+            return bool(handle.sessions.set_hidden(session_id, hidden))
+        finally:
+            handle.close()
+
+    def _ext_write_title(self, session_id: str, title: str) -> bool:
+        handle = self._ext_store()
+        if handle is None:
+            return False
+        try:
+            return bool(handle.sessions.set_title(session_id, title))
+        finally:
+            handle.close()
 
     async def initialize(self, **kwargs):
         from hermes_cli import __version__

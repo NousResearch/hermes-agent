@@ -93,9 +93,14 @@ def cua_driver_install_hint() -> str:
             "Or run `hermes tools` and enable the Computer Use toolset to install it automatically.")
 
 def _mcp_args_with_overlay_flag(args: list[str], driver_cmd: str = _CUA_DRIVER_DEFAULT_CMD) -> list[str]:
-    """Return *args* with ``--no-overlay`` appended when configured and supported."""
-    on = _cb()._cua_no_overlay() and _cua_driver_supports_no_overlay(driver_cmd)
-    return [*args, "--no-overlay"] if on else list(args)
+    """Return *args* with supported overlay controls from the Hermes config."""
+    result = list(args)
+    if _cb()._cua_no_overlay() and _cua_driver_supports_no_overlay(driver_cmd):
+        result.append("--no-overlay")
+    theme = _cb()._cua_cursor_theme()
+    if theme and _cua_driver_supports_cursor_theme(driver_cmd):
+        result.extend(("--cursor-theme", theme))
+    return result
 
 @functools.lru_cache(maxsize=1)
 def _cua_driver_supports_no_overlay(driver_cmd: str) -> bool:
@@ -104,6 +109,16 @@ def _cua_driver_supports_no_overlay(driver_cmd: str) -> bool:
     try:
         proc = _cb()._run_driver(driver_cmd, "--help", timeout=3.0)
         return "--no-overlay" in (proc.stdout or "") + (proc.stderr or "")
+    except Exception:
+        return False
+
+
+@functools.lru_cache(maxsize=1)
+def _cua_driver_supports_cursor_theme(driver_cmd: str) -> bool:
+    """True if the driver advertises ``--cursor-theme`` for its overlay."""
+    try:
+        proc = _cb()._run_driver(driver_cmd, "--help", timeout=3.0)
+        return "--cursor-theme" in (proc.stdout or "") + (proc.stderr or "")
     except Exception:
         return False
 

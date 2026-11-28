@@ -65,6 +65,15 @@ def _cua_no_overlay() -> bool:
         os.environ.get("XDG_SESSION_TYPE") != "wayland" and not os.environ.get("WAYLAND_DISPLAY"))
 
 
+def _cua_cursor_theme() -> str:
+    """Configured cua-driver overlay theme, or ``""`` to keep its default.
+
+    The theme is rendered by cua-driver's agent-only overlay and never changes
+    the operating system cursor.
+    """
+    return str(_computer_use_cfg().get("cursor_theme", "") or "").strip()
+
+
 def _cua_telemetry_disabled() -> bool:
     """True unless ``computer_use.cua_telemetry`` opts in (unreadable config fails SAFE toward disabling)."""
     return not bool(_computer_use_cfg().get("cua_telemetry", False))

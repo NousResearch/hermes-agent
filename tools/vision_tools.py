@@ -428,7 +428,8 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
                               force_jpeg: bool = False) -> str:
     """Base64 data URL, progressively downscaled with Pillow while over budget.
 
-    Halves dimensions (aspect-preserving, 64px floor) up to 4 times; JPEG also walks a
+    Fits the dimension cap first, then halves (aspect-preserving, 64px floor)
+    within four resize steps; JPEG also walks a
     quality ladder (85/70/50) per step. Without Pillow, or if it still doesn't fit, returns
     the best attempt (or raw bytes) and lets the caller apply the size check.
     ``max_dimension``: force a downscale above this long edge even when bytes fit
@@ -481,8 +482,13 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
             scale_out.update(orig_width=orig_dims[0], orig_height=orig_dims[1], new_width=w, new_height=h)
     for attempt in range(5):
         if attempt > 0:
-            # Halve, then re-derive from whichever axis hit the 64px floor so both shrink equally.
-            new_w, new_h = max(int(img.width * 0.5), 64), max(int(img.height * 0.5), 64)
+            # Preserve pixels when dimensions alone exceed the cap. A 1600px
+            # screenshot can fit at 1568px instead of losing half its resolution.
+            scale = 0.5
+            if attempt == 1 and max_dimension and max(img.size) > max_dimension:
+                scale = max_dimension / max(img.size)
+            # Re-derive from whichever axis hit the floor so both shrink equally.
+            new_w, new_h = max(int(img.width * scale), 64), max(int(img.height * scale), 64)
             if new_w == 64 and img.width > 0:
                 new_h = max(int(img.height * (64 / img.width)), 64)
             elif new_h == 64 and img.height > 0:

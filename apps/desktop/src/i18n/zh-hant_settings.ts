@@ -311,6 +311,8 @@ export const zhHantSettings = {
       toolViewDesc: '產品模式會隱藏原始工具 payload；技術模式會顯示完整輸入/輸出。',
       hideCodeDiffsTitle: '隱藏程式碼差異',
       hideCodeDiffsDesc: '將檔案編輯顯示為附有新增和刪除行數的行內工具列，不顯示程式碼。',
+      chatLinksRequireModifierTitle: '需 ⌘/Ctrl-點擊才能開啟聊天連結',
+      chatLinksRequireModifierDesc: '在 Mac 上用 ⌘-點擊、在其他系統用 Ctrl-點擊開啟聊天回覆中的路徑與連結。一般點擊用於選取文字；焦點在連結上時按 Enter 仍會開啟。',
       hideThreadTimelineTitle: '隱藏對話時間軸列',
       hideThreadTimelineDesc: '隱藏每個對話右側邊緣的導覽列。',
       reasoningCollapsedTitle: '預設摺疊推理過程',

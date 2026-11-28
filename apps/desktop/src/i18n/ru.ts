@@ -498,6 +498,9 @@ export const ruOverrides = {
       hideCodeDiffsTitle: 'Скрывать изменения кода',
       hideCodeDiffsDesc:
         'Показывать правки файлов строками инструментов с числом добавленных и удалённых строк, без кода.',
+      chatLinksRequireModifierTitle: 'Открывать ссылки в чате по ⌘/Ctrl-клику',
+      chatLinksRequireModifierDesc:
+        '⌘-клик на Mac или Ctrl-клик в других системах открывает пути и ссылки в ответах чата. Обычный клик выделяет текст; Enter на ссылке в фокусе по-прежнему открывает её.',
       hideThreadTimelineTitle: 'Скрывать полоски истории диалога',
       hideThreadTimelineDesc: 'Скрывать полоски навигации вдоль правого края каждого диалога.',
       reasoningCollapsedTitle: 'Сворачивать «мышление» по умолчанию',

@@ -346,6 +346,9 @@ export const arSettings = {
       toolViewDesc: 'تحكم في كيفية عرض نشاط الأدوات داخل المحادثة.',
       hideCodeDiffsTitle: 'إخفاء فروق الكود',
       hideCodeDiffsDesc: 'عرض تعديلات الملفات كسطور أدوات مضمّنة مع عدد الأسطر المضافة والمحذوفة، دون عرض الكود.',
+      chatLinksRequireModifierTitle: 'يتطلب ⌘/Ctrl-نقرة لفتح روابط المحادثة',
+      chatLinksRequireModifierDesc:
+        '⌘-نقرة على Mac أو Ctrl-نقرة في الأنظمة الأخرى تفتح المسارات والروابط في ردود المحادثة. النقرة العادية تحدد النص؛ ومفتاح Enter على رابط مُركَّز ما زال يفتحه.',
       hideThreadTimelineTitle: 'إخفاء أشرطة المخطط الزمني للمحادثة',
       hideThreadTimelineDesc: 'إخفاء أشرطة التنقل على الحافة اليمنى لكل محادثة.',
       reasoningCollapsedTitle: 'طي التفكير افتراضيًا',

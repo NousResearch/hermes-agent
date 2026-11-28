@@ -1011,6 +1011,9 @@ export const frOverrides = {
       hideCodeDiffsTitle: 'Masquer les diffs de code',
       hideCodeDiffsDesc:
         'Afficher les modifications de fichiers sous forme de lignes d’outil avec le nombre de lignes ajoutées/supprimées, sans le code.',
+      chatLinksRequireModifierTitle: 'Exiger ⌘/Ctrl-clic pour ouvrir les liens du chat',
+      chatLinksRequireModifierDesc:
+        '⌘-clic sur Mac ou Ctrl-clic ailleurs ouvre les chemins et les liens des réponses du chat. Un clic simple sélectionne le texte ; Entrée sur un lien ciblé l’ouvre toujours.',
       hideThreadTimelineTitle: 'Masquer les barres de chronologie',
       hideThreadTimelineDesc: 'Masquer les barres de navigation le long du bord droit de chaque conversation.',
       reasoningCollapsedTitle: 'Réduire le raisonnement par défaut',

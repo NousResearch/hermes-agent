@@ -797,6 +797,8 @@ export interface Translations extends NoticeTranslations {
       toolViewDesc: string
       hideCodeDiffsTitle: string
       hideCodeDiffsDesc: string
+      chatLinksRequireModifierTitle: string
+      chatLinksRequireModifierDesc: string
       hideThreadTimelineTitle: string
       hideThreadTimelineDesc: string
       reasoningCollapsedTitle: string

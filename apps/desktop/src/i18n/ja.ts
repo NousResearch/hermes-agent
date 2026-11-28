@@ -519,6 +519,9 @@ export const jaOverrides = {
       toolViewDesc: 'プロダクト表示は生のツールペイロードを隠し、テクニカル表示は入出力をすべて表示します。',
       hideCodeDiffsTitle: 'コードの差分を非表示',
       hideCodeDiffsDesc: 'ファイル編集は追加・削除行数付きのインラインツール行で表示し、コードは表示しません。',
+      chatLinksRequireModifierTitle: 'チャットのリンクを ⌘/Ctrl-クリックで開く',
+      chatLinksRequireModifierDesc:
+        'Mac では ⌘-クリック、他の環境では Ctrl-クリックで、チャットの返信内のパスやリンクを開きます。通常のクリックはテキスト選択です。フォーカスしたリンクで Enter を押すと従来どおり開きます。',
       hideThreadTimelineTitle: 'スレッドのタイムラインバーを非表示',
       hideThreadTimelineDesc: '各会話の右端にあるナビゲーションバーを非表示にします。',
       reasoningCollapsedTitle: '思考ブロックをデフォルトで折りたたむ',

@@ -977,6 +977,9 @@ export const en: Translations = {
       toolViewDesc: 'Product hides raw tool payloads; Technical shows full input/output.',
       hideCodeDiffsTitle: 'Hide code diffs',
       hideCodeDiffsDesc: 'Show file edits as inline tool rows with added/removed line counts, without the code.',
+      chatLinksRequireModifierTitle: 'Require ⌘/Ctrl-click to open chat links',
+      chatLinksRequireModifierDesc:
+        '⌘-click on Mac or Ctrl-click elsewhere opens paths and links in chat replies. A plain click selects text; Enter on a focused link still opens it.',
       hideThreadTimelineTitle: 'Hide thread timeline bars',
       hideThreadTimelineDesc: 'Hide the navigation bars along the right edge of each conversation.',
       reasoningCollapsedTitle: 'Collapse thinking by default',

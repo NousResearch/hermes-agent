@@ -740,6 +740,8 @@ export const zhOverrides = {
       toolViewDesc: '产品模式隐藏原始工具数据；技术模式显示完整输入/输出。',
       hideCodeDiffsTitle: '隐藏代码差异',
       hideCodeDiffsDesc: '将文件编辑显示为带有新增和删除行数的内联工具行，不显示代码。',
+      chatLinksRequireModifierTitle: '需 ⌘/Ctrl-点击才能打开聊天链接',
+      chatLinksRequireModifierDesc: '在 Mac 上用 ⌘-点击、在其他系统用 Ctrl-点击打开聊天回复中的路径和链接。普通点击用于选择文本；焦点在链接上时按 Enter 仍会打开。',
       hideThreadTimelineTitle: '隐藏对话时间线条',
       hideThreadTimelineDesc: '隐藏每个对话右侧边缘的导航条。',
       reasoningCollapsedTitle: '默认折叠推理过程',

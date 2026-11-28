@@ -1007,6 +1007,9 @@ export const deOverrides = {
       hideCodeDiffsTitle: 'Code-Diffs ausblenden',
       hideCodeDiffsDesc:
         'Dateiänderungen als Tool-Zeilen mit Anzahl hinzugefügter/entfernter Zeilen anzeigen, ohne den Code.',
+      chatLinksRequireModifierTitle: 'Chat-Links nur mit ⌘/Strg-Klick öffnen',
+      chatLinksRequireModifierDesc:
+        '⌘-Klick auf dem Mac oder Strg-Klick auf anderen Systemen öffnet Pfade und Links in Chat-Antworten. Ein normaler Klick markiert Text; Enter auf einem fokussierten Link öffnet ihn weiterhin.',
       hideThreadTimelineTitle: 'Zeitleistenbalken ausblenden',
       hideThreadTimelineDesc: 'Blendet die Navigationsbalken am rechten Rand jeder Unterhaltung aus.',
       reasoningCollapsedTitle: 'Gedanken standardmäßig einklappen',

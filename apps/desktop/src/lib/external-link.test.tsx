@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { IS_MAC } from '@/lib/keybinds/combo'
+import { CHAT_LINK_ATTR, setChatLinksRequireModifier } from '@/store/chat-link-open'
 import { setAlwaysExternalLinks } from '@/store/external-links'
 import { $previewTabs, closeRightRail } from '@/store/preview'
 
@@ -44,6 +45,7 @@ afterEach(() => {
   closeRightRail()
   globalThis.document.documentElement.removeAttribute('data-hermes-desktop-host')
   setAlwaysExternalLinks(false)
+  setChatLinksRequireModifier(false)
   vi.restoreAllMocks()
   cleanup()
 
@@ -357,5 +359,42 @@ describe('external link helpers', () => {
 
     const link = screen.getByRole('link', { name: 'agent.log' })
     expect(link.getAttribute('href')).toBe('https://agent.log')
+  })
+})
+
+describe('chat link modifier preference', () => {
+  it('leaves links outside chat prose on a single click', async () => {
+    setChatLinksRequireModifier(true)
+    installDesktopBridge()
+
+    render(<ExternalLink href="https://example.com/guide">Docs</ExternalLink>)
+
+    const link = screen.getByRole('link', { name: 'Docs' })
+
+    expect(link.hasAttribute(CHAT_LINK_ATTR)).toBe(false)
+    fireEvent.click(link, { detail: 1 })
+    await waitFor(() => expect($previewTabs.get().at(-1)?.target.url).toBe('https://example.com/guide'))
+  })
+
+  it('opens a chat link in-app on the modifier instead of escaping to the OS browser', async () => {
+    setChatLinksRequireModifier(true)
+    const openExternal = vi.fn().mockResolvedValue(undefined)
+    installDesktopBridge({ openExternal: openExternal as unknown as Window['hermesDesktop']['openExternal'] })
+
+    render(
+      <ExternalLink chatLink href="https://example.com/guide">
+        Docs
+      </ExternalLink>
+    )
+
+    const link = screen.getByRole('link', { name: 'Docs' })
+
+    fireEvent.click(link, { detail: 1 })
+    await Promise.resolve()
+    expect($previewTabs.get()).toHaveLength(0)
+
+    fireEvent.click(link, IS_MAC ? { detail: 1, metaKey: true } : { ctrlKey: true, detail: 1 })
+    expect(openExternal).not.toHaveBeenCalled()
+    await waitFor(() => expect($previewTabs.get().at(-1)?.target.url).toBe('https://example.com/guide'))
   })
 })

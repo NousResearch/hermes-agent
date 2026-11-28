@@ -26,6 +26,7 @@ import { defaultRemarkPlugins } from 'streamdown'
 
 import { useSessionView } from '@/app/chat/session-view'
 import { ExpandableBlock } from '@/components/chat/expandable-block'
+import { InlinePathLink } from '@/components/chat/inline-path-link'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { chunkByLines, SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
 import { TranscriptVideo } from '@/components/chat/transcript-video'
@@ -35,6 +36,7 @@ import { useContributions } from '@/contrib'
 import { useMediaImage } from '@/hooks/use-media-image'
 import { useMediaPlaybackSrc } from '@/hooks/use-media-playback-src'
 import { detectArtifact } from '@/lib/artifact-detect'
+import { classifyCodeSpan, pathFromMarkdownHref } from '@/lib/bare-path-refs'
 import { renderMediaTags } from '@/lib/chat-messages/parts'
 import { ExternalLink, normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
@@ -344,6 +346,18 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
     return <SessionRefLink value={sessionRef} />
   }
 
+  // A bare path the agent wrote mid-sentence (`linkifyBarePaths`): inline,
+  // not a card, so the sentence still reads as one.
+  const barePath = pathFromMarkdownHref(href)
+
+  if (barePath) {
+    return (
+      <InlinePathLink className={className} path={barePath}>
+        {children}
+      </InlinePathLink>
+    )
+  }
+
   const target = href ? normalizeExternalUrl(href) : href
 
   if (!target || !/^https?:\/\//i.test(target)) {
@@ -405,8 +419,43 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
   const fallbackLabel = text || undefined
 
   return (
-    <PrettyLink className={cn('wrap-anywhere', className)} fallbackLabel={fallbackLabel} href={target} {...props} />
+    <PrettyLink
+      className={cn('wrap-anywhere', className)}
+      fallbackLabel={fallbackLabel}
+      href={target}
+      {...props}
+      chatLink
+    />
   )
+}
+
+// A code span that IS a path or URL (`/tmp/report.md`, `http://localhost:8931/`)
+// is the agent's favourite way to hand one over. Keep the code styling the
+// agent chose but make it a link; any other span (a command, a symbol, a
+// relative path) stays inert code.
+function InlineCode({ children, className, ...props }: ComponentProps<'code'>) {
+  const code = (
+    <code className={className} dir="ltr" {...props}>
+      {children}
+    </code>
+  )
+
+  const text = typeof children === 'string' ? children.trim() : ''
+  const kind = text ? classifyCodeSpan(text) : null
+
+  if (kind === 'path') {
+    return <InlinePathLink path={text}>{code}</InlinePathLink>
+  }
+
+  if (kind === 'url') {
+    return (
+      <ExternalLink chatLink className="wrap-anywhere" href={text} title={text}>
+        {code}
+      </ExternalLink>
+    )
+  }
+
+  return code
 }
 
 // Generated/inline media often arrives as image markdown — `![clip](clip.mp4)`.
@@ -775,9 +824,11 @@ function MarkdownTextSurface({
         // mirroring the CSS isolate that already keeps it out of the
         // plaintext scan. Fenced code never reaches this override; it goes
         // through the code plugin's CodeCard path.
-        inlineCode: ({ className, ...props }: ComponentProps<'code'>) => (
-          <code className={className} dir="ltr" {...props} />
-        ),
+        // Foreign history (previewOnly) resolves nothing on this machine, so
+        // its code spans never become path or URL links.
+        inlineCode: previewOnly
+          ? ({ className, ...props }: ComponentProps<'code'>) => <code className={className} dir="ltr" {...props} />
+          : InlineCode,
         // `---` as quiet spacing, not a heavy full-width rule.
         hr: (_props: ComponentProps<'hr'>) => <div aria-hidden className="my-3" />,
         // Lists and blockquotes have chrome that sits *beside* the text

@@ -185,21 +185,27 @@ def test_a_core_era_disable_keeps_weixin_off_through_both_installers(tmp_path, p
 
 # The detached default-plugin child mid-install, in another process: holds the installer lock with weixin's tree
 # placed and its ``installing`` marker written, until the test signals *release*; then enables it and lets go
-# (``fails``: removes the tree instead, an install that broke before it enabled anything).
+# (``fails``: removes the tree instead, an install that broke before it enabled anything; ``refused``: keeps the
+# tree and writes the default installer's ``placed`` marker, a failed enable; ``killed``: exits holding its
+# ``installing`` marker, the tree left behind).
 _INSTALLER_CHILD = """
 import sys
 from pathlib import Path
 from hermes_cli.default_plugins import installer_lock, installing_marker
 from tests.waiting import wait_until
-home, signals, fails = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3] == "fails"
+home, signals, mode = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
 with installer_lock(5):
     (home / "plugins" / "weixin").mkdir(parents=True, exist_ok=True)
     installing_marker(home, "weixin").parent.mkdir(parents=True, exist_ok=True)
     installing_marker(home, "weixin").touch()
     (signals / "holding").touch()
     wait_until(lambda: (signals / "release").exists(), timeout=120, what="release signal")
-    if fails:
+    if mode == "killed":
+        raise SystemExit(9)
+    if mode == "fails":
         (home / "plugins" / "weixin").rmdir()
+    elif mode == "refused":
+        (home / "cache" / "default-plugins.placed-weixin").touch()
     else:
         (home / "config.yaml").write_text("platforms:\\n  weixin:\\n    enabled: false\\n"
                                           "plugins:\\n  enabled: [weixin]\\n_default_plugins_installed: [weixin]\\n")
@@ -207,7 +213,7 @@ with installer_lock(5):
 """
 
 
-def _send_only_home_with_installer_in_flight(tmp_path, *, fails: bool = False):
+def _send_only_home_with_installer_in_flight(tmp_path, *, mode: str = "places"):
     import os
     import sys
     from hermes_constants import get_hermes_home
@@ -217,8 +223,7 @@ def _send_only_home_with_installer_in_flight(tmp_path, *, fails: bool = False):
     (home / "config.yaml").write_text("platforms:\n  weixin:\n    enabled: false\n", encoding="utf-8")
     signals = tmp_path / "signals"
     signals.mkdir()
-    child = subprocess.Popen([sys.executable, "-c", _INSTALLER_CHILD, str(home), str(signals),
-                              "fails" if fails else "places"],
+    child = subprocess.Popen([sys.executable, "-c", _INSTALLER_CHILD, str(home), str(signals), mode],
                              env={**os.environ, "HERMES_HOME": str(home)}, cwd=str(Path(lcm.__file__).parents[1]))
     wait_until(lambda: (signals / "holding").exists(), timeout=60, what="installer child holding the lock")
     return home, signals, child
@@ -263,12 +268,14 @@ def test_the_first_send_waits_for_the_install_already_in_flight(tmp_path, monkey
     assert seen == [True]
 
 
-def test_a_send_whose_in_flight_install_failed_installs_weixin_itself(tmp_path, monkeypatch):
-    """The installer the send waited for stopped without placing weixin (it failed or was killed): getting the
-    lock is not success, so the send rechecks and installs weixin itself, then delivers through it."""
+@pytest.mark.parametrize("mode", ["fails", "refused", "killed"])
+def test_a_send_whose_in_flight_install_failed_installs_weixin_itself(tmp_path, monkeypatch, mode):
+    """The installer the send waited for stopped without enabling weixin (it failed before placing it, its enable
+    was refused, or it was killed with the tree on disk): getting the lock is not success and a leftover tree is
+    not an install, so the send rechecks and installs weixin itself, then delivers through it."""
     import pm.install
     monkeypatch.setattr(pm.install, "lazy_installs_allowed", lambda: True)
-    home, signals, child = _send_only_home_with_installer_in_flight(tmp_path, fails=True)
+    home, signals, child = _send_only_home_with_installer_in_flight(tmp_path, mode=mode)
     installed: list[str] = []
 
     def install(name):

@@ -23,6 +23,11 @@ _PART_SUFFIX_RE = re.compile(r"-\d{5}-of-\d{5}$")
 _FFN_WEIGHT = re.compile(r"blk\.(\d+)\.ffn_.*\.weight")
 # A block with an SSM conv filter keeps recurrent state (Mamba2 and gated delta-net alike).
 _SSM_CONV = re.compile(r"blk\.(\d+)\.ssm_conv1d\.weight")
+# Multi-token-prediction heads ship as extra blocks whose tensors llama.cpp names
+# ``blk.<N>.nextn.*`` and serves with ``--spec-type draft-mtp``. The catalog knows this for the
+# files it lists; a staged file the catalog has never seen carries the answer only in its tensor
+# table, which this reader already walks.
+_NEXTN_HEAD = re.compile(r"blk\.(\d+)\.nextn\.")
 
 # Tensors llama.cpp leaves in the file and reads row by row on demand instead of loading them
 # (create_tensor's TENSOR_READ_LAZY, marked per architecture in the engine's model code). Under the
@@ -88,12 +93,26 @@ class GGUFHeader:
     # Blocks that keep recurrent state. Counted from the tensor table: hybrids like Nemotron-H
     # also have MoE-only blocks without KV heads, which hold none.
     recurrent_blocks: frozenset[int] = frozenset()
+    # Block indices that carry an MTP (next-token-prediction) head: llama.cpp's
+    # ``blk.<N>.nextn.*`` tensors. Detection only — the draft depth stays a launch decision.
+    mtp_blocks: frozenset[int] = frozenset()
 
     # ── typed accessors ──────────────────────────────────────
 
     @property
     def architecture(self) -> str:
         return str(self.metadata.get("general.architecture", ""))
+
+    @property
+    def has_mtp_head(self) -> bool:
+        """Whether the file carries a multi-token-prediction head llama.cpp can draft with.
+
+        True when the tensor table has ``blk.<N>.nextn.*`` entries (llama.cpp's naming for an MTP
+        block, e.g. ``blk.40.nextn.eh_proj.weight``). The catalog reports the same capability for
+        the files it lists; this is how a staged file the catalog has never seen answers it.
+        """
+        return bool(self.mtp_blocks)
+
 
     @property
     def lazy_bytes(self) -> int:
@@ -283,6 +302,7 @@ def _read_part(path: Path) -> GGUFHeader:
         ffn_block_bytes: dict[int, int] = {}
         lazy_candidate_bytes: dict[str, int] = {}
         recurrent_blocks: set[int] = set()
+        mtp_blocks: set[int] = set()
         for _ in range(n_tensors):
             name = read_str(f)
             (n_dims,) = read(f, "<I")
@@ -307,12 +327,15 @@ def _read_part(path: Path) -> GGUFHeader:
                 lazy_candidate_bytes[name] = nbytes
             elif m := _SSM_CONV.match(name):
                 recurrent_blocks.add(int(m.group(1)))
+            elif m := _NEXTN_HEAD.match(name):
+                mtp_blocks.add(int(m.group(1)))
 
     return GGUFHeader(path=str(path), version=version, metadata=metadata,
                       n_tensors=n_tensors, tensor_bytes=tensor_bytes,
                       embd_table_bytes=embd_bytes, ffn_block_bytes=ffn_block_bytes,
                       lazy_candidate_bytes=lazy_candidate_bytes,
-                      recurrent_blocks=frozenset(recurrent_blocks))
+                      recurrent_blocks=frozenset(recurrent_blocks),
+                      mtp_blocks=frozenset(mtp_blocks))
 
 
 def read_gguf_header(path: str | Path) -> GGUFHeader:
@@ -358,4 +381,5 @@ def read_gguf_header(path: str | Path) -> GGUFHeader:
         ffn_block_bytes=ffn_block_bytes,
         lazy_candidate_bytes={name: nbytes for h in readable
                               for name, nbytes in h.lazy_candidate_bytes.items()},
-        recurrent_blocks=frozenset().union(*(h.recurrent_blocks for h in readable)))
+        recurrent_blocks=frozenset().union(*(h.recurrent_blocks for h in readable)),
+        mtp_blocks=frozenset().union(*(h.mtp_blocks for h in readable)))

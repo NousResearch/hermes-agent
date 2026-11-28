@@ -1,0 +1,31 @@
+name: theagentmail
+title: AgentMail (theagentmail.net)
+repo: https://github.com/uriva/agentmail
+sha: 5d3f1321e27683319105e1e26120e26768d4106c
+subdir: integrations/hermes-plugin
+description: "Give a Hermes agent its own @theagentmail.net (or self-hosted MIT AgentMail) email inbox using a scoped per-mailbox API key. Read mailbox status, list and read messages, send email with threading headers, fetch 1-hour signed attachment URLs, and manage real-time inbound HTTPS webhooks. Disclosure: sends HTTPS requests only to https://api.theagentmail.net (or a configured AGENTMAIL_API_URL, with http:// restricted to localhost) with HTTP redirects disabled so the Bearer key is never forwarded to another host; theagentmail_send_email sends real external email through the AgentMail API (which runs an outbound spam/phishing filter) without a Hermes approval prompt; theagentmail_create_webhook requires explicit user approval via a pre_tool_call hook showing the destination URL before registering persistent inbox forwarding; fetched email subjects, headers, and bodies are returned to the model provider as tool results; reads AGENTMAIL_API_KEY and optional AGENTMAIL_API_URL via agent.secret_scope.get_secret; pure Python standard library only, no local files, no background processes, no telemetry."
+maintainer: uriva
+tier: community
+category: tools
+requires_hermes: ">=0.22.6"
+docs_url: https://theagentmail.net/guides/hermes-openclaw
+version: "0.1.1"
+image: https://raw.githubusercontent.com/uriva/agentmail/5d3f1321e27683319105e1e26120e26768d4106c/web/public/og-image.png
+readme: true
+platforms: []
+known_issues: []
+capabilities:
+  provides_tools:
+    - theagentmail_get_mailbox
+    - theagentmail_list_messages
+    - theagentmail_get_message
+    - theagentmail_send_email
+    - theagentmail_get_attachment_url
+    - theagentmail_list_webhooks
+    - theagentmail_create_webhook
+    - theagentmail_delete_webhook
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env:
+    - AGENTMAIL_API_KEY

@@ -854,6 +854,24 @@ def get_plugin_manager() -> PluginManager:
     return manager
 
 
+def shutdown_plugin_host_for_home(home: Path) -> int:
+    """Stop the plugin host process of ``home``'s plugin manager in this process; returns how many stopped.
+
+    The host runs with the profile home as its working directory (``PluginHost.ensure_started``), and
+    Windows cannot remove a directory that is some process's working directory, so deleting a profile
+    stops it first (#159497). Its manager keeps its plugins; the host only comes back on the next call
+    into a hosted plugin.
+    """
+    key = hermes_home_key(home)
+    stopped = 0
+    for manager in _known_plugin_managers():
+        host = getattr(manager, "_plugin_host_instance", None)
+        if getattr(manager, "scope_key", None) == key and host is not None and host.pid is not None:
+            host.shutdown()
+            stopped += 1
+    return stopped
+
+
 def _reset_plugin_managers_for_tests() -> None:
     """Test-only: drop every cached manager and its submodules for a fully clean slate."""
     global _plugin_manager, _published_gateway_message_injector, _published_tui_message_injector

@@ -1105,6 +1105,21 @@ def patch_tool(mode: str = "replace", path: str | None = None, old_string: str |
         return tool_error(str(e))
 
 
+def _broad_search_root_error(path: str, resolved: str, task_id: str) -> str | None:
+    """Refusal for a search root (or any part of a multi-path string) spanning a whole disk."""
+    from tools.search_root_guard import broad_root_error
+    candidates = [resolved]
+    raw = str(path)
+    parts = [p.strip() for p in raw.split(",")] if "," in raw else raw.split()
+    if len(parts) > 1:
+        for part in filter(None, parts):
+            try:
+                candidates.append(str(_resolve_path_for_task(part, task_id)))
+            except (OSError, ValueError, RuntimeError):
+                continue
+    return next(filter(None, map(broad_root_error, candidates)), None)
+
+
 def search_tool(pattern: str, target: str = "content", path: str = ".",
                 file_glob: str | None = None, limit: int = 50, offset: int = 0,
                 output_mode: str = "content", context: int = 0,
@@ -1148,6 +1163,9 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
         block_error = get_read_block_error(resolved_search_path)
         if block_error:
             return tool_error(block_error)
+        broad_error = _broad_search_root_error(path, resolved_search_path, task_id)
+        if broad_error:
+            return tool_error(broad_error, **{GUARDRAIL_REFUSAL_KEY: True})
 
         # A missing search root costs two shells (search + parent listing for
         # "Similar paths"); cache the miss so a retry skips both.

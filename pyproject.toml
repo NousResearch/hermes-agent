@@ -250,7 +250,15 @@ edge-tts = ["edge-tts==7.3.1"]
 # setup requests report unavailable rather than succeeding with an empty set.
 neutts = ["neutts[all]==1.4.1; python_version < '3.14'"]
 kittentts = [
-  "kittentts @ https://github.com/KittenML/KittenTTS/releases/download/0.8.1/kittentts-0.8.1-py3-none-any.whl ; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin') and sys_platform != 'android'",
+  # Supply-chain pin: GitHub release ASSETS are mutable in place — same URL,
+  # different bytes, no signal. The #sha256= fragment is enforced by uv on
+  # every resolution/sync of this direct reference, and both install flows
+  # (`hermes setup tts`, `hermes tools post-setup kittentts`) route through
+  # this manifest line since the pm decomposition. When bumping the release,
+  # update the URL and the digest TOGETHER (asserted by
+  # tests/hermes_cli/test_kittentts_wheel_pin.py; uv.lock mirrors the same
+  # hash — keep all three in agreement).
+  "kittentts @ https://github.com/KittenML/KittenTTS/releases/download/0.8.1/kittentts-0.8.1-py3-none-any.whl#sha256=482a436c4f1f3192153710376e459ff3689517ebcda7c2b051e2fd4187b41851 ; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin') and sys_platform != 'android'",
   # KittenTTS requires misaki[en]>=0.9.4, and PyPI's misaki 0.9.4 caps Python
   # below 3.13. The NousResearch fork is the same 0.9.4 code with the cap
   # raised to <3.15. Declaring it here makes KittenTTS's transitive

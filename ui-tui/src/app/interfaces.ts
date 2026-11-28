@@ -471,6 +471,8 @@ export interface ComposerRefs {
 }
 
 export interface ComposerState {
+  /** The input the held completion rows answer; differs from the typed text while a refresh is in flight. */
+  compFor: string
   compIdx: number
   compReplace: number
   completions: CompletionItem[]

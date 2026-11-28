@@ -243,7 +243,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
   } = useQueue(gw)
 
   const { historyRef, historyIdx, setHistoryIdx, historyDraftRef, pushHistory } = useInputHistory()
-  const { completions, compIdx, setCompIdx, compReplace } = useCompletion(input, isBlocked, gw)
+  const { completions, compFor, compIdx, setCompIdx, compReplace } = useCompletion(input, isBlocked, gw)
 
   const clearIn = useCallback(() => {
     draftLife.current++
@@ -1015,6 +1015,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
 
   const state = useMemo(
     () => ({
+      compFor,
       compIdx,
       compReplace,
       completions,
@@ -1026,7 +1027,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
       queuedDisplay,
       tokens
     }),
-    [compIdx, compReplace, completions, historyIdx, input, inputBuf, pasteExpanded, queueEditIdx, queuedDisplay, tokens]
+    [compFor, compIdx, compReplace, completions, historyIdx, input, inputBuf, pasteExpanded, queueEditIdx, queuedDisplay, tokens]
   )
 
   return {

@@ -83,10 +83,24 @@ export function completionRequestForInput(
   }
 }
 
+/** The highlighted row, or undefined when the held rows answer older text than *text* (keys typed
+ *  faster than the refresh). Enter then submits what was typed and Tab waits for the fresh menu,
+ *  instead of applying a row picked for a prefix of it. */
+export function freshCompletionRow(
+  state: { compFor: string; compIdx: number; completions: CompletionItem[] },
+  text: string
+): CompletionItem | undefined {
+  return state.compFor === text ? state.completions[state.compIdx] : undefined
+}
+
 export function useCompletion(input: string, blocked: boolean, gw: GatewayClient) {
   const [completions, setCompletions] = useState<CompletionItem[]>([])
   const [compIdx, setCompIdx] = useState(0)
   const [compReplace, setCompReplace] = useState(0)
+  // The input the held rows answer. Rows stay on screen while the next request is in flight (no
+  // blink per keystroke), so a key burst can reach Enter/Tab before they catch up: callers compare
+  // this to the text they act on and treat a mismatch as a stale menu.
+  const [compFor, setCompFor] = useState('')
   const ref = useRef('')
 
   useEffect(() => {
@@ -94,6 +108,7 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
       setCompletions(prev => (prev.length ? [] : prev))
       setCompIdx(prev => (prev ? 0 : prev))
       setCompReplace(prev => (prev ? 0 : prev))
+      setCompFor(prev => (prev ? '' : prev))
     }
 
     if (blocked) {
@@ -152,6 +167,7 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
 
           setCompletions(items)
           setCompIdx(0)
+          setCompFor(input)
           // An inline reference replaces its own token, so the gateway's
           // `replace_from` (an offset into the synthetic `/query` it was sent)
           // doesn't apply — the caller already knows where the token starts.
@@ -172,6 +188,7 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
             }
           ])
           setCompIdx(0)
+          setCompFor(input)
           setCompReplace(request.replaceFrom)
         })
     }, 60)
@@ -179,5 +196,5 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
     return () => clearTimeout(timer)
   }, [blocked, gw, input])
 
-  return { completions, compIdx, setCompIdx, compReplace }
+  return { completions, compFor, compIdx, setCompIdx, compReplace }
 }

@@ -214,6 +214,8 @@ export function TreeSplit({
       const totalWeight = node.weights.reduce((a, b) => a + b, 0) || 1
       const pxPerWeight = totalPx / totalWeight
       const start = horizontal ? e.clientX : e.clientY
+      // Flex rows follow inline direction; pointer coordinates remain physical.
+      const inlineSign = horizontal && getComputedStyle(container).direction === 'rtl' ? -1 : 1
       const restoreCursor = document.body.style.cursor
       const restoreSelect = document.body.style.userSelect
 
@@ -460,7 +462,7 @@ export function TreeSplit({
       let done = false
 
       const onMove = (ev: PointerEvent) => {
-        const shift = (horizontal ? ev.clientX : ev.clientY) - start
+        const shift = ((horizontal ? ev.clientX : ev.clientY) - start) * inlineSign
         const direction = Math.sign(shift) as -1 | 0 | 1
 
         const allowCascade = cascadeDirection === null || direction === cascadeDirection
@@ -816,13 +818,16 @@ function Sash({
         // Windows overlay-scrollbar hit target on the chat — only ~3px of
         // thumb remained clickable (#99867). The sash stays 8px wide, all
         // on the sidebar/tool side of the seam.
-        horizontal ? 'inset-y-0 left-0 w-[8px]' : 'inset-x-0 top-0 h-[8px]',
+        horizontal ? 'inset-y-0 w-[8px]' : 'inset-x-0 top-0 h-[8px]',
         disabled ? 'pointer-events-none' : horizontal ? 'cursor-col-resize' : 'cursor-row-resize'
       )}
       data-sash-overlap="trailing"
       onDoubleClick={disabled ? undefined : onDoubleClick}
       onPointerDown={disabled ? undefined : onPointerDown}
       role="separator"
+      // The handler pairs this child with its logical previous sibling. Its
+      // leading edge is right in RTL, not physical left (the NEXT seam).
+      style={horizontal ? { insetInlineStart: 0 } : undefined}
     >
       {/* Persistent hairline: same token as PaneShell's divider sash
           (--ui-stroke-secondary) so every seam — vertical or horizontal —
@@ -831,7 +836,9 @@ function Sash({
       <span
         className={cn(
           'absolute bg-(--ui-stroke-secondary) opacity-10 transition-opacity duration-100 group-hover:opacity-100',
-          horizontal ? 'inset-y-0 left-[1px] w-px -translate-x-1/2' : 'inset-x-0 top-[1px] h-px -translate-y-1/2'
+          horizontal
+            ? 'inset-y-0 start-[1px] w-px -translate-x-1/2 rtl:translate-x-1/2'
+            : 'inset-x-0 top-[1px] h-px -translate-y-1/2'
         )}
       />
       {!disabled && (
@@ -839,7 +846,7 @@ function Sash({
           className={cn(
             'absolute bg-(--ui-sash-hover-border) opacity-0 transition-opacity duration-100 group-hover:opacity-100',
             horizontal
-              ? 'inset-y-0 left-[1px] w-(--vscode-sash-hover-size,0.25rem) -translate-x-1/2'
+              ? 'inset-y-0 start-[1px] w-(--vscode-sash-hover-size,0.25rem) -translate-x-1/2 rtl:translate-x-1/2'
               : 'inset-x-0 top-[1px] h-(--vscode-sash-hover-size,0.25rem) -translate-y-1/2'
           )}
         />

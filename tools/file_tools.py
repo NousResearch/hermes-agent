@@ -18,7 +18,8 @@ import time
 from contextlib import ExitStack
 from pathlib import Path, PurePosixPath
 
-from agent.file_safety import get_nt_namespace_error, get_read_block_error, is_blocked_device_path
+from agent.file_safety import (
+    get_nt_namespace_error, get_read_block_error, is_blocked_device_path, read_deny_index)
 from agent.tool_result_classification import GUARDRAIL_REFUSAL_KEY
 from tools.binary_extensions import has_binary_extension
 from tools.skill_provenance import is_background_review
@@ -233,10 +234,11 @@ def _filter_read_blocked_search_results(result, task_id: str = "default") -> int
     return cwd-relative paths; the process cwd can differ).
     """
     omitted = 0
+    index = read_deny_index()
 
     def _allowed(path: str) -> bool:
         nonlocal omitted
-        if get_read_block_error(_resolved_match_path(path, task_id)):
+        if get_read_block_error(_resolved_match_path(path, task_id), index=index):
             omitted += 1
             return False
         return True

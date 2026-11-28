@@ -12,6 +12,7 @@ import os
 import re
 import socket
 from contextlib import suppress
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Optional
@@ -542,7 +543,36 @@ def is_project_env_basename(name: str) -> bool:
     return name.casefold() in _BLOCKED_PROJECT_ENV_BASENAMES
 
 
-def get_read_block_error(path: str) -> Optional[str]:
+@dataclass(frozen=True)
+class ReadDenyIndex:
+    """The resolved Hermes read denylist ``get_read_block_error`` matches a path against."""
+
+    hub_dirs: tuple[Path, ...]
+    credential_files: frozenset[str]
+    denied_dirs: tuple[tuple[Path, str, str], ...]
+
+
+def read_deny_index() -> ReadDenyIndex:
+    """Resolve the read denylist of every credential home as it is on disk now.
+
+    Building it costs a ``resolve()`` per (home, store) pair, so a caller that checks many paths
+    in one operation (a search's result list) builds it once and passes it to each
+    ``get_read_block_error`` call. Never keep one across operations: it does not see a profile
+    or a symlink created after it was built.
+    """
+    homes = _credential_store_dirs()
+    return ReadDenyIndex(
+        hub_dirs=tuple(hd / "skills" / ".hub" for hd in homes),
+        credential_files=frozenset(
+            deny_key(p) for p in _resolve_each(hd / name for name in _CREDENTIAL_FILE_NAMES for hd in homes)),
+        denied_dirs=tuple(
+            (blocked_dir, dir_msg, file_msg)
+            for subdir, dir_msg, file_msg in _READ_DENIED_DIRS
+            for blocked_dir in _resolve_each(hd / subdir for hd in homes)),
+    )
+
+
+def get_read_block_error(path: str, *, index: Optional[ReadDenyIndex] = None) -> Optional[str]:
     """Return an error message when a read targets a denied Hermes path.
 
     Blocked: device/fd/proc files that hang reads or leak process state (``/dev/zero``,
@@ -554,6 +584,9 @@ def get_read_block_error(path: str) -> Optional[str]:
     Callers that resolve relative paths against a non-process cwd (e.g.
     ``TERMINAL_CWD``) MUST pass an absolute path: ``resolve()`` here anchors at
     the process cwd, so a relative ``"auth.json"`` would miss the denylist.
+
+    ``index`` is a ``read_deny_index()`` built for the current operation; without one the
+    denylist is resolved for this call.
     """
     # NT/device-namespace check runs on the RAW string, before resolve():
     # on Windows, resolving \??\UNC\host\share (or \\?\UNC\, GLOBALROOT)
@@ -567,31 +600,28 @@ def get_read_block_error(path: str) -> Optional[str]:
     local = local_drive_spelling(path)
     lexical = sandbox_lexical_path(local)
     resolved = Path(lexical) if lexical is not None else Path(local).expanduser().resolve()
-    hermes_dirs = _credential_store_dirs()
+    if index is None:
+        index = read_deny_index()
     reason = None
     if is_blocked_device_path(os.path.expanduser(local)) or is_blocked_device_path(str(resolved)):
         reason = (
             "is a device or process file: reading it can hang or leak process state "
             "(environment, command line, memory layout)." + _DID_SUFFIX
         )
-    elif any(deny_path_under(resolved, hd / "skills" / ".hub") for hd in hermes_dirs):
+    elif any(deny_path_under(resolved, hub) for hub in index.hub_dirs):
         reason = (
             "is an internal Hermes cache file and cannot be read directly to prevent "
             "prompt injection. Use the skills_list or skill_view tools instead."
         )
-    elif any(deny_key(resolved) in map(deny_key, _resolve_each(hd / name for hd in hermes_dirs))
-             for name in _CREDENTIAL_FILE_NAMES):
+    elif deny_key(resolved) in index.credential_files:
         reason = (
             "is a Hermes credential store and cannot be read directly. Provider tools "
             "consume these credentials through internal channels." + _DID_SUFFIX
         )
     else:
-        for subdir, dir_msg, file_msg in _READ_DENIED_DIRS:
-            for blocked_dir in _resolve_each(hd / subdir for hd in hermes_dirs):
-                if deny_path_under(resolved, blocked_dir):
-                    reason = (dir_msg if deny_key(resolved) == deny_key(blocked_dir) else file_msg) + _DID_SUFFIX
-                    break
-            if reason:
+        for blocked_dir, dir_msg, file_msg in index.denied_dirs:
+            if deny_path_under(resolved, blocked_dir):
+                reason = (dir_msg if deny_key(resolved) == deny_key(blocked_dir) else file_msg) + _DID_SUFFIX
                 break
         if reason is None and is_project_env_basename(resolved.name):
             reason = (

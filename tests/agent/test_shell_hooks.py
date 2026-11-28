@@ -223,6 +223,23 @@ class TestCallbackSubprocess:
         assert "cwd" in payload
         assert payload["extra"]["task_id"] == "task-77"
 
+    def test_event_name_renames_only_the_stdin_event(self, tmp_path):
+        """A script written for another agent switches on its own event names; ``event_name`` is what it
+        reads, while dispatch and the reply parser stay on the Hermes event (a deny still blocks)."""
+        script = _write_script(
+            tmp_path, "foreign.sh",
+            "#!/usr/bin/env python3\nimport json, sys\n"
+            "if json.load(sys.stdin).get('hook_event_name') == 'PreToolUse':\n"
+            "    print(json.dumps({'decision': 'block', 'reason': 'foreign gate'}))\n",
+        )
+        [spec] = shell_hooks._parse_hooks_block(
+            {"pre_tool_call": [{"command": str(script), "event_name": "PreToolUse"}]})
+        assert (spec.event, spec.event_name) == ("pre_tool_call", "PreToolUse")
+        result = shell_hooks._make_callback(spec)(tool_name="terminal", args={"command": "rm -rf x"})
+        assert result == {"action": "block", "message": "foreign gate"}
+        plain = shell_hooks.ShellHookSpec(event="pre_tool_call", command=str(script))
+        assert shell_hooks._make_callback(plain)(tool_name="terminal", args={}) is None
+
 
     def test_modify_canonical_parsing(self, tmp_path):
         """Shell hook returning canonical modify is parsed correctly."""

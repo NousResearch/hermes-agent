@@ -1,7 +1,7 @@
 name: plur1bus
 title: PLUR1BUS Memory Engine
 repo: https://github.com/Cyb3rb1ade/openclaw-plur1bus-memory
-sha: 538eb1996be374f029cb87096eba0398130ad218
+sha: 2448f296090cb6f9df093fe9baa23b15ec6004d4
 subdir: catalog/plur1bus
 version: "7.21.8-hermes.2"
 requires_hermes: ">=0.23.0"
@@ -9,7 +9,7 @@ description: "Profile-scoped long-term memory and Langzeitgedächtnis for Hermes
 maintainer: Cyb3rb1ade
 tier: community
 category: memory
-docs_url: https://github.com/Cyb3rb1ade/openclaw-plur1bus-memory/blob/538eb1996be374f029cb87096eba0398130ad218/catalog/plur1bus/README.md
+docs_url: https://github.com/Cyb3rb1ade/openclaw-plur1bus-memory/blob/2448f296090cb6f9df093fe9baa23b15ec6004d4/catalog/plur1bus/README.md
 platforms: [linux, macos, windows]
 known_issues:
   - Enable PLUR1BUS and select it as the persistent memory provider in each intended profile after installation.

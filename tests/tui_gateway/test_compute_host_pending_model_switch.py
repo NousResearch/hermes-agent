@@ -66,15 +66,41 @@ def test_compute_host_turn_done_clears_pending_switch_on_success(monkeypatch):
     session = _session(running=True, pending_model_switch={"raw": "anthropic/claude-sonnet-4.6"})
     server._sessions["sid-done"] = session
     try:
+        server._compute_host_turn_frame("r1", "sid-done", session, "hello")  # forwards the stash
         server._on_compute_host_turn_done(
             "r1", "sid-done", session, {"type": "turn.end", "session_info_emitted": True})
         assert "pending_model_switch" not in session
         # An errored turn must KEEP the stash for the fail-open path.
         session["pending_model_switch"] = {"raw": "anthropic/claude-sonnet-4.6"}
         session["running"] = True
+        server._compute_host_turn_frame("r1", "sid-done", session, "hello")
         server._on_compute_host_turn_done(
             "r1", "sid-done", session,
             {"type": "turn.error", "message": "boom", "session_info_emitted": True})
         assert session["pending_model_switch"]["raw"] == "anthropic/claude-sonnet-4.6"
     finally:
         server._sessions.pop("sid-done", None)
+
+
+def test_compute_host_turn_done_keeps_pick_made_during_the_turn(monkeypatch):
+    """A pick stashed while the turn ran was never forwarded: the turn's end must not drop it,
+    or session.info reports the old model and the Desktop pill reverts."""
+    monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
+    session = _session(running=True)
+    server._sessions["sid-mid"] = session
+    try:
+        server._compute_host_turn_frame("r1", "sid-mid", session, "hello")  # turn starts, nothing queued
+        pick = {"raw": "deepseek/deepseek-v4.1-flash", "display_model": "deepseek/deepseek-v4.1-flash"}
+        session["pending_model_switch"] = pick  # user switches mid-turn
+        server._on_compute_host_turn_done(
+            "r1", "sid-mid", session, {"type": "turn.end", "session_info_emitted": True})
+        assert session["pending_model_switch"] is pick
+        # The next turn carries it, and its end clears it.
+        frame = server._compute_host_turn_frame("r2", "sid-mid", session, "next")
+        assert frame["pending_model_switch"] is pick
+        session["running"] = True
+        server._on_compute_host_turn_done(
+            "r2", "sid-mid", session, {"type": "turn.end", "session_info_emitted": True})
+        assert "pending_model_switch" not in session
+    finally:
+        server._sessions.pop("sid-mid", None)

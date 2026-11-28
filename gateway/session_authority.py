@@ -1329,7 +1329,13 @@ class SessionAuthority:
                                 continue
                     import logging
                     from gateway.session_local_recovery import _refused_check
-                    logging.getLogger(__name__).warning('Session %s paused: %s', ref.session_id, _refused_check(exc))
+                    hint = ''
+                    if exc.reason == 'unknown_execution':
+                        # The pause is the operator's to clear: name the command that clears it.
+                        from gateway.session_ingress import discard_command
+                        hint = f'; queued input waits until `{discard_command(self, ref.session_id)}`'
+                    logging.getLogger(__name__).warning(
+                        'Session %s paused: %s%s', ref.session_id, _refused_check(exc), hint)
                     self._pause(ref, exc.reason)
                     return None
             except (CorruptStoreError, StoreReplaced):

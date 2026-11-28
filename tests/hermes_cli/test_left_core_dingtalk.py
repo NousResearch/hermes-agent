@@ -252,10 +252,9 @@ def test_a_home_stamped_below_v55_that_runs_dingtalk_migrates(tmp_path):
     assert installed == ["dingtalk"]
 
 
-def test_the_dingtalk_card_installs_the_labs_plugin_once_dingtalk_is_set_up(monkeypatch):
-    """The explicit choice a home from v55 on gets besides the command: "Install and enable" on the platform's
-    own card (``install_catalog_platform``) takes a Labs entry once that home has the platform set up, and still
-    refuses it for a home that never did (the not-installed listing never offers Labs)."""
+def test_no_channels_install_takes_the_labs_plugin_for_a_set_up_dingtalk_home(monkeypatch):
+    """Neither Channels page lists a Labs platform, so the Channels install route refuses one even for a
+    home that has DingTalk set up: the explicit choice there is `hermes plugins install dingtalk`."""
     import hermes_cli.plugins_cmd_install as pci
     from hermes_cli import plugin_catalog
     from hermes_cli.catalog_platform_listing import available_catalog_platforms, install_catalog_platform
@@ -268,12 +267,44 @@ def test_the_dingtalk_card_installs_the_labs_plugin_once_dingtalk_is_set_up(monk
     monkeypatch.setattr(plugin_catalog, "load_catalog_live", lambda: [entry])
     monkeypatch.setattr(plugin_catalog, "load_catalog", lambda *a, **k: [entry])
     monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
-    asked = []
-    monkeypatch.setattr(pci, "dashboard_install_plugin",
-                        lambda *a, **k: asked.append(k["catalog_name"]) or {"ok": True, "plugin_name": "dingtalk"})
+    monkeypatch.setattr(pci, "dashboard_install_plugin", lambda *a, **k: pytest.fail("Labs code installed from a list"))
     home = get_hermes_home()
     (home / "config.yaml").write_text("_config_version: 55\n", encoding="utf-8")
-    assert install_catalog_platform("dingtalk")["ok"] is False and asked == []
     (home / ".env").write_text(_CREDS, encoding="utf-8")
     assert "dingtalk" not in {row.name for row in available_catalog_platforms(provided=())}
-    assert install_catalog_platform("dingtalk")["ok"] is True and asked == ["dingtalk"]
+    assert install_catalog_platform("dingtalk")["ok"] is False
+
+
+def _telegram_sends(monkeypatch) -> list:
+    """Stub the outermost sink only: a Telegram target sends, so the run is not "nothing reached"."""
+    from unittest.mock import MagicMock
+
+    from gateway.config import Platform
+    sent: list = []
+
+    async def _send(platform, pconfig, chat_id, text, **kwargs):
+        sent.append((platform, chat_id))
+        return {"success": True, "message_id": "1"}
+
+    pconfig = MagicMock()
+    pconfig.enabled = True
+    cfg = MagicMock()
+    cfg.platforms = {Platform.TELEGRAM: pconfig}
+    monkeypatch.setattr("gateway.config.load_gateway_config", lambda *a, **k: cfg)
+    monkeypatch.setattr("gateway.outbound.send._send_to_platform", _send)
+    return sent
+
+
+@pytest.mark.parametrize("job", [
+    {"deliver": "dingtalk:cidAbC123==,telegram:123"},
+    {"deliver": "origin,telegram:123", "origin": {"platform": "dingtalk", "chat_id": "cidAbC123=="}},
+], ids=["explicit-target", "saved-origin"])
+def test_cron_reports_the_dingtalk_target_it_missed_with_the_install_command(monkeypatch, job):
+    """A DingTalk target saved while core shipped it is a failed send with the install hint in the run
+    result, even when another target of the same job was reached."""
+    from cron.scheduler_delivery import _deliver_result
+
+    sent = _telegram_sends(monkeypatch)
+    error = _deliver_result({"id": "j1", "name": "report", **job}, "hello")
+    assert [chat for _, chat in sent] == ["123"]
+    assert error is not None and "dingtalk" in error and "hermes plugins install dingtalk" in error

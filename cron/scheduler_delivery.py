@@ -716,7 +716,11 @@ def _resolve_single_delivery_target(
         chat_id, thread_id, resolution_error = resolve_send_target(
             platform_key, rest, pass_unresolved_references=True)
         if resolution_error:
+            # Recorded in the run result, not only logged: another target reaching its chat must not
+            # hide this one (a saved route to a platform that left core carries its install command).
             logger.warning("Invalid cron delivery target '%s': %s", deliver_value, resolution_error)
+            if skipped is not None:
+                skipped.append(f"delivery target '{deliver_value}' skipped: {resolution_error}")
             return None
         # Chat-only target on the origin chat adopts the origin lane where it is a durable place
         # (Telegram topic, Slack thread); Matrix/Mattermost threads are per-message ids -> top-level.
@@ -1696,7 +1700,8 @@ def _prepare_target_delivery(
     try:
         platform = Platform(platform_name.lower())
     except (ValueError, KeyError):
-        _note_target_error(job, f"unknown platform '{platform_name}'", delivery_errors)
+        from gateway.outbound.targets import unknown_platform_error
+        _note_target_error(job, unknown_platform_error(platform_name), delivery_errors)
         return None
 
     resolved, resolve_err = _resolve_target_transport(
@@ -1780,8 +1785,7 @@ def _unresolved_delivery_outcome(job: dict, for_failure: bool, skipped: list) ->
             "skipping delivery (output saved in last_output)",
             job.get("name", job.get("id", "?")))
         return None
-    hints = "".join(moved_platform_hint(part.split(":", 1)[0]) for part in deliver_value.split(","))
-    msg = "; ".join([f"no delivery target resolved for deliver={deliver_value}{hints}", *skipped])
+    msg = "; ".join([f"no delivery target resolved for deliver={deliver_value}", *skipped])
     logger.warning("Job '%s': %s", job["id"], msg)
     return msg
 

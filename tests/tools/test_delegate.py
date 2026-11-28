@@ -1822,7 +1822,7 @@ class TestOrchestratorEndToEnd(unittest.TestCase):
                 m.thinking_callback = None
                 orch_mock["agent"] = m
 
-                def _orchestrator_run(user_message=None, task_id=None, stream_callback=None):
+                def _orchestrator_run(user_message=None, task_id=None, stream_callback=None, title_user_message=None):
                     # Re-entrant: orchestrator spawns two leaves
                     delegate_task(
                         tasks=[

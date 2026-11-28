@@ -2,8 +2,9 @@
 
 The script is the no-install structural validator used by the plugin-catalog
 admission CI: it must run with only stdlib + ruamel.yaml, take file paths or a
-directory, exit 0/1, and support --json machine output. These tests exercise
-the CLI contract via subprocess (the same way CI invokes it).
+directory, exit 0/1 (and 101 when its one dependency is absent), and support
+--json machine output. These tests exercise the CLI contract via subprocess
+(the same way CI invokes it).
 """
 
 import json
@@ -344,3 +345,35 @@ def test_directory_mode_all_valid_exits_zero(tmp_path):
     )
     result = run_validator(str(tmp_path))
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+# ── dependency contract ────────────────────────────────────────────────
+#
+# Probes and watchdogs read this script's exit code, so the code is a contract:
+# 0 = clean, 1 = real findings, 101 = the dependency is absent and nothing was
+# validated. Exit 2 used to mean "missing ruamel.yaml", which is
+# indistinguishable from "the tool itself broke" and was repeatedly misread as a
+# validation failure. Pin 101 here so a future edit cannot silently restore 2.
+
+
+def test_missing_ruamel_exits_101():
+    """-S drops site-packages, so ruamel.yaml is genuinely unimportable."""
+    result = subprocess.run(
+        [sys.executable, "-S", str(SCRIPT), str(REPO_ROOT / "plugin-catalog")],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 101, result.stdout + result.stderr
+    assert "ruamel.yaml is required" in result.stderr
+    # Nothing may be reported as valid: the run never looked at a file.
+    assert "OK:" not in result.stdout
+
+
+def test_docstring_documents_every_reachable_exit_code():
+    """The docstring is the contract probes are written against."""
+    source = SCRIPT.read_text(encoding="utf-8")
+    docstring = source.split('"""')[1]
+    for code in ("0 =", "1 =", "101 ="):
+        assert code in docstring, f"exit code {code.strip(' =')} undocumented"
+

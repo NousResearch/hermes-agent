@@ -244,6 +244,9 @@ gateway:
       guidance: "This is an automatic task-status notification, not a request to decompose the task again. Inspect the current board before creating follow-up tasks; do not recreate tasks or graphs that already exist."
     ping:
       completed: "✔ {head} 완료 — {title}{handoff}"
+      chain_broke: "🪓 {head} 체인 끊김 — {title}이(가) 후속 작업을 약속({phrase})했으나 후임 카드를 만들지 않았습니다{triage_suffix}"
+      chain_broke_phrase: "“{value}”"
+      chain_broke_triage: " — {triage}(으)로 분류됨"
       review_requested: "👀 {head} 리뷰 준비됨 — {title}{handoff}"
       changes_default_reason: "리뷰어 피드백에 따라 변경이 필요해요"
       reviewer_suffix: " — 리뷰어 @{reviewer}"

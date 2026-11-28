@@ -244,6 +244,9 @@ gateway:
       guidance: "这是自动任务状态通知，不是再次分解任务的请求。创建后续任务前请先检查当前看板；不要重复创建已存在的任务或任务图。"
     ping:
       completed: "✔ {head} 已完成——{title}{handoff}"
+      chain_broke: "🪓 {head} 链条断裂 — {title} 承诺了后续工作（{phrase}）却没有创建后继卡片{triage_suffix}"
+      chain_broke_phrase: "“{value}”"
+      chain_broke_triage: " — 已分诊为 {triage}"
       review_requested: "👀 {head} 待审核——{title}{handoff}"
       changes_default_reason: "审核反馈要求修改"
       reviewer_suffix: " ——审核人 @{reviewer}"

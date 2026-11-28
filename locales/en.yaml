@@ -247,6 +247,9 @@ gateway:
       guidance: "This is an automatic task-status notification, not a request to decompose the task again. Inspect the current board before creating follow-up tasks; do not recreate tasks or graphs that already exist."
     ping:
       completed: "✔ {head} done — {title}{handoff}"
+      chain_broke: "🪓 {head} CHAIN BROKE — {title} promised follow-on work ({phrase}) and created no successor{triage_suffix}"
+      chain_broke_phrase: "“{value}”"
+      chain_broke_triage: " — triaged as {triage}"
       review_requested: "👀 {head} ready for review — {title}{handoff}"
       changes_default_reason: "reviewer feedback requires changes"
       reviewer_suffix: " — reviewer @{reviewer}"

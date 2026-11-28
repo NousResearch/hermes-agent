@@ -244,6 +244,9 @@ gateway:
       guidance: "This is an automatic task-status notification, not a request to decompose the task again. Inspect the current board before creating follow-up tasks; do not recreate tasks or graphs that already exist."
     ping:
       completed: "✔ {head} tamamlandı — {title}{handoff}"
+      chain_broke: "🪓 {head} ZİNCİR KOPTU — {title} sonraki işi vaat etti ({phrase}) ancak halef oluşturmadı{triage_suffix}"
+      chain_broke_phrase: "“{value}”"
+      chain_broke_triage: " — {triage} olarak ayrıldı"
       review_requested: "👀 {head} incelemeye hazır — {title}{handoff}"
       changes_default_reason: "inceleyici geri bildirimi değişiklik gerektiriyor"
       reviewer_suffix: " — inceleyici @{reviewer}"

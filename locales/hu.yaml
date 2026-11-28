@@ -247,6 +247,9 @@ gateway:
       guidance: "Ez egy automatikus feladatállapot-értesítés, nem kérés a feladat újbóli felbontására. Nézd meg az aktuális táblát, mielőtt követő feladatokat hoznál létre; ne hozz létre újra már létező feladatokat vagy gráfokat."
     ping:
       completed: "✔ {head} kész — {title}{handoff}"
+      chain_broke: "🪓 {head} LÁNC MEGSZAKADT — {title} folytatási munkát ígért ({phrase}), de nem hozott létre utódot{triage_suffix}"
+      chain_broke_phrase: "„{value}”"
+      chain_broke_triage: " — {triage} címkézve"
       review_requested: "👀 {head} átnézésre kész — {title}{handoff}"
       changes_default_reason: "az átnéző visszajelzése módosítást kér"
       reviewer_suffix: " — átnéző: @{reviewer}"

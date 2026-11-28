@@ -2353,7 +2353,7 @@ def release_stale_claims(
         "WHERE status = 'running' AND claim_expires IS NOT NULL "
         "  AND claim_expires < ?", (now,),
     ).fetchall()
-    from hermes_cli.kanban_owner_recovery import owner_reclaim_blocked, owner_reclaim_blocked_after_kill, reclaim_error
+    from hermes_cli.kanban_owner_recovery import claimer_gone, owner_reclaim_blocked, owner_reclaim_blocked_after_kill, reclaim_error
     for row in stale:
         if owner_reclaim_blocked(conn, row["id"]):
             continue
@@ -2378,6 +2378,7 @@ def release_stale_claims(
                 reason="ttl_expired_worker_alive",
             )
             continue
+        gone = row["worker_pid"] is None and claimer_gone(conn, row["id"], row["claim_lock"], host_prefix)
         with write_txn(conn):
             # Again under the write lock: an interpreter that bound since the check above
             # changes neither claim_lock nor worker_pid, so the CAS below cannot see it.
@@ -2404,19 +2405,18 @@ def release_stale_claims(
                     "claim_expires": _to_epoch(row["claim_expires"]),
                     "last_heartbeat_at": hb,
                     "now": now,
-                    "host_local": host_local,
+                    "host_local": host_local, "claimer_gone": gone,
                     "heartbeat_stale": bool(heartbeat_stale),
                     "retry_status": retry_status,
                 },
             )
             reclaimed += 1
-        # Own txn, after the reclaim commit (same shape as ``enforce_max_runtime``):
-        # the run ended without a verdict, so it counts toward the breaker and a
-        # trip flips the task to ``blocked`` + ``gave_up`` on top of ``reclaimed``.
+        # Own txn, after the reclaim commit (same shape as ``enforce_max_runtime``): a run without a
+        # verdict counts toward the breaker (a trip adds ``blocked`` + ``gave_up``), unless no worker
+        # ever started and the claimer is gone (``claimer_gone``): nothing ran, like a spawn refusal.
         _record_task_failure(
-            conn, row["id"], error,
-            outcome="reclaimed", failure_limit=failure_limit,
-            release_claim=False, end_run=False,
+            conn, row["id"], error, outcome="reclaimed", failure_limit=failure_limit,
+            release_claim=False, end_run=False, infrastructure=gone,
             event_payload_extra={"worker_pid": _opt_int(row["worker_pid"]), "retry_status": retry_status},
         )
         # Post-commit observer; every non-reclaim branch ``continue``d above.

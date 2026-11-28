@@ -215,6 +215,25 @@ def reclaim_error(conn, task_id, claim_lock) -> str:
     return f"stale_lock={claim_lock}" + (f" [{note}]" if note else "")
 
 
+def claimer_gone(conn, task_id, claim_lock, host_prefix) -> bool:
+    """True only when the current run shows no worker ever started and ``claim_lock`` is exactly
+    ``<this host>:<pid>`` with that pid dead: a one-shot ``hermes kanban claim`` that has exited, or
+    a dispatcher that died before spawning. Nothing ran. Any ``spawned`` / ``worker_registered`` /
+    ``owner_admitted`` / ``heartbeat`` event, another host's lock, a non-numeric claimer and a live
+    (or recycled) pid prove nothing, so the TTL reclaim keeps charging the breaker.
+    """
+    lock = claim_lock or ""
+    pid = lock[len(host_prefix):] if lock.startswith(host_prefix) else ""
+    if not (pid.isascii() and pid.isdigit() and int(pid) > 0):
+        return False
+    started = conn.execute(
+        "SELECT 1 FROM task_events e JOIN tasks t ON t.current_run_id=e.run_id WHERE t.id=? AND e.task_id=t.id "
+        "AND e.kind IN ('spawned', 'worker_registered', 'owner_admitted', 'heartbeat') LIMIT 1",
+        (task_id,)).fetchone()
+    from hermes_cli.kanban_db_dispatch import _pid_alive
+    return started is None and not _pid_alive(int(pid))
+
+
 def apply_attempt_note(conn, task_id, pid, dead) -> None:
     """Fold the owner's own record of how the attempt ended into ONE dead worker's booking.
 

@@ -31,6 +31,7 @@ _EXPORTS = {
         "prepare_tools",
     ),
     "pm.operations": ("environment_python", "python_tool"),
+    "pm.user_facing": ("npm_command",),
     "pm.extras": ("available", "ensure_import", "install_hint"),
     "pm.lock": ("Facts", "Lockfile"),
     "pm.package": ("InstallError", "Package", "Runner", "compose_env"),

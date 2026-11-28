@@ -56,9 +56,10 @@ def refresh_launch_files() -> None:
 
 
 def _owned_by_this_checkout(kind: str) -> bool:
-    """False (with the left-alone notice) when the active home's definition launches another checkout."""
+    """False with a notice unless the active home's definition names this checkout."""
     from hermes_cli import gateway
-    from hermes_cli.update_fleet_scope import announce_skipped_runtime, definition_foreign_checkout
+    from hermes_cli.update_fleet_scope import announce_skipped_runtime, definition_checkout_roots
+    from hermes_cli.update_receipt import _updater_code_root
 
     paths = {"systemd user unit": lambda: gateway.get_systemd_unit_path(system=False),
              "systemd system unit": lambda: gateway.get_systemd_unit_path(system=True),
@@ -66,9 +67,12 @@ def _owned_by_this_checkout(kind: str) -> bool:
     if kind not in paths:
         return True
     path = paths[kind]()
-    if (foreign := definition_foreign_checkout(path)) is None:
+    mine = _updater_code_root()
+    roots = definition_checkout_roots(path)
+    if mine is not None and roots == {mine}:
         return True
-    announce_skipped_runtime(kind, path.name, None, checkout=foreign)
+    foreign = sorted(roots - ({mine} if mine is not None else set()))
+    announce_skipped_runtime(kind, path.name, None, checkout=str(foreign[0]) if foreign else None)
     return False
 
 

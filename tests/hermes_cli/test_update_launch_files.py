@@ -12,18 +12,24 @@ from pathlib import Path
 import pytest
 
 import hermes_cli.gateway as gateway_cli
-from hermes_cli import gateway_windows, source_build, update_cmd, update_completion
+from hermes_cli import (
+    gateway_windows, source_build, update_cmd, update_completion, update_launch_files, update_receipt,
+)
 
-STALE_UNIT = "[Service]\nEnvironment=\"PATH=/usr/bin:/bin\"\nRestartSec=30\n"
+_UPDATER_ROOT = update_receipt._updater_code_root()
+assert _UPDATER_ROOT is not None
+_OWN_LAUNCHER = _UPDATER_ROOT / ".hermes" / "bin" / "hermes"
+STALE_UNIT = f'[Service]\nExecStart="{_OWN_LAUNCHER}" "gateway" "run"\nEnvironment="PATH=/usr/bin:/bin"\nRestartSec=30\n'
 
 
 def _generator_reads_node_bin(root: Path):
     """Stand-in for ``generate_systemd_unit``: its PATH names ``node_modules/.bin`` when it exists.
 
-    The emitted path is fixed: refresh refuses to persist a unit naming a pytest directory."""
+    The emitted launcher names this checkout, while the PATH test observes the build root."""
     def generate(system=False, run_as_user=None):
         node_bin = "/opt/hermes/node_modules/.bin:" if (root / "node_modules" / ".bin").is_dir() else ""
-        return f"[Service]\nEnvironment=\"PATH={node_bin}/usr/bin:/bin\"\nRestartSec=5\n"
+        return (f'[Service]\nExecStart="{_OWN_LAUNCHER}" "gateway" "run"\n'
+                f'Environment="PATH={node_bin}/usr/bin:/bin"\nRestartSec=5\n')
     return generate
 
 
@@ -103,7 +109,6 @@ def test_the_paused_gateway_starts_under_the_unit_generated_after_the_node_depen
 @pytest.mark.platforms("linux")
 def test_one_failed_launch_file_is_a_followup_and_the_other_profiles_are_still_rewritten(
         tmp_path, monkeypatch, capsys):
-    from hermes_cli import update_launch_files
     from hermes_cli.config_backend import ConfigBackendUnavailable
 
     homes = [("default", tmp_path / "default"), ("work", tmp_path / "work"), ("lab", tmp_path / "lab")]
@@ -117,6 +122,7 @@ def test_one_failed_launch_file_is_a_followup_and_the_other_profiles_are_still_r
 
     monkeypatch.setattr("hermes_cli.update_receipt._profile_homes", lambda: homes)
     monkeypatch.setattr(update_launch_files, "_refreshers", lambda: [("systemd user unit", refresh)])
+    monkeypatch.setattr(update_launch_files, "_owned_by_this_checkout", lambda _kind: True)
     monkeypatch.setattr(update_launch_files.os, "geteuid", lambda: 1000)
 
     update_launch_files.refresh_launch_files()

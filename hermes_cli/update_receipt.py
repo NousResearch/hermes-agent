@@ -1060,8 +1060,9 @@ def _code_root_for_path(raw: Any) -> Optional[Path]:
         if not candidate.is_absolute():
             return None
         for parent in [candidate, *candidate.parents][:_CODE_ROOT_MAX_DEPTH]:
-            if (parent / "hermes_cli" / "main.py").is_file():
-                return parent.resolve()
+            for root in (parent, parent / "src"):
+                if (root / "hermes_cli" / "main.py").is_file():
+                    return root.resolve()
     return None
 
 

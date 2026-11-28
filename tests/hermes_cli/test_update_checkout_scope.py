@@ -20,7 +20,10 @@ import pytest
 
 import hermes_cli.gateway as gateway_cli
 from hermes_cli import update_cmd_fleet as fleet
+from hermes_cli import update_cmd_posix_pause as pause
+from hermes_cli import update_fleet_scope as fleet_scope
 from hermes_cli import update_launch_files
+from hermes_cli import update_receipt
 from hermes_cli.update_receipt import _updater_code_root as _maybe_root
 from tests.waiting import wait_until
 
@@ -102,11 +105,152 @@ def test_scratch_home_update_never_rewrites_the_account_unit_or_another_checkout
     assert fleet._restart_launchd_gateway_after_update(supervision_verify=False) == ([], [])
     assert events == [] and "launchd job of another Hermes checkout" in capsys.readouterr().out
 
+    # A shared home and an unidentifiable launcher are not proof that the job belongs to this checkout.
+    plist.write_bytes(plistlib.dumps({"Label": "ai.hermes.gateway", "EnvironmentVariables": {"HERMES_HOME": str(root)},
+                                      "ProgramArguments": ["/usr/bin/env", "hermes", "gateway", "run"]}))
+    assert fleet._restart_launchd_gateway_after_update(supervision_verify=False) == ([], [])
+    assert events == [] and "ownership could not be proved" in capsys.readouterr().out
+
+    unit = _unit(tmp_path, _updater_code_root(), root)
+    unit.write_text(f'[Service]\nExecStart="/usr/bin/env" "hermes" "gateway" "run"\n'
+                    f'Environment="HERMES_HOME={root}"\n{STALE}', encoding="utf-8")
+    update_launch_files.refresh_launch_files()
+    assert unit.read_text(encoding="utf-8").endswith(STALE) and events == []
+    assert "ownership could not be proved" in capsys.readouterr().out
+
+    unit.write_text(f'[Service]\nExecStart="/usr/bin/env" "python" "-m" "hermes_cli.main"\n'
+                    f'WorkingDirectory={other}\nEnvironment="HERMES_HOME={root}"\n{STALE}', encoding="utf-8")
+    update_launch_files.refresh_launch_files()
+    assert unit.read_text(encoding="utf-8").endswith(STALE) and events == []
+    assert f"another Hermes checkout ({other.resolve()})" in capsys.readouterr().out
+
     # Control: this checkout's own stale unit is still rewritten and reloaded.
     unit = _unit(tmp_path, _updater_code_root(), root)
     update_launch_files.refresh_launch_files()
     assert unit.read_text(encoding="utf-8") == "[Service]\nRestartSec=5\n"
     assert events == [("systemctl", "daemon-reload")]
+
+
+@pytest.mark.platforms("linux")
+def test_systemd_unit_ownership_requires_the_updating_checkout(tmp_path, monkeypatch, account):
+    root, _scratch, _events = account
+    mine = _updater_code_root()
+    other = _checkout(tmp_path / "runtime-checkout")
+    monkeypatch.setattr(fleet_scope, "systemd_unit_hermes_home", lambda *_: str(root))
+    monkeypatch.setattr(fleet_scope, "home_in_update_scope", lambda *_: True)
+    monkeypatch.setattr(update_receipt, "_updater_code_root", lambda: mine)
+    monkeypatch.setattr(fleet_scope, "announce_skipped_runtime", lambda *args, **kwargs: None)
+
+    monkeypatch.setattr(fleet_scope, "systemd_unit_checkout_roots", lambda *_: {other})
+    assert not fleet._systemd_unit_owned_by_update(["systemctl", "--user"], "hermes-gateway-foreign")
+
+    monkeypatch.setattr(fleet_scope, "systemd_unit_checkout_roots", lambda *_: {mine})
+    assert fleet._systemd_unit_owned_by_update(["systemctl", "--user"], "hermes-gateway-own")
+
+    monkeypatch.setattr(fleet_scope, "systemd_unit_checkout_roots", lambda *_: set())
+    assert not fleet._systemd_unit_owned_by_update(["systemctl", "--user"], "hermes-gateway-unknown")
+
+
+def test_code_root_resolves_checkout_in_sibling_src_layout(tmp_path):
+    runtime = tmp_path / "managed-runtime"
+    source = _checkout(runtime / "src")
+    interpreter = runtime / "venv" / "bin" / "python"
+    interpreter.parent.mkdir(parents=True)
+    interpreter.touch()
+
+    assert update_receipt._code_root_for_path(str(interpreter)) == source.resolve()
+
+
+@pytest.mark.platforms("linux")
+def test_active_systemd_ownership_requires_live_and_effective_definition_match(tmp_path, monkeypatch):
+    mine = _updater_code_root()
+    assert mine is not None
+    other = _checkout(tmp_path / "other checkout")
+    unit = "hermes-gateway.service"
+    command = ["systemctl", "--user"]
+    pid, live, effective = 101, {mine}, other
+    monkeypatch.setattr(fleet, "_unit_main_pid", lambda *_: pid)
+    monkeypatch.setattr(fleet_scope, "gateway_pid_checkout_roots", lambda _: live)
+
+    def show(args, *, timeout):
+        assert args == [*command, "show", unit, "--property=ExecStart", "--value"]
+        launcher = effective / ".hermes/bin/hermes"
+        return SimpleNamespace(returncode=0, stdout=f"{{ path={launcher} ; argv[]={launcher} gateway run ; }}")
+
+    monkeypatch.setattr(fleet, "_systemctl", show)
+    assert fleet_scope.systemd_unit_checkout_roots(command, unit) == {mine, other}
+    live = set()
+    assert fleet_scope.systemd_unit_checkout_roots(command, unit) == {other}
+    effective = mine
+    assert fleet_scope.systemd_unit_checkout_roots(command, unit) == set()
+    pid = 0  # once stopped, effective ExecStart is the remaining witness
+    assert fleet_scope.systemd_unit_checkout_roots(command, unit) == {mine}
+
+
+@pytest.mark.platforms("linux")
+def test_mixed_fleet_pauses_and_resumes_only_this_checkout(tmp_path, monkeypatch, account, capsys):
+    root, _scratch, _events = account
+    mine = _updater_code_root()
+    other = _checkout(tmp_path / "runtime-checkout")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setattr(update_receipt, "_updater_code_root", lambda: mine)
+
+    listing = SimpleNamespace(stdout=(
+        "hermes-gateway-own.service loaded active running\n"
+        "hermes-gateway-foreign.service loaded active running\n"
+    ), returncode=0)
+    monkeypatch.setattr(gateway_cli, "_ensure_user_systemd_env", lambda: None)
+    monkeypatch.setattr(fleet, "_systemd_gateway_unit_listings", lambda: [
+        ("user", ["systemctl", "--user"], listing),
+    ])
+    monkeypatch.setattr(fleet, "_unit_main_pid", lambda _cmd, name: {
+        "hermes-gateway-own": 101,
+        "hermes-gateway-foreign": 202,
+    }[name])
+    monkeypatch.setattr(pause, "_unit_cgroup", lambda _cmd, name: f"/unit/{name}")
+    monkeypatch.setattr(fleet_scope, "systemd_unit_hermes_home", lambda _cmd, _name: str(root))
+    monkeypatch.setattr(fleet_scope, "systemd_unit_checkout_roots", lambda _cmd, name: {
+        "hermes-gateway-own": {mine}, "hermes-gateway-foreign": {other},
+    }[name])
+
+    selected = pause._discover_systemd()
+    assert [entry["unit"] for entry in selected] == ["hermes-gateway-own"]
+    assert selected[0]["checkout_root"] == str(mine)
+
+    starts = []
+    skipped = []
+    monkeypatch.setattr(fleet_scope, "systemd_unit_hermes_home", lambda _cmd, _name: str(root))
+    monkeypatch.setattr(fleet_scope, "systemd_unit_checkout_roots", lambda _cmd, name: {
+        "hermes-gateway-foreign.service": {other},
+        "hermes-gateway-own.service": {mine},
+        "hermes-gateway-legacy-unknown.service": set(),
+    }[name])
+    monkeypatch.setattr(fleet_scope, "home_in_update_scope", lambda *_: True)
+    monkeypatch.setattr(fleet_scope, "announce_skipped_runtime",
+                        lambda kind, name, home, **kwargs: skipped.append((kind, name, home, kwargs.get("checkout"))))
+    monkeypatch.setattr(fleet, "_systemd_unit_owned_by_update", lambda *_, **__: False)
+    monkeypatch.setattr(pause, "_start_unit", lambda entry: starts.append(entry["unit"]) or 303)
+    monkeypatch.setattr(pause, "_RESTARTED", {"pids": set(), "units": set(), "labels": set()})
+
+    token = {"posix_units": [
+        {"kind": "systemd", "scope": "user", "unit": "hermes-gateway-foreign.service",
+         "home": str(root), "checkout_root": str(other), "pid": 202},
+        {"kind": "systemd", "scope": "user", "unit": "hermes-gateway-legacy-unknown.service",
+         "home": str(root), "pid": 404},
+        {"kind": "systemd", "scope": "user", "unit": "hermes-gateway-own.service",
+         "home": str(root), "checkout_root": str(mine), "pid": 101},
+    ], "unmapped": [], "resume_needed": True}
+    with pytest.raises(RuntimeError, match="ownership could not be proved"):
+        pause.resume_paused_set(token)
+
+    assert starts == ["hermes-gateway-own.service"]
+    assert {item[1] for item in skipped} == {
+        "hermes-gateway-foreign.service", "hermes-gateway-legacy-unknown.service",
+    }
+    assert [entry["unit"] for entry in token["posix_units"]] == ["hermes-gateway-legacy-unknown.service"]
+    assert token["restarted_services"] == ["hermes-gateway-own.service"]
+    assert token["resume_needed"] is True
+    assert "Restarted paused gateway(s): hermes-gateway-own.service" in capsys.readouterr().out
 
 
 @pytest.mark.platforms("posix")
@@ -127,7 +271,8 @@ def test_ancestor_gateway_of_another_checkout_is_never_signalled(tmp_path, monke
         signalled: list[int] = []
         monkeypatch.setattr(gateway_cli, "_is_pid_ancestor_of_current_process", lambda pid: pid == gateway.pid)
         monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda pid: signalled.append(pid) or True)
-        monkeypatch.setattr("hermes_cli.update_fleet_scope.gateway_pid_home", lambda pid: None)
+        monkeypatch.setattr("hermes_cli.update_fleet_scope.gateway_pid_home", lambda pid: str(tmp_path / ".hermes"))
+        monkeypatch.setattr("hermes_cli.update_fleet_scope.home_in_update_scope", lambda *_: True)
 
         result = fleet._drain_or_signal_gateway_for_update(gateway.pid, 5.0, "hermes-gateway")
         assert (result, signalled) == ((True, [gateway.pid]) if own else (False, []))

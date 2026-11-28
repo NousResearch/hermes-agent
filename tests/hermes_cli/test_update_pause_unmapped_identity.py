@@ -21,12 +21,17 @@ import psutil
 import pytest
 
 from gateway.status import get_process_start_time
+from hermes_cli import update_receipt
 from hermes_cli.update_cmd_windows import _unmapped_ready_filter
 from tests.waiting import wait_until
 
 
 @pytest.fixture
-def spawn(tmp_path):
+def spawn(tmp_path, monkeypatch):
+    source = tmp_path / "hermes_cli"
+    source.mkdir()
+    (source / "main.py").touch()
+    monkeypatch.setattr(update_receipt, "_updater_code_root", lambda: tmp_path.resolve())
     entry = tmp_path / "bin" / "hermes"  # a ``hermes`` entry token: the cmdline reads as a gateway
     entry.parent.mkdir()
     entry.write_text("import time\ntime.sleep(60)\n", encoding="utf-8")
@@ -38,7 +43,8 @@ def spawn(tmp_path):
         procs.append(proc)
         # Popen returns once exec has begun, before the kernel publishes the new image's argv and
         # environment: /proc/<pid>/cmdline reads empty for that instant. A gateway is running.
-        wait_until(psutil.Process(proc.pid).cmdline, interval=0.001, what="the spawned gateway's argv")
+        wait_until(lambda: psutil.Process(proc.pid).cmdline()[1:] == argv[1:],
+                   interval=0.001, what="the spawned gateway's argv")
         return proc
 
     yield _spawn, argv

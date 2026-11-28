@@ -68,8 +68,12 @@ def test_restart_phase_records_accepted_self_restart_and_verify_exits_clean(monk
     gateway is the one it runs inside."""
     from hermes_cli import gateway
     from hermes_cli import update_cmd
+    from hermes_cli import update_fleet_scope
 
     ancestor = os.getpid()
+    monkeypatch.setattr(update_fleet_scope, "gateway_pid_checkout_roots", lambda _pid: {ur._updater_code_root()})
+    monkeypatch.setattr(update_fleet_scope, "gateway_pid_home", lambda _pid: "/srv/current/.hermes")
+    monkeypatch.setattr(update_fleet_scope, "home_in_update_scope", lambda *_: True)
     monkeypatch.setattr(gateway, "_is_pid_ancestor_of_current_process", lambda pid: pid == ancestor)
     monkeypatch.setattr(gateway, "_request_gateway_self_restart", lambda pid: True)
     pending: set = set()

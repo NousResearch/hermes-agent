@@ -20,9 +20,11 @@ TOOL_REQUEST_MIDDLEWARE = "tool_request"
 TOOL_EXECUTION_MIDDLEWARE = "tool_execution"
 LLM_REQUEST_MIDDLEWARE = "llm_request"
 LLM_EXECUTION_MIDDLEWARE = "llm_execution"
+MCP_REQUEST_MIDDLEWARE = "mcp_request"
 
 VALID_MIDDLEWARE: set[str] = {
     TOOL_REQUEST_MIDDLEWARE, TOOL_EXECUTION_MIDDLEWARE, LLM_REQUEST_MIDDLEWARE, LLM_EXECUTION_MIDDLEWARE,
+    MCP_REQUEST_MIDDLEWARE,
 }
 
 
@@ -130,6 +132,22 @@ def apply_tool_request_middleware(
     return _apply_request_chain(
         TOOL_REQUEST_MIDDLEWARE, "args", trace, original_args,
         tool_name=tool_name, args=current_args, original_args=original_args, **context,
+    )
+
+
+def apply_mcp_request_middleware(
+    server_name: str, tool_name: str, args: dict[str, Any], **context: Any
+) -> RequestMiddlewareResult:
+    """Apply registered MCP request middleware to one ``tools/call``; ``{"meta": {...}}`` replaces the
+    request's ``_meta``, which starts empty. ``_meta`` is JSON-RPC request metadata, never part of the
+    model-visible arguments, so a server can read caller context the model cannot forge."""
+    from hermes_cli.plugins import has_middleware
+
+    if not has_middleware(MCP_REQUEST_MIDDLEWARE):
+        return RequestMiddlewareResult(payload={}, original_payload={})
+    return _apply_request_chain(
+        MCP_REQUEST_MIDDLEWARE, "meta", [], {},
+        server_name=server_name, tool_name=tool_name, args=_safe_copy(args), meta={}, original_meta={}, **context,
     )
 
 

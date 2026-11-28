@@ -20,8 +20,8 @@ from tools.mcp_tool_common import _exc_str, _sanitize_error, exact_mcp_identifie
 from tools import mcp_tool_loop as _loop
 from tools.mcp_tool_content import (
     _MCP_HARD_RESULT_CAP_CHARS, _cache_mcp_audio_block, _cache_mcp_image_block, _mcp_result_with_native_images,
-    _render_mcp_dropped_block_notice, _render_mcp_resource_block, _strip_reserved_meta_keys,
-    _truncate_mcp_text_result)
+    _is_reserved_mcp_meta_key, _render_mcp_dropped_block_notice, _render_mcp_resource_block,
+    _strip_reserved_meta_keys, _truncate_mcp_text_result)
 from tools.mcp_tool_errors import (
     _auth_error_detail, _is_auth_error, _is_session_expired_error, _mcp_call_failed_message)
 
@@ -603,7 +603,8 @@ async def _track_inflight_rpc(server: Any, server_name: str, op: str, *, retry_s
             inflight.discard(task)
 
 
-async def _call_tool_racing_stdio_death(server, server_name: str, tool_name: str, args: dict, progress_callback=None):
+async def _call_tool_racing_stdio_death(server, server_name: str, tool_name: str, args: dict, progress_callback=None,
+                                        meta: Optional[dict] = None):
     """``session.call_tool`` that fails fast when the stdio child is/gets dead: pre-call (a dead
     child must not hold the slot for the full timeout) and mid-call (race against
     ``_watch_stdio_children``). Both raise :class:`_StdioChildExited` for the respawn path, which
@@ -619,7 +620,9 @@ async def _call_tool_racing_stdio_death(server, server_name: str, tool_name: str
         )
     # A progress callback makes the SDK send ``_meta.progressToken``, the spec's opt-in for
     # ``notifications/progress``; without one the server must stay silent.
-    extra = {"progress_callback": progress_callback} if progress_callback is not None else {}
+    extra: dict[str, Any] = {"progress_callback": progress_callback} if progress_callback is not None else {}
+    if meta:  # plugin ``mcp_request`` middleware; omitted otherwise so the request is unchanged
+        extra["meta"] = meta
     _call_coro = server.session.call_tool(tool_name, arguments=args, **extra)
     _watch_children = getattr(server, "_watch_stdio_children", None)
     if not (inspect.iscoroutinefunction(_watch_children) and asyncio.iscoroutine(_call_coro)):
@@ -830,6 +833,18 @@ def _render_call_tool_result(result, server_name: str, image_paths: Optional[lis
         return json.dumps({"result": text_result}, ensure_ascii=False)
 
 
+def _request_meta(server_name: str, tool_name: str, args: dict, context: dict) -> Optional[dict]:
+    """``_meta`` set by plugin ``mcp_request`` middleware for this ``tools/call``; None when none set any.
+    Resolved on the caller's thread, where the turn's context is bound (the RPC runs on the MCP loop).
+    ``progressToken`` and spec-reserved keys stay the SDK's and the protocol's."""
+    from hermes_cli.middleware import apply_mcp_request_middleware
+    ids = {key: str(context.get(key) or "") for key in ("session_id", "task_id", "conversation_id")}
+    payload = apply_mcp_request_middleware(server_name, tool_name, args, **ids).payload
+    meta = {k: v for k, v in payload.items()
+            if isinstance(k, str) and k != "progressToken" and not _is_reserved_mcp_meta_key(k)}
+    return meta or None
+
+
 @asynccontextmanager
 async def _tool_call_scope(server, parallel: bool, turn_callbacks: tuple):
     """Keep admission behind discovery, but release the RPC lock for safe HTTP calls.
@@ -905,6 +920,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, *,
         # Read on the agent's thread: the coroutine below runs on the MCP loop, outside this context.
         from agent.tool_progress_relay import current_tool_progress
         report = current_tool_progress()
+        meta = _request_meta(server_name, tool_name, args, kwargs)
 
         async def _on_progress(progress, total, message):
             if report is not None:
@@ -921,7 +937,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, *,
                 if still_cleared and _core._tool_read_only_hints.get(hint_key, {}).get(tool_name) is not True:
                     return await _refuse_unconsented_write(server_name, tool_name)
                 result = await _call_tool_racing_stdio_death(
-                    server, server_name, tool_name, args, _on_progress if report is not None else None)
+                    server, server_name, tool_name, args, _on_progress if report is not None else None, meta)
             if getattr(server, "_mark_session_proven", None) is not None:  # round-trip done: transport healthy
                 server._mark_session_proven()
             image_paths.clear()

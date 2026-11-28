@@ -24,6 +24,8 @@ With middleware enabled, plugins can:
   streaming, interrupt, and hook behavior.
 - Wrap the actual tool execution callback while preserving Hermes guardrails,
   approval, post-tool hooks, and tool-result transformation.
+- Set the `_meta` of an MCP `tools/call` request: caller context the MCP
+  server reads and the model never sees.
 
 ## Contract
 
@@ -35,6 +37,7 @@ def register(ctx):
     ctx.register_middleware("llm_execution", on_llm_execution)
     ctx.register_middleware("tool_request", on_tool_request)
     ctx.register_middleware("tool_execution", on_tool_execution)
+    ctx.register_middleware("mcp_request", on_mcp_request)
 ```
 
 Every middleware callback receives:
@@ -53,6 +56,7 @@ Supported middleware kinds:
 | `tool_request` | `tool_name`, `args`, `original_args` | `{"args": {...}}` | Replace effective tool args before hooks, guardrails, approvals, and execution. |
 | `llm_execution` | `request`, `original_request`, `next_call` | Any provider response | Wrap or replace the actual provider call. |
 | `tool_execution` | `tool_name`, `args`, `original_args`, `next_call` | Any tool result | Wrap or replace the actual tool call. |
+| `mcp_request` | `server_name`, `tool_name`, `args`, `meta`, `original_meta` | `{"meta": {...}}` | Set the `_meta` of one MCP `tools/call` request. |
 
 Request middleware can return optional trace fields:
 
@@ -121,6 +125,25 @@ For each tool call, Hermes applies middleware in this order:
 
 Tool request middleware runs before approval checks. Use it carefully: a
 rewritten path, command, or URL is the value downstream policy will evaluate.
+
+### MCP Calls
+
+Inside step 4, the handler of an MCP server's tool applies
+`mcp_request` middleware on the calling thread, after the server's trust gate
+and before the request crosses to the MCP event loop. `meta` starts empty; the
+chain's result becomes the request's `_meta`, and the same value is sent again
+if Hermes retries the call after a reconnect. With no `mcp_request` middleware
+registered, the request carries no `_meta` of a plugin's.
+
+Callbacks receive `session_id`, `task_id`, and `conversation_id` when the call
+comes from an agent turn (empty for a plugin's direct `ctx.call_mcp`). Hermes
+drops `progressToken`, which the MCP SDK sets from the call's progress
+callback, and every key with a prefix the MCP specification reserves.
+
+`_meta` is JSON-RPC request metadata: it is not part of the tool's arguments,
+so the model cannot see or forge it. Use it for caller context such as a
+correlation id or a signed assertion of who the turn acts for. A server that
+authorizes on it must still verify it, and must refuse when it is missing.
 
 ## Enablement
 
@@ -231,6 +254,24 @@ def time_llm_execution(**kwargs):
 Return the same response shape Hermes expects from the provider adapter. Do not
 wrap the response in a plugin-specific envelope unless the rest of the runtime
 expects that envelope.
+
+### MCP Request Middleware
+
+This plugin tells every MCP server which Hermes session the call belongs to:
+
+```python
+def register(ctx):
+    ctx.register_middleware("mcp_request", tag_mcp_session)
+
+
+def tag_mcp_session(**kwargs):
+    if not kwargs.get("session_id"):
+        return None
+    meta = {**kwargs["meta"], "com.example/hermes-session": kwargs["session_id"]}
+    return {"meta": meta, "source": "middleware-demo", "reason": "tagged MCP session"}
+```
+
+A FastMCP tool reads it from its context: `ctx.request_context.meta`.
 
 ### Tool Execution Middleware
 

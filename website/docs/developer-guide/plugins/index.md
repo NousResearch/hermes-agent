@@ -1993,6 +1993,7 @@ The canonical list of kinds is `VALID_MIDDLEWARE` in `hermes_cli/middleware.py`:
 | `llm_request` | `request`, `original_request`, context kwargs | Return `{"request": {...}}` to replace the effective provider kwargs before Hermes sends them. |
 | `tool_execution` | the payload plus `next_call` | Wraps tool execution. Call `next_call(payload)` exactly once to run the downstream chain (or skip it to short-circuit) and return the result. |
 | `llm_execution` | the payload plus `next_call` | Same shape, wrapping the provider call. |
+| `mcp_request` | `server_name`, `tool_name`, `args`, `meta`, `original_meta`, context kwargs | Return `{"meta": {...}}` to set the `_meta` of an MCP `tools/call` request, which the server reads and the model never sees. See [Middleware](../middleware.md#mcp-calls). |
 
 **Rules that matter in practice:**
 

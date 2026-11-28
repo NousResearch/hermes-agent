@@ -247,6 +247,8 @@ def _job_rows(job: dict[str, Any]) -> list[tuple[str, str]]:
         ("Monitor", f"{monitor_source} (agent runs only on output change)" if monitor_source
          else ""),
         ("Changed", mon_state.get("last_changed_at") if monitor_source else ""),
+        ("Monitor source failing since", mon_state.get("source_failed_at")
+         if monitor_source else ""),
         ("Mode", color("no-agent", Colors.DIM) + " (script stdout delivered directly)"
          if job.get("no_agent") else ""),
         ("Timezone", job.get("timezone")),
@@ -709,6 +711,15 @@ def _cron_doctor_issues_for_job(job: dict[str, Any]) -> list[str]:
     # "delivery_failed" = the agent run succeeded; the delivery issue below reports it.
     if last_status and last_status not in {"ok", "delivery_failed", "delivery_queued"}:
         issues.append(f"last run failed: {str(job.get('last_error') or 'unknown error').strip()}")
+    mon_state = job.get("monitor_state") or {}
+    monitor_source = str(job.get("monitor_script") or job.get("monitor_url") or "").strip()
+    if monitor_source and isinstance(mon_state, dict) and mon_state.get("source_failed_at"):
+        # Open failure window: change detection is DOWN even when last_status is
+        # ok — the pinned hash predates the window and must not read as healthy.
+        issues.append(
+            "monitor source failing since "
+            f"{mon_state['source_failed_at']} — change detection is down; the stored output "
+            "hash predates the failure and must not be trusted")
     if delivery_err := str(job.get("last_delivery_error") or "").strip():
         issues.append(f"last run finished but the result was not delivered ({_short_reason(delivery_err)}). "
                       f"{_delivery_fix_hint(job)}")

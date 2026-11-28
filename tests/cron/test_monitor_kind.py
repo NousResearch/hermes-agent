@@ -239,6 +239,15 @@ def test_unified_diff_is_capped(hermes_env):
 # ---------------------------------------------------------------------------
 
 
+def _stored(job_id: str) -> dict:
+    """get_job with a non-None assertion — reads the STORE, not the caller's stale copy."""
+    from cron.jobs import get_job
+
+    job = get_job(job_id)
+    assert job is not None
+    return job
+
+
 def _make_monitor_job(hermes_env, script_body: str):
     from cron.jobs import create_job
 
@@ -414,8 +423,107 @@ def test_monitor_script_failure_is_error_not_change(hermes_env, monkeypatch):
     assert success is False
     assert error is not None
     assert observed["agent_runs"] == 1  # agent NOT invoked on source failure
-    # Stored hash untouched — a later recovery to 'state A' still suppresses.
+    # Stored hash untouched — and the failure window it opens (source_failed_at) means a later
+    # recovery to 'state A' surfaces a VISIBLE re-baseline tick, not a silent suppression
+    # (test_monitor_recovery_after_failure_is_visible).
     assert get_job(job["id"])["monitor_state"]["last_output_hash"] == stored_hash
+
+
+def test_missing_monitor_script_opens_failure_window(hermes_env):
+    """a monitor whose script VANISHED (deleted copy, update, rename) must be a
+    visible incident — failure recorded, hash untouched, failure window opened in the store —
+    never a healthy-looking tick."""
+    from cron.jobs import get_job
+    from cron.monitor import check_monitor
+    from cron.scheduler import _apply_monitor_gate
+
+    job = _make_monitor_job(hermes_env, "echo 'state A'\n")
+    outcome = check_monitor(job)
+    assert outcome.ok is True and outcome.changed is True  # baseline
+    stored_hash = _stored(job["id"])["monitor_state"]["last_output_hash"]
+
+    (hermes_env / "scripts" / "mon.sh").unlink()
+    outcome = check_monitor(_stored(job["id"]))
+    assert outcome.ok is False
+    assert "Script not found" in (outcome.error or "")
+
+    stored = _stored(job["id"])["monitor_state"]
+    assert stored["last_output_hash"] == stored_hash  # stale pin survives the failure
+    assert stored.get("source_failed_at")  # failure window opened in the STORE
+
+    # One flag per window, not one write per failing tick.
+    first_stamp = stored["source_failed_at"]
+    check_monitor(_stored(job["id"]))
+    assert _stored(job["id"])["monitor_state"]["source_failed_at"] == first_stamp
+
+    # The gate classifies the failure as a FAILED early result with an alert — not a silent
+    # no_change tick masquerading as health.
+    early, extra_prompt, monitor_context = _apply_monitor_gate(
+        _stored(job["id"]), job["id"], "monitor-source", None)
+    assert early is not None
+    success, doc, alert, _error = early
+    assert success is False
+    assert "monitor source failed" in doc
+    assert "source failed" in alert
+    assert monitor_context is None
+    assert extra_prompt is None
+
+
+def test_monitor_recovery_after_failure_is_visible(hermes_env):
+    """ regression, at the monitor-gate boundary (the decision surface run_job
+    consumes): a hash pinned BEFORE a source-failure window must not silently mask the
+    recovery tick. Recovery with identical output must produce an agent-run tick carrying the
+    recovery notice; suppression must re-arm only after that; a later REAL change must still
+    take the normal diff path. (Asserted via _apply_monitor_gate rather than run_job: the
+    run_job-level siblings above already cover the prompt-injection mechanics, and the
+    owner-execution seam they import trips this checkout's real-home IO guard.)"""
+    from cron.jobs import create_job
+    from cron.monitor import check_monitor
+    from cron.scheduler import SILENT_MARKER, _apply_monitor_gate
+
+    _write_script(hermes_env, "mon.sh", "echo 'state A'\n")
+    job = create_job(
+        prompt="Summarize what changed", model="test-model",
+        schedule="every 5m", monitor_script="mon.sh", deliver="local",
+    )
+
+    # Baseline: first run → agent runs (gate passes the baseline context through).
+    early, _extra, context = _apply_monitor_gate(job, job["id"], "guard", None)
+    assert early is None
+    assert context is not None and "state A" in context
+
+    # Failure window: source unrunnable → FAILED early result, flag set, hash pinned.
+    (hermes_env / "scripts" / "mon.sh").unlink()
+    stored = _stored(job["id"])
+    early, _extra, _context = _apply_monitor_gate(stored, job["id"], "guard", None)
+    assert early is not None and early[0] is False  # failed, never silent
+    monitor_state = _stored(job["id"])["monitor_state"]
+    assert monitor_state.get("source_failed_at")
+    pinned_hash = monitor_state["last_output_hash"]
+
+    # Recovery to the IDENTICAL pre-failure output: NOT suppressed — agent-run tick with the
+    # recovery notice; the flag clears; the baseline re-arms.
+    _write_script(hermes_env, "mon.sh", "echo 'state A'\n")
+    early, _extra, context = _apply_monitor_gate(_stored(job["id"]), job["id"], "guard", None)
+    assert early is None, "recovery tick must not be suppressed"
+    assert context is not None and "MONITOR SOURCE RECOVERED" in context
+    recovered = _stored(job["id"])["monitor_state"]
+    assert not recovered.get("source_failed_at"), "recovery must close the failure window"
+    assert recovered["last_output_hash"] == pinned_hash  # output truly unchanged
+
+    # Detection re-armed: the same output suppresses silently again.
+    early, _extra, context = _apply_monitor_gate(_stored(job["id"]), job["id"], "guard", None)
+    assert early is not None
+    assert early[0] is True and early[2] == SILENT_MARKER and "no_change" in early[1]
+    assert context is None
+
+    # A REAL change after the window takes the normal diff path.
+    _write_script(hermes_env, "mon.sh", "echo 'state B'\n")
+    early, _extra, context = _apply_monitor_gate(_stored(job["id"]), job["id"], "guard", None)
+    assert early is None
+    assert context is not None
+    assert "MONITOR CHANGE DETECTED" in context
+    assert "+state B" in context and "-state A" in context
 
 
 # ---------------------------------------------------------------------------

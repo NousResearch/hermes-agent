@@ -9,6 +9,7 @@ import {
   composerPlainText,
   deleteSelectionInEditor,
   insertComposerContentsAtCaret,
+  insertComposerLineBreak,
   normalizeComposerEditorDom,
   placeCaretAtOffset,
   placeCaretEnd,
@@ -635,5 +636,67 @@ describe('caret reveal after programmatic inserts', () => {
 
     expect(editor.scrollTop).toBe(220)
     expect(composerPlainText(editor)).toContain('said 29')
+  })
+})
+
+describe('insertComposerLineBreak', () => {
+  const editorWith = (text: string) => {
+    const editor = document.createElement('div')
+
+    editor.contentEditable = 'true'
+    editor.dataset.slot = RICH_INPUT_SLOT
+    document.body.append(editor)
+    renderComposerContents(editor, text)
+
+    return editor
+  }
+
+  afterEach(() => document.body.replaceChildren())
+
+  it('at the end adds a placeholder break that serializes to one newline', () => {
+    const editor = editorWith('abc')
+
+    placeCaretAtEnd(editor)
+
+    expect(insertComposerLineBreak(editor)).toBe(true)
+    expect(editor.querySelectorAll('br').length).toBe(2)
+    expect(composerPlainText(editor)).toBe('abc\n')
+  })
+
+  it('mid-text adds a single break', () => {
+    const editor = editorWith('abc')
+    const text = editor.firstChild as Text
+
+    window.getSelection()?.collapse(text, 1)
+
+    expect(insertComposerLineBreak(editor)).toBe(true)
+    expect(editor.querySelectorAll('br').length).toBe(1)
+    expect(composerPlainText(editor)).toBe('a\nbc')
+  })
+
+  it('a draft ending in a newline repaints with a visible trailing line', () => {
+    const editor = editorWith('abc\n')
+
+    expect(editor.querySelectorAll('br').length).toBe(2)
+    expect(composerPlainText(editor)).toBe('abc\n')
+  })
+
+  it('twice at the end yields two newlines and the caret serializes before the placeholder', () => {
+    const editor = editorWith('abc')
+
+    placeCaretAtEnd(editor)
+    insertComposerLineBreak(editor)
+    insertComposerLineBreak(editor)
+
+    expect(composerPlainText(editor)).toBe('abc\n\n')
+    expect(caretOffsetInEditor(editor)).toBe(5)
+  })
+
+  it('returns false when the caret is outside the editor', () => {
+    const editor = editorWith('abc')
+
+    window.getSelection()?.removeAllRanges()
+
+    expect(insertComposerLineBreak(editor)).toBe(false)
   })
 })

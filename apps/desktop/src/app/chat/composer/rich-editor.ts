@@ -236,6 +236,12 @@ export function renderComposerContents(target: HTMLElement, text: string, option
   // restored draft, a sent message opened for edit) pass `trailingCommitted`.
   appendComposerContents(target, text, options)
 
+  // A draft ending in a newline paints a lone trailing <br>, which has no
+  // height — the caret would sit on the previous line.
+  if (target.lastChild?.nodeName === 'BR' && target.childNodes.length > 1) {
+    target.append(placeholderBreak())
+  }
+
   // The other writer that reshapes the editor root: painting a restored draft
   // in clears the marker, clearing back to '' sets it.
   markEditorEmptiness(target)
@@ -251,6 +257,62 @@ function composerSelectionRange(editor: HTMLElement) {
   }
 
   return { range, selection }
+}
+
+/** The extra <br> that gives a trailing line break its height. Scaffolding, not
+ *  a line the user typed, so it serializes to nothing. */
+export const LINE_BREAK_PLACEHOLDER = 'linePlaceholder'
+
+function placeholderBreak() {
+  const br = document.createElement('br')
+
+  br.dataset[LINE_BREAK_PLACEHOLDER] = ''
+
+  return br
+}
+
+/** Insert a soft line break at the caret (Shift+Enter) without trusting the
+ *  browser's native contenteditable behavior, which WebKit gets wrong at the end
+ *  of the draft. A lone trailing <br> has no height, so the caret never reaches
+ *  the new line; a break with nothing after it gets a placeholder <br> behind it
+ *  (what Chromium does natively) and the caret lands between the two.
+ *  Returns false when the selection isn't inside `editor`. */
+export function insertComposerLineBreak(editor: HTMLElement): boolean {
+  const hit = composerSelectionRange(editor)
+
+  if (!hit) {
+    return false
+  }
+
+  hit.range.deleteContents()
+
+  const br = document.createElement('br')
+
+  hit.range.insertNode(br)
+
+  let next: ChildNode | null = null
+
+  for (let node: Node | null = br; node && node !== editor; node = node.parentNode) {
+    if (node.nextSibling) {
+      next = node.nextSibling
+
+      break
+    }
+  }
+
+  if (!next || (next.nodeType === Node.TEXT_NODE && !next.textContent)) {
+    br.after(placeholderBreak())
+  }
+
+  const caret = document.createRange()
+
+  caret.setStartAfter(br)
+  caret.collapse(true)
+  hit.selection.removeAllRanges()
+  hit.selection.addRange(caret)
+  revealCaret(editor)
+
+  return true
 }
 
 /** Serialized text from the editor's start up to (`container`, `offset`).
@@ -301,7 +363,7 @@ export function serializeTextBefore(editor: HTMLElement, container: Node, offset
     }
 
     if (element.tagName === 'BR') {
-      text += '\n'
+      text += LINE_BREAK_PLACEHOLDER in (element as HTMLElement).dataset ? '' : '\n'
 
       return
     }
@@ -626,7 +688,7 @@ export function composerPlainText(node: Node): string {
   }
 
   if (el.tagName === 'BR') {
-    return '\n'
+    return LINE_BREAK_PLACEHOLDER in el.dataset ? '' : '\n'
   }
 
   const text = Array.from(node.childNodes).map(composerPlainText).join('')
@@ -803,7 +865,7 @@ export function placeCaretAtOffset(editor: HTMLElement, offset: number) {
 
       // Chips and <br> are atomic: consume their serialized length whole.
       if (el.dataset.refText || el.tagName === 'BR') {
-        const length = el.dataset.refText ? el.dataset.refText.length : 1
+        const length = el.dataset.refText ? el.dataset.refText.length : LINE_BREAK_PLACEHOLDER in el.dataset ? 0 : 1
 
         if (remaining < length) {
           const range = document.createRange()

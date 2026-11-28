@@ -60,6 +60,15 @@ for the full pattern (Template Buttons postback at 45s, `RequestCache`
 state machine, `interrupt_session_activity` override for `/stop`
 orphans) and the developer-guide page for the prose walkthrough.
 
+**Inbound `MessageEvent.metadata` at the envelope boundary.** The field is
+free-form inside the turn (read it with `.get()`), but only WhatsApp's
+closed key set crosses native admission into the durable session envelope.
+Another platform's dict metadata is dropped at that boundary — never
+refused (#146220) — so a third-party adapter may stamp its own context
+without losing the message. Do not rely on `metadata` surviving a gateway
+restart: carry anything admission- or replay-critical in `text` or
+`SessionSource` instead.
+
 **Sibling adapters that share behavior.** When a single platform has
 two transport modes the user picks between — unofficial vs official
 APIs, polling vs websocket, library A vs library B — the right

@@ -84,6 +84,7 @@ vi.mock('@/store/session-states', async () => {
     $stalledSessionIds: atom([]),
     $workingSessionIds: atom([]),
     dropTilesForProfile: vi.fn(),
+    focusWorkspaceOwnerSessionTile: vi.fn(() => null),
     sessionTileDelegate: vi.fn(() => null)
   }
 })
@@ -145,7 +146,7 @@ const { openGatewayForProfile } = await import('@/store/gateway')
 
 const { $activeGatewayProfile, setShowAllProfiles } = await import('@/store/profile')
 
-const { $sessionTiles, sessionTileDelegate } = await import('@/store/session-states')
+const { $sessionTiles, focusWorkspaceOwnerSessionTile, sessionTileDelegate } = await import('@/store/session-states')
 
 const { requestSessionResume, setSessionOwnerHint, $selectedStoredSessionId } = await import('@/store/session')
 
@@ -217,6 +218,16 @@ describe('host.openSession refreshInPlace — background re-resume never navigat
     expect(requestSessionResume).not.toHaveBeenCalled()
     expect(openSessionCore).not.toHaveBeenCalled()
     expect(openGatewayForProfile).not.toHaveBeenCalled()
+  })
+
+  // The refresh mints no tab, so the reconciliation that precedes it must be
+  // able to keep one: the re-home target has to reach the tile store.
+  it('hands the stale-tab re-home target through to the tile store', () => {
+    const probe = () => true
+
+    host.focusOpenWorkspaceSession('bot:ops', probe, [], 'bot-chat-ops-tip')
+
+    expect(focusWorkspaceOwnerSessionTile).toHaveBeenCalledWith('bot:ops', probe, [], 'bot-chat-ops-tip')
   })
 
   it('stamps the owner hint so the resume routes to the owning backend', async () => {

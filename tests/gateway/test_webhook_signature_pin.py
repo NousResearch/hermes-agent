@@ -47,6 +47,7 @@ def _standard_headers() -> dict:
 _RELABELLED_V1 = {
     "linear": lambda: {"Linear-Signature": _mac(BODY)},
     "github": lambda: {"X-Hub-Signature-256": "sha256=" + _mac(BODY)},
+    "pagerduty": lambda: {"X-PagerDuty-Signature": "v1=" + _mac(BODY)},
 }
 
 
@@ -95,9 +96,10 @@ async def test_unknown_signature_pin_fails_closed():
 # Each supported header family, correctly signed with the route secret, and the families each pin admits.
 _FAMILY_HEADERS = {
     "v2": _v2_headers, "standard": _standard_headers, "linear": lambda: {"Linear-Signature": _mac(BODY)},
-    "github": lambda: {"X-Hub-Signature-256": "sha256=" + _mac(BODY)}, "gitlab": lambda: {"X-Gitlab-Token": SECRET}}
+    "github": lambda: {"X-Hub-Signature-256": "sha256=" + _mac(BODY)}, "gitlab": lambda: {"X-Gitlab-Token": SECRET},
+    "pagerduty": lambda: {"X-PagerDuty-Signature": "v1=" + _mac(BODY)}}
 _PIN_ADMITS = {"generic": {"v2", "standard"}, "github": {"github"}, "gitlab": {"gitlab", "standard"},
-               "linear": {"linear"}}
+               "linear": {"linear"}, "pagerduty": {"pagerduty"}}
 
 
 @pytest.mark.parametrize("family", sorted(_FAMILY_HEADERS))
@@ -106,3 +108,23 @@ _PIN_ADMITS = {"generic": {"v2", "standard"}, "github": {"github"}, "gitlab": {"
 async def test_each_pin_admits_only_its_own_families(pin, family):
     expected = 202 if family in _PIN_ADMITS[pin] else 404
     assert await _post(_adapter({"signature": pin}), _FAMILY_HEADERS[family](), f"{pin}-{family}") == expected
+
+
+@pytest.mark.asyncio
+async def test_pagerduty_v3_delivery_rotation_event_type_and_retry():
+    """PagerDuty sends one ``v1=`` per active secret, the event type inside the body, and a retry-stable
+    ``X-Webhook-Id``: a rotated header verifies, ``events`` filters on ``event.event_type``, a retry dedupes."""
+    body = b'{"event":{"id":"01ABC","event_type":"incident.triggered","data":{"title":"API latency"}}}'
+    other = hmac.new(b"previous-secret", body, hashlib.sha256).hexdigest()
+    signature = f"v1={other},v1={hmac.new(SECRET.encode(), body, hashlib.sha256).hexdigest()}"
+    adapter = _adapter({"signature": "pagerduty", "events": ["incident.triggered"]})
+    async with TestClient(TestServer(_app(adapter))) as cli:
+        async def post(sig: str, delivery: str):
+            resp = await cli.post("/webhooks/r", data=body, headers={
+                "Content-Type": "application/json", "X-PagerDuty-Signature": sig, "X-Webhook-Id": delivery})
+            return resp.status, await resp.json()
+
+        assert await post(f"v1={other}", "d0") == (404, {"error": "Unknown route: r"})
+        status, accepted = await post(signature, "d1")
+        assert (status, accepted["event"], accepted["delivery_id"]) == (202, "incident.triggered", "d1")
+        assert (await post(signature, "d1"))[1]["status"] == "duplicate"

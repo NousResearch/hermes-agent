@@ -78,9 +78,9 @@ Routes define how different webhook sources are handled. Each route is a named e
 
 | Property | Required | Description |
 |----------|----------|-------------|
-| `events` | No | List of event types to accept (e.g. `["pull_request"]`). If empty, all events are accepted. Event type is read from `X-GitHub-Event`, `X-GitLab-Event`, or `event_type` in the payload. |
+| `events` | No | List of event types to accept (e.g. `["pull_request"]`). If empty, all events are accepted. Event type is read from `X-GitHub-Event`, `X-GitLab-Event`, `event_type`/`type` in the payload, or PagerDuty's `event.event_type` (e.g. `incident.triggered`). |
 | `secret` | **Yes** | HMAC secret for signature validation. Falls back to the global `secret` if not set on the route. Set to `"INSECURE_NO_AUTH"` for testing only (skips validation). |
-| `signature` | No | Pin the route to one signature scheme: `generic` (`X-Webhook-Signature-V2` + `X-Webhook-Timestamp`, or Standard Webhooks / Svix headers), `github` (`X-Hub-Signature-256`), `gitlab` (`X-Gitlab-Token`, or a GitLab signing token sent as Standard Webhooks headers) or `linear` (`Linear-Signature`). Every other header family gets the same `404` as an unknown route. Omit it to accept every supported scheme (the behaviour before this key existed). `hermes webhook subscribe` writes `signature: generic` for new routes. Recommended; see [Pin the signature scheme](#pin-the-signature-scheme). |
+| `signature` | No | Pin the route to one signature scheme: `generic` (`X-Webhook-Signature-V2` + `X-Webhook-Timestamp`, or Standard Webhooks / Svix headers), `github` (`X-Hub-Signature-256`), `gitlab` (`X-Gitlab-Token`, or a GitLab signing token sent as Standard Webhooks headers) `linear` (`Linear-Signature`) or `pagerduty` (`X-PagerDuty-Signature`). Every other header family gets the same `404` as an unknown route. Omit it to accept every supported scheme (the behaviour before this key existed). `hermes webhook subscribe` writes `signature: generic` for new routes. Recommended; see [Pin the signature scheme](#pin-the-signature-scheme). |
 | `profile` | No | Profile authorized to execute this route when `gateway.multiplex_profiles` is enabled. Omit it for a default-profile-only route; set a profile name (for example `coder`) to bind the route and its secret to `/p/coder/webhooks/<route>`. Dynamic subscriptions set it with `hermes webhook subscribe <name> --route-profile coder`. |
 | `prompt` | No | Template string with dot-notation payload access (e.g. `{pull_request.title}`). If omitted, the full JSON payload is dumped into the prompt. Payload fields are untrusted — see [Authenticated does not mean trusted](#authenticated-does-not-mean-trusted). |
 | `filters` | No | Declarative payload filters evaluated after auth/body/event filtering and before agent or direct delivery work. Non-matches return `{"status":"ignored","reason":"filter"}` with HTTP 200. |
@@ -299,6 +299,40 @@ gh auth login
 ### 4. Test it
 
 Open a pull request on the repository. The webhook fires, Hermes processes the event, and posts a review comment on the PR.
+
+---
+
+## PagerDuty Webhook Setup {#pagerduty-webhook-setup}
+
+PagerDuty v3 webhook subscriptions sign every delivery with `X-PagerDuty-Signature` and carry the event type inside the body (`event.event_type`), so `events` filters work on values like `incident.triggered`.
+
+### 1. Add the route
+
+```bash
+hermes webhook subscribe pagerduty-incidents \
+  --signature pagerduty \
+  --events incident.triggered,incident.reopened \
+  --prompt "PagerDuty {event.event_type}: {event.data.title} ({event.data.html_url}). Triage it." \
+  --deliver telegram --deliver-chat-id <chat id>
+```
+
+Or in `config.yaml`:
+
+```yaml
+platforms:
+  webhook:
+    extra:
+      routes:
+        pagerduty-incidents:
+          secret: "<the subscription's signing secret>"
+          signature: pagerduty
+          events: ["incident.triggered", "incident.reopened"]
+          prompt: "PagerDuty {event.event_type}: {event.data.title} ({event.data.html_url}). Triage it."
+```
+
+### 2. Create the subscription in PagerDuty
+
+Create a **Generic Webhook (v3)** subscription (Integrations → Generic Webhooks, or the Webhook Subscriptions API) pointing at `https://your-server:8644/webhooks/pagerduty-incidents`. PagerDuty generates the signing secret when the subscription is created: put that value in the route's `secret` (for a dynamic route, re-run `hermes webhook subscribe pagerduty-incidents --secret <value> ...`). During a PagerDuty-side secret rotation both signatures arrive in one header and either one validates. Retries reuse `X-Webhook-Id`, so a retried delivery is skipped instead of starting a second agent run.
 
 ---
 
@@ -606,6 +640,7 @@ The adapter validates incoming webhook signatures using the appropriate method f
 
 - **GitHub**: `X-Hub-Signature-256` header — HMAC-SHA256 hex digest prefixed with `sha256=`
 - **GitLab**: `X-Gitlab-Token` header — plain secret string match
+- **PagerDuty (v3 webhooks)**: `X-PagerDuty-Signature` header — one or more comma-separated `v1=<hex HMAC-SHA256 of the body>` values; any one matching is accepted, so PagerDuty's zero-downtime secret rotation keeps working
 - **Standard Webhooks**: `webhook-id`, `webhook-timestamp`, and `webhook-signature` headers — signed content is `{id}.{timestamp}.{raw_body}` with a `v1,<base64-hmac-sha256>` signature
 - **Generic (V2, recommended)**: `X-Webhook-Signature-V2` + `X-Webhook-Timestamp` headers — HMAC-SHA256 hex digest of `<timestamp>.<body>`. The timestamp (Unix seconds) must be within ±300 seconds of the server clock, which prevents captured requests from being replayed later.
 - **Generic (V1, rejected)**: `X-Webhook-Signature` signs only the body, so a captured request remains valid after the delivery-ID cache expires. V1-only requests receive the same `404` as an unknown route, including on loopback. Switch senders to the timestamp-bound V2 format above; the gateway logs migration instructions once per route.
@@ -614,7 +649,7 @@ If a secret is configured but no recognized signature header is present, the req
 
 ### Pin the signature scheme {#pin-the-signature-scheme}
 
-GitHub (`X-Hub-Signature-256`), Linear (`Linear-Signature`) and the rejected V1 header all carry the same value: HMAC-SHA256 of the body under the route secret, with no timestamp. On a route without `signature`, a captured V1 request can therefore still be replayed by moving its MAC into `Linear-Signature` (or `X-Hub-Signature-256` with a `sha256=` prefix) and sending a fresh delivery ID. Set `signature` on every route so it accepts only the scheme its sender uses:
+GitHub (`X-Hub-Signature-256`), Linear (`Linear-Signature`), PagerDuty (`X-PagerDuty-Signature`, with a `v1=` prefix) and the rejected V1 header all carry the same value: HMAC-SHA256 of the body under the route secret, with no timestamp. On a route without `signature`, a captured V1 request can therefore still be replayed by moving its MAC into `Linear-Signature` (or `X-Hub-Signature-256` with a `sha256=` prefix) and sending a fresh delivery ID. Set `signature` on every route so it accepts only the scheme its sender uses:
 
 ```yaml
 routes:
@@ -628,7 +663,7 @@ routes:
 
 An unknown value is a configuration error: a static route stops the adapter from starting, a dynamic subscription is skipped, and neither falls back to accepting every scheme.
 
-If a sender used body-only V1 (`X-Webhook-Signature`), **rotate that route's secret** when you move it to V2. Old captures stop validating under every header family only once the secret changes. GitHub and Linear signatures have no timestamp of their own, so a pinned `github`/`linear` route still relies on the 1-hour delivery-ID cache against replays of its own provider's requests.
+If a sender used body-only V1 (`X-Webhook-Signature`), **rotate that route's secret** when you move it to V2. Old captures stop validating under every header family only once the secret changes. GitHub, Linear and PagerDuty signatures have no timestamp of their own, so a pinned `github`/`linear`/`pagerduty` route still relies on the 1-hour delivery-ID cache against replays of its own provider's requests.
 
 ### Secret is required
 
@@ -656,7 +691,7 @@ Requests exceeding the limit receive a `429 Too Many Requests` response.
 
 ### Idempotency
 
-Delivery IDs (from `X-GitHub-Delivery`, `svix-id`, `webhook-id`, `X-Request-ID`, or a random per-request ID) are cached for **1 hour**. Duplicate deliveries (e.g. webhook retries) are silently skipped with a `200` response, preventing duplicate agent runs.
+Delivery IDs (from `X-GitHub-Delivery`, `svix-id`, `webhook-id`, `X-Webhook-Id` (PagerDuty), `X-Request-ID`, or a random per-request ID) are cached for **1 hour**. Duplicate deliveries (e.g. webhook retries) are silently skipped with a `200` response, preventing duplicate agent runs.
 
 ### Body size limits
 

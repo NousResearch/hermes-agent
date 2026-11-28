@@ -436,6 +436,8 @@ def _test_signature_headers(scheme, secret: str, body: bytes) -> dict[str, str]:
         return {"X-Hub-Signature-256": "sha256=" + body_mac, "X-GitHub-Event": "test"}
     if scheme == "linear":
         return {"Linear-Signature": body_mac}
+    if scheme == "pagerduty":
+        return {"X-PagerDuty-Signature": "v1=" + body_mac}
     if scheme == "gitlab":
         return {"X-Gitlab-Token": secret, "X-Gitlab-Event": "test"}
     timestamp = str(int(time.time()))

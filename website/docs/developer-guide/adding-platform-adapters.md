@@ -271,6 +271,27 @@ def register(ctx):
 Feature-detect these fields with `dataclasses.fields(PlatformEntry)` as above so the plugin stays loadable on
 older Hermes cores that predate them.
 
+### Local bridges: `keeps_gateway_up`
+
+A client (`hermes chat`, the TUI, Desktop) that finds no gateway starts one detached with
+`gateway run --idle-exit`. That gateway exits after `gateway.unmanaged_idle_exit_seconds`
+(default 600) with no clients and no work. By default, an enabled, connected or reconnecting
+adapter counts as work, so a gateway with any messaging platform never exits on its own.
+
+An adapter that bridges to a local service (for example, a long-poll against a loopback app)
+can set the `BasePlatformAdapter` class attribute `keeps_gateway_up = False`. The adapter
+then does not hold an auto-started gateway up. A turn that runs from its messages still holds
+the gateway, as do attached clients, queued admissions and runnable cron jobs.
+
+```python
+class MyBridgeAdapter(BasePlatformAdapter):
+    keeps_gateway_up = False  # connection alone is not work
+```
+
+Leave the default (`True`) for chat networks: a bot must stay connected to receive messages.
+Gateways under a supervisor (systemd, launchd, Desktop) or started without `--idle-exit` never
+idle-exit, so the attribute has no effect there. Older cores ignore the attribute.
+
 ## Authorization fields for chat platforms
 
 Two more optional `PlatformEntry` fields carry gateway authorization behaviour that core used to

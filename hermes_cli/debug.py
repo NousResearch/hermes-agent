@@ -675,11 +675,56 @@ def run_debug_delete(args):
             print(f"  ✗ Could not delete {safe_url}: {redact_debug_support_text(exc)}")
 
 
+def run_debug_pastes(args):
+    """List (or purge) this profile's collapsed-paste files."""
+    from hermes_cli import paste_store
+    if getattr(args, "purge", False):
+        deleted, remaining = paste_store.sweep_pastes(purge_all=True)
+        print(f"Deleted {deleted} paste file(s); {remaining} still present.")
+        return
+    paths = paste_store.list_pastes()
+    directory = paste_store.paste_dir()
+    if not paths:
+        print(f"No collapsed paste files in {directory}.")
+        return
+    minutes = paste_store.retention_minutes()
+    policy = (f"expire after {minutes:g} min (paste_retention_minutes)"
+              if minutes > 0 else "never expire (paste_retention_minutes: 0)")
+    total = 0
+    now = time.time()
+    rows = []
+    for path in paths:
+        try:
+            st = path.stat()
+        except OSError:
+            continue
+        total += st.st_size
+        rows.append((_human_age(now - st.st_mtime), st.st_size, path.name))
+    print(f"{len(rows)} paste file(s) in {directory} ({total / 1024:.1f} KiB) — {policy}\n")
+    for age, size, name in rows[:50]:
+        print(f"  {age:>9}  {size:>8}  {name}")
+    if len(rows) > 50:
+        print(f"  … and {len(rows) - 50} more")
+    print("\nPurge every one now: hermes debug pastes --purge")
+
+
+def _human_age(seconds: float) -> str:
+    seconds = max(seconds, 0)
+    if seconds < 90:
+        return f"{seconds:.0f}s"
+    if seconds < 90 * 60:
+        return f"{seconds / 60:.0f}m"
+    if seconds < 48 * 3600:
+        return f"{seconds / 3600:.0f}h"
+    return f"{seconds / 86400:.0f}d"
+
+
 def run_debug(args):
     """Route debug subcommands (sweeping expired pastes opportunistically on every call)."""
     _best_effort_sweep_expired_pastes()
-    handler = {"share": run_debug_share, "delete": run_debug_delete}.get(
-        getattr(args, "debug_command", None))
+    command = str(getattr(args, "debug_command", "") or "")
+    handler = {"share": run_debug_share, "delete": run_debug_delete,
+               "pastes": run_debug_pastes}.get(command)
     if handler is None:
         print(_DEBUG_USAGE)
     else:
@@ -692,6 +737,7 @@ Usage: hermes debug <command>
 Commands:
   share    Upload an allowlisted debug summary to a public paste (full logs: --nous)
   delete   Delete a previously uploaded paste
+  pastes   List (or --purge) local collapsed-paste files
 
 Options (share):
   --lines N    Log lines per file in the --nous / --local report (default: 200)
@@ -702,4 +748,7 @@ Options (share):
   --no-redact  Disable secret redaction of --nous / --local logs (default: redact)
 
 Options (delete):
-  <url> ...    One or more paste URLs to delete"""
+  <url> ...    One or more paste URLs to delete
+
+Options (pastes):
+  --purge      Delete every local paste file now"""

@@ -345,6 +345,13 @@ def _serve():
     from hermes_cli.observability.shared_metrics_disabled import set_process_surface
     set_process_surface("tui_gateway")
 
+    # Collapsed pastes expire (paste_retention_minutes); sweep the ones left by earlier sessions.
+    try:
+        from hermes_cli.paste_store import maybe_sweep_pastes
+        maybe_sweep_pastes()
+    except Exception:
+        logger.debug("startup paste sweep skipped", exc_info=True)
+
     # One TLS authority: trust the OS store process-wide before any
     # outbound call resolves a CA bundle (see agent/ssl_verify.py).
     try:

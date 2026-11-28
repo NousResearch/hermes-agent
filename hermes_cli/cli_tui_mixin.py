@@ -1644,16 +1644,17 @@ class CLITuiMixin:
 
     def _tui_collapse_paste(self, text: str, line_count: int, *, fallback: bool) -> str:
         """Save a large paste under ~/.hermes/pastes and return the placeholder for the buffer."""
-        from cli import _hermes_home, datetime, logger
+        from cli import _hermes_home, logger
+        from hermes_cli import paste_store
         self._tui_paste_counter += 1
-        paste_dir = _hermes_home / "pastes"
-        paste_dir.mkdir(parents=True, exist_ok=True)
-        paste_file = paste_dir / f"paste_{self._tui_paste_counter}_{datetime.now().strftime('%H%M%S')}.txt"
-        paste_file.write_text(text, encoding="utf-8")
+        paste_file = paste_store.write_paste(text, self._tui_paste_counter, home=_hermes_home)
         logger.info(
             "Collapsed paste #%d: %d lines, %d chars -> %s" + (" (fallback)" if fallback else ""),
             self._tui_paste_counter, line_count + 1, len(text), paste_file)
         self._tui_paste_just_collapsed = True
+        # Paste files expire (paste_retention_minutes); sweeping here keeps the dir bounded
+        # even for a user who never restarts the CLI.
+        paste_store.maybe_sweep_pastes(config=getattr(self, "config", None), home=_hermes_home)
         return f"[Pasted text #{self._tui_paste_counter}: {line_count + 1} lines \u2192 {paste_file}]"
 
     def _tui_paste_over_threshold(self, text: str, line_count: int, threshold_key: str) -> bool:

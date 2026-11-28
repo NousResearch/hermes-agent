@@ -378,10 +378,16 @@ class SignalAdapter(BasePlatformAdapter):
         """Gate on require_mention (False = drop) and strip the bot's own @mention from every group
         message, so the agent doesn't read "@+155****4567 say hello" as a directive to contact that number."""
         account_norm = self._account_normalized
+        # A linked device shares the user's number, so it has no number of its own to be mentioned
+        # with: Signal clients send only the ACI (UUID) in mention metadata and leave `number` empty.
+        # `_recipient_uuid_by_number` is seeded from the account's own envelopes for exactly that case.
+        bot_uuid = self._recipient_uuid_by_number.get(account_norm) if account_norm else None
         if self.require_mention:
             mentioned_in_text = account_norm and (f"@{account_norm}" in (text or ""))
-            mentioned_in_metadata = any(account_norm in (m.get("number"), m.get("uuid"))
-                                        for m in (data_message.get("mentions") or []))
+            mentioned_in_metadata = any(
+                account_norm in (m.get("number"), m.get("uuid"))
+                or (bot_uuid is not None and m.get("uuid") == bot_uuid)
+                for m in (data_message.get("mentions") or []))
             if not mentioned_in_text and not mentioned_in_metadata:
                 logger.debug("Signal: ignoring group message (require_mention=true, bot not mentioned)")
                 return False, text

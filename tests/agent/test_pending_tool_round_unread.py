@@ -16,11 +16,8 @@ from __future__ import annotations
 
 import json
 
-from agent.context_compressor import (
-    ContextCompressor,
-    _summarize_tool_result,
-    _tool_output_text,
-)
+from agent.context_compressor import ContextCompressor, _summarize_tool_result
+from agent.context_compressor_prune import tool_output_text
 
 CTX = 200_000
 MAX_TOKENS = 32_000
@@ -186,4 +183,4 @@ def test_execute_code_stub_counts_lines_in_the_output():
 
 def test_output_text_falls_back_when_the_envelope_is_malformed():
     broken = '{"output": "unterminated'
-    assert _tool_output_text("terminal", broken) == broken
+    assert tool_output_text("terminal", broken) == broken

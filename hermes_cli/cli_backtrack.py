@@ -18,6 +18,7 @@ cli.py-internal symbols are imported lazily (import cycle).
 from __future__ import annotations
 
 from agent.i18n import t
+from hermes_cli.input_sanitize import replace_lone_surrogates
 
 
 _BROWSE_KEYS = ("left", "right", "h", "l", "up", "down", "j", "k", "pageup", "pagedown", "enter", "q", "f")
@@ -276,7 +277,7 @@ class CLIBacktrackMixin:
         edit = self._backtrack_edit
         if edit is None:
             return super()._tui_submit_buffer(event, buf)
-        text = buf.text.strip()
+        text = replace_lone_surrogates(buf.text.strip())
         if not text and not self._attached_images:
             self._backtrack_cancel_edit()
             return None
@@ -286,7 +287,7 @@ class CLIBacktrackMixin:
             return super()._tui_submit_buffer(event, buf)
         self._backtrack_edit = None
         self._inline_pastes(buf)
-        self._pending_input.put(BacktrackResend(buf.text.strip(), **edit))
+        self._pending_input.put(BacktrackResend(text, **edit))
         buf.reset(append_to_history=True)
         event.app.invalidate()
         return None

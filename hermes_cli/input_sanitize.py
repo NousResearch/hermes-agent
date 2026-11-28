@@ -51,4 +51,28 @@ def sanitize_user_prompt_text(text: str) -> str:
     """Normalize user-authored prompt text before persistence or model input."""
     if not isinstance(text, str) or not text:
         return text
-    return collapse_repeated_input_artifacts(strip_leaked_bracketed_paste_wrappers(text))
+    return collapse_repeated_input_artifacts(
+        strip_leaked_bracketed_paste_wrappers(replace_lone_surrogates(text))
+    )
+
+
+def replace_lone_surrogates(text: str) -> str:
+    """Turn lone surrogates into U+FFFD and a valid pair into its actual character."""
+    if not isinstance(text, str) or not text:
+        return text
+    if not any("\ud800" <= ch <= "\udfff" for ch in text):
+        return text
+    out = []
+    index = 0
+    length = len(text)
+    while index < length:
+        char = text[index]
+        if "\ud800" <= char <= "\udbff" and index + 1 < length and "\udc00" <= text[index + 1] <= "\udfff":
+            # A valid pair is one non-BMP character; combine it so it encodes.
+            code = 0x10000 + ((ord(char) - 0xD800) << 10) + (ord(text[index + 1]) - 0xDC00)
+            out.append(chr(code))
+            index += 2
+            continue
+        out.append("\ufffd" if "\ud800" <= char <= "\udfff" else char)
+        index += 1
+    return "".join(out)

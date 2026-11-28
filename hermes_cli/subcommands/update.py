@@ -117,4 +117,11 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
         help="Update code and dependencies but defer the fleet restart. Use for updates "
              "running inside a gateway cgroup, then restart gateways separately.",
     )
+    update_parser.add_argument(
+        "--rollback", action="store_true", default=False,
+        help="Source checkouts with updates.rollback_releases set: go back to the release this install "
+             "ran before the current one (repeat to step further back), through the normal update "
+             "pipeline: dependency sync, downgrade guard and gateway restart included. Needs no network. "
+             "A later plain `hermes update` moves forward again.",
+    )
     update_parser.set_defaults(func=cmd_update)

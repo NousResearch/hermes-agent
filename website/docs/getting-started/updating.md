@@ -222,6 +222,39 @@ older release on the upgraded database:
 
 Sessions and messages created after the update are not in that snapshot.
 
+### Rolling back the last update: `hermes update --rollback`
+
+Source checkouts can keep their previous releases for a one-command, offline rollback. Turn it
+on in `config.yaml`:
+
+```yaml
+updates:
+  rollback_releases: 3   # keep the 3 most recent commits this install updated away from (0 = off)
+```
+
+From then on, every `hermes update` that moves the code records the commit it moved off as a
+git ref (`refs/worktree/hermes/releases/<seq>-<sha>`) and prunes the ledger to the newest N. The
+entry is written after the move, so a failed update or one that finds nothing new leaves the
+ledger as it was. The refs are private to that checkout (another worktree of the same repository
+keeps its own ledger) and keep those commits on disk, so going back needs no network, not even
+on a shallow checkout.
+
+`hermes update --rollback` picks the release before the one you are running and moves the
+install there through the normal update pipeline: gateways are paused and restarted on that
+code, dependencies are re-synced to its lockfile, the syntax checks run, and the
+[downgrade guard](#rolling-back-to-an-older-release) still refuses a release that predates the
+gateway runtime your `state.db` uses. The checkout lands detached at that commit. Run it again
+to step further back; a plain `hermes update` moves forward again.
+
+It does not cover:
+
+- **Data.** Only code and dependencies move. Config or database migrations a newer release
+  made stay; restore a pre-update snapshot or backup for those.
+- **Updates made before the setting was on**, and installs that are not git checkouts (ZIP,
+  Docker, Nix, packages).
+- **Processes Hermes does not restart.** A `hermes chat` or Desktop backend that was already
+  running keeps the code it loaded until you restart it, as after any update.
+
 ### Why the gateway restart can take a while
 
 The restart happens when the gateway is idle: the running gateway keeps serving normally (new turns, background-process notices and background-subagent completions all still run) and exits at the first moment no work is in flight (chat turns, cron jobs, API runs, background subagents, notify-watched background processes). Live work is never interrupted on a timer: every `agent.restart_after_turn_timeout` seconds (30 minutes by default) the gateway logs a warning naming what it is still waiting on and keeps waiting; only a forced restart stops it. While that wait is in progress the updater prints, every 30 seconds, what the gateway is still holding for — for example:

@@ -3,35 +3,20 @@ import { computed } from 'nanostores'
 
 import type { DesktopConnectionsRegistry, DesktopRegistryConnection } from '@/global'
 import { $activeConnectionId, $connectionsRegistry } from '@/store/connections'
-import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
+import { $activeGatewayProfile } from '@/store/profile'
 
-import { bindTerminalDefaultGateway, forgetRemovedTerminalGateways, type TerminalEntry } from './terminals'
+import { shellGatewayFor } from './terminal-gateway-routing'
+import { focusedTerminalWorkspace } from './terminal-workspace'
+
+export { shellGatewayFor } from './terminal-gateway-routing'
+
+import { bindTerminalDefaultGateway, bindTerminalWorkspace, forgetRemovedTerminalGateways, type TerminalEntry } from './terminals'
 
 /** The gateway a terminal tab was opened on. Only This device and SSH gateways
  *  carry a shell; the SSH tunnel is keyed by (connection, profile). */
 export interface TerminalGateway {
   connectionId: string
   profile?: string
-}
-
-/** Where a shell for `connectionId` runs: an SSH gateway runs it on its own
- *  host; This device, URL/token and cloud gateways (no shell transport) run it
- *  here and say so. Undefined while the registry is unknown (or on a host with
- *  none, like the Webapp), so main keeps routing by the window. */
-export function shellGatewayFor(
-  connectionId: null | string | undefined,
-  profile: null | string | undefined,
-  registry: DesktopConnectionsRegistry | null | undefined
-): TerminalGateway | undefined {
-  const source = connectionId ? registry?.connections.find(connection => connection.id === connectionId) : undefined
-
-  if (!source) {
-    return undefined
-  }
-
-  return source.kind === 'ssh'
-    ? { connectionId: source.id, profile: normalizeProfileKey(profile) }
-    : { connectionId: LOCAL_CONNECTION_ID }
 }
 
 /** A new terminal opens on the gateway picked in Sessions. */
@@ -50,6 +35,7 @@ export const runsOverSsh = (gateway: TerminalGateway | undefined): boolean =>
 // New tabs record this gateway, and entering a session re-selects a tab in its
 // cwd only on the session's host.
 bindTerminalDefaultGateway($defaultTerminalGateway)
+bindTerminalWorkspace(focusedTerminalWorkspace)
 
 // A gateway that leaves the registry is gone for its tabs for good: ids are
 // reusable label slugs, so a later gateway with the same name is another

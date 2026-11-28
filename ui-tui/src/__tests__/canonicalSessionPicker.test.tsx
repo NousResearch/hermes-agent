@@ -5,9 +5,12 @@ import React from 'react'
 import { expect, it, vi } from 'vitest'
 
 import { ActiveSessionSwitcher } from '../components/activeSessionSwitcher.js'
+import { messages } from '../i18n/runtime.js'
 import { DEFAULT_THEME } from '../theme.js'
 
-it('canonical sessions render and select owner rows using only the canonical list', async () => {
+const modelCases = [null, undefined, '', 'vendor/example-model']
+
+it.each(modelCases)('keeps a canonical session selectable with model %s', async model => {
   const request = vi.fn(async (method: string) => {
     if (method !== 'session.list') {
       throw new Error('invalid_params')
@@ -22,6 +25,7 @@ it('canonical sessions render and select owner rows using only the canonical lis
           title: 'Owned conversation',
           started_at: 1,
           message_count: 2,
+          model,
           running: true
         }
       ]
@@ -70,6 +74,7 @@ it('canonical sessions render and select owner rows using only the canonical lis
     expect(request.mock.calls.every(([method]) => method === 'session.list')).toBe(true)
     expect(output).toContain('Owned conversation')
     expect(output).toContain('working')
+    expect(output).toContain(model ? 'example-model' : messages().pickers.session.modelUnknown)
     stdin.write('\r')
     await new Promise(resolve => setImmediate(resolve))
     expect(onSelect).toHaveBeenCalledWith('owner')

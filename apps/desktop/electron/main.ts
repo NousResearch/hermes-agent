@@ -8996,7 +8996,7 @@ async function sshProbeReuseProof(baseUrl, token, spawnNonce) {
   }
 }
 
-async function teardownSshConnection(profile) {
+async function teardownSshConnection(profile, { keepRemote = false }: { keepRemote?: boolean } = {}) {
   const scope = sshScopeKey(profile)
   sshIsolatedKeepalives.stop(scope)
   const state = sshConnections.get(scope)
@@ -9022,14 +9022,18 @@ async function teardownSshConnection(profile) {
       },
       {
         cleanupRemote:
-          state.remotePlatform === 'Windows'
+          keepRemote
+            ? async () => {
+                sshRememberLog('[ssh] resume teardown: keeping remote backend ownership record')
+              }
+            : state.remotePlatform === 'Windows'
             ? async () => {
                 // connectWindowsRemote does not share POSIX lock/kill. Stay
                 // silent on the kill path, but leave a log so quit is not a
                 // mysterious no-op on Windows remotes.
                 sshRememberLog('[ssh] skip remote serve teardown on Windows remotes; POSIX disconnect does not apply')
               }
-            : remoteLifecycle.disconnect
+              : remoteLifecycle.disconnect
       }
     )
   )
@@ -10317,7 +10321,7 @@ async function ensureRegistryBackend(
           if (source.kind === 'ssh') {
             // Teardown runs INSIDE the bootstrap drain barrier so a reconnect
             // cannot start a new SSH bootstrap into a dying scope (#106935).
-            await sshBootstrapCoordinator.cancelAndWait(key, () => teardownSshConnection(key))
+            await sshBootstrapCoordinator.cancelAndWait(key, () => teardownSshConnection(key, { keepRemote: true }))
           }
         }
       })
@@ -13647,7 +13651,9 @@ ipcMain.handle('hermes:connection:revalidate', async () => {
 
       if (conn?.remoteKind === 'ssh') {
         const profile = primaryProfileKey()
-        await sshBootstrapCoordinator.cancelAndWait(sshScopeKey(profile), () => teardownSshConnection(profile))
+        await sshBootstrapCoordinator.cancelAndWait(sshScopeKey(profile), () =>
+          teardownSshConnection(profile, { keepRemote: true })
+        )
       }
     }
 
@@ -13704,7 +13710,9 @@ function revalidateSuspectPoolAfterResume() {
         // The pool key doubles as the SSH scope for registry SSH backends and
         // resolves through sshScopeKey() for bare-profile remotes; both
         // teardown calls no-op when the scope holds no SSH state.
-        await sshBootstrapCoordinator.cancelAndWait(poolKey, () => teardownSshConnection(poolKey))
+        await sshBootstrapCoordinator.cancelAndWait(poolKey, () =>
+          teardownSshConnection(poolKey, { keepRemote: true })
+        )
       },
       tracker: remoteLiveness
     })

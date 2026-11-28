@@ -285,6 +285,12 @@ async def _mutate_session_request(request, profile, session_id, *, request_id,
         else:
             with _native_history_transport(request, authority, actor):
                 result = await mutate_session(authority, actor, SessionRef(authority.profile_id, session_id), params)
+        if 'pinned' in payload and 'archived' not in payload:
+            from hermes_cli.web_server_cron import _cron_default_profile
+            from tui_gateway.server import _broadcast_global_event
+            _broadcast_global_event("session.pinned_changed", {
+                'session_id': session_id, 'profile': profile or _cron_default_profile(),
+                'pinned': payload['pinned'], 'revision': result['revision']})
         return {'ok': True, **result}
     except AuthorityRefusal as exc:
         # The offline store and a composed authority's session DB refuse with the same class.

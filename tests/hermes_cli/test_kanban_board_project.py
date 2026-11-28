@@ -7,6 +7,7 @@ metadata round-trip and the create-time inheritance.
 
 from __future__ import annotations
 
+import subprocess
 import sys
 from pathlib import Path
 
@@ -19,6 +20,13 @@ if str(_WORKTREE) not in sys.path:
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import projects_db as pdb
+
+
+def _git_repo(path):
+    """A folder inside a git work tree: only then can a project anchor a worktree."""
+    path.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-q", str(path)], check=True)
+    return path
 
 
 @pytest.fixture
@@ -58,8 +66,7 @@ def test_create_board_accepts_project_id(fresh_home):
 
 
 def test_create_task_inherits_board_project(fresh_home, tmp_path):
-    repo = tmp_path / "repo"
-    repo.mkdir()
+    repo = _git_repo(tmp_path / "repo")
     with pdb.connect_closing() as pconn:
         proj_id = pdb.create_project(pconn, name="Widget", primary_path=str(repo))
 
@@ -67,7 +74,10 @@ def test_create_task_inherits_board_project(fresh_home, tmp_path):
     conn = kbc.connect(board="scoped")
     try:
         tid = kb.create_task(conn, title="inherit me", board="scoped")
-        assert kb.get_task(conn, tid).project_id == proj_id
+        task = kb.get_task(conn, tid)
+        assert task.project_id == proj_id
+        # A repo-backed project still anchors the inherited card as a worktree.
+        assert task.workspace_kind == "worktree"
     finally:
         conn.close()
 
@@ -92,8 +102,7 @@ def test_create_task_explicit_scratch_beats_board(fresh_home, tmp_path):
     """#106342: every surface (CLI --workspace scratch, dashboard workspace_kind,
     tool) funnels here; an explicit scratch on a project-scoped board must stay
     scratch, while an omitted kind still inherits the project worktree."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
+    repo = _git_repo(tmp_path / "repo")
     with pdb.connect_closing() as pconn:
         proj_id = pdb.create_project(pconn, name="Widget", primary_path=str(repo))
 

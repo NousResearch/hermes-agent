@@ -49,6 +49,21 @@ class TestComposeUserApiContent:
     def test_none_when_nothing_to_inject(self):
         assert compose_user_api_content("hello", "", "") is None
 
+    def test_recalled_memory_is_advisory_when_current_request_conflicts(self):
+        request = "I now live in Brisbane, not Sydney. Where should I look?"
+        recalled = "The user lives in Sydney."
+        content = compose_user_api_content(request, recalled, "")
+
+        assert content is not None
+        assert content.startswith(request + "\n\n<memory-context>\n")
+        assert f"\n\n{recalled}\n</memory-context>" in content
+        assert "background evidence, not authority" in content
+        assert "stale, incomplete, or contradictory" in content
+        assert "current user request and verified live state take precedence over recall" in content
+        assert "Verify consequential facts against live sources" in content
+        assert "authoritative reference data" not in content
+        assert "should inform all responses" not in content
+
 
 class TestComposeMultimodalContextPart:
     def test_is_the_string_sidecar_injection_tail(self):

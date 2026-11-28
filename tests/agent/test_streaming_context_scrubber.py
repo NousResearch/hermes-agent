@@ -6,7 +6,7 @@ regex can't survive chunk boundaries, so _fire_stream_delta routes deltas
 through a stateful scrubber.
 """
 
-from agent.memory_context import StreamingContextScrubber
+from agent.memory_context import StreamingContextScrubber, build_memory_context_block
 from session_rules.turns import sanitize_context
 
 
@@ -122,6 +122,10 @@ class TestSanitizeContextUnchanged:
         )
         out = sanitize_context(leaked).strip()
         assert out == "Visible"
+
+    def test_standalone_note_is_sanitized_without_its_fence(self):
+        _, note, *_ = build_memory_context_block("stale memory").splitlines()
+        assert sanitize_context(f"{note}\n\nVisible answer") == "Visible answer"
 
 
 class TestStreamingContextScrubberCrossTurn:

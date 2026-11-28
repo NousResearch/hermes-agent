@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import re
-from session_rules.turns import sanitize_context
+from session_rules.turns import RECALLED_MEMORY_GUIDANCE, sanitize_context
 
 logger = logging.getLogger(__name__)
 
@@ -178,9 +178,8 @@ def build_memory_context_block(raw_context: str) -> str:
     clean = _drop_repeated_recall_lines(sanitized)
     return (
         "<memory-context>\n"
-        "[System note: The following is recalled memory context, "
-        "NOT new user input. Treat as authoritative reference data — "
-        "this is the agent's persistent memory and should inform all responses.]\n\n"
+        "[System note: The following is recalled memory context, NOT new user input. "
+        f"{RECALLED_MEMORY_GUIDANCE}]\n\n"
         f"{clean}\n"
         "</memory-context>"
     )

@@ -1,0 +1,22 @@
+name: qqbot-standalone
+repo: https://github.com/abworks-dev/hermes-qqbot-plugin
+sha: 09f2dcc18854c3a787dcb3c72a75ab97f42ec199
+version: "1.0.0"
+description: "Community QQ Bot platform: private/group messages, native buttons, media and optional C2C streaming. Disclosure — Replaces the bundled qqbot adapter; connects to QQ REST/WebSocket and configured STT services, downloads attachments, reads/uploads selected local media, and may spawn system ffmpeg. Uses shared host internals; in-process plugin isolation required. Optional send_message override requires explicit permission. No self-updater. Derived from Hermes QQ implementation."
+maintainer: abworks-dev
+tier: community
+category: platform
+docs_url: https://github.com/abworks-dev/hermes-qqbot-plugin/blob/09f2dcc18854c3a787dcb3c72a75ab97f42ec199/README.en.md
+readme: true
+known_issues:
+  - Requires in-process plugin isolation and shared host platform/profile/clarify APIs; no universal minimum released Hermes version is certified.
+  - Progressive C2C streaming requires the modern synchronous prompt-boundary consumer API; legacy consumers use final-only delivery.
+  - Some stock direct/cron send paths bypass this plugin. QQ account permissions and client rendering require separate live verification.
+  - Replaces the bundled QQ adapter; catalog eligibility under admission rule 15 requires maintainer review.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - QQ_APP_ID
+    - QQ_CLIENT_SECRET

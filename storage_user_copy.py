@@ -91,6 +91,20 @@ _STORAGE_FAILURES: dict[str, tuple[str, str, str]] = {
         "another Hermes process took over this session",
         "Wait for it to finish, then send your message again.",
     ),
+    "store_bloat": (
+        "storage_bloated",
+        "the session database grew past the size where Hermes can write to it within its patience",
+        "Nothing is lost. Run `hermes {profile_arg}doctor` to see the size, then `hermes "
+        "{profile_arg}sessions optimize-storage` with the gateway stopped to compact the search "
+        "index and reclaim space.",
+    ),
+    "wal_pressure": (
+        "storage_wal_pressure",
+        "the session database's write-ahead log grew past the size where new writes can get through",
+        "Nothing is lost. Run `hermes {profile_arg}doctor` to check the log's size; if the log is "
+        "large, stop the profile with `hermes {profile_arg}gateway stop`, run `hermes "
+        "{profile_arg}doctor --fix` to checkpoint it, then start Hermes again.",
+    ),
     "unknown": (
         "storage_unavailable",
         "the session database could not be opened",

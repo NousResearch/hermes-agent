@@ -48,6 +48,7 @@ from .core.errors import (
     SessionRowMissing,
     SessionWriteGuarded,
     StaleFenceKind,
+    StoreBloatError,
     StoreContention,
     StoreQuarantined,
     StoreReplaced,
@@ -55,6 +56,7 @@ from .core.errors import (
     TransientStoreError,
     TurnLeaseLost,
     UnknownExecution,
+    WalPressureError,
     busy_refusal,
 )
 from .core.fences import AuthorityEpoch, ExecutionGeneration, SessionRevision
@@ -127,6 +129,7 @@ __all__ = [
     "StorageHealth",
     "StorageProbe",
     "StorageState",
+    "StoreBloatError",
     "StoreContention",
     "StoreQuarantined",
     "StoreReplaced",
@@ -135,6 +138,7 @@ __all__ = [
     "TransientStoreError",
     "TurnLeaseLost",
     "UnknownExecution",
+    "WalPressureError",
     "busy_refusal",
     "ensure_utc",
 ]

@@ -6,6 +6,7 @@ import sqlite3
 
 from storage_errors import _MALFORMED_SCHEMA_MARKERS, is_sqlite_lock_error
 from storage_errors import classify_persistence_error as _classify_storage_error
+from persistence.core.errors import StoreBloatError, WalPressureError
 
 # SQLITE_IOERR as a substring (wrapped strings still classify).
 _DISK_IO_ERROR_MARKER = "disk i/o error"
@@ -42,7 +43,7 @@ def is_malformed_schema_error(exc: BaseException) -> bool:
 # Every classify_persistence_error bucket; consumers enumerate this tuple.
 PERSISTENCE_ERROR_CAUSES = (
     "locked", "compression", "compression_closed", "turn_lease", "corrupt", "fts_index",
-    "replaced", "deleted_wal", "disk", "session_row_missing", "unknown",
+    "replaced", "deleted_wal", "disk", "session_row_missing", "store_bloat", "wal_pressure", "unknown",
 )
 
 
@@ -177,7 +178,9 @@ _PERSISTENCE_CAUSE_BY_TYPE = (
     (DeletedWalGenerationError, "deleted_wal"),
     (StateDbReplacedError, "replaced"),
     (StateDbCorruptError, "corrupt"),
-)
+    (StoreBloatError, "store_bloat"),
+    (WalPressureError, "wal_pressure"),
+    )
 
 
 def classify_persistence_error(exc_or_str) -> str:

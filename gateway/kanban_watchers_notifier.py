@@ -48,6 +48,9 @@ TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "st
 # Kinds that hand a decision back to the origin, which must take a turn.
 # status/archived/unblocked are bookkeeping.
 _WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked", "review_requested", "changes_requested", "block_loop_detected")
+# The wake kinds whose text promises a dispatcher retry. On a card already DONE they are
+# stale history (a superseded attempt's late write), so the notifier drops them (#84059).
+_RETRY_PROMISING_KINDS = frozenset({"crashed", "timed_out", "gave_up"})
 
 
 def diagnostic_event(ev) -> bool:
@@ -590,10 +593,33 @@ class _KanbanNotification:
             self.wake_review_detail = review_detail
         return msg
 
+    def _wake_kinds(self) -> set:
+        """The wake kinds this notification may deliver, staleness-filtered.
+
+        A ``crashed`` / ``timed_out`` event of a superseded attempt can be written
+        AFTER the card already reached a terminal status — the dispatcher settles the
+        attempt's lease-loop after the run that completed the work recorded its own
+        result (``run_id: null``, the late write of an attempt whose result was
+        superseded). Collected unfiltered, that stale event wakes the origin with a
+        "timed out; dispatcher will retry" instruction on a card that is DONE, and
+        acting on it means redoing finished work (7/768 completed cards measured,
+        0/7 with a run that ever started).
+
+        The filter: a retry-promising kind on a card whose current status is terminal
+        is history, not a pending retry, so it never wakes. ``blocked`` is a real state
+        change and is not filtered (``gave_up`` cannot coexist with ``done``). On a
+        fresh task (or one missing a row) the collection behaves as before.
+        """
+        awaited = {ev.kind for ev in self.d["events"] if ev.kind in _WAKE_KINDS}
+        task = self.task
+        if task is not None and getattr(task, "status", None) == "done":
+            awaited -= _RETRY_PROMISING_KINDS
+        return awaited
+
     def build_wake_text(self) -> None:
         """Set ``wake_kinds`` / ``session_key`` / ``synth`` for the wake paths."""
         task, sub = self.task, self.sub
-        self.wake_kinds = {ev.kind for ev in self.d["events"] if ev.kind in _WAKE_KINDS} if self.wake_agent else set()
+        self.wake_kinds = self._wake_kinds() if self.wake_agent else set()
         self.wake_diagnostic = all(diagnostic_event(ev) for ev in self.d["events"] if ev.kind in self.wake_kinds)
         if not self.wake_kinds:
             return

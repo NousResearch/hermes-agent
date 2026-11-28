@@ -796,3 +796,76 @@ def test_review_requested_does_not_wake_a_notify_only_subscription(
     assert adapter.handled == [], (
         "notify-only subscriptions must not be woken by a review handoff"
     )
+
+
+# ---------------------------------------------------------------------------
+# Staleness: a superseded attempt's late crashed/timed_out write must not wake
+# the origin of a card that already reached a terminal status (#84059).
+# ---------------------------------------------------------------------------
+
+
+def _late_event_notification(*, card_status, event_kinds, delivery_mode="notify+wake"):
+    """A notification assembled in the collector's own dict shape, for one card.
+
+    ``run_id=None`` is what makes it the real defect: the event of an attempt
+    whose result was superseded, written after the card's outcome settled.
+    """
+    from types import SimpleNamespace
+
+    from gateway.kanban_watchers_notifier import _KanbanNotification
+
+    sub = {"task_id": "t_stale", "platform": "telegram", "chat_id": "chat-1",
+           "delivery_mode": delivery_mode}
+    task = SimpleNamespace(title="already finished", assignee="worker", status=card_status)
+    events = [SimpleNamespace(kind=k, payload={}, run_id=None) for k in event_kinds]
+    n = _KanbanNotification(
+        object(), {"sub": sub, "events": events, "task": task, "board": "default"},
+        platform_cls=None, sub_fail_counts={},
+    )
+    n.build_wake_text()
+    return n
+
+
+def test_late_timed_out_on_a_done_card_does_not_wake_the_origin():
+    """A timed_out written after the card completed is history, not a pending retry.
+
+    7/768 completed cards carried such an event and 0/7 ever started a run after
+    it — the retry the announcement promised never happened, while the message
+    ordered the origin to redo finished work.
+    """
+    n = _late_event_notification(card_status="done", event_kinds=["timed_out"])
+    assert n.wake_kinds == set()
+    assert n.synth == ""
+
+
+def test_completed_wins_over_a_stale_terminal_event_in_the_same_batch():
+    """The card's own outcome is delivered; the superseded attempt's kind is dropped."""
+    n = _late_event_notification(card_status="done", event_kinds=["completed", "timed_out"])
+    assert n.wake_kinds == {"completed"}
+    assert "timed out" not in n.synth.lower()
+
+
+def test_timed_out_still_wakes_while_the_card_can_still_be_retried():
+    """A card that is not done can genuinely be retried, so the signal stays."""
+    n = _late_event_notification(card_status="ready", event_kinds=["timed_out"])
+    assert "timed_out" in n.wake_kinds
+    assert "timed out" in n.synth.lower()
+
+
+def test_promised_retry_wording_is_gone_from_the_wake_catalog():
+    """The static string cannot know whether a retry will happen, so it must not
+    promise one (#84059's third half): the wake text names the outcome only."""
+    import pathlib
+
+    import yaml
+
+    # .../tests/gateway/ -> repo root, whose locales/ the notifier reads via t().
+    locales_dir = pathlib.Path(__file__).resolve().parents[2] / "locales"
+    for lang in ("en", "fr", "ja", "ru"):
+        catalog = yaml.safe_load((locales_dir / f"{lang}.yaml").read_text(encoding="utf-8"))
+        wake = catalog["gateway"]["kanban"]["wake"]
+        assert "dispatcher will retry" not in wake["crashed"], lang
+        assert "dispatcher will retry" not in wake["timed_out"], lang
+        ping = catalog["gateway"]["kanban"]["ping"]
+        assert "retried automatically" not in ping["timed_out"], lang
+        assert "retried automatically" not in ping["crashed"], lang

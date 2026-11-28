@@ -230,8 +230,8 @@ gateway:
     wake:
       completed: "completed"
       gave_up: "gave up (retries exhausted)"
-      crashed: "crashed (worker exited); dispatcher will retry"
-      timed_out: "timed out; dispatcher will retry"
+      crashed: "crashed (worker exited)"
+      timed_out: "timed out"
       blocked: "blocked; needs attention"
       review_requested: "handed off for review; the implementation is done"
       changes_requested: "review requested changes (BLOCK); implementation is not approved"
@@ -3595,6 +3595,8 @@ explainer:
     repeated_outer_errors: "lean an seal ag teip le hearráidí arís agus arís eile agus stopadh é go luath in ionad atriail a dhéanamh go deo. Seiceáil na hearráidí thuas, ansin seol `continue` chun triail eile a bhaint as."
   persistence:
     compression: "stopadh an seal mar go raibh próiseas eile ag dlúthú an tseisiúin seo. Ba cheart go mbeadh do theachtaireacht sábháilte cheana — seol í arís le do thoil tar éis an dlúthú a bheith críochnaithe."
+    store_bloat: "the turn was stopped because the state store (state.db) has grown beyond its configured size threshold. Run `hermes {profile_arg}doctor` to check storage and WAL size, then `hermes {profile_arg}sessions optimize-storage` with the profile's gateway stopped to compact FTS storage and reclaim space."
+    wal_pressure: "the turn was stopped because the session database's write-ahead log has grown beyond its configured size threshold, causing checkpoint contention that blocks new writes. Run `hermes {profile_arg}doctor` to check storage and WAL size; if the WAL is large, stop the profile's gateway then run `hermes {profile_arg}doctor --fix` to checkpoint it, then send your message again."
     compression_closed: "stopadh an seal mar gur rothlaíodh an seisiún seo trí dhlúthú comhthéacs agus níorbh fhéidir glacadh lena leanúint bheo. Tá an stóras féin sláintiúil — athnuaigh an cliant (nó tosaigh seal nua) ionas go nglacfaidh sé le ID an tseisiúin nua, ansin seol do theachtaireacht arís."
     turn_lease: "stopadh an seal mar gur ghlac próiseas Hermes eile seilbh ar an seisiún seo. Níor sábháladh do fhreagra — fan go gcríochnóidh an próiseas eile, ansin seol do theachtaireacht arís."
     session_row_missing: "scriosadh an seisiún seo ón stóras fad a bhí an comhrá fós ar oscailt, agus níorbh fhéidir le Hermes é a athchruthú, mar sin níor sábháladh an teachtaireacht seo. Seol do theachtaireacht arís; má leanann sé ag teip, rith `hermes {profile_arg}doctor`."

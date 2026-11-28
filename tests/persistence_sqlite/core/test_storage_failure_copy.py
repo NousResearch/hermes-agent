@@ -19,6 +19,9 @@ from storage_user_copy import describe_storage_failure, storage_failure_details
         (sqlite3.OperationalError("attempt to write a readonly database"), "storage_readonly", "hermes doctor --fix"),
         (sqlite3.DatabaseError("database disk image is malformed"), "storage_corrupt", "hermes doctor --fix"),
         (OSError(28, "No space left on device"), "disk_full", "Free some disk space"),
+        ("storage pressure on a large state.db (store bloat or write-ahead-log backlog)",
+         "storage_bloated", "optimize-storage"),
+        ("state.db-wal exceeds configured pressure threshold", "storage_wal_pressure", "doctor --fix"),
         (None, "storage_unavailable", "hermes doctor --fix"),
     ],
 )

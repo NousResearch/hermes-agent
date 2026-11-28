@@ -37,6 +37,13 @@ export function observeCanonicalAdmissions(observer: (admissionId: string, statu
   return () => admissionObservers.delete(observer)
 }
 
+/** A card answered from a prompt this cache does not hold at the session's current generation. */
+export class StalePromptError extends Error {
+  constructor() {
+    super('Prompt is stale or unavailable; reconnect before responding')
+  }
+}
+
 /** Live events and retained snapshots must describe the same answerable card. */
 export function canonicalPromptParams(kind: unknown, sessionId: string, prompt: Record<string, unknown>): Record<string, unknown> {
   const choices = Array.isArray(prompt.choices) ? prompt.choices : []
@@ -563,12 +570,41 @@ export class CanonicalDesktopProtocol {
 
     if (!prompt || prompt.session_id !== sessionId || prompt.profile !== canonicalProfile(params.profile) ||
         prompt.execution_generation !== this.generations.get(canonicalSessionKey(sessionId, params.profile))) {
-      throw new Error('Prompt is stale or unavailable; reconnect before responding')
+      throw new StalePromptError()
     }
 
     const field = method === 'approval.respond' ? 'choice' : 'answer'
 
     return { session_id: sessionId, execution_generation: prompt.execution_generation, prompt_id: id, [field]: params[field] }
+  }
+
+  /** Each session this cache still holds an open prompt for, under its owner's profile. */
+  promptOwners(): Array<{ session_id: string; profile: string }> {
+    const owners = new Map<string, { session_id: string; profile: string }>()
+
+    for (const prompt of this.prompts.values()) {
+      const owner = { session_id: String(prompt.session_id), profile: String(prompt.profile) }
+      owners.set(canonicalSessionKey(owner.session_id, owner.profile), owner)
+    }
+
+    return [...owners.values()]
+  }
+
+  /** An attach snapshot lists every prompt its owner still holds open for the session. A cached one it
+   *  does not list settled while this socket was not watching (asleep, redialing, a truncated replay):
+   *  retire it, and return it so its card can come down. */
+  retireUnlistedPrompts(sessionId: string, profile: unknown, listed: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
+    const open = new Set(listed.map(prompt => prompt.prompt_id))
+    const retired: Array<Record<string, unknown>> = []
+
+    for (const [key, prompt] of this.prompts) {
+      if (prompt.session_id === sessionId && prompt.profile === canonicalProfile(profile) && !open.has(prompt.prompt_id)) {
+        this.prompts.delete(key)
+        retired.push(prompt)
+      }
+    }
+
+    return retired
   }
 
   private reconcileUnknownAdmissions(sid: string, profile: string, pending: Array<Record<string, unknown>>): void {
@@ -611,6 +647,10 @@ export class CanonicalDesktopProtocol {
 
     if (Array.isArray(payload.pending)) { payload.pending_submissions = payload.pending.map(row => ({ ...row, user: row.text })) }
 
+    // A settle closes its prompt whatever generation the session reached since: behind the fence
+    // below, a turn's late settle left its prompt cached, and its card unanswerable, for good.
+    if (typeof payload.prompt_id === 'string' && event.type.endsWith('.settled')) { this.prompts.delete(canonicalSessionKey(payload.prompt_id, profile)) }
+
     const generation = event.execution_generation ?? payload.execution_generation
 
     if (typeof generation === 'number') {
@@ -633,9 +673,7 @@ export class CanonicalDesktopProtocol {
     }
 
     if (typeof payload.prompt_id === 'string') {
-      if (event.type.endsWith('.settled')) { this.prompts.delete(canonicalSessionKey(payload.prompt_id, profile));
-
- return }
+      if (event.type.endsWith('.settled')) { return }
 
       if (event.type === 'approval.request' || event.type === 'clarify.request') {
         payload.request_id = payload.prompt_id

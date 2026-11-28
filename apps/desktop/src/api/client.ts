@@ -12,7 +12,7 @@ import { map, type MapStore } from 'nanostores'
 import type { HermesApiRequest } from '@/global'
 import { desktopClientIdentity } from '@/lib/client-identity'
 
-import { CanonicalDesktopProtocol, canonicalProfile, canonicalPromptParams, canonicalSessionKey, openGatewaySocket, recordCanonicalOwner, splitRewindSubmit } from './canonical-protocol'
+import { CanonicalDesktopProtocol, canonicalProfile, canonicalPromptParams, canonicalSessionKey, openGatewaySocket, recordCanonicalOwner, splitRewindSubmit, StalePromptError } from './canonical-protocol'
 import { DialReadiness, GATEWAY_NOT_CONNECTED_MESSAGE, remainingRequestBudget } from './dial-readiness'
 
 // Desktop startup fires a burst of read-only data calls (config, profiles,
@@ -184,7 +184,25 @@ export class HermesGateway extends JsonRpcGatewayClient {
     }
   }
 
+  // A page coming back (a phone's backgrounded tab) may have slept through settles on a socket that survived.
+  private readonly onPageVisible = (): void => {
+    if (document.visibilityState === 'visible') { void this.resyncPrompts() }
+  }
+
+  /** Re-read the open prompts of every session this cache still holds one for: each owner's attach
+   *  snapshot replaces them and their cards. A redial and a return to the page run it, after the
+   *  socket's replay, for what that replay could not carry (a truncated window, a lost settle). */
+  async resyncPrompts(): Promise<void> {
+    if (!this.canonical || !this.readiness.ready) { return }
+
+    await Promise.allSettled(this.protocol.promptOwners().map(async owner => {
+      if (await this.sessionReplayBarrier(owner.session_id) === false) { return }
+      await this.reattach(owner.session_id, owner.profile)
+    }))
+  }
+
   override close(): void {
+    if (typeof document !== 'undefined') { document.removeEventListener('visibilitychange', this.onPageVisible) }
     this.readiness.fail()
     this.connectionGeneration++
     this.deliveredPrompts.clear()
@@ -384,6 +402,10 @@ export class HermesGateway extends JsonRpcGatewayClient {
       if (generation === this.connectionGeneration) { this.invalidate('Hermes gateway protocol negotiation failed') }
       throw error
     }
+
+    if (typeof document !== 'undefined') { document.addEventListener('visibilitychange', this.onPageVisible) }
+    // A redial: the dropped socket may have missed settles, newer requests or a generation change.
+    void this.resyncPrompts()
   }
 
   // Sessions attached over THIS socket. An authority subscription is per
@@ -462,7 +484,20 @@ export class HermesGateway extends JsonRpcGatewayClient {
     // owner refuses the unknown key, so it rides only where `client.capabilities` advertised it.
     if (method === 'prompt.submit' && this.backendClarifyBatch) { params = { ...params, clarify_batch: true } }
 
-    let prepared = this.protocol.prepare(method, params)
+    let prepared: Record<string, unknown>
+
+    try {
+      prepared = this.protocol.prepare(method, params)
+    } catch (error) {
+      if (!(error instanceof StalePromptError) || typeof params.session_id !== 'string') { throw error }
+      const fresh = await this.preparePromptAfterResync(method, params, deadline, signal)
+      this.requireConnectionGeneration(generation)
+
+      // The owner no longer holds the prompt: nothing is left to answer, as when another viewer answered first.
+      if (!fresh) { return { status: 'already_resolved', prompt_id: params.prompt_id ?? params.request_id } as T }
+      prepared = fresh
+    }
+
     const wireMethod = this.protocol.wire(method, prepared)
 
     try {
@@ -529,6 +564,35 @@ export class HermesGateway extends JsonRpcGatewayClient {
     return this.request<T>('clarify.respond', { session_id: promptOwner.sessionId, profile: promptOwner.profile, request_id: params.request_id, answer }, timeoutMs, signal)
   }
 
+  // A card can outlive this socket's prompt cache: a page asleep (a phone's backgrounded tab) misses the
+  // settle, a newer request or the turn's generation change, and every answer was refused until a
+  // reload. Re-read the owner's open prompts once. The same prompt still open at the snapshot's
+  // generation takes the user's answer. Null only when the owner's complete prompt list leaves it out:
+  // a snapshot with no list, or one still listing a prompt this cache cannot answer, proves no settle,
+  // so the stale refusal stands (no send) and the snapshot has refreshed the cards for a fresh answer.
+  private async preparePromptAfterResync(method: string, params: Record<string, unknown>, deadline: number, signal?: AbortSignal): Promise<Record<string, unknown> | null> {
+    const snapshot = await this.reattach(String(params.session_id), params.profile, remainingRequestBudget(deadline, signal), signal) as { prompts?: unknown } | undefined
+
+    try {
+      return this.protocol.prepare(method, params)
+    } catch (error) {
+      if (!(error instanceof StalePromptError)) { throw error }
+      const id = params.prompt_id ?? params.request_id
+      const listed = Array.isArray(snapshot?.prompts) ? snapshot.prompts as Array<Record<string, unknown> | null> : null
+
+      if (listed && !listed.some(prompt => prompt?.prompt_id === id)) { return null }
+      throw error
+    }
+  }
+
+  // A resume on this socket without the transcript: the attach, and the owner's word on the session's open prompts.
+  private reattach(sessionId: string, profile: unknown, timeoutMs?: number, signal?: AbortSignal): Promise<unknown> {
+    return this.request('session.resume', {
+      session_id: sessionId, defer_history: true, omit_messages: true,
+      ...(profile ? { profile } : {})
+    }, timeoutMs, signal)
+  }
+
   private requireConnectionGeneration(generation: number): void {
     if (generation !== this.connectionGeneration) { throw new Error('Hermes gateway connection changed; reopen the session') }
   }
@@ -538,10 +602,7 @@ export class HermesGateway extends JsonRpcGatewayClient {
   private async attachForRequest(method: string, params: Record<string, unknown>, deadline: number, signal?: AbortSignal): Promise<void> {
     const sid = typeof params.session_id === 'string' ? params.session_id : null
 
-    const resume = (sessionId: string) => this.request('session.resume', {
-      session_id: sessionId, defer_history: true, omit_messages: true,
-      ...(params.profile ? { profile: params.profile } : {})
-    }, remainingRequestBudget(deadline, signal), signal)
+    const resume = (sessionId: string) => this.reattach(sessionId, params.profile, remainingRequestBudget(deadline, signal), signal)
 
     if (sid && ATTACH_REQUIRED.has(method) && !this.attached.has(canonicalSessionKey(sid, params.profile))) {
       await resume(sid)
@@ -568,6 +629,19 @@ export class HermesGateway extends JsonRpcGatewayClient {
 
       if (typeof settled.replay_epoch === 'string') {
         this.replayProfiles.set(settled.replay_epoch, { sessionId: sid, profile: canonicalProfile(profile) })
+      }
+
+      // A cached prompt the snapshot no longer lists settled while this socket was not watching: its
+      // card comes down as on the owner's own settle frame, routed by the snapshot's epoch.
+      const retired = Array.isArray(settled.prompts) ? this.protocol.retireUnlistedPrompts(sid, profile, settled.prompts) : []
+
+      for (const prompt of retired) {
+        this.dispatchEvent({
+          type: `${prompt.kind}.settled` as 'approval.settled' | 'clarify.settled',
+          session_id: sid,
+          ...(typeof settled.replay_epoch === 'string' ? { replay_epoch: settled.replay_epoch } : {}),
+          payload: { prompt_id: String(prompt.prompt_id), execution_generation: prompt.execution_generation as number | undefined }
+        })
       }
     }
 

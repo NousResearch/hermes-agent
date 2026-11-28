@@ -39,7 +39,8 @@ def test_streamed_oneshot_prints_the_reply(tmp_path):
         "auxiliary": {"title_generation": {"enabled": False}}}))
     env = {k: os.environ[k] for k in ("PATH", "LANG", "TZ") if k in os.environ}
     env.update(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home), PYTHONPATH=str(root),
-               PYTHONUNBUFFERED="1", OPENAI_API_KEY="loopback-only", OPENAI_BASE_URL=url)
+               PYTHONUNBUFFERED="1", OPENAI_API_KEY="loopback-only", OPENAI_BASE_URL=url,
+               HERMES_DISABLE_LAZY_INSTALLS="1")
 
     def hermes(*args):
         return subprocess.run([sys.executable, "-m", "hermes_cli.main", *args], cwd=work, env=env,

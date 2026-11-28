@@ -27,7 +27,11 @@ def _comment_op(keys, missing_msg, label, method, uri, queries=None, body=None, 
         client = get_client()
         values = tuple(args.get(k, "").strip() for k in keys)
         if client is None:
-            return tool_error("Feishu client not available")
+            return tool_error(
+                "Feishu client not available. Set FEISHU_APP_ID/FEISHU_APP_SECRET "
+                "(or LARK_APP_ID/LARK_APP_SECRET), or run inside a Feishu "
+                "comment context"
+            )
         if not all(values):
             return tool_error(missing_msg)
         code, msg, data = lark_call(

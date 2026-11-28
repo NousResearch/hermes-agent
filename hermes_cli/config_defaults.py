@@ -2320,6 +2320,12 @@ DEFAULT_CONFIG = {
         # stay on the branch (never conflicts). update_in_place = for a maintained custom branch:
         # merge origin/<target> INTO it after leaving a pre-update-<stamp> tag; a conflict stops the
         # update cleanly. `hermes update --switch-branch` overrides to switch for one run.
+        # A RELEASE target (stable channel) normally lands the checkout detached at its exact
+        # commit. true = when the checkout is on a maintained branch carrying unmerged commits,
+        # merge the release INTO that branch instead (checkout never moves, local commits
+        # survive; a conflict aborts the merge and stops the update). Default off so every
+        # existing install keeps landing detached at the release.
+        "release_merge_into_branch": False,
         "parked_branch_strategy": "switch",
         # Refresh an installed cua-driver during `hermes update` (best-effort, macOS only). Turn off
         # e.g. on non-admin accounts where /Applications isn't writable.

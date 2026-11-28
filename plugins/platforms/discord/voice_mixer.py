@@ -105,29 +105,39 @@ class VoiceMixer(discord.AudioSource):
             gain_now = self._duck_gain if self._speech_active else self._ambient_gain
             self._ambient = MixerChild(pcm, loop=True, gain=gain_now, fade_in_ms=200)
 
-    def play_speech(self, pcm: bytes, *, gain: Optional[float] = None, fade_in_ms: int = 40) -> None:
-        """Layer a one-shot speech clip over the ambient bed (ducks ambient)."""
+    def play_speech(self, pcm: bytes, *, gain: Optional[float] = None, fade_in_ms: int = 40) -> Optional[MixerChild]:
+        """Layer a one-shot speech clip over the ambient bed (ducking the bed).
+
+        Returns the clip's child so a caller can later stop exactly its own clip.
+        """
         if not pcm:
-            return
+            return None
         with self._lock:
-            self._speech.append(MixerChild(
+            child = MixerChild(
                 pcm, gain=self._speech_gain if gain is None else float(gain), fade_in_ms=fade_in_ms,
-            ))
+            )
+            self._speech.append(child)
             self._speech_active = True
             self._duck_release_left = 0
             if self._ambient is not None:
                 self._ambient.gain = self._duck_gain
+            return child
 
     @property
     def speech_active(self) -> bool:
         with self._lock:
             return self._speech_active
 
-    def stop_speech(self) -> None:
-        """Drop any in-flight speech immediately and release the duck."""
+    def stop_speech(self, child: Optional[MixerChild] = None) -> None:
+        """Drop in-flight speech: every clip when *child* is omitted, otherwise only that
+        clip. Never clears another operation's speech."""
         with self._lock:
-            self._speech.clear()
-            self._begin_duck_release_locked()
+            if child is None:
+                self._speech.clear()
+            else:
+                self._speech = [item for item in self._speech if item is not child]
+            if not self._speech:
+                self._begin_duck_release_locked()
 
     def _begin_duck_release_locked(self) -> None:
         self._speech_active = False

@@ -57,6 +57,7 @@ import {
   uploadAttachment,
   useKanbanScope
 } from './api'
+import { useCompletionSummary } from './completion-dialog'
 import { ModelOverrideField, overridePatch } from './model-override'
 import {
   type Diagnostic,
@@ -874,8 +875,9 @@ export function TaskDrawer({
   // Optimistic status change against the task cache; rolls back + toasts on a
   // rejected transition (the backend enforces the workflow).
   const moveMut = useMutation({
-    mutationFn: (status: string) => patchTask(id!, { status }),
-    onMutate: async status => {
+    mutationFn: ({ result, status, summary }: { result?: string; status: string; summary?: string }) =>
+      patchTask(id!, result === undefined ? { status } : { result, status, summary }),
+    onMutate: async ({ status }) => {
       await qc.cancelQueries({ queryKey: taskKey(scope, slug, id!) })
       const previous = qc.getQueryData<KanbanTaskDetail>(taskKey(scope, slug, id!))
 
@@ -894,6 +896,10 @@ export function TaskDrawer({
     },
     onSettled: invalidate
   })
+
+  // `done` needs result/summary evidence; the hook gates the move behind the
+  // completion-summary dialog and keeps that branch/state out of this component.
+  const completion = useCompletionSummary(moveMut.mutate)
 
   const mutate = (fn: () => Promise<unknown>, onDone?: () => void) => () =>
     fn().then(
@@ -957,7 +963,7 @@ export function TaskDrawer({
       return
     }
 
-    moveMut.mutate(status)
+    completion.requestMove(status, task.status)
   }
 
   // The shared Dialog owns the chrome tokens, focus trap, Esc and outside-click
@@ -967,6 +973,7 @@ export function TaskDrawer({
   // clips instead of scrolling itself; its height follows the content up to
   // the cap.
   return (
+    <>
     <Dialog onOpenChange={open => !open && onClose()} open>
       <DialogContent
         aria-describedby={undefined}
@@ -1181,5 +1188,7 @@ export function TaskDrawer({
         </div>
       </DialogContent>
     </Dialog>
+      {completion.dialog}
+    </>
   )
 }

@@ -18,7 +18,7 @@
     "audit:fix:tui": "pnpm audit --fix --filter hermes-tui",
     "check": "pnpm -r check",
     "fix": "pnpm -r fix",
-    "prepare": "node -e \"const {existsSync}=require('fs');const {spawnSync}=require('child_process');if(existsSync('.git'))spawnSync('lefthook',['install'],{stdio:'inherit',shell:true})\""
+    "prepare": "node -e \"const {existsSync}=require('fs');const {spawnSync}=require('child_process');const ci=process.env.CI;if(ci&&ci!=='0'&&ci!=='false')process.exit(0);if(existsSync('.git'))spawnSync('lefthook',['install'],{stdio:'inherit',shell:true})\""
   },
   "repository": {
     "type": "git",

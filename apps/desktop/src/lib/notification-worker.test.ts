@@ -177,21 +177,39 @@ describe('notification worker', () => {
     expect(worker.clients.openWindow).not.toHaveBeenCalled()
   })
 
-  it('asks no tab when there is no choice to make: a lone tab, or a click that names no session', async () => {
+  it('asks no tab when there is no choice to make: a lone tab takes the click', async () => {
     const lone = new FakeWindowClient(SCOPE, 'tab-b')
     const worker = await startWorker([lone])
 
     await worker.click({ focusSessionId: 'stored-1', profile: 'research', tab: 'tab-a' })
 
     expect([lone.queries, lone.messages]).toEqual([0, [{ sessionId: 'stored-1', type: 'hermes:focus-session' }]])
+  })
 
-    const first = new FakeWindowClient(SCOPE, 'tab-b')
-    const second = new FakeWindowClient(SCOPE, 'tab-a')
-    const sessionless = await startWorker([first, second])
+  it('brings forward the tab that showed a notification naming no session, as its own click did', async () => {
+    // Settings' test notification names no session; another Webapp tab was used since.
+    const other = new FakeWindowClient(SCOPE, 'tab-b')
+    const notifier = new FakeWindowClient(SCOPE, 'tab-a')
+    const worker = await startWorker([other, notifier])
 
-    await sessionless.click({ profile: 'research', tab: 'tab-a' })
+    await worker.click({ profile: 'research', tab: 'tab-a' })
 
-    expect([first.focused, first.queries, second.focused, second.queries]).toEqual([1, 0, 0, 0])
+    expect([notifier.focused, notifier.messages, other.focused, other.messages]).toEqual([1, [], 0, []])
+  })
+
+  it('asks no tab for a notification that carries no tab id, and gives it to the tab used last', async () => {
+    const last = new FakeWindowClient(SCOPE, 'tab-b')
+    const silent = new FakeWindowClient(SCOPE, null)
+    const worker = await startWorker([last, silent])
+
+    await worker.click({ focusSessionId: 'stored-1', profile: 'research' })
+    await worker.click({ focusSessionId: 'stored-2', profile: 'research', tab: '' })
+
+    expect([last.queries, silent.queries, silent.focused]).toEqual([0, 0, 0])
+    expect(last.messages).toEqual([
+      { sessionId: 'stored-1', type: 'hermes:focus-session' },
+      { sessionId: 'stored-2', type: 'hermes:focus-session' }
+    ])
   })
 
   it("opens the Webapp on the notification's profile when none of its tabs is open", async () => {

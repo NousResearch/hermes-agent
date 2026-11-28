@@ -72,10 +72,7 @@ async function openHermes({ focusSessionId, profile, tab: notifier }) {
   // Only a choice between tabs asks: a lone tab takes the click, as the constructor's onclick did. A
   // client's URL can't tell the tabs apart: it is the one its document was created with, from before
   // any profile switch.
-  const tab =
-    session && typeof notifier === 'string' && notifier && tabs.length > 1
-      ? await notifyingTab(tabs, notifier)
-      : tabs[0]
+  const tab = typeof notifier === 'string' && notifier && tabs.length > 1 ? await notifyingTab(tabs, notifier) : tabs[0]
 
   if (!tab) {
     // The chat's route, as sessionRoute() in src/app/routes.ts builds it, on the notifying tab's profile,

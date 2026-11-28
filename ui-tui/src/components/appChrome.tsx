@@ -505,6 +505,42 @@ const shortModelLabel = (model: string) =>
 const modelLabel = (model: string, effort?: string, fast?: boolean, effortWire?: string) =>
   [shortModelLabel(model), effortLabel(effort, effortWire), fast ? tr('status.fast') : ''].filter(Boolean).join(' ')
 
+const PROVIDER_MAX_WIDTH = 20
+
+const providerLabelText = (provider?: string) => {
+  const id = (provider ?? '').trim()
+
+  return id.length > PROVIDER_MAX_WIDTH ? `${id.slice(0, PROVIDER_MAX_WIDTH - 3)}...` : id
+}
+
+const statusProviderText = (fields: StatusRuleProps['statusBarFields'], provider?: string) =>
+  fields == null || fields.has('provider') ? providerLabelText(provider) : ''
+
+const providerSuffixWidth = (text: string) => (text ? stringWidth(` via ${text}`) : 0)
+
+// Width of the must-keep left segments: indicator slot, model + provider, context.
+const statusEssentialWidth = (
+  batteryWidth: number,
+  slotWidth: number,
+  modelText: string,
+  providerText: string,
+  ctxLabel: string
+) =>
+  stringWidth('─ ') +
+  batteryWidth +
+  slotWidth +
+  stringWidth(' │ ') +
+  stringWidth(modelText) +
+  providerSuffixWidth(providerText) +
+  (ctxLabel ? stringWidth(' │ ') + stringWidth(ctxLabel) : 0)
+
+const providerSuffix = (provider: string, color: string) =>
+  provider ? (
+    <Text color={color} wrap="truncate-end">
+      {` via ${provider}`}
+    </Text>
+  ) : null
+
 export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
   const [active, setActive] = useState(false)
   const [color, setColor] = useState(t.color.accent)
@@ -541,6 +577,7 @@ export function StatusRule({
   statusBarFields = null,
   statusColor,
   model,
+  modelProvider,
   modelFast,
   modelReasoningEffort,
   modelReasoningEffortWire,
@@ -583,6 +620,7 @@ export function StatusRule({
 
   const bar = !segs.compactCtx && usage.context_max && ok('context_pct') ? ctxBar(pct) : ''
   const modelText = modelLabel(model, modelReasoningEffort, modelFast, modelReasoningEffortWire)
+  const providerText = statusProviderText(statusBarFields, modelProvider)
 
   // Battery read-out — the first (pinned) status-bar element when enabled.
   const showBattery = !!battery && battery.available && battery.percent != null && ok('battery')
@@ -613,13 +651,7 @@ export function StatusRule({
       ? noticeReserve
       : stringWidth(status)
 
-  const essentialWidth =
-    stringWidth('─ ') +
-    batteryWidth +
-    slotWidth +
-    stringWidth(' │ ') +
-    stringWidth(modelText) +
-    (ctxLabel ? stringWidth(' │ ') + stringWidth(ctxLabel) : 0)
+  const essentialWidth = statusEssentialWidth(batteryWidth, slotWidth, modelText, providerText, ctxLabel)
 
   const rightLabel = sessionTitle && ok('title') ? ` ${sessionTitle} ` : cwdLabel
   const { leftWidth, rightWidth, separatorWidth } = statusRuleWidths(cols, rightLabel, essentialWidth)
@@ -768,6 +800,7 @@ export function StatusRule({
             {' │ '}
             {modelText}
           </Text>
+          {providerSuffix(providerText, t.color.muted)}
           {ctxLabel ? (
             <Text color={t.color.muted} wrap="truncate-end">
               {' │ '}
@@ -998,6 +1031,7 @@ interface StatusRuleProps {
   cols: number
   cwdLabel: string
   model: string
+  modelProvider?: string
   modelFast?: boolean
   modelReasoningEffort?: string
   modelReasoningEffortWire?: string

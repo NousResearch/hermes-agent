@@ -226,6 +226,72 @@ class TestConvertToolsToConverse:
         assert convert_tools_to_converse([]) == []
         assert convert_tools_to_converse(None) == []
 
+    def test_drops_top_level_combinators_from_input_schema(self):
+        """A top-level anyOf/allOf/oneOf in input_schema makes Converse reject the WHOLE
+        request with a ValidationException naming the tool index, not just that tool.
+
+        Regression for #139065. Top-level combinators are conditional-required hints, so
+        dropping them changes no validity — the handler re-validates. Nested ones (inside
+        properties/items) are accepted by Converse and must survive untouched.
+        """
+        from agent.bedrock_adapter import convert_tools_to_converse
+        params = {
+            "type": "object",
+            "properties": {"query": {"type": "string"}, "limit": {"type": "integer"}},
+            "required": ["query"],
+            "anyOf": [{"required": ["query"]}, {"required": ["limit"]}],
+            "allOf": [{"type": "object", "required": ["query"]}],
+            "oneOf": [{"required": ["query"]}, {"required": ["limit"]}],
+        }
+        tools = [{"type": "function", "function": {"name": "search", "description": "Search",
+                                                  "parameters": params}}]
+        schema = convert_tools_to_converse(tools)[0]["toolSpec"]["inputSchema"]["json"]
+        for banned in ("anyOf", "allOf", "oneOf"):
+            assert banned not in schema
+        assert schema["type"] == "object"
+        assert schema["properties"]["query"]["type"] == "string"
+        assert schema["required"] == ["query"]
+
+    def test_keeps_nested_combinators_in_input_schema(self):
+        """Converse accepts combinators nested inside properties/items; only the top level
+        is rejected. Regression for #139065."""
+        from agent.bedrock_adapter import convert_tools_to_converse
+        params = {
+            "type": "object",
+            "properties": {
+                "query": {"anyOf": [{"type": "string"}, {"type": "integer"}]},
+                "items": {"type": "array", "items": {"oneOf": [{"type": "string"},
+                                                              {"type": "null"}]}},
+            },
+        }
+        tools = [{"type": "function", "function": {"name": "search", "description": "Search",
+                                                  "parameters": params}}]
+        schema = convert_tools_to_converse(tools)[0]["toolSpec"]["inputSchema"]["json"]
+        assert schema["properties"]["query"]["anyOf"] == [{"type": "string"}, {"type": "integer"}]
+        assert schema["properties"]["items"]["items"]["oneOf"] == [{"type": "string"},
+                                                                   {"type": "null"}]
+
+    def test_sanitizes_schema_that_is_only_a_combinator(self):
+        """A bare ``{"anyOf": [...]}`` parameters block would become a typeless schema once
+        the combinator is dropped; it must still carry the ``type: object`` + ``properties``
+        shape Converse requires. Regression for #139065."""
+        from agent.bedrock_adapter import convert_tools_to_converse
+        params = {"anyOf": [{"required": ["query"]}, {"required": ["limit"]}]}
+        tools = [{"type": "function", "function": {"name": "search", "description": "Search",
+                                                  "parameters": params}}]
+        schema = convert_tools_to_converse(tools)[0]["toolSpec"]["inputSchema"]["json"]
+        assert schema == {"type": "object", "properties": {}, "required": []}
+
+    def test_leaves_parameters_untouched_when_no_combinator(self):
+        """A schema with no top-level combinator must reach the wire byte-identical — the
+        repair only fires on what Converse actually rejects. Regression for #139065."""
+        from agent.bedrock_adapter import convert_tools_to_converse
+        params = {"type": "object", "properties": {"path": {"type": "string"}},
+                  "required": ["path"]}
+        tools = [{"type": "function", "function": {"name": "read_file", "description": "Read",
+                                                  "parameters": params}}]
+        assert convert_tools_to_converse(tools)[0]["toolSpec"]["inputSchema"]["json"] == params
+
 
 # ---------------------------------------------------------------------------
 # Message conversion: OpenAI → Converse

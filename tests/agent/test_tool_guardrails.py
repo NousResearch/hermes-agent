@@ -506,3 +506,47 @@ def test_rate_limited_retry_is_not_a_replay_but_stays_bounded(result, throttled,
             break
     else:
         raise AssertionError("a permanently failing endpoint must still halt or block")
+
+
+def _load_skill(controller, args, result):
+    decision = controller.before_call("skill_view", args)
+    if decision.allows_execution:
+        controller.after_call("skill_view", args, result, failed=False)
+        controller.observe_call("skill_view", args, result, failed=False)
+    return decision
+
+
+def test_skill_reload_after_each_compaction_is_never_blocked():
+    # One unattended turn (kanban worker) spanning many compactions: compaction prunes the skill body,
+    # the model re-loads it. Without the reset the 6th load hit idempotent_no_progress_block and
+    # halted the turn before the worker reported its result.
+    controller = ToolCallGuardrailController(ToolCallGuardrailConfig(hard_stop_enabled=True))
+    args = {"name": "some-skill"}
+    result = json.dumps({"success": True, "name": "some-skill", "content": "x" * 600})
+    for _ in range(8):
+        assert _load_skill(controller, args, result).allows_execution
+        assert controller.halt_decision is None
+        controller.forget_results_after_compaction()
+
+
+def test_compaction_reset_keeps_the_block_for_loops_within_one_context_window():
+    controller = ToolCallGuardrailController(ToolCallGuardrailConfig(hard_stop_enabled=True))
+    args = {"name": "some-skill"}
+    result = json.dumps({"success": True, "name": "some-skill", "content": "x" * 600})
+    controller.forget_results_after_compaction()
+    for _ in range(5):
+        assert _load_skill(controller, args, result).allows_execution
+    blocked = controller.before_call("skill_view", args)
+    assert blocked.action == "block"
+    assert blocked.code == "idempotent_no_progress_block"
+
+
+def test_compaction_reset_keeps_failure_counters():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(hard_stop_enabled=True, exact_failure_block_after=2)
+    )
+    args = {"path": "/missing"}
+    for _ in range(2):
+        controller.after_call("read_file", args, '{"error":"not found"}', failed=True)
+    controller.forget_results_after_compaction()
+    assert controller.before_call("read_file", args).code == "repeated_exact_failure_block"

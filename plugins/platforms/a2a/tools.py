@@ -49,8 +49,21 @@ def _auth_header(auth: dict) -> dict:
     return {"Authorization": f"Bearer {auth['token']}"} if auth and auth.get("type") == "bearer" and auth.get("token") else {}
 
 
+def _http_error_detail(exc: urllib.error.HTTPError) -> str:
+    """Short, single-line snippet from an HTTPError body, or '' when unavailable."""
+    try:
+        raw = exc.read(300) if getattr(exc, "fp", None) is not None else b""
+    except (OSError, ValueError):
+        return ""
+    if not raw:
+        return ""
+    return " ".join(raw.decode("utf-8", errors="replace").split())[:160]
+
+
 def _http_json(url: str, headers: dict, timeout: int, method: str, data: Optional[bytes] = None) -> dict:
-    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    req = urllib.request.Request(
+        url, data=data, headers=security.default_user_agent_headers(headers), method=method
+    )
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
@@ -141,7 +154,7 @@ def _reply_text_from_result(result: Any) -> str:
 
 
 _AUTH_ERR = "Error: peer '{agent}' rejected auth (HTTP {code}). Check the configured token."
-_HTTP_CALL_ERRORS = {401: _AUTH_ERR, 403: _AUTH_ERR, 429: "Error: peer '{agent}' rate limited us (HTTP 429). Retry later."}
+_HTTP_CALL_ERRORS = {401: _AUTH_ERR, 429: "Error: peer '{agent}' rate limited us (HTTP 429). Retry later."}
 
 def a2a_discover(args: dict, **_: Any) -> str:
     """Fetch and summarize the Agent Card at ``url``."""
@@ -151,7 +164,9 @@ def a2a_discover(args: dict, **_: Any) -> str:
     try:
         card = _fetch_card(url, {}, _DEFAULT_TIMEOUT)
     except urllib.error.HTTPError as e:
-        return f"Error: discovery failed — HTTP {e.code} from {url}."
+        detail = _http_error_detail(e)
+        suffix = f" ({detail})" if detail else ""
+        return f"Error: discovery failed — HTTP {e.code} from {url}{suffix}."
     except Exception as e:
         return f"Error: could not reach {url} — {e}."
     caps = card.get("capabilities", {}) or {}
@@ -183,6 +198,13 @@ def a2a_call(args: dict, **_: Any) -> str:
     try:
         reply, reply_ctx, state = _send_task(agent, peer, message, context_id)
     except urllib.error.HTTPError as e:
+        if e.code == 403:
+            detail = _http_error_detail(e)
+            suffix = f" ({detail})" if detail else ""
+            return (
+                f"Error: peer '{agent}' rejected request (HTTP 403){suffix}. "
+                "Check the configured token or upstream proxy/WAF rules."
+            )
         return _HTTP_CALL_ERRORS.get(e.code, "Error: call to '{agent}' failed — HTTP {code}.").format(agent=agent, code=e.code)
     except ValueError as e:
         return str(e)

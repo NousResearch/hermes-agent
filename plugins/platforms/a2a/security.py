@@ -248,6 +248,15 @@ def is_safe_callback_url(url: str, *, localhost_mode: Optional[bool] = None) -> 
     return is_safe_url(url)
 
 
+def default_user_agent_headers(headers: dict | None) -> dict:
+    """Copy *headers* and inject Hermes's A2A User-Agent unless the caller already set one."""
+    req_headers = dict(headers or {})
+    if not any(str(k).lower() == "user-agent" for k in req_headers):
+        from hermes_cli.version_info import hermes_user_agent
+        req_headers["User-Agent"] = hermes_user_agent("hermes-agent-a2a")
+    return req_headers
+
+
 def post_callback(url: str, body: bytes, headers: dict, *, localhost_mode: bool, timeout: float = 10.0) -> int:
     """POST *body* to a callback URL that passed ``is_safe_callback_url``; returns the HTTP status.
 
@@ -264,7 +273,7 @@ def post_callback(url: str, body: bytes, headers: dict, *, localhost_mode: bool,
         client = httpx.Client(timeout=timeout, follow_redirects=False, trust_env=False)
     else:
         client = create_ssrf_safe_client(timeout=timeout, follow_redirects=False)
-    with client, client.stream("POST", url, content=body, headers=headers) as response:
+    with client, client.stream("POST", url, content=body, headers=default_user_agent_headers(headers)) as response:
         return response.status_code  # the peer's body is never read: only the status matters
 
 

@@ -1003,11 +1003,16 @@ def should_allow_install(result: ScanResult, force: bool = False) -> tuple[bool,
 
 def format_scan_report(result: ScanResult) -> str:
     """Compact multi-line report for CLI/chat display; findings sorted critical → low."""
+    try:
+        from rich.markup import escape as _esc_rich
+    except ImportError:  # rich absent: plain-text callers get the raw string anyway
+        def _esc_rich(s: str) -> str:
+            return s
     lines = [f"Scan: {result.skill_name} ({result.source}/{result.trust_level})  Verdict: {result.verdict.upper()}"]
     if result.findings:
         for f in sorted(result.findings, key=lambda f: _SEVERITY_ORDER.get(f.severity, 4)):
             lines.append(f"  {f.severity.upper().ljust(8)} {f.category.ljust(14)} "
-                         f"{f'{f.file}:{f.line}'.ljust(30)} \"{f.match[:60]}\"")
+                         f"{f'{f.file}:{f.line}'.ljust(30)} \"{_esc_rich(f.match[:60])}\"")
         lines.append("")
     allowed, reason = should_allow_install(result)
     status = "ALLOWED" if allowed is True else "NEEDS CONFIRMATION" if allowed is None else "BLOCKED"

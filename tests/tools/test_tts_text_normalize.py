@@ -61,6 +61,18 @@ def test_prepare_spoken_text_strips_media_file_links():
     assert "Bye" in spoken
 
 
+def test_prepare_spoken_text_strips_quoted_media_paths_but_keeps_prose():
+    assert prepare_spoken_text('Done MEDIA:"/home/user/My File.pdf" thanks') == "Done thanks"
+    assert prepare_spoken_text("Done MEDIA:'/home/user/My File.pdf' thanks") == "Done thanks"
+    assert prepare_spoken_text("Done MEDIA:/home/hermes/My Slides.pptx thanks") == "Done thanks"
+    assert prepare_spoken_text("See MEDIA:~/AI Brain/Q3 Report Final.pdf. Next.") == "See. Next."
+    assert prepare_spoken_text("Deck MEDIA:C:\\Users\\Morten\\My Report.docx done") == "Deck done"
+    assert prepare_spoken_text("Files MEDIA:/tmp/My Deck.pptx MEDIA:/tmp/a.png ok") == "Files ok"
+    assert "MEDIA:" not in prepare_spoken_text("done MEDIA:C:\\Users\\p\\deck.pptx")
+    assert "MEDIA:" in prepare_spoken_text("discussing MEDIA: strategy for the campaign")
+    assert 'MEDIA:"strategy"' in prepare_spoken_text('discussing MEDIA:"strategy" for the campaign')
+
+
 def test_prepare_spoken_text_keeps_sentence_break_after_inline_media_link():
     spoken = prepare_spoken_text("See MEDIA:/tmp/report-2026-q3.xlsx. Then reply.")
     assert "report" not in spoken

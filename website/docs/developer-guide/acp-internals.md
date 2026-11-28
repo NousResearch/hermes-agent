@@ -164,6 +164,33 @@ repair is session rotation, not another row.
 
 `fork_session()` deep-copies message history into a new live session, preserving conversation state while giving the fork its own session ID and cwd.
 
+### Session extensions
+
+An editor that draws sessions as tabs needs more than `session/list`, which is the visible catalog
+every other ACP client sees: a tab is an *unhidden* session, and ACP has no method that hides or
+renames one. Three `_`-prefixed extension methods answer from the profile's own session store:
+
+| method | params | answer |
+|---|---|---|
+| `_session/catalog` | `{cwd?: string}` | `{sessions: [{session_id, cwd, title, hidden, message_count, updated_at}]}`, newest first |
+| `_session/setHidden` | `{sessionId: string, hidden: boolean}` | `{ok, sessionId, hidden}` |
+| `_session/setTitle` | `{sessionId: string, title: string}` | `{ok, sessionId, title}` |
+| `_model/options` | `{sessionId?: string, explicitOnly?: boolean, includeUnconfigured?: boolean, refresh?: boolean}` | the `model.options` payload: `{providers, model, provider}` |
+
+They dispatch through `ext_method` on the class that answers the wire — a `GatewayACPAgent`,
+which is what `HermesACPAgent()` returns when no session manager is passed — and are built on
+`persistence.sessions.list_sessions` (`include_hidden`), `set_hidden` and `set_title`. A title is
+written with user provenance, so the auto-titler cannot overwrite it. `session/list` is unchanged.
+An unknown session is `-32602 Invalid params` with `{"reason": "unknown session <id>"}`; a refused
+title (one another session holds, the canonical Bot Chat, one past the store's limit) is refused
+with the store's own message.
+
+`_model/options` is the read-only member: ACP's session replies carry only `availableModels`, while
+the TUI's `model.options` returns the shared inventory (pricing, capabilities, planned usage). It is
+answered by `hermes_cli.inventory.build_model_options_payload` with the named session's model
+centered on it, and the three flags mean what they mean for the TUI; a session this connection
+never attached is refused as above.
+
 ## Provider/auth behavior
 
 ACP does not implement its own auth store.

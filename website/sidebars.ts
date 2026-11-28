@@ -497,6 +497,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/mlops/mlops-evaluation-evaluating-llms-harness',
                     'user-guide/skills/optional/mlops/mlops-faiss',
                     'user-guide/skills/optional/mlops/mlops-flash-attention',
+                    'user-guide/skills/optional/mlops/mlops-inference-inference-optimisation',
                     'user-guide/skills/optional/mlops/mlops-lambda-labs',
                     'user-guide/skills/optional/mlops/mlops-inference-llama-cpp',
                     'user-guide/skills/optional/mlops/mlops-modal',

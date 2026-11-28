@@ -65,3 +65,41 @@ def test_does_not_overwrite_existing_new_namespace_key(tmp_path):
         store.rekey_profile_routing("oldname", "newname")
     assert "agent:oldname:feishu:dm:chatA" in store._entries
     assert "agent:newname:feishu:dm:chatA" in store._entries
+
+
+def test_rename_repins_the_receiving_bot_of_live_routes(tmp_path):
+    """Regression for #155001: a completion on a route pinned to the renamed bot was held forever as "the
+    bot of profile 'oldname' is not connected". The live index is written back over the durable rows,
+    and delivery reads a route's bot through ``restore_identity`` on ``entry.origin``, which returns an
+    identity already pinned there (by ingress, or by an earlier restore in this process). After the
+    rename that reader names the new bot, in the old namespace and on a chat the bot received for
+    another profile; a route pinned to another bot keeps it."""
+    from types import SimpleNamespace
+
+    from gateway.session_identity import identity_of, restore_identity
+    store = _make_store(tmp_path)
+    runner = SimpleNamespace(config=SimpleNamespace(multiplex_profiles=True), _primary_profile_name="default",
+                             _resolve_profile_home_for_source=lambda source: tmp_path / "profiles" / source.profile)
+
+    def receiving_bot(entry):
+        restore_identity(entry.origin, runner=runner, transport_profile=entry.transport_profile)
+        return identity_of(entry.origin).transport_profile
+
+    chats = {"own": ("oldname", "oldname"), "routed": ("satellite", "oldname"), "other": ("satellite", "otherbot")}
+    with store._lock:
+        for chat_id, (runtime, bot) in chats.items():
+            key = f"agent:{runtime}:feishu:dm:{chat_id}"
+            entry = _entry(key, chat_id, runtime)
+            entry.transport_profile = bot
+            store._entries[key] = entry
+    assert {entry.origin.chat_id: receiving_bot(entry) for entry in store._entries.values()} == {
+        "own": "oldname", "routed": "oldname", "other": "otherbot"}
+
+    assert store.rekey_profile_routing("oldname", "newname") == 1
+
+    bots = {entry.origin.chat_id: (key, receiving_bot(entry)) for key, entry in store._entries.items()}
+    assert bots == {
+        "own": ("agent:newname:feishu:dm:own", "newname"),
+        "routed": ("agent:satellite:feishu:dm:routed", "newname"),
+        "other": ("agent:satellite:feishu:dm:other", "otherbot"),
+    }

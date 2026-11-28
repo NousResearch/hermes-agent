@@ -513,7 +513,8 @@ import {
   mergeActiveWork,
   normalizeActiveWork,
   quitPromptFor,
-  shouldGuardWindowClose
+  shouldGuardWindowClose,
+  turnsOnly
 } from './quit-guard'
 import {
   backendQuitNeedsWait,
@@ -616,6 +617,7 @@ import {
 } from './translucency'
 import { uiPreferencesRoot } from './ui-preferences'
 import { registerMachineUiPreferences } from './ui-preferences-ipc'
+import { confirmUpdateDiscardsUnsaved, installUnsavedEditsUnloadGuard, promptDialogOptions } from './unsaved-edits-guard'
 import {
   UPDATE_HANDOFF_DWELL_MS,
   UPDATE_WAIT_POLL_MS,
@@ -4333,7 +4335,9 @@ async function releaseBackendLock(updateRoot: string, tag: string): Promise<{ un
 // Detection (checkUpdates / commit changelog / "N behind") stays in the UI;
 // only this apply action changed.
 async function applyUpdates(): Promise<UpdaterApplyResultWire> {
-  return updateOperation.apply(async (): Promise<UpdaterApplyResultWire> => {
+  const declined = await confirmUpdateDiscardsUnsaved(activeWorkByWebContents.values(), BrowserWindow.getFocusedWindow() ?? mainWindow, dialog)
+
+  return declined ?? updateOperation.apply(async (): Promise<UpdaterApplyResultWire> => {
     updateInFlight = true
     let handedOff: boolean = false
 
@@ -11630,6 +11634,8 @@ function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {})
   }
 
   installContextMenuBridge(win)
+  const unsavedFiles = () => activeWorkByWebContents.get(win.webContents.id)?.unsavedFiles ?? []
+  installUnsavedEditsUnloadGuard(win, { allowUnload: () => SKIP_QUIT_CONFIRM || quitInProgress || isQuittingForHandoff, host: dialog, unsavedFiles })
   // Always deny, never open as a side effect: GHSA-9f4c-93c8-jc8g. Trusted
   // links arrive via `hermes:openExternal`, not here. See window-open-policy.ts.
   win.webContents.setWindowOpenHandler(createWindowOpenHandler(origin => rememberLog(`[window-open] denied: ${origin}`)))
@@ -16095,7 +16101,7 @@ ipcMain.on('hermes:active-work', (event, payload) => {
 
   const work = normalizeActiveWork(payload)
   activeWorkByWebContents.set(id, work)
-  lastActiveWorkSeen = work
+  lastActiveWorkSeen = turnsOnly(work)
 
   if (owner?.webContents === event.sender && event.senderFrame === event.sender.mainFrame) {
     streamThrottle.setVoiceActive(owner, payload?.voiceActive === true)
@@ -17556,14 +17562,7 @@ function heldQuitForActiveWork(event: Electron.Event): boolean {
   quitPromptOpen = true
 
   void dialog
-    .showMessageBox(parent, {
-      buttons: [...prompt.buttons],
-      cancelId: 0,
-      defaultId: 0,
-      detail: prompt.detail,
-      message: prompt.message,
-      type: 'question'
-    })
+    .showMessageBox(parent, promptDialogOptions(prompt, 'question'))
     .then(({ response }) => {
       quitPromptOpen = false
 

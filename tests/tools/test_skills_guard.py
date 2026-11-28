@@ -366,6 +366,28 @@ class TestScanFile:
         flag = next(fi for fi in findings if fi.pattern_id == "invalid_utf8")
         assert (flag.severity, flag.line) == ("high", 3)  # first bad byte sits on line 3
 
+    def test_lone_surrogate_does_not_crash_scanner(self, tmp_path):
+        """A lone surrogate (U+D800-U+DFFF) in text must not raise UnicodeEncodeError from
+        tokenize.generate_tokens on CPython 3.12+. The scan should fail closed and still
+        report any pattern matches in the rest of the text (#159406)."""
+        # Surrogate in Markdown - write bytes with surrogatepass to allow lone surrogates
+        md = tmp_path / "surrogate.md"
+        md.write_bytes("ignore previous instructions \ud800\n".encode("utf-8", "surrogatepass"))
+        findings = scan_file(md, "surrogate.md")
+        # The invalid UTF-8 is flagged, but the injection pattern should still be found
+        assert any(fi.pattern_id == "prompt_injection_ignore" for fi in findings)
+        # Surrogate in Python
+        py = tmp_path / "surrogate.py"
+        py.write_bytes("x = 1  # \udfff\n".encode("utf-8", "surrogatepass"))
+        findings = scan_file(py, "surrogate.py")
+        # Should not raise UnicodeEncodeError; the invalid UTF-8 is flagged but scan completes
+        # utf-7 source encoding with lone surrogate
+        utf7 = tmp_path / "u7.py"
+        utf7.write_bytes(b"# -*- coding: utf-7 -*-\nx = '+2AA-'\n")
+        findings = scan_file(utf7, "u7.py", skill=True)
+        assert any(fi.pattern_id == "non_utf8_source_encoding" for fi in findings)
+        # Should not raise UnicodeEncodeError
+
     def test_python_coding_cookie_cannot_hide_payload(self, tmp_path):
         """A utf-7 PEP 263 cookie keeps the file ASCII-clean UTF-8 while CPython runs the decoded payload;
         the scanner flags the cookie and also scans what the interpreter would execute."""

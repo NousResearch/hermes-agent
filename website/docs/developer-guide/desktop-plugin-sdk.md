@@ -393,6 +393,42 @@ Settings, focus the composer), never dispatch a synthetic `KeyboardEvent` for it
 shortcut — the user may have rebound it. Call
 [`ctx.runAction(id)`](#run-app-actions) instead.
 
+### Custom-endpoint editor
+
+The Settings ▸ Providers ▸ Custom Endpoints editor exposes one decoration seam,
+`CUSTOM_ENDPOINT_FORM_AREA` (`'customEndpoint.form'`), rendered inline inside
+the editor card between the option checkboxes and the action buttons. Core
+keeps ownership of the fields, validation, and the save path — a contribution
+AUGMENTS the editor (e.g. "also create this endpoint on other profiles"), it
+never replaces a field or the Save button.
+
+```javascript
+import { CUSTOM_ENDPOINT_FORM_AREA } from '@hermes/plugin-sdk'
+
+ctx.register({
+  id: 'also-create',
+  area: CUSTOM_ENDPOINT_FORM_AREA,
+  data: {
+    render: ({ profile, draft, saved, saving }) => {
+      // profile: the editor's scoped profile (null = active profile)
+      // draft:   read-only snapshot — hasApiKey, NEVER the key value
+      // saved:   the endpoint core just saved ({ id, name, base_url, model,
+      //          has_api_key, savedAt }), or null before the first save;
+      //          savedAt changes on every save, so repeated saves re-notify
+      // saving:  core's save request is in flight
+      return jsx(MyAugmentation, { profile, draft, saved, saving })
+    }
+  }
+})
+```
+
+Mount semantics match the session-row seams: every registration mounts inside
+its own error boundary (a throw degrades to an inline error, not a dead
+editor), and a contribution renders `null` when it has nothing to offer. The
+draft snapshot deliberately carries `hasApiKey` instead of the key value — a
+plugin that needs the credential resolves it through Hermes' secret scope on
+its backend, like every other credential path.
+
 ### Themes
 
 A theme contribution ships a full `DesktopTheme` as its `data` (name, label,

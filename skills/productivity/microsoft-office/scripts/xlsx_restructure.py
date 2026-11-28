@@ -39,17 +39,18 @@ from openpyxl import load_workbook
 from openpyxl.formatting.formatting import ConditionalFormattingList
 from openpyxl.utils import (column_index_from_string, get_column_letter,
                             range_boundaries)
+from openpyxl.worksheet.table import TableColumn
 
 # A1-style reference, optionally sheet-qualified, optionally a range.
 # Guards: not preceded by a word char/$/. (avoids ABC123 identifiers) and
 # not followed by a word char or "(" (avoids function names like LOG10().
-SHEET_PATTERN = r"(?:'(?:[^']|'')+'|[A-Za-z_][A-Za-z0-9_.]*)!"
+SHEET_PATTERN = r"(?:'(?:[^']|'')+'|[^\W\d][\w.]*)!"
 REF_RE = re.compile(
-    r"(?<![\w$.:])"
+    r"(?<![\w$.:'])"
     rf"(?P<sheet>{SHEET_PATTERN})?"
     r"(?P<start>\$?[A-Za-z]{1,3}\$?[0-9]{1,7})"
     r"(?::(?P<end>\$?[A-Za-z]{1,3}\$?[0-9]{1,7}))?"
-    r"(?![\w(])")
+    r"(?![\w('!])")
 WHOLE_COL_RE = re.compile(
     r"(?<![\w$.:])"
     rf"(?P<sheet>{SHEET_PATTERN})?"
@@ -62,7 +63,14 @@ WHOLE_ROW_RE = re.compile(
     r"(?![\w(])")
 # String literals and innermost [...] groups (table column names in structured
 # references such as Table1[[A:B]]) are copied through unrewritten.
-LITERAL_RE = re.compile(r'"(?:[^"]|"")*"|\[[^\[\]]*\]')
+STRING_RE = re.compile(r'"(?:[^"]|"")*"')
+BRACKET_RE = re.compile(r'\[[^\[\]]*\]')
+EXTERNAL_REF_RE = re.compile(
+    r"(?:'\[[^\]]+\][^']+'|\[[^\]]+\][A-Za-z_][A-Za-z0-9_.]*)!"
+    r"(?:\$?[A-Za-z]{1,3}\$?[0-9]{1,7}"
+    r"(?::\$?[A-Za-z]{1,3}\$?[0-9]{1,7})?"
+    r"|\$?[A-Za-z]{1,3}:\$?[A-Za-z]{1,3}"
+    r"|\$?[0-9]{1,7}:\$?[0-9]{1,7})")
 COORD_RE = re.compile(r"^(\$?)([A-Za-z]{1,3})(\$?)([0-9]+)$")
 
 
@@ -195,20 +203,51 @@ class RefRewriter:
                 f"{'$' if end_abs else ''}{new_end}")
 
     def _rewrite_segment(self, text, home_sheet):
-        text = WHOLE_COL_RE.sub(
-            lambda m: self._sub_whole(m, home_sheet, "cols"), text)
-        text = WHOLE_ROW_RE.sub(
-            lambda m: self._sub_whole(m, home_sheet, "rows"), text)
-        return REF_RE.sub(lambda m: self._sub(m, home_sheet), text)
+        whole = [(m.start(), m.end(), "cols", m)
+                 for m in WHOLE_COL_RE.finditer(text)]
+        whole += [(m.start(), m.end(), "rows", m)
+                  for m in WHOLE_ROW_RE.finditer(text)]
+        whole.sort(key=lambda item: (item[0], item[1]))
+        out, pos = [], 0
+        for start, end, axis, match in whole:
+            if start < pos:
+                continue
+            out.append(REF_RE.sub(
+                lambda m: self._sub(m, home_sheet), text[pos:start]))
+            out.append(self._sub_whole(match, home_sheet, axis))
+            pos = end
+        out.append(REF_RE.sub(
+            lambda m: self._sub(m, home_sheet), text[pos:]))
+        return "".join(out)
 
     def rewrite(self, text, home_sheet):
         """Rewrite refs outside quoted string literals. Returns new text."""
+        def rewrite_structured(segment):
+            local_out, local_pos = [], 0
+            for literal in BRACKET_RE.finditer(segment):
+                local_out.append(self._rewrite_segment(
+                    segment[local_pos:literal.start()], home_sheet))
+                local_out.append(literal.group(0))
+                local_pos = literal.end()
+            local_out.append(self._rewrite_segment(segment[local_pos:], home_sheet))
+            return "".join(local_out)
+
+        def rewrite_external(segment):
+            external_out, external_pos = [], 0
+            for external in EXTERNAL_REF_RE.finditer(segment):
+                external_out.append(rewrite_structured(
+                    segment[external_pos:external.start()]))
+                external_out.append(external.group(0))
+                external_pos = external.end()
+            external_out.append(rewrite_structured(segment[external_pos:]))
+            return "".join(external_out)
+
         out, pos = [], 0
-        for lit in LITERAL_RE.finditer(text):
-            out.append(self._rewrite_segment(text[pos:lit.start()], home_sheet))
-            out.append(lit.group(0))
-            pos = lit.end()
-        out.append(self._rewrite_segment(text[pos:], home_sheet))
+        for literal in STRING_RE.finditer(text):
+            out.append(rewrite_external(text[pos:literal.start()]))
+            out.append(literal.group(0))
+            pos = literal.end()
+        out.append(rewrite_external(text[pos:]))
         return "".join(out)
 
 
@@ -218,17 +257,23 @@ def shift_dimensions(dims, idx, n, delete, is_row):
     saved = {}
     for key, dim in items:
         pos = key if is_row else column_index_from_string(key)
-        new = shift_point(pos, idx, n, delete)
+        span = None if is_row else shift_span(
+            dim.min or pos, dim.max or dim.min or pos, idx, n, delete,
+        )
+        new = (shift_point(pos, idx, n, delete) if is_row
+               else (None if span is None else span[0]))
         if new is None:
             del dims[key]
-        elif new != pos:
-            saved[new if is_row else get_column_letter(new)] = dim
+        elif new != pos or (not is_row and span != (dim.min, dim.max)):
+            new_key = new if is_row else get_column_letter(new)
+            saved[new_key] = (dim, span)
             del dims[key]
-    for key, dim in saved.items():
+    for key, (dim, span) in saved.items():
         if is_row:
             dim.index = key
         else:
-            dim.index = column_index_from_string(key)
+            dim.index = key
+            dim.min, dim.max = span
         dims[key] = dim
     return len(saved)
 
@@ -258,6 +303,52 @@ def _shift_freeze_panes(ws, axis, idx, n, delete, report):
     if new != ws.freeze_panes:
         report["freeze_panes"] = {"from": ws.freeze_panes, "to": new}
         ws.freeze_panes = new
+
+
+def _sync_table_columns(ws, table, old_ref, new_ref, axis, idx, n, delete):
+    """Keep ListObject column metadata aligned with a shifted table range."""
+    if table.autoFilter is not None:
+        table.autoFilter.ref = new_ref
+    if axis != "cols":
+        return
+
+    old_min_col, _, _, _ = range_boundaries(old_ref)
+    new_min_col, new_min_row, new_max_col, _ = range_boundaries(new_ref)
+    columns = list(table.tableColumns)
+    target_width = new_max_col - new_min_col + 1
+
+    if delete:
+        deleted = set(range(idx, idx + n))
+        columns = [column for offset, column in enumerate(columns)
+                   if old_min_col + offset not in deleted]
+    elif target_width > len(columns):
+        position = max(0, min(len(columns), idx - old_min_col))
+        for offset in range(target_width - len(columns)):
+            columns.insert(position + offset, TableColumn(id=0, name=""))
+
+    columns = columns[:target_width]
+    while len(columns) < target_width:
+        columns.append(TableColumn(id=0, name=""))
+
+    used = set()
+    has_header = table.headerRowCount != 0
+    for offset, column in enumerate(columns):
+        cell = ws.cell(new_min_row, new_min_col + offset) if has_header else None
+        if has_header:
+            base = str(cell.value).strip() if cell.value is not None else ""
+        else:
+            base = str(column.name or "").strip()
+        base = base or f"Column{offset + 1}"
+        name, suffix = base, 2
+        while name.casefold() in used:
+            name = f"{base}_{suffix}"
+            suffix += 1
+        used.add(name.casefold())
+        if cell is not None:
+            cell.value = name
+        column.id = offset + 1
+        column.name = name
+    table.tableColumns = columns
 
 
 def main(argv=None):
@@ -365,6 +456,9 @@ def main(argv=None):
             if new is None:
                 del ws.tables[table.displayName]
             else:
+                _sync_table_columns(
+                    ws, table, old, new, axis, idx, n, delete,
+                )
                 table.ref = new
 
     # 8. workbook-scope defined names

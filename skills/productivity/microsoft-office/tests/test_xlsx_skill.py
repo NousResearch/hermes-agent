@@ -392,6 +392,29 @@ def test_restructure_insert_cols(restructure_book):
     merged = [str(r) for r in data.merged_cells.ranges]
     assert "F2:F4" in merged                    # merge shifted right
     assert "A7:C7" in merged                    # merge expanded across col B
+    table = data.tables["SalesTbl"]
+    assert table.ref == "A1:D4"
+    assert table.autoFilter.ref == "A1:D4"
+    assert len(table.tableColumns) == 4
+    assert [column.name for column in table.tableColumns] == [
+        data.cell(1, col).value for col in range(1, 5)
+    ]
+
+
+def test_restructure_headerless_table_preserves_first_data_row(tmp_path):
+    book = tmp_path / "headerless.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.append([10, 20])
+    table = Table(displayName="RawData", ref="A1:B1")
+    table.headerRowCount = 0
+    table._initialise_columns()
+    ws.add_table(table)
+    wb.save(book)
+    run("xlsx_restructure.py", book, "--insert-cols", "B:1")
+    ws = load_workbook(book).active
+    assert [ws.cell(1, col).value for col in range(1, 4)] == [10, None, 20]
+    assert len(ws.tables["RawData"].tableColumns) == 3
 
 
 def test_restructure_whole_axis_refs(restructure_book):
@@ -415,6 +438,30 @@ def test_restructure_whole_axis_refs(restructure_book):
     wb = load_workbook(restructure_book)
     assert wb["Summary"]["C1"].value == "=SUM(Data!C:C)"
     assert wb["Summary"]["C2"].value == "=SUM(Data!3:3)"
+
+
+def test_restructure_preserves_external_workbook_refs(restructure_book):
+    wb = load_workbook(restructure_book)
+    wb["Summary"]["D1"] = "=[Budget.xlsx]Data!A1"
+    wb["Summary"]["D2"] = "='[Budget.xlsx]Data'!A1"
+    wb.save(restructure_book)
+    run("xlsx_restructure.py", restructure_book, "--sheet", "Data",
+        "--insert-rows", "1")
+    wb = load_workbook(restructure_book)
+    assert wb["Summary"]["D1"].value == "=[Budget.xlsx]Data!A1"
+    assert wb["Summary"]["D2"].value == "='[Budget.xlsx]Data'!A1"
+
+
+def test_restructure_preserves_formula_strings_and_unicode_sheet_refs(
+        restructure_book):
+    wb = load_workbook(restructure_book)
+    wb.create_sheet("数据")["A1"] = 7
+    wb["Data"]["G1"] = '=数据!A1&"[Book.xlsx]Data!A1 plus B1"'
+    wb.save(restructure_book)
+    run("xlsx_restructure.py", restructure_book, "--sheet", "Data",
+        "--insert-rows", "1")
+    wb = load_workbook(restructure_book)
+    assert wb["Data"]["G2"].value == '=数据!A1&"[Book.xlsx]Data!A1 plus B1"'
 
 
 def test_restructure_removes_fully_deleted_artifacts(tmp_path):

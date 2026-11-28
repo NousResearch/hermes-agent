@@ -356,6 +356,47 @@ class TestDispatchIntegration(unittest.TestCase):
         self.assertEqual(result["status"], "success")
         self.assertIn("per-call ran", result["output"])
 
+    def test_execute_remote_strips_fences_on_kernel_and_per_call_paths(self):
+        from tools.code_execution_tool import _execute_remote
+        from unittest.mock import MagicMock
+
+        env = ScriptedEnv(_spawn_ok_handlers([_cell(stdout="alive\n")]) + [
+            ("command -v python3", lambda c: {"output": "OK\n", "returncode": 0}),
+        ])
+        shipped_cells = []
+        with patch("tools.code_execution_tool._load_config",
+                   return_value={"timeout": 30, "max_tool_calls": 5}), \
+             patch("tools.code_execution_tool._get_or_create_env",
+                   return_value=(env, "ssh")), \
+             patch("tools.code_kernel_remote._remote_write",
+                   side_effect=lambda _e, path, data, **_kw: shipped_cells.append((path, data))):
+            kernel_out = json.loads(_execute_remote('print("alive")\n</code>', "t-fence", ["read_file"]))
+        self.assertEqual(kernel_out["status"], "success", kernel_out)
+        self.assertIn("fence line stripped before compile", kernel_out.get("warning", ""))
+        cell_req = next(json.loads(data) for path, data in shipped_cells if "cell_req_" in path)
+        self.assertEqual(cell_req["code"], 'print("alive")\n')
+
+        shipped_scripts = []
+        fallback_env = ScriptedEnv([
+            ("command -v python3", lambda c: {"output": "OK\n", "returncode": 0}),
+            ("python3 script.py", lambda c: {"output": "per-call alive\n", "returncode": 0}),
+        ])
+        with patch("tools.code_execution_tool._load_config",
+                   return_value={"timeout": 30, "max_tool_calls": 5}), \
+             patch("tools.code_execution_tool._get_or_create_env",
+                   return_value=(fallback_env, "ssh")), \
+             patch("tools.code_kernel_remote.execute_in_remote_kernel",
+                   return_value=None), \
+             patch("tools.code_execution_tool._remote_write",
+                   side_effect=lambda _e, path, data, **_kw: shipped_scripts.append((path, data))), \
+             patch("tools.code_execution_tool.threading.Thread",
+                   return_value=MagicMock()):
+            per_call_out = json.loads(_execute_remote("```python\nprint('alive')\n```", "t-fence", ["read_file"]))
+        self.assertEqual(per_call_out["status"], "success", per_call_out)
+        self.assertIn("fence line stripped before compile", per_call_out.get("warning", ""))
+        script_src = next(data for path, data in shipped_scripts if path.endswith("/script.py"))
+        self.assertEqual(script_src, "print('alive')\n")
+
 
 class TestSharedHostLockdown(RemoteKernelBase):
     """Shared-host hardening: the kernel dir lives under a shared temp dir, so

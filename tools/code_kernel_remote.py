@@ -30,7 +30,9 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from tools.code_execution_rpc import _execute_checked, _private_dirs_cmd, _remote_write
-from tools.code_kernel import RUNNER_CELL_SOURCE, KernelRegistry, stale_modules_warning
+from tools.code_kernel import (
+    RUNNER_CELL_SOURCE, KernelRegistry, stale_modules_warning, strip_code_fences,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -331,12 +333,14 @@ def _acquire_remote_kernel(env, env_type: str, owner: str, task_env_id: str,
 
 def _run_remote_cell(kernel: RemoteKernel, code: str, timeout: int) -> tuple[str, dict[str, Any]]:
     """Ship one cell request and poll for its result: (cell status, payload)."""
+    code, fence_stripped = strip_code_fences(code)
     kernel.cell_seq += 1
     seq = f"{kernel.cell_seq:06d}"
     q_cells, q_res = shlex.quote(f"{kernel.kernel_dir}/cells"), shlex.quote(f"cell_res_{seq}.json")
     # One round-trip: tmp write + rename publishes the request atomically.
     _remote_write(kernel.env, f"{kernel.kernel_dir}/cells/cell_req_{seq}.json",
-                  json.dumps({"id": seq, "code": code}, ensure_ascii=False), atomic=True, check=True)
+                  json.dumps({"id": seq, "code": code, "fence_stripped": fence_stripped}, ensure_ascii=False),
+                  atomic=True, check=True)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
@@ -464,6 +468,8 @@ def _run_attached_cell(kernel: RemoteKernel, key: tuple, code: str, *, env, task
             "restart, or idle self-exit); state from earlier calls was lost and a fresh kernel was started."))
     if cell_status == "error" and result["traceback"]:
         result["error"] = result["traceback"].strip().splitlines()[-1]
+    if cell_payload.get("fence_stripped") or strip_code_fences(code)[1]:
+        result["fence_stripped"] = True
     stale_warning = stale_modules_warning(cell_payload)
     if stale_warning:
         kernel_info["warning"] = stale_warning  # the caller rebuilds the result but keeps `kernel`

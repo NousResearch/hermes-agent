@@ -117,7 +117,8 @@ def routed_profile_fire(home=None) -> bool:
 
 @contextlib.contextmanager
 def _profile_cron_scope(home):
-    """Scope the calling thread to one profile's home + cron store for the block."""
+    """Scope the calling thread to one profile's home, secrets and cron store."""
+    from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
     from cron.jobs import use_cron_store
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
 
@@ -128,7 +129,11 @@ def _profile_cron_scope(home):
     home_token = set_hermes_home_override(str(home))
     try:
         with use_cron_store(home):
-            yield
+            secret_token = set_secret_scope(build_profile_secret_scope(home), profile_home=str(home))
+            try:
+                yield
+            finally:
+                reset_secret_scope(secret_token)
     finally:
         reset_hermes_home_override(home_token)
 

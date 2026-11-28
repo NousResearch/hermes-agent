@@ -1039,7 +1039,7 @@ class TestSameRootDuplicationResolves:
             result = json.loads(skill_view("arxiv"))
 
         assert result["success"] is True, result
-        assert result["path"] == "arxiv/SKILL.md"
+        assert result["path"] == os.path.join("arxiv", "SKILL.md")
         assert "IDENTICAL COPY" in result["content"]
 
     def test_different_skill_with_same_frontmatter_name_in_same_root_refuses(self, tmp_path):

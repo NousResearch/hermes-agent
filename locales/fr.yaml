@@ -1212,8 +1212,6 @@ platform:
       video_failed: "⚠️ Impossible d'envoyer la vidéo jointe."
       file_failed: "⚠️ Impossible d'envoyer le fichier joint ({name})."
       attachment_failed: "⚠️ Impossible d'envoyer la pièce jointe."
-  weixin:
-    voice_as_attachment: "[message vocal en pièce jointe]"
   signal:
     batch_pacing_notice: "(D'autres images arrivent — pause d'environ {wait} pour respecter la limite de débit de Signal, lot {batch}/{total}.)"
     wait_seconds: "{count}s"

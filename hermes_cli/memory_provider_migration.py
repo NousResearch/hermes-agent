@@ -154,9 +154,14 @@ def _install_command(name: str, home: Path) -> str:
 
 def kept_off_sentence(name: str, home: Path) -> str:
     """Why an automatic install left *name* off in *home* (its ``plugins.disabled`` named it when the
-    enable ran, :func:`_install_into`), and the command that turns it on."""
+    enable ran, :func:`_install_into`), and the command that turns it on. Names the spelling the list holds:
+    the enable vetoes every alias, a core-era key (``platforms/weixin``) included, which the enable purges."""
+    from hermes_cli.plugins_cmd import _plugin_aliases
+    from pm.plugins_state import read_home_selection
+    disabled = ((read_home_selection(home) or {}).get("plugins") or {}).get("disabled") or ()
+    listed = next((str(n) for n in disabled if str(n) in _plugin_aliases(name, entries=[])), name)
     enable = _install_command(name, home).replace(" plugins install ", " plugins enable ")
-    return f"plugins.disabled lists '{name}', so it is installed but off: run `{enable}` to turn it on."
+    return f"plugins.disabled lists '{listed}', so it is installed but off: run `{enable}` to turn it on."
 
 
 def _install_pending(home: Path, name: str, *, install: Callable[[str], dict],

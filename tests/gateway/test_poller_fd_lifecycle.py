@@ -10,8 +10,7 @@ a local HTTP proxy leaked one TCP socket per failed poll/connect cycle until
    try/finally at all — a login/select failure abandoned the connected
    socket entirely.
 2. weixin: repeated poll failures through a proxy strand sockets in the
-   aiohttp connector; the poll session was never recycled, so they
-   accumulated for the life of the process.
+   aiohttp connector (now covered in the weixin plugin's own tests).
 """
 
 import asyncio
@@ -88,85 +87,6 @@ class TestFetchClosesSocketOnBrokenLogout(unittest.TestCase):
         mock_imap.shutdown.assert_called_once()
         # A teardown failure is not a fetch failure.
         self.assertFalse(adapter._last_fetch_failed)
-
-
-class TestWeixinPollSessionRecycle(unittest.TestCase):
-    """The weixin poll loop must recycle its session after a failure streak."""
-
-    def _make_adapter(self):
-        from gateway.config import PlatformConfig
-        from plugins.platforms.weixin.adapter import WeixinAdapter
-
-        return WeixinAdapter(
-            PlatformConfig(
-                enabled=True,
-                token="test-token",
-                extra={"account_id": "test-account"},
-            )
-        )
-
-    def test_recycle_closes_old_and_installs_fresh_session(self):
-        from plugins.platforms.weixin import adapter as weixin_mod
-
-        adapter = self._make_adapter()
-        adapter._running = True
-
-        old_session = MagicMock()
-        old_session.closed = False
-
-        async def _close():
-            old_session.close_called = True
-
-        old_session.close = MagicMock(side_effect=lambda: _close())
-        # close() must return an awaitable
-        closed = {"v": False}
-
-        async def _aclose():
-            closed["v"] = True
-
-        old_session.close = _aclose
-        adapter._poll_session = old_session
-
-        new_session = MagicMock()
-        with patch.object(
-            weixin_mod.aiohttp, "ClientSession", return_value=new_session
-        ) as mk:
-            asyncio.run(adapter._recycle_poll_session())
-
-        mk.assert_called_once()
-        self.assertIs(adapter._poll_session, new_session)
-        self.assertTrue(closed["v"])
-
-
-    def test_poll_loop_recycles_after_max_consecutive_failures(self):
-        from plugins.platforms.weixin import adapter as weixin_mod
-
-        adapter = self._make_adapter()
-        adapter._running = True
-        adapter._poll_session = MagicMock()
-
-        calls = {"n": 0, "recycled": 0}
-
-        async def _failing_get_updates(*args, **kwargs):
-            calls["n"] += 1
-            if calls["n"] > weixin_mod.MAX_CONSECUTIVE_FAILURES:
-                adapter._running = False
-                raise asyncio.CancelledError
-            raise ConnectionError("Cannot connect to host via proxy")
-
-        async def _fake_recycle():
-            calls["recycled"] += 1
-
-        async def _no_sleep(_secs):
-            return None
-
-        with patch.object(weixin_mod, "_get_updates", _failing_get_updates), \
-                patch.object(weixin_mod, "_load_sync_buf", return_value=""), \
-                patch.object(weixin_mod.asyncio, "sleep", _no_sleep), \
-                patch.object(adapter, "_recycle_poll_session", _fake_recycle):
-            asyncio.run(adapter._poll_loop())
-
-        self.assertEqual(calls["recycled"], 1)
 
 
 if __name__ == "__main__":

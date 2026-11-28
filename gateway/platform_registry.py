@@ -134,7 +134,7 @@ class PlatformEntry:
     # already merged into it), for ``GatewayConfig.get_connected_platforms``. Unlike ``is_connected``
     # it never falls back to the env / ``.env`` (the gateway runs from the merged config, setup UIs
     # read the env), and it owns the ``token``/``api_key`` shortcut so a platform that needs more
-    # than a token (Weixin: token AND account_id) can refuse it. None = ``token or api_key``, then
+    # than a token (e.g. token AND account_id) can refuse it. None = ``token or api_key``, then
     # ``is_connected`` / ``validate_config``.
     config_connected_fn: Optional[Callable[[Any], bool]] = None
     # --- authz ---

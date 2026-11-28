@@ -2,7 +2,7 @@
 in config.yaml must survive ``_apply_env_overrides`` when that platform's
 credentials are present in the environment.
 
-Before the fix, twelve credential-presence branches (weixin, whatsapp_cloud,
+Before the fix, twelve credential-presence branches (whatsapp_cloud,
 email, sms, dingtalk, feishu, wecom, wecom_callback, bluebubbles,
 qqbot) force-set ``enabled = True`` unconditionally, while Telegram /
 Discord / Slack routed through ``_enable_from_env`` and honored the
@@ -19,10 +19,6 @@ from gateway.config import Platform, load_gateway_config
 
 # platform -> env credentials that trigger its env-enable branch
 CRED_ENV = {
-    "weixin": {
-        "WEIXIN_TOKEN": "wx_9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b2a1f0e",
-        "WEIXIN_ACCOUNT_ID": "acct_12345",
-    },
     "whatsapp_cloud": {
         "WHATSAPP_CLOUD_PHONE_NUMBER_ID": "1234567890",
         "WHATSAPP_CLOUD_ACCESS_TOKEN": "EAAB-test-access-token",
@@ -104,17 +100,18 @@ def test_env_credentials_still_enable_without_yaml_opinion(platform, tmp_path, m
 def test_env_credentials_still_populate_extra_when_yaml_disables(tmp_path, monkeypatch):
     """The disable only gates ``enabled``; credentials are still wired through
     (mirrors the Slack/API-server contract so send-only tooling keeps working)."""
-    hermes_home = _isolate(monkeypatch, tmp_path, CRED_ENV["weixin"])
+    env = {"MATTERMOST_TOKEN": "mm-token-1234567890", "MATTERMOST_URL": "https://mm.example.com"}
+    hermes_home = _isolate(monkeypatch, tmp_path, env)
     (hermes_home / "config.yaml").write_text(
-        "platforms:\n  weixin:\n    enabled: false\n", encoding="utf-8"
+        "platforms:\n  mattermost:\n    enabled: false\n", encoding="utf-8"
     )
 
     config = load_gateway_config()
 
-    cfg = config.platforms[Platform.WEIXIN]
+    cfg = config.platforms[Platform.MATTERMOST]
     assert cfg.enabled is False
-    assert cfg.token == CRED_ENV["weixin"]["WEIXIN_TOKEN"]
-    assert cfg.extra.get("account_id") == "acct_12345"
+    assert cfg.token == env["MATTERMOST_TOKEN"]
+    assert cfg.extra.get("url") == "https://mm.example.com"
     # marker never leaks out of config load
     assert "_enabled_explicit" not in cfg.extra
 
@@ -149,7 +146,7 @@ def test_explicit_disable_with_env_credentials_warns_once(platform, tmp_path, mo
 
 @pytest.mark.usefixtures("_fresh_warn_dedup")
 def test_no_warning_when_yaml_has_no_opinion_or_is_enabled(tmp_path, monkeypatch, caplog):
-    hermes_home = _isolate(monkeypatch, tmp_path, {**CRED_ENV["weixin"], **CRED_ENV["qqbot"]})
+    hermes_home = _isolate(monkeypatch, tmp_path, {**CRED_ENV["wecom"], **CRED_ENV["qqbot"]})
     (hermes_home / "config.yaml").write_text(
         "platforms:\n  qqbot:\n    enabled: true\n", encoding="utf-8"
     )
@@ -157,7 +154,7 @@ def test_no_warning_when_yaml_has_no_opinion_or_is_enabled(tmp_path, monkeypatch
     with caplog.at_level(logging.WARNING, logger="gateway.config"):
         config = load_gateway_config()
 
-    assert config.platforms[Platform.WEIXIN].enabled is True
+    assert config.platforms[Platform.WECOM].enabled is True
     assert config.platforms[Platform.QQBOT].enabled is True
     assert not [r for r in caplog.records if "explicitly disabled" in r.getMessage()]
 
@@ -166,11 +163,11 @@ def test_no_warning_when_disabled_and_no_env_credentials(tmp_path, monkeypatch, 
     """The notice is about credentials being IGNORED; a plain disable is silent."""
     hermes_home = _isolate(monkeypatch, tmp_path, {})
     (hermes_home / "config.yaml").write_text(
-        "platforms:\n  weixin:\n    enabled: false\n", encoding="utf-8"
+        "platforms:\n  wecom:\n    enabled: false\n", encoding="utf-8"
     )
 
     with caplog.at_level(logging.WARNING, logger="gateway.config"):
         config = load_gateway_config()
 
-    assert config.platforms[Platform.WEIXIN].enabled is False
+    assert config.platforms[Platform.WECOM].enabled is False
     assert not [r for r in caplog.records if "explicitly disabled" in r.getMessage()]

@@ -1036,8 +1036,6 @@ platform:
       video_failed: "⚠️ A videómellékletet nem sikerült kézbesíteni."
       file_failed: "⚠️ A fájlmellékletet nem sikerült kézbesíteni ({name})."
       attachment_failed: "⚠️ A mellékletet nem sikerült kézbesíteni."
-  weixin:
-    voice_as_attachment: "[hangüzenet mellékletként]"
   signal:
     batch_pacing_notice: "(További képek jönnek — ~{wait} szünet a Signal sebességkorlátja miatt, {batch}/{total} köteg.)"
     wait_seconds: "{count} mp"

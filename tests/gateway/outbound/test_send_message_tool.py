@@ -1691,3 +1691,4 @@ def test_not_configured_error_names_default_root_gateway_and_secret_sources(tmp_
     assert str(os.getpid()) in err and str(profile) in err
     assert "bitwarden" in err
     assert "SECRET-VALUE" not in err
+

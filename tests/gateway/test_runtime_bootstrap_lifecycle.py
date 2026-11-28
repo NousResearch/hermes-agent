@@ -154,9 +154,9 @@ async def test_drain_stops_adapter_inbound_before_withdrawing_handlers(tmp_path)
         assert primary.calls == ['stop_inbound', 'set_message_handler=False']
         assert secondary.calls == ['stop_inbound', 'set_message_handler=False']
         # A failing stop_inbound cannot block the drain: handlers are still withdrawn.
-        tertiary = SequencedAdapter(PlatformConfig(enabled=True), Platform.WEIXIN)
+        tertiary = SequencedAdapter(PlatformConfig(enabled=True), Platform.SLACK)
         tertiary.stop_inbound_error = RuntimeError('wedge')
-        runner.adapters[Platform.WEIXIN] = tertiary
+        runner.adapters[Platform.SLACK] = tertiary
         primary.calls.clear()
         secondary.calls.clear()
         await drain_gateway_runtime(runner)

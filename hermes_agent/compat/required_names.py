@@ -172,7 +172,6 @@ REQUIRED_NAMES: dict[str, str] = {
     "plugins/platforms/teams/__init__.py": "exists",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:286@v0.23.1
     "plugins/platforms/telegram/__init__.py": "exists",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:286@v0.23.1
     "plugins/platforms/wecom/__init__.py": "exists",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:286@v0.23.1
-    "plugins/platforms/weixin/__init__.py": "exists",  # v0.22.3..rc.4-v0.23.2: gateway/config.py:286@v0.23.1
     "plugins/platforms/whatsapp/__init__.py": "exists",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:286@v0.23.1
     "plugins/platforms/whatsapp_cloud/__init__.py": "exists",  # v0.22.3..rc.4-v0.23.2: gateway/config.py:286@v0.23.1
     "plugins/platforms/a2a/plugin.yaml": "copy",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:287@v0.23.1
@@ -198,7 +197,6 @@ REQUIRED_NAMES: dict[str, str] = {
     "plugins/platforms/teams/plugin.yaml": "copy",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:287@v0.23.1
     "plugins/platforms/telegram/plugin.yaml": "copy",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:287@v0.23.1
     "plugins/platforms/wecom/plugin.yaml": "copy",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:287@v0.23.1
-    "plugins/platforms/weixin/plugin.yaml": "copy",  # v0.22.3..rc.4-v0.23.2: gateway/config.py:287@v0.23.1
     "plugins/platforms/whatsapp/plugin.yaml": "copy",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:287@v0.23.1
     "plugins/platforms/whatsapp_cloud/plugin.yaml": "copy",  # v0.22.3..rc.4-v0.23.2: gateway/config.py:287@v0.23.1
     "plugins/platforms/bluebubbles/gateway_env.py": "by-path",  # v0.22.3..rc.4-v0.23.2: gateway/platform_env.py:198@v0.23.1
@@ -214,7 +212,6 @@ REQUIRED_NAMES: dict[str, str] = {
     "plugins/platforms/sms/gateway_env.py": "by-path",  # v0.22.3..rc.4-v0.23.2: gateway/platform_env.py:198@v0.23.1
     "plugins/platforms/telegram/gateway_env.py": "by-path",  # v0.22.3..rc.4-v0.23.2: gateway/platform_env.py:198@v0.23.1
     "plugins/platforms/wecom/gateway_env.py": "by-path",  # v0.22.3..rc.4-v0.23.2: gateway/platform_env.py:198@v0.23.1
-    "plugins/platforms/weixin/gateway_env.py": "by-path",  # v0.22.3..rc.4-v0.23.2: gateway/platform_env.py:198@v0.23.1
     "plugins/platforms/whatsapp/gateway_env.py": "by-path",  # v0.22.3..rc.4-v0.23.2: gateway/platform_env.py:198@v0.23.1
     "plugins/platforms/whatsapp_cloud/gateway_env.py": "by-path",  # v0.22.3..rc.4-v0.23.2: gateway/platform_env.py:198@v0.23.1
 }

@@ -1013,7 +1013,7 @@ class GatewayStartupMixin:
     # allowlist / open-access opt-in; plugin platforms are appended at check time.
     _ALLOWLIST_ENV_PLATFORMS = (
         "TELEGRAM", "DISCORD", "WHATSAPP", "WHATSAPP_CLOUD", "SLACK", "SIGNAL", "EMAIL", "SMS",
-        "MATTERMOST", "MATRIX", "DINGTALK", "FEISHU", "WECOM", "WECOM_CALLBACK", "WEIXIN",
+        "MATTERMOST", "MATRIX", "DINGTALK", "FEISHU", "WECOM", "WECOM_CALLBACK",
         "BLUEBUBBLES", "QQ",
     )
     _BUILTIN_ALLOWED_USERS_VARS = tuple(f"{p}_ALLOWED_USERS" for p in _ALLOWLIST_ENV_PLATFORMS) + (

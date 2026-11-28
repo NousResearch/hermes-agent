@@ -1916,7 +1916,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
     @property
     def enforces_own_access_policy(self) -> bool:
         """Whether this adapter enforces its own config-driven access policy at intake
-        (``dm_policy``/``group_policy``/``allow_from``: WeCom, Weixin, QQBot, WhatsApp…). The
+        (``dm_policy``/``group_policy``/``allow_from``: WeCom, QQBot, WhatsApp, plugin adapters such as Weixin…). The
         gateway env allowlist runs *after* the adapter; without one it trusts this flag ONLY when
         the effective policy is a real ``"allowlist"`` — never ``"open"`` (the default), which would
         be a network-exposed fail-open (SECURITY.md §2.6). Open access still requires
@@ -3518,7 +3518,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         error_str = result.error or ""
         # A rate-limited / flood-capped send is transient: back off (honoring the server's retry_after) rather
         # than fall through to the plain-text fallback, which re-enters the ban and can truncate content. The
-        # platform-neutral classifier also matches a rate limit with no retry_after (Weixin's bare RuntimeError).
+        # platform-neutral classifier also matches a rate limit with no retry_after (a plugin adapter's bare RuntimeError).
         is_rate_limited = self._is_rate_limited_error(error_str)
         is_network = (
             result.retryable

@@ -236,6 +236,10 @@ def cmd_send(args: argparse.Namespace) -> None:
 
     # Lazy import keeps `hermes send --help` fast (no tool registry / gateway config stack).
     from gateway.outbound.send import send_message_tool
+    from hermes_cli.left_core_migration import recover_for_platform
+
+    # A platform that left core: its plugin may still be installing in the background on an upgraded home.
+    recover_for_platform(target.split(":", 1)[0])
 
     # Routes to the platform adapter (bot-token path for built-ins, live-adapter path for plugin
     # platforms); takes the standard tool-call dict and returns a JSON string.

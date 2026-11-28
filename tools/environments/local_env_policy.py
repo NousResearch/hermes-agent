@@ -126,7 +126,7 @@ def _build_provider_env_blocklist() -> frozenset:
 def _build_adapter_secret_env() -> frozenset:
     """Secrets the messaging adapters declare, process-wide: core ``password`` messaging entries
     of OPTIONAL_ENV_VARS, the bundled platform plugin manifests' secret entries, and the
-    secret-named keys the gateway env-override table reads (WEIXIN_TOKEN, FEISHU_ENCRYPT_KEY, ...).
+    secret-named keys the gateway env-override table reads (FEISHU_ENCRYPT_KEY, ...).
     Declared names only: a user's own ``SLACK_USER_TOKEN`` or ``LOCAL_LLM_API_KEY`` is not Hermes's.
     A profile's user-installed platform plugins are per home: :func:`_home_adapter_secret_env`.
     Nothing here fails soft: an unreadable bundled manifest or env table fails the import rather

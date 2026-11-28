@@ -16,8 +16,7 @@ from typing import Mapping, Optional
 
 # Union of the per-adapter maps where they agree. Favors the common-in-the-wild extension
 # over the RFC-correct one (``audio/ogg`` → ``.ogg``, not ``.oga``): downstream STT/vision
-# pipelines whitelist real-world extensions. (weixin.py's private ``_mime_from_filename``
-# is not folded in yet — another in-flight branch edits that file.)
+# pipelines whitelist real-world extensions.
 DEFAULT_MIME_TO_EXT: dict[str, str] = {
     "image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif", "image/webp": ".webp",
     "audio/ogg": ".ogg", "audio/x-opus+ogg": ".ogg", "audio/opus": ".ogg",  # whatsapp voice notes

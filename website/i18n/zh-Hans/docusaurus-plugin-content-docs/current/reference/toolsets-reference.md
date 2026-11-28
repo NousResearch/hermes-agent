@@ -106,11 +106,10 @@ hermes tools                            # curses UI to enable/disable per platfo
 | `hermes-qqbot` | 与 `hermes-cli` 相同。 |
 | `hermes-wecom` | 与 `hermes-cli` 相同。 |
 | `hermes-wecom-callback` | 与 `hermes-cli` 相同。 |
-| `hermes-weixin` | 与 `hermes-cli` 相同。 |
 | `hermes-webhook` | 与 `hermes-cli` 相同。 |
 | `hermes-gateway` | 内部 gateway 编排器工具集——所有 `hermes-<platform>` 工具集的并集；当 gateway 需要接受任意消息来源时使用。 |
 
-由插件提供的平台会获得一个隐式的 `hermes-<platform>` 工具集，且不属于 `hermes-gateway`。例如，安装插件目录中的 `homeassistant` 插件后，`hermes-homeassistant` 仍可解析，但它已不再是内置工具集。
+由插件提供的平台会获得一个隐式的 `hermes-<platform>` 工具集，且不属于 `hermes-gateway`。例如，安装插件目录中的 `homeassistant` / `weixin` 插件后（`weixin` 默认安装），`hermes-homeassistant` / `hermes-weixin` 仍可解析，但它们已不再是内置工具集。
 
 ## 动态工具集
 

@@ -254,7 +254,6 @@ class Platform(Enum):
     FEISHU = "feishu"
     WECOM = "wecom"
     WECOM_CALLBACK = "wecom_callback"
-    WEIXIN = "weixin"
     BLUEBUBBLES = "bluebubbles"
     QQBOT = "qqbot"
     RELAY = "relay"  # generic relay adapter fronted by the connector (EXPERIMENTAL)
@@ -433,7 +432,6 @@ PLATFORM_TOKEN_ENV_NAMES: dict[Platform, str] = {
     Platform.SLACK: "SLACK_BOT_TOKEN",
     Platform.MATTERMOST: "MATTERMOST_TOKEN",
     Platform.MATRIX: "MATRIX_ACCESS_TOKEN",
-    Platform.WEIXIN: "WEIXIN_TOKEN",
 }
 
 
@@ -716,7 +714,7 @@ class GatewayConfig:
         if checker is not None:
             return bool(config.token or config.api_key) or checker(config)
         entry = _discovered_registry_entry(platform)
-        # ``config_connected_fn`` owns the token shortcut (Weixin needs token AND account_id).
+        # ``config_connected_fn`` owns the token shortcut (a plugin may need more than a token).
         if entry is not None and entry.config_connected_fn is not None:
             return entry.config_connected_fn(config)
         if config.token or config.api_key:

@@ -1022,8 +1022,6 @@ platform:
       video_failed: "⚠️ تعذّر إيصال مرفق الفيديو."
       file_failed: "⚠️ تعذّر إيصال مرفق الملف ({name})."
       attachment_failed: "⚠️ تعذّر إيصال المرفق."
-  weixin:
-    voice_as_attachment: "[رسالة صوتية كمرفق]"
   signal:
     batch_pacing_notice: "(مزيد من الصور قادمة — توقّف مؤقت ~{wait} بسبب حد المعدّل في Signal، الدفعة {batch}/{total}.)"
     wait_seconds: "{count} ث"

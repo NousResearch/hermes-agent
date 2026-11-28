@@ -1022,8 +1022,6 @@ platform:
       video_failed: "⚠️ Não foi possível entregar o vídeo anexado."
       file_failed: "⚠️ Não foi possível entregar o arquivo anexado ({name})."
       attachment_failed: "⚠️ Não foi possível entregar o anexo."
-  weixin:
-    voice_as_attachment: "[mensagem de voz como anexo]"
   signal:
     batch_pacing_notice: "(Mais imagens a caminho — pausando ~{wait} pelo limite de taxa do Signal, lote {batch}/{total}.)"
     wait_seconds: "{count}s"

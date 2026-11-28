@@ -5,7 +5,6 @@ public URL 302 to loopback/metadata and uploads the response into the chat.
 """
 import asyncio
 import socket
-from pathlib import Path
 
 import aiohttp
 import pytest
@@ -17,7 +16,6 @@ from gateway.platforms.helpers import ssrf_checked_aiohttp_get
 from tools import url_safety
 
 PUBLIC_HOST = "redirector.test"
-WEIXIN_CDN_HOST = "novac2c.cdn.weixin.qq.com"
 INTERNAL_BODY = b"internal-only-body"
 
 
@@ -54,32 +52,10 @@ async def _mattermost_fetch(session, url):
     return uploaded + ([loaded[0]] if loaded else [])
 
 
-async def _weixin_fetch(session, url):
-    from plugins.platforms.weixin.adapter import WeixinAdapter
-    adapter = WeixinAdapter(PlatformConfig(enabled=True, token="t", extra={}))
-    adapter._send_session = session
-    try:
-        path = await adapter._download_remote_media(url)
-    except ValueError:
-        return []
-    return [await asyncio.to_thread(Path(path).read_bytes)]
-
-
-async def _weixin_cdn_fetch(session, url):
-    """Inbound media: ``full_url`` passes the CDN host allowlist, then the CDN answers 302."""
-    from plugins.platforms.weixin import adapter as weixin
-    try:
-        return [await weixin._download_and_decrypt_media(
-            session, cdn_base_url=weixin.WEIXIN_CDN_BASE_URL, encrypted_query_param=None, aes_key_b64=None,
-            full_url=url, timeout_seconds=30)]
-    except ValueError:
-        return []
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("fetch", "public_host"), [
-    (_mattermost_fetch, PUBLIC_HOST), (_weixin_fetch, PUBLIC_HOST), (_weixin_cdn_fetch, WEIXIN_CDN_HOST),
-], ids=["mattermost", "weixin", "weixin-cdn"])
+    (_mattermost_fetch, PUBLIC_HOST),
+], ids=["mattermost"])
 async def test_redirect_to_private_address_is_not_followed(fetch, public_host, monkeypatch):
     internal_hits = []
 
@@ -194,42 +170,6 @@ async def test_redirect_does_not_forward_session_authorization_to_another_public
 
     # The first origin may authenticate; the second must not receive any HTTP request.
     assert seen == [(PUBLIC_HOST, "Bearer origin-secret")]
-
-
-@pytest.mark.asyncio
-async def test_weixin_cdn_media_downloads_when_a_fake_ip_resolver_answers_the_cdn(monkeypatch):
-    """Inbound CDN URLs are vetted by the allowlist or the configured CDN base, never by DNS; a local
-    fake-ip proxy (198.18.0.0/15) answering the CDN host must not drop the media."""
-    from plugins.platforms.weixin import adapter as weixin
-
-    async def cdn(_request):
-        return web.Response(body=b"cdn-bytes")
-
-    app = web.Application()
-    app.router.add_get("/{tail:.*}", cdn)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "127.0.0.1", 0)
-    await site.start()
-    port = site._server.sockets[0].getsockname()[1]
-
-    real_getaddrinfo = url_safety._getaddrinfo
-
-    def getaddrinfo(host, port=None):
-        if host == WEIXIN_CDN_HOST:
-            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("198.18.0.7", port or 0))]
-        return real_getaddrinfo(host, port)
-    monkeypatch.setattr(url_safety, "_getaddrinfo", getaddrinfo)
-
-    try:
-        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(resolver=_LoopbackResolver())) as session:
-            data = await weixin._download_and_decrypt_media(
-                session, cdn_base_url=f"http://{WEIXIN_CDN_HOST}:{port}/c2c", encrypted_query_param="q",
-                aes_key_b64=None, full_url=None, timeout_seconds=30)
-    finally:
-        await runner.cleanup()
-
-    assert data == b"cdn-bytes"
 
 
 @pytest.mark.asyncio

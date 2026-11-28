@@ -995,6 +995,5 @@ async def disconnect(self):
 | Adapter | Pattern | Complexity | Good reference for |
 |---------|---------|------------|-------------------|
 | `plugins/platforms/bluebubbles/adapter.py` | REST + webhook | Medium | Simple REST API integration |
-| `plugins/platforms/weixin/adapter.py` | Long-poll + CDN | High | Media handling, encryption |
 | `plugins/platforms/wecom/callback_adapter.py` | Callback/webhook | Medium | HTTP server, AES crypto, multi-app |
 | `plugins/platforms/irc/adapter.py` | Long-poll + IRC protocol | High | Full-featured plugin adapter with scoped token lock |

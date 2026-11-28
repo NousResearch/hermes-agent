@@ -1,6 +1,6 @@
 """Mount a cold messaging-platform session into the authority for a local viewer (TUI-8).
 
-A messaging session (Telegram, Weixin, Discord, ...) is published into the authority only when its
+A messaging session (Telegram, Discord, ...) is published into the authority only when its
 lane's first post-restart inbound runs ``_publish_route``, so ``session.resume`` of its row answered
 ``not_found`` until someone wrote to the lane again, on every gateway restart. Before the canonical
 authority (#106742) a viewer opened any such row straight from ``state.db``; this restores that for

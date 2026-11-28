@@ -472,6 +472,7 @@
     "plugins/platforms/slack/adapter_slash_payload.py hermes_cli.commands_platforms.slack_subcommand_map": 1,
     "plugins/platforms/slack/gateway_env.py gateway.platform_env.EnvCred": 1,
     "plugins/platforms/slack/gateway_env.py gateway.platform_env.getenv": 1,
+    "plugins/platforms/slack/permalinks/resolve.py gateway.session.neutralize_untrusted_inline_text": 1,
     "plugins/platforms/slack/send_targets.py gateway.platforms.send_targets.StandaloneSendPolicy": 1,
     "plugins/platforms/sms/adapter.py gateway.platforms.send_targets.StandaloneSendPolicy": 1,
     "plugins/platforms/sms/adapter.py gateway.platforms.shared_ingress.bind_listener": 1,

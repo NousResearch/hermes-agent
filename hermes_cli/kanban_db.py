@@ -3337,6 +3337,13 @@ def request_review(
                 implementer = arow["profile"] if arow else None
             if implementer is None and trow["assignee"] != reviewer:
                 implementer = trow["assignee"]
+            if implementer is None:
+                # No live run and the row only names the reviewer: a re-review
+                # of a card handed back from ``ready`` (e.g. after a scheduled
+                # wait) still has durable provenance from the runs that did
+                # the work. Use it instead of recording nothing, which made
+                # request_changes refuse and the card loop to triage.
+                implementer = _implementer_from_history(conn, task_id)
             assignee_sql = ", assignee = ?" if reviewer is not None else ""
             run_guard = "" if expected_run_id is None else " AND current_run_id = ?"
             params: tuple[Any, ...] = (
@@ -3405,6 +3412,38 @@ def _nonblank_str(value: Any) -> Optional[str]:
     return value if isinstance(value, str) and value.strip() else None
 
 
+def _implementer_from_history(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
+    """Implementer recorded by the task's own history, newest first: the
+    ``implementer`` of a review handoff event, else the profile of the latest
+    run that was claimed but NOT from ``review`` (an implementing run;
+    synthesized handoff runs have no claim and are skipped). ``None``
+    when the card never had an implementing actor."""
+    rows = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id = ? AND kind IN "
+        "('review_requested', 'changes_requested', 'review_reopened') ORDER BY id DESC",
+        (task_id,),
+    ).fetchall()
+    for row in rows:
+        found = _nonblank_str(_json_dict(_row_get(row, "payload")).get("implementer"))
+        if found:
+            return _canonical_assignee(found)
+    runs = conn.execute(
+        "SELECT r.id, r.profile, "
+        "(SELECT e.payload FROM task_events e WHERE e.run_id = r.id AND e.kind = 'claimed' "
+        " ORDER BY e.id DESC LIMIT 1) AS claim_payload "
+        "FROM task_runs r WHERE r.task_id = ? AND r.profile IS NOT NULL "
+        "AND TRIM(r.profile) != '' ORDER BY r.id DESC",
+        (task_id,),
+    ).fetchall()
+    for run in runs:
+        if run["claim_payload"] is None:
+            continue
+        if _json_dict(run["claim_payload"]).get("source_status") == "review":
+            continue
+        return _canonical_assignee(run["profile"])
+    return None
+
+
 def request_changes(
     conn: sqlite3.Connection, task_id: str, *, reason: str, expected_run_id: Optional[int] = None,
 ) -> tuple[bool, Optional[str]]:
@@ -3436,6 +3475,23 @@ def request_changes(
         if requested_event is None:
             return False, "no prior review_requested event"
         implementer = _nonblank_str(_json_dict(requested_event["payload"]).get("implementer"))
+        implementer_source = "review_requested"
+        if implementer is None:
+            # Older handoffs (and re-reviews from ``ready``) recorded no
+            # implementer. Refusing here blocked the reviewer, then the card
+            # went to triage and was re-created. Fall back to the task's own
+            # implementing history so the changes route back to the actor
+            # that did the work.
+            implementer = _implementer_from_history(conn, task_id)
+            implementer_source = "history"
+        if implementer is None:
+            # Last resort: no implementer anywhere in history (a card created
+            # already assigned to its reviewer). Send the changes back to the
+            # current assignee rather than refusing, so the card cannot loop
+            # through block -> triage. Note this can route the changes to the
+            # profile that wrote the findings.
+            implementer = _nonblank_str(task_row["assignee"])
+            implementer_source = "assignee"
         if implementer is None:
             return False, "review handoff has no valid implementer provenance"
         reviewer = _canonical_assignee(_nonblank_str(task_row["assignee"]))
@@ -3469,6 +3525,8 @@ def request_changes(
                 "implementer": implementer,
                 "reviewer": reviewer,
                 "status": new_status,
+                **({} if implementer_source == "review_requested"
+                   else {"implementer_source": implementer_source}),
             },
             run_id=run_id,
         )
@@ -3612,7 +3670,7 @@ def reopen_review_task(conn: sqlite3.Connection, task_id: str) -> bool:
         new_status = _landing_status_after_parents(conn, task_id)
         review_event = _latest_event(conn, task_id, "review_requested")
         handoff = _json_dict(_row_get(review_event, "payload"))
-        implementer = _nonblank_str(handoff.get("implementer"))
+        implementer = _nonblank_str(handoff.get("implementer")) or _implementer_from_history(conn, task_id)
         params: tuple[Any, ...] = (new_status, *((implementer,) if implementer else ()), task_id)
         cur = conn.execute(
             # consecutive_failures deliberately PRESERVED: review reopen is not

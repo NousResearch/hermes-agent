@@ -18,6 +18,7 @@ import { enErrorLayers } from './en_error_layers'
 import { enExternalOpenFailed } from './en_external_open'
 import { enFirstRun } from './en_first_run'
 import { enGatewayHost } from './en_gateway_host'
+import { enInbox } from './en_inbox'
 import { enLocalModels } from './en_local_models'
 import { enMemoryLayers } from './en_memory_layers'
 import { enModelMenu } from './en_model_menu'
@@ -42,6 +43,7 @@ export const en: Translations = {
   sharedMetrics: enSharedMetrics,
   sandbox: enSandbox,
   appTour: enAppTour,
+  inbox: enInbox,
   firstRun: enFirstRun,
   // English editorial copy stays in the shipped JSONL; other locales override it.
   intro: { stock: {}, custom: () => [] },
@@ -3255,7 +3257,8 @@ export const en: Translations = {
       capabilities: 'Capabilities',
       messaging: 'Messaging',
       artifacts: 'Artifacts',
-      cron: 'Scheduled jobs'
+      cron: 'Scheduled jobs',
+      inbox: 'Inbox'
     },
     searchAria: 'Search sessions',
     searchPlaceholder: 'Search sessions…',

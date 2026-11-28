@@ -12,6 +12,7 @@ import { frErrorCodes } from './fr_error_codes'
 import { frErrorLayers } from './fr_error_layers'
 import { frFirstRun } from './fr_first_run'
 import { frGatewayHost } from './fr_gateway_host'
+import { frInbox } from './fr_inbox'
 import { frLocalModels } from './fr_local_models'
 import { frMemoryLayers } from './fr_memory_layers'
 import { frModelMenu } from './fr_model_menu'
@@ -36,6 +37,7 @@ export const frOverrides = {
     missing: "Cette discussion de groupe n’existe plus."
   },
   sharedMetrics: frSharedMetrics,
+  inbox: frInbox,
   firstRun: frFirstRun,
   intro: introFr,
   connectors: frConnectorCard,
@@ -3701,7 +3703,8 @@ export const frOverrides = {
       capabilities: 'Capacités',
       messaging: 'Messagerie',
       artifacts: 'Artefacts',
-      cron: 'Tâches planifiées'
+      cron: 'Tâches planifiées',
+      inbox: 'Boîte de réception'
     },
     searchAria: 'Rechercher des sessions',
     searchPlaceholder: 'Rechercher des sessions…',

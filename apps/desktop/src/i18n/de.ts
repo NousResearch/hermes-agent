@@ -11,6 +11,7 @@ import { deErrorCodes } from './de_error_codes'
 import { deErrorLayers } from './de_error_layers'
 import { deFirstRun } from './de_first_run'
 import { deGatewayHost } from './de_gateway_host'
+import { deInbox } from './de_inbox'
 import { deLocalModels } from './de_local_models'
 import { deMemoryLayers } from './de_memory_layers'
 import { deModelMenu } from './de_model_menu'
@@ -36,6 +37,7 @@ export const deOverrides = {
     missing: "Dieser Gruppenchat existiert nicht mehr."
   },
   sharedMetrics: deSharedMetrics,
+  inbox: deInbox,
   firstRun: deFirstRun,
   intro: introDe,
   connectors: deConnectorCard,
@@ -3693,7 +3695,8 @@ export const deOverrides = {
       capabilities: 'Fähigkeiten',
       messaging: 'Messaging',
       artifacts: 'Artefakte',
-      cron: 'Geplante Jobs'
+      cron: 'Geplante Jobs',
+      inbox: 'Posteingang'
     },
     searchAria: 'Sessions durchsuchen',
     searchPlaceholder: 'Sessions durchsuchen…',

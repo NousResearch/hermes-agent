@@ -5144,6 +5144,33 @@ export interface CronAdmissionParams {
 export interface CronCancelResult {
   ok: boolean
 }
+export interface InboxListParams {
+  profile?: string | null
+  limit?: number
+}
+export interface InboxListResult {
+  items: InboxItem[]
+  unread_count: number
+}
+/** A scheduled job's finished (or still running) run session filed into the profile's Inbox. */
+export interface InboxItem {
+  session_id: string
+  job_id: string
+  job_name: string
+  delivered_at: number
+  preview: string
+  unread: boolean
+  running: boolean
+}
+export interface InboxReadParams {
+  profile?: string | null
+  session_id: string
+  read?: boolean
+}
+export interface InboxReadResult {
+  session_id: string
+  unread: boolean
+}
 export interface KanbanRunParams {
   board: string
   task_id: string
@@ -7259,6 +7286,10 @@ export interface CanonicalRpcMethods {
   'groups.peer.revoke': { params: CanonicalGroupsPeerRevokeParams; result: GroupsPeerRevokeResult }
   'groups.retry': { params: CanonicalRoomAttemptParams; result: GroupsRetryResult }
   'image.attach_bytes': { params: ImageAttachBytesParams; result: CanonicalAttachedImageResult }
+  /** The owning profile's Inbox: cron run sessions filed by deliver=inbox, newest first. */
+  'inbox.list': { params: InboxListParams; result: InboxListResult }
+  /** Mark one Inbox item read (or unread): the session's shared last_read_at watermark. */
+  'inbox.read': { params: InboxReadParams; result: InboxReadResult }
   /** Native-owner only: admit the dispatcher's current claim on a kanban task. */
   'kanban.run': { params: KanbanRunParams; result: KanbanRunResult }
   'profiles.list': { params: CanonicalProfilesParams; result: CanonicalProfilesResult }
@@ -7337,6 +7368,8 @@ export const CANONICAL_RPC_METHODS = [
   'groups.peer.revoke',
   'groups.retry',
   'image.attach_bytes',
+  'inbox.list',
+  'inbox.read',
   'kanban.run',
   'profiles.list',
   'prompt.cancel',

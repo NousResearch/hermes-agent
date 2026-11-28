@@ -56,6 +56,7 @@ import { TRANSCRIPT_DIRECTIVE_AREA, type TranscriptDirectiveContribution } from 
 import { setYoloEnabled } from '@/lib/yolo-session'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { watchDeadSessionPrune } from '@/store/dead-session-prune'
+import { watchInbox } from '@/store/inbox'
 import { $interfaceMode, $showsAdvancedChrome, setModeContext, toggleSimpleMode } from '@/store/interface-mode'
 import {
   $fileBrowserOpen,
@@ -95,7 +96,7 @@ import { watchSessionPins } from '@/store/session-pin-sync'
 import { $botChatScopes } from '@/store/session-states'
 import { watchUnreadWriteGuard } from '@/store/session-unread-remote'
 import { $statusbarVisible } from '@/store/statusbar-prefs'
-import { isBrowserWindow, isHudWindow } from '@/store/windows'
+import { isAuxiliaryWindow, isBrowserWindow, isHudWindow, isMainWindow } from '@/store/windows'
 
 import { BrowserPopoutShell } from '../chat/browser-popout-shell'
 import type { SessionDragPayload } from '../chat/composer/inline-refs'
@@ -478,6 +479,12 @@ watchSessionPins()
 
 // Release unread-write guards once a list page confirms the value we wrote.
 watchUnreadWriteGuard()
+
+// Scheduled-job results (sidebar Inbox row + new-result alerts). Session
+// windows/HUD/Browser render no sidebar; only the main window raises alerts.
+if (!isAuxiliaryWindow()) {
+  watchInbox({ announce: isMainWindow() })
+}
 
 // Drop local pins/drafts/queued prompts whose sessions no longer exist on the
 // backend — otherwise every boot re-requests the dead ids and 404s on each.

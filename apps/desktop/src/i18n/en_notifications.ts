@@ -26,6 +26,10 @@ export const enNotifications = {
       label: 'Background task finished',
       description: 'A backgrounded terminal command completed.'
     },
+    inbox: {
+      label: 'Scheduled job results',
+      description: 'A scheduled job finished and its result is in the Inbox.'
+    },
     credits: {
       label: 'Credit alerts',
       description: 'Credit access is paused or restored.'

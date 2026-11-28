@@ -12,6 +12,7 @@ import { esErrorCodes } from './es_error_codes'
 import { esErrorLayers } from './es_error_layers'
 import { esFirstRun } from './es_first_run'
 import { esGatewayHost } from './es_gateway_host'
+import { esInbox } from './es_inbox'
 import { esLocalModels } from './es_local_models'
 import { esMemoryLayers } from './es_memory_layers'
 import { esModelMenu } from './es_model_menu'
@@ -36,6 +37,7 @@ export const esOverrides = {
     missing: "Este chat de grupo ya no existe."
   },
   sharedMetrics: esSharedMetrics,
+  inbox: esInbox,
   firstRun: esFirstRun,
   intro: introEs,
   connectors: esConnectorCard,
@@ -3682,7 +3684,8 @@ export const esOverrides = {
       capabilities: 'Capacidades',
       messaging: 'Mensajería',
       artifacts: 'Artefactos',
-      cron: 'Tareas programadas'
+      cron: 'Tareas programadas',
+      inbox: 'Bandeja de entrada'
     },
     searchAria: 'Buscar sesiones',
     searchPlaceholder: 'Buscar sesiones…',

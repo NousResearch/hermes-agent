@@ -23,6 +23,7 @@ import type { GatewayGroupOpenCopy, SkillDeepLinkCopy } from './types_deep_links
 import type { ExternalOpenFailedCopy } from './types_external_open'
 import type { FirstRunCopy } from './types_first_run'
 import type { GatewayHostTranslations } from './types_gateway_host'
+import type { InboxCopy } from './types_inbox'
 import type { MemoryLayersTranslations } from './types_memory_layers'
 import type { ModelMenuTranslations } from './types_model_menu'
 import type { ModelSettingsTranslations } from './types_model_settings'
@@ -100,6 +101,7 @@ export interface Translations extends NoticeTranslations {
   /** A profile a plugin runs in a sandbox: its planned start, restart and stop. */
   sandbox: SandboxCopy
   appTour: AppTourTranslations
+  inbox: InboxCopy
   firstRun: FirstRunCopy
   externalOpenFailed: ExternalOpenFailedCopy
   intro: {

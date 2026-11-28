@@ -26,6 +26,10 @@ export const esNotifications = {
       label: 'Tarea en segundo plano finalizada',
       description: 'Se completó un comando de terminal en segundo plano.'
     },
+    inbox: {
+      label: 'Resultados de tareas programadas',
+      description: 'Una tarea programada terminó y su resultado está en la bandeja de entrada.'
+    },
     credits: {
       label: 'Avisos de crédito',
       description: 'El acceso a los créditos se pausa o se restablece.'

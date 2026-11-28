@@ -26,6 +26,10 @@ export const frNotifications = {
       label: 'Tâche en arrière-plan terminée',
       description: "Une commande terminal en arrière-plan s'est terminée."
     },
+    inbox: {
+      label: 'Résultats des tâches planifiées',
+      description: 'Une tâche planifiée est terminée et son résultat est dans la boîte de réception.'
+    },
     credits: {
       label: 'Alertes de crédits',
       description: "L'accès aux crédits est suspendu ou rétabli."

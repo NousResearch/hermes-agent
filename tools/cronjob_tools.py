@@ -62,6 +62,7 @@ from cron.job_args import (
     _validate_context_from_refs,
     _validate_cron_base_url,
     _validate_cron_script_path)
+from cron.inbox import default_deliver as _inbox_default_deliver
 from tools.delegate_tool_config import _get_max_async_children
 from tools.registry import registry, tool_error
 
@@ -716,7 +717,10 @@ def _action_create(a: dict[str, Any]) -> str:
     try:
         job = create_job_with_scheduler_registration(
             prompt=prompt or "", schedule=a["schedule"], name=a["name"], repeat=a["repeat"],
-            deliver=_resolve_cron_context_deliver(deliver),
+            # A Desktop/Web chat that is not the Bot Chat files agent results into the Inbox
+            # (cron/inbox.py); a script-only job writes no run session to file, so it keeps its default.
+            deliver=(_resolve_cron_context_deliver(deliver) if _no_agent
+                     else _inbox_default_deliver(_resolve_cron_context_deliver(deliver))),
             origin=_origin_from_env(a["schedule"]),
             skills=canonical_skills,
             model=_normalize_optional_job_value(a["model"]), provider=_normalize_optional_job_value(a["provider"]),
@@ -1172,7 +1176,7 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
             },
             "deliver": {
                 "type": "string",
-                "description": "Where the job's output is POSTED as a one-way message (the job itself always runs in a fresh session with no chat context). Omit to address the chat/topic this job was created from. Otherwise: 'local' (save only, no delivery), 'all' (every connected home channel, resolved at fire time), 'bot-chat' or 'bot-chat:<profile>' (inject into a Bot Chat as a real message), 'room:<room_id>' (post into a Bot Mode Group Chat; it starts a round only for members the output @mentions), or platform:chat_id:thread_id (e.g. 'telegram:-1001234567890:17585'). Comma-combine like 'origin,all'. From a local chat (CLI, TUI or Desktop) the default writes the result into that chat's history as a note, seen when the chat is reopened and by its next turn, not as a live message."
+                "description": "Where the job's output is POSTED as a one-way message (the job itself always runs in a fresh session with no chat context). Omit to address the chat/topic this job was created from. Otherwise: 'local' (save only, no delivery), 'all' (every connected home channel, resolved at fire time), 'bot-chat' or 'bot-chat:<profile>' (inject into a Bot Chat as a real message), 'room:<room_id>' (post into a Bot Mode Group Chat; it starts a round only for members the output @mentions), 'inbox' (file the run into the Desktop/Web Inbox, where the user can reply to it), or platform:chat_id:thread_id (e.g. 'telegram:-1001234567890:17585'). Comma-combine like 'origin,all'. From a CLI or TUI chat the default writes the result into that chat's history as a note, seen when the chat is reopened and by its next turn, not as a live message; from a Desktop/Web chat (not Bot Chat) the default is 'inbox'."
             },
             "failure_deliver": {
                 "type": "string",

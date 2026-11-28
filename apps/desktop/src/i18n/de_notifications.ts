@@ -26,6 +26,10 @@ export const deNotifications = {
       label: 'Hintergrund-Task fertig',
       description: 'Ein Terminal-Befehl im Hintergrund wurde abgeschlossen.'
     },
+    inbox: {
+      label: 'Ergebnisse geplanter Jobs',
+      description: 'Ein geplanter Job ist fertig und sein Ergebnis liegt im Posteingang.'
+    },
     credits: {
       label: 'Credit-Alerts',
       description: 'Der Credit-Zugriff wird pausiert oder wiederhergestellt.'

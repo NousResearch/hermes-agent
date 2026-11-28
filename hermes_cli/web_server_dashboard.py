@@ -638,7 +638,7 @@ def _dashboard_plugin_entry(data: dict[str, Any], name: str, dashboard_dir: Path
 def _installed_plugin_dirs(root: Path, prefix: str = "") -> list[tuple[Path, str]]:
     """``(directory, key)`` of every plugin installed under one plugins root, keyed as the plugin
     loader keys it: flat ``<name>``, or ``<category>/<name>`` one level into a manifest-less dir."""
-    from hermes_cli.plugins_discovery import is_skipped_plugin_dir
+    from hermes_cli.plugin_identity import is_skipped_plugin_dir
     found: list[tuple[Path, str]] = []
     try:
         children = sorted(p for p in root.iterdir() if p.is_dir() and not is_skipped_plugin_dir(p.name))

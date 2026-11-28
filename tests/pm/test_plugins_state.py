@@ -192,6 +192,61 @@ def test_member_discovery_uses_real_enabled_config(homes):
     assert enabled_member_dirs() == []
 
 
+def _moved_keys():
+    """``(catalog plugin, core-era key)`` for every bundled key that left core on this tree."""
+    from hermes_cli.left_core_migration import LEFT_CORE
+    from pm import paths
+    return [(f.plugin, key) for f in LEFT_CORE if f.plugin_key for key in (f.plugin_key, *f.plugin_names)
+            if not (paths.repo_root() / "plugins" / key).is_dir()]
+
+
+@pytest.mark.parametrize(("plugin", "key"), _moved_keys(), ids=[key for _p, key in _moved_keys()])
+def test_a_core_era_key_selects_the_catalog_copy_for_its_dependencies(homes, plugin, key):
+    """``plugins.enabled`` naming a plugin by the bundled key it had in core (``platforms/qqbot``) loads the
+    catalog copy (``plugins_discovery.gate_manifest``), so its Python dependencies join the workspace too:
+    a tree the default pass keeps for that enable is never left without them."""
+    from pm.workspace import enabled_member_dirs
+    home, _ = homes
+    path = home / "plugins" / plugin / "plugin.yaml"
+    path.parent.mkdir(parents=True)
+    path.write_text(f'name: {plugin}\npip_dependencies: ["fixturedep>=1"]\n')
+    _write_config(home, [key])
+    assert enabled_member_dirs() == [home / "plugins" / plugin]
+
+
+def _moved_spellings():
+    """``(catalog plugin, enabled spelling, disabled spelling)``: every pair of one moved plugin's names."""
+    from hermes_cli.left_core_migration import LEFT_CORE
+    rows = [f for f in LEFT_CORE if f.plugin_key]
+    return [(f.plugin, on, off) for f in rows for on in (f.plugin, f.plugin_key, *f.plugin_names)
+            for off in (f.plugin, f.plugin_key, *f.plugin_names) if on != off]
+
+
+@pytest.mark.parametrize(("plugin", "on", "off"), _moved_spellings())
+def test_a_moved_plugin_disabled_by_another_spelling_adds_no_dependencies(homes, plugin, on, off):
+    """The loader keeps a plugin off when ``plugins.disabled`` names it by any of its core-era or catalog names
+    (``gate_manifest``), so PM leaves its dependencies out of the build whichever spelling each list uses."""
+    import hermes_yaml as yaml
+    from pm.workspace import enabled_member_dirs
+    home, _ = homes
+    path = home / "plugins" / plugin / "plugin.yaml"
+    path.parent.mkdir(parents=True)
+    path.write_text(f'name: {plugin}\npip_dependencies: ["fixturedep>=1"]\n')
+    (home / "config.yaml").write_text(yaml.safe_dump({"plugins": {"enabled": [on], "disabled": [off]}}))
+    assert enabled_member_dirs() == []
+
+
+@pytest.mark.parametrize(("plugin", "key"), _moved_keys(), ids=[key for _p, key in _moved_keys()])
+def test_a_core_era_key_selects_the_catalog_copy_being_installed(homes, plugin, key):
+    """A first install of the catalog copy (not yet published) under a core-era enable counts as selected, so
+    its dependencies are built before it is published."""
+    from pm.workspace import enabled_plugin_dirs
+    home, _ = homes
+    _write_config(home, [key])
+    staged = home / "plugins" / plugin
+    assert enabled_plugin_dirs(installing=staged) == [staged]
+
+
 
 
 def test_read_parses_config_once_per_home(homes, monkeypatch):

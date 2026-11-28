@@ -242,9 +242,11 @@ def spotify_in_use(home: Path, *, process_env: bool = False) -> bool:
     return _toolset_listed(_read_config(home), frozenset({"spotify"}))
 
 
-def _plugins_listed(home: Path, names: tuple[str, ...]) -> tuple[bool, bool]:
-    """Whether a name in *names* is in *home*'s ``plugins.enabled`` / ``plugins.disabled``, read with the
-    managed overlay applied like the loader's config, so an administrator's pinned list counts."""
+def _plugins_listed(home: Path, identity) -> tuple[bool, bool]:
+    """Whether *home*'s ``plugins.enabled`` / ``plugins.disabled`` name the plugin with *identity*
+    (``plugin_identity.plugin_listed``, the loader's rule), read with the managed overlay applied like the
+    loader's config, so an administrator's pinned list counts."""
+    from hermes_cli.plugin_identity import plugin_listed
     from gateway import config_loader
     try:
         plugins = config_loader.read_yaml_layers(home).get("plugins")
@@ -253,17 +255,21 @@ def _plugins_listed(home: Path, names: tuple[str, ...]) -> tuple[bool, bool]:
         return False, False
     plugins = plugins if isinstance(plugins, dict) else {}
 
-    def listed(key: str) -> bool:
-        entries = plugins.get(key)
-        return isinstance(entries, list) and any(str(n) in names for n in entries)
-    return listed("enabled"), listed("disabled")
+    identity = frozenset(identity)
+    return plugin_listed(identity, plugins.get("enabled")), plugin_listed(identity, plugins.get("disabled"))
 
 
 def _plugin_lists(home: Path, plugin: str, *, also: tuple[str, ...] = ()) -> tuple[bool, bool]:
-    """Whether *plugin*'s key or name (or a name in *also*) is in *home*'s ``plugins.enabled`` /
-    ``plugins.disabled`` (:func:`_plugins_listed`)."""
-    feature = next(f for f in LEFT_CORE if f.plugin == plugin)
-    return _plugins_listed(home, (feature.plugin_key, *feature.plugin_names, feature.plugin, *also))
+    """Whether catalog *plugin* (by its catalog name or a core-era key, ``plugin_identity``) or a name in
+    *also* is in *home*'s ``plugins.enabled`` / ``plugins.disabled`` (:func:`_plugins_listed`)."""
+    from hermes_cli.plugin_identity import plugin_identity
+    return _plugins_listed(home, plugin_identity(plugin) | set(also))
+
+
+def _tree_lists(home: Path, plugin: str) -> tuple[bool, bool]:
+    """:func:`_plugins_listed` for the tree *home* has for *plugin*, by the names the loader gives that tree."""
+    from hermes_cli.plugin_identity import tree_identity
+    return _plugins_listed(home, tree_identity(home / "plugins", home / "plugins" / plugin, default=plugin))
 
 
 def _bundled_plugin_selected(home: Path, plugin: str) -> bool:
@@ -1039,7 +1045,7 @@ def _installed_for_good(home: Path, plugin: str) -> bool:
     nobody enabled or disabled since (that one is owed, and the next attempt enables it in place)."""
     if not plugin_present(plugin, home):
         return False
-    return not _placed(home, plugin).exists() or any(_plugins_listed(home, (plugin,)))
+    return not _placed(home, plugin).exists() or any(_tree_lists(home, plugin))
 
 
 def _core_carried(feature: LeftCoreFeature, selection: list) -> bool:

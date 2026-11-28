@@ -41,12 +41,12 @@ def _served_env(home: Path) -> set[str]:
     from hermes_cli.left_core_migration import _plugins_listed
     from hermes_cli.plugins_discovery import collect_directory_manifests
     from agent.runtime_scope import bind_profile_scope
-    from hermes_cli.plugins_manifest import manifest_key
+    from hermes_cli.plugin_identity import manifest_identity
     with bind_profile_scope(home, hydrate_secrets=False):
         manifests = collect_directory_manifests()
     served: set[str] = set()
     for manifest in manifests:
-        if manifest.kind != "platform" or _plugins_listed(home, (manifest.name, manifest_key(manifest)))[1]:
+        if manifest.kind != "platform" or _plugins_listed(home, manifest_identity(manifest))[1]:
             continue
         for item in manifest.requires_env:
             name = item.get("name") if isinstance(item, dict) else item
@@ -73,13 +73,14 @@ def pending_entries(home: Path, *, _catalog: list | None = None) -> list:
     tell a working Feishu user on every start that a plugin they do not need is missing."""
     from hermes_cli.default_plugins import _installed_dir, _recorded, fetch_allowed
     from hermes_cli.left_core_migration import LEFT_CORE, _plugins_listed
+    from hermes_cli.plugin_identity import plugin_identity
     owned = {feature.plugin for feature in LEFT_CORE}
     done = _recorded(home)
     catalog = _catalog if _catalog is not None else _catalog_entries(allow_network=fetch_allowed(home))
     candidates = [entry for entry in catalog
                   if entry.category == "platform" and entry.name not in owned and entry.name not in done
                   and _configured(entry, home) and _installed_dir(home, entry) is None
-                  and not _plugins_listed(home, (entry.name,))[1]]
+                  and not _plugins_listed(home, plugin_identity(entry.name))[1]]
     served = _served_env(home) if candidates else set()
     return [entry for entry in candidates if not set(entry.capabilities.requires_env) <= served]
 

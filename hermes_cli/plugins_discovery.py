@@ -22,19 +22,13 @@ from hermes_cli.plugins_manifest import (
     PluginManifest, _detect_kind_from_source, manifest_key, _resolve_module_source,
     parse_manifest_file, portable_plugin_manifest,
 )
+from hermes_cli.plugin_identity import is_skipped_plugin_dir, manifest_identity, plugin_listed
 from hermes_cli.relay_plugin_cutover import LEGACY_RELAY_PLUGIN_KEYS, RELAY_PLUGINS_CONFIG_ENV
 
 logger = logging.getLogger("hermes_cli.plugins")
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"
 ENTRY_POINT_CAPABILITIES_GROUP = "hermes_agent.plugin_capabilities"
-
-# Per-harness manifest directories plugin repos ship for OTHER agent harnesses (e.g. obra/superpowers keeps one
-# plugin.json per harness). Their plugin.json is not an Agent Plugins v1 manifest and can never validate, so
-# parsing it on every discovery pass only spams warnings (#101962).
-_FOREIGN_HARNESS_MANIFEST_DIRS = frozenset({
-    ".claude-plugin", ".codex-plugin", ".cursor-plugin", ".devin-plugin", ".kimi-plugin",
-})
 
 # Set while a caller reads a profile's config WITHOUT wanting that profile's plugins in this process:
 # the multiplex preflight loads a PARKED profile's gateway config for the duplicate-credential guard,
@@ -129,13 +123,6 @@ def _get_enabled_plugins() -> Optional[set]:
         return set(enabled) if isinstance(enabled, list) else None
     except Exception:
         return None
-
-
-def is_skipped_plugin_dir(name: str) -> bool:
-    """True for directory names discovery never treats as plugins. Cache/dunder dirs (__pycache__,
-    __MACOSX__, …) can raise PermissionError when walked and take down every later tool call
-    (#86996); foreign-harness dirs hold another tool's manifest convention."""
-    return (name.startswith("__") and name.endswith("__")) or name in _FOREIGN_HARNESS_MANIFEST_DIRS
 
 
 def scan_directory(
@@ -273,9 +260,8 @@ def gate_manifest(
     category-owned kinds (exclusive / model-provider), bundled auto-loads (backend now, platform deferred),
     then ``plugins.enabled`` opt-in (path-derived key or legacy bare name)."""
     lookup_key = manifest_key(manifest)
-    from hermes_cli.left_core_migration import legacy_plugin_keys
-    # A bundled key that left core (``observability/langfuse``) keeps selecting its catalog plugin.
-    names = {lookup_key, manifest.name, *legacy_plugin_keys(lookup_key)}
+    # Key, manifest name and a left-core plugin's bundled keys: the one rule every list reader shares.
+    names = manifest_identity(manifest)
 
     def _placeholder(error: Optional[str], level: int, message: str, *args, enabled: bool = False) -> ManifestGate:
         return ManifestGate("placeholder", enabled=enabled, error=error, log=(level, message, lookup_key, *args))
@@ -287,8 +273,8 @@ def gate_manifest(
             f"plugins.toml, or use {RELAY_PLUGINS_CONFIG_ENV} for an explicit user-file override"
         )
         return _placeholder(error, logging.WARNING, "Refusing to load removed Hermes Relay plugin '%s'; %s", error)
-    if names & disabled:
-        if enabled and names & enabled:
+    if plugin_listed(names, disabled):
+        if plugin_listed(names, enabled):
             # Contradictory config (#131980): the disable wins, but a silent DEBUG skip hides the
             # conflict — the plugin "loads nowhere" while plugins.enabled still lists it. Fail loud.
             return _placeholder(
@@ -317,7 +303,7 @@ def gate_manifest(
         # invocation. A deferred loader keeps every platform available on first use.
         if manifest.kind == "platform":
             return ManifestGate("defer")
-    if enabled is None or not names & enabled:
+    if not plugin_listed(names, enabled):
         return _placeholder(
             f"not enabled in config (run `hermes plugins enable {lookup_key}` to activate)", logging.DEBUG,
             "Skipping '%s' (not in plugins.enabled)",

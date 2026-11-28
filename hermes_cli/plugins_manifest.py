@@ -16,6 +16,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Tuple, Uni
 
 from utils import fast_safe_load
 from hermes_cli.plugin_capabilities import parse_declared_capabilities as _parse_declared_capabilities
+from hermes_cli.plugin_identity import tree_key
 
 try:
     import hermes_yaml as yaml
@@ -516,7 +517,7 @@ def portable_plugin_manifest(child: Path, source: str, prefix: str) -> PluginMan
     data, diagnostics = read_agent_plugin_manifest(child)
     for diagnostic in diagnostics:
         logger.warning("Agent Plugin '%s': %s", child, diagnostic.message)
-    key = f"{prefix}/{child.name}" if prefix else data["name"]
+    key = tree_key(prefix, child.name, data["name"])
     return PluginManifest(
         name=data["name"], version=data.get("version", ""), description=data.get("description", ""),
         author=_display_author(data.get("author", "")), source=source, path=str(child), key=key,
@@ -562,7 +563,7 @@ def parse_manifest_file(
                            manifest_file, type(data).__name__)
             return None
         name = data.get("name", plugin_dir.name)
-        key = f"{prefix}/{plugin_dir.name}" if prefix else name
+        key = tree_key(prefix, plugin_dir.name, name)
         kind = _manifest_kind(data, key, plugin_dir)
         logger.debug(
             "Parsed manifest: key=%s name=%s kind=%s source=%s path=%s", key, name, kind, source, plugin_dir)

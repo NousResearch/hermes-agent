@@ -3046,7 +3046,7 @@
       showCreate ? h(InlineCreate, {
         columnName: props.column.name,
         allTasks: props.allTasks,
-        defaultWorkspaceKind: (props.boardMeta && props.boardMeta.default_workspace_kind) || "scratch",
+        defaultWorkspaceKind: (props.boardMeta && (props.boardMeta.default_workspace_kind || props.boardMeta.recommended_workspace_kind)) || "scratch",
         defaultWorkspacePath: (props.boardMeta && props.boardMeta.default_workdir) || "",
         onSubmit: function (body) {
           props.onCreate(body).then(function () { setShowCreate(false); });

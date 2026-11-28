@@ -3349,7 +3349,8 @@ def request_review(
                    SET status        = 'review',
                        claim_lock    = NULL,
                        claim_expires = NULL,
-                       worker_pid    = NULL
+                       worker_pid    = NULL,
+                       last_failure_error = NULL
                 """ + assignee_sql + """
                  WHERE id = ?
                    AND status IN ('running', 'ready')

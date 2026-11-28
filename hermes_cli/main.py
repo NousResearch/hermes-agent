@@ -2488,14 +2488,10 @@ def cmd_dashboard(args):
 
 
 def cmd_completion(args, parser=None):
-    """Print shell completion script."""
-    from hermes_cli import completion
+    """Set up completions or print a shell script for legacy callers."""
+    from hermes_cli.completion_setup import run_completion
 
-    shell = getattr(args, "shell", "bash")
-    generate = {"zsh": completion.generate_zsh, "fish": completion.generate_fish}.get(
-        shell, completion.generate_bash
-    )
-    print(generate(parser))
+    return run_completion(args, parser)
 
 
 def cmd_logs(args):

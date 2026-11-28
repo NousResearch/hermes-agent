@@ -108,3 +108,86 @@ def test_a_reused_worker_does_not_log_as_the_previous_turns_session():
         assert tag == "", f"the reused thread logs as {tag!r}"
     finally:
         ex.shutdown(wait=True)
+
+
+def _hold_mid_import(monkeypatch, module_name):
+    """Re-import the real ``module_name`` on a helper thread and park it before its body runs.
+
+    Python lists a module in ``sys.modules`` when its import starts, so until ``release`` is set
+    the name resolves to a module with none of its attributes: what a reused worker's reset saw
+    while another turn thread was importing it for the first time (gateway-06efb1e8d9).
+    """
+    import importlib.util
+    import sys
+
+    package, _, child = module_name.rpartition(".")
+    monkeypatch.delitem(sys.modules, module_name)  # restored (the original object) after the test
+    monkeypatch.delattr(sys.modules[package], child)
+    spec = importlib.util.find_spec(module_name)
+    real_exec = spec.loader.exec_module
+    started, release = threading.Event(), threading.Event()
+
+    class _GatedLoader:
+        def create_module(self, spec):
+            return None
+
+        def exec_module(self, module):
+            started.set()
+            assert release.wait(10), "the test never released the import"
+            real_exec(module)
+
+    class _Finder:
+        def find_spec(self, name, path=None, target=None):
+            if name != module_name:
+                return None
+            gated = importlib.util.spec_from_file_location(name, spec.origin, loader=_GatedLoader())
+            return gated
+
+    finder = _Finder()
+    sys.meta_path.insert(0, finder)
+    importer = threading.Thread(target=importlib.import_module, args=(module_name,), daemon=True)
+    importer.start()
+    assert started.wait(5), "the import never started"
+    sys.meta_path.remove(finder)
+
+    def finish():
+        release.set()
+        importer.join(10)
+        assert not importer.is_alive()
+        return sys.modules[module_name]
+
+    return finish
+
+
+def test_reset_skips_a_sudo_module_another_thread_is_still_importing(monkeypatch):
+    import sys
+
+    from gateway.turn_thread_reset import reset_reused_thread_state
+
+    finish = _hold_mid_import(monkeypatch, "tools.terminal_tool_sudo")
+    try:
+        assert not hasattr(sys.modules["tools.terminal_tool_sudo"], "_sudo_password_cache_lock")
+        reset_reused_thread_state()  # was: AttributeError: partially initialized module ...
+    finally:
+        sudo = finish()
+    key = f"thread:{threading.get_ident()}"
+    sudo._sudo_password_cache[key] = "cached by this thread's turn"
+    reset_reused_thread_state()
+    assert key not in sudo._sudo_password_cache, "a fully loaded module's thread entry must still clear"
+
+
+def test_reset_skips_an_interrupt_module_another_thread_is_still_importing(monkeypatch):
+    import sys
+
+    from gateway.turn_thread_reset import reset_reused_thread_state
+
+    finish = _hold_mid_import(monkeypatch, "tools.interrupt")
+    try:
+        assert not hasattr(sys.modules["tools.interrupt"], "set_interrupt")
+        reset_reused_thread_state()  # was: AttributeError: partially initialized module ...
+    finally:
+        interrupt = finish()
+    interrupt.set_interrupt(True, reason="turn one's stop")
+    reset_reused_thread_state()
+    assert not interrupt.is_interrupted(), "a fully loaded module's interrupt bit must still clear"
+    assert interrupt.get_interrupt_reason() is None

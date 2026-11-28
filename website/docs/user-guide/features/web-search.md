@@ -95,6 +95,8 @@ web:
     - "*.ngrok-free.app"
 ```
 
+Extract backends keep page caches of their own, so for these URLs (and local ones) Hermes also asks the backend for a live copy: Firecrawl gets `maxAge: 0`, Keenable `live=true`, Exa `max_age_hours: 0`, and Parallel its freshest policy (a copy at most 10 minutes old, with no fallback to an older one). The keyless Exa and Parallel endpoints, Tavily and Perplexity expose no such switch and may still answer from their caches.
+
 ```yaml
 # ~/.hermes/config.yaml
 web:
@@ -103,6 +105,14 @@ web:
 ```
 
 If you're researching genuinely live data (scores, prices, breaking news) and need every call fresh, lower the TTL or set `web.cache_enabled: false`.
+
+Those settings cover Hermes' own cache only. Firecrawl also keeps a copy of each page it scrapes and answers `web_extract` from that copy while it is younger than Firecrawl's default window (4 hours through its SDK, 2 days through the keyless API). `web.firecrawl_max_age_hours` sets that window for every Firecrawl scrape, and `0` makes each one fetch the page live:
+
+```yaml
+# ~/.hermes/config.yaml
+web:
+  firecrawl_max_age_hours: 0   # unset = Firecrawl's default window; 6 = reuse copies up to 6 hours old
+```
 
 ---
 

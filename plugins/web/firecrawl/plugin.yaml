@@ -5,3 +5,5 @@ author: NousResearch
 kind: backend
 provides_web_providers:
   - firecrawl
+config_keys:
+  - web.firecrawl_max_age_hours  # freshness window for Firecrawl scrapes, read in provider._max_age_kwargs

@@ -11,6 +11,8 @@ import logging
 import os
 from typing import Any, Dict, List
 
+from tools.web_result_cache import must_fetch_live
+
 from plugins.web._common import (
     SEARCH_LIMIT_CAP, BaseWebSearchProvider, cached_sdk_client, document, keyless_extract, keyless_search,
     keyless_variant_schema, provider_env, run_extract_async, run_search, search_ok, use_keyless, vendor_error_entry, web_hit,
@@ -73,7 +75,10 @@ class ParallelWebSearchProvider(BaseWebSearchProvider):
                 # Keyless ring is blocking HTTP — hop off the event loop.
                 return await asyncio.to_thread(keyless_extract, "Parallel", "parallel", urls, logger)
             logger.info("Parallel extract: %d URL(s)", len(urls))
-            response = await _get_async_client().beta.extract(urls=urls, full_content=True)
+            # Parallel's freshest policy for a URL that must come from the origin: a copy at most 600 s old (its
+            # floor) and an error, not an older copy, when the live fetch fails.
+            fresh = {"fetch_policy": {"max_age_seconds": 600, "disable_cache_fallback": True}} if any(must_fetch_live(u) for u in urls) else {}
+            response = await _get_async_client().beta.extract(urls=urls, full_content=True, **fresh)
             results = [document(r.url or "", r.title or "", r.full_content or "\n\n".join(r.excerpts or [])) for r in response.results or []]
             return results + [
                 vendor_error_entry(e.url or "", status=getattr(e, "http_status_code", None), reason=e.error_type, body=e.content)

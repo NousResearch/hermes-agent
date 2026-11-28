@@ -75,7 +75,7 @@ jobs:
           # Tests that drive the real scripts/build/node-deps.mjs need pnpm (and
           # with it PM's Node) on PATH.
           packages: pnpm
-          extras: '["all", "anthropic", "bedrock", "mistral", "fal", "modal", "daytona", "parallel-web", "keychain"]'
+          extras: '["all", "anthropic", "bedrock", "mistral", "fal", "modal", "daytona", "parallel-web", "keychain", "tts-premium"]'
           test-environment: 'true'
           prune-python-cache: true
 

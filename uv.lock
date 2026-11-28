@@ -1710,7 +1710,7 @@ wheels = [
 
 [[package]]
 name = "elevenlabs"
-version = "1.59.0"
+version = "2.56.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
@@ -1720,9 +1720,9 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "websockets" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/73/5f/01197145be5be258abdce254010eb300868b85fbf6cf1c6c1538a68caef4/elevenlabs-1.59.0.tar.gz", hash = "sha256:16e735bd594e86d415dd445d249c8cc28b09996cfd627fbc10102c0a84698859", size = 200549, upload-time = "2025-05-15T12:19:28.868Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/e1/8e/76738671e856bde505218e4ef00ed391d82632c9d8480c1e6425d3fb4160/elevenlabs-2.56.0.tar.gz", hash = "sha256:ed7b15af50e95e2b4a6bc91ac33a59af12c7e6a02c002d75921ffd867b7562b8", size = 660828, upload-time = "2026-07-01T15:01:51.02Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b0/1f/eaf5dc72edad9124f16daf36b9226c57893e21280d25e94b6b5c7011c86b/elevenlabs-1.59.0-py3-none-any.whl", hash = "sha256:468145db81a0bc867708b4a8619699f75583e9481b395ec1339d0b443da771ed", size = 523205, upload-time = "2025-05-15T12:19:27.568Z" },
+    { url = "https://files.pythonhosted.org/packages/96/68/6f69cc905e821174961f1e617c7b778878ea210aa3332979f2a8734bd80b/elevenlabs-2.56.0-py3-none-any.whl", hash = "sha256:45192dd89047470895a7aad8df0cebb776a337af14b3f426ddb86fd65cfcc31a", size = 1783648, upload-time = "2026-07-01T15:01:49.177Z" },
 ]
 
 [[package]]
@@ -2638,7 +2638,7 @@ requires-dist = [
     { name = "discord-py", extras = ["voice"], marker = "extra == 'discord'", specifier = "==2.7.1" },
     { name = "discord-py", extras = ["voice"], marker = "extra == 'messaging'", specifier = "==2.7.1" },
     { name = "edge-tts", marker = "extra == 'edge-tts'", specifier = "==7.3.1" },
-    { name = "elevenlabs", marker = "extra == 'tts-premium'", specifier = "==1.59.0" },
+    { name = "elevenlabs", marker = "extra == 'tts-premium'", specifier = "==2.56.0" },
     { name = "exa-py", marker = "extra == 'exa'", specifier = "==2.26.0" },
     { name = "fal-client", marker = "extra == 'fal'", specifier = "==0.14.1" },
     { name = "fastapi", marker = "python_full_version >= '3.14'", specifier = ">=0.104.0,<1" },

@@ -78,6 +78,27 @@ login. A login that cannot see the repository is rejected with
 `classification=auth`, naming the profile and repository, instead of a
 retryable infra failure.
 
+An `auth` receipt also stores `failure_provenance`: a fixed `stage`
+(`assignee_profile`, `pr_policy`, `branch_rules`, `check_runs`, `commit_statuses`
+or `head_recheck`), `credential_scope` (`assignee_profile` or `ambient`) and
+`http_status`. The status is 401, 403 or 404 only when observed from the failed
+HTTP request; it is null for a missing profile/login or a null GraphQL repository.
+These fields contain no raw endpoint, provider text, profile path or token.
+They identify which read needs access reconciliation, not why GitHub denied it;
+a 403 alone does not prove a subscription, plan or credential root cause.
+Unreadable required policy remains a refusal, even when visible checks are green.
+Do not switch identities, drop rules or retry unchanged to obtain acceptance.
+
+For an explicitly authorized, separately accounted diagnostic, run
+`python scripts/e2e_kanban_pr_refusal.py --pr-url URL --expected-sha SHA
+--expected-stage branch_rules --expected-http-status 403 --output receipt.json`.
+It uses the current ambient gh login on one disposable unassigned card in a
+private native home, makes real read-only GitHub requests, verifies refusal/run
+retention and archival, then removes its private state. No worker or model starts.
+Its pass proves refusal provenance only; positive PR or release acceptance still
+requires the actual required evidence. Other stages/statuses need their own real
+observations; they are not qualified by this example.
+
 Rejection retains the active card and workspace. Durable `pr_acceptance` events
 store PR URL, SHA, required contexts, check IDs/URLs, classifications and recovery
 instructions; `last_failure_error` surfaces the next step. Fix failures, rerun

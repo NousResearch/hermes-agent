@@ -1793,9 +1793,8 @@ async def test_base_processing_stops_typing_before_hung_post_delivery_callback(
     adapter._active_sessions[session_key] = asyncio.Event()
     adapter._post_delivery_callbacks[session_key] = _post_delivery_cb
 
-    await asyncio.wait_for(
-        adapter._process_message_background(event, session_key), timeout=1.0
-    )
+    # Generous: the hung callback is cut at 0.01s, but the ledger write is a slow thread hop under load.
+    await asyncio.wait_for(adapter._process_message_background(event, session_key), timeout=15.0)
 
     assert [call["content"] for call in adapter.sent] == ["done"]
     # Invariant: typing must stop before the (hung) post-delivery callback

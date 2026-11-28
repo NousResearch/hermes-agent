@@ -11,6 +11,8 @@ import importlib
 import inspect
 import logging
 import os
+import platform
+import sys
 import threading
 import tomllib
 import uuid
@@ -844,6 +846,9 @@ class NoopRelayRuntime:
 
     profile_key: str
     reason: str
+    # Set when the fallback comes from the platform-expected absence (Intel macOS has
+    # no nemo-relay wheel), not from a genuine initialization failure.
+    expected_absence: bool = False
 
     def apply_tool_request_intercepts(self, *, session_id: str, tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
         return args
@@ -875,6 +880,14 @@ class RelayHostRegistry:
                 return host
             try:
                 host = RelayRuntime(profile_key=key)
+            except ModuleNotFoundError as exc:
+                if _is_expected_missing_relay(exc):
+                    logger.info("NeMo Relay is unavailable on Intel macOS; using NoopRelayRuntime")
+                    expected = True
+                else:
+                    logger.warning("Hermes Relay runtime initialization failed", exc_info=True)
+                    expected = False
+                host = NoopRelayRuntime(profile_key=key, reason=str(exc), expected_absence=expected)
             except Exception as exc:
                 logger.warning("Hermes Relay runtime initialization failed", exc_info=True)
                 host = NoopRelayRuntime(profile_key=key, reason=str(exc))
@@ -1322,6 +1335,17 @@ def get_runtime(*, create: bool = True, profile_key: str | None = None) -> Relay
     return host if isinstance(host, RelayRuntime) else None
 
 
+def core_runtime_absence_expected(*, profile_key: str | None = None) -> bool:
+    """Return whether the profile's core host is the platform-expected Noop fallback.
+
+    Consumers layered on the core host (shared metrics) use this to downgrade their
+    own initialization failure to the same reduced-capability path instead of
+    re-warning on a host that will never exist on this platform.
+    """
+    host = HOST_REGISTRY.for_profile(profile_key, create=False)
+    return isinstance(host, NoopRelayRuntime) and host.expected_absence
+
+
 def current_profile_key() -> str:
     """Return the canonical profile identity used for runtime isolation."""
     home = get_hermes_home().expanduser()
@@ -1333,6 +1357,15 @@ def current_profile_key() -> str:
 def _load_nemo_relay() -> Any:
     """Load the binding only when a producer or consumer needs Relay."""
     return importlib.import_module("nemo_relay")
+
+
+def _is_expected_missing_relay(exc: ModuleNotFoundError) -> bool:
+    """Return whether Relay is intentionally unavailable on this platform."""
+    return (
+        exc.name == "nemo_relay"
+        and sys.platform == "darwin"
+        and platform.machine() == "x86_64"
+    )
 
 
 def _configured_plugin_inputs() -> Path | None:

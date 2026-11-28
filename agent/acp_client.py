@@ -2,8 +2,9 @@
 
 The public base for ``external_process`` model providers: a provider profile's
 ``create_client`` returns an :class:`ACPClient` (or a subclass). Each request starts a
-short-lived ACP session with the agent CLI, sends the formatted conversation as one prompt,
-collects text chunks, and returns the minimal OpenAI-client shape.
+short-lived ACP session with the agent CLI, sends the formatted conversation as one text block
+(plus the latest user turn's inline images as ACP image blocks when the agent advertises
+``promptCapabilities.image``), collects text chunks, and returns the minimal OpenAI-client shape.
 
 Subclasses customise the launch defaults and vendor quirks through class attributes
 (``default_command``, ``default_args``, ``command_env_vars``, ``args_env_var``,
@@ -39,6 +40,7 @@ from agent.acp_openai_bridge import (
 )
 from agent.file_safety import (
     get_nt_namespace_error, get_read_block_error, get_write_denied_error, is_write_approval_required)
+from agent.interrupt_compat import _accepts_keyword
 from agent.redact import redact_sensitive_text
 from agent.runtime_cwd import resolve_agent_cwd
 
@@ -216,6 +218,40 @@ def _render_message_content(content: Any) -> str:
     return str(content).strip()
 
 
+def _latest_user_image_blocks(messages: list[dict[str, Any]]) -> tuple[dict[str, str], ...]:
+    """ACP ``image`` blocks for the inline ``data:image/...;base64,`` parts of the latest user message.
+
+    Older turns keep only their text hint; remote URLs and non-base64 data URLs are left out."""
+    latest = next((m for m in reversed(messages) if isinstance(m, dict)
+                   and str(m.get("role") or "").strip().lower() == "user"), None)
+    content = latest.get("content") if latest else None
+    if not isinstance(content, list):
+        return ()
+    blocks: list[dict[str, str]] = []
+    for part in content:
+        if not isinstance(part, dict) or part.get("type") != "image_url":
+            continue
+        image_url = part.get("image_url")
+        url = image_url.get("url") if isinstance(image_url, dict) else image_url
+        if not isinstance(url, str):
+            continue
+        header, _, data = url.partition(",")
+        if not header.startswith("data:"):
+            continue
+        mime, *params = header[5:].split(";")
+        mime = mime.strip().lower()
+        if mime.startswith("image/") and "base64" in params and data:
+            blocks.append({"type": "image", "mimeType": mime, "data": data})
+    return tuple(blocks)
+
+
+def _agent_accepts_images(initialize_result: Any) -> bool:
+    """True when the agent's ``initialize`` answer advertises ``promptCapabilities.image``."""
+    capabilities = initialize_result.get("agentCapabilities") if isinstance(initialize_result, dict) else None
+    prompt_capabilities = capabilities.get("promptCapabilities") if isinstance(capabilities, dict) else None
+    return isinstance(prompt_capabilities, dict) and prompt_capabilities.get("image") is True
+
+
 def _ensure_path_within_cwd(path_text: str, cwd: str, *, verb: str) -> Path:
     # Raw-string check BEFORE resolve(): resolving an NT-namespace path is the NTLM-leak trigger.
     if nt_error := get_nt_namespace_error(path_text, verb=verb):
@@ -377,7 +413,12 @@ class ACPClient:
         tools: list[dict[str, Any]] | None = None, tool_choice: Any = None, stream: bool = False, **_: Any,
     ) -> Any:
         prompt_text = _format_messages_as_prompt(messages or [], model=model, tools=tools, tool_choice=tool_choice)
-        response_text, reasoning = self._run_prompt(prompt_text, timeout_seconds=_effective_timeout(timeout), model=model)
+        images = _latest_user_image_blocks(messages or [])
+        # Plugin compat contract: optional kwargs are signature-inspected, so a ``_run_prompt``
+        # override without ``images`` keeps working (text-only) instead of raising TypeError.
+        extra = {"images": images} if images and _accepts_keyword(self._run_prompt, "images") else {}
+        response_text, reasoning = self._run_prompt(
+            prompt_text, timeout_seconds=_effective_timeout(timeout), model=model, **extra)
         tool_calls, cleaned_text = _extract_tool_calls_from_text(response_text)
         message = SimpleNamespace(
             content=cleaned_text, tool_calls=tool_calls, reasoning=reasoning or None, reasoning_content=reasoning or None,
@@ -423,9 +464,12 @@ class ACPClient:
 
     @contextlib.contextmanager
     def _session(
-        self, timeout_seconds: float, *, allow_file_requests: bool = True
+        self, timeout_seconds: float, *, allow_file_requests: bool = True,
+        on_initialize: Callable[[Any], None] | None = None,
     ) -> Iterator[tuple[dict[str, Any], Callable[..., Any]]]:
-        """Start one ACP process and yield its ``session/new`` result plus request callable."""
+        """Start one ACP process and yield its ``session/new`` result plus request callable.
+
+        ``on_initialize`` receives the agent's ``initialize`` result (its advertised capabilities)."""
         proc = self._spawn()
         inbox: queue.Queue[dict[str, Any]] = queue.Queue()
         stderr_tail: deque[str] = deque(maxlen=40)
@@ -487,7 +531,9 @@ class ACPClient:
             raise TimeoutError(f"Timed out waiting for {self.label} response to {method}.")
 
         try:
-            _request("initialize", _INITIALIZE_PARAMS)
+            initialized = _request("initialize", _INITIALIZE_PARAMS)
+            if on_initialize is not None:
+                on_initialize(initialized)
             session = _request("session/new", {"cwd": self._acp_cwd, "mcpServers": []}) or {}
             if not str(session.get("sessionId") or "").strip():
                 raise RuntimeError(f"{self.label} did not return a sessionId.")
@@ -500,11 +546,15 @@ class ACPClient:
         with self._session(timeout_seconds, allow_file_requests=False) as (session, _):
             return _session_model_ids(session, self.model_entry_disabled)
 
-    def _run_prompt(self, prompt_text: str, *, timeout_seconds: float, model: str | None = None) -> tuple[str, str]:
+    def _run_prompt(
+        self, prompt_text: str, *, timeout_seconds: float, model: str | None = None,
+        images: tuple[dict[str, str], ...] = (),
+    ) -> tuple[str, str]:
         # No `--model` spawn flag: agent CLIs may validate it (an unknown id aborts the spawn) yet ignore it
         # for the session, so the model is applied over ACP after session/new instead.
         requested_model = str(model or "").strip()
-        with self._session(timeout_seconds) as (session, _request):
+        initialized: list[Any] = []
+        with self._session(timeout_seconds, on_initialize=initialized.append) as (session, _request):
             session_id = str(session.get("sessionId") or "").strip()
             if requested_model and requested_model != self.placeholder_model:
                 try:
@@ -522,7 +572,12 @@ class ACPClient:
                                    self.label, requested_model, exc)
             text_parts: list[str] = []
             reasoning_parts: list[str] = []
-            prompt = {"sessionId": session_id, "prompt": [{"type": "text", "text": prompt_text}]}
+            blocks: list[dict[str, str]] = [{"type": "text", "text": prompt_text}]
+            if images and _agent_accepts_images(initialized[0] if initialized else None):
+                blocks.extend(images)
+            elif images:
+                logger.debug("%s does not advertise image prompts; %d image(s) left out.", self.label, len(images))
+            prompt = {"sessionId": session_id, "prompt": blocks}
             _request("session/prompt", prompt, text_parts=text_parts, reasoning_parts=reasoning_parts)
             return "".join(text_parts), "".join(reasoning_parts)
 

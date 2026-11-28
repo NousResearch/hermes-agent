@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import subprocess
@@ -11,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from agent.acp_client import ACPClient
+from agent.acp_client import ACPClient, _format_messages_as_prompt
 
 _REPO = Path(__file__).resolve().parents[2]
 
@@ -106,6 +107,72 @@ def test_malformed_vendor_model_options_fall_back_to_the_session_default(tmp_pat
     completion = _VendorClient(command=command, args=args, acp_cwd=str(tmp_path)).chat.completions.create(
         model="open-model", messages=[{"role": "user", "content": "hi"}], timeout=30)
     assert completion.choices[0].message.content == "hello"
+
+
+# Launched as [python, script, log_path, capability]: "image" / "text" set promptCapabilities.image,
+# "none" omits agentCapabilities entirely. Every session/prompt payload is logged for the test.
+_IMAGE_AGENT = """import json
+import sys
+
+log_path, capability = sys.argv[1], sys.argv[2]
+for line in sys.stdin:
+    request = json.loads(line)
+    method = request.get("method")
+    if method == "initialize":
+        result = {"protocolVersion": 1}
+        if capability != "none":
+            result["agentCapabilities"] = {"promptCapabilities": {"image": capability == "image"}}
+    elif method == "session/new":
+        result = {"sessionId": "s1"}
+    elif method == "session/prompt":
+        with open(log_path, "w", encoding="utf-8") as log:
+            log.write(json.dumps(request["params"]["prompt"]))
+        print(json.dumps({"jsonrpc": "2.0", "method": "session/update", "params": {
+            "update": {"sessionUpdate": "agent_message_chunk", "content": {"text": "seen"}}}}), flush=True)
+        result = {"stopReason": "end_turn"}
+    else:
+        result = {}
+    print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}), flush=True)
+"""
+
+_PNG = base64.b64encode(b"latest-turn fixture bytes").decode("ascii")
+_OLD = base64.b64encode(b"older-turn fixture bytes").decode("ascii")
+_IMAGE_MESSAGES = [
+    {"role": "user", "content": [
+        {"type": "text", "text": "first"},
+        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{_OLD}"}},
+    ]},
+    {"role": "assistant", "content": "noted"},
+    {"role": "user", "content": [
+        {"type": "text", "text": "What is this?\n\n[Image attached at: /fixture/shot.png]"},
+        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{_PNG}"}},
+        {"type": "image_url", "image_url": {"url": "https://example.invalid/remote.png"}},
+    ]},
+]
+
+
+@pytest.mark.parametrize("capability", ["image", "text", "none"])
+def test_latest_user_turn_images_reach_an_image_capable_agent_as_acp_blocks(tmp_path, capability):
+    log_path = tmp_path / "prompt.json"
+    command, *args = _server(tmp_path, _IMAGE_AGENT)
+    client = ACPClient(command=command, args=[*args, str(log_path), capability], acp_cwd=str(tmp_path))
+    completion = client.chat.completions.create(messages=_IMAGE_MESSAGES, timeout=30)
+    assert completion.choices[0].message.content == "seen"
+    text_block, *rest = json.loads(log_path.read_text(encoding="utf-8"))
+    assert text_block == {"type": "text", "text": _format_messages_as_prompt(_IMAGE_MESSAGES)}
+    # Only the latest user turn's inline data: image; older turns and remote URLs stay out.
+    assert rest == ([{"type": "image", "mimeType": "image/png", "data": _PNG}] if capability == "image" else [])
+    assert _PNG not in text_block["text"] and _OLD not in text_block["text"]
+
+
+def test_a_run_prompt_override_without_images_still_serves_image_turns(tmp_path):
+    class _FrozenRunPrompt(ACPClient):  # pinned catalog plugins override _run_prompt without ``images``
+        def _run_prompt(self, prompt_text, *, timeout_seconds, model=None):
+            return "frozen", ""
+
+    client = _FrozenRunPrompt(command=sys.executable, args=[], acp_cwd=str(tmp_path))
+    completion = client.chat.completions.create(messages=_IMAGE_MESSAGES, timeout=30)
+    assert completion.choices[0].message.content == "frozen"
 
 
 _FROZEN_SUBCLASS_PLUGIN = '''

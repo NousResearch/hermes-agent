@@ -24,6 +24,14 @@ class SQLiteStateMetaRepository:
         with translated():
             return self._store.holder().get_meta(key)
 
+    def get_many(self, keys: tuple[str, ...]) -> tuple[Optional[str], ...]:
+        if not keys:
+            raise ValueError("state_meta get_many requires at least one key")
+        if any(not key for key in keys):
+            raise ValueError("state_meta key must be non-empty")
+        with translated():
+            return self._store.holder().get_meta_many(keys)
+
     def set(self, key: str, value: str) -> None:
         if not key:
             raise ValueError("state_meta key must be non-empty")

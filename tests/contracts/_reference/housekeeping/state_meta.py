@@ -46,6 +46,14 @@ class InMemoryStateMetaRepository:
         require_key(key)
         return state_meta_table(self._backend, scope).get(key)
 
+    def get_many(self, keys: tuple[str, ...]) -> tuple[Optional[str], ...]:
+        if not keys:
+            raise ValueError("state_meta get_many requires at least one key")
+        for key in keys:
+            require_key(key)
+        table = state_meta_table(self._backend, self._backend.scope)
+        return tuple(table.get(key) for key in keys)
+
     def set(self, key: str, value: str) -> None:
         scope = self._backend.scope
         require_key(key)

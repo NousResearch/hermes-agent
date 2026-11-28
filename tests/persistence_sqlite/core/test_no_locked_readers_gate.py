@@ -38,6 +38,7 @@ READS: dict[str, Callable[[Any, Any], Any]] = {
     "maintenance.list_prune_candidates": lambda store, admin: store.maintenance.list_prune_candidates(),
     "maintenance.list_idle_archive_candidates": lambda store, admin: store.maintenance.list_idle_archive_candidates(0),
     "state_meta.list_prefix": lambda store, admin: store.state_meta.list_prefix("k"),
+    "state_meta.get_many": lambda store, admin: store.state_meta.get_many(("k", "missing")),
     "admin.freelist_ratio": lambda store, admin: admin.freelist_ratio(),
     "admin.fts_optimize_available": lambda store, admin: admin.fts_optimize_available(),
 }

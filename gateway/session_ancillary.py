@@ -486,8 +486,8 @@ def control_snapshot(authority, ref):
     # Compression carries goal/loop/heartbeat to the continuation: read the current segment.
     target = store.lineage.tip(physical_target(authority, ref))
     states = []
-    for kind, cls in [('goal', GoalState), ('loop', LoopState), ('heartbeat', HeartbeatState)]:
-        raw = store.state_meta.get(kind + ':' + target)
+    keys = tuple(kind + ':' + target for kind in ('goal', 'loop', 'heartbeat'))
+    for raw, cls in zip(store.state_meta.get_many(keys), (GoalState, LoopState, HeartbeatState)):
         try:
             states.append(cls.from_json(raw) if raw else None)
         except (ValueError, TypeError, AttributeError) as exc:

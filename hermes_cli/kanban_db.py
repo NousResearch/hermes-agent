@@ -105,7 +105,7 @@ def _git_out(cwd: Path, *args: str, timeout: int = 30) -> Optional[str]:
 
 # --- Constants ---
 
-VALID_INITIAL_STATUSES = {"running", "blocked"}
+VALID_INITIAL_STATUSES = {"running", "blocked", "scheduled"}
 
 # Typed block reasons (routing in ``_route_block``); ``None`` = legacy un-typed.
 VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
@@ -1164,6 +1164,7 @@ def create_task(
     max_retries: Optional[int] = None, model_override: Optional[str] = None,
     provider_override: Optional[str] = None, reasoning_effort: Optional[str] = None,
     goal_mode: bool = False, goal_max_turns: Optional[int] = None, initial_status: str = "running",
+    schedule_reason: Optional[str] = None,
     session_id: Optional[str] = None, board: Optional[str] = None, project_id: Optional[str] = None,
     project_source_task_id: Optional[str] = None,
     creator_task_id: Optional[str] = None,
@@ -1172,7 +1173,9 @@ def create_task(
     """Create a task (optionally under ``parents``); returns its id.
 
     Status: ``ready`` unless a parent is not ``done`` (``todo``); ``triage=True``
-    forces ``triage``; ``initial_status="blocked"`` parks it for human ops.
+    forces ``triage``; ``initial_status="blocked"`` parks it for human ops;
+    ``initial_status="scheduled"`` parks it waiting on time (never dispatchable,
+    no ``blocked`` event) with an optional ``schedule_reason``.
     ``idempotency_key``: an existing non-archived task with the key is returned
     instead of a duplicate. ``max_runtime_seconds``: cap before the dispatcher
     SIGTERMs and re-queues. ``model_override``/``provider_override`` pin the
@@ -1308,6 +1311,15 @@ def create_task(
                         task_id,
                         "blocked",
                         {"reason": "initial_status", "status": "blocked", "actor": created_by or "user"},
+                    )
+                if task_status == "scheduled":
+                    # Parked waiting on time (not a human): one ``scheduled``
+                    # event, no ``blocked`` noise for terminal-event consumers.
+                    _append_event(
+                        conn,
+                        task_id,
+                        "scheduled",
+                        {"reason": schedule_reason},
                     )
                 if task_status == "todo":
                     # Parked behind an open parent: record why, exactly as

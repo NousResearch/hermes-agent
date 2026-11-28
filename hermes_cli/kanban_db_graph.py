@@ -42,8 +42,8 @@ def initial_task_state(
             raise ValueError(f"unknown parent task(s): {', '.join(missing)}")
         if tenant is None:
             tenant = next((rows[pid]["tenant"] for pid in parents if rows[pid]["tenant"]), None)
-    if initial_status == "blocked":
-        return "blocked", tenant
+    if initial_status in ("blocked", "scheduled"):
+        return initial_status, tenant
     if triage:
         return "triage", tenant
     if any(row["status"] != "done" for row in rows.values()):

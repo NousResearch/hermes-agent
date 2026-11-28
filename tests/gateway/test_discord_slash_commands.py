@@ -141,6 +141,22 @@ def test_patchable_payload_excludes_install_and_context_metadata(adapter):
 # ------------------------------------------------------------------
 
 
+def test_goal_argument_description_keeps_every_subcommand_whole():
+    from agent.i18n import t
+    from hermes_cli.commands import resolve_command
+    from hermes_cli.goal_command import _SUBCOMMANDS
+    from plugins.platforms.discord.adapter import _DISCORD_APP_COMMAND_TEXT_LIMIT, _t_discord
+
+    hint = resolve_command('goal').args_hint
+    raw = t('platform.discord.command.auto_args_description', args_hint=hint)
+    description = _t_discord('platform.discord.command.auto_args_description',
+                             _DISCORD_APP_COMMAND_TEXT_LIMIT, args_hint=hint)
+    assert len(raw.encode('utf-16-le')) // 2 <= 100
+    assert description == raw
+    words = description.translate(str.maketrans('|[]', '   ')).split()
+    assert _SUBCOMMANDS <= set(words)
+
+
 @pytest.mark.asyncio
 async def test_registers_native_thread_slash_command(adapter):
     # The /thread slash closure now delegates ALL the work — including

@@ -1,4 +1,5 @@
 import { compactNumber } from '@hermes/shared'
+import { CURRENCY_SYMBOL } from '@hermes/shared/format'
 import { useStore } from '@nanostores/react'
 import { Fragment, type ReactNode, useEffect, useMemo, useState } from 'react'
 
@@ -256,7 +257,7 @@ function SubagentTree({ tree }: { tree: SubagentNode[] }) {
     tools > 0 ? t.agents.toolsCount(tools) : '',
     files > 0 ? t.agents.filesCount(files) : '',
     tokens > 0 ? fmtTokens(tokens, t.agents) : '',
-    cost > 0 ? `$${cost.toFixed(2)}` : ''
+    cost > 0 ? `${CURRENCY_SYMBOL}${cost.toFixed(2)}` : ''
   ].filter(Boolean)
 
   return (

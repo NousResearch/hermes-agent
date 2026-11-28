@@ -5,6 +5,7 @@ import pytest
 
 from agent.usage_pricing import (
     _OFFICIAL_DOCS_PRICING,
+    CURRENCY_SYMBOL,
     CanonicalUsage,
     format_cost_label,
     estimate_usage_cost,
@@ -466,21 +467,21 @@ class TestFormatCostLabel:
     """Tests for magnitude-scaled cost label formatting."""
 
     def test_zero_renders_as_dollar_zero(self):
-        assert format_cost_label(Decimal(0)) == "$0.00"
+        assert format_cost_label(Decimal(0)) == f"{CURRENCY_SYMBOL}0.00"
 
     def test_sub_cent_renders_4dp(self):
         """Costs below $0.01 render at 4 decimal places (#79220)."""
         label = format_cost_label(Decimal("0.004640"))
-        assert label == "~$0.0046"
-        # Must NOT be $0.00
-        assert "$0.00" != label
+        assert label == f"~{CURRENCY_SYMBOL}0.0046"
+        # Must NOT be a zero label
+        assert f"{CURRENCY_SYMBOL}0.00" != label
 
     def test_exactly_one_cent_renders_2dp(self):
         """$0.01 renders at 2dp."""
-        assert format_cost_label(Decimal("0.01")) == "~$0.01"
+        assert format_cost_label(Decimal("0.01")) == f"~{CURRENCY_SYMBOL}0.01"
 
     def test_normal_cost_renders_2dp(self):
-        assert format_cost_label(Decimal("1.23")) == "~$1.23"
+        assert format_cost_label(Decimal("1.23")) == f"~{CURRENCY_SYMBOL}1.23"
 
 
 
@@ -491,10 +492,10 @@ class TestFormatCostLabel:
         label — the exact dishonesty the formatter exists to fix.
         """
         label = format_cost_label(Decimal("0.00004"))
-        assert label == "~$<0.0001"
+        assert label == f"~{CURRENCY_SYMBOL}<0.0001"
         # Exact boundary: $0.00005 rounds to 0.0000 under ROUND_HALF_EVEN
         # and must also take the fallback.
-        assert format_cost_label(Decimal("0.00005")) == "~$<0.0001"
+        assert format_cost_label(Decimal("0.00005")) == f"~{CURRENCY_SYMBOL}<0.0001"
 
 
 

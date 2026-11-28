@@ -39,6 +39,7 @@ from tools.approval_floors import (
 from tools.approval_gateway_wait import _await_gateway_decision
 from tools.approval_provenance import allowlisted_result, preapproved_result
 from tools.approval_prompt import _present_with_selected_transport, _transport_choice, prompt_dangerous_approval
+from tools.approval_reason_catalog import reason_items
 from tools.approval_smart import _smart_verdict
 
 logger = logging.getLogger(__name__)
@@ -1013,7 +1014,8 @@ def _smart_gate(spec: _GateSpec, command: str, description: str, pattern_key: st
 def _human_decision(spec: _GateSpec, *, command: str, description: str,
                     pattern_key: str, pattern_keys: list[str],
                     session_key: str, approval_callback, is_cli: bool, is_gateway: bool,
-                    is_ask: bool, smart: bool = False, pending_body=None) -> dict:
+                    is_ask: bool, smart: bool = False, pending_body=None,
+                    reasons: Iterable[tuple[str, str]] = ()) -> dict:
     """Ask a human (after the optional guardian-LLM step) and turn the answer into the gate result.
 
     ``pattern_keys`` are what :func:`_persist_choice` stores on session/always; a smart-DENY
@@ -1023,6 +1025,10 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
     A key in ``SMART_MANUAL_ONLY_DESCRIPTIONS`` (osascript that can discard the operator's unsaved
     work) skips the guardian: its APPROVE is not the consent of the person who owns that work
     (#141346). The human answer then covers this one command; session/always are not offered.
+
+    ``reasons`` (command gate only) are the ordered ``(pattern_key, description)`` findings behind
+    ``description``; the gateway payload carries them as display-only ``reasons`` (empty for other
+    gates) so a chat surface can localize each one. Keys, scope and ``description`` are unchanged.
     """
     from agent.redact import redact_approval_display
 
@@ -1100,6 +1106,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
                 "pattern_keys": pattern_keys, "description": display_description,
                 "allow_permanent": not one_shot,
                 "allow_session": not one_shot,
+                "reasons": reason_items(reasons, redact_approval_display),
             }
             if smart_denied:
                 data["smart_denied"] = True
@@ -1455,6 +1462,7 @@ def check_all_command_guards(command: str, env_type: str,
         # hardline scan finished still reaches a human.
         is_cli=is_cli, is_gateway=is_gateway, is_ask=is_ask,
         smart=approval_mode == "smart" and not unread and _SCAN_INCOMPLETE_DESCRIPTION not in keys,
+        reasons=[(key, text) for key, text in findings if key in keys],
     )
 
 

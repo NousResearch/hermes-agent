@@ -245,6 +245,19 @@ def get_language() -> str:
     return _resolve_language(_current_home())
 
 
+def lookup(key: str, lang: str | None = None) -> str | None:
+    """The active (or explicit ``lang``) language's own value for ``key``, unformatted, or None.
+
+    Unlike :func:`t` there is no English or bare-key fallback, for callers that hold their own
+    fallback text and must tell a translation apart from an English default. An explicit ``lang`` no
+    layer supplies any more (an unregistered pack) is a miss, not English."""
+    home = _current_home()
+    target = resolve_language_id(lang, home) if lang else _resolve_language(home)
+    if target is None:
+        return None
+    return _load_catalog(target, home).get(key)
+
+
 def t(key: str, lang: str | None = None, **format_kwargs: Any) -> str:
     """Translate a dotted catalog key to the active (or explicit ``lang``) language.
 
@@ -274,6 +287,7 @@ __all__ = [
     "get_language",
     "language_options",
     "language_surfaces",
+    "lookup",
     "reset_language_cache",
     "resolve_language_id",
     "supported_languages",

@@ -144,3 +144,44 @@ async def test_timed_out_card_keeps_the_command_and_reason(monkeypatch):
     await pending[0]
     (content,) = edits
     assert "rm -rf /x" in content and "delete in root path" in content
+
+
+@pytest.mark.asyncio
+async def test_expired_card_keeps_the_reason_the_prompt_showed(monkeypatch):
+    """Structured reasons render (localized/redacted) on the card; the timeout edit must repeat that
+    rendered reason, not the payload's English ``description``."""
+    import asyncio
+    from gateway.run_turn_runner import TurnRunner
+
+    hooks, edits, settles = _capture_settle(monkeypatch), [], []
+
+    class _Adapter:
+        def pause_typing_for_chat(self, chat_id):
+            pass
+
+        def max_message_length_for_chat(self, chat_id):
+            return 4096
+
+        def message_len_fn_for_chat(self, chat_id):
+            return len
+
+        async def send_exec_approval(self, **kwargs):
+            return SimpleNamespace(success=True, error=None, message_id="card-1")
+
+        async def edit_message(self, chat_id, message_id, content):
+            edits.append(content)
+            return SimpleNamespace(success=True)
+
+    loop = asyncio.get_running_loop()
+    ctx = SimpleNamespace(_status_adapter=_Adapter(), _status_chat_id="c", _status_thread_metadata=None,
+                          session_key="telegram:1", _loop_for_step=loop, stream_consumer_holder=[None],
+                          _run_still_current=lambda: True)
+    turn = TurnRunner(SimpleNamespace(), ctx)
+    approval = {"command": "rm -rf build/", "description": "english description", "request_id": "r5",
+                "reasons": [{"slug": None, "text": "reason as rendered"}]}
+    await asyncio.to_thread(turn._render_approval_sync, approval)
+    turn._schedule = lambda coro, label: settles.append(coro)
+    hooks["r5"]("timeout")
+    await settles[0]
+    (content,) = edits
+    assert "reason as rendered" in content and "english description" not in content

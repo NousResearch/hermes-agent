@@ -29,6 +29,7 @@ from gateway.platforms.base_exec_approval import ea_default_reason_text
 from gateway.turn_context import TurnContext
 from hermes_cli.config import cfg_get
 from hermes_cli.plugins_dispatch import stream_held
+from tools.approval_reason_catalog import render_reasons
 from utils import is_truthy_value
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
@@ -811,7 +812,11 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             self._close_native_stream_boundary("Approval")
         # Redact credentials before display: the raw command string can carry secrets. Both the button and plain-text paths use this value.
         cmd = _redact_approval_command(approval_data.get("command", ""))
-        desc = _redact_approval_command(approval_data.get("description")) or ea_default_reason_text()
+        # Structured reasons render in this profile's language, each falling back to its redacted
+        # English text; a payload without them (other gates, older producers) keeps the description.
+        reasons = approval_data.get("reasons")
+        desc = (render_reasons(reasons, _redact_approval_command) if reasons
+                else _redact_approval_command(approval_data.get("description"))) or ea_default_reason_text()
         flags = {k: approval_data.get(k, d) for k, d in (("allow_permanent", True), ("allow_session", True), ("smart_denied", False))}
         # Check the *class*, not the instance — MagicMock auto-creates attributes in tests.
         if _renders_exec_approval_buttons(type(adapter)):
@@ -836,7 +841,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                     # Without this, a card whose timer runs out keeps live buttons and nobody
                     # learns the command did NOT run (only the TUI registered a settle hook).
                     register_timeout_notice(
-                        self, approval_data, command=cmd,
+                        self, approval_data, command=cmd, reason=desc,
                         card_message_id=getattr(fut.result(timeout=0), "message_id", None))
                     return
                 if outcome == "ambiguous":
@@ -905,7 +910,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                            approval_data.get("request_id"), ctx.session_key)
                 # No card to edit on the text path: the prompt has no buttons to drop and carries
                 # the /approve instructions, so the timeout notice is posted as a new message.
-                register_timeout_notice(self, approval_data, command=cmd, card_message_id=None)
+                register_timeout_notice(self, approval_data, command=cmd, reason=desc, card_message_id=None)
             if background and outcome not in ("sent", "ambiguous"):
                 # Nobody else can still show a background child's prompt: undelivered fails it closed.
                 raise RuntimeError("Approval notification was not delivered")

@@ -23,7 +23,8 @@ _PROTOCOL_HEADING = "## Messaging other agents"
 _LEGACY_PROTOCOL_RE = re.compile(r"\n*" + re.escape(_PROTOCOL_HEADING) + r"[ \t]*\n.*?(?=\n## |\Z)", re.DOTALL)
 # v3: the single-reply contract (final response captured by the transport) replaced the
 # "reply concisely via message_agent" bounce that double-delivered every teammate DM.
-_BOT_MODE_PROTOCOL_VERSION = 3
+# v4: a Bot Chat built on the CLI transport carries the desktop platform hint, not the CLI's.
+_BOT_MODE_PROTOCOL_VERSION = 4
 # Leads a notify-only DM's body (after the attribution colon, so every sender-card parser keeps it).
 NO_REPLY_MARKER = "[no reply needed]"
 

@@ -91,3 +91,35 @@ class TestEmbeddedTuiPaneClarifier:
         assert out == PLATFORM_HINTS["tui"], (
             f"HERMES_DESKTOP_TERMINAL={val!r} should not trigger clarifier"
         )
+
+class TestBotChatOnCliTransport:
+    """A bot's canonical Bot Chat is read in the desktop app, but message_agent, relay and
+    cron deliveries run its turns through ``chat -c "Bot Chat"``, so the agent's platform
+    is ``cli``. It must get the desktop hint (GFM renders), not "Markdown does NOT render"."""
+
+    def _stable(self, platform, title):
+        agent = _make_agent(platform=platform, _bot_mode_protocol=True, _session_title_hint=title,
+                            _session_db=None)
+        with (
+            patch("tools.bot_mode_probe.get_bot_mode_protocol_section", return_value="## Messaging other agents"),
+            patch("tools.bot_mode_probe.epoch_line", return_value="Capability epoch: test"),
+        ):
+            return _stable_prompt(agent)
+
+    def test_bot_chat_on_cli_gets_desktop_hint(self, monkeypatch):
+        monkeypatch.delenv("HERMES_DESKTOP_TERMINAL", raising=False)
+        stable = self._stable("cli", "Bot Chat")
+        assert PLATFORM_HINTS["desktop"] in stable
+        assert PLATFORM_HINTS["cli"] not in stable
+
+    def test_plain_cli_session_keeps_cli_hint(self, monkeypatch):
+        monkeypatch.delenv("HERMES_DESKTOP_TERMINAL", raising=False)
+        stable = self._stable("cli", "Some chat")
+        assert PLATFORM_HINTS["cli"] in stable
+        assert PLATFORM_HINTS["desktop"] not in stable
+
+    def test_bot_chat_on_tui_keeps_tui_hint(self, monkeypatch):
+        monkeypatch.delenv("HERMES_DESKTOP_TERMINAL", raising=False)
+        stable = self._stable("tui", "Bot Chat")
+        assert PLATFORM_HINTS["tui"] in stable
+        assert PLATFORM_HINTS["desktop"] not in stable

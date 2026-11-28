@@ -5,6 +5,7 @@ reload / targeted unload unwind registries in reverse order. Mixed into :class:`
 from __future__ import annotations
 
 import logging
+import threading
 import weakref
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -18,6 +19,27 @@ if TYPE_CHECKING:  # pragma: no cover
     from hermes_cli.plugins import LoadedPlugin
 
 logger = logging.getLogger("hermes_cli.plugins")
+
+# Serializes ledger bookkeeping against the teardown an abandoned load's own worker thread runs after its
+# deadline fired (#149326). Held only across in-memory list/dict rebuilds — never across ``release()``
+# callbacks — so a plugin's teardown cannot deadlock against a registration that wants this lock.
+_LEDGER_LOCK = threading.RLock()
+
+
+def undo_abandoned_registration(ctx: Any, registrar: str) -> None:
+    """Undo a registration whose registrar was already running when its load was abandoned (#149326).
+
+    The loader's failure path snapshots the ledger at the deadline, so a registration that lands after
+    that snapshot is never disposed and the plugin keeps a live handle into a load that failed. The whole
+    load is abandoned, so nothing it registered may stay live: dispose the ledger handles and the event
+    subscriptions this plugin owns. Safe to run concurrently with the failure path's own sweep.
+    """
+    logger.warning(
+        "Plugin '%s' completed %s() while its load was being abandoned; registration undone",
+        ctx.manifest.name, registrar,
+    )
+    ctx._manager._dispose_plugin_registrations(ctx.plugin_id)
+    ctx._manager._remove_plugin_subscriptions(ctx.plugin_id)
 
 
 def _hook_source_of(name: str, module: Any) -> Optional[tuple]:
@@ -80,9 +102,12 @@ class PluginLedgerMixin:
         registration = PluginRegistration(
             kind=kind, key=key, release=release, plugin_key=manifest_key(manifest), persistent=persistent)
         registration._on_dispose = lambda disposed: self._forget_registrations([disposed])
-        self._ownership_ledger.setdefault(registration.plugin_key, []).append(registration)
-        if not persistent:
-            self._registration_order.append(registration)
+        # Both containers move under one lock: a concurrent sweep must never see the ownership ledger
+        # updated while ``_registration_order`` still lacks the handle (it would be disposed but missed).
+        with _LEDGER_LOCK:
+            self._ownership_ledger.setdefault(registration.plugin_key, []).append(registration)
+            if not persistent:
+                self._registration_order.append(registration)
         return registration
 
     def _track_scoped_registration(
@@ -199,14 +224,28 @@ class PluginLedgerMixin:
         if not registrations:
             return
         ids = {id(r) for r in registrations}
-        self._registration_order = [r for r in self._registration_order if id(r) not in ids]
-        for ledger in (self._ownership_ledger, self._memory_hook_registrations):
-            for plugin_key, owned in list(ledger.items()):
-                remaining = [r for r in owned if id(r) not in ids]
-                if remaining:
-                    ledger[plugin_key] = remaining
-                else:
-                    ledger.pop(plugin_key, None)
+        with _LEDGER_LOCK:
+            self._registration_order = [r for r in self._registration_order if id(r) not in ids]
+            for ledger in (self._ownership_ledger, self._memory_hook_registrations):
+                for plugin_key, owned in list(ledger.items()):
+                    remaining = [r for r in owned if id(r) not in ids]
+                    if remaining:
+                        ledger[plugin_key] = remaining
+                    else:
+                        ledger.pop(plugin_key, None)
+
+    def _dispose_plugin_registrations(self, plugin_key: str) -> None:
+        """Dispose and forget every ledger handle *plugin_key* registered.
+
+        One call site each for a failed load (the loader's failure path) and for a registrar that was
+        still running when its load was abandoned (#149326). Remove-then-release, the removal under the
+        ledger lock: the second of two concurrent sweeps finds an empty snapshot, so a handle is released
+        exactly once, and no ``release()`` callback runs while the lock is held.
+        """
+        with _LEDGER_LOCK:
+            owned = [r for r in self._registration_order if r.plugin_key == plugin_key]
+            self._forget_registrations(owned)
+        self._dispose_registrations(owned)
 
     # -- dual-kind hook ownership -------------------------------------------------------------
     # A plugin dir loaded by general discovery AND as the configured memory provider calls

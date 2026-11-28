@@ -412,6 +412,32 @@ def _attach_import_parents(conn, parent_updates: list[tuple]) -> int:
     return detached
 
 
+def _import_normalized(holder, conn, normalized, ids):
+    # A user-deleted id stays fenced for good: its row restored beside the fence would list
+    # fine and refuse every turn, so the import is refused by name and writes nothing.
+    if deleted := [sid for sid in ids if retired_in(conn, sid)]:
+        return ImportResult(ok=False, imported=0, skipped=0, detached=0, errors=tuple(
+            f"session {sid} was deleted here; a deleted session is not restored" for sid in deleted))
+    imported_ids: list[SessionId] = []
+    skipped_ids: list[SessionId] = []
+    parent_updates: list[tuple[str, str]] = []
+    for item, session_id in zip(normalized, ids, strict=True):
+        raw = item["session"]
+        if conn.execute("SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (session_id,)).fetchone():
+            skipped_ids.append(SessionId(session_id))
+            continue
+        _import_session_row(holder, conn, raw, item["messages"], session_id)
+        parent_id = str(raw.get("parent_session_id") or "").strip()
+        if parent_id:
+            parent_updates.append((session_id, parent_id))
+        imported_ids.append(SessionId(session_id))
+    return ImportResult(
+        ok=True, imported=len(imported_ids), skipped=len(skipped_ids),
+        detached=_attach_import_parents(conn, parent_updates),
+        imported_ids=tuple(imported_ids), skipped_ids=tuple(skipped_ids),
+    )
+
+
 class SessionPortability:
     """Export, import and foreign-import verbs; mixed into the SQLite SessionMaintenance, which sets ``_store``."""
 
@@ -488,35 +514,36 @@ class SessionPortability:
             return ImportResult(ok=False, imported=0, skipped=0, detached=0, errors=tuple(errors))
         holder = self._store.holder()
 
-        def _do(conn):
-            # A user-deleted id stays fenced for good: its row restored beside the fence would list
-            # fine and refuse every turn, so the import is refused by name and writes nothing.
-            ids = [str(item["session"].get("id") or "").strip() for item in normalized]
-            if deleted := [sid for sid in ids if retired_in(conn, sid)]:
-                return ImportResult(ok=False, imported=0, skipped=0, detached=0, errors=tuple(
-                    f"session {sid} was deleted here; a deleted session is not restored" for sid in deleted))
-            imported_ids: list[SessionId] = []
-            skipped_ids: list[SessionId] = []
-            parent_updates: list[tuple[str, str]] = []
-            for item in normalized:
-                raw = item["session"]
-                session_id = str(raw.get("id") or "").strip()
-                if conn.execute("SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (session_id,)).fetchone():
-                    skipped_ids.append(SessionId(session_id))
-                    continue
-                _import_session_row(holder, conn, raw, item["messages"], session_id)
-                parent_id = str(raw.get("parent_session_id") or "").strip()
-                if parent_id:
-                    parent_updates.append((session_id, parent_id))
-                imported_ids.append(SessionId(session_id))
-            return ImportResult(
-                ok=True, imported=len(imported_ids), skipped=len(skipped_ids),
-                detached=_attach_import_parents(conn, parent_updates),
-                imported_ids=tuple(imported_ids), skipped_ids=tuple(skipped_ids),
-            )
+        from persistence.sqlite._state.lineage_fence import SessionLineageError, session_write_budget
+
+        ids = [str(item["session"].get("id") or "").strip() for item in normalized]
+
+        try:
+            with translated(), session_write_budget(holder, ids) as remaining:
+                return holder._execute_write(lambda conn: _import_normalized(holder, conn, normalized, ids),
+                                             patience_s=remaining)
+        except SessionLineageError as exc:
+            return ImportResult(ok=False, imported=0, skipped=0, detached=0, errors=(exc.code,))
+
+    def adopt_lineage_from(self, donor, session_id, *, retire_donor=True, pending_only=False):
+        from ._lineage_transfer import LineageTransfer
+
+        if not isinstance(donor, SessionPortability):
+            raise TypeError("SQLite lineage adoption requires a SQLite donor")
+        with translated():
+            return LineageTransfer(self, donor).adopt(
+                session_id, retire_donor=retire_donor, pending_only=pending_only)
+
+    def pending_adoption_source(self, session_id):
+        from ._adoption_records import retirement_pending_source
 
         with translated():
-            return holder._execute_write(_do)
+            return retirement_pending_source(self._store.holder(), session_id)
+
+    def adoption_store_location(self):
+        from ._adoption_records import store_identity
+
+        return store_identity(self._store.holder())[0]
 
     def find_foreign_import(self, origin: ForeignOrigin) -> Optional[SessionId]:
         with translated():

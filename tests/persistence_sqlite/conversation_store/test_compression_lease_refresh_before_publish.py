@@ -5,6 +5,7 @@ pre-publication refresh inside the same transaction gives one last chance
 to extend the lease before the expiry check.
 """
 import time
+from functools import partial
 from unittest.mock import patch
 
 import pytest
@@ -28,6 +29,11 @@ def _seed_lock(conn, session_id, holder, expired=False):
     )
 
 
+def _run_write_in_fixture(db, fn, *, patience_s):
+    assert 0 < patience_s <= db._WRITE_PATIENCE_S
+    return fn(db._conn)
+
+
 class TestLeaseRefreshBeforePublish:
 
     def test_refresher_stopped_final_refresh_succeeds(self, tmp_path):
@@ -35,7 +41,7 @@ class TestLeaseRefreshBeforePublish:
         create_session(db, "parent-1", source="test")
         _seed_lock(db._conn, "parent-1", "holder-1", expired=True)
 
-        with patch.object(db, "_execute_write", side_effect=lambda fn: fn(db._conn)):
+        with patch.object(db, "_execute_write", side_effect=partial(_run_write_in_fixture, db)):
             publish_compression_child(
                 db,
                 parent_session_id="parent-1",
@@ -66,7 +72,7 @@ class TestLeaseRefreshBeforePublish:
         db = _setup_db(tmp_path)
         _seed_lock(db._conn, "parent-1", "other-holder", expired=True)
 
-        with patch.object(db, "_execute_write", side_effect=lambda fn: fn(db._conn)):
+        with patch.object(db, "_execute_write", side_effect=partial(_run_write_in_fixture, db)):
             with pytest.raises(CompressionSessionBusyError, match="lease lost"):
                 publish_compression_child(
                     db,
@@ -91,7 +97,7 @@ class TestLeaseRefreshBeforePublish:
             ("parent-1", "holder-1", now, future),
         )
 
-        with patch.object(db, "_execute_write", side_effect=lambda fn: fn(db._conn)):
+        with patch.object(db, "_execute_write", side_effect=partial(_run_write_in_fixture, db)):
             publish_compression_child(
                 db,
                 parent_session_id="parent-1",
@@ -115,7 +121,7 @@ class TestLeaseRefreshBeforePublish:
         db = _setup_db(tmp_path)
         _seed_lock(db._conn, "parent-1", "new-holder", expired=False)
 
-        with patch.object(db, "_execute_write", side_effect=lambda fn: fn(db._conn)):
+        with patch.object(db, "_execute_write", side_effect=partial(_run_write_in_fixture, db)):
             with pytest.raises(CompressionSessionBusyError, match="lease lost"):
                 publish_compression_child(
                     db,
@@ -133,7 +139,7 @@ class TestLeaseRefreshBeforePublish:
         db = _setup_db(tmp_path)
         _seed_lock(db._conn, "parent-1", "holder-1", expired=True)
 
-        with patch.object(db, "_execute_write", side_effect=lambda fn: fn(db._conn)):
+        with patch.object(db, "_execute_write", side_effect=partial(_run_write_in_fixture, db)):
             with pytest.raises(CompressionSessionBusyError, match="lease lost"):
                 publish_compression_child(
                     db,

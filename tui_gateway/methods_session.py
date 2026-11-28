@@ -634,34 +634,32 @@ def _resume_live_unpersisted(ctx: _Resume, live_sid: str, live: dict) -> dict:
                  "profile_name": profile_name_for_home(live.get("profile_home")) or _response_profile_name(ctx.profile)}}, live))
 
 
-def _resume_adopt_stranded(ctx: _Resume) -> None:
-    """Adopt a lineage stranded in the DEFAULT store (older builds ran a profile bot's turns on the focused
-    tile's backend; unadopted it 4001s forever). Exact-id ONLY — bot titles collide; never a retired donor."""
+def _resume_adopt_stranded(ctx: _Resume, *, pending_only: bool = False) -> dict | None:
+    """Heal a stranded default-store lineage by exact ID or settle its saved retirement."""
+    from lineage_adoption import adopt_session_lineage, resume_pending_adoption
+
+    def default_store():
+        return _persistence_for(_get_db())
+
     try:
-        # Stranded-session adoption (#93296 follow-up): before session RPCs routed by their TARGET session,
-        # a profile bot's turns executed on the focused tile's backend — usually default — so its canonical
-        # session accumulated in the DEFAULT profile's state.db. Now that routing is correct, this
-        # profile-scoped resume is the first place the fix and the stranded data collide: the id exists in
-        # the default store but not here, and without adoption the same chat 4001s forever (the fix made it
-        # unreachable instead of misrouted). Adopt the full lineage from the default store into this
-        # profile's db, then retry the lookup. Only profile-scoped resumes reach here (owns_db); unknown ids
-        # in the default store still 4007 exactly as before.
-        from lineage_adoption import adopt_session_lineage
-        with _persistence_for(_get_db()) as donor:
-            donor_row = _row_of(donor.sessions.get(ctx.target)) if donor is not None else None
-            if not donor_row or donor_row.get("archived"):
-                return
-            adoption = adopt_session_lineage(ctx.persistence, donor, donor_row["id"])
-        if adoption.get("adopted"):
-            logger.info("adopted stranded session %s (lineage of %s segment(s)) from default store into profile %s",
-                        donor_row["id"],
-                        len(adoption.get("imported_ids") or []) + len(adoption.get("skipped_ids") or []),
-                        ctx.profile or "?")
-            ctx.found = _row_of(ctx.persistence.sessions.get(donor_row["id"]))
+        if pending_only:
+            failure = resume_pending_adoption(ctx.persistence, ctx.target, default_store)
+            return _err(ctx.rid, 4001, failure) if failure else None
+        with default_store() as donor:
+            row = _row_of(donor.sessions.get(ctx.target)) if donor is not None else None
+            if not row or row.get("archived"):
+                return None
+            result = adopt_session_lineage(ctx.persistence, donor, row["id"])
+        if result.get("adopted"):
+            if not result.get("donor_retired"):
+                return _err(ctx.rid, 4001, "Donor retirement is incomplete")
+            ctx.found = _row_of(ctx.persistence.sessions.get(row["id"]))
             if ctx.found:
                 ctx.target = ctx.found["id"]
+        return None
     except Exception:
         logger.exception("stranded-session adoption failed for %s", ctx.target)
+        return _err(ctx.rid, 4001, "Profile adoption could not be verified")
 
 
 def _resume_materialize_minted(ctx: _Resume) -> None:
@@ -698,11 +696,11 @@ def _resume_locate(ctx: _Resume) -> dict | None:
     """Resolve ``ctx.target`` to a stored row (``ctx.found``); a dict is an early response."""
     ctx.found = _row_of(ctx.persistence.sessions.get(ctx.target))
     if ctx.found:
-        return None
+        return _resume_adopt_stranded(ctx, pending_only=True) if ctx.owns_db else None
     ctx.found = _row_of(ctx.persistence.sessions.get_by_title(ctx.target))
     if ctx.found:
         ctx.target = ctx.found["id"]
-        return None
+        return _resume_adopt_stranded(ctx, pending_only=True) if ctx.owns_db else None
     if ctx.lazy and _child_run_active(ctx.target, ctx.profile_home):
         # Fresh subagent watch window: `subagent.start` relays BEFORE the child's first DB flush. Proceed lazily
         # with empty history — the live mirror streams the turn and the row exists by upgrade time.
@@ -711,8 +709,8 @@ def _resume_locate(ctx: _Resume) -> dict | None:
     live_sid = _find_live_unpersisted(ctx.target, ctx.profile_home)
     if (live := _sessions.get(live_sid) if live_sid else None) is not None:
         return _resume_live_unpersisted(ctx, live_sid, live)
-    if ctx.owns_db:
-        _resume_adopt_stranded(ctx)
+    if ctx.owns_db and (failure := _resume_adopt_stranded(ctx)) is not None:
+        return failure
     if not ctx.found and not ctx.lazy and _is_server_minted_key(ctx.target) \
             and not _any_live_session_claims_key(ctx.target):
         _resume_materialize_minted(ctx)

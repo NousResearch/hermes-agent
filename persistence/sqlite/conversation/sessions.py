@@ -516,7 +516,8 @@ class SQLiteSessionRepository:
     def replace_session_config(self, session_id: SessionId, command: ReplaceSessionConfig) -> None:
         holder = self._store.holder()
         with refusals(holder, session_id):
-            update_session_meta(holder, session_id, json.dumps(dict(command.model_config)), command.model)
+            update_session_meta(holder, session_id, json.dumps(dict(command.model_config)), command.model,
+                                fences=command.fences)
 
     def patch_model_config(self, session_id: SessionId, patch: Mapping[str, Any]) -> None:
         holder = self._store.holder()

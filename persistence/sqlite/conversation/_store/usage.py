@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from typing import Any, Optional
 from persistence.sqlite._holder import StoreHolder
-from persistence.sqlite.conversation._store.sessions import _insert_session_row, _is_explicit_branch_session, _own_profile_name, _session_lineage_root_to_tip
+from persistence.sqlite.conversation._store.sessions import _is_explicit_branch_session, _own_profile_name, _session_lineage_root_to_tip
 
 
 _TOKEN_COUNTERS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens")
@@ -86,8 +86,12 @@ def update_session_billing_route(
 
     See #48173, #48248.
     """
+    from persistence.core.errors import StoreContention
+    from persistence.sqlite._state.lineage_fence import session_write_budget
+
     # Barrier against queued token deltas — see update_session_model.
-    holder.flush_token_counts()
+    if not holder.flush_token_counts():
+        raise StoreContention("Session accounting is unsettled; billing metadata was not updated")
 
     def _do(conn):
         conn.execute("""UPDATE sessions SET
@@ -95,7 +99,8 @@ def update_session_billing_route(
                    billing_base_url = ?,
                    billing_mode = COALESCE(?, billing_mode)
                    WHERE id = ?""", (provider, base_url, billing_mode, session_id))
-    holder._execute_write(_do)
+    with session_write_budget(holder, session_id) as remaining:
+        holder._execute_write(_do, patience_s=remaining)
 
 
 def update_token_counts(
@@ -114,6 +119,9 @@ def update_token_counts(
     land in ``session_model_usage`` under that task, but never become the session's recorded route.
     ``prompt_cache_clock`` (JSON of the latest prompt-cache event) replaces the stored one when given."""
     values = dict(locals())
+    from persistence.sqlite._state.accounting_markers import require_legacy_accounting_clear
+
+    require_legacy_accounting_clear(holder)
     values.pop('holder')
     values.pop('session_id')
     values.pop('source')
@@ -122,8 +130,16 @@ def update_token_counts(
     # writer it must carry the agent's real source: the turn lease treats an existing row as
     # proof the create already happened, so the creator never returns to repair an anonymous
     # ``unknown`` placeholder and the session stays a phantom for life (#111999).
-    _insert_session_row(holder, session_id, source or "unknown", model=model)
-    holder._execute_write(lambda conn: _update_token_counts_in_transaction(holder, conn, session_id, **values))
+    from persistence.sqlite.conversation._store.worker_lifecycle import insert_session_row_in_transaction
+
+    def write(conn):
+        insert_session_row_in_transaction(holder, conn, session_id, source or "unknown", model=model)
+        _update_token_counts_in_transaction(holder, conn, session_id, **values)
+
+    from persistence.sqlite._state.lineage_fence import session_write_budget
+
+    with session_write_budget(holder, session_id) as remaining:
+        holder._execute_write(write, patience_s=remaining)
 
 
 def _update_token_counts_in_transaction(
@@ -268,7 +284,12 @@ def record_auxiliary_usage(
                 "UPDATE sessions SET profile_name=? WHERE id=? AND profile_name IS NULL",
                 (own_profile, session_id))
         _record_model_usage(holder, conn, session_id, task=task, **usage)
-    holder._execute_write(_write, patience_s=holder._TRANSCRIPT_WRITE_PATIENCE_S)
+    from persistence.sqlite._state.accounting_markers import require_legacy_accounting_clear
+    from persistence.sqlite._state.lineage_fence import session_write_budget
+
+    with session_write_budget(holder, session_id, holder._TRANSCRIPT_WRITE_PATIENCE_S) as remaining:
+        require_legacy_accounting_clear(holder)
+        holder._execute_write(_write, patience_s=remaining)
 
 
 def auxiliary_usage_by_task(holder: StoreHolder, session_id: str) -> dict[str, dict[str, float]]:

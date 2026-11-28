@@ -11,20 +11,20 @@ from ..conversation._store.local import POLICY_PREFIX
 from ..conversation._store.local_migration import LEGACY_PREFIX
 
 
-def moved_receipts(conn, target_ids=None):
+def moved_receipts(conn, target_ids=None, *, new_route=None):
     """``{owner id: (moved row id, its source)}`` of local receipts whose current physical target row
     now carries another lane's route. An explicit repoint (``/handoff``, a platform ``/resume``)
     rewrote that row's routing identity, so the receipt can never restore the conversation again
     (the stored identity check in ``gateway.session_local_recovery._checked_entry``). Only the
     current target counts: an earlier ``/new`` segment that moved leaves the conversation the
     receipt guards local, and releasing it would strand that transcript. *target_ids* narrows the
-    scan to the rows one repoint rewrote."""
+    scan to the rows one repoint rewrote. *new_route* projects that repoint before it writes."""
     rows = conn.execute(
         "SELECT substr(m.key, ?), s.id, s.source FROM state_meta m JOIN sessions s "
         "ON s.id = CASE WHEN json_valid(m.value) THEN json_extract(m.value, '$.entry.session_id') END "
-        "WHERE m.key GLOB ? AND s.session_key IS NOT NULL "
-        "AND s.session_key IS NOT CASE WHEN json_valid(m.value) THEN json_extract(m.value, '$.route') END",
-        (len(POLICY_PREFIX) + 1, POLICY_PREFIX + '*')).fetchall()
+        "WHERE m.key GLOB ? AND COALESCE(?, s.session_key) IS NOT NULL "
+        "AND COALESCE(?, s.session_key) IS NOT CASE WHEN json_valid(m.value) THEN json_extract(m.value, '$.route') END",
+        (len(POLICY_PREFIX) + 1, POLICY_PREFIX + '*', new_route, new_route)).fetchall()
     return {owner: (target, source) for owner, target, source in rows
             if target_ids is None or target in target_ids}
 
@@ -48,17 +48,34 @@ def hand_off_conversations(conn, moved):
     handed off: one whose lineage is malformed stays as it is (its own reads refuse it, logged)."""
     handed = {}
     for owner, (target, source) in moved.items():
-        saved = conn.execute('SELECT value FROM state_meta WHERE key=?', (POLICY_PREFIX + owner,)).fetchone()
-        lineage = (_receipt(saved[0]) or {}).get('lineage', [owner]) if saved else [owner]
-        if not isinstance(lineage, list) or not all(isinstance(sid, str) for sid in lineage):
+        segments = _handoff_segments(conn, owner)
+        if segments is None:
             continue
-        segments = list(dict.fromkeys([owner, *lineage]))
         conn.execute(f'UPDATE sessions SET ({_LANE_IDENTITY}) = (SELECT {_LANE_IDENTITY} FROM sessions WHERE id=?) '
                      'WHERE id IN (SELECT value FROM json_each(?)) AND id != ?', (target, json.dumps(segments), target))
         _title_follows_head(conn, owner, _segment_root(conn, segments, target))
         handed[owner] = (target, source)
     release_receipts(conn, handed)
     return handed
+
+
+def handoff_write_ids(conn, moved):
+    """Rows and receipt owners a handoff can mutate, including the head receiving the name."""
+    ids = set()
+    for owner, (target, _) in moved.items():
+        segments = _handoff_segments(conn, owner)
+        if segments is not None:
+            ids.update(segments)
+            ids.add(target)
+    return ids
+
+
+def _handoff_segments(conn, owner):
+    saved = conn.execute('SELECT value FROM state_meta WHERE key=?', (POLICY_PREFIX + owner,)).fetchone()
+    lineage = (_receipt(saved[0]) or {}).get('lineage', [owner]) if saved else [owner]
+    if not isinstance(lineage, list) or not all(isinstance(sid, str) for sid in lineage):
+        return None
+    return list(dict.fromkeys([owner, *lineage]))
 
 
 def _receipt(raw):

@@ -345,7 +345,10 @@ def append_message(
         return msg_id
     # THE critical write (failure aborts the turn): long patience so a sibling legitimately
     # holding the lock for seconds (VACUUM, checkpoint) can't kill it.
-    return holder._execute_write(_do, patience_s=holder._TRANSCRIPT_WRITE_PATIENCE_S)
+    from persistence.sqlite._state.lineage_fence import session_write_budget
+
+    with session_write_budget(holder, session_id, holder._TRANSCRIPT_WRITE_PATIENCE_S) as remaining:
+        return holder._execute_write(_do, patience_s=remaining)
 
 
 def append_messages_batch(
@@ -364,10 +367,13 @@ def append_messages_batch(
                 compression_lock_holder=compression_lock_holder, turn_lease_holder=turn_lease_holder,
                 turn_lease_ttl_seconds=turn_lease_ttl_seconds)
             for start in range(0, len(messages), chunk_rows))
-    return _execute_transcript_write(holder, lambda conn: _append_messages_in_transaction(holder,
-        conn, session_id, messages, compression_lock_holder=compression_lock_holder,
-        turn_lease_holder=turn_lease_holder, turn_lease_ttl_seconds=turn_lease_ttl_seconds),
-        messages, patience_s=holder._TRANSCRIPT_WRITE_PATIENCE_S)
+    from persistence.sqlite._state.lineage_fence import session_write_budget
+
+    with session_write_budget(holder, session_id, holder._TRANSCRIPT_WRITE_PATIENCE_S) as remaining:
+        return _execute_transcript_write(holder, lambda conn: _append_messages_in_transaction(holder,
+            conn, session_id, messages, compression_lock_holder=compression_lock_holder,
+            turn_lease_holder=turn_lease_holder, turn_lease_ttl_seconds=turn_lease_ttl_seconds),
+            messages, patience_s=remaining)
 
 
 def _append_messages_in_transaction(holder: StoreHolder, conn, session_id, messages, *,
@@ -671,15 +677,22 @@ def replace_messages(holder: StoreHolder, session_id: str, messages: list[dict[s
         replace_messages_in_transaction(holder,
             conn, session_id, messages, active_only=active_only, archive_dropped=archive_dropped,
             reject_active_turn_lease=reject_active_turn_lease)
-    _execute_transcript_write(holder, _do, messages)
+    from persistence.sqlite._state.lineage_fence import session_write_budget
+
+    with session_write_budget(holder, session_id) as remaining:
+        _execute_transcript_write(holder, _do, messages, patience_s=remaining)
 
 
 def clear_messages(holder: StoreHolder, session_id: str) -> None:
-    """Delete every row of a session and zero its message and tool-call counters; no write guard applies."""
+    """Delete the owned session's messages and zero its message and tool-call counters."""
+    from persistence.sqlite._state.lineage_fence import session_write_budget
+
     def _do(conn):
         conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
         conn.execute(_RESET_COUNTERS_SQL, (session_id,))
-    holder._execute_write(_do)
+
+    with session_write_budget(holder, session_id) as remaining:
+        holder._execute_write(_do, patience_s=remaining)
 
 
 def replace_messages_in_transaction(holder: StoreHolder, conn, session_id: str, messages: list[dict[str, Any]], *,

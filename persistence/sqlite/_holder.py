@@ -49,6 +49,7 @@ from persistence.sqlite._state import holders as _state_holders
 from persistence.sqlite._state import lockguard as _lockguard
 from persistence.sqlite._state.lockowners import log_write_lock_holders
 from persistence.sqlite._state.write import WriterMutexTimeout, write_site, writer_mutex_until
+from persistence.sqlite._state.write_outcome import AccountingWriteReceipt, WriteAttempt
 from persistence.sqlite._state.dbfile import (
     _chmod_pinned_inode, _connect_tracked_db, _fd_is_truly_unlinked, _is_operator_store_link, _prepare_connection_retirement,
     _read_sqlite_application_id, _stat_sqlite_sidecar_identity,
@@ -362,6 +363,12 @@ class StoreHolder:
         self._conn = None
         # Async token accounting; distinct from self._lock so enqueue/flush never contends with writes.
         self._token_queue: deque = deque()
+        self._token_pending_marker = None
+        self._token_pending_marker_path = None
+        self._token_pending_marker_identity = None
+        self._token_writer_uncertain: list[tuple[str, dict[str, Any]]] = []
+        self._token_batch_write_context = threading.local()
+        self._write_fence_stack = threading.local()
         self._token_queue_cond = threading.Condition(threading.Lock())
         self._token_writer_thread: Optional[threading.Thread] = None
         self._token_writer_stop = self._token_writer_busy = False
@@ -843,23 +850,24 @@ class StoreHolder:
             # raising a sticky DeletedWalGenerationError that permanently refuses
             # later writes (#105567). Inside the lock the probe only ever sees the
             # stable post-close state (identity cleared → adopt / reopen path).
-            fn_started = False
+            attempt = WriteAttempt(getattr(self._token_batch_write_context, "receipt", None))
             try:
                 with writer_mutex_until(self._lock, deadline, db=self, site=write_site(fn)):
                     self._raise_if_db_replaced()
                     if self._conn is None:  # close() raced this writer
                         self._reopen_after_close_locked(context="write")
-                    self._conn.execute("BEGIN IMMEDIATE")
-                    try:
-                        fn_started = True
-                        result = fn(self._conn)
-                        self._conn.commit()
-                    except BaseException:
-                        try:
-                            self._conn.rollback()
-                        except Exception:  # health: allow BLE001 S110 -- a failed rollback must not hide the error re-raised
-                            pass
-                        raise
+                    fence_frames = getattr(self._write_fence_stack, "frames", None)
+                    fence_ids = tuple(dict.fromkeys(sid for frame in fence_frames for sid in frame)) if fence_frames else ()
+                    if fence_ids:
+                        from persistence.sqlite._state.lineage_fence import _require_local_write
+
+                        def fenced_fn(conn):
+                            _require_local_write(conn, fence_ids)
+                            return fn(conn)
+
+                        result = attempt.execute(self._conn, fenced_fn)
+                    else:
+                        result = attempt.execute(self._conn, fn)
                 # Success — periodic best-effort checkpoint + FTS merge.
                 self._write_count += 1
                 if self._write_count % self._CHECKPOINT_EVERY_N_WRITES == 0:
@@ -867,10 +875,10 @@ class StoreHolder:
                 if self._write_count % self._FTS_MERGE_EVERY_N_WRITES == 0:
                     _try_incremental_merge_fts(self)
                 return result
-            except WriterMutexTimeout:
-                # No transaction began; preserve local contention attribution and never replay it.
+            except WriterMutexTimeout as exc:
+                attempt.mark_mutex_refusal(exc)
                 raise
-            except (SessionCompressionInProgressError, CompressionInProgress):
+            except (SessionCompressionInProgressError, CompressionInProgress) as exc:
                 # Transient (see _COMPRESSION_BUSY_WAIT_S): a steer landing mid-compression must not abort.
                 # A live foreign compression lock is transient: the compressor publishes in a couple of
                 # seconds. Without any wait, a steer that lands mid-compression aborts the user's turn as
@@ -881,7 +889,7 @@ class StoreHolder:
                 # finally lets go.
                 if compression_deadline is None:
                     compression_deadline = min(time.monotonic() + self._COMPRESSION_BUSY_WAIT_S, deadline)
-                if self._sleep_before_write_retry(
+                if attempt.retry_safe(exc) and self._sleep_before_write_retry(
                     compression_deadline, self._COMPRESSION_BUSY_WAIT_S
                 ):
                     continue
@@ -889,26 +897,31 @@ class StoreHolder:
             except sqlite3.Error as exc:
                 # 'no more rows' is a transient engine error on contended WAL appends (some builds
                 # raise it as InterfaceError, a sibling of DatabaseError): retry like locked/busy.
-                if _is_no_more_rows(exc) and self._sleep_before_write_retry(deadline, patience_s):
+                retry_safe = attempt.retry_safe(exc)
+                if retry_safe and _is_no_more_rows(exc) and self._sleep_before_write_retry(deadline, patience_s):
                     continue
                 err_msg = str(exc).lower()
                 if isinstance(exc, sqlite3.OperationalError):
-                    if is_sqlite_lock_error(exc):
+                    if retry_safe and is_sqlite_lock_error(exc):
                         if self._sleep_before_write_retry(deadline, patience_s):
                             continue
                         # Say what actually happened, not disk/permission damage. The holder goes to
                         # the log, not the message: classify_persistence_error() buckets by phrase and
                         # a holder's argv (a worktree named fix-corrupt-db) would flip the bucket.
                         log_write_lock_holders(self.db_path, patience_s)
-                        raise sqlite3.OperationalError(
+                        refused = sqlite3.OperationalError(
                             f"database is locked (another Hermes process held the "
                             f"state.db write lock for over {patience_s:.0f}s — "
                             "likely a long maintenance operation such as VACUUM, "
                             "a large WAL checkpoint, or an older pre-update "
                             "process; the database itself is healthy)"
-                        ) from exc
+                        )
+                        if attempt.receipt is not None:
+                            attempt.receipt.retryable_lock_timeout(refused)
+                        raise refused from exc
                     if (
-                        _DISK_IO_ERROR_MARKER in err_msg and not fn_started and not ioerr_begin_retried
+                        retry_safe and _DISK_IO_ERROR_MARKER in err_msg
+                        and not attempt.fn_started and not ioerr_begin_retried
                         and self._sleep_before_write_retry(deadline, patience_s)
                     ):
                         # Retry on the SAME connection: close()+reopen would cancel this process's
@@ -927,7 +940,7 @@ class StoreHolder:
                             self._raise_if_db_replaced()
                     # Corrupt FTS shadow tables fail every write via the sync triggers while canonical
                     # rows are intact: detach the derived indexes atomically and retry (never rebuild here).
-                    if _enter_fts_fail_open(self, exc, deadline=deadline, patience_s=patience_s):
+                    if retry_safe and _enter_fts_fail_open(self, exc, deadline=deadline, patience_s=patience_s):
                         continue
                     # What survives both checks is structural damage: quarantine.
                     if self._is_structural_corruption_error(exc):
@@ -1455,13 +1468,24 @@ class StoreHolder:
         """Enqueue a token/cost delta for the background writer (same kwargs as
         :meth:`update_token_counts`). After close() stopped the writer, falls back to the
         synchronous path and may raise."""
+        self._queue_owned_token_counts(session_id, kwargs)
+
+    def _queue_owned_token_counts(self, session_id, kwargs):
+        from persistence.sqlite._state.accounting_markers import hold_pending_usage, require_legacy_accounting_clear
+
+        require_legacy_accounting_clear(self)
         if _token_delta_applier is None:
             from . import SQLiteBackend  # loads the repositories; the usage family registers the applier
         with self._token_queue_cond:
+            if self._token_writer_uncertain or (self._token_writer_stop and self._token_queue):
+                hold_pending_usage(self)
+                self._token_queue.append((session_id, kwargs))
+                return
             thread = self._token_writer_thread
             writer_alive = thread is not None and thread.is_alive()
             writer_stopped = self._token_writer_stop and not writer_alive
             if not writer_stopped:
+                hold_pending_usage(self)
                 self._token_queue.append((session_id, kwargs))
                 if not writer_alive:
                     # Daemon so exit never hangs on accounting; the atexit hook drains
@@ -1492,36 +1516,33 @@ class StoreHolder:
             return self._apply_token_batch(batch)
         finally:
             with self._token_queue_cond:
+                from persistence.sqlite._state.accounting_markers import release_idle_usage
+
                 self._token_writer_busy = False
                 self._token_queue_cond.notify_all()
+                release_idle_usage(self)
 
     def flush_token_counts(self, timeout: float = 5.0) -> bool:
-        """Block until every queued token delta has been applied. False on timeout (callers
-        then read totals stale by the queued deltas). Never raises."""
-        # Lock-free fast path: reads queue-then-busy (see ordering notes below).
-        if not self._token_queue and not self._token_writer_busy:
-            return True
-        batch = None
-        with self._token_queue_cond:
-            deadline = time.monotonic() + timeout
-            while self._token_queue or self._token_writer_busy:
-                # A live writer is authoritative even when stop-flagged: draining here would
-                # race its in-flight batch and reorder deltas (breaking last-non-None-wins /
-                # first-accounted-route / COALESCE-backfill fields). Only a dead writer lets
-                # the caller take leftovers; a claimed busy means "wait".
-                thread = self._token_writer_thread
-                if (thread is None or not thread.is_alive()) and not self._token_writer_busy:
-                    self._token_writer_busy = True
-                    batch = list(self._token_queue)
-                    self._token_queue.clear()
-                    break
+        """Wait for queued accounting to settle. Unknown effects never count as flushed."""
+        deadline = time.monotonic() + max(0.0, timeout)
+        while True:
+            with self._token_queue_cond:
+                if self._token_writer_uncertain:
+                    return False
+                if not self._token_queue and not self._token_writer_busy:
+                    return True
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     return False
-                self._token_queue_cond.wait(remaining)
-        if batch:
-            return self._apply_claimed_batch(batch)
-        return True
+                thread = self._token_writer_thread
+                if self._token_writer_busy or (thread is not None and thread.is_alive()):
+                    self._token_queue_cond.wait(remaining)
+                    continue
+                self._token_writer_busy = True
+                batch = list(self._token_queue)
+                self._token_queue.clear()
+            if not self._apply_claimed_batch(batch):
+                return False
 
     def flush_for_read(self) -> bool:
         """Read-side token barrier. On a thread running an asyncio loop it never waits: the writer can sit
@@ -1538,7 +1559,7 @@ class StoreHolder:
         while True:
             with self._token_queue_cond:
                 idle_deadline = time.monotonic() + self._TOKEN_WRITER_IDLE_SECONDS
-                while not self._token_queue and not self._token_writer_stop:
+                while not (self._token_queue or self._token_writer_stop or self._token_writer_uncertain):
                     remaining = idle_deadline - time.monotonic()
                     if remaining <= 0:
                         # Retire under the lock queue_token_counts() spawns under, so no
@@ -1546,15 +1567,19 @@ class StoreHolder:
                         self._token_writer_thread = None
                         return
                     self._token_queue_cond.wait(remaining)
-                if not self._token_queue:
+                if self._token_writer_uncertain or not self._token_queue:
                     self._token_writer_thread = None
-                    return  # stop requested and fully drained
+                    return
                 # busy BEFORE clearing the queue: flush's lock-free fast path must never see
                 # "empty and idle" while a popped batch is unapplied.
                 self._token_writer_busy = True
                 batch = list(self._token_queue)
                 self._token_queue.clear()
-            self._apply_claimed_batch(batch)
+            if not self._apply_claimed_batch(batch):
+                # A known pre-BEGIN refusal may persist across many attempts.
+                with self._token_queue_cond:
+                    if not self._token_writer_uncertain:
+                        self._token_queue_cond.wait(0.05)
 
     def _apply_token_batch(self, batch: list[tuple[str, dict[str, Any]]]) -> bool:
         """Apply queued deltas in order, coalescing where safe. Never raises. False when a delta was
@@ -1568,17 +1593,32 @@ class StoreHolder:
             logger.warning("async token accounting: coalesce failed, applying raw batch: %s", exc)
             coalesced = batch
         for index, (session_id, kwargs) in enumerate(coalesced):
+            receipt = AccountingWriteReceipt()
+            self._token_batch_write_context.receipt = receipt
             try:
                 _apply_token_delta(self, session_id, kwargs)
-            except WriterMutexTimeout:
+            except BaseException as exc:
+                if (
+                    self.read_only
+                    and isinstance(exc, sqlite3.OperationalError)
+                    and "readonly database" in str(exc).lower()
+                    and not receipt.has_uncertain_effect()
+                ):
+                    logger.warning("async token accounting: read-only handle refused delta: %s", exc)
+                    continue
                 with self._token_queue_cond:
-                    self._token_queue.extendleft(reversed(coalesced[index:]))
-                logger.debug("async token accounting: writer mutex busy; %d delta(s) requeued",
-                             len(coalesced) - index)
+                    if receipt.proves_unapplied(exc):
+                        self._token_queue.extendleft(reversed(coalesced[index:]))
+                        logger.debug("async token accounting: write proven unapplied; delta requeued")
+                    else:
+                        self._token_writer_uncertain.append((session_id, kwargs))
+                        self._token_queue.extendleft(reversed(coalesced[index + 1:]))
+                        logger.warning("async token accounting: item outcome unknown; retaining work", exc_info=True)
+                if not isinstance(exc, Exception):
+                    raise
                 return False
-            except Exception as exc:  # health: allow BLE001 -- one failed delta is logged; the batch goes on
-                # Accounting loss is logged, never raised into a turn.
-                logger.warning("async token accounting: apply failed (session=%s): %s", session_id, exc)
+            finally:
+                self._token_batch_write_context.receipt = None
         return True
 
     def _coalesce_token_deltas(self, batch: list[tuple[str, dict[str, Any]]]) -> list[tuple[str, dict[str, Any]]]:
@@ -1630,6 +1670,8 @@ class StoreHolder:
                         join_timeout, len(self._token_queue))
                     return
                 self._token_queue_cond.wait(remaining)
+            if self._token_writer_uncertain:
+                return
             # busy BEFORE clearing the queue (same ordering as the writer loop).
             batch = list(self._token_queue)
             if batch:
@@ -1641,7 +1683,7 @@ class StoreHolder:
             # behaviour instead of dropping the deltas at shutdown.
             while not self._apply_claimed_batch(batch):
                 with self._token_queue_cond:
-                    if self._token_writer_busy or not self._token_queue:
+                    if self._token_writer_uncertain or self._token_writer_busy or not self._token_queue:
                         return
                     self._token_writer_busy = True
                     batch = list(self._token_queue)

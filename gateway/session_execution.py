@@ -116,6 +116,16 @@ class GatewaySessionAgentMixin:
             # Same session_key, other conversation: the counts track DIFFERENT DB rows, so the
             # comparison is meaningless — REUSE rather than bust the prompt cache on every switch.
             sid_mismatch = cached_sid is not None and ctx.session_id is not None and cached_sid != ctx.session_id
+            # The snapshot may still match the route after the mutable agent was
+            # rebound to a foreign session (e.g. an async subagent, #154994).
+            live_sid = getattr(cached[0], "session_id", cached_sid)
+            if not sid_mismatch and cached_sid is not None and live_sid not in (None, cached_sid):
+                logger.warning(
+                    "Cached agent's live session drifted for %s: %s != %s; evicting",
+                    ctx.session_key, live_sid, cached_sid,
+                )
+                out.evicted = self._pop_cached_agent_for_eviction()
+                return out
             # Re-validate the outside-lock dead-session peek against the tuple read under THIS lock:
             # a stale "dead" verdict must never be applied to a different (possibly live) agent.
             if sid_mismatch and dead and cached_sid == peek_sid:

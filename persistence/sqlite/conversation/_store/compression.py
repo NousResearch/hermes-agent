@@ -25,6 +25,9 @@ _COOLDOWN_ROW_SQL = (
 )
 
 
+# One forward step of get_compression_chain. A subagent child is another conversation even when it
+# lacks its ``_delegate_from`` marker (#154994); only a subagent's own chain walks through one (or a
+# sourceless parent's, whose compression child took the agent's platform as its source).
 _CHAIN_STEP_SQL = f"""
                     SELECT child.id
                     FROM sessions parent
@@ -35,6 +38,7 @@ _CHAIN_STEP_SQL = f"""
                       AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL
                       AND NOT ({_RESET_CHILD_SQL.format(a='child')})
                       AND COALESCE(child.source, '') != 'tool'
+                      AND (COALESCE(child.source, '') != 'subagent' OR COALESCE(parent.source, '') IN ('subagent', ''))
                     ORDER BY
                       CASE
                         WHEN child.end_reason = 'compression' THEN 0

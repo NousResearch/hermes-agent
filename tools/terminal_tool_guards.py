@@ -140,7 +140,7 @@ _DATA_COMMANDS = frozenset((
     "shasum true false done fi esac"
 ).split())
 # Subcommands of `docker` / `docker compose` that report and return.
-_DOCKER_REPORT_SUBCOMMANDS = frozenset({"ps", "port", "config", "images", "version", "ls", "inspect"})
+_DOCKER_REPORT_SUBCOMMANDS = frozenset({"ps", "port", "config", "images", "version", "ls", "inspect", "logs"})
 _PACKAGE_TOOLS = frozenset("npm pnpm yarn bun pip pip3 uv poetry pdm pipx brew apt apt-get apk dnf conda cargo gem".split())
 _PACKAGE_DATA_SUBCOMMANDS = frozenset((
     "install i add update up upgrade remove rm uninstall ls list view info show why outdated audit ci "

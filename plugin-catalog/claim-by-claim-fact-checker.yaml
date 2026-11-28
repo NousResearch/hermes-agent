@@ -1,0 +1,18 @@
+name: claim-by-claim-fact-checker
+title: Claim-by-Claim Fact-Checker
+repo: https://github.com/KellerAI/claim-by-claim-fact-checker
+sha: d1d15abd74119553ccd1b3d097abfc757d7396ca
+description: "Skills-only plugin. Checks every claim, figure and date in a draft against primary sources and returns a dated source table with verified, soften or cut verdicts and replacement wording. Never posts. Disclosure: no network calls of its own (source checks use the host's web access), no model calls of its own, no shell, no stored credentials, no telemetry."
+maintainer: KellerAI
+tier: community
+category: general
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/KellerAI/claim-by-claim-fact-checker#readme
+version: "0.1.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

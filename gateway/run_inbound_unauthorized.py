@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 from collections import OrderedDict
+from typing import Any
 
 from agent.i18n import t
 from gateway.pairing import CODE_TTL_SECONDS, _allowlist_env_for_platform
@@ -48,6 +49,21 @@ def pairing_code_reply(platform_name: str, code: str, profile_arg: str = "") -> 
 
 def pairing_rate_limited_reply() -> str:
     return t("gateway.pairing.rate_limited")
+
+
+def log_undelivered_reply(result: Any, platform_name: str, user_id: str | None, what: str) -> None:
+    """Warn when the platform refused a stranger's reply instead of raising.
+
+    Adapters report API-level refusals — a bot without the send scope, a chat that forbids it — by
+    returning ``SendResult(success=False, error=...)``, and the only per-send logging they do sits in
+    their own ``except`` branches. Ignoring that result makes an undelivered pairing code invisible at
+    both layers: the sender sees silence and the operator has no cause to act on (#155562)."""
+    if result is None or getattr(result, "success", True):
+        return
+    logger.warning(
+        "Could not deliver the %s to %s on %s: %s", what, user_id or "an unknown sender", platform_name,
+        getattr(result, "error", None) or "the platform reported no error",
+    )
 
 
 def unauthorized_owner_hint(

@@ -2233,19 +2233,58 @@ def claim_review_task(
         return get_task(conn, task_id)
 
 
+# Lane decisions in the card's own history. A ``review_requested`` event hands
+# the card to the review lane; only an explicit implementer handoff
+# (``changes_requested`` from a reviewer, ``review_reopened`` from an operator
+# reopening review for more work) sends it back to implementation.
+_REVIEW_LANE_EVENTS = ("review_requested",)
+_IMPLEMENT_LANE_EVENTS = ("changes_requested", "review_reopened")
+
+
+def _latest_event_id(conn: sqlite3.Connection, task_id: str, kinds: tuple) -> Optional[int]:
+    """Highest ``task_events.id`` of ``kinds`` for the task, or ``None``."""
+    if not kinds:
+        return None
+    placeholders = ",".join("?" for _ in kinds)
+    row = conn.execute(
+        f"SELECT MAX(id) AS id FROM task_events WHERE task_id = ? "
+        f"AND kind IN ({placeholders})",
+        (task_id, *kinds),
+    ).fetchone()
+    value = _row_get(row, "id")
+    return int(value) if value is not None else None
+
+
+def _card_is_in_review_lane(conn: sqlite3.Connection, task_id: str) -> bool:
+    """True when the card's newest lane decision is a ``review_requested``."""
+    review = _latest_event_id(conn, task_id, _REVIEW_LANE_EVENTS)
+    if review is None:
+        return False
+    implement = _latest_event_id(conn, task_id, _IMPLEMENT_LANE_EVENTS)
+    return implement is None or review > implement
+
+
 def _retry_status_for_run(
     conn: sqlite3.Connection, task_id: str, run_id: Optional[int] = None,
 ) -> str:
-    """``review`` when the run's ``claimed`` event says ``source_status=review``,
-    else ``ready`` — one place, so crash/timeout/reclaim can't silently turn a
-    reviewer run into an implementation run."""
+    """``review`` when the retry belongs to the review lane, else ``ready``.
+
+    The ``claimed`` event of the dying run is the primary witness: it records
+    ``source_status=review`` for a reviewer run. That witness is not always
+    readable — the run id may already be cleared, the ``claimed`` event may be
+    pruned or predate the field — so the card's own lane history is the
+    fallback. A card that has reached ``review_requested`` and was not since
+    handed back to the implementer never retries as an implementation run.
+    One place, so crash/timeout/reclaim cannot silently restart implementation.
+    """
     if run_id is None:
         run_id = _current_run_id(conn, task_id)
-    if run_id is None:
-        return "ready"
-    event = _latest_event(conn, task_id, "claimed", run_id)
-    payload = _json_dict(_row_get(event, "payload"))
-    return "review" if payload.get("source_status") == "review" else "ready"
+    if run_id is not None:
+        event = _latest_event(conn, task_id, "claimed", run_id)
+        payload = _json_dict(_row_get(event, "payload"))
+        if payload.get("source_status") == "review":
+            return "review"
+    return "review" if _card_is_in_review_lane(conn, task_id) else "ready"
 
 
 # Run outcome -> lifecycle status a goal loop should report for a handed-off run.

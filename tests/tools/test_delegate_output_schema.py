@@ -229,6 +229,59 @@ class TestRunSingleChildSchemaValidation:
         assert len(child.calls) == 1
         assert entry.get("schema_valid") is False
 
+    def test_failed_child_with_error_text_skips_schema_retry(self):
+        """Provider failure text is not a child answer that can be corrected by retrying."""
+        child = _StubChild(["API call failed after 3 retries: HTTP 429 rate limit"])
+        child._delegate_output_schema = ADDRESS_SCHEMA
+
+        original_run_conversation = child.run_conversation
+
+        def failed_run(user_message, task_id=None, **kwargs):
+            result = original_run_conversation(user_message, task_id=task_id, **kwargs)
+            result.update({"completed": False, "error": "HTTP 429", "failed": True})
+            return result
+
+        child.run_conversation = failed_run
+        entry = _run(child)
+
+        assert entry["status"] == "failed"
+        assert entry["summary"] == "API call failed after 3 retries: HTTP 429 rate limit"
+        assert len(child.calls) == 1
+        assert entry.get("schema_retries", 0) == 0
+
+    def test_child_error_without_failed_flag_skips_schema_retry(self):
+        """A structured error is not repairable even when the producer omits ``failed``."""
+        error_text = "Context compression is already running for this session. Please retry in a moment."
+        child = _StubChild([error_text])
+        child._delegate_output_schema = ADDRESS_SCHEMA
+
+        original_run_conversation = child.run_conversation
+
+        def error_run(user_message, task_id=None, **kwargs):
+            result = original_run_conversation(user_message, task_id=task_id, **kwargs)
+            result.update({"completed": False, "error": error_text})
+            return result
+
+        child.run_conversation = error_run
+        entry = _run(child)
+
+        assert entry["status"] == "failed"
+        assert entry["summary"] == error_text
+        assert len(child.calls) == 1
+        assert entry.get("schema_retries", 0) == 0
+
+    def test_empty_give_up_sentinel_skips_schema_retry(self):
+        """The agent's give-up sentinel contains no answer for a schema retry to repair."""
+        child = _StubChild(["(empty)"])
+        child._delegate_output_schema = ADDRESS_SCHEMA
+
+        entry = _run(child)
+
+        assert entry["status"] == "failed"
+        assert entry["summary"] == "(empty)"
+        assert len(child.calls) == 1
+        assert entry.get("schema_retries", 0) == 0
+
     def test_schema_failure_returns_raw_text_with_schema_valid_false(self):
         """A final answer that still violates the contract after the bounded retry is NOT discarded: the
         child did the work (audits of 400-4100 s were written off over a stray fence or one missing

@@ -1,0 +1,28 @@
+name: trustedrouter
+title: TrustedRouter
+repo: https://github.com/Lore-Hex/hermes-trustedrouter
+sha: 9f5971ca37eeaabc0e6597b557f695ec04e70eb2
+subdir: plugins/model-providers/trustedrouter
+description: >-
+  TrustedRouter — hardware-attested, privacy-enforced OpenAI-compatible router across 500+
+  models (Google Confidential Space TEEs, fail-closed ZDR/E2E floors, and trustedrouter/*
+  & nyte/* presets). Disclosure — sends your prompts, tool definitions, tool results, and
+  TRUSTEDROUTER_API_KEY to api.trustedrouter.com (or TRUSTEDROUTER_BASE_URL); TrustedRouter
+  terminates prompt TLS inside a hardware-attested Google Confidential Space enclave and
+  routes requests to the selected upstream model provider according to the chosen model or
+  TRUSTEDROUTER_MIN_PRIVACY floor (failing closed when no eligible route exists). The plugin
+  downloads TrustedRouter's public /v1/models catalog (with your key if set, HTTPS/loopback
+  only, no redirects), sometimes on a short-lived background thread, keeps it in memory
+  only, and reads or writes no files.
+maintainer: Lore-Hex
+tier: community
+category: models
+requires_hermes: ">=0.22.6"
+docs_url: https://github.com/Lore-Hex/hermes-trustedrouter#readme
+version: "1.0.0"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - TRUSTEDROUTER_API_KEY

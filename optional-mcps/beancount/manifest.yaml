@@ -1,0 +1,17 @@
+manifest_version: 1
+
+name: beancount
+description: Query, reconcile, and edit hosted Beancount.io ledgers with BQL, reports, and validated write previews.
+source: https://github.com/bex-co/beancount-io/blob/main/backend-cluster/backend-v2/docs/mcp.md
+
+transport:
+  type: http
+  url: https://beancount.io/api-gateway/mcp
+
+auth:
+  type: oauth
+
+post_install: |
+  Sign in with Beancount.io and choose which ledger Hermes can access.
+  To authorize from a terminal, run hermes mcp login beancount.
+  Review the discovered tools with hermes mcp configure beancount.

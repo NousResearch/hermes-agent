@@ -1,0 +1,24 @@
+name: kaizen-views
+title: Kaizen Views
+repo: https://github.com/Revenue-Architect/hermes-kaizen-ui
+sha: "046242132ed797bdf62b24ecadbda41384e69e61"
+subdir: packages/views
+description: "Interactive views in the Hermes Desktop and Webapp chat, in two toolsets the user enables separately: a2ui (a2ui_present: A2UI Express compiled to A2UI 1.0 with the official a2ui-agent-sdk, pinned 0.11.0, Apache-2.0; 1.0 or v0.9 JSON also accepted) and openui (openui_present: OpenUI views and live read-only MCP dashboards). One shared delivery runtime and one pair of hooks; exact validation errors the model can fix; a text fallback for other clients. Disclosure — no network calls of its own, subprocesses or credentials; installs one Python package, a2ui-agent-sdk; a view can load http or https images the model names, LAN hosts included; reads local image files the model names and stores a copy in the view's file; an OpenUI dashboard on screen reads the MCP tools the user lists in dashboard_sources, through Hermes' own client, and nothing is read until a source is listed; saves each view in the plugin's data folder (newest 500, at most 2 GB); clicking a view sends an ordinary message in that chat."
+maintainer: Revenue-Architect
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/Revenue-Architect/hermes-kaizen-ui/tree/046242132ed797bdf62b24ecadbda41384e69e61/packages/views#readme
+version: "1.0.0"
+readme: true
+platforms: []
+known_issues:
+  - "A Desktop that connects to Hermes on another machine needs the Desktop half installed there too (Capabilities > Plugins > Install from Git)."
+  - "The Android app receives a readable file instead of the interactive view."
+  - "Live dashboards are off until the user lists MCP tools under plugins.entries.kaizen-views (mcp_allowlist and settings.dashboard_sources)."
+  - "Replaces hermes-a2ui and hermes-openui: uninstall those first."
+capabilities:
+  provides_tools: [a2ui_present, openui_present]
+  provides_hooks: [pre_llm_call, transform_llm_output]
+  provides_middleware: []
+  requires_env: []

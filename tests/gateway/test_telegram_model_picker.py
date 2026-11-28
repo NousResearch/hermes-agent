@@ -1,5 +1,9 @@
 """Tests for Telegram model picker thread fallback."""
 
+import asyncio
+import json
+import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -88,6 +92,76 @@ def plain_keyboards(monkeypatch):
     monkeypatch.setattr(tg, "InlineKeyboardButton",
                         lambda text, callback_data=None, **_: SimpleNamespace(text=text, callback_data=callback_data))
     monkeypatch.setattr(tg, "InlineKeyboardMarkup", lambda rows: SimpleNamespace(inline_keyboard=rows))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("live_models", [["gpt-6.2-sol", "gpt-6-sol"], []])
+async def test_codex_provider_tap_uses_verified_catalog_on_the_same_picker(
+    plain_keyboards, tmp_path, monkeypatch, live_models,
+):
+    from gateway import run as gateway_run
+    from gateway.config import Platform
+    from gateway.platforms.base import MessageEvent, MessageType
+    from gateway.session import SessionSource
+    from hermes_cli import model_switch_providers, models
+    from hermes_constants import get_hermes_home
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
+    monkeypatch.setattr(model_switch_providers, "_overlay_has_creds", lambda _b, _pid, slug, _cfg: slug == "openai-codex")
+    monkeypatch.setattr(models, "_credential_fingerprint", lambda _: "test-account")
+    profile_home = tmp_path / "profiles" / "named"
+    profile_home.mkdir(parents=True)
+    (profile_home / "config.yaml").write_text(json.dumps({
+        "model": {"provider": "openai-codex", "default": "gpt-6-sol"},
+    }), encoding="utf-8")
+    with gateway_run._profile_runtime_scope(profile_home):
+        models._store_cache_entry("openai-codex", models._cache_entry(
+            "test-account", ["gpt-6.2-sol", "gpt-6-sol"], time.time() - 7200))
+
+    refresh_started = threading.Event()
+    finish_refresh = threading.Event()
+
+    def fetch_catalog(provider, *, force_refresh=False):
+        if provider != "openai-codex" or get_hermes_home() != profile_home:
+            return []
+        refresh_started.set()
+        return live_models if finish_refresh.wait(10) else []
+
+    monkeypatch.setattr(models, "provider_model_ids", fetch_catalog)
+
+    adapter = _make_adapter()
+    adapter._bot.send_message.return_value = SimpleNamespace(message_id=42)
+    runner = object.__new__(gateway_run.GatewayRunner)
+    runner.adapters = {}
+    runner.config = SimpleNamespace(multiplex_profiles=True)
+    runner._profile_adapters = {"named": {Platform.TELEGRAM: adapter}}
+    runner._resolve_profile_home_for_source = lambda _: profile_home
+    runner._session_model_overrides = {}
+    runner._running_agents = {}
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="12345", chat_type="dm", profile="named")
+    event = MessageEvent(text="/model", message_type=MessageType.TEXT, source=source)
+    query = AsyncMock()
+    query.message = SimpleNamespace(chat_id=12345, message_id=42)
+    try:
+        with gateway_run._profile_runtime_scope(profile_home):
+            assert await runner._handle_model_command(event) is None
+        assert await asyncio.to_thread(refresh_started.wait, 5)
+        state = adapter._model_picker_state["12345"]
+        codex = next(row for row in state["providers"] if row["slug"] == "openai-codex")
+        assert codex["models"] == ["gpt-6-sol"]
+        finish_refresh.set()
+        await adapter._handle_model_picker_callback(query, "mp:openai-codex", "12345")
+    finally:
+        finish_refresh.set()
+
+    markup = query.edit_message_text.call_args.kwargs["reply_markup"]
+    model_buttons = [button for button in _keyboard_buttons(markup) if button.callback_data.startswith("mm:")]
+    expected = live_models or ["gpt-6-sol"]
+    assert [button.text for button in model_buttons] == expected
+    assert [state["model_list"][int(button.callback_data[3:])] for button in model_buttons] == expected
+    adapter._bot.send_message.assert_awaited_once()
 
 
 def test_provider_keyboard_keeps_a_provider_whose_config_key_has_uppercase(plain_keyboards):

@@ -8,7 +8,6 @@ Origin module; cohesive clusters live in siblings and are re-imported here so
 
 from __future__ import annotations
 
-import contextvars
 import copy
 import gzip
 import json
@@ -16,7 +15,6 @@ import logging
 import os
 import re
 import sys
-import threading
 import urllib.parse
 import urllib.request
 import urllib.error
@@ -1773,10 +1771,6 @@ _PROVIDER_MODELS_STALE_SERVE_MAX = 7 * 24 * 3600  # 7d
 # serve it through the stale window.
 _PROVIDER_MODELS_FALLBACK_TTL = 60
 
-# Cache keys with a background SWR refresh in flight — dedupes concurrent refreshes.
-_swr_refresh_inflight: set = set()
-_swr_refresh_lock = threading.Lock()
-
 
 def _cache_entry(fp: str, models: list[str], at: Optional[float] = None) -> dict:
     """One provider row of the disk cache: credential fingerprint, write time, model ids."""
@@ -1808,15 +1802,7 @@ def _spawn_swr_refresh(cache_key: str, refresh_fn=None) -> None:
     Failures are swallowed — the stale entry stays served until a later refresh succeeds.
     ``refresh_fn`` (no-args → fresh entry dict or None) lets ``custom:<base_url>`` keys from
     :func:`cached_fetch_api_models` reuse the same inflight-dedupe scaffolding."""
-    # Under a routed profile the inflight key includes the home: the same provider slug names a
-    # different disk cache and credential set per profile, so one profile's refresh must not
-    # suppress another's. Unscoped keeps the bare key (tests inspect the set by slug).
-    from hermes_constants import get_hermes_home_override, hermes_home_key
-    inflight_key = cache_key if get_hermes_home_override() is None else (hermes_home_key(), cache_key)
-    with _swr_refresh_lock:
-        if inflight_key in _swr_refresh_inflight:
-            return
-        _swr_refresh_inflight.add(inflight_key)
+    from hermes_cli.models_cache_lock import start_background_cache_refresh
 
     def _default_refresh():
         live = provider_model_ids(cache_key, force_refresh=True)
@@ -1834,13 +1820,8 @@ def _spawn_swr_refresh(cache_key: str, refresh_fn=None) -> None:
                 _store_cache_entry(cache_key, entry)
         except Exception:
             logger.debug("SWR refresh failed for %s", cache_key, exc_info=True)
-        finally:
-            with _swr_refresh_lock:
-                _swr_refresh_inflight.discard(inflight_key)
 
-    # copy_context: the refresh must read the calling profile's credentials and write ITS disk cache.
-    ctx = contextvars.copy_context()
-    threading.Thread(target=lambda: ctx.run(_refresh), daemon=True, name=f"model-cache-swr-{cache_key}").start()
+    start_background_cache_refresh(cache_key, _refresh)
 
 
 def _provider_models_cache_path() -> Path:

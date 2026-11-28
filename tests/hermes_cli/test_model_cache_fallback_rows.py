@@ -12,15 +12,16 @@ from unittest.mock import patch
 import pytest
 
 import hermes_cli.models as mod
+from hermes_cli import models_cache_lock as locks
 
 
 @pytest.fixture(autouse=True)
 def _reset_swr_state():
-    with mod._swr_refresh_lock:
-        mod._swr_refresh_inflight.clear()
+    with locks._swr_refresh_lock:
+        locks._swr_refresh_inflight.clear()
     yield
-    with mod._swr_refresh_lock:
-        mod._swr_refresh_inflight.clear()
+    with locks._swr_refresh_lock:
+        locks._swr_refresh_inflight.clear()
 
 
 def _row(models, age_seconds, **extra):

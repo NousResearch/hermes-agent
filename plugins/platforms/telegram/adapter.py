@@ -217,6 +217,7 @@ from plugins.platforms.telegram.telegram_split import (
 from plugins.platforms.telegram.telegram_typing_gate import claim_ai_action, typing_may_fire
 from plugins.platforms.telegram.telegram_voice_mention import admit_media, cache_inbound_voice
 from plugins.platforms.telegram.telegram_group_observe import apply_group_observe_attribution, observed_media_note, shared_sender_suffix
+from plugins.platforms.telegram.model_picker import show_provider_models
 from plugins.platforms.telegram.telegram_picker_labels import model_button_labels
 from plugins.platforms.telegram.telegram_topic_routing import TelegramTopicRoutingMixin
 from plugins.platforms.telegram.telegram_vault_code import TelegramVaultCodeMixin
@@ -3909,9 +3910,13 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
                 return slug
         return get_label
 
+    supports_model_picker_catalog_reload = True
+
     async def send_model_picker(
         self, chat_id: str, providers: list, current_model: str, current_provider: str, session_key: str,
-        on_model_selected, metadata: Optional[dict[str, Any]] = None) -> SendResult:
+        on_model_selected, metadata: Optional[dict[str, Any]] = None, *,
+        reload_provider: Optional[Callable[[str], Optional[dict]]] = None,
+    ) -> SendResult:
         """Send an inline-keyboard model picker: provider → model drill-down, edited in place."""
         def build():
             keyboard, provider_page_info = self._build_provider_keyboard(providers, 0)
@@ -3922,7 +3927,8 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             def _remember(msg):
                 self._model_picker_state[str(chat_id)] = {
                     "msg_id": msg.message_id, "providers": providers, "session_key": session_key, "on_model_selected": on_model_selected,
-                    "current_model": current_model, "current_provider": current_provider, "provider_page": 0}
+                    "current_model": current_model, "current_provider": current_provider, "provider_page": 0,
+                    "reload_provider": reload_provider}
             return text, keyboard, _remember
         return await self._send_prompt(
             "send_model_picker", chat_id, metadata, build, thread_id=metadata.get("thread_id") if metadata else None,
@@ -4145,15 +4151,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             return
         get_label = self._provider_get_label()
         if data.startswith("mp:"):  # provider selected: show model buttons (page 0)
-            provider_slug = data[3:]
-            provider = next((p for p in state["providers"] if p["slug"] == provider_slug), None)
-            if not provider:
-                await answer_callback(query, _toast("platform.telegram.picker.provider_not_found"))
-                return
-            state["selected_provider"] = provider_slug
-            state["selected_provider_name"] = provider.get("name", provider_slug)
-            state["model_list"] = provider.get("models", [])
-            await self._picker_show_models(query, state, 0)
+            await show_provider_models(self, query, chat_id, state, data[3:])
         elif data.startswith("mg:"):  # model page navigation
             page = await self._parse_page(query, data[3:])
             if page is not None:

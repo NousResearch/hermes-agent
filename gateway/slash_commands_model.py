@@ -466,7 +466,10 @@ class GatewayModelCommandsMixin:
                 persist_global=ctx.persist_global and global_error is None)
         return reply + ("\n" + t("gateway.model.local_next_turn") if live is not None else "")
 
-    async def _send_model_picker(self, event: MessageEvent, source, adapter, session_key: str, listing_kwargs: dict, on_model_selected) -> bool:
+    async def _send_model_picker(
+        self, event: MessageEvent, source, adapter, session_key: str, listing_kwargs: dict, on_model_selected,
+        profile_home=None,
+    ) -> bool:
         """Send the interactive /model picker; False when nothing was sent (text fallback). *source*
         is session-key-normalized so the picker's thread metadata lands where the next turn reads."""
         from hermes_cli.model_switch_providers import list_picker_providers
@@ -480,12 +483,30 @@ class GatewayModelCommandsMixin:
             return False
         from gateway.approval_actor import opener_authority
         on_model_selected.prompt_authority = opener_authority(event)  # only its opener (or an admin) taps it
+        picker_options = {}
+        if getattr(type(adapter), "supports_model_picker_catalog_reload", False):
+            def _reload_provider(slug: str) -> Optional[dict]:
+                from gateway.run import _profile_runtime_scope
+                from hermes_cli.models_cache_lock import wait_for_provider_models_refresh
+
+                # The tap runs later, possibly on a shared bot serving another profile.
+                scope = _profile_runtime_scope(profile_home) if profile_home is not None else contextlib.nullcontext()
+                with scope:
+                    if not wait_for_provider_models_refresh(slug, timeout=3):
+                        return None
+                    rows = list_picker_providers(
+                        **(listing_kwargs | {"probe_current_custom_provider": False}),
+                    )
+                    return next((row for row in rows if row["slug"] == slug), None)
+
+            picker_options["reload_provider"] = _reload_provider
         result = await adapter.send_model_picker(
             chat_id=source.chat_id, providers=providers,
             current_model=listing_kwargs["current_model"],
             current_provider=listing_kwargs["current_provider"], session_key=session_key,
             on_model_selected=on_model_selected,
             metadata=self._thread_metadata_for_source(source, self._reply_anchor_for_event(event)),
+            **picker_options,
         )
         return bool(result.success)
 
@@ -550,7 +571,9 @@ class GatewayModelCommandsMixin:
                 with _profile_runtime_scope(profile_home):
                     return await _picker_switch(model_id, provider_slug)
 
-            if await self._send_model_picker(event, ctx.source, adapter, ctx.session_key, listing_kwargs, _on_model_selected):
+            if await self._send_model_picker(
+                event, ctx.source, adapter, ctx.session_key, listing_kwargs, _on_model_selected, profile_home,
+            ):
                 return None  # Picker sent — adapter handles the response
 
         lines = [t("gateway.model.current_label", model=ctx.current_model or t("gateway.shared.unknown_value"),

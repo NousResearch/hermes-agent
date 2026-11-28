@@ -784,28 +784,41 @@ def _warn_all_invalid_platform_toolsets(platform: str, explicit: list, config: d
             platform, ", ".join(named))
 
 
-def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: set[str]):
-    """Save the selected toolset keys for a platform to config."""
+def _save_platform_tools(
+    config: dict, platform: str, enabled_toolset_keys: set[str], *,
+    offered_plugin_toolset_keys: set[str] | None = None,
+):
+    """Save selected keys; only keys captured from the checklist/explicit action count as offered."""
     config.setdefault("platform_toolsets", {})
     # Drop platform-scoped toolsets that don't apply here, so the "Configure all platforms" checklist (or a
     # hand-edited config.yaml) can't turn on `discord` for Telegram.
     enabled_toolset_keys = {ts for ts in enabled_toolset_keys if _toolset_allowed_for_platform(ts, platform)}
-    plugin_keys = _get_plugin_toolset_keys()
-    # Preserve only existing entries that are neither configurable nor platform defaults (i.e. MCP server
-    # names): platform defaults (hermes-cli, ...) resolve to ALL tools and would silently override the user's
-    # unchecked selections on the next read. Saving from the picker is consent to clear the "no_mcp" sentinel
-    # (no checkbox for it; users who once set it by hand could otherwise never re-enable MCP via the UI).
-    drop = _configurable_keys() | plugin_keys | _platform_default_keys() | {"no_mcp"}
+    offered_plugin_keys = {
+        str(ts) for ts in (offered_plugin_toolset_keys or ())
+        if _toolset_allowed_for_platform(str(ts), platform)
+    }
+    # Preserve existing entries the user was not offered (including a plugin toolset that became
+    # unavailable while this checklist was open); offered-but-unchecked entries are removed below.
+    drop = _configurable_keys() | offered_plugin_keys | _platform_default_keys() | {"no_mcp"}
     existing_toolsets = _coerce_platform_toolsets_value(
         cfg_get(config, "platform_toolsets", platform, default=[]), platform
     )
     preserved_entries = {str(e) for e in (existing_toolsets if isinstance(existing_toolsets, list) else [])
                          if str(e) not in drop}
     config["platform_toolsets"][platform] = sorted(enabled_toolset_keys | preserved_entries)
-    # Record which plugin toolsets this platform "knows" (distinguishes "new plugin, default enabled" from
-    # "user disabled it"). _cfg_section normalizes a present-but-null key that setdefault alone would not replace.
-    if plugin_keys:
-        _cfg_section(config, "known_plugin_toolsets")[platform] = sorted(plugin_keys)
+    # Record which plugin toolsets this platform "knows", i.e. which the user was ever offered a checkbox
+    # for (distinguishes "new plugin, default enabled" from "user disabled it"). Only keys the checklist
+    # actually offers count: a key discovered via get_plugin_toolset_keys_nowait() (or a stale or
+    # gateway-projected superset) that this platform never offered must NOT become known, or the resolver
+    # at _enabled_plugin_toolsets reads "known but omitted" as a false opt-out and hides the plugin's tools
+    # by default (the hermes_tingle failure). Prior known keys are kept so a real opt-out survives a save
+    # in which that plugin is temporarily absent from the checklist. _cfg_section normalizes a
+    # present-but-null key that setdefault alone would not replace.
+    if offered_plugin_keys:
+        known_section = _cfg_section(config, "known_plugin_toolsets")
+        prior = known_section.get(platform)
+        prior_known = {str(k) for k in prior if isinstance(k, str)} if isinstance(prior, list) else set()
+        known_section[platform] = sorted(prior_known | offered_plugin_keys)
     # Same record for builtin toolsets the checklist offered; without it an unchecked toolset is
     # indistinguishable from one shipped after the save and _enable_recently_shipped_toolsets re-enables it.
     _cfg_section(config, "known_builtin_toolsets")[platform] = sorted(_configurable_keys())
@@ -909,8 +922,10 @@ def _estimate_tool_tokens() -> dict[str, int]:
     return counts
 
 
-def _prompt_toolset_checklist(platform_label: str, enabled: set[str], platform: str = "cli", *, force_fresh: bool = True) -> set[str]:
-    """Multi-select checklist of toolsets. Returns set of selected toolset keys."""
+def _prompt_toolset_checklist(
+    platform_label: str, enabled: set[str], platform: str = "cli", *, force_fresh: bool = True,
+) -> tuple[set[str], set[str]]:
+    """Multi-select checklist; returns selected keys and the plugin keys actually displayed."""
     from hermes_cli.curses_ui import curses_checklist
     from toolsets import resolve_toolset
 
@@ -940,7 +955,10 @@ def _prompt_toolset_checklist(platform_label: str, enabled: set[str], platform: 
     chosen = curses_checklist(
         f"Tools for {platform_label}", labels, pre_selected, cancel_returns=pre_selected, status_fn=status_fn,
     )
-    return {effective[i][0] for i in chosen}
+    selected = {effective[i][0] for i in chosen}
+    builtins = _configurable_keys()
+    offered_plugins = {ts_key for ts_key, _, _ in effective if ts_key not in builtins}
+    return selected, offered_plugins
 
 
 # --- Provider-Aware Configuration ---
@@ -1079,7 +1097,8 @@ def _first_install_flow(config: dict, enabled_platforms: list[str]) -> None:
     for pkey in enabled_platforms:
         pinfo = PLATFORMS[pkey]
         current_enabled = _current_platform_tools(config, pkey)
-        new_enabled = _prompt_toolset_checklist(pinfo["label"], current_enabled - _DEFAULT_OFF_TOOLSETS, pkey)
+        new_enabled, offered_plugins = _prompt_toolset_checklist(
+            pinfo["label"], current_enabled - _DEFAULT_OFF_TOOLSETS, pkey)
         _print_toolset_diff(*_checklist_diff(new_enabled, current_enabled, pkey))
         auto_configured = apply_nous_managed_defaults(config, enabled_toolsets=new_enabled, force_fresh=True)
         for ts_key in sorted(auto_configured):
@@ -1090,7 +1109,7 @@ def _first_install_flow(config: dict, enabled_platforms: list[str]) -> None:
         _configure_list(
             [ts for ts in sorted(new_enabled) if _is_configurable(ts) and ts not in auto_configured],
             config, selected=False)
-        _save_platform_tools(config, pkey, new_enabled)
+        _save_platform_tools(config, pkey, new_enabled, offered_plugin_toolset_keys=offered_plugins)
         save_config(config)
         print(color(f"  ✓ Saved {pinfo['label']} tool configuration", Colors.GREEN))
         print()
@@ -1100,8 +1119,10 @@ def _current_platform_tools(config: dict, pkey: str) -> set[str]:
     return _get_platform_tools(config, pkey, include_default_mcp_servers=False)
 
 
-def _apply_platform_checklist(config: dict, pkey: str, new_enabled: set[str], prev: set[str], already: set[str],
-                              *, indent: str = "  ", header: bool = False) -> None:
+def _apply_platform_checklist(
+    config: dict, pkey: str, new_enabled: set[str], prev: set[str], already: set[str],
+    offered_plugin_toolset_keys: set[str], *, indent: str = "  ", header: bool = False,
+) -> None:
     """Print the diff, configure newly added toolsets not in ``already``, and write the platform list.
     Keys for newly enabled tools not already handled by the selected-tool pass, so a tool enabled globally
     but lacking provider config doesn't drop the user back to the main menu."""
@@ -1110,7 +1131,7 @@ def _apply_platform_checklist(config: dict, pkey: str, new_enabled: set[str], pr
         print(color(f"  {PLATFORMS[pkey]['label']}:", Colors.DIM))
     _print_toolset_diff(added, removed, indent=indent)
     _configure_newly_added(added, already, config)
-    _save_platform_tools(config, pkey, new_enabled)
+    _save_platform_tools(config, pkey, new_enabled, offered_plugin_toolset_keys=offered_plugin_toolset_keys)
 
 
 def _configure_platforms(config: dict, platform_keys: list[str], *, all_platforms: bool = False) -> bool:
@@ -1119,7 +1140,9 @@ def _configure_platforms(config: dict, platform_keys: list[str], *, all_platform
     label = "All platforms" if all_platforms else PLATFORMS[platform_keys[0]]["label"]
     current = {pk: _current_platform_tools(config, pk) for pk in platform_keys}
     all_current = set().union(*current.values())
-    new_enabled = _prompt_toolset_checklist(label, all_current, force_fresh=True)
+    checklist_platform = platform_keys[0] if not all_platforms else "cli"
+    new_enabled, offered_plugins = _prompt_toolset_checklist(
+        label, all_current, checklist_platform, force_fresh=True)
     selected_to_configure = _toolsets_needing_setup(new_enabled, config)
     _configure_list(selected_to_configure, config)
     if new_enabled == all_current and not selected_to_configure:
@@ -1129,8 +1152,9 @@ def _configure_platforms(config: dict, platform_keys: list[str], *, all_platform
         # Global: re-read after each save — reconciling agent.disabled_toolsets for one platform can change
         # what the next platform resolves to. Single platform: diff against the pre-checklist snapshot.
         prev = _current_platform_tools(config, pk) if all_platforms else current[pk]
-        _apply_platform_checklist(config, pk, new_enabled, prev, set(selected_to_configure),
-                                  indent="    " if all_platforms else "  ", header=all_platforms)
+        _apply_platform_checklist(
+            config, pk, new_enabled, prev, set(selected_to_configure), offered_plugins,
+            indent="    " if all_platforms else "  ", header=all_platforms)
     save_config(config)
     print(color("  ✓ Saved configuration for all platforms" if all_platforms else f"  ✓ Saved {label} configuration",
                 Colors.GREEN))

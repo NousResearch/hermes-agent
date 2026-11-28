@@ -277,7 +277,7 @@ async def toggle_toolset(name: str, body: ToolsetToggle, profile: Optional[str] 
     (``platform_toolsets.cli`` for most; platform-restricted toolsets target
     their own platform) via the same ``_save_platform_tools`` the CLI uses."""
     from hermes_cli.tools_config import (
-        _CONFIG_ONLY_TOOLSETS, _get_platform_tools, _save_platform_tools,
+        _CONFIG_ONLY_TOOLSETS, _configurable_keys, _get_platform_tools, _save_platform_tools,
         _toolset_configuration_platform)
 
     target_platform = _toolset_configuration_platform(name)
@@ -299,7 +299,10 @@ async def toggle_toolset(name: str, body: ToolsetToggle, profile: Optional[str] 
                 enabled.add(name)
             else:
                 enabled.discard(name)
-            _save_platform_tools(config, target_platform, enabled)
+            _save_platform_tools(
+                config, target_platform, enabled,
+                offered_plugin_toolset_keys=set() if name in _configurable_keys() else {name},
+            )
 
     await asyncio.to_thread(_run)
 

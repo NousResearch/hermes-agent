@@ -37,6 +37,35 @@ def test_toolset_pin_round_trips_a_then_b_then_a(second):
     assert pinned == {"web"}
 
 
+def test_profile_pin_can_disable_an_enabled_plugin_toolset(monkeypatch):
+    """The profile editor's full enabled-toolset list is an explicit selection; an omitted plugin
+    that was present in the editor must not be preserved by the generic saver."""
+    import hermes_cli.tools_config as _tc
+    from toolsets import resolve_toolset as real_resolve
+
+    monkeypatch.setattr(_tc, "_get_plugin_toolset_keys", lambda: {"profile_plugin"})
+    monkeypatch.setattr(
+        _tc, "_get_effective_configurable_toolsets",
+        lambda: [*_tc.CONFIGURABLE_TOOLSETS, ("profile_plugin", "Profile plugin", "Test row")],
+    )
+    config = {
+        "platform_toolsets": {"cli": ["web", "profile_plugin"]},
+    }
+    _save_toolset_pin(config, ["web"], save_config=lambda _cfg: None)
+
+    def resolve(key, **kwargs):
+        if key == "profile_plugin":
+            return ["profile_plugin_tool"]
+        return real_resolve(key, **kwargs)
+
+    monkeypatch.setattr("toolsets.resolve_toolset", resolve)
+    from hermes_cli.tools_config import _get_platform_tools
+    effective = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+    assert "profile_plugin" not in effective
+    assert "profile_plugin" not in config["platform_toolsets"]["cli"]
+    assert "profile_plugin" in config["known_plugin_toolsets"]["cli"]
+
+
 def test_empty_pin_clears_the_pin_and_falls_back_to_the_platform_default():
     from hermes_cli.tools_config import _get_platform_tools
 

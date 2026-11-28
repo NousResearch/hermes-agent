@@ -1773,7 +1773,9 @@ def activate_codex_app_server_fallback(agent: Any, result: dict[str, Any]) -> bo
         _eager_fallback_status(classified, classified.reason == FailoverReason.upstream_rate_limit, False))
     from agent.fallback_notice import record_fallback_trigger
     record_fallback_trigger(agent, classified.reason, str(error))
-    if not agent._try_activate_fallback(reason=classified.reason):
+    # A plan refusal carries the reset codex reported, so the primary cooldown waits for it.
+    reset = {"reset_at": result["rate_limit_reset_at"]} if result.get("rate_limit_reset_at") else {}
+    if not agent._try_activate_fallback(reason=classified.reason, **reset):
         return False
     # The status above is dropped once the fallback answers: log the trigger (#152101).
     logger.warning("%sCodex app-server turn failed (%s: %s) — switched to fallback",

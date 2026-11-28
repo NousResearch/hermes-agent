@@ -15,6 +15,9 @@ from contextlib import suppress
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List
 
+from agent.codex_runtime_rate_limits import (
+    CodexRateLimitState, on_error_notification, on_rate_limits_updated, usage_limit_message, usage_limit_reset,
+)
 from agent.display import redact_tool_args_for_display
 from agent.reasoning_summaries import redact_reasoning_fields
 from agent.redact import redact_sensitive_text
@@ -473,6 +476,11 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
     }
     handlers["item/started"] = lambda p: _on_item(p, completed=False)
     handlers["item/completed"] = lambda p: _on_item(p, completed=True)
+    # Plan windows codex reads from its own response headers: /usage, the picker gauge and a
+    # usage-limit failure's reset time come from here (agent/codex_runtime_rate_limits.py).
+    agent._codex_rate_limit_state = rate_limits = CodexRateLimitState()
+    handlers["account/rateLimits/updated"] = functools.partial(on_rate_limits_updated, rate_limits)
+    handlers["error"] = functools.partial(on_error_notification, rate_limits)
 
     def on_event(note: dict) -> None:
         if not isinstance(note, dict):
@@ -803,6 +811,8 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
         raise _checkpoint_blocked("codex_app_server owns the authoritative thread and compacts it "
                                   "without a truthful pre-compaction transcript boundary")
     _ensure_codex_session(agent, messages)
+    if (rate_limits := getattr(agent, "_codex_rate_limit_state", None)) is not None:
+        rate_limits.turn_error_info = None
     try:
         _start_codex_thread(agent)
         wire_model = _codex_wire_model(agent, getattr(agent, "_codex_session_model_provider", None))
@@ -818,6 +828,10 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
             final_response=f"Codex app-server turn failed: {exc}. Fall back to default runtime with `/codex-runtime auto`.",
         )
     interrupt = _consume_user_interrupt(agent, turn.interrupted)
+    # A plan refusal names only a wall-clock time; lead with when the windows actually reopen, and hand
+    # the reset to the fallback cooldown (activate_codex_app_server_fallback).
+    if (limit_reset := usage_limit_reset(rate_limits, turn)) is not None:
+        turn.error = f"{usage_limit_message(limit_reset)}\n{turn.error}"
     # Wedged client (turn deadline blown, OAuth refresh died, subprocess exited): retire it. Post-tool
     # silence alone no longer retires — it only logs a warning (#112928).
     if getattr(turn, "should_retire", False):
@@ -836,6 +850,7 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
         interrupt, messages, api_calls=1, completed=not turn.interrupted and turn.error is None, error=turn.error,
         # We flushed the projected rows ourselves (agent_persisted); the gateway must skip its own DB write.
         agent_persisted=True, codex_thread_id=turn.thread_id, codex_turn_id=turn.turn_id, **reply, **usage_result,
+        **({"rate_limit_reset_at": limit_reset.timestamp()} if limit_reset is not None else {}),
     )
 
 

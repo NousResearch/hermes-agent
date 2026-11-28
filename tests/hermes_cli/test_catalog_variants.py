@@ -162,7 +162,7 @@ def test_catalog_and_preset_agree_on_identical_model_facts(tmp_path, monkeypatch
         variant = entry.variants[0]
         profile = entry.profile(variant)
         path = tmp_path / f"{variant.model_id}.gguf"
-        monkeypatch.setattr(presets, "read_gguf_header", lambda p: SimpleNamespace(sampling_defaults={}))
+        monkeypatch.setattr(presets, "read_gguf_header", lambda p: SimpleNamespace(sampling_defaults={}, has_unknown_quant_types=False))
         monkeypatch.setattr(presets, "profile_from_gguf", lambda h: profile)
         # The catalog prices the whole download; the preset prices what is on disk. Agreement is
         # the contract once every companion the download fetches has arrived.

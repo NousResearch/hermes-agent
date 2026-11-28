@@ -229,6 +229,53 @@ async def test_captured_completed_automation_result_gets_no_restart_notice(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_receipt_poll_nudges_the_drain_and_settles_a_stuck_kanban_unknown(tmp_path, monkeypatch):
+    """GW-10 regression (t_74a56092 -> t_6fa39edb): a kanban worker_client's reconnect only ever
+    does a read-only ``prompt.receipt`` poll, never anything that re-enters this session's drain.
+    If a hard-kill lands before any drain exit handler runs, nothing else would ever nudge it
+    again, so the existing GW-10 auto-resolution (``settle_unattended_unknown``) never gets a
+    chance to run. ``receipt()`` must itself nudge ``_schedule`` on an ``unknown`` row, so the
+    very read a kanban worker_client does is what unsticks it -- no viewer, no human /discard."""
+    executed = []
+    store, runner = _runner(tmp_path, monkeypatch, executed)
+    db = store.persistence
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id='gw10')
+    seed_session(db, 's', 'telegram')
+    authority = await initialize_session_authority(runner, profile_id='p', instance_id='owner-1')
+    authority.sessions['s'] = LiveSession(source, 's')
+    ref = SessionRef('p', 's')
+    actor = AuthorityConnection(authority, Peer(), {'user_id': 'human'}).actor
+    authority._schedule = lambda ref: None  # no auto-drain while the stuck row is set up
+    row, _created = db.admissions.admit(
+        epoch=authority.epoch, principal_id='automation:agent:main:kanban:card:t_6fa39edb',
+        session_id='s', request_id='kanban-1', payload={'text': 'HEAD', 'kanban_card_v1': {'task_id': 't_6fa39edb'}})
+    head_id = row.admission_id
+    follower = await authority.submit(actor, Submission('follower', ref, {'text': 'FOLLOWER'}, 'queue'))
+    claimed = db.admissions.claim(epoch=authority.epoch, session_id='s')
+    assert claimed.admission_id == head_id
+    # The exact hard-kill race from t_74a56092: the claimed row is fenced ``unknown`` with nothing
+    # left to ever re-enter this session's drain again (no restart, no live worker, no viewer).
+    assert db.admissions.mark_unknown(epoch=authority.epoch, admission_id=head_id, generation=claimed.generation) == 'unknown'
+    try:
+        del authority._schedule  # restore the real method: only `receipt()` may call it from here
+        # This is the ONLY RPC a kanban worker_client's reconnect ever calls (prompt.receipt).
+        receipt = await authority.receipt(actor, ref, head_id)
+        assert receipt.status == 'unknown'  # the nudged drain has not run yet on this same read
+        live = authority.sessions['s']
+        await async_wait_until(lambda: live.task is not None and live.task.done(), what='drain finished')
+        assert executed == ['FOLLOWER']
+        statuses = _statuses(db)
+        assert statuses[head_id] == ('terminal', 'interrupted')
+        assert statuses[follower.admission_id] == ('terminal', 'completed')
+        # A later receipt read now reports it settled -- exactly what `_await_receipt`'s grace
+        # poll on the client side (hermes_cli/kanban_worker_client.py) is watching for.
+        settled_receipt = await authority.receipt(actor, ref, head_id)
+        assert settled_receipt.status == 'terminal'
+    finally:
+        store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
 async def test_lost_automation_worker_settles_on_its_own_exit_and_runs_the_queued_follower(tmp_path, monkeypatch):
     """Review #141357 F2: a managed worker lost mid-turn fences its automation head ``unknown`` and
     raises ManagedExecutionUnknown. That same drain settles it and runs the follower already queued,

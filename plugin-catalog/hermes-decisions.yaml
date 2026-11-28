@@ -1,0 +1,17 @@
+name: hermes-decisions
+repo: https://github.com/TangledDaunT/Hermes-decisions
+sha: 00f33ab8fef95bd8a7f2c81279d9ba39ec188092
+description: Fast, zero-output-token Gemini Decisions API tool for noul, choice, and score decisions over text, JSON, images, PDFs, audio, and video.
+maintainer: TangledDaunT
+tier: community
+category: tools
+version: "1.0.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - gemini_decide
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - GEMINI_API_KEY

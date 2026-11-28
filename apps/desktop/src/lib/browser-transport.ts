@@ -27,6 +27,17 @@ export class BrowserReauthRequiredError extends Error {
   }
 }
 
+/** A gateway answer that was not 2xx; the message is `<status>: <body>`. */
+export class BrowserApiError extends Error {
+  readonly status: number
+
+  constructor(status: number, message: string) {
+    super(`${status}: ${message}`)
+    this.name = 'BrowserApiError'
+    this.status = status
+  }
+}
+
 export function browserBootstrap(): BrowserBootstrap | null {
   if (!hasBrowserHostBootstrap()) {return null}
 
@@ -234,7 +245,7 @@ export async function browserApi<T>(bootstrap: BrowserBootstrap, request: Hermes
   })
 
   if (!response.ok) {
-    throw new Error(`${response.status}: ${text || response.statusText}`)
+    throw new BrowserApiError(response.status, text || response.statusText)
   }
 
   if (!text) {return null as T}
@@ -309,6 +320,22 @@ export type TicketSocketPath = keyof typeof TICKET_SOCKETS
 export type AudioSocketPath = '/api/audio/speak-stream' | '/api/audio/transcribe-stream'
 
 /**
+ * Socket name the server mints a plugin event stream ticket by — `plugin-events/<id>` — or null
+ * when the id is not a name it accepts (server names are `[a-z0-9][a-z0-9_-]{0,127}`; anything else keeps
+ * its polling fallback instead of minting a ticket the server would refuse).
+ */
+export function pluginEventsSocketName(pluginId: string): null | string {
+  return /^[a-z0-9][a-z0-9_-]{0,127}$/.test(pluginId) ? `plugin-events/${pluginId}` : null
+}
+
+const PERMANENT_MINT_REFUSALS: ReadonlySet<number> = new Set([400, 401, 403, 404])
+
+/** Only a plugin's own event stream is ticketed; every other plugin path keeps its REST/polling path. */
+function isPluginEventsPath(suffix: string): boolean {
+  return /^\/events(?:\?|$)/.test(suffix)
+}
+
+/**
  * Socket *path*'s URL for one dial, carrying a ticket minted for it alone; a failed mint is the
  * reason to show. The gateway socket's mint also checks *profile*, and its `native_dial` makes the
  * client speak the gateway's canonical contract and move the ticket into the socket's subprotocol.
@@ -344,4 +371,52 @@ export function gatewaySocketUrl(bootstrap: BrowserBootstrap, profile?: null | s
   url.searchParams.set('native_dial', BROWSER_NATIVE_DIAL)
 
   return url.toString()
+}
+
+/**
+ * A plugin event stream's URL for ONE dial — `/api/plugins/<id>/events…` with a one-use ticket
+ * minted for exactly that plugin's stream (`plugin-events/<id>`). The mint is the authenticated
+ * same-origin request every other ticket socket uses, so the session token never rides the URL;
+ * the ticket is the URL's only credential and dies with the connection. Null means "no ticket
+ * path for this dial" (not an events stream, an id the server would not name, no bootstrap, or a
+ * lasting refusal of the mint) — the caller stays on its polling fallback. A network failure or a
+ * 5xx is not a refusal: it throws, and the caller retries with backoff.
+ */
+export async function pluginEventsTicketUrl(
+  bootstrap: BrowserBootstrap | null,
+  pluginId: string,
+  suffix: string
+): Promise<null | string> {
+  const socket = pluginEventsSocketName(pluginId)
+
+  if (!bootstrap || !socket || !isPluginEventsPath(suffix)) {return null}
+
+  let result: null | { ticket?: string }
+
+  try {
+    result = await browserApi<null | { ticket?: string }>(bootstrap, {
+      method: 'POST',
+      path: `/api/webapp/socket-ticket?socket=${encodeURIComponent(socket)}`
+    })
+  } catch (error) {
+    // 400 is an older server that mints no plugin event tickets ("Unknown socket"); 401/403/404 are
+    // a surface or session that will not mint one. None of these changes by retrying.
+    if (error instanceof BrowserApiError && PERMANENT_MINT_REFUSALS.has(error.status)) {return null}
+
+    throw error
+  }
+
+  const ticket = String(result?.ticket || '').trim()
+
+  if (!ticket) {throw new Error(`Hermes did not return a ticket for ${socket}`)}
+
+  // The suffix carries its own query (board, since) — merge the ticket into it instead of
+  // appending a second `?` the way a plain websocketUrl() join would.
+  const queryAt = suffix.indexOf('?')
+  const path = queryAt < 0 ? suffix : suffix.slice(0, queryAt)
+  const query = queryAt < 0 ? '' : suffix.slice(queryAt + 1)
+  const params = new URLSearchParams(query)
+  params.set('ticket', ticket)
+
+  return `${websocketUrl(bootstrap.basePath, `/api/plugins/${pluginId}${path}`, {})}?${params.toString()}`
 }

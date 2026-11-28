@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import re
 import threading
 import weakref
 from typing import Any, Optional
@@ -40,8 +41,30 @@ TRANSCRIBE_STREAM_SOCKET = "transcribe-stream"
 AUDIO_SOCKETS = frozenset({SPEAK_STREAM_SOCKET, TRANSCRIBE_STREAM_SOCKET})
 #: A socket the Webapp's proxy opens to a saved gateway connection (``web_routers.webapp_relay_proxy``).
 RELAY_SOCKET = "relay"
+#: A dashboard plugin's event stream (``/api/plugins/<id>/events``), named ``plugin-events/<id>``.
+#: Named per installed plugin rather than enumerated: a ticket minted for exactly that name opens
+#: only that stream (``ticket_refusal``) — one plugin's ticket opens no other plugin's stream and
+#: no core socket. Unnamed legacy tickets keep opening them, as before the name existed.
+PLUGIN_EVENTS_PREFIX = "plugin-events/"
+_PLUGIN_ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,127}")
 #: Sockets that open only with a ticket minted for them, never with a standing credential.
 OWN_TICKET_SOCKETS = frozenset({HOST_TERMINAL_SOCKET, RELAY_SOCKET})
+
+
+def plugin_events_socket(plugin_id: str) -> str:
+    """The events-socket name for *plugin_id* (``/api/plugins/<id>/events``). Ids are confined to
+    ``[a-z0-9][a-z0-9_-]{0,127}`` so a name can never smuggle a path separator or traversal into the
+    ticket's bound path."""
+    if not _PLUGIN_ID.fullmatch(plugin_id or ""):
+        raise ValueError(f"invalid plugin id for a plugin events socket: {plugin_id!r}")
+    return f"{PLUGIN_EVENTS_PREFIX}{plugin_id}"
+
+
+def is_plugin_events_socket(name: str | None) -> bool:
+    """True when *name* is a well-formed plugin events socket name (``plugin-events/<id>``)."""
+    if not name or not name.startswith(PLUGIN_EVENTS_PREFIX):
+        return False
+    return bool(_PLUGIN_ID.fullmatch(name[len(PLUGIN_EVENTS_PREFIX):]))
 #: What a signed-out tab's sockets are closed with: the same code a refused credential gets.
 SIGNED_OUT_CODE = 4401
 
@@ -52,8 +75,11 @@ _live: dict[int, tuple[weakref.ref, asyncio.AbstractEventLoop, str]] = {}
 def ticket_refusal(info: dict[str, Any], socket: Optional[str], *, auth_required: bool) -> Optional[str]:
     """Why a redeemed ticket may not open *socket*, or None when it may.
 
-    A ticket named for a socket opens only that socket; an unnamed ticket opens any socket except
-    one that takes only its own ticket. A ticket minted under the browser credential (with the
+    A ticket named for a socket opens only that socket. An unnamed (legacy) ticket opens any
+    socket except one that takes only its own ticket (``host-terminal``, ``relay``) — including
+    the plugin events sockets, as it did before they were named, so the classic dashboard client
+    (``web/src/lib/api.ts`` ``buildWsAuthParam``) keeps its streams. A ticket minted under the
+    browser credential (with the
     session token, or by a Webapp login bound to it) opens nothing once that credential is replaced,
     and one minted with the session token opens nothing behind the sign-in gate.
     """

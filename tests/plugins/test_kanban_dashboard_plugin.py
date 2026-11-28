@@ -516,7 +516,7 @@ def test_ws_events_rejects_when_token_required(tmp_path, monkeypatch):
     import hermes_cli
     import types
 
-    def _fake_ws_auth_ok(ws):
+    def _fake_ws_auth_ok(ws, socket=None):
         return ws.query_params.get("token", "") == "secret-xyz"
 
     stub = types.SimpleNamespace(
@@ -562,7 +562,7 @@ def test_ws_events_applies_the_dashboard_host_origin_guard(kanban_home, monkeypa
 
     from hermes_cli import web_server, web_server_chat
 
-    monkeypatch.setattr(web_server_chat, "_ws_auth_ok", lambda ws: True)
+    monkeypatch.setattr(web_server_chat, "_ws_auth_ok", lambda ws, socket=None: True)
     monkeypatch.setattr(web_server.app.state, "bound_host", "127.0.0.1", raising=False)
     monkeypatch.setattr(web_server.app.state, "auth_required", False, raising=False)
     app = FastAPI()
@@ -1223,7 +1223,7 @@ def test_ws_events_for_archived_board_does_not_recreate_it(tmp_path, monkeypatch
     import hermes_cli
     import types
 
-    def _fake_ws_auth_ok(ws):
+    def _fake_ws_auth_ok(ws, socket=None):
         return ws.query_params.get("token", "") == "secret-xyz"
 
     stub = types.SimpleNamespace(

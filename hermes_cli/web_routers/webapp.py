@@ -19,7 +19,8 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from hermes_cli.dashboard_auth.request_utils import _http_origin
 from hermes_cli.web_server_surface import policy, private_launch
 from hermes_cli.web_session_sockets import (
-    GATEWAY_SOCKET, HOST_TERMINAL_SOCKET, RELAY_SOCKET, SPEAK_STREAM_SOCKET, TRANSCRIBE_STREAM_SOCKET)
+    GATEWAY_SOCKET, HOST_TERMINAL_SOCKET, RELAY_SOCKET, SPEAK_STREAM_SOCKET, TRANSCRIBE_STREAM_SOCKET,
+    is_plugin_events_socket)
 
 _log = logging.getLogger("hermes_cli.web_server")
 router = APIRouter()
@@ -238,8 +239,14 @@ async def issue_socket_ticket(request: Request, socket: str = "", profile: str |
     from hermes_cli.web_server_cron import _cron_profile_home
 
     if socket not in SOCKET_TICKETS:
-        raise HTTPException(400, "Unknown socket")
-    surface, checks_profile = SOCKET_TICKETS[socket]
+        if not is_plugin_events_socket(socket):
+            raise HTTPException(400, "Unknown socket")
+        # A dashboard plugin's event stream (``/api/plugins/<id>/events``): mints on the surface
+        # that serves the plugin loader, and the ticket binds to exactly that plugin's socket name
+        # (``web_session_sockets.plugin_events_socket``), so it opens no other stream or socket.
+        surface, checks_profile = "desktop_plugins", False
+    else:
+        surface, checks_profile = SOCKET_TICKETS[socket]
     if not getattr(policy(request.app.state), surface):
         raise HTTPException(404, f"Webapp {socket} tickets are unavailable on this surface")
     identity, session_token = _ticket_principal(request)

@@ -281,3 +281,57 @@ def test_a_signed_in_browser_opens_its_voice_streams_with_their_own_tickets(weba
     finally:
         clear_providers()
         _reset_for_tests()
+
+
+def _plugin_events_app():
+    """A stand-in for a dashboard plugin's events route that, like a plugin written before socket
+    names existed, calls ``_ws_auth_ok(ws)`` without naming its socket."""
+    from fastapi import WebSocket
+
+    from hermes_cli import web_server_chat
+
+    app = FastAPI()
+
+    @app.websocket("/api/plugins/{plugin_id}/events")
+    async def events(ws: WebSocket, plugin_id: str):
+        if not web_server_chat._ws_auth_ok(ws):
+            await ws.close(code=4401)
+            return
+        await ws.accept()
+        await ws.send_json({"events": [], "plugin": plugin_id})
+        await ws.close()
+
+    return app
+
+
+def test_a_plugin_events_ticket_needs_the_session(webapp):
+    client = webapp.client
+    assert client.post("/api/webapp/socket-ticket", params={"socket": "plugin-events/kanban"}).status_code == 401
+    assert _mint(client, "plugin-events/kanban")
+
+
+@pytest.mark.parametrize("socket", [
+    "plugin-events/../x", "plugin-events/Kanban", "plugin-events/a/b", "plugin-events/", "plugin-events",
+    "plugin-events/" + "a" * 129,
+])
+def test_a_plugin_events_ticket_is_refused_for_an_invalid_id(webapp, socket):
+    response = webapp.client.post("/api/webapp/socket-ticket", params={"socket": socket}, headers=_SESSION)
+    assert response.status_code == 400, socket
+
+
+def test_a_plugin_events_ticket_accepts_the_longest_valid_id(webapp):
+    assert _mint(webapp.client, "plugin-events/" + "a" * 128)
+
+
+def test_a_plugin_events_ticket_opens_the_stream_of_exactly_one_plugin(webapp):
+    client = webapp.client
+    with TestClient(_plugin_events_app()) as plugins:
+        ticket = _mint(client, "plugin-events/kanban")
+        with plugins.websocket_connect(f"ws://localhost/api/plugins/kanban/events?ticket={ticket}") as ws:
+            assert ws.receive_json()["plugin"] == "kanban"
+        # One use only.
+        _refused(plugins, f"ws://localhost/api/plugins/kanban/events?ticket={ticket}")
+        # Not another plugin's stream, nor a core socket's.
+        _refused(plugins, f"ws://localhost/api/plugins/other/events?ticket={_mint(client, 'plugin-events/kanban')}")
+        _refused(plugins, f"ws://localhost/api/plugins/kanban/events?ticket={_mint(client, 'plugin-events/other')}")
+        _refused(plugins, f"ws://localhost/api/plugins/kanban/events?ticket={_mint(client, 'gateway')}")

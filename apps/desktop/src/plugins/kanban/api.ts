@@ -26,6 +26,7 @@ import {
   queryClient,
   useValue
 } from '@hermes/plugin-sdk'
+import type { QueryCacheNotifyEvent } from '@tanstack/react-query'
 
 // Native completion notification.
 import { bindCompletionNotify, type CompletionEvent, onKanbanEventsFrame } from './completion-notify'
@@ -45,7 +46,11 @@ import type {
 } from './types'
 
 type Rest = <T>(path: string, opts?: PluginRestOptions) => Promise<T>
-type Socket = (path: string, onMessage: (data: unknown) => void) => () => void
+type Socket = (
+  path: string,
+  onMessage: (data: unknown) => void,
+  onStatus?: (status: 'live' | 'polling') => void
+) => () => void
 
 let rest: null | Rest = null
 let os: null | PluginOs = null
@@ -89,6 +94,91 @@ export const $lanesByProfile = atom<boolean>(false)
 /** Per-lane collapse OVERRIDES (true=collapsed, false=expanded). Absence means
  *  auto: empty lanes collapse to a rail, occupied lanes expand. Persisted. */
 export const $collapsedLanes = atom<Record<string, boolean>>({})
+
+// ── live transport state ────────────────────────────────────────────────────
+
+/** Chip state for the board header: 'live' = events socket open AND frames
+ *  arriving (server keepalive: one frame / 25 s); 'polling' = socket down or
+ *  frames stalled — the HTTP fallback covers updates; 'offline' = nothing
+ *  reached the backend recently (socket AND polls silent). */
+export type KanbanLiveState = 'live' | 'polling' | 'offline'
+
+/** Transport of the event stream, straight from pluginSocket's onStatus. */
+export const $liveChannel = atom<'live' | 'polling'>('polling')
+
+/** Derived display state — recomputed by the watchdog in `bindApi`. */
+export const $liveState = atom<KanbanLiveState>('polling')
+
+/** Wall clock (ms, null = nothing yet) of the last backend answer — an events
+ *  frame OR a successful board read. Drives the "Synced <time>" caption and
+ *  the offline watchdog. */
+export const $lastSyncAt = atom<number | null>(null)
+
+/** Board poll cadence: slow heartbeat while the event socket carries updates,
+ *  fast fallback when it doesn't (a change shows within about 10 s on a
+ *  degraded transport). */
+export const LIVE_POLL_INTERVAL_MS = 60_000
+export const POLL_FALLBACK_INTERVAL_MS = 10_000
+
+/** Board-header poll interval derived from the live state. */
+export const boardRefetchInterval = (state: KanbanLiveState): number =>
+  state === 'live' ? LIVE_POLL_INTERVAL_MS : POLL_FALLBACK_INTERVAL_MS
+
+/** Whether the board's fallback poll may keep running in a background window.
+ *  Only while the event channel is not live, and never for a local gateway the
+ *  Desktop itself started: its idle-exit would never trigger while a hidden
+ *  window keeps asking it for the board. The browser-hosted Webapp and remote
+ *  connections have no such gateway to wake, so they keep polling. */
+export const pollInBackground = (state: KanbanLiveState, scope: string, browserHosted: boolean): boolean =>
+  state !== 'live' && (browserHosted || scope !== LOCAL_SCOPE)
+
+/** True in the browser-hosted Webapp (the host marker the browser bridge writes on the document). */
+export const isBrowserHosted = (): boolean =>
+  typeof document !== 'undefined' && document.documentElement.dataset.hermesDesktopHost === 'browser'
+
+/** Server keepalive: one frame per 25 s when idle (`stream_events` in the
+ *  plugin's `plugin_api.py`). Tolerate three missed keepalives before demoting 'live'. */
+export const LIVE_KEEPALIVE_MS = 25_000
+export const LIVE_TOLERATED_KEEPALIVES = 3
+/** Offline verdict after this many missed fallback polls plus grace. While
+ *  'live', the slow heartbeat (60 s) sets the bar instead of the 10 s one. */
+export const OFFLINE_AFTER_POLLS = 3
+export const OFFLINE_GRACE_MS = 5_000
+
+/** Watchdog cadence — worst-case detection lag for a stalled frame clock. */
+export const LIVE_TICK_MS = 5_000
+
+/** Pure clock the watchdog runs every LIVE_TICK_MS — exported for tests.
+ *  Boot (lastSyncAt null) claims nothing; evidence flips the chip. */
+export function deriveLiveState(
+  input: { channel: 'live' | 'polling'; lastFrameAt: number | null; lastSyncAt: number | null },
+  now: number
+): KanbanLiveState {
+  const { channel, lastFrameAt, lastSyncAt } = input
+
+  if (lastSyncAt === null) {
+    return 'polling'
+  }
+
+  const offlineAfter =
+    channel === 'live'
+      ? LIVE_POLL_INTERVAL_MS + OFFLINE_GRACE_MS
+      : POLL_FALLBACK_INTERVAL_MS * OFFLINE_AFTER_POLLS + OFFLINE_GRACE_MS
+
+  if (now - lastSyncAt > offlineAfter) {
+    return 'offline'
+  }
+
+  if (
+    channel === 'live' &&
+    lastFrameAt !== null &&
+    now - lastFrameAt <= LIVE_KEEPALIVE_MS * LIVE_TOLERATED_KEEPALIVES
+  ) {
+    return 'live'
+  }
+
+  return 'polling'
+}
 
 /** Cache scope of the local pool — the SDK atom's own spelling. */
 const LOCAL_SCOPE = 'local'
@@ -240,7 +330,15 @@ export function bindApi(
   bindCompletionNotify(r, notifyDoors?.t, notifyDoors?.os)
   const unsubs: Array<() => void> = []
 
-  queryClient.setQueryDefaults(KANBAN_KEY_ROOT, { enabled: routedToScope })
+  // Kanban opts back INTO focus/reconnect refetches even though the app-wide
+  // default disables them (lib/query-client.ts): hidden/minimized windows used
+  // to pause even the fallback poll and nothing resynced on return.
+  // 'always' = refetch even when data is fresh.
+  queryClient.setQueryDefaults(KANBAN_KEY_ROOT, {
+    enabled: routedToScope,
+    refetchOnWindowFocus: 'always',
+    refetchOnReconnect: 'always'
+  })
   unsubs.push(() => queryClient.setQueryDefaults(KANBAN_KEY_ROOT, {}))
 
   // Hydrate an atom from storage and keep storage in sync with it.
@@ -255,6 +353,81 @@ export function bindApi(
 
   eventCursorByBoard.clear()
 
+  // ── live-status bookkeeping ────────────────────────────────────────────────
+  // Freshness clock: every events frame (server keepalive 25 s) and every
+  // successful board/boards cache answer proves the backend is reachable; the
+  // watchdog derives the header chip state from channel + clock.
+  let lastFrameAt: number | null = null
+
+  const derive = () => {
+    $liveState.set(
+      deriveLiveState(
+        { channel: $liveChannel.get(), lastFrameAt, lastSyncAt: $lastSyncAt.get() },
+        Date.now()
+      )
+    )
+  }
+
+  const liveTimer = setInterval(derive, LIVE_TICK_MS)
+  unsubs.push(() => clearInterval(liveTimer))
+
+  const markFrame = () => {
+    lastFrameAt = Date.now()
+    $lastSyncAt.set(lastFrameAt)
+    derive()
+  }
+
+  // Board/boards cache success — a poll answer, focus refetch or settled
+  // mutation — proves reachability even when no socket frame arrived.
+  unsubs.push(
+    queryClient.getQueryCache().subscribe(
+      (event: QueryCacheNotifyEvent) => {
+        if (event.type !== 'updated' || event.action.type !== 'success') {
+          return
+        }
+
+        const key = event.query.queryKey
+
+        if (
+          key[0] === 'kanban' &&
+          (key[1] === 'board' || key[1] === 'boards') &&
+          key[2] === kanbanConnectionScope()
+        ) {
+          $lastSyncAt.set(Date.now())
+          derive()
+        }
+      }
+    )
+  )
+
+  // Catch-up on window return / focus / network return. Kanban queries are
+  // configured 'always' for focus/reconnect, but a covered window fires
+  // visibilitychange without focus and a resumed machine can wake without
+  // onlineManager noticing — an explicit invalidate is
+  // idempotent and cheap; missed events ride the since-cursor on the next
+  // socket frame.
+  const resync = () => {
+    const scope = kanbanConnectionScope()
+
+    void queryClient.invalidateQueries({ queryKey: boardKeyPrefix(scope) })
+    void queryClient.invalidateQueries({ queryKey: boardsKey(scope) })
+  }
+
+  const visibilityHandler = () => {
+    if (document.visibilityState === 'visible') {
+      resync()
+    }
+  }
+
+  document.addEventListener('visibilitychange', visibilityHandler)
+  window.addEventListener('focus', resync)
+  window.addEventListener('online', resync)
+  unsubs.push(() => {
+    document.removeEventListener('visibilitychange', visibilityHandler)
+    window.removeEventListener('focus', resync)
+    window.removeEventListener('online', resync)
+  })
+
   let close: (() => void) | null = null
   let socketGeneration = 0
 
@@ -262,11 +435,32 @@ export function bindApi(
     const generation = socketGeneration
     const selectedSlug = $boardSlug.get()
 
-    return socket(eventsUrl(slug, since), data => {
-      if (generation === socketGeneration) {
-        onEventsFrame(scope, slug, data, selectedSlug)
+    return socket(
+      eventsUrl(slug, since),
+      data => {
+        if (generation === socketGeneration) {
+          onEventsFrame(scope, slug, data, selectedSlug)
+          markFrame()
+        }
+      },
+      status => {
+        // Stale generations stay silent — only the current dial speaks for
+        // the chip; open() resets to 'polling' across reconnects.
+        if (generation === socketGeneration) {
+          $liveChannel.set(status)
+
+          // An open socket is itself proof of freshness: the server answered
+          // the handshake. Counting only frames left the chip on 'polling' for
+          // up to one keepalive (25 s) after the socket (re)opened.
+          if (status === 'live') {
+            lastFrameAt = Date.now()
+            $lastSyncAt.set(lastFrameAt)
+          }
+
+          derive()
+        }
       }
-    })
+    )
   }
 
   const open = (selectedSlug: string) => {
@@ -275,6 +469,13 @@ export function bindApi(
 
     close?.()
     close = null
+
+    // The previous dial's status callbacks are generation-silenced from here
+    // on — reset the chip so it cannot keep claiming 'live' for a channel the
+    // new dial has to re-prove (board switch, connection switch, rebind).
+    $liveChannel.set('polling')
+    lastFrameAt = null
+    derive()
 
     const openResolved = (slug: string) => {
       if (generation !== socketGeneration) {
@@ -380,6 +581,9 @@ export function bindApi(
   return () => {
     socketGeneration += 1
     eventCursorByBoard.clear()
+    $liveChannel.set('polling')
+    $liveState.set('polling')
+    $lastSyncAt.set(null)
     unsubs.forEach(unsub => unsub())
     close?.()
     rest = null

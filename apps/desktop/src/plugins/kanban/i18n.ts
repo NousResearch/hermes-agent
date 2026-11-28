@@ -227,9 +227,23 @@ type KanbanMessages = {
     openKanban: string
     artifacts: (n: number) => string
   }
+  /** Live-status chip in the board header — transport state plus the wall
+   *  clock of the last backend answer (frame or poll). */
+  live: {
+    live: string
+    polling: string
+    offline: string
+    lastSync: (time: string) => string
+  }
 }
 
 export const en: KanbanMessages = {
+  live: {
+    live: 'Live',
+    polling: 'Delayed (polling)',
+    offline: 'Offline',
+    lastSync: time => `Synced ${time}`
+  },
   nav: 'Kanban',
   openBoard: 'Kanban: Open board',
   newTaskCommand: 'Kanban: New task',
@@ -462,6 +476,12 @@ export const en: KanbanMessages = {
 }
 
 const ja: KanbanMessages = {
+  live: {
+    live: 'ライブ',
+    polling: '遅延（ポーリング）',
+    offline: 'オフライン',
+    lastSync: time => `更新 ${time}`
+  },
   nav: 'カンバン',
   openBoard: 'カンバン: ボードを開く',
   newTaskCommand: 'カンバン: 新しいタスク',
@@ -693,6 +713,12 @@ const ja: KanbanMessages = {
 }
 
 const zh: KanbanMessages = {
+  live: {
+    live: '实时',
+    polling: '延迟（轮询）',
+    offline: '离线',
+    lastSync: time => `更新于 ${time}`
+  },
   nav: '看板',
   openBoard: '看板：打开面板',
   newTaskCommand: '看板：新建任务',
@@ -921,6 +947,12 @@ const zh: KanbanMessages = {
 }
 
 const zhHant: KanbanMessages = {
+  live: {
+    live: '即時',
+    polling: '延遲（輪詢）',
+    offline: '離線',
+    lastSync: time => `更新於 ${time}`
+  },
   nav: '看板',
   openBoard: '看板：開啟面板',
   newTaskCommand: '看板：新增任務',

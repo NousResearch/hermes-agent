@@ -102,7 +102,7 @@ async def _drive(monkeypatch, mod, ws, conn, polls: int) -> None:
 
     monkeypatch.setattr(mod.asyncio, "wait_for", _wait_for)
     monkeypatch.setattr(mod.kbc, "connect", lambda *, board=None: conn)
-    monkeypatch.setattr(mod, "_ws_upgrade_authorized", lambda ws: True)
+    monkeypatch.setattr(mod, "_ws_upgrade_authorized", lambda ws, socket=None: True)
     await mod.stream_events(ws)
 
 

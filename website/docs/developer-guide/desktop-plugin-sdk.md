@@ -2400,9 +2400,11 @@ register(ctx) {
   const act  = () => ctx.rest('/action', { method: 'POST', body: { go: true } })
 
   // Live twin — a WebSocket to your own namespace.
-  const stop = ctx.socket('/events', frame => {
-    queryClient.invalidateQueries({ queryKey: [ctx.source, 'board'] })
-  })
+  const stop = ctx.socket(
+    '/events',
+    frame => queryClient.invalidateQueries({ queryKey: [ctx.source, 'board'] }),
+    status => { /* optional: 'live' while the socket is open, 'polling' otherwise */ }
+  )
 }
 ```
 
@@ -2410,10 +2412,23 @@ register(ctx) {
 address another plugin's API or a core route through it. `PluginRestOptions` is
 `{ method?, body?, upload?: { filename, contentType?, bytes }, timeoutMs? }`.
 
-`ctx.socket` auto-reconnects with backoff until disposed. **It resolves to a no-op
-on OAuth remotes** (single-use WS tickets are core-managed) — treat the socket as
-an accelerator over polling, never a replacement. Every consumer needs a polling
+`ctx.socket` auto-reconnects with backoff until disposed. Treat the socket as an
+accelerator over polling, never a replacement: every consumer needs a polling
 fallback anyway, since any socket can drop.
+
+OAuth remotes and the browser-hosted Webapp open **your plugin's `/events`
+stream** with a single-use ticket minted for exactly that stream. Any other
+path (for example `ctx.socket('/updates', …)`) stays on the polling fallback
+there: the dial resolves to nothing and no frame arrives. On the server, a route
+at `/api/plugins/<id>/events` takes such a named ticket automatically; it does
+not need to name its socket when it calls `_ws_auth_ok(ws)`, and a ticket minted
+for another plugin's stream does not open it.
+
+The optional third argument, `onStatus`, reports the transport: `'live'` while
+the socket is open and `'polling'` when the dial resolved to nothing, was
+refused or dropped. It reports the transport only. Frames, including an
+idle keepalive frame from your server route if it sends one, are what prove the
+data is fresh.
 
 How it authenticates depends on the backend: a token-mode remote gets the same
 `?token=` query credential the app's own sockets use; a **local gateway** (no
@@ -2547,7 +2562,7 @@ pipeline as a trust boundary.
 - **One id, one file.** Two folders exporting the same `id` (a standalone install
   beside a unified-package copy) load first-wins in folder-name order; the later
   one shows `duplicate id` on its own row in Capabilities ▸ Plugins.
-- **`ctx.socket` is a no-op on OAuth remotes.** Always have a polling fallback.
+- **`ctx.socket` only streams `/events` on OAuth remotes and the browser Webapp.** Any other path stays on polling there, so always have a polling fallback.
 
 ## Reference
 
@@ -2592,9 +2607,10 @@ that the plugin is in `plugins.enabled` in `config.yaml`, and restart the gatewa
 (backend routes mount at startup). Tail `~/.hermes/logs/errors.log` for
 `Failed to load plugin <id> API routes`.
 
-**`ctx.socket` never fires.** On an OAuth remote it's a no-op by design — use your
-polling fallback. Otherwise verify the backend exposes the matching
-`@router.websocket(...)` route under its namespace.
+**`ctx.socket` never fires.** On an OAuth remote or the browser Webapp only the
+plugin's `/events` stream is opened (with a single-use ticket); any other path
+stays on your polling fallback by design. Otherwise verify the backend exposes
+the matching `@router.websocket(...)` route under its namespace.
 
 **Colors look wrong after a theme switch.** You hardcoded a color. Replace it with
 a `var(--ui-*)` theme variable.

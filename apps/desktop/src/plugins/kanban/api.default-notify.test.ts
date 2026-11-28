@@ -84,7 +84,7 @@ describe('default board event notifications', () => {
 
     const socket = vi.fn(() => vi.fn())
     dispose = bindApi(rest as never, { get: (_key, fallback) => fallback, set: vi.fn(), remove: vi.fn() }, socket)
-    await vi.waitFor(() => expect(socket).toHaveBeenCalledWith('/events?since=20', expect.any(Function)))
+    await vi.waitFor(() => expect(socket).toHaveBeenCalledWith('/events?since=20', expect.any(Function), expect.any(Function)))
     expect(doors.notify).not.toHaveBeenCalled()
   })
 
@@ -101,7 +101,7 @@ describe('default board event notifications', () => {
 
     if (change === 'selection') {
       $boardSlug.set('chosen')
-      await vi.waitFor(() => expect(socket).toHaveBeenCalledWith('/events?board=chosen&since=30', expect.any(Function)))
+      await vi.waitFor(() => expect(socket).toHaveBeenCalledWith('/events?board=chosen&since=30', expect.any(Function), expect.any(Function)))
     } else {
       dispose()
       dispose = undefined
@@ -125,7 +125,7 @@ describe('default board event notifications', () => {
       },
       socket
     )
-    await vi.waitFor(() => expect(socket).toHaveBeenCalledWith('/events?board=chosen&since=30', expect.any(Function)))
+    await vi.waitFor(() => expect(socket).toHaveBeenCalledWith('/events?board=chosen&since=30', expect.any(Function), expect.any(Function)))
     expect(rest).not.toHaveBeenCalledWith('/boards')
   })
 
@@ -155,7 +155,7 @@ describe('default board event notifications', () => {
     const storage = { get: <T>(_key: string, fallback: T) => fallback, set: vi.fn(), remove: vi.fn() }
     dispose = bindApi(rest as never, storage, socket)
     await vi.waitFor(() => expect(callbacks).toHaveLength(1))
-    expect(socket).toHaveBeenCalledWith('/events?board=default&since=100', expect.any(Function))
+    expect(socket).toHaveBeenCalledWith('/events?board=default&since=100', expect.any(Function), expect.any(Function))
     expect($boardSlug.get()).toBe('')
     // Establish the existing notifier's baseline from a nonterminal frame;
     // first-live-frame baseline seeding is separately owned by PR #116236.

@@ -107,7 +107,7 @@ function buildGatewayWsUrlWithTicket(baseUrl, ticket) {
 }
 
 /** True only when a gateway explicitly rejected the current OAuth session. */
-function isGatewayAuthRejection(error) {
+function isGatewayAuthRejection(error: unknown) {
   if (error && typeof error === 'object' && (error as any).needsOauthLogin === true) {
     return true
   }

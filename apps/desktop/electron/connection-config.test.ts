@@ -620,6 +620,16 @@ test('pathWithProfileScope keeps an explicit profile query and no-ops on empty p
   assert.equal(pathWithProfileScope('/api/cron/jobs', null), '/api/cron/jobs')
 })
 
+test('sidebar recents profile is not contradicted by the ambient profile', () => {
+  const path = '/api/profiles/sessions/sidebar?recents_profile=default&recents_limit=50'
+  for (const backend of [{ mode: 'local' }, { sharedPrimary: true }, { sharedRemote: true }]) {
+    assert.equal(pathForRegistryBackendRequest(path, 'worker', backend, 'GET'), path)
+  }
+  assert.equal(pathWithProfileScope(path, 'worker', 'GET'), path)
+  assert.equal(pathWithProfileScope('/api/profiles/sessions/sidebar?recents_limit=50', 'worker', 'GET'),
+    '/api/profiles/sessions/sidebar?recents_limit=50&profile=worker')
+})
+
 test('pathForRegistryBackendRequest uses the resolved registry backend scope', () => {
   assert.equal(
     pathForRegistryBackendRequest('/api/fs/read-data-url?path=%2Fsrv%2Fimage.png', 'research', {

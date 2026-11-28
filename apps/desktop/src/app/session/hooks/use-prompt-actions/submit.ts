@@ -1072,11 +1072,11 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         // No pre-send stale-transcript guard (removed on main, fcfc5c66ede):
         // windows on one backend share the live session and turns are
         // serialized, so a send from a window behind its chat cannot fork it.
-        trackPendingSubmission(targetStoredSessionId ?? liveSessionId, {
-          id: submissionId,
-          text,
-          displayText: options?.displayText
-        })
+        trackPendingSubmission(
+          targetStoredSessionId ?? liveSessionId,
+          { id: submissionId, text, displayText: options?.displayText },
+          syncedAttachments
+        )
 
         const imageAttachments = syncedAttachments
           .filter(attachment => attachment.kind === 'image' && attachment.mime)

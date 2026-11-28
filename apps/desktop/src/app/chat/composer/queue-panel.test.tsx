@@ -119,3 +119,27 @@ describe('QueuePanel lost turn', () => {
     expect(await screen.findByText('Turn lost during restart')).toBeTruthy()
   })
 })
+
+// A queued screenshot used to show only "1 attachment": the row now previews each image it carries.
+describe('QueuePanel image previews', () => {
+  it('shows a thumbnail per queued image and none for blob-only or non-image attachments', async () => {
+    const shot = 'data:image/png;base64,iVBORw0KGgo='
+
+    await renderExpandedPanel([
+      {
+        ...entry('imgs', 'Look at these'),
+        attachments: [
+          { id: 'a', kind: 'image', label: 'shot.png', thumbnailUrl: shot },
+          { id: 'b', kind: 'image', label: 'stale.png', previewUrl: 'blob:dead' },
+          { id: 'c', kind: 'file', label: 'notes.md', thumbnailUrl: shot }
+        ]
+      }
+    ])
+
+    const row = (await screen.findByText('Look at these')).closest('div')!
+    const thumbs = row.querySelectorAll('[data-slot="queue-thumbs"] img')
+
+    expect(Array.from(thumbs, img => img.getAttribute('alt'))).toEqual(['shot.png'])
+    expect(screen.getByText('3 attachments')).toBeTruthy()
+  })
+})

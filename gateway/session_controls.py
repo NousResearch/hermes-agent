@@ -921,6 +921,7 @@ class AuthorityConnection:
 
     async def mutate(self, ref, params):
         from gateway.session_mutations import mutate_session
+        from persistence.conversation.sessions import CanonicalTitleLocked, TitleConflict
         from persistence.core.errors import MUTATION_GUARD_REFUSALS, busy_refusal
         try:
             result = await mutate_session(self.authority, self.actor, ref, params)
@@ -928,6 +929,13 @@ class AuthorityConnection:
             # A live turn lease / compression lock is the same retryable busy verdict a
             # running admission gets (REST maps it to 409), not an internal error.
             raise busy_refusal(exc) from exc
+        except (TitleConflict, CanonicalTitleLocked) as exc:
+            detail = ('This title is already in use by another chat.' if isinstance(exc, TitleConflict)
+                      else 'The canonical Bot Chat cannot be renamed.')
+            # Slash clients display the RPC message, not the structured detail.
+            refusal = AuthorityRefusal('invalid_params', field='title', detail=detail)
+            refusal.wire_message = detail
+            raise refusal from exc
         except AuthorityRefusal as exc:
             if exc.reason in {'revision_conflict', 'stale_generation'}:
                 # The fresh fences ride on the refusal, so the client retries once without a re-read.

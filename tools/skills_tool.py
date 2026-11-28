@@ -74,14 +74,59 @@ def _dir_tree_signature(root, sig, depth=_SIGNATURE_MAX_DEPTH) -> None:
             _dir_tree_signature(os.path.join(root, name), sig, depth - 1)
 
 
+# Per-pass memo of a root's directory-tree signature. A gateway signs every scope a session has
+# published commands for (up to _MAX_WATCHED_SCOPES of them) on one poll, and scopes of the same
+# profile share that profile's skills root: the same tree was walked once per scope. Measured on
+# the live dashboard, 32 watched scopes resolved to 1 unique root and the walk was repeated 27x
+# over — 0.76s of stat work per 2.0s poll, so the watcher never finished a pass in time and the
+# loop never slept.
+#
+# The memo is per-pass on purpose: it must not outlive the pass that opened it, or a change
+# between passes would be invisible. It also makes the pass CONSISTENT — every scope in one pass
+# sees the same snapshot of a shared root, where before they could straddle a change.
+_ROOT_SIG_MEMO: contextvars.ContextVar[Optional[dict[str, tuple]]] = contextvars.ContextVar(
+    "skills_root_sig_memo", default=None)
+
+
+@contextmanager
+def root_signature_memo():
+    """Memoize each root's directory-tree signature for the duration of one pass.
+
+    Wraps the scope loop of ``agent.skill_commands.published_scopes_signature``: scopes that
+    reference the same root reuse that root's walk instead of repeating it. Yields the memo dict
+    (empty on entry, dropped on exit) so a caller can inspect it.
+    """
+    token = _ROOT_SIG_MEMO.set({})
+    try:
+        yield _ROOT_SIG_MEMO.get()
+    finally:
+        _ROOT_SIG_MEMO.reset(token)
+
+
 def _skills_scan_signature(dirs_to_scan, disabled) -> tuple:
     """Stat-based change signature over every directory the catalog walks; platform is read via
-    ``agent.skill_utils.sys`` so test patches are honored."""
+    ``agent.skill_utils.sys`` so test patches are honored.
+
+    Inside a :func:`root_signature_memo` block each root's tree is walked ONCE and the result is
+    reused for every scope that references it (see the memo for why). Outside one, every root is
+    walked per call, exactly as before.
+    """
     from agent import skill_utils as _skill_utils
     platform = getattr(getattr(_skill_utils, "sys", None), "platform", "")
+    memo = _ROOT_SIG_MEMO.get()
     sig: list = []
     for d in dirs_to_scan:
-        _dir_tree_signature(str(d), sig)
+        key = str(d)
+        if memo is None:
+            _dir_tree_signature(key, sig)
+            continue
+        if key in memo:
+            sig.extend(memo[key])
+            continue
+        entries: list = []
+        _dir_tree_signature(key, entries)
+        memo[key] = tuple(entries)
+        sig.extend(entries)
     return (tuple(sig), frozenset(disabled), platform)
 
 

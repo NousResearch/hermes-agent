@@ -421,7 +421,20 @@ def _whatsapp_linked_account_from_session(session_path: Path) -> tuple[str | Non
 
 def _ensure_whatsapp_bridge_dependencies(bridge_dir: Path) -> None:
     """Install bridge dependencies when the dashboard is the setup surface."""
-    if (bridge_dir / "node_modules").exists():
+    from plugins.platforms.whatsapp.bridge_dependencies import bridge_dependencies_ready, bridge_dependency_install_lock
+    if bridge_dependencies_ready(bridge_dir):
+        return
+    try:
+        with bridge_dependency_install_lock(bridge_dir):
+            if not bridge_dependencies_ready(bridge_dir):
+                _install_whatsapp_bridge_dependencies_unlocked(bridge_dir)
+    except (OSError, TimeoutError) as exc:
+        raise HTTPException(status_code=500, detail=f"WhatsApp bridge dependency lock failed: {exc}") from exc
+
+
+def _install_whatsapp_bridge_dependencies_unlocked(bridge_dir: Path) -> None:
+    from plugins.platforms.whatsapp.bridge_dependencies import bridge_dependencies_ready, stamp_bridge_dependencies
+    if bridge_dependencies_ready(bridge_dir):
         return
 
     from hermes_constants import find_node_executable, with_hermes_node_path
@@ -454,6 +467,7 @@ def _ensure_whatsapp_bridge_dependencies(bridge_dir: Path) -> None:
     if result.returncode != 0:
         detail = "\n".join((result.stderr or result.stdout or "").strip().splitlines()[-10:])
         raise HTTPException(status_code=500, detail=f"npm install failed for WhatsApp bridge: {detail or 'no output'}")
+    stamp_bridge_dependencies(bridge_dir)
 
 
 def _spawn_whatsapp_pairing_process(session_path: Path, mode: str) -> subprocess.Popen:

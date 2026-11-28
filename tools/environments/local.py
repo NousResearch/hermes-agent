@@ -1285,9 +1285,9 @@ class LocalEnvironment(BaseEnvironment):
             cmd_string = _prepend_shell_init(cmd_string, _resolve_shell_init_files())
         command_file = None
         try:
-            # MSYS can silently truncate a long -c argument. Leave headroom below
-            # 8192 UTF-16 units, including login initialization added above.
-            if _IS_WINDOWS and len(cmd_string.encode("utf-16-le")) > 7500 * 2:
+            # Git Bash can silently truncate -c at 8,186 Unicode code points.
+            # Leave some headroom and count the complete script, including login init.
+            if _IS_WINDOWS and len(cmd_string) > 8_000:
                 with tempfile.NamedTemporaryFile(
                     mode="w", encoding="utf-8", newline="\n", delete=False,
                     dir=self.get_temp_dir(), prefix="hermes-command-", suffix=".sh",
@@ -1311,7 +1311,7 @@ class LocalEnvironment(BaseEnvironment):
                 start_new_session=True, cwd=self._spawn_cwd(),
                 pass_fds=tuple(fd for fd in (secret_fd, source_fd, restore_fd) if fd >= 0),
                 creationflags=windows_hide_flags() if _IS_WINDOWS else 0)
-        except OSError:
+        except (OSError, UnicodeEncodeError):
             if command_file is not None:
                 with contextlib.suppress(OSError):
                     os.unlink(command_file)

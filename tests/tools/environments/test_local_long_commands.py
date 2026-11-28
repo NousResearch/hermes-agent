@@ -25,8 +25,8 @@ def _local_shell(_isolated_child_env, monkeypatch):  # health: allow F811 -- pyt
         env.cleanup()
 
 
-@pytest.mark.parametrize("padding", ["short", "x" * 9000, "\U0001f600" * 5000],
-                         ids=["short", "ascii", "utf16-surrogate-pairs"])
+@pytest.mark.parametrize("padding", ["short", "x" * 40_000, "\U0001f600" * 9_000],
+                         ids=["short", "beyond-createprocess-limit", "long-non-bmp"])
 def test_complete_command_preserves_stdin_status_and_session(local_shell, padding):
     env = local_shell
     script_dir = Path(env.get_temp_dir())
@@ -50,6 +50,15 @@ def test_complete_command_preserves_stdin_status_and_session(local_shell, paddin
     assert followup["returncode"] == 0, followup
     assert followup["output"] == "preserved"
     assert set(script_dir.iterdir()) == original_files
+
+
+def test_silent_truncation_in_comment_keeps_final_output(local_shell):
+    # Exercise the Bash transport directly: truncating this comment leaves a
+    # valid script that exits zero, whereas execute() adds its own eval quotes.
+    proc = local_shell._run_bash("#" * 9_000 + "\nprintf reached-end")
+    result = local_shell._wait_for_process(proc, timeout=30)
+    assert result["returncode"] == 0, result
+    assert result["output"] == "reached-end"
 
 
 def test_many_config_declared_keys_keep_terminal_and_file_reads_working(local_shell):

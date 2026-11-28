@@ -230,6 +230,15 @@ class AuthorityConnection:
             raise AuthorityRefusal('runtime_draining', field='profile', detail='the profile is still starting')
         raise AuthorityRefusal('profile_mismatch')
 
+    def _request_target(self, profile, queued_profile, profile_error):
+        if profile_error is not None:
+            raise profile_error
+        routed = self._sibling_for(profile)
+        # A mutable selector must still name the profile whose FIFO admitted this control.
+        if queued_profile is not None and (routed or self).authority.profile_id != queued_profile:
+            raise AuthorityRefusal('profile_mismatch', field='profile')
+        return routed
+
     def awaits_profile_start(self, request, held=()):
         """Whether a shared socket holds *request* off its serial lane: ``(key, started)`` when a
         host-scoped frame names a profile hot-serve is still building (``started`` is set once the
@@ -318,7 +327,7 @@ class AuthorityConnection:
         handlers.update(stored_read_handlers(self))
         return handlers
 
-    async def dispatch(self, request):
+    async def dispatch(self, request, *, queued_profile=None, profile_error=None):
         from gateway.session_server_requests import is_response_frame
         if is_response_frame(request):
             # A viewer answering one of the owner's server→client requests (the sudo prompt): a
@@ -344,13 +353,13 @@ class AuthorityConnection:
         profile = params.get('profile')
         if isinstance(profile, str) and profile:
             try:
-                routed = self._sibling_for(profile)
+                routed = self._request_target(profile, queued_profile, profile_error)
             except AuthorityRefusal as exc:
                 _log_refusal(getattr(self.actor, 'profile_id', None), method, exc)
                 return {'jsonrpc': '2.0', 'id': rid, 'error': {
                     'code': 4001, 'message': exc.reason, 'data': _refusal_data(exc)}}
             if routed is not None:
-                return await routed.dispatch(request)
+                return await routed.dispatch(request, queued_profile=queued_profile)
             # Our own home: the scope is implicit for the strict session verbs, which refuse
             # unknown keys; every other handler validates ``profile`` itself.
             if method in _PROFILE_IMPLICIT:
@@ -393,7 +402,7 @@ class AuthorityConnection:
             from gateway.session_plugin_rpc import call_plugin_rpc, resolve_plugin_rpc
             async with async_owner_scope(self.authority):
                 if method in GROUP_METHODS or method == 'profiles.list':
-                    result = await dispatch_group_control(self, method, params)
+                    result = await dispatch_group_control(self, method, params, queued=queued_profile is not None)
                 elif method not in handlers and (plugin := await resolve_plugin_rpc(self, method)) is not None:
                     return {'jsonrpc': '2.0', 'id': rid, 'result': await call_plugin_rpc(self, ref, method, plugin, params)}
                 elif method not in handlers or (method in CONNECTION_METHODS and not session_owned(params)):

@@ -22,6 +22,7 @@ from gateway.session_presence import ClientPresence
 from tui_gateway.event_replay import replay_epoch
 from tui_gateway.transport import serialize_frame
 from tui_gateway.ws_legacy_fallback import dispatch_legacy, legacy_fallback_allowed
+from tui_gateway.ws_group_controls import GroupControlLanes
 
 _log = logging.getLogger(__name__)
 
@@ -93,7 +94,7 @@ _WS_WRITE_TIMEOUT_S = 10.0
 # later frame and RPC reply parked behind the writer lock (#106369).
 _WS_SEND_DEADLINE_S = 30.0
 _WS_LOG_PAYLOAD_PREVIEW = 240
-# Frames read ahead of a busy dispatcher. RPCs still dispatch one at a time in arrival order, but on a
+# Frames read ahead of a busy dispatcher. Serial RPCs dispatch in arrival order, but on a
 # per-connection task so the read loop keeps answering gateway.ping while a handler blocks (a lock held
 # by a long compaction, a GIL-heavy turn): the client's heartbeat deadline measures the transport, not
 # handler latency (#108325). A full queue parks the reader — the old serial behaviour.
@@ -101,9 +102,12 @@ _WS_DISPATCH_QUEUE_MAX = 256
 # These handlers only project already-owned state.  They may take seconds for a large stored
 # transcript, so running them through the serial control lane turns an inexpensive interrupt or
 # control read behind them into a client timeout.  Keep the exception deliberately narrow: mutating
-# RPCs still retain arrival order, and no more than two expensive reads consume a connection.
+# RPCs retain arrival order within their control lane; at most two reads consume a connection.
 # ``session.account_usage`` waits on a provider's usage API (a plugin hook up to its deadline).
-_WS_CONCURRENT_READ_METHODS = frozenset({"session.context_breakdown", "session.transcript", "session.account_usage"})
+_WS_GROUP_READ_METHODS = frozenset({"groups.state", "groups.log", "groups.list", "groups.capabilities"})
+_WS_CONCURRENT_READ_METHODS = _WS_GROUP_READ_METHODS | frozenset({
+    "session.context_breakdown", "session.transcript", "session.account_usage",
+})
 _WS_CONCURRENT_READ_LIMIT = 2
 # Reads admitted beyond the running ones; one more parks the reader (as the serial lane did).
 _WS_WAITING_READ_LIMIT = 8
@@ -392,7 +396,8 @@ def _authority_connection(ws: Any, transport: WSTransport, auth_identity: dict |
     return AuthorityConnection(authority, transport, auth_identity or {}, operator=operator)
 
 
-async def _dispatch_request(authority_connection: Any, req: Any, req_method: Any, transport: WSTransport) -> Any:
+async def _dispatch_request(authority_connection: Any, req: Any, req_method: Any, transport: WSTransport,
+                            **routing: str | Exception) -> Any:
     """One request through the authority when attached, else the legacy dispatcher. A request from the
     local Desktop runs as work for it (the welcome trial and onboarding key on that), and so do the
     threads it hands off to: ``to_thread`` and the legacy pool copy this context."""
@@ -405,7 +410,7 @@ async def _dispatch_request(authority_connection: Any, req: Any, req_method: Any
     with serving_local_desktop(getattr(transport, "desktop_local", False)):
         if authority_connection is None:
             return await asyncio.to_thread(server.dispatch, req, transport)
-        resp = await authority_connection.dispatch(req)
+        resp = await authority_connection.dispatch(req, **routing)
         actor = authority_connection.actor
         if (_is_unknown_method(resp) and req_method in server._methods
                 and legacy_fallback_allowed(actor, req_method)):
@@ -472,6 +477,7 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
     # Frames waiting for a profile's start, per start, in arrival order; one lane task drains each.
     held: dict[str, collections.deque] = {}
     held_lanes: set[asyncio.Task] = set()
+    held_reads = 0
     # Held frames count against the serial lane's bound: once that many wait, the dispatcher waits for
     # room, the queue fills and the reader parks, as it does behind a busy handler.
     held_room = asyncio.Semaphore(_WS_DISPATCH_QUEUE_MAX)
@@ -488,7 +494,7 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
         client_gone.set()
         held_dropped.update(key for key, started in held_waiting.items() if not started.is_set())
 
-    async def _dispatch_one(req: Any) -> None:
+    async def _dispatch_one(req: Any, **routing: str | Exception) -> None:
         """Dispatch one request and write its inline reply."""
         nonlocal dispatch_crashes
         req_id = req.get("id") if isinstance(req, dict) else None
@@ -497,7 +503,7 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
         # writes the response itself via transport.write (a separate thread, so that is the safe
         # path). Inline handlers return the response dict, written here from the loop.
         try:
-            resp = await _dispatch_request(authority_connection, req, req_method, transport)
+            resp = await _dispatch_request(authority_connection, req, req_method, transport, **routing)
         # health: allow BLE001 -- dispatch boundary: logs the traceback (_log.exception) and answers -32603
         except Exception:
             dispatch_crashes += 1
@@ -511,6 +517,8 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
 
     async def _dispatch_concurrent_read(req: Any) -> None:
         async with concurrent_read_slots:
+            if client_gone.is_set():
+                return
             started_reads.add(asyncio.current_task())
             try:
                 await _dispatch_one(req)
@@ -534,6 +542,7 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
         (the authority then refuses a profile still starting retryably). A frame for that profile read
         meanwhile joins the queue instead of overtaking it on the serial lane. A client that leaves
         before the start ends drops them: nobody reads those replies."""
+        nonlocal held_reads
         try:
             waits = {asyncio.ensure_future(started.wait()), asyncio.ensure_future(client_gone.wait())}
             try:
@@ -543,12 +552,14 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
                     wait.cancel()
             del held_waiting[key]  # dispatching from here on: a later disconnect lets these frames finish
             frames = held[key]
-            if key in held_dropped:
-                for _ in frames:
-                    held_room.release()
-                frames.clear()
             while frames:
-                await _dispatch_one(frames[0])
+                req = frames[0]
+                if req.get("method") in _WS_GROUP_READ_METHODS:
+                    held_reads -= 1
+                    if key in held_dropped:
+                        read_admission.release()
+                if key not in held_dropped:
+                    await _dispatch_ready(req)
                 frames.popleft()
                 held_room.release()
         except _SendFailed:
@@ -560,6 +571,13 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             del held[key]
 
     async def _hold_for_profile_start(req: Any) -> bool:
+        nonlocal held_reads
+        method = req.get("method") if isinstance(req, dict) else None
+        if method in _WS_CONCURRENT_READ_METHODS and (
+                method not in _WS_GROUP_READ_METHODS or held_reads >= _WS_WAITING_READ_LIMIT):
+            # Session projections and excess group reads get the authority's retryable start refusal.
+            # A start can occupy the waiting budget, never the permits that let read workers run.
+            return False
         if authority_connection is None or authority_connection.awaits_profile_start(req, held) is None:
             return False
         await _unless_dispatch_failed(held_room.acquire())
@@ -570,6 +588,8 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             held_room.release()
             return False
         key, started = start
+        if method in _WS_GROUP_READ_METHODS:
+            held_reads += 1
         if key in held:
             held[key].append(req)
         else:
@@ -602,16 +622,19 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
         return stop
 
     async def _dispatch_loop() -> None:
-        """Dispatch controls in arrival order; bounded expensive read-only projections run alongside them."""
+        """Park starting profiles; each group's controls and bounded reads run beside serial work."""
         while (req := await _next_request()) is not stop:
-            req_method = req.get("method") if isinstance(req, dict) else None
-            if req_method in _WS_CONCURRENT_READ_METHODS:
-                task = asyncio.create_task(_dispatch_concurrent_read(req))
-                concurrent_reads.add(task)
-                task.add_done_callback(_finish_concurrent_read)
-                continue
             if await _hold_for_profile_start(req):
                 continue
+            await _dispatch_ready(req)
+
+    async def _dispatch_ready(req: Any) -> None:
+        req_method = req.get("method") if isinstance(req, dict) else None
+        if req_method in _WS_CONCURRENT_READ_METHODS:
+            task = asyncio.create_task(_dispatch_concurrent_read(req))
+            concurrent_reads.add(task)
+            task.add_done_callback(_finish_concurrent_read)
+        elif not await group_controls.queue(authority_connection, req, _unless_dispatch_failed):
             await _dispatch_one(req)
 
     async def _queue_request(req: Any) -> None:
@@ -647,6 +670,7 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
         finally:
             step.cancel()  # no-op once done
 
+    group_controls = GroupControlLanes(_dispatch_one, send_failed, client_gone, limit=_WS_DISPATCH_QUEUE_MAX)
     try:
         await (ws.accept(subprotocol=subprotocol) if subprotocol else ws.accept())
         disconnect_reason = "connected"
@@ -737,8 +761,9 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             failure = None if dispatcher.cancelled() else dispatcher.exception()
             if failure is not None and not isinstance(failure, _SendFailed):
                 _log.error("ws dispatcher failed peer=%s", peer, exc_info=failure)
-        await _end_reads()
         await _end_held()
+        await _end_reads()
+        await group_controls.close()
         if authority_connection is not None:
             # After the dispatcher drained: an in-flight authority call must not see its connection closed.
             await authority_connection.close()

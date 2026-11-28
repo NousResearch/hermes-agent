@@ -1,0 +1,131 @@
+{
+  "agents": {
+    "agent-1785920150313-7uqgwb": {
+      "agentId": "agent-1785920150313-7uqgwb",
+      "agentType": "coder",
+      "status": "terminated",
+      "health": 1,
+      "taskCount": 1,
+      "config": {
+        "name": "e2e-tester",
+        "model": "haiku"
+      },
+      "createdAt": "2026-08-05T08:55:50.313Z",
+      "model": "haiku",
+      "modelRoutedBy": "explicit"
+    },
+    "agent-1785920289247-wa06sq": {
+      "agentId": "agent-1785920289247-wa06sq",
+      "agentType": "coder",
+      "status": "terminated",
+      "health": 1,
+      "taskCount": 1,
+      "config": {
+        "name": "e2e-ollama",
+        "model": "haiku"
+      },
+      "createdAt": "2026-08-05T08:58:09.247Z",
+      "model": "haiku",
+      "modelRoutedBy": "explicit"
+    },
+    "agent-1785920327989-61wrkl": {
+      "agentId": "agent-1785920327989-61wrkl",
+      "agentType": "coder",
+      "status": "terminated",
+      "health": 1,
+      "taskCount": 1,
+      "config": {
+        "name": "e2e-ollama2",
+        "model": "haiku"
+      },
+      "createdAt": "2026-08-05T08:58:47.990Z",
+      "model": "haiku",
+      "modelRoutedBy": "explicit"
+    },
+    "agent-1785920694713-lhno00": {
+      "agentId": "agent-1785920694713-lhno00",
+      "agentType": "coder",
+      "status": "terminated",
+      "health": 1,
+      "taskCount": 1,
+      "config": {
+        "model": "ollama:deepseek-v4-flash:0731"
+      },
+      "createdAt": "2026-08-05T09:05:00.661Z",
+      "model": "sonnet",
+      "modelRoutedBy": "router",
+      "provider": "anthropic"
+    },
+    "agent-1785921015868-0xcqtf": {
+      "agentId": "agent-1785921015868-0xcqtf",
+      "agentType": "coder",
+      "status": "terminated",
+      "health": 1,
+      "taskCount": 1,
+      "config": {
+        "name": "e2e-claude",
+        "model": "haiku"
+      },
+      "createdAt": "2026-08-05T09:10:15.868Z",
+      "model": "haiku",
+      "modelRoutedBy": "explicit"
+    },
+    "agent-1785921093160-5ork4y": {
+      "agentId": "agent-1785921093160-5ork4y",
+      "agentType": "coder",
+      "status": "terminated",
+      "health": 1,
+      "taskCount": 1,
+      "config": {
+        "name": "e2e-final",
+        "model": "haiku"
+      },
+      "createdAt": "2026-08-05T09:11:33.177Z",
+      "model": "haiku",
+      "modelRoutedBy": "explicit"
+    },
+    "agent-1785921125558-d88pne": {
+      "agentId": "agent-1785921125558-d88pne",
+      "agentType": "coder",
+      "status": "terminated",
+      "health": 1,
+      "taskCount": 1,
+      "config": {
+        "name": "e2e-dual",
+        "model": "haiku"
+      },
+      "createdAt": "2026-08-05T09:12:05.558Z",
+      "model": "haiku",
+      "modelRoutedBy": "explicit"
+    },
+    "agent-1785921536455-p0hv2g": {
+      "agentId": "agent-1785921536455-p0hv2g",
+      "agentType": "coder",
+      "status": "terminated",
+      "health": 1,
+      "taskCount": 1,
+      "config": {
+        "name": "harden-e2e",
+        "model": "haiku"
+      },
+      "createdAt": "2026-08-05T09:18:56.455Z",
+      "model": "haiku",
+      "modelRoutedBy": "explicit",
+      "lastResult": {
+        "success": true,
+        "agentId": "agent-1785921536455-p0hv2g",
+        "messageId": "msg_011CdjMQBSNJVGTSjgaPD3Gu",
+        "model": "claude-haiku-4-5-20251001",
+        "stopReason": "end_turn",
+        "output": "391",
+        "usage": {
+          "inputTokens": 84,
+          "outputTokens": 5,
+          "totalTokens": 89
+        },
+        "durationMs": 2108
+      }
+    }
+  },
+  "version": "3.0.0"
+}

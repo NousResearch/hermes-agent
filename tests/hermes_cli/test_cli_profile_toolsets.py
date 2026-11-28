@@ -34,6 +34,7 @@ def _launch(monkeypatch, db, toolsets=None, coding=None):
     monkeypatch.setattr(cli_mod, "CLI_CONFIG", CONFIG)
     monkeypatch.setattr("agent.coding_context.coding_selection", lambda **_: coding)
     monkeypatch.setattr("hermes_cli.plugins.get_plugin_toolset_keys_nowait", lambda: set())
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_toolset_view_nowait", lambda: (set(), {}))
     printed = []
 
     class Host(CLIInitMixin):

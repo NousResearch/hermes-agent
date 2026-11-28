@@ -815,7 +815,8 @@ class TestPluginToolsetStartupValidation:
         printed: list[str] = []
         stub._console_print = printed.append
         monkeypatch.setattr(_cli_mod, "CLI_CONFIG", {"agent": {}})
-        for name in ("get_plugin_toolset_keys_nowait", "discover_plugins", "get_plugin_manager"):
+        for name in ("get_plugin_toolset_keys_nowait", "get_plugin_toolset_view_nowait", "discover_plugins",
+                     "get_plugin_manager"):
             monkeypatch.setattr(f"hermes_cli.plugins.{name}", lambda *_a: pytest.fail("probed plugins"))
         stub._init_toolsets(["terminal", "voice_stack", "voice_stak"])
         assert printed == []

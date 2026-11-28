@@ -11,6 +11,7 @@ from gateway.session_policy import build_policy
 @pytest.fixture
 def extensions(tmp_path, monkeypatch):
     monkeypatch.setattr('hermes_cli.plugins.get_plugin_toolset_keys_nowait', lambda: {'fake_coding_plugin'})
+    monkeypatch.setattr('hermes_cli.plugins.get_plugin_toolset_view_nowait', lambda: ({'fake_coding_plugin'}, {}))
     servers = {'srv': {'command': str(tmp_path / 'absent')}, 'other': {'command': str(tmp_path / 'absent')}}
     return {'platform_toolsets': {'cli': ['hermes-cli']}, 'mcp_servers': servers}
 
@@ -51,6 +52,8 @@ def test_an_all_pick_keeps_every_plugin_toolset_and_mcp_server(tmp_path, extensi
 def builtin_named_plugin_keys(monkeypatch):
     # The issue's leaked set: plugin keys that are also built-in toolset names.
     monkeypatch.setattr('hermes_cli.plugins.get_plugin_toolset_keys_nowait', lambda: {'coding', 'delegation', 'fake_plug'})
+    monkeypatch.setattr('hermes_cli.plugins.get_plugin_toolset_view_nowait',
+                        lambda: ({'coding', 'delegation', 'fake_plug'}, {}))
     return {'platform_toolsets': {'cli': ['hermes-cli']}}
 
 

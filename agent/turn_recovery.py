@@ -1423,12 +1423,17 @@ def abort_turn_on_interrupt(
     agent._drop_trailing_empty_response_scaffolding(messages)
     close_interrupted_tool_sequence(messages, interrupt_text, stopped=True)
     agent._persist_session(messages, conversation_history)
+    # This early return bypasses ``finalize_turn``, so it must carry the interrupting message
+    # itself: the gateway re-queues it as the user's next turn and reads restart/shutdown
+    # reasons from it. Read it before ``clear_interrupt`` wipes it.
+    interrupt_message = getattr(agent, "_interrupt_message", None)
     # The turn was stopped, not rebuilt: a pending steer was aimed at this turn's next
     # tool iteration, which will no longer happen — drop it (hard-cancel semantics).
     agent.clear_interrupt(hard_cancel=True)
     return {
         "final_response": interrupt_text, "messages": messages, "api_calls": api_call_count,
         "completed": False, "interrupted": True,
+        **({"interrupt_message": interrupt_message} if interrupt_message else {}),
     }
 
 

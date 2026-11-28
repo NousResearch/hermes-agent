@@ -10,8 +10,8 @@ KEY = 'agent:main:telegram:dm:202'
 
 
 class _Store:
-    """SessionStore's two write paths: ``set_session_metadata`` writes whichever entry is current,
-    ``_update_entry`` applies *mutate* to the current entry under the store lock (False: no save)."""
+    """``set_session_metadata`` writes whichever entry is current; the two ``_update_entry``
+    variants apply *mutate* to the current entry under the store lock (False: no save)."""
 
     def __init__(self):
         self._entries = {}
@@ -22,6 +22,8 @@ class _Store:
     def _update_entry(self, key, mutate):
         entry = self._entries.get(key)
         return entry is not None and mutate(entry) is not False
+
+    _update_entry_metadata = _update_entry
 
 
 def _entry(session_id, created_at):

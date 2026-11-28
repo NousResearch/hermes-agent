@@ -3,6 +3,7 @@ import { useStore } from '@nanostores/react'
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 
 import { getHermesConfigRecord, type HermesConfigRecord, retainConfigReadOrigin, saveHermesConfig } from '@/hermes'
+import { readKey, writeKey } from '@/lib/storage'
 
 import { TRANSLATIONS } from './catalog'
 import {
@@ -67,6 +68,34 @@ function toError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error))
 }
 
+const LOCALE_CACHE_KEY_PREFIX = 'hermes.desktop.i18n.locale.v1.'
+
+function localeCacheStorageKey(cacheKey: string | undefined): string | null {
+  return cacheKey ? `${LOCALE_CACHE_KEY_PREFIX}${encodeURIComponent(cacheKey)}` : null
+}
+
+function readStoredLocaleCache(cacheKey: string | undefined): string | null {
+  const storageKey = localeCacheStorageKey(cacheKey)
+
+  if (!storageKey) {
+    return null
+  }
+
+  const cached = readKey(storageKey)
+
+  return cached && cached.trim() ? normalizeLocaleId(cached) : null
+}
+
+function writeStoredLocaleCache(cacheKey: string | undefined, locale: string | null): void {
+  const storageKey = localeCacheStorageKey(cacheKey)
+
+  if (!storageKey) {
+    return
+  }
+
+  writeKey(storageKey, locale && locale.trim() ? normalizeLocaleId(locale) : null)
+}
+
 export interface I18nContextValue {
   configLoadError: Error | null
   isLoadingConfig: boolean
@@ -88,6 +117,8 @@ const I18nContext = createContext<I18nContextValue>({
 })
 
 export interface I18nProviderProps {
+  /** Stable owner key for caching the last confirmed saved locale across transient backend outages. */
+  cacheKey?: string
   children: ReactNode
   configClient?: I18nConfigClient | null
   initialLocale?: unknown
@@ -96,12 +127,25 @@ export interface I18nProviderProps {
 }
 
 export function I18nProvider({
+  cacheKey,
   children,
   configClient = defaultConfigClient,
   initialLocale,
   scopeKey
 }: I18nProviderProps) {
-  const [locale, setLocaleState] = useState<Locale>(() => normalizeLocale(initialLocale))
+  const effectiveCacheKey = cacheKey ?? scopeKey
+  const memoryCacheRef = useRef(new Map<string, string>())
+
+  const [locale, setLocaleState] = useState<Locale>(() => {
+    if (initialLocale !== undefined) {
+      return normalizeLocale(initialLocale)
+    }
+
+    const cached = readStoredLocaleCache(effectiveCacheKey)
+
+    return cached && isSupportedLocaleValue(cached) ? normalizeLocale(cached) : DEFAULT_LOCALE
+  })
+
   const [isLoadingConfig, setIsLoadingConfig] = useState(false)
   const [isSavingLocale, setIsSavingLocale] = useState(false)
   const [configLoadError, setConfigLoadError] = useState<Error | null>(null)
@@ -117,6 +161,30 @@ export function I18nProvider({
   // set to from here). A ref, not the atom: another provider's or an earlier
   // scope's ask must never be promoted into this one.
   const requestedRef = useRef<null | string>(null)
+
+  const readCachedLocale = useCallback((key: string | undefined): string | null => {
+    if (!key) {
+      return null
+    }
+
+    return readStoredLocaleCache(key) ?? memoryCacheRef.current.get(key) ?? null
+  }, [])
+
+  const writeCachedLocale = useCallback((key: string | undefined, value: string | null): void => {
+    if (!key) {
+      return
+    }
+
+    const normalized = value && value.trim() ? normalizeLocaleId(value) : null
+
+    if (normalized) {
+      memoryCacheRef.current.set(key, normalized)
+    } else {
+      memoryCacheRef.current.delete(key)
+    }
+
+    writeStoredLocaleCache(key, normalized)
+  }, [])
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
@@ -158,13 +226,14 @@ export function I18nProvider({
     let cancelled = false
     let retryTimer: ReturnType<typeof setTimeout> | null = null
     let retryCount = 0
+    const activeCacheKey = effectiveCacheKey
 
     // The desktop races its own backend at startup: the renderer mounts before
     // the backend is ready, so the first /api/config call can time out. We keep
     // the established permanent-failure contract — a rejected config load
-    // settles on English so the UI stays usable — but bounded retries recover
-    // transient startup failures, applying the persisted display.language once
-    // the backend comes up.
+    // without a cached saved locale settles on English so the UI stays usable —
+    // while keeping any previously confirmed saved locale for this scope and
+    // allowing bounded retries to recover transient startup failures.
     const MAX_LOCALE_RETRIES = 10
     const LOCALE_RETRY_DELAY_MS = 3_000
 
@@ -180,11 +249,13 @@ export function I18nProvider({
           }
 
           const saved = getConfigDisplayLanguage(config)
+          const rawSaved = typeof saved === 'string' && saved.trim() ? normalizeLocaleId(saved) : null
 
           // Publish the raw ask even when it names a language only a pack
           // can render; the backend-pack sync fetches that pack by this id.
-          requestedRef.current = typeof saved === 'string' && saved.trim() ? normalizeLocaleId(saved) : null
-          $requestedLocale.set(requestedRef.current)
+          requestedRef.current = rawSaved
+          $requestedLocale.set(rawSaved)
+          writeCachedLocale(activeCacheKey, rawSaved)
 
           // A saved choice needs no machine probe and always takes precedence.
           if (isSupportedLocaleValue(saved)) {
@@ -208,7 +279,16 @@ export function I18nProvider({
           }
 
           setConfigLoadError(toError(error))
-          setLocaleState(DEFAULT_LOCALE)
+
+          const cached = readCachedLocale(activeCacheKey)
+
+          if (cached) {
+            requestedRef.current = cached
+            $requestedLocale.set(cached)
+            setLocaleState(isSupportedLocaleValue(cached) ? normalizeLocale(cached) : DEFAULT_LOCALE)
+          } else {
+            setLocaleState(DEFAULT_LOCALE)
+          }
 
           if (retryCount < MAX_LOCALE_RETRIES) {
             retryCount += 1
@@ -234,12 +314,13 @@ export function I18nProvider({
         clearTimeout(retryTimer)
       }
     }
-  }, [configClient, initialLocale, scopeKey])
+  }, [configClient, effectiveCacheKey, initialLocale, readCachedLocale, scopeKey, writeCachedLocale])
 
   const setLocale = useCallback(
     async (next: Locale) => {
       const previousLocale = localeRef.current
       const generation = scopeGenerationRef.current
+      const targetCacheKey = effectiveCacheKey
 
       userLocaleRef.current = true
       setSaveError(null)
@@ -260,6 +341,8 @@ export function I18nProvider({
         if (!result.ok) {
           throw new Error('Failed to save language')
         }
+
+        writeCachedLocale(targetCacheKey, next)
       } catch (error) {
         const nextError = toError(error)
 
@@ -277,7 +360,7 @@ export function I18nProvider({
         }
       }
     },
-    [configClient]
+    [configClient, effectiveCacheKey, writeCachedLocale]
   )
 
   const value = useMemo<I18nContextValue>(

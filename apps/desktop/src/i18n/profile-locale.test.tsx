@@ -34,6 +34,8 @@ function route(profile: string, connectionId: string | null = null) {
 
 afterEach(() => {
   cleanup()
+  vi.useRealTimers()
+  window.localStorage.clear()
   $gateway.set(null)
   $gatewayState.set('idle')
   resetAppLocaleRegistry()
@@ -247,4 +249,150 @@ it('promotes a saved pack language that arrives after the OS-language probe', as
 
   act(() => $gateway.set({ request: koPackRequest() } as never))
   await waitFor(() => expect(screen.getByTestId('locale').textContent).toBe('ko'))
+})
+
+it('keeps saved Russian across remote disconnect and retry exhaustion, and re-syncs when gateway reopens', async () => {
+  vi.useFakeTimers()
+
+  let online = true
+  let remoteLanguage = 'ru'
+
+  const api = vi.fn(async () => {
+    if (!online) {
+      throw new Error('Could not reach the remote Hermes gateway')
+    }
+
+    return { display: { language: remoteLanguage } }
+  })
+
+  window.hermesDesktop = { api } as never
+  $connection.set({
+    baseUrl: 'https://hermes.kolotovalexander.tech',
+    connectionId: 'remote-oci',
+    mode: 'remote',
+    profile: 'default'
+  } as never)
+  $gatewayState.set('open')
+
+  const view = render(
+    <I18nProvider>
+      <Probe />
+    </I18nProvider>
+  )
+
+  await act(async () => {})
+  expect(screen.getByTestId('locale').textContent).toBe('ru')
+
+  // Simulate sleep/disconnect: socket closes, reconnect blip sets $connection(null),
+  // and backend config calls keep failing past the 10-retry (30s) budget.
+  online = false
+  act(() => {
+    $gatewayState.set('closed')
+    $connection.set(null)
+  })
+  await act(async () => {})
+  expect(screen.getByTestId('locale').textContent).toBe('ru')
+
+  // Even a transient reopen while HTTP ticket refresh is still failing exhausts
+  // retries without resetting the cached Russian UI back to English.
+  act(() => $gatewayState.set('open'))
+  await act(async () => {})
+  expect(screen.getByTestId('locale').textContent).toBe('ru')
+
+  for (let i = 0; i < 10; i++) {
+    await act(async () => {
+      vi.advanceTimersByTime(3_000)
+    })
+    expect(screen.getByTestId('locale').textContent).toBe('ru')
+  }
+
+  const callsAtExhaustion = api.mock.calls.length
+
+  await act(async () => {
+    vi.advanceTimersByTime(30_000)
+  })
+  expect(api).toHaveBeenCalledTimes(callsAtExhaustion)
+  expect(screen.getByTestId('locale').textContent).toBe('ru')
+
+  // Unmount/remount while still offline also preserves the cached saved Russian locale.
+  view.unmount()
+  $gatewayState.set('idle')
+  $connection.set({
+    baseUrl: 'https://hermes.kolotovalexander.tech',
+    connectionId: 'remote-oci',
+    mode: 'remote',
+    profile: 'default'
+  } as never)
+
+  render(
+    <I18nProvider>
+      <Probe />
+    </I18nProvider>
+  )
+
+  await act(async () => {})
+  expect(screen.getByTestId('locale').textContent).toBe('ru')
+
+  for (let i = 0; i < 10; i++) {
+    await act(async () => {
+      vi.advanceTimersByTime(3_000)
+    })
+  }
+
+  expect(screen.getByTestId('locale').textContent).toBe('ru')
+
+  // Remote gateway finally recovers after retry exhaustion -> $gatewayState transitions
+  // to 'open', triggering a fresh config read instead of staying stuck on a stale loop.
+  online = true
+  remoteLanguage = 'fr'
+  act(() => $gatewayState.set('open'))
+  await act(async () => {})
+  expect(screen.getByTestId('locale').textContent).toBe('fr')
+})
+
+it('recovers saved Russian when gateway opens after cold-boot retry exhaustion without cache', async () => {
+  vi.useFakeTimers()
+
+  let online = false
+
+  const api = vi.fn(async () => {
+    if (!online) {
+      throw new Error('Could not reach the remote Hermes gateway')
+    }
+
+    return { display: { language: 'ru' } }
+  })
+
+  window.hermesDesktop = { api } as never
+  $connection.set({
+    baseUrl: 'https://hermes.kolotovalexander.tech',
+    connectionId: 'remote-cold',
+    mode: 'remote',
+    profile: 'default'
+  } as never)
+
+  render(
+    <I18nProvider>
+      <Probe />
+    </I18nProvider>
+  )
+
+  await act(async () => {})
+  expect(screen.getByTestId('locale').textContent).toBe('en')
+
+  for (let i = 0; i < 10; i++) {
+    await act(async () => {
+      vi.advanceTimersByTime(3_000)
+    })
+  }
+
+  expect(api).toHaveBeenCalledTimes(11)
+  expect(screen.getByTestId('locale').textContent).toBe('en')
+
+  // Gateway finishes connecting 108s later -> transition to 'open' reloads config.
+  online = true
+  act(() => $gatewayState.set('open'))
+  await act(async () => {})
+  expect(api).toHaveBeenCalledTimes(12)
+  expect(screen.getByTestId('locale').textContent).toBe('ru')
 })

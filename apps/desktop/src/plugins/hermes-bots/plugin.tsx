@@ -466,8 +466,7 @@ export default {
         tabTitleText: () => translateNow('common.bots'),
         dock: {
           pane: 'sessions',
-          pos: 'center',
-          enforce: true
+          pos: 'center'
         }
       },
       render: () => <BotsPane />
@@ -500,8 +499,7 @@ export default {
           // Repair persisted layouts that stranded Cronjobs in the Bots tab strip.
           dock: {
             pane: 'workspace',
-            pos: 'right',
-            enforce: true
+            pos: 'right'
           },
           // A bot's schedule is glanceable, not something you sit in — it
           // arrives as the right edge's vertical tab and takes no width off the

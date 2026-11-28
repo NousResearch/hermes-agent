@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 # These options change execution or require frontend facilities not yet exposed by
 # the authority. Reject them, rather than mutate process-wide gateway settings.
 _UNSUPPORTED = (
-    "image", "worktree", "w",
+    "worktree", "w",
     "no_restore_cwd",
     "run_budget", "verbose", "compact",
 )
@@ -26,7 +26,6 @@ _POLICY = ("model", "provider", "reasoning", "toolsets", "max_turns", "base_url"
            "yolo", "safe_mode", "ignore_user_config", "skills", "checkpoints", "accept_hooks", "pass_session_id")
 # Where each refused option lives now; the refusal names it so the user is not left guessing.
 _RELOCATED = {
-    "image": "`hermes --tui` or the Desktop app to attach the image",
     "worktree": "`hermes --tui -w`",
     "w": "`hermes --tui -w`",
     "no_restore_cwd": "`--in <dir>` (the gateway keeps the session's frozen cwd)",
@@ -182,6 +181,22 @@ async def _resume_latest(client, args):
                                  "or list sessions with `hermes sessions list`.") from None
 
 
+def _read_launch_image(image):
+    import base64
+
+    path = Path(image).expanduser()
+    return path.name, base64.b64encode(path.read_bytes()).decode("ascii")
+
+
+async def _launch_attachment_options(client, session_id, image):
+    if not image:
+        return {}
+    filename, content = await asyncio.to_thread(_read_launch_image, image)
+    uploaded = await client.rpc("image.attach_bytes", session_id=session_id,
+                                filename=filename, content_base64=content)
+    return {"attachments": [{"path": uploaded["path"], "mime": uploaded["mime"]}]}
+
+
 async def run_gateway_chat(args, emitter=None):
     from hermes_cli.gateway_chat_view import GatewayChatView
     query = getattr(args, "query", None) or getattr(args, "q", None)
@@ -269,7 +284,8 @@ async def run_gateway_chat(args, emitter=None):
                 merged = isinstance(metadata, dict) and metadata.get(MODEL_ONLY_DISPLAY_METADATA_KEY)
                 if row.get("role") in {"user", "assistant"} and isinstance(row.get("content"), str) and not merged:
                     print(f"{row['role']}: {row['content']}")
-        return await view.run(query, oneshot=oneshot)
+        attachment_options = await _launch_attachment_options(client, view.session_id, getattr(args, "image", None))
+        return await view.run(query, oneshot=oneshot, **attachment_options)
 
 
 _RESUME_POLICY_MISMATCH = "Resume retains gateway session policy; creation overrides are unsupported on resume."

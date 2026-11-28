@@ -556,6 +556,58 @@ def test_deleted_sibling_worktree_folds_into_parent_home_checkout():
     assert len(main["sessions"]) == 2
 
 
+def test_deleted_sibling_worktree_still_folds_when_the_backend_can_stat():
+    # With `exists` (local backend) the guess still runs for a cwd that is gone.
+    resolve = _resolver({"/www/hermes-agent": ("/www/hermes-agent", "/www/hermes-agent")})
+    on_disk = {"/www", "/www/hermes-agent"}
+    sessions = [
+        _session("/www/hermes-agent", branch="main"),
+        _session("/www/hermes-agent-session-links/sub"),
+    ]
+
+    tree = pt.build_tree([], sessions, [], resolve, hydrate=True, exists=on_disk.__contains__)
+
+    assert [p["id"] for p in tree["projects"]] == ["/www/hermes-agent"]
+    assert _lane_ids(tree["projects"][0]) == ["/www/hermes-agent::branch::main"]
+    assert len(tree["projects"][0]["repos"][0]["groups"][0]["sessions"]) == 2
+
+
+def test_live_non_repo_folder_is_never_filed_under_a_trimmed_ancestor_name():
+    # `/www/work-scratch/notes` is on disk and is not a repo. Trimming `-scratch` off
+    # its parent names `/www/work`, an unrelated repo: the session must not get a
+    # `main` lane there (nor a second home), in an explicit project or an auto one.
+    resolve = _resolver({"/www/work": ("/www/work", "/www/work")})
+    on_disk = {"/www", "/www/work", "/www/work-scratch", "/www/work-scratch/notes"}
+    explicit_row = _session("/www/work-scratch/notes")
+    project = _project("p_notes", "notes", ["/www/work-scratch/notes"])
+
+    explicit = pt.build_tree([project], [explicit_row], [], resolve, hydrate=True, exists=on_disk.__contains__)
+    node = next(p for p in explicit["projects"] if p["id"] == "p_notes")
+    assert [r["id"] for r in node["repos"]] == ["/www/work-scratch/notes"]
+    lane = node["repos"][0]["groups"][0]
+    assert lane["isGit"] is False and [s["id"] for s in lane["sessions"]] == [explicit_row["id"]]
+
+    auto_row = _session("/www/work-scratch/notes")
+    auto = pt.build_tree([], [auto_row], [], resolve, hydrate=True, exists=on_disk.__contains__)
+    assert _real_project_ids(auto) == ["/www/work-scratch/notes"]
+    assert not any(
+        g["id"].startswith("/www/work::") for p in auto["projects"] for r in p["repos"] for g in r["groups"])
+
+
+def test_sibling_probe_never_trims_a_folder_that_exists():
+    probed = []
+
+    def resolve(cwd):
+        probed.append(cwd)
+        return {"repo_root": "/www/work", "worktree_root": "/www/work"} if cwd == "/www/work" else None
+
+    on_disk = {"/www", "/www/work", "/www/work-scratch", "/www/work-scratch/notes"}
+    assert pt._probe_sibling_worktree("/www/work-scratch/notes", resolve, on_disk.__contains__) == ""
+    assert probed == []
+    # Gone below an existing parent: only the missing names are trimmed.
+    assert pt._probe_sibling_worktree("/www/work-gone/sub", resolve, on_disk.__contains__) == "/www/work"
+
+
 def test_existing_non_git_workspace_still_becomes_a_project():
     # The existence guard keys on the DIRECTORY, not on git-ness: a plain folder
     # that's still on disk is a legitimate workspace and must keep its project.

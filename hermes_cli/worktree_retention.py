@@ -133,8 +133,10 @@ def hidden_index_edits(wt_path, env=None) -> list[str]:
     wt = Path(wt_path)
     env = env or _env(wt)
     flagged = []
-    for record in _git(["ls-files", "-v", "-s", "-z"], wt, env).split("\0"):
-        meta, _, rel = record.partition("\t")
+    from hermes_cli.worktree_archive import _run_bytes
+    # Bytes, not text: universal-newline decoding would read a "\r" in a name as "\n" and check the wrong file.
+    for raw in _run_bytes(["ls-files", "-v", "-s", "-z"], wt, env, b"").split(b"\0"):
+        meta, _, rel = os.fsdecode(raw).partition("\t")
         parts = meta.split()
         if not rel or len(parts) != 4 or not (parts[0] == "S" or parts[0].islower()):
             continue
